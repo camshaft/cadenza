@@ -181,6 +181,14 @@ def c-cx-neg-mod() = Case.Case([Tok.TNeg, Tok.TNum(7), Tok.TOp(37), Tok.TNum(3)]
 /// `if 1 < 2 then (if 3 < 4 then 7 else 8) else 9` → 7 — a nested `if` in the THEN branch (an `if` as a
 /// branch RESULT, not just at top level). Pins that a branch can itself be a full control-flow expression.
 def c-cx-nested-if-in-branch() = Case.Case([Tok.TIf, Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TThen, Tok.TIf, Tok.TNum(3), Tok.TOp(60), Tok.TNum(4), Tok.TThen, Tok.TNum(7), Tok.TElse, Tok.TNum(8), Tok.TElse, Tok.TNum(9)], Expect.Runs(7))
+/// `if 1 < 2 then (if 3 < 4 then 42 else 0) else 99` → 42 — a PARENTHESISED inner `if` as the then-branch
+/// of an outer `if` that has its OWN `else`. THE bug #4 witness (corpus-bugfix reassigned to v-inference):
+/// this exact shape was a VALID-BUT-WRONG-VALUE seed miscompile (parse-if re-entering itself 2 levels deep
+/// through the paren factor, the depth-3 recursive-descent SCC re-entry). Distinct from the un-parenthesised
+/// c-cx-nested-if-in-branch above: the `(` routes the inner `if` through parse-factor's TLParen arm, the exact
+/// re-entry that mis-lowered. FIXED (rcdzc 26e3471ac, the same recursive-call-scrutinee materialization that
+/// un-hung `((5))`); verified 42 at full conformance-db scale. Permanent regression guard for the paren-if face.
+def c-cx-paren-if-in-then-branch() = Case.Case([Tok.TIf, Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TThen, Tok.TLParen, Tok.TIf, Tok.TNum(3), Tok.TOp(60), Tok.TNum(4), Tok.TThen, Tok.TNum(42), Tok.TElse, Tok.TNum(0), Tok.TRParen, Tok.TElse, Tok.TNum(99)], Expect.Runs(42))
 /// `let x = 4 in let y = x + 1 in x * y` → 20 — the outer binding `x` used in BOTH the inner let's VALUE
 /// (`x+1`) and the body (`x*y`). Pins outer-scope visibility across a nested-let value + body together.
 def c-cx-let-chain-outer-in-value-and-body() = Case.Case([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(4), Tok.TIn, Tok.TLet, Tok.TName(2), Tok.TEq, Tok.TName(1), Tok.TOp(43), Tok.TNum(1), Tok.TIn, Tok.TName(1), Tok.TOp(42), Tok.TName(2)], Expect.Runs(20))
@@ -226,7 +234,7 @@ def corpus() = [
   c-cx-paren-overrides-precedence(), c-cx-paren-right-operand(),
   c-cx-sub-left-assoc(), c-cx-mod-precedence(), c-cx-mod-precedence-distinguishes(),
   c-cx-neg-dividend(), c-cx-mod-by-zero-declines(),
-  c-cx-nested-if-in-branch(), c-cx-let-chain-outer-in-value-and-body(),
+  c-cx-nested-if-in-branch(), c-cx-paren-if-in-then-branch(), c-cx-let-chain-outer-in-value-and-body(),
   c-cx-ne-true(), c-cx-mul-prec-in-sub-chain(),
   c-cx-chained-comparison-declines(), c-cx-neg-mod(),
   c-cx-nested-redundant-parens(),
@@ -261,7 +269,7 @@ def cf-declines-mismatch-is-fail() =
 
 @test
 def cf-corpus-size-floor() =
-  // The corpus SIZE floor: exactly 63 cases, so a case can't be silently dropped from `corpus()`.
+  // The corpus SIZE floor: exactly 64 cases, so a case can't be silently dropped from `corpus()`.
   // This does NOT re-run the compiles — each case's pass/decline is already proven by its own
   // `conformance-<case>` @test below, and the `count-passing` fold logic by
   // `cf-count-passing-partial`. The old `cf-corpus-all-pass` re-ran the entire corpus
@@ -270,7 +278,7 @@ def cf-corpus-size-floor() =
   // v-fleet-tooling as the compiler-ml gate-throughput + false-hang source). The conformance FLOOR
   // is now: per-case @tests (each case correct) + this size check (no case dropped), with none of
   // the redundant full-corpus re-run.
-  (if List.len(corpus()) == 63 then unit else trap("corpus has 63 cases"))
+  (if List.len(corpus()) == 64 then unit else trap("corpus has 64 cases"))
 
 @test
 def cf-count-passing-partial() =
@@ -403,6 +411,8 @@ def conformance-cx-mod-by-zero-declines() = (if check-case(c-cx-mod-by-zero-decl
 def conformance-cx-nested-redundant-parens() = (if check-case(c-cx-nested-redundant-parens()) then unit else trap("((5)) → 5 (nested redundant parens collapse; bug #4 regression guard)"))
 @test
 def conformance-cx-nested-if-in-branch() = (if check-case(c-cx-nested-if-in-branch()) then unit else trap("if 1<2 then (if 3<4 then 7 else 8) else 9 → 7"))
+@test
+def conformance-cx-paren-if-in-then-branch() = (if check-case(c-cx-paren-if-in-then-branch()) then unit else trap("if 1<2 then (if 3<4 then 42 else 0) else 99 → 42 (bug #4 paren-if regression guard)"))
 @test
 def conformance-cx-let-chain-outer-in-value-and-body() = (if check-case(c-cx-let-chain-outer-in-value-and-body()) then unit else trap("let x=4 in let y=x+1 in x*y → 20"))
 @test

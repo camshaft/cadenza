@@ -183,3 +183,49 @@ def se-three-param-under-application-declines() =
   (match run-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2)) (export main))") with
     | Option.None(_) => unit
     | Option.Some(_) => trap("(f 1 2) under-applies a 3-param def → declines"))
+
+@test
+def se-helper-calls-earlier-helper() =
+  // a BACKWARD reference: a helper calls an EARLIER-defined helper. `(def (inc x) (+ x 1))` then
+  // `(def (inc2 x) (inc (inc x)))` — inc2's body calls inc (defined before it) twice. inc2(5) → 7. Pins that
+  // a def-body's call resolves to a PRIOR def (the definition-order-dependent path that currently works;
+  // definition-order INDEPENDENCE — a forward call to a LATER def — is a filed follow-up). Guards the
+  // backward-ref call-chain against regression. Differential-verified vs rcdzc (7).
+  (match run-src("(do (def (inc x) (+ x 1)) (def (inc2 x) (inc (inc x))) (def (main) (inc2 5)) (export main))") with
+    | Option.Some(v) => (if v == 7 then unit else trap("inc2(5) = inc(inc(5)) = 7"))
+    | Option.None(_) => trap("a helper calling an earlier helper runs"))
+
+@test
+def se-helper-chain-nested-calls() =
+  // a deeper backward chain: `(def (dbl x) (* x 2))` then `(def (quad x) (dbl (dbl x)))` — quad(3) → 12.
+  // Pins a NESTED call to an earlier helper (dbl called twice, nested, inside quad's body).
+  (match run-src("(do (def (dbl x) (* x 2)) (def (quad x) (dbl (dbl x))) (def (main) (quad 3)) (export main))") with
+    | Option.Some(v) => (if v == 12 then unit else trap("quad(3) = dbl(dbl(3)) = 12"))
+    | Option.None(_) => trap("a nested backward helper chain runs"))
+
+@test
+def se-three-typed-params-run() =
+  // slice-3e-typed: a 3-param def with ALL params typed narrow. `(def (f (: a Int8) (: b Int8) (: c Int8))
+  // (+ a (+ b c)))` `(f 5 10 15)` → 30 (fits Int8). The reader now chains a typed 2nd param to a typed 3rd
+  // (read-typed-second-param → read-third-param → read-typed-third-param), and infer-param3 binds param3's
+  // declared narrow type + fit-checks arg3. Matches the reference.
+  (match run-src("(do (def (f (: a Int8) (: b Int8) (: c Int8)) (+ a (+ b c))) (def (main) (f 5 10 15)) (export main))") with
+    | Option.Some(v) => (if v == 30 then unit else trap("f(5,10,15) Int8 sum = 30"))
+    | Option.None(_) => trap("all-typed 3-param def runs"))
+
+@test
+def se-three-param-typed-third-arg-out-of-range-declines() =
+  // CDZ0302 on the THIRD typed param: an arg3 out of param3's declared range rejects (like param1/param2).
+  // `(f (: a Int8) (: b Int8) (: c Int8))` `(f 5 10 200)` → 200 doesn't fit Int8 → declines.
+  (match run-src("(do (def (f (: a Int8) (: b Int8) (: c Int8)) (+ a (+ b c))) (def (main) (f 5 10 200)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("arg3 200 out of Int8 range → declines (CDZ0302 on param3)"))
+
+@test
+def se-three-param-typed-third-only() =
+  // a MIXED shape: untyped 1st/2nd + a typed 3rd `(f a b (: c Int8))`. Body returns c → 3. Pins that the
+  // untyped-params → typed-3rd path (read-second-param untyped → read-third-param → read-typed-third-param)
+  // composes. (A body mixing the untyped-Int64 params with the Int8 3rd would be mixed-width — Gap A/item-3.)
+  (match run-src("(do (def (f a b (: c Int8)) c) (def (main) (f 1 2 3)) (export main))") with
+    | Option.Some(v) => (if v == 3 then unit else trap("f(1,2,3) returns c = 3"))
+    | Option.None(_) => trap("untyped-1st-2nd + typed-3rd def runs"))

@@ -695,28 +695,54 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
 /// sibling — two bare literals — imposes nothing, and both then default to Int64). Keyed on the
 /// operator's PRIM (`is_binop`), never a name — no key outside the prelude.
 fn literal_binop_context_ty(db: &mut Db, id: StructId) -> Option<crate::ty::IntTy> {
-    let parent = db.parent_of(id)?;
-    let Resolved::Apply { head, args } = resolved_of(db, parent) else {
-        return None;
-    };
-    // The head must be an integer binary operator; the literal must be one of its (exactly two) operands.
-    let prim = crate::eval::meta_apply_of(db, head)?;
-    if !prim.is_binop() || args.len() != 2 {
-        return None;
-    }
-    let sibling = if args[0] == id {
-        args[1]
-    } else if args[1] == id {
-        args[0]
-    } else {
-        return None;
-    };
-    // The sibling's type fixes the shared width only when it is a CONCRETELY-fixed integer (a `UInt64`
-    // variable, an annotated operand) — the same "prefer a concrete width over a deferred literal" rule
-    // `operand_int_ty` applies at selection. A deferred/var sibling imposes no constraint.
-    match type_of(db, sibling) {
-        Ty::Int(it) if it.width_is_fixed() => Some(it),
-        _ => None,
+    // CLIMB the binary-operator spine from the literal upward. At each step `child` is the node we ascended
+    // from and `parent` its enclosing binop; `sibling` is the operator's OTHER operand. A CONCRETELY-fixed
+    // integer sibling (a `UInt8` variable, an annotated operand, a nested op whose own operands fix it —
+    // `(% a b)` over two `UInt8`) fixes the shared width, the same "prefer a concrete width over a deferred
+    // literal" rule `operand_int_ty` applies at selection.
+    //
+    // When the immediate sibling is itself DEFERRED (an `if`/`match` whose bare-literal branches default to
+    // Int64, another bare literal), the width may still be fixed TRANSITIVELY by an ancestor: in `(+ (* 10000
+    // (if …)) (% a b))` the literal's own sibling (the `if`) is deferred, but the enclosing `*`'s sibling
+    // under the `+` is the `UInt8` `(% a b)`. An integer ARITH op unifies its two operands to ONE width (its
+    // result width IS its operand width — `+ : ∀a. (Int a) → (Int a) → (Int a)`), so that `UInt8` flows down
+    // through the `*` to the literal, which must then fit it (numeric-model.md §"An Explicit … Or Other
+    // Constraint On An Integer Literal MUST Take Precedence"). This is the wasm selection path's downward
+    // width threading, surfaced at the SHARED well-formedness layer so `cdz check` and BOTH backends inherit
+    // one verdict — rather than the rust backend silently emitting a truncating `as u8` cast where wasm
+    // rejects (CDZ0302). Climb only through ARITH ops: a COMPARISON's result is `Bool`, so a width fixed
+    // above it does NOT flow to its operands (the chain breaks there).
+    let mut child = id;
+    loop {
+        let parent = db.parent_of(child)?;
+        let Resolved::Apply { head, args } = resolved_of(db, parent) else {
+            return None;
+        };
+        // The head must be an integer binary operator; the child must be one of its (exactly two) operands.
+        let prim = crate::eval::meta_apply_of(db, head)?;
+        if !prim.is_binop() || args.len() != 2 {
+            return None;
+        }
+        let sibling = if args[0] == child {
+            args[1]
+        } else if args[1] == child {
+            args[0]
+        } else {
+            return None;
+        };
+        // A CONCRETELY-fixed sibling fixes the shared width. A deferred/var sibling imposes no direct
+        // constraint here.
+        if let Ty::Int(it) = type_of(db, sibling)
+            && it.width_is_fixed()
+        {
+            return Some(it);
+        }
+        // The sibling is deferred. Keep climbing only through an ARITH op (whose enclosing width flows down
+        // to its operands); a COMPARISON breaks the chain (its result is `Bool`, not the operand width).
+        if !prim.is_arith() {
+            return None;
+        }
+        child = parent;
     }
 }
 

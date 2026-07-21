@@ -301,6 +301,37 @@
   (call   em) (output (: 36 Int64))
   (call   ef) (output (: 12 Int64)))
 
+; A CLOSED literal closure FORWARDED through several `const`-parameter call hops (`sum` → `fold` →
+; `drive`'s `const g`) — the const-WRAPPER-CHAIN. This used to be a false CDZ0201 reject: a β-substitution
+; splices the source lambda `(fn (a x) (+ a x))` into a specialization copy and STEALS its single arena
+; parent pointer (one mutable parent per node), so `arg_captures_runtime_binding`'s `is_within` walk sees
+; the lambda's OWN params `a`/`x` as "outside" it → a spurious runtime-capture → a reject on a genuinely
+; compile-time-known closure. Fixed by a theft-immune lexical free-NAME closedness cross-check (a bare name
+; that is neither the lambda's own param nor a resolvable global is the only real capture). Distinct from
+; the "re-passed through a recursive driver" case above (that is a bare self-repass of the callee's OWN
+; const param; this FORWARDS a closed literal down two intermediate const params before the recursion). The
+; derived-closure divergence guard (a re-pass building a NEW closure each depth) stays intact — only a
+; genuinely CLOSED forwarded closure is accepted. `sum(from-list([1,2,3]))` folds with `+`: 1+2+3 = 6.
+
+(case "a closed literal closure forwarded through const-wrapper hops is not a false reject"
+  (doc    "A closed closure `(fn (a x) (+ a x))` forwarded through `sum` → `fold` → `drive`'s `const g`
+           parameter. The const-wrapper chain used to falsely reject CDZ0201: a β-substitution spliced the
+           source lambda into a spec copy and stole its arena parent pointer, so the capture check saw the
+           lambda's own params `a`/`x` as an outside (runtime) capture. A theft-immune lexical free-name
+           closedness check accepts the genuinely-closed forwarded closure, so it specializes and computes.
+           sum(from-list([1,2,3])) = 1+2+3 = 6.")
+  (input  (do
+            (type Iter (Mk (List Int64) (-> (List Int64) (Option (Tuple Int64 (List Int64))))))
+            (def (from-list (: xs (List Int64)))
+              (Iter.Mk xs (fn ((: s (List Int64))) (match s ((list) (Option.None)) ((list h .. t) (Option.Some (tuple h t)))))))
+            (def (drive (const (: step (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) (: s (List Int64)) (: acc Int64) (const (: g (-> Int64 Int64 Int64))))
+              (match (step s) ((Option.None) acc) ((Option.Some p) (match p ((tuple x s2) (drive step s2 (g acc x) g))))))
+            (def (fold (: it Iter) (: acc Int64) (const (: g (-> Int64 Int64 Int64)))) (match it ((Iter.Mk s step) (drive step s acc g))))
+            (def (sum (: it Iter)) (fold it 0 (fn ((: a Int64) (: x Int64)) (+ a x))))
+            (def (main) (sum (from-list (list 1 2 3))))
+            (export main)))
+  (output (: 6 Int64)))
+
 (case "a let-bound returned closure applied twice folds each application independently"
   (doc    "The multi-use companion: `(let ((f (mk n))) (+ (f 3) (f 4)))` binds the returned capturing closure
            once and applies it twice; each application folds independently, so with `n` = 10 the result is
@@ -2980,6 +3011,25 @@
             (def (main) (let ((m 10)) ((sub m) 3)))
             (export main)))
   (output (: 7 Int64)))
+
+(case "a partially-applied RUNTIME closure binds its residual to a let, then completes it"
+  (doc    "The residual-closure-lift capability: a FACTORY `mk` RETURNS a runtime closure value `(fn (a b)
+           (+ (+ a b) k))`; `(f 3)` partially applies THAT RUNTIME CLOSURE to 1 of its 2 args, producing a
+           residual that captures the supplied `3` (and, transitively, the factory's `k`); the residual is
+           BOUND to `g` in a `let`, then COMPLETED by `(g 4)`. `(mk n)` with n = 10 → `(3 + 4 + 10)` = 17.
+           Unlike `((sub m) 3)` above (a partial of a top-level DEF), `f` here is a genuine RUNTIME CLOSURE
+           VALUE, so `(f 3)` is an UNDER-ARITY `CallClosure` that must build a residual closure cell (capturing
+           the supplied arg) and complete it via `call_indirect`. This partial-of-a-runtime-closure emitted
+           INVALID WASM before the residual-closure lift landed (the under-arity `CallClosure`'s residual rep
+           disagreed with the later completing `call_indirect` — `expected i64 found i32`); a stopgap DECLINE
+           guarded it until the genuine lift replaced it. Pins that a let-bound residual from a partially-
+           applied runtime closure now COMPUTES the correct value (was the decline-stopgap's exact repro).")
+  (input  (do
+            (def (mk (: k Int64)) (fn ((: a Int64) (: b Int64)) (+ (+ a b) k)))
+            (def (go (: n Int64)) (let ((f (mk n))) (let ((g (f 3))) (g 4))))
+            (def (main) (go 10))
+            (export main)))
+  (output (: 17 Int64)))
 
 (case "a named multi-argument function applies to all its arguments at once"
   (doc    "The DIRECT multi-argument application `(add a b)` — not the explicit curried `((add a) b)` of

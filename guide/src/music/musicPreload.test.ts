@@ -111,3 +111,38 @@ test("every MUSIC_PRELOAD_NAMES entry is staged by stage-wasm.mjs musicLibs (no 
     assert.ok(staged.includes(name), `MUSIC_PRELOAD_NAMES has "${name}" but stage-wasm.mjs musicLibs does not stage "${name}.cdz" — it would fail to preload (add it to musicLibs)`);
   }
 });
+
+// The PRELOAD ARITY trap (OPERATOR bug 2026-07-20): compile_with_preloaded requires names/sources/formats to be
+// EQUAL LENGTH. In MusicPage.tsx, PRELOAD_NAMES derives from MUSIC_PRELOAD_NAMES and FORMATS is mapped off NAMES
+// (so those can't drift), but PRELOAD_SOURCES is a HAND-maintained list of `?raw` imports — one per module. When
+// `pattern` was added to MUSIC_PRELOAD_NAMES without a matching `pattern.cdz?raw` import + SOURCES entry, names=12
+// vs sources=11 → the whole /music page threw "names/sources/formats must be equal length". MusicPage.tsx has a
+// runtime module-load guard now, but that only fires when the page is imported; this pins it in CI (test:unit) by
+// parsing MusicPage.tsx and asserting every preloaded name has a matching `../wasm/music/<name>.cdz?raw` import.
+function musicPageRawImports(): string[] {
+  const here = dirname(fileURLToPath(import.meta.url)); // src/music
+  const src = readFileSync(join(here, "MusicPage.tsx"), "utf8");
+  // Each `import X from "../wasm/music/<name>.cdz?raw"` → capture <name> (bare, matches MUSIC_PRELOAD_NAMES).
+  return [...src.matchAll(/from\s+"\.\.\/wasm\/music\/([a-z0-9-]+)\.cdz\?raw"/g)].map((m) => m[1]);
+}
+
+test("MusicPage PRELOAD_SOURCES has a ?raw import for every MUSIC_PRELOAD_NAMES entry (equal-length arity)", () => {
+  const rawImports = musicPageRawImports();
+  assert.ok(rawImports.length >= 10, `expected many ?raw music imports in MusicPage.tsx, found ${rawImports.length} — the regex may be stale`);
+  // Every preloaded NAME must have a matching ?raw SOURCE import, else names.length !== sources.length and
+  // compile_with_preloaded throws "must be equal length" — breaking the whole page (the pattern/R4 regression).
+  for (const name of MUSIC_PRELOAD_NAMES) {
+    assert.ok(
+      rawImports.includes(name),
+      `MUSIC_PRELOAD_NAMES has "${name}" but MusicPage.tsx has no matching \`../wasm/music/${name}.cdz?raw\` import ` +
+        `→ PRELOAD_SOURCES would be short a slot → compile_with_preloaded "names/sources/formats must be equal length".`,
+    );
+  }
+  // And no EXTRA source import without a preloaded name (the reverse arity drift — sources longer than names).
+  for (const raw of rawImports) {
+    assert.ok(
+      (MUSIC_PRELOAD_NAMES as readonly string[]).includes(raw),
+      `MusicPage.tsx imports "${raw}.cdz?raw" but "${raw}" is not in MUSIC_PRELOAD_NAMES → PRELOAD_SOURCES longer than PRELOAD_NAMES.`,
+    );
+  }
+});

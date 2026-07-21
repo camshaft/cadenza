@@ -13,38 +13,44 @@
 @!default-fraction Rational
 
 import { Solid, Vec3, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
-import { box, cyl, hole-through, fuse, move-z } from "helpers"
 
-@!param(widget: slider, range: [20, 200], default: 50) width : Rational
-@!param(widget: slider, range: [20, 150], default: 30) depth : Rational
-@!param(widget: slider, range: [2, 20], default: 5) thickness : Rational
+import { box, cyl, hole-through, fuse, move-z } from "helpers";
+
+@!param(widget: slider, range: [20, 200], default: 50) width : Rational;
+
+@!param(widget: slider, range: [20, 150], default: 30) depth : Rational;
+
+@!param(widget: slider, range: [2, 20], default: 5) thickness : Rational;
+
 @!param(widget: slider, range: [1, 15], default: 3) bore : Rational
 
 /// A parametric mounting PLATE: a `width × depth × thickness` plate with a central bolt hole of radius
 /// `bore` drilled through it. Every dimension is a runtime `@!param` — drag the sliders, the plate resizes
 /// and the hole re-bores, all exact. Built entirely with the ergonomic helpers (box + hole-through).
-def plate(w: Rational, d: Rational, t: Rational, r: Rational) =
-  hole-through(box(w, d, t), r, t)
+def plate(w: Rational, d: Rational, t: Rational, r: Rational) = hole-through(box(w, d, t), r, t)
 
 /// The showcase entry: read each @param ONCE (let-bind — reuse re-performs), build the parametric plate,
 /// and lower it to the render form the mesh driver consumes.
-def main() = host Param in
-  (let w = Param.width() in
-   let d = Param.depth() in
-   let t = Param.thickness() in
-   let r = Param.bore() in
-     lower(plate(w, d, t, r)))
+def main() =
+  host Param
+  in
+  let w = Param.width() in
+  let d = Param.depth() in
+  let t = Param.thickness() in
+  let r = Param.bore() in
+  lower(plate(w, d, t, r))
 
+@test
 /// ---- @test: pin the NON-parametric core (the helper-built plate at fixed dims) so the shape is gate-
 /// protected. (The PARAMETRIC path — @param + host-response — is proven via `cdz run --host-response`, not a
 /// @test, which supplies no host values; see the module doc for the CLI invocation.) ----
-
-@test
 def plate-at-fixed-dims-is-a-drilled-block() =
   // plate(50, 30, 5, 3) — a 50×30×5 plate with a Ø6 bore. The hole (a Difference) never grows the box, so
   // the envelope is exactly the outer block 50×30×5; and it's not empty (a real drilled plate).
   let p = plate(50 / 1, 30 / 1, 5 / 1, 3 / 1) in
-  if v3-eq(aabbr-size(bounding-box(p)), v3(50 / 1, 30 / 1, 5 / 1)) and (solidr-is-empty(p) == false)
-  then unit else trap("plate(50,30,5,3) envelope is the 50×30×5 block, non-empty")
+  if v3-eq(aabbr-size(bounding-box(p)), v3(50 / 1, 30 / 1, 5 / 1)) and solidr-is-empty(p) == false then
+    unit
+  else
+    trap("plate(50,30,5,3) envelope is the 50×30×5 block, non-empty")
 
 export { main }

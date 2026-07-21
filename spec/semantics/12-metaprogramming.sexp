@@ -351,6 +351,18 @@
   (input  (eval (Ast.List (list (Ast.Int 1) (Ast.Int 2)))))
   (error  CDZ0201))
 
+(case "eval of a constructor-built Ast.List with a valid operator head computes its value"
+  (doc    "The SUCCESS mirror of the non-operator-head case above, on the same Ast.List shape: `(eval
+           (Ast.List (list (Ast.Name \"+\") (Ast.Int 1) (Ast.Int 2))))` — an AST built ENTIRELY by hand
+           from constructors (no quote anywhere) — reconstructs to `(+ 1 2)` and evaluates to 3. The
+           eval-to-value pins elsewhere reach eval only via `quote` (a different producer of the same Ast
+           data); the constructor path was pinned only on the ERROR side (the case above proves it
+           faithfully rejects a bad head). This proves it faithfully SUCCEEDS on a good one — catching a
+           reconstruct regression that broke constructor-built operator application while leaving the
+           quote path intact. Expected: 3.")
+  (input  (eval (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2)))))
+  (output (: 3 Int64)))
+
 (case "eval of a bare Ast.Name for an unbound name is the ordinary unbound-name error"
   (doc    "`(eval (Ast.Name \"nonexistent\"))` reconstructs to the bare name `nonexistent` as a program.
            The reconstruct is faithful; the reconstructed name is resolved like any other reference, so an

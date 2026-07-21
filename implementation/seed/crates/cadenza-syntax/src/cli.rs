@@ -1486,6 +1486,71 @@ mod tests {
         assert!(would_drop_comments(b"x = 1\n", b"// added\nx = 1\n").is_none());
     }
 
+    #[test]
+    fn comment_counts_is_total_on_arbitrary_input() {
+        // The guard scans RAW bytes (possibly a malformed/partial file) — it must never panic, at any
+        // input: unterminated strings, lone `#`/`\`/`/` at EOL, non-ASCII, embedded NULs. A tiny
+        // deterministic PRNG (SplitMix64, the crate house style) fuzzes over a comment-relevant alphabet.
+        struct R(u64);
+        impl R {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                z ^ (z >> 31)
+            }
+        }
+        // Bytes that exercise every branch of the scanner: quotes, escapes, slashes, `#\`, newlines,
+        // a multi-byte char, and ordinary text.
+        let alphabet = ['/', '"', '\\', '#', '\n', ' ', 'a', '1', 'é', '\0'];
+        let mut r = R(0xC0FFEE);
+        for _ in 0..4000 {
+            let len = (r.next() % 40) as usize;
+            let s: String = (0..len)
+                .map(|_| alphabet[(r.next() as usize) % alphabet.len()])
+                .collect();
+            // The ONLY assertion is that it returns (does not panic); the counts themselves are exercised
+            // by the hand-written cases above. Totality is the property under test.
+            let _ = comment_counts(&s);
+        }
+    }
+
+    #[test]
+    fn guard_never_false_trips_on_a_comment_preserving_reprint() {
+        // SOUNDNESS of the guard's no-false-trip property: for a program whose comments all survive an
+        // fmt reprint (leading `///`/`//` on their own lines — the positions the reader DOES preserve),
+        // `would_drop_comments(src, fmt(src))` must be `None` (no refusal). If this regressed, the guard
+        // would start refusing legitimate formats. (The genuinely-lost trailing-inline case is tested to
+        // TRIP in the integration tests; here we pin that the safe case does NOT trip.)
+        for src in [
+            "/// a doc\ndef f() = 1",
+            "// a comment\ndef g() = 2",
+            "/// doc\ndef h() =\n  // body note\n  3",
+            "def i() = 4\n// between\ndef j() = 5",
+        ] {
+            let printed = match convert::convert_with(
+                src.as_bytes(),
+                Format::Ml,
+                Format::Ml,
+                Options::default(),
+            ) {
+                Ok(mut b) => {
+                    if b.last() != Some(&b'\n') {
+                        b.push(b'\n');
+                    }
+                    b
+                }
+                Err(e) => panic!("reprint {src:?}: {e}"),
+            };
+            assert!(
+                would_drop_comments(src.as_bytes(), &printed).is_none(),
+                "guard must NOT trip on a comment-preserving reprint of {src:?} → {}",
+                String::from_utf8_lossy(&printed)
+            );
+        }
+    }
+
     /// A fresh temp dir unique to `tag` (the caller populates + removes it).
     fn fmt_tmp(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("cdz-fmt-{tag}-{}", std::process::id()));

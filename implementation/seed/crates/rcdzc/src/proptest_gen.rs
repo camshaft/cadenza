@@ -355,6 +355,30 @@ fn plan_for_item(ast: &Arenas, item: StructId, items: &[StructId]) -> Option<Tes
                         *ml = (*ml).max(m);
                     }
                 }
+                // Apply a param-level match-based `@requires` CONSTRUCTOR filter to a `Sum` param: a
+                // precondition `(match o ((T.Some n) …) ((T.None) false))` forbids the `None` constructor, so
+                // drop it from the generator's variant set — otherwise the wrapper draws `None`, the enforced
+                // (D) precondition traps, and the runner reports a spurious `f(None)`. If ALL variants would be
+                // forbidden (an unsatisfiable precondition) keep them all — generation then trips the trap,
+                // which reports honestly rather than leaving the sum empty (no variant to build).
+                if let (GenTy::Sum { variants, .. }, Some(pname)) =
+                    (&mut gt, ast.as_name(param_name_occ))
+                {
+                    let forbidden: std::collections::HashSet<String> = requires_preds
+                        .iter()
+                        .flat_map(|&q| sum_ctors_forbidden_by_match(ast, q, pname))
+                        .collect();
+                    if !forbidden.is_empty() {
+                        let kept: Vec<_> = variants
+                            .iter()
+                            .filter(|(vname, _)| !forbidden.contains(vname))
+                            .cloned()
+                            .collect();
+                        if !kept.is_empty() {
+                            *variants = kept;
+                        }
+                    }
+                }
                 // A SCALAR param (`Int`/`Bool`/`Float`) has a boundary representation → boundary-arg route,
                 // no wrapper. Only a COMPOUND param (no boundary form) forces the synthesized wrapper.
                 if !matches!(gt, GenTy::Int | GenTy::Bool | GenTy::Float(_)) {
@@ -493,6 +517,34 @@ pub fn gen_ty_of_wrapper_param(db: &crate::db::Db, wrapper_name: &str) -> Option
             .max();
         if let Some(m) = floor {
             *ml = (*ml).max(m);
+        }
+    }
+    // RE-APPLY the param-level match-based `@requires` CONSTRUCTOR filter on the DECODE side too, matching the
+    // generation-side filter (`plan_for_item`): drop the forbidden variants so the decoder consumes the pool
+    // with the SAME `% k` selector arity the generator used. WITHOUT this, generation draws over the kept
+    // variants but decode re-classifies over the FULL set, and the `% k` selector desyncs → a wrong-variant
+    // counterexample render. Same all-forbidden guard (keep all if the precondition forbids every variant).
+    if let (GenTy::Sum { variants, .. }, Some(pname)) = (
+        &mut gt,
+        db.ast
+            .as_form(param, ":")
+            .and_then(|t| t.first())
+            .and_then(|&n| db.ast.as_name(n)),
+    ) {
+        let forbidden: std::collections::HashSet<String> = db
+            .requires_of(def)
+            .iter()
+            .flat_map(|&q| sum_ctors_forbidden_by_match(&db.ast, q, pname))
+            .collect();
+        if !forbidden.is_empty() {
+            let kept: Vec<_> = variants
+                .iter()
+                .filter(|(vname, _)| !forbidden.contains(vname))
+                .cloned()
+                .collect();
+            if !kept.is_empty() {
+                *variants = kept;
+            }
         }
     }
     Some(gt)
@@ -849,6 +901,69 @@ fn min_len_for_param(ast: &Arenas, pred: StructId, param: &str) -> Option<usize>
         }
     }
     floor
+}
+
+/// The set of SUM-CONSTRUCTOR names a match-based `@requires` on `param` FORBIDS — i.e. the precondition is
+/// `(match param (PAT BODY) …)` and an arm dispatching on constructor `C` has body literal `false`, meaning
+/// "a value built with `C` violates the precondition". Returns the forbidden constructor SHORT names (e.g.
+/// `"None"` from a `(Opt.None)` pattern). The generator then declines to draw those constructors, so it never
+/// produces a value the enforced (D) precondition rejects (a spurious `f(None)` failure). An arm whose body is
+/// NOT literal `false` (a real guard like `(>= n 0)`) does NOT forbid its constructor — that arm's values may
+/// still be valid, and a payload-level guard is not a constructor-level one (left to reject-free fallback).
+/// Empty if `pred` is not a `(match param …)` over this param, or no arm bodies are literal `false`.
+fn sum_ctors_forbidden_by_match(ast: &Arenas, pred: StructId, param: &str) -> Vec<String> {
+    // `(match SCRUT (PAT BODY) (PAT BODY) …)` — head `match`, first tail item the scrutinee, rest the arms.
+    let Some(tail) = ast.as_form(pred, "match") else {
+        return Vec::new();
+    };
+    let Some((&scrut, arms)) = tail.split_first() else {
+        return Vec::new();
+    };
+    // Only a match on THIS param constrains its generation.
+    if ast.as_name(scrut) != Some(param) {
+        return Vec::new();
+    }
+    let mut forbidden = Vec::new();
+    for &arm in arms {
+        // An arm is `(PAT BODY)`: a 2-element list.
+        let crate::ast::Struct::List(items) = ast.get(arm) else {
+            continue;
+        };
+        let [pat, body] = items.as_slice() else {
+            continue;
+        };
+        // The arm forbids its constructor only when its BODY is the literal `false` (a `Leaf::Bool`, not a
+        // name — `as_bool`, not `as_name`).
+        if ast.as_bool(*body) != Some(false) {
+            continue;
+        }
+        // The PAT names a constructor: either `(. TYPE Ctor)` / `((. TYPE Ctor) binds…)` (member-access head)
+        // or a bare `Ctor` name. Extract the short constructor name.
+        if let Some(c) = ctor_name_of_pattern(ast, *pat) {
+            forbidden.push(c);
+        }
+    }
+    forbidden
+}
+
+/// The short constructor name a match PATTERN dispatches on: `(. TYPE Ctor)` → `Ctor`; a payload pattern
+/// `((. TYPE Ctor) x …)` → `Ctor` (the head is the member access); a bare `Ctor` name → `Ctor`. `None` for a
+/// wildcard/binding/other pattern (which doesn't name a single constructor).
+fn ctor_name_of_pattern(ast: &Arenas, pat: StructId) -> Option<String> {
+    // A `(. TYPE Ctor)` member access directly.
+    if let Some(m) = ast.as_form(pat, ".")
+        && m.len() == 2
+    {
+        return ast.as_name(m[1]).map(str::to_string);
+    }
+    // A payload pattern `(HEAD binds…)` — recurse on HEAD (the constructor position).
+    if let crate::ast::Struct::List(items) = ast.get(pat)
+        && let Some(&head) = items.first()
+    {
+        return ctor_name_of_pattern(ast, head);
+    }
+    // A bare constructor name.
+    ast.as_name(pat).map(str::to_string)
 }
 
 fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize) -> Option<GenTy> {
@@ -2246,5 +2361,56 @@ mod tests {
                 "{def}: expected wrapper {wrapper} for a deeply nested compound, got {names:?}"
             );
         }
+    }
+
+    /// `sum_ctors_forbidden_by_match` recognizes a match-based `@requires` and returns the constructors whose
+    /// arm body is the literal `false` (forbidden by the precondition). An arm with a real guard body (not
+    /// `false`) is NOT forbidden; a match on a DIFFERENT param constrains nothing.
+    #[test]
+    fn sum_ctors_forbidden_by_match_reads_false_arms() {
+        // Extract the `@requires` predicate node from a fixture, then hand it to the recognizer.
+        let forbidden_of = |src: &str, param: &str| -> Vec<String> {
+            let ast = crate::testkit::parse(src);
+            // The requires predicate is the first child of the `(requires Q)` head of the `(@ (requires …) …)`.
+            let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
+            let ann = *items
+                .iter()
+                .find(|&&it| ast.as_form(it, "@").is_some())
+                .expect("an @ annotation");
+            let layer = ast.as_form(ann, "@").unwrap();
+            let head = layer[0];
+            let pred = ast.as_form(head, "requires").expect("(requires Q)")[0];
+            super::sum_ctors_forbidden_by_match(&ast, pred, param)
+        };
+        // `None -> false` forbids `None`; the `Some` arm (guard body) is not forbidden.
+        assert_eq!(
+            forbidden_of(
+                "(do (type Opt (None) (Some Int64)) \
+                 (@ (requires (match o ((Opt.Some n) (>= n 0)) ((Opt.None) false))) \
+                   (def (f (: o Opt)) 0)) (def (z) 1))",
+                "o"
+            ),
+            vec!["None".to_string()]
+        );
+        // Both a `false` arm AND a `true` arm: only the `false` one is forbidden.
+        assert_eq!(
+            forbidden_of(
+                "(do (type T (A) (B) (C Int64)) \
+                 (@ (requires (match o ((T.A) false) ((T.B) true) ((T.C n) (>= n 0)))) \
+                   (def (f (: o T)) 0)) (def (z) 1))",
+                "o"
+            ),
+            vec!["A".to_string()]
+        );
+        // A match on a DIFFERENT param than the one asked about constrains nothing.
+        assert!(
+            forbidden_of(
+                "(do (type Opt (None) (Some Int64)) \
+                 (@ (requires (match o ((Opt.None) false) ((Opt.Some n) true))) \
+                   (def (f (: o Opt) (: p Opt)) 0)) (def (z) 1))",
+                "p"
+            )
+            .is_empty()
+        );
     }
 }

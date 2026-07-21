@@ -10,20 +10,18 @@
 ///
 /// This is the units-everywhere SHOWCASE on the stage-3 model (vs examples-exact.cdz's bare-Rational models
 /// and examples-typed.cdz's S2b boundary-typed `Vec3m` models — this one is the full `Solid(Qty[meter])`).
-
 @!default-fraction Rational
 
 import { Solid, Vec3, bounding-box, aabbr-size, v3-x, v3-y, v3-z } from "exact"
+
 import { meters, cube-m, sphere-m, cylinder-m, difference-m, translate-m, lower } from "units-model"
 
 /// A length in inches, converted to an exact Rational-METER `Qty` at the boundary (1 inch = 127/5000 m).
 /// This is how a model authored with imperial fasteners stays EXACT: the language converts inch→meter over
 /// Rational, so the model carries the exact meter magnitude, no float.
-def inches(n: Rational) =
-  Qty.of(Unit.in(Unit.of(#"meter"), Qty.of(n, Unit.of(#"inch"))), Unit.of(#"meter"))
+def inches(n: Rational) = Qty.of(n inch as meter, Unit.of(#meter))
 
 /// ---- worked models: authored in units (Solid(Qty[meter])), lowered for bbox/mesh --------------------
-
 /// A 2m × 1m × 0.5m plinth — authored in meters. The model's type is Solid(Qty[meter]).
 def plinth-m() = cube-m(meters(2), meters(1), meters(1 / 2))
 
@@ -33,17 +31,18 @@ def drilled-block-m() =
   difference-m(cube-m(meters(1), meters(1), meters(1)), cylinder-m(meters(2), inches(1 / 4)))
 
 /// A washer: outer cylinder minus a concentric bore, both meter lengths.
-def washer-m() = difference-m(cylinder-m(meters(1 / 10), meters(1)), cylinder-m(meters(1 / 10), meters(1 / 2)))
-
-/// ============================ @test suite (units-authored models → lower → exact bbox) ============================
+def washer-m() =
+  difference-m(cylinder-m(meters(1 / 10), meters(1)), cylinder-m(meters(1 / 10), meters(1 / 2)))
 
 @test
+/// ============================ @test suite (units-authored models → lower → exact bbox) ============================
 def plinth-authored-in-meters-has-exact-bbox() =
   // Authored as Solid(Qty[meter]); lower → Solid(Rational); bbox is exactly 2 × 1 × 1/2 m (the meter mags).
   let sz = aabbr-size(bounding-box(lower(plinth-m()))) in
   if v3-x(sz) == 2 / 1 then
-    (if v3-y(sz) == 1 / 1 then (if v3-z(sz) == 1 / 2 then unit else trap("z")) else trap("y"))
-  else trap("x")
+    if v3-y(sz) == 1 / 1 then if v3-z(sz) == 1 / 2 then unit else trap("z") else trap("y")
+  else
+    trap("x")
 
 @test
 def drilled-block-mixes-metric-and-imperial-exactly() =
@@ -63,6 +62,6 @@ def an-imperial-bore-radius-is-exact-meters() =
 def washer-outer-box-is-its-diameter() =
   // outer radius 1m → Ø2m in x/y; thickness 1/10 m in z. Authored in units, lowered, exact.
   let sz = aabbr-size(bounding-box(lower(washer-m()))) in
-  if v3-x(sz) == 2 / 1 then (if v3-z(sz) == 1 / 10 then unit else trap("z")) else trap("x")
+  if v3-x(sz) == 2 / 1 then if v3-z(sz) == 1 / 10 then unit else trap("z") else trap("x")
 
 export { inches, plinth-m, drilled-block-m, washer-m }

@@ -225,7 +225,7 @@ pub(crate) static CSE_PARTITION_CORE_EQ_CALLS: std::sync::atomic::AtomicU64 =
 /// borrow vs clone, so a batch conversion's effect is measurable and a regression (a new hot `resolved_of`
 /// where a borrow would do) is catchable. `AtomicU64` (not `thread_local`) because resolution runs on the
 /// scoped compiler worker thread (`host::run_with_compiler_stack`), invisible to a `thread_local` the test
-/// thread reads. See `resolved_of_clone_count_is_bounded_on_a_match_heavy_program`.
+/// thread reads. See `a_wide_match_resolves_in_a_bounded_number_of_clones`.
 #[cfg(test)]
 pub(crate) static RESOLVED_OF_CALLS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);

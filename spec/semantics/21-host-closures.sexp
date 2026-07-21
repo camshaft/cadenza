@@ -591,6 +591,42 @@
   (call   is-pos (: 5 Int64))
   (output (: true Bool)))
 
+; The consumer cases above apply the handed-back closure ONCE (or twice as sibling operands). These
+; stress the DISPATCH under repetition and composition: the same handle applied once per iteration of
+; a RECURSIVE loop (the funcref/code-slot read must be stable across activations, not a one-shot), and
+; a consumed closure's RESULT feeding a trap-guarded division (the trap must surface through the
+; consumer's boundary as a trap, not a wrong value — the consumer twin of the closure-body trap pin).
+
+(case "a consumed closure is applied once per iteration of a recursive loop"
+  (doc    "`apply-n` hands the closure to a RECURSIVE worker `iter` that applies it once per iteration:
+           `make-adder(10)` then `apply-n(handle, 3)` folds g over 0 three times — 0→10→20→30. The handle
+           crosses the boundary ONCE but dispatches N times from loop-carried state; a code-slot read
+           that only survived the first activation (or a handle consumed by the first apply) breaks the
+           later iterations. Expected: 30.")
+  (input  (do
+            (def (make-adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+            (def (iter (: g (-> Int64 Int64)) (: n Int64) (: acc Int64))
+              (if (< n 1) acc (iter g (- n 1) (g acc))))
+            (def (apply-n (: g (-> Int64 Int64)) (: n Int64))
+              (iter g n 0))
+            (export make-adder) (export apply-n)))
+  (call   apply-n (: 10 Int64) (: 3 Int64))
+  (output (: 30 Int64)))
+
+(case "a trap raised on a consumed closure's result surfaces through the consumer as a trap"
+  (doc    "`divide-by` applies the handed-back closure and divides by its RESULT: `make-sub(5)` gives
+           `(- x 5)`, so `divide-by(handle, 5)` computes `(/ 100 0)` — a genuine divide-by-zero reached
+           only through the consumed closure's value. The trap must surface to the host as a trap through
+           the consumer export's boundary (not a swallowed error or wrong value) — the consumer-side twin
+           of the closure-BODY trap pin above. Expected: trap (integer divide by zero).")
+  (input  (do
+            (def (make-sub (: k Int64)) (fn ((: x Int64)) (- x k)))
+            (def (divide-by (: g (-> Int64 Int64)) (: x Int64))
+              (/ 100 (g x)))
+            (export make-sub) (export divide-by)))
+  (call   divide-by (: 5 Int64) (: 5 Int64))
+  (trap   "integer divide by zero"))
+
 ; DISTINCT-SIGNATURE multi-export — a program exporting closures of DIFFERENT signatures crosses as one
 ; resource type PER signature. `inc : (-> Int64 Int64)` and `isz : (-> Int64 Bool)` become resources `t0`
 ; and `t1`, each with its own `make-<name>` + `call-g<n>` (the group's shared call). The host picks a

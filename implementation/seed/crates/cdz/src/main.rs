@@ -349,7 +349,33 @@ enum Cmd {
     Chor(ChorArgs),
 }
 
+/// Install a `RUST_LOG`-gated trace subscriber, so rcdzc's rich `trace!` events (lower/eval/resolve
+/// decisions) actually surface during a `cdz` compile. rcdzc's lib is instrumentation-only — it EMITS
+/// events but installs no sink; a bin must install one for them to fire. `cdz` is the user-facing entry
+/// (not an internal `cargo xtask` pipeline stage, where rcdzc's own bin uses the tool-private `CDZ_LOG`
+/// to avoid `RUST_LOG` fanning out to cargo/wasmtime), so it reads the SHARED `RUST_LOG` — the standard
+/// knob (`RUST_LOG=rcdzc=trace cdz compile …`). With `RUST_LOG` UNSET, nothing is installed and every
+/// `trace!` site is a runtime no-op — a normal run pays nothing. Writes to stderr (stdout carries the
+/// tool's real output — the emitted `.rs`/wasm/verdict — which a trace must never corrupt).
+fn init_tracing() {
+    if std::env::var_os("RUST_LOG").is_none() {
+        return;
+    }
+    use tracing_subscriber::{EnvFilter, fmt};
+    // `try_init` (not `init`): if a subscriber is somehow already installed, don't panic — a best-effort
+    // sink is the right posture for a debugging aid.
+    let _ = fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        // file:line maps each traced decision straight back to the code that made it — the point of a
+        // debugging trace. Captured in the event metadata at no cost when no subscriber is installed.
+        .with_file(true)
+        .with_line_number(true)
+        .try_init();
+}
+
 fn main() -> ExitCode {
+    init_tracing();
     let cli = Cli::parse();
     match cli.command {
         // Front-end commands defer to the syntax CLI, reconstructing its command enum (its arg structs
@@ -871,9 +897,9 @@ fn run_chor(args: &ChorArgs) -> ExitCode {
     // 5. Split into per-actor sections on the `==== <Role> ====` markers.
     let actors = split_actor_bundle(&bundle);
     if actors.is_empty() {
-        eprintln!(
-            "{PROG} chor: no actors emitted (protocol not projectable, or missing `protocol`/`roles` exports). Bundle: {bundle}"
-        );
+        // The bundle carries the specific verdict (from chor-driver's `render-all`/`shred-sexp`); tailor the
+        // message to it so the user gets the actual cause + fix, not a catch-all guess.
+        eprintln!("{PROG} chor: {}", chor_no_actors_reason(&bundle, is_sexp));
         return ExitCode::FAILURE;
     }
 
@@ -1030,6 +1056,30 @@ fn split_actor_bundle(bundle: &str) -> Vec<(String, String)> {
         actors.push((r, m.trim_end().to_string()));
     }
     actors
+}
+
+/// Turn a no-actors `render-all`/`shred-sexp` bundle verdict into an ACTIONABLE `cdz chor` error message
+/// (rustc bar: name the cause + the fix). The bundle is the driver's own verdict string — `not-a-protocol`
+/// (only the `.sexp` path: unreadable/unparseable), `not-projectable: <role>`, `not-well-formed`, or (the
+/// `.cdz` path) a run that emitted no `==== <Role> ====` sections, usually a missing `protocol`/`roles`
+/// export. `is_sexp` disambiguates the last case so we never tell a `.sexp` user about exports they don't need.
+fn chor_no_actors_reason(bundle: &str, is_sexp: bool) -> String {
+    let b = bundle.trim();
+    if b == "not-a-protocol" {
+        "the file is not a readable protocol s-expr (check for balanced parens and a known head: `seq`, `comm`, `choice`, `branch`, `rec`, `var`, `done`)".to_string()
+    } else if let Some(role) = b.strip_prefix("not-projectable: ") {
+        format!(
+            "role `{role}` lacks knowledge of a choice — have the deciding role send `{role}` a distinct selection message as its first action in every branch it participates in"
+        )
+    } else if b == "not-well-formed" {
+        "the protocol is not well-formed (undeclared/self comm, undeclared chooser, non-branch in a choice, or an unbound rec-var)".to_string()
+    } else if is_sexp {
+        format!("no actors emitted. Bundle: {bundle}")
+    } else {
+        format!(
+            "no actors emitted — the protocol file must export both `protocol` and `roles`. Bundle: {bundle}"
+        )
+    }
 }
 
 #[derive(clap::Args)]
@@ -8779,6 +8829,30 @@ mod tests {
         assert!(actors[1].1.contains("def main() = 1"));
         // A bundle with no markers yields no actors (the run_chor empty-guard fires).
         assert!(split_actor_bundle("no markers here").is_empty());
+    }
+
+    #[test]
+    fn chor_no_actors_reason_is_tailored_to_the_verdict() {
+        // Each driver verdict maps to an actionable message naming the cause + fix (not a catch-all guess).
+        // not-a-protocol (only the .sexp path): points at parens + valid heads, NOT exports.
+        let r = chor_no_actors_reason("not-a-protocol", true);
+        assert!(r.contains("not a readable protocol s-expr") && r.contains("balanced parens"));
+        assert!(
+            !r.contains("export"),
+            "the .sexp not-a-protocol case must not mention exports"
+        );
+        // not-projectable: names the role AND the selection-message fix.
+        let r = chor_no_actors_reason("not-projectable: Shipper", true);
+        assert!(r.contains("Shipper") && r.contains("selection message"));
+        // not-well-formed: lists the concrete wf failure modes.
+        let r = chor_no_actors_reason("not-well-formed", false);
+        assert!(r.contains("not well-formed") && r.contains("self comm"));
+        // .cdz path with an unrecognized (non-verdict) bundle: guide the user to export protocol + roles.
+        let r = chor_no_actors_reason("", false);
+        assert!(r.contains("export both `protocol` and `roles`"));
+        // .sexp path with an unrecognized bundle: generic (no misleading exports mention).
+        let r = chor_no_actors_reason("something-unexpected", true);
+        assert!(r.contains("no actors emitted") && !r.contains("export"));
     }
 
     #[test]

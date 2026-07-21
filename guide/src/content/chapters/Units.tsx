@@ -256,6 +256,29 @@ export default function Units() {
         Cadenza refuses to guess what you meant, and here it refuses at the moment you write it.
       </Why>
 
+      <H2>A quantity is a value you can key by</H2>
+      <P>
+        That erasure is also why a quantity works as a value in its own right: the unit is gone at run time,
+        but the magnitude is a perfectly good map key. Build a map under a five-kilometre quantity, then look
+        it up with a separately-constructed but equal key, and it hits, because quantities compare by content
+        like every other value:
+      </P>
+      <Runnable
+        source={`(def (main)
+  (let ((m (Map.insert (Map.empty)
+                       (Qty.of 5 (Unit.prefix kilo (Unit.base #"meter"))) 42)))
+    (match (Map.lookup m (Qty.of 5 (Unit.prefix kilo (Unit.base #"meter"))))
+      ((Some x) x)
+      ((None) 0))))`}
+      />
+      <P>
+        The lookup returns <C>42</C>: a quantity assembled twice is one key, not two. The same by-content
+        rule holds from the set side, so two equal quantities in a <C>Set</C> collapse to one. And because
+        units are checked then erased, <C>5</C> kilometres and <C>5</C> metres are different <em>types</em>,
+        not just different values, so the compiler won't let them share a map at all; convert one with{" "}
+        <C>Unit.in</C> first if you mean them to meet.
+      </P>
+
       <H2>Your turn</H2>
       <Exercise
         id="units:1"

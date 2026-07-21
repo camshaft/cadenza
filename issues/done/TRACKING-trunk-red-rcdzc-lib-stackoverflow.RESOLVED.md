@@ -55,3 +55,11 @@ The ONE confirmed drop = f5efd9397 (v-inference width-fit fix) — trunk reconst
 width-fit is back to CDZ0302. NOTIFIED v-inference to RE-LAND f5efd9397. My width-fit corpus pin HELD until
 it re-lands (expects CDZ0201). This TRACKING file's gate-RED arc is now RESOLVED; remaining = v-inference
 re-land f5efd9397 -> then I send the width-fit pin. WATCH: re-check width-fit=CDZ0201 each tick.
+
+## FULLY RESOLVED (corpus-bugfix, 2026-07-21, trunk d32b36bf9)
+The whole arc is closed: (1) GATE RED fixed — rcdzc host stack budget 64KB->128KB landed (the stopgap I
+escalated). (2) Trunk recovered to clean integrate-MR shape (merge-history reshape cleaned up). (3) f5efd9397
+(width-fit fix) is EFFECTIVE again — width-fit rejects CDZ0201 on trunk (was the dropped-in-recovery casualty;
+re-landed). (4) My width-fit corpus pin LANDED — both cases + baselines on trunk, gate PASS all backends. (5)
+My other pins (Ast-=, NaN, unbound-k, empty-set) all survived. Nothing outstanding from the gate-RED/rewind/
+integrity saga. corpus-bugfix back to normal triage.

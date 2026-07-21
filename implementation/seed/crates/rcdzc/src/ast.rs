@@ -1078,6 +1078,18 @@ impl Arenas {
         }
     }
 
+    /// The value of a boolean-literal `Atom` (`true`/`false`), if `id` is one. (A surface `true`/`false`
+    /// is a `Leaf::Bool`, not a `Leaf::Name`, so `as_name` does not see it.)
+    pub fn as_bool(&self, id: StructId) -> Option<bool> {
+        match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Bool(b) => Some(*b),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The head name of a `List` occurrence, if its first child is an `Atom(Name)`.
     pub fn head_name(&self, id: StructId) -> Option<&str> {
         match self.get(id) {

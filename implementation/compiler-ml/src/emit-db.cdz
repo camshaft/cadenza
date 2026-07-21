@@ -598,6 +598,17 @@ def em-src-let-and-if-emit() =
     | Option.None(_) => trap("let source emits"))
 
 @test
+def em-src-multi-binding-let-emits() =
+  // a MULTI-binding let emits: `(let ((x 5) (y 10)) (+ x y))` desugars (in the reader) to nested single-lets,
+  // so emit sees a nested-CLet tree it already handles (each binding → a wasm local). Pins the desugar→emit
+  // path for the multi-binding form (the emit-src let tests were single-binding before). run-emitted runs it
+  // to 15 (W4-checked). A 3-binding form also emits.
+  (match emit-src("(let ((x 5) (y 10)) (+ x y))") with
+    | Option.Some(_) => (match emit-src("(let ((a 1) (b 2) (c 3)) (+ a (+ b c)))") with
+        | Option.Some(_) => unit | Option.None(_) => trap("3-binding let source emits"))
+    | Option.None(_) => trap("2-binding let source emits"))
+
+@test
 def em-src-ill-typed-declines() =
   // an unbound name is ill-typed → lower-tree declines → emit-src returns None (no wrong module).
   (match emit-src("x") with
@@ -639,6 +650,15 @@ def em-src-two-param-function-module-emits() =
   (match emit-src("(do (def (add a b) (+ a b)) (def (main) (add 3 4)) (export main))") with
     | Option.Some(_) => unit
     | Option.None(_) => trap("two-param helper module emits"))
+
+@test
+def em-src-three-param-function-module-emits() =
+  // a THREE-param helper module emits (slice-3e): a 3-arg call inlines to a 3-deep nested CLet
+  // CLet(p1,a1,CLet(p2,a2,CLet(p3,a3,body))), which emit handles as locals. `(f a b c)=(+ a (+ b c))` called
+  // from main → run-emitted 6 (W4-checked). Pins the 3-param inline→emit path reaches a valid module.
+  (match emit-src("(do (def (f a b c) (+ a (+ b c))) (def (main) (f 1 2 3)) (export main))") with
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("three-param helper module emits"))
 
 @test
 def em-src-bytes-matches-emit-src-len() =

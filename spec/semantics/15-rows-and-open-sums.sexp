@@ -88,6 +88,38 @@
             (export main)))
   (output (: 13 Int64)))
 
+; The project/without cases above are all CONST-foldable (record literals, or let-bound constants the
+; fold sees through). These pin the RUNTIME-leaf path: boundary parameters flow into the record's
+; fields, so the row op must EMIT (build the restricted/reduced record from a live heap record), not
+; fold — the shape a compiler pass takes restricting a runtime environment record.
+
+(case "Record.project over runtime field values keeps the named fields and their live values"
+  (doc    "`(record (x a) (y b) (z 99))` with a and b RUNTIME parameters — the record is a live heap value,
+           not a foldable constant. Projecting `(x y)` builds the restricted record; both projections read
+           the runtime values: 10·a + b = 37 at a=3, b=7. Pins the runtime `Record.project` emit (heap
+           record in, restricted heap record out, field values preserved) — the const cases above never
+           reach it. Expected: 37.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (let ((r (record (x a) (y b) (z 99))))
+                (let ((p (Record.project r (x y))))
+                  (+ (* 10 (. p x)) (. p y)))))
+            (export main)))
+  (call   main (: 3 Int64) (: 7 Int64)) (output (: 37 Int64)))
+
+(case "Record.without over runtime field values drops the named field and keeps the rest live"
+  (doc    "The `without` twin: `(record (x a) (y 2))` with a runtime `a`, dropping `y` — the reduced
+           record still carries the LIVE runtime value of `x` (5 at a=5). Pins the runtime `Record.without`
+           emit; a fold-only implementation (or one that rebuilt the record from stale constants) would
+           decline or lose the boundary value. Expected: 5.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((r (record (x a) (y 2))))
+                (let ((w (Record.without r (y))))
+                  (. w x))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64)))
+
 (case "projecting a record onto an absent field is rejected"
   (doc    "Witnesses type-system.md #A Record Is Restricted To A Named Set Of Its Fields (2nd sentence):
            a projection naming a field the operand does not contain is a compile-time rejection (CDZ0212),

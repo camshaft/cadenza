@@ -2737,3 +2737,23 @@
   (call via-bump (: 90 Int64) (: 20 Int64))   (trap "unreachable")
   (call via-list (: 50 Int64))                (output (: 50 Int64))
   (call via-list (: 150 Int64))               (trap "unreachable"))
+
+(case "@invariant ESTABLISH fires when the constructor is directly a MATCH ARM's selected result (v-patterns divert site)"
+  (doc    "An escape-face pin extending the divert-reachability set (lambda / reconstruct / list-element) with
+           a MATCH-ARM construction site: the constructor call is the RESULT EXPRESSION of a match arm the
+           scrutinee selects, so the establish divert must fire inside whichever arm runs — a construction-site
+           rewrite that walked `fn`/`let`/list but skipped a match arm's body would silently miss it. `(mk x) =
+           (match x (0 (Nat.Mk 0)) (_ (Nat.Mk (- x 1))))` over `@invariant(>= self 0) type Nat`: `(mk 0)` takes
+           the `0` arm, builds `Nat.Mk 0` (0 >= 0, establishes) → read back `0`; `(mk -5)` takes the wildcard
+           arm, builds `Nat.Mk (- -5 1)` = `Nat.Mk -6` which VIOLATES `>= self 0` → the establish check traps
+           `unreachable` inside the selected arm. Runtime scrutinee via `main`'s param so neither arm folds.
+           Pins that @invariant establish is reachability-complete over match-arm construction sites too.")
+  (input  (do
+            (@ (invariant (>= self 0)) (type Nat (Mk Int64)))
+            (def (mk (: x Int64)) (match x (0 (Nat.Mk 0)) (_ (Nat.Mk (- x 1)))))
+            (def (main (: k Int64)) (match (mk k) ((Nat.Mk v) v)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64))
+  (call   main (: -5 Int64))
+  (trap   "unreachable"))

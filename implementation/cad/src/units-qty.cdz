@@ -21,63 +21,74 @@
 /// leak into imported modules — v-inference fixes). So a bare `n/d` here is an EXACT Rational (not Int64
 /// truncation), coordinate magnitudes read naturally (`127/5000`) with no `Rational.of` noise, and the
 /// imported `exact.cdz` (which uses `Rational.of` throughout) is UNAFFECTED (its own module default holds).
-
 @!default-fraction Rational
 
 import { Vec3 } from "exact"
+
 import { v3 } from "exact"
 
 /// A units-carrying 3-vector: each component is an exact length quantity (Rational magnitude in the base
-/// METER unit). The unit is IN the type — passing a bare number, or a non-length quantity, is a type
-/// error at construction. This is the strong-unit-typed product the operator asked for ("the Vec3 would
-/// be over the Rational+Meter types … strong typing about units").
-type Vec3q =
-  | V3q(Qty(Rational, Unit.base(#"meter")), Qty(Rational, Unit.base(#"meter")), Qty(Rational, Unit.base(#"meter")))
+  /// METER unit). The unit is IN the type — passing a bare number, or a non-length quantity, is a type
+  /// error at construction. This is the strong-unit-typed product the operator asked for ("the Vec3 would
+  /// be over the Rational+Meter types … strong typing about units").
+  type Vec3q =
+  | V3q(Qty(Rational, Unit.base(#meter)), Qty(Rational, Unit.base(#meter)), Qty(
+    Rational,
+    Unit.base(#meter)
+  ))
 
 /// Build a `Vec3q` from three length quantities (the units-carrying constructor). A length authored in any
 /// unit converts to exact meters before it reaches here; a bare `Rational` is a CDZ0301 type error.
-def v3q(x: Qty(Rational, Unit.base(#"meter")), y: Qty(Rational, Unit.base(#"meter")), z: Qty(Rational, Unit.base(#"meter"))) =
-  Vec3q.V3q(x, y, z)
+def v3q(x: Qty(Rational, Unit.base(#meter)), y: Qty(Rational, Unit.base(#meter)), z: Qty(
+  Rational,
+  Unit.base(#meter)
+)) = Vec3q.V3q(x, y, z)
 
 /// A meter length from a magnitude — the everyday component builder (`qm(5)` = 5-metre length), sugar over
 /// `Qty.of`. `n` is a `Rational` (under this module's `default-fraction Rational`, a caller's bare `5`
 /// grounds to Rational), so a whole or fractional count works: `qm(5)`, `qm(3/2)`.
-def qm(n: Rational) = Qty.of(n, Unit.of(#"meter"))
+def qm(n: Rational) = n meter
 
 /// The three length components, each read back OUT as a meter quantity (units preserved).
-def q-x(v: Vec3q) = match v with | Vec3q.V3q(x, _, _) => x
-def q-y(v: Vec3q) = match v with | Vec3q.V3q(_, y, _) => y
-def q-z(v: Vec3q) = match v with | Vec3q.V3q(_, _, z) => z
+def q-x(v: Vec3q) = match v with
+  | Vec3q.V3q(x, _, _) => x
+
+def q-y(v: Vec3q) = match v with
+  | Vec3q.V3q(_, y, _) => y
+
+def q-z(v: Vec3q) = match v with
+  | Vec3q.V3q(_, _, z) => z
 
 /// Bridge a units-carrying `Vec3q` to the exact bare-`Rational` `Vec3` the CSG/bbox core consumes:
 /// unwrap each length to its exact meter magnitude (`Qty.value` — the magnitude IS the meter coordinate).
 /// Still fully exact (no f64); this is how a Qty-field build plugs into the existing exact machinery.
-def vec3q-to-vec3(v: Vec3q) =
-  match v with | Vec3q.V3q(x, y, z) => v3(Qty.value(x), Qty.value(y), Qty.value(z))
-
-/// ============================ @test suite (S2b — Qty-field product, exact meters) ============================
+def vec3q-to-vec3(v: Vec3q) = match v with
+  | Vec3q.V3q(x, y, z) => v3(Qty.value(x), Qty.value(y), Qty.value(z))
 
 @test
+/// ============================ @test suite (S2b — Qty-field product, exact meters) ============================
 def a-vec3q-field-holds-a-length-quantity() =
   // The field itself is a Qty — read a component back and it is a meter quantity of the right magnitude.
   let v = v3q(qm(5), qm(2), qm(3)) in
   if Qty.value(q-x(v)) == 5 / 1 then
-    (if Qty.value(q-z(v)) == 3 / 1 then unit else trap("z")) else trap("x")
+    if Qty.value(q-z(v)) == 3 / 1 then unit else trap("z")
+  else
+    trap("x")
 
 @test
 def vec3q-bridges-to-the-exact-vec3-core() =
   // Unwrapping to Vec3 gives the exact bare-Rational meter magnitudes the CSG/bbox core uses — a Qty-
   // field build plugs into the existing exact machinery, same magnitudes, no f64.
   let v = v3q(qm(4), qm(5), qm(6)) in
-  match vec3q-to-vec3(v) with | Vec3.V3(x, y, z) =>
-    if x == 4 / 1 then (if z == 6 / 1 then unit else trap("z")) else trap("x")
+  match vec3q-to-vec3(v) with
+    | Vec3.V3(x, y, z) => if x == 4 / 1 then if z == 6 / 1 then unit else trap("z") else trap("x")
 
 @test
 def a-vec3q-component-authored-in-inches-is-exact-meters() =
   // Author a component in INCHES; it converts to exact Rational METERS and the field carries that exact
   // quantity. 1 inch = 127/5000 m EXACTLY. The strong-field type + exact conversion together.
-  let one-inch = Qty.of(1 / 1, Unit.of(#"inch")) in
-  let as-meters = Qty.of(Unit.in(Unit.of(#"meter"), one-inch), Unit.of(#"meter")) in
+  let one-inch = Qty.of(1 / 1, Unit.of(#inch)) in
+  let as-meters = Qty.of(one-inch as meter, Unit.of(#meter)) in
   let v = v3q(as-meters, qm(0), qm(0)) in
   if Qty.value(q-x(v)) == 127 / 5000 then unit else trap("1 inch = 127/5000 m")
 

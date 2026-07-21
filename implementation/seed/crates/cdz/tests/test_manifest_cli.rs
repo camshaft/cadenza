@@ -2357,6 +2357,39 @@ fn a_recognizable_conjunct_still_constrains_alongside_an_opaque_user_fn_predicat
     );
 }
 
+/// A match-based `@requires` on a SUM parameter that FORBIDS a constructor (an arm body is literal `false`)
+/// filters that constructor from generation. `@requires(match o (Some => true) (None => false))` on `f(o:
+/// Opt)` forbids `None`, so the `-gen` wrapper draws only `Some` and the enforced (D) precondition never
+/// spuriously trips on a generated `None`. Before this, the sum generator picked `None` uniformly and the
+/// runner reported a spurious `f(None)`. A PASS proves every drawn value was a `Some`. Uses s-expr surface
+/// (the match-predicate spelling). No store needed for the scalar payload here (Int64 in `Some`), but the
+/// wrapper path runs, so store-guard the run half. Pins the generation AND the counterexample-decode filter
+/// stay in sync (a desync would render a wrong-variant or spuriously fail).
+#[test]
+fn a_match_requires_forbidding_a_sum_constructor_filters_it_from_generation() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("requires-sum-ctor");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do \
+           (type Opt (None) (Some Int64)) \
+           (@ test (@ (requires (match o ((Opt.Some n) true) ((Opt.None) false))) \
+             (def (f (: o Opt)) (match o ((Opt.Some n) n) ((Opt.None) 0))))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok && stdout.contains("PASS f-gen (100 trials)"),
+        "a match-@requires forbidding None filters it from sum generation so only Some is drawn and the property passes (no spurious f(None)): {stdout}{stderr}"
+    );
+}
+
 /// TERMINATION under an UNSATISFIABLE relation: `@requires(a < b and b < a)` can NEVER hold (it implies
 /// `a < a`), so rejection sampling can never find an in-domain draw. The generator must NOT loop forever —
 /// it is fuel-bounded (`RELATION_FUEL`), so after exhausting fuel it returns the last draw and lets the (D)

@@ -355,7 +355,7 @@ def read-third-param(s: String, nm: String, paramId: Int64, param2Id: Int64, k: 
   (if (char-at(s, k) == ")")
    then (match read-form(s, k + 1, tree) with | (bodyId, j, t1) => (name-id(nm), bodyId, paramId, param2Id, 0 - 1, j, t1))
    else (if (char-at(s, k) == "(")
-         then (name-id(nm), 0 - 1, paramId, param2Id, 0 - 1, k, tree)   // typed 3rd param not yet supported → decline
+         then read-typed-third-param(s, nm, paramId, param2Id, k, tree)   // `(: c T)` — a typed 3rd param
          else (match scan-atom(s, k, "") with | (p3nm, k1) =>           // a THIRD untyped param name
                 (let e = skip-space(s, k1) in
                  (if (char-at(s, e) == ")")                              // exactly 3 params: the signature closes here
@@ -376,7 +376,8 @@ def read-typed-param(s: String, nm: String, k: Int64, tree: Tree) =
 
 /// A TYPED SECOND param `(: b T)` at `k` (pointing at `(`): the second-param analogue of read-typed-param.
 /// Consume `(`, expect `:`, read the name + validate the type (recording it in the param-type table via
-/// add-typed-param-node), then require the signature `)` and read the body → a TWO-param def. A malformed
+/// add-typed-param-node), consume the 2nd param's `)`, then thread to read-third-param for an OPTIONAL THIRD
+/// param (so a typed 2nd param composes with a 3rd — e.g. `(: a Int8) (: b Int8) (: c Int8)`). A malformed
 /// `(: …)` (missing `:` / bad type) declines via bodyId -1. `paramId` is the already-read FIRST param.
 def read-typed-second-param(s: String, nm: String, paramId: Int64, k: Int64, tree: Tree) =
   (let a = skip-space(s, k + 1) in                              // past `(`
@@ -386,9 +387,26 @@ def read-typed-second-param(s: String, nm: String, paramId: Int64, k: Int64, tre
              | (param2Id, a3, t1) =>
                (if (param2Id == (0 - 1)) then (name-id(nm), 0 - 1, paramId, 0 - 1, 0 - 1, a3, t1)   // bad type → decline
                 else (let a4 = close-paren(s, skip-space(s, a3)) in                           // the 2nd param's `)`
-                      (let a5 = close-paren(s, skip-space(s, a4)) in                          // the signature `)`
-                       (match read-form(s, a5, t1) with | (bodyId, j, t2) => (name-id(nm), bodyId, paramId, param2Id, 0 - 1, j, t2))))))
+                      read-third-param(s, nm, paramId, param2Id, skip-space(s, a4), t1))))     // + optional 3rd param
       else (name-id(nm), 0 - 1, paramId, 0 - 1, 0 - 1, k, tree))))     // not `(:` → decline
+
+/// A TYPED THIRD param `(: c T)` at `k` (pointing at `(`): the third-param analogue of read-typed-second-param
+/// (slice-3e-typed). Consume `(`, expect `:`, read the name + validate the type (add-typed-param-node records
+/// it in the param-type table), then require the signature `)` and read the body → a THREE-param def. A
+/// malformed `(: …)` (missing `:` / bad type) declines via bodyId -1. `paramId`/`param2Id` are the already-read
+/// first two params. infer-param3 already binds param3 to its declared narrow type + fit-checks arg3, so a
+/// typed 3rd param enforces exactly like a typed 1st/2nd (CDZ0302/CDZ0304).
+def read-typed-third-param(s: String, nm: String, paramId: Int64, param2Id: Int64, k: Int64, tree: Tree) =
+  (let a = skip-space(s, k + 1) in                              // past `(`
+   (match scan-atom(s, a, "") with | (colon, a1) =>
+     (if (colon == ":")
+      then (match add-typed-param-node(s, skip-space(s, a1), tree) with
+             | (param3Id, a3, t1) =>
+               (if (param3Id == (0 - 1)) then (name-id(nm), 0 - 1, paramId, param2Id, 0 - 1, a3, t1)   // bad type → decline
+                else (let a4 = close-paren(s, skip-space(s, a3)) in                           // the 3rd param's `)`
+                      (let a5 = close-paren(s, skip-space(s, a4)) in                          // the signature `)`
+                       (match read-form(s, a5, t1) with | (bodyId, j, t2) => (name-id(nm), bodyId, paramId, param2Id, param3Id, j, t2))))))
+      else (name-id(nm), 0 - 1, paramId, param2Id, 0 - 1, k, tree))))     // not `(:` → decline
 
 /// After `(:` at `a1`: read the param NAME as an NVar binder (paramId), VALIDATE the declared Type name, record
 /// it, then thread to read-second-param (a typed FIRST param can be followed by a second param — the mixed
@@ -922,6 +940,19 @@ def sr-module-three-param-def-records-all-three() =
          | Option.Some(_) => unit   // f's 3rd param recorded → 3-param def read cleanly
          | Option.None(_) => trap("a 3-param def records param3"))
      else trap("main's body (NLit 5) is the root — the 3-param def read cleanly")))
+
+@test
+def sr-module-all-typed-three-param-records-param3() =
+  // slice-3e-typed: an ALL-TYPED 3-param def `(def (f (: a Int8) (: b Int8) (: c Int8)) …)` records param3 —
+  // the reader chains a typed 2nd param to a typed 3rd (read-typed-second-param → read-third-param →
+  // read-typed-third-param). Before this the typed-2nd path assumed the signature closed after param2, so a
+  // typed 3rd was never read (the def declined). Pins that all-typed-3-param reads cleanly + records param3.
+  (match read-source("(do (def (f (: a Int8) (: b Int8) (: c Int8)) (+ a (+ b c))) (def (main) 5) (export main))") with | (root, tree) =>
+    (if (is-lit(tree, root, 5)) then
+       (match param3-of(tree, name-id("f")) with
+         | Option.Some(_) => unit
+         | Option.None(_) => trap("an all-typed 3-param def records param3"))
+     else trap("main's body is the root — the all-typed 3-param def read cleanly")))
 
 @test
 def sr-module-four-param-def-declines() =
