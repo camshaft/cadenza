@@ -1734,10 +1734,14 @@
             ((Err _) 0)))
   (output (: 0 Int64)))
 
-; Ast.decode stays TOTAL (Err, never a trap) on adversarial bytes that specifically exercise the FLOAT
-; (tag 0x05, 8-byte f64) and STR (tag 0x04, len-prefixed UTF-8) decode arms this vertical added, plus an
-; unknown tag. The generic non-canonical/trailing-byte cases above don't reach these arms; a change to the
-; Float/Str decode that dropped a bounds/finite check would pass those yet regress here. All → Err.
+; Ast.decode stays TOTAL (Err, never a trap) on adversarial bytes that specifically exercise EACH decode
+; arm's bounds/finite check: FLOAT (tag 0x05, 8-byte f64), STR (tag 0x04, len-prefixed UTF-8), LIST (tag
+; 0x02, 4-byte-count-prefixed elements), INT (tag 0x00, fixed 8-byte payload), plus an unknown tag and an
+; empty (no-tag) input. The generic non-canonical/trailing-byte cases above don't reach the individual
+; arms; a change to ANY arm that dropped a bounds/length/finite check would pass those generic cases yet
+; regress the matching per-arm case here. All → Err. (The LIST-count and INT-length arms are the
+; companions of the Float/Str arms this vertical added — a dropped List count-bound would over-read or
+; attempt a 4-billion-element build on `(2 ff ff ff ff)`, and a short Int payload would partial-read.)
 
 (case "decode of a truncated Float tag yields the error case, not a trap"
   (doc    "The Float decode arm reads 8 bytes after tag 0x05; a truncated payload (tag + only 3 bytes) is
@@ -1771,6 +1775,47 @@
            0x00..0x05) is not a canonical AST, so `Ast.decode` returns `Err`. Pins that the tag dispatch's
            fallthrough is a clean decline, not a trap — total over ANY external byte.")
   (input  (match (Ast.decode (Bytes.of (list 9 0 0 0 0)))
+            ((Ok _)  1)
+            ((Err _) 0)))
+  (output (: 0 Int64)))
+
+(case "decode of a List tag whose element count exceeds the bytes present yields the error case"
+  (doc    "The List decode arm reads a 4-byte element count then that many child nodes; a count (255) with
+           NO element bytes following is not a canonical encoding, so `Ast.decode` returns `Err`. The
+           companion of the Str-oversized-length case for the LIST arm (tag 0x02): pins that the count is
+           bounds-checked against the remaining input — never an over-read past the end. A decode that
+           trusted the count would read past the buffer (trap) or half-build a list.")
+  (input  (match (Ast.decode (Bytes.of (list 2 255 0 0 0)))
+            ((Ok _)  1)
+            ((Err _) 0)))
+  (output (: 0 Int64)))
+
+(case "decode of a List tag with an enormous element count does not attempt a giant build — yields the error case"
+  (doc    "A List count of 0xffffffff (~4.29 billion) with no element bytes present must be caught by the
+           bounds check and reported `Err`, NOT drive a 4-billion-iteration build or an out-of-memory trap.
+           Pins that the List arm validates the count against the ACTUAL remaining bytes before allocating
+           or looping — total over an adversarial count, not merely a small-count truncation.")
+  (input  (match (Ast.decode (Bytes.of (list 2 255 255 255 255)))
+            ((Ok _)  1)
+            ((Err _) 0)))
+  (output (: 0 Int64)))
+
+(case "decode of a truncated Int tag (fewer than eight payload bytes) yields the error case"
+  (doc    "The Int decode arm reads a fixed 8-byte two's-complement payload after tag 0x00; a payload of
+           only 3 bytes is not a canonical encoding, so `Ast.decode` returns `Err`. The Int-arm companion
+           of the truncated-Float case (both fixed-width payloads): pins the length check on the Int arm —
+           a dropped check would partial-read a garbage integer rather than declining.")
+  (input  (match (Ast.decode (Bytes.of (list 0 1 2 3)))
+            ((Ok _)  1)
+            ((Err _) 0)))
+  (output (: 0 Int64)))
+
+(case "decode of an empty byte string (no tag) yields the error case"
+  (doc    "The zero-length input has no leading tag byte to dispatch on, so `Ast.decode` returns `Err`
+           rather than trapping on an empty read — the total-decode contract holds at the degenerate
+           boundary (value-interchange.md #A Decode Over External Bytes Is Total). Pins that the tag read
+           itself is bounds-checked, not just the per-arm payloads.")
+  (input  (match (Ast.decode (Bytes.of (list)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))

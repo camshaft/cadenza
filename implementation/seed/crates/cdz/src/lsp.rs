@@ -500,8 +500,24 @@ impl Server {
         params: &GotoDefinitionParams,
     ) -> Option<GotoDefinitionResponse> {
         let pos = &params.text_document_position_params;
-        let doc = self.docs.get(&pos.text_document.uri)?;
-        let loc = type_definition_at(&doc.text, doc.is_ml, pos.position, &pos.text_document.uri)?;
+        let uri = &pos.text_document.uri;
+        let doc = self.docs.get(uri)?;
+        // PACKAGE path: a `file://` doc that declares imports types the cursor across its closure, so an
+        // imported value's type resolves AND the jump can land in the declaring library. Else single-buffer.
+        let loc =
+            if let Some(entry_path) = uri_to_path(uri).filter(|_| self.doc_declares_import(doc)) {
+                let open = self.open_resolver();
+                package_type_definition_at(
+                    &entry_path.to_string_lossy(),
+                    &open,
+                    &doc.text,
+                    doc.is_ml,
+                    pos.position,
+                )
+                .or_else(|| type_definition_at(&doc.text, doc.is_ml, pos.position, uri))
+            } else {
+                type_definition_at(&doc.text, doc.is_ml, pos.position, uri)
+            }?;
         Some(GotoDefinitionResponse::Scalar(loc))
     }
 
@@ -1616,20 +1632,85 @@ fn type_definition_at(text: &str, is_ml: bool, pos: Position, uri: &Uri) -> Opti
         rcdzc::sidecar::Query::TypeAt { node: node.0 },
         rcdzc::sidecar::KIND_TYPE_AT,
     )?;
-    let ty = ty.trim();
-    // Only a BARE type name is navigable: a single identifier token (no spaces/parens/arrows → not a
-    // compound `(List …)`/`(-> …)`, and an uninformative `unknown` is excluded). A builtin scalar name
-    // (`Int64`) simply won't resolve to a top-level `Symbols` declaration, so it declines below anyway.
+    let name = navigable_type_name(&ty)?;
+    // Map the type NAME to its top-level declaration node (the same `Symbols` lookup references uses),
+    // then to a source location. A name that names no declared type (a builtin) yields None.
+    let decl = top_level_symbol_node(&arenas, name)?;
+    node_location(text, &spans, uri, decl)
+}
+
+/// The NAVIGABLE type name in a rendered `TypeAt` answer — a BARE type name (a single identifier token)
+/// that a go-to-type-definition can jump to, or `None`. Excludes the uninformative `unknown`, and any
+/// COMPOUND type (`(List …)`, `(-> …)` — contains a space/paren) which has no single declaration to land
+/// on. A builtin scalar name (`Int64`) passes this shape filter but simply won't resolve to a user
+/// `type` declaration downstream, so it declines there. Shared by the single-buffer + package paths.
+fn navigable_type_name(rendered: &str) -> Option<&str> {
+    let ty = rendered.trim();
     if ty.is_empty()
         || ty == "unknown"
         || ty.contains(|c: char| c.is_whitespace() || c == '(' || c == ')')
     {
         return None;
     }
-    // Map the type NAME to its top-level declaration node (the same `Symbols` lookup references uses),
-    // then to a source location. A name that names no declared type (a builtin) yields None.
-    let decl = top_level_symbol_node(&arenas, ty)?;
-    node_location(text, &spans, uri, decl)
+    Some(ty)
+}
+
+/// Cross-file go-to-TYPE-definition: type the cursor node against the whole `(import …)` closure (so an
+/// IMPORTED value's type resolves), then jump to that type's `type …` declaration WHEREVER it lives —
+/// the entry file OR an imported library. Mirrors `package_hover_at` for the linked `TypeAt`, then locates
+/// the type NAME's declaration by scanning each loaded file's own `Symbols` (like `package_completions_at`
+/// reads each lib's columns). `None` when the closure can't load, the type is not a bare navigable name,
+/// or no loaded file declares it (a builtin) — the caller falls back to the single-buffer path.
+fn package_type_definition_at(
+    entry_path: &str,
+    open: &dyn Fn(&std::path::Path) -> Option<String>,
+    entry_text: &str,
+    entry_is_ml: bool,
+    pos: Position,
+) -> Option<Location> {
+    let (_entry_arenas, entry_spans, _e) = parse_surface(entry_text, entry_is_ml).ok()?;
+    let byte = position_to_byte(entry_text, pos);
+    let cursor = entry_spans.node_at_offset(byte)?;
+
+    let files = crate::closure::load(entry_path, open).ok()?;
+    let mut inputs: Vec<rcdzc::Artifact> = files
+        .iter()
+        .map(|f| {
+            rcdzc::Artifact::new(
+                rcdzc::Artifact::KIND_AST,
+                f.name.clone(),
+                cadenza_syntax::codec::encode(&f.arenas),
+            )
+        })
+        .collect();
+    inputs.push(rcdzc::Artifact::new(
+        rcdzc::sidecar::KIND_SIDECAR,
+        "drive",
+        // Entry is spliced FIRST (base 0), so the cursor's entry-local node id is the linked query input.
+        rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::TypeAt {
+            node: cursor.0,
+        })]),
+    ));
+    inputs.push(rcdzc::cli::entry_artifact(&files[0].name));
+    let compiled = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    let ty = compiled
+        .artifact(rcdzc::sidecar::KIND_TYPE_AT)
+        .map(|b| String::from_utf8_lossy(b).trim().to_string())?;
+    let name = navigable_type_name(&ty)?;
+
+    // Locate the type NAME's declaration in whichever loaded file declares it — its own `Symbols` gives a
+    // FILE-LOCAL node id, mapped to a Location in THAT file (a jump into the declaring library, or the
+    // entry itself). First match wins (a type name is unique across a well-formed closure).
+    for file in &files {
+        if let Some(decl) = top_level_symbol_node(&file.arenas, name) {
+            let span = file.spans.get(cadenza_syntax::StructId(decl))?;
+            return Some(Location {
+                uri: path_to_uri(&file.path)?,
+                range: byte_range_to_range(&file.source, span.start, span.end),
+            });
+        }
+    }
+    None
 }
 
 /// Cross-file go-to-definition: resolve the cursor's reference across the entry's `(import …)` closure,
@@ -4307,6 +4388,39 @@ mod tests {
             type_definition_at(text, true, Position::new(1, 22), &test_uri()).is_none(),
             "a builtin-typed value has no type declaration to jump to"
         );
+    }
+
+    #[test]
+    fn type_definition_jumps_across_files_to_an_imported_type_decl() {
+        // Cross-file go-to-type-definition: the entry imports type `Color` (and `favorite`) from a library
+        // and holds a `Color`-typed value; go-to-type-definition lands on the `type Color` decl in the
+        // LIBRARY file, not the entry. Exercises package_type_definition_at (linked TypeAt + per-file
+        // Symbols scan → a Location in the declaring lib).
+        let dir = std::env::temp_dir().join(format!("cdz-lsp-typedef-pkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(
+            dir.join("lib.sexp"),
+            "(module lib (type Color (Red) (Green) (Blue)) (def (favorite) Green) (export Color favorite))",
+        )
+        .expect("write lib");
+        let main_path = dir.join("main.sexp");
+        let main_text =
+            "(do (import \"lib\" (Color favorite)) (def (main) (favorite)) (export main))";
+        std::fs::write(&main_path, main_text).expect("write main");
+        let open = |p: &std::path::Path| std::fs::read_to_string(p).ok();
+        // Cursor on the `favorite` use in main — its type is the imported `Color`.
+        let byte = main_text.find("(favorite))").unwrap() + 1;
+        let pos = crate::lsp::byte_to_position(main_text, byte);
+        let loc =
+            package_type_definition_at(&main_path.to_string_lossy(), &open, main_text, false, pos)
+                .expect("a cross-file type definition");
+        assert!(
+            loc.uri.as_str().ends_with("lib.sexp"),
+            "the type Color is declared in lib.sexp — jump should land there, got {:?}",
+            loc.uri
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

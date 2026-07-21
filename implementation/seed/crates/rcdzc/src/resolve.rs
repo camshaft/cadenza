@@ -153,9 +153,13 @@ fn is_grammar_form_head_occurrence(db: &Db, id: StructId) -> bool {
 /// resolved-form request answers, and the upstream read `infer`/`lower` perform.
 pub fn resolved_of(db: &mut Db, id: StructId) -> Resolved {
     // Test-only: count every clone-returning call — the noise-free metric for borrow-family cleanups
-    // (`resolved_of`→`resolved_ref`), which a fleet-load-swamped wall-clock A/B cannot measure.
+    // (`resolved_of`→`resolved_ref`), which a fleet-load-swamped wall-clock A/B cannot measure. A
+    // PER-`Db` counter (not a process-global atomic) so the parallel test harness's OTHER concurrent
+    // compiles can't pollute the reading (`db.rs::Db::resolved_of_calls` doc has the full rationale).
     #[cfg(test)]
-    crate::db::RESOLVED_OF_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    {
+        db.resolved_of_calls += 1;
+    }
     if let Slot::Filled(r) = db.resolved.get(id) {
         trace!(target: "rcdzc::resolve", node = id.0, "memo hit");
         return r.clone();

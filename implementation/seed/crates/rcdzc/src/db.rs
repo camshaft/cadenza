@@ -217,19 +217,6 @@ thread_local! {
 pub(crate) static CSE_PARTITION_CORE_EQ_CALLS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Test-only: total `resolve::resolved_of` calls since the last reset — each one CLONES the whole
-/// `Resolved` (the memo-hit `r.clone()` on every call, plus the fill clone on a miss). This is the
-/// deterministic, NOISE-FREE metric for the borrow-family cleanups (a `resolved_of`→`resolved_ref`
-/// conversion at a dispatch/tag-test site removes one clone per call): a wall-clock A/B of a borrow
-/// change is swamped by fleet-load noise, but this count is a pure function of the program + which sites
-/// borrow vs clone, so a batch conversion's effect is measurable and a regression (a new hot `resolved_of`
-/// where a borrow would do) is catchable. `AtomicU64` (not `thread_local`) because resolution runs on the
-/// scoped compiler worker thread (`host::run_with_compiler_stack`), invisible to a `thread_local` the test
-/// thread reads. See `a_wide_match_resolves_in_a_bounded_number_of_clones`.
-#[cfg(test)]
-pub(crate) static RESOLVED_OF_CALLS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
 /// occurrences (empty = nullary), and its body occurrence (absent = malformed). The body is LOCATED,
 /// never entered by the scan — entering it is a later per-node demand.
@@ -1617,6 +1604,18 @@ pub struct Db {
 
     /// The resolved-form column. Filled only by [`crate::resolve`].
     pub(crate) resolved: Column<StructId, Resolved>,
+    /// Test-only: count of clone-returning [`crate::resolve::resolved_of`] calls against THIS `Db` — the
+    /// deterministic, noise-free metric for the borrow-family cleanups (a `resolved_of`→`resolved_ref`
+    /// conversion at a dispatch/tag-test site removes one clone per call). A PER-`Db` counter, NOT a
+    /// process-global `AtomicU64`: the count is a pure function of one program's compile, but a global
+    /// shared across the parallel test harness is `fetch_add`-polluted by OTHER tests' concurrent
+    /// `resolved_of` calls during the read window (they compile on their own worker threads into the same
+    /// static) — so the reading inflated nondeterministically under load and the regression-guard test
+    /// false-tripped. Scoped to one `Db`, every increment is single-owner (`resolved_of` holds `&mut Db`)
+    /// and the test reads the field off the very `Db` it drove — zero cross-test contamination. See
+    /// `a_wide_match_resolves_in_a_bounded_number_of_clones`.
+    #[cfg(test)]
+    pub(crate) resolved_of_calls: u64,
     /// The solved-type column. Filled only by [`crate::infer`].
     pub(crate) types: Column<StructId, Ty>,
     /// The ground TYPE-VALUE memo — the read-through cache for [`crate::eval::typeval_of`]. Distinct from
@@ -2561,6 +2560,8 @@ impl Db {
             reduction_root: None,
             call_sites_by_callee: None,
             resolved: Column::new(),
+            #[cfg(test)]
+            resolved_of_calls: 0,
             types: Column::new(),
             typeval: Column::new(),
             typeval_memo_live: false,

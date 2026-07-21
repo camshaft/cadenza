@@ -2288,10 +2288,33 @@ pub fn reduce_handle(
     // OWN body, so this caller-side observation must be recorded up front. Purely additive: it only UPGRADES a
     // multi-value-threadable callee — a non-threadable one stays single-return.
     mark_caller_observed_outstate(db, body, &ctx);
+    // SEED LET-LIFT for a NON-CONSTANT init carrying a live CAPTURE. The `thread` perform arm splices the
+    // threaded state (which starts as `init`) at every `s` reference and `deep_fresh_copy`s each splice to
+    // break value/next-state sharing (the resume(a,a) bug). That fresh copy re-pushes each leaf UNPINNED, so
+    // an internal state param re-resolves against the specialized def's sig — correct — but a leaf that was
+    // RESOLVE-PINNED to a LIVE enclosing binder (a caller runtime arg `k` substituted into the seed by an
+    // inlining `(f k)`, arm body `(resume s (+ s 1))` reading `s` twice) loses its pin and re-resolves against
+    // the folded orphan → a spurious CDZ0101 "unbound k" (the let-wrapped-handle-seed bug). Rather than teach
+    // `deep_fresh_copy` to tell a live capture from a to-be-respecialized param (a fragile global change), bind
+    // the seed ONCE here to a fresh INTERNAL name and thread THAT: each `s` splice is then a fresh UNPINNED
+    // `#seed` occurrence (nothing to lose on copy) that re-resolves to the wrapping `let`, and the capture `k`
+    // sits in exactly ONE place — the let-init, grafted under the handle site below so it resolves up the live
+    // chain. GATED to a non-constant seed (a bare int/bool/etc. leaf is scope-independent, shared safely, and
+    // stays byte-identical — the common `(handle St 0 …)` corpus case is untouched); the wrap fires only for
+    // the rare runtime-arg seed the bug needs.
+    let seed_wrap: Option<(StructId, StructId)> = if !seed_is_shareable_constant(db, init) {
+        let nm = format!("#seed{}", init.0);
+        let binder = db.push_atom(Leaf::Name(nm.clone()));
+        let sref = db.push_atom(Leaf::Name(nm));
+        Some((binder, sref))
+    } else {
+        None
+    };
+    let thread_seed = seed_wrap.map(|(_, r)| r).unwrap_or(init);
     // Thread the INIT state through the body in evaluation order. The handle's value is the body's
     // value (the accumulated state is observable only through the operations), so we return the
     // rewritten body; the final threaded state is discarded (the body never reads it directly).
-    let (rewritten, _final_states) = thread(db, body, vec![init], &ctx)?;
+    let (rewritten, _final_states) = thread(db, body, vec![thread_seed], &ctx)?;
     // ABORTIVE (E4): if an abortive perform fired during threading, the handle's value is that arm's
     // value — the surrounding computation was abandoned, so the threaded body is dead. (Unconditional
     // strict abort only; a conditional abort was declined above.)
@@ -2316,6 +2339,18 @@ pub fn reduce_handle(
     // value is `(let ((t (f#ctx … init))) (. t 0))`. (The self-call arm already discards each spec's
     // OUT-state at the top level — the handle observes only the value.) Nothing pending → returns `rewritten`.
     let wrapped = drain_and_wrap(db, &ctx, 0, rewritten);
+    // Apply the SEED LET-LIFT decided above: `(let ((#seed init)) wrapped)`. Every `#seed` occurrence
+    // threaded into the body re-resolves to this binding; `init` (carrying the live capture) is evaluated
+    // once here, and the whole `let` is grafted under the handle site below so `init`'s free names resolve
+    // up the original chain. `None` (a constant seed) leaves `wrapped` untouched — byte-identical to before.
+    let wrapped = if let Some((binder, _)) = seed_wrap {
+        let let_head = db.push_name("let");
+        let pair = db.push_list(vec![binder, init]);
+        let bindings = db.push_list(vec![pair]);
+        db.push_list(vec![let_head, bindings, wrapped])
+    } else {
+        wrapped
+    };
     // Graft the threaded result UNDER the original handle's site (the same re-anchoring the E5 pure-one-hole
     // and multi-shot blocks above do). The `thread` perform arm returns the resume VALUE as the perform's
     // result via `deep_fresh_copy` — a freshly-pushed subtree whose root parent is `None`. When that value is
@@ -6561,6 +6596,20 @@ fn count_discharged_performs(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> u
 /// so the copy discipline is identical.)
 fn copy_pure(db: &mut Db, node: StructId) -> StructId {
     crate::eval::beta_reduce(db, node, &HashMap::default())
+}
+
+/// Whether `node` is a SELF-CONTAINED constant — a bare int/bool/float/string leaf whose value resolves
+/// position-independently, so the `thread` fold may safely SHARE + `deep_fresh_copy` it at N state-splice
+/// sites (each copy re-resolves to the same constant). A NAME atom (or any list that may contain one) is
+/// NOT shareable: it resolves by a scope walk, and a `deep_fresh_copy` at a splice site re-pushes it UNPINNED
+/// so a leaf pinned to a LIVE enclosing binder (a caller runtime-arg seed) re-resolves against the folded
+/// orphan → unbound (the let-wrapped-handle-seed CDZ0101). Used to gate the seed let-lift in `reduce_handle`:
+/// a constant seed threads as-is (byte-identical, the common case); a non-constant seed is let-bound once.
+fn seed_is_shareable_constant(db: &Db, node: StructId) -> bool {
+    match db.ast.get(node) {
+        Struct::Atom(lid) => !matches!(db.ast.leaf(*lid), Leaf::Name(_)),
+        Struct::List(_) => false,
+    }
 }
 
 /// A DEEP structural copy that re-pushes EVERY node fresh — no sharing anywhere in the subtree. Unlike

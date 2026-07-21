@@ -1030,6 +1030,19 @@ def position-of-empty-is-none() = match position(take(from-list([1]), 0), fn(x) 
   | Option.None(_) => unit
   | Option.Some(_) => trap("position empty must be None")
 
+// last / last-where complete the empty-source block: both have a GIter.Nil base arm returning None (the
+// same base-arm-on-empty class as find/position above — their non-empty hits/misses are pinned, but the
+// empty source was not). Typed-empty via take(from-list([1]), 0) like the rest of the block.
+@test
+def last-of-empty-is-none() = match last(take(from-list([1]), 0)) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("last empty must be None")
+
+@test
+def last-where-of-empty-is-none() = match last-where(take(from-list([1]), 0), fn(x) => x > 0) with
+  | Option.None(_) => unit
+  | Option.Some(_) => trap("last-where empty must be None")
+
 @test
 /// SLICE-17: `map-while` — closure-storing, fused map + take-while over an Option-returning closure
 /// (element-changing), pinned at two source element types, the stop-at-None, and the all-Some cases.

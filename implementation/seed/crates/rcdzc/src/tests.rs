@@ -7618,6 +7618,46 @@ fn an_effectful_helper_reading_a_driver_param_in_a_selfcall_arg_folds() {
     }
 }
 
+/// A callee whose body is `(let ((r (handle E seed …))) r)` where the handle SEED is a CALLER RUNTIME ARG,
+/// called with that runtime arg — the let-wrapped-handle-seed CDZ0101 (v-verification 2026-07-20, blocked
+/// their `@ensures`-over-handle-body, whose `verify_enforce` injects exactly this `(let ((ret BODY)) …)`).
+/// `f`'s body binds a `(handle St x …)` whose seed `x` is `f`'s param; `main(k)` calls `(f k)`, so the inline
+/// substitutes the seed `x ↦ k` (main's runtime param). The tail-resumptive arm `(resume s (+ s 1))` reads
+/// its state binder `s` TWICE, so the `thread` fold splices the seed at both sites and `deep_fresh_copy`s each
+/// to break sharing — which re-pushed the pinned `k` UNPINNED, re-resolving it against the folded orphan →
+/// spurious CDZ0101 "unbound k". The fix let-binds a NON-CONSTANT seed once at the fold entry (`(let ((#seed
+/// init)) folded)`) so each threaded `s` is a fresh internal ref to that `let` and the capture `k` sits in one
+/// place, grafted under the handle site to resolve up the live chain. `main 5` = 5 (tick returns the seed;
+/// the +1 next-state is discarded). Pins BOTH that it compiles (no CDZ0101) AND runs to the seed value — a
+/// regression here would re-break runtime contract enforcement over any handle-bodied def with a runtime arg.
+#[test]
+fn a_let_bound_handle_whose_seed_is_a_caller_runtime_arg_folds_and_runs() {
+    use crate::testkit::parse;
+    let src = "(module m \
+        (effect St (op tick (-> Unit Int64))) \
+        (def (f (: x Int64)) \
+          (let ((r (handle St x ((tick (u) s (resume s (+ s 1)))) (St.tick)))) r)) \
+        (def (main (: k Int64)) (f k)) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "a let-bound handle whose seed is a caller runtime arg must fold, not CDZ0101 unbound",
+    );
+    let runtime = find_runtime_wasm();
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["5".to_string()],
+        runtime,
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => {
+            assert_eq!(s, "5", "tick returns the seed (the caller's runtime arg)")
+        }
+        cdz_run::Outcome::Trap(t) => panic!("linked run trapped: {t}"),
+    }
+}
+
 /// A handler arm that CAPTURES an enclosing fn param, under a MULTI-ARM nested handler, over a recursive
 /// driver performing BOTH effects (the two-nested-states MERGE path). `converse`'s arm `(resume p 0)` closes
 /// over `run-with`'s param `p` — not the arm's own params/state. Before the fix, the synthesized `run#ctx`
@@ -41775,15 +41815,49 @@ mod match_engine {
             d.message
         );
         // A near-miss of a real unit gets a confident suggestion (British spelling / typo).
+        let metre = find("(module m (def (main) (Qty.of 5 (Unit.of #\"metre\"))) (export main))");
+        assert!(metre.message.contains("did you mean `meter`?"));
+        // The confident suggestion is APPLYABLE: it carries a heuristic Replace fix on the NAME literal,
+        // and — since the argument is a SYMBOL literal `#"metre"` — the replacement PRESERVES the `#"…"`
+        // delimiter (`#"meter"`), so applying it re-renders a valid `(Unit.of #"meter")`, not the
+        // malformed bare-name `(Unit.of meter)`.
+        let fix = metre
+            .fix
+            .as_ref()
+            .expect("the unknown-unit did-you-mean carries a replace fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "#\"meter\"",
+            "rewrites the typo to the near unit, keeping the #\"…\" symbol delimiter"
+        );
+        assert!(!fix.verified, "a nearest-name guess is heuristic");
+        // ROUND-TRIP: applying the fix (`#"metre"` → `#"meter"`) yields a program with no unknown-unit
+        // fault — the suggestion is a real repair, witnessed by compiling the corrected source.
         assert!(
-            find("(module m (def (main) (Qty.of 5 (Unit.of #\"metre\"))) (export main))")
-                .message
-                .contains("did you mean `meter`?"),
+            !crate::diagnostics(&mut crate::db::Db::load(parse(
+                "(module m (def (main) (Qty.of 5 (Unit.of #\"meter\"))) (export main))"
+            )))
+            .iter()
+            .any(|d| d.message.contains("unknown unit")),
+            "applying the unit fix (#\"metre\" → #\"meter\") clears the unknown-unit fault"
         );
         assert!(
             find("(module m (def (main) (Qty.of 5 (Unit.of #\"secnd\"))) (export main))")
                 .message
                 .contains("did you mean `second`?"),
+        );
+        // The delimiter is PRESERVED per the argument literal's kind: a plain STRING argument `"metre"`
+        // (not the `#"…"` symbol form) gets a string-delimited replacement `"meter"`, so applying it
+        // re-renders a valid string argument rather than a mismatched symbol or a bare name.
+        let str_metre =
+            find("(module m (def (main) (Qty.of 5 (Unit.of \"metre\"))) (export main))");
+        let str_fix = str_metre
+            .fix
+            .as_ref()
+            .expect("the string-form unknown-unit did-you-mean also carries a fix");
+        assert_eq!(
+            str_fix.replacement, "\"meter\"",
+            "a string-literal unit argument keeps the \"…\" delimiter"
         );
         // An ABBREVIATION with no confident typo neighbour (`mph`'s nearest units by edit distance are the
         // unrelated `bps`/`mbps`/`bit`) does NOT get a misleading "closest matches" list — it gets
@@ -60210,7 +60284,10 @@ mod stage1 {
         // pattern-atom `resolved_of` tag test was a top `Resolved::clone` caller) to grow ~LINEARLY with
         // the program, so a regression that reintroduces a per-node `resolved_of` where a borrow would do
         // is caught deterministically (a wall-clock A/B of a borrow change is swamped by fleet-load noise;
-        // this `RESOLVED_OF_CALLS` count is a pure function of the program).
+        // the per-`Db` `resolved_of_calls` count is a pure function of ONE program's compile). It is a
+        // PER-`Db` field, NOT a process-global atomic — a global was `fetch_add`-polluted by the parallel
+        // test harness's other concurrent compiles during the read window, inflating the reading under
+        // load and false-tripping this guard (fixed 2026-07-21; see the field doc in `db.rs`).
         fn wide_match_src(n: usize) -> String {
             // N functions each matching a runtime sum over literal + binder arms — heavy pattern lowering.
             let defs: String = (0..n)
@@ -60233,10 +60310,13 @@ mod stage1 {
             "a wide match program compiles with no error diagnostics: {diags:?}"
         );
         fn clone_calls(src: &str) -> u64 {
-            use std::sync::atomic::Ordering;
-            crate::db::RESOLVED_OF_CALLS.store(0, Ordering::Relaxed);
-            let _ = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
-            crate::db::RESOLVED_OF_CALLS.load(Ordering::Relaxed)
+            // Read the count off the very `Db` this call drove — a PER-`Db` field, so the parallel test
+            // harness's other concurrent compiles cannot pollute it (the old process-global atomic was
+            // `fetch_add`-contaminated by other tests' `resolved_of` calls during the read window, which
+            // inflated the reading nondeterministically under load and false-tripped this guard).
+            let mut db = crate::db::Db::load(parse(src));
+            let _ = crate::diagnostics(&mut db);
+            db.resolved_of_calls
         }
         // Width 100→200 is 2×; a per-node clone count that grows LINEARLY with the program ⇒ ~2×. Require
         // < 3× (between linear and any O(N²) resolve-clone regression, with constant-term margin). `> 0`

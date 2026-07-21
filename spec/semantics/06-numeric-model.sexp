@@ -1474,6 +1474,24 @@
   (call   main (: 200 UInt8))
   (output (: 200 Int64)))
 
+(case "narrow unsigned comparison division and remainder compose unsigned over a high-bit operand"
+  (doc    "The OP-COMPOSITION face of unsigned narrow arithmetic: 200 has the i8 SIGN BIT set, so every
+           op below computes WRONG under a signed lowering — `(< 200 3)` would be true (-56 < 3),
+           `(/ 200 3)` would be -18, `(% 200 3)` would be negative. Composed in ONE UInt8-width
+           expression with in-width weights: 200/3=66, 3·66=198, 200%3=2, cmp=0 → 0+198+2 = 200; the
+           swapped call has cmp=1 (100<200), 100/200=0, 100%200=100 → 50+0+100 = 150. The zero-extend
+           widening case above pins the boundary crossing; this pins the ops themselves staying
+           unsigned while COMPOSED at the narrow width (each sub-result feeds the next in-width, so a
+           single signed op poisons the encoded sum). Expected: 200, 150.")
+  (input  (do
+            (def (main (: a UInt8) (: b UInt8))
+              (+ (* 50 (if (< a b) 1 0))
+                 (+ (* 3 (/ a b))
+                    (% a b))))
+            (export main)))
+  (call   main (: 200 UInt8) (: 3 UInt8)) (output (: 200 UInt8))
+  (call   main (: 100 UInt8) (: 200 UInt8)) (output (: 150 UInt8)))
+
 (case "widening a runtime signed narrow integer to Int64 sign-extends (total, emits)"
   (doc    "`(Int64.of x)` with `x` a runtime `Int8` widens totally by SIGN-extending — -1 stays -1, not a
            large positive. Every Int8 (-128..127) fits Int64, so no trap; contrasts the unsigned case's
@@ -3290,6 +3308,48 @@
   (input  (do (def (main (: x Int64)) (| (| x 8) 8)) (export main)))
   (call   main (: 1 Int64))
   (output (: 9 Int64)))
+
+; ── The ABSORPTION LAW and the RUNTIME-operand IDEMPOTENT collapse (both operands runtime) ────────────
+; The OR-then-mask absorption and nested-OR collapse above fold a CONSTANT second operand. `arith_identity`
+; ALSO recognizes the pure-runtime shapes: the ABSORPTION LAW `x & (x | y)` → x and `x | (x & y)` → x (a
+; value combined with the DUAL op of itself-with-anything absorbs to itself — value-exact for ANY x/y),
+; and the IDEMPOTENT collapse with a RUNTIME repeated operand `(| (| x y) y)` → `(| x y)` / `(& (& x y) y)`
+; (re-applying `OP y` changes nothing). Absorption DISCARDS `y`, so it is `is_trap_free`-guarded (a trapping
+; `y` must still trap); the idempotent collapse KEEPS both operands (no guard). Distinct from the constant
+; cases above (which the const/nested-collapse paths handle) — these need TWO runtime operands. Both backends.
+(case "the bitwise absorption law folds x-and-(x-or-y) and x-or-(x-and-y) to x on runtime operands"
+  (doc    "`(& x (| x y))` → x and `(| x (& x y))` → x for ANY runtime x, y: a value combined with the DUAL
+           op of itself-with-anything absorbs to itself. `(tuple (& x (| x y)) (| x (& x y)))` at
+           (x=12, y=10) → (12, 12); at (x=-9223372036854775808, y=-7) → (min, min) (the boundary operand is
+           returned unchanged, not re-derived). Pins both absorption laws on genuinely runtime operands,
+           both backends.")
+  (input  (do (def (main (: x Int64) (: y Int64)) (tuple (& x (| x y)) (| x (& x y)))) (export main)))
+  (call   main (: 12 Int64) (: 10 Int64))
+  (output (: (tuple 12 12) (Tuple Int64 Int64)))
+  (call   main (: -9223372036854775808 Int64) (: -7 Int64))
+  (output (: (tuple -9223372036854775808 -9223372036854775808) (Tuple Int64 Int64))))
+
+(case "the absorption law does not discard a trapping runtime operand"
+  (doc    "The trap-preservation face: `(& x (| x (/ 10 z)))` still absorbs to `x` for the VALUE, but the
+           discarded operand `(/ 10 z)` with z = 0 divides by zero and MUST trap — absorption may drop y's
+           VALUE, not its EVALUATION (the `is_trap_free` guard on the fold). At z = 2 the operand `(/ 10 z)`
+           = 5 is trap-free and the whole thing absorbs to x = 12. Pins both faces of the absorption fold's
+           trap-preservation on a runtime operand, both backends.")
+  (input  (do (def (main (: x Int64) (: z Int64)) (& x (| x (/ 10 z)))) (export main)))
+  (call   main (: 12 Int64) (: 2 Int64))
+  (output (: 12 Int64))
+  (call   main (: 12 Int64) (: 0 Int64))
+  (trap   "divide by zero"))
+
+(case "the idempotent bitwise collapse holds on a repeated RUNTIME operand"
+  (doc    "`(| (| x y) y)` → `(| x y)` and `(& (& x y) y)` → `(& x y)` for RUNTIME y (distinct from the
+           `(| (| x 8) 8)` CONSTANT case above): re-ORing / re-ANDing by the same value is idempotent
+           (`y OP y == y`). Both operands survive so no trap guard is needed. `(tuple (| (| x y) y)
+           (& (& x y) y))` at (x=1, y=8) → (9, 0) — `1|8|8` = 9, `1&8&8` = 0. Pins the runtime-operand
+           idempotent collapse for both `|` and `&`, both backends.")
+  (input  (do (def (main (: x Int64) (: y Int64)) (tuple (| (| x y) y) (& (& x y) y))) (export main)))
+  (call   main (: 1 Int64) (: 8 Int64))
+  (output (: (tuple 9 0) (Tuple Int64 Int64))))
 
 ; --- The bitwise/shift/truncation primitives COMPOSE into the LEB128 encoding step ----------
 ; The cases above exercise `&`, `|`, `>>`, and `UInt8.wrap` INDIVIDUALLY on constant operands. The

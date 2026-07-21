@@ -449,6 +449,30 @@
   (output (: (Qty.of 27.77777777777778 (Unit./ (Unit.base #"meter") (Unit.base #"second")))
              (Qty Float64 (Unit./ (Unit.base #"meter") (Unit.base #"second"))))))
 
+(case "a scaled cube dimension raises its prefix scale to the power (km³ → ×1e9 meter³)"
+  (doc    "`(Qty.of 2.0 (Unit.^ kilometer 3))` — a scaled base raised to a power — DISPLAYS as
+           `2000000000.0 meter³`: the render normalizes to the reference `meter³` and the kilo prefix scale
+           is RAISED TO THE EXPONENT, not applied linearly — ×(1000³) = ×1e9, so 2 → 2e9. Beyond the linear
+           scale-fold of the flat scaled derived pin (`100 km/h` → `27.77… m/s`, scale ×5/18 applied once),
+           this pins that a POWERED scaled unit folds the prefix scale RAISED to its exponent: `km³` is
+           `(1000 m)³` = `1e9 m³`, NOT `1000 m³`. The rendered unit is the reference power
+           `(Unit.^ (Unit.base meter) 3)`, number and unit AGREE.")
+  (input  (Qty.of 2.0 (Unit.^ (Unit.of #"kilometer") 3)))
+  (output (: (Qty.of 2000000000.0 (Unit.^ (Unit.base #"meter") 3))
+             (Qty Float64 (Unit.^ (Unit.base #"meter") 3)))))
+
+(case "a scaled reciprocal dimension folds the denominator prefix scale (1/ms → ×1000 per second)"
+  (doc    "`(Qty.of 1.0 (Unit./ Unit.one millisecond))` — a reciprocal over a SCALED denominator —
+           DISPLAYS as `1000.0 (Unit.one/second)`: the render normalizes `millisecond` to the reference
+           `second` (ms = 1/1000 s), and because the scaled unit is in the DENOMINATOR its scale INVERTS —
+           ÷(1/1000) = ×1000, so 1 → 1000. Pins the scaled-reciprocal render (a `Unit.one` numerator over a
+           scaled base): the companion of the flat reciprocal pin (`1/s`, unscaled) and the scaled quotient
+           pin (`km/h`), isolating the denominator-scale inversion. Number and unit AGREE at the reference
+           `(Unit./ Unit.one (Unit.base second))`.")
+  (input  (Qty.of 1.0 (Unit./ Unit.one (Unit.of #"millisecond"))))
+  (output (: (Qty.of 1000.0 (Unit./ Unit.one (Unit.base #"second")))
+             (Qty Float64 (Unit./ Unit.one (Unit.base #"second"))))))
+
 (case "a velocity multiplied by a time recovers the distance dimension"
   (doc    "The multiply-direction inverse of the velocity quotient: `(* (Qty.of 6.0 (meter/second))
            (Qty.of 2.0 second))` composes `(meter·second⁻¹)·second` = meter — the `second` cancels in the
