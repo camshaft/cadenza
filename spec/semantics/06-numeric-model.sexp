@@ -201,6 +201,33 @@
   (call   main (: 6 Int64))
   (output (: 3 Int64)))
 
+; `Rational.truncate : Rational → Int64` — the integer part of a rational TOWARD ZERO, narrowed to a fixed
+; Int64 (unlike numerator/denominator which stay BigInt: the integer part is a single small value that must
+; land in a fixed width to be useful — MIDI ticks, indices). It is NOT a new runtime op: it lowers as a
+; DERIVATION over the primitives above — `(Int64.of (/ (numerator r) (denominator r)))` — BigInt truncating
+; division (toward zero) then the checked Int64.of narrowing (traps on overflow). The FIRST of the
+; rational→integer projection surface; floor/ceil/round add a remainder-sign ±1 on top. A RUNTIME rational
+; (built from the parameter `n`) exercises the derivation's runtime shape; the toward-zero rule is pinned on
+; BOTH signs (7/2 → 3, -7/2 → -3, NOT the floor's -4) — the axis a floor/truncate confusion would break.
+(case "a rational truncates to its integer part toward zero, narrowed to Int64"
+  (doc    "`Rational.truncate : Rational → Int64` is the integer part TOWARD ZERO. `(Rational.of n 2)` at
+           n=7 is 7/2, whose truncate is 3 (toward zero); at n=-7 it is -7/2 → -3 (toward zero, NOT the
+           floor -4). A DERIVATION over numerator/denominator + BigInt truncating-division + the checked
+           Int64.of narrowing — no new runtime op (hash-neutral). A RUNTIME rational (from the parameter)
+           lowers the derivation's runtime shape; a constant folds to the same integer via IntValue divmod.")
+  (input  (do (def (main (: n Int64)) (Rational.truncate (Rational.of n 2))) (export main)))
+  (call   main (: 7 Int64))
+  (output (: 3 Int64)))
+
+(case "a rational truncates a negative value toward zero, not toward negative infinity"
+  (doc    "The negative toward-zero face: `(Rational.of n 2)` at n=-7 is -7/2, whose TRUNCATE is -3 (drop
+           the fractional part, toward zero), distinct from a floor which would give -4 (toward -infinity).
+           Pins the sign behavior of BigInt truncating division (the dividend's sign, quotient toward zero)
+           that the derivation relies on — a floor/truncate confusion in a future change trips this.")
+  (input  (do (def (main (: n Int64)) (Rational.truncate (Rational.of n 2))) (export main)))
+  (call   main (: -7 Int64))
+  (output (: -3 Int64)))
+
 ; The exact-arithmetic cases above use SMALL operands (1/3, 1/6) that never leave the i64 range. A Rational
 ; is a normalized pair of BigInt handles, so a gcd normalization over NEAR-i64 operands must run on the
 ; runtime bigint limbs and stay exact. This pins a large num/den reducing to 2/1 — both backends must agree

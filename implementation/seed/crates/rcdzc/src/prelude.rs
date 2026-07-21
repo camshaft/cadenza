@@ -1185,6 +1185,17 @@ fn rational_module(ast: &mut Arenas) -> StructId {
     let denominator_op = list_op_record(ast, "rational-den", denominator_ty);
     let denominator_key = push_atom(ast, Leaf::Name("denominator".to_string()));
     children.push(push_list(ast, vec![denominator_key, denominator_op]));
+    // `truncate : Rational → Int64` — the exact integer part TOWARD ZERO (`7/2 → 3`, `-7/2 → -3`). Unlike
+    // `numerator`/`denominator` (BigInt-valued, since either component can exceed i64), the integer part of
+    // a rational is a single value that MUST land in a fixed width to be useful (MIDI ticks, indices), so
+    // this narrows to `Int64` with the checked-narrow TRAP on overflow (never a silent truncation). It is
+    // NOT a new runtime op: it lowers as a DERIVATION over the existing `numerator`/`denominator` +
+    // BigInt truncating-division + the checked `Int64.of` narrowing (all hash-neutral). floor/ceil/round
+    // (which add a conditional ±1 off the remainder sign) compose on top in later increments.
+    let truncate_ty = rational_to_int64_type(ast);
+    let truncate_op = list_op_record(ast, "rational-truncate", truncate_ty);
+    let truncate_key = push_atom(ast, Leaf::Name("truncate".to_string()));
+    children.push(push_list(ast, vec![truncate_key, truncate_op]));
     push_list(ast, children)
 }
 
@@ -1247,6 +1258,21 @@ fn rational_to_bigint_type(ast: &mut Arenas) -> StructId {
     let rational = intrinsic_node(ast, "Rational");
     let bigint = intrinsic_node(ast, "BigInt");
     let body = arrow_type(ast, rational, bigint);
+    let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
+    let params = push_list(ast, vec![]);
+    push_list(ast, vec![fn_head, params, body])
+}
+
+/// `(fn () (-> Rational Int64))` for `Rational.truncate` (and the later `floor`/`ceil`/`round`) — the
+/// integer PROJECTION of a rational to a fixed `Int64`, checked-narrow (traps on overflow). Unlike
+/// `rational_to_bigint_type` (num/den can exceed i64), the integer part is a single small value that
+/// narrows to `Int64`. The zero-param `fn` wrapper makes `scheme_of` read a SCHEME over the monomorphic
+/// arrow (like `string_to_int64_type`), so `(. Rational truncate)` resolves as an applyable op. The result
+/// `Int64` is spelled by the NAME node (like `string_to_int64_type`), not an intrinsic.
+fn rational_to_int64_type(ast: &mut Arenas) -> StructId {
+    let rational = intrinsic_node(ast, "Rational");
+    let int64 = push_atom(ast, Leaf::Name("Int64".to_string()));
+    let body = arrow_type(ast, rational, int64);
     let fn_head = push_atom(ast, Leaf::Name("fn".to_string()));
     let params = push_list(ast, vec![]);
     push_list(ast, vec![fn_head, params, body])

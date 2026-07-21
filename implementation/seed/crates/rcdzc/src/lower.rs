@@ -1940,6 +1940,26 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     Core::Poison(r) => Core::Poison(r),
                     _ => Core::RationalDen { operand: args[0] },
                 },
+                // `Rational.truncate r` — the integer part TOWARD ZERO, narrowed to `Int64`. A DERIVATION
+                // (no runtime op): a CONSTANT `Core::ConstRational(n, d)` (normalized, `d > 0`) folds to the
+                // truncating quotient `n / d` (`IntValue::divmod` truncates toward zero, remainder takes the
+                // dividend's sign — exactly the toward-zero integer part). A RUNTIME Rational synthesizes
+                // `(let ((__r r)) (Int64.of (/ ((. Rational numerator) __r) ((. Rational denominator) __r))))`
+                // and lowers THAT — `numerator`/`denominator` (→ BigInt), BigInt `/` (truncating), then the
+                // checked `Int64.of` narrowing (TRAPS on overflow). All existing prims → hash-neutral.
+                Some(Prim::RationalTruncate) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::ConstRational(n, d) => match n.divmod(&d) {
+                        Some((q, _rem)) => Core::ConstInt(q),
+                        // A `ConstRational` is normalized (`Rational.of` traps a zero denominator at
+                        // construction), so `d > 0` and `divmod` is `Some`; this arm is defensive.
+                        None => Core::Poison(Reject::coded(
+                            Code::ConstTrap,
+                            "rational with zero denominator has no integer part",
+                        )),
+                    },
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => lower_rational_truncate(db, args[0]),
+                },
                 // `Symbol.to-string` — recover a Symbol's content String (`Symbol → String`, the inverse of
                 // `Symbol.of`). A constant symbol IS its `Core::ConstStr`, so this folds to that same node
                 // retyped `String` (the node's solved type); the rep is unchanged. A RUNTIME symbol is a
@@ -15256,6 +15276,55 @@ fn lower_rational_of(db: &mut Db, num: StructId, den: StructId) -> Core {
     }
 }
 
+/// Lower a RUNTIME `Rational.truncate r` as a DERIVATION over existing prims — no new runtime op. Synthesize
+/// `(let ((__rtrunc r)) (Int64.of (/ ((. Rational numerator) __rtrunc) ((. Rational denominator) __rtrunc))))`
+/// and lower THAT: `numerator`/`denominator` read the pair as BigInts, BigInt `/` truncates toward zero
+/// (dividend-signed, matching the const `IntValue::divmod` fold), and `Int64.of` checked-narrows the small
+/// quotient (TRAPS on overflow). `r` is referenced twice, so it is LET-BOUND once (`__rtrunc`) — computed a
+/// single time, read by two occurrences (the `__` prefix cannot collide with a source name). The operand
+/// node `r` is spliced verbatim into the binding (it is already resolved/typed in this scope; the original
+/// `Rational.truncate` apply node is fully replaced by this subtree's core, so the splice reparents cleanly
+/// exactly as `partial_ctor_eta_closure` splices its supplied args). `resolve_subtree` classifies the synth
+/// nodes; `core_of` on the root produces the derivation's Core (the same shape a hand-written source
+/// expression lowers to — verified to compile + run: `7/2 → 3`, `-7/2 → -3`).
+fn lower_rational_truncate(db: &mut Db, r: StructId) -> Core {
+    let bind_name = "__rtrunc";
+    // `(let ((__rtrunc r)) body)`.
+    let binder_occ = db.push_name(bind_name);
+    let binding = db.push_list(vec![binder_occ, r]);
+    let bindings = db.push_list(vec![binding]);
+    // `((. Rational numerator) __rtrunc)` and `((. Rational denominator) __rtrunc)` — a member access
+    // applied to a fresh reference of the let binder (the `.` head form, per `(. List len)` precedent).
+    let num_call = rational_member_call(db, "numerator", bind_name);
+    let den_call = rational_member_call(db, "denominator", bind_name);
+    // `(/ num_call den_call)` — BigInt truncating division (both operands are `Ty::BigInt`).
+    let div_head = db.push_name("/");
+    let quotient = db.push_list(vec![div_head, num_call, den_call]);
+    // `(Int64.of quotient)` — the checked BigInt→Int64 narrowing (traps on overflow).
+    let dot = db.push_name(".");
+    let int64_mod = db.push_name("Int64");
+    let of_key = db.push_name("of");
+    let int64_of = db.push_list(vec![dot, int64_mod, of_key]);
+    let narrowed = db.push_list(vec![int64_of, quotient]);
+    let let_head = db.push_name("let");
+    let derivation = db.push_list(vec![let_head, bindings, narrowed]);
+    crate::resolve::resolve_subtree(db, derivation);
+    core_of(db, derivation)
+}
+
+/// Build `((. Rational <member>) <bind_name>)` — a `Rational` module member access (`numerator`/
+/// `denominator`) applied to a fresh reference of the let-bound name. Helper for `lower_rational_truncate`
+/// (and the later floor/ceil/round derivations) so each reads the rational's component through the same
+/// member surface the source would use. A FRESH name occurrence per call (a node has one parent).
+fn rational_member_call(db: &mut Db, member: &str, bind_name: &str) -> StructId {
+    let dot = db.push_name(".");
+    let rational_mod = db.push_name("Rational");
+    let member_key = db.push_name(member);
+    let member_access = db.push_list(vec![dot, rational_mod, member_key]);
+    let arg_ref = db.push_name(bind_name);
+    db.push_list(vec![member_access, arg_ref])
+}
+
 /// The two `IntValue`s of a `Core::ConstRational` operand (already normalized), or `None` if `id` did not
 /// fold to a constant rational (a runtime rational — the caller then emits the runtime `rational-*` op, R3b).
 fn const_rational_of(
@@ -17778,6 +17847,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::RationalValue
         | Prim::RationalNum
         | Prim::RationalDen
+        | Prim::RationalTruncate
         // The unit/quantity prims are compile-time unit builders / erasing quantity ops — never an
         // integer binary operation (a `Qty.of`/`Qty.value` lowers to its value argument, a unit builder
         // is reduced away by `eval`), so they never reach this integer fold.
@@ -23868,6 +23938,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::RationalValue => "rational-value",
         Prim::RationalNum => "rational-num",
         Prim::RationalDen => "rational-den",
+        Prim::RationalTruncate => "rational-truncate",
         Prim::CharTy => "Char",
         Prim::CharToInt => "char-to-int",
         Prim::CharFromInt => "char-from-int",

@@ -71,6 +71,13 @@ impl Parsed {
 #[derive(Clone, Debug)]
 struct Lead {
     doc: bool,
+    /// TRAILING = the comment began on the SAME source line as the PREVIOUS grammar token (code before
+    /// it: `x // note`), as opposed to LEADING = on its own line above the next token. A trailing comment
+    /// documents the thing it FOLLOWS, so a drain site can attach it to the preceding node (as
+    /// `(comment-after "text" node)`) and the printer re-emits it same-line — instead of stranding it at
+    /// the next token's leading slot (where an interior position drops it). `///` docs are never trailing
+    /// (a doc leads its item); only `//` comments carry this.
+    trailing: bool,
     text: String,
     span: Span,
 }
@@ -85,19 +92,33 @@ pub fn parse(src: &str, file: FileId) -> Parsed {
     let mut tokens: Vec<Token> = Vec::new();
     let mut leading: Vec<Vec<Lead>> = Vec::new();
     let mut pending: Vec<Lead> = Vec::new();
+    // The END offset of the most recent GRAMMAR token — to classify a following comment as TRAILING
+    // (same source line as that token, no newline between) vs LEADING (its own line). `None` before the
+    // first grammar token (a file-leading comment is never trailing).
+    let mut prev_grammar_end: Option<usize> = None;
     for t in Lexer::new(src) {
         match t.kind {
             Kind::Whitespace => {}
             Kind::LineComment | Kind::DocComment => {
                 let doc = t.kind == Kind::DocComment;
+                // Trailing iff a grammar token precedes it on the SAME line: no `\n` in the source gap
+                // between that token's end and this comment's start. A `///` doc is never trailing (a doc
+                // leads its item, even if written after code — treat it as leading for attachment).
+                let trailing = !doc
+                    && match prev_grammar_end {
+                        Some(end) if end <= t.span.start => !src[end..t.span.start].contains('\n'),
+                        _ => false,
+                    };
                 pending.push(Lead {
                     doc,
+                    trailing,
                     text: strip_comment(&src[t.span.start..t.span.end], doc),
                     span: t.span,
                 });
             }
             _ => {
                 tokens.push(t);
+                prev_grammar_end = Some(t.span.end);
                 leading.push(std::mem::take(&mut pending));
             }
         }
@@ -591,6 +612,29 @@ impl<'a> Parser<'a> {
         comments
     }
 
+    /// If the current grammar token's leading run begins with TRAILING comment lead(s) — comments that
+    /// sat on the SAME source line as the PREVIOUS token (`Ctor(T)  // note`) — drain and return them,
+    /// leaving any leading (own-line) comments/docs in place. A drain site calls this RIGHT AFTER parsing
+    /// the element the comment trails, then wraps that element in `(comment-after "text" node)` so the
+    /// comment attaches to what it FOLLOWS and re-prints same-line — instead of being stranded at this
+    /// token's leading slot (where an interior parser drops it). Only the LEADING PREFIX of trailing
+    /// leads is taken (a trailing comment is contiguous with the prior line's code; any own-line comment
+    /// after it is a genuine leading comment of the next element and stays). Returns `[]` if none.
+    fn take_trailing_comment_here(&mut self) -> Vec<Lead> {
+        let leads = if self.pos < self.leading.len() {
+            &mut self.leading[self.pos]
+        } else {
+            return Vec::new();
+        };
+        // Count the leading prefix that is trailing (`//` on the previous line). Stop at the first
+        // non-trailing lead (an own-line comment/doc that belongs to the NEXT element).
+        let n = leads.iter().take_while(|l| l.trailing).count();
+        if n == 0 {
+            return Vec::new();
+        }
+        leads.drain(..n).collect()
+    }
+
     /// Drain and return the `///` DOC leads preceding the current grammar token. Called by a
     /// def/module parser at entry to splice them as `(doc "text")` body forms.
     fn take_docs_here(&mut self) -> Vec<Lead> {
@@ -713,6 +757,22 @@ impl<'a> Parser<'a> {
         for lead in comments.into_iter().rev() {
             let head = self.name("comment", lead.span);
             let text = self.atom(Leaf::Str(lead.text), lead.span);
+            node = self.list(vec![head, text, node], lead.span);
+        }
+        node
+    }
+
+    /// Wrap `node` in `(comment-after "text" node)` for each TRAILING comment lead (a `//` that followed
+    /// `node` on the same source line), innermost = first so multiple trail in source order. Distinct
+    /// head from the leading `(comment …)` so the printer knows to re-emit it SAME-LINE (`node // text`),
+    /// and so `strip_comments` (which peels both heads) keeps it transparent to the compiler. A no-op for
+    /// an empty run (returns `node` unchanged).
+    fn wrap_comment_after(&mut self, comments: Vec<Lead>, mut node: StructId) -> StructId {
+        for lead in comments.into_iter() {
+            let head = self.name("comment-after", lead.span);
+            let text = self.atom(Leaf::Str(lead.text), lead.span);
+            // Same `(head "text" node)` shape as a leading `(comment …)` — so `strip_comments` peels
+            // BOTH heads by the identical `tail = [text, form]` rule (the compiler never sees either).
             node = self.list(vec![head, text, node], lead.span);
         }
         node
@@ -1891,7 +1951,14 @@ impl<'a> Parser<'a> {
         }
         if !self.at(Kind::DotDot) {
             loop {
-                items.push(self.variant());
+                let v = self.variant();
+                // A `//` comment trailing this variant on the same line (`| Ctor(T)  // note`) sits at
+                // the NEXT token's leading slot (the `|` or the type's end). Drain + attach it to THIS
+                // variant as `(comment-after …)` so it re-prints same-line, rather than being stranded
+                // at the next variant's slot (where the variant loop would drop it — the trailing-inline
+                // comment-loss). `strip_comments` peels it, so the type scanner is unaffected.
+                let trailing = self.take_trailing_comment_here();
+                items.push(self.wrap_comment_after(trailing, v));
                 if self.at(Kind::Pipe) {
                     self.bump(); // `|`
                 } else {
