@@ -2342,6 +2342,48 @@
             (export main)))
   (output (: 0 Int64)))
 
+(case "a user-sum variant value as a Map KEY keys by variant and payload"
+  (doc    "The KEY companion of the sum-VALUE case above: a payload-carrying user sum as the map key. Over
+           `m = {(A n)↦10, (B 5)↦20}` with runtime `n`, encodes `100·len + 10·has(A 5) + has(B n)`: at
+           `n = 5` both lookups hit — `(A 5)` matches the stored `(A n)` by content and `(B 5)` was inserted
+           → 211; at `n = 7` the map holds `(A 7)`/`(B 5)`, so `(A 5)` misses AND `(B 7)` misses → 200. The
+           key hash/eq must read BOTH the variant tag and the payload — a tag-only key would collide A and
+           B, a payload-only key would false-hit `(A 5)` at n=7.")
+  (input  (do
+            (type Tag (A Int64) (B Int64))
+            (def (main (: n Int64))
+              (let ((m (Map.insert (Map.insert Map.empty (A n) 10) (B 5) 20)))
+                (+ (* 100 (Map.len m))
+                   (+ (* 10 (match (Map.lookup m (A 5)) ((Some v) 1) ((None u) 0)))
+                      (match (Map.lookup m (B n)) ((Some v) 1) ((None u) 0))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 211 Int64))
+  (call   main (: 7 Int64)) (output (: 200 Int64)))
+
+(case "same-payload different-variant sum keys are DISTINCT map keys"
+  (doc    "The tag-discrimination control: `(A n)` and `(B n)` share the payload but differ in VARIANT, and
+           both survive as distinct keys (len 2). A key hash that read only the payload bytes (dropping the
+           tag) would collapse them into one entry.")
+  (input  (do
+            (type Tag (A Int64) (B Int64))
+            (def (main (: n Int64))
+              (Map.len (Map.insert (Map.insert Map.empty (A n) 10) (B n) 20)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2 Int64)))
+
+(case "a NESTED sum-in-sum map key discriminates by the inner variant"
+  (doc    "The depth-2 face of the sum-key family: `(Some (A n))` and `(Some (B n))` — the OUTER variant
+           (Some) and payload value agree; only the INNER variant tag differs — are two DISTINCT map keys
+           (len 2). The key hash must descend through the outer sum's payload into the inner sum's tag; a
+           descent that stopped at the outer payload's bytes-of-handle (or hashed only one level of tag)
+           would collapse them.")
+  (input  (do
+            (type T (A Int64) (B Int64))
+            (def (main (: n Int64))
+              (Map.len (Map.insert (Map.insert Map.empty (Some (A n)) 10) (Some (B n)) 20)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2 Int64)))
+
 ; The map-sum-value case above consumes the lookup result INLINE, in the same expression. The environment-
 ; lookup idiom a type-inference / evaluation pass takes is different: look a binding up in the map, WRAP it
 ; in a result constructor, RETURN it from the lookup function, then MATCH it in the CALLER. These pin that
@@ -10286,6 +10328,31 @@
            equal-map-keys case above, size 1).")
   (input  (do (def (main) (Map.len (map ((map (1 10)) 1) ((map (2 20)) 2)))) (export main)))
   (output (: 2 Int64)))
+
+; The above collapse cases pin that EQUAL compound keys are one entry (size), but not WHICH value survives a
+; re-insert. LAST-WRITE-WINS is the CHAMP update rule: re-inserting an equal key REPLACES the value rather than
+; adding a second entry or keeping the first. Over RUNTIME magnitudes with a TUPLE key (a compound whose eq/hash
+; walks its components), insert `(tuple a b)`→100 then `(tuple a b)`→200: the two keys are EQUAL by value so the
+; entries collapse (`Map.len` 1), AND the SECOND value (200) wins the lookup. Encodes 1000·len + lookup = 1200.
+; First-wins keying would give 1100; handle-identity keying (two entries) would give 2200. Pins compound-key
+; last-write-wins, the update face beside the size-collapse faces above.
+(case "a tuple Map key inserted twice with different values collapses to one entry and last write wins"
+  (doc    "Last-write-wins on a compound (tuple) key collision over RUNTIME magnitudes: `(Map.insert (Map.insert
+           Map.empty (tuple a b) 100) (tuple a b) 200)` with a,b runtime. The two `(tuple a b)` keys are EQUAL by
+           value so the entries collapse (`Map.len` 1, the each-key-at-most-once rule), and the SECOND value 200
+           WINS the lookup (CHAMP re-insert REPLACES, not first-wins, not two entries). Encodes 1000·len + lookup
+           = 1000·1 + 200 = 1200. First-wins would be 1100; handle-identity keying (two entries) 2200. MUST be
+           1200.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (let ((m0 (Map.insert Map.empty (tuple a b) 100))
+                    (m1 (Map.insert m0 (tuple a b) 200)))
+                (+ (* 1000 (Map.len m1))
+                   (match (Map.lookup m1 (tuple a b))
+                     ((Some v) v)
+                     ((None _u) -1)))))
+            (export main)))
+  (call main (: 5 Int64) (: 5 Int64)) (output (: 1200 Int64)))
 
 ; --- Map PATTERN matching (ask-61) — a SEPARATE phase a generation declines until it lands. A map's key set is
 ; a RUNTIME collection, not a static shape, so a map pattern is a KEY-DIRECTED LOOKUP: `(map (k p) .. rest)`

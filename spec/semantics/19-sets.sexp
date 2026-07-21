@@ -285,6 +285,25 @@
   (call   main (: 4 Int64)) (output (: 310 Int64))
   (call   main (: 9 Int64)) (output (: 410 Int64)))
 
+(case "set algebra descends into FLOAT-leaf tuple elements"
+  (doc    "The FLOAT-leaf dimension of the compound-element set algebra above (those pins use integer
+           tuples; the float leaf exercises the canonical-byte compare inside the CHAMP walk): `a =
+           {(x,1),(2.5,2)}`, `b = {(0.5,1),(9.5,9)}` over runtime `x`. At `x = 0.5` the tuples `(0.5,1)`
+           intersect by float-leaf content — union 3, intersection 1, difference 1 → 311. At `x = 7.5`
+           the operands are disjoint — union 4, intersection 0, difference 2 → 402. A union/intersection
+           that compared float leaves by identity (or a difference that missed the float slot) would break
+           one of the encoded digits. All three ops in one shape, both regimes.")
+  (input  (do
+            (def (main (: x Float64))
+              (let ((a (Set.of (list (tuple x 1) (tuple 2.5 2))))
+                    (b (Set.of (list (tuple 0.5 1) (tuple 9.5 9)))))
+                (+ (* 100 (Set.len (Set.union a b)))
+                   (+ (* 10 (Set.len (Set.intersection a b)))
+                      (Set.len (Set.difference a b))))))
+            (export main)))
+  (call   main (: 0.5 Float64)) (output (: 311 Int64))
+  (call   main (: 7.5 Float64)) (output (: 402 Int64)))
+
 (case "a binary set operation leaves BOTH its operands unchanged — set-algebra persistence"
   (doc    "The persistence face of the binary set algebra, the two-operand twin of the single-element
            Set.insert/Set.remove persistence pins: `Set.difference` (like union/intersection) produces a NEW
@@ -1391,6 +1410,66 @@
   (input  (do
             (def (main (: x Float64))
               (Set.len (Set.insert (Set.insert (Set.of (list)) (record (f (+ x 1.25)) (n 3))) (record (f 2.5) (n 3)))))
+            (export main)))
+  (call   main (: 1.25 Float64))
+  (output (: 1 Int64)))
+
+; The tuple- and record-float-key cases above have the float leaf ONE level deep. A float leaf NESTED two
+; levels deep — a tuple inside a tuple, or a tuple inside a record field — must ALSO key by content: the
+; CHAMP hash/eq recurses through both compound layers to the float leaf. This declined on rust until
+; v-rust-backend threaded the ord-wrapper through NESTED compound keys (f8e5b1c0d); now it keys by content
+; on all three. These pin the nested path: tuple-in-tuple hit + MISS, record-field-of-tuple hit, and Set
+; dedup. (A float in a SUM PAYLOAD key still declines on rust — per-variant threading, a later increment —
+; so those stay out.)
+(case "a nested tuple-in-tuple float key is a Map key found by a separately-built equal key"
+  (doc    "A doubly-nested compound key `(tuple (tuple Float64 Int64) Int64)`: insert under `(tuple (tuple
+           (+ x 1.25) 3) 9)` at x=1.25 (a RUNTIME float leaf two levels deep) and look up with `(tuple
+           (tuple 2.5 3) 9)` → 42. The CHAMP key hash/eq recurses through BOTH tuple layers to the float
+           leaf and compares it by content. Pins the nested-compound-float-key path (rust emits it via the
+           nested-threaded ord-wrapper, f8e5b1c0d), deeper than the one-level tuple-float-key case.")
+  (input  (do
+            (def (main (: x Float64))
+              (match (Map.lookup (Map.insert Map.empty (tuple (tuple (+ x 1.25) 3) 9) 42) (tuple (tuple 2.5 3) 9))
+                ((Some v) v) ((None _) -1)))
+            (export main)))
+  (call   main (: 1.25 Float64))
+  (output (: 42 Int64)))
+
+(case "a nested tuple-in-tuple float key MISSES a Map key with a different deep float leaf"
+  (doc    "The negative control of the nested case: the outer/inner Int elements match but the deep float
+           leaf differs — look up `(tuple (tuple 9.5 3) 9)` against a map keyed by `(tuple (tuple 2.5 3) 9)`
+           → None (-1). Confirms the nested-key compare reaches the two-levels-deep float leaf's content,
+           not over-matching on the shared Int elements or the compound shape.")
+  (input  (do
+            (def (main (: x Float64))
+              (match (Map.lookup (Map.insert Map.empty (tuple (tuple (+ x 1.25) 3) 9) 42) (tuple (tuple 9.5 3) 9))
+                ((Some v) v) ((None _) -1)))
+            (export main)))
+  (call   main (: 1.25 Float64))
+  (output (: -1 Int64)))
+
+(case "a record whose field is a tuple with a Float64 leaf is a Map key found by content"
+  (doc    "The mixed-nesting face: a RECORD whose field is a TUPLE carrying a float leaf, as a Map key —
+           `(record (p (tuple Float64 Int64)) (n Int64))`. Insert under `(record (p (tuple (+ x 1.25) 3)) (n
+           9))` and look up with `(record (p (tuple 2.5 3)) (n 9))` → 42. The CHAMP key hash/eq recurses
+           record→tuple→float leaf, comparing by content across the mixed compound layers (record threaded
+           over tuple, f8e5b1c0d). Pins the record-of-tuple-float nested key.")
+  (input  (do
+            (def (main (: x Float64))
+              (match (Map.lookup (Map.insert Map.empty (record (p (tuple (+ x 1.25) 3)) (n 9)) 42) (record (p (tuple 2.5 3)) (n 9)))
+                ((Some v) v) ((None _) -1)))
+            (export main)))
+  (call   main (: 1.25 Float64))
+  (output (: 42 Int64)))
+
+(case "a Set of nested tuple-in-tuple float keys dedups equal members by content"
+  (doc    "The Set companion of the nested case: insert `(tuple (tuple (+ x 1.25) 3) 9)` (runtime deep float
+           leaf) then `(tuple (tuple 2.5 3) 9)` into a set → ONE element (`Set.len` 1), the two doubly-nested
+           tuples sharing one canonical form. Pins that the CHAMP set dedup recurses through both compound
+           layers to the float leaf.")
+  (input  (do
+            (def (main (: x Float64))
+              (Set.len (Set.insert (Set.insert (Set.of (list)) (tuple (tuple (+ x 1.25) 3) 9)) (tuple (tuple 2.5 3) 9))))
             (export main)))
   (call   main (: 1.25 Float64))
   (output (: 1 Int64)))

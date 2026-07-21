@@ -54,6 +54,23 @@ const CTX_PREWALL_THRESHOLD: u8 = 95;
 /// earlier/harder for the single-writer".)
 const CTX_PREWALL_THRESHOLD_PRSYNC: u8 = 92;
 
+// The threshold ordering invariant, guarded at COMPILE TIME beside the definitions it constrains.
+// pr-sync (single `trunk` writer) must escalate no later than a general agent — ideally earlier — and
+// every pre-wall bound must sit below the 100% wall so a `/compact` can still submit when it fires. A
+// `const _: () = assert!(…)` fails the BUILD (not a test run) the instant a future edit inverts the
+// margin or lifts a bound to/over the wall — stronger than a runtime test assert, and clippy-clean
+// (a `const` context is the intended home for a const comparison, so `assertions_on_constants` doesn't
+// fire — no lint-suppression needed). Supersedes the earlier `#[allow(clippy::assertions_on_constants)]`
+// runtime asserts in `prewall_threshold_is_lower_for_the_single_writer_pr_sync`.
+const _: () = assert!(
+    CTX_PREWALL_THRESHOLD_PRSYNC < CTX_PREWALL_THRESHOLD,
+    "the single writer (pr-sync) must escalate earlier than a general agent"
+);
+const _: () = assert!(
+    CTX_PREWALL_THRESHOLD < CTX_WEDGE_THRESHOLD,
+    "the pre-wall bound must sit below the 100% wall so /compact can still submit"
+);
+
 /// The pre-wall escalation threshold for `agent` — the lower pr-sync-specific bound for the single-writer,
 /// else the general pre-wall bound. Pure so the per-agent policy is unit-testable.
 fn prewall_threshold_for(agent: &str) -> u8 {
@@ -7107,22 +7124,10 @@ mod tests {
         assert_eq!(prewall_threshold_for("v-inference"), CTX_PREWALL_THRESHOLD);
         assert_eq!(prewall_threshold_for("concierge"), CTX_PREWALL_THRESHOLD);
         assert_eq!(prewall_threshold_for(""), CTX_PREWALL_THRESHOLD);
-        // The margin invariant: pr-sync's bound is STRICTLY below the general one (it MUST escalate no
-        // later — ideally earlier — than any other agent), and both stay below the 100% wall so a
-        // `/compact` can still submit when the escalation fires. These compare `const`s ON PURPOSE — the
-        // assertion is a compile-time-values guard so a future edit to any threshold that broke the
-        // ordering fails the test suite; clippy's `assertions_on_constants` is exactly the shape we want.
-        #[allow(clippy::assertions_on_constants)]
-        {
-            assert!(
-                CTX_PREWALL_THRESHOLD_PRSYNC < CTX_PREWALL_THRESHOLD,
-                "the single writer must escalate earlier than a general agent"
-            );
-            assert!(
-                CTX_PREWALL_THRESHOLD < CTX_WEDGE_THRESHOLD,
-                "the pre-wall bound must sit below the 100% wall so /compact can still submit"
-            );
-        }
+        // The margin invariant (pr-sync STRICTLY below the general bound, both below the 100% wall) is now
+        // guarded at COMPILE TIME by the `const _: () = assert!(…)` pair beside the const definitions —
+        // stronger than a runtime assert (fails the build, not a test run) and clippy-clean. This test
+        // keeps only the per-agent DISPATCH pins above (which the compile-time guard can't express).
     }
 
     #[test]
