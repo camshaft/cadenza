@@ -9390,6 +9390,32 @@
   (call   main (: 0 Int64))
   (output (: (tuple 999 3 38 40 35) (Tuple Int64 Int64 Int64 Int64 Int64))))
 
+; The update case above touches ONE deep index; this pins the whole-spine TRAVERSAL of a large list. A List
+; is an RRB vector, so a 100-element list is a multi-node trie — a fold reading every element in order (a
+; recursive List.at walk) must traverse the full spine correctly, and List.len / indexing at a node boundary
+; / the last index / past-end must all agree. This is the List companion of the deep-CHAMP map + deep-rope
+; traversal cases: exercise the deep read path across many nodes, not just a single deep index.
+(case "a large runtime List folds every element across the RRB spine and indexes at depth"
+  (doc    "A 100-element runtime list (built by a push-loop, spanning multiple RRB nodes). A recursive
+           `sum` reads EVERY element in order via `List.at` and totals them: 0+1+…+99 = 4950 (the full-spine
+           traversal). `List.len` = 100; `List.at` reads the right element at index 0 (0), the node-boundary
+           63 (63), the last 99 (99); index 100 (== len) is None → -1 (past-end, total not a trap). Result
+           `(100, 4950, 0, 63, 99, -1)`. Pins that a large multi-node RRB list traverses its whole spine and
+           indexes correctly at depth — the List companion of the deep-CHAMP map and deep-rope traversal
+           cases, and the whole-spine companion of the single-deep-index update case above.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: xs (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push xs i)) xs))
+            (def (sum (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i) ((Some v) (sum xs (+ i 1) (+ acc v))) ((None _u) acc)))
+            (def (at (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None _u) -1)))
+            (def (main (: n Int64))
+              (let ((xs (build 0 100 (list))))
+                (tuple (List.len xs) (sum xs 0 0) (at xs 0) (at xs 63) (at xs 99) (at xs 100))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 100 4950 0 63 99 -1) (Tuple Int64 Int64 Int64 Int64 Int64 Int64))))
+
 ; --- `List.at` at a RUNTIME index: the fallible positional read on the value heap -----------------------
 ; The `List.at` cases elsewhere read at a CONSTANT index (`(List.at (list …) 3)` folds to the element at
 ; compile time). A RUNTIME index — a boundary parameter — cannot fold: the read runs on the value heap,
@@ -9938,6 +9964,39 @@
                                      (match (Map.lookup m2 (tuple a 1)) ((Some v) v) ((None) 0))))))))
             (export main)))
   (call   main (: 5 Int64)) (output (: (tuple 120 89 100) (Tuple Int64 Int64 Int64))))
+
+(case "tuple keys differing only in the FLOAT component stay distinct and look up"
+  (doc    "The float-component face of the compound-key family: a tuple key whose distinguishing slot is a
+           Float64 must hash+compare by the float's canonical bytes INSIDE the compound, on every backend.
+           `m = {(1,x)↦10, (1,2.5)↦20}` over runtime `x`: at `x = 0.5` the keys are distinct (len 2) and
+           `(1,0.5)` looks up its own 10; at `x = 2.5` the second insert REPLACES the first (len 1) and the
+           lookup reports the replacement 20. Both calls encode `10·len + lookup` → 30 by different routes
+           (2·10+10 vs 1·10+20). On the rust backend a bare Float64 key needs an Ord wrapper (f64 is not Ord);
+           this pins that the wrapper threads through a TUPLE key too, not only a scalar key — a compound key
+           containing a float must not fall back to derive(Ord) on the raw f64 or diverge from the wasm
+           canonical-byte path. Both backends.")
+  (input  (do
+            (def (main (: x Float64))
+              (let ((m (Map.insert (Map.insert Map.empty (tuple 1 x) 10) (tuple 1 2.5) 20)))
+                (+ (* 10 (Map.len m))
+                   (match (Map.lookup m (tuple 1 x)) ((Some v) v) ((None u) -1)))))
+            (export main)))
+  (call   main (: 0.5 Float64)) (output (: 30 Int64))
+  (call   main (: 2.5 Float64)) (output (: 30 Int64)))
+
+(case "signed-zero float components make DISTINCT tuple keys"
+  (doc    "The ±0.0 edge of the float-in-compound-key face: Cadenza's canonical float ordering keeps -0.0 and
+           0.0 DISTINCT (unlike IEEE `=`, where -0.0 = 0.0). Inserting at `(1,x)` then `(1,0.0)` over runtime
+           `x`: at `x = -0.0` the two keys differ only by zero sign and BOTH survive (len 2); at `x = 0.0`
+           the second insert replaces the first (len 1). If a backend keyed the compound by IEEE equality of
+           the raw f64 (or normalized -0.0 to 0.0 inside the key hash), the -0.0 call would collapse to len 1
+           and the two calls would be indistinguishable. Both backends.")
+  (input  (do
+            (def (main (: x Float64))
+              (Map.len (Map.insert (Map.insert Map.empty (tuple 1 x) 10) (tuple 1 0.0) 20)))
+            (export main)))
+  (call   main (: -0.0 Float64)) (output (: 2 Int64))
+  (call   main (: 0.0 Float64))  (output (: 1 Int64)))
 
 (case "a map consumed by Map.take in one operand is unchanged for a later read of the same binding"
   (doc    "The persistence companion of the Map.take cases above and the value-yielding-remove twin of the

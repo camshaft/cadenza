@@ -365,6 +365,13 @@ pass	a Float element inserted into an empty (runtime) set boxes with box-float, 
 pass	a Float32 NaN map key is found by a differently-produced NaN
 pass	a Float32 quantity stored as a map value round-trips through Map.lookup
 pass	a Float32 set dedups NaN elements and keeps zero signs distinct
+pass	a Float32-overflowing literal in a Result Err payload is rejected
+pass	a Float32-overflowing literal in a Result Ok payload is rejected
+pass	a Float32-overflowing literal in a compound payload inside a runtime conditional branch is rejected
+pass	a Float32-overflowing literal in a runtime if branch is rejected at check
+pass	a Float32-overflowing literal in a runtime match arm is rejected at check
+pass	a Float32-overflowing literal in argument position under a narrow parameter is rejected at check
+pass	a Float32-overflowing literal nested in a compound payload is rejected
 pass	a Float64 closure captures a Float64 build-time host effect result
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
@@ -1193,6 +1200,7 @@ pass	a lambda captures an enclosing function parameter and is applied in its bod
 pass	a lambda parameter shadows the outer constant for its body
 pass	a lambda's return type ascription agreeing with the body is transparent
 pass	a large multiply-called definition is emitted once by the cost heuristic
+pass	a large runtime List folds every element across the RRB spine and indexes at depth
 pass	a large runtime Map builds a deep CHAMP trie, looks up every key, shrinks to empty and regrows
 pass	a large-magnitude float whose shortest form differs from its exact value renders the full decimal expansion
 pass	a large whole float crosses the boundary preserving its full value
@@ -1391,6 +1399,8 @@ pass	a match on an uninhabited scrutinee is exhaustive with zero arms
 pass	a match on the result of a match threads sum values through nested control flow
 pass	a match over a match-selected Option folds through the false arm (None)
 pass	a match over a match-selected Option folds through the true arm (Some)
+pass	a match over a quoted float dispatches the Ast.Float arm past a preceding Ast.Int arm
+pass	a match over a quoted string dispatches the Ast.Str arm past a preceding Ast.Name arm
 pass	a match over a statically-known constructor with a runtime payload elides the dispatch
 pass	a match over an if-selected Option folds through the else branch (None)
 pass	a match over an if-selected Option folds through the then branch (Some)
@@ -2742,7 +2752,10 @@ pass	an annotated argument joins a callee-side quantity at its own scale
 pass	an annotated destructuring let binder
 pass	an annotated empty list escapes fine (the undetermined-empty-list control)
 pass	an annotated escaped None renders its canonical nullary-variant form (the control)
+pass	an annotated let binder at a fitting narrow float computes
 pass	an annotated let binder constrains the value's type
+pass	an annotated let binder narrower than its literal value is rejected (float width)
+pass	an annotated let binder narrower than its literal value is rejected (int width)
 pass	an annotated let binder range-checks its narrow-width bound value
 pass	an annotated let binder that contradicts the value is rejected
 pass	an annotated quantity joins additions at its own scale, no silent mixed-scale bypass
@@ -3727,6 +3740,7 @@ pass	round-trip: an UNANNOTATED inner closure with a List param via the context 
 pass	runtime < on a self operand is false for finite AND NaN (irreflexive, stays false)
 pass	runtime <= on a self operand is true for finite but FALSE for NaN (no reflexivity fold)
 pass	runtime >= and > on a self operand mirror <= and < including the NaN self case
+pass	runtime BigInt add/subtract carries and borrows exactly across the 64-bit limb boundary
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
 pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
@@ -3739,6 +3753,7 @@ pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	runtime float ordering is a strict/non-strict partial order over finite values
 pass	runtime float ordering treats negative and positive zero as equal, unlike equality
+pass	runtime multi-limb BigInt division satisfies q*d + r = n with a bounded remainder
 pass	runtime string ordering compares bytes UNSIGNED (a multi-byte scalar exceeds ASCII)
 pass	runtime string ordering makes a proper prefix less than its extension
 pass	runtime string ordering surfaces all four relational operators
@@ -3772,6 +3787,7 @@ pass	shrinking reports the minimal failing input
 pass	sibling recursive calls sequenced through let bindings thread state
 pass	sibling-recursive effect threading is left-to-right (order-observing)
 pass	signed 8-bit addition that overflows its width is rejected at compile time
+pass	signed-zero float components make DISTINCT tuple keys
 pass	size after a runtime-key insert reflects replace-vs-add
 pass	size after a runtime-key remove reflects whether the key was present
 pass	slicing a byte sequence built at run time yields Some of the sub-range
@@ -4073,6 +4089,7 @@ pass	tuple access on a tuple chosen by a conditional projects the element
 pass	tuple elements are accessed by index
 pass	tuple elements are evaluated left to right
 pass	tuple elements consume and read a shared binding in both orders
+pass	tuple keys differing only in the FLOAT component stay distinct and look up
 pass	tuples are deconstructed by pattern matching
 pass	two @param sites generate two accessors under one Param effect
 pass	two @param sites with the same name are rejected as a duplicate effect operation
@@ -4369,3 +4386,5 @@ pass	adding two data-rate quantities of the same composite dimension is exact
 pass	adding a data-rate to a length is a compile-time dimension error over a composite dimension
 pass	a whole MAP holding a quantity VALUE renders it scaled to reference in the value form
 pass	a NEGATIVE large-magnitude float renders its full expansion with its sign
+pass	a whole LIST of quantities renders every element scaled to reference in the value form
+pass	a bare literal annotated Float32 is grounded at binary32 precision (literal path, not a runtime demote)

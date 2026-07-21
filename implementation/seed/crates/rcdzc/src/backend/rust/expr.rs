@@ -208,8 +208,8 @@ pub fn emit_body(
 /// not match the collection's key type (a `__CdzF64::new` around an `f32` is a type error — the very bug
 /// this width-split fixes). A TUPLE key REBUILDS the tuple wrapping each float element by position
 /// (`(__CdzF64::new(k.0), k.1)`), matching `ord_key_type`'s per-element threading — so a `(Tuple Float Int)`
-/// key crosses (v-runtime differential). A float nested in a RECORD/SUM payload still declines upstream via
-/// `ty_is_ord_key` (a later increment), so this only rebuilds Tuples + wraps bare floats.
+/// key crosses (v-runtime differential). A float nested in a SUM payload still declines upstream via `ty_is_ord_key`
+/// (a later increment); this rebuilds Tuples + Records (sorted-field order) + wraps bare floats.
 fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
     match key_ty {
         Ty::Float(ft) if ft.ground_width() == 32 => format!("__CdzF32::new({expr})"),
@@ -226,6 +226,26 @@ fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
                 .iter()
                 .enumerate()
                 .map(|(i, e)| wrap_ord_key(format!("__k.{i}"), e))
+                .collect();
+            let rebuilt = if parts.len() == 1 {
+                format!("({},)", parts[0])
+            } else {
+                format!("({})", parts.join(", "))
+            };
+            format!("{{ let __k = {expr}; {rebuilt} }}")
+        }
+        // A RECORD erases to a Rust tuple in SORTED-field order (a `BTreeMap` iterates sorted), so a record
+        // with any float FIELD rebuilds exactly like a tuple — wrap each float field at its sorted position
+        // `.i`. Same identity-skip for a float-free record (no float field → verbatim).
+        Ty::Record(fields)
+            if fields
+                .values()
+                .any(|t| matches!(t.strip_nominal(), Ty::Float(_))) =>
+        {
+            let parts: Vec<String> = fields
+                .values()
+                .enumerate()
+                .map(|(i, t)| wrap_ord_key(format!("__k.{i}"), t))
                 .collect();
             let rebuilt = if parts.len() == 1 {
                 format!("({},)", parts[0])

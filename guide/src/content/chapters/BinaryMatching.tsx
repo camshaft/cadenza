@@ -35,17 +35,19 @@ export default function BinaryMatching() {
       </P>
       <Runnable
         source={`(match (bin (u16 258))
-  ((bin (u16 n)) n)
-  (_             0))`}
+  ((bin (u16 n)) (Some n))
+  (_             (None unit)))`}
       />
       <P>
-        The arm reads <C>258</C> back. Byte order is explicit and honored both ways: add the <C>le</C>{" "}
-        modifier and the same integer is written, and read, least-significant byte first.
+        The arm reads <C>258</C> back, returned as <C>{`(Some 258)`}</C>: a match that reads a value hands
+        back an <C>Option</C>, so the wildcard can honestly say <C>{`(None unit)`}</C> when the bytes don't fit
+        the layout, rather than a stand-in number. Byte order is explicit and honored both ways: add the{" "}
+        <C>le</C> modifier and the same integer is written, and read, least-significant byte first.
       </P>
       <Runnable
         source={`(match (bin (u16 258 le))
-  ((bin (u16 n le)) n)
-  (_                0))`}
+  ((bin (u16 n le)) (Some n))
+  (_                (None unit)))`}
       />
 
       <H2>A literal segment dispatches</H2>
@@ -56,39 +58,42 @@ export default function BinaryMatching() {
       </P>
       <Runnable
         source={`(match (Bytes.of (list 1 1 2))
-  ((bin (u8 1) (u16 n)) n)
-  (_                    0))`}
+  ((bin (u8 1) (u16 n)) (Some n))
+  (_                    (None unit)))`}
       />
       <P>
         Written as a hex literal, the same idea reads a magic-number header legibly, so a <C>u32</C> equal to{" "}
         <C>0x89504E47</C> is the PNG signature, and a trailing <C>(bytes rest)</C> absorbs the payload after
-        it:
+        it. Here the question is only <em>is this a PNG</em>, so the arms return a <C>Bool</C> directly, the
+        matched header being <C>true</C>:
       </P>
       <Runnable
         source={`(match (Bytes.of (list 137 80 78 71 1 2))
-  ((bin (u32 0x89504E47) (bytes rest)) 1)
-  (_                                   0))`}
+  ((bin (u32 0x89504E47) (bytes rest)) true)
+  (_                                   false))`}
       />
 
       <H2>A pattern accounts for the whole value</H2>
       <P>
         A <C>bin</C> pattern must describe the <em>entire</em> byte sequence, so leftover bytes are a
         non-match. Three bytes against a pattern that names only two doesn't fire, so this falls to the
-        catch-all and gives <C>0</C>:
+        catch-all and gives <C>{`(None unit)`}</C>, honestly reporting that the read failed rather than a
+        stand-in number:
       </P>
       <Runnable
         source={`(match (Bytes.of (list 1 2 3))
-  ((bin (u16 n)) n)
-  (_             0))`}
+  ((bin (u16 n)) (Some n))
+  (_             (None unit)))`}
       />
       <P>
         The fix is a trailing unsized <C>(bytes rest)</C>, which absorbs the variable-length remainder, so now
-        the <C>u16</C> reads the first two bytes and <C>rest</C> takes the third, and the arm matches:
+        the <C>u16</C> reads the first two bytes and <C>rest</C> takes the third, the arm matches, and the
+        result is <C>{`(Some 258)`}</C>:
       </P>
       <Runnable
         source={`(match (Bytes.of (list 1 2 3))
-  ((bin (u16 n) (bytes rest)) n)
-  (_                          0))`}
+  ((bin (u16 n) (bytes rest)) (Some n))
+  (_                          (None unit)))`}
       />
       <Note>
         Because a <C>bin</C> pattern never covers every possible byte sequence, a <C>match</C> over a{" "}
@@ -104,8 +109,8 @@ export default function BinaryMatching() {
       </P>
       <Runnable
         source={`(match (Bytes.of (list 2 10 20 99))
-  ((bin (u8 n) (bytes body n) (bytes rest)) (Bytes.len body))
-  (_                                        0))`}
+  ((bin (u8 n) (bytes body n) (bytes rest)) (Some (Bytes.len body)))
+  (_                                        (None unit)))`}
       />
       <P>
         The first byte is <C>2</C>, so <C>body</C> is the next two bytes (length <C>2</C>) and <C>rest</C> is
@@ -133,11 +138,11 @@ export default function BinaryMatching() {
       </P>
       <Runnable
         source={`(match (Bytes.of (list (UInt8.wrap 165)))
-  ((bin (bits a 3) (bits b 5)) (+ (* 100 a) b))
-  (_                           -1))`}
+  ((bin (bits a 3) (bits b 5)) (Some (+ (* 100 a) b)))
+  (_                           (None unit)))`}
       />
       <P>
-        That reads back as <C>505</C>. A bit-field literal dispatches the same way a byte literal does, so a
+        That reads back as <C>{`(Some 505)`}</C>. A bit-field literal dispatches the same way a byte literal does, so a
         leading <C>(bits 1 1)</C> matches only when the top bit is set and binds the remaining seven, which
         is how a one-bit tag selects a format. A run of bit-fields must still close a whole number of bytes,
         and the compiler checks that alignment before the program runs (CDZ0220), so a layout whose bits

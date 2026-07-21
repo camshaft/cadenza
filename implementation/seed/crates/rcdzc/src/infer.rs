@@ -1068,6 +1068,37 @@ fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) 
 /// `want` fit-checks a constant `value` (the same fold `literal_width_fault` runs); any other `want`
 /// recurses through the compound if `value` is one. Returns the first out-of-range literal's reject.
 fn width_fault_against_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<Reject> {
+    // A RUNTIME `(Option.expect s "…")` / `(Result.expect …)` in a narrow-width context: `expect` PROJECTS
+    // the sum's payload, so the annotation's `want` is the payload type — descend into the sum argument
+    // against `Option<want>` (the payload arg substituted to `want`). Without this, `(: (Option.expect (if c
+    // (Some 10000) None) "x") UInt8)` was a SILENT MISCOMPILE: a CONSTANT `(Some 10000)` FOLDS (`expect`
+    // reduces to the payload `10000`, caught by the scalar check below), but a RUNTIME sum (here an `if`
+    // returning `Some`) does NOT fold → the value stays a runtime `SumExpect` call, no literal to check, and
+    // EMIT truncated `10000` to `16` (a `wrap` on the projected payload) with NO diagnostic on either side.
+    // Rebuilding the sum's type with `want` as its payload arg + descending routes the `if`-branch `(Some
+    // 10000)` through the Sum arm of `nested_width_fault_by_ty`, which range-checks `10000` against `want`.
+    if let Resolved::Apply { head, args } = resolved_of(db, value)
+        && crate::eval::meta_apply_of(db, head) == Some(crate::resolved::Prim::SumExpect)
+        && let Some(&sum_arg) = args.first()
+        && let Ty::Sum {
+            decl,
+            name,
+            args: sum_args,
+        } = type_of(db, sum_arg)
+        && !sum_args.is_empty()
+    {
+        // `expect` projects the present variant's payload, whose type is the sum's FIRST type arg — the
+        // `Some a` of `Option a` (1 arg) AND the `Ok a` of `Result a e` (2 args, payload is arg 0). So
+        // substitute `want` for arg 0 only, leaving any others (Result's error type) as-is.
+        let mut new_args: Vec<Ty> = sum_args.iter().cloned().collect();
+        new_args[0] = want.clone();
+        let payload_sum = Ty::Sum {
+            decl,
+            name,
+            args: std::rc::Rc::from(new_args),
+        };
+        return width_fault_against_ty(db, sum_arg, &payload_sum);
+    }
     // A RUNTIME conditional `(if c a b)` in a narrow-width context: the WHOLE `if` carries the expected
     // type `want`, so BOTH of its live branches must fit `want` — each branch is a value the annotation's
     // width applies to. Without this a bare out-of-range literal in a branch (`(: (if c 10000 0) UInt8)`,

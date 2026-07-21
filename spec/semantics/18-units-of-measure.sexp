@@ -2632,6 +2632,18 @@
   (output (: (map (1 (Qty.of 5000.0 (Unit.base #"meter"))))
              (Map Int64 (Qty Float64 (Unit.base #"meter"))))))
 
+(case "a whole LIST of quantities renders every element scaled to reference in the value form"
+  (doc    "The list sibling of the whole-Map-value render: a `(List (Qty …))` returned WHOLE renders every
+           element scaled to its reference — `(list (Qty.of 5.0 kilometer) (Qty.of 2.0 kilometer))` →
+           `(list (Qty.of 5000.0 meter) (Qty.of 2000.0 meter))` typed `(List (Qty Float64 meter))`. Pins the
+           per-element reference scale-fold recursing into a LIST's elements in the whole-collection value
+           form, not only when a single element is decoded via `List.at` + `Qty.value`. Companion of the
+           whole-Map-value render above — both exercise a quantity inside a heap collection's element slot.")
+  (input  (list (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter")))
+                (Qty.of 2.0 (Unit.prefix kilo (Unit.base #"meter")))))
+  (output (: (list (Qty.of 5000.0 (Unit.base #"meter")) (Qty.of 2000.0 (Unit.base #"meter")))
+             (List (Qty Float64 (Unit.base #"meter"))))))
+
 ; --- A NOMINAL newtype over a quantity as a (compound) key: strip_nominal ∘ peel-Ty::Qty -----------
 ; A single-variant nominal newtype `(type Len (Q (Qty Int64 meter)))` erases to the SAME machine slot as
 ; its inner quantity, which erases to its inner scalar — so the key shape builder must strip the nominal

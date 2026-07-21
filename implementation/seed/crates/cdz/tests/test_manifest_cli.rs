@@ -1774,6 +1774,41 @@ fn a_failing_set_or_map_property_renders_a_concrete_counterexample_value() {
     );
 }
 
+/// A `(Set …)` generator is VARIABLE-cardinality (`0..=G1_LIST_LEN` distinct elements), so the EMPTY set is
+/// reachable — a "Set is never empty" property MUST fail within a modest trial count. Before this, the Set
+/// generator built a FIXED 3-element `(Set.of (list e0 e1 e2))`; with a wide element type (Int64) the elements
+/// never collide, so the set was ALWAYS 3 elements and the empty/singleton sets were unreachable → a
+/// never-empty property spuriously PASSED. The fix folds a drawn count of `Set.insert`s over the empty set
+/// (`build_var_set_gen`), reaching the empty + small sets — the Set analogue of the variable-length LIST fix
+/// (G7). A PASS of the assert = the empty set was generated (the property failed) + its counterexample renders
+/// as the concrete empty set `f({})`, not a raw int pool.
+#[test]
+fn a_set_generator_reaches_the_empty_set() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("set-reaches-empty");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do \
+           (@ test (def (f (: s (Set Int64))) (if (> (Set.len s) 0) unit (trap \"empty set\")))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "40"]);
+    assert!(
+        !ok && stdout.contains("FAIL f-gen"),
+        "a variable-cardinality Set generator reaches the EMPTY set (a never-empty property fails): {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("counterexample: f({})") && !stdout.contains("generated ints"),
+        "the empty-set counterexample renders as the concrete `f({{}})`, not a raw int pool: {stdout}"
+    );
+}
+
 /// END-TO-END: a MIN-LENGTH `@invariant` constrains a newtype-List to non-empty generation. `NEList = Mk
 /// (List Int64)` with `@invariant(< 0 (List.len self))`: every generated `NEList` wraps a NON-EMPTY list, so
 /// a property asserting `List.len > 0` PASSES all trials (before the constraint the generator drew the empty

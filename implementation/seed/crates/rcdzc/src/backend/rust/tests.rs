@@ -982,14 +982,24 @@ fn a_bare_float_set_or_map_key_uses_the_cdz_f64_total_order_wrapper() {
         tup.contains("BTreeSet<(__CdzF64, i64)>") && tup.contains("__CdzF64::new("),
         "a (Tuple Float Int64) set element keys as (__CdzF64, i64) + wraps the float element:\n{tup}"
     );
-    // A float nested in a RECORD/SUM payload key still DECLINES (threading not yet extended past tuples).
-    let rec = compile_rust_result(
-        "(module m (type R (Mk (: f Float64) (: n Int64))) (def (main (: x Float64)) \
+    // A float in a structural RECORD key now EMITS too: `(record (f x) (n 1))` erases to a sorted-field
+    // tuple `(f64, i64)`, so the wrapper threads through it exactly like a tuple → keys as `(__CdzF64, i64)`.
+    let rec = compile_rust(
+        "(module m (def (main (: x Float64)) \
+           (Set.len (Set.of (list (record (f x) (n 1)))))) (export main))",
+    );
+    assert!(
+        rec.contains("BTreeSet<(__CdzF64, i64)>") && rec.contains("__CdzF64::new("),
+        "a float-field record set element keys as (__CdzF64, i64) + wraps the float field:\n{rec}"
+    );
+    // A float in a SUM PAYLOAD key still DECLINES (threading not yet extended into variant payloads).
+    let sum = compile_rust_result(
+        "(module m (type R (Mk Float64 Int64)) (def (main (: x Float64)) \
            (Set.len (Set.of (list (R.Mk x 1))))) (export main))",
     );
     assert!(
-        rec.is_err(),
-        "a float-in-a-record/sum-payload set element still declines (tuple-only threading):\n{rec:?}"
+        sum.is_err(),
+        "a float-in-a-sum-payload set element still declines (record/tuple-only threading):\n{sum:?}"
     );
 }
 

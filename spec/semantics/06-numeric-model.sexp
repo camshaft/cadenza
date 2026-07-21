@@ -547,6 +547,89 @@
   (input  (: (Some 999) (Option Int8)))
   (error  CDZ0302))
 
+(case "a Float32-overflowing literal nested in a compound payload is rejected"
+  (doc    "The FLOAT analogue of the compound-payload width descent above: `(: (Some 1.0e300) (Option
+           Float32))` — the annotation's `Float32` grounds the `Some` payload literal, and `1.0e300` (finite
+           as Float64) overflows binary32 → CDZ0302, exactly as the bare `(: 1.0e300 Float32)` is. Pins that
+           the payload descent range-checks FLOAT widths too, not only integer ones — without it the payload
+           would materialize ±inf, a malformed value with no written form.")
+  (input  (: (Some 1.0e300) (Option Float32)))
+  (error  CDZ0302))
+
+(case "a Float32-overflowing literal in a compound payload inside a runtime conditional branch is rejected"
+  (doc    "The COMPOSITION of the two float width descents: the overflowing literal sits in a compound
+           payload (`(Some 1.0e300)`) which itself sits in a RUNTIME if branch — `(if c (: (Some 1.0e300)
+           (Option Float32)) …)` over runtime `c`. The branch descent must reach the annotation, and the
+           payload descent must then reach the literal; a check handling each face only in isolation would
+           miss the product. → CDZ0302 on every backend.")
+  (input  (do
+            (def (main (: c Bool))
+              (if c (: (Some 1.0e300) (Option Float32)) (: (None) (Option Float32))))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a Float32-overflowing literal in a Result Err payload is rejected"
+  (doc    "The Result face of the float compound-payload width descent: `(: (Err 1.0e300) (Result Int64
+           Float32))` — the annotation's SECOND type argument grounds the `Err` payload, and `1.0e300`
+           overflows binary32 → CDZ0302. Pins that the payload descent selects the correct type argument per
+           VARIANT (Err reads the error slot, not the Int64 ok slot — a descent that zipped payloads against
+           the first type argument would wrongly ground the literal at Int64 and mis-report).")
+  (input  (: (Err 1.0e300) (Result Int64 Float32)))
+  (error  CDZ0302))
+
+(case "a Float32-overflowing literal in a Result Ok payload is rejected"
+  (doc    "The Ok twin: `(: (Ok 1.0e300) (Result Float32 Int64))` — the FIRST type argument grounds the `Ok`
+           payload → CDZ0302. Together with the Err case, pins both variant-to-type-argument selections of
+           the Result payload descent.")
+  (input  (: (Ok 1.0e300) (Result Float32 Int64)))
+  (error  CDZ0302))
+
+; The width fit-check must ALSO reach a FLOAT literal in a RUNTIME conditional branch under a narrow float
+; annotation. `1.0e300` is a perfectly good Float64 but overflows Float32 (whose finite max is ~3.4e38) —
+; as a Float32 it would be ±inf, a malformed value with no written form. In `(: (if c 1.0e300 0.0) Float32)`
+; with RUNTIME `c` the literal is not in direct-annotation position (the annotation sits on the conditional),
+; so a check that only range-checked a DIRECT literal missed it; the emit path then produced an INVALID wasm
+; module rather than a clean reject. The check now descends the runtime if/match branches under a narrow
+; Float annotation exactly as the integer descent does, so `cdz check` and emit agree: CDZ0302 at the branch
+; literal. Only Float32 is narrow enough for a finite Float64 literal to overflow. Both faces below; the
+; Float64 twin of the if-face computes (no over-reject — pinned in the runtime-conditional cluster).
+(case "a Float32-overflowing literal in a runtime if branch is rejected at check"
+  (doc    "`(: (if c 1.0e300 0.0) Float32)` over runtime `c` — the branch literal `1.0e300` is finite as
+           Float64 but overflows Float32 (finite max ~3.4028235e38), so as an f32 it would be ±inf: a
+           malformed value. The annotation sits on the CONDITIONAL, not the literal, so the width fit-check
+           must descend the runtime if's branches to catch it → CDZ0302, agreeing with emit (which could
+           only produce an invalid module). The float sibling of the nested-int branch descent.")
+  (input  (do
+            (def (main (: c Bool))
+              (: (if c 1.0e300 0.0) Float32))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a Float32-overflowing literal in a runtime match arm is rejected at check"
+  (doc    "The match face of the Float32 branch descent: `(: (match n (0 0.5) (_ 1.0e300)) Float32)` over
+           runtime `n` — the wildcard arm's `1.0e300` overflows Float32. The annotation grounds the whole
+           match, so the check must descend into every ARM body to range-check its literal → CDZ0302. Pins
+           that the float branch descent covers match arms, not only if branches.")
+  (input  (do
+            (def (main (: n Int64))
+              (: (match n (0 0.5) (_ 1.0e300)) Float32))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a Float32-overflowing literal in argument position under a narrow parameter is rejected at check"
+  (doc    "The narrow-PARAMETER face of the Float32 branch descent: `(f 1.0e300)` where `f` declares
+           `(: x Float32)` — the parameter's Float32 grounds the argument literal, which overflows binary32,
+           so the call rejects CDZ0302 even though the author wrote no annotation at the call site (the
+           declared parameter type carries the width). Wrapped in a runtime `if` so neither call site const-
+           folds away. Completes the three faces of the float width descent: annotated if branch, annotated
+           match arm, and narrow-parameter argument.")
+  (input  (do
+            (def (f (: x Float32)) x)
+            (def (main (: c Bool))
+              (if c (f 1.0e300) (f 0.5)))
+            (export main)))
+  (error  CDZ0302))
+
 ; The width fit-check must reach a literal whose narrow width is fixed CONTEXTUALLY + TRANSITIVELY through an
 ; integer-arith spine — not just its immediate binop sibling. `(+ (* 10000 …) (% a b))` over UInt8 params:
 ; the `+` unifies its two operands to one width, so the `%`'s UInt8 propagates up to the `*`, and the `*`
@@ -793,6 +876,36 @@
   (input  (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807)))
   (output (: 85070591730234615847396907784232501249 BigInt)))
 
+; The multiply case above pins ONE multi-limb product's value. This pins that ARITHMETIC over a multi-limb
+; BigInt carries and borrows exactly across the 64-bit limb boundary — the low-level limb-library
+; correctness: from a ~2^126 value (Int64.max², 2 limbs), +1 then −1 round-trips (carry then borrow across
+; the boundary), (up−big)=1, add agrees with ×2 (independent carry paths), self-subtract is 0 (borrow to
+; empty), and multi-limb `<` orders correctly. A limb carry/borrow bug (dropped carry, wrong limb count on
+; shrink, off-by-one across the boundary) would flip one of these consistency checks while the single
+; multiply above still passed.
+(case "runtime BigInt add/subtract carries and borrows exactly across the 64-bit limb boundary"
+  (doc    "From a genuinely-runtime multi-limb BigInt `big = Int64.max²` (~2^126, two 64-bit limbs), five
+           arithmetic-consistency checks that each stress carry/borrow across the limb boundary: `up = big+1`
+           then `up−1 = big` (add-carry then subtract-borrow round-trip), `up−big = 1`, `big+big = big·2`
+           (the add's carry chain agrees with the multiply's), `big−big = 0` (borrow all the way to the empty
+           magnitude), and `big < up` (multi-limb comparison orders by full magnitude). All → 1, so the
+           result tuple is `(1,1,1,1,1)`. Pins the runtime limb library's carry/borrow/compare across the
+           64-bit boundary — a dropped carry, a wrong limb count on shrink, or an off-by-one at the boundary
+           would flip one check even though the single-product case (:784) passes.")
+  (input  (do
+            (def (main (: v Int64))
+              (let ((big (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807))))
+                (let ((up (+ big (BigInt.of 1))))
+                  (tuple
+                    (if (= (- up (BigInt.of 1)) big) 1 0)
+                    (if (= (- up big) (BigInt.of 1)) 1 0)
+                    (if (= (+ big big) (* big (BigInt.of 2))) 1 0)
+                    (if (= (- big big) (BigInt.of 0)) 1 0)
+                    (if (< big up) 1 0)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 1 1 1 1 1) (Tuple Int64 Int64 Int64 Int64 Int64))))
+
 (case "a beyond-i64 constant BigInt is an operand of a runtime bigint op"
   (doc    "`(: 100000000000000000000 BigInt)` is a constant BigInt = 1e20, BEYOND i64::MAX (~9.2e18). As an
            OPERAND of a runtime bigint op it must materialize a heap leaf: an i64-fitting constant widens via
@@ -835,6 +948,36 @@
            the escape walker (100/7 = 14 remainder 2, truncated to 14).")
   (input  (/ (BigInt.of 100) (BigInt.of 7)))
   (output (: 14 BigInt)))
+
+; The divide/remainder cases here use SMALL single-limb operands (100/7, 17%5). This pins the division
+; INVARIANT on a genuinely MULTI-LIMB dividend: the runtime limb-library `divmod` must satisfy the
+; fundamental identity `q·d + r = n` with `0 ≤ r < d` even when `n` spans multiple 64-bit limbs — the
+; div/rem companion of the add/subtract limb-boundary case. A long-division bug (a wrong quotient digit at
+; a limb step, a mis-scaled remainder) would break the reconstruction while the small 100/7 divide passes.
+(case "runtime multi-limb BigInt division satisfies q*d + r = n with a bounded remainder"
+  (doc    "A genuinely multi-limb dividend `n = Int64.max² + 12345` (~2^126, spans two 64-bit limbs) divided
+           by `d = 1000000007`: the runtime `divmod` must satisfy the division identity. Checks: `q·d + r =
+           n` (reconstruct the dividend from quotient·divisor + remainder — the core correctness of
+           long division across limbs), `r < d` and `r ≥ 0` (the remainder is properly bounded and
+           non-negative for a positive dividend), `n % 1 = 0` (divide by one has no remainder), and `n / n =
+           1` (a multi-limb value divides itself to one). All → 1, tuple `(1,1,1,1,1)`. Pins the limb-library
+           long-division correctness on a multi-limb dividend — a wrong quotient digit at a limb step or a
+           mis-scaled remainder would break `q·d+r=n` even though the small single-limb divide (100/7) above
+           passes.")
+  (input  (do
+            (def (main (: z Int64))
+              (let ((n (+ (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807)) (BigInt.of 12345)))
+                    (d (BigInt.of 1000000007)))
+                (let ((q (/ n d)) (r (% n d)))
+                  (tuple
+                    (if (= (+ (* q d) r) n) 1 0)
+                    (if (< r d) 1 0)
+                    (if (>= r (BigInt.of 0)) 1 0)
+                    (if (= (% n (BigInt.of 1)) (BigInt.of 0)) 1 0)
+                    (if (= (/ n n) (BigInt.of 1)) 1 0)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 1 1 1 1 1) (Tuple Int64 Int64 Int64 Int64 Int64))))
 
 (case "a runtime BigInt in an Option payload crosses the host boundary"
   (doc    "`(Some (* (BigInt.of 1000000) (BigInt.of 1000000)))` — a runtime BigInt (the 10^12 product does
@@ -1777,6 +1920,17 @@
            fixed mode (numeric-model.md #A Conversion Involving A Floating-Point Type Is Explicit), the
            narrowing companion of the exact promote.")
   (input  (Float32.of 0.1))
+  (output (: 0.10000000149011612 Float32)))
+
+(case "a bare literal annotated Float32 is grounded at binary32 precision (literal path, not a runtime demote)"
+  (doc    "`(: 0.1 Float32)` grounds the bare literal 0.1 at binary32 precision AT PARSE TIME — its
+           canonical value form is 0.10000000149011612 (the binary32 nearest to 0.1), the SAME value the
+           runtime `(Float32.of 0.1)` demote produces above, but via the LITERAL-grounding path rather than
+           an explicit conversion op. Pins that a Float32-annotated literal stores at binary32, not the f64
+           0.1 (which renders 0.1). This is the working scalar baseline for the fitting-Float32-branch-literal
+           lowering (a bare literal under a Float32 annotation must ground at f32) — the axis a branch-position
+           annotation must also push down.")
+  (input  (: 0.1 Float32))
   (output (: 0.10000000149011612 Float32)))
 
 (case "an explicit float-width conversion makes a mixed-width operation well-typed"

@@ -3742,6 +3742,70 @@ mod tests {
         }
     }
 
+    /// Generate a random QUANTITY / UNIT literal as ML SOURCE — `<num> <unit-chain>` — spanning the
+    /// postfix-unit surface: a bare unit (`5 meter`), a glued RATE (`59 GiB/s`), a product (`3 kg*m`),
+    /// and exponents (`9 m/s^2`). The four sibling generators emit NO unit literals, so the postfix-unit
+    /// sugar + the compound-unit chain (`maybe_unit_suffix`/`compound_unit_tail`) had no GENERATIVE
+    /// round-trip coverage across widths. Unlike the siblings this generates ML SOURCE directly (the
+    /// feature under test is the PARSE of the glued surface; s-expr has no postfix-unit sugar), then the
+    /// caller round-trips read_ml → print → read_ml for structural stability.
+    fn gen_ml_quantity(rng: &mut SplitMix64) -> String {
+        const UNITS: [&str; 6] = ["meter", "second", "GiB", "kg", "m", "s"];
+        let mag = ["5", "42", "2.5", "100", "1"][(rng.next() as usize) % 5];
+        let u = |rng: &mut SplitMix64| UNITS[(rng.next() as usize) % UNITS.len()];
+        // A unit FACTOR: a name, optionally a glued `^n` exponent (1..=3).
+        let factor = |rng: &mut SplitMix64| {
+            let name = u(rng);
+            if rng.next().is_multiple_of(3) {
+                format!("{name}^{}", 1 + (rng.next() % 3))
+            } else {
+                name.to_string()
+            }
+        };
+        // 1..=3 factors joined by glued `/` or `*` — a compound/rate unit (or a single factor).
+        let nfactors = 1 + (rng.next() % 3) as usize;
+        let mut unit = factor(rng);
+        for _ in 1..nfactors {
+            let op = if rng.next().is_multiple_of(2) {
+                "/"
+            } else {
+                "*"
+            };
+            unit.push_str(op);
+            unit.push_str(&factor(rng));
+        }
+        format!("{mag} {unit}")
+    }
+
+    #[test]
+    fn ml_quantity_and_compound_unit_literals_round_trip_over_widths() {
+        // The postfix-unit / compound-rate surface (`5 meter`, `59 GiB/s`, `9 m/s^2`, `3 kg*m`) swept for
+        // structural round-trip across widths — the coverage the expr/pattern/decl/annotation generators
+        // lack (none emit a unit literal). For each random quantity ML source: print never panics, the ML
+        // re-parses clean at every width, and re-read is structurally equal to the first read (parse →
+        // print → parse stability). Generation is ML SOURCE (the parse of the glued surface is the feature
+        // under test; the desugared arena has no glue sugar to regenerate).
+        let mut rng = SplitMix64(0x9107_1740_c0de_5197);
+        for _ in 0..3000 {
+            let src = format!("def main() = {}", gen_ml_quantity(&mut rng));
+            let a = parser::read_ml(&src);
+            assert!(a.ok(), "generated quantity {src:?} parses: {:?}", a.errors);
+            for &width in &[0usize, 1, 8, 30, 100] {
+                let ml = print(&a.arenas, width); // must not panic
+                let back = parser::read_ml(&ml);
+                assert!(
+                    back.ok(),
+                    "ML print (w={width}) of {src:?} must re-parse clean, got {:?}\n--- ml ---\n{ml}",
+                    back.errors
+                );
+                assert!(
+                    a.arenas.structurally_eq(&back.arenas),
+                    "ML print (w={width}) not faithful for quantity {src:?}\n--- ml ---\n{ml}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn ml_comment_and_doc_wrapped_programs_round_trip_over_widths() {
         // The ANNOTATION-node surface — `(comment "…" form)` (`//`), a leading `(comment "…")` statement,

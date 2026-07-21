@@ -4220,6 +4220,54 @@ fn dup_aware_let_binding_reclaim_leaves_no_live_objects() {
     }
 }
 
+/// REGRESSION PIN for the closure-that-captures-a-HEAP-value env-cell reclaim (was
+/// `leak-closure-env-heap-capture-not-reclaimed.CONFIRMED`, v-memory-safety lead 2026-07-18; now RESOLVED).
+/// DISTINCT from `dup_aware_let_binding_reclaim_leaves_no_live_objects` case (1): THAT one has `mk-adder xs`
+/// INLINE to `List.push xs` (no closure survives — the leak was the let-binding reclaim). HERE `mk-adder`
+/// takes an UNANNOTATED `(fn (x) …)` and the closure is stored in `f` and applied once, so it lowers to a
+/// real `Core::Closure { code, captures: [xs] }` that materializes a heap env cell holding the funcref slot
+/// and the dup'd captured `List` handle. The reported leak was 2/iter (env cell + captured list copy) never
+/// reclaimed after the closure is last-used. It now reclaims to LIVE 0 (the closure make/dtor dup-drop
+/// discipline + dup-aware reclaim landed). `main(5)` = `f(9)` (len[0..5]+[9] = 6) + `List.len xs` (5) = 11.
+/// Pins BOTH value (11) AND live 0 so a regression to the leak — OR a double-free (which would trap/underflow
+/// the live count) — is caught. The env-cell + heap-capture reclaim is the closure-emit × dup/drop seam
+/// (v-effects × v-memory-safety), the heap-capture analog of the landed SITE-A scalar/partial-ctor env drop.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
+#[test]
+#[ignore]
+fn a_closure_capturing_a_heap_value_reclaims_its_env_cell() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "debug-counters runtime not in the store; skipping closure-heap-capture reclaim probe"
+        );
+        return;
+    };
+    // `f = mk-adder xs` is a surviving runtime closure (unannotated param → not inlined away) capturing the
+    // heap List `xs`; applied once. Env cell + captured-handle copy must both reclaim → live 0.
+    let src = "(module m \
+        (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
+          (if (< i n) (build (+ i 1) n ((. List push) acc i)) acc)) \
+        (def (mk-adder (: base (List Int64))) (fn (x) ((. List len) ((. List push) base x)))) \
+        (def (main (: n Int64)) \
+          (let ((xs (build 0 n (list))) (f (mk-adder xs))) (+ (f 9) ((. List len) xs)))) \
+        (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[Val::S64(5)]),
+        Val::S64(11),
+        "the heap-capturing closure computes 11 (f(9)=6 + List.len xs=5)"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "a closure capturing a heap value must reclaim its env cell + captured handle (was 2/iter leak); \
+         > 0 = the closure-env reclaim regressed, < 0-would-trap = a double-free"
+    );
+}
+
 /// list (a recursive `build` over `List.push` — a constant would fold away with no heap alloc / no runtime
 /// import), so the producer's result is a genuine owned temporary the `List.len` borrow must reclaim.
 /// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
@@ -14508,6 +14556,59 @@ mod runtime_ops {
         check_clean("(module m (def (f (: c Bool)) (: (if c 1.0 0.0) Float32)) (export f))");
         check_clean("(module m (def (f (: c Bool)) (: (if c 1.0e300 0.0) Float64)) (export f))");
         check_clean("(module m (def (f (: c Bool)) (if c 1.0e300 0.0)) (export f))");
+    }
+
+    #[test]
+    fn cdz_check_rejects_a_narrow_width_overflow_projected_through_option_or_result_expect() {
+        // A SILENT MISCOMPILE (wrong value, no error on check OR emit — the worst class), now a check reject.
+        // `(: (Option.expect (if c (Some 10000) None) "x") UInt8)` at c=true RAN TO 16 (`10000 as UInt8`,
+        // truncated) with no diagnostic: `expect` projects the sum payload, so the UInt8 result width
+        // propagated down into the `Some` payload, where EMIT truncated it (a `wrap`) while `cdz check` never
+        // descended the runtime `if` into `(Some 10000)`. A CONSTANT `(Some 10000)` folds (`expect` reduces
+        // to the payload, caught by the scalar check); only a RUNTIME sum slipped. The fix descends a
+        // `SumExpect`'s sum argument against the sum type with its payload arg substituted to `want` (arg 0 —
+        // the `Some`/`Ok` payload for both Option and Result), routing the branch `(Some 10000)` through the
+        // Sum-payload width check. Now rejects CDZ0302 at check, matching the direct + constant forms.
+        let check_rejects = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            let d = diags
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .unwrap_or_else(|| panic!("expected a check-level reject for: {src}"));
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0302"),
+                "expected CDZ0302 for {src}, got: {}",
+                d.message
+            );
+        };
+        // Option.expect and Result.expect (payload is arg 0 for Some AND Ok), over a runtime if.
+        check_rejects(
+            "(module m (def (f (: c Bool)) (: (Option.expect (if c (Some 10000) None) \"x\") UInt8)) (export f))",
+        );
+        check_rejects(
+            "(module m (def (f (: c Bool)) (: (Result.expect (if c (Ok 10000) (Err \"e\")) \"x\") UInt8)) (export f))",
+        );
+
+        // NO OVER-REJECTION: a fitting payload, an Int64 result (fits), and no narrow annotation all pass.
+        let check_clean = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "expected NO check reject for: {src}\ngot: {diags:?}"
+            );
+        };
+        check_clean(
+            "(module m (def (f (: c Bool)) (: (Option.expect (if c (Some 100) None) \"x\") UInt8)) (export f))",
+        );
+        check_clean(
+            "(module m (def (f (: c Bool)) (: (Option.expect (if c (Some 10000) None) \"x\") Int64)) (export f))",
+        );
+        check_clean(
+            "(module m (def (f (: c Bool)) (Option.expect (if c (Some 10000) None) \"x\")) (export f))",
+        );
     }
 
     #[test]

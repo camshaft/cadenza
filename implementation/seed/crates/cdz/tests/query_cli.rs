@@ -2292,6 +2292,38 @@ fn def_on_a_non_reference_reports_no_definition() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn def_error_paths_are_clear_not_panics() {
+    // ERROR PATHS (`cdz def` must share the discipline its `type-at`/`doc-at` siblings already pin): a
+    // bad offset / missing file / missing arg is a clear error naming the tool, NOT a panic or a silent
+    // success. `def` had happy-path + json + non-reference coverage but its IO/arg error paths were
+    // unpinned — this closes that consistency gap so a future regression (e.g. an unwrap on a past-EOF
+    // offset) is caught at the gate, matching the type-at/doc-at error-path pins.
+    let dir = scratch_dir("def_err");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (main) 1) (export main))\n").unwrap();
+    let path = f.to_str().unwrap();
+    // An offset past EOF is a clear "no node at byte offset" error naming the tool (shared with type-at).
+    let (ok, _o, err) = run(&["def", path, "999999"], "");
+    assert!(!ok, "an offset past EOF fails");
+    assert!(
+        err.contains("cdz:") && err.contains("no node at byte offset"),
+        "clear no-node error naming the tool: {err}"
+    );
+    // A missing FILE is an I/O error naming the tool (via load_program_spanned).
+    let (ok, _o, err) = run(&["def", "/no/such/file.sexp", "0"], "");
+    assert!(!ok, "a missing file fails");
+    assert!(err.contains("cdz:"), "the error names the tool: {err}");
+    // A missing OFFSET argument is a clap usage error (offset is a required positional).
+    let (ok, _o, err) = run(&["def", path], "");
+    assert!(!ok, "a missing offset is a usage error");
+    assert!(
+        err.contains("error") || err.contains("Usage") || err.contains("required"),
+        "clap usage error on stderr: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- `cdz scope FILE OFFSET` — variable scope tracking (Query::ScopeAt) ----
 
 #[test]
