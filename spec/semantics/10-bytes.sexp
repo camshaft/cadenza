@@ -368,6 +368,41 @@
             (def (main)      (join 7 8)) (export main)))
   (output (: b"\x07\x08\t" Bytes)))
 
+; Bytes.of over a RUNTIME (non-literal) list — a byte sequence built from a `(List UInt8)` the compiler
+; cannot see the elements of (a `List.concat`, a param/recursively-built list). `Bytes.of` semantically IS
+; a left fold of "append one byte" from the empty sequence, so the compiler synthesizes that fold and runs
+; it at runtime (a constant `(list …)` literal still folds to a `Bytes` at compile time). `Bytes.of` is
+; monomorphic (`(List UInt8) → Bytes`), so there is no multi-element-type restriction.
+(case "Bytes.of of a computed (concatenated) runtime list builds a byte sequence of that length"
+  (doc    "`Bytes.of` over a `List.concat` result — a runtime `(List UInt8)` the compiler has no element
+           list to fold at compile time. `(List.concat (list a b) (list a))` = [a, b, a]; `Bytes.of` of it
+           builds a 3-byte sequence → `Bytes.len` 3. Pins runtime-list byte CONSTRUCTION (the synthesized
+           `Bytes.concat` fold). A `Bytes.of` that only accepted a compile-time list literal would DECLINE
+           this. MUST be 3.")
+  (input  (do
+            (def (main (: a UInt8) (: b UInt8))
+              (Bytes.len (Bytes.of (List.concat (list a b) (list a)))))
+            (export main)))
+  (call   main (: 7 UInt8) (: 9 UInt8))
+  (output (: 3 Int64)))
+
+(case "a byte read back from a runtime-list-built Bytes has the right value"
+  (doc    "Value-correctness of runtime-list `Bytes.of` (not just its length): build `Bytes.of (List.concat
+           (list a b) (list a))` = [a, b, a] and read index 1 — it is `b` (9). Encodes 100·len + byte[1] =
+           100·3 + 9 = 309. Pins that the synthesized append fold places each byte at its position (a fold
+           that dropped/reordered a byte would misread here while the length case still passed). MUST be
+           309. (`Bytes.at` is fallible → `(Option Int64)`; the absent arm cannot occur for an in-bounds
+           read and yields -1.)")
+  (input  (do
+            (def (main (: a UInt8) (: b UInt8))
+              (+ (* 100 (Bytes.len (Bytes.of (List.concat (list a b) (list a)))))
+                 (match (Bytes.at (Bytes.of (List.concat (list a b) (list a))) 1)
+                   ((Some v) v)
+                   ((None _u) -1))))
+            (export main)))
+  (call   main (: 7 UInt8) (: 9 UInt8))
+  (output (: 309 Int64)))
+
 (case "a recursively-built byte sequence assembles its bytes at run time"
   (doc    "The genuine self-hosting idiom for output: a byte sequence whose LENGTH is decided at run
            time, built by recursion + concatenation, not a fixed literal spine. `rep` prepends the byte

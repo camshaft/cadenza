@@ -2078,6 +2078,19 @@
   (call   main (: 6.0 Float64) (: 2.0 Float64))
   (output (: true Bool)))
 
+(case "a float divide by zero takes the DIVIDEND's sign into the infinity"
+  (doc    "The SIGN face of the non-trapping float `/0` (the case above witnesses only self-equality):
+           `a/0.0` for a positive runtime `a` is +inf — witnessed by `> 1.0e300` (greater than every finite
+           the corpus writes) — and `(-a)/0.0` is -inf — witnessed by `< -1.0e300`. Both in one call as a
+           tuple of comparisons → (true, true). Pins the IEEE signed-infinity rule for the zero-divisor
+           quotient; an emit that produced an unsigned/positive infinity for the negated dividend would
+           fail the second component.")
+  (input  (do
+            (def (main (: a Float64) (: b Float64))
+              (tuple (> (/ a b) 1.0e300) (< (/ (- 0.0 a) b) -1.0e300)))
+            (export main)))
+  (call   main (: 1.0 Float64) (: 0.0 Float64)) (output (: (tuple true true) (Tuple Bool Bool))))
+
 (case "a runtime nan subtracted from itself is nan, not zero"
   (doc    "`(- x x)` with `x` = NaN is NaN, NOT 0 — subtracting a NaN from ITSELF does not cancel to zero
            (a NaN is not equal to itself under IEEE arithmetic identity; every NaN-operand op is NaN).
@@ -2521,6 +2534,25 @@
            truncates toward zero, matching this.")
   (input  (/ -7 2))
   (output (: -3 Int64)))
+
+(case "runtime division and remainder agree across ALL FOUR sign quadrants"
+  (doc    "The full quadrant matrix with BOTH operands as boundary parameters (the const case above fixes
+           the negative-dividend quadrant only, and the strength-reduction cases fix a constant divisor;
+           nothing pins a runtime NEGATIVE DIVISOR): `(tuple (/ a b) (% a b))` at (7,2) → (3,1); (-7,2) →
+           (-3,-1); (7,-2) → (-3,1); (-7,-2) → (3,-1). Two invariants per call: the quotient truncates
+           toward zero (never floors), and the remainder takes the DIVIDEND's sign (never the divisor's) —
+           together they preserve q·b + r = a in every quadrant. wasm's i64.div_s/i64.rem_s and rust's
+           `/`/`%` both implement exactly this; the pin guards any future path (an optimizer rewrite, an
+           alternate backend) against flooring or a divisor-signed remainder in the two negative-divisor
+           quadrants no other case reaches.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (tuple (/ a b) (% a b)))
+            (export main)))
+  (call   main (: 7 Int64) (: 2 Int64)) (output (: (tuple 3 1) (Tuple Int64 Int64)))
+  (call   main (: -7 Int64) (: 2 Int64)) (output (: (tuple -3 -1) (Tuple Int64 Int64)))
+  (call   main (: 7 Int64) (: -2 Int64)) (output (: (tuple -3 1) (Tuple Int64 Int64)))
+  (call   main (: -7 Int64) (: -2 Int64)) (output (: (tuple 3 -1) (Tuple Int64 Int64))))
 
 (case "a runtime negative dividend divided by a constant power of two truncates toward zero"
   (doc    "Division by a constant power of two may be strength-reduced to a shift, but a signed division
@@ -3159,6 +3191,32 @@
   (input  (do (def (main (: x Int64)) (tuple (<< x 0) (>> x 0))) (export main)))
   (call   main (: -7 Int64))
   (output (: (tuple -7 -7) (Tuple Int64 Int64))))
+
+(case "a shift by a RUNTIME amount computes (both operands off the fold)"
+  (doc    "Every shift pin above fixes the COUNT as a constant (the fold/guard genre needs it so); this
+           pins the fully-runtime face — `(<< v k)` with BOTH operands as boundary parameters, so neither
+           the value nor the count is visible to any fold and the emit is the bare machine shift with a
+           runtime count register. `5 << 3` = 40, and `1 << 62` reaches the highest non-sign bit
+           (4611686018427387904) — the near-boundary count witnesses the full 6-bit count range, not a
+           masked-to-5-bits (32-bit-style) count.")
+  (input  (do
+            (def (main (: v Int64) (: k Int64))
+              (<< v k))
+            (export main)))
+  (call   main (: 5 Int64) (: 3 Int64)) (output (: 40 Int64))
+  (call   main (: 1 Int64) (: 62 Int64)) (output (: 4611686018427387904 Int64)))
+
+(case "a right shift of a negative by a RUNTIME amount stays arithmetic"
+  (doc    "The sign face of the runtime-count shift: `(>> v k)` on a signed Int64 must be the ARITHMETIC
+           right shift (sign-extending) even when the count arrives at run time — `-16 >> 2` = -4 (the
+           sign bit replicates), `16 >> 2` = 4. An emit that selected the logical shift for a runtime
+           count (while the constant-count path chose arithmetically) would turn -16 into a huge positive.")
+  (input  (do
+            (def (main (: v Int64) (: k Int64))
+              (>> v k))
+            (export main)))
+  (call   main (: -16 Int64) (: 2 Int64)) (output (: -4 Int64))
+  (call   main (: 16 Int64) (: 2 Int64)) (output (: 4 Int64)))
 
 ; ── NESTED SAME-DIRECTION SHIFTS by constants COMBINE into one shift by their SUM (A+B < width) ───────
 ; `arith_identity` (lower.rs, `nested_shift_combine`) folds `(SH (SH v A) B)` → `(SH v (A+B))` for the SAME
@@ -5480,6 +5538,38 @@
               (if (< (+ (Rational.of a b) (Rational.of 1 2)) (Rational.of 1 1)) 1 0))
             (export main)))
   (call   main (: 1 Int64) (: 3 Int64))
+  (output (: 1 Int64)))
+
+; The addition above compares the RESULT; this reads its normalized num/den directly, at the two canonical
+; collapse boundaries a runtime rational-add/sub must hit: a sum that reduces to a WHOLE (denominator → 1)
+; and a difference that reduces to ZERO (canonical 0/1). Both are computed by the runtime `rational-add`/
+; `rational-sub` + the gcd-reduce, over parameter-built operands (nothing folds), so the reduction runs live.
+(case "runtime Rational arithmetic that reduces to a whole normalizes to denominator one"
+  (doc    "`(Rational.of a d) + (Rational.of c d)` with a=1,c=1,d=2: the runtime sum 1/2 + 1/2 = 2/2, which
+           the gcd-reduce collapses to the WHOLE 1/1 — denominator 1, not an unreduced 2/2. Reading the
+           RESULT's normalized pair: `Rational.numerator` = 1, `Rational.denominator` = 1. Encodes 10·num +
+           den = 10·1 + 1 = 11. Pins that runtime rational addition reduces a whole result to denominator 1
+           (a missing/late gcd-reduce would leave 2/2 → den 2 → 12). MUST be 11.")
+  (input  (do
+            (def (main (: a Int64) (: c Int64) (: d Int64))
+              (let ((r (+ (Rational.of a d) (Rational.of c d))))
+                (+ (* 10 (Int64.of (Rational.numerator r))) (Int64.of (Rational.denominator r)))))
+            (export main)))
+  (call   main (: 1 Int64) (: 1 Int64) (: 2 Int64))
+  (output (: 11 Int64)))
+
+(case "runtime Rational arithmetic that cancels to zero normalizes to canonical zero over one"
+  (doc    "`(Rational.of a d) - (Rational.of a d)` with a=3,d=7: the runtime difference 3/7 - 3/7 = 0, which
+           normalizes to the CANONICAL zero 0/1 — numerator 0, denominator 1 (not 0/7 or 0/49). Reading the
+           RESULT's pair: `Rational.numerator` = 0, `Rational.denominator` = 1. Encodes 10·num + den = 10·0 +
+           1 = 1. Pins that a runtime rational that cancels to zero carries the canonical 0/1 form (a zero
+           left as 0/d would give denominator d). MUST be 1.")
+  (input  (do
+            (def (main (: a Int64) (: d Int64))
+              (let ((r (- (Rational.of a d) (Rational.of a d))))
+                (+ (* 10 (Int64.of (Rational.numerator r))) (Int64.of (Rational.denominator r)))))
+            (export main)))
+  (call   main (: 3 Int64) (: 7 Int64))
   (output (: 1 Int64)))
 
 (case "a Rational accumulator threaded through recursion sums exactly"

@@ -137,13 +137,15 @@ export default function DesignByContract() {
       </P>
 
       <Why tenet="Make the assumption an enforced check, not a comment">
-        Every function has assumptions; usually they live in a comment or someone's head, and a violation
-        surfaces far away as corrupted data. A contract puts the assumption where the compiler can enforce
-        it, checked at the boundary, failing loudly and locally the instant it's broken. It's the same{" "}
+        Every function, and every type, carries assumptions; usually they live in a comment or someone's
+        head, and a violation surfaces far away as corrupted data. A contract puts the assumption where the
+        compiler can enforce it, checked at the boundary, failing loudly and locally the instant it's broken.
+        It's the same{" "}
         <Link to="/errors" className="text-cadenza-300 underline-offset-2 hover:underline">
           Option and Result
         </Link>{" "}
-        instinct of making the failure a value you must confront, turned on a function's own promises.
+        instinct of making the failure a value you must confront, turned on a function's inputs and results
+        and on a type's own values.
       </Why>
 
       <P>

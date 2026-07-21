@@ -2292,11 +2292,18 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             ))
         }
         // `Int64.of b` on a runtime `Big` — the checked narrowing back to i64, which TRAPS out of range at
-        // run time (matching the wasm `bigint-to-i64-checked`). `to_i64_checked` returns `Option<i64>`.
+        // run time (matching the wasm `bigint-to-i64-checked`, which lowers to a wasm `unreachable`).
+        // `to_i64_checked` returns `Option<i64>`. Panic with a message that CLASSIFIES as `unreachable`
+        // under the gate's `trap_kind` (the same reason the shift-count guard and the runtime Rational
+        // zero-denominator guard panic "unreachable"): the numeric-model out-of-range narrowing is a
+        // non-arithmetic trap, so both backends must grade the SAME kind. A bare "BigInt value out of Int64
+        // range" message does NOT classify (it lacks any `trap_kind` substring), so the case graded `todo`
+        // (an unconfirmed trap) even though the behavior already matched wasm — the exact gap the corpus
+        // case "truncating a rational whose integer part exceeds Int64 traps" documents.
         Core::BigIntToI64 { operand } => {
             let b = emit(db, operand, env, ctx)?;
             Ok(format!(
-                "({b}).to_i64_checked().expect(\"BigInt value out of Int64 range\")"
+                "({b}).to_i64_checked().unwrap_or_else(|| panic!(\"unreachable: BigInt value out of Int64 range\"))"
             ))
         }
         // A runtime BigInt binary op — `+`/`-`/`*`/`/`/`%`. `add`/`sub`/`mul` are total; `div`/`rem` go

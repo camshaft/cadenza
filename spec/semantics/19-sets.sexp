@@ -1249,6 +1249,63 @@
   (call   main (: 0 Int64))
   (output (: 103 Int64)))
 
+; Set.of over a RUNTIME (non-literal) list — a set built from a list the compiler cannot see the elements
+; of (a `Set.to-list` result, a `List.concat`, a param/recursively-built list). `Set.of` semantically IS a
+; left fold of `Set.insert` from the empty set, so the compiler synthesizes that fold and runs it at
+; runtime (a constant `(list …)` literal still folds to a canonical set at compile time). The motivating
+; consumer is the enumeration ROUND-TRIP: rebuilding a set from its own `Set.to-list` recovers an equal set.
+(case "Set.of of a Set.to-list result reconstructs the same set (the enumeration round-trips)"
+  (doc    "The closure property: rebuilding a set from its own canonical enumeration recovers an EQUAL set.
+           Over a RUNTIME set s = {a, b} (a duplicate `a` collapses), `(Set.of (Set.to-list s))` builds a new
+           set by folding `Set.insert` over the enumerated list — and it equals `s`. Pins that `Set.to-list`
+           loses/adds no element AND that `Set.of` over a runtime (non-literal) list constructs the same
+           CHAMP as the source. A `Set.of` that only accepted a compile-time list literal would DECLINE this
+           (the runtime-list construction is the synthesized fold); a to-list that dropped an element would
+           break the round-trip. MUST be 1.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (let ((s (Set.of (list a b a))))
+                (if (= (Set.of (Set.to-list s)) s) 1 0)))
+            (export main)))
+  (call   main (: 5 Int64) (: 7 Int64))
+  (output (: 1 Int64)))
+
+(case "Set.of of a computed (concatenated) runtime list dedups by value"
+  (doc    "`Set.of` over a `List.concat` result — a runtime list the compiler has no element-list to fold at
+           compile time. `(List.concat (list a b) (list b a))` = [a, b, b, a]; `Set.of` of it dedups to
+           {a, b} → `Set.len` 2. Pins runtime-list set CONSTRUCTION (the synthesized `Set.insert` fold) with
+           the dedup that makes it a set. A construction that kept duplicates (a plain list-copy) would give
+           4. MUST be 2.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (Set.len (Set.of (List.concat (list a b) (list b a)))))
+            (export main)))
+  (call   main (: 5 Int64) (: 7 Int64))
+  (output (: 2 Int64)))
+
+; KNOWN LIMITATION (a defined DECLINE, not a miscompile): building a runtime set at TWO different element
+; types in ONE program declines. The synthesized runtime-`Set.of` fold is a single generic recursive def;
+; instantiating it at two element types (a `Set Int64` AND a `Set Bool`) hits the recursive-generic Set-op
+; element-grounding tie (a plain generic recursive def at two types works, so it is the `Set.insert`/empty-
+; seed grounding specifically — v-inference's parked recursive-generic territory). This is a clean DECLINE
+; (before this feature ALL runtime `Set.of` declined, so single-type is a strict gain); when the inference
+; tie is fixed this becomes fully general and this case flips to pass. Pinned as `todo` to guard the boundary.
+(case "Set.of over runtime lists at two different element types declines pending the recursive-generic tie"
+  (doc    "Two runtime-`Set.of` constructions at DIFFERENT element types in one program: a `Set Int64` from
+           `(List.concat (list a b) (list a))` and a `Set Bool` from `(List.concat (list (> a b)) (list (<
+           a b)))`. The synthesized runtime-set fold is one generic recursive def; instantiating it at both
+           Int64 and Bool declines (CDZ0201 — the recursive-generic `Set.insert`/empty-seed element grounding
+           tie, v-inference's lane). A DEFINED decline, not a wrong answer: a single-element-type program
+           compiles + runs (the round-trip/concat cases above). The value WOULD be 22 if the tie were
+           resolved (Int set {a,b} = 2, Bool set {true,false} = 2 → 2 + 10·2); kept `todo` until then.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (+ (Set.len (Set.of (List.concat (list a b) (list a))))
+                 (* 10 (Set.len (Set.of (List.concat (list (> a b)) (list (< a b))))))))
+            (export main)))
+  (call   main (: 5 Int64) (: 7 Int64))
+  (output (: 22 Int64)))
+
 (case "a runtime-keyed map entry enumerates as its key-value tuple"
   (doc    "`(Map.to-list (Map.insert Map.empty k 42))` with k a parameter — the single entry
            enumerates as a (k, 42) tuple whose value projects 42. Pins the entry-tuple

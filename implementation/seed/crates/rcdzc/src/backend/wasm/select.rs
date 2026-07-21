@@ -3113,8 +3113,22 @@ fn collect_used_ops_into(
             // must include them or the import section would omit an op the body calls.
             out.insert(OP_ARR_ALLOC);
             out.insert(OP_ARR_SET);
-            for value in fields.values() {
-                if let Ok(Some(op)) = box_op(db, *value) {
+            // Box each field by the DECLARED field type (`box_op_for`), NOT the field-value NODE's type
+            // (`box_op`) — the SAME choice `emit`'s `Core::Record` arm makes. They MUST agree: a `(: x
+            // Float32)` field with a bare `1.5` value has node type `Float64` → `box_op` would declare
+            // `box-float`, but emit boxes by the declared `Float32` → `box-float32`, so the used-set would
+            // OMIT `box-float32` and the body's `call box-float32` resolves to an out-of-bounds func index
+            // (an INVALID module). Read the declared field types off the record's own solved type by name.
+            let field_tys = match crate::infer::type_of(db, id).strip_nominal() {
+                crate::ty::Ty::Record(m) => Some((*m).clone()),
+                _ => None,
+            };
+            for (name, value) in fields.iter() {
+                let boxed = match field_tys.as_ref().and_then(|m| m.get(name)) {
+                    Some(declared) => box_op_for(db, *value, declared),
+                    None => box_op(db, *value),
+                };
+                if let Ok(Some(op)) = boxed {
                     out.insert(op);
                 }
                 if elem_needs_rope_compaction(db, *value) {
@@ -6583,7 +6597,22 @@ fn emit(
                 let field_base = base.max(*high);
                 // [arr] ; push index ; push (box, if scalar) the field value ; arr-set → [arr]
                 out.push(Lir::ConstI32(i as i32)); // [arr, i]
-                emit(db, value, slots, field_base, high, scratch_ty, layout, out)?; // [arr, i, value]
+                // A bare `ConstFloat` field value takes the DECLARED field width, not its own default
+                // `Float64`: a `(: x Float32)` field initialized by a bare `1.5` has value-node type
+                // `Float64`, so `emit`'s `Core::ConstFloat` would push an `f64.const` while `box-float32`
+                // expects `f32` → an INVALID module. Ground it to `f32.const` here (the record-field twin of
+                // the if-branch/match-arm bare-ConstFloat grounding); other field shapes emit normally.
+                if let Some(crate::ty::Ty::Float(dft)) =
+                    field_tys.as_ref().and_then(|m| m.get(name))
+                    && dft.ground_width() == 32
+                    && let Core::ConstFloat(d) = core_of(db, value)
+                {
+                    out.push(Lir::F32ConstBits(
+                        (f64::from_bits(d.to_f64_bits()) as f32).to_bits(),
+                    ));
+                } else {
+                    emit(db, value, slots, field_base, high, scratch_ty, layout, out)?; // [arr, i, value]
+                }
                 // A scalar element boxes to a handle (a NARROW int first extends i32→i64, as box-int
                 // takes an i64 cell); a nested compound is ALREADY a u32 handle → `arr-set` it directly;
                 // a UNIT field pushed nothing → its slot holds the inline-unit sentinel.

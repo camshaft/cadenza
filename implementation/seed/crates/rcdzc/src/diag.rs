@@ -179,6 +179,17 @@ pub enum Code {
     /// A Unit-typed statement (a host-effect-free `unit`) or an effectful one (a host call, kept by the
     /// `Core::Seq` lowering) never warns; a `_ =`-style intentional discard is spelled as a `let` binding.
     DiscardedValue,
+    /// A conditional branch is PROVABLY never reached — the flow-sensitive value-facts analysis proves the
+    /// guarding condition is a constant at that point (e.g. inside an `if x > 0` truthy branch, a nested
+    /// `if x > 0` is always-true, so its else arm is dead). A WARNING (not a rejection): dead code is
+    /// well-formed and runs correctly, just noteworthy — the reachability analogue of `DiscardedValue`/
+    /// `DeadTrap`/`UnusedBinding` (the 03xx code-quality/dead-code band), surfaced rather than silently
+    /// kept. Emitted ONLY when the interval facts PROVE the condition constant (conservative — a false
+    /// positive that flagged a REACHABLE branch would mislead, so an unproven/open condition never warns);
+    /// the emitting fact-analysis lives in the lower/emit tier (`v-value-facts`), this code + its message
+    /// shape are owned here. The message names the proving fact (`<var> ∈ [lo,hi]`) so the claim is
+    /// verifiable, not just asserted. Anchored at the dead branch, and MAY carry a heuristic delete fix.
+    UnreachableBranch,
     /// An effect operation is reached at a point with NEITHER an enclosing handler for its effect NOR an
     /// enclosing host delegation of it — the merged "no home for a reached effect" check. This single
     /// code subsumes both the reached-but-undelegated host operation and the undischarged intra-program
@@ -339,6 +350,7 @@ impl Code {
             Code::DeadTrap => "CDZ0305",
             Code::UnusedBinding => "CDZ0306",
             Code::DiscardedValue => "CDZ0307",
+            Code::UnreachableBranch => "CDZ0308",
             Code::NonExhaustive => "CDZ0210",
             Code::PresentField => "CDZ0211",
             Code::AbsentField => "CDZ0212",
@@ -360,6 +372,25 @@ impl Code {
             Code::RecursionBound => "CDZ0999",
         }
     }
+}
+
+/// The canonical [`Code::UnreachableBranch`] (CDZ0308) message — the one wording the value-facts emitter
+/// (`v-value-facts`, lower/emit tier) uses so the phrasing stays a single owned shape rather than drifting
+/// per emit site. `cond` is the branch's guarding condition as written (e.g. `` `x > 0` `` — pass it
+/// pre-quoted or bare, this wraps nothing), `always_true` picks the constant the facts proved, and `fact`
+/// names the proving interval (e.g. `x ∈ [1, 127]`) so the claim is VERIFIABLE, not just asserted — the
+/// property that makes a dead-code warning trustworthy (a reader can check the interval against the code).
+///
+/// Shape: `` this branch is never reached — `<cond>` is always <true|false> here (<fact>) ``. Kept as a
+/// helper (not inlined at the emit site) so this ONE test-pinned string is the whole surface: a re-word is
+/// a one-place edit + a test update, and the emitter never hand-rolls a divergent variant. The emitter
+/// wraps it in `Diagnostic::warning(Code::UnreachableBranch, msg, dead_branch_node)` — warning severity,
+/// anchored at the DEAD branch (not the condition), per the 03xx code-quality/dead-code band convention.
+pub fn unreachable_branch_message(cond: &str, always_true: bool, fact: &str) -> String {
+    format!(
+        "this branch is never reached — `{cond}` is always {} here ({fact})",
+        if always_true { "true" } else { "false" }
+    )
 }
 
 /// How confident the compiler is that a proposed [`Fix`] is the RIGHT edit — the branch an agent
@@ -1244,5 +1275,38 @@ pub mod suggest {
             // No candidates at all → empty string (nothing to suggest).
             assert_eq!(did_you_mean("xyzzy", Vec::<&str>::new(), 3), "");
         }
+    }
+}
+
+#[cfg(test)]
+mod cdz0308_tests {
+    use super::{Code, unreachable_branch_message};
+
+    #[test]
+    fn unreachable_branch_maps_to_cdz0308() {
+        // The new dead-branch reachability warning is CDZ0308, the next slot in the 03xx code-quality/
+        // dead-code band (0305 dead-trap, 0306 unused-binding, 0307 discarded-value). Pins the code so a
+        // future taxonomy edit can't silently move it, and confirms it doesn't collide with a sibling.
+        assert_eq!(Code::UnreachableBranch.code(), "CDZ0308");
+        // Distinct from the sibling dead-code codes it must not be confused with.
+        assert_ne!(Code::DeadTrap.code(), "CDZ0308");
+        assert_ne!(Code::DiscardedValue.code(), "CDZ0308");
+    }
+
+    #[test]
+    fn unreachable_branch_message_is_the_pinned_shape() {
+        // The canonical CDZ0308 wording the value-facts emitter uses. Pins the shape end-to-end so a
+        // re-word is a deliberate one-place edit + this update — the emitter never diverges. The
+        // `<var> ∈ [lo,hi]` fact clause is load-bearing: it names the interval that PROVES the branch dead,
+        // which is what makes the warning trustworthy (a reader verifies the claim against the code).
+        assert_eq!(
+            unreachable_branch_message("x > 0", true, "x ∈ [1, 127]"),
+            "this branch is never reached — `x > 0` is always true here (x ∈ [1, 127])"
+        );
+        // The false case picks `false`; the condition + fact are echoed verbatim.
+        assert_eq!(
+            unreachable_branch_message("n == 0", false, "n ∈ [1, 9]"),
+            "this branch is never reached — `n == 0` is always false here (n ∈ [1, 9])"
+        );
     }
 }

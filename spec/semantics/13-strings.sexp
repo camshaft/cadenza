@@ -2528,3 +2528,27 @@
   (input  (do (def (main (: s String)) (String.byte-len s)) (export main)))
   (call   main (: "abc" String))
   (output (: 3 Int64)))
+
+(case "a MULTIBYTE and an EMPTY runtime String entry arg measure their UTF-8 byte lengths"
+  (doc    "The multibyte + empty edges of the String entry arg (the ascii case above measures 3): `aéz` is
+           4 BYTES (é is 2 in UTF-8) though 3 characters — byte-len reads the encoding, not the char count —
+           and the empty string is 0. Three calls through ONE export exercise the driver's owned-String
+           marshaling at ascii/multibyte/empty. (wasm declines the String entry arg — the same sound todo as
+           the ascii case; rust computes.)")
+  (input  (do (def (main (: s String)) (String.byte-len s)) (export main)))
+  (call   main (: "abc" String)) (output (: 3 Int64))
+  (call   main (: "aéz" String)) (output (: 4 Int64))
+  (call   main (: "" String)) (output (: 0 Int64)))
+
+(case "two runtime String entry args compare by content including multibyte"
+  (doc    "TWO String entry parameters compared with `=`: `café` = `café` → 1 (equal content, including the
+           2-byte é), `café` ≠ `cafe` → 0 (the accented vs bare e differ). Pins that two independently-
+           marshaled owned Strings compare by CONTENT at the boundary (not by handle/pointer) and that the
+           compare reads the full byte sequence. (wasm declines the String entry args — sound todo; rust
+           computes.)")
+  (input  (do
+            (def (main (: a String) (: b String))
+              (if (= a b) 1 0))
+            (export main)))
+  (call   main (: "café" String) (: "café" String)) (output (: 1 Int64))
+  (call   main (: "café" String) (: "cafe" String)) (output (: 0 Int64)))

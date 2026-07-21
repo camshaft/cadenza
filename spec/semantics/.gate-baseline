@@ -36,6 +36,7 @@ pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	BigInt.of a UInt64 widens to the exact value (round-trips back through Int64.of where it fits)
 pass	BigInt.of a UInt8 at its high bit widens to the exact value (smallest-width zero-extend)
 pass	BigInt.of a signed Int32 is a positive BigInt (the narrow path breaks regardless of sign)
+pass	Bytes.of of a computed (concatenated) runtime list builds a byte sequence of that length
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) (Tuple Int64 Int64)) — BOTH sides compound
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Err (scalar side)
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Ok (tuple side)
@@ -183,6 +184,9 @@ pass	Set.contains finds a runtime STRING-rope element built via Set.of
 pass	Set.contains over nan finds nan
 pass	Set.contains over negative zero does not find positive zero
 pass	Set.insert does not fold a duplicate against a runtime element
+pass	Set.of of a Set.to-list result reconstructs the same set (the enumeration round-trips)
+pass	Set.of of a computed (concatenated) runtime list dedups by value
+todo	Set.of over runtime lists at two different element types declines pending the recursive-generic tie
 pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
 pass	Set.to-list canonical order is SIGNED at the integer extremes
@@ -404,6 +408,7 @@ pass	a MULTI-shot arm re-reduces a continuation that reads a captured heap list 
 pass	a MULTI-shot arm whose FIRST resume value is chosen by an if on the state
 pass	a MULTI-shot arm whose each resume CONSUMES a captured heap list dups it per resume
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
+todo	a MULTIBYTE and an EMPTY runtime String entry arg measure their UTF-8 byte lengths
 pass	a MULTIPLY on an unusual signed width computes in range at the declared width
 pass	a MULTIPLY overflowing an unusual signed width is rejected CDZ0304
 pass	a MUTUALLY-recursive effectful group is specialized under a state handler
@@ -651,6 +656,7 @@ pass	a built-in comparison on an abstract theorem value outside the kernel is re
 pass	a built-in comparison on an abstract type's value is rejected outside its module
 pass	a built-in operation applied to too many arguments names its arity
 pass	a byte of a runtime string's encoding is its exact UTF-8 value, not merely the right count
+pass	a byte read back from a runtime-list-built Bytes has the right value
 pass	a byte sequence carrying a runtime byte value is a first-class value
 pass	a byte sequence is constructed from a list of integers in range
 pass	a byte sequence written as a literal renders back to the same literal
@@ -1019,6 +1025,7 @@ pass	a fitting cross-function match projection computes at the narrow width
 pass	a fitting handler arm resume value computes under a narrow annotation
 pass	a fitting payload projected through Option.expect computes
 pass	a fitting recursive annotated result computes at the narrow width
+pass	a float divide by zero takes the DIVIDEND's sign into the infinity
 pass	a float literal compared against a Float32 param computes at the narrow width
 pass	a handler STATE that is a recursive sum GROWS one constructor per operation
 pass	a large value in a NON-projected tuple slot does not trip the projection width check
@@ -1039,12 +1046,15 @@ pass	a quantity in an OPTION inside a MAP value renders scaled (nested compositi
 pass	a quantity read from a map COMBINES with a fresh same-dimension quantity
 pass	a record key with a float-bearing TUPLE field keys by content
 pass	a recursive fold over a runtime Peano spine recovers its depth
+pass	a right shift of a negative by a RUNTIME amount stays arithmetic
 pass	a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend
 pass	a runtime = on a sum recursive through a RECORD-of-TUPLE payload walks structurally
 pass	a runtime = over MUTUALLY-recursive sums walks across the type cycle
 pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
+pass	a shift by a RUNTIME amount computes (both operands off the fold)
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
+pass	a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack
 pass	a tuple key whose element is itself a float-bearing tuple keys by content
 pass	a tuple key with a RUNTIME Rational leaf hits and misses by canonical content
 pass	a tuple key with an ARITH-built BigInt leaf hits and misses by content
@@ -1338,6 +1348,7 @@ pass	a list of records with different field sets is a type error
 pass	a list of records: a runtime index then reads a field of the found record
 pass	a list of tuples with different arities is a type error
 pass	a list operation applied to a non-list names the expected argument type
+pass	a list past 1024 elements builds a three-level RRB trie and indexes correctly at every level
 pass	a list pattern in a sum-variant payload matches a runtime node by its child count
 pass	a list pattern over a map scrutinee is a type error
 pass	a list pattern over a non-list scrutinee is a type error
@@ -1958,6 +1969,7 @@ pass	a recursive unifier distinguishes arrow components through the payload slot
 pass	a recursive user sum built in a lib is folded by the entry over the imported type
 pass	a recursive user sum type is built at run time and renders its variant names
 pass	a recursive walk consulting a node's own and its child's String key computes correctly
+pass	a recursive walk over the built-in Ast recurses into its List payload via a rest pattern
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
 pass	a recursive-generic filter threading a predicate closure composes at two element types
@@ -2062,6 +2074,7 @@ pass	a runtime List.update at exactly the length index is the first out-of-bound
 pass	a runtime MIXED-SCALE BigInt comparison converts to the reference before comparing
 pass	a runtime MIXED-SCALE BigInt-magnitude sum converts to the reference in unbounded arithmetic
 pass	a runtime MIXED-SCALE Rational-magnitude sum converts to the reference EXACTLY
+pass	a runtime Map built by folding Map.insert over a list of entries dedups keys last-write-wins
 pass	a runtime NaN equals a runtime NaN under the canonical byte form
 pass	a runtime NaN float leaf two levels deep (a record-of-tuple) compares equal by the canonical byte form
 pass	a runtime NaN leaf in a tuple compares equal, a runtime -0.0 leaf stays distinct
@@ -3828,7 +3841,10 @@ pass	runtime Bytes ordering declines uniformly — the spec blesses no Bytes ord
 pass	runtime Bytes value-equality distinguishes different content
 pass	runtime Rational MULTIPLICATION of two parameter-built fractions reduces to lowest terms
 pass	runtime Rational arithmetic adds two parameter-built fractions exactly
+pass	runtime Rational arithmetic that cancels to zero normalizes to canonical zero over one
+pass	runtime Rational arithmetic that reduces to a whole normalizes to denominator one
 pass	runtime String.concat is associative — (a·b)·c equals a·(b·c), both equal the flat concatenation
+pass	runtime division and remainder agree across ALL FOUR sign quadrants
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
 pass	runtime float ordering is a strict/non-strict partial order over finite values
@@ -4240,6 +4256,7 @@ pass	the tautology fold keeps a trapping shared operand
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
 pass	two runtime Bytes values of equal content compare equal (rope vs flat)
 pass	two runtime Ok values of a multi-parameter sum compare equal by a heap walk
+todo	two runtime String entry args compare by content including multibyte
 pass	two runtime maps built in different insertion orders compare equal by content
 pass	two runtime maps with the same keys but a different value are unequal
 pass	two runtime records compare equal by a heap walk
@@ -4373,6 +4390,7 @@ pass	a List.concat of a checked-arith list with a recursive-call list is disjoin
 pass	a List.push of a checked-arith element behind a recursive-call list is disjoint-slotted
 pass	a List.update at a checked-arith element behind a recursive-call list is disjoint-slotted
 pass	a List.update at a second-RRB-node index on a large runtime list lands there and preserves the rest
+pass	a List.update at a third-level RRB index lands and preserves persistence and siblings
 pass	a Map VALUE that is a list-of-quantities round-trips through Map.lookup and List.at
 pass	a Map.len over a projected field of a fresh record whose producer binds an i64 let is disjoint-slotted
 pass	a Map.remove of a checked-arith key behind a recursive-call map is disjoint-slotted
@@ -4489,3 +4507,5 @@ pass	a literal MAP VALUE that overflows the annotated value width is rejected
 pass	a literal MAP KEY that overflows the annotated key width is rejected
 pass	a bare in-range ConstFloat if-branch under a Float32 annotation emits valid f32 and runs
 pass	a FITTING narrow record-field literal grounds to the field width and computes (emit twin of the reject)
+pass	a user sum named Ast with NON-colliding variants renders its ctor heads BARE on all backends
+pass	a user sum whose variant name collides with a built-in renders that head QUALIFIED on all backends

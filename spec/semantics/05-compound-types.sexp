@@ -2288,6 +2288,30 @@
             (export main)))
   (output (: 12 Int64)))
 
+; --- Sum ctor-head render qualification: keyed on the per-sum VARIANT collision, not the type name -----
+; A sum's ctor heads render BARE (Node) unless a variant name COLLIDES with a built-in reflection ctor, in
+; which case that sum's heads render QUALIFIED ((. Ast Int)) to disambiguate. The predicate is per-sum
+; (lower::sum_needs_qualified_heads), reused verbatim by BOTH backends (parity) — NOT triggered by the type
+; being NAMED "Ast". Fixed a divergence where rust qualified any sum named Ast while wasm rendered bare;
+; both now agree via the shared predicate. Ruling: unqualified when no collision (pr-sync 2026-07-21).
+(case "a user sum named Ast with NON-colliding variants renders its ctor heads BARE on all backends"
+  (doc    "`(type Ast (Lit Int64) (Node (List Ast)))` — the variants Lit/Node do NOT collide with any
+           built-in reflection ctor, so the value `(Node (list (Lit 5) (Lit 6)))` renders with BARE ctor
+           heads on every backend, exactly as a non-Ast-named sum (Tree) would. The type being named Ast does
+           not force qualification; only a real variant-name collision does. Pins the sum_needs_qualified_heads
+           predicate's BARE arm + cross-backend parity (was rust-qualified / wasm-bare before the fix).")
+  (input  (do (type Ast (Lit Int64) (Node (List Ast))) (def (main) (Node (list (Lit 5) (Lit 6)))) (export main)))
+  (output (: (Node (list (Lit 5) (Lit 6))) Ast)))
+
+(case "a user sum whose variant name collides with a built-in renders that head QUALIFIED on all backends"
+  (doc    "The disambiguation arm: `(type Ast (Int Int64) (Node (List Ast)))` — the variant `Int` COLLIDES
+           with the built-in, so the value `(Int 5)` renders QUALIFIED as `(. Ast Int)` on every backend, to
+           distinguish the user ctor from the built-in. Pins the sum_needs_qualified_heads predicate's
+           QUALIFIED arm (fires on a real variant collision, both backends agree) — the complement of the
+           bare case above.")
+  (input  (do (type Ast (Int Int64) (Node (List Ast))) (def (main) (Int 5)) (export main)))
+  (output (: ((. Ast Int) 5) Ast)))
+
 ; A capture-free BETA-REDUCTION over a nameless (de Bruijn) term — the evaluator core of a self-hosted
 ; λ-calculus front end (the compiler-ml port's beta/normalize passes). A `Tm` is `Ix index` / `Lam body`
 ; / `App f x` (nameless: a binder carries no name; a bound variable is its de Bruijn index). `shift` raises
@@ -9572,6 +9596,50 @@
   (call   main (: 0 Int64))
   (output (: (tuple 100 4950 0 63 99 -1) (Tuple Int64 Int64 Int64 Int64 Int64 Int64))))
 
+; The cases above span TWO RRB levels (n≤1024 = a leaf of leaves). An RRB branches by 32, so n>32²=1024
+; forces a THIRD level (level 2): the trie root now indexes interior nodes that index leaves. These pin that
+; the deeper shift path builds, indexes, and PATH-COPIES correctly — a level a 40- or 100-element list never
+; reaches. Built at n=1100 (just past 1024), which needs exactly one level-2 root over ~35 second-level nodes.
+(case "a list past 1024 elements builds a three-level RRB trie and indexes correctly at every level"
+  (doc    "n=1100 > 32² = 1024, so the RRB needs a THIRD level (level 2 root → interior nodes → leaves). Built
+           by a push-loop, then read across all three levels: index 5 (first leaf) = 5, index 1050 (deep in a
+           late second-level subtree, reached only through the level-2 root) = 1050, the last index 1099 = 1099,
+           index 1100 (== len) is None → -1 (past-end, total not a trap), and `List.len` = 1100. Result
+           `(1100, 5, 1050, 1099, -1)`. Pins that the deeper RRB shift path indexes correctly at a level no
+           smaller list reaches; a lowering whose shift/level arithmetic was hard-coded for ≤2 levels would
+           misread the deep index or the length.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: xs (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push xs i)) xs))
+            (def (at (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None _u) -1)))
+            (def (main (: n Int64))
+              (let ((xs (build 0 1100 (list))))
+                (tuple (List.len xs) (at xs 5) (at xs 1050) (at xs 1099) (at xs 1100))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 1100 5 1050 1099 -1) (Tuple Int64 Int64 Int64 Int64 Int64))))
+
+(case "a List.update at a third-level RRB index lands and preserves persistence and siblings"
+  (doc    "The update companion at three levels: on the same n=1100 three-level trie, `(List.update xs 1050
+           999)` path-copies down to the level-2 subtree holding index 1050. Reading back: index 1050 is 999
+           (the update landed at depth), index 5 is still 5 (a first-leaf sibling untouched), index 1099 is
+           still 1099 (a sibling in a different deep subtree not clobbered), `List.len` is 1100, and the
+           ORIGINAL `xs` still reads 1050 at index 1050 (the update is FUNCTIONAL/persistent — the level-2
+           path-copy shares every off-path subtree). Result `(999, 5, 1099, 1100, 1050)`. Pins the deep
+           path-copy + persistence one level below the second-node update case above; an update that mutated
+           in place or copied the wrong level would flip a component.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: xs (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push xs i)) xs))
+            (def (at (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None _u) -1)))
+            (def (main (: n Int64))
+              (let ((xs (build 0 1100 (list))))
+                (let ((ys (List.update xs 1050 999)))
+                  (tuple (at ys 1050) (at ys 5) (at ys 1099) (List.len ys) (at xs 1050)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 999 5 1099 1100 1050) (Tuple Int64 Int64 Int64 Int64 Int64))))
+
 ; --- `List.at` at a RUNTIME index: the fallible positional read on the value heap -----------------------
 ; The `List.at` cases elsewhere read at a CONSTANT index (`(List.at (list …) 3)` folds to the element at
 ; compile time). A RUNTIME index — a boundary parameter — cannot fold: the read runs on the value heap,
@@ -10550,6 +10618,33 @@
                      ((None _u) -1)))))
             (export main)))
   (call main (: 5 Int64) (: 5 Int64)) (output (: 1200 Int64)))
+
+; A Map is idiomatically built from a COMPUTED list of entries by folding `Map.insert` over it — the way a
+; program assembles a map (an environment, a symbol table) whose entries are decided at run time, not
+; written as a `(map …)` literal. This pins that fold spine: over a RUNTIME `(List (Tuple k v))` it threads
+; the accumulator map through each insert, and a repeated key collapses last-write-wins (the same CHAMP
+; re-insert rule the tuple-key case above pins, here driven by the folded list rather than nested inserts).
+(case "a runtime Map built by folding Map.insert over a list of entries dedups keys last-write-wins"
+  (doc    "Building a Map by folding `Map.insert` over a RUNTIME list of `(key value)` tuples — the computed-
+           entries idiom (an environment/table assembled at run time). `[(a,10), (b,20), (a,30)]` with a,b
+           runtime: key `a` appears twice, so the later insert REPLACES (last-write-wins) → `Map.len` 2 and
+           `Map.lookup a` is 30 (not 10, not two entries). Encodes 100·len + lookup(a) = 100·2 + 30 = 230.
+           Pins the runtime `Map.insert` fold spine + last-write-wins under a list-driven build (a first-wins
+           keying would give 210; a build that kept both `a` entries would give 3·100 + 30 = 330). MUST be
+           230.")
+  (input  (do
+            (def (mfold (: xs (List (Tuple Int64 Int64))) (: i Int64) (: acc (Map Int64 Int64)))
+              (if (< i (List.len xs))
+                  (match (List.at xs i)
+                    ((Some kv) (mfold xs (+ i 1) (Map.insert acc (. kv 0) (. kv 1))))
+                    ((None _u) acc))
+                  acc))
+            (def (main (: a Int64) (: b Int64))
+              (let ((m (mfold (list (tuple a 10) (tuple b 20) (tuple a 30)) 0 Map.empty)))
+                (+ (* 100 (Map.len m))
+                   (match (Map.lookup m a) ((Some v) v) ((None _u) -1)))))
+            (export main)))
+  (call main (: 5 Int64) (: 7 Int64)) (output (: 230 Int64)))
 
 ; --- Map PATTERN matching (ask-61) — a SEPARATE phase a generation declines until it lands. A map's key set is
 ; a RUNTIME collection, not a static shape, so a map pattern is a KEY-DIRECTED LOOKUP: `(map (k p) .. rest)`

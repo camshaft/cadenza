@@ -1573,7 +1573,22 @@ impl<'a> Printer<'a> {
     /// so definitions don't cram together. The first member breaks straight off the `{` (no leading
     /// blank inside the braces); a `///` doc line hugs the member it documents.
     fn print_module(&mut self, args: &[StructId]) {
-        let members = &args[1..];
+        // A `///` doc that precedes the `module` keyword documents the MODULE itself — the reader attaches
+        // it as a LEADING `(doc …)` MEMBER (args after the name, before the first real member). That is a
+        // DISTINCT tree from a doc INSIDE the braces, which attaches to the def it precedes
+        // (`(module M (def (x) (doc …) …))`). So the leading module-doc run must print ABOVE the `module`
+        // line, at the module's own column — printing it as an in-body `///` line instead re-reads as a
+        // doc on the first body member, silently migrating the module-doc onto that member (a round-trip
+        // break). Mirrors `print_type`/`print_effect`: leading decl docs print flush, outside the box.
+        let docs_end = 1 + args[1..].iter().take_while(|&&a| self.is_doc(a)).count();
+        let docs = &args[1..docs_end];
+        let members = &args[docs_end..];
+        for &d in docs {
+            if let Some(a) = self.a.as_form(d, "doc") {
+                self.print_doc(a[0]);
+            }
+            self.doc.hardbreak();
+        }
         self.doc.cbox(INDENT);
         self.doc.word("module ");
         self.expr(args[0], 0); // name
@@ -5188,6 +5203,51 @@ mod tests {
         assert_eq!(
             assert_roundtrip("/// one\n/// two\neffect E = | emit : -> Unit", 80),
             "/// one\n/// two\neffect E =\n  | emit : -> Unit"
+        );
+    }
+
+    #[test]
+    fn a_leading_module_doc_prints_above_the_keyword_and_round_trips() {
+        // A `///` header ABOVE `module M {` documents the MODULE — the reader attaches it as a LEADING
+        // `(doc …)` MEMBER: `(module M (doc …) (def …))`. This is a DISTINCT tree from a doc INSIDE the
+        // braces, which attaches to the def it precedes: `(module M (def (x) (doc …) …))`. Regression:
+        // `print_module` rendered the leading module-doc member as an in-body `///` line, so it re-read
+        // as a doc on the FIRST member — silently MIGRATING the module-doc onto that member (a round-trip
+        // break in my core invariant). The leading doc run now prints ABOVE the `module` keyword.
+        // A leading module-doc member prints above `module`, and re-reads to the SAME module-doc member
+        // (NOT migrated into the def) — the round-trip witness.
+        let a = sexpr::read(r#"(module M (doc "one") (doc "two") (def (y) (: 1 Int64)))"#).unwrap();
+        let printed = print(&a, 80);
+        assert_eq!(
+            printed, "/// one\n/// two\nmodule M {\n  def y() -> Int64 = 1\n}",
+            "leading module-docs print flush above the `module` keyword"
+        );
+        let b = parser::read_ml(&printed);
+        assert!(b.ok(), "reparse: {:?}", b.errors);
+        assert_eq!(
+            sexpr::print(&b.arenas),
+            "(module M (doc \"one\") (doc \"two\") (def (y) (: 1 Int64)))",
+            "docs stay MODULE members across the round-trip, not migrated onto the def"
+        );
+        // A doc INSIDE the braces (before a def) is the DISTINCT tree and must be UNCHANGED — it stays a
+        // doc on that def, printed indented in the body (the contrast that makes the fix correct, not a
+        // blanket hoist).
+        let body = parser::read_ml("module M {\n  /// on def\n  def y() -> Int64 = 1\n}");
+        assert_eq!(
+            sexpr::print(&body.arenas),
+            "(module M (def (y) (doc \"on def\") (: 1 Int64)))",
+            "an in-body doc attaches to the def, not the module"
+        );
+        // A doc-only module (no members) also round-trips: the leading doc prints above the empty braces.
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml(&print(
+                    &sexpr::read(r#"(module M (doc "only"))"#).unwrap(),
+                    80
+                ))
+                .arenas
+            ),
+            "(module M (doc \"only\"))"
         );
     }
 
