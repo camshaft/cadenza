@@ -14334,6 +14334,59 @@ mod runtime_ops {
     }
 
     #[test]
+    fn cdz_check_rejects_an_oversize_literal_in_a_runtime_if_branch_under_a_narrow_annotation() {
+        // A check-vs-emit gap: `(: (if c 10000 0) UInt8)` — a RUNTIME `if` (runtime condition `c`) with a
+        // bare out-of-range literal in a branch, under a narrow-width annotation — was ACCEPTED by `cdz
+        // check` while the EMIT path rejected it CDZ0302. `check`'s nested width-fault descent range-checked
+        // compound payloads (Sum/Tuple/List) but bailed on a runtime `if` (it folds to neither a
+        // `Resolved::Int` nor a `Core::ConstInt`), so an out-of-range branch literal slipped `check`. The fix
+        // descends BOTH live branches of a runtime `if` against the annotation width. Both the direct
+        // annotation form and the same literal reaching a narrow PARAMETER (`(f (if c 10000 0))` where
+        // `f : UInt8 → …`) now reject at check, agreeing with emit. Nested `if`s descend recursively.
+        let check_rejects = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            let d = diags
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .unwrap_or_else(|| panic!("expected a check-level reject for: {src}"));
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0302"),
+                "expected CDZ0302 for {src}, got: {}",
+                d.message
+            );
+        };
+        // Direct annotation on a runtime if.
+        check_rejects("(module m (def (f (: c Bool)) (: (if c 10000 0) UInt8)) (export f))");
+        // The same literal reaching a narrow PARAMETER through a runtime if.
+        check_rejects(
+            "(module m (def (g (: x UInt8)) x) (def (f (: c Bool)) (g (if c 10000 0))) (export f))",
+        );
+        // A NESTED runtime if — the descent recurses into the inner if's branches.
+        check_rejects(
+            "(module m (def (f (: c Bool) (: d Bool)) (: (if c (if d 10000 0) 0) UInt8)) (export f))",
+        );
+        // Negative literal in an unsigned annotation via a runtime if (the sign-flip CDZ0302 face).
+        check_rejects("(module m (def (f (: c Bool)) (: (if c -1 0) UInt8)) (export f))");
+
+        // NO OVER-REJECTION: fitting branch literals, a constant-condition if (folds to its taken branch),
+        // both-branches-fit, and a bare if with NO narrow context (stays Int64) must all pass check clean.
+        let check_clean = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "expected NO check reject for: {src}\ngot: {diags:?}"
+            );
+        };
+        check_clean("(module m (def (f (: c Bool)) (: (if c 100 0) UInt8)) (export f))");
+        check_clean("(module m (def (f (: c Bool)) (: (if c 200 100) UInt8)) (export f))");
+        check_clean("(module m (def (f) (: (if true 100 0) UInt8)) (export f))");
+        check_clean("(module m (def (f (: c Bool)) (if c 10000 0)) (export f))");
+    }
+
+    #[test]
     fn runtime_if_branch_bare_literal_grounds_to_the_narrow_result_width() {
         // An `if` whose branches MIX a narrow value and a bare literal: the literal branch (Int64 on its
         // own = i64 slot) must take the `if`'s narrow result width, so both branches leave the same i32
@@ -30682,6 +30735,35 @@ mod match_engine {
                 ))
                 .is_none(),
                 "`{ok}` is a valid integer segment width"
+            );
+        }
+        // APPLYABLE FIX: a `uNN`/`iNN` width that is a CONFIDENT near-miss of a real byte-aligned kind
+        // carries a rename fix on the kind head — `u166`→`u16`, `i17`→`i16` (same signedness). The message
+        // still names `(bits v k)`, so an author who wanted a genuine non-aligned width sees that route too.
+        for (typo, want) in [("u166", "u16"), ("i17", "i16")] {
+            let d = reject_full(&format!(
+                "(module m (def (main) (bin ({typo} 1))) (export main))"
+            ))
+            .unwrap_or_else(|| panic!("`{typo}` must reject"));
+            let fix = d
+                .fix
+                .as_ref()
+                .unwrap_or_else(|| panic!("`{typo}` carries a width-rename fix: {}", d.message));
+            assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+            assert_eq!(fix.replacement, want, "`{typo}` renames to the near width");
+            assert!(!fix.verified, "a width-typo guess is heuristic");
+        }
+        // A width TOO FAR from any byte-aligned kind keeps the guidance but NO misleading rename fix
+        // (`u128`/`u9999` — the author likely wants `(bits v k)`, not a one-token width swap).
+        for far in ["u128", "u9999"] {
+            let d = reject_full(&format!(
+                "(module m (def (main) (bin ({far} 1))) (export main))"
+            ))
+            .unwrap_or_else(|| panic!("`{far}` must reject"));
+            assert!(
+                d.fix.is_none(),
+                "`{far}` is beyond the typo cutoff — no rename fix, just the `(bits v k)` guidance: {:?}",
+                d.fix
             );
         }
     }
@@ -59762,6 +59844,51 @@ mod stage1 {
             has_coded,
             "a DERIVED const-closure re-pass (not an identity re-pass) must still be a coded CDZ0201 reject, got: {:?}",
             out.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_forwarded_param_const_arg_gets_an_actionable_polymorphic_or_inline_hint() {
+        // OPTION-C DIAGNOSTIC (concierge ruling): the standalone-lowering const-forward reject
+        // (`fold(it: Iter, acc, g)` forwarding a runtime param into `drive`'s `const` slot — the annotated
+        // `it: Iter` makes `fold` monomorphic, so it lowers STANDALONE and is not specialized at its call
+        // site, and the forwarded param is unbound there → CDZ0201). The reject STAYS (the real fix, backward
+        // const-propagation, is a separate operator-gated arc), but its message must be ACTIONABLE — point at
+        // keeping the enclosing fn polymorphic (drop the annotation) or inlining, NOT the cryptic bare
+        // "depends on runtime data". A DERIVED const arg (the twin above) keeps the plain message; only a
+        // BARE forwarded param gets this hint.
+        let src = "(module m \
+               (type Iter (Mk (List Int64) (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) \
+               (def (from-list (: xs (List Int64))) ((. Iter Mk) xs (fn ((: s (List Int64))) (match s ((list) ((. Option None) unit)) ((list h .. t) ((. Option Some) (tuple h t))))))) \
+               (def (drive (const (: step (-> (List Int64) (Option (Tuple Int64 (List Int64)))))) (: s (List Int64)) (: acc Int64) (const (: g (-> Int64 (-> Int64 Int64))))) \
+                 (match (step s) (((. Option None) _) acc) (((. Option Some) p) (match p ((tuple x s2) (drive step s2 (g acc x) g)))))) \
+               (def (fold (: it Iter) acc (: g (-> Int64 (-> Int64 Int64)))) (match it (((. Iter Mk) s step) (drive step s acc g)))) \
+               (def (sum it) (fold it 0 (fn (a x) (+ a x)))) \
+               (def (main) (sum (from-list (list 1 2 3)))) (export main))";
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(src)),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let hint = out.diagnostics.iter().find(|d| {
+            d.severity == crate::abi::Severity::Error && d.code.as_deref() == Some("CDZ0201")
+        });
+        let hint = hint.unwrap_or_else(|| {
+            panic!(
+                "the forwarded-param const arg must still be a coded CDZ0201, got: {:?}",
+                out.diagnostics
+            )
+        });
+        assert!(
+            hint.message
+                .contains("forwarded from an enclosing function")
+                && hint.message.contains("POLYMORPHIC")
+                && hint.message.contains("INLINE"),
+            "the forwarded-param const-arg reject must carry the actionable polymorphic-or-inline hint, got: {:?}",
+            hint.message
         );
     }
 

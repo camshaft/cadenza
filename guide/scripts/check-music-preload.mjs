@@ -40,13 +40,15 @@ const { EXAMPLES } = await import(pathToFileURL(join(guideRoot, "src/music/examp
 // filter could resolve either to `[]` — then the per-showcase compile loop below never runs and this
 // gate reports success on nothing (a false green shipping an unverified /music). The specific-slug guards
 // (piece-to-events, value-pins) catch some of that, but a floor on the input sets makes an empty import
-// FAIL outright. /music ships 3 showcases preloaded against ≥1 music lib. (Mirrors the floors in
-// check-examples.mjs / check-prose-annotations.mjs.)
-if (!Array.isArray(EXAMPLES) || EXAMPLES.length < 3) {
+// FAIL outright. /music ships FOUR showcases (R1 rational-intervals, R2 chord-to-midi, R3 piece-to-events,
+// R4 euclidean-pattern) preloaded against ≥1 music lib — the floor tracks that count, so LOSING a showcase
+// (drop to 3) fails here rather than silently shipping a shrunk /music. Bump this alongside EXAMPLES.
+// (Mirrors the floors in check-examples.mjs / check-prose-annotations.mjs.)
+if (!Array.isArray(EXAMPLES) || EXAMPLES.length < 4) {
   console.error(
-    `\n✗ music-preload conformance FAILED — expected ≥3 /music showcases in src/music/examples.ts, ` +
-      `found ${Array.isArray(EXAMPLES) ? EXAMPLES.length : typeof EXAMPLES}; the EXAMPLES import likely broke. ` +
-      `Refusing a vacuous pass.`,
+    `\n✗ music-preload conformance FAILED — expected ≥4 /music showcases in src/music/examples.ts, ` +
+      `found ${Array.isArray(EXAMPLES) ? EXAMPLES.length : typeof EXAMPLES}; the EXAMPLES import likely broke ` +
+      `or a showcase was dropped. Refusing a vacuous pass.`,
   );
   process.exit(1);
 }

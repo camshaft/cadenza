@@ -193,6 +193,26 @@
   (input  (Qty.of 1 (Unit.prefix kibi (Unit.base #"byte"))))
   (output (: (Qty.of 1024 (Unit.base #"byte")) (Qty Int64 (Unit.base #"byte")))))
 
+(case "a prefixed quantity displays scaled to its reference over Float32"
+  (doc    "The Float32-inner companion of the Float64/Rational/Int64 scaled-display pins: `5 kilometer`
+           = `(Qty.of (Float32.of 5.0) (Unit.prefix kilo meter))` DISPLAYS as `5000.0 meter` typed
+           `(Qty Float32 meter)` — the ×1000 kilo scale applies to the Float32 magnitude at the reference
+           `meter`. Pins that the reference display-scale fires over EVERY float width, not just Float64
+           (the narrow-float inner threads the same const_value_ast_scaled path).")
+  (input  (Qty.of (Float32.of 5.0) (Unit.prefix kilo (Unit.base #"meter"))))
+  (output (: (Qty.of 5000.0 (Unit.base #"meter")) (Qty Float32 (Unit.base #"meter")))))
+
+(case "a prefixed quantity displays scaled to its reference over BigInt (exact, no truncation)"
+  (doc    "The BigInt-inner companion: `5 kilometer` = `(Qty.of (BigInt.of 5) (Unit.prefix kilo meter))`
+           DISPLAYS as `5000 meter` typed `(Qty BigInt meter)` — the ×1000 whole-ratio scale applies EXACTLY
+           over the arbitrary-precision BigInt at the reference `meter`, no truncation (contrast the Int64
+           `5 foot` non-whole-ratio truncation; a whole-ratio prefix like kilo is exact over any integer
+           inner). Pins the reference display-scale over a HEAP-numeric inner (a BigInt erases to a handle;
+           the scale-multiply runs in the bignum path), completing the display matrix {Float64, Float32,
+           Rational, Int64, BigInt}.")
+  (input  (Qty.of (BigInt.of 5) (Unit.prefix kilo (Unit.base #"meter"))))
+  (output (: (Qty.of 5000 (Unit.base #"meter")) (Qty BigInt (Unit.base #"meter")))))
+
 (case "a family quantity displays scaled to its reference over Int64, truncating a non-whole ratio"
   (doc    "`5 foot` = `(Qty.of 5 (Unit.of #\"foot\"))` DISPLAYS as `1 meter` over Int64: foot = 381/1250 m,
            so 5 foot = 1905/1250 = 1.524 m, and the reference-normalized DISPLAY truncates toward zero to
@@ -2823,3 +2843,28 @@
            boundary. Pins that the two angle dimensions do NOT interconvert implicitly.")
   (input  (+ (Qty.of 1 (Unit.of #"degree")) (Qty.of 1 (Unit.of #"radian"))))
   (error  CDZ0501))
+
+; A Quantity stored in a RECURSIVE sum's payload — the list-of-quantities shape a measurement log
+; takes. The Qty erases to its inner scalar in the variant payload slot, and the recursive walk
+; (construct N cells, then match-fold them) must carry the erased magnitudes with the units held by
+; the STATIC type alone; the rust backend's per-payload display-scale walk additionally needs its
+; recursive-sum CYCLE GUARD here (a naive type-directed payload walk on QList recurses forever).
+
+(case "a quantity in a recursive sum payload folds through construction and match"
+  (doc    "`(type QList (QNil) (QCons (Qty Int64 meter) QList))` — a recursive sum whose payload is a
+           QUANTITY. `total` folds the list by match, summing `Qty.value` of each cell: `(QCons a·m
+           (QCons 5m QNil))` at a=3 → 8. Pins that a Qty rides a recursive sum's payload slot as its
+           erased scalar (construct → boxed variant payload → match-bind → Qty.value), and that the
+           type-level recursion (QList inside QList) does not trip the payload walk — the corpus face
+           of the rust backend's recursive-sum cycle guard on the display-scale walk. Expected: 8.")
+  (input  (do
+            (type QList (QNil) (QCons (Qty Int64 (Unit.base #"meter")) QList))
+            (def (total (: l QList))
+              (match l
+                ((QNil) 0)
+                ((QCons q rest) (+ (Qty.value q) (total rest)))))
+            (def (main (: a Int64))
+              (total (QCons (Qty.of a (Unit.base #"meter"))
+                     (QCons (Qty.of 5 (Unit.base #"meter")) (QNil)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 8 Int64)))

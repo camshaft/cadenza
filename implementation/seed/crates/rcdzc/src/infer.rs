@@ -1002,6 +1002,14 @@ pub(crate) fn nested_runtime_width_type(db: &mut Db, ty_expr: StructId) -> Optio
 fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) -> Option<Reject> {
     let expected = crate::eval::typeval_of(db, ty_expr)?;
     match &expected {
+        // A NARROW-INT annotation on a non-literal that `literal_width_fault` could not check directly — a
+        // runtime `(if c 10000 0)` / `(match …)` annotated `(: … UInt8)`: the value is neither a
+        // `Resolved::Int` nor a folding constant, so the scalar check above found nothing, yet each live
+        // branch of the conditional carries the annotation's narrow width. Route it through
+        // `width_fault_against_ty` (which descends a runtime `if` into both branches + range-checks the
+        // narrow int). A bare out-of-range literal in a branch (`(: (if c 10000 0) UInt8)`) then rejects at
+        // `check` as the emit path already does — closing the same check-vs-emit gap the compound arms close.
+        Ty::Int(_) => width_fault_against_ty(db, value, &expected),
         // A single-payload variant `(Some 999)` : `(Option Int8)` — drill the payload arg against the
         // payload type at this sum's instantiation. (A multi-payload variant boxes its payloads as a tuple;
         // its single ctor arg is that tuple, handled by the Tuple arm once drilled — kept simple here to the
@@ -1054,6 +1062,25 @@ fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) 
 /// `want` fit-checks a constant `value` (the same fold `literal_width_fault` runs); any other `want`
 /// recurses through the compound if `value` is one. Returns the first out-of-range literal's reject.
 fn width_fault_against_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<Reject> {
+    // A RUNTIME conditional `(if c a b)` in a narrow-width context: the WHOLE `if` carries the expected
+    // type `want`, so BOTH of its live branches must fit `want` — each branch is a value the annotation's
+    // width applies to. Without this a bare out-of-range literal in a branch (`(: (if c 10000 0) UInt8)`,
+    // or the same reaching a narrow PARAMETER) slipped through `cdz check` because a runtime `if` folds to
+    // neither a `Resolved::Int` nor a `Core::ConstInt` (the narrow-int block below then reads `v = None`
+    // and returns), while the EMIT path DID reject it (CDZ0302) — a check-vs-emit gap. Descend into each
+    // branch here so `check` catches it at the same choke point the compound-payload cases use. A CONSTANT-
+    // condition `if` is NOT descended: `core_of` folds it to its taken branch (handled by the constant path
+    // below), so a `Core::If` result marks a genuine runtime conditional with both branches live — checking
+    // both is sound (neither is dead), whereas descending a folded `if` would falsely reject a dead untaken
+    // out-of-range branch.
+    if matches!(
+        crate::lower::core_of(db, value),
+        crate::core::Core::If { .. }
+    ) && let Resolved::If { then_, else_, .. } = resolved_of(db, value)
+    {
+        return width_fault_against_ty(db, then_, want)
+            .or_else(|| width_fault_against_ty(db, else_, want));
+    }
     if let Ty::Int(it) = want
         && let crate::ty::Width::Fixed(w) = it.width
         && w != 0

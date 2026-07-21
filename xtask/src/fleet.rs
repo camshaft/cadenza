@@ -7092,6 +7092,20 @@ mod tests {
             decide_drain_nudge(true, true, None, 95, Some("m1"), Some(("", 950)), cg, sg),
             DrainNudge::Fresh
         );
+        // The CURRENT flag has NO resolvable id (its filename didn't parse) but we DID nudge before.
+        // `same_message` needs `flagged_id` to be Some, so a None current id can never match the prior
+        // one → it degrades to the CHURN branch (safe): suppress within the full grace, then re-nudge as
+        // Fresh — never a premature "didn't stick" Stuck re-nudge off an unidentifiable flag.
+        assert_eq!(
+            decide_drain_nudge(true, true, None, 95, None, Some(("m1", 200)), cg, sg),
+            DrainNudge::Skip,
+            "unresolvable current id within churn grace → suppress (not Stuck)"
+        );
+        assert_eq!(
+            decide_drain_nudge(true, true, None, 95, None, Some(("m1", 950)), cg, sg),
+            DrainNudge::Fresh,
+            "unresolvable current id past churn grace → Fresh, never Stuck"
+        );
     }
 
     #[test]

@@ -4529,14 +4529,34 @@ fn resolve_bin(db: &Db, id: StructId) -> Resolved {
             && !rest.is_empty()
             && rest.bytes().all(|b| b.is_ascii_digit())
         {
-            return Resolved::Poison(Reject::coded(
+            let mut reject = Reject::coded(
                 Code::Malformed,
                 format!(
                     "a fixed-width integer bin segment must be one of u8/u16/u32/u64 or i8/i16/i32/i64 \
                      (the byte-aligned widths) — `{kind_name}` is not; for an arbitrary bit width use a \
                      `(bits v k)` segment"
                 ),
-            ));
+            );
+            // A `uNN`/`iNN` whose width is a near-miss of a real byte-aligned kind (`u166`→`u16`,
+            // `u62`→`u64`, `u17`→`u16`) carries a rename fix on the kind head — the applyable half the
+            // "u62→u64 handled above" comment promised. HEURISTIC: it is a guess at a mistyped width, and
+            // the message still names `(bits v k)` for an author who genuinely wanted a non-aligned width,
+            // so both routes stay visible. The candidate pool is ONLY the SAME-signedness byte-aligned
+            // widths (a `u166` never suggests an `i16` — signedness is not the slip), so the suggestion
+            // stays a plausible width fix. A width too far from any byte-aligned kind (`u128`, `u9999`) is
+            // beyond `nearest`'s cutoff → no fix, just the `(bits v k)` guidance.
+            let signed = kind_name.starts_with('i');
+            const U_KINDS: &[&str] = &["u8", "u16", "u32", "u64"];
+            const I_KINDS: &[&str] = &["i8", "i16", "i32", "i64"];
+            let pool = if signed { I_KINDS } else { U_KINDS };
+            if let Some(suggestion) = crate::diag::suggest::nearest(kind_name, pool.iter().copied())
+            {
+                let head = parts[0];
+                reject = reject
+                    .at(head)
+                    .with_fix(crate::diag::Fix::replace_heuristic(head, suggestion));
+            }
+            return Resolved::Poison(reject);
         }
         // An unrecognized kind head. If it is a plausible typo of a known kind — `byte`→`bytes`,
         // `utf`/`utf-8`→`utf8`, `bit`→`bits`, `u62`→`u64` handled above — name it and carry a rename fix on

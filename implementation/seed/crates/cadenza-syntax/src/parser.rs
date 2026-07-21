@@ -4481,6 +4481,17 @@ mod tests {
             sexpr::print(&parse_ok("def get(#{ 1 = v }) = v")),
             "(def (get (map (1 v))) v)"
         );
+        // A `{`-led RECORD pattern parameter — the destructuring-record-arg the operator's DB-records
+        // fast-follow needed (backlog flagged it once mis-parsed "expected a name" in the param slot; it
+        // now parses like the other compound params). A partial (name a subset of fields) is fine.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f({ x = a, y = b }) = a")),
+            "(def (f (record (x a) (y b))) a)"
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def f({ x = a }) = a")),
+            "(def (f (record (x a))) a)"
+        );
         // Pattern parameters COMPOSE and mix with plain-name / annotated params.
         assert_eq!(
             sexpr::print(&parse_ok("def f([(a, b), .. rest]) = a")),

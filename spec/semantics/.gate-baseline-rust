@@ -4,6 +4,7 @@ pass	@ensures on a RECURSIVE def whose body is a HANDLE is re-checked at every r
 pass	@ensures on a def returning an @invariant type: establish (on construction) AND the postcondition (on ret) both fire (design §10, (D))
 pass	@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)
 pass	@ensures over a HANDLE-bodied def called with a runtime arg is enforced (the verify_enforce let-over-handle shape)
+pass	@ensures over a def whose body uses the `?` try-operator under an Option boundary — the postcondition matches the FALLIBLE result
 pass	@ensures predicate PROJECTS a RECORD field of the result (single field, and a two-field relation)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype traps on the empty list, constructs a non-empty one (design §10.1/§10.2, (D))
@@ -959,6 +960,7 @@ pass	a file-top default-fraction pragma fixes a type but adds no conversion — 
 pass	a file-top default-fraction pragma grounds a bare literal to its exact fraction
 pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
+pass	a dependent-size utf8 segment decodes a length-prefixed string
 pass	a final unquote-splice binds the remaining elements as a list
 pass	a fixed-arity list binding pattern is refutable and rejected
 pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
@@ -1796,6 +1798,7 @@ pass	a recursive do-local function survives two inlinings of its helper
 pass	a recursive effectful walk BUILDS a list as its return value, one fresh element per step
 pass	a recursive effectful walk accumulates into a STRING-state handler
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
+pass	a quantity in a recursive sum payload folds through construction and match
 pass	a recursive emitter dispatches on a sum's variants to build bytes per node
 pass	a recursive fold infers a callback applied to the RECURSIVE-CALL RESULT
 pass	a recursive fold of a cons-list to bytes is the whole program result
@@ -4315,3 +4318,5 @@ todo	a record of quantities RETURNED as a value renders every field scaled to it
 pass	a comparison against a constant outside a masked value's range folds, but an in-range one stays a runtime test
 pass	a bare literal grounded to a narrow width through a SHIFT spine is range-checked
 pass	a bare literal grounded to a narrow width through a BITWISE spine is range-checked
+pass	a prefixed quantity displays scaled to its reference over Float32
+pass	a prefixed quantity displays scaled to its reference over BigInt (exact, no truncation)

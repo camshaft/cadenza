@@ -2951,3 +2951,26 @@
   (output (: 1 Int64))
   (call   main (: 5 Int64))
   (trap   "unreachable"))
+
+(case "@ensures over a def whose body uses the `?` try-operator under an Option boundary — the postcondition matches the FALLIBLE result"
+  (doc    "Cross-seam pin: contract enforcement composes with the `?` short-circuit operator (v-try-operator).
+           `f` returns a fallible `(Option Int64)` and its body uses `(try (Some n))` to unwrap, so `ret` binds
+           the WRAPPED result (a `Some`/`None`), and the postcondition matches on it:
+           `@ensures(match ret ((Some v) (>= v 0)) ((None _u) true))`. The `?` needs a fallible enclosing
+           boundary to short-circuit to (DESIGN-try-operator §4/§6); this pins that verify_enforce's
+           `(let ((ret BODY)) (if Q ret trap))` wrapper does NOT disturb the boundary walk — `ret` still binds
+           the Option result and the `?` resolves against f's declared `(Option Int64)`. f(5) unwraps 5, builds
+           `(Some 6)` whose payload 6 >= 0 → main reads 6; f(-3) builds `(Some -2)` whose payload violates the
+           postcondition → traps. Runtime arg via main's param (no const-fold). Guards the try-operator × verify
+           seam so a future `?`-desugar or enforcement change cannot silently break enforcement over fallible
+           bodies.")
+  (input  (do
+            (@ (ensures (match ret ((Some v) (>= v 0)) ((None _u) true)))
+               (def (f (: n Int64))
+                 (: (let ((x (try (Some n)))) (Some (+ x 1))) (Option Int64))))
+            (def (main (: k Int64)) (match (f k) ((Some v) v) ((None _u) -1)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64))
+  (call   main (: -3 Int64))
+  (trap   "unreachable"))

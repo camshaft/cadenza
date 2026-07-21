@@ -11508,8 +11508,39 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                     ));
                 }
                 trace!(target: "rcdzc::lower", head = head.0, callee, callee_has_const, "specialization declined (const contract / undetermined generic type arg)");
-                let message = if callee_has_const {
+                // A FORWARDED-PARAM const arg: the const argument is a BARE reference to an ENCLOSING
+                // param/local binder (not a derived expression). This is the standalone-lowering false-
+                // reject — a def like `fold(it: Iter, acc, g)` that forwards its own param `g` (or a
+                // `step` destructured from an annotated `it: Iter`) into another def's `const` slot is
+                // lowered STANDALONE (it is monomorphic, so not specialized at its call site), where the
+                // forwarded param is an unbound runtime reference → this decline. Every REACHABLE call
+                // DOES have a concrete arg, so the reject is a compile-time provability gap, not a runtime
+                // bug — turn the cryptic message into an ACTIONABLE fix-it hint (concierge ruling, option
+                // C; the real fix, backward const-propagation, is a separate operator-gated arc). A
+                // DERIVED const arg (`fn(x)=>(step x)+1`, a composed closure) is NOT a bare param forward,
+                // so it keeps the plain message — it is a genuine runtime-data dependency.
+                let const_arg_is_forwarded_param = callee_has_const
+                    && callee_params.iter().zip(args.iter()).any(|(&p, &a)| {
+                        let occ = crate::eval::param_name_occ(db, p);
+                        db.const_params.contains(&occ)
+                            && db.ast.as_name(a).is_some()
+                            && matches!(
+                                resolved_of(db, a),
+                                Resolved::Ref { .. } | Resolved::Param { .. }
+                            )
+                    });
+                let message = if const_arg_is_forwarded_param {
+                    "an argument to a `const` parameter must be compile-time-known, but here it is a runtime \
+                     parameter forwarded from an enclosing function — that function is lowered on its own \
+                     (it is not specialized at its call sites), so the forwarded value is not known there. \
+                     Fix it by keeping the enclosing function POLYMORPHIC (drop a type annotation on the \
+                     intermediate parameter — e.g. `it` rather than `it: Iter` — so it specializes per call), \
+                     or INLINE the forwarding into the caller so the concrete argument reaches the `const` \
+                     parameter directly"
+                        .to_string()
+                } else if callee_has_const {
                     "an argument to a `const` parameter must be compile-time-known — it depends on runtime data"
+                        .to_string()
                 } else {
                     // The recursive-generic case: a type variable in the callee's scheme is not tied to any
                     // argument, so the monomorphizer has no concrete type to bind it to at this call. THREE
@@ -11542,6 +11573,7 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                      Add an explicit annotation — on a nested generic-call argument or on the result — \
                      annotate the closure's parameter type, use a single concrete element type, or make the \
                      definition monomorphic"
+                        .to_string()
                 };
                 Core::Poison(Reject::coded(Code::Malformed, message))
             }
