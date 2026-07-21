@@ -765,6 +765,7 @@ pass	a closure-payload sum picked by an if-helper, applied by a match-consumer, 
 pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a common constructor composes through a hoisted tuple field to build once
+pass	a comparison walls the FLOAT width from a literal above it
 pass	a comparison's trapping shared bound fires under a trap-free condition
 pass	a comparison-predicate function returns its boolean result
 pass	a compile-time type branch reads a runtime parameter's static type
@@ -997,7 +998,14 @@ pass	a file-top default-fraction pragma grounds a bare literal to its exact frac
 pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a dependent-size utf8 segment decodes a length-prefixed string
+pass	a fitting cross-function match projection computes at the narrow width
+pass	a fitting handler arm resume value computes under a narrow annotation
+pass	a fitting recursive annotated result computes at the narrow width
+pass	a float literal compared against a Float32 param computes at the narrow width
 pass	a large value in a NON-projected tuple slot does not trip the projection width check
+pass	a narrow-width overflow in a RECURSIVE function's annotated result is rejected
+pass	a narrow-width overflow in a handler arm resume value under a narrow annotation is rejected
+pass	a narrow-width overflow reached ACROSS a function boundary through a match projection is rejected
 pass	a narrow-width overflow reached through a MATCH projection of a runtime sum is rejected
 pass	a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected
 pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string

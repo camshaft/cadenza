@@ -1788,6 +1788,39 @@
                 (Qty.value (Env.width)))) (export main)))
   (output (: 5 Int64)))
 
+(case "a narrow-width overflow in a handler arm resume value under a narrow annotation is rejected"
+  (doc    "The EFFECTS face of the width fit-check: the whole `handle` sits under a `UInt8` annotation, so
+           the narrow width must propagate through the handle's result — the op's resume site — into the
+           arm's resume VALUE, where the runtime-conditional branch literal `10000` overflows (0..=255) →
+           CDZ0302. The resume value is the width descent's longest path yet: annotation → handle body's op
+           result → arm resume → runtime `if` branch literal. Without it the overflow would slip into the
+           resumed value exactly as the plain-`if` gap did. The fitting twin below computes.")
+  (input  (do
+            (effect Pick (op get (-> Unit Int64)))
+            (def (main (: c Bool))
+              (: (handle Pick 0
+                   ((get (u) s (resume (if c 10000 5) s)))
+                   (Pick.get unit))
+                 UInt8))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a fitting handler arm resume value computes under a narrow annotation"
+  (doc    "The no-over-reject control for the effects width face: the same handle shape resuming `(if c 100
+           5)` — both branch literals fit UInt8 — computes 100/5 per the runtime condition, at UInt8
+           end-to-end. Guards the resume-value width descent against rejecting every narrow-annotated
+           handle.")
+  (input  (do
+            (effect Pick (op get (-> Unit Int64)))
+            (def (main (: c Bool))
+              (: (handle Pick 0
+                   ((get (u) s (resume (if c 100 5) s)))
+                   (Pick.get unit))
+                 UInt8))
+            (export main)))
+  (call   main (: true Bool)) (output (: 100 UInt8))
+  (call   main (: false Bool)) (output (: 5 UInt8)))
+
 (case "a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom"
   (doc    "The `Result` companion of the Option-result case: an operation whose declared result is a
            `(Result Int64 Int64)`, resumed with an `Ok` or `Err` chosen by the arm, and the body dispatches
