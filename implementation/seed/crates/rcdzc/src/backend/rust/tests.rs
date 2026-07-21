@@ -1030,6 +1030,47 @@ fn a_tuple_with_a_float_leaf_keys_a_map_by_content_end_to_end() {
 }
 
 #[test]
+fn a_float_nested_inside_a_compound_key_field_is_wrapped_not_just_a_direct_float() {
+    // Copilot PR#741: `wrap_ord_key`'s tuple/record rebuild arms gated on a SHALLOW `.any(direct Float)`,
+    // but `ord_key_type` threads the `__CdzF{N}` wrapper through NESTED tuples/records. So a record field
+    // whose TYPE is `(Tuple Float Int)` (a float NOT directly in the record) got a wrapped key TYPE
+    // `(i64, (__CdzF64, i64))` but a BARE `f64` key VALUE (the rebuild was skipped) → rustc E0308. The
+    // guard is now the recursive `key_ty_has_wrappable_float`, so the nested float is wrapped on both
+    // insert + lookup and the key crosses. Regression: emit must NOT leave a bare `f64::from_bits` in the
+    // key expression, and the whole program must rustc-compile + look up by content.
+    let m = compile_rust(
+        "(module m (def (run) \
+           (match (Map.lookup \
+                    (Map.insert (Map.empty) (record (t (tuple 2.5 3)) (n 5)) 42) \
+                    (record (t (tuple 2.5 3)) (n 5))) \
+             ((Some v) v) ((None _) -1))) (export run))",
+    );
+    // The key type carries the nested wrapper; the emitted KEY VALUE must wrap that nested float too — i.e.
+    // a `__CdzF64::new(` inside the tuple rebuild, never a naked `f64::from_bits` sitting in a wrapper slot.
+    assert!(
+        m.contains("(__CdzF64, i64)") && m.contains("__CdzF64::new("),
+        "the nested float key field is wrapped in both type and value:\n{m}"
+    );
+    if let Some(out) = rustc_run(&m, "run()") {
+        assert_eq!(
+            out, "42",
+            "a record key with a nested (Tuple Float Int) field hits by content: 42"
+        );
+    }
+    // A distinct nested float misses → -1 (the nested float participates in the key comparison).
+    let miss = compile_rust(
+        "(module m (def (run) \
+           (match (Map.lookup \
+                    (Map.insert (Map.empty) (record (t (tuple 2.5 3)) (n 5)) 42) \
+                    (record (t (tuple 9.5 3)) (n 5))) \
+             ((Some v) v) ((None _) -1))) (export run))",
+    );
+    if let Some(out) = rustc_run(&miss, "run()") {
+        assert_eq!(out, "-1", "a distinct nested float in the key MISSES: -1");
+    }
+}
+
+#[test]
 fn float_set_key_wrapper_is_width_specific_and_the_reserved_name_never_collides() {
     // Copilot review on PR #487 found two bugs in the bare-float set/map key support:
     //  (1) the wrapper was WIDTH-BLIND — a `Float32` key emitted a `__CdzF64` (over `u64`) around an `f32`

@@ -210,18 +210,36 @@ pub fn emit_body(
 /// (`(__CdzF64::new(k.0), k.1)`), matching `ord_key_type`'s per-element threading — so a `(Tuple Float Int)`
 /// key crosses (v-runtime differential). A float nested in a SUM payload still declines upstream via `ty_is_ord_key`
 /// (a later increment); this rebuilds Tuples + Records (sorted-field order) + wraps bare floats.
+/// Whether a KEY/element type contains a FLOAT leaf that [`wrap_ord_key`] would lift to a `__CdzF{N}`
+/// wrapper — a bare float, OR a float nested inside a tuple/record (which `wrap_ord_key` rebuilds
+/// element-by-element). This is the recursion-aware guard the tuple/record rebuild arms gate on: it MUST
+/// track `wrap_ord_key`'s own descent (Float / Tuple / Record) so the two agree on whether a rebuild is
+/// needed — and, transitively, agree with [`types::ord_key_type`]'s wrapped key TYPE. A shallow
+/// direct-`Float` check would return false for a field of type `(Tuple Float Int)`, skipping the rebuild
+/// while `ord_key_type` still wraps that field's type → a bare `f64` value in a `__CdzF64` slot (rustc
+/// E0308). A nominal is peeled (the boundary erases the tag); any other shape has no wrappable float.
+fn key_ty_has_wrappable_float(ty: &Ty) -> bool {
+    match ty.strip_nominal() {
+        Ty::Float(_) => true,
+        Ty::Tuple(elems) => elems.iter().any(key_ty_has_wrappable_float),
+        Ty::Record(fields) => fields.values().any(key_ty_has_wrappable_float),
+        _ => false,
+    }
+}
+
 fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
     match key_ty {
         Ty::Float(ft) if ft.ground_width() == 32 => format!("__CdzF32::new({expr})"),
         Ty::Float(_) => format!("__CdzF64::new({expr})"),
-        // A tuple with any float element: bind the key once (it may be a non-trivial expr), then rebuild it
-        // wrapping each float element at its position. A float-free tuple has no float element → the rebuild
-        // is the identity `(k.0, k.1)`; skip it (emit verbatim) so a non-float tuple key stays unchanged.
-        Ty::Tuple(elems)
-            if elems
-                .iter()
-                .any(|e| matches!(e.strip_nominal(), Ty::Float(_))) =>
-        {
+        // A tuple with a float leaf ANYWHERE (a direct element OR nested in a tuple/record element): bind
+        // the key once (it may be a non-trivial expr), then rebuild it wrapping each element by position —
+        // the per-element `wrap_ord_key` recurses into a nested tuple/record and wraps its float leaves too.
+        // The guard is the RECURSIVE `key_ty_has_wrappable_float` (not a shallow direct-Float check): it MUST
+        // agree with `ord_key_type`, which threads the wrapper through nested tuples/records, so a field of
+        // type `(Tuple Float Int)` gets a wrapped key TYPE and therefore needs a wrapped key VALUE too — a
+        // shallow guard would skip the rebuild and emit a bare `f64` into a `__CdzF64` slot (rustc E0308).
+        // A float-free tuple has no wrappable leaf → skip the rebuild (emit verbatim) so it stays unchanged.
+        Ty::Tuple(elems) if elems.iter().any(key_ty_has_wrappable_float) => {
             let parts: Vec<String> = elems
                 .iter()
                 .enumerate()
@@ -235,13 +253,12 @@ fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
             format!("{{ let __k = {expr}; {rebuilt} }}")
         }
         // A RECORD erases to a Rust tuple in SORTED-field order (a `BTreeMap` iterates sorted), so a record
-        // with any float FIELD rebuilds exactly like a tuple — wrap each float field at its sorted position
-        // `.i`. Same identity-skip for a float-free record (no float field → verbatim).
-        Ty::Record(fields)
-            if fields
-                .values()
-                .any(|t| matches!(t.strip_nominal(), Ty::Float(_))) =>
-        {
+        // with a float leaf ANYWHERE (a direct field OR nested in a field's tuple/record) rebuilds exactly
+        // like a tuple — wrap each field at its sorted position `.i`, recursing into a nested field. Same
+        // RECURSIVE guard as the tuple arm (a field of type `(Tuple Float)` gets a wrapped key TYPE from
+        // `ord_key_type` and so must be rebuilt too — a shallow direct-Float check would miss it, E0308).
+        // Same identity-skip for a float-free record (no wrappable leaf → verbatim).
+        Ty::Record(fields) if fields.values().any(key_ty_has_wrappable_float) => {
             let parts: Vec<String> = fields
                 .values()
                 .enumerate()

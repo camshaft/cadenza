@@ -371,6 +371,7 @@ pass	a Float32-overflowing literal in a runtime if branch is rejected at check
 pass	a Float32-overflowing literal in a runtime match arm is rejected at check
 pass	a Float32-overflowing literal in argument position under a narrow parameter is rejected at check
 pass	a Float32-overflowing literal nested in a compound payload is rejected
+pass	a Float32-overflowing magnitude literal under a Float32 Qty inner type is rejected
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a GENUINELY-RUNTIME Rational map/set key is found by a normalized-equal key
@@ -404,6 +405,7 @@ pass	a MUTUALLY-recursive effectful group is specialized under a state handler
 pass	a Map accumulator threaded through a non-tail double tree recursion accumulates both subtrees
 pass	a Map.lookup over a map literal with a runtime key finds it by value
 pass	a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)
+pass	a NEGATIVE Float32-overflowing literal in a runtime branch is rejected
 pass	a NESTED Tuple ARG (a tuple containing a tuple) crosses the direct-call boundary
 pass	a NESTED Tuple ARG among scalar args crosses the direct-call boundary
 pass	a NESTED Tuple ARG among scalars with a LIST result
@@ -952,11 +954,14 @@ pass	a file-top default-fraction pragma grounds a bare literal to its exact frac
 pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a dependent-size utf8 segment decodes a length-prefixed string
+pass	a fitting Float32 Qty magnitude computes at the narrow inner width
 pass	a fitting cross-function match projection computes at the narrow width
 pass	a fitting handler arm resume value computes under a narrow annotation
 pass	a fitting recursive annotated result computes at the narrow width
 pass	a float literal compared against a Float32 param computes at the narrow width
 pass	a large value in a NON-projected tuple slot does not trip the projection width check
+pass	a literal just past the Float32 finite max overflows in a runtime branch
+pass	a magnitude literal that overflows the annotated Qty INNER width is rejected
 pass	a narrow-width overflow in a RECURSIVE function's annotated result is rejected
 pass	a narrow-width overflow in a handler arm resume value under a narrow annotation is rejected
 pass	a narrow-width overflow reached ACROSS a function boundary through a match projection is rejected
@@ -2453,6 +2458,8 @@ pass	a tuple payload at a late variant projects both fields by its own layout
 pass	a tuple payload consumed INLINE in the sum arm projects and re-matches
 pass	a tuple payload extracted through a helper return must not be rejected as a type error
 pass	a tuple payload returned through a helper from a built-in Option must not trap
+pass	a tuple with a Float64 element MISSES a Map key with a different float leaf
+pass	a tuple with a Float64 element is a Map key found by a separately-built equal key
 pass	a tuple with a runtime element is returned as a program result
 pass	a tuple with every element computed at run time is returned as a result
 pass	a tuple-of-two-sums match reads each sum's payload from its own slot (HM-unify shape)
@@ -4312,6 +4319,8 @@ pass	a Rational-inner quantity Set dedups equal elements and keeps distinct ones
 pass	a Rational-inner quantity stored in a List reads back canonicalized through List.at
 pass	a Set of lists-of-quantities dedups equal members and keeps distinct ones
 pass	a Set of nominal-over-quantity newtypes dedups equal members
+pass	a Set of tuples with a Float64 element dedups equal members by content
+pass	a Set of tuples with an f32 NaN element dedups by the canonical quiet NaN
 pass	a Set of tuples-containing-a-quantity dedups equal members and keeps distinct ones
 pass	a Set.remove of a checked-arith element behind a recursive-call set is disjoint-slotted
 pass	a Set.remove of a checked-arith element that is PRESENT drops exactly it (disjoint-slot value-parity)
@@ -4406,3 +4415,4 @@ pass	a NEGATIVE large-magnitude float renders its full expansion with its sign
 pass	a whole LIST of quantities renders every element scaled to reference in the value form
 pass	a bare literal annotated Float32 is grounded at binary32 precision (literal path, not a runtime demote)
 pass	a literal in a USER-DECLARED sum payload that overflows the annotated width is rejected
+pass	two composed times-minus-one strength reductions round-trip a normal operand but still trap at Int64.min
