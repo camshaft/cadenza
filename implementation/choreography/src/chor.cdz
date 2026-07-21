@@ -288,8 +288,8 @@ def purchase() =
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 // Tests — the Inc-0 gate.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
-@test
 /// `Chor` → `Ast` → `Chor` is the identity on `Purchase` (the flagship round-trip).
+@test
 def rt-purchase() = match from-ast(to-ast(purchase())) with
   | Option.Some(c) => (if chor-eq(c, purchase()) then
     unit
@@ -297,8 +297,8 @@ def rt-purchase() = match from-ast(to-ast(purchase())) with
     trap("Purchase Chor→Ast→Chor must be identity"))
   | Option.None(_) => trap("Purchase must parse back from its canonical node")
 
-@test
 /// The dual direction: `Ast` → `Chor` → `Ast` is the identity on Purchase's canonical node.
+@test
 def rt-purchase-ast() =
   let node = to-ast(purchase()) in
   match from-ast(node) with
@@ -308,8 +308,8 @@ def rt-purchase-ast() =
       trap("Purchase Ast→Chor→Ast must be identity"))
     | Option.None(_) => trap("Purchase canonical node must parse")
 
-@test
 /// Round-trip of each leaf/spine shape.
+@test
 def rt-done() = match from-ast(to-ast(Chor.Done)) with
   | Option.Some(c) => (if chor-eq(c, Chor.Done) then unit else trap("Done round-trips"))
   | Option.None(_) => trap("Done parses")
@@ -328,8 +328,8 @@ def rt-rec() =
     | Option.Some(c2) => (if chor-eq(c2, c) then unit else trap("Rec round-trips"))
     | Option.None(_) => trap("Rec parses")
 
-@test
 /// Round-trip must be non-vacuous: distinct choreographies must not compare equal.
+@test
 def chor-eq-distinguishes() =
   if chor-eq(Chor.Comm("A", "B", "M"), Chor.Comm("A", "B", "N")) then
     trap("distinct labels must not be equal")
@@ -353,45 +353,45 @@ def from-ast-rejects-non-name-role() = match from-ast(
   | Option.Some(_) => trap("comm with a non-name role must not parse")
   | Option.None(_) => unit
 
-@test
 /// Well-formedness — Purchase is well-formed against its declared roles.
+@test
 def wf-purchase-ok() =
   if wf(purchase-roles(), purchase()) then unit else trap("Purchase is well-formed")
 
-@test
 /// A comm to an UNDECLARED role is rejected.
+@test
 def wf-rejects-undeclared-role() =
   if wf(["Buyer", "Seller"], Chor.Comm("Buyer", "Shipper", "Ship")) then
     trap("a comm to the undeclared role Shipper must be rejected")
   else
     unit
 
-@test
 /// A self-communication (`from == to`) is rejected.
+@test
 def wf-rejects-self-comm() =
   if wf(["Buyer"], Chor.Comm("Buyer", "Buyer", "M")) then
     trap("a role cannot send to itself")
   else
     unit
 
-@test
 /// A choice at an undeclared chooser is rejected.
+@test
 def wf-rejects-undeclared-chooser() =
   if wf(["Seller"], Chor.Choice("Buyer", [Chor.Branch("A", Chor.Done)])) then
     trap("a choice at the undeclared role Buyer must be rejected")
   else
     unit
 
-@test
 /// A `Choice` whose children are not all branches is rejected.
+@test
 def wf-rejects-non-branch-in-choice() =
   if wf(["Buyer"], Chor.Choice("Buyer", [Chor.Done])) then
     trap("a choice child must be a Branch")
   else
     unit
 
-@test
 /// An unbound `Var` (no enclosing `Rec`) is rejected; a bound one is accepted.
+@test
 def wf-rejects-unbound-var() =
   if wf(["A", "B"], Chor.Var("Loop")) then trap("an unbound rec-var must be rejected") else unit
 

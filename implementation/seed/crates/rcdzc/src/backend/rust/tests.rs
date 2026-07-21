@@ -1438,6 +1438,33 @@ fn a_compound_tuple_of_quantities_emits_per_element_scale_notes() {
 }
 
 #[test]
+fn a_user_sum_qty_payload_emits_a_per_variant_scale_note() {
+    // REGRESSION (v-quantity follow-up): a Qty in a USER-DEFINED variant payload display-scales to its
+    // reference too — `Circle(Qty.of 3.0 km)` should render `(Circle (Qty.of 3000.0 meter))`, not raw 3.0.
+    // The per-element scale note keys a user-sum payload by the LOCAL `<variant>?<idx>` (the render's reused
+    // helper has no outer path prefix). A `Circle` payload declared at kilometer scales ×1000/1.
+    let m = compile_rust(
+        "(do (type Shape (Circle (Qty Float64 (Unit.prefix kilo (Unit.base #\"meter\")))) (Sq Int64)) \
+             (def (run) (Circle (Qty.of 3.0 (Unit.prefix kilo (Unit.base #\"meter\"))))) (export run))",
+    );
+    assert!(
+        m.contains("// cdz-qty-at[run]: Circle?0 1000/1"),
+        "the Circle Qty payload emits a per-variant scale note (Circle?0, 1000/1):\n{m}"
+    );
+    // (End-to-end value-form render is validated by the corpus gate case in 18-units-of-measure.sexp, which
+    // drives the full `cdz_render_expr` driver — `rustc_run`'s bare `println!("{}", …)` can't Display a sum.)
+    // A user sum whose payload is a SCALE-1 (reference) Qty emits no note (rendered as stored).
+    let m1 = compile_rust(
+        "(do (type Shape (Circle (Qty Float64 (Unit.base #\"meter\"))) (Sq Int64)) \
+             (def (run) (Circle (Qty.of 3.0 (Unit.base #\"meter\")))) (export run))",
+    );
+    assert!(
+        !m1.contains("// cdz-qty-at["),
+        "a reference-unit (scale-1) user-sum Qty payload emits no per-variant scale note:\n{m1}"
+    );
+}
+
+#[test]
 fn empty_set_at_a_call_arg_grounds_to_the_callee_param_element_not_the_default() {
     // REGRESSION (breaker adv-rust-empty-set-call-arg-elem-type-not-consulted-E0308): an empty
     // `(Set.of (list))` passed as a CALL ARGUMENT whose callee PARAM declares a `(Set Float64)` — with no

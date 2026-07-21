@@ -103,3 +103,15 @@ has the `if !host_imports.is_empty() { decline }` guard (mod.rs ~6845) unlike th
 - REMAINING AFTER THIS: (1) the STRING-PARAM host op shared-memory `_mem` variant (all sites decline via
   set_needs_memory today — a bigger increment, the (ptr,len) 2-slot ABI); (2) the `host_as_extern_for` dedup
   cleanup (PR#483 id 3596437345) once `cd923d38a` lands. Both non-urgent.
+
+## UPDATE (v-effects, 2026-07-21) — WITH-METHODS bytes site BUILT + COMMITTED, gate blocked on lease saturation.
+`assemble_host_runtime_resource_with_scalar_methods` (envelope.rs, +272) written as the host analogue of the
+peer with-methods twin (single "host" iface at comp inst/type 0, runtime 1, resource type 2; make+encode+
+len/is-empty/to-bytes); bytes-site host arm wired (mod.rs, +116, leading_is_host=true, scalar-only + single-
+effect + host+peer guards). +2 tests (bytes with-methods emit → valid component; two-distinct-host-effects
+decline). LOCAL VERIFY GREEN: both new tests pass, 198 host/resource/effect lib tests pass, compiles clean.
+COMMITTED `7efc9d54a` (on fleet/v-effects, unlanded). ⏳ NOT YET SENT: full `cargo xtask check` (needed for a
+byte-assembler emit change) could not complete — the shared check-lease pool is saturated (merge queue + peers),
+3 consecutive attempts all EXIT-124 "waiting for a check slot", never ran a stage. HOLDING the MR until the gate
+runs green (next tick when the pool frees) — will NOT send an ungated byte-assembler MR. Run at RUST_MIN_STACK=64M
+(the pre-existing CSE stack-mask). REMAINING AFTER: string-param `_mem` variant + the host_as_extern_for dedup.

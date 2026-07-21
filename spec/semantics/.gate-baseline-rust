@@ -3186,6 +3186,7 @@ pass	dividing a quantity by a bare number keeps its dimension
 pass	dividing a rational by a negative rational normalizes the quotient's sign
 pass	dividing an unusual-width minimum by -1 overflows its declared range and is rejected CDZ0304
 pass	dividing quantities divides their dimensions
+pass	complementary comparisons over different operand pairs do not fold to a tautology
 pass	dividing two same-dimension quantities cancels to a dimensionless number
 pass	division by zero traps
 pass	division of an integer and a float does not silently promote
@@ -3498,6 +3499,10 @@ pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
 pass	print of an exponent-scale Ast.Float round-trips through read
 pass	print of an integer-valued Ast.Float keeps its float form through read
+pass	print renders a bare Ast.Bool as its exact keyword text
+pass	print renders a bare Ast.Int as its exact decimal text
+pass	print renders a bare Ast.Name as its exact identifier text
+pass	print renders a bare NEGATIVE Ast.Int as its exact signed text
 pass	print renders a nested compound with a string leaf as its exact canonical text
 pass	print renders a single-element Ast.List as one parenthesized element
 pass	print renders a template that splices an Ast value — the non-executing path works
@@ -3886,6 +3891,7 @@ pass	the selected operand decides a hoisted comparison
 pass	the selected operand decides a hoisted float equality
 pass	the sequent-shaped kernel Thm is unforgeable — building Thm.Seq outside the kernel is CDZ0214
 pass	the shift-by-zero identities preserve a runtime narrow UInt8 (x << 0 = x, x >> 0 = x)
+pass	swapped-operand complements do not fold — less-than or flipped greater-equal is not a tautology
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the span between two equal Instants is zero — the inclusive lower boundary of `since`
@@ -4088,6 +4094,7 @@ pass	wrapping subtraction wraps modulo two to the sixty-fourth on underflow
 pass	wrapping-add on a runtime Int8 wraps at its signed boundary
 pass	wrapping-add on a runtime UInt8 wraps modulo 256
 pass	wrapping-add wraps a boundary-crossing runtime Int64 at the max boundary
+pass	the tautology fold keeps a trapping shared operand
 pass	wrapping-mul of the minimum integer by -1 wraps back to the minimum
 pass	wrapping-mul on a runtime UInt8 wraps modulo 256
 pass	wrapping-mul wraps a boundary-crossing runtime Int64

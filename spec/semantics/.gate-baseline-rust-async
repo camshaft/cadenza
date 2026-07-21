@@ -3186,6 +3186,7 @@ pass	eval of a quoted private constructor is withheld exactly as a direct refere
 pass	eval of a quoted proof-variant match cannot destructure an abstract proof outside the kernel
 pass	eval of a quoted string executes it to the string value
 pass	eval of a quoted theorem constructor cannot forge an abstract theorem outside the kernel
+pass	complementary comparisons over different operand pairs do not fold to a tautology
 pass	eval of a quoted tuple-construction form folds to the runtime tuple
 pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
 pass	eval of an Ast.Float NaN node executes to the NaN value — it does NOT construct an escaping node
@@ -3431,6 +3432,10 @@ pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
 pass	print of an exponent-scale Ast.Float round-trips through read
 pass	print of an integer-valued Ast.Float keeps its float form through read
+pass	print renders a bare Ast.Bool as its exact keyword text
+pass	print renders a bare Ast.Int as its exact decimal text
+pass	print renders a bare Ast.Name as its exact identifier text
+pass	print renders a bare NEGATIVE Ast.Int as its exact signed text
 pass	print renders a nested compound with a string leaf as its exact canonical text
 pass	print renders a single-element Ast.List as one parenthesized element
 pass	print renders a template that splices an Ast value — the non-executing path works
@@ -3886,6 +3891,7 @@ pass	two effects each declaring a same-named operation do not collide
 pass	two empty byte sequences are equal
 pass	two empty strings are equal
 pass	two equal chars compare equal
+pass	swapped-operand complements do not fold — less-than or flipped greater-equal is not a tautology
 pass	two expects of one bound optional share its resident handle
 pass	two exports normalizing to the same kebab extern name are rejected
 pass	two fallible reads of one Bytes parameter share its resident handle slot
@@ -4088,6 +4094,7 @@ todo	a round-trip alongside a plain export — the round-trip still works
 todo	a round-trip at a widened scalar width (UInt32)
 todo	a round-trip consumer applies a closure whose result is a nominal-over-scalar
 todo	a round-trip consumer applies the closure in a match wildcard arm
+pass	the tautology fold keeps a trapping shared operand
 todo	a round-trip consumer applies the closure only in the taken if-branch
 todo	a round-trip consumer binds the applied closure through a let
 todo	a round-trip consumer takes the non-applying match arm

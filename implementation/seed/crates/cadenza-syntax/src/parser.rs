@@ -5205,6 +5205,48 @@ mod tests {
             back.arenas.structurally_eq(&a),
             "embedded region round-trips: {printed:?}"
         );
+        // SURFACE fidelity (not just structural): the printer must re-emit the `json{ … }` SURFACE via
+        // the sub-grammar's own printer — NOT the generic application `embedded(#json, json-object(…))` a
+        // fall-through render produces (which is structurally-equal, so `structurally_eq` above passes
+        // either way, but is NOT the readable surface a user wrote / `cdz fmt` must preserve). This pins
+        // the embedded printer arm: without it, formatting a `json{ … }` file destroyed its embedded syntax.
+        assert!(
+            printed.contains("json{") && !printed.contains("embedded("),
+            "embedded region re-prints as the `json{{ … }}` surface, not `embedded(…)`: {printed:?}"
+        );
+    }
+
+    #[test]
+    fn an_embedded_region_nested_in_a_larger_expr_re_emits_its_surface() {
+        // `embedded_region_round_trips_through_the_printer` pins the TOP-LEVEL/def-body position; this pins
+        // the printer's `embedded` arm fires wherever `expr` recurses — an embedded region nested inside a
+        // let / tuple / call / list (realistic: a `json{ … }` config as a fn arg or let binding). Each must
+        // re-emit the `grammar{ … }` SURFACE (not the generic `embedded(…)` application) AND round-trip
+        // structurally. Guards against a regression where only the top-level path re-sugars.
+        for src in [
+            r#"def f() = let x = json{ [1, 2] } in x"#,
+            r#"def f() = g(json{ {"k": "v"} })"#,
+            r#"def f() = (json{ {"a": 1} }, toml{ x = 1 })"#,
+            r#"def f() = [json{ 1 }, json{ 2 }]"#,
+        ] {
+            let a = parse_ok(src);
+            let printed = crate::printer::print(&a, 80);
+            assert!(
+                !printed.contains("embedded("),
+                "nested embedded must re-emit its `grammar{{ … }}` surface, not `embedded(…)`: \
+                 {src:?} -> {printed:?}"
+            );
+            let back = read_ml(&printed);
+            assert!(
+                back.ok(),
+                "printed form re-parses: {printed:?}: {:?}",
+                back.errors
+            );
+            assert!(
+                back.arenas.structurally_eq(&a),
+                "nested embedded round-trips: {src:?} -> {printed:?}"
+            );
+        }
     }
 
     #[test]

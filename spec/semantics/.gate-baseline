@@ -3186,6 +3186,7 @@ pass	dimensional equality is decided by canonical exponent map, not written form
 pass	disjunction is false exactly when both operands are false
 pass	disjunction shields a trapping right operand when the left is true
 pass	distinct large floats are not equal
+pass	complementary comparisons over different operand pairs do not fold to a tautology
 pass	distinct names bound to the same string key the same map entry
 pass	distinct seeds produce distinct generated values (the stream covers, it is not constant)
 pass	distinct signatures sharing a core valtype shape dispatch distinct bodies
@@ -3560,6 +3561,10 @@ pass	print of an Ast.Float renders a re-readable decimal and read inverts it
 pass	print of an Ast.Str renders a quoted literal with escapes and read inverts it
 pass	print of an exponent-scale Ast.Float round-trips through read
 pass	print of an integer-valued Ast.Float keeps its float form through read
+pass	print renders a bare Ast.Bool as its exact keyword text
+pass	print renders a bare Ast.Int as its exact decimal text
+pass	print renders a bare Ast.Name as its exact identifier text
+pass	print renders a bare NEGATIVE Ast.Int as its exact signed text
 pass	print renders a nested compound with a string leaf as its exact canonical text
 pass	print renders a single-element Ast.List as one parenthesized element
 pass	print renders a template that splices an Ast value — the non-executing path works
@@ -3886,6 +3891,7 @@ pass	the intersection of disjoint sets is empty
 pass	the intersection of sets of TUPLES matches elements by their whole-tuple content
 pass	the keeping + bitwise self-identities hold on a runtime SIGNED narrow Int8 at a negative value
 pass	the kernel defines T (truth) as a constant and DERIVES |- T through the rules
+pass	swapped-operand complements do not fold — less-than or flipped greater-equal is not a tautology
 pass	the kernel proves reflexivity end-to-end: refl t yields a theorem whose conclusion is (t = t)
 pass	the kernel proves the identity theorem ⊢ (λx.x) y = y via BETA — the first-theorem milestone
 pass	the kernel proves the tautology ⊢ p ⇒ p via DISCH (implication introduction) over ASSUME
@@ -4088,6 +4094,7 @@ pass	two performs bound by nested lets thread the handler state in order
 pass	two performs of a MULTI-parameter op each combine both args with the state advancing between them
 pass	two rationals denoting the same number are equal regardless of how they were written
 pass	two recursion-built linked lists compare equal by a deep heap walk
+pass	the tautology fold keeps a trapping shared operand
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
 pass	two runtime Bytes values of equal content compare equal (rope vs flat)
 pass	two runtime Ok values of a multi-parameter sum compare equal by a heap walk

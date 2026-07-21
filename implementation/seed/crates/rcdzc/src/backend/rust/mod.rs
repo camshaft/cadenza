@@ -97,16 +97,26 @@ fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
 /// display-scale notes (`// cdz-qty-at[ident]: <path> <num>/<den>`). The `path` is the render's descent
 /// route into the Rust value — the SAME positional `.N` field indices `cdz_render_at` uses (a tuple field
 /// `i` is `(<path>).i`, a record field `i` in sorted order is `.i`), joined by `.` (e.g. `0`, `1`, `0.1`
-/// for a nested tuple's second field). SCOPE (this slice): TUPLE + RECORD holes only — where the logical
-/// path is EXACTLY the render's positional `.i` descent, so emit and render key identically. A Qty inside
-/// an Option/Result payload or a List element is a FOLLOW-UP (the render binds those under a fresh binder,
-/// not a `.i` field, so the path scheme differs). The empty path (`""`) — a TOP-LEVEL bare Qty — is NOT
-/// collected here: it already carries its scale via the single `// cdz-scale` note. Only a
-/// `qty_scale_supported` inner (Int/Float/Rational) at a non-1 scale gets an entry (scale-1 renders as
-/// stored). Mirrors wasm `const_value_ast_scaled`'s per-element scale-fold. Returns entries in descent order.
-fn collect_qty_scale_paths(t: &crate::ty::Ty, path: &str, out: &mut Vec<(String, i128, i128)>) {
+/// for a nested tuple's second field). COVERS: TUPLE + RECORD holes (positional `.i`), OPTION/RESULT
+/// payloads (`?N`, N = type-arg index), and USER-DEFINED sum variant payloads (keyed by the LOCAL
+/// `<variant>?<idx>` — the render's per-sum helper is reused across call-sites so it can't see an outer path
+/// prefix; a monomorphic user sum only, a generic one's payload carries unsubstituted type params). A
+/// RECURSIVE sum is cycle-guarded via `visited` (its own decl on the descent path → skip, else infinite
+/// recursion → stack overflow). STILL a follow-up: a Qty inside a LIST element (the render's list binder is
+/// per-iteration). The empty path (`""`) — a TOP-LEVEL bare Qty — is NOT collected: it carries its scale via
+/// the single `// cdz-scale` note. Only a `qty_scale_supported` inner (Int/Float/Rational) at a non-1 scale
+/// gets an entry (scale-1 renders as stored). Mirrors wasm `const_value_ast_scaled`'s per-element scale-fold.
+fn collect_qty_scale_paths(
+    db: &mut Db,
+    t: &crate::ty::Ty,
+    path: &str,
+    out: &mut Vec<(String, i128, i128)>,
+    visited: &mut Vec<crate::ast::StructId>,
+) {
     use crate::ty::Ty;
-    match t.strip_nominal() {
+    // `strip_nominal` borrows `t`; clone the stripped type so `db` can be reborrowed mutably in the sum arm.
+    let t = t.strip_nominal().clone();
+    match &t {
         // Skip the top-level bare Qty (empty path) — the existing single `// cdz-scale` note covers it; only
         // a NESTED Qty (non-empty path) at a non-1 scale over a supported inner needs a per-element note.
         Ty::Qty { inner, unit } if !path.is_empty() => {
@@ -122,7 +132,7 @@ fn collect_qty_scale_paths(t: &crate::ty::Ty, path: &str, out: &mut Vec<(String,
                 } else {
                     format!("{path}.{i}")
                 };
-                collect_qty_scale_paths(e, &child, out);
+                collect_qty_scale_paths(db, e, &child, out, visited);
             }
         }
         Ty::Record(fields) => {
@@ -133,14 +143,13 @@ fn collect_qty_scale_paths(t: &crate::ty::Ty, path: &str, out: &mut Vec<(String,
                 } else {
                     format!("{path}.{i}")
                 };
-                collect_qty_scale_paths(ft, &child, out);
+                collect_qty_scale_paths(db, ft, &child, out, visited);
             }
         }
         // An OPTION/RESULT payload (the well-known 2-variant sums the render descends into with a fresh
         // binder). Use a `?N` path segment (N = the type-arg index: Option's payload is `?0`, Result's Ok
         // is `?0` / Err is `?1`) — a segment the render's Option/Result arms mirror when they extend the
-        // logical path. A USER sum stays out of scope (its render is a generated recursive helper that does
-        // not thread a static path). So a `(Option (Qty km))` result scales its payload; a nested
+        // logical path. So a `(Option (Qty km))` result scales its payload; a nested
         // `(Tuple (Option (Qty km)) …)` composes (`0?0`).
         Ty::Sum { name, args, .. } if name == "Option" || name == "Result" => {
             for (i, a) in args.iter().enumerate() {
@@ -149,7 +158,44 @@ fn collect_qty_scale_paths(t: &crate::ty::Ty, path: &str, out: &mut Vec<(String,
                 } else {
                     format!("{path}?{i}")
                 };
-                collect_qty_scale_paths(a, &child, out);
+                collect_qty_scale_paths(db, a, &child, out, visited);
+            }
+        }
+        // A USER-DEFINED sum — resolve each variant's payload types via the type decl and recurse, keying by
+        // the LOCAL `<variant-name>?<payload-idx>` (NO outer path prefix). WHY local: the render routes a user
+        // sum through a helper `fn __render_<Sum>` generated ONCE per sum type + REUSED across call-sites
+        // (keyed by the sum name, not the descent path), so the helper cannot know an outer path prefix — it
+        // keys its Qty payloads by the local `<variant>?<idx>`. To stay consistent, emit the SAME local key.
+        // SCOPE: correct for a user sum at the TOP-LEVEL result (v-quantity's `Circle(3km)`) or wherever the
+        // `<variant>?<idx>` is unambiguous; a user sum NESTED inside another compound is imperfect (the helper
+        // loses the prefix) — a documented follow-up. MONOMORPHIC user sums only (a generic sum's payload
+        // carries unsubstituted `T{k}` type params here). A `Circle(Qty km)` payload scales to reference.
+        Ty::Sum { decl, .. } => {
+            // GUARD a RECURSIVE sum (`IntList = Cons(Tuple Int64 IntList) | Nil`): its payload references the
+            // sum itself, so descending unguarded recurses forever → stack overflow. Skip a decl already on
+            // the descent path (its Qty leaves, if any, are collected at the first visit). `visited` tracks
+            // sum decls currently being walked.
+            if visited.contains(decl) {
+                return;
+            }
+            if let Some(t) = db.type_decl_by_occ(*decl) {
+                // Clone the (name, payload-occs) pairs first — `typeval_of` takes `&mut db`.
+                let variants: Vec<(String, Vec<crate::ast::StructId>)> = t
+                    .variants
+                    .iter()
+                    .map(|v| (v.name.clone(), v.payloads.clone()))
+                    .collect();
+                visited.push(*decl);
+                for (vname, payload_occs) in variants {
+                    for (i, occ) in payload_occs.iter().enumerate() {
+                        if let Some(pty) = crate::eval::typeval_of(db, *occ) {
+                            // LOCAL key (no `path` prefix) — matches the reused helper's keying.
+                            let child = format!("{vname}?{i}");
+                            collect_qty_scale_paths(db, &pty, &child, out, visited);
+                        }
+                    }
+                }
+                visited.pop();
             }
         }
         _ => {}
@@ -872,7 +918,7 @@ fn emit_signature(
     // mirroring wasm `const_value_ast_scaled`. Scale-1 leaves emit no note (rendered as stored).
     let qty_at_notes = {
         let mut paths = Vec::new();
-        collect_qty_scale_paths(result, "", &mut paths);
+        collect_qty_scale_paths(db, result, "", &mut paths, &mut Vec::new());
         paths
             .iter()
             .map(|(p, num, den)| format!("// cdz-qty-at[{ident}]: {p} {num}/{den}\n"))

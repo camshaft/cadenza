@@ -325,6 +325,42 @@
   (input  (= (print (quote (f))) "(f)"))
   (output (: true Bool)))
 
+; The bare-LEAF companions of the compound exact-print cases above. The compound cases pin exact spacing/
+; nesting/parens; these pin the exact text a BARE scalar leaf renders — the `read(print v) == v` round-trip
+; cases prove the printer/reader are inverses but a round-trip NORMALIZES, so it does not pin the literal
+; string `print` emits for a lone leaf. A printer that rendered an Int with a leading `+`, a Bool as `#t`,
+; or a Name with surrounding quotes would still round-trip yet emit the wrong exact text — caught here.
+; `Ast.Int` (positive + NEGATIVE, so the sign is exact), `Ast.Bool` (the bare keyword), `Ast.Name` (the
+; bare identifier, no quotes — the Str-vs-Name print distinction). Float exact-text is pinned separately.
+
+(case "print renders a bare Ast.Int as its exact decimal text"
+  (doc    "`print (Ast.Int 42)` is exactly `\"42\"` — the bare decimal, no `+` sign, no leading zero, no
+           wrapper. The leaf companion of the compound exact-print cases; pins the literal text a lone Int
+           leaf emits, which the normalizing round-trip cases don't fix.")
+  (input  (= (print (Ast.Int 42)) "42"))
+  (output (: true Bool)))
+
+(case "print renders a bare NEGATIVE Ast.Int as its exact signed text"
+  (doc    "`print (Ast.Int -7)` is exactly `\"-7\"` — the minus is part of the rendered text (not dropped,
+           not spaced). The signed companion of the positive-Int exact-print case.")
+  (input  (= (print (Ast.Int -7)) "-7"))
+  (output (: true Bool)))
+
+(case "print renders a bare Ast.Bool as its exact keyword text"
+  (doc    "`print (Ast.Bool true)` is exactly `\"true\"` — the bare boolean keyword the reader re-lexes as
+           `Ast.Bool`, not `#t`/`True`/`1`. Pins the exact Bool rendering (a printer emitting a different
+           spelling would still round-trip via read's keyword arm yet emit wrong text).")
+  (input  (= (print (Ast.Bool true)) "true"))
+  (output (: true Bool)))
+
+(case "print renders a bare Ast.Name as its exact identifier text"
+  (doc    "`print (Ast.Name \"foo\")` is exactly `\"foo\"` — the bare identifier with NO surrounding quotes
+           (the print-side of the Name-vs-Str distinction: a Str renders `\"foo\"` WITH quotes, a Name
+           without). A printer that quoted a Name would re-lex it as an `Ast.Str` — this pins that it does
+           not.")
+  (input  (= (print (Ast.Name "foo")) "foo"))
+  (output (: true Bool)))
+
 (case "the AST is a sum type deconstructible by pattern matching"
   (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value (2nd sentence): the AST is a
            sum type with variants for each syntactic form. Pattern matching over (quote 42) binds
