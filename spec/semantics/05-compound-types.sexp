@@ -10056,6 +10056,34 @@
   (call   main (: -0.0 Float32)) (output (: 2 Int64))
   (call   main (: 0.0 Float32))  (output (: 1 Int64)))
 
+(case "a NaN float leaf in a tuple Map key is found by a differently-computed NaN"
+  (doc    "The NaN face of the float-in-compound-key family, on the LOOKUP path: insert under `(tuple (/ x
+           x) 3)` at `x = 0.0` (0/0 = a computed NaN, off the const-fold) and look up with `(tuple
+           Float64.nan 3)` → 42. Every NaN canonicalizes to the one quiet NaN at CONSTRUCTION, so the two
+           differently-produced NaNs share one byte form inside the tuple and the CHAMP lookup hits. The
+           compound-key companion of the bare `NaN map key is found` case, at f64 width and via Map.lookup
+           (the fresh Set-dedup pin covers the f32 insert path).")
+  (input  (do
+            (def (main (: x Float64))
+              (let ((m (Map.insert Map.empty (tuple (/ x x) 3) 42)))
+                (match (Map.lookup m (tuple Float64.nan 3)) ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main (: 0.0 Float64)) (output (: 42 Int64)))
+
+(case "a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup"
+  (doc    "The lookup-MISS face of the ±0.0 compound-key edge: the insert-distinctness cases above pin that
+           -0.0 and 0.0 make two entries; this pins the complementary read — a map keyed by `(tuple x 3)` at
+           `x = -0.0` reports None (-1) for `(Map.lookup m (tuple 0.0 3))`, and the same shape at `x = 0.0`
+           hits (42). A lookup path that normalized the zero sign (or compared leaves by IEEE `=`, where
+           -0.0 = 0.0) would wrongly hit on the first call.")
+  (input  (do
+            (def (main (: x Float64))
+              (let ((m (Map.insert Map.empty (tuple x 3) 42)))
+                (match (Map.lookup m (tuple 0.0 3)) ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main (: -0.0 Float64)) (output (: -1 Int64))
+  (call   main (: 0.0 Float64)) (output (: 42 Int64)))
+
 (case "a map consumed by Map.take in one operand is unchanged for a later read of the same binding"
   (doc    "The persistence companion of the Map.take cases above and the value-yielding-remove twin of the
            Map.remove / Map.swap persistence pins: `Map.take` produces `(tuple <dropped-opt> <new-map>)` and

@@ -1603,24 +1603,24 @@
             ((Err _) false)))
   (output (: true Bool)))
 
-; --- The Int payload is a SIGNED two's-complement i64: negatives and the range boundary round-trip ---
-; ast-encoding.md: an `Ast.Int n` encodes as tag 0x00 then `n` as 8 bytes little-endian TWO'S-COMPLEMENT
-; i64 (`encode_ast_value`/`decode_ast_value` in lower.rs). The round-trip case above uses only the small
-; positive `7`, which never exercises the sign bit or the full 8-byte width — so a decoder that mis-reads
-; the payload as UNSIGNED, or a re-emit that sign-extends wrongly (the recurring hand-emitted-const class
-; the house rules warn about), would pass `7` yet corrupt a negative or large value. These pin the SIGNED
-; boundary: `i64::MIN` (-9223372036854775808 — the asymmetric two's-complement extreme, whose magnitude
-; is not representable as a positive i64), and that `-1` and `1` encode to DISTINCT bytes (a decoder that
-; drops the sign collapses them). A negative nested in a compound pins the same through the recursive
-; encoder. Promoted from passing probes (breaker rule: pin the invariant so a future codec change can't
-; quietly flip it).
+; --- The Int payload is a NON-LOSSY sign + magnitude: negatives and the range boundary round-trip ---
+; ast-encoding.md: an `Ast.Int n` encodes as tag 0x00 + 1 sign byte + a 4-byte LE magnitude length + the
+; big-endian minimal magnitude (`encode_ast_value`/`decode_ast_value` in lower.rs) — a NON-LOSSY form
+; (operator directive: parametric integers must never truncate), so the magnitude is arbitrary-precision,
+; not a fixed 8-byte i64. The round-trip case above uses only the small positive `7`, which never
+; exercises the sign byte or a multi-byte magnitude — so a decoder that dropped the sign, or mis-read the
+; length, would pass `7` yet corrupt a negative or large value. These pin the SIGNED boundary: `i64::MIN`
+; (-9223372036854775808 — its magnitude is not representable as a positive i64, catching a
+; negate-during-decode bug), and that `-1` and `1` encode to DISTINCT bytes (they differ only in the sign
+; byte — a decoder that dropped it collapses them). A negative nested in a compound pins the same through
+; the recursive encoder. Promoted from passing probes (breaker rule: pin the invariant so a future codec
+; change can't quietly flip it).
 
 (case "the Int codec round-trips i64::MIN — the two's-complement boundary"
-  (doc    "`Ast.Int -9223372036854775808` (i64::MIN) encodes+decodes to an equal AST. This is the extreme
-           of the signed 8-byte payload — its magnitude has no positive i64 representation, so a decoder
-           that reads the bytes as unsigned, or negates during re-encode, corrupts it. The negative
-           companion of the `Ast.Int 7` round-trip: pins the SIGNED two's-complement contract at its
-           hardest value. `Ast.decode` is total, so the round-trip matches the `Ok` arm.")
+  (doc    "`Ast.Int -9223372036854775808` (i64::MIN) encodes+decodes to an equal AST. Its magnitude has no
+           positive i64 representation, so a decoder that negated during decode, or dropped the sign byte,
+           corrupts it. The negative companion of the `Ast.Int 7` round-trip: pins the sign+magnitude
+           contract at a hard value. `Ast.decode` is total, so the round-trip matches the `Ok` arm.")
   (input  (match (Ast.decode (Ast.encode (Ast.Int -9223372036854775808)))
             ((Ok a)  (= a (Ast.Int -9223372036854775808)))
             ((Err _) false)))
@@ -2039,15 +2039,61 @@
             ((Err _) 0)))
   (output (: 0 Int64)))
 
-(case "decode of a truncated Int tag (fewer than eight payload bytes) yields the error case"
-  (doc    "The Int decode arm reads a fixed 8-byte two's-complement payload after tag 0x00; a payload of
-           only 3 bytes is not a canonical encoding, so `Ast.decode` returns `Err`. The Int-arm companion
-           of the truncated-Float case (both fixed-width payloads): pins the length check on the Int arm —
-           a dropped check would partial-read a garbage integer rather than declining.")
+; The Int payload is NON-LOSSY (operator directive: parametric integers must never silently truncate),
+; encoded as tag 0x00 + 1 sign byte (0 non-negative, 1 negative) + a 4-byte LE u32 magnitude length + that
+; many big-endian magnitude bytes (ast-encoding.md; same length-prefix framing as Str/List). `Ast.decode`
+; stays TOTAL over this variable-length form, and enforces the canonical `IntValue` invariant so the
+; encoding is a bijection: exactly these decode adversarial inputs to `Err`, never a panic or wrong value.
+(case "decode of an Int tag with a truncated magnitude-length yields the error case"
+  (doc    "After tag 0x00 the Int arm reads a 4-byte LE magnitude length; `(0 1 2 3)` supplies the sign
+           byte (1) then only TWO of the four length bytes, so the length prefix is truncated and
+           `Ast.decode` returns `Err`. The variable-length successor of the old fixed-8-byte truncation
+           case: pins that the length prefix itself is bounds-checked, never partial-read.")
   (input  (match (Ast.decode (Bytes.of (list 0 1 2 3)))
             ((Ok _)  1)
             ((Err _) 0)))
   (output (: 0 Int64)))
+
+(case "decode of an Int tag whose magnitude is shorter than its declared length yields the error case"
+  (doc    "The Int arm reads `length` magnitude bytes after the 4-byte length; `(0 0 2 0 0 0)` declares a
+           2-byte magnitude but supplies ZERO magnitude bytes, so `Ast.decode` returns `Err`. The
+           magnitude-side companion of the truncated-length case — pins the bounds check on the magnitude
+           read, mirroring the Str/List length-vs-present cases.")
+  (input  (match (Ast.decode (Bytes.of (list 0 0 2 0 0 0)))
+            ((Ok _)  1)
+            ((Err _) 0)))
+  (output (: 0 Int64)))
+
+(case "decode of an Int tag with a leading-zero magnitude byte is non-canonical and yields the error case"
+  (doc    "The `IntValue` invariant is a MINIMAL big-endian magnitude (no leading zero bytes), so the
+           encoding is a bijection with one canonical form. `(0 0 2 0 0 0 0 1)` (sign 0, length 2,
+           magnitude `00 01`) has a leading zero byte — a non-canonical encoding of the value 1 — so
+           `Ast.decode` returns `Err` rather than accepting a second spelling of the same value. Pins that
+           decode rejects a non-minimal magnitude, keeping encode/decode a bijection.")
+  (input  (match (Ast.decode (Bytes.of (list 0 0 2 0 0 0 0 1)))
+            ((Ok _)  1)
+            ((Err _) 0)))
+  (output (: 0 Int64)))
+
+(case "decode of an Int tag marked negative with a zero-length magnitude is non-canonical (no negative zero)"
+  (doc    "Zero's one canonical encoding is sign 0 + length 0 (no magnitude bytes); there is no negative
+           zero. `(0 1 0 0 0 0)` marks the sign NEGATIVE with a zero-length magnitude — a negative zero,
+           not canonical — so `Ast.decode` returns `Err`. Pins the signed-zero canonicalization on the
+           decode side, the byte-codec companion of the text-path negative-zero float cases.")
+  (input  (match (Ast.decode (Bytes.of (list 0 1 0 0 0 0)))
+            ((Ok _)  1)
+            ((Err _) 0)))
+  (output (: 0 Int64)))
+
+(case "decode of a canonical length-prefixed Int magnitude round-trips to its value"
+  (doc    "The positive-path witness of the non-lossy format: `(0 0 1 0 0 0 42)` (tag 0x00, sign 0, length
+           1, magnitude byte 0x2A) decodes to `Ast.Int 42`. Pins that the sign+magnitude-length+magnitude
+           layout reassembles the exact value — the constructive companion of the adversarial-`Err` cases
+           above.")
+  (input  (match (Ast.decode (Bytes.of (list 0 0 1 0 0 0 42)))
+            ((Ok (Ast.Int n)) n)
+            (_                -1)))
+  (output (: 42 Int64)))
 
 (case "decode of an empty byte string (no tag) yields the error case"
   (doc    "The zero-length input has no leading tag byte to dispatch on, so `Ast.decode` returns `Err`
