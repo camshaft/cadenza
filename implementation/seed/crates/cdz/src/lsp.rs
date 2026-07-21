@@ -2094,39 +2094,54 @@ fn top_level_defs_with_spans(text: &str, is_ml: bool) -> Vec<(String, Range, Ran
     out
 }
 
-/// The `CallHierarchyItem` for the top-level definition whose NAME occurrence contains `pos` — the anchor
-/// a `callHierarchy/prepare` returns. `None` when the cursor is not on a top-level definition's name.
+/// The `CallHierarchyItem` for the top-level definition the cursor refers to — the anchor a
+/// `callHierarchy/prepare` returns. Prepares from EITHER the definition's own name OR a USE of it
+/// (rust-analyzer prepares from a call site too): the cursor's name atom is matched against the top-level
+/// defs by name, so a cursor on `helper` anywhere — its `def` or any `helper(…)` call — yields helper's
+/// item. `None` when the cursor is not on a name that names a top-level definition.
 fn call_hierarchy_item_at(
     text: &str,
     is_ml: bool,
     pos: Position,
     uri: &Uri,
 ) -> Option<CallHierarchyItem> {
-    // Match on the NAME range (the def's own identifier), so preparing from the declaration works; the
-    // `Symbols`-backed kind gives the icon. First def whose name range covers the cursor wins.
+    let (arenas, spans, _errors) = parse_surface(text, is_ml).ok()?;
+    // The name atom under the cursor (a def name, or a use of one). A cursor off any name → None.
+    let byte = position_to_byte(text, pos);
+    let cursor_name = spans
+        .node_at_offset(byte)
+        .and_then(|n| arenas.as_name(n))
+        .map(str::to_string);
     let kinds: std::collections::HashMap<String, String> = top_level_symbols_of(text, is_ml)
         .into_iter()
         .map(|(n, k, _)| (n, k))
         .collect();
-    for (name, full_range, name_range) in top_level_defs_with_spans(text, is_ml) {
-        if range_contains(&name_range, pos) {
-            let kind = kinds
-                .get(&name)
-                .map(|k| symbol_kind_to_document_kind(k))
-                .unwrap_or(SymbolKind::FUNCTION);
-            return Some(CallHierarchyItem {
-                name,
-                kind,
-                tags: None,
-                detail: None,
-                uri: uri.clone(),
-                range: full_range,
-                selection_range: name_range,
-                data: None,
-            });
-        }
-    }
-    None
+    // Match a top-level def either by NAME-range containment (cursor on the decl) OR by the cursor's name
+    // atom (cursor on a use elsewhere). The decl-range check wins first (exact), then the name match.
+    let defs = top_level_defs_with_spans(text, is_ml);
+    let hit = defs
+        .iter()
+        .find(|(_, _, name_range)| range_contains(name_range, pos))
+        .or_else(|| {
+            cursor_name
+                .as_ref()
+                .and_then(|cn| defs.iter().find(|(n, _, _)| n == cn))
+        })?;
+    let (name, full_range, name_range) = hit.clone();
+    let kind = kinds
+        .get(&name)
+        .map(|k| symbol_kind_to_document_kind(k))
+        .unwrap_or(SymbolKind::FUNCTION);
+    Some(CallHierarchyItem {
+        name,
+        kind,
+        tags: None,
+        detail: None,
+        uri: uri.clone(),
+        range: full_range,
+        selection_range: name_range,
+        data: None,
+    })
 }
 
 /// The incoming calls to the definition `name` in `text` — every top-level def that references it, each as
@@ -4793,6 +4808,22 @@ mod tests {
         assert_eq!(
             item.selection_range.start.line, 0,
             "selection is the name on line 0"
+        );
+    }
+
+    #[test]
+    fn call_hierarchy_prepare_works_from_a_use_site() {
+        // rust-analyzer prepares call hierarchy from a CALL SITE too, not just the declaration. A cursor on
+        // the `helper` USE in main's body yields helper's item (its DECL range, on line 0), so the client
+        // can ask "who else calls helper" starting from a call it's looking at.
+        let text = "def helper(x: Int64) -> Int64 = x + 1\ndef main() -> Int64 = helper(2)";
+        // Cursor on the `helper` USE in main (line 1). "def main() -> Int64 = " is 22 chars → col 22.
+        let item = call_hierarchy_item_at(text, true, Position::new(1, 22), &test_uri())
+            .expect("an item from the use site");
+        assert_eq!(item.name, "helper");
+        assert_eq!(
+            item.selection_range.start.line, 0,
+            "the item anchors on helper's DECLARATION (line 0), not the use: {item:?}"
         );
     }
 

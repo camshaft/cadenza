@@ -1513,6 +1513,32 @@
   (call   main (: false Bool))
   (output (: 15 Int64)))
 
+; The BORROWED-operand companion of the inline eta-closure pin above. When the if-of-partial-ctors is
+; LET-BOUND first (`(let ((g (if c (T.Mk 1) (T.Mk 10)))) (g 5))`), the `CallClosure` operand reaches emit as
+; a `Core::LocalRef` to `g`, which `heap_operand_ownership` classifies BORROWED (select.rs) — NOT Owned. So
+; SITE-A part b (`0c0adc7e4`) does NOT drop the cell here (its gate requires an Owned operand); the `let`'s
+; own drop reclaims it instead. This exercises the OTHER reclaim path than the inline pin (Owned → part-b
+; drops): a part-b that ignored the Owned gate and dropped a borrowed LocalRef cell would DOUBLE-FREE it (the
+; let drops it too), corrupting the value or trapping. Pins that the let-bound closure computes correctly AND
+; is reclaimed exactly once. `c=true` → `Mk 1 5` → 6; `c=false` → `Mk 10 5` → 15.
+(case "a let-bound if-selected partial constructor is applied and reclaimed once (borrowed-operand path)"
+  (doc    "The let-bound companion of the inline eta-closure pin: `(let ((g (if c (T.Mk 1) (T.Mk 10)))) (g
+           5))` binds the if-of-partial-ctors to `g`, so the `CallClosure` operand is a `Core::LocalRef`
+           (BORROWED, not Owned) — SITE-A part b leaves the cell to the `let`'s drop rather than dropping it
+           itself. A part-b that dropped the borrowed cell would double-free it (the let drops it too). Pins
+           the value is correct AND the env cell is reclaimed exactly once: `c=true` → `Mk 1 5` → 6; `c=false`
+           → `Mk 10 5` → 15. Complements the inline `((if c …) 5)` Owned-operand pin above.")
+  (input  (do
+            (type T (Mk Int64 Int64))
+            (def (main (: c Bool))
+              (let ((g (if c (T.Mk 1) (T.Mk 10))))
+                (match (g 5) ((Mk a b) (+ a b)))))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: 6 Int64))
+  (call   main (: false Bool))
+  (output (: 15 Int64)))
+
 ; A PREDICATE closure — a runtime closure whose RESULT TYPE is Bool. `(fn (x) (= x k))` is a `(-> Int64
 ; Bool)` value threaded through the recursive `anyp` ("does any i in n…1 satisfy the predicate?"), which
 ; SHORT-CIRCUITS on the first `true`. The closure's result crosses the `call_indirect` boundary as a

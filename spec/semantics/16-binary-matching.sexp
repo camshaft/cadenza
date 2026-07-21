@@ -817,7 +817,14 @@
                   (_ -1)))
               (export main)))
   (call   main (: 2 UInt8) (: 300 UInt16))
-  (output (: 1300 Int64)))
+  (output (: 1300 Int64))
+  ; The FIRST-arm hit: tag 1 selects the `x` arm, returning the raw field (300).
+  (call   main (: 1 UInt8) (: 300 UInt16))
+  (output (: 300 Int64))
+  ; The MISS→DEFAULT fallthrough: tag 9 matches neither literal-tag arm, so the runtime if-chain falls
+  ; through every arm predicate to the `_` catch-all (-1) — the tail of the per-arm nested `if`, NOT a trap.
+  (call   main (: 9 UInt8) (: 300 UInt16))
+  (output (: -1 Int64)))
 
 (case "a runtime bytes value is spliced into a length-prefixed frame"
   (doc    "`(bin (u16 3) (bytes b))` with `b` a RUNTIME `Bytes` value splices `b` after a two-byte header,

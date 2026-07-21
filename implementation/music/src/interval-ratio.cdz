@@ -139,6 +139,14 @@ def to-semitones-floor(i: RInterval) = Rational.floor(octaves(i) * Rational.of-i
 /// value. `floor(x) <= truncate(x)/exact <= ceil(x)`, with equality for any on-grid (integer) x.
 def to-semitones-ceil(i: RInterval) = Rational.ceil(octaves(i) * Rational.of-int(12))
 
+/// The ROUND projection: `octaves × 12` rounded to the NEAREST whole semitone, ties half-AWAY-from-zero
+/// (prelude's `Rational.round`, landed 2026-07-21 — the operator-ruled MIDI-snap tie-break). This is the
+/// RECOMMENDED default for snapping an arbitrary rational interval (a microtonal/just-intonation pitch) to
+/// the closest 12-TET semitone: 7.4→7, 7.5→8, -7.5→-8. On the 12-TET grid it equals the exact value like
+/// the others. Prefer this over truncate/floor/ceil when you want nearest-semitone (the usual "quantize to
+/// MIDI" intent); use the directed variants when you specifically want toward-zero / down / up.
+def to-semitones-round(i: RInterval) = Rational.round(octaves(i) * Rational.of-int(12))
+
 /// ============================ @test suite (rational intervals) ============================
 @test
 def a-fifth-is-seven-twelfths-of-an-octave() =
@@ -342,6 +350,27 @@ def ceil-rounds-up-for-a-positive-off-grid-interval() =
     if to-semitones-floor(quarter-sharp-fifth) == 7 then unit else trap("floor -> 7")
   else trap("ceil -> 8")
 
+@test
+def round-snaps-to-the-nearest-semitone-ties-away-from-zero() =
+  // The recommended default snap. Just under a tie: 7/12 + 1/48 octave = 29/48 → 7.25 semitones → 7.
+  // Exactly a tie: 15/24 octave = 7.5 → 8 (half-AWAY-from-zero). Its negative -7.5 → -8 (away from zero).
+  let near-fifth = rinterval(Rational.of(29, 48)) in
+  let quarter-sharp-fifth = rinterval(Rational.of(15, 24)) in
+  if to-semitones-round(near-fifth) == 7 then
+    if to-semitones-round(quarter-sharp-fifth) == 8 then
+      if to-semitones-round(r-negate(quarter-sharp-fifth)) == (0 - 8) then unit else trap("-7.5 → -8")
+    else trap("7.5 → 8 (tie away from zero)")
+  else trap("7.25 → 7")
+
+@test
+def round-agrees-with-the-others-on-the-grid() =
+  // On the 12-TET grid round == truncate == floor == ceil == the exact value (no fractional part).
+  if to-semitones-round(r-perfect-fifth) == 7 then
+    if to-semitones-round(r-octave) == 12 then
+      if to-semitones-round(r-negate(r-perfect-fifth)) == (0 - 7) then unit else trap("descending fifth → -7")
+    else trap("octave → 12")
+  else trap("fifth → 7")
+
 export {
   RInterval.*,
   rinterval,
@@ -372,4 +401,5 @@ export {
   to-semitones,
   to-semitones-floor,
   to-semitones-ceil,
+  to-semitones-round,
 }
