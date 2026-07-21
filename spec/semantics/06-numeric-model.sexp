@@ -680,6 +680,58 @@
   (call   main (: true Bool)) (output (: 5 UInt8))
   (call   main (: false Bool)) (output (: 7 UInt8)))
 
+(case "a narrow-width overflow reached ACROSS a function boundary through a match projection is rejected"
+  (doc    "The CROSS-FUNCTION face of the projection width descent: the runtime sum is built in a HELPER —
+           `(def (get (: c Bool)) (if c (Ok 10000) (Err 1)))` — and the narrow annotation sits in MAIN on the
+           match that extracts it: `(: (match (get c) ((Ok v) v) ((Err e) 0)) UInt8)`. The UInt8 width must
+           propagate backwards through the arm binder into get's INFERRED result type and reach the `Ok`
+           payload literal in the OTHER function → CDZ0302. Pins that inference's whole-program result-type
+           unification carries the width constraint across the call, not only within one body. The fitting
+           twin (100 in the same two-function shape) computes 100 (pinned as the control below).")
+  (input  (do
+            (def (get (: c Bool))
+              (if c (Ok 10000) (Err 1)))
+            (def (main (: c Bool))
+              (: (match (get c) ((Ok v) v) ((Err e) 0)) UInt8))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a fitting cross-function match projection computes at the narrow width"
+  (doc    "The no-over-reject control for the cross-function projection face: the helper builds `(Ok 100)` /
+           `(Err 1)` and main's UInt8-annotated match extracts 100 — every literal fits, so the program
+           computes 100 at UInt8. Guards the cross-call width propagation against rejecting fitting helpers.")
+  (input  (do
+            (def (get (: c Bool))
+              (if c (Ok 100) (Err 1)))
+            (def (main (: c Bool))
+              (: (match (get c) ((Ok v) v) ((Err e) 0)) UInt8))
+            (export main)))
+  (call   main (: true Bool)) (output (: 100 UInt8)))
+
+(case "a narrow-width overflow in a RECURSIVE function's annotated result is rejected"
+  (doc    "The RECURSION face: `(def (f (: n Int64)) (: (if (= n 0) 10000 (f (- n 1))) UInt8))` — the
+           annotated result grounds the base-case literal `10000` at UInt8 THROUGH the recursive `if` (whose
+           other branch is the recursive call, typed by f's own result) → CDZ0302. Pins that the branch
+           descent is not derailed by a self-referential branch: the recursive-call branch contributes the
+           (in-progress) result type, and the literal branch still width-checks. The fitting twin (100)
+           computes through 3 levels of recursion (control below).")
+  (input  (do
+            (def (f (: n Int64))
+              (: (if (= n 0) 10000 (f (- n 1))) UInt8))
+            (def (main (: n Int64)) (f n))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a fitting recursive annotated result computes at the narrow width"
+  (doc    "The control: the same self-recursive shape with base-case literal `100` (fits UInt8) unwinds 3
+           levels and computes 100 at UInt8. Guards the recursive branch descent against over-rejecting.")
+  (input  (do
+            (def (f (: n Int64))
+              (: (if (= n 0) 100 (f (- n 1))) UInt8))
+            (def (main (: n Int64)) (f n))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 100 UInt8)))
+
 ; The width fit-check must reach a literal whose narrow width is fixed CONTEXTUALLY + TRANSITIVELY through an
 ; integer-arith spine — not just its immediate binop sibling. `(+ (* 10000 …) (% a b))` over UInt8 params:
 ; the `+` unifies its two operands to one width, so the `%`'s UInt8 propagates up to the `*`, and the `*`
@@ -749,6 +801,35 @@
   (input  (do (def (main (: a UInt8) (: b UInt8)) (+ (* 10000 (if (< a b) 1 0)) (if (< a b) 1 0))) (export main)))
   (call   main (: 3 UInt8) (: 5 UInt8))
   (output (: 10001 Int64)))
+
+(case "a float literal compared against a Float32 param computes at the narrow width"
+  (doc    "The float face of comparison-OPERAND grounding: `(< a 1.5)` over `(: a Float32)` — the comparison
+           unifies its two OPERANDS (its result is Bool, but the operands must share one width), grounding
+           the bare `1.5` at Float32, where it fits exactly. `0.5 < 1.5` → 1, `2.5 < 1.5` → 2. Pins that a
+           float literal grounded by a comparison operand computes at the narrow width — the comparison-
+           operand sibling of the arith-operand fitting case above.")
+  (input  (do
+            (def (main (: a Float32))
+              (if (< a 1.5) 1 2))
+            (export main)))
+  (call   main (: 0.5 Float32)) (output (: 1 Int64))
+  (call   main (: 2.5 Float32)) (output (: 2 Int64)))
+
+(case "a comparison walls the FLOAT width from a literal above it"
+  (doc    "The float twin of the integer comparison-boundary case above: `(+ 1.0e300 (if (< a b) 0.0 1.0))`
+           over Float32 params — `a`/`b` appear ONLY as `<` operands, whose Bool result walls their narrow
+           width from the arith spine above, so `1.0e300` stays at its Float64 default (where it is finite
+           and FITS) and the sum computes at f64. Witnessed by equality against `1.0e300` (adding 0.0 or 1.0
+           to 1.0e300 is absorbed at f64 precision — both branches equal the literal). If the Float32 width
+           leaked across the comparison, `1.0e300` would ground at binary32 → ±inf (today) or a reject (once
+           the contextual float fit-check lands) — either way the equality would break. Guards the comparison
+           boundary for the float width family, exactly as the 10001 case does for the integer family.")
+  (input  (do
+            (def (main (: a Float32) (: b Float32))
+              (= (+ 1.0e300 (if (< a b) 0.0 1.0)) 1.0e300))
+            (export main)))
+  (call   main (: 1.0 Float32) (: 2.0 Float32)) (output (: true Bool))
+  (call   main (: 2.0 Float32) (: 1.0 Float32)) (output (: true Bool)))
 
 ; The arith-spine climb fires for EVERY arith operator, not just `+`/`*` (the case above). `is_arith` covers
 ; `+`/`-`/`*`/`/`/`%` — each unifies its two operands to ONE width, so a concretely-fixed sibling anywhere up a
