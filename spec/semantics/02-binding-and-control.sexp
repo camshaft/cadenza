@@ -4365,6 +4365,50 @@
   (call   main (: 5 Int64) (: 5 Int64))
   (output (: (tuple 1 0 1 0) (Tuple Int64 Int64 Int64 Int64))))
 
+; The complementary-comparison fold above fires on IDENTICAL operand pairs. These pin its GUARDS —
+; the faces where a fold keyed on comparison SHAPE rather than operand identity (or one that dropped
+; the discarded operand's evaluation) would miscompile. The fold's own comment says "caller
+; trap-guards the discard"; these witness both that guard and the two identity preconditions.
+
+(case "complementary comparisons over different operand pairs do not fold to a tautology"
+  (doc    "`(or (< a b) (>= a c))` with b ≠ c is NOT exhaustive — at a=5,b=3,c=9 BOTH disjuncts are false
+           (5 ≮ 3, 5 < 9) → 0; at a=5,b=9,c=9 the first holds → 1. A fold matching only the comparison
+           SHAPE `(or (< _ _) (>= _ _))` without checking the operand pairs are IDENTICAL folds this to
+           true and returns 1 at the first call. The operand-identity precondition of the tautology fold.
+           Expected: 0, 1.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64) (: c Int64))
+              (if (or (< a b) (>= a c)) 1 0))
+            (export main)))
+  (call   main (: 5 Int64) (: 3 Int64) (: 9 Int64)) (output (: 0 Int64))
+  (call   main (: 5 Int64) (: 9 Int64) (: 9 Int64)) (output (: 1 Int64)))
+
+(case "the tautology fold keeps a trapping shared operand"
+  (doc    "`(or (< (/ a z) 5) (>= (/ a z) 5))` IS the exhaustive pair — the fold may answer true — but
+           the shared operand `(/ a z)` carries a divide-by-zero at z = 0: the fold must not DISCARD its
+           evaluation (the trap is a defined outcome; the same is_trap_free discipline as the x·0
+           annihilator). z=2 → 1 (folded or not); z=0 → trap. Expected: 1, trap.")
+  (input  (do
+            (def (main (: a Int64) (: z Int64))
+              (if (or (< (/ a z) 5) (>= (/ a z) 5)) 1 0))
+            (export main)))
+  (call   main (: 10 Int64) (: 2 Int64)) (output (: 1 Int64))
+  (call   main (: 10 Int64) (: 0 Int64)) (trap "integer divide by zero"))
+
+(case "swapped-operand complements do not fold — less-than or flipped greater-equal is not a tautology"
+  (doc    "`(or (< a b) (>= b a))` LOOKS complementary but `(>= b a)` is `(<= a b)`, not `(>= a b)` — the
+           pair is exhaustive only at a ≠ b... in fact `(< a b) ∨ (<= a b)` = `(<= a b)`, which is FALSE
+           at a > b: a=7,b=3 → 0 (both disjuncts false); a=3,b=7 → 1. A fold that matched the operator
+           pair but ignored operand ORDER would fold to true and return 1 at the first call. The
+           operand-order precondition, completing the guard set with the different-pairs and trap faces
+           above. Expected: 1, 0.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (if (or (< a b) (>= b a)) 1 0))
+            (export main)))
+  (call   main (: 3 Int64) (: 7 Int64)) (output (: 1 Int64))
+  (call   main (: 7 Int64) (: 3 Int64)) (output (: 0 Int64)))
+
 ; --- Zero-equality instruction selection (eqz) keys on VALUE and width -----------------------------
 ; e316ef2cd selects `(= x 0)` to a single `eqz` at the Compare emit site. The selection must key on
 ; a VALUE zero in either operand order, test the NORMALIZED narrow value for a masked width (the

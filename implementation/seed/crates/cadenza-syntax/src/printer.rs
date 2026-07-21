@@ -62,6 +62,7 @@ fn print_mode(arenas: &Arenas, width: usize, display: bool) -> String {
         display,
         depth: 0,
         suppress_leading_docs: false,
+        width,
     };
     // In display mode, an outer `(: value type)` result annotation is stripped — a rendered value
     // shows the value, not its type. Only at the ROOT (a nested ascription is a real program form).
@@ -126,6 +127,9 @@ struct Printer<'a> {
     /// annotation-comment adjacency the frontend is touchy about (v-cad/v-cdz-tooling report). A
     /// one-shot flag (like `delimit_body`): set, print the form, taken+cleared at the def's doc site.
     suppress_leading_docs: bool,
+    /// The target column width the whole print targets — threaded to the sub-grammar printer for an
+    /// embedded region (`json{ … }` / `toml{ … }`), which renders its own body at the same width.
+    width: usize,
 }
 
 /// The `expr`-recursion depth ceiling for the ML printer. Set FAR above the reader's
@@ -510,6 +514,22 @@ impl<'a> Printer<'a> {
                 return;
             }
             // ---- quasiquote / unquote sigils ----
+            // ---- first-class embedded syntax `(embedded #grammar <subtree>)` -> `grammar{ <text> }` ----
+            // The reader parses a `json{ … }` / `toml{ … }` region by handing the body to the sub-grammar's
+            // OWN reader and grafting its arena under `(embedded #<grammar> <subtree>)`. Re-emit that
+            // SURFACE by dispatching to the sub-grammar's OWN printer on the grafted subtree, so a
+            // `json{ … }` round-trips (and `cdz fmt`) as `json{ … }` — NOT as the generic application
+            // `embedded(#json, json-object(…))` a fall-through render would produce, which is not the
+            // readable surface (a print-fidelity bug the structural round-trip misses, since the generic
+            // form re-parses to the same tree). Only the reserved grammars have a printer; an unknown tag
+            // (should not occur — the reader only grafts reserved tags) falls through to the generic render.
+            if head == "embedded"
+                && args.len() == 2
+                && let Some(grammar) = self.a.as_sym(args[0])
+                && self.print_embedded(grammar, args[1])
+            {
+                return;
+            }
             if head == "quasiquote" && args.len() == 1 {
                 self.doc.word("`{ ");
                 self.expr(args[0], 0);
@@ -1764,6 +1784,29 @@ impl<'a> Printer<'a> {
             return;
         }
         self.expr(ty, 0);
+    }
+
+    /// Render a first-class embedded-syntax region `(embedded #<grammar> <subtree>)` as its SURFACE
+    /// `grammar{ <text> }`, dispatching to the sub-grammar's OWN printer on the grafted subtree. Returns
+    /// `true` if it emitted (a reserved grammar with a printer), `false` for an unknown tag (caller falls
+    /// through to the generic render). `#[inline(never)]` so its locals (the sub-arena + rendered body
+    /// `String`) do NOT bloat the recursive `expr`/`list` hub's stack frame — inlining them tipped a
+    /// MAX_NESTING_DEPTH-deep arena walk over the test thread's stack (the deep-flat-chain guard), exactly
+    /// like `print_param_pragma`. Without this arm a `json{ … }` re-printed as the generic application
+    /// `embedded(#json, json-object(…))` — structurally equal, so the round-trip test passed, but NOT the
+    /// readable surface, so `cdz fmt` destroyed embedded syntax.
+    #[inline(never)]
+    fn print_embedded(&mut self, grammar: &str, subtree: StructId) -> bool {
+        let sub = crate::query::Tree::from_arena(self.a, subtree).to_arena();
+        let body = match grammar {
+            "json" => crate::json::print(&sub, self.width),
+            "toml" => crate::toml_surface::print(&sub, self.width),
+            _ => return false,
+        };
+        // `grammar{ <body> }` — a single space inside the braces so it re-lexes as the region (the reader
+        // scans raw bytes from just after `{`; the tag must be GLUED to `{`, which `word` preserves).
+        self.doc.word(format!("{grammar}{{ {} }}", body.trim()));
+        true
     }
 
     /// Render an `@!param` module directive `(pragma param (param <kv>…) (: name Type))` as

@@ -8,27 +8,36 @@ calculator). You can look at https://github.com/camshaft/rsolid and my printing 
 I'm after … port rsolid to cadenza and make a really nice interface for it. I don't really care about the
 openscad backend - I think manifold is a lot faster route. And I'm pretty sure it compiles to wasm too."*
 
-> **STATUS (updated 2026-07-16) — G1 + G2 BUILT & MERGED; G3 blocked on an operator scope call.**
-> Progress by the `v-cad` vertical:
-> - ✅ **G1 model library** — `implementation/cad/` (the recursive `Solid` sum + Vec3 + primitives + boolean
->   combinators + transforms + `simplify` + analysis folds). 45 `@test`, gated by the `cad-tests` CI job.
-> - ✅ **G4 (partial)** — worked examples `plate`/`washer`/`capsule`/`tube`/`cube-row`/`radial-pattern`/`gear`
->   in `implementation/cad/src/examples.cdz`.
-> - ✅ **G2 native driver — COMPLETE** — the `cdz-cad` crate (`implementation/seed/crates/cdz-cad`,
->   workspace-excluded so its C++/cmake `manifold-csg` build never burdens the seed): parse a rendered
->   `Solid` s-expr → mesh via manifold → write **STL + binary glTF** (extension-dispatched) → report the
->   **bounding box** (extents/size/center). Driven as `cdz run model.cdz | cdz-cad - -o out.stl|out.glb`.
->   36 tests incl. an integration suite over the real examples. Manifold binds as a per-surface DRIVER (B1,
->   §2), NOT a Cadenza peer — confirmed: `manifold-csg` builds+runs on aarch64.
-> - ⏸️ **G3 browser `/cad`** — DESIGNED + de-risked, but HELD on an operator SCOPE decision (does a heavy-dep
->   three.js/manifold-3d app-page belong in the guide vs a standalone surface vs defer). Territory split with
->   v-guide-infra agreed. Awaiting the `answer`.
-> - 🔧 One language gap found + reported (not worked around, per the assign): a recursive Float64-compare fold
->   hits an unimplemented runtime scalar-Float64-`==` (`fix-scalar-eq-misclassified`) → the language-side
->   `bounding-box` fold is deferred (the native `bounds` covers it meanwhile).
+> **STATUS: ✅ SHIPPED & LIVE (updated 2026-07-21). The vertical delivered end-to-end; both operator
+> follow-on features (assembly-as-code + parametric snowflake) are live in the `/cad` picker.** The
+> reconciliation below is the current state; the original 2026-07-15 design pass (from §0 down) is retained
+> verbatim as the record — but note it describes a **Float64** geometry model that was SUPERSEDED by the
+> operator's exact-Rational/Qty redirect (see the ⚠ below).
 >
-> The original design pass (below) was written against `trunk` @ `9ae29c12a`; **two ⚑ decisions** (§3) shipped
-> on their chosen defaults (D1 plain applicative surface, D2 = B1 render-tree-as-data — both borne out).
+> ### ✅ What shipped (read this first — supersedes the older progress notes)
+> - **The model went EXACT-RATIONAL, not Float64.** The operator redirected mid-build ("it should all be
+>   RATIONALS everywhere … strong typing about units"): `Vec3`/`Solid` are **generic over the coordinate
+>   type**, the CAD model is exact `Rational` (units-carrying `Qty(Rational, meter)` in `units-model.cdz`),
+>   and `f64` appears ONLY at the manifold FFI leaf. So §§ below that say "Numerics are Float64" / "Vec3 =
+>   record of Float64" are the OLD plan — superseded. (Companion docs: `DESIGN-cad-units-everywhere.md` P1,
+>   `DESIGN-cad-profiles-extrude-paths.md`.)
+> - **`bounding-box` SHIPPED** (exact, in `exact.cdz`) — the Float64-compare gap that deferred it is moot
+>   over Rational (total order); the recursive fold is exact. (The one-time O(2^n) ANF match-binder-reuse
+>   miscompile it later hit was fixed by v-compiler-perf.)
+> - **G1 model** — `Empty/Cube/Sphere/Cylinder` + booleans + `Translate/Scale` + **`Rotate`/`Mirror`**
+>   (added as the snowflake/assembly enabler) + `ExtrudeLinear`/`Revolve` + `Path`/`Profile` (splines) +
+>   `simplify-r` + exact `bounding-box`. 119 `@test`, gated by the `cad-tests` CI job.
+> - **G2 native driver** (`cdz-cad`, workspace-excluded) — parse SolidR s-expr → manifold mesh → STL +
+>   binary glTF → bounding box. 54 tests. Manifold is a per-surface DRIVER (B1), not a Cadenza peer.
+> - **G3 browser `/cad` — SHIPPED & LIVE** (the scope call resolved to in-guide, lazy-route). Compiles a
+>   BARE model buffer against the **preloaded** CAD library (P5, `compile_with_preloaded`) — the reader edits
+>   only their model. Renders via `manifold-3d` + three.js; the picker carries the primitive showcases +
+>   both operator features (assembly-l-bracket, assembly-parametric-bracket, parametric-snowflake).
+> - **Both operator follow-on features delivered + operator-confirmed:** assembly-as-code (plain + parametric
+>   L-bracket) and the seed→unique parametric snowflake (built inline from primitives).
+> - **D1/D2** (§3) shipped on their chosen defaults, borne out.
+>
+> The original design pass follows, verbatim (Float64-era — see the redirect note above).
 
 This design leans on one structural finding, exactly the way the calculator design did: **almost none of
 this is new language work.** A CSG model is *Cadenza data* — a recursive sum (the CSG tree) over records

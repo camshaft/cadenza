@@ -339,6 +339,19 @@ impl Arenas {
         }
     }
 
+    /// The contents of a symbol-literal `Atom` (`#"json"` → `"json"`), if `id` is one. Distinct from
+    /// [`as_name`] (an identifier) — a symbol is a `#"…"` name-value, e.g. the grammar tag of an
+    /// `(embedded #<grammar> …)` node.
+    pub fn as_sym(&self, id: StructId) -> Option<&str> {
+        match self.get(id) {
+            Struct::Atom(l) => match self.leaf(*l) {
+                Leaf::Sym(s) => Some(s),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// The contents of a string-literal `Atom`, if `id` is one.
     pub fn as_str(&self, id: StructId) -> Option<&str> {
         match self.get(id) {

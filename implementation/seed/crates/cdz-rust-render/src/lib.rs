@@ -1080,9 +1080,9 @@ pub fn cdz_render_at(
                         // A single-payload variant → `(Name <payload>)`, the payload rendered from `__p`
                         // (its own type — a scalar, tuple, record, or nested sum; kept nested if a tuple).
                         1 => {
-                            // Inside a recursive-sum helper fn — the per-element Qty scale map does not
-                            // track paths across the runtime recursion, so pass `""` (a Qty payload here
-                            // renders raw, this slice's out-of-scope path — Qty-in-user-sum is a follow-up).
+                            // Key a Qty payload by the LOCAL `<variant>?0` (the helper is reused across
+                            // call-sites, so no outer path prefix — matches the emit walk's user-sum key).
+                            let child_lp = format!("{vname}?0");
                             let inner = cdz_render_at(
                                 &payloads[0],
                                 "__p",
@@ -1091,7 +1091,7 @@ pub fn cdz_render_at(
                                 sum_params,
                                 None,
                                 None,
-                                "",
+                                &child_lp,
                                 qty_at,
                                 helpers,
                                 on_path,
@@ -1110,6 +1110,8 @@ pub fn cdz_render_at(
                                 .iter()
                                 .enumerate()
                                 .map(|(i, pty)| {
+                                    // Local key `<variant>?<i>` per payload slot (helper reused; no prefix).
+                                    let child_lp = format!("{vname}?{i}");
                                     cdz_render_at(
                                         pty,
                                         &format!("(__p).{i}"),
@@ -1118,7 +1120,7 @@ pub fn cdz_render_at(
                                         sum_params,
                                         None,
                                         None,
-                                        "",
+                                        &child_lp,
                                         qty_at,
                                         helpers,
                                         on_path,
