@@ -1563,22 +1563,10 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
             type_name,
             variants,
         } => build_sum_gen(ast, type_name, variants, binds),
-        // `(Set.of (list <gen:ELEM> …))` — build a fixed-length list then dedup into a set.
-        GenTy::Set(elem) => {
-            let list_head = name(ast, "list");
-            let mut list_children = vec![list_head];
-            for _ in 0..G1_LIST_LEN {
-                list_children.push(build_gen(ast, elem, binds));
-            }
-            let list = push_list(ast, list_children);
-            let set_of = {
-                let dot = name(ast, ".");
-                let set = name(ast, "Set");
-                let of = name(ast, "of");
-                push_list(ast, vec![dot, set, of])
-            };
-            push_list(ast, vec![set_of, list])
-        }
+        // A VARIABLE-cardinality set (`0..=G1_LIST_LEN` distinct elements) via a `Set.insert` fold over the
+        // constant empty set — so the EMPTY + singleton sets are reachable (a fixed 3-element `Set.of (list …)`
+        // never reached them for a wide element type). See `build_var_set_gen`.
+        GenTy::Set(elem) => build_var_set_gen(ast, elem, binds),
         // A fold of `Map.insert` over `G1_LIST_LEN` generated key/value pairs, seeded from `Map.empty`:
         // `(Map.insert (Map.insert (Map.empty) k0 v0) k1 v1) …`.
         GenTy::Map(kty, vty) => {
@@ -1764,6 +1752,95 @@ fn build_var_list_gen(
         };
         let if_head = name(ast, "if");
         chain = push_list(ast, vec![if_head, cond, prefixes[len], chain]);
+    }
+    chain
+}
+
+/// Build a VARIABLE-cardinality `Set` generator (`0..=G1_LIST_LEN` distinct elements) — the Set analogue of
+/// [`build_var_list_gen`]. A fixed-cardinality `(Set.of (list e0 e1 e2))` made the EMPTY + singleton sets
+/// unreachable for a wide element type (Int64 never collides), so a "Set is never empty" / "Set.len < 3"
+/// property spuriously passed. This draws a count `c` (like the var-list gen) then folds `c` `Set.insert`s over
+/// the CONSTANT empty set `(Set.of (list))` — `Set.insert` exists in the prelude and dedups, so the result is
+/// a set of AT MOST `c` elements (a collision yields a smaller one, same as `Set.of`). `(Set.of (list))` is a
+/// constant-list literal (the ONLY list shape `Set.of` accepts), so the seed compiles; the fold builds the
+/// variable part. Mirrors the Map generator's `Map.insert`-over-`Map.empty` fold, but with a variable count.
+fn build_var_set_gen(
+    ast: &mut Arenas,
+    elem: &GenTy,
+    binds: &mut Vec<(StructId, StructId)>,
+) -> StructId {
+    let span = (G1_LIST_LEN + 1) as i64;
+    // Hoist the count `c = (% (& gen i64::MAX) (LEN+1))` ∈ [0, LEN] — same non-negative-mask derivation as the
+    // var-list count (a raw negative `%` would make `c` negative and the `(<= c 0)` guard pick the empty set).
+    let count_name = format!("g{}", binds.len());
+    {
+        let g = gen_call(ast);
+        let nonneg = {
+            let andop = name(ast, "&");
+            let mask = int_lit(ast, i64::MAX);
+            push_list(ast, vec![andop, g, mask])
+        };
+        let span_lit = int_lit(ast, span);
+        let rem = name(ast, "%");
+        let modded = push_list(ast, vec![rem, nonneg, span_lit]);
+        let var = name(ast, &count_name);
+        binds.push((var, modded));
+    }
+    // Hoist the LEN candidate elements (each its own `gN`), so the prefix sets reference names, never sharing
+    // an expression node across parents. Same ordering as `build_var_list_gen`, so the DECODER (which draws the
+    // count then LEN elements then dedups a `c`-prefix) stays in lockstep.
+    let elem_names: Vec<String> = (0..G1_LIST_LEN)
+        .map(|_| {
+            let e = build_gen(ast, elem, binds);
+            let nm = format!("g{}", binds.len());
+            let var = name(ast, &nm);
+            binds.push((var, e));
+            nm
+        })
+        .collect();
+    // The constant empty set `(Set.of (list))` — the fold seed (a constant-list literal, so `Set.of` accepts).
+    let empty_set = |ast: &mut Arenas| -> StructId {
+        let set_of = {
+            let dot = name(ast, ".");
+            let set = name(ast, "Set");
+            let of = name(ast, "of");
+            push_list(ast, vec![dot, set, of])
+        };
+        let empty_list = {
+            let list_head = name(ast, "list");
+            push_list(ast, vec![list_head])
+        };
+        push_list(ast, vec![set_of, empty_list])
+    };
+    // Build the prefix SETS: prefix0 = `(Set.of (list))`, prefix_k = `(Set.insert … (Set.insert (Set.of (list))
+    // e0) …) e_{k-1}` — `k` nested inserts of the first `k` candidate elements.
+    let prefixes: Vec<StructId> = (0..=G1_LIST_LEN)
+        .map(|k| {
+            let mut acc = empty_set(ast);
+            for enm in elem_names.iter().take(k) {
+                let insert = {
+                    let dot = name(ast, ".");
+                    let set = name(ast, "Set");
+                    let ins = name(ast, "insert");
+                    push_list(ast, vec![dot, set, ins])
+                };
+                let e = name(ast, enm);
+                acc = push_list(ast, vec![insert, acc, e]);
+            }
+            acc
+        })
+        .collect();
+    // Fold into `(if (<= c 0) prefix0 (if (<= c 1) prefix1 … prefixLEN))` — the last prefix is the else.
+    let mut chain = prefixes[G1_LIST_LEN];
+    for k in (0..G1_LIST_LEN).rev() {
+        let cond = {
+            let le = name(ast, "<=");
+            let c_use = name(ast, &count_name);
+            let iv = int_lit(ast, k as i64);
+            push_list(ast, vec![le, c_use, iv])
+        };
+        let if_head = name(ast, "if");
+        chain = push_list(ast, vec![if_head, cond, prefixes[k], chain]);
     }
     chain
 }

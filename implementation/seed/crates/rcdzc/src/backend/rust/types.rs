@@ -221,6 +221,21 @@ pub(super) fn ord_key_type(ty: &Ty) -> Option<String> {
                 format!("({})", parts.join(", "))
             })
         }
+        // A RECORD key threads the wrapper through each FIELD in sorted-field order (a record erases to a
+        // tuple in that order), so `(Record (f Float64) (n Int64))` keys as `(__CdzF64, i64)` — the record
+        // twin of the tuple key. The value-side rebuild is `expr::wrap_ord_key`'s Record arm (same sorted
+        // `.i` positions). A field with no ord-key mapping declines the whole record key.
+        Ty::Record(fields) => {
+            let mut parts = Vec::with_capacity(fields.len());
+            for t in fields.values() {
+                parts.push(ord_key_type(t)?);
+            }
+            Some(if parts.len() == 1 {
+                format!("({},)", parts[0])
+            } else {
+                format!("({})", parts.join(", "))
+            })
+        }
         _ => rust_type(ty),
     }
 }
@@ -307,8 +322,8 @@ pub(super) fn ty_is_ord(db: &mut Db, ty: &Ty) -> bool {
 /// the boundary use. Like [`ty_is_ord`], EXCEPT a `Float` is OK because it maps to the total-order wrapper
 /// `__CdzF{64,32}` (see [`ord_key_type`]), which IS `Ord` — AND a TUPLE that contains floats is OK too,
 /// because `ord_key_type` now threads the wrapper through the tuple's elements (each float element becomes
-/// `__CdzF{N}`, so the whole tuple keys as an `Ord` `(__CdzF64, i64)`). A float nested in a RECORD / SUM
-/// payload is still NOT threaded (a later increment), so those delegate to the strict `ty_is_ord`. This gate,
+/// `__CdzF{N}`, so the whole tuple keys as an `Ord` `(__CdzF64, i64)`). A float nested in a SUM
+/// payload is still NOT threaded (a later increment), so that delegates to the strict `ty_is_ord`. This gate,
 /// the type spelling, and the value wrap (`expr::wrap_ord_key`) MUST agree on exactly which shapes admit a
 /// contained float, or an emitted key value would not match the collection's key type.
 pub(super) fn ty_is_ord_key(db: &mut Db, ty: &Ty) -> bool {
@@ -319,7 +334,10 @@ pub(super) fn ty_is_ord_key(db: &mut Db, ty: &Ty) -> bool {
         // matching `ord_key_type`'s per-element threading. (`ty_is_ord`'s tuple arm uses the STRICT
         // `ty_is_ord`, which would reject a float element — hence this key-specific per-element recurse.)
         Ty::Tuple(elems) => elems.iter().all(|e| ty_is_ord_key(db, e)),
-        // Any other shape uses the strict predicate (a float nested in a record/sum payload still declines).
+        // A RECORD key is ord iff each FIELD is ord-key-able (a float field OK via the wrapper) — matching
+        // `ord_key_type`'s per-field threading, the record twin of the tuple arm.
+        Ty::Record(fields) => fields.values().all(|t| ty_is_ord_key(db, t)),
+        // Any other shape uses the strict predicate (a float nested in a SUM payload still declines).
         _ => ty_is_ord(db, ty),
     }
 }
