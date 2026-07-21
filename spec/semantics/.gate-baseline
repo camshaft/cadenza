@@ -2004,6 +2004,7 @@ pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin construction result compares equal to the Bytes it builds
 pass	a runtime bin construction result unequal to different content is false
 pass	a runtime bin match binds a dependent-size bytes segment over a runtime scrutinee
+pass	a runtime dependent-size match reads a MULTI-BYTE (u16) length prefix
 todo	a runtime bin match with a NON-FINAL dependent-size segment binds the body then the rest
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
 pass	a runtime bin match decodes a byte-aligned bit-field run

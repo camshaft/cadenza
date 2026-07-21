@@ -977,6 +977,26 @@
   (call   main (: 1 Int64))
   (output (: -1 Int64)))
 
+(case "a runtime dependent-size match reads a MULTI-BYTE (u16) length prefix"
+  (doc    "The multi-byte-prefix companion of the runtime dependent-size case above: the length is a `u16`
+           (two bytes, big-endian), not a `u8`, so the dependent `(bytes body n)` starts at the STATIC offset
+           2 and its size `n` is a two-byte read. `(bin (u16 n) (bytes body n))` over a runtime four-byte frame
+           `[0, h, 7, 8]` — the u16 reads `n = h` (high byte 0), then binds `n` body bytes. h=2 → frame is
+           exactly prefix(2)+2 = 4 bytes, so the two body bytes bind → `Bytes.len body = 2`; h=1 → the u16
+           reads 1 but two bytes remain after the prefix, so the arm does not consume the whole scrutinee and
+           falls through → -1. Pins that the length prefix feeding a dependent size may be WIDER than one byte
+           (the u16 decode at offset 0 feeds the slice at the static offset 2) — the u16-framed-message shape,
+           the runtime companion of the constant u16-length cases.")
+  (input  (do (def (main (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap 0) (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
+                  ((bin (u16 n) (bytes body n)) (Bytes.len body))
+                  (_ -1)))
+              (export main)))
+  (call   main (: 2 Int64))
+  (output (: 2 Int64))
+  (call   main (: 1 Int64))
+  (output (: -1 Int64)))
+
 (case "a runtime dependent-size match falls through when the scrutinee is too short for the size prefix"
   (doc    "The truncated-frame boundary the dependent-size length probe must GUARD: a RUNTIME scrutinee too
            short to even READ the size prefix must FALL THROUGH, not trap. The arm `(bin (u8 a) (u8 n) (bytes
