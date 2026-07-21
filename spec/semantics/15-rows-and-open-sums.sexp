@@ -265,6 +265,40 @@
   (input  (Record.with (record (a 1)) #"z" 5))
   (error  CDZ0212))
 
+(case "Record.with replaces a nested-record field wholesale and the original keeps its inner"
+  (doc    "The `with` cases above replace SCALAR fields in const records; here the replaced field's value
+           is itself a RECORD and the operands are runtime: `r1 = {x ↦ {p a, q 2}, y 5}` updated with
+           `{p 30, q 40}` at `x` — the update swaps the WHOLE inner record (r2.x.p = 30, r2.x.q = 40),
+           and the ORIGINAL r1 still reads its old inner (r1.x.p = a = 7) — persistence through the
+           nesting (an in-place inner mutation or a shared-cell update would corrupt r1). Encodes
+           1000·r2.x.p + 100·r1.x.p + 10·r2.y + r2.x.q = 30790 at a=7. Expected: 30790.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((inner1 (record (p a) (q 2)))
+                    (inner2 (record (p 30) (q 40))))
+                (let ((r1 (record (x inner1) (y 5))))
+                  (let ((r2 (Record.with r1 #"x" inner2)))
+                    (+ (* 1000 (. (. r2 x) p))
+                       (+ (* 100 (. (. r1 x) p))
+                          (+ (* 10 (. r2 y)) (. (. r2 x) q))))))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 30790 Int64)))
+
+(case "chained Record.with updates on one field compose with the last write winning"
+  (doc    "`(Record.with (Record.with r #\"x\" 10) #\"x\" 20)` — two updates of the SAME field chained:
+           the outer sees the inner's result, so the last write wins (r2.x = 20) while the ORIGINAL
+           binding keeps its runtime value (r.x = a = 7). 10·r2.x + r.x = 207. Pins that `with` composes
+           through its own result (each update derives a fresh record from the previous — a rewrite that
+           batched or reordered same-field updates would still get 20, but one that updated the ORIGINAL
+           twice independently would lose the chain). Expected: 207.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((r (record (x a) (y 2))))
+                (let ((r2 (Record.with (Record.with r #"x" 10) #"x" 20)))
+                  (+ (* 10 (. r2 x)) (. r x)))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 207 Int64)))
+
 (case "the OLD 2-operand `Record.with (name value)` pair form is rejected (migrated to 3 operands)"
   (doc    "Witnesses DESIGN-record-update-syntax.md §2/§6 (operator DECISION 2026-07-15): the field-pair
            row ops now take THREE positional operands `r #field value`, and the OLD grouped `(name value)`

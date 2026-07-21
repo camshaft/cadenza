@@ -89,19 +89,19 @@ def r-complement(i: RInterval) = RInterval.RInterval(Rational.of(1, 1) - octaves
 
 // ---- the MIDI PROJECTION (rational octave-fraction -> 12-TET semitone count) -------------------------
 //
-// ⚠ LANGUAGE GAP (reported, issue filed): projecting a rational interval to an INTEGER semitone count
-// needs a Rational → Int64 conversion (a floor / round / numerator-with-denominator read), and the prelude
-// `Rational` surface has NONE — `Rational.of`, `Rational.of-int`, and `Rational.value` only (and `value`
-// is IDENTITY : Rational → Rational). There is no `floor`/`truncate`/`round`/`numerator`/`denominator`, and
-// no implicit Rational → Int64 promotion (CDZ0301). So the rational→MIDI-note projection CANNOT be written
-// in pure Cadenza today. It is therefore deferred to the driver boundary and this gap is filed for the
-// prelude/runtime owners. Until then the theory core stays PURELY rational (which is the operator's point —
-// rationals everywhere in the model); integer note numbers live only in the existing Int64 scheduler layer,
-// and the bridge lands once a Rational→Int64 conversion exists.
-//
-// `to-semitones-exact` covers the case that DOES work with only equality: a 12-TET interval is `s/12` for a
-// known integer `s`, recoverable by testing `r-eq(i, semitones-r(s))`. We expose a bounded exact form for
-// the common in-grid case; a general rounding projection waits on the conversion gap.
+// The rational theory core projects to the integer MIDI wire here. The Rational→Int64 conversion this
+// needed was a LANGUAGE GAP early in this vertical (the prelude had only `Rational.of`/`of-int`/`value`,
+// no floor/round/etc); it was FILED, and the prelude now provides the full checked-narrow surface
+// (`Rational.truncate`/`floor`/`ceil`/`round : Rational → Int64`, trap-on-overflow — landed 2026-07-21).
+// So the projection IS now expressible in pure Cadenza, in two forms:
+//   - `to-semitones-exact` — the EXACT on-grid read (a 12-TET interval is `s/12`, recovered by equality
+//     `r-eq(i, semitones-r(s))`); returns `Option` (`None` off-grid). Use when you want a total-only-on-grid
+//     answer with no rounding.
+//   - `to-semitones` (+ `-floor`/`-ceil`/`-round`) — the GENERAL projection: `round(octaves × 12)` to a
+//     whole semitone, defined for ANY interval (incl. off-grid microtonal/just-intonation, which it snaps).
+//     On the 12-TET grid all forms agree with `to-semitones-exact`'s `Some k`.
+// The theory core stays PURELY rational (the operator's point — rationals everywhere in the model); these
+// projections are the honest boundary where an exact rational meets the integer MIDI wire.
 /// The exact 12-TET semitone count of an interval that lies ON the 12-TET grid, searched in `lo..hi`
 /// (inclusive). Returns `Option`: `Some(s)` if `i == s/12` for some `s` in range, else `None` (a non-12-TET
 /// or out-of-range interval — those need the (missing) rounding conversion). Recursive, annotated.

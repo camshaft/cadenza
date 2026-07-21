@@ -5708,6 +5708,28 @@ mod tests {
     }
 
     #[test]
+    fn partition_batch_interaction_failure_still_lands_a_sound_green_set() {
+        // NON-MONOTONE predicate: the batch fails ONLY when items 1 AND 3 are BOTH present; each is
+        // perfectly fine on its own. This is the "over-approximation" case flagged in review — there is
+        // no independently-broken MR, so the heuristic MUST attribute the failure to one member of the
+        // interacting pair. The load-bearing invariant is NOT which member it blames but that the SET IT
+        // LANDS ALWAYS GATES GREEN: removing the blamed item heals the batch, so no red tree is ever
+        // published. Pin the exact behavior so a refactor can't silently start landing a red set.
+        let (land, broken) =
+            partition_batch(5, |subset| !(subset.contains(&1) && subset.contains(&3)));
+        // It peels the LAST element of the shortest failing prefix (index 3), then the remainder
+        // {0,1,2,4} no longer contains both → green, so it lands.
+        assert_eq!(broken, vec![3], "blames one member of the interacting pair");
+        assert_eq!(land, vec![0, 1, 2, 4]);
+        // The soundness invariant, checked directly against the same predicate: the landed set is green.
+        let landed_gates_green = !(land.contains(&1) && land.contains(&3));
+        assert!(
+            landed_gates_green,
+            "the set gate-batch lands must always pass the gate"
+        );
+    }
+
+    #[test]
     fn first_divergence_line_picks_the_specific_missing_titles_line() {
         // The lint's Err is multi-line; the quarantine reason should be the specific "missing" line.
         let msg = "baseline title sets diverge:\n  \

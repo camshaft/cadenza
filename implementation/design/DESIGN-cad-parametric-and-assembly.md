@@ -1,8 +1,38 @@
 # DESIGN — Parametric snowflake + Assembly-as-code for Cadenza CAD
 
-Status: **DRAFT / in progress** (v-cad, autonomous). Operator reviews async.
+Status: **✅ SHIPPED + OPERATOR-CONFIRMED (both features delivered, live in the `/cad` picker).** This doc is
+now a RECORD, not an in-progress draft; the reconciliation box just below records what shipped. Retained as
+the design/tracking surface the operator reviewed async.
 Scope: two operator-requested CAD showcases, driven autonomously on high-level requirements.
 Companion to `DESIGN-cad-solid-modeling.md` (the base `Solid` CSG model).
+
+## ✅ What shipped (reconciliation — read this first)
+
+Both operator-requested features landed on trunk, are live in the `/cad` picker, and were operator-confirmed
+(the snowflake after a design-directive + blank-render round the operator rejected and I re-architected).
+
+- **Parametric snowflake** — `showcase-snowflake.cdz`, picker slug `parametric-snowflake`. The recursive
+  branch + 6-fold symmetry + bilateral mirror + MINSTD-LCG PRNG are built **inline from visible primitives**
+  (box/ball/fuse/move-x/rotate-z/mirror-x) — NOT an opaque `snowflake()` library fn (the operator rejected
+  a hidden impl: "the whole point is you can create a snowflake from simple primitives"). `@!param` seed
+  (Int64) + arm-length + depth sliders; seed→unique, deterministic, browser-verified **49930 tris visible**,
+  drag-seed re-meshes a different snowflake. Uses threaded `prng.cdz` (the Prng-EFFECT swap is a ready
+  future internal upgrade, not required).
+- **Assembly-as-code** — `showcase-assembly.cdz` (plain L-bracket) + `showcase-assembly-parametric.cdz`
+  (5 `@!param` dimension sliders), picker slugs `assembly-l-bracket` + `assembly-parametric-bracket`. An
+  assembly IS just a `Solid` (named part defs mated via origin-relative Translate/Rotate/Mirror over shared
+  dims) — confirmed against the operator's real parts (no formal mate/part-tree system needed). Rotate/Mirror
+  were the enabler this drove (added as mesh-leaf transforms, Revolve precedent).
+- **The autonomous run surfaced + got fixed ~6 real compiler/runtime/tooling bugs** (all non-CAD, each
+  routed to its owner): bbox O(2^n) ANF match-binder-reuse, @param-comment CDZ0201, jco whole-kebab
+  camelCase, 818759e9 value-heap runtime OOB, Int64-@param accessor, empty-Solid mesh-annihilation.
+- The Rotate/Mirror decision (mesh-leaf f64, model carries exact Rational angle) noted in Part 3 below
+  shipped as designed; the sound L1 rotate-bbox radius is the exact-model bound.
+
+The original draft (algorithm study, decisions, assembly sketch) is retained verbatim below as the record.
+
+---
+
 
 ## Context & mandate
 

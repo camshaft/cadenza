@@ -2328,7 +2328,25 @@ impl<'a> Printer<'a> {
     /// a tuple pattern `(tuple p q…)` (2+ elements) -> `(p, q, …)`; a constructor application
     /// `(Ctor p…)` -> `Ctor(p, …)`; a dotted ctor `(. A B)` -> `A.B`; a bare name / literal prints
     /// as itself.
+    ///
+    /// DEPTH GUARD: `pattern` is a SECOND recursion hub (a tuple/list/ctor sub-pattern re-enters it),
+    /// SEPARATE from `expr`'s — so `expr`'s guard never bounds it. A decoded-only deep pattern arena
+    /// (`codec::decode` accepts arbitrary depth; the reader caps at `MAX_NESTING_DEPTH`, so this is
+    /// unreachable from source but reachable from a crafted binary AST) overflowed the native stack
+    /// (SIGABRT) walking it. Share `MAX_PRINT_DEPTH` + the `self.depth` budget with `expr`: past the
+    /// ceiling elide (`…`) instead of recursing; else bump and delegate to `pattern_inner`, decrementing
+    /// after — mirroring `expr`'s guard so the printer stays TOTAL on a pathological decode-only arena.
     fn pattern(&mut self, id: StructId) {
+        if self.depth >= MAX_PRINT_DEPTH {
+            self.doc.word("…");
+            return;
+        }
+        self.depth += 1;
+        self.pattern_inner(id);
+        self.depth -= 1;
+    }
+
+    fn pattern_inner(&mut self, id: StructId) {
         if let Some(tail) = self.a.as_form(id, "guard")
             && tail.len() == 2
         {
@@ -3373,6 +3391,45 @@ mod tests {
                 );
             })
             .expect("spawn big-stack printer worker");
+        if let Err(p) = h.join() {
+            std::panic::resume_unwind(p);
+        }
+    }
+
+    #[test]
+    fn ml_print_is_depth_guarded_on_a_deep_pattern_arena_not_a_stack_overflow() {
+        // `pattern` is a SECOND printer recursion hub (a tuple/list/ctor sub-pattern re-enters it),
+        // SEPARATE from `expr`'s — so `expr`'s MAX_PRINT_DEPTH guard never bounded it. A decoded-only
+        // deep pattern arena (the reader caps at MAX_NESTING_DEPTH, but `codec::decode` accepts arbitrary
+        // depth) overflowed the native stack (SIGABRT) when the ML printer walked it — the printer-side
+        // twin of the reader-side pattern guard. `pattern` now shares the MAX_PRINT_DEPTH/`self.depth`
+        // budget and elides past it. A pattern far deeper than the guard must render bounded (elision
+        // present), no overflow. Big (64 MB) stack like the sibling `expr`-guard test — even the GUARDED
+        // MAX_PRINT_DEPTH (4096) frames exceed a default worker; the guard bounds native use to that fixed
+        // ceiling (without it the walk was unbounded → SIGABRT regardless of stack size).
+        let h = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let n = (MAX_PRINT_DEPTH as usize) + 20_000; // well past the guard
+                let mut b = Builder::new();
+                let tuple = b.name("tuple");
+                let mut pat = b.name("x");
+                for _ in 0..n {
+                    pat = b.list(vec![tuple, pat]); // nested `(tuple <sub>)` pattern
+                }
+                let body = b.name("z");
+                let arm = b.list(vec![pat, body]);
+                let matchkw = b.name("match");
+                let scrut = b.name("y");
+                let root = b.list(vec![matchkw, scrut, arm]);
+                let a = b.finish(root);
+                let out = print(&a, 80); // must NOT overflow — the pattern guard bounds recursion
+                assert!(
+                    out.contains('…'),
+                    "past MAX_PRINT_DEPTH the pattern printer elides with `…`"
+                );
+            })
+            .expect("spawn small-stack printer worker");
         if let Err(p) = h.join() {
             std::panic::resume_unwind(p);
         }

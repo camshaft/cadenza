@@ -82,8 +82,8 @@ where
     T: Send,
 {
     // IDEMPOTENT: if we are ALREADY on the compile worker (this fn nests — `compile_with_opt` establishes
-    // the precondition at the shared sink, but `compile_component` and the bin ALSO wrap their `compile`
-    // call), run INLINE rather than spawn a second worker. Nesting would reserve a fresh worker stack per
+    // the precondition at the shared sink, and the bin/embedders — `cli.rs`, `cdz-kernel`, `cdz-smith` —
+    // ALSO wrap their `compile` call), run INLINE rather than spawn a second worker. Nesting would reserve a fresh worker stack per
     // level and RESET the depth budget (the semantic `DESCENT_DEPTH_LIMIT` guard measures native recursion
     // within ONE worker), so a re-entry must share the existing worker's stack, not start over. The worker
     // names its thread `rcdzc-compile`; on it, just call `f`.
