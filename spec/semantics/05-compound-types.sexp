@@ -10098,6 +10098,61 @@
   (call   main (: -0.0 Float32)) (output (: 2 Int64))
   (call   main (: 0.0 Float32))  (output (: 1 Int64)))
 
+(case "record keys differing only in the float field stay distinct and look up"
+  (doc    "The RECORD face of the float-in-compound-key family (the tuple faces are pinned above; a record
+           erases to a sorted-field positional array, so its key path must thread the float discipline
+           through the FIELD layout): `m = {(record (f x) (n 1)) ↦ 10, (record (f 2.5) (n 1)) ↦ 20}` over
+           runtime `x` — at `x = 0.5` distinct keys (len 2) and the lookup reports its own 10 → 30; at
+           `x = 2.5` the second insert replaces (len 1) and the lookup reports 20 → 30 by the other route.
+           On rust this exercises the ord-wrapper threading through a RECORD key (fields rebuilt at their
+           sorted positions), the record arm of the tuple-key wrapper fix.")
+  (input  (do
+            (def (main (: x Float64))
+              (let ((m (Map.insert (Map.insert Map.empty (record (f x) (n 1)) 10) (record (f 2.5) (n 1)) 20)))
+                (+ (* 10 (Map.len m))
+                   (match (Map.lookup m (record (f x) (n 1))) ((Some v) v) ((None u) -1)))))
+            (export main)))
+  (call   main (: 0.5 Float64)) (output (: 30 Int64))
+  (call   main (: 2.5 Float64)) (output (: 30 Int64)))
+
+(case "signed-zero float fields make distinct record keys"
+  (doc    "The ±0.0 edge through the record-key path: `(record (f -0.0) (n 1))` and `(record (f 0.0) (n 1))`
+           are DISTINCT keys (len 2 at `x = -0.0`; replace → len 1 at `x = 0.0`), exactly as the tuple-key
+           edge — the canonical-byte discipline survives the record's sorted-field erasure.")
+  (input  (do
+            (def (main (: x Float64))
+              (Map.len (Map.insert (Map.insert Map.empty (record (f x) (n 1)) 10) (record (f 0.0) (n 1)) 20)))
+            (export main)))
+  (call   main (: -0.0 Float64)) (output (: 2 Int64))
+  (call   main (: 0.0 Float64)) (output (: 1 Int64)))
+
+(case "a tuple key whose element is itself a float-bearing tuple keys by content"
+  (doc    "The NESTED (depth-2) face: the float sits one level down — `(tuple 1 (tuple x 2))` — and the key
+           path must thread the float discipline through the INNER tuple (on rust, the ord-wrapper entry
+           guard must recurse: a shallow any-direct-float test wrapped the key TYPE but skipped the value
+           REBUILD, mismatching the two — E0308). Distinct at `x = 0.5` (len 2, lookup 10 → 30), replaced at
+           `x = 2.5` (len 1, lookup 20 → 30).")
+  (input  (do
+            (def (main (: x Float64))
+              (let ((m (Map.insert (Map.insert Map.empty (tuple 1 (tuple x 2)) 10) (tuple 1 (tuple 2.5 2)) 20)))
+                (+ (* 10 (Map.len m))
+                   (match (Map.lookup m (tuple 1 (tuple x 2))) ((Some v) v) ((None u) -1)))))
+            (export main)))
+  (call   main (: 0.5 Float64)) (output (: 30 Int64))
+  (call   main (: 2.5 Float64)) (output (: 30 Int64)))
+
+(case "a record key with a float-bearing TUPLE field keys by content"
+  (doc    "The cross-composition: a RECORD key whose FIELD is a float-bearing tuple — `(record (p (tuple x
+           1)) (n 7))`. The key path composes the record's sorted-field erasure with the inner tuple's float
+           slot. Distinct at `x = -0.5` (len 2), replaced at `x = 0.5` (len 1). With the tuple-in-tuple case
+           above, pins both nesting orders of the depth-2 float-key discipline.")
+  (input  (do
+            (def (main (: x Float64))
+              (Map.len (Map.insert (Map.insert Map.empty (record (p (tuple x 1)) (n 7)) 10) (record (p (tuple 0.5 1)) (n 7)) 20)))
+            (export main)))
+  (call   main (: -0.5 Float64)) (output (: 2 Int64))
+  (call   main (: 0.5 Float64)) (output (: 1 Int64)))
+
 (case "a NaN float leaf in a tuple Map key is found by a differently-computed NaN"
   (doc    "The NaN face of the float-in-compound-key family, on the LOOKUP path: insert under `(tuple (/ x
            x) 3)` at `x = 0.0` (0/0 = a computed NaN, off the const-fold) and look up with `(tuple
@@ -10147,6 +10202,34 @@
                         (Map.len (. r 1)))))))
             (export main)))
   (output (: 1101 Int64)))
+
+; The value-yielding forms (Map.swap, Map.take) and the plain forms (Map.insert, Map.remove) MUST AGREE on
+; the resulting map (collections-and-text.md — "The two forms MUST agree on the resulting map, so that the
+; only difference is whether the prior value is reported"). The cases above pin what swap/take REPORT (the
+; prior value) and that the new map holds the right value / dropped the key; this pins the complementary
+; invariant — the map COMPONENT of the value-yielding form is byte-for-byte the plain form's result. Maps
+; compare BY CANONICAL VALUE, so `=` on two maps is exact. Over `m = {a↦10, b↦20}` with runtime a,b, four
+; faces: swap-replace agrees with insert (existing key), swap-add agrees with insert (fresh key), take agrees
+; with remove (present key), take agrees with remove (absent key — both a no-op yielding a map equal to m).
+(case "the swap and take value-yielding forms agree with insert and remove on the resulting map"
+  (doc    "The value-yielding forms agree with the plain forms on the RESULTING MAP (collections-and-text.md
+           — the only difference is whether the prior value is reported). Over `m = {a↦10, b↦20}` with runtime
+           a,b, four faces (maps compare by canonical value): (1) `(. (Map.swap m a 99) 1) = (Map.insert m a
+           99)` — replace agrees; (2) `(. (Map.swap m 7 99) 1) = (Map.insert m 7 99)` — fresh-key add agrees;
+           (3) `(. (Map.take m a) 1) = (Map.remove m a)` — present-key remove agrees; (4) `(. (Map.take m 7)
+           1) = (Map.remove m 7)` — absent-key remove agrees (both a no-op yielding a map equal to m). Encodes
+           1000·f1 + 100·f2 + 10·f3 + f4 = 1111. A value-yielding form that built a DIFFERENT map than its
+           plain twin (a canonicalization or slotting divergence on the two-output path) would drop a digit.
+           MUST be 1111.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (let ((m (Map.insert (Map.insert Map.empty a 10) b 20)))
+                (+ (* 1000 (if (= (. (Map.swap m a 99) 1) (Map.insert m a 99)) 1 0))
+                   (+ (* 100 (if (= (. (Map.swap m 7 99) 1) (Map.insert m 7 99)) 1 0))
+                      (+ (* 10 (if (= (. (Map.take m a) 1) (Map.remove m a)) 1 0))
+                         (if (= (. (Map.take m 7) 1) (Map.remove m 7)) 1 0))))))
+            (export main)))
+  (call main (: 1 Int64) (: 2 Int64)) (output (: 1111 Int64)))
 
 ; A map operation applies to a map that arrives through a FUNCTION PARAMETER, not only a map constructed
 ; inline in the same expression. Every OTHER heap collection already supports this — `(def (f xs) (List.len

@@ -205,6 +205,27 @@
             (export main)))
   (call   main) (output (: 1.5 Float32)))
 
+(case "a quantity in a TUPLE inside a LIST element renders scaled (nested composition)"
+  (doc    "The DEPTH-2 composition of the collection-element scale notes: the Qty sits in a tuple which
+           itself is a LIST element — `(list (tuple 1 (Qty.of 5.0 km)))` renders `(list (tuple 1 (Qty.of
+           5000.0 meter)))`. The per-element scale path must compose the list's `.*` segment with the
+           tuple's positional segment to reach the Qty leaf; the whole-LIST and whole-MAP faces are pinned
+           by the direct cases — this pins that the note-path descent NESTS (a scale-path machinery that
+           handled only a top-level collection element would render the tuple-nested Qty raw at 5.0).")
+  (input  (list (tuple 1 (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))))
+  (output (: (list (tuple 1 (Qty.of 5000.0 (Unit.base #"meter"))))
+             (List (Tuple Int64 (Qty Float64 (Unit.base #"meter")))))))
+
+(case "a quantity in an OPTION inside a MAP value renders scaled (nested composition)"
+  (doc    "The sum-wrapper composition: the Qty sits in an Option payload which itself is a MAP value —
+           `{1 ↦ (Some (Qty.of 5.0 km))}` renders `(map (1 (Some (Qty.of 5000.0 meter))))`. The map's `!v`
+           scale-path segment must compose with the Option payload segment to reach the Qty. With the
+           tuple-in-list case above, pins both wrapper KINDS (positional compound + sum payload) nesting
+           inside both collection positions that carry per-element notes.")
+  (input  (Map.insert Map.empty 1 (Some (Qty.of 5.0 (Unit.prefix kilo (Unit.base #"meter"))))))
+  (output (: (map (1 (Some (Qty.of 5000.0 (Unit.base #"meter")))))
+             (Map Int64 (Option (Qty Float64 (Unit.base #"meter")))))))
+
 (case "a family quantity displays scaled exactly to its reference (Rational)"
   (doc    "`5 mile` = `(Qty.of (Rational.of 5 1) (Unit.of #\"mile\"))` DISPLAYS as `201168/25 meter`
            EXACTLY: mile = 201168/125 m, so 5 mile = 5·201168/125 = 201168/25 m, scaled at the reference

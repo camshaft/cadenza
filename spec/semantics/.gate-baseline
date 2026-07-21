@@ -370,6 +370,7 @@ pass	a Float32 set dedups NaN elements and keeps zero signs distinct
 pass	a Float32-overflowing literal in a Result Err payload is rejected
 pass	a Float32-overflowing literal in a Result Ok payload is rejected
 pass	a Float32-overflowing literal in a compound payload inside a runtime conditional branch is rejected
+pass	a Float32-overflowing literal in a record field is rejected
 pass	a Float32-overflowing literal in a runtime if branch is rejected at check
 pass	a Float32-overflowing literal in a runtime match arm is rejected at check
 pass	a Float32-overflowing literal in argument position under a narrow parameter is rejected at check
@@ -1004,8 +1005,10 @@ pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a dependent-size utf8 segment decodes a length-prefixed string
 pass	a fitting Float32 Qty magnitude computes at the narrow inner width
+pass	a fitting Float32 literal in a runtime if branch computes
 pass	a fitting cross-function match projection computes at the narrow width
 pass	a fitting handler arm resume value computes under a narrow annotation
+pass	a fitting payload projected through Option.expect computes
 pass	a fitting recursive annotated result computes at the narrow width
 pass	a float literal compared against a Float32 param computes at the narrow width
 pass	a large value in a NON-projected tuple slot does not trip the projection width check
@@ -1014,11 +1017,18 @@ pass	a literal one past the Int8 min rejects in a runtime branch
 pass	a magnitude literal that overflows the annotated Qty INNER width is rejected
 pass	a narrow-width overflow in a RECURSIVE function's annotated result is rejected
 pass	a narrow-width overflow in a handler arm resume value under a narrow annotation is rejected
+pass	a narrow-width overflow projected through Option.expect over a runtime branch is rejected
+pass	a narrow-width overflow projected through Result.expect over a runtime branch is rejected
 pass	a narrow-width overflow reached ACROSS a function boundary through a match projection is rejected
 pass	a narrow-width overflow reached through a MATCH projection of a runtime sum is rejected
 pass	a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected
 pass	a negative literal under an UNSIGNED width rejects in a runtime branch
+pass	a quantity in a TUPLE inside a LIST element renders scaled (nested composition)
+pass	a quantity in an OPTION inside a MAP value renders scaled (nested composition)
+pass	a record key with a float-bearing TUPLE field keys by content
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
+pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
+pass	a tuple key whose element is itself a float-bearing tuple keys by content
 pass	a tuple key with a RUNTIME Rational leaf hits and misses by canonical content
 pass	a tuple key with an ARITH-built BigInt leaf hits and misses by content
 pass	a user-sum variant value as a Map KEY keys by variant and payload
@@ -3473,7 +3483,9 @@ pass	integer to byte wraps on overflow
 pass	interleaved same/different Instants keep FIFO within a time and ascending across times
 pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
+pass	intersection distributes over union on runtime-element sets
 pass	intersection is associative
+pass	intersection is commutative over runtime-element sets
 pass	intersection of a set with itself is the set (idempotent)
 pass	intersection with the empty set is the empty set
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
@@ -3534,6 +3546,7 @@ pass	merging with the empty record on the right is the identity
 pass	mixed bool and int splices evaluate in one template
 pass	mixed comparison operators across if arms keep their own arms
 pass	mixed operators across the if arms keep their own arms
+pass	mixed param-and-literal Float32 branches compute
 pass	mixed payload widths across the variant set dispatch and read correctly
 pass	mixed-type @param sites share one Param effect and drive control flow
 pass	mixed: two closure exports alongside a plain export — driving the plain export
@@ -3714,6 +3727,7 @@ pass	reading a string's scalar out of bounds yields None
 pass	reading the text a printer produced round-trips to an equal value
 pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order
+pass	record keys differing only in the float field stay distinct and look up
 pass	record reshaping is subset comparison as explicit projection
 pass	recursive factorial with a match base case
 pass	recursive fibonacci over a RUNTIME argument computes the predecessors correctly
@@ -3835,6 +3849,7 @@ pass	sibling-recursive effect threading is left-to-right (order-observing)
 pass	signed 8-bit addition that overflows its width is rejected at compile time
 pass	signed-zero Float32 tuple-key components stay distinct at binary32 width
 pass	signed-zero float components make DISTINCT tuple keys
+pass	signed-zero float fields make distinct record keys
 pass	size after a runtime-key insert reflects replace-vs-add
 pass	size after a runtime-key remove reflects whether the key was present
 pass	slicing a byte sequence built at run time yields Some of the sub-range
@@ -3966,6 +3981,7 @@ pass	the entrypoint returns its runtime argument unchanged
 pass	the entrypoint returns its runtime boolean argument
 pass	the entrypoint sums its two runtime arguments
 pass	the event queue pops the earliest-Instant entry first (pop-min)
+pass	the exact Float32 finite max fits in a runtime branch
 pass	the expander rewrites a directly-written node even when chunks != holes+1 (no re-check)
 pass	the expander threads the hole list to the tag even with zero chunks and zero holes
 pass	the exponent marker is case-insensitive
@@ -4081,6 +4097,7 @@ pass	the shift-by-zero identities preserve a runtime narrow UInt8 (x << 0 = x, x
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the span between two equal Instants is zero — the inclusive lower boundary of `since`
+pass	the swap and take value-yielding forms agree with insert and remove on the resulting map
 pass	the taken arm's checked add still overflows under the operator hoist
 pass	the three-way comparison is deconstructed by an exhaustive match
 pass	the three-way comparison orders Bool with false below true
@@ -4408,6 +4425,7 @@ pass	remainder by one folds to zero but does not discard a trapping runtime oper
 pass	the OLD 2-operand `Record.extend (name value)` pair form is rejected (migrated to 3 operands)
 pass	the OLD 2-operand `Record.with (name value)` pair form is rejected (migrated to 3 operands)
 pass	the absorption law does not discard a trapping runtime operand
+pass	the absorption law holds on runtime-element sets
 pass	the and-complement folds to zero on an unsigned type but the or-complement is the width all-ones not -1
 pass	the bitwise absorption law folds x-and-(x-or-y) and x-or-(x-and-y) to x on runtime operands
 pass	the boolean absorption laws reduce a-and-(a-or-b) and a-or-(a-and-b) to a

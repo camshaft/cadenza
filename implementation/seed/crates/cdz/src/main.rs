@@ -216,6 +216,19 @@ enum Cmd {
     #[command(alias = "fuzz")]
     Smith(SmithArgs),
 
+    // ── CAD mesh export (PASSTHROUGH to the separate-workspace cdz-cad bin) ────────────────────────
+    /// Run the `cdz-cad` native CAD MESH driver — a PASSTHROUGH that execs the standalone `cdz-cad` binary
+    /// and forwards every argument to it (`cdz cad <args…>` == `cdz-cad <args…>`), so a single `cdz` on the
+    /// PATH also reaches the mesh exporter for discoverability. It reads a rendered `Solid` s-expr (from a
+    /// FILE or `-` stdin — e.g. `cdz run model.cdz | cdz cad - -o out.stl`) and writes a mesh, the output
+    /// format dispatched by extension (`.stl` → binary STL, `.glb` → binary glTF). It is a passthrough, NOT
+    /// a linked-in subcommand, DELIBERATELY: `cdz-cad` is a SEPARATE cargo workspace (excluded from the seed
+    /// workspace) because its `manifold-csg` mesh backend builds the C++ manifold3d library via cmake, which
+    /// must never enter `cdz`'s workspace/lockfile. Exec-not-link keeps that isolation intact. The binary is
+    /// located beside the running `cdz` (then on `$PATH`); if absent, build it with `cargo build -p cdz-cad`.
+    /// All args/flags/exit-code are the standalone bin's — run `cdz cad --help` (or `cdz-cad`'s usage).
+    Cad(CadArgs),
+
     // ── unit testing ─────────────────────────────────────────────────────────────────────────────
     /// Compile a SEPARATE test component from a FILE's `@test`-marked NULLARY definitions and run each,
     /// reporting pass/fail. Each `@test def` crosses the boundary as a nullary entry the runner invokes;
@@ -446,6 +459,7 @@ fn main() -> ExitCode {
         Cmd::Completions(a) => run_completions(&a),
         Cmd::Doctor(a) => run_doctor(&a),
         Cmd::Smith(a) => run_smith(&a),
+        Cmd::Cad(a) => run_cad(&a),
         Cmd::Test(a) => run_test(&a),
         Cmd::Watch(a) => run_watch(&a),
         // The span-mapped semantic queries live here (they need both libraries in one process).
@@ -3666,22 +3680,15 @@ struct SmithArgs {
     args: Vec<String>,
 }
 
-/// Locate the sibling `cdz-smith` binary — like [`locate_cdz_run`], it lives beside THIS binary in
-/// `target/<profile>/` when built (`cargo build -p cdz-smith`), the install-location-independent
-/// `current_exe().parent()/cdz-smith` path. Unlike `cdz-run` it is NOT linked in (a separate workspace),
-/// so a passthrough must find it as a binary. `None` if absent beside `cdz`.
-fn locate_cdz_smith() -> Option<PathBuf> {
+/// Locate a sibling passthrough binary (`stem`) beside THIS `cdz` — it lives in `target/<profile>/` when
+/// built (`cargo build -p <stem>`), the install-location-independent `current_exe().parent()/<stem>` path
+/// (the same convention as [`locate_cdz_run`]). Used for the separate-workspace passthrough tools
+/// (`cdz-smith`, `cdz-cad`) that are NOT linked in, so must be found as binaries. Carries the platform
+/// executable suffix via [`bin_name`]. `None` if absent beside `cdz` (the caller then tries `$PATH`).
+fn locate_sibling_bin(stem: &str) -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
-        .and_then(|p| {
-            p.parent().map(|dir| {
-                dir.join(if cfg!(windows) {
-                    "cdz-smith.exe"
-                } else {
-                    "cdz-smith"
-                })
-            })
-        })
+        .and_then(|p| p.parent().map(|dir| dir.join(bin_name(stem))))
         .filter(|p| p.exists())
 }
 
@@ -3696,8 +3703,31 @@ fn run_smith(args: &SmithArgs) -> ExitCode {
     // resolves, `Command::new` on the bare name would fail with an opaque OS error — give the actionable
     // build hint instead (the separate-workspace bin isn't produced by an ordinary `cargo build`). The
     // fallback carries the platform executable suffix (`.exe` on Windows) so a PATH lookup resolves.
-    let program = locate_cdz_smith().unwrap_or_else(|| PathBuf::from(bin_name("cdz-smith")));
+    let program =
+        locate_sibling_bin("cdz-smith").unwrap_or_else(|| PathBuf::from(bin_name("cdz-smith")));
     passthrough_status(&program, &args.args, "cdz-smith")
+}
+
+#[derive(clap::Args)]
+struct CadArgs {
+    /// Every argument after `cdz cad` is forwarded VERBATIM to the standalone `cdz-cad` binary
+    /// (`trailing_var_arg` + `allow_hyphen_values` so `cdz cad - -o out.stl --segments 64` passes through
+    /// untouched rather than being parsed as `cdz`'s own). `cdz cad --help` prints the standalone bin's usage.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
+}
+
+/// `cdz cad <args…>` — a PASSTHROUGH to the standalone `cdz-cad` CAD mesh driver: exec the sibling binary
+/// and forward argv + exit code, so a single `cdz` on the PATH reaches the mesh exporter for discoverability
+/// (`cdz run model.cdz | cdz cad - -o out.stl`). It is exec-not-link ON PURPOSE — `cdz-cad` is a SEPARATE
+/// cargo workspace (its `manifold-csg` backend builds the C++ manifold3d library via cmake), so linking it
+/// in would pull that native/cmake build into `cdz`'s workspace — the exact thing its exclusion prevents.
+/// Resolves the binary beside `cdz` first (the co-built location), then falls back to `$PATH`. Shares
+/// `passthrough_status` with `cdz smith` so exit-code + not-found handling stay identical.
+fn run_cad(args: &CadArgs) -> ExitCode {
+    let program =
+        locate_sibling_bin("cdz-cad").unwrap_or_else(|| PathBuf::from(bin_name("cdz-cad")));
+    passthrough_status(&program, &args.args, "cdz-cad")
 }
 
 /// The platform executable NAME for a bare tool stem — appends `.exe` on Windows so a `$PATH` lookup of
