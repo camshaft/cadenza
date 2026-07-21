@@ -1148,6 +1148,15 @@ fn param_apply_extra_handled(
     head: StructId,
     callee_body: StructId,
     arity: usize,
+    // INTER-PROCEDURAL recursion budget: this fn follows a KNOWN sub-callee (line ~`sub_extra`) by
+    // RE-ENTERING itself, and `is_recursive` cannot break every cycle — a self-call hidden inside a nested
+    // fold closure (`(count e)` under `(List.fold es _ (fn (acc e) (+ acc (count e))))`) is invisible to the
+    // call graph (`collect_callees` stops at a nested-`fn` boundary), so the callee reads as non-recursive
+    // and is chased forever. This `depth` bounds that inter-procedural chase — it seeds the inner `walk` and
+    // grows by one per sub-callee follow, so the `depth < 32` gate on the transitive follow terminates the
+    // walk (a compiler must never overflow its stack — `self-hosting-and-bootstrap.md`). External callers
+    // pass 0.
+    depth: u32,
 ) -> Vec<Vec<u32>> {
     let Some(params) = crate::eval::lambda_params_of(db, head) else {
         return Vec::new();
@@ -1190,7 +1199,11 @@ fn param_apply_extra_handled(
                         .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
                     && !crate::eval::is_recursive(db, sub_body)
                 {
-                    let sub_extra = param_apply_extra_handled(db, head, sub_body, args.len());
+                    // Re-enter at `depth + 1`: the follow itself is one inter-procedural step, and the
+                    // sub-call's inner walk must SEE the accumulated depth (it re-seeds at this value), or a
+                    // graph-invisible cycle (a self-call hidden in a nested fold closure) never trips the gate.
+                    let sub_extra =
+                        param_apply_extra_handled(db, head, sub_body, args.len(), depth + 1);
                     for (j, &a) in args.iter().enumerate() {
                         if let Some(i) = param_index_of_head(db, a, params)
                             && i < out.len()
@@ -1242,7 +1255,11 @@ fn param_apply_extra_handled(
         }
     }
     let mut handled: Vec<u32> = Vec::new();
-    walk(db, callee_body, &params, &mut handled, &mut out, 0);
+    // Seed at the INTER-PROCEDURAL `depth`, not 0: the inner `walk` holds `depth` constant across ONE body
+    // (a finite arena walk that always terminates) and the transitive follow re-enters at `depth + 1`, so
+    // seeding here at the accumulated depth is what lets the `depth < 32` follow-gate actually fire on a
+    // graph-invisible cycle — otherwise every re-entry restarts at 0 and the chase never terminates.
+    walk(db, callee_body, &params, &mut handled, &mut out, depth);
     out
 }
 
@@ -1356,7 +1373,9 @@ fn check_no_home_walk(
                 .or_else(|| crate::eval::lambda_body_of_nullary(db, head))
                 .filter(|&c| !crate::eval::is_recursive(db, c));
             let param_extra: Vec<Vec<u32>> = match callee {
-                Some(callee_body) => param_apply_extra_handled(db, head, callee_body, args.len()),
+                Some(callee_body) => {
+                    param_apply_extra_handled(db, head, callee_body, args.len(), depth)
+                }
                 None => Vec::new(),
             };
             if let Some(callee_body) = callee
@@ -4184,12 +4203,50 @@ fn thread_bounded(
             }
             let mut cur = states;
             let mut last = None;
-            for it in items {
+            // NON-FINAL items that, after rewriting, STILL reach a FOREIGN perform (an effect THIS handler
+            // does not discharge) must be PRESERVED — dropping them loses a residual side effect. The
+            // collapse-to-last shortcut is sound ONLY for an item that folded to a PURE expression (its
+            // discharged effect went into the threaded state). But an INNER handler folding a body
+            // `(do (Outer.bump) (Outer.get))` sees `Outer.bump` as FOREIGN: it does not fold it into any
+            // slot, so the rewrite leaves the perform intact — and dropping the non-final one silently
+            // erases its state advance the moment the OUTER handler folds it (the do-sequenced-outer-perform-
+            // under-inner-handle miscompile: `(A.bump)` discarded under an inner `B` reads back stale). Keep
+            // each such survivor and rebuild a `do` over them; the enclosing fold re-threads it (or, for a
+            // host-delegated foreign op, it lowers as a host-call sequence). A pure-folded item is still
+            // dropped — byte-identical to before for the single-handler-depth surface.
+            let items_len = items.len();
+            let mut kept: Vec<StructId> = Vec::new();
+            for (i, it) in items.into_iter().enumerate() {
                 let (r, next) = thread_bounded(db, it, cur, ctx, inline_depth)?;
-                last = Some(r);
                 cur = next;
+                if i + 1 == items_len {
+                    last = Some(r);
+                } else if ctx.abort_value.get().is_none()
+                    && body_reaches_foreign_perform(db, r, ctx)
+                {
+                    // KEEP a non-final residual-foreign-perform item — BUT only while no abort has fired.
+                    // An ABORTIVE non-final item (`(do (Halt.stop n) …)`, `stop` never resumes) sets the
+                    // abort cell and returns the abort VALUE as `r` — a `copy_pure` of the arm body, an
+                    // ORPHAN (parent `None`) not yet reparented, carrying live names (the arm `(list v v v)`
+                    // with `v`↦ the perform's runtime arg `n`). `body_reaches_foreign_perform` runs
+                    // `resolved_of` over it, which RESOLVE-PINS `n` as unbound against the orphan scope —
+                    // and that pin outlives `reduce_handle`'s later `reparent_under_handle_site`, surfacing a
+                    // spurious CDZ0101 "unbound n" (the abortive-heap-list regression). Once an abort has
+                    // fired the sequence is ABANDONED anyway — `reduce_handle` returns the abort value and
+                    // discards this do-arm's result — so there is nothing to preserve. Skip the check.
+                    kept.push(r);
+                }
             }
-            Some((last.unwrap(), cur))
+            let last = last.unwrap();
+            if kept.is_empty() {
+                Some((last, cur))
+            } else {
+                kept.push(last);
+                let do_head = db.push_name("do");
+                let mut ch = vec![do_head];
+                ch.extend(kept);
+                Some((db.push_list(ch), cur))
+            }
         }
         // A CROSS-FUNCTION perform: `(f args…)` where `f` is a NON-RECURSIVE function whose body reaches
         // A RECURSIVE effectful call `(f args…)` — `f` recurses AND reaches a discharged op, so it cannot

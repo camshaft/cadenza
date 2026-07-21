@@ -3288,19 +3288,18 @@ fn emit_arith(
     {
         let l = emit_grounded(db, lhs, it, env, ctx)?;
         let r = emit_grounded(db, rhs, it, env, ctx)?;
-        let native = match op {
-            Prim::Add => "wrapping_add",
-            Prim::Sub => "wrapping_sub",
-            Prim::Mul => "wrapping_mul",
-            _ => unreachable!(),
-        };
         // Provably-in-range elision — the SAME Core-tier decision the wasm backend + the normal path use.
         let grounded = crate::ty::IntTy::fixed(it.ground_signed(), it.ground_width());
         if crate::lower::provably_no_overflow(db, op, lhs, rhs, grounded, id) {
+            let native = match op {
+                Prim::Add => "wrapping_add",
+                Prim::Sub => "wrapping_sub",
+                Prim::Mul => "wrapping_mul",
+                _ => unreachable!(),
+            };
             return Ok(format!("({l}).{native}({r})"));
         }
-        // The type's own bounds. An unusual width is 1..=63 (never 64 here), so BOTH bounds fit i64 and the
-        // storage type (which is strictly larger) represents any out-of-range result exactly for the compare.
+        // The type's own bounds. An unusual width is 1..=63 (never 64 here), so BOTH bounds fit i64/i128.
         let signed = it.ground_signed();
         let (min_n, max_n): (i128, i128) = if signed {
             let half = 1i128 << (w - 1);
@@ -3308,21 +3307,51 @@ fn emit_arith(
         } else {
             (0, (1i128 << w) - 1)
         };
-        // Compute on the storage type (via the wrapping op — in range it equals the true result), bind it,
-        // then compare against the type's bounds cast to the storage type; panic "integer overflow" (the
-        // classifying kind) if outside. Signed → two-sided; unsigned → single upper-bound test (the value is
-        // >= 0 by type). The bounds literals are the storage type's, so no cast mismatch.
         let store = super::types::rust_type(&Ty::Int(it))
             .ok_or_else(|| Reject::decline("unusual-width arith: no storage type"))?;
-        let cond = if signed {
-            format!("__uw < {min_n}{store} || __uw > {max_n}{store}")
-        } else {
-            format!("__uw > {max_n}{store}")
-        };
-        return Ok(format!(
-            "{{ let __uw = ({l}).{native}({r}); if {cond} {{ panic!(\"integer overflow in {}\") }} __uw }}",
-            op_name(op),
-        ));
+        return Ok(match op {
+            // ADD/SUB — the storage type is STRICTLY WIDER than the type's N bits, so the true result of
+            // two in-range operands (each < 2^N ≤ 2^(storage-1)) NEVER overflows the storage width: a
+            // `wrapping_*` on the storage prim equals the true result exactly, and the type-bound check then
+            // catches a result that leaves `[min_N, max_N]`. Bind it, compare against the type's bounds (as
+            // storage-type literals, no cast mismatch), panic the classifying "integer overflow" if outside.
+            Prim::Add | Prim::Sub => {
+                let native = if matches!(op, Prim::Add) {
+                    "wrapping_add"
+                } else {
+                    "wrapping_sub"
+                };
+                let cond = if signed {
+                    format!("__uw < {min_n}{store} || __uw > {max_n}{store}")
+                } else {
+                    format!("__uw > {max_n}{store}")
+                };
+                format!(
+                    "{{ let __uw = ({l}).{native}({r}); if {cond} {{ panic!(\"integer overflow in {}\") }} __uw }}",
+                    op_name(op),
+                )
+            }
+            // MUL — a `wrapping_mul` on the STORAGE prim is UNSOUND: two in-range operands can multiply PAST
+            // the storage width (e.g. `UInt48` `2^32 * 2^32 = 2^64` wraps `u64::wrapping_mul` to 0, which
+            // falsely passes the `[0, 2^48-1]` check → a silent wrong value instead of a trap — Copilot/
+            // github-liaison PR#756). Compute the product in a WIDER intermediate (`i128`, always wider than
+            // the ≤64-bit storage, so the product is EXACT — a 63×63-bit product fits i128's 127 bits), range-
+            // check the i128 against the type's bounds, then cast the in-range result back to the storage
+            // type. `i128` holds every unsigned-N value too (N ≤ 63, and a `uN as i128` is non-negative), so
+            // the single/two-sided bound test is correct for both signednesses.
+            Prim::Mul => {
+                let cond = if signed {
+                    format!("__wide < {min_n}i128 || __wide > {max_n}i128")
+                } else {
+                    format!("__wide > {max_n}i128")
+                };
+                format!(
+                    "{{ let __wide = ({l} as i128) * ({r} as i128); if {cond} {{ panic!(\"integer overflow in {}\") }} __wide as {store} }}",
+                    op_name(op),
+                )
+            }
+            _ => unreachable!(),
+        });
     }
     let l = emit_grounded(db, lhs, it, env, ctx)?;
     let r = emit_grounded(db, rhs, it, env, ctx)?;

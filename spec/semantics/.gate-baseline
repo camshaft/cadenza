@@ -89,6 +89,8 @@ pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken bra
 pass	FULL CONTRACT: @requires + @ensures on ONE def fire INDEPENDENTLY — a pre-violation and a post-violation trap on DIFFERENT inputs
 pass	Float32 tuple-key components key at binary32 width (distinctness, lookup, signed zero)
 pass	Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even
+pass	a param-left arith-right Float64.of-int equality compiles to a valid module and computes
+pass	Float64.of-int collapses adjacent integers at the 2^53 precision boundary
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
 pass	Int8.wrap at the sign-bit boundary is the most-negative Int8
@@ -187,6 +189,7 @@ pass	Set.contains over negative zero does not find positive zero
 pass	Set.insert does not fold a duplicate against a runtime element
 pass	Set.of of a Set.to-list result reconstructs the same set (the enumeration round-trips)
 pass	Set.of of a computed (concatenated) runtime list dedups by value
+pass	Set.of over a runtime list of TUPLE elements reconstructs the same set through the synthesized fold
 todo	Set.of over runtime lists at two different element types declines pending the recursive-generic tie
 pass	Set.remove does not fold a set whose element is a runtime scalar
 pass	Set.remove of a rope-element set built via Set.of lowers the cardinality
@@ -420,6 +423,7 @@ pass	a Map-returning closure alongside a parameterized plain export — the clos
 pass	a Map-returning closure alongside a parameterized plain export — the plain
 pass	a Map.lookup over a map literal with a runtime key finds it by value
 pass	a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)
+pass	a NARROW-width effect op parameter grounds a fitting perform argument
 pass	a NEGATIVE Float32-overflowing literal in a runtime branch is rejected
 pass	a NESTED Record ARG (a record containing a record) crosses the direct-call boundary
 pass	a NESTED Record ARG with a LIST result crosses the direct-call boundary
@@ -503,6 +507,7 @@ pass	a Result carrying a Result is matched by a nested pattern to its inner valu
 pass	a Result pipeline short-circuits on the first Err
 pass	a Result-valued `?` under an Option boundary is a type error
 pass	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
+pass	a SET as a Map key hits by ORDER-INDEPENDENT inner-set content
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STRING-result effect op resumes with a string that folds through a concat
@@ -531,6 +536,7 @@ pass	a THREE-parameter op arm binds all three parameters and the state
 pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
 pass	a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both
 pass	a TUPLE-returning operation resumes a pair built from the handler state, then projected
+pass	a Thm rides a MAP value through outside code and comes back to the kernel accessor
 pass	a Thm rides a collection through outside code without destructure rights
 pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
 pass	a Tuple ARG BEFORE a scalar arg crosses the direct-call boundary (tuple, then scalar)
@@ -1037,7 +1043,9 @@ pass	a float literal compared against a Float32 param computes at the narrow wid
 pass	a handler STATE that is a recursive sum GROWS one constructor per operation
 pass	a handler arm computes its NEXT-STATE with a recursive pure helper
 pass	a handler arm computes its RESUME VALUE with a deeply RECURSIVE pure helper
+pass	a host-delegated result SEEDS an in-program handler's initial state
 pass	a large value in a NON-projected tuple slot does not trip the projection width check
+pass	a let tuple pattern destructures a helper CALL's runtime tuple result
 pass	a literal just past the Float32 finite max overflows in a runtime branch
 pass	a literal one past the Int8 min rejects in a runtime branch
 pass	a magnitude literal that overflows the annotated Qty INNER width is rejected
@@ -2106,6 +2114,7 @@ pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin construction result compares equal to the Bytes it builds
 pass	a runtime bin construction result unequal to different content is false
 pass	a runtime bin match binds a dependent-size bytes segment over a runtime scrutinee
+pass	a runtime bin match feeds its decoded segment binders into a sum+tuple constructor, then projects back
 pass	a runtime dependent-size match reads a MULTI-BYTE (u16) length prefix
 pass	a runtime literal-tag probe gates a dependent-size body in one arm
 todo	a runtime bin match with a NON-FINAL dependent-size segment binds the body then the rest
@@ -2872,6 +2881,7 @@ pass	an axiom composes with the inference rules like any other theorem (SYM of E
 pass	an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel
 pass	an earlier literal arm is chosen over a later name-binding arm for a runtime scrutinee
 pass	an earlier name-binding arm shadows a later literal arm — first-match-wins, not specificity-ordered
+pass	an effect declared in a MODULE is performed by its helper and handled by the IMPORTER
 pass	an effect discharged by a handler does not escape to the manifest
 pass	an effect in a statically-dead branch is still syntactically reached, so its delegation is not latent
 pass	an effect in a statically-dead branch still requires a grant — ungranted is rejected
@@ -3108,6 +3118,7 @@ pass	an unused let binding whose init performs still advances the handler state
 pass	an unusual unsigned width underflows below zero and is rejected CDZ0304
 pass	an unusual-width minimum modulo -1 is zero and does not overflow
 pass	an unusual-width value that overflows its computed range is rejected at compile time
+pass	an unwrap-transform-rewrap helper round-trips a newtype at runtime
 pass	an unwrapped conversion result is a bare number under ordinary numeric rules
 pass	an unwrapped length adds to an unwrapped time with no dimension error
 pass	and evaluates the right operand when the left is true
@@ -3760,6 +3771,7 @@ pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and 
 pass	nested MIXED-direction shifts do not combine — left-then-right is two operations
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
+pass	re-inserting a LIST row into a map replaces that row and leaves the original map's row intact
 pass	re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	read classifies a lone punctuation token as an Ast.Name and it round-trips
@@ -4262,6 +4274,7 @@ pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added
 pass	two narrow tuple elements are projected and compared
 pass	two nested recursive const-closure drivers (filter under fold) emit valid wasm and compute correctly
+pass	two newtypes over the SAME inner type do not cross-assign
 pass	two pattern keys match with one satisfied by the runtime-keyed entry
 pass	two performs as the two ARGUMENTS of a pure USER function thread the state left-to-right
 pass	two performs bound by nested lets thread the handler state in order
@@ -4408,6 +4421,7 @@ pass	a List.update at a checked-arith element behind a recursive-call list is di
 pass	a List.update at a second-RRB-node index on a large runtime list lands there and preserves the rest
 pass	a List.update at a third-level RRB index lands and preserves persistence and siblings
 pass	a Map VALUE that is a list-of-quantities round-trips through Map.lookup and List.at
+pass	a Map rebuilt by folding Map.insert over its own Map.to-list equals the original
 pass	a Map.len over a projected field of a fresh record whose producer binds an i64 let is disjoint-slotted
 pass	a Map.remove of a checked-arith key behind a recursive-call map is disjoint-slotted
 pass	a Map.remove of a checked-arith key that is PRESENT drops exactly it (disjoint-slot value-parity)

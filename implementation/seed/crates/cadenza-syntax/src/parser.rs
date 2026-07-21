@@ -2990,7 +2990,16 @@ impl<'a> Parser<'a> {
                 // Elements are single expressions (`PREC_SEQ + 1`) — a `;` is not a list separator, so a
                 // sequence element parenthesizes (`[(a; b), c]`), matching call-argument position.
                 if !self.rest_marker(&mut items, |p| p.expr(crate::token::PREC_SEQ + 1)) {
-                    items.push(self.expr(crate::token::PREC_SEQ + 1));
+                    let elem = self.expr(crate::token::PREC_SEQ + 1);
+                    // A `//` comment trailing this element on the SAME source line (`[1, // note` or
+                    // `2 // last` before `]`) sits at the NEXT token's leading slot (the `,` or `]`).
+                    // Drain + attach it to THIS element as `(comment-after …)` so it re-prints same-line,
+                    // rather than being stranded at the next element's slot / the `]` slot where the loop
+                    // would DROP it (the trailing-inline comment-loss that made `cdz fmt` refuse the whole
+                    // file). `strip_comments` peels `(comment-after …)`, so the compiler is unaffected.
+                    // (Mirrors the sum-type `variant()` loop's same-line trailing-comment capture.)
+                    let trailing = self.take_trailing_comment_here();
+                    items.push(self.wrap_comment_after(trailing, elem));
                 }
                 if !self.sep_continue(Kind::RBracket) {
                     break;

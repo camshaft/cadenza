@@ -6646,6 +6646,21 @@ mod tests {
         // Scoped to trunk, and writes the configured log path — QUOTED in the redirect (PR #458).
         assert!(body.contains("refs/heads/trunk"));
         assert!(body.contains(">> '/hub/.claude/fleet/trunk-clobber.log'"));
+        // A log path containing a single quote (or other shell metachars) must be SAFELY quoted — the
+        // `'…'` wrap with `'\''` escaping (PR #458), else the redirect breaks or injects into a hook that
+        // runs on EVERY fleet-wide ref update. The clean-path assert above never exercises the escape
+        // branch, so a mutant dropping `log_path.replace('\'', "'\\''")` would survive it. Pin the escape:
+        // `/x/it's/log` must appear as `'/x/it'\''s/log'` in BOTH the redirect uses (the echo + the
+        // ancestry-walk appends all share the one `{q}`), and the raw unescaped `it's` must NOT leak.
+        let esc = reference_transaction_hook_body("/x/it's/log");
+        assert!(
+            esc.contains(">> '/x/it'\\''s/log'"),
+            "a single-quote in the log path must be shell-escaped as '\\'' in the redirect, got:\n{esc}"
+        );
+        assert!(
+            !esc.contains(">> '/x/it's/log'"),
+            "the raw unescaped single-quote path must NOT appear (that redirect would be broken/injectable)"
+        );
         // Uses a descendant check to classify a backward (non-fast-forward) move.
         assert!(body.contains("merge-base --is-ancestor"));
         // Guards BOTH creation (old all-zeros) and deletion (new all-zeros) — PR #458.
