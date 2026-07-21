@@ -1010,6 +1010,12 @@ fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) 
         // narrow int). A bare out-of-range literal in a branch (`(: (if c 10000 0) UInt8)`) then rejects at
         // `check` as the emit path already does — closing the same check-vs-emit gap the compound arms close.
         Ty::Int(_) => width_fault_against_ty(db, value, &expected),
+        // A narrow `Float32` annotation on a non-literal `literal_width_fault` could not check directly — a
+        // runtime `(if c 1.0e300 0.0)` / `(match …)` annotated `(: … Float32)`. Route it through
+        // `width_fault_against_ty` (which descends the conditional's branches + applies the Float32-overflow
+        // check to each branch literal). Without this, an overflowing branch literal slipped `cdz check`
+        // while the emit path produced an INVALID module — the float sibling of the narrow-int gap.
+        Ty::Float(_) => width_fault_against_ty(db, value, &expected),
         // A single-payload variant `(Some 999)` : `(Option Int8)` — drill the payload arg against the
         // payload type at this sum's instantiation. (A multi-payload variant boxes its payloads as a tuple;
         // its single ctor arg is that tuple, handled by the Tuple arm once drilled — kept simple here to the
@@ -1097,6 +1103,28 @@ fn width_fault_against_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<Rej
         return arms
             .iter()
             .find_map(|&(_pattern, body)| width_fault_against_ty(db, body, want));
+    }
+    // A FLOAT literal that overflows a narrow `Float32` `want` — the float analogue of the narrow-int
+    // block below, reached here (not only by `literal_width_fault`'s direct-literal check) so it fires
+    // through the runtime `if`/`match`/`let` descent above: `(: (if c 1.0e300 0.0) Float32)` PASSED `cdz
+    // check` while the emit path produced an INVALID module (the branch literal is `±inf` in Float32, a
+    // malformed value with no written form). Only `Float32` is narrow enough to overflow a finite `Float64`
+    // literal; the retype-to-`Float64` fix is not offered here (no `ty_expr` for a nested/branch position,
+    // like the nested-int case). Reuses `dec.fits_f32()` — the same predicate `literal_width_fault` runs.
+    if let Ty::Float(ft) = want
+        && ft.ground_width() == 32
+        && let crate::ast::Struct::Atom(lid) = db.ast.get(value)
+        && let crate::ast::Leaf::Float(dec) = db.ast.leaf(*lid).clone()
+        && !dec.fits_f32()
+    {
+        return Some(
+            Reject::coded(
+                Code::IntOutOfRange,
+                "float literal does not fit the annotated type Float32 (it overflows the Float32 \
+                 range to infinity — the largest finite Float32 is about 3.4e38)",
+            )
+            .at(value),
+        );
     }
     if let Ty::Int(it) = want
         && let crate::ty::Width::Fixed(w) = it.width

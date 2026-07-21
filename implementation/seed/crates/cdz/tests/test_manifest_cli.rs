@@ -1711,6 +1711,69 @@ fn a_failing_property_over_a_doubly_nested_refined_newtype_renders_the_counterex
     );
 }
 
+/// A failing `(Set …)` / `(Map …)` property renders its counterexample as a CONCRETE VALUE (`{…}`), not the
+/// opaque raw driver-int pool. The Set/Map decode mirrors the generator: a Set decodes its `RUNNER_LIST_LEN`
+/// drawn elements then DEDUPS by value (`Set.of`); a Map decodes its drawn key/value pairs then applies
+/// LAST-WRITE-WINS by key (the `Map.insert` fold). Before this, `decode_value` returned `None` for Set/Map, so
+/// a failing Set/Map counterexample fell back to `generated ints [big64, …]` — unreadable and non-obviously
+/// replayable. A refined-newtype Set element decodes IN-DOMAIN too (the element GenTy carries the invariant).
+#[test]
+fn a_failing_set_or_map_property_renders_a_concrete_counterexample_value() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("setmap-counterexample");
+    // A Set property that FAILs once a large element is drawn → the counterexample must render `{N, …}`, not
+    // raw ints. A refined-newtype element (`Pct` in [0,100]) renders in-domain: `{P(99), …}`.
+    let set_src = "(do (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64))) \
+           (@ test (def (f (: s (Set Pct))) \
+             (match (Set.to-list s) ((list) unit) \
+               ((list h .. t) (match h (((. Pct P) x) (if (< x 50) unit (trap \"big\")))))))) \
+           (def (anchor) 1))";
+    let set_f = write(&d, "set.sexp", set_src);
+    let (sok, sout, _) = run(&["test", &set_f, "--seed", "3", "--trials", "50"]);
+    assert!(
+        !sok,
+        "the Set property fails (an element >= 50 is drawn in [0,100]): {sout}"
+    );
+    assert!(
+        sout.contains("counterexample: f({") && !sout.contains("generated ints"),
+        "a failing Set property renders a concrete `{{…}}` value, not the raw int pool: {sout}"
+    );
+    // Every rendered `P(N)` in the set is IN-DOMAIN [0,100] (the refined-newtype element decoded through its
+    // invariant, not a raw driver int).
+    for seg in sout.split("P(").skip(1) {
+        if let Some(nums) = seg.split(')').next()
+            && let Ok(n) = nums.trim().parse::<i64>()
+        {
+            assert!(
+                (0..=100).contains(&n),
+                "each Set element P(N) decodes IN-DOMAIN [0,100]: {sout}"
+            );
+        }
+    }
+    // A Map property that FAILs on a large VALUE → the counterexample must render `{k: v, …}` (last-write-wins
+    // by key), not raw ints.
+    let map_src = "(do \
+           (@ test (def (f (: m (Map Int64 Int64))) \
+             (match (Map.to-list m) ((list) unit) \
+               ((list h .. t) (match h ((tuple k v) (if (< v 500000000000000000) unit (trap \"big v\")))))))) \
+           (def (anchor) 1))";
+    let map_f = write(&d, "map.sexp", map_src);
+    let (mok, mout, _) = run(&["test", &map_f, "--seed", "1", "--trials", "40"]);
+    assert!(
+        !mok,
+        "the Map property fails (a large value is drawn): {mout}"
+    );
+    assert!(
+        mout.contains("counterexample: f({") && !mout.contains("generated ints"),
+        "a failing Map property renders a concrete `{{k: v}}` value, not the raw int pool: {mout}"
+    );
+}
+
 /// END-TO-END: a MIN-LENGTH `@invariant` constrains a newtype-List to non-empty generation. `NEList = Mk
 /// (List Int64)` with `@invariant(< 0 (List.len self))`: every generated `NEList` wraps a NON-EMPTY list, so
 /// a property asserting `List.len > 0` PASSES all trials (before the constraint the generator drew the empty

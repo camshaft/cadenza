@@ -7071,6 +7071,32 @@ mod tests {
     }
 
     #[test]
+    fn prewall_threshold_is_lower_for_the_single_writer_pr_sync() {
+        // pr-sync (the sole `trunk` writer) escalates EARLIER than everyone else: its wedge stalls the
+        // whole merge queue, so it's worth more margin below the 100% wall. This pins the two constants
+        // AND their ordering invariant — a future edit that swaps them, drops the special-case, or makes
+        // the general bound the lower of the two (inverting the single-writer margin) fails here.
+        assert_eq!(
+            prewall_threshold_for("pr-sync"),
+            CTX_PREWALL_THRESHOLD_PRSYNC
+        );
+        assert_eq!(prewall_threshold_for("v-inference"), CTX_PREWALL_THRESHOLD);
+        assert_eq!(prewall_threshold_for("concierge"), CTX_PREWALL_THRESHOLD);
+        assert_eq!(prewall_threshold_for(""), CTX_PREWALL_THRESHOLD);
+        // The margin invariant: pr-sync's bound is STRICTLY below the general one (it MUST escalate no
+        // later — ideally earlier — than any other agent), and both stay below the 100% wall so a
+        // `/compact` can still submit when the escalation fires.
+        assert!(
+            CTX_PREWALL_THRESHOLD_PRSYNC < CTX_PREWALL_THRESHOLD,
+            "the single writer must escalate earlier than a general agent"
+        );
+        assert!(
+            CTX_PREWALL_THRESHOLD < CTX_WEDGE_THRESHOLD,
+            "the pre-wall bound must sit below the 100% wall so /compact can still submit"
+        );
+    }
+
+    #[test]
     fn decide_drain_nudge_is_hard_guarded() {
         // churn_grace = 900, stuck_grace = 180 (representative of the real constants).
         let (cg, sg) = (900u64, 180u64);

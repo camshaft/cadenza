@@ -434,6 +434,39 @@
   (input  (Set.len (Set.union (Set.of (list 1 2 3)) (Set.of (list 2 3 4)))))
   (output (: 4 Int64)))
 
+; The set-algebra cases here use SMALL sets (a handful of elements, single CHAMP leaf). At higher
+; cardinality a Set is a MULTI-LEVEL CHAMP trie, so union/intersection/difference must merge/traverse deep
+; tries correctly. This pins the large-set algebra: two 40-element runtime sets with a known 20-element
+; overlap (a=[0,40), b=[20,60)) — union=60, intersection=20, difference(a∖b)=20 — plus membership
+; spot-checks (an element only in b is in the union; a shared element is in the intersection; an
+; a-only element is in the difference but a shared element is NOT). A deep-trie merge that mis-navigated,
+; double-counted the overlap, or dropped a node would flip a cardinality or a membership bit.
+(case "large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference"
+  (doc    "Two 40-element runtime sets built by a push-loop (each spans >1 CHAMP node): a = [0,40),
+           b = [20,60), overlapping on [20,40) (20 elements). `Set.len` of the union is 60 (0..59, the
+           overlap counted once), of the intersection 20 ([20,40)), of the difference a∖b 20 ([0,20)).
+           Membership spot-checks: 55 ∈ union (b-only), 25 ∈ intersection (shared), 5 ∈ a∖b (a-only), 25 ∉
+           a∖b (shared, correctly excluded from the difference). Result `(60, 20, 20, 1, 1, 1, 0)`. Pins
+           that the CHAMP set-algebra operations merge/traverse the deep multi-level trie by content — the
+           large-cardinality companion of the small-set union/intersection/difference law cases above.")
+  (input  (do
+            (def (fill (: i Int64) (: n Int64) (: s (Set Int64)))
+              (if (< i n) (fill (+ i 1) n (Set.insert s i)) s))
+            (def (main (: z Int64))
+              (let ((a (fill 0 40 (Set.of (list))))
+                    (b (fill 20 60 (Set.of (list)))))
+                (tuple
+                  (Set.len (Set.union a b))
+                  (Set.len (Set.intersection a b))
+                  (Set.len (Set.difference a b))
+                  (if (Set.contains (Set.union a b) 55) 1 0)
+                  (if (Set.contains (Set.intersection a b) 25) 1 0)
+                  (if (Set.contains (Set.difference a b) 5) 1 0)
+                  (if (Set.contains (Set.difference a b) 25) 1 0))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 60 20 20 1 1 1 0) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64))))
+
 (case "intersection is associative"
   (doc    "`(A ∩ B) ∩ C` equals `A ∩ (B ∩ C)` for A={1,2,3,4}, B={2,3,4,5}, C={3,4,5,6} — both regroupings
            yield {3,4}. The intersection companion of union associativity; pins that the meet regrouping is

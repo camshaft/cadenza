@@ -2374,6 +2374,35 @@
   (call   run (: 8 Int64))
   (output (: 8 Int64)))
 
+; The retention case above checks a deep rope's byte-LEN (=8) but not that its CONTENT reads back correctly
+; through the depth. A many-chunk rope (built by repeated String.concat) is a deep byte-rope; String.at /
+; String.scalar-len / `=` must traverse it correctly at every position, not just measure its length. This
+; pins that: a 20-chunk "ab" rope (40 scalars) indexes right at the start, deep interior, and last position,
+; equals its flat twin, and is None past the end — the content-through-depth companion of the byte-len case.
+(case "a deep many-chunk runtime string rope indexes and measures correctly through its depth"
+  (doc    "A 20-chunk rope built by repeated `String.concat` of \"ab\" (a deep runtime byte-rope, 40 scalars).
+           `String.scalar-len` = 40; `String.at` reads the right scalar at index 0 (\"a\"), 1 (\"b\"), the
+           deep interior 38 (\"a\") and last 39 (\"b\"); the rope `=` its 40-char flat twin (rope operands are
+           compacted before the byte-compare, so a rope equals its flat form); and `String.at 40` is None
+           (past the end). Result `(40, \"a\", \"b\", \"a\", \"b\", 1, 0)`. Pins that a MANY-chunk rope's
+           addressing/length/equality traverse the full depth correctly, not just the 2-chunk ropes and the
+           byte-len-only retention case — the content-through-depth companion of the deep-rope retention case
+           above.")
+  (input  (do
+            (def (build (: n Int64) (: acc String))
+              (if (= n 0) acc (build (- n 1) (String.concat acc "ab"))))
+            (def (at (: s String) (: i Int64)) (match (String.at s i) ((Some c) c) ((None _u) "X")))
+            (def (main (: n Int64))
+              (let ((r (build 20 "")))
+                (tuple
+                  (String.scalar-len r)
+                  (at r 0) (at r 1) (at r 38) (at r 39)
+                  (if (= r "abababababababababababababababababababab") 1 0)
+                  (match (String.at r 40) ((Some _c) 1) ((None _u) 0)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 40 "a" "b" "a" "b" 1 0) (Tuple Int64 String String String String Int64 Int64))))
+
 ; --- The threaded-String-param retain: the consumption-shape faces ----------------------------------
 ; e38228f35 added String/Symbol to the Perceus retain-candidate gate (a param threaded through a
 ; self-recursive loop AND consumed by concat each step was freed while referenced — an OOB trap past

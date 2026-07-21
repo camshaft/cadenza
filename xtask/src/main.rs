@@ -3736,6 +3736,15 @@ fn check(paths: &Paths, profile: &str) {
         baseline_titles_agree_lint(paths)
     });
 
+    // Within-file duplicate-title lint (companion to the cross-file agree-lint above): a baseline with the
+    // SAME case-title on 2+ lines — typically a `gate --save`/hand-append leaving a stale extra verdict —
+    // hard-errors `gate --check` when the verdicts conflict (pass+todo), reddening that target FLEET-WIDE.
+    // The agree-lint compares title SETS so it can't see a within-file dup; this catches it at MR time.
+    // Cheap (reads the three baseline files, no rebuild), like the agree-lint.
+    log.step_native("baseline-no-dup-titles", || {
+        baseline_no_dup_titles_lint(paths)
+    });
+
     // The two REPORT-ONLY conformance sweeps below (cadenza-ml + emit≡interpret) each shell `cdz
     // run-ml`/`run-emitted` PLUS the wasm oracle once per corpus case (~3s/case over thousands of
     // cases), bounded only by the 45-min compiler-ml suite deadline — so back-to-back they can add up
@@ -4227,6 +4236,74 @@ pub(crate) fn baseline_titles_agree_lint(paths: &Paths) -> Result<(), String> {
          the rust baselines stale). Heal with `cargo xtask gate --save --target rust` and `--target \
          rust-async` (re-run each backend's gate + re-save), so all three cover the same cases. \
          Divergences:\n  {}",
+        problems.join("\n  ")
+    ))
+}
+
+/// The case-titles in a baseline as they APPEAR (a `Vec`, NOT a set) — so a within-file DUPLICATE title
+/// is visible (the set-based `baseline_titles` silently dedups, which is why the agree-lint can't catch a
+/// dup). Same parse: skip `#`-header/blank lines, take field 2 of `verdict\tdescription`.
+fn baseline_title_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .filter_map(|l| l.split_once('\t').map(|(_v, d)| d.to_string()))
+        .collect()
+}
+
+/// Assert no gate baseline has the SAME case-title on 2+ lines. A duplicate title is how a `gate --save`
+/// / hand-append can leave two verdict lines for one case; when the verdicts DIFFER (a `pass`+`todo`
+/// conflicting-dup) the map-keyed baseline masks one (last-wins) and `gate --check` HARD-ERRORS, reddening
+/// that target FLEET-WIDE until healed (recurred 3× — corpus-bugfix's `545c8e44a`, `6a3e7906e`). The
+/// agree-lint only compares title SETS across files, so it can't see a within-file dup (a set dedups). This
+/// catches the class at MR time. Returns an actionable error naming the dup'd title(s) + heal command;
+/// `Ok(())` when every baseline's titles are unique (or a baseline is absent — nothing to check).
+pub(crate) fn baseline_no_dup_titles_lint(paths: &Paths) -> Result<(), String> {
+    let targets = [
+        (".gate-baseline", GateTarget::Wasm),
+        (".gate-baseline-rust", GateTarget::Rust),
+        (".gate-baseline-rust-async", GateTarget::RustAsync),
+    ];
+    let mut problems: Vec<String> = Vec::new();
+    for (name, target) in targets {
+        let path = baseline_path(paths, target);
+        // Absent baseline: nothing to check (rust baselines are opt-in). A real read error fails loudly,
+        // mirroring `baseline_titles_agree_lint` — never silently pass having read nothing.
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("cannot read baseline {}: {e}", path.display())),
+        };
+        // Count each title; a count > 1 is a duplicate. Preserve first-seen order for a stable report.
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut order: Vec<String> = Vec::new();
+        for t in baseline_title_lines(&text) {
+            if *counts.entry(t.clone()).or_insert(0) == 0 {
+                order.push(t.clone());
+            }
+            *counts.get_mut(&t).unwrap() += 1;
+        }
+        let dups: Vec<String> = order
+            .into_iter()
+            .filter(|t| counts[t] > 1)
+            .map(|t| format!("{}× {t}", counts[&t]))
+            .collect();
+        if !dups.is_empty() {
+            problems.push(format!(
+                "{name} has {} duplicated case-title(s):\n    {}",
+                dups.len(),
+                dups.join("\n    ")
+            ));
+        }
+    }
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "a gate baseline has the SAME case-title on 2+ lines — a duplicate. When the verdicts differ \
+         (pass+todo) the map-keyed baseline masks one (last-wins) and `gate --check` hard-errors, \
+         reddening that target FLEET-WIDE. Heal by removing the stale/extra line (keep the correct verdict), \
+         or re-run `cargo xtask gate --save --target <t>` to regenerate the file cleanly (one line per case). \
+         Duplicates:\n  {}",
         problems.join("\n  ")
     ))
 }
@@ -5327,6 +5404,27 @@ mod trap_grading_tests {
         assert!(titles.contains("a case that passes"));
         assert!(titles.contains("a case the backend declines"));
         assert_eq!(titles.len(), 2);
+    }
+
+    #[test]
+    fn baseline_title_lines_keeps_a_duplicate_that_the_set_form_dedups() {
+        // The dup-lint's foundation: `baseline_title_lines` preserves a repeated title (a Vec), whereas
+        // `baseline_titles` (a set) collapses it — which is exactly why the set-based agree-lint can't see
+        // a within-file dup and this Vec-based check can. A `pass`+`todo` conflicting-dup is the real case.
+        let text = "# gate baseline\npass\tdup case\ntodo\tdup case\npass\tunique case\n";
+        let lines = baseline_title_lines(text);
+        assert_eq!(lines.len(), 3, "the duplicate is NOT collapsed: {lines:?}");
+        assert_eq!(
+            lines.iter().filter(|t| *t == "dup case").count(),
+            2,
+            "`dup case` appears twice (conflicting pass+todo): {lines:?}"
+        );
+        // The set form (used by the agree-lint) dedups it to a single entry — the blind spot this closes.
+        assert_eq!(
+            baseline_titles(text).len(),
+            2,
+            "the set form collapses the dup (why a within-file dup needs the Vec-based lint)"
+        );
     }
 
     #[test]

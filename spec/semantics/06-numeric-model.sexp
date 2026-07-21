@@ -2662,6 +2662,33 @@
   (call   main (: 5 Int64)) (output (: 80 Int64))
   (call   main (: -5 Int64)) (output (: -80 Int64)))
 
+(case "a cancelling add-then-subtract chain keeps the intermediate overflow"
+  (doc    "`(- (+ a 2) 2)` is algebraically the identity, but the checked INTERMEDIATE `(+ a 2)` overflows
+           at a = Int64.max - 1: a reassociation to `a + (2 - 2)` = a (or any cancel-the-constants
+           rewrite) would return the input where the program must TRAP — the intermediate is a defined
+           observable, exactly like the trap in a discarded operand. 5 → 5 (the chain computes normally);
+           max-1 → trap. The add-then-subtract face of reassociation trap-preservation. Expected: 5, trap.")
+  (input  (do
+            (def (main (: a Int64))
+              (- (+ a 2) 2))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: 9223372036854775806 Int64)) (trap "integer overflow"))
+
+(case "the mirrored subtract-then-add chain computes at both boundaries without a spurious trap"
+  (doc    "The control: `(+ (- a 2) 2)` has NO overflowing intermediate at either extreme — a = Int64.max
+           subtracts first (fits), adds back (fits) → max; a = min+2 likewise → min+2. Pins that the
+           trap-preservation above is about the GENUINE intermediate, not a blanket refusal to compute
+           near the boundary: the mirrored order is total at the same inputs' magnitudes. Together the
+           pair fixes the fold's legality criterion — a constant-cancel rewrite is sound exactly when the
+           intermediate provably cannot overflow. Expected: max, min+2.")
+  (input  (do
+            (def (main (: a Int64))
+              (+ (- a 2) 2))
+            (export main)))
+  (call   main (: 9223372036854775807 Int64)) (output (: 9223372036854775807 Int64))
+  (call   main (: -9223372036854775806 Int64)) (output (: -9223372036854775806 Int64)))
+
 ; shift moves every set bit out. The bound comes from a masking chain (`unsigned_value_bits`): `(x & 15)`
 ; fits 4 bits so `>> 4` (on the UNSIGNED UInt8, `>>` is the LOGICAL zero-filling shift) drops them all → 0,
 ; and `(x & 7)` fits 3 bits so `>> 3` → 0. The fold DISCARDS `x`, so it is `is_trap_free`-guarded: a

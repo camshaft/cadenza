@@ -14462,6 +14462,55 @@ mod runtime_ops {
     }
 
     #[test]
+    fn cdz_check_rejects_a_float32_overflowing_literal_in_a_runtime_if_or_match_branch() {
+        // The FLOAT sibling of the integer descent gap above — HIGHER severity: `(: (if c 1.0e300 0.0)
+        // Float32)` (a Float32-overflowing literal `1.0e300` — finite as Float64, `±inf` as Float32, a
+        // malformed value) in a runtime `if`/`match` branch PASSED `cdz check` while the EMIT path produced
+        // an INVALID wasm MODULE (not a clean reject). `literal_width_fault`'s Float32-overflow check only
+        // fired on a DIRECT float literal; a runtime conditional bypassed it, and the nested descent handled
+        // the INTEGER path only. The fix adds a Float32-overflow arm to `width_fault_against_ty` (reached
+        // through the runtime if/match/let branch descent) + routes a `Ty::Float` annotation into it. Now
+        // `check` rejects CDZ0302 at the branch literal, agreeing with emit (and no longer emitting a broken
+        // module). Only `Float32` overflows a finite `Float64` literal; `Float64` and fitting values pass.
+        let check_rejects = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            let d = diags
+                .iter()
+                .find(|d| d.severity == crate::abi::Severity::Error)
+                .unwrap_or_else(|| panic!("expected a check-level reject for: {src}"));
+            assert_eq!(
+                d.code.as_deref(),
+                Some("CDZ0302"),
+                "expected CDZ0302 for {src}, got: {}",
+                d.message
+            );
+        };
+        // if-branch, narrow parameter, and match-arm (scalar-int scrutinee) forms.
+        check_rejects("(module m (def (f (: c Bool)) (: (if c 1.0e300 0.0) Float32)) (export f))");
+        check_rejects(
+            "(module m (def (g (: x Float32)) x) (def (f (: c Bool)) (g (if c 1.0e300 0.0))) (export f))",
+        );
+        check_rejects(
+            "(module m (def (f (: n Int64)) (: (match n (0 1.0e300) (_ 0.0)) Float32)) (export f))",
+        );
+
+        // NO OVER-REJECTION: a fitting Float32 literal, the same overflow under Float64 (fits), and a bare
+        // conditional with no narrow-float context (stays Float64) all pass check clean.
+        let check_clean = |src: &str| {
+            let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+            assert!(
+                diags
+                    .iter()
+                    .all(|d| d.severity != crate::abi::Severity::Error),
+                "expected NO check reject for: {src}\ngot: {diags:?}"
+            );
+        };
+        check_clean("(module m (def (f (: c Bool)) (: (if c 1.0 0.0) Float32)) (export f))");
+        check_clean("(module m (def (f (: c Bool)) (: (if c 1.0e300 0.0) Float64)) (export f))");
+        check_clean("(module m (def (f (: c Bool)) (if c 1.0e300 0.0)) (export f))");
+    }
+
+    #[test]
     fn runtime_if_branch_bare_literal_grounds_to_the_narrow_result_width() {
         // An `if` whose branches MIX a narrow value and a bare literal: the literal branch (Int64 on its
         // own = i64 slot) must take the `if`'s narrow result width, so both branches leave the same i32
