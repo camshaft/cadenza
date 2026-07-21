@@ -6,6 +6,7 @@ pass	@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype t
 pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwraps + type-checks; a satisfying value constructs and is usable
 pass	@invariant ESTABLISH Part 2 (divert): a plain `(Percent.Pct v)` construction auto-establishes — a satisfying value constructs, a violating value traps at the call site (design §10.2, (D))
 pass	@invariant ESTABLISH Part 2: the synthesized checked constructor enforces the invariant at run time — a satisfying value constructs, a violating value traps (design §10.2, (D))
+pass	@invariant ESTABLISH divert reaches a LET-INIT construction site and a NESTED-invariant constructor argument
 pass	@invariant ESTABLISH divert reaches indirect construction sites: a lambda body, a reconstruct-after-update, and a list element all establish
 pass	@invariant ESTABLISH fires when the constructor is directly a MATCH ARM's selected result (v-patterns divert site)
 pass	@invariant ESTABLISH over a multi-variant sum: each variant's construction auto-establishes — a satisfying value constructs, a violating one traps (design §10.2, (D))
@@ -1889,6 +1890,7 @@ pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin construction result compares equal to the Bytes it builds
 pass	a runtime bin construction result unequal to different content is false
 pass	a runtime bin match binds a dependent-size bytes segment over a runtime scrutinee
+todo	a runtime bin match with a NON-FINAL dependent-size segment binds the body then the rest
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
 pass	a runtime bin match decodes a byte-aligned bit-field run
 pass	a runtime bin match dispatches on a leading literal bit-field tag
@@ -3329,6 +3331,10 @@ pass	nested mixed-match tail loops compose — an outer accumulator loop driving
 pass	nested patterns deconstruct recursively
 pass	nested patterns with literals
 pass	nested quasiquote embeds a FLOAT via the inner unquote
+pass	nested quasiquote: a double unquote at level 2 decrements back to active and splices (exact structure)
+pass	nested quasiquote: a level-1 unquote splices even while a level-2 one is deferred (same template)
+pass	nested quasiquote: a level-2 deferred unquote is INDEPENDENT of the enclosing binding
+pass	nested quasiquote: an inner unquote at level 2 is deferred, not spliced (exact structure)
 pass	nested-Option equality observes the OUTER variant and matches identical nesting
 pass	nullary constructor patterns are uniform with unary
 pass	one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers

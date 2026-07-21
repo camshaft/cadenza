@@ -2757,3 +2757,31 @@
   (output (: 0 Int64))
   (call   main (: -5 Int64))
   (trap   "unreachable"))
+
+(case "@invariant ESTABLISH divert reaches a LET-INIT construction site and a NESTED-invariant constructor argument"
+  (doc    "Two more escape-face pins extending the divert-reachability set (lambda / reconstruct / list-element /
+           match-arm) with the LET-INIT position and a NESTED @invariant. `via-let` constructs `(Nat.Mk v)` as a
+           LET-BINDING's initializer — the establish divert must fire on the init expression, not only on a
+           def-body-tail or an argument position (via-let(5)=5 establishes, via-let(-1) traps at the let-init).
+           `mk` nests one @invariant type inside another: `(Box.B (Nat.Mk x))` builds a `Nat` (which carries its
+           own `>= self 0` invariant) as the ARGUMENT to the `Box` constructor — the INNER `Nat.Mk` establish
+           must fire even though the value is immediately consumed by the outer constructor, so mk(5)=5 flows and
+           mk(-1) traps at the inner Nat establish before Box is ever built. Together they pin that the divert is
+           reachability-complete over let-init positions AND over an invariant construction used as a
+           constructor argument to a second invariant type — nesting does not let an inner establish escape.")
+  (input  (do
+            (@ (invariant (>= self 0)) (type Nat (Mk Int64)))
+            (@ (invariant true) (type Box (B Nat)))
+            (def (via-let (: v Int64)) (let ((n (Nat.Mk v))) (match n ((Nat.Mk x) x))))
+            (def (unbox (: b Box)) (match b ((Box.B n) (match n ((Nat.Mk v) v)))))
+            (def (mk (: x Int64)) (unbox (Box.B (Nat.Mk x))))
+            (export via-let)
+            (export mk)))
+  (call   via-let (: 5 Int64))
+  (output (: 5 Int64))
+  (call   via-let (: -1 Int64))
+  (trap   "unreachable")
+  (call   mk (: 5 Int64))
+  (output (: 5 Int64))
+  (call   mk (: -1 Int64))
+  (trap   "unreachable"))

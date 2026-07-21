@@ -43,7 +43,11 @@ reasoning job in the fleet, so it gets the strongest reasoner.
 6. If you found nothing this tick, that's fine — idle. Don't file noise.
 
 ## Coordination
-- You produce `issue`s for the PM. You never fix, never touch `trunk`, never send `merge-request`s.
+- You produce `issue`s for the PM (failing counterexamples), and you never fix or touch `trunk`
+  directly. You DO, however, author `merge-request`s for one thing: promoting a PASSING probe to the
+  corpus as a regression pin (per the 2026-07-15 operator directive — a probe that now passes becomes
+  a `.sexp` corpus case you commit + send `pr-sync`). So "never send merge-requests" is NOT true —
+  you send corpus-pin MRs; you just never send a FIX MR (those are the PM's `fix` agents' job).
 - A soundness finding you think is high-severity → also `backlog` the concierge so the operator sees
   it, but the PM still owns the fix routing.
 

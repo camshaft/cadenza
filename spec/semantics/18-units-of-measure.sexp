@@ -436,6 +436,19 @@
   (output (: (Qty.of 6.0 (Unit.* (Unit.base #"meter") (Unit.base #"second")))
              (Qty Float64 (Unit.* (Unit.base #"meter") (Unit.base #"second"))))))
 
+(case "a scaled derived quantity displays with BOTH scales folded into the magnitude"
+  (doc    "`100 km/h` = `(Qty.of 100.0 (Unit./ kilometer hour))` DISPLAYS as `27.77… meter/second`: the
+           render normalizes a DERIVED (quotient) dimension to its reference units AND folds BOTH scales
+           into the magnitude — the numerator's kilo prefix (×1000) and the denominator's hour→second scale
+           (÷3600) compose to ×1000/3600 = ×5/18, so 100 → 27.777…. Beyond the flat scaled-prefix display
+           (`5 km` → `5000 m`, a single base dimension) and the unscaled derived renders (`m/s`, `m·s`,
+           `m/s²`, `m³`), this pins the COMPOSITION: a scaled numerator over a scaled denominator both
+           reduce to reference, and the group magnitude carries the combined ratio. The rendered unit is the
+           reference quotient `(Unit./ (Unit.base meter) (Unit.base second))`, number and unit AGREE.")
+  (input  (Qty.of 100.0 (Unit./ (Unit.of #"kilometer") (Unit.of #"hour"))))
+  (output (: (Qty.of 27.77777777777778 (Unit./ (Unit.base #"meter") (Unit.base #"second")))
+             (Qty Float64 (Unit./ (Unit.base #"meter") (Unit.base #"second"))))))
+
 (case "a velocity multiplied by a time recovers the distance dimension"
   (doc    "The multiply-direction inverse of the velocity quotient: `(* (Qty.of 6.0 (meter/second))
            (Qty.of 2.0 second))` composes `(meter·second⁻¹)·second` = meter — the `second` cancels in the

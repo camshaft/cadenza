@@ -444,6 +444,29 @@
   (call   main (: 3 UInt8) (: 5 UInt8))
   (output (: 103 UInt8)))
 
+; A COMPARISON WALLS OFF the arith-spine width climb — the other no-over-rejection face. The arith-spine
+; fit-check climbs an integer-arith chain because an arith op (`+`/`*`/`%`) unifies its operands to ONE width;
+; a comparison (`<`) does NOT — its result is `Bool`, so a narrow width sitting only on a comparison's OPERANDS
+; must NOT propagate up to a literal above it. Here the ONLY UInt8 uses are `(< a b)` comparison operands; the
+; big literal `10000` is walled from that width by the `<`, so it stays at its Int64 default and is IN range —
+; the check must NOT reject it. (Contrast the reject case above, where the second `+` operand is the ARITH `(% a
+; b)`, which DOES carry UInt8 up the spine to ground `10000` → out of range.) A future change that let width leak
+; across a comparison would silently start over-rejecting this — this case is the guard for the "a comparison
+; breaks the chain" boundary the fix relies on.
+(case "a big literal is NOT grounded to a narrow width across a COMPARISON boundary (arith-spine climb stops at `<`)"
+  (doc    "`(+ (* 10000 (if (< a b) 1 0)) (if (< a b) 1 0))` over `(: a UInt8) (: b UInt8)`: the UInt8 params
+           appear ONLY as operands of the `<` comparisons, whose result is `Bool` — so the narrow width does NOT
+           climb the arith spine to the bare `10000`. With no arith-operand context fixing it, `10000` stays at
+           its Int64 default (10000 fits Int64), the whole expression is Int64, and the check must NOT reject it.
+           This is the COMPARISON-BOUNDARY face of the arith-spine fit-check: distinct from the fitting-value twin
+           above (same width, small literal), this pins that a comparison BREAKS the width climb, so a large
+           literal walled off by a `<` is left at Int64 and computes — guarding against a future change that lets
+           width leak across a comparison and over-rejects. At a=3,b=5: `10000·(3<5→1) + (3<5→1)` = 10000 + 1 =
+           10001.")
+  (input  (do (def (main (: a UInt8) (: b UInt8)) (+ (* 10000 (if (< a b) 1 0)) (if (< a b) 1 0))) (export main)))
+  (call   main (: 3 UInt8) (: 5 UInt8))
+  (output (: 10001 Int64)))
+
 (case "an R-suffixed literal composes with exact rational arithmetic"
   (doc    "`(+ 0.5R (Rational.of 1 3))` = 1/2 + 1/3 = 5/6 exactly — the suffixed literal flows into the
            exact `+` just like the explicit constructor, so both spellings denote one kind of value.")
@@ -2246,6 +2269,40 @@
   (input  (do (def (main (: x Int64)) (tuple (<< x 0) (>> x 0))) (export main)))
   (call   main (: -7 Int64))
   (output (: (tuple -7 -7) (Tuple Int64 Int64))))
+
+; The MULTIPLICATIVE-one and SUBTRACTIVE-zero keeping identities are the companions of `x + 0` above:
+; `x * 1`, `1 * x`, and `x - 0` all RETURN the surviving operand (`arith_identity` in lower.rs elides the
+; op), so a boundary-crossing runtime `x` must come back unchanged — including Int64.min, whose bit
+; pattern a fold that re-derived the boundary would corrupt. `(- 0 x)` is NOT this identity (it is a
+; negation), so `x - 0` folds but `0 - x` does not; likewise `1 * x` keeps `x` (commutative) but the
+; annihilator `x * 0` DISCARDS it (pinned separately, trap-guarded). Both backends.
+(case "the multiplicative-one and subtractive-zero identities preserve a boundary-crossing runtime operand"
+  (doc    "`(* x 1)`, `(* 1 x)`, and `(- x 0)` are all the identity on a runtime operand — none overflows
+           and each returns `x` unchanged. Called with Int64.min every component comes back Int64.min
+           exactly (a fold that dropped the sign or re-derived the boundary would corrupt it). Pins
+           `x * 1 = 1 * x = x - 0 = x` on a genuinely runtime operand, on both backends. The `x + 0`
+           companion above covers addition; this covers the multiplicative-one and right-zero-subtract
+           keepers `arith_identity` also applies.")
+  (input  (do (def (main (: x Int64)) (tuple (* x 1) (* 1 x) (- x 0))) (export main)))
+  (call   main (: -9223372036854775808 Int64))
+  (output (: (tuple -9223372036854775808 -9223372036854775808 -9223372036854775808)
+             (Tuple Int64 Int64 Int64))))
+
+; The `x * -1` STRENGTH REDUCTION must be value- AND trap-identical to the multiply it replaces.
+; `arith_identity` rewrites `(* x -1)` / `(* -1 x)` to the negation `(- 0 x)` (a cheaper single-overflow
+; form than the full-width `* -1` div_s round-trip), and that negation has the SAME overflow: `x == MIN`,
+; since `-MIN` is not i64-representable. So the rewrite must NOT silently wrap Int64.min to itself — it
+; must still TRAP. `x` stays an operand (the subtrahend), so its own traps are preserved. Both backends.
+(case "the x times minus-one strength reduction negates a normal operand and still traps at Int64.min"
+  (doc    "`(* x -1)` is rewritten to the negation `(- 0 x)` — cheaper than a full-width `* -1`, and
+           value-identical: at `x = 5` it is -5. But the rewrite must be TRAP-identical too: `x = Int64.min`
+           negates to `2^63`, which does not fit Int64, so it TRAPS integer overflow rather than wrapping
+           back to Int64.min. Pins that the `* -1 → (- 0 x)` strength reduction keeps the multiply's single
+           MIN-overflow (a rewrite that emitted a wrapping negate would MISCOMPILE the boundary), on both
+           backends.")
+  (input  (do (def (main (: x Int64)) (* x -1)) (export main)))
+  (call   main (: 5 Int64)) (output (: -5 Int64))
+  (call   main (: -9223372036854775808 Int64)) (trap "integer overflow"))
 
 (case "arithmetic right shift"
   (doc    "The compiler needs right shift for LEB128 encoding: (>> n 7) shifts n right by 7 bits,

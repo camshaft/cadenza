@@ -5106,6 +5106,24 @@ mod tests {
     }
 
     #[test]
+    fn format_document_preserves_an_ml_doc_comment() {
+        // A formatter that silently drops a `///` doc comment would be a disaster — the comment is part of
+        // the source's meaning (it feeds hover/`DocAt`). Pin that formatting an ML buffer PRESERVES its
+        // doc comment (the ML surface round-trips `///` through the arena; the shared `cdz fmt` guard also
+        // refuses a reprint that drops a `//`/`///` marker). A `def` already canonical except for the doc.
+        let text = "/// Adds one.\ndef inc(n: Int64) -> Int64 = n + 1";
+        let formatted = format_document(text, true).expect("a clean parse formats");
+        assert!(
+            formatted.contains("/// Adds one."),
+            "formatting must preserve the doc comment, got {formatted:?}"
+        );
+        assert!(
+            formatted.contains("def inc(n: Int64) -> Int64 = n + 1"),
+            "the def body must survive too, got {formatted:?}"
+        );
+    }
+
+    #[test]
     fn format_document_is_none_on_a_buffer_that_does_not_parse_cleanly() {
         // A broken buffer is NOT rewritten to a patched-up shape (matching `cdz fmt`'s fail-safe) — the
         // formatter returns None, so the LSP handler yields no edit rather than corrupting the source.

@@ -55,6 +55,28 @@ import EXACT_CDZ from "../wasm/cad/exact.cdz?raw";
 import HELPERS_CDZ from "../wasm/cad/helpers.cdz?raw";
 import UNITS_CDZ from "../wasm/cad/units.cdz?raw";
 
+// The preloaded-library triple passed to compile_with_preloaded — names/sources/formats, aligned 1:1 and
+// SINGLE-SOURCE (previously the three arrays were hand-written + DUPLICATED at both the linter-preload and
+// runModel call sites, so adding a CAD lib meant editing 4 literals in lockstep — the same parallel-array drift
+// that broke /music when `pattern` was added to names but not sources). One constant, referenced everywhere, +
+// an arity assertion: compile_with_preloaded requires equal lengths, so a mismatch throws a clear error at
+// module load, not a cryptic "must be equal length" mid-compile. (Mirrors MusicPage's PRELOAD arity guard.)
+const CAD_PRELOAD = {
+  names: [CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME],
+  sources: [EXACT_CDZ, HELPERS_CDZ, UNITS_CDZ],
+  formats: [CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT],
+};
+if (
+  CAD_PRELOAD.names.length !== CAD_PRELOAD.sources.length ||
+  CAD_PRELOAD.names.length !== CAD_PRELOAD.formats.length
+) {
+  throw new Error(
+    `CadPage preload arity mismatch: names=${CAD_PRELOAD.names.length}, sources=${CAD_PRELOAD.sources.length}, ` +
+      `formats=${CAD_PRELOAD.formats.length} — a CAD lib was added to one array but not the others (add the ` +
+      `matching "../wasm/cad/<name>.cdz?raw" import + its sources/formats entry).`,
+  );
+}
+
 // /cad's IDE config is built INSIDE the component (it must read the LIVE edit surface) — see `cadIde`
 // below. The program is a self-contained module (no wrapping), so the compiled text IS the editor text
 // (prefix 0). This turns on the Cadenza lexical + semantic highlighting + squiggles/hover.
@@ -149,11 +171,7 @@ export default function CadPage() {
     // resolves the full injected vocab — otherwise a model using `box`/`inch` faults them as unbound (the same
     // class as the earlier Solid/v3 all-red-squiggles bug), even though it runs fine. No snowflake/prng lib:
     // the snowflake showcase is self-contained (its builder is inline in the buffer), needing only this vocab.
-    preload: () => ({
-      names: [CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME],
-      sources: [EXACT_CDZ, HELPERS_CDZ, UNITS_CDZ],
-      formats: [CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT],
-    }),
+    preload: () => ({ names: CAD_PRELOAD.names, sources: CAD_PRELOAD.sources, formats: CAD_PRELOAD.formats }),
   }).current;
 
   // THE single run path. Inject the imports (exact + helpers) + pragma + export (ruling A — the buffer stays
@@ -173,9 +191,9 @@ export default function CadPage() {
         const out = await compileWithPreloaded(
           program,
           from,
-          [CAD_LIB_NAME, CAD_HELPERS_NAME, CAD_UNITS_NAME],
-          [EXACT_CDZ, HELPERS_CDZ, UNITS_CDZ],
-          [CAD_LIB_FORMAT, CAD_LIB_FORMAT, CAD_LIB_FORMAT],
+          CAD_PRELOAD.names,
+          CAD_PRELOAD.sources,
+          CAD_PRELOAD.formats,
         );
         if (!out.component) {
           const d = out.diagnostics.find((x) => x.error) ?? out.diagnostics[0];
