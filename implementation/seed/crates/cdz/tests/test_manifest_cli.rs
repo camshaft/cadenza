@@ -1809,6 +1809,39 @@ fn a_set_generator_reaches_the_empty_set() {
     );
 }
 
+/// A `(Map …)` generator is VARIABLE-size (`0..=G1_LIST_LEN` entries), so the EMPTY map is reachable — a "Map
+/// is never empty" property MUST fail. Before this, the Map generator did a FIXED `G1_LIST_LEN` `Map.insert`s;
+/// with a wide key type (Int64) the keys never collide, so the map was ALWAYS `G1_LIST_LEN` entries and the
+/// empty/small maps were unreachable → a never-empty property spuriously PASSED. The fix folds a drawn count
+/// of `Map.insert`s over `(Map.empty)` (`build_var_map_gen`) — the Map analogue of the variable-cardinality
+/// Set fix. A PASS = the empty map was generated (property failed) + its counterexample renders `f({})`.
+#[test]
+fn a_map_generator_reaches_the_empty_map() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("map-reaches-empty");
+    let f = write(
+        &d,
+        "m.sexp",
+        "(do \
+           (@ test (def (f (: m (Map Int64 Int64))) (if (> (Map.len m) 0) unit (trap \"empty map\")))) \
+           (def (anchor) 1))",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "40"]);
+    assert!(
+        !ok && stdout.contains("FAIL f-gen"),
+        "a variable-size Map generator reaches the EMPTY map (a never-empty property fails): {stdout}{stderr}"
+    );
+    assert!(
+        stdout.contains("counterexample: f({})") && !stdout.contains("generated ints"),
+        "the empty-map counterexample renders as the concrete `f({{}})`, not a raw int pool: {stdout}"
+    );
+}
+
 /// END-TO-END: a MIN-LENGTH `@invariant` constrains a newtype-List to non-empty generation. `NEList = Mk
 /// (List Int64)` with `@invariant(< 0 (List.len self))`: every generated `NEList` wraps a NON-EMPTY list, so
 /// a property asserting `List.len > 0` PASSES all trials (before the constraint the generator drew the empty

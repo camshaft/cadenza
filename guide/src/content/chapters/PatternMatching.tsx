@@ -136,19 +136,21 @@ export default function PatternMatching() {
         <C>(map (key binder) .. rest)</C>, fires when the map contains that key, binding the associated
         value to <C>binder</C> (and the leftover entries to <C>rest</C>). It's the pattern-matching
         counterpart to a <C>Map.lookup</C>: here <C>setting</C> reads the <C>"width"</C> from a config map,
-        falling back to <C>-1</C> when it's absent:
+        returning <C>{`(Some v)`}</C> when the key is present and <C>{`(None unit)`}</C> when it's absent,
+        because a missing key is an absence, not a magic number:
       </P>
       <Runnable
         source={`(def (setting m)
   (match m
-    ((map ("width" v) .. rest) v)
-    (_ -1)))
+    ((map ("width" v) .. rest) (Some v))
+    (_ (None unit))))
 (def (main)
   (setting (Map.insert (Map.insert (Map.empty) "width" 80) "height" 50)))`}
       />
       <P>
-        The map has a <C>"width"</C>, so the arm fires and binds <C>v</C> to <C>80</C>. Drop that key from
-        the map and the pattern no longer matches, so it falls through to the wildcard, <C>-1</C>. Toggle to
+        The map has a <C>"width"</C>, so the arm fires, binds <C>v</C> to <C>80</C>, and returns{" "}
+        <C>{`(Some 80)`}</C>. Drop that key from the map and the pattern no longer matches, so it falls
+        through to the wildcard and returns <C>{`(None unit)`}</C>. Toggle to
         the conventional surface and the pattern reads as <C>{`#{ "width" = v, .. rest }`}</C>, a
         map-literal shape on the left of a match arm (the <strong>Maps &amp; sets</strong> chapter later
         builds out maps as values).

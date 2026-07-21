@@ -547,6 +547,17 @@
   (input  (: (Some 999) (Option Int8)))
   (error  CDZ0302))
 
+(case "a literal in a USER-DECLARED sum payload that overflows the annotated width is rejected"
+  (doc    "`(type W (W Int8))` then `(: (W 999) W)` — the sum type W's declared payload Int8 grounds the `W`
+           constructor's literal argument `999`, which overflows Int8 → CDZ0302, exactly as the bare `(: 999
+           Int8)` and the `(Some 999) : Option Int8` payload above. The width fit-check must descend into a
+           USER-declared sum's payload type (not just the built-in Option/Result), which the earlier descent
+           missed — a user-sum payload literal escaped the check and materialized a silently-truncated value
+           (999 → -25 as Int8 on wasm; the rust backend E0308'd — a backend-divergent miscompile). Pins that
+           the descent reaches user-sum payloads.")
+  (input  (do (type W (W Int8)) (def (main) (match (: (W 999) W) ((W v) v))) (export main)))
+  (error  CDZ0302))
+
 (case "a Float32-overflowing literal nested in a compound payload is rejected"
   (doc    "The FLOAT analogue of the compound-payload width descent above: `(: (Some 1.0e300) (Option
            Float32))` — the annotation's `Float32` grounds the `Some` payload literal, and `1.0e300` (finite
@@ -630,6 +641,45 @@
             (export main)))
   (error  CDZ0302))
 
+(case "a narrow-width overflow reached through a MATCH projection of a runtime sum is rejected"
+  (doc    "A PROJECTION face of the width descent: the narrow annotation sits on a `match` that EXTRACTS the
+           payload of a runtime sum — `(: (match (if c (Some 10000) (None)) ((Some v) v) ((None) 0)) UInt8)`.
+           The UInt8 result width propagates backwards through the arm binder `v` into the `Some` payload,
+           where `10000` overflows (0..=255) → CDZ0302. Without the projection descent the payload would
+           slip check and EMIT would silently truncate (10000 → 16 as u8) — a wrong VALUE with no error,
+           the highest-severity class. The projection cousin of the direct `(: (Some 999) (Option Int8))`
+           payload descent: there the annotation wraps the sum; here it wraps the EXTRACTION.")
+  (input  (do
+            (def (main (: c Bool))
+              (: (match (if c (Some 10000) (None)) ((Some v) v) ((None) 0)) UInt8))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected"
+  (doc    "The tuple-projection twin: `(: (. (if c (tuple 10000 1) (tuple 5 2)) 0) UInt8)` — the narrow
+           annotation sits on a field PROJECTION of a runtime conditional, and the UInt8 width propagates
+           through the projected slot 0 into both branch tuples, where `10000` overflows → CDZ0302. Pins
+           that the projection descent selects the PROJECTED slot (a descent grounding every element would
+           wrongly reject a large slot-1 too; a descent grounding none would let the truncation through).")
+  (input  (do
+            (def (main (: c Bool))
+              (: (. (if c (tuple 10000 1) (tuple 5 2)) 0) UInt8))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a large value in a NON-projected tuple slot does not trip the projection width check"
+  (doc    "The selectivity control for the tuple-projection descent above: `(: (. (if c (tuple 5 10000)
+           (tuple 7 2)) 0) UInt8)` — the UInt8 annotation grounds only the PROJECTED slot 0 (5 and 7, both
+           fit); the `10000` lives in slot 1, which stays at its own Int64 grounding and must NOT be dragged
+           to UInt8 by the projection. Computes 5/7 per branch. Guards the descent against over-grounding
+           every element of the projected compound.")
+  (input  (do
+            (def (main (: c Bool))
+              (: (. (if c (tuple 5 10000) (tuple 7 2)) 0) UInt8))
+            (export main)))
+  (call   main (: true Bool)) (output (: 5 UInt8))
+  (call   main (: false Bool)) (output (: 7 UInt8)))
+
 ; The width fit-check must reach a literal whose narrow width is fixed CONTEXTUALLY + TRANSITIVELY through an
 ; integer-arith spine — not just its immediate binop sibling. `(+ (* 10000 …) (% a b))` over UInt8 params:
 ; the `+` unifies its two operands to one width, so the `%`'s UInt8 propagates up to the `*`, and the `*`
@@ -662,6 +712,20 @@
   (input  (do (def (main (: a UInt8) (: b UInt8)) (+ (* 100 (if (< a b) 1 0)) (% a b))) (export main)))
   (call   main (: 3 UInt8) (: 5 UInt8))
   (output (: 103 UInt8)))
+
+(case "a FLOAT literal that fits its contextually-grounded narrow width through an arith op computes"
+  (doc    "The FLOAT face of contextual width grounding, fitting side: `(+ a 1.5)` over `(: a Float32)` — the
+           `+` unifies its operand widths, grounding the bare `1.5` at Float32, where it is exactly
+           representable in binary32; `2.25 + 1.5` = `3.75` at f32 end-to-end. Pins that a float literal
+           grounded by an OPERAND's width (no annotation anywhere) computes at the narrow width. (The
+           OVERFLOWING twin `(+ a 1.0e300)` currently materializes ±inf on both backends instead of
+           rejecting — filed as a check gap; when its reject lands, its case joins this one as the
+           float mirror of the UInt8 10000/100 arith-spine pair.)")
+  (input  (do
+            (def (main (: a Float32))
+              (+ a 1.5))
+            (export main)))
+  (call   main (: 2.25 Float32)) (output (: 3.75 Float32)))
 
 ; A COMPARISON WALLS OFF the arith-spine width climb — the other no-over-rejection face. The arith-spine
 ; fit-check climbs an integer-arith chain because an arith op (`+`/`*`/`%`) unifies its operands to ONE width;
@@ -1166,6 +1230,35 @@
   (output (: 3 Int64))
   (call   main (: 17 Int64) (: 5 Int64))
   (output (: 3 Int64)))
+
+; The negative div/rem sign cases above use SMALL single-limb operands (-17/5). This pins the same
+; truncate-toward-zero / dividend-sign-remainder conventions on a genuinely MULTI-LIMB negative dividend:
+; the limb-library divmod must keep `q·d + r = n`, truncate the quotient toward zero (q = −|q|, not floored),
+; and give a non-positive remainder in `(−d, 0]` — even when the magnitude spans multiple 64-bit limbs. The
+; negative-sign companion of the multi-limb positive division-identity case above.
+(case "negative multi-limb BigInt div truncates toward zero and rem takes the dividend's sign"
+  (doc    "A negative multi-limb dividend `n = −(Int64.max² + 12345)` (~−2^126, spans two limbs) divided by
+           a positive `d = 1000000007`: the runtime divmod keeps the identity and the sign conventions.
+           Checks: `q·d + r = n` (reconstruction holds for a negative multi-limb dividend); `r < 1` (the
+           remainder is non-positive — it takes the DIVIDEND's sign, unlike a floored modulo); `r > −d` (the
+           remainder magnitude is bounded by the divisor); `q = −(|n|/d)` (the quotient truncates TOWARD
+           ZERO — the negation of the positive-magnitude quotient, not the floor); and `n < 0`. All → 1,
+           tuple `(1,1,1,1,1)`. The multi-limb negative-sign companion of the positive division-identity
+           case; pins that truncate-toward-zero + dividend-sign-remainder hold across the limb boundary, not
+           just on the single-limb −17/5 operands above.")
+  (input  (do
+            (def (main (: z Int64))
+              (let ((big (* (BigInt.of 9223372036854775807) (BigInt.of 9223372036854775807))))
+                (let ((n (- (BigInt.of 0) (+ big (BigInt.of 12345)))) (d (BigInt.of 1000000007)))
+                  (tuple
+                    (if (= (+ (* (/ n d) d) (% n d)) n) 1 0)
+                    (if (< (% n d) (BigInt.of 1)) 1 0)
+                    (if (> (% n d) (- (BigInt.of 0) d)) 1 0)
+                    (if (= (/ n d) (- (BigInt.of 0) (/ (+ big (BigInt.of 12345)) d))) 1 0)
+                    (if (< n (BigInt.of 0)) 1 0)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 1 1 1 1 1) (Tuple Int64 Int64 Int64 Int64 Int64))))
 
 (case "a runtime BigInt intermediate that overflows Int64 does not trap"
   (doc    "`(Int64.of (/ (* big big) big))` with `big = BigInt.of 5000000000`: the product `big*big` =
@@ -2903,6 +2996,24 @@
            backends.")
   (input  (do (def (main (: x Int64)) (* x -1)) (export main)))
   (call   main (: 5 Int64)) (output (: -5 Int64))
+  (call   main (: -9223372036854775808 Int64)) (trap "integer overflow"))
+
+; COMPOSITION of two `* -1` strength reductions: `(* (* x -1) -1)` is `x` (double negation), but each
+; `* -1` rewrites to `(- 0 _)` which traps at Int64.min — so the pair must NOT be cancelled to a bare `x`
+; that skips the boundary trap. The INNER `(* x -1)` evaluates first: at x = Int64.min it traps before the
+; outer negation ever runs. A fold that recognized `(* (* x -1) -1) → x` (algebraically true for
+; non-boundary x) and dropped both negations would WRONGLY return Int64.min instead of trapping. Pins that
+; the strength reductions COMPOSE trap-faithfully (each keeps its own MIN-overflow), on both backends.
+(case "two composed times-minus-one strength reductions round-trip a normal operand but still trap at Int64.min"
+  (doc    "`(* (* x -1) -1)` = x for a non-boundary operand (double negation): at x = 5 → 5, at x = -5 →
+           -5. But at x = Int64.min the INNER `(* x -1)` negates 2^63 (unrepresentable) and TRAPS integer
+           overflow before the outer `* -1` runs — the composition must not cancel to a bare `x` that skips
+           the trap. Pins that two `* -1 → (- 0 _)` strength reductions compose trap-faithfully (the inner
+           MIN-overflow still fires), on both backends. The composition companion of the single `* -1` case
+           above.")
+  (input  (do (def (main (: x Int64)) (* (* x -1) -1)) (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: -5 Int64)) (output (: -5 Int64))
   (call   main (: -9223372036854775808 Int64)) (trap "integer overflow"))
 
 (case "arithmetic right shift"

@@ -6935,6 +6935,39 @@ fn a_float32_arith_op_grounds_a_bare_literal_operand_to_f32() {
     assert_eq!(got.to_bits(), 3.5f64.to_bits(), "Float64 unchanged");
 }
 
+#[test]
+fn a_float32_if_result_grounds_its_bare_literal_branches_to_f32_not_f64() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // A bare-`ConstFloat` branch of an `if` whose RESULT is `Float32` (in TAIL position — the whole body
+    // is the `if`, annotated Float32) emitted an `f64.const` while the block type was `f32` → an INVALID
+    // wasm module ("expected f32, found f64"). The annotation is on the `if`, so each branch literal solves
+    // to the default `Float64`; unlike a narrow INT (masked into the shared i32 slot), f32/f64 are DISTINCT
+    // machine types so the mismatch is a hard validation error. The tail `Core::If` arm now grounds a
+    // bare-`ConstFloat` branch to the result's f32 width (the float twin of its bare-`ConstInt` grounding).
+    // Regression for the invalid-module bug (breaker-filed, routed by corpus-bugfix).
+    let src = "(module m (def (f (: n Int64)) (: (if (< n 5) 1.5 0.25) Float32)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let then_: f32 = run_returns_with(&bytes, "f", &[Val::S64(3)]);
+    assert_eq!(then_.to_bits(), 1.5f32.to_bits(), "then branch 1.5 as f32");
+    let else_: f32 = run_returns_with(&bytes, "f", &[Val::S64(7)]);
+    assert_eq!(
+        else_.to_bits(),
+        0.25f32.to_bits(),
+        "else branch 0.25 as f32"
+    );
+    // A value needing real f32 rounding (0.1 is inexact in binary32) rounds through f32, not f64.
+    let round_src = "(module m (def (f (: c Bool)) (: (if c 0.1 0.2) Float32)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(round_src))).expect("compile");
+    let got: f32 = run_returns_with(&bytes, "f", &[Val::Bool(true)]);
+    assert_eq!(got.to_bits(), 0.1f32.to_bits(), "0.1 rounds through f32");
+    // A Float64 `if` result is UNCHANGED (its branch literals were always the default f64).
+    let f64src = "(module m (def (f (: c Bool)) (: (if c 1.5 0.25) Float64)) (export f))";
+    let bytes = compile_component(&crate::codec::encode(&parse(f64src))).expect("compile");
+    let got: f64 = run_returns_with(&bytes, "f", &[Val::Bool(true)]);
+    assert_eq!(got.to_bits(), 1.5f64.to_bits(), "Float64 if unchanged");
+}
+
 /// The explicit INT→FLOAT conversion `Float64.of-int` over a RUNTIME integer emits
 /// `f64.convert_i64_s` (a constant folds instead). `(def (f (: n Int64)) (Float64.of-int n))` run with
 /// 42 returns 42.0; a large Int64 rounds to the nearest f64 — total, never trapping.
@@ -58114,6 +58147,69 @@ mod stage1 {
             ),
             cdz_run::Outcome::Trap(t) => panic!("runtime-string host-arg run trapped: {t}"),
         }
+    }
+
+    #[test]
+    fn a_runtime_string_host_arg_handles_empty_and_multibyte_lengths() {
+        // EDGE-LENGTH coverage for the `_mem` runtime-string-arg copy loop (the primary test uses a 1-byte
+        // string). Two edges an off-by-one in the loop guard `pos >= len → done` would break: (1) an EMPTY
+        // runtime string (0-length rope) — the copy loop body must be SKIPPED (nothing to store) and push
+        // `(scratch_base, 0)`, so the host receives a valid empty `(ptr, 0)`; a `>` vs `>=` bug would store
+        // one garbage byte. (2) a MULTI-byte string — the loop must iterate the full length, not stop early.
+        // Both build a genuine runtime rope via `String.from-bytes (Bytes.of …)` (not a const, not an export
+        // param — which declines at the boundary) and pass it to a host op answering 99; the program returns
+        // 99 in both, proving the marshaling completed + the host call executed regardless of length.
+        use crate::testkit::parse;
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("[host-mem-edge] runtime wasm not in the store; skipping run");
+            return;
+        };
+        let run = |src: &str, args: Vec<String>| -> String {
+            let bytes = compile_component(&crate::codec::encode(&parse(src)))
+                .expect("edge runtime-string host arg must compile");
+            let engine = wasmtime::Engine::default();
+            wasmtime::component::Component::from_binary(&engine, &bytes)
+                .expect("the edge host-mem component must be valid");
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args,
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: vec![cdz_run::HostResponse {
+                    op: "h".to_string(),
+                    value: "99".to_string(),
+                }],
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => s,
+                cdz_run::Outcome::Trap(t) => {
+                    panic!("edge runtime-string host-arg run trapped: {t}")
+                }
+            }
+        };
+        // (1) EMPTY runtime string: from-bytes of the empty byte list → a 0-length rope.
+        assert_eq!(
+            run(
+                "(do (effect H (op h (-> String Int64))) \
+                   (def (main) (match (String.from-bytes (Bytes.of (list))) \
+                     ((Some s) (host (H) (H.h s))) (None 0))) (export main))",
+                vec![]
+            ),
+            "99",
+            "an EMPTY runtime string arg marshals as (ptr, 0) and the host call returns 99"
+        );
+        // (2) MULTI-byte runtime string: from-bytes of three bytes.
+        assert_eq!(
+            run(
+                "(do (effect H (op h (-> String Int64))) \
+                   (def (main (: a Int64)) \
+                     (match (String.from-bytes (Bytes.of (list ((UInt 8).wrap a) ((UInt 8).wrap a) ((UInt 8).wrap a)))) \
+                       ((Some s) (host (H) (H.h s))) (None 0))) (export main))",
+                vec!["65".to_string()]
+            ),
+            "99",
+            "a MULTI-byte runtime string arg copies the full length and the host call returns 99"
+        );
     }
 
     #[test]

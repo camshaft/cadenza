@@ -5323,6 +5323,21 @@ fn emit_tail(
                     && let Ty::Int(rit) = &result
                 {
                     emit_operand(db, b, *rit, slots, bbase, high, st, layout, out)
+                } else if let Core::ConstFloat(d) = core_of(db, b)
+                    && let Ty::Float(rft) = &result
+                    && rft.ground_width() == 32
+                {
+                    // A bare `ConstFloat` branch takes the `if`'s RESULT float width, not its own default
+                    // `Float64`: `(: (if c 1.5 0.25) Float32)` has the annotation on the `if`, so each branch
+                    // literal solves to `Float64` and `Core::ConstFloat`'s emit (which reads the node's own
+                    // solved width) pushes an `f64.const` while the block type is `f32` → an INVALID module
+                    // (`expected f32, found f64`). Unlike a narrow INT (masked into the shared i32 slot),
+                    // `f32`/`f64` are DISTINCT machine types — a hard validation error, not a silent mask.
+                    // Ground it to the result's f32 here (the float twin of the `ConstInt` grounding above).
+                    out.push(Lir::F32ConstBits(
+                        (f64::from_bits(d.to_f64_bits()) as f32).to_bits(),
+                    ));
+                    Ok(())
                 } else {
                     emit_tail(db, b, slots, bbase, high, st, layout, out, inner_tl)
                 }
@@ -13991,6 +14006,17 @@ fn emit_branch(
 ) -> Result<(), Reject> {
     if let (Ty::Int(rit), Core::ConstInt(_)) = (result, core_of(db, id)) {
         return emit_operand(db, id, *rit, slots, base, high, scratch_ty, layout, out);
+    }
+    // A bare `ConstFloat` branch must take the `if`'s RESULT float width, not its own default `Float64` —
+    // the float twin of the `ConstInt`-to-result-width grounding above (see the tail-position `Core::If`
+    // arm's `emit_tail_branch` for the full rationale). Only `Float32` differs from the literal's default.
+    if let (Ty::Float(rft), Core::ConstFloat(d)) = (result, core_of(db, id))
+        && rft.ground_width() == 32
+    {
+        out.push(Lir::F32ConstBits(
+            (f64::from_bits(d.to_f64_bits()) as f32).to_bits(),
+        ));
+        return Ok(());
     }
     emit(db, id, slots, base, high, scratch_ty, layout, out)
 }

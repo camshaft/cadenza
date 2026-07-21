@@ -5009,17 +5009,25 @@ fn decode_value(
             }
             Some(format!("{{{}}}", seen.join(", ")))
         }
-        // A Map: the generator folds `Map.insert` over `RUNNER_LIST_LEN` drawn key/value pairs, seeded from
-        // `Map.empty` — so a repeated KEY is LAST-WRITE-WINS. Mirror it: decode all `RUNNER_LIST_LEN` (key,
-        // value) pairs in draw order (advancing the cursor over every one), then apply last-write-wins by the
-        // rendered key string, preserving first-insertion order of each surviving key (the insert fold keeps a
-        // key's position, updating its value). Rendered `{k0: v1, k2: v2}`. Keys/values decode via their own
-        // GenTy, so refined-newtype key/value renders in-domain.
+        // A Map: the generator draws a count `c = (gen & i64::MAX) % (LEN+1)` then folds `c` `Map.insert`s of
+        // the first `c` of `RUNNER_LIST_LEN` candidate key/value pairs over `(Map.empty)` (a VARIABLE-size map,
+        // so the empty/small maps are reachable — see `build_var_map_gen`). Mirror it EXACTLY: draw the count,
+        // decode all `RUNNER_LIST_LEN` (key, value) candidate pairs (cursor advances over every one, so a
+        // NESTED Map stays in lockstep), keep the length-`c` prefix, then apply LAST-WRITE-WINS by rendered key
+        // (preserving first-insertion order, as the insert fold does). `{}` for c=0. Refined-newtype key/value
+        // decodes in-domain via its own GenTy.
         GenTy::Map(kty, vty) => {
-            let mut entries: Vec<(String, String)> = Vec::with_capacity(RUNNER_LIST_LEN);
+            let span = (RUNNER_LIST_LEN + 1) as i64;
+            let c = ((next(cursor)? & i64::MAX) % span) as usize;
+            let mut drawn: Vec<(String, String)> = Vec::with_capacity(RUNNER_LIST_LEN);
             for _ in 0..RUNNER_LIST_LEN {
                 let k = decode_value(kty, pool, cursor)?;
                 let v = decode_value(vty, pool, cursor)?;
+                drawn.push((k, v));
+            }
+            drawn.truncate(c);
+            let mut entries: Vec<(String, String)> = Vec::with_capacity(c);
+            for (k, v) in drawn {
                 // Last-write-wins: update an existing key's value in place (keeping its position), else append.
                 if let Some(slot) = entries.iter_mut().find(|(ek, _)| ek == &k) {
                     slot.1 = v;
