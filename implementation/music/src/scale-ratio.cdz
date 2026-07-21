@@ -12,7 +12,7 @@
 /// form is provided instead (mirrors interval-ratio.cdz's to-semitones-exact).
 
 import { RInterval } from "interval-ratio"
-import { octaves, edo-step, degree-r, r-octave, r-eq, rinterval } from "interval-ratio"
+import { octaves, edo-step, degree-r, r-octave, r-eq, rinterval, to-semitones-round } from "interval-ratio"
 
 /// A scale: the tonic offset (an `RInterval` from some reference, usually unison) plus the ordered list of
 /// DEGREE intervals (each a `Rational` fraction of the octave from the tonic, ascending, starting at 0/1).
@@ -77,6 +77,25 @@ def rscale-size(s: RScale) = list-len-r(rscale-degrees(s))
 /// Length of an RInterval list (recursive, annotated) — a local count (List.len is generic but this keeps
 /// the arithmetic obvious).
 def list-len-r(xs: List(RInterval)) = match xs with | [] => 0 | [_, .. t] => 1 + list-len-r(t)
+
+// ---- rational scale → MIDI pitch numbers (the theory-core → playable-wire bridge, scale level) -------
+
+/// Project a rational scale to concrete MIDI note numbers over a `base` note (the scale-level twin of
+/// chord-ratio's rchord-to-midi, both built on interval-ratio's to-semitones-round). Each degree — an
+/// absolute octave-fraction from the tonic — becomes `base + round((tonic+degree) × 12)`. For the CHROMATIC
+/// scale (k/12 degrees) the projection is exact: [0..11] over base. For the HEPTATONIC skeleton (k/7
+/// degrees, OFF the 12-TET grid), it SNAPS each degree to the nearest semitone — the honest microtonal→MIDI
+/// quantization (e.g. 1/7 octave ≈ 1.71 semitones → 2). Recursive driver, annotated params (CDZ0201).
+def scale-to-midi-go(base: Int64, tonic: RInterval, ds: List(RInterval), out: List(Int64)) =
+  match ds with
+    | [] => out
+    | [h, .. t] =>
+      let abs = rinterval(octaves(tonic) + octaves(h)) in
+      scale-to-midi-go(base, tonic, t, List.push(out, base + to-semitones-round(abs)))
+
+/// The MIDI note numbers of a rational scale's degrees over `base`, ascending.
+def rscale-to-midi(s: RScale, base: Int64) =
+  scale-to-midi-go(base, rscale-tonic(s), rscale-degrees(s), [])
 
 // ---- COLLAPSE: snap a foreign interval to the nearest scale degree (euphony's collapse, in RATIONAL space) --
 //
@@ -190,9 +209,38 @@ def collapse-is-tonic-relative() =
   let want = rinterval(octaves(edo-step(1, 12)) + octaves(degree-r(1))) in  // tonic + 1/7
   if r-eq(collapse-to-rscale(s, near), want) then unit else trap("collapse is tonic-relative")
 
+@test
+def chromatic-scale-projects-to-the-twelve-tet-semitones() =
+  // The chromatic scale on tonic 0 over base 60 projects EXACTLY to [60,61,62,…,71] (k/12 → k semitones).
+  let cs = chromatic-scale(rinterval(Rational.of(0, 1))) in
+  match rscale-to-midi(cs, 60) with
+    | [a, b, c, .. _] =>
+      if a == 60 then (if b == 61 then (if c == 62 then unit else trap("D=62")) else trap("C#=61")) else trap("C=60")
+    | _ => trap("chromatic has twelve degrees")
+
+@test
+def heptatonic-skeleton-snaps-off-grid-degrees-to-nearest-semitone() =
+  // The heptatonic k/7 degrees are OFF the 12-TET grid; projecting SNAPS each to the nearest semitone:
+  // 0/7→0, 1/7 (~1.71 st)→2, 2/7 (~3.43)→3, 3/7 (~5.14)→5, 4/7 (~6.86)→7, 5/7 (~8.57)→9, 6/7 (~10.29)→10.
+  // Over base 60 → [60,62,63,65,67,69,70]. Pins the honest microtonal→MIDI quantization (7-EDO ≠ 12-TET).
+  let hs = heptatonic-scale(rinterval(Rational.of(0, 1))) in
+  match rscale-to-midi(hs, 60) with
+    | [d0, d1, _d2, d3, d4, _d5, d6] =>
+      if d0 == 60 then
+        if d1 == 62 then
+          if d3 == 65 then
+            if d4 == 67 then
+              if d6 == 70 then unit else trap("6/7 → 70")
+            else trap("4/7 → 67")
+          else trap("3/7 → 65")
+        else trap("1/7 → 62")
+      else trap("0/7 → 60")
+    | _ => trap("heptatonic has seven degrees")
+
 export {
   RScale.*,
   rscale, rscale-tonic, rscale-degrees, heptatonic-degrees, chromatic-degrees,
   collapse-to-rscale,
   heptatonic-scale, chromatic-scale, rscale-degree, in-rscale, rscale-size,
+  rscale-to-midi,
 }

@@ -117,6 +117,23 @@
             (export main)))
   (call main (: 4 Int64)) (output (: 211 Int64)))
 
+(case "a set of MAPS deduplicates by full map content"
+  (doc    "The map-element member of the compound-element family (tuple/list/record above): set elements
+           that are themselves MAPS, deduplicated by FULL map content — `{{1↦a}, {1↦10}, {2↦10}}` at
+           a=10 collapses the first two (same single entry) → len 2; at a=99 all three differ (by value,
+           by value, by key) → len 3. A CHAMP-of-CHAMPs: the outer set's hash/compare must walk each
+           element map's entries (a hash over the map handle, or a compare stopping at the key set,
+           conflates one of the pairs). Expected: 2 (a=10), 3 (a=99).")
+  (input  (do
+            (def (main (: a Int64))
+              (Set.len (Set.of (list
+                (Map.insert Map.empty 1 a)
+                (Map.insert Map.empty 1 10)
+                (Map.insert Map.empty 2 10)))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 2 Int64))
+  (call   main (: 99 Int64)) (output (: 3 Int64)))
+
 (case "membership of an absent element is false, not a trap"
   (doc    "The absent companion: `(Set.contains (Set.of (list 1 2 3)) 5)` tests an element not in the
            set, so the total predicate yields false — NOT a trap and NOT an error (collections-and-text.md

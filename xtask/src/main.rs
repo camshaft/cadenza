@@ -1658,6 +1658,12 @@ fn run_program_rust(
     // …and the NON-scale-1 quantity's `num/den` scale (`// cdz-scale[<ident>]`) — the harness multiplies the
     // boundary magnitude by it so `5 kilometer` displays `5000 meter`. `None` for a scale-1/non-Qty result.
     let unit_scale = cdz_scale(&module, &export);
+    // …and the PER-ELEMENT quantity scale map (`// cdz-qty-at[<ident>]: <path> <num>/<den>`) — for a
+    // COMPOUND result carrying non-scale-1 Qty leaves (a tuple/record of quantities at different units), each
+    // leaf display-scales independently, keyed by its positional descent path. `cdz_render_expr` consults it
+    // in the Qty arm for a nested Qty (the top-level bare Qty keeps using `unit_scale`). Empty for a result
+    // with no compound non-scale-1 Qty leaf.
+    let qty_at = cdz_qty_at(&module, &export);
     // A DIVERGING export — its Cadenza result type is `Never`, which the `cdz-return` note renders as the
     // fresh var/`Any` a `(trap …)` / never-returning body carries: either `Any` (a grounded hole) or a bare
     // type variable `?N` (an unconstrained result var — e.g. `Option.expect` on a statically-None value,
@@ -1696,6 +1702,7 @@ fn run_program_rust(
                     &sum_params,
                     unit_form.as_deref(),
                     unit_scale,
+                    &qty_at,
                 );
                 // The Cadenza type surface for the annotation (`(Option Int64)`) — parenthesize a
                 // multi-token type (`Option Int64` → `(Option Int64)`); a bare single token stays as-is.
@@ -1713,6 +1720,7 @@ fn run_program_rust(
                     &sum_params,
                     unit_form.as_deref(),
                     unit_scale,
+                    &qty_at,
                 )
             }
         }) {
@@ -5612,6 +5620,7 @@ mod trap_grading_tests {
             &std::collections::HashMap::new(),
             None,
             None,
+            &std::collections::HashMap::new(),
         );
         // A recursive helper `fn __render_IntList` is generated and the value is rendered by CALLING it —
         // the self-referential `IntList` payload position becomes a recursive call, not another inline match.
@@ -5646,6 +5655,7 @@ mod trap_grading_tests {
             &std::collections::HashMap::new(),
             None,
             None,
+            &std::collections::HashMap::new(),
         );
         assert!(
             s.contains("fn __render_Sign(") && s.contains("(Pos unit)"),
@@ -5669,6 +5679,7 @@ mod trap_grading_tests {
             &std::collections::HashMap::new(),
             None,
             None,
+            &std::collections::HashMap::new(),
         );
         assert!(
             expr.contains("(record (") && expr.contains("(__r).0") && expr.contains("(__r).1"),
@@ -5686,6 +5697,7 @@ mod trap_grading_tests {
             &std::collections::HashMap::new(),
             None,
             None,
+            &std::collections::HashMap::new(),
         );
         assert!(
             nested.contains("(record (") && nested.contains("(tuple "),
@@ -5709,6 +5721,7 @@ mod trap_grading_tests {
             &std::collections::HashMap::new(),
             None,
             None,
+            &std::collections::HashMap::new(),
         );
         assert!(
             expr.contains("(tuple ") && expr.contains("(__r).0") && expr.contains("(__r).1"),
@@ -5728,6 +5741,7 @@ mod trap_grading_tests {
             &std::collections::HashMap::new(),
             None,
             None,
+            &std::collections::HashMap::new(),
         );
         assert!(
             s.contains("format!(\"{}\""),
@@ -5756,6 +5770,7 @@ mod trap_grading_tests {
             &std::collections::HashMap::new(),
             None,
             None,
+            &std::collections::HashMap::new(),
         );
         assert_eq!(
             expr, "\"(tuple)\".to_string()",
@@ -5793,7 +5808,15 @@ mod trap_grading_tests {
         );
 
         // The multi-payload variant renders its two payloads FLAT — `(P {} {})` reading `(__p).0`/`(__p).1`.
-        let expr = cdz_render_expr("W", &ds, &nt, &std::collections::HashMap::new(), None, None);
+        let expr = cdz_render_expr(
+            "W",
+            &ds,
+            &nt,
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        );
         assert!(
             expr.contains("(P {} {})") && expr.contains("(__p).0") && expr.contains("(__p).1"),
             "a multi-payload variant spreads its payloads flat under the name: {expr}"
@@ -5803,7 +5826,15 @@ mod trap_grading_tests {
             "a multi-payload variant must NOT render as one nested tuple payload: {expr}"
         );
         // A single-tuple-payload variant keeps the nested tuple — `(Q {})` where `{}` is `(tuple …)`.
-        let vexpr = cdz_render_expr("V", &ds, &nt, &std::collections::HashMap::new(), None, None);
+        let vexpr = cdz_render_expr(
+            "V",
+            &ds,
+            &nt,
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            &std::collections::HashMap::new(),
+        );
         assert!(
             vexpr.contains("(Q {})") && vexpr.contains("(tuple "),
             "a single tuple payload stays nested: {vexpr}"

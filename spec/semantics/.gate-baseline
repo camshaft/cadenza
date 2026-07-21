@@ -19,6 +19,7 @@ pass	@invariant ESTABLISH over a single-variant multi-payload newtype: an ordere
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)
 pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `self` + prelude are in scope)
+pass	@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -1325,6 +1326,7 @@ pass	a map pattern value sub-pattern may be a literal that refines the match
 pass	a map pattern value sub-pattern may be an irrefutable compound that binds
 pass	a map threaded as a recursive accumulator is grown then measured
 pass	a map value sub-pattern with binders reads a runtime map
+pass	a map of lists of tuples: a three-level mixed query with a miss at each level
 pass	a map whose value is a list: a runtime lookup then indexes the returned list
 pass	a map with a String value is looked up and its value compared in the arm
 pass	a map with a String value: a missing key takes the None arm
@@ -2262,6 +2264,7 @@ pass	a shared trapping operand before the differing one does not preempt a trapp
 pass	a shared trapping operand before the differing one does not preempt a trapping condition (compare head)
 pass	a shared trapping operand traps under a trap-free condition
 pass	a shared trapping second operand does not preempt a trapping condition
+pass	a set of MAPS deduplicates by full map content
 pass	a shift of a non-numeric operand names the integer requirement
 pass	a shared list is consumed element-wise twice by rest-pattern recursion
 pass	a short-circuit connective threads a branch perform to the continuation
@@ -3083,9 +3086,13 @@ pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar 
 pass	comparing two same-unit scalar-Int quantities at RUNTIME rides the scalar integer compare
 pass	comparing two units of one dimension converts before comparing
 pass	comparison on an unusual signed width orders by the sign-extended declared value (negative < zero)
+pass	compound equality over a MIXED Float32/Float64 tuple: a differing f64 leaf makes it unequal
+pass	compound equality over a MIXED Float32/Float64 tuple: each leaf canonicalized at its own width
 pass	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
 pass	compound equality over a runtime BigInt leaf compares by the canonical bytes
 pass	compound equality over a runtime BigInt leaf distinguishes different values
+pass	compound equality over a runtime FLOAT32 NaN leaf: nan equals nan
+pass	compound equality over a runtime FLOAT32 leaf: negative zero is not equal to positive zero
 pass	compound equality over a runtime NaN float leaf: nan equals nan
 pass	compound equality over a runtime Rational leaf compares by the normalized form
 pass	compound equality over a runtime float leaf: different floats compare unequal

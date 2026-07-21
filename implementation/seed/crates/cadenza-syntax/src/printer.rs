@@ -3643,6 +3643,56 @@ mod tests {
     }
 
     #[test]
+    fn ml_comment_and_doc_wrapped_programs_round_trip_over_widths() {
+        // The ANNOTATION-node surface — `(comment "…" form)` (`//`), a leading `(comment "…")` statement,
+        // an inner `(comment "…" expr)` in a def body, and a file-header `(module-doc "…")` before a
+        // non-documentable form (`///`) — swept for never-panic + faithful round-trip across widths. The
+        // expression/pattern/decl generators emit NO annotation nodes, so the printer's comment/doc layout
+        // (which threads hardbreaks + the `///`-vs-`//` marker distinction) had no generative round-trip
+        // coverage — a break here would silently downgrade a `///` to `//` or drop a comment at some width.
+        // Every shape is verified reader-reachable + faithful; generation is in s-expr (no lean on the
+        // printer under test). Non-reader-reachable degenerate arenas (a lone `(module-doc)`, a malformed
+        // `(comment "x")` missing its wrapped node) are covered for TOTALITY by
+        // `printer_is_total_on_arbitrary_input…`, not here — here we pin the fidelity of the real shapes.
+        let mut rng = SplitMix64(0xc011_7ee5_d0c5_a11e);
+        for _ in 0..3000 {
+            let depth = 1 + (rng.next() % 3) as usize;
+            let inner = gen_ml_expressible(&mut rng, depth);
+            // Wrap the generated expr in one of the reader-reachable annotation shapes, all inside a
+            // `def main` so `print` takes the real top-level path.
+            let sx = match rng.next() % 5 {
+                // `//` comment attached to the def (wraps the whole def).
+                0 => format!("(comment \"note\" (def (main) {inner}))"),
+                // A leading `//` statement comment before the def (a `(do …)` with a bare comment first).
+                1 => format!("(do (comment \"lead\") (def (main) {inner}))"),
+                // An inner `//` comment on the def body expression.
+                2 => format!("(def (main) (comment \"inner\" {inner}))"),
+                // A `///` file-header module-doc before a non-documentable form (an int, not a def — a def
+                // would DRAIN the doc as its own docstring; the module-doc path needs a non-doc-consuming
+                // form after it).
+                3 => format!("(do (module-doc \"header\") {inner})"),
+                // A `(comment-after …)` trailing node (the same-line trailing comment surface).
+                _ => format!("(def (main) (comment-after \"trail\" {inner}))"),
+            };
+            let a = sexpr::read(&sx)
+                .unwrap_or_else(|e| panic!("generated s-expr {sx:?} reads: {}", e.0));
+            for &width in &[0usize, 1, 8, 30, 100] {
+                let ml = print(&a, width); // must not panic
+                let back = parser::read_ml(&ml);
+                assert!(
+                    back.ok(),
+                    "ML print (w={width}) of {sx:?} must re-parse clean, got {:?}\n--- ml ---\n{ml}",
+                    back.errors
+                );
+                assert!(
+                    a.structurally_eq(&back.arenas),
+                    "ML print (w={width}) not faithful for {sx:?}\n--- ml ---\n{ml}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ml_print_round_trip_is_faithful_over_generated_programs_and_widths() {
         // The ML printer's structural FIDELITY, swept: `read_ml(print(a, w))` is STRUCTURALLY EQUAL to
         // `a`, over random valid programs at a range of widths. The byte-soup sweep above pins that a

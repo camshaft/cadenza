@@ -265,6 +265,26 @@
   (input  (Record.with (record (a 1)) #"z" 5))
   (error  CDZ0212))
 
+(case "the OLD 2-operand `Record.with (name value)` pair form is rejected (migrated to 3 operands)"
+  (doc    "Witnesses DESIGN-record-update-syntax.md §2/§6 (operator DECISION 2026-07-15): the field-pair
+           row ops now take THREE positional operands `r #field value`, and the OLD grouped `(name value)`
+           pair spelling is MIGRATED + REJECTED, never kept as a second accepted spelling
+           (canonical-form discipline — the `(price 9)` pair rendered call-like `price(9)` in ML). A
+           2-operand `Record.with` is now an ARITY error (CDZ0201) whose message routes the migration
+           (`… now takes three operands r #b v — replace the (name value) pair with a #field label and a
+           value`). This negative case PINS the rejection so a future change can't silently re-accept the
+           old form and reintroduce the call-like render.")
+  (input  (Record.with (record (a 1) (b 2)) (b 9)))
+  (error  CDZ0201))
+
+(case "the OLD 2-operand `Record.extend (name value)` pair form is rejected (migrated to 3 operands)"
+  (doc    "Witnesses DESIGN-record-update-syntax.md §1/§6: `Record.extend` gets the same 3-operand
+           treatment as `Record.with` for family uniformity, so its OLD grouped `(name value)` pair is
+           also migrated + rejected as an arity error (CDZ0201) with the same migration-routing message.
+           Pins the rejection alongside the `with` sibling.")
+  (input  (Record.extend (record (a 1)) (b 2)))
+  (error  CDZ0201))
+
 (case "popping a field yields its value and the remaining record"
   (doc    "Witnesses type-system.md #A Record Is Reduced By Dropping A Named Set Of Its Fields and #A Field
            Is Added To Or Replaced In A Record By A Derived Operation: `Record.pop` takes a field OFF a

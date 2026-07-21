@@ -19,6 +19,7 @@ pass	@invariant ESTABLISH over a single-variant multi-payload newtype: an ordere
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)
 pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `self` + prelude are in scope)
+pass	@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -1325,6 +1326,7 @@ pass	a match whose only variant arm is guarded is non-exhaustive
 pass	a match-arm binder shadowing a parameter binds the scrutinee, not the argument
 pass	a match-join of two capturing lambdas let-bound and called applies the selected closure
 pass	a match-of-closures on a runtime-selected variant is applied per arm
+pass	a map of lists of tuples: a three-level mixed query with a miss at each level
 pass	a member access with no field operand is rejected, not a crash
 pass	a middle module re-exports a base function and also uses it in its own exported function
 pass	a misspelled segment kind is rejected with a rename suggestion
@@ -2262,6 +2264,7 @@ pass	a sum TYPE and its constructors are imported by a wildcard and constructed 
 pass	a sum chosen by a runtime if is matched with valid wasm
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
+pass	a set of MAPS deduplicates by full map content
 pass	a shared list is consumed element-wise twice by rest-pattern recursion
 pass	a sum type NAMED after a primitive scalar does not collide with the primitive
 pass	a sum type can mix nullary and payload-carrying variants
@@ -2990,9 +2993,13 @@ pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar 
 pass	comparing two same-unit scalar-Int quantities at RUNTIME rides the scalar integer compare
 pass	comparing two units of one dimension converts before comparing
 pass	comparison on an unusual signed width orders by the sign-extended declared value (negative < zero)
+pass	compound equality over a MIXED Float32/Float64 tuple: a differing f64 leaf makes it unequal
+pass	compound equality over a MIXED Float32/Float64 tuple: each leaf canonicalized at its own width
 pass	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
 pass	compound equality over a runtime BigInt leaf compares by the canonical bytes
 pass	compound equality over a runtime BigInt leaf distinguishes different values
+pass	compound equality over a runtime FLOAT32 NaN leaf: nan equals nan
+pass	compound equality over a runtime FLOAT32 leaf: negative zero is not equal to positive zero
 pass	compound equality over a runtime NaN float leaf: nan equals nan
 pass	compound equality over a runtime Rational leaf compares by the normalized form
 pass	compound equality over a runtime float leaf: different floats compare unequal
@@ -4186,9 +4193,9 @@ pass	a scaled derived quantity displays with BOTH scales folded into the magnitu
 pass	a scaled cube dimension raises its prefix scale to the power (km³ → ×1e9 meter³)
 pass	a scaled reciprocal dimension folds the denominator prefix scale (1/ms → ×1000 per second)
 pass	a DERIVED-dimension (velocity) quantity used as a Map key hits by content
-todo	a bare TUPLE of quantities renders each element scaled to its reference (mixed inner types)
-todo	an OPTION payload quantity renders scaled to its reference in the value form
-todo	a NESTED tuple of quantities renders every element scaled at depth
+pass	a bare TUPLE of quantities renders each element scaled to its reference (mixed inner types)
+pass	an OPTION payload quantity renders scaled to its reference in the value form
+pass	a NESTED tuple of quantities renders every element scaled at depth
 pass	a rational floors toward negative infinity, narrowed to Int64
 pass	a rational ceilings toward positive infinity, narrowed to Int64
 pass	a rational rounds to nearest, ties half-away-from-zero, narrowed to Int64

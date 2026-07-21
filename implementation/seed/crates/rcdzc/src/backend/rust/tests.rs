@@ -1409,6 +1409,35 @@ fn rustc_roundtrip_unconstrained_empty_set_grounds_and_compiles_not_e0282() {
 }
 
 #[test]
+fn a_compound_tuple_of_quantities_emits_per_element_scale_notes() {
+    // REGRESSION (pr-sync/v-core-opt rust-red on 18-units): a `(Tuple (Qty km) (Qty mile))` result — each
+    // element display-scales to its reference INDEPENDENTLY. The single `// cdz-scale` note only scales a
+    // top-level bare Qty; a Qty NESTED in a tuple was rendered RAW (`5.0`/`5/1` not `5000.0`/`201168/25`).
+    // The fix emits a per-element `// cdz-qty-at[ident]: <path> <num>/<den>` note per non-scale-1 Qty leaf.
+    let m = compile_rust(
+        "(do (def (main) (tuple (Qty.of 5.0 (Unit.prefix kilo (Unit.base #\"meter\"))) \
+                                (Qty.of (Rational.of 5 1) (Unit.of #\"mile\")))) (export main))",
+    );
+    // Element 0 (Float64 km) scales ×1000/1; element 1 (Rational mile) scales ×201168/125.
+    assert!(
+        m.contains("// cdz-qty-at[main]: 0 1000/1"),
+        "the km Float element emits a per-path scale note (path 0, 1000/1):\n{m}"
+    );
+    assert!(
+        m.contains("// cdz-qty-at[main]: 1 201168/125"),
+        "the mile Rational element emits a per-path scale note (path 1, 201168/125):\n{m}"
+    );
+    // A SCALE-1 element (already at reference) emits NO per-path note — rendered as stored.
+    let m1 = compile_rust(
+        "(do (def (main) (tuple (Qty.of 5.0 (Unit.base #\"meter\")) (Qty.of 7.0 (Unit.base #\"meter\")))) (export main))",
+    );
+    assert!(
+        !m1.contains("// cdz-qty-at["),
+        "a reference-unit (scale-1) tuple of quantities emits no per-path scale note:\n{m1}"
+    );
+}
+
+#[test]
 fn empty_set_at_a_call_arg_grounds_to_the_callee_param_element_not_the_default() {
     // REGRESSION (breaker adv-rust-empty-set-call-arg-elem-type-not-consulted-E0308): an empty
     // `(Set.of (list))` passed as a CALL ARGUMENT whose callee PARAM declares a `(Set Float64)` — with no

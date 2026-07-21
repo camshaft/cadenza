@@ -93,6 +93,69 @@ fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
     }
 }
 
+/// Walk a result type collecting every NON-scale-1 QUANTITY leaf's PATH + its scale, for the per-element
+/// display-scale notes (`// cdz-qty-at[ident]: <path> <num>/<den>`). The `path` is the render's descent
+/// route into the Rust value — the SAME positional `.N` field indices `cdz_render_at` uses (a tuple field
+/// `i` is `(<path>).i`, a record field `i` in sorted order is `.i`), joined by `.` (e.g. `0`, `1`, `0.1`
+/// for a nested tuple's second field). SCOPE (this slice): TUPLE + RECORD holes only — where the logical
+/// path is EXACTLY the render's positional `.i` descent, so emit and render key identically. A Qty inside
+/// an Option/Result payload or a List element is a FOLLOW-UP (the render binds those under a fresh binder,
+/// not a `.i` field, so the path scheme differs). The empty path (`""`) — a TOP-LEVEL bare Qty — is NOT
+/// collected here: it already carries its scale via the single `// cdz-scale` note. Only a
+/// `qty_scale_supported` inner (Int/Float/Rational) at a non-1 scale gets an entry (scale-1 renders as
+/// stored). Mirrors wasm `const_value_ast_scaled`'s per-element scale-fold. Returns entries in descent order.
+fn collect_qty_scale_paths(t: &crate::ty::Ty, path: &str, out: &mut Vec<(String, i128, i128)>) {
+    use crate::ty::Ty;
+    match t.strip_nominal() {
+        // Skip the top-level bare Qty (empty path) — the existing single `// cdz-scale` note covers it; only
+        // a NESTED Qty (non-empty path) at a non-1 scale over a supported inner needs a per-element note.
+        Ty::Qty { inner, unit } if !path.is_empty() => {
+            let (num, den) = unit.scale();
+            if (num, den) != (1, 1) && types::qty_scale_supported(inner) {
+                out.push((path.to_string(), num, den));
+            }
+        }
+        Ty::Tuple(elems) => {
+            for (i, e) in elems.iter().enumerate() {
+                let child = if path.is_empty() {
+                    i.to_string()
+                } else {
+                    format!("{path}.{i}")
+                };
+                collect_qty_scale_paths(e, &child, out);
+            }
+        }
+        Ty::Record(fields) => {
+            // Fields are baked in sorted (BTreeMap) order — the SAME `.i` index the render reads.
+            for (i, (_, ft)) in fields.iter().enumerate() {
+                let child = if path.is_empty() {
+                    i.to_string()
+                } else {
+                    format!("{path}.{i}")
+                };
+                collect_qty_scale_paths(ft, &child, out);
+            }
+        }
+        // An OPTION/RESULT payload (the well-known 2-variant sums the render descends into with a fresh
+        // binder). Use a `?N` path segment (N = the type-arg index: Option's payload is `?0`, Result's Ok
+        // is `?0` / Err is `?1`) — a segment the render's Option/Result arms mirror when they extend the
+        // logical path. A USER sum stays out of scope (its render is a generated recursive helper that does
+        // not thread a static path). So a `(Option (Qty km))` result scales its payload; a nested
+        // `(Tuple (Option (Qty km)) …)` composes (`0?0`).
+        Ty::Sum { name, args, .. } if name == "Option" || name == "Result" => {
+            for (i, a) in args.iter().enumerate() {
+                let child = if path.is_empty() {
+                    format!("?{i}")
+                } else {
+                    format!("{path}?{i}")
+                };
+                collect_qty_scale_paths(a, &child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Whether a closure RESULT type is renderable by the gate harness (S1 scalar OR S3 Tuple/List/Option/
 /// Result). The factory result is rendered by `cdz_render_expr`, which walks the value's TYPE and emits the
 /// corpus s-expr form — including the Option/Result arms (`(Some <p>)`/`(None unit)`/`(Ok <p>)`/`(Err <e>)`,
@@ -799,7 +862,23 @@ fn emit_signature(
         }
         _ => String::new(),
     };
-    let ret_note = format!("{ret_note}{unit_note}");
+    // PER-ELEMENT quantity display-scale notes for a COMPOUND result carrying non-scale-1 Qty leaves (a
+    // `(Tuple (Qty Float64 km) (Qty Rational mile))` — each element display-scales to its reference
+    // INDEPENDENTLY). The single `// cdz-scale[ident]` note above only scales a TOP-LEVEL bare Qty; a Qty
+    // nested in a tuple/record has no per-element scale, so the harness rendered it RAW (`5.0`/`5/1` instead
+    // of `5000.0`/`201168/25` — the rust-red v-quantity/v-core-opt found). Emit one `// cdz-qty-at[ident]:
+    // <path> <num>/<den>` per non-scale-1 Qty leaf (path = the render's positional `.i` descent); the harness
+    // multiplies that leaf's magnitude by the scale in its inner type (Float IEEE, Int trunc, Rational exact),
+    // mirroring wasm `const_value_ast_scaled`. Scale-1 leaves emit no note (rendered as stored).
+    let qty_at_notes = {
+        let mut paths = Vec::new();
+        collect_qty_scale_paths(result, "", &mut paths);
+        paths
+            .iter()
+            .map(|(p, num, den)| format!("// cdz-qty-at[{ident}]: {p} {num}/{den}\n"))
+            .collect::<String>()
+    };
+    let ret_note = format!("{ret_note}{unit_note}{qty_at_notes}");
     if mode.is_async() {
         // `async fn <name><__CdzE: CdzEnv>(env: &mut __CdzE, …) -> <ret> { env.consume(1).await; <body> }`
         // — the per-call fuel charge + cooperative-yield point at entry. The env TYPE PARAMETER is named

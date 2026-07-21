@@ -2898,3 +2898,33 @@
   (output (: 2 Int64))
   (call   main-rel (: 9 Int64))
   (trap   "unreachable"))
+
+(case "@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)"
+  (doc    "Two more effects-seam pins hardening the let-over-handle / seed-thread fix beyond the single
+           @ensures-over-handle shape already pinned. `req` puts a @requires(>= n 0) over a handle-bodied def
+           called with a runtime arg — the PRECONDITION injection `(if PRE handle-body (trap))` is a DIFFERENT
+           rewrite from @ensures's `(let ((ret handle-body)) …)`, so it exercises the fold under a distinct
+           wrapper: req(7)=7, req(-3) traps at the precondition before the body folds. `thrice` puts
+           @ensures(>= ret 0) over a handle whose arm resumes the state binder THREE times `(resume (+ s s) s)`
+           — the ≥2-state-use shape that originally orphaned the threaded seed; confirming 3 uses fold correctly
+           pins the seed-preservation fix is not limited to exactly two uses: thrice(4)=8, thrice(-1) traps.
+           Together they guard the effects/verify seam across both injection shapes and higher state-binder
+           multiplicity. Runtime arg via the export param (no const-fold).")
+  (input  (do
+            (effect St (op get (-> Unit Int64)))
+            (@ (requires (>= n 0))
+               (def (req (: n Int64)) (handle St n ((get (u) s (resume s s))) (St.get))))
+            (@ (ensures (>= ret 0))
+               (def (thrice (: n Int64)) (handle St n ((get (u) s (resume (+ s s) s))) (St.get))))
+            (def (main-req (: k Int64)) (req k))
+            (def (main-thrice (: k Int64)) (thrice k))
+            (export main-req)
+            (export main-thrice)))
+  (call   main-req (: 7 Int64))
+  (output (: 7 Int64))
+  (call   main-req (: -3 Int64))
+  (trap   "unreachable")
+  (call   main-thrice (: 4 Int64))
+  (output (: 8 Int64))
+  (call   main-thrice (: -1 Int64))
+  (trap   "unreachable"))
