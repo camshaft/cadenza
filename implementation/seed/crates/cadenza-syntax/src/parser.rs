@@ -1236,8 +1236,15 @@ impl<'a> Parser<'a> {
                 self.carry_docs(at_pos, form_pos);
                 // The annotated form parses in PREFIX position (no postfix): a following juxtaposed
                 // top-level form that begins with `(` must not be swallowed as a call of the def. A
-                // `def`/other keyword dispatches to its full form; a nested `@` recurses here.
+                // `def`/other keyword dispatches to its full form; a nested `@` recurses HERE via
+                // `self.prefix()` — directly, NOT through `expr` — so a deep stack of annotations
+                // (`@a @b @c … def`) bypassed `expr`'s depth guard and overflowed the native stack
+                // (SIGABRT). Count each annotation layer against the shared depth budget via `guard_prefix`.
+                if let Some(err) = self.guard_prefix(span) {
+                    return self.list(vec![head, name, err], span.merge(self.prev_span()));
+                }
                 let form = self.prefix();
+                self.depth -= 1;
                 // If the form was NOT documentable (no def/type/effect/module drained the carried
                 // docs), they still sit at `form_pos` and would be silently DROPPED. Move them back to
                 // the `@` slot so `stmt`'s leftover-drain re-wraps them as `(comment …)` — preserving
@@ -1291,9 +1298,15 @@ impl<'a> Parser<'a> {
                 // postfix stops at a `.`/`(` glued to the type; a following module member (`def …` on the
                 // next line) does not begin with either, so it is never swallowed. Infix operators / `as`
                 // are intentionally NOT consumed (a pragma type is a single type, never `A -> B`).
+                // DEPTH GUARD: a stacked pragma (`@!k @!k … def`) recurses `prefix` DIRECTLY here (like
+                // the `@` annotation arm), bypassing `expr`'s guard → deep run overflowed the stack.
+                if let Some(err) = self.guard_prefix(span) {
+                    return self.list(vec![head, key, err], span.merge(self.prev_span()));
+                }
                 let arg_start = self.cur_span();
                 let arg_prefix = self.prefix();
                 let arg = self.postfix(arg_prefix, arg_start);
+                self.depth -= 1;
                 let full = span.merge(self.prev_span());
                 self.list(vec![head, key, arg], full)
             }
@@ -2495,6 +2508,14 @@ impl<'a> Parser<'a> {
     /// literal-headed forms (`1(v)`), and quoted patterns (`quasiquote(…)`) all parse uniformly.
     fn pattern(&mut self) -> StructId {
         let start = self.cur_span();
+        // DEPTH GUARD: patterns recurse (a tuple/list/ctor sub-pattern re-enters `pattern`) on a path
+        // ENTIRELY separate from `expr`, so `expr`'s guard never covers them — a pathologically deep
+        // pattern (`((((…` / `[[[[…` / `C(C(C(…`) overflowed the native stack (SIGABRT). Count each
+        // pattern level against the shared depth budget via `guard_prefix` (clean diagnostic). The single
+        // `node` exit below decrements to keep the budget balanced.
+        if let Some(err) = self.guard_prefix(start) {
+            return err;
+        }
         let mut node = self.pattern_atom();
         loop {
             match self.kind() {
@@ -2536,6 +2557,7 @@ impl<'a> Parser<'a> {
                 _ => break,
             }
         }
+        self.depth -= 1;
         node
     }
 
@@ -3642,6 +3664,48 @@ mod tests {
             assert!(ok.ok(), "shallow negation must parse: {:?}", ok.errors);
             let okq = read_ml("`{ ,x + ,y }");
             assert!(okq.ok(), "shallow unquote must parse: {:?}", okq.errors);
+        });
+    }
+
+    #[test]
+    fn deep_pattern_and_annotation_recursion_is_diagnosed_not_crashed() {
+        // Two more recursion classes that bypass `expr`'s depth guard, each fixed by `guard_prefix`:
+        // (1) PATTERNS — a tuple/list/ctor sub-pattern re-enters `pattern` on a path entirely separate
+        //     from `expr`, so a deep `((((…` / `[[[[…` / `C(C(C(…` pattern overflowed the stack; the
+        //     guard now lives at `pattern`'s entry.
+        // (2) ANNOTATION / PRAGMA — the `@name form` and `@!key arg` arms recurse `prefix` DIRECTLY, so a
+        //     stacked `@a @b … def` / `@!k @!k … def` overflowed; each layer is now counted.
+        // All must be clean 'nests too deeply' diagnostics, not a SIGABRT. Large stack (descends to 1024).
+        run_deep(|| {
+            let over = (crate::sexpr::MAX_NESTING_DEPTH as usize) + 50;
+            let cases = [
+                format!("def f(x) = match x with | {} => 1", "(".repeat(over)), // tuple-pattern
+                format!("def f(x) = match x with | {} => 1", "[".repeat(over)), // list-pattern
+                format!(
+                    "def f(x) = match x with | {}x{} => 1",
+                    "C(".repeat(over),
+                    ")".repeat(over)
+                ), // ctor-pattern
+                format!("{}def f() = 1", "@ann ".repeat(over)), // stacked annotations
+                format!("{}def f() = 1", "@!k ".repeat(over)),  // stacked pragmas
+            ];
+            for src in &cases {
+                let p = read_ml(src);
+                assert!(
+                    p.errors
+                        .iter()
+                        .any(|e| e.message.contains("nests too deeply")),
+                    "a deep pattern/annotation must be a clean depth-limit error, not a crash; \
+                     src head {:?}, got {:?}",
+                    &src[..src.len().min(24)],
+                    p.errors
+                );
+            }
+            // Moderate, well-formed pattern + annotation still parse (no over-rejection).
+            let ok = read_ml("def f(x) = match x with | (a, [b, c]) => 1 | Some(y) => 2 | _ => 0");
+            assert!(ok.ok(), "shallow pattern must parse: {:?}", ok.errors);
+            let oka = read_ml("@inline\ndef f() = 1");
+            assert!(oka.ok(), "shallow annotation must parse: {:?}", oka.errors);
         });
     }
 

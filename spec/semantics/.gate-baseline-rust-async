@@ -165,6 +165,7 @@ pass	Qty.value of a conversion result is a compile-time error — the conversion
 pass	Qty.value recovers the underlying numeric value, discarding the unit
 pass	Result propagates errors without trapping
 pass	Record.project over runtime field values keeps the named fields and their live values
+pass	Record.with replaces a nested-record field wholesale and the original keeps its inner
 pass	Record.without over runtime field values drops the named field and keeps the rest live
 pass	Result type for fallible operations
 pass	STACKED @requires: EVERY precondition is enforced — a violated OUTER @requires traps (not only the innermost)
@@ -3067,6 +3068,7 @@ pass	decoding a four-byte sequence for a code point above U+10FFFF yields none
 pass	decoding a lone continuation byte yields none
 pass	decoding a runtime ROPE Bytes as UTF-8 flattens before validating (well-formed)
 pass	decoding a runtime ROPE Bytes that is ill-formed yields none
+pass	chained Record.with updates on one field compose with the last write winning
 pass	decoding a surrogate code point encoded as UTF-8 yields none
 pass	decoding a truncated multi-byte sequence yields none
 pass	decoding an EMPTY byte sequence yields Some of the empty string
@@ -4281,6 +4283,8 @@ pass	complementary ordering comparisons fold their or to true and their and to f
 pass	distinct-magnitude runtime quantities in a Set stay separate
 pass	division by one keeps a boundary-crossing runtime operand
 pass	remainder by one folds to zero but does not discard a trapping runtime operand
+pass	the OLD 2-operand `Record.extend (name value)` pair form is rejected (migrated to 3 operands)
+pass	the OLD 2-operand `Record.with (name value)` pair form is rejected (migrated to 3 operands)
 pass	the absorption law does not discard a trapping runtime operand
 pass	the and-complement folds to zero on an unsigned type but the or-complement is the width all-ones not -1
 pass	the bitwise absorption law folds x-and-(x-or-y) and x-or-(x-and-y) to x on runtime operands

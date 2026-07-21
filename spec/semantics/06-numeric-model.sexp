@@ -2076,6 +2076,33 @@
   (call   main (: 5 Int64))
   (output (: 1 Int64)))
 
+; The EQUALITY face of the type-bound fold (`fold_comparison_at_type_bound`): `(= v C)` against a runtime
+; `v` with a known range `[min,max]` is DECIDABLE when `C` lies OUTSIDE that range — no value in the range
+; equals `C`, so the compare folds to `false` (and an ordering `< C` above the whole range folds to `true`,
+; `>= C` above it to `false`). But an IN-RANGE constant leaves the compare a genuine runtime test. `v` is a
+; masked bare param (`(& x 7)` ∈ [0,7]) so it cannot trap — the fold discards nothing that must run. These
+; pin the decidable-out-of-range folds AND the in-range NON-fold (the discriminator), both backends.
+(case "a comparison against a constant outside a masked value's range folds, but an in-range one stays a runtime test"
+  (doc    "`(& x 7)` lives in [0,7]. `(= (& x 7) 100)` folds to false (100 ∉ [0,7]); `(< (& x 7) 100)` folds
+           to true (whole range < 100); `(>= (& x 7) 8)` folds to false (whole range < 8) — all decidable
+           from the type bound. But `(= (& x 7) 5)` is NOT decidable (5 ∈ [0,7]) so it stays a runtime
+           compare. `main` = `(tuple (if (= (& x 7) 100) 1 0) (if (< (& x 7) 100) 1 0) (if (>= (& x 7) 8) 1 0)
+           (if (= (& x 7) 5) 1 0))`: at x = 5 → (0, 1, 0, 1) (`5 & 7 = 5`, so the in-range `= 5` is TRUE), at
+           x = 3 → (0, 1, 0, 0) (`3 & 7 = 3 ≠ 5`). The first three are constant across both calls (decided by
+           the bound); only the fourth varies with x. Pins the decidable-out-of-range comparison folds and the
+           in-range non-fold, both backends.")
+  (input  (do
+            (def (main (: x Int64))
+              (tuple (if (= (& x 7) 100) 1 0)
+                     (if (< (& x 7) 100) 1 0)
+                     (if (>= (& x 7) 8) 1 0)
+                     (if (= (& x 7) 5) 1 0)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: (tuple 0 1 0 1) (Tuple Int64 Int64 Int64 Int64)))
+  (call   main (: 3 Int64))
+  (output (: (tuple 0 1 0 0) (Tuple Int64 Int64 Int64 Int64))))
+
 ; The SELF-COMPARISON fold (`x < x` → false, `x <= x`/`x >= x`/`x = x` → true — the ordering is fixed
 ; when both operands are the SAME value) is the sibling the type-bound cases above reference. It DISCARDS
 ; the operand, so — exactly like the tautology fold — it is sound to fold the RESULT to a constant only

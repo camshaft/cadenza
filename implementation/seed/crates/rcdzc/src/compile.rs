@@ -101,9 +101,10 @@ pub fn compile_with_opt(
     // old wrap lived only in `compile_component`, so a caller that used `compile` directly — e.g. the CSE
     // perf tests building a 400-deep arith chain — recursed on the ≈2 MB `cargo test` worker thread and
     // SIGABRT'd before the semantic depth guard could fire, regardless of the per-level budget.)
-    // `run_with_compiler_stack` is idempotent (runs inline if already on the worker), so the bin's and
-    // `compile_component`'s existing outer wrap does NOT double-spawn. The borrowed inputs/targets and the
-    // `CompileOutput` result are all `Send`, so the scoped worker is sound.
+    // `run_with_compiler_stack` is idempotent (runs inline if already on the worker), so the bin's/embedders'
+    // (`cli.rs`, `cdz-kernel`, `cdz-smith`) existing outer wrap does NOT double-spawn. (`compile_component`
+    // no longer wraps — it reaches its guard-sized stack through this sink like every other caller.) The
+    // borrowed inputs/targets and the `CompileOutput` result are all `Send`, so the scoped worker is sound.
     crate::host::run_with_compiler_stack(|| compile_with_opt_inner(inputs, targets, opt_level))
 }
 
