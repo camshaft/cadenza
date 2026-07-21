@@ -3573,7 +3573,13 @@ fn check(paths: &Paths, profile: &str) {
     // one that guards trunk) this is a HARD leak-regression gate. `--test-threads=1` keeps the shared global
     // live-objects counter deterministic. NOTE: a SKIP is logged (the probes' own eprintln) so a silent
     // no-gate is visible.
-    log.step(
+    // RUST_MIN_STACK=64M for consistency with every other rcdzc `--lib` / workspace test invocation
+    // (storeless-rerun, `cargo test --workspace`, miri, bench). These CORE-4 probes are shallow
+    // rc-invariant witnesses, not deep-recursion tests, so today they don't need it — but this runs the
+    // deep-recursion-prone rcdzc lib test binary, so a future probe added to this list is protected by
+    // the floor rather than becoming the next whack-a-mole overflow. Uniform floor = one less way to
+    // regress. (No-op for the compile worker, which sets its own stack_size.)
+    log.step_env(
         "rc-leak-probes",
         "cargo test -p rcdzc --lib -- --ignored --test-threads=1 \
          perceus_balance_leaves_no_live_objects \
@@ -3581,6 +3587,7 @@ fn check(paths: &Paths, profile: &str) {
          option_expect_over_an_owned_some_shell_leaves_no_live_objects \
          owned_temporary_list_producers_leave_no_live_objects",
         repo,
+        &[("RUST_MIN_STACK", "67108864")],
     );
 
     // The Cadenza-SOURCE @test suites — libraries written IN Cadenza (the CAD `Solid` model library and

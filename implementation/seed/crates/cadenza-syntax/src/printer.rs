@@ -3488,6 +3488,80 @@ mod tests {
         }
     }
 
+    /// Generate a random VALID match PATTERN as S-EXPR text (bounded by `depth`), spanning every pattern
+    /// SURFACE the printer's `pattern()` dispatches — tuple/list/map/record/bin sequences, the `.`-dotted
+    /// and ctor-application heads, guards, AND the quote/quasiquote forms + EMPTY compounds. The last two
+    /// are the coverage gap that let the empty-compound quote-pattern `unreachable!()` reach breaker: the
+    /// expression generator never emits a pattern, so the never-panic fuzz never rendered one. Kept in
+    /// s-expr (like `gen_ml_expressible`) so generation never leans on the ML printer under test. Every
+    /// arm chosen here round-trips FAITHFULLY (verified shapes), so the caller can assert structural
+    /// equality, not just no-panic.
+    fn gen_ml_pattern(rng: &mut SplitMix64, depth: usize) -> String {
+        // Leaf patterns: a binder/wildcard name, a literal, or the two degenerate EMPTY compounds (the
+        // empty raw-list `()` — the shape that panicked — and the empty record/bin, which have their own
+        // printer arms). All read back to the same node.
+        let leaves = ["a", "x", "_", "1", "true", "()", "(record)", "(bin)"];
+        if depth == 0 || rng.next().is_multiple_of(3) {
+            return leaves[(rng.next() as usize) % leaves.len()].to_string();
+        }
+        let sub = |rng: &mut SplitMix64| gen_ml_pattern(rng, depth - 1);
+        // NOTE: no `guard` arm here — a guard `p if c` is only valid at a match arm's TOP level (the
+        // reader rejects it NESTED inside a tuple/quote/etc.), so nesting it would build an arena with no
+        // reader-reachable ML surface. The caller applies a guard at the arm level instead.
+        match rng.next() % 8 {
+            0 => format!("(tuple {} {})", sub(rng), sub(rng)),
+            1 => format!("(tuple {})", sub(rng)), // 1-tuple: `(p,)`
+            2 => format!("(list {} {})", sub(rng), sub(rng)),
+            3 => format!("(record (f {}) (g {}))", sub(rng), sub(rng)),
+            4 => format!("(map ({} {}))", "k", sub(rng)),
+            // ctor application `Ctor(p, …)` (name head, so it prints as an application, not a literal).
+            5 => format!("(C {} {})", sub(rng), sub(rng)),
+            // quote / quasiquote PATTERN — inner is itself a pattern, so a quote OVER an empty compound
+            // (`(quote ())`) is reachable here, exercising the once-panicking path.
+            6 => format!("(quote {})", sub(rng)),
+            _ => format!("(quasiquote {})", sub(rng)),
+        }
+    }
+
+    #[test]
+    fn ml_pattern_round_trip_is_faithful_and_never_panics_over_generated_patterns() {
+        // The never-panic + faithful-round-trip contract for the PATTERN printer, swept — the coverage the
+        // expression fuzz above lacks (it emits no patterns, so the empty-compound quote-pattern
+        // `unreachable!()` slipped past it to breaker). For each random pattern, wrap it in a `match` and
+        // assert: `print` never panics at any width, the printed ML re-parses clean, and the re-read arena
+        // is STRUCTURALLY EQUAL to the source (the pattern node survives, including the empty compounds and
+        // quote patterns). Generation is in s-expr so it never leans on the printer under test.
+        let mut rng = SplitMix64(0x5eed_9a77_e40f_1c03);
+        for _ in 0..3000 {
+            let depth = 1 + (rng.next() % 4) as usize;
+            let inner = gen_ml_pattern(&mut rng, depth);
+            // A guard `p if c` is legal only at the arm's TOP level — apply it here (not inside
+            // `gen_ml_pattern`) with 1/4 probability, so the `(guard …)` arm shape is still swept.
+            let pat = if rng.next().is_multiple_of(4) {
+                format!("(guard {inner} c)")
+            } else {
+                inner
+            };
+            let sx = format!("(def (main x) (match x ({pat} 1) (_ 0)))");
+            let a = sexpr::read(&sx)
+                .unwrap_or_else(|e| panic!("generated s-expr {sx:?} reads: {}", e.0));
+            for &width in &[0usize, 1, 8, 30, 100] {
+                let ml = print(&a, width); // must not panic
+                let back = parser::read_ml(&ml);
+                assert!(
+                    back.ok(),
+                    "ML print (w={width}) of pattern {sx:?} must re-parse clean, got {:?}\n\
+                     --- ml ---\n{ml}",
+                    back.errors
+                );
+                assert!(
+                    a.structurally_eq(&back.arenas),
+                    "ML print (w={width}) not faithful for pattern {sx:?}\n--- ml ---\n{ml}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn ml_print_round_trip_is_faithful_over_generated_programs_and_widths() {
         // The ML printer's structural FIDELITY, swept: `read_ml(print(a, w))` is STRUCTURALLY EQUAL to

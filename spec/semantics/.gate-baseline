@@ -4169,3 +4169,12 @@ todo	an exported entry with a String parameter is called with a string argument
 pass	zero divided by a runtime value folds to zero but keeps the zero-divisor guard
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
+pass	a NEGATIVE prefixed quantity carries its sign through the reference scale-fold
+pass	a narrow-width quantity whose reference-scaled magnitude overflows its inner type is rejected
+pass	a scaled derived quantity displays with BOTH scales folded into the magnitude
+pass	a scaled cube dimension raises its prefix scale to the power (km³ → ×1e9 meter³)
+pass	a scaled reciprocal dimension folds the denominator prefix scale (1/ms → ×1000 per second)
+pass	a bare TUPLE of quantities renders each element scaled to its reference (mixed inner types)
+pass	an OPTION payload quantity renders scaled to its reference in the value form
+pass	a NESTED tuple of quantities renders every element scaled at depth
+pass	a DERIVED-dimension (velocity) quantity used as a Map key hits by content

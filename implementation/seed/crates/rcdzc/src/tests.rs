@@ -5674,20 +5674,27 @@ fn set_algebra_producer_leaves_no_live_objects() {
         eprintln!("[set-algebra] debug-counters runtime not in the store; skipping balance probe");
         return;
     };
-    // Each `build` recurses so the sets stay OPAQUE runtime values (a two-literal set would fold); the
-    // algebra result is a fresh OWNED set the borrowing `Set.len` must drop, and its operands (each an owned
+    // `build i n s` RECURSES `(if (< i n) (build (+ i 1) n (Set.insert s i)) s)`, inserting the runtime loop
+    // counter `i` for i in [i0, n) — so each set is a genuinely RUNTIME-constructed opaque value (its
+    // elements are the loop index, NOT constant literals, so the construction can NOT const-fold — the flaw
+    // PR#719/Copilot caught in the earlier `build 0 1 2 3` form, which never recursed since `0 < 0` is false).
+    // The algebra result is a fresh OWNED set the borrowing `Set.len` must drop; its operands (each an owned
     // temporary from `build`) are consumed by the algebra op. Net 0 live cells after the length read.
-    // (a) UNION: {1,2,3} ∪ {2,3,4} = {1,2,3,4} → len 4.
-    let union_src = "(module m \
-                 (def (build (: n Int64) (: a Int64) (: b Int64) (: c Int64)) \
-                    (if (< n 0) (build (+ n 1) a b c) (Set.insert (Set.insert (Set.insert (Set.of (list)) a) b) c))) \
-                 (def (main) (Set.len (Set.union (build 0 1 2 3) (build 0 2 3 4)))) (export main))";
-    let program = compile_component(&crate::codec::encode(&parse(union_src))).expect("compile");
+    // `build 0 3` = {0,1,2}; `build 2 5` = {2,3,4}.
+    let build_def = "(def (build (: i Int64) (: n Int64) (: s (Set Int64))) \
+                    (if (< i n) (build (+ i 1) n (Set.insert s i)) s))";
+    // (a) UNION: {0,1,2} ∪ {2,3,4} = {0,1,2,3,4} → len 5.
+    let union_src = format!(
+        "(module m {build_def} \
+         (def (main) (Set.len (Set.union (build 0 3 (Set.of (list))) (build 2 5 (Set.of (list)))))) \
+         (export main))"
+    );
+    let program = compile_component(&crate::codec::encode(&parse(&union_src))).expect("compile");
     let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
     assert_eq!(
         rt.call("main", &[]),
-        Val::S64(4),
-        "{{1,2,3}} ∪ {{2,3,4}} = {{1,2,3,4}}, len 4"
+        Val::S64(5),
+        "{{0,1,2}} ∪ {{2,3,4}} = {{0,1,2,3,4}}, len 5"
     );
     assert_eq!(
         rt.live_objects(),
@@ -5696,17 +5703,18 @@ fn set_algebra_producer_leaves_no_live_objects() {
          result (borrowed then dropped by Set.len) must net to 0 live cells"
     );
 
-    // (b) INTERSECTION: {1,2,3} ∩ {2,3,4} = {2,3} → len 2.
-    let inter_src = "(module m \
-                 (def (build (: n Int64) (: a Int64) (: b Int64) (: c Int64)) \
-                    (if (< n 0) (build (+ n 1) a b c) (Set.insert (Set.insert (Set.insert (Set.of (list)) a) b) c))) \
-                 (def (main) (Set.len (Set.intersection (build 0 1 2 3) (build 0 2 3 4)))) (export main))";
-    let program2 = compile_component(&crate::codec::encode(&parse(inter_src))).expect("compile");
+    // (b) INTERSECTION: {0,1,2} ∩ {2,3,4} = {2} → len 1.
+    let inter_src = format!(
+        "(module m {build_def} \
+         (def (main) (Set.len (Set.intersection (build 0 3 (Set.of (list))) (build 2 5 (Set.of (list)))))) \
+         (export main))"
+    );
+    let program2 = compile_component(&crate::codec::encode(&parse(&inter_src))).expect("compile");
     let mut rt2 = ComposedRuntime::new(&program2, &runtime_bytes);
     assert_eq!(
         rt2.call("main", &[]),
-        Val::S64(2),
-        "{{1,2,3}} ∩ {{2,3,4}} = {{2,3}}, len 2"
+        Val::S64(1),
+        "{{0,1,2}} ∩ {{2,3,4}} = {{2}}, len 1"
     );
     assert_eq!(
         rt2.live_objects(),
@@ -5715,17 +5723,18 @@ fn set_algebra_producer_leaves_no_live_objects() {
          all be dropped after the borrowing length read — net 0 live cells"
     );
 
-    // (c) DIFFERENCE: {1,2,3} \ {2,3,4} = {1} → len 1.
-    let diff_src = "(module m \
-                 (def (build (: n Int64) (: a Int64) (: b Int64) (: c Int64)) \
-                    (if (< n 0) (build (+ n 1) a b c) (Set.insert (Set.insert (Set.insert (Set.of (list)) a) b) c))) \
-                 (def (main) (Set.len (Set.difference (build 0 1 2 3) (build 0 2 3 4)))) (export main))";
-    let program3 = compile_component(&crate::codec::encode(&parse(diff_src))).expect("compile");
+    // (c) DIFFERENCE: {0,1,2} \ {2,3,4} = {0,1} → len 2.
+    let diff_src = format!(
+        "(module m {build_def} \
+         (def (main) (Set.len (Set.difference (build 0 3 (Set.of (list))) (build 2 5 (Set.of (list)))))) \
+         (export main))"
+    );
+    let program3 = compile_component(&crate::codec::encode(&parse(&diff_src))).expect("compile");
     let mut rt3 = ComposedRuntime::new(&program3, &runtime_bytes);
     assert_eq!(
         rt3.call("main", &[]),
-        Val::S64(1),
-        "{{1,2,3}} \\ {{2,3,4}} = {{1}}, len 1"
+        Val::S64(2),
+        "{{0,1,2}} \\ {{2,3,4}} = {{0,1}}, len 2"
     );
     assert_eq!(
         rt3.live_objects(),

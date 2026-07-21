@@ -1510,6 +1510,66 @@ mod tests {
     }
 
     #[test]
+    fn resuming_from_the_recorded_cursor_does_not_re_perform_processed_triggers() {
+        // The crash-recovery at-most-once invariant the whole cursor mechanism exists to protect (the `run` doc:
+        // resuming from scratch would re-perform "every historical trigger, an at-most-once violation"). Simulate
+        // a round + a crash + a restart WITHOUT an explicit --from: process two triggers, record the cursor as
+        // `run` does (append DAEMON_CURSOR when processed > 0), then resume from `latest_cursor(log)` — the auto-
+        // resume mark — and prove the second round performs ZERO triggers (the already-done ones are behind the
+        // cursor). This closes the gap between `latest_cursor_reads_the_newest_recorded_daemon_cursor` (the fold in
+        // isolation) and `run_once_performs_…` (a single round): here the two compose into the actual restart path.
+        use std::sync::{Arc, Mutex};
+        let (path, mut log0) = temp_log();
+        crate::boot::inject_genesis(&mut log0, GENESIS).unwrap(); // seq 0 (`program` — skipped)
+        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let provider = match crate::kernel::compile_interpret_provider(GENESIS) {
+            Ok(p) => p,
+            Err(e) => panic!("genesis compiles: {e}"),
+        };
+        let Some(runtime) = crate::kernel::find_runtime_for(&provider, store_root) else {
+            eprintln!("[cdz-kernel::daemon] runtime absent/stale; skipping resume test");
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
+        log0.append("trigger", b"one").unwrap(); // seq 1
+        log0.append("trigger", b"two").unwrap(); // seq 2
+        let log = Arc::new(Mutex::new(log0));
+        let kind_of = |e: &crate::Event| (e.kind == "trigger").then_some(1i64);
+
+        // Round 1: drain from 0, perform both triggers, then record the cursor exactly as `run` does (processed > 0).
+        let (cursor, processed) = run_once(&log, 0, runtime.clone(), None, kind_of)
+            .expect("round 1 performs the triggers");
+        assert_eq!(processed, 2, "round 1 performs both triggers");
+        {
+            let mut l = log.lock().unwrap();
+            l.append(DAEMON_CURSOR, cursor.to_string().as_bytes())
+                .unwrap();
+        }
+
+        // "Restart": auto-resume from the recorded high-water mark (no explicit --from), as `run` does via
+        // `latest_cursor`. The recorded cursor must be exactly what we resume from.
+        let resume_from = {
+            let l = log.lock().unwrap();
+            latest_cursor(&l.tail(0).unwrap())
+        };
+        assert_eq!(
+            resume_from,
+            Some(cursor),
+            "the auto-resume mark is the cursor round 1 recorded"
+        );
+
+        // Round 2 from the recorded cursor: the two already-performed triggers are BEHIND it, and the daemon's own
+        // prim/cursor events are skipped → ZERO re-performed. This is the at-most-once guarantee.
+        let (_cursor2, processed2) = run_once(&log, resume_from.unwrap(), runtime, None, kind_of)
+            .expect("round 2 resumes cleanly");
+        assert_eq!(
+            processed2, 0,
+            "resuming from the recorded cursor re-performs NO already-processed trigger (at-most-once)"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn run_once_with_no_external_policy_reads_the_policy_from_the_log() {
         // The full operator model at the loop level: run_once(policies=None) reads the policy FROM THE LOG per
         // invocation (via tick_hosted_log_policy). With a `policy` event permitting ONLY prim:append in the log,
