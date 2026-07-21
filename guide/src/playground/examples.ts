@@ -278,6 +278,28 @@ export const EXAMPLES: Example[] = [
     expected: "(: (tuple 11 12) (Tuple BigInt BigInt))",
   },
   {
+    // Shows off: projecting an EXACT rational back to an integer. `Rational.floor` rounds toward -inf and
+    // `Rational.ceil` toward +inf, each narrowing to Int64 — so the direction (not just truncation) is the
+    // point: 7/2 = 3.5 -> floor 3 / ceil 4, and -7/2 = -3.5 -> floor -4 / ceil -3 (floor keeps going DOWN
+    // for a negative, ceil UP). The result (3, 4, -4, -3) shows both signs so the toward-±inf rule is visible.
+    id: "rational-floor-ceil",
+    name: "Rational floor & ceil",
+    theme: "numbers",
+    surface: "sexpr",
+    source: `(do
+  (pragma default-fraction Rational)
+  ; floor/ceil project an EXACT fraction to an Int64, rounding toward -inf / +inf.
+  ; 7/2 = 3.5 -> floor 3, ceil 4.   -7/2 = -3.5 -> floor -4, ceil -3.
+  (def (main)
+    (tuple
+      (Rational.floor (/ 7 2))
+      (Rational.ceil (/ 7 2))
+      (Rational.floor (/ -7 2))
+      (Rational.ceil (/ -7 2))))
+  (export main))`,
+    expected: "(: (tuple 3 4 -4 -3) (Tuple Int64 Int64 Int64 Int64))",
+  },
+  {
     // Shows off: Float64 rounding drift — the flip side of the exact-rational example. Adding 0.1 ten
     // times should give 1.0, but IEEE 754 can't represent 0.1 exactly, so the errors accumulate to
     // 0.9999999999999999. Also shows explicit parameter type annotations (n: Int64, acc: Float64) —

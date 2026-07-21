@@ -2455,6 +2455,72 @@ fn a_match_requires_list_length_guard_floors_the_constructor_payload_length() {
     );
 }
 
+/// A match-based `@requires` narrows EACH allowed constructor's payload INDEPENDENTLY when several arms carry
+/// distinct payload guards — not just a single allowed constructor. `@requires(match o ((T.A n) (0<=n<=9))
+/// ((T.B m) (100<=m<=109)) ((T.C) false))` forbids `C`, draws `A` in `[0,9]`, AND draws `B` in `[100,109]`,
+/// each from its own guard. This exercises `constrain_sum_variants`' ctor-KEYED range map (a regression that
+/// applied only the first/last guard, or one range to every variant, would draw an out-of-domain payload and
+/// spuriously trip the (D) precondition). Two faces: (1) a PASS proving every drawn A/B payload was in its own
+/// window; (2) a `B`-failing property shrinks to a counterexample decoded as `B(k)` with `k` in `[100,109]`
+/// (never A's window or below B's bound) — pinning that the decode side keeps each constructor's range too.
+#[test]
+fn a_match_requires_narrows_each_allowed_constructor_payload_independently() {
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — the -gen wrapper run needs the store"
+        );
+        return;
+    }
+    let d = dir("requires-sum-multi-ctor-guard");
+    // Face 1: both allowed ctors draw in their own window → PASS (no spurious out-of-window trap).
+    let pass_src = "(do \
+           (type T (A Int64) (B Int64) (C)) \
+           (@ test (@ (requires (match o ((T.A n) (and (>= n 0) (<= n 9))) ((T.B m) (and (>= m 100) (<= m 109))) ((T.C) false))) \
+             (def (f (: o T)) (match o \
+               ((T.A n) (if (and (>= n 0) (<= n 9)) 1 (trap \"A out of window\"))) \
+               ((T.B m) (if (and (>= m 100) (<= m 109)) 2 (trap \"B out of window\"))) \
+               ((T.C) (trap \"C forbidden\")))))) \
+           (def (anchor) 1))";
+    let f = write(&d, "pass.sexp", pass_src);
+    let (ok, stdout, stderr) = run(&["test", &f, "--seed", "0", "--trials", "100"]);
+    assert!(
+        ok && stdout.contains("PASS f-gen (100 trials)"),
+        "each allowed constructor's payload is narrowed to its OWN guard window (A in [0,9], B in [100,109]), so no spurious out-of-window trap: {stdout}{stderr}"
+    );
+    // Face 2: a B-always-fails property shrinks to a B(k) counterexample IN B's window [100,109] — the decode
+    // side keeps B's range (not A's, not below B's lower bound).
+    let fail_src = "(do \
+           (type T (A Int64) (B Int64) (C)) \
+           (@ test (@ (requires (match o ((T.A n) (and (>= n 0) (<= n 9))) ((T.B m) (and (>= m 100) (<= m 109))) ((T.C) false))) \
+             (def (f (: o T)) (match o \
+               ((T.A n) 1) \
+               ((T.B m) (trap \"always fail on B\")) \
+               ((T.C) (trap \"C forbidden\")))))) \
+           (def (anchor) 1))";
+    let f2 = write(&d, "fail.sexp", fail_src);
+    let (ok2, stdout2, stderr2) = run(&["test", &f2, "--seed", "0", "--trials", "80"]);
+    assert!(
+        !ok2 && stdout2.contains("FAIL f-gen"),
+        "the B-arm always traps, so once a B is drawn the property fails: {stdout2}{stderr2}"
+    );
+    // Extract `f(B(N))` and assert N is in B's window [100,109]. If the CE is an A(...) instead, the B guard
+    // still must be honored when a B is the failing draw; the shrink converges to B's low end (100).
+    let ce = stdout2
+        .lines()
+        .find(|l| l.contains("counterexample: f(B("))
+        .unwrap_or("");
+    let n: i64 = ce
+        .split("B(")
+        .nth(1)
+        .and_then(|s| s.split(')').next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(-1);
+    assert!(
+        (100..=109).contains(&n),
+        "the shrunk B-payload counterexample stays in B's OWN guard window [100,109], proving the decode keeps each constructor's range: {stdout2}"
+    );
+}
+
 /// TERMINATION under an UNSATISFIABLE relation: `@requires(a < b and b < a)` can NEVER hold (it implies
 /// `a < a`), so rejection sampling can never find an in-domain draw. The generator must NOT loop forever —
 /// it is fuel-bounded (`RELATION_FUEL`), so after exhausting fuel it returns the last draw and lets the (D)

@@ -2000,6 +2000,41 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     Core::Poison(r) => Core::Poison(r),
                     _ => lower_rational_floor_ceil(db, args[0], /* is_floor */ false),
                 },
+                // `Rational.round r` — NEAREST integer, ties HALF-AWAY-FROM-ZERO. A CONSTANT
+                // `Core::ConstRational(n, d)` folds: the toward-zero quotient `q` (+ remainder `rem`,
+                // dividend-signed) adjusted AWAY from zero (by the sign of `n`) when `2·|rem| ≥ d` — the
+                // fractional part is ≥ ½ (`≥` gives the half-away tie: at exactly ½, `2·|rem| = d`, round
+                // away). A RUNTIME Rational synthesizes the derivation subtree (the same tie test over the
+                // truncate). `d > 0` (normalized), so the compare is well-defined.
+                Some(Prim::RationalRound) if args.len() == 1 => match core_of(db, args[0]) {
+                    Core::ConstRational(n, d) => match n.divmod(&d) {
+                        Some((q, rem)) => {
+                            // `|rem|` — the remainder's magnitude (rem is dividend-signed).
+                            let abs_rem = crate::ast::IntValue {
+                                negative: false,
+                                magnitude: rem.magnitude.clone(),
+                            };
+                            let two = crate::ast::IntValue::from_i64(2);
+                            // Tie test `2·|rem| ≥ d` — round away from zero (by the sign of `n`) when true.
+                            if two.mul(&abs_rem).cmp(&d) != std::cmp::Ordering::Less {
+                                let one = crate::ast::IntValue::from_i64(1);
+                                if n.negative {
+                                    Core::ConstInt(q.sub(&one))
+                                } else {
+                                    Core::ConstInt(q.add(&one))
+                                }
+                            } else {
+                                Core::ConstInt(q)
+                            }
+                        }
+                        None => Core::Poison(Reject::coded(
+                            Code::ConstTrap,
+                            "rational with zero denominator has no integer part",
+                        )),
+                    },
+                    Core::Poison(r) => Core::Poison(r),
+                    _ => lower_rational_round(db, args[0]),
+                },
                 // `Symbol.to-string` — recover a Symbol's content String (`Symbol → String`, the inverse of
                 // `Symbol.of`). A constant symbol IS its `Core::ConstStr`, so this folds to that same node
                 // retyped `String` (the node's solved type); the rep is unchanged. A RUNTIME symbol is a
@@ -15458,6 +15493,125 @@ fn lower_rational_floor_ceil(db: &mut Db, r: StructId, is_floor: bool) -> Core {
     core_of(db, derivation)
 }
 
+/// Lower a RUNTIME `Rational.round r` as a DERIVATION — NEAREST integer, ties HALF-AWAY-FROM-ZERO. Synthesize:
+/// ```text
+/// (let ((__rr r))
+///   (Int64.of
+///     (let ((__num (numerator __rr)) (__den (denominator __rr)))
+///       (let ((__q (/ __num __den)) (__rem (% __num __den)))
+///         (let ((__abs (if (< __rem 0N) (- 0N __rem) __rem)))
+///           (if (>= (* 2N __abs) __den)
+///               (if (< __rem 0N) (- __q 1N) (+ __q 1N))
+///               __q))))))
+/// ```
+/// The toward-zero quotient `__q` is adjusted AWAY from zero (by the sign of the remainder, which equals the
+/// value's sign) when twice the |remainder| is ≥ the denominator — i.e. the fractional part is ≥ ½. Using
+/// `≥` (not `>`) makes an exact-half tie round AWAY (`2·|rem| = __den` at ½), the settled half-away ruling.
+/// Multi-use values (`__num`/`__den`/`__q`/`__rem`/`__abs`) are LET-BOUND (each read 2–3×). All BigInt ops
+/// (`/`, `%`, `*`, `-`, `<`, `>=`) + the checked `Int64.of` narrowing already exist → hash-neutral. Matches
+/// the const-fold arm + the verified formula (`1/2 → 1`, `-1/2 → -1`, `3/2 → 2`, `5/2 → 3`, `7/3 → 2`).
+fn lower_rational_round(db: &mut Db, r: StructId) -> Core {
+    let outer = "__rr";
+    // `(let ((__num (numerator __rr)) (__den (denominator __rr))) …)`.
+    let num_call = rational_member_call(db, "numerator", outer);
+    let den_call = rational_member_call(db, "denominator", outer);
+    let num_binding = {
+        let b = db.push_name("__num");
+        db.push_list(vec![b, num_call])
+    };
+    let den_binding = {
+        let b = db.push_name("__den");
+        db.push_list(vec![b, den_call])
+    };
+    let numden_bindings = db.push_list(vec![num_binding, den_binding]);
+    // `(let ((__q (/ __num __den)) (__rem (% __num __den))) …)`.
+    let q_binding = {
+        let div_head = db.push_name("/");
+        let n = db.push_name("__num");
+        let d = db.push_name("__den");
+        let div = db.push_list(vec![div_head, n, d]);
+        let b = db.push_name("__q");
+        db.push_list(vec![b, div])
+    };
+    let rem_binding = {
+        let rem_head = db.push_name("%");
+        let n = db.push_name("__num");
+        let d = db.push_name("__den");
+        let rem = db.push_list(vec![rem_head, n, d]);
+        let b = db.push_name("__rem");
+        db.push_list(vec![b, rem])
+    };
+    let qrem_bindings = db.push_list(vec![q_binding, rem_binding]);
+    // `(let ((__abs (if (< __rem 0N) (- 0N __rem) __rem))) …)` — the remainder's magnitude.
+    let abs_binding = {
+        let rem_ref = db.push_name("__rem");
+        let zero = bigint_lit(db, 0);
+        let lt = db.push_name("<");
+        let neg_test = db.push_list(vec![lt, rem_ref, zero]);
+        let zero2 = bigint_lit(db, 0);
+        let rem_ref2 = db.push_name("__rem");
+        let sub = db.push_name("-");
+        let negated = db.push_list(vec![sub, zero2, rem_ref2]);
+        let rem_ref3 = db.push_name("__rem");
+        let if_head = db.push_name("if");
+        let abs = db.push_list(vec![if_head, neg_test, negated, rem_ref3]);
+        let b = db.push_name("__abs");
+        db.push_list(vec![b, abs])
+    };
+    let abs_bindings = db.push_list(vec![abs_binding]);
+    // The tie test `(>= (* 2N __abs) __den)`.
+    let tie_test = {
+        let two = bigint_lit(db, 2);
+        let abs_ref = db.push_name("__abs");
+        let mul = db.push_name("*");
+        let doubled = db.push_list(vec![mul, two, abs_ref]);
+        let den_ref = db.push_name("__den");
+        let ge = db.push_name(">=");
+        db.push_list(vec![ge, doubled, den_ref])
+    };
+    // The away-from-zero adjustment `(if (< __rem 0N) (- __q 1N) (+ __q 1N))`.
+    let adjusted = {
+        let rem_ref = db.push_name("__rem");
+        let zero = bigint_lit(db, 0);
+        let lt = db.push_name("<");
+        let neg_test = db.push_list(vec![lt, rem_ref, zero]);
+        let q1 = db.push_name("__q");
+        let one1 = bigint_lit(db, 1);
+        let sub = db.push_name("-");
+        let minus = db.push_list(vec![sub, q1, one1]);
+        let q2 = db.push_name("__q");
+        let one2 = bigint_lit(db, 1);
+        let add = db.push_name("+");
+        let plus = db.push_list(vec![add, q2, one2]);
+        let if_head = db.push_name("if");
+        db.push_list(vec![if_head, neg_test, minus, plus])
+    };
+    let q_else = db.push_name("__q");
+    let if_head = db.push_name("if");
+    let tie_if = db.push_list(vec![if_head, tie_test, adjusted, q_else]);
+    // Nest the lets: abs over (q,rem) over (num,den).
+    let let_head3 = db.push_name("let");
+    let abs_let = db.push_list(vec![let_head3, abs_bindings, tie_if]);
+    let let_head2 = db.push_name("let");
+    let qrem_let = db.push_list(vec![let_head2, qrem_bindings, abs_let]);
+    let let_head1 = db.push_name("let");
+    let numden_let = db.push_list(vec![let_head1, numden_bindings, qrem_let]);
+    // `(Int64.of <numden_let>)` — checked narrowing (traps on overflow).
+    let dot = db.push_name(".");
+    let int64_mod = db.push_name("Int64");
+    let of_key = db.push_name("of");
+    let int64_of = db.push_list(vec![dot, int64_mod, of_key]);
+    let narrowed = db.push_list(vec![int64_of, numden_let]);
+    // `(let ((__rr r)) <narrowed>)`.
+    let outer_binder = db.push_name(outer);
+    let outer_binding = db.push_list(vec![outer_binder, r]);
+    let outer_bindings = db.push_list(vec![outer_binding]);
+    let outer_let_head = db.push_name("let");
+    let derivation = db.push_list(vec![outer_let_head, outer_bindings, narrowed]);
+    crate::resolve::resolve_subtree(db, derivation);
+    core_of(db, derivation)
+}
+
 /// The two `IntValue`s of a `Core::ConstRational` operand (already normalized), or `None` if `id` did not
 /// fold to a constant rational (a runtime rational — the caller then emits the runtime `rational-*` op, R3b).
 fn const_rational_of(
@@ -17983,6 +18137,7 @@ fn fold_arith(op: Prim, a: IntValue, b: IntValue) -> Core {
         | Prim::RationalTruncate
         | Prim::RationalFloor
         | Prim::RationalCeil
+        | Prim::RationalRound
         // The unit/quantity prims are compile-time unit builders / erasing quantity ops — never an
         // integer binary operation (a `Qty.of`/`Qty.value` lowers to its value argument, a unit builder
         // is reduced away by `eval`), so they never reach this integer fold.
@@ -24076,6 +24231,7 @@ fn intrinsic_name(op: Prim) -> &'static str {
         Prim::RationalTruncate => "rational-truncate",
         Prim::RationalFloor => "rational-floor",
         Prim::RationalCeil => "rational-ceil",
+        Prim::RationalRound => "rational-round",
         Prim::CharTy => "Char",
         Prim::CharToInt => "char-to-int",
         Prim::CharFromInt => "char-from-int",

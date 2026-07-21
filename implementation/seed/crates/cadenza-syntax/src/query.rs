@@ -2544,6 +2544,7 @@ pub mod treediff {
 /// surface as the source, so the splice reads consistently with its neighbours.
 pub mod textedit {
     use super::Tree;
+    use crate::ast::Leaf;
     use crate::convert::Format;
 
     /// One primitive text edit: replace the original byte range `[start, end)` with `text`. A pure
@@ -2614,6 +2615,46 @@ pub mod textedit {
             // sexpr and everything else: the direct one-line s-expression rendering.
             _ => crate::sexpr::print(&arena),
         }
+    }
+
+    /// Render an inserted CHILD `t` for splicing into a list whose head is `parent_head`, on `surface`.
+    /// Most nodes render context-free via [`render`], but a few ML forms are CONTEXT-SENSITIVE — the ML
+    /// printer only emits their in-context syntax when it sees them INSIDE their parent. The one that
+    /// bites the corpus fixer: a `match` ARM `(pat body)` prints as `| pat => body` only inside a
+    /// `(match …)`; rendered STANDALONE it prints as an APPLICATION `pat(body)` (e.g. `(D (trap …))` →
+    /// `D(trap(…))`), which is invalid ML in arm position, so the InsertArms fix (CDZ0210 non-exhaustive
+    /// match) was silently dropped on the ML surface at reparse/validate. (s-expr is context-free — an arm
+    /// renders the same in or out of a match — so only ML needs this.) Fix: for an ML `match`-child, render
+    /// a synthetic single-arm `match` and extract the `  | … => …` arm line(s), so the splice is valid ML.
+    fn render_child(t: &Tree, parent_head: Option<&str>, surface: Format) -> String {
+        if surface == Format::Ml && parent_head == Some("match") {
+            // A match arm is a 2-element `(pat body)` list; anything else under a `match` head (the
+            // scrutinee, or a malformed child) is not an arm — render it plainly.
+            if let Tree::List(kids, _) = t
+                && kids.len() == 2
+            {
+                // Build `(match cdz_arm_ctx <arm>)`, print it, and take everything after the `with` line
+                // — the rendered arm line(s), correctly `| pat => body`. The sentinel scrutinee name is
+                // arbitrary (never emitted into the result — only the arm tail is kept).
+                let sentinel = Tree::Atom(Leaf::Name("cdz_arm_ctx".to_string()), None);
+                let synthetic = Tree::List(
+                    vec![
+                        Tree::Atom(Leaf::Name("match".to_string()), None),
+                        sentinel,
+                        t.clone(),
+                    ],
+                    None,
+                );
+                let printed = render(&synthetic, surface);
+                // The printer emits `match cdz_arm_ctx with\n  | <pat> => <body>`; keep everything after
+                // the first newline (the arm line(s)), trimmed of leading indentation so the splice's own
+                // separator controls placement.
+                if let Some((_, arm)) = printed.split_once('\n') {
+                    return arm.trim_start().to_string();
+                }
+            }
+        }
+        render(t, surface)
     }
 
     /// Walk `old`/`new` in parallel, appending edits for the sub-nodes that differ. The alignment
@@ -2819,13 +2860,26 @@ pub mod textedit {
                     }
                 }
                 super::treediff::Align::Ins(j) => {
-                    // Splice the new child right after the current anchor, prefixed with a separating
-                    // space so tokens don't fuse. (Insertion is the rarer path — the corpus edit is a
-                    // pure deletion; a splice the validator rejects falls back to a reprint upstream.)
+                    // Render the new child in its PARENT's context (a `match` arm needs `| pat => body`
+                    // arm-syntax, not a standalone application — see `render_child`). The separator: a
+                    // match arm goes on its OWN line (arms are `|`-led, one per line), so an ML arm insert
+                    // is newline-prefixed; every other insert is space-prefixed so tokens don't fuse.
+                    // (Insertion is the rarer path — the corpus edit is a pure deletion; a splice the
+                    // validator rejects falls back to a reprint upstream.)
+                    let parent_head = match old_list {
+                        Tree::List(items, _) => items.first().and_then(Tree::as_name),
+                        _ => None,
+                    };
+                    let rendered = render_child(&b[j], parent_head, surface);
+                    let sep = if surface == Format::Ml && parent_head == Some("match") {
+                        "\n  "
+                    } else {
+                        " "
+                    };
                     out.push(Edit {
                         start: anchor_end,
                         end: anchor_end,
-                        text: format!(" {}", render(&b[j], surface)),
+                        text: format!("{sep}{rendered}"),
                     });
                 }
             }
@@ -6064,6 +6118,74 @@ mod tests {
         assert!(
             !free.contains("let"),
             "the let keyword is a head, not a variable"
+        );
+    }
+
+    #[test]
+    fn inserting_a_match_arm_renders_valid_ml_arm_syntax_not_a_standalone_application() {
+        // The CDZ0210 InsertArms fix (add a missing match arm) dropped on the ML surface: `textedit`'s
+        // Ins splice rendered the new arm `(pat body)` STANDALONE, and a match arm only prints as
+        // `| pat => body` INSIDE a `(match …)` — standalone it prints as an application `pat(body)`,
+        // invalid ML in arm position, so the reparse/validate dropped the fix. `render_child` fixes it
+        // by rendering a match-child as arm-syntax. This pins the ML insert produces VALID, REPARSEABLE
+        // arm syntax (not `C(...)`). (s-expr was unaffected — an arm renders context-free there.)
+        use crate::convert::Format;
+        // A match missing the `C` arm; parse WITH spans so the preserving rewrite has anchors.
+        let src = "def f(t) = match t with\n  | A => 1\n  | B => 2";
+        let parsed = crate::parser::parse(src, crate::spans::FileId(0));
+        assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
+        let old = Tree::of(&parsed.arenas);
+        let spans = &parsed.spans;
+        let span_of = |t: &Tree| -> Option<(usize, usize)> {
+            t.origin()
+                .and_then(|id| spans.get(id))
+                .map(|s| (s.start, s.end))
+        };
+        // Build `new` = `old` with a `(C (trap "TODO: C"))` arm appended to the match. Locate the match
+        // node (the def body) and append the arm.
+        fn add_arm(t: &Tree) -> Tree {
+            if let Tree::List(items, o) = t {
+                if items.first().and_then(Tree::as_name) == Some("match") {
+                    let mut kids = items.clone();
+                    let arm = Tree::List(
+                        vec![
+                            Tree::Atom(Leaf::Name("C".into()), None),
+                            Tree::List(
+                                vec![
+                                    Tree::Atom(Leaf::Name("trap".into()), None),
+                                    Tree::Atom(Leaf::Str("TODO: C".into()), None),
+                                ],
+                                None,
+                            ),
+                        ],
+                        None,
+                    );
+                    kids.push(arm);
+                    return Tree::List(kids, *o);
+                }
+                return Tree::List(items.iter().map(add_arm).collect(), *o);
+            }
+            t.clone()
+        }
+        let new = add_arm(&old);
+        let out = textedit::rewrite_preserving(src, &old, &new, &span_of, Format::Ml);
+        // The spliced arm must be `| C => trap(...)` arm-syntax, NOT the standalone application `C(...)`.
+        assert!(
+            out.output.contains("| C => trap(\"TODO: C\")"),
+            "arm inserted as `| C => …` arm-syntax; got:\n{}",
+            out.output
+        );
+        assert!(
+            !out.output.contains("C(trap("),
+            "must NOT render the arm as a standalone application `C(trap(…))`; got:\n{}",
+            out.output
+        );
+        // And the result must REPARSE cleanly (the whole point — an invalid render was dropped upstream).
+        let reparsed = crate::parser::read_ml(&out.output);
+        assert!(
+            reparsed.ok(),
+            "the ML with the inserted arm reparses: {:?}",
+            reparsed.errors
         );
     }
 }

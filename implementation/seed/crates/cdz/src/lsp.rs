@@ -4843,6 +4843,29 @@ mod tests {
     }
 
     #[test]
+    fn call_hierarchy_works_on_an_sexpr_module_rooted_program() {
+        // The s-expr `(module m …)` root is a DISTINCT path in top_level_defs_with_spans (it skips the
+        // module NAME and walks the members), separate from the ML do-root/bare-def cases the other
+        // call-hierarchy tests use. Pin both directions on a module-rooted program: incoming to `helper`
+        // = [main]; outgoing from `main` = [helper].
+        let text = "(module m (def (helper x) (+ x 1)) (def (main) (helper 2)) (export main))";
+        let incoming = incoming_calls_for(text, false, "helper", &test_uri());
+        let callers: Vec<&str> = incoming.iter().map(|c| c.from.name.as_str()).collect();
+        assert_eq!(
+            callers,
+            vec!["main"],
+            "helper's caller in the module is main: {callers:?}"
+        );
+        let outgoing = outgoing_calls_for(text, false, "main", &test_uri());
+        let callees: Vec<&str> = outgoing.iter().map(|c| c.to.name.as_str()).collect();
+        assert_eq!(
+            callees,
+            vec!["helper"],
+            "main's callee in the module is helper: {callees:?}"
+        );
+    }
+
+    #[test]
     fn call_hierarchy_outgoing_finds_the_callees_of_a_def() {
         // Outgoing calls FROM `main`: it calls `helper` and `other`, so outgoingCalls returns those two
         // callee items with their call-site ranges. `main`'s own signature is not a call.

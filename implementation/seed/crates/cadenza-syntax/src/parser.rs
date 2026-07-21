@@ -2615,6 +2615,32 @@ impl<'a> Parser<'a> {
                 let lspan = span.merge(self.prev_span());
                 self.list(items, lspan)
             }
+            Kind::Hash if self.nth_kind(1) == Kind::LBracket => {
+                // `#[ p, … ]` — the RAW-LIST escape in pattern position, the twin of the expression
+                // `#[ e, … ]` (`hash_list`). It reads to a BARE list of sub-patterns `(p …)` — no head
+                // name — so the EMPTY case `#[]` reads to an empty-list node `()`, the exact inverse of
+                // the pattern printer's `#[]` render for an empty `Struct::List`. That closes the
+                // round-trip for an empty-compound QUOTE pattern (`(quote ())`), whose inner `()` has no
+                // other pattern surface (`()` reads to `unit`, `[]` to `(list)`).
+                self.bump(); // '#'
+                self.bump(); // '['
+                let mut items = Vec::new();
+                if !self.at(Kind::RBracket) {
+                    loop {
+                        let before = self.pos;
+                        items.push(self.pattern());
+                        if !self.sep_continue(Kind::RBracket) {
+                            break;
+                        }
+                        if self.pos == before {
+                            self.bump(); // pattern didn't consume — avoid a missing-`,` spin
+                        }
+                    }
+                }
+                self.expect(Kind::RBracket, "`]`");
+                let rlspan = span.merge(self.prev_span());
+                self.list(items, rlspan)
+            }
             Kind::Hash if self.nth_kind(1) == Kind::LBrace => {
                 // `#{ k = p, … }` / `#{ k = p, …, .. rest }` — a map pattern, the s-expr `(map (k p) ..
                 // rest)` twin. Head is the NAME `map`; each entry is a `(key sub-pattern)` pair (the key

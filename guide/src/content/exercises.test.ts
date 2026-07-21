@@ -78,3 +78,22 @@ test("the exercise-id count per chapter equals the registry's declared `exercise
     );
   }
 });
+
+test("the exercise scan sees real chapters + exercises (guards a vacuous pass)", () => {
+  // All three tests above iterate CHAPTERS and assert a violation set is EMPTY — so if fileForSlug()'s
+  // regex broke (empty map) or CHAPTERS were empty, every loop would run zero times and all three would
+  // pass on nothing, hiding a real regression (e.g. a mis-prefixed id would sail through). Assert the
+  // machinery actually reads a healthy corpus: many chapters mapped to files, and a realistic number of
+  // exercise ids found across them (the registry declares dozens), so a broken scan trips here instead.
+  const map = fileForSlug();
+  assert.ok(map.size >= 30, `expected the registry to map many slugs to files, got ${map.size}`);
+  let totalIds = 0;
+  for (const c of CHAPTERS) {
+    const file = map.get(c.slug);
+    if (!file) continue;
+    totalIds += exerciseIds(readFileSync(join(here, "chapters", file), "utf8")).length;
+  }
+  const declared = CHAPTERS.reduce((n, c) => n + (c.exercises ?? 0), 0);
+  assert.ok(totalIds >= 20, `expected many exercise ids across the guide, found ${totalIds}`);
+  assert.equal(totalIds, declared, `exercise-id scan (${totalIds}) disagrees with total declared exercises (${declared})`);
+});

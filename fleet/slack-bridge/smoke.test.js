@@ -15,6 +15,12 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
+// ⚠ DEP-FREE INVARIANT: require ONLY inbox.js + format.js here — both use node:-builtins only. NEVER
+// require("./bridge.js") (it pulls in @slack/bolt): the CI `slack-bridge crate` job runs this with NO
+// `npm install`, so any external-dep require throws "Cannot find module" and reds the check. If you need
+// to test a helper that lives in bridge.js, MOVE it to format.js (the dep-free module) and require it from
+// there — that's exactly what was done for isTransientSocketModeFault. Verify locally the CI way:
+// `mv node_modules aside && node smoke.test.js` must still pass.
 const { deliver, drain, markProcessed, inboxDir, isValidAgentName } = require("./inbox.js");
 const { parseOperatorMessage, renderFleetMessage, helpText, isTransientSocketModeFault } = require("./format.js");
 

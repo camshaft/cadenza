@@ -6458,21 +6458,22 @@ fn a_site_a_closure_cell_leak_probe_tracks_the_owned_temp_env_cell() {
         Val::S64(15),
         "the eta-closure completes to 15"
     );
-    // KNOWN GAP (observed 2026-07-20): 4 live cells leak after the eta-closure application. ATTRIBUTION
-    // (isolated via a no-closure control of the SAME tuple/match shape, which leaked 2): the CLOSURE
-    // contributes exactly 2 — the env cell (arr-alloc) + its boxed captured `10` — never reclaimed because
-    // the CallClosure env-cell owned-temp is not dropped after the borrowing call (select.rs ~10248). The
-    // OTHER 2 are the pervasive tuple + match-shell reclaim gap (the `(T.Mk a b)` shell), shared with the
-    // control and NOT closure-specific. So the SITE-A fix target is 4→2 (reclaim the closure's 2 cells),
-    // NOT 4→0 (the remaining 2 are the general Perceus match/tuple-drop workstream). This PINS the total so
-    // it cannot silently WORSEN (> 4 = a per-call allocation regression in the CallClosure path).
+    // SITE-A FIXED (part b, 2026-07-21): the CallClosure emit now drops the owned-temp env `cell_slot` after
+    // the borrowing call when the closure operand is Owned (part a's `Core::Closure`/If-join classification)
+    // and the application's result is not itself a function (non-escaping — a curried partial / re-applied
+    // thunk keeps a Fn result, so its cell is left live). That reclaims the 2 CLOSURE-specific cells (env
+    // cell + boxed captured `10`) → the count drops 4→2. The REMAINING 2 are the pervasive tuple + match-shell
+    // reclaim gap (the `(T.Mk a b)` shell), shared with a no-closure control of the same shape and NOT
+    // closure-specific (the general Perceus match/tuple-drop workstream — flip to 0 when that lands). This
+    // PINS the post-fix total: > 2 = a CallClosure reclaim regression (the drop stopped firing); < 2 would
+    // mean the shell gap closed elsewhere. Value stays correct (15) — the drop reclaims a dead temporary, no
+    // double-free (a double-free would trap or underflow the live count).
     assert_eq!(
         rt.live_objects(),
-        4,
-        "SITE-A KNOWN GAP: 4 cells leak = 2 CLOSURE-specific (env cell + boxed capture, the SITE-A target, \
-         flip to 2 when the CallClosure owned-temp cell drop lands) + 2 tuple/match-shell (the general \
-         Perceus match-reclaim gap, isolated via a no-closure control). Value correct (15); > 4 is a \
-         regression."
+        2,
+        "SITE-A part b: the CallClosure owned-temp env-cell drop reclaims the 2 closure-specific cells \
+         (env + boxed capture), so 4→2; the remaining 2 are the general Perceus tuple/match-shell gap. \
+         Value correct (15); > 2 = the CallClosure reclaim regressed."
     );
 }
 
@@ -6512,6 +6513,59 @@ fn a_recursive_list_fold_leaks_every_node_known_gap() {
         7,
         "KNOWN GAP: a recursive list fold leaks every heap node (match does not reclaim the matched \
          shell); 7 cells for a 3-element list. Flip to 0 when the Perceus drop-insertion pass lands."
+    );
+}
+
+/// RECLAIM WITNESS (pins a SOUND path, narrows the compound-shell gap): a SINGLE non-recursive `match` over
+/// an OWNED compound-payload sum, whose payload child is only BORROWED (read by `List.len` — returns a scalar,
+/// never moves the child out) and does NOT escape the arm, IS already reclaimed to 0 live cells. This was
+/// EXPECTED to leak (the two `MatchSum` reclaim gates require `sum_has_only_scalar_payloads`, which a
+/// `(List Int64)` payload fails), but empirically nets 0 — so this borrow-only, non-escaping compound shape
+/// is ALREADY sound today. That NARROWS the real compound-shell-reclaim gap (the residual leaks) to the
+/// RECURSIVE / child-ESCAPING shapes: `a_recursive_list_fold_leaks_every_node_known_gap` (child `t` threaded
+/// into the recursive `len t` — escapes) and `a_recursive_match_binder_over_a_heap_scrutinee...` (child `a`
+/// flows into the returned `(Mk a a)` — escapes). Pinning THIS (0) guards the sound path from a future
+/// over-drop regression (a wrong broadening that drops an escaping child would show up as a UAF/trap here or
+/// a spurious <0-ish churn elsewhere) while the escaping shapes stay the tracked open gap. `main` returns the
+/// scalar `List.len xs` (3), so the only heap traffic is the shell + its payload list. `#[ignore]` — needs
+/// the debug-counters store (`cargo xtask build`; run with `-- --ignored`).
+#[test]
+#[ignore]
+fn a_borrow_only_compound_payload_match_shell_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[compound-shell] debug-counters runtime not in the store; skipping reclaim witness"
+        );
+        return;
+    };
+    // `mk 3` builds a fresh owned `Box.Wrap [0,1,2]`; the match binds `xs` and reads `List.len xs` (a
+    // borrow → scalar 3). `xs` does NOT escape the arm (no constructor/call/return carries the handle out),
+    // so the shell is a droppable owned temporary — and it IS reclaimed (empirically 0, though the payload
+    // is compound). The recursive-fold + match-binder known-gap probes hold the still-leaking escaping shapes.
+    let src = "(module m \
+                 (type Box (Wrap (List Int64)) Empty) \
+                 (def (build (: i Int64) (: n Int64) (: acc (List Int64))) \
+                    (if (< i n) (build (+ i 1) n (List.push acc i)) acc)) \
+                 (def (mk (: n Int64)) (if (< n 0) (Box.Empty ()) (Box.Wrap (build 0 n (list))))) \
+                 (def (main) (match (mk 3) ((Box.Wrap xs) (List.len xs)) ((Box.Empty _) 0))) \
+                 (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(3),
+        "List.len of the wrapped [0,1,2] is 3 (value-correct + NO UAF — a freed-early shell would trap/OOB)"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "borrow-only compound-payload match shell IS reclaimed: the owned `Box.Wrap` shell + its payload \
+         list net to 0 after the match (the child `xs` is borrowed by List.len + does not escape, so the \
+         deep shell drop is sound). A NON-zero count here = an over-drop UAF regression OR a lost reclaim — \
+         investigate; do not just bump the number."
     );
 }
 
@@ -31644,6 +31698,63 @@ mod match_engine {
         }
     }
 
+    #[test]
+    fn a_runtime_rational_round_is_nearest_ties_half_away_from_zero() {
+        // `Rational.round : Rational → Int64` — NEAREST integer, ties HALF-AWAY-FROM-ZERO (the settled
+        // ruling). A DERIVATION: the toward-zero quotient adjusted away from zero when 2·|remainder| ≥
+        // denominator. Runtime rational (from the param). Pins the TIE direction on both signs: 1/2 → 1,
+        // -1/2 → -1, 3/2 → 2, 5/2 → 3, -5/2 → -3 (halves round AWAY), plus a whole 4/2 → 2 (no adjustment).
+        for (n, want) in [
+            (1i64, "1"),
+            (-1, "-1"),
+            (3, "2"),
+            (-3, "-2"),
+            (5, "3"),
+            (-5, "-3"),
+            (4, "2"),
+        ] {
+            let Some(got) = run_on_heap_arg(
+                "(module m (def (main (: n Int64)) (Rational.round (Rational.of n 2))) (export main))",
+                n,
+            ) else {
+                eprintln!(
+                    "runtime wasm not found (run `cargo xtask build`); skipping composed run"
+                );
+                return;
+            };
+            assert_eq!(got, want, "round({n}/2) half-away-from-zero");
+        }
+    }
+
+    #[test]
+    fn a_constant_rational_round_folds_to_a_constant_int() {
+        // A CONSTANT `Rational.round` FOLDS: the toward-zero quotient ± 1 when 2·|rem| ≥ den. Pins the
+        // half-away ties (1/2 → 1, -1/2 → -1, 3/2 → 2, 5/2 → 3) AND the nearest-not-tie cases (7/3 = 2.33 →
+        // 2, 8/3 = 2.67 → 3) — the `≥` threshold that rounds an exact half away but a below-half toward.
+        for (prog, want) in [
+            ("(Rational.round (Rational.of 1 2))", 1),
+            ("(Rational.round (Rational.of -1 2))", -1),
+            ("(Rational.round (Rational.of 3 2))", 2),
+            ("(Rational.round (Rational.of 5 2))", 3),
+            ("(Rational.round (Rational.of -5 2))", -3),
+            ("(Rational.round (Rational.of 7 3))", 2),
+            ("(Rational.round (Rational.of 8 3))", 3),
+            ("(Rational.round (Rational.of 4 2))", 2),
+        ] {
+            let src = format!("(module m (def (main) {prog}) (export main))");
+            let bytes = component(&src);
+            assert!(
+                cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+                "a constant Rational.round folds — no runtime import: {prog}"
+            );
+            assert_eq!(
+                run_returns::<i64>(&bytes, "main"),
+                want,
+                "const fold: {prog}"
+            );
+        }
+    }
+
     /// Whether the component `bytes` imports the runtime op named `op` (a core-module import from the
     /// `heap` interface). Used to assert the FBIP fast path emits NO `dup` for a single-use consume.
     fn component_imports_op(bytes: &[u8], op: &str) -> bool {
@@ -50794,6 +50905,35 @@ mod stage1 {
             "`get` is too far from any op for a confident single: {}",
             d.message
         );
+    }
+
+    #[test]
+    fn a_confident_module_member_typo_carries_an_applyable_rename_fix() {
+        // The TIER-1 complement of the far-miss `List get` case above: a CONFIDENT typo of a real module
+        // member (`List.ln` for `len`, 1 edit) gets a `` — did you mean `len`? `` AND an APPLYABLE Replace
+        // fix on the member-key token, so an agent/editor rewrites `ln`→`len` directly (the module-member
+        // twin of the record-field / import-name confident-typo fixes). Pins the confident→fix half of the
+        // two-tier did-you-mean invariant — the far-miss half (no fix, just a list) is pinned above; without
+        // this, a future change could silently drop the confident fix (the class of regression that hit the
+        // ML CDZ0210 insert-arms fix) and only the un-fixed message would remain.
+        let d = expect_error("(. List ln)");
+        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert!(
+            d.message.contains("the `List` module has no member `ln`")
+                && d.message.contains("did you mean `len`?"),
+            "a confident member typo names the near op: {}",
+            d.message
+        );
+        let fix = d
+            .fix
+            .as_ref()
+            .expect("the confident module-member did-you-mean carries a replace fix");
+        assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+        assert_eq!(
+            fix.replacement, "len",
+            "rewrites the typo to the near member"
+        );
+        assert!(!fix.verified, "a nearest-name guess is heuristic");
     }
 
     #[test]

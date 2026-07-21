@@ -3258,6 +3258,17 @@ fn collect_used_ops_into(
         Core::CallClosure { closure, args } => {
             out.insert(OP_ARR_GET); // read the code slot from the cell
             out.insert(OP_GET_INT); // unbox it to the table index
+            // SITE-A owned-temp env-cell reclaim (part b): mirror the emit's drop condition so `drop` is
+            // imported whenever an Owned closure operand with a non-function result is reclaimed after the
+            // borrowing call (else `local.get cell_slot; drop` references an undeclared import → invalid
+            // module). Same gate as the emit: operand Owned + result not a function type.
+            if matches!(
+                heap_operand_ownership(db, closure),
+                Ok(HandleOwnership::Owned)
+            ) && !matches!(type_of(db, id), crate::ty::Ty::Fn(_, _))
+            {
+                out.insert(OP_DROP);
+            }
             collect_used_ops_into(db, closure, out);
             for arg in args {
                 collect_used_ops_into(db, arg, out);
@@ -10398,6 +10409,29 @@ fn emit(
                     out.push(Lir::I32WrapI64);
                     out.push(Lir::CallIndirect(type_index));
                 }
+            }
+            // SITE-A OWNED-TEMP ENV-CELL RECLAIM (part b, co-owned with v-memory-safety who landed part a).
+            // The call BORROWS the env cell (the lifted body reads captures via `Core::Captured` arr-get; it
+            // does not consume the cell), so after a FULL application the cell in `cell_slot` is a dead owned
+            // temporary. When the closure operand is a freshly-built OWNED producer (`heap_operand_ownership
+            // == Owned` — part a classifies a `Core::Closure`, and an `If`/`match` join of fresh partial-ctor
+            // closures, as Owned) AND the application's RESULT is not itself a function (so the cell is not
+            // re-applied / returned as a residual closure — the curried/thunk escape the root memory flags as
+            // unsound to drop), drop the cell after the call: the result is already on the stack, so
+            // `local.get cell_slot; drop` reclaims the env cell (+ its dup'd boxed captures, via the runtime
+            // dtor) without disturbing the result beneath it. A BORROWED operand (a param/local/captured cell
+            // whose owner reclaims it) or a FUNCTION-typed result leaves the cell untouched — leak-safe: an
+            // unproven ownership just leaves it un-dropped, never double-frees. This flips the SITE-A leak
+            // probe 4→2 (the closure's env cell + boxed capture; the remaining 2 are the general match/tuple
+            // Perceus gap). Devirtualized + indirect paths share the reclaim (both borrow the cell identically).
+            let result_is_fn = matches!(type_of(db, id), crate::ty::Ty::Fn(_, _));
+            let operand_owned = matches!(
+                heap_operand_ownership(db, closure),
+                Ok(HandleOwnership::Owned)
+            );
+            if operand_owned && !result_is_fn {
+                out.push(Lir::LocalGet(cell_slot)); // [result, cell]
+                out.push(Lir::CallImport(OP_DROP)); // → [result] (reclaim the owned env cell)
             }
             Ok(())
         }

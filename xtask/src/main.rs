@@ -3459,7 +3459,22 @@ fn check(paths: &Paths, profile: &str) {
     let repo = &paths.repo;
     log.step("fmt", "cargo fmt --all --check", repo);
     log.step("build", "cargo build --workspace", repo);
-    log.step("test", "cargo test --workspace", repo);
+    // RUST_MIN_STACK=64M on the workspace test phase, matching the storeless-rerun/miri/bench steps.
+    // WHY: a deep-recursion test that runs on libtest's own worker thread (default ~2MB stack) — not one
+    // wrapped in rcdzc's explicit-stack `host::run_with_compiler_stack` worker — SIGABRTs "stack
+    // overflow" under fleet build load, a NONDETERMINISTIC false-red that reds `check` for every vertical
+    // + pr-sync's re-gate. This whack-a-mole class kept recurring (v-diagnostics deep-arith, v-syntax
+    // deep-arena, v-runtime sum-payload) as per-test spawn-wrapper point-fixes; exporting the same 64MB
+    // floor the sibling test steps already use immunizes the WHOLE workspace at once. Harmless for tests
+    // that don't need it (a larger min stack only raises the floor). `RUST_MIN_STACK` governs threads
+    // spawned WITHOUT an explicit stack_size, so it lifts libtest's harness threads but is (correctly)
+    // a no-op for the compile worker, which sets its own stack.
+    log.step_env(
+        "test",
+        "cargo test --workspace",
+        repo,
+        &[("RUST_MIN_STACK", "67108864")],
+    );
     log.step(
         "clippy",
         "cargo clippy --workspace --all-targets -- -D warnings",
