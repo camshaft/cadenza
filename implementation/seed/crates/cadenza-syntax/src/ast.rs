@@ -227,7 +227,36 @@ impl Builder {
     /// Intern a NAME leaf given its string SLICE, returning its (possibly pre-existing) id. Allocates
     /// an owned `String` ONLY on a cache miss — a repeated name (the common case) is a pure `&str`
     /// lookup with no allocation. This is the hot interning path (every identifier occurrence).
+    ///
+    /// A name is NFC-NORMALIZED before it becomes the dedup KEY, so two Unicode-canonically-equal
+    /// spellings (`café` precomposed U+00E9 vs decomposed `e`+U+0301) intern to the SAME leaf — otherwise
+    /// they were distinct `Leaf::Name`s and a decomposed reference failed to resolve against a precomposed
+    /// definition (silent CDZ0101 unbound; concierge-ruled 2026-07-21 to normalize, mirroring the
+    /// string-literal/symbol parse-path NFC). Normalization MUST precede the `name_index` lookup or the
+    /// dedup itself would not unify the two spellings. HOT-PATH GUARD: an ASCII name (the overwhelming
+    /// majority) is ALWAYS already NFC, so `is_ascii()` — one cheap byte scan, no allocation — short-circuits
+    /// to the original zero-alloc `&str` dedup path; only a non-ASCII name pays the `is_nfc`/`.nfc()` cost.
     pub fn leaf_name(&mut self, name: &str) -> LeafId {
+        // ASCII fast path: ASCII is always NFC, so a pure-ASCII name (the common case) keeps the original
+        // allocation-free `&str` dedup — no normalization work.
+        if name.is_ascii() {
+            return self.leaf_name_normalized(name);
+        }
+        // Non-ASCII: normalize to NFC first so canonically-equal spellings share a key. `is_nfc_quick`
+        // avoids the `.nfc()` allocation when the name is already normalized (the usual case).
+        use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
+        match is_nfc_quick(name.chars()) {
+            IsNormalized::Yes => self.leaf_name_normalized(name),
+            _ => {
+                let normalized: String = name.nfc().collect();
+                self.leaf_name_normalized(&normalized)
+            }
+        }
+    }
+
+    /// The core intern — `name` is ALREADY NFC (an ASCII name, or the caller normalized it). Allocates
+    /// only on a dedup MISS. Split out so the NFC guard in [`leaf_name`] runs exactly once per call.
+    fn leaf_name_normalized(&mut self, name: &str) -> LeafId {
         if let Some(&id) = self.name_index.get(name) {
             return id;
         }
@@ -506,6 +535,42 @@ mod tests {
         assert_eq!(l1, l2);
         assert_eq!(a.head_name(root), Some("+"));
         assert_eq!(a.as_form(root, "+").map(|t| t.len()), Some(2));
+    }
+
+    #[test]
+    fn leaf_name_nfc_normalizes_so_canonically_equal_spellings_intern_as_one() {
+        // A name is NFC-normalized before it becomes the dedup KEY (concierge-ruled 2026-07-21): two
+        // Unicode-canonically-equal spellings of `café` — precomposed `é` (U+00E9) and decomposed
+        // `e`+combining-acute (U+0301) — must intern to the SAME `Leaf::Name`. Before the fix they were
+        // distinct leaves, so a decomposed reference failed to resolve against a precomposed def (silent
+        // CDZ0101 unbound).
+        let precomposed = "caf\u{00e9}";
+        let decomposed = "cafe\u{0301}";
+        assert_ne!(
+            precomposed, decomposed,
+            "the two byte spellings differ before normalization"
+        );
+        let mut b = Builder::new();
+        let a1 = b.leaf_name(precomposed);
+        let a2 = b.leaf_name(decomposed);
+        assert_eq!(
+            a1, a2,
+            "canonically-equal name spellings intern to ONE leaf"
+        );
+        // And the interned text is the NFC (precomposed) form.
+        assert_eq!(
+            b.leaves[a1.0 as usize],
+            Leaf::Name(precomposed.to_string()),
+            "the interned name is NFC-normalized (precomposed)"
+        );
+
+        // PURE-ASCII no-op: an ASCII name (the hot common case) takes the is_ascii fast path — still
+        // dedups correctly, no normalization applied (ASCII is already NFC).
+        let mut c = Builder::new();
+        let x1 = c.leaf_name("foo");
+        let x2 = c.leaf_name("foo");
+        assert_eq!(x1, x2, "an ASCII name still dedups on the fast path");
+        assert_eq!(c.leaves.len(), 1, "one leaf for the repeated ASCII name");
     }
 
     #[test]

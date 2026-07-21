@@ -553,6 +553,31 @@ mod tests {
     }
 
     #[test]
+    fn a_unicode_name_leaf_round_trips_through_the_codec() {
+        // `sample()` uses only ASCII names. A NAME leaf carrying MULTI-BYTE UTF-8 (a unicode identifier)
+        // must survive the codec too — its bytes go through the same length-prefixed KIND_NAME encode as
+        // a string, but names are the most common leaf and, since names now NFC-normalize at intern
+        // (`Builder::leaf_name`), the interned name is a multi-byte NFC sequence the codec must preserve
+        // byte-for-byte (a var-len miscount or a byte-vs-char length confusion would corrupt it). Pin a
+        // precomposed `café` + a CJK `世界` name through encode → decode.
+        let mut b = Builder::new();
+        let f = b.name("caf\u{00e9}"); // café (NFC precomposed)
+        let g = b.name("\u{4e16}\u{754c}"); // 世界
+        let root = b.list(vec![f, g]);
+        let a = b.finish(root);
+        let back = decode(&encode(&a)).expect("decode of an arena with unicode name leaves");
+        assert!(
+            a.structurally_eq(&back),
+            "unicode name leaves not preserved through the codec: {a:?} vs {back:?}"
+        );
+        assert_eq!(
+            encode(&a),
+            encode(&back),
+            "re-encode of the decoded arena is not byte-identical"
+        );
+    }
+
+    #[test]
     fn radix_round_trips() {
         // Same value, different bases -> distinct leaves that survive the round-trip.
         let mut b = Builder::new();

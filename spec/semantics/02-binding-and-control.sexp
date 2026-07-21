@@ -4409,6 +4409,33 @@
   (call   main (: 3 Int64) (: 7 Int64)) (output (: 1 Int64))
   (call   main (: 7 Int64) (: 3 Int64)) (output (: 0 Int64)))
 
+; ── REASSOCIATION lets a complementary pair fold even when NESTED past a third operand ────────────────
+; The complementary-comparison fold above fires on an ADJACENT pair. `reassociate_comparison_pair`
+; (lower.rs) extends it: when a comparison `c` is `and`/`or`-ed with a SAME-connective nested pair
+; `(op p q)`, it reassociates so `c` folds against `p` (or `q`) — so a complementary pair SEPARATED by a
+; third operand still collapses. `(and (< a b) (and (>= a b) (> c 0)))`: reassociating `(< a b)` with the
+; nested `(>= a b)` gives the exhaustive-FALSE `and`, so the whole conjunction is false regardless of `c`;
+; the `or` dual is true regardless. All operands are pure comparisons (trap-free), so the regrouping is
+; unobservable. Both backends.
+(case "a complementary comparison pair nested past a third operand still folds via reassociation"
+  (doc    "`(and (< a b) (and (>= a b) (> c 0)))` → false and `(or (< a b) (or (>= a b) (> c 0)))` → true:
+           `reassociate_comparison_pair` regroups the outer comparison with the matching nested leaf so the
+           complementary `< a b`/`>= a b` pair folds (`and` disjoint → false, `or` exhaustive → true), and
+           the third operand `(> c 0)` is then irrelevant. `main` = `(tuple (if (and (< a b) (and (>= a b)
+           (> c 0))) 1 0) (if (or (< a b) (or (>= a b) (> c 0))) 1 0)`. At (a=3, b=5, c=9) → (0, 1) and at
+           (a=5, b=3, c=-9) → (0, 1): a/b/c all vary yet the answer is fixed (0 for the and, 1 for the or).
+           Pins that reassociation lets a complementary pair fold across a nested third operand, both
+           backends.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64) (: c Int64))
+              (tuple (if (and (< a b) (and (>= a b) (> c 0))) 1 0)
+                     (if (or  (< a b) (or  (>= a b) (> c 0))) 1 0)))
+            (export main)))
+  (call   main (: 3 Int64) (: 5 Int64) (: 9 Int64))
+  (output (: (tuple 0 1) (Tuple Int64 Int64)))
+  (call   main (: 5 Int64) (: 3 Int64) (: -9 Int64))
+  (output (: (tuple 0 1) (Tuple Int64 Int64))))
+
 ; --- Zero-equality instruction selection (eqz) keys on VALUE and width -----------------------------
 ; e316ef2cd selects `(= x 0)` to a single `eqz` at the Compare emit site. The selection must key on
 ; a VALUE zero in either operand order, test the NORMALIZED narrow value for a masked width (the

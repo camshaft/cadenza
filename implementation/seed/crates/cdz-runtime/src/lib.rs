@@ -873,6 +873,23 @@ fn op_get_bool(h: Handle) -> bool {
     }
     with_node(h, false, |n| n.raw.first().is_some_and(|&b| b != 0))
 }
+fn is_whole_f64(f: f64) -> bool {
+    let bits = f.to_bits();
+    let biased_exp = ((bits >> 52) & 0x7ff) as i64;
+    let mantissa = bits & 0x000f_ffff_ffff_ffff;
+    if biased_exp == 0 {
+        return mantissa == 0;
+    }
+    let e = biased_exp - 1023;
+    if e >= 52 {
+        return true;
+    }
+    if e < 0 {
+        return false;
+    }
+    let frac_bits = 52 - e as u32;
+    (mantissa & ((1u64 << frac_bits) - 1)) == 0
+}
 fn op_box_float(v: f64) -> Handle {
     // Normalize-on-construct to the CANONICAL byte form (deterministic-value-form.md §A Value Has One
     // Canonical Byte Form): every NaN — of ANY bit pattern (a distinct literal NaN, or a runtime
@@ -1915,8 +1932,14 @@ impl DocBuilder {
         if !f.is_finite() {
             return None;
         }
-        // `{:e}` gives the f64's SHORTEST round-tripping decimal → the exact `KIND_FLOAT` decimal.
-        self.float_leaf_from_sci(&format!("{f:e}"))
+        // A WHOLE float renders its FULL exact expansion (`{f:.0}`, matches scalar display_float + rust);
+        // a non-whole keeps `{:e}` (shortest == written form; `{f:.0}` would round the fraction away).
+        let text = if is_whole_f64(f) {
+            format!("{f:.0}")
+        } else {
+            format!("{f:e}")
+        };
+        self.float_leaf_from_sci(&text)
     }
     /// A Float32 leaf — the f32's SHORTEST round-tripping decimal (via `{:e}` on the `f32`, NOT a
     /// promoted f64 whose shortest decimal differs — `0.1f32` → `"1e-1"` not `"1.0000000149…e-1"`). Same
@@ -9578,18 +9601,10 @@ mod tests {
         for &v in &[1.5f64, 0.0, -2.0, 3.14159, 1e10, -1e-10, 123456.789, 0.1, -0.0, f64::MAX, f64::MIN, 5e-324] {
             let h = op_box_float(v);
             let doc = op_value_encode_form(h, desc).expect("finite float encodes");
-            let neg = doc[10] == 1;
-            let mut eb = [0u8; 8];
-            eb.copy_from_slice(&doc[11..19]);
-            let exp = i64::from_be_bytes(eb);
-            let siglen = doc[19] as usize;
-            let mag = &doc[20..20 + siglen];
-            // Big-endian base-256 magnitude → a base-10 integer (fits u128 for a shortest-round-trip double).
-            let mut sig: u128 = 0;
-            for &b in mag {
-                sig = sig * 256 + b as u128;
-            }
-            let decimal = format!("{}{}e{}", if neg { "-" } else { "" }, sig, exp);
+            // Use the limb-based, LEB-length-aware reader — a WHOLE float's FULL exact expansion (e.g.
+            // f64::MAX) has a 128-byte significand whose length is a multi-byte LEB, which a fixed-offset /
+            // u128 read would garble/overflow.
+            let decimal = float_doc_to_decimal(&doc);
             let reconstructed: f64 = decimal.parse().expect("decimal parses");
             assert_eq!(
                 reconstructed.to_bits(),
@@ -9605,15 +9620,30 @@ mod tests {
     /// `[-]<significand>e<exponent>`, where the significand is the big-endian base-256 magnitude read as a
     /// base-10 integer. Robust to a magnitude of ANY length (repeated ÷10 on a base-256 limb vector — no
     /// u128 width assumption), so it works for a fuzzed value's full shortest decimal. Doc layout:
-    /// header(8)·leaf_count(1)·[KIND_FLOAT · neg(1) · exp(8 BE) · siglen(1) · mag] · struct… — the float
-    /// leaf is first, at offset 9: [9]=KIND, [10]=neg, [11..19]=exp, [19]=siglen, [20..]=mag.
+    /// header(8)·leaf_count(1)·[KIND_FLOAT · neg(1) · exp(8 BE) · siglen(LEB) · mag] · struct… — the float
+    /// leaf is first, at offset 9: [9]=KIND, [10]=neg, [11..19]=exp, [19..]=siglen(LEB), then mag. The
+    /// siglen is a VARIABLE-length LEB (`doc_leb`), NOT a fixed byte — a full-expansion significand (a
+    /// whole float's exact decimal, e.g. f64::MAX = a 128-byte magnitude) has a multi-byte length, so read
+    /// the LEB and advance past it before the magnitude.
     fn float_doc_to_decimal(doc: &[u8]) -> String {
         let neg = doc[10] == 1;
         let mut eb = [0u8; 8];
         eb.copy_from_slice(&doc[11..19]);
         let exp = i64::from_be_bytes(eb);
-        let siglen = doc[19] as usize;
-        let mag = &doc[20..20 + siglen]; // big-endian base-256
+        // Read the LEB128 significand length starting at offset 19.
+        let mut siglen = 0usize;
+        let mut shift = 0u32;
+        let mut off = 19usize;
+        loop {
+            let byte = doc[off];
+            off += 1;
+            siglen |= ((byte & 0x7f) as usize) << shift;
+            if byte & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+        }
+        let mag = &doc[off..off + siglen]; // big-endian base-256
         // base-256 (big-endian) → decimal string via repeated division by 10.
         let mut limbs: Vec<u32> = mag.iter().map(|&b| b as u32).collect(); // most-significant first
         let mut digits_rev: Vec<u8> = Vec::new();

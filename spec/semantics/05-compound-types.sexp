@@ -12248,6 +12248,36 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "a RECURSIVE sum with a record payload walks an environment chain by depth and tag search"
+  (doc    "The DbBox case above reads a record payload from a NON-recursive wrapper; this combines the
+           record payload with a RECURSIVE tie — the interpreter environment-chain shape: `(type Env
+           (Root) (Scope (Record (: v Int64) (: tag Int64)) Env))`, each Scope carrying a record AND the
+           parent link. Two walks over a 3-deep chain: `depth` folds the spine (3), and `find-v` searches
+           by tag — projecting the record payload at EACH level and either returning its `v` or recursing
+           on the parent. Hit at depth 1 (tag 2 → 20 → 50), hit at depth 2 (tag 1 → 10 → 40), miss to
+           Root (tag 9 → -1 → 29). Each level's record must project correctly from its own boxed payload
+           slot while the recursive tie stays walkable — the shape scope-resolution bugs live in.
+           Expected: 50, 40, 29.")
+  (input  (do
+            (type Env (Root) (Scope (Record (: v Int64) (: tag Int64)) Env))
+            (def (depth (: e Env))
+              (match e
+                ((Root) 0)
+                ((Scope r parent) (+ 1 (depth parent)))))
+            (def (find-v (: e Env) (: t Int64))
+              (match e
+                ((Root) -1)
+                ((Scope r parent) (if (= (. r tag) t) (. r v) (find-v parent t)))))
+            (def (main (: t Int64))
+              (let ((e (Scope (record (v 30) (tag 3))
+                       (Scope (record (v 20) (tag 2))
+                       (Scope (record (v 10) (tag 1)) (Root))))))
+                (+ (* 10 (depth e)) (find-v e t))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 50 Int64))
+  (call   main (: 1 Int64)) (output (: 40 Int64))
+  (call   main (: 9 Int64)) (output (: 29 Int64)))
+
 ; A TRANSITIVE chain of single-variant (erasable) newtypes declared in REVERSED dependency order — `A`
 ; wraps `B`, `B` wraps `C`, `C` wraps `Int64`, declared A-FIRST — must construct + read through all three
 ; erasure layers. Each newtype's stored inner template embeds the next as a `Ty::Nominal`; the

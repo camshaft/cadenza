@@ -13959,7 +13959,13 @@ fn const_value_ast(db: &mut Db, b: &mut crate::ast::Builder, id: StructId) -> Op
         // A constant float bakes as its exact decimal leaf — the codec encodes it (KIND_FLOAT), and the
         // host reader renders it back. A quantity over a Float64 magnitude reaches here through
         // `const_value_ast_at` (the inner-value render of `Qty.of`).
-        Core::ConstFloat(d) => Some(b.atom_leaf(Leaf::Float(d))),
+        Core::ConstFloat(d) => {
+            // RE-CANONICALIZE via `from_f64`: the stored `Decimal` carries the SOURCE LITERAL's digit form,
+            // but the canonical value form is the FULL exact expansion (scalar display_float + rust + the
+            // runtime `float_leaf`), so a CONST compound-element float renders identically to a runtime one.
+            let canon = crate::ast::Decimal::from_f64(f64::from_bits(d.to_f64_bits())).unwrap_or(d);
+            Some(b.atom_leaf(Leaf::Float(canon)))
+        }
         Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
         // A constant string bakes as its `"…"` leaf — the codec encodes it (KIND_STR: len + UTF-8
         // bytes), and the host reader lifts it back to a string value.
@@ -14207,7 +14213,13 @@ fn const_value_ast_at(
             value: v,
             radix: Radix::Dec,
         })),
-        Core::ConstFloat(d) => Some(b.atom_leaf(Leaf::Float(d))),
+        Core::ConstFloat(d) => {
+            // RE-CANONICALIZE via `from_f64`: the stored `Decimal` carries the SOURCE LITERAL's digit form,
+            // but the canonical value form is the FULL exact expansion (scalar display_float + rust + the
+            // runtime `float_leaf`), so a CONST compound-element float renders identically to a runtime one.
+            let canon = crate::ast::Decimal::from_f64(f64::from_bits(d.to_f64_bits())).unwrap_or(d);
+            Some(b.atom_leaf(Leaf::Float(canon)))
+        }
         Core::ConstBool(x) => Some(b.atom_leaf(Leaf::Bool(x))),
         // A RATIONAL magnitude renders as its canonical `num/den` name leaf (the same form as the
         // top-level `const_value_ast` Rational arm), so a `(Qty Rational u)` value renders
@@ -22813,6 +22825,35 @@ enum BinDecoded {
 /// earlier INT segment binder — resolved to that segment's already-decoded value). The literal-vs-binder
 /// distinction is the CALLER's (a literal slot must equal the decoded int); here we decode every
 /// segment's raw value + enforce widths/consumption.
+/// Resolve a sized bin-segment's SIZE operand (`(bytes b SIZE)` / `(utf8 s SIZE)`) to a byte count against
+/// the already-decoded prefix `out`. The size is EITHER a NAME referencing an earlier integer segment's
+/// binder (a dependent size — the crown-jewel form), OR a CONSTANT INTEGER LITERAL (a fixed size — ruling
+/// (a) 2026-07-21: a literal size is the most basic case, Erlang bit-syntax precedent, and MUST match, not
+/// silently fall through). Returns the non-negative byte count, or `None` (non-match) if the operand is
+/// neither a resolvable earlier-segment name nor a constant int, or the resolved value is negative.
+fn bin_decode_dependent_size(
+    db: &Db,
+    size_occ: StructId,
+    segs: &[crate::resolved::Segment],
+    seg_index: usize,
+    out: &[BinDecoded],
+) -> Option<usize> {
+    let v = if let Some(name) = db.ast.as_name(size_occ) {
+        // A NAME → the decoded Int of the earlier segment binding it (a forward / non-int ref → None).
+        segs.iter()
+            .take(seg_index)
+            .position(|s| db.ast.as_name(s.slot) == Some(name))
+            .and_then(|idx| match out.get(idx) {
+                Some(BinDecoded::Int(v)) => Some(*v),
+                _ => None,
+            })?
+    } else {
+        // A CONSTANT INTEGER LITERAL size (ruling (a)) — read it directly, no earlier segment needed.
+        db.ast.as_int(size_occ)?.to_i64()?
+    };
+    (v >= 0).then_some(v as usize)
+}
+
 fn bin_match_decode(
     db: &Db,
     raw: &[u8],
@@ -22893,21 +22934,12 @@ fn bin_match_decode(
                     nbits, 0,
                     "a well-formed bin is byte-aligned at a bytes segment"
                 );
-                // `n_occ` is a name referencing an earlier segment's binder. Find that segment by name and
-                // read its decoded Int. (A non-name / forward / non-int size reference can't be resolved
-                // here → non-match, conservatively.)
-                let size_name = db.ast.as_name(*n_occ)?;
-                let bound = segs
-                    .iter()
-                    .take(i)
-                    .position(|s| db.ast.as_name(s.slot) == Some(size_name))
-                    .and_then(|idx| match out.get(idx) {
-                        Some(BinDecoded::Int(v)) => Some(*v),
-                        _ => None,
-                    });
-                let n = bound.filter(|v| *v >= 0)? as usize;
+                // `n_occ` is EITHER a name referencing an earlier segment's binder (dependent size) OR a
+                // constant integer literal (fixed size — ruling (a)). `bin_decode_dependent_size` resolves
+                // both; an unresolvable/negative size is a non-match, conservatively.
+                let n = bin_decode_dependent_size(db, *n_occ, segs, i, &out)?;
                 if off + n > raw.len() {
-                    return None; // the named size overruns the remaining bytes → non-match
+                    return None; // the sized segment overruns the remaining bytes → non-match
                 }
                 out.push(BinDecoded::ByteRange(off, off + n));
                 off += n;
@@ -22925,18 +22957,11 @@ fn bin_match_decode(
                     nbits, 0,
                     "a well-formed bin is byte-aligned at a utf8 segment"
                 );
-                let size_name = db.ast.as_name(*size)?;
-                let bound = segs
-                    .iter()
-                    .take(i)
-                    .position(|s| db.ast.as_name(s.slot) == Some(size_name))
-                    .and_then(|idx| match out.get(idx) {
-                        Some(BinDecoded::Int(v)) => Some(*v),
-                        _ => None,
-                    });
-                let n = bound.filter(|v| *v >= 0)? as usize;
+                // `size` is EITHER a name (dependent size) OR a constant integer literal (fixed size —
+                // ruling (a)); `bin_decode_dependent_size` resolves both, non-match on an unresolvable/negative.
+                let n = bin_decode_dependent_size(db, *size, segs, i, &out)?;
                 if off + n > raw.len() {
-                    return None; // the named size overruns the remaining bytes → non-match
+                    return None; // the sized segment overruns the remaining bytes → non-match
                 }
                 // Strict UTF-8 validation (matches `str::from_utf8` — rejects invalid leads, overlong
                 // forms, surrogates, and code points > U+10FFFF). Ill-formed → non-match.

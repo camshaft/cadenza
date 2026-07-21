@@ -858,8 +858,14 @@ impl Decimal {
         if !f.is_finite() {
             return None;
         }
-        // `{:e}` → `[-]D[.DDDD]eEXP` (shortest round-tripping). Split sign, mantissa, exponent.
-        let s = format!("{f:e}");
+        // A WHOLE float uses its FULL exact expansion (`{f:.0}`), matching scalar display_float + rust +
+        // the runtime `float_leaf`; a non-whole keeps `{:e}` (shortest == written form). Both round-trip to
+        // the same bits — this changes the digit REPRESENTATION, not the value.
+        let s = if f.fract() == 0.0 {
+            format!("{f:.0}")
+        } else {
+            format!("{f:e}")
+        };
         let (negative, rest) = match s.strip_prefix('-') {
             Some(r) => (true, r),
             None => (false, s.as_str()),
