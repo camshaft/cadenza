@@ -1483,6 +1483,26 @@ fn a_qty_in_a_collection_element_display_scales_to_its_reference() {
 }
 
 #[test]
+fn a_scalar_match_grounds_its_float32_arm_literals_to_the_result_width() {
+    // REGRESSION (corpus-bugfix, sibling of the wasm Float32-branch bug): a scalar `match` under an outer
+    // Float32 result — `(: (match n (0 0.5) (_ 1.5)) Float32)` — defaulted each arm's `ConstFloat` to
+    // Float64, emitting `f64::from_bits(…)` in an `-> f32` match → rustc E0308. (The `if`-form was already
+    // grounded via `emit_branch`; only `match` missed it.) Now `emit_match_impl` grounds each arm literal to
+    // the match's result float width, mirroring the result-int grounding beside it.
+    let m = compile_rust(
+        "(module m (def (run (: n Int64)) (: (match n (0 0.5) (_ 1.5)) Float32)) (export run))",
+    );
+    assert!(
+        m.contains("f32::from_bits(") && !m.contains("f64::from_bits("),
+        "match arm Float32 literals render as f32, not f64:\n{m}"
+    );
+    // End-to-end: n=0 → 0.5f32.
+    if let Some(out) = rustc_run(&m, "run(0)") {
+        assert_eq!(out, "0.5", "the match returns the f32 arm value 0.5");
+    }
+}
+
+#[test]
 fn a_bigint_quantity_display_scales_to_its_reference_in_the_bignum_path() {
     // REGRESSION (v-quantity/v-runtime): a NON-scale-1 BigInt-inner Qty display-scales to its reference in
     // the bignum path — `(Qty.of (BigInt.of 5) kilometer)` → `(Qty.of 5000 meter)` (×1000/1 kilo scale,

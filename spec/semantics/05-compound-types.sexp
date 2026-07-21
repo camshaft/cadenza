@@ -9998,6 +9998,35 @@
   (call   main (: -0.0 Float64)) (output (: 2 Int64))
   (call   main (: 0.0 Float64))  (output (: 1 Int64)))
 
+(case "Float32 tuple-key components key at binary32 width (distinctness, lookup, signed zero)"
+  (doc    "The NARROW-float width of the float-in-compound-key family: the two Float64 cases above pin the
+           f64 component; this pins that a Float32 component keys by ITS canonical binary32 bytes on every
+           backend (on rust the ord-wrapper must select the f32 wrapper for the narrow width, not coerce
+           through f64). Two faces in one runtime-x shape each: (1) `{(1,x)↦10, (1,2.5f32)↦20}` — at
+           `x = 0.5` distinct (len 2, lookup 10 → 30 as 2·10+10); at `x = 2.5` replaced (len 1, lookup 20 →
+           30 as 1·10+20); (2) `-0.0f32` vs `0.0f32` components stay DISTINCT keys (len 2 / len 1), the ±0.0
+           canonical-byte edge at the narrow width.")
+  (input  (do
+            (def (main (: x Float32))
+              (let ((m (Map.insert (Map.insert Map.empty (tuple 1 x) 10) (tuple 1 (Float32.of 2.5)) 20)))
+                (+ (* 10 (Map.len m))
+                   (match (Map.lookup m (tuple 1 x)) ((Some v) v) ((None u) -1)))))
+            (export main)))
+  (call   main (: 0.5 Float32)) (output (: 30 Int64))
+  (call   main (: 2.5 Float32)) (output (: 30 Int64)))
+
+(case "signed-zero Float32 tuple-key components stay distinct at binary32 width"
+  (doc    "The ±0.0 edge at Float32: `-0.0f32` and `0.0f32` differ only by sign bit in binary32, and the
+           canonical-byte key discipline keeps them DISTINCT map keys exactly as at f64 width. `x = -0.0` →
+           both keys survive (len 2); `x = 0.0` → the second insert replaces (len 1). Guards the narrow
+           width against a zero-normalizing or f64-coercing key path that would collapse the pair.")
+  (input  (do
+            (def (main (: x Float32))
+              (Map.len (Map.insert (Map.insert Map.empty (tuple 1 x) 10) (tuple 1 (Float32.of 0.0)) 20)))
+            (export main)))
+  (call   main (: -0.0 Float32)) (output (: 2 Int64))
+  (call   main (: 0.0 Float32))  (output (: 1 Int64)))
+
 (case "a map consumed by Map.take in one operand is unchanged for a later read of the same binding"
   (doc    "The persistence companion of the Map.take cases above and the value-yielding-remove twin of the
            Map.remove / Map.swap persistence pins: `Map.take` produces `(tuple <dropped-opt> <new-map>)` and

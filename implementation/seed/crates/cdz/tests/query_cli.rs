@@ -2405,6 +2405,40 @@ fn scope_at_top_level_is_empty() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn scope_error_paths_are_clear_not_panics() {
+    // ERROR PATHS (`cdz scope` is an OFFSET-based query like `def`/`type-at`/`doc-at`, and must share
+    // their error-path discipline): a bad offset / missing file / missing arg is a clear error naming
+    // the tool, NOT a panic or silent success. `scope` had happy + json + top-level-empty coverage but
+    // its IO/arg error paths were unpinned — this closes that consistency gap so a future regression
+    // (e.g. an unwrap on a past-EOF offset in run_scope) is caught at the gate, matching the def pins.
+    // NOTE: an in-bounds offset with no local bindings is SUCCESS ("no bindings in scope"), pinned by
+    // `scope_at_top_level_is_empty` above — that is NOT an error path; only past-EOF/missing-file/arg are.
+    let dir = scratch_dir("scope_err");
+    let f = dir.join("prog.sexp");
+    std::fs::write(&f, "(module m (def (main) 1) (export main))\n").unwrap();
+    let path = f.to_str().unwrap();
+    // An offset past EOF is a clear "no node at byte offset" error naming the tool (shared with def).
+    let (ok, _o, err) = run(&["scope", path, "999999"], "");
+    assert!(!ok, "an offset past EOF fails");
+    assert!(
+        err.contains("cdz:") && err.contains("no node at byte offset"),
+        "clear no-node error naming the tool: {err}"
+    );
+    // A missing FILE is an I/O error naming the tool (via load_program_spanned).
+    let (ok, _o, err) = run(&["scope", "/no/such/file.sexp", "0"], "");
+    assert!(!ok, "a missing file fails");
+    assert!(err.contains("cdz:"), "the error names the tool: {err}");
+    // A missing OFFSET argument is a clap usage error (offset is a required positional).
+    let (ok, _o, err) = run(&["scope", path], "");
+    assert!(!ok, "a missing offset is a usage error");
+    assert!(
+        err.contains("error") || err.contains("Usage") || err.contains("required"),
+        "clap usage error on stderr: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- `cdz exports FILE` — the module interface (Query::Exports) ----
 
 #[test]

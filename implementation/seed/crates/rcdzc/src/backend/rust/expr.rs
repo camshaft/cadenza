@@ -3414,10 +3414,17 @@ fn emit_match_impl(
     // The match's RESULT integer type, if any — a bare-literal arm body is grounded to it so a
     // default-Int64 literal arm beside a narrow-width arm does not yield a mismatched type (Rust E0308),
     // the same reconciliation the wasm backend applies to a `ConstInt` arm body via `emit_operand`.
-    let result_it = match type_of(db, match_id) {
-        Ty::Int(it) => Some(it),
+    let result_ty = type_of(db, match_id);
+    let result_it = match &result_ty {
+        Ty::Int(it) => Some(*it),
         _ => None,
     };
+    // The match's RESULT FLOAT width, if any — the float twin: a bare `ConstFloat` arm body defaults to
+    // Float64, so under an outer `Float32` result (`(: (match n (0 0.5) (_ 1.5)) Float32)`) an ungrounded
+    // arm renders `f64::from_bits(…)` in an `-> f32` match → rustc E0308 (corpus-bugfix: the match-arm
+    // sibling of the `if`-branch float grounding `emit_branch` already does). Ground each arm literal to
+    // this width. `float_width_of_ty` strips a nominal/Qty wrapper (a `(Qty Float32 …)` result grounds f32).
+    let result_fw = float_width_of_ty(&result_ty);
     let scrut = emit(db, scrutinee, env, ctx)?;
     let mut out = format!("match ({scrut}) {{ ");
     for arm in arms {
@@ -3465,9 +3472,10 @@ fn emit_match_impl(
             // arm is `pat => { <stmt> }` (braces make a statement a valid match-arm body).
             format!("{{ {} }}", emit_tail(db, arm.body, env, ctx)?)
         } else {
-            match result_it {
-                Some(it) => emit_grounded(db, arm.body, it, env, ctx)?,
-                None => emit(db, arm.body, env, ctx)?,
+            match (result_it, result_fw) {
+                (Some(it), _) => emit_grounded(db, arm.body, it, env, ctx)?,
+                (None, Some(w)) => emit_grounded_float(db, arm.body, w, env, ctx)?,
+                (None, None) => emit(db, arm.body, env, ctx)?,
             }
         };
         out.push_str(&format!("{pat}{guard} => {b}, "));

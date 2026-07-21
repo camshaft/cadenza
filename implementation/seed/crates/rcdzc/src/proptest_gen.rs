@@ -1568,29 +1568,11 @@ fn build_gen(ast: &mut Arenas, ty: &GenTy, binds: &mut Vec<(StructId, StructId)>
         // never reached them for a wide element type). See `build_var_set_gen`.
         GenTy::Set(elem) => build_var_set_gen(ast, elem, binds),
         // A fold of `Map.insert` over `G1_LIST_LEN` generated key/value pairs, seeded from `Map.empty`:
-        // `(Map.insert (Map.insert (Map.empty) k0 v0) k1 v1) …`.
-        GenTy::Map(kty, vty) => {
-            // `(Map.empty)` — the seed.
-            let mut acc = {
-                let dot = name(ast, ".");
-                let mapn = name(ast, "Map");
-                let empty = name(ast, "empty");
-                let member = push_list(ast, vec![dot, mapn, empty]);
-                push_list(ast, vec![member])
-            };
-            for _ in 0..G1_LIST_LEN {
-                let k = build_gen(ast, kty, binds);
-                let v = build_gen(ast, vty, binds);
-                let insert = {
-                    let dot = name(ast, ".");
-                    let mapn = name(ast, "Map");
-                    let ins = name(ast, "insert");
-                    push_list(ast, vec![dot, mapn, ins])
-                };
-                acc = push_list(ast, vec![insert, acc, k, v]);
-            }
-            acc
-        }
+        // A VARIABLE-size map (`0..=G1_LIST_LEN` entries) via a `Map.insert` fold over `(Map.empty)` — so the
+        // EMPTY + small maps are reachable (a fixed `G1_LIST_LEN`-insert fold never reached them for a wide key
+        // type — keys never collide, so the map was always exactly `G1_LIST_LEN` entries). See
+        // `build_var_map_gen`. The Map analogue of the variable-cardinality Set fix.
+        GenTy::Map(kty, vty) => build_var_map_gen(ast, kty, vty, binds),
     }
 }
 
@@ -1826,6 +1808,91 @@ fn build_var_set_gen(
                 };
                 let e = name(ast, enm);
                 acc = push_list(ast, vec![insert, acc, e]);
+            }
+            acc
+        })
+        .collect();
+    // Fold into `(if (<= c 0) prefix0 (if (<= c 1) prefix1 … prefixLEN))` — the last prefix is the else.
+    let mut chain = prefixes[G1_LIST_LEN];
+    for k in (0..G1_LIST_LEN).rev() {
+        let cond = {
+            let le = name(ast, "<=");
+            let c_use = name(ast, &count_name);
+            let iv = int_lit(ast, k as i64);
+            push_list(ast, vec![le, c_use, iv])
+        };
+        let if_head = name(ast, "if");
+        chain = push_list(ast, vec![if_head, cond, prefixes[k], chain]);
+    }
+    chain
+}
+
+/// Build a VARIABLE-size `Map` generator (`0..=G1_LIST_LEN` entries) — the Map analogue of
+/// [`build_var_set_gen`]. A fixed-`G1_LIST_LEN`-insert fold made the EMPTY + small maps unreachable for a wide
+/// key type (keys never collide → always exactly `G1_LIST_LEN` entries), so a "Map is never empty" property
+/// spuriously passed. This draws a count `c` then folds `c` `Map.insert`s of the first `c` candidate key/value
+/// pairs over `(Map.empty)` — same variable-count if-chain as `build_var_set_gen`, over the Map's existing
+/// `Map.empty`/`Map.insert` prelude ops. Last-write-wins on a repeated key yields a smaller map (as before).
+fn build_var_map_gen(
+    ast: &mut Arenas,
+    kty: &GenTy,
+    vty: &GenTy,
+    binds: &mut Vec<(StructId, StructId)>,
+) -> StructId {
+    let span = (G1_LIST_LEN + 1) as i64;
+    // Hoist the count `c = (% (& gen i64::MAX) (LEN+1))` ∈ [0, LEN] — same non-negative-mask derivation as the
+    // var-set/var-list count (a raw negative `%` would make `c` negative → the `(<= c 0)` guard picks empty).
+    let count_name = format!("g{}", binds.len());
+    {
+        let g = gen_call(ast);
+        let nonneg = {
+            let andop = name(ast, "&");
+            let mask = int_lit(ast, i64::MAX);
+            push_list(ast, vec![andop, g, mask])
+        };
+        let span_lit = int_lit(ast, span);
+        let rem = name(ast, "%");
+        let modded = push_list(ast, vec![rem, nonneg, span_lit]);
+        let var = name(ast, &count_name);
+        binds.push((var, modded));
+    }
+    // Hoist the LEN candidate key/value pairs, each its own `gN`, in draw order (key then value per pair) so the
+    // DECODER (which draws the count then LEN (k,v) pairs then last-write-wins a `c`-prefix) stays in lockstep.
+    let pair_names: Vec<(String, String)> = (0..G1_LIST_LEN)
+        .map(|_| {
+            let ke = build_gen(ast, kty, binds);
+            let knm = format!("g{}", binds.len());
+            let kvar = name(ast, &knm);
+            binds.push((kvar, ke));
+            let ve = build_gen(ast, vty, binds);
+            let vnm = format!("g{}", binds.len());
+            let vvar = name(ast, &vnm);
+            binds.push((vvar, ve));
+            (knm, vnm)
+        })
+        .collect();
+    // The empty map `(Map.empty)` — the fold seed.
+    let empty_map = |ast: &mut Arenas| -> StructId {
+        let dot = name(ast, ".");
+        let mapn = name(ast, "Map");
+        let empty = name(ast, "empty");
+        let member = push_list(ast, vec![dot, mapn, empty]);
+        push_list(ast, vec![member])
+    };
+    // Build the prefix MAPS: prefix0 = `(Map.empty)`, prefix_k = `k` nested inserts of the first `k` pairs.
+    let prefixes: Vec<StructId> = (0..=G1_LIST_LEN)
+        .map(|k| {
+            let mut acc = empty_map(ast);
+            for (knm, vnm) in pair_names.iter().take(k) {
+                let insert = {
+                    let dot = name(ast, ".");
+                    let mapn = name(ast, "Map");
+                    let ins = name(ast, "insert");
+                    push_list(ast, vec![dot, mapn, ins])
+                };
+                let kref = name(ast, knm);
+                let vref = name(ast, vnm);
+                acc = push_list(ast, vec![insert, acc, kref, vref]);
             }
             acc
         })

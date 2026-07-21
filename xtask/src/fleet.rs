@@ -2229,7 +2229,7 @@ fn watchdog(
             // concierge hand-arming each one. Hard-guarded (see `decide_drain_nudge`): skips a
             // context-saturated pane (needs a restart, not a nudge) and rate-limits per agent — with a
             // SHORT re-nudge window when the SAME message persists (our prior nudge didn't stick).
-            let flagged_id = oldest_inbox_message(fleet, &a.name);
+            let flagged_id = oldest_actionable_inbox_message(fleet, &a.name);
             let last = last_drain_nudge(fleet, &a.name, now);
             let action = decide_drain_nudge(
                 nudge_drain_stalls,
@@ -2826,16 +2826,24 @@ fn stamp_drain_nudge(fleet: &Fleet, name: &str, flagged_id: &str) {
     std::fs::write(dir.join(name), format!("{flagged_id}\n")).ok();
 }
 
-/// The oldest (by durable delivery seq) unconsumed message filename in this agent's hub inbox, or
-/// `None` if empty. Used as the drain-stall "flagged message id": if the same one persists after a
-/// nudge, the nudge didn't stick; a different one means the agent drained the old one (healthy churn).
-fn oldest_inbox_message(fleet: &Fleet, name: &str) -> Option<String> {
+/// The oldest (by durable delivery seq) unconsumed ACTIONABLE message filename in this agent's hub
+/// inbox, or `None` if none. Used as the drain-stall "flagged message id": if the same one persists
+/// after a nudge, the nudge didn't stick; a different one means the agent drained the old one (healthy
+/// churn). MUST filter to actionable kinds to match the signal that fired — the drain-stall triggers on
+/// `actionable_inbox_depth`, so keying the stuck-identity on the oldest message of ANY kind would let a
+/// stale un-archived informational note (older than the real actionable item) hijack the identity: the
+/// agent could drain the actionable message yet keep the note → id unchanged → a false `Stuck`
+/// re-nudge; or archive the note while the actionable item persists → id flips → a real stall wrongly
+/// treated as fresh churn (full grace instead of `Stuck`). Both are avoided by tracking the actionable
+/// message the signal is actually about.
+fn oldest_actionable_inbox_message(fleet: &Fleet, name: &str) -> Option<String> {
     let mut names: Vec<String> = std::fs::read_dir(fleet.inbox(name))
         .into_iter()
         .flatten()
         .filter_map(Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|f| f.ends_with(".json"))
+        .filter(|f| message_kind_from_filename(f).is_some_and(message_kind_is_actionable))
         .collect();
     sort_inbox_filenames(&mut names);
     names.into_iter().next()
@@ -7373,6 +7381,50 @@ mod tests {
             "a stray non-bus file must not be counted"
         );
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn oldest_actionable_inbox_message_skips_older_informational_mail() {
+        // The drain-nudge stuck-identity must track the oldest ACTIONABLE message (the item the
+        // drain-stall signal fires on), NOT the oldest message of any kind — else a stale un-archived
+        // note older than the real actionable item hijacks the identity, producing false `Stuck`
+        // re-nudges (or mis-graced real stalls) in `decide_drain_nudge`.
+        let root =
+            std::env::temp_dir().join(format!("cdz-oldest-actionable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: PathBuf::from("/hub/.claude/worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        // Empty inbox (missing dir) → None, never panics.
+        assert_eq!(oldest_actionable_inbox_message(&fleet, "v-x"), None);
+        let ib = fleet.inbox("v-x");
+        std::fs::create_dir_all(&ib).unwrap();
+        // Oldest message is an INFORMATIONAL note (seq 1); the actionable reject arrives later (seq 3).
+        std::fs::write(ib.join("000000000001-10-note.json"), "{}").unwrap();
+        std::fs::write(ib.join("000000000002-11-merged.json"), "{}").unwrap();
+        std::fs::write(ib.join("000000000003-12-reject.json"), "{}").unwrap();
+        // The flagged id must be the reject — the actionable item — not the older note.
+        assert_eq!(
+            oldest_actionable_inbox_message(&fleet, "v-x").as_deref(),
+            Some("000000000003-12-reject.json"),
+            "must skip the older informational note and flag the oldest actionable message"
+        );
+        // A still-older actionable message (seq 0) becomes the flagged id (oldest-first among actionable).
+        std::fs::write(ib.join("000000000000-9-assign.json"), "{}").unwrap();
+        assert_eq!(
+            oldest_actionable_inbox_message(&fleet, "v-x").as_deref(),
+            Some("000000000000-9-assign.json")
+        );
+        // With only informational mail, there is no actionable item → None (no false stuck-identity).
+        let ib2 = fleet.inbox("v-y");
+        std::fs::create_dir_all(&ib2).unwrap();
+        std::fs::write(ib2.join("000000000001-1-note.json"), "{}").unwrap();
+        std::fs::write(ib2.join("000000000002-2-merged.json"), "{}").unwrap();
+        assert_eq!(oldest_actionable_inbox_message(&fleet, "v-y"), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

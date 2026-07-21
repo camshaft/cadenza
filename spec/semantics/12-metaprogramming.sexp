@@ -2556,6 +2556,33 @@
             (_                                    -1)))
   (output (: 2 Int64)))
 
+; The `if` case above pins head-agnostic quote for a CONTROL keyword; these extend it to the BINDER-
+; introducing keywords `let` and `fn`, where a compiler that interpreted the head during quote would do
+; something worse than mis-branch — it would establish a `let` scope or bind an `fn` parameter, potentially
+; capturing/renaming the body's names. Quote is purely syntactic: `let`/`fn` reify as bare `Ast.Name` heads
+; and the body (including the binder `x`) is inert structure, no scope entered, no binding performed.
+
+(case "quote reifies a let form's head as an ordinary Ast.Name without establishing scope"
+  (doc    "`(quote (let ((x 1)) x))` reifies to an `Ast.List` whose head is `(Ast.Name \"let\")` — quote
+           does NOT enter a `let` scope or bind `x`; `let` is a bare name head like any other and the whole
+           body stays inert structure. Matching the head binds the Name (= \"let\"). The binder-form
+           companion of the `if` head-agnostic case: a quote that interpreted `let` would risk scoping the
+           body's names, so this pins that no binding happens.")
+  (input  (match (quote (let ((x 1)) x))
+            ((Ast.List (list (Ast.Name h) .. _)) h)
+            (_                                    "?")))
+  (output (: "let" String)))
+
+(case "quote reifies an fn form's head as an ordinary Ast.Name without binding its parameter"
+  (doc    "`(quote (fn (x) x))` reifies to an `Ast.List` headed `(Ast.Name \"fn\")` — quote does NOT bind
+           the parameter `x` or build a closure; `fn` is a bare name head and the param list + body are
+           inert structure. Matching the head binds the Name (= \"fn\"). The lambda-form companion of the
+           `let` case: a quote that interpreted `fn` would bind the parameter, so this pins it does not.")
+  (input  (match (quote (fn (x) x))
+            ((Ast.List (list (Ast.Name h) .. _)) h)
+            (_                                    "?")))
+  (output (: "fn" String)))
+
 (case "quote of a nested quote form is inert — the inner quote is not evaluated"
   (doc    "The self-referential head-agnostic edge: `(quote (quote x))` reifies to `(Ast.List (Ast.Name
            \"quote\") (Ast.Name \"x\"))` — `quote` treats the metaprogramming keyword `quote` as an ORDINARY

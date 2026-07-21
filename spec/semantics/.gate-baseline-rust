@@ -86,6 +86,7 @@ pass	DISTINCT-SIG: two capturing sum-arg closures of different signatures
 pass	DISTINCT-SIG: two-Tuple-arg closures of different signatures ALONGSIDE a plain export
 pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken branch
 pass	FULL CONTRACT: @requires + @ensures on ONE def fire INDEPENDENTLY — a pre-violation and a post-violation trap on DIFFERENT inputs
+pass	Float32 tuple-key components key at binary32 width (distinctness, lookup, signed zero)
 pass	Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even
 pass	Int64.min crosses the parameter boundary and back unchanged
 pass	Int64.min crossing the boundary is still negative
@@ -356,6 +357,7 @@ pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child ret
 pass	a Duration constructor `secs` scales a UInt64 count to nanoseconds
 pass	a Duration constructor scaling a count past the UInt64 nanosecond range traps rather than wrapping
 pass	a FLAT runtime string nested in a tuple is unaffected (control)
+pass	a FLOAT literal that fits its contextually-grounded narrow width through an arith op computes
 pass	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
 pass	a FLOAT-result effect op threads a float state and its resume folds under a float-dispatched operator
 pass	a Float KEY inserted into an empty (runtime) map boxes with box-float, not box-int
@@ -982,6 +984,9 @@ pass	a file-top default-fraction pragma grounds a bare literal to its exact frac
 pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a dependent-size utf8 segment decodes a length-prefixed string
+pass	a large value in a NON-projected tuple slot does not trip the projection width check
+pass	a narrow-width overflow reached through a MATCH projection of a runtime sum is rejected
+pass	a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected
 pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
 pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
 pass	a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes
@@ -3477,6 +3482,7 @@ pass	negating a runtime narrow integer just above its min is exact
 pass	negating a runtime narrow integer traps at the width's own min, not the Int64 min
 pass	negation inverts a boolean
 pass	negative integer to byte uses two's complement
+pass	negative multi-limb BigInt div truncates toward zero and rem takes the dividend's sign
 pass	negative zero and zero are distinct map keys
 pass	negative zero crosses the parameter boundary preserving its sign
 pass	negative zero encodes to bytes distinct from positive zero
@@ -3588,6 +3594,8 @@ pass	quote of a nested quote form is inert — the inner quote is not evaluated
 pass	quote produces an AST value without evaluating
 pass	narrow unsigned comparison division and remainder compose unsigned over a high-bit operand
 pass	quote reifies a grammar-keyword head as an ordinary Ast.Name
+pass	quote reifies a let form's head as an ordinary Ast.Name without establishing scope
+pass	quote reifies an fn form's head as an ordinary Ast.Name without binding its parameter
 pass	quote-built and constructor-built equal trees encode byte-identically
 pass	quote-vs-constructor AST equality holds regardless of operand order
 pass	quoting an empty compound produces an empty Ast.List
@@ -3707,6 +3715,7 @@ pass	sibling performs feeding a subtraction witness the advancing state non-comm
 pass	sibling recursive calls sequenced through let bindings thread state
 pass	sibling-recursive effect threading is left-to-right (order-observing)
 pass	signed 8-bit addition that overflows its width is rejected at compile time
+pass	signed-zero Float32 tuple-key components stay distinct at binary32 width
 pass	signed-zero float components make DISTINCT tuple keys
 pass	size after a runtime-key insert reflects replace-vs-add
 pass	size after a runtime-key remove reflects whether the key was present
@@ -4384,7 +4393,8 @@ pass	a MIXED-shape compound scales its quantity leaf beside a non-quantity eleme
 pass	a data-rate quantity converts a binary-prefix composite unit to its byte/second reference
 pass	adding two data-rate quantities of the same composite dimension is exact
 pass	adding a data-rate to a length is a compile-time dimension error over a composite dimension
-todo	a whole MAP holding a quantity VALUE renders it scaled to reference in the value form
+pass	a whole MAP holding a quantity VALUE renders it scaled to reference in the value form
 pass	a NEGATIVE large-magnitude float renders its full expansion with its sign
-todo	a whole LIST of quantities renders every element scaled to reference in the value form
+pass	a whole LIST of quantities renders every element scaled to reference in the value form
 pass	a bare literal annotated Float32 is grounded at binary32 precision (literal path, not a runtime demote)
+pass	a literal in a USER-DECLARED sum payload that overflows the annotated width is rejected
