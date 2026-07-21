@@ -3,6 +3,7 @@ pass	@ensures / @requires predicate PROJECTS a TUPLE component (`(. ret N)` on t
 pass	@ensures on a def returning an @invariant type: establish (on construction) AND the postcondition (on ret) both fire (design §10, (D))
 pass	@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)
 pass	@ensures over a HANDLE-bodied def called with a runtime arg is enforced (the verify_enforce let-over-handle shape)
+pass	@ensures predicate PROJECTS a RECORD field of the result (single field, and a two-field relation)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype traps on the empty list, constructs a non-empty one (design §10.1/§10.2, (D))
 pass	@invariant ESTABLISH Part 1: a bare-scalar invariant on a newtype auto-unwraps + type-checks; a satisfying value constructs and is usable
@@ -1166,6 +1167,7 @@ pass	a lambda captures an enclosing function parameter and is applied in its bod
 pass	a lambda parameter shadows the outer constant for its body
 pass	a lambda's return type ascription agreeing with the body is transparent
 pass	a large multiply-called definition is emitted once by the cost heuristic
+pass	a float at the top of the binary64 exponent range renders its full decimal expansion
 pass	a large whole float crosses the boundary preserving its full value
 pass	a large whole-valued float renders its full value, not an integer saturation
 pass	a later declaration in a do block sees an earlier one
@@ -1549,6 +1551,7 @@ pass	a nested module's function export is applied through the projection chain
 pass	a nested non-exhaustive match names the uncovered inner variant (CDZ0210 not the generic message)
 pass	a nested option value annotated with the wrong inner payload type is rejected
 pass	a nested pattern under an open sum's named variant still requires the outer open-tail arm
+pass	a nested quote pattern matches a compound-within-a-compound two levels deep
 pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
@@ -2051,6 +2054,7 @@ pass	a runtime less-than-or-equal holds at the equal-operand boundary
 pass	a runtime less-than-or-equal is signed at the integer extremes
 pass	a runtime list consumed by push in one operand is unchanged when read in a later operand
 pass	a runtime list of lists escapes with its nested element type
+pass	a runtime list of tuples is equal element-wise, descending into each tuple component
 pass	a runtime list orders lexicographically by its elements
 pass	a runtime list parameter consumed by push in a self-recursive call's sibling operand is unchanged
 pass	a runtime list that is a proper prefix orders less than its extension
@@ -2135,6 +2139,7 @@ pass	a runtime truncation into a signed byte sign-extends
 pass	a runtime truncation to an unsigned byte keeps the low bits, total on negatives
 pass	a runtime tuple built behind a recursive call escapes to the host
 pass	a runtime tuple orders lexicographically by field
+pass	a runtime tuple whose component is a list compares the list element-wise in order
 pass	a runtime tuple with a boolean element is returned as a result
 pass	a runtime unsigned division at the maximum by 1 does not trap
 pass	a runtime unsigned division by zero traps as divide-by-zero
@@ -3794,6 +3799,7 @@ pass	the bitwise self-identities hold on a runtime narrow UInt8 (x & x = x, x | 
 pass	the bitwise-AND-with-zero annihilator does not discard a trapping runtime operand
 pass	the boolean less-than operator agrees with compare over Bool
 pass	the boolean less-than operator agrees with the three-way comparison
+pass	the SAME runtime set as both operands of union intersection and difference computes each law live
 pass	the boolean literals
 pass	the boolean-literal coercion composes over a runtime Symbol equality
 pass	the built variant is the multi-arg one, the unbuilt arm still gets its call type
@@ -4178,3 +4184,7 @@ pass	a bare TUPLE of quantities renders each element scaled to its reference (mi
 pass	an OPTION payload quantity renders scaled to its reference in the value form
 pass	a NESTED tuple of quantities renders every element scaled at depth
 pass	a DERIVED-dimension (velocity) quantity used as a Map key hits by content
+pass	a rational floors toward negative infinity, narrowed to Int64
+pass	a rational ceilings toward positive infinity, narrowed to Int64
+pass	a rational rounds to nearest, ties half-away-from-zero, narrowed to Int64
+pass	a rational rounds a negative half away from zero

@@ -6027,6 +6027,51 @@
   (input  (= (list 1 2) (list 1 2 3)))
   (output (: false Bool)))
 
+; The list-equality cases above compare SCALAR-element lists, and both operands are CONSTANT (const-folded
+; at compile time). The runtime, COMPOUND-element face is distinct: a `(List (Tuple Int64 Int64))` whose
+; elements are TUPLES, compared with a genuinely RUNTIME element (built from the parameter), exercises the
+; element-wise ValueCmp op=Eq walk that must DESCEND INTO each tuple and compare component-wise — not a
+; const fold, not a scalar leaf compare. collections-and-text.md #A List Is An Ordered Homogeneous Sequence
+; + core-semantics.md #Equality Is Structural: list equality is structural over the elements whatever the
+; element type, so a list of tuples is equal iff same length AND each tuple is component-wise equal. A
+; compiler whose runtime list-eq only handled scalar leaves (or declined on a compound element) would break
+; this. The dual — a tuple whose COMPONENT is a list — recurses the other way (structural tuple eq descends
+; into the List component, comparing it element-wise IN ORDER, unlike a Set which is order-independent).
+
+(case "a runtime list of tuples is equal element-wise, descending into each tuple component"
+  (doc    "A `(List (Tuple Int64 Int64))` compared with a RUNTIME element: `a = (list (tuple 1 2) (tuple 3
+           x))` vs `b = (list (tuple 1 2) (tuple 3 4))` with `x` a parameter (so neither operand const-folds
+           — the second tuple's second component is only known at run time). At `x=4` the lists are
+           element-wise identical (`[(1,2),(3,4)]`) → equal (1); at `x=9` they differ in that one component
+           → unequal (0). Pins that runtime list equality descends INTO the compound (tuple) elements and
+           compares them component-wise — the element-wise ValueCmp op=Eq walk over a COMPOUND element type,
+           not just scalar leaves. A runtime list-eq that only compared scalar elements (or declined on a
+           tuple element) would miscompute or reject this well-typed total comparison.")
+  (input  (do (def (main (: x Int64))
+                (let ((a (list (tuple 1 2) (tuple 3 x)))
+                      (b (list (tuple 1 2) (tuple 3 4))))
+                  (if (= a b) 1 0)))
+              (export main)))
+  (call   main (: 4 Int64))
+  (output (: 1 Int64)))
+
+(case "a runtime tuple whose component is a list compares the list element-wise in order"
+  (doc    "The DUAL of the list-of-tuples case: a tuple whose COMPONENT is a List — structural tuple
+           equality recurses INTO the list component and compares it element-wise, IN ORDER (unlike a Set
+           component, which is order-independent). Face 1 (`x`=2): `(= (tuple 0 (list 1 x)) (tuple 0 (list 1
+           2)))` → the lists `[1,2]` match → equal (1). Face 2 (order sensitivity): `(= (tuple 0 (list 1 2))
+           (tuple 0 (list 2 1)))` → the list components hold the same elements in DIFFERENT order → unequal
+           (0), whereas a Set component would compare equal. Result `(1, 0)` pins that structural equality
+           descends into a List-typed tuple component and honors ORDER. A compiler that reordered or treated
+           a list component as a bag would wrongly return 1 for the second face.")
+  (input  (do (def (main (: x Int64))
+                (tuple
+                  (if (= (tuple 0 (list 1 x)) (tuple 0 (list 1 2))) 1 0)
+                  (if (= (tuple 0 (list 1 2)) (tuple 0 (list 2 1))) 1 0)))
+              (export main)))
+  (call   main (: 2 Int64))
+  (output (: (tuple 1 0) (Tuple Int64 Int64))))
+
 ; --- A list is homogeneous: its elements share one type ----------------------------------
 ; collections-and-text.md #A List Is An Ordered Homogeneous Sequence: "A list MUST be an ordered
 ; sequence whose elements share one type." A list literal whose elements do NOT share one type is

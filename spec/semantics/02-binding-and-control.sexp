@@ -4316,6 +4316,29 @@
   (call   main (: 0 Int64) (: 3 Int64))
   (output (: 1 Int64)))
 
+; ── The BOOLEAN ABSORPTION LAWS: `a && (a || b)` → a and `a || (a && b)` → a ──────────────────────────
+; The logical analogue of the bitwise absorption law (`x & (x|y) → x`): a value combined with the DUAL
+; connective of itself-with-anything absorbs to itself. `arith_identity`/`bool_absorption_operand`
+; (lower.rs) folds `(and a (or a b))` → a and `(or a (and a b))` → a — the result depends ONLY on `a`,
+; never on `b`. Observed via `(if … 1 0)` on runtime comparison operands (so the connectives are EMITTED,
+; not const-folded): with `a` = `(> a 0)`, the answer tracks `a` alone regardless of `b`. Both backends.
+(case "the boolean absorption laws reduce a-and-(a-or-b) and a-or-(a-and-b) to a"
+  (doc    "`(and a (or a b))` → a and `(or a (and a b))` → a: a boolean combined with the DUAL connective
+           of itself-with-anything absorbs to itself, so `b` is irrelevant. `main` returns `(tuple (and (>
+           a 0) (or (> a 0) (> b 0))) (or (> a 0) (and (> a 0) (> b 0))))` as two conditionals folded to
+           `(> a 0)`: at (a=5, b=-1) → (1, 1) (a>0 true), at (a=-1, b=5) → (0, 0) (a>0 false) — b flips
+           across the two calls yet never changes the answer. Pins both boolean absorption laws on runtime
+           operands, both backends.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (tuple (if (and (> a 0) (or (> a 0) (> b 0))) 1 0)
+                     (if (or (> a 0) (and (> a 0) (> b 0))) 1 0)))
+            (export main)))
+  (call   main (: 5 Int64) (: -1 Int64))
+  (output (: (tuple 1 1) (Tuple Int64 Int64)))
+  (call   main (: -1 Int64) (: 5 Int64))
+  (output (: (tuple 0 0) (Tuple Int64 Int64))))
+
 ; --- Zero-equality instruction selection (eqz) keys on VALUE and width -----------------------------
 ; e316ef2cd selects `(= x 0)` to a single `eqz` at the Compare emit site. The selection must key on
 ; a VALUE zero in either operand order, test the NORMALIZED narrow value for a masked width (the

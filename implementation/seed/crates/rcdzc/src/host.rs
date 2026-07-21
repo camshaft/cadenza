@@ -81,6 +81,15 @@ where
     F: FnOnce() -> T + Send,
     T: Send,
 {
+    // IDEMPOTENT: if we are ALREADY on the compile worker (this fn nests — `compile_with_opt` establishes
+    // the precondition at the shared sink, but `compile_component` and the bin ALSO wrap their `compile`
+    // call), run INLINE rather than spawn a second worker. Nesting would reserve a fresh worker stack per
+    // level and RESET the depth budget (the semantic `DESCENT_DEPTH_LIMIT` guard measures native recursion
+    // within ONE worker), so a re-entry must share the existing worker's stack, not start over. The worker
+    // names its thread `rcdzc-compile`; on it, just call `f`.
+    if std::thread::current().name() == Some("rcdzc-compile") {
+        return f();
+    }
     // The closure and its result borrow the caller's frame for the duration of the join, so a scoped
     // thread lets `f` capture by reference (no `'static` bound) — the bin passes borrowed inputs.
     std::thread::scope(|scope| {
