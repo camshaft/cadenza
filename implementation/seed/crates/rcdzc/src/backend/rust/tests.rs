@@ -2913,6 +2913,53 @@ fn int64_of_a_runtime_bigint_out_of_range_traps_with_a_classifying_unreachable_m
 }
 
 #[test]
+fn runtime_arithmetic_on_an_unusual_width_range_checks_at_its_own_width_not_the_storage_width() {
+    // REGRESSION (corpus "a genuinely-runtime MULTIPLY on an unusual signed width traps on overflow"): an
+    // unusual width (`Int 4`, `UInt 12` — 1..=64 but not 8/16/32/64) is STORED in the next-larger machine
+    // primitive, so a `checked_*` on the storage type traps at `2^machine`, NOT the type's `2^N` — a wrong
+    // overflow, so `emit_arith` DECLINED. Now `+`/`-`/`*` compute the native (wrapping) op on the storage
+    // type and RANGE-CHECK the result against the TYPE's own `[min_N, max_N]`, panicking "integer overflow"
+    // (the classifying kind) out of range — the rust twin of the wasm narrow-width `emit_range_check`.
+    // (a) signed Int4 `[-8, 7]`: 2·3=6 in range; 3·3=9 and 4·4=16 overflow (the corpus oracle).
+    let i4 = compile_rust(
+        "(module m (def (run (: a Int64) (: b Int64)) \
+           (* ((. (Int 4) wrap) a) ((. (Int 4) wrap) b))) (export run))",
+    );
+    assert!(
+        i4.contains("integer overflow in multiplication")
+            && (i4.contains("7i8") || i4.contains("> 7")),
+        "an unusual-width multiply range-checks at the TYPE's bound (7 for Int4), not the storage width:\n{i4}"
+    );
+    if let Some(out) = rustc_run(&i4, "run(2, 3)") {
+        assert_eq!(out, "6", "2·3 = 6 fits Int4 [-8, 7]");
+    }
+    match rustc_run_traps(&i4, "run(4, 4)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("overflow"),
+            "4·4 = 16 overflows Int4 and traps overflow, got:\n{msg}"
+        ),
+        TrapRun::RanOk(out) => panic!("`4·4 : Int4` must TRAP (16 > 7), but ran → {out}"),
+        TrapRun::NoRustc => {}
+    }
+    // (b) unsigned UInt12 `[0, 4095]` — the single upper-bound test: 3·4=12 fits; 50·90=4500 overflows.
+    let u12 = compile_rust(
+        "(module m (def (run (: a Int64) (: b Int64)) \
+           (* ((. (UInt 12) wrap) a) ((. (UInt 12) wrap) b))) (export run))",
+    );
+    if let Some(out) = rustc_run(&u12, "run(3, 4)") {
+        assert_eq!(out, "12", "3·4 = 12 fits UInt12 [0, 4095]");
+    }
+    match rustc_run_traps(&u12, "run(50, 90)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("overflow"),
+            "50·90 = 4500 overflows UInt12 and traps overflow, got:\n{msg}"
+        ),
+        TrapRun::RanOk(out) => panic!("`50·90 : UInt12` must TRAP (4500 > 4095), but ran → {out}"),
+        TrapRun::NoRustc => {}
+    }
+}
+
+#[test]
 fn a_provably_in_range_left_shift_elides_its_overflow_guard_on_the_rust_backend() {
     // BOTH-BACKEND PARITY (v-core-opt Slice-4): the rust `<<` emit now consults the SAME Core-tier
     // shl_provably_in_range / _dynamic predicates the wasm backend uses (select.rs emit_shift), so a
@@ -5683,8 +5730,9 @@ fn rustc_roundtrip_unusual_integer_width_stores_in_the_next_larger_primitive() {
     // An UNUSUAL in-range width (`UInt48`, `UInt4` — 1..=64 but not an aliased boundary) has no exact Rust
     // primitive, so it STORES in the next-larger machine width (`UInt48`→`u64`, `UInt4`→`u8`); the value/
     // wrap/render surface is exact. `.wrap` to an unusual width masks the low N bits (an `as` cast keeps the
-    // STORAGE width's bits, so add `& (2^N-1)`). Runtime ARITHMETIC on an unusual width DECLINES (it would
-    // need the `2^N` overflow check, not the storage width's — a safety guard against a silent miscompile).
+    // STORAGE width's bits, so add `& (2^N-1)`). Runtime ARITHMETIC on an unusual width computes the native
+    // op on the storage type then RANGE-CHECKS the result against the type's own `2^N` bounds (not the
+    // storage width's `2^machine`) — see part (c).
     // (a) a `(UInt 48)` const value = 2^48-1, stored as u64.
     let val = compile_rust("(module m (def (run) (: 281474976710655 (UInt 48))) (export run))");
     assert!(
@@ -5706,13 +5754,16 @@ fn rustc_roundtrip_unusual_integer_width_stores_in_the_next_larger_primitive() {
         assert_eq!(out, "15", "15 fits the nibble whole");
     }
 
-    // (c) runtime ARITHMETIC on an unusual width DECLINES (safety — no wrong 2^machine overflow).
-    let arith = try_compile_rust(
-        "(module m (def (run (: a (UInt 48)) (: b (UInt 48))) (+ a b)) (export run))",
-    );
+    // (c) runtime ARITHMETIC on an unusual width now COMPILES: the native op runs on the storage type, then
+    // a range-check against the TYPE's own `2^N` bound (NOT the storage width's `2^machine`) traps overflow.
+    // A `(UInt 48)` add emits `wrapping_add` + `if __uw > 2^48-1 { panic!("integer overflow …") }` — the
+    // single unsigned upper-bound test (the rust twin of the wasm narrow-width range-check), NOT a bare
+    // `u64::checked_add` (which would trap at 2^64, the wrong width). Was a DECLINE (safety guard) before.
+    let arith =
+        compile_rust("(module m (def (run (: a (UInt 48)) (: b (UInt 48))) (+ a b)) (export run))");
     assert!(
-        arith.is_err(),
-        "runtime unusual-width arithmetic declines (not a wrong-width overflow):\n{arith:?}"
+        arith.contains("281474976710655u64") && arith.contains("integer overflow in addition"),
+        "unusual-width UInt48 add range-checks at 2^48-1 (its own bound), not the storage width:\n{arith}"
     );
 
     // (d) an aliased narrow width (UInt8) still wraps with NO redundant mask (the `as` cast is exact).

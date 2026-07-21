@@ -2403,6 +2403,34 @@
   (call   main (: 0 Int64))
   (output (: (tuple 40 "a" "b" "a" "b" 1 0) (Tuple Int64 String String String String Int64 Int64))))
 
+; The deep-rope case above folds a FIXED chunk ("ab") a fixed number of times; this folds String.concat over
+; a RUNTIME LIST of DISTINCT chunks — the list-driven build idiom (assembling a string from computed pieces,
+; e.g. a compiler joining rendered fragments), the String twin of the Map.insert-fold and Set.insert-fold
+; builds. The chunks arrive through a `(List String)` the fold walks by index, so the concatenation order and
+; the per-step consume/drop discipline both run live.
+(case "a String built by folding String.concat over a runtime list of chunks has the right content and length"
+  (doc    "Fold `String.concat` over a runtime `(List String)` `[\"ab\", \"c\", \"de\"]`, threading the
+           accumulator: → \"abcde\". `String.scalar-len` = 5 (the joined length); `String.slice r 3 4` = \"d\"
+           by content (the 4th scalar came from the THIRD chunk \"de\", so the fold placed the chunks in list
+           order); and the whole rope `=` its flat twin \"abcde\". Result `(5, 1, 1)` (len, slice-is-d,
+           equals-flat). Pins the list-driven `String.concat` fold build — the String companion of the
+           Map.insert / Set.insert fold-build cases; a fold that reordered or dropped a chunk would flip the
+           slice or the flat-equality.")
+  (input  (do
+            (def (sfold (: xs (List String)) (: i Int64) (: acc String))
+              (if (< i (List.len xs))
+                  (match (List.at xs i) ((Some s) (sfold xs (+ i 1) (String.concat acc s))) ((None _u) acc))
+                  acc))
+            (def (main (: n Int64))
+              (let ((r (sfold (list "ab" "c" "de") 0 "")))
+                (tuple
+                  (String.scalar-len r)
+                  (match (String.slice r 3 4) ((Some sub) (if (= sub "d") 1 0)) ((None _u) 0))
+                  (if (= r "abcde") 1 0))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (tuple 5 1 1) (Tuple Int64 Int64 Int64))))
+
 ; --- The threaded-String-param retain: the consumption-shape faces ----------------------------------
 ; e38228f35 added String/Symbol to the Perceus retain-candidate gate (a param threaded through a
 ; self-recursive loop AND consumed by concat each step was freed while referenced — an OOB trap past

@@ -256,6 +256,21 @@
   (input  (Record.with (record (a 1) (b 2)) #"b" true))
   (output (: (record (a 1) (b true)) (Record (a Int64) (b Bool)))))
 
+(case "Record.with over a RUNTIME field leaves the original record readable (persistence)"
+  (doc    "The runtime + persistence face of `Record.with` (the pins above are const-folded whole-value
+           outputs): the operand record carries a RUNTIME field `x = n`, `Record.with` replaces `x` with
+           99, and BOTH records are then read — the updated `r2.x` (99) and `r2.y` (20, the untouched field
+           carried over), AND the ORIGINAL `r.x` (still `n` — the update must not mutate its operand
+           through the shared binding). Encodes 100·r2.x + 10·r2.y + r.x = 9900+200+5 = 10105 at n=5. The
+           record companion of the Map/Set persistence pins.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((r (record (x n) (y 20))))
+                (let ((r2 (Record.with r #"x" 99)))
+                  (+ (* 100 (. r2 x)) (+ (* 10 (. r2 y)) (. r x))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10105 Int64)))
+
 (case "updating an absent record field is rejected"
   (doc    "Witnesses type-system.md #A Field Is Added To Or Replaced In A Record By A Derived Operation
            (3rd sentence): updating a field absent from the operand is a compile-time rejection (CDZ0212),

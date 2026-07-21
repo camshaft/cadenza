@@ -9861,10 +9861,23 @@ fn emit(
             rhs,
             width,
         } => {
+            // DISJOINT-SLOT DISCIPLINE (the sibling-scratch collision class, as `Core::MapRemove`/`Tuple`):
+            // the LHS float result is left PENDING ON THE STACK while the RHS is emitted, so the RHS's
+            // operand scratch must FLOAT above the LHS's high-water — NOT reuse the shared `base`. Concretely
+            // `(= (Float64.of-int n) (Float64.of-int (+ n 1)))`: the LHS `Float64.of-int n` leaves its
+            // canonical f64 bits pending; the RHS's `(+ n 1)` is a CHECKED i64 add whose overflow-guard temp,
+            // if laid at the same `base`, re-types a wasm local the LHS emit already fixed at f64/i64 → an
+            // invalid module (`function[0]` fails to compile), order-specific (only param-left/arith-right —
+            // arith-left's i64 scratch is consumed before anything is pending). Advancing the RHS base past
+            // `*high` gives the two operands disjoint scratch. (Both the FEq canon-bits path and the ordering
+            // path share this structure; fixing both closes the whole `Core::FloatCompare` operand-pair class.)
             if op == Prim::FEq {
                 // EQUALITY: canonical-byte bit compare (see above).
                 emit_canon_float_bits(db, lhs, width, slots, base, high, scratch_ty, layout, out)?;
-                emit_canon_float_bits(db, rhs, width, slots, base, high, scratch_ty, layout, out)?;
+                let rhs_base = base.max(*high);
+                emit_canon_float_bits(
+                    db, rhs, width, slots, rhs_base, high, scratch_ty, layout, out,
+                )?;
                 out.push(if width == 32 { Lir::I32Eq } else { Lir::I64Eq });
             } else {
                 // ORDERING (`< <= > >=`): the RAW IEEE float compare (operator ruling — IEEE partialOrd).
@@ -9873,7 +9886,10 @@ fn emit(
                 // equality path; ordering DISAGREES with it on NaN + signed zero, by design. Emit each float
                 // operand directly (grounded to the op width), then the raw compare op.
                 emit_float_operand(db, lhs, width, slots, base, high, scratch_ty, layout, out)?;
-                emit_float_operand(db, rhs, width, slots, base, high, scratch_ty, layout, out)?;
+                let rhs_base = base.max(*high);
+                emit_float_operand(
+                    db, rhs, width, slots, rhs_base, high, scratch_ty, layout, out,
+                )?;
                 out.push(float_ordering_op(op, width));
             }
             Ok(())

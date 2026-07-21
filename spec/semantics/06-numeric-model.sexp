@@ -259,6 +259,30 @@
             (export main)))
   (call   main (: 3 Int64)) (trap "unreachable"))
 
+; --- List.len fold must preserve a TRAPPING element construction (trap-preservation) --------------------
+; The List.len constant-arity fold computes length from the list SPINE without reading element VALUES, so it
+; could drop a trapping element construction. It must NOT: a Rational.of with a RUNTIME zero denominator
+; TRAPS, and that trap must survive the len fold (the fold fires only when every element is provably
+; trap-free; a runtime Rational.of is not). Fixed 0434021a8 (broadened is_trap_free to pure constructors so
+; pure-data lists still fold, but a trapping element blocks the fold). The trap-free twin below still folds.
+(case "List.len over a list with a TRAPPING element construction preserves the trap (does not fold it away)"
+  (doc    "`(List.len (list (Rational.of 1 2) (Rational.of 3 d)))` — at runtime d=0 the second element's
+           construction (Rational.of 3 0) is not a value and TRAPS; the len fold must NOT elide the element
+           constructions to compute 2 from the spine. So the call traps at d=0 and computes 2 at d=2. Pins
+           that the len fold respects is_trap_free (a runtime Rational.of is not trap-free), the len analogue
+           of the arith-fold trap-preservation discipline.")
+  (input  (do (def (main (: d Int64)) (List.len (list (Rational.of 1 2) (Rational.of 3 d)))) (export main)))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (call   main (: 0 Int64)) (trap "unreachable"))
+
+(case "List.len over a trap-free pure-data list still folds to the length"
+  (doc    "The trap-free twin: `(List.len (list 1 2 3))` has only pure-data (trap-free) element
+           constructions, so the constant-arity len fold still fires → 3. Pins that the trap-preservation
+           guard (above) did NOT over-decline pure-data lists — the fold still computes when every element is
+           provably trap-free.")
+  (input  (do (def (main) (List.len (list 1 2 3))) (export main)))
+  (output (: 3 Int64)))
+
 ; `Rational.floor : Rational → Int64` (toward −∞) and `Rational.ceil` (toward +∞) — the other two exact
 ; integer projections. Like `truncate`, DERIVATIONS (no runtime op): `truncate` adjusted by ±1 off the
 ; remainder sign — floor = trunc−1 iff (numerator < 0 AND remainder ≠ 0); ceil = trunc+1 iff (numerator > 0
@@ -5794,6 +5818,23 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 1002 Int64))
   (call   main (: 8 Int64)) (output (: 2001 Int64)))
+
+(case "runtime Rational DIVISION inverts the divisor and reduces to lowest terms"
+  (doc    "The DIVIDE companion completing the runtime rational arithmetic family (add/sub collapse and
+           multiply cross-cancel are pinned above; division was CONST-only at the exactness case):
+           `(/ (Rational.of a 4) (Rational.of 3 2))` = (a/4)·(2/3) = 2a/12 = a/6 reduced. Encodes
+           1000·num + den: a=1 → 1/6 → 1006; a=6 → 12/12 = 1/1 → 1001 (a WHOLE, denominator 1); a=9 →
+           18/12 = 3/2 → 3002 (a reduced improper fraction). Three regimes: proper, whole-collapse, and
+           improper-reduce. Pins that the runtime divide inverts the divisor then gcd-reduces, matching
+           the const-fold exactness, on every backend.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((r (/ (Rational.of a 4) (Rational.of 3 2))))
+                (+ (* 1000 (Int64.of (Rational.numerator r))) (Int64.of (Rational.denominator r)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1006 Int64))
+  (call   main (: 6 Int64)) (output (: 1001 Int64))
+  (call   main (: 9 Int64)) (output (: 3002 Int64)))
 
 (case "a RUNTIME-built Rational is usable as a map key, matched by its exact value"
   (doc    "The runtime companion of the constant Rational-map-key case: `(Rational.of a 2)` with a

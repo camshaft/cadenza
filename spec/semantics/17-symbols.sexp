@@ -415,6 +415,21 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 109 Int64)))
 
+(case "a Symbol nested in a TUPLE map key keys by content through the compound descent"
+  (doc    "The compound-key face of the Symbol key (the bare Symbol-key case above): the symbol sits in a
+           tuple beside a RUNTIME int — `(tuple (Symbol.of \"k\") n)` — and the lookup key rebuilds both
+           components; at `n = 5` the lookup `(tuple (Symbol.of \"k\") 5)` HITS (42), at `n = 9` it MISSES
+           (-1). The CHAMP hash/eq must descend the tuple into the Symbol's byte-leaf content (the same
+           per-leaf discipline the float/Rational/BigInt tuple-key pins fix for their leaf kinds — this
+           completes the heap-leaf-kind matrix with the Symbol leaf).")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m (Map.insert Map.empty (tuple (Symbol.of "k") n) 42)))
+                (match (Map.lookup m (tuple (Symbol.of "k") 5)) ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 42 Int64))
+  (call   main (: 9 Int64)) (output (: -1 Int64)))
+
 ; The case above interns a Symbol from a string the compiler can still FOLD (`(String.concat "map"
 ; "-insert")` = the constant `"map-insert"`). Interning a GENUINELY-RUNTIME string — one arriving at
 ; the call boundary, unfoldable — also works: a Symbol IS a String byte-leaf at run time (the value

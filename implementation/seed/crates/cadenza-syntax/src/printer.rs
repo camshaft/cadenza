@@ -5252,6 +5252,59 @@ mod tests {
     }
 
     #[test]
+    fn a_trailing_doc_or_comment_before_a_modules_close_brace_is_preserved_not_dropped() {
+        // A `///` doc or `//` comment on the last line(s) INSIDE a module body, before the closing `}`,
+        // has no following member — it sits in the `}` token's leading slot, which the member loop never
+        // drains, so it used to be DROPPED (a genuine content LOSS: `cdz fmt` then REFUSED the whole file
+        // via the comment-drop guard, so the module could not be formatted). module_expr now drains that
+        // slot after the loop (mirroring the top-level `program()` trailing handler).
+        //
+        // A trailing `///` doc → a `(doc …)` MODULE MEMBER at the end of the body (docs are members here).
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("module M {\n  def a() -> Int64 = 1\n  /// trailing doc\n}")
+                    .arenas
+            ),
+            "(module M (def (a) (: 1 Int64)) (doc \"trailing doc\"))",
+            "a trailing `///` before the close brace becomes a doc member, not dropped"
+        );
+        // It round-trips (re-reading the printed form yields the same trailing doc member).
+        let printed = print(
+            &parser::read_ml("module M {\n  def a() -> Int64 = 1\n  /// trailing doc\n}").arenas,
+            80,
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml(&printed).arenas),
+            "(module M (def (a) (: 1 Int64)) (doc \"trailing doc\"))",
+            "trailing module doc round-trips"
+        );
+        // A trailing `//` comment → wraps the LAST member as `(comment …)`, preserved (not dropped).
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("module M {\n  def a() -> Int64 = 1\n  // trailing comment\n}")
+                    .arenas
+            ),
+            "(module M (comment \"trailing comment\" (def (a) (: 1 Int64))))",
+            "a trailing `//` before the close brace wraps the last member, not dropped"
+        );
+        // A trailing doc in an EMPTY module body is also preserved (a `(doc …)` stands alone).
+        assert_eq!(
+            sexpr::print(&parser::read_ml("module M {\n  /// only doc\n}").arenas),
+            "(module M (doc \"only doc\"))",
+            "a trailing doc in an empty module body is preserved"
+        );
+        // A `//` comment in an EMPTY body has no member to wrap and no clean standalone carrier — it must
+        // NOT corrupt the module name (the earlier `items.pop()` bug wrapped the name → `(module (comment
+        // … M))`). The module reads as `(module M)`; the comment stays in the slot for the drop-guard to
+        // catch (`cdz fmt` refuses, byte-identical) — the pre-existing safe behavior, no corruption.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("module M {\n  // only comment\n}").arenas),
+            "(module M)",
+            "a comment-only empty module keeps its name intact (no phantom member, no name corruption)"
+        );
+    }
+
+    #[test]
     fn open_sum_row_variable_round_trips() {
         // OPEN SUM (open-sums OS1): a trailing `.. r` row-variable marker after the last variant. It is
         // the flat two-sibling convention — `Name("..")` then a lowercase `Name` — as the type list's

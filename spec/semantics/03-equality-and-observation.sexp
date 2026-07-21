@@ -2117,3 +2117,44 @@
             (export main)))
   (call   main (: 0.0 Float64))
   (output (: 11 Int64)))
+
+; A `=` between two `Float64.of-int` conversions where the LEFT converts a bare PARAM and the RIGHT converts
+; an ARITH result. The wasm `Core::FloatCompare` emit left the LEFT operand's canonicalized f64 bits PENDING
+; ON THE STACK, then emitted the RIGHT operand's inner `(+ n 1)` (a CHECKED i64 add) reusing scratch at the
+; SAME fixed `base` — re-typing a wasm local the left emit had already fixed (f64/i64), producing an INVALID
+; module (`function[0]` fails to compile). ORDER-SPECIFIC: only param-left/arith-right triggered it (arith-
+; left's i64 scratch is consumed before any f64 is pending); the mirror + two-params + arith-alone all
+; compiled. The fix floats the RHS operand's scratch above the LHS's high-water (the disjoint-slot discipline
+; shared with `Map.remove`/`Set.of`). n=100 → of-int(100)=100.0 ≠ 101.0=of-int(101) → false. Both backends.
+(case "a param-left arith-right Float64.of-int equality compiles to a valid module and computes"
+  (doc    "Regression guard for the FloatCompare operand-pair sibling-scratch collision: `(= (Float64.of-int
+           n) (Float64.of-int (+ n 1)))` — the left converts the bare param `n`, the right converts the
+           checked-arith `(+ n 1)`. The wasm emit used to lay the right's i64 arith temp at the same scratch
+           base the left's pending f64 needed → invalid module (order-specific: only this operand order). Now
+           the right operand's scratch floats above the left's high-water. n=100 → 100.0 ≠ 101.0 → false.")
+  (input  (do
+            (def (main (: n Int64))
+              (= (Float64.of-int n) (Float64.of-int (+ n 1))))
+            (export main)))
+  (call   main (: 100 Int64))
+  (output (: false Bool)))
+
+; The double-precision integer-boundary semantic pin the emit fix above UNBLOCKS (breaker's original probe):
+; Float64 (binary64) has a 52-bit mantissa, so every integer up to 2^53 is representable exactly, but 2^53
+; and 2^53+1 both round to the SAME f64 (the first adjacent-integer collapse). So `(= (Float64.of-int n)
+; (Float64.of-int (+ n 1)))` — DISTINCT integers n and n+1 — is FALSE for small n (100 ≠ 101) but TRUE at
+; n = 2^53 = 9007199254740992 (n and n+1 collapse to one f64). Pins the exact float-precision boundary.
+(case "Float64.of-int collapses adjacent integers at the 2^53 precision boundary"
+  (doc    "`(= (Float64.of-int n) (Float64.of-int (+ n 1)))` compares the f64 conversions of two DISTINCT
+           integers n, n+1. Below 2^53 they are distinct f64s → false (n=100 → 100.0 ≠ 101.0). AT n = 2^53 =
+           9007199254740992, binary64's 52-bit mantissa cannot represent 2^53+1, so both round to the same
+           f64 → true. Pins the double-precision integer-exactness boundary (adjacent ints collapse at 2^53),
+           riding the param-left/arith-right emit fix above.")
+  (input  (do
+            (def (main (: n Int64))
+              (= (Float64.of-int n) (Float64.of-int (+ n 1))))
+            (export main)))
+  (call   main (: 9007199254740992 Int64))
+  (output (: true Bool))
+  (call   main (: 100 Int64))
+  (output (: false Bool)))

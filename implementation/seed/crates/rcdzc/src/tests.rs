@@ -14753,9 +14753,14 @@ mod runtime_ops {
         check_rejects(
             "(module m (def (f (: n Int64)) (: (match n (0 1.0e300) (_ 0.0)) Float32)) (export f))",
         );
+        // CONST-FOLDED conditional: `(if true 1.0e300 0.5)` folds to its taken branch `1.0e300`, which the
+        // Float32 arm reads via `core_of` (a folded `Core::ConstFloat`, not a direct atom) — before, this
+        // slipped `check` and COMPILED + ran to `inf`.
+        check_rejects("(module m (def (f) (: (if true 1.0e300 0.5) Float32)) (export f))");
 
-        // NO OVER-REJECTION: a fitting Float32 literal, the same overflow under Float64 (fits), and a bare
-        // conditional with no narrow-float context (stays Float64) all pass check clean.
+        // NO OVER-REJECTION: a fitting Float32 literal, the same overflow under Float64 (fits), a bare
+        // conditional with no narrow-float context (stays Float64), and a DEAD-branch const-fold (the taken
+        // branch fits; the untaken overflow is folded away, matching the int dead-branch precedent) all pass.
         let check_clean = |src: &str| {
             let diags = crate::diagnostics(&mut crate::db::Db::load(parse(src)));
             assert!(
@@ -14768,6 +14773,10 @@ mod runtime_ops {
         check_clean("(module m (def (f (: c Bool)) (: (if c 1.0 0.0) Float32)) (export f))");
         check_clean("(module m (def (f (: c Bool)) (: (if c 1.0e300 0.0) Float64)) (export f))");
         check_clean("(module m (def (f (: c Bool)) (if c 1.0e300 0.0)) (export f))");
+        // DEAD-branch const-fold: `(if false 1.0e300 0.5)` folds to `0.5` (fits); the untaken 1.0e300 is gone.
+        check_clean("(module m (def (f) (: (if false 1.0e300 0.5) Float32)) (export f))");
+        // Fitting const-fold: `(if true 1.5 0.5)` folds to `1.5` (fits Float32).
+        check_clean("(module m (def (f) (: (if true 1.5 0.5) Float32)) (export f))");
     }
 
     #[test]

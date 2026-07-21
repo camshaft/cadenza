@@ -390,7 +390,12 @@ def lit-node-fits(tree: Tree, x: Int64, ts: Bool, tw: Int64) =
 /// HM infer↔ty boundary: it's what turns a deferred literal into the unifier's deferred int.
 def typed-to-ty-defer(t: Typed) = match t with
   | Typed.TIntW(s, w) => (if w == 0 then Option.Some(ty-deferred-int()) else Option.Some(ty-fixed-int(s, w)))
-  | Typed.TBool => Option.Some(Ty.TyBool)
+  // ARITHMETIC IS INTEGER-ONLY: a Bool operand → None, so arith-result-type declines `(+ true false)` (→ TErr,
+  // not a laundered Bool — arith requires TInt). This is NOT a regression for relational ops: bin-type's
+  // relational arm (op 60..65) has a `both-bool` fallback, so `(== true false)`/`(< true false)` still type Bool
+  // even when arith-result-type returns None here. (Bug caught in PR#754 review: mapping TBool→TyBool let
+  // unify-ty(TyBool,TyBool)=TyBool flow through the arith arm, mis-accepting `(+ true false)` as Bool.)
+  | Typed.TBool => Option.None(unit)
   | Typed.TErr => Option.None(unit)
 
 /// Literal-width adaptation for a mixed-width arith pair that didn't unify. If ONE operand is a plain `NLit(v)`
@@ -657,6 +662,15 @@ def id-bool-in-arith-is-err() =
   // "true + 1" → a Bool operand to arithmetic → TErr (bin-type requires Int operands).
   (match parse-of([truelit(), plus(), n(1)]) with | (root, tree) =>
     (if type-err-at(tree, root, root) then unit else trap("true + 1 is TErr (no bool arithmetic)")))
+
+@test
+def id-bool-plus-bool-is-err() =
+  // "true + false" → BOTH operands Bool → arithmetic → TErr (arith is INTEGER-ONLY). The Bool-Bool case (distinct
+  // from Bool+Int above): item-3 HM's typed-to-ty-defer initially mapped TBool→TyBool, so unify-ty(TyBool,TyBool)
+  // =TyBool flowed through bin-type's arith arm and MIS-ACCEPTED `(+ true false)` as Bool (PR#754 review catch).
+  // Fixed: typed-to-ty-defer's TBool arm → None → arith-result-type is integer-only. Pins the fix.
+  (match parse-of([truelit(), plus(), falselit()]) with | (root, tree) =>
+    (if type-err-at(tree, root, root) then unit else trap("true + false is TErr (arithmetic is integer-only)")))
 
 @test
 def id-bool-comparison-is-bool() =

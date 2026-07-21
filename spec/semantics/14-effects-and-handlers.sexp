@@ -1861,6 +1861,48 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 2 Int64)))
 
+(case "a LET-bound outer perform under an inner handle threads its state advance"
+  (doc    "An OUTER-handled effect performed INSIDE an inner (different-effect) handle, with the perform's
+           value LET-BOUND before the next operation: `A.bump` (threads 0→1) let-bound, then `A.get` reads
+           1 — the state advance crosses the inner `B` handler level intact. Pins the cross-level state
+           threading for the value-consumed sequencing form. (The DO-discarded twin of this shape — `(do
+           (A.bump unit) (A.get unit))` under the inner handle — currently DROPS the advance, a filed
+           lowering bug; when it is fixed its case joins this one, and this pin guards the form that must
+           keep working.)")
+  (input  (do
+            (effect A (op bump (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect B (op noop (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle A 0
+                ((bump (u) s (resume 0 (+ s 1)))
+                 (get (u) s (resume s s)))
+                (handle B 100
+                  ((noop (u) t (resume t t)))
+                  (let ((x (A.bump unit)))
+                    (A.get unit)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "a do-sequenced perform train under its OWN inner handle threads state"
+  (doc    "The inner-effect control for the cross-level threading: the do-sequenced bump/get train targets
+           the INNER handler itself (`B`, seeded 100) while an outer `A` handler wraps it — `B.bump`
+           (100→101 discarded) then `B.get` reads 101. Pins that do-sequencing is sound when the performs
+           discharge at the NEAREST handler; combined with the let-bound case above it brackets the filed
+           do-discarded CROSS-level state-drop precisely (same sequencing one level down: works; same
+           crossing with let: works; do + crossing: the bug).")
+  (input  (do
+            (effect A (op noop (-> Unit Int64)))
+            (effect B (op bump (-> Unit Int64)) (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle A 0
+                ((noop (u) s (resume s s)))
+                (handle B 100
+                  ((bump (u) t (resume 0 (+ t 1)))
+                   (get (u) t (resume t t)))
+                  (do (B.bump unit) (B.get unit)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 101 Int64)))
+
 (case "a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom"
   (doc    "The `Result` companion of the Option-result case: an operation whose declared result is a
            `(Result Int64 Int64)`, resumed with an `Ok` or `Err` chosen by the arm, and the body dispatches
