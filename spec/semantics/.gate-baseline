@@ -805,6 +805,7 @@ pass	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
 pass	a computed Float32 map key is found by its literal twin
 pass	a computed float map key is found by its literal twin
+pass	a concat of two runtime SLICES joins the sliced views, not the originals
 pass	a concat-built and a push-built SMALL list (single-leaf, n<=32) with the same elements are the same map key
 pass	a concat-built list = a push-built list with the same elements (element-wise, shape-independent, n>=33)
 pass	a conditional evaluates only the selected branch
@@ -1034,6 +1035,8 @@ pass	a fitting recursive annotated result computes at the narrow width
 pass	a float divide by zero takes the DIVIDEND's sign into the infinity
 pass	a float literal compared against a Float32 param computes at the narrow width
 pass	a handler STATE that is a recursive sum GROWS one constructor per operation
+pass	a handler arm computes its NEXT-STATE with a recursive pure helper
+pass	a handler arm computes its RESUME VALUE with a deeply RECURSIVE pure helper
 pass	a large value in a NON-projected tuple slot does not trip the projection width check
 pass	a literal just past the Float32 finite max overflows in a runtime branch
 pass	a literal one past the Int8 min rejects in a runtime branch
@@ -1047,6 +1050,7 @@ pass	a narrow-width overflow reached ACROSS a function boundary through a match 
 pass	a narrow-width overflow reached through a MATCH projection of a runtime sum is rejected
 pass	a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected
 pass	a negative literal under an UNSIGNED width rejects in a runtime branch
+pass	a performing closure called TWICE observes the state advance between its calls
 pass	a quantity in a TUPLE inside a LIST element renders scaled (nested composition)
 pass	a quantity in an OPTION inside a MAP value renders scaled (nested composition)
 pass	a quantity read from a map COMBINES with a fresh same-dimension quantity
@@ -1059,6 +1063,7 @@ pass	a runtime = over MUTUALLY-recursive sums walks across the type cycle
 pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
 pass	a shift by a RUNTIME amount computes (both operands off the fold)
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
+pass	a slice OF a slice composes the offsets at runtime bounds
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack
 pass	a tuple key whose element is itself a float-bearing tuple keys by content
@@ -2363,6 +2368,7 @@ pass	a set consumed by Set.remove in one operand is unchanged for a later read o
 pass	a set dedups NaN elements and keeps zero signs distinct
 pass	a set is constructed from a list of its elements
 pass	a set nested in a tuple compares equal with a runtime element, order-independent
+pass	a set of SETS deduplicates by inner-set value and finds a member built in a different order
 pass	a set of lists deduplicates by the whole list, distinguishing element order
 pass	a set of negative zero and positive zero keeps both (distinct sign bits)
 pass	a set of records deduplicates by the whole record and its membership is field-order-INDEPENDENT
@@ -2779,6 +2785,8 @@ pass	an SI decimal prefix scales a unit by a power of ten
 pass	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)
 pass	an abort abandons a pending borrowed map lookup and the map survives
 pass	an abort abandons a pending consuming op and the shared binding survives
+pass	an abortive arm yields a RECURSIVE-SUM spine as the handle's value
+pass	an abortive arm yields a heap LIST built in the arm as the handle's value
 pass	an abortive handler abandons a host call in the path it discards
 pass	an abortive handler arm never resumes, so its value becomes the handle's value
 pass	an abortive handler arm performed with a RUNTIME argument abandons the computation and returns it

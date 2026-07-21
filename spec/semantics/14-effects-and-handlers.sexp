@@ -449,6 +449,23 @@
             (def (main) (outer (fn (u) (R.roll)))) (export main)))
   (output (: 5 Int64)))
 
+(case "a performing closure called TWICE observes the state advance between its calls"
+  (doc    "The state-threading face of the performing closure (the homing pins above call the closure
+           once): `f = (fn (u) (Ctr.next unit))` is let-bound under the handler and applied TWICE in one
+           expression — the first call reads the seed `n` and threads `n+1`, the second reads `n+1`.
+           Encodes `10·first + second` = 10n + (n+1) → 34 at n = 3. Pins that each APPLICATION of a
+           performing closure is a fresh perform against the CURRENT handler state (a closure that captured
+           its perform's result at creation, or replayed the first discharge, would give 33).")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Ctr n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((f (fn ((: u Unit)) (Ctr.next unit))))
+                  (+ (* 10 (f unit)) (f unit)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 34 Int64)))
+
 (case "a ctl-style arm applying its continuation inside a match scrutinee resolves and folds"
   (doc    "The continuation binder `k` of a `ctl`-style arm must be in scope everywhere in the arm body,
            including inside a MATCH scrutinee. `(flip () s k (match (k 10) (z (* z 2))))` applies `k`
@@ -1025,6 +1042,42 @@
             (def (main)
               (handle Amb 0 ((flip (u) s (dbl (resume 10 s)))) (+ 1 (Amb.flip)))) (export main)))
   (output (: 22 Int64)))
+
+(case "a handler arm computes its RESUME VALUE with a deeply RECURSIVE pure helper"
+  (doc    "The recursive upgrade of the effect-free-helper arm (the `dbl` case above is explicitly
+           non-recursive): the arm's resume value is `(fib s)` — a doubly-recursive pure function run on
+           the handler STATE inside the arm — so the arm's evaluation nests an unbounded pure recursion
+           between the perform and the resume. Seeded 10, `fib 10` = 55 resumes to the body. Pins that a
+           handler arm may run arbitrary recursive computation to produce its resume value (the arm is an
+           ordinary expression context, not a restricted position).")
+  (input  (do
+            (effect Fib (op get (-> Unit Int64)))
+            (def (fib (: n Int64))
+              (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+            (def (main (: n Int64))
+              (handle Fib n
+                ((get (u) s (resume (fib s) s)))
+                (Fib.get unit)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 55 Int64))
+  (call   main (: 1 Int64)) (output (: 1 Int64)))
+
+(case "a handler arm computes its NEXT-STATE with a recursive pure helper"
+  (doc    "The next-state twin: the arm threads `(double-up s 2)` — a tail-recursive helper quadrupling the
+           state — as its NEXT-STATE argument. Seeded 1: the first `next` reads 1 and threads `double-up 1
+           2` = 4; the second reads 4. `(do (Tw.next) (Tw.next))` = 4. Pins that the resume's SECOND
+           argument (the state advance) may be an arbitrary recursive computation over the current state,
+           not only a primitive step like `(+ s 1)`.")
+  (input  (do
+            (effect Tw (op next (-> Unit Int64)))
+            (def (double-up (: n Int64) (: k Int64))
+              (if (= k 0) n (double-up (* n 2) (- k 1))))
+            (def (main (: n Int64))
+              (handle Tw 1
+                ((next (u) s (resume s (double-up s 2))))
+                (do (Tw.next unit) (Tw.next unit))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 4 Int64)))
 
 (case "a handler arm that resumes NON-tail folds through a PURE one-hole continuation"
   (doc    "The general one-shot arm generalizes past the identity-continuation sliver: when the performed
@@ -1949,6 +2002,39 @@
               (handle Bail (tuple 0 0) ((bail (n) s (tuple n n)))
                 (Bail.bail 7))) (export main)))
   (output (: (tuple 7 7) (Tuple Int64 Int64))))
+
+(case "an abortive arm yields a heap LIST built in the arm as the handle's value"
+  (doc    "The heap-collection abort (the tuple abort above is a fixed-shape compound; this arm BUILDS an
+           RRB list): `(stop (v) s (list v v v))` never resumes — the 3-element list constructed in the arm
+           becomes the handle's value, abandoning the body's continuation (`(list 1)` never evaluates). The
+           abort's `br` must carry a live heap HANDLE out of the handler block (not a scalar), and the
+           abandoned continuation's pending values must not corrupt it. `List.len` reads 3.")
+  (input  (do
+            (effect Halt (op stop (-> Int64 (List Int64))))
+            (def (main (: n Int64))
+              (List.len (handle Halt 0
+                ((stop (v) s (list v v v)))
+                (do (Halt.stop n) (list 1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3 Int64)))
+
+(case "an abortive arm yields a RECURSIVE-SUM spine as the handle's value"
+  (doc    "The unbounded-shape abort: the arm yields `(S (S (Z)))` — a recursive-sum spine — and the
+           abandoned body would have produced the different-depth `(Z)`. The abort path must carry the
+           multi-node heap structure out intact; the fold reads depth 2 (a corrupted or body-value handle
+           would read 0). With the list case above, pins that the abortive `br` carries every heap value
+           class, completing the abort-value matrix (scalar/runtime-scalar/tuple/list/recursive-sum).")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (effect Halt (op stop (-> Int64 Nat)))
+            (def (depth (: v Nat))
+              (match v ((S rest) (+ 1 (depth rest))) ((Z u) 0)))
+            (def (main (: n Int64))
+              (depth (handle Halt 0
+                ((stop (v) s (S (S (Z)))))
+                (do (Halt.stop n) (Z)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2 Int64)))
 
 (case "a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both"
   (doc    "The chained-compound-result shape: a perform returning a TUPLE has one of its fields projected

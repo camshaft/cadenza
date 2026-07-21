@@ -134,6 +134,23 @@
   (call   main (: 10 Int64)) (output (: 2 Int64))
   (call   main (: 99 Int64)) (output (: 3 Int64)))
 
+(case "a set of SETS deduplicates by inner-set value and finds a member built in a different order"
+  (doc    "The set-element member of the compound-element family (tuple/list/map above): set elements that
+           are themselves SETS. Because a Set is ORDER-INDEPENDENT, the inner sets `{a,b}` and `{b,a}` are the
+           SAME value, so `(Set.of (list {a,b} {b,a} {a}))` collapses the first two → `Set.len` 2; and
+           `Set.contains` for `{b,a}` (built in the opposite order) is TRUE — the outer set finds the member
+           by its canonical CONTENT, not by insertion order or handle. A Set-of-Sets is a CHAMP-of-CHAMPs
+           where the OUTER hash/compare must reduce each element set to its canonical (sorted) form (a walk
+           that hashed insertion order would keep `{a,b}` and `{b,a}` distinct → len 3, has 0). Encodes
+           10·len + has = 10·2 + 1 = 21. MUST be 21.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (let ((ss (Set.of (list (Set.of (list a b)) (Set.of (list b a)) (Set.of (list a))))))
+                (+ (* 10 (Set.len ss))
+                   (if (Set.contains ss (Set.of (list b a))) 1 0))))
+            (export main)))
+  (call   main (: 3 Int64) (: 8 Int64)) (output (: 21 Int64)))
+
 (case "a Set.of over RECURSIVE-sum elements dedups by spine content"
   (doc    "The unbounded-depth member of the compound-element family: elements are runtime-built Peano
            spines — `{(mk a), (mk 3)}` at `a = 3` collapses (two separately-built equal 4-node spines share
