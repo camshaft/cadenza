@@ -671,7 +671,9 @@ fn core_module_impl(
     // string arg IMPORTS a memory (from module `"mem"`, name `"mem"`) that the component's shared-memory
     // module provides and the string op's canon-lower reads. The import is a MEMORY desc (`0x02`) with
     // limits `{ min: 1 }`. Placed AFTER the func imports (a memory import does not occupy a func index).
-    let needs_memory = !layout.host_strings.is_empty();
+    // The core module imports `mem` when a host op passes a string — either a CONST string (laid in the
+    // data segment) OR a RUNTIME string (marshaled into `mem` by the `_mem` copy loop, `host_needs_memory`).
+    let needs_memory = !layout.host_strings.is_empty() || layout.host_needs_memory;
     let mut import_index: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let import_sec = if import_count == 0 && !needs_memory {
         Vec::new()

@@ -3,6 +3,7 @@ pass	@ensures / @requires predicate PROJECTS a TUPLE component (`(. ret N)` on t
 pass	@ensures on a RECURSIVE def whose body is a HANDLE is re-checked at every recursive exit (recursion x effects-fold seam)
 pass	@ensures on a def returning an @invariant type: establish (on construction) AND the postcondition (on ret) both fire (design §10, (D))
 pass	@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)
+pass	@ensures over a BIGINT (arbitrary-precision heap) result checks it with structural equality — the postcondition reads a non-scalar heap value
 pass	@ensures over a HANDLE-bodied def called with a runtime arg is enforced (the verify_enforce let-over-handle shape)
 pass	@ensures over a def whose body uses the `?` try-operator under an Option boundary — the postcondition matches the FALLIBLE result
 pass	@ensures predicate PROJECTS a RECORD field of the result (single field, and a two-field relation)
@@ -688,6 +689,7 @@ pass	a closure captures another closure and applies it
 pass	a closure captures another closure and applies it at RUNTIME
 pass	a closure captures its environment by value at creation, unaffected by a later same-named binding
 pass	a closure captures the binding in scope where it was created
+pass	a cancelling add-then-subtract chain keeps the intermediate overflow
 pass	a closure capturing THREE scalars is made and called
 pass	a closure capturing a RUNTIME-BUILT list indexes the captured spine at call time
 pass	a closure capturing a runtime String ROPE reads its byte length at call time
@@ -872,6 +874,8 @@ pass	a deep chain of runtime-list let-bindings compiles and returns the final le
 pass	a deep compound nesting all six leaf kinds round-trips through encode and decode
 pass	a deep consume leaves the intermediate compound and a sibling element readable
 pass	a deep four-leaf tree round-trips through encode and decode
+pass	a deep many-chunk runtime byte rope indexes and measures correctly through its depth
+pass	a deep many-chunk runtime string rope indexes and measures correctly through its depth
 pass	a deep nested-constructor pattern matching a nullary variant two layers deep solves its switch path
 pass	a deep out-of-order queue drains fully time-sorted with FIFO across every tie-group
 pass	a deep push chain beside two other live bindings retains each correctly
@@ -3264,6 +3268,7 @@ pass	eval of a quoted boolean connective short-circuits
 pass	eval of a quoted boolean executes it to the boolean value
 pass	eval of a quoted conditional reduces its comparison condition first
 pass	eval of a quoted conditional takes the branch its boolean literal selects
+pass	eval of a quoted disjunction short-circuits to true
 pass	eval of a quoted equality yields the boolean value directly
 pass	eval of a quoted float executes it to the float value
 pass	eval of a quoted float feeds ordinary float arithmetic
@@ -3271,6 +3276,7 @@ pass	eval of a quoted lambda application folds
 pass	eval of a quoted let-binding form folds
 pass	eval of a quoted list-construction form folds to the runtime list
 pass	eval of a quoted match form folds to the selected arm
+pass	eval of a quoted not inverts its boolean operand
 pass	eval of a quoted ordering comparison drives the branch
 pass	eval of a quoted ordering comparison yields the boolean value directly
 pass	eval of a quoted private constructor is withheld exactly as a direct reference — no forge
@@ -3363,6 +3369,7 @@ pass	intersection of a set with itself is the set (idempotent)
 pass	intersection with the empty set is the empty set
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	keyed lookups at different keys are not shared
+pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
 pass	le-ax of a ground add that OVERFLOWS Int64 traps during evaluation — it cannot wrap to forge a false bound
 pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned
@@ -4087,6 +4094,7 @@ pass	union is commutative
 pass	union of a set with itself is the set (idempotent)
 pass	union with the empty set is the set itself
 pass	unit and the empty tuple are the same value
+pass	the mirrored subtract-then-add chain computes at both boundaries without a spurious trap
 pass	unit is the empty tuple
 pass	unquote in quasiquote evaluates normally and embeds
 pass	unquote outside quasiquote is a syntax error
@@ -4359,3 +4367,5 @@ pass	a MIXED-shape compound scales its quantity leaf beside a non-quantity eleme
 pass	a data-rate quantity converts a binary-prefix composite unit to its byte/second reference
 pass	adding two data-rate quantities of the same composite dimension is exact
 pass	adding a data-rate to a length is a compile-time dimension error over a composite dimension
+todo	a whole MAP holding a quantity VALUE renders it scaled to reference in the value form
+pass	a NEGATIVE large-magnitude float renders its full expansion with its sign

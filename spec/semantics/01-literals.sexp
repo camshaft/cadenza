@@ -431,6 +431,15 @@
   (input  (do (def (main (: x Float64)) x) (export main)))
   (call   main (: 3.4028235e38 Float64)) (output (: 340282349999999991754788743781432688640.0 Float64)))
 
+(case "a NEGATIVE large-magnitude float renders its full expansion with its sign"
+  (doc    "The sign companion of the large-magnitude render pin: -3.4028235e38 renders
+           -340282349999999991754788743781432688640.0 — the full decimal expansion carrying its leading minus, NOT the shortest
+           re-reading form. Pins that the exact-expansion value render preserves the sign on a negative
+           top-of-magnitude Float64 (the sign is orthogonal to the compound-vs-scalar axis pinned by the
+           tuple/list/Option cases below). Both backends agree.")
+  (input  (do (def (main (: x Float64)) x) (export main)))
+  (call   main (: -3.4028235e38 Float64)) (output (: -340282349999999991754788743781432688640.0 Float64)))
+
 (case "a large-magnitude float renders its full expansion as a TUPLE element (compound matches scalar)"
   (doc    "Compound-element companion of the scalar large-magnitude pin: a Float64 whose shortest form
            differs from its exact value, as a tuple element, renders the FULL decimal expansion — the same

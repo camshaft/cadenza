@@ -553,6 +553,9 @@ pub fn emit(
         .with_import_base((imports.len() + host_imports.len() + extern_imports.len()) as u32)
         .with_host_order(host_order)
         .with_host_strings(host_strings)
+        // A String-param host op needs the shared `mem` even with no CONST string arg (the runtime-string
+        // `_mem` copy loop writes into it) — so the core module imports `mem` on `set_needs_memory` too.
+        .with_host_needs_memory(host::set_needs_memory(&host_imports))
         .with_extern_order(extern_order);
     let layout = &layout;
 

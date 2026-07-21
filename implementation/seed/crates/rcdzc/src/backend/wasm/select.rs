@@ -3082,7 +3082,18 @@ fn collect_used_ops_into(
             for arg in args {
                 match crate::infer::type_of(db, arg) {
                     Ty::Unit => {}
-                    Ty::String | Ty::Bytes if !peer_bound => {}
+                    // A CONSTANT string/bytes host arg crosses via the data segment (no runtime op). A
+                    // RUNTIME (non-const) string arg is marshaled by the `_mem` copy loop, which calls
+                    // `bytes-len` + `bytes-get` (+ `i32.store8`, a core instr needing no import) — declare
+                    // them here to MATCH the emit (else their `CallImport` resolves to u32::MAX → an invalid
+                    // module) and descend into the arg to collect the ops that BUILD the runtime rope.
+                    Ty::String | Ty::Bytes if !peer_bound => {
+                        if !matches!(core_of(db, arg), Core::ConstStr(_)) {
+                            out.insert(OP_BYTES_LEN);
+                            out.insert(OP_BYTES_GET);
+                            collect_used_ops_into(db, arg, out);
+                        }
+                    }
                     _ => collect_used_ops_into(db, arg, out),
                 }
             }
@@ -10501,30 +10512,86 @@ fn emit(
             let index = layout.host_index(&effect, &op).ok_or_else(|| {
                 Reject::decline("a host call's operation is not in the host-import set")
             })?;
+            // Only ONE runtime string arg per host call (they share the one fixed scratch buffer); a second
+            // declines above rather than silently overwriting the first.
+            let mut runtime_string_arg_seen = false;
             for &arg in &args {
                 let at = crate::infer::type_of(db, arg);
                 match at {
                     // A unit argument carries no boundary value.
                     Ty::Unit => continue,
-                    // A STRING argument crosses as `(ptr, len)` — its constant bytes were laid in the core
-                    // module's data segment at a known offset (`host_string_offset`), so push that ptr +
-                    // the byte length. Only a CONSTANT string is supported (a runtime byte-rope is a later
-                    // increment); a non-constant string arg declines.
-                    Ty::String => {
-                        let s = match core_of(db, arg) {
-                            Core::ConstStr(s) => s,
-                            _ => {
+                    // A STRING argument crosses as `(ptr, len)` into the SHARED host memory (`assemble_host_mem`
+                    // provides it; `set_needs_memory` fires for any String-param op). A CONSTANT string's bytes
+                    // were laid in the data segment at `host_string_offset` — push that ptr + len. A RUNTIME
+                    // string (a value-heap rope) is MARSHALED here: copy its bytes into a fixed scratch region
+                    // of `mem` past the const-string data, then push `(scratch_base, len)`.
+                    Ty::String => match core_of(db, arg) {
+                        Core::ConstStr(s) => {
+                            let offset = layout.host_string_offset(&s).ok_or_else(|| {
+                                Reject::decline(
+                                    "a host-arg string was not laid in the data segment",
+                                )
+                            })?;
+                            out.push(Lir::ConstI32(offset as i32));
+                            out.push(Lir::ConstI32(s.len() as i32));
+                        }
+                        // RUNTIME string arg → copy the rope into `mem` at `scratch_base`, push `(scratch_base,
+                        // len)`. The scratch region starts past the const-string data (rounded up + a gap) in
+                        // the 1-page shared `mem`. A host string arg is consumed IMMEDIATELY by the call (not
+                        // retained), so a fixed scratch reused per call is sound; a host call with TWO runtime
+                        // string args in one arg list would collide → declined (a nested/bump scheme is a later
+                        // increment). The copy loop mirrors `String.scalar-len`'s byte-scan (~7086) with
+                        // `I32Store8` in place of the counter. `bytes-len`/`bytes-get` are declared for this
+                        // path in `collect_used_ops_into` (else their `CallImport` resolves to u32::MAX).
+                        _ => {
+                            if runtime_string_arg_seen {
                                 return Err(Reject::decline(
-                                    "a host call with a non-constant string argument is not yet emitted",
+                                    "a host call with TWO runtime string arguments is not yet emitted \
+                                     (one fixed scratch buffer; a per-arg bump allocator is a later increment)",
                                 ));
                             }
-                        };
-                        let offset = layout.host_string_offset(&s).ok_or_else(|| {
-                            Reject::decline("a host-arg string was not laid in the data segment")
-                        })?;
-                        out.push(Lir::ConstI32(offset as i32));
-                        out.push(Lir::ConstI32(s.len() as i32));
-                    }
+                            runtime_string_arg_seen = true;
+                            let scratch_base = host_arg_scratch_base(layout);
+                            let rope_slot = base.max(*high);
+                            *high = (*high).max(rope_slot + 3);
+                            scratch_ty.insert(rope_slot, ValType::I32);
+                            let len_slot = rope_slot + 1;
+                            scratch_ty.insert(len_slot, ValType::I32);
+                            let pos_slot = rope_slot + 2;
+                            scratch_ty.insert(pos_slot, ValType::I32);
+                            emit(db, arg, slots, rope_slot + 3, high, scratch_ty, layout, out)?;
+                            out.push(Lir::LocalSet(rope_slot));
+                            out.push(Lir::LocalGet(rope_slot));
+                            out.push(Lir::CallImport(OP_BYTES_LEN)); // [len:i32]
+                            out.push(Lir::LocalSet(len_slot));
+                            out.push(Lir::ConstI32(0));
+                            out.push(Lir::LocalSet(pos_slot)); // pos = 0
+                            // block { loop { br_out if pos>=len; mem[scratch_base+pos] = bytes-get(rope,pos);
+                            //   pos++; br loop } }
+                            out.push(Lir::Block(BlockType::Empty)); // $done
+                            out.push(Lir::Loop(BlockType::Empty)); // $copy
+                            out.push(Lir::LocalGet(pos_slot));
+                            out.push(Lir::LocalGet(len_slot));
+                            out.push(Lir::I32GeS);
+                            out.push(Lir::BrIf(1)); // pos >= len → $done
+                            out.push(Lir::ConstI32(scratch_base as i32));
+                            out.push(Lir::LocalGet(pos_slot));
+                            out.push(Lir::I32Add); // [addr]
+                            out.push(Lir::LocalGet(rope_slot));
+                            out.push(Lir::LocalGet(pos_slot));
+                            out.push(Lir::CallImport(OP_BYTES_GET)); // [addr, byte:i32]
+                            out.push(Lir::I32Store8 { offset: 0 }); // mem[scratch_base+pos] = byte
+                            out.push(Lir::LocalGet(pos_slot));
+                            out.push(Lir::ConstI32(1));
+                            out.push(Lir::I32Add);
+                            out.push(Lir::LocalSet(pos_slot)); // pos++
+                            out.push(Lir::Br(0)); // → $copy
+                            out.push(Lir::End); // end $copy
+                            out.push(Lir::End); // end $done
+                            out.push(Lir::ConstI32(scratch_base as i32));
+                            out.push(Lir::LocalGet(len_slot)); // push (ptr, len)
+                        }
+                    },
                     // A scalar argument emits its value directly.
                     _ => emit(db, arg, slots, base, high, scratch_ty, layout, out)?,
                 }
@@ -11493,6 +11560,24 @@ fn elem_needs_rope_compaction(db: &mut Db, id: StructId) -> bool {
 fn is_bigint_valued(db: &mut Db, id: StructId) -> bool {
     matches!(type_of(db, id), Ty::BigInt)
         || matches!(type_of(db, id), Ty::Qty { inner, .. } if matches!(*inner, Ty::BigInt))
+}
+
+/// The byte offset in the shared host `mem` where a RUNTIME string host-arg's bytes are marshaled (the
+/// `_mem` runtime-arg path). The const-string host args occupy `[0, max(offset+len))` (the data segment);
+/// the runtime scratch buffer starts past that — the max const-string end rounded up to a 256-byte
+/// boundary, plus a 1 KiB gap (headroom so a future data-segment growth does not overlap). The shared mem
+/// is 1 page (64 KiB); a runtime string longer than `65536 - scratch_base` would overrun — the caller
+/// bounds this by the single-arg + fixed-buffer contract (a huge runtime string is a later increment; the
+/// value-heap rope's length is not statically known here, so an over-long string is a runtime concern the
+/// host boundary already sizes its read to `len`). Deterministic (no allocation state) — same base every call.
+fn host_arg_scratch_base(layout: &Layout) -> u32 {
+    let const_end = layout
+        .host_strings
+        .iter()
+        .map(|(s, off)| off + s.len() as u32)
+        .max()
+        .unwrap_or(0);
+    const_end.div_ceil(256) * 256 + 1024
 }
 
 fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, Reject> {

@@ -198,6 +198,30 @@ fn collect_qty_scale_paths(
                 visited.pop();
             }
         }
+        // A LIST / SET element, or a MAP KEY/VALUE: the scale is UNIFORM across every element/entry (all
+        // share the collection's element type + unit), so a SINGLE note per element-position suffices — the
+        // render applies it to each per-iteration binder. Path segments: a list/set element extends with
+        // `.*`, a map value with `!v`, a map key with `!k` (segments the render's collection arms mirror).
+        // A Qty in a Map VALUE (`(Map Int64 (Qty Float64 km))`) or a List element (`(List (Qty Float64 km))`)
+        // thus display-scales — v-quantity's whole-Map-value / List-element gap. (Distinct from the KEY-side
+        // float wrapper: this is the display-render scale-fold, a Map/List VALUE position.)
+        Ty::List(e) | Ty::Set(e) => {
+            let child = if path.is_empty() {
+                "*".to_string()
+            } else {
+                format!("{path}.*")
+            };
+            collect_qty_scale_paths(db, e, &child, out, visited);
+        }
+        Ty::Map(k, v) => {
+            let (kp, vp) = if path.is_empty() {
+                ("!k".to_string(), "!v".to_string())
+            } else {
+                (format!("{path}!k"), format!("{path}!v"))
+            };
+            collect_qty_scale_paths(db, k, &kp, out, visited);
+            collect_qty_scale_paths(db, v, &vp, out, visited);
+        }
         _ => {}
     }
 }

@@ -4987,11 +4987,43 @@ fn decode_value(
             }
             selected
         }
-        // Set/Map: the generator dedups (Set) / last-write-wins (Map) over G1_LIST_LEN drawn elements, so the
-        // rendered VALUE is not a simple 1:1 decode of the pool (a collision yields a smaller collection). The
-        // pool is still consumed deterministically, but rendering the post-dedup value would need to model
-        // the runtime dedup — a later increment. Fall back to the raw-int line (never a wrong value).
-        GenTy::Set(_) | GenTy::Map(_, _) => None,
+        // A Set: the generator draws exactly `RUNNER_LIST_LEN` elements (a FIXED count, no length draw) then
+        // `Set.of` DEDUPS them by value. Mirror it: decode all `RUNNER_LIST_LEN` elements in order (advancing
+        // the cursor over every one, so a NESTED Set keeps the cursor correct), then dedup by the rendered
+        // string — a collision yields a smaller set, exactly as the runtime does. Rendered `{a, b}` (first
+        // occurrence order); an all-collision draw renders a singleton. Set element decode uses the SAME
+        // element GenTy the generator built from, so a refined-newtype element renders in-domain (`{P(67)}`).
+        GenTy::Set(elem) => {
+            let mut seen = Vec::with_capacity(RUNNER_LIST_LEN);
+            for _ in 0..RUNNER_LIST_LEN {
+                let e = decode_value(elem, pool, cursor)?;
+                if !seen.contains(&e) {
+                    seen.push(e);
+                }
+            }
+            Some(format!("{{{}}}", seen.join(", ")))
+        }
+        // A Map: the generator folds `Map.insert` over `RUNNER_LIST_LEN` drawn key/value pairs, seeded from
+        // `Map.empty` — so a repeated KEY is LAST-WRITE-WINS. Mirror it: decode all `RUNNER_LIST_LEN` (key,
+        // value) pairs in draw order (advancing the cursor over every one), then apply last-write-wins by the
+        // rendered key string, preserving first-insertion order of each surviving key (the insert fold keeps a
+        // key's position, updating its value). Rendered `{k0: v1, k2: v2}`. Keys/values decode via their own
+        // GenTy, so refined-newtype key/value renders in-domain.
+        GenTy::Map(kty, vty) => {
+            let mut entries: Vec<(String, String)> = Vec::with_capacity(RUNNER_LIST_LEN);
+            for _ in 0..RUNNER_LIST_LEN {
+                let k = decode_value(kty, pool, cursor)?;
+                let v = decode_value(vty, pool, cursor)?;
+                // Last-write-wins: update an existing key's value in place (keeping its position), else append.
+                if let Some(slot) = entries.iter_mut().find(|(ek, _)| ek == &k) {
+                    slot.1 = v;
+                } else {
+                    entries.push((k, v));
+                }
+            }
+            let parts: Vec<String> = entries.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+            Some(format!("{{{}}}", parts.join(", ")))
+        }
     }
 }
 

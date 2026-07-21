@@ -3046,3 +3046,23 @@
   (trap   "unreachable")
   (call   main (: -5 Int64))
   (trap   "unreachable"))
+
+(case "@ensures over a BIGINT (arbitrary-precision heap) result checks it with structural equality — the postcondition reads a non-scalar heap value"
+  (doc    "The enforcement predicate operates on a BigInt result — a heap-allocated arbitrary-precision value, a
+           distinct representation from an Int64 scalar — using structural `=` (BigInt has no `>=` prelude op;
+           equality is the comparison). `f(n) = (BigInt.of n)` under `@ensures(= ret (BigInt.of 42))`: the
+           postcondition builds its own `(BigInt.of 42)` and compares it to `ret` by value. main projects the
+           result to a Bool via `(= (f k) (BigInt.of 42))`. f(42): ret = BigInt 42, the postcondition's `=`
+           holds → main returns true. f(7): ret = BigInt 7, `= (BigInt.of 42)` is false → the postcondition
+           traps. Pins that verify_enforce's `ret` binder + predicate lower correctly over a heap BigInt result
+           (not just Int64 scalars / tuples / records), and structural `=` composes in predicate position.
+           Runtime arg via main's param (no const-fold).")
+  (input  (do
+            (@ (ensures (= ret (BigInt.of 42)))
+               (def (f (: n Int64)) (BigInt.of n)))
+            (def (main (: k Int64)) (= (f k) (BigInt.of 42)))
+            (export main)))
+  (call   main (: 42 Int64))
+  (output (: true Bool))
+  (call   main (: 7 Int64))
+  (trap   "unreachable"))
