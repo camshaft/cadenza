@@ -338,6 +338,19 @@
             (_ false)))
   (output (: true Bool)))
 
+(case "a dependent-size utf8 segment decodes a length-prefixed string"
+  (doc    "The string-decoding companion of the dependent-size `(bytes body n)` case: `(bin (u8 n) (utf8 s n))`
+           reads a one-byte length `n = 2`, then decodes the next `n` bytes as strict UTF-8, binding `s` to
+           the resulting String. Against `(Bytes.of (list 2 104 105))` — length 2 then the bytes 104 105 =
+           `hi` — `s` = \"hi\". Pins that a `utf8` segment binds a DECODED STRING (not raw bytes), sized by an
+           earlier integer segment, the length-prefixed-string idiom (a UTF-8 field is decoded, validated, and
+           bound in one pattern). Ill-formed UTF-8 in those bytes would be a non-match (falls to the catch-all),
+           never a trap — decoding-bytes-to-a-string is total.")
+  (input  (match (Bytes.of (list 2 104 105))
+            ((bin (u8 n) (utf8 s n)) s)
+            (_ "miss")))
+  (output (: "hi" String)))
+
 (case "a literal segment matches a magic-number header by equality"
   (doc    "The pattern `(bin (u32 0x89504E47) (bytes rest))` matches the scrutinee only when its first
            four bytes equal the magic number (137 80 78 71) — a literal segment matches by equality, the

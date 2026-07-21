@@ -1608,6 +1608,17 @@ mod tests {
         // A symbol is NOT a string and NOT a name.
         assert_ne!(leaf_of("#\"meter\""), Leaf::Str("meter".to_string()));
         assert_ne!(leaf_of("#\"meter\""), Leaf::Name("meter".to_string()));
+        // The `#`-SIGIL BOUNDARY: `#` opens a symbol/char ONLY before `"`/`\`; before anything else
+        // (an identifier char), a bare `#foo` is an ORDINARY token — a `Leaf::Name` whose text INCLUDES
+        // the `#` (NOT a `Leaf::Sym("foo")`). So `#foo` and `#"foo"` are DISTINCT nodes. This is the
+        // reader-lexis rule the ML printer's `#`-name backtick escape depends on (a `#`-headed name must
+        // re-emit `` `#foo` `` so it doesn't re-lex as the symbol), and the answer to whether
+        // `(quote #foo)` reifies an `Ast.Name "#foo"` (it does) — pinned here so neither can silently drift.
+        assert_eq!(leaf_of("#foo"), Leaf::Name("#foo".to_string()));
+        assert_eq!(leaf_of("#meter"), Leaf::Name("#meter".to_string()));
+        assert_ne!(leaf_of("#foo"), Leaf::Sym("foo".to_string()));
+        // And the two `#foo` spellings read to genuinely different leaves.
+        assert_ne!(leaf_of("#foo"), leaf_of("#\"foo\""));
     }
 
     #[test]
