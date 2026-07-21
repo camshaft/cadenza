@@ -66,3 +66,15 @@
 ; BUILDS FINE (Vec<f64>) -> SET-SPECIFIC, not a general empty-collection hole. run-rust masks as "declined"
 ; but GATE build is hard E0308 FAIL -> NOT pinnable-as-declines until fixed. Routed v-rust-backend
 ; (extend empty-Set grounding to consult callee param type at call-arg position). Pin both cases on land.
+
+; ===== FIX QUEUED (v-rust-backend, 2026-07-21) — MR 9a9448f95, PIN PLAN ready =====
+; FIXED + queued to pr-sync (9a9448f95): rust/rust-async/wasm all 0-fail, +1 rcdzc regression test, NO
+; baseline flip (no corpus case witnesses it yet — that's my pin). NOT landed yet (still emits BTreeSet<i64>
+; on trunk 2bc0ba7ea). PIN PLAN (corpus-bugfix, on land): pin the Set case + Map twin, both expect value 0 on
+; ALL backends (was rust-E0308):
+;   (module m (def (loop (: n Int64) (: s (Set Float64))) (if (= n 0) (Set.len s) (loop (- n 1) s)))
+;             (def (run) (loop 3 (Set.of (list)))) (export run))  -> 0
+;   Map twin: same shape with (Map Float64 Int64) param + Map.empty seed -> 0
+; NB: (module …)-root cases need a LIB test not the do-wrapping corpus harness (per my memory trap
+; [[gate-corpus-harness-do-wraps-every-input-cannot-test-module-root]]) — so author these as (do (def …)
+; (export run)) with a nullary run, gradeable on all 3 backends. WATCH: pin the moment 9a9448f95 lands.

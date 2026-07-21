@@ -104,3 +104,38 @@ fn normalize_preserves_a_trailing_comment_and_writes() {
     assert!(after.contains("// note"), "the comment survived: {after}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn fmt_refuses_to_write_when_it_would_drop_a_sexpr_semicolon_comment() {
+    // The s-expr surface uses `;` line comments; the reader currently drops them (they never become a
+    // node) so a reprint LOSES them. The guard must count `;` on a `.sexp` file (not the ML `//`) and
+    // REFUSE the lossy write — fail-safe, file left byte-identical. (v-lsp/v-cdz-tooling report.)
+    let dir = std::env::temp_dir().join(format!("cdz-guard-sexpr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("m.sexp");
+    let src = "(module m\n  ; keep me\n  (def (add a b) (+ a b)) (export add))\n";
+    std::fs::write(&path, src).unwrap();
+    let p = path.to_str().unwrap();
+
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let out = Command::new(exe)
+        .args(["fmt", p])
+        .output()
+        .expect("spawn cdz");
+    assert!(
+        !out.status.success(),
+        "must refuse (exit non-zero) on a dropped `;` comment"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("refusing to format") && err.contains("`;`"),
+        "clear s-expr refusal naming `;`; got: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        src,
+        "the .sexp file must be left UNCHANGED (not clobbered)"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

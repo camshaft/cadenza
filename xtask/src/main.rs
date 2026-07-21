@@ -1485,13 +1485,28 @@ fn run_program_rust(
             // make the handle (`both(10, 20)`), the rest apply it (`(5)`) — the native equivalent of the
             // wasm make/call resource-handle ABI. A NON-factory export (return type is not `Rc<dyn Fn`) is
             // the ordinary single call. Recover K by counting the factory signature's params.
-            match rust_factory_param_count(&module, &name, async_mode) {
-                Some(k) if k <= args.len() => {
-                    let (caps, applied) = args.split_at(k);
-                    let call = format!("{name}({})({})", caps.join(", "), applied.join(", "));
-                    (name, call)
+            // CLOSURE-PARAMETER CONSUMER export: a def taking one or more `(-> a b)` params + applying
+            // them (`(def (apply-it (: g (-> Int64 Int64)) (: x Int64)) (g x))`). The host supplies each
+            // closure — the harness builds it from a companion PRODUCER export (a factory whose result is
+            // that same `Rc<dyn Fn>` type) and threads it. The flat `(call apply-it 100 7)` maps its args
+            // LEFT-TO-RIGHT onto the consumer's params: a closure param consumes K args (its producer's
+            // capture count) to build the closure via the producer; a scalar param consumes one. This
+            // mirrors the wasm make/call resource ABI (which cdz-run does itself; the rust driver has no
+            // cdz-run, so it synthesizes the closure here). Checked BEFORE the factory branch: a consumer's
+            // return type is NOT a closure, so `rust_factory_param_count` returns None for it.
+            if let Some(consumer_call) =
+                build_closure_consumer_call(&module, &name, &args, async_mode)
+            {
+                (name, consumer_call)
+            } else {
+                match rust_factory_param_count(&module, &name, async_mode) {
+                    Some(k) if k <= args.len() => {
+                        let (caps, applied) = args.split_at(k);
+                        let call = format!("{name}({})({})", caps.join(", "), applied.join(", "));
+                        (name, call)
+                    }
+                    _ => (name.clone(), format!("{name}({})", args.join(", "))),
                 }
-                _ => (name.clone(), format!("{name}({})", args.join(", "))),
             }
         }
         None => {
@@ -1951,16 +1966,31 @@ fn split_factory_application(call_expr: &str) -> Option<(String, String)> {
     None
 }
 
-fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Option<usize> {
+/// The parsed shape of an emitted `pub fn <name>(…) -> <ret>` signature, used by BOTH the factory
+/// (producer) analysis and the closure-parameter (consumer) analysis so they share ONE arrow-aware
+/// param-list walk (v-fleet-tooling review ask #1: don't naive-substring the closure-type text).
+struct EmittedSig<'a> {
+    /// Each top-level parameter's verbatim `<name>: <type>` text, in source order. Empty for a nullary fn.
+    /// The env param (`__cdz_env: &mut __CdzE`) is INCLUDED here (callers that care filter it).
+    params: Vec<&'a str>,
+    /// The return-type text (up to the fn body `{`).
+    ret_head: String,
+}
+
+/// Parse the emitted signature of `name` (the SOURCE-level export ident) out of `module`. Returns the
+/// param-list, the per-parameter slices (arrow-aware split, so a closure-typed param `g: Rc<dyn Fn(i64)
+/// -> i64>` is ONE param, not split at its inner `->`/`,`), and the return-type head. `None` if no such
+/// exported fn header is found or its param list is malformed.
+fn parse_emitted_sig<'a>(module: &'a str, name: &str, async_mode: bool) -> Option<EmittedSig<'a>> {
     let marker = if async_mode {
         "pub async fn "
     } else {
         "pub fn "
     };
     // Find the exact `<marker><name>` header. The name boundary matters: a bare `split` on `pub fn both`
-    // also matches `pub fn both2(` (prefix), so a MULTI-export module grabs the wrong occurrence and counts
-    // the wrong arity (Copilot PR#548). Only an occurrence whose next char starts the param list `(` (sync)
-    // or the generic list `<` (async) — never an identifier-continuation char — is the real header.
+    // also matches `pub fn both2(` (prefix), so a MULTI-export module grabs the wrong occurrence (Copilot
+    // PR#548). Only an occurrence whose next char starts the param list `(` (sync) or the generic list
+    // `<` (async) — never an identifier-continuation char — is the real header.
     let needle = format!("{marker}{name}");
     let after = module
         .match_indices(&needle)
@@ -1977,13 +2007,16 @@ fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Optio
     if !after.starts_with('(') {
         return None;
     }
-    // Walk the param list, tracking nesting depth so a `(…)`/`<…>` inside a param TYPE isn't miscounted.
-    // The RETURN type follows the matching `)`; only a `-> …Rc<dyn Fn(` return marks a factory.
+    // Walk the param list, tracking nesting depth so a `(…)`/`<…>` inside a param TYPE isn't miscounted,
+    // and recording each top-level comma so params can be split. A `>` closes an angle group EXCEPT the
+    // `>` of a `->` return arrow (which appears INSIDE the list when a param type is itself a closure,
+    // `g: Rc<dyn Fn(i64) -> i64>`); counting it as a close underflows depth so the list's own `)` never
+    // returns to depth 0 → the slice below would panic `begin > end` (v-rust-backend hit this). Guard: a
+    // `>` immediately preceded by `-` is an arrow, not a bracket close.
     let bytes = after.as_bytes();
     let mut depth = 0usize;
-    let mut params = 0usize;
-    let mut saw_any = false;
     let mut end = 0usize;
+    let mut comma_positions = Vec::new();
     for (i, &b) in bytes.iter().enumerate() {
         match b {
             b'(' | b'<' | b'[' => depth += 1,
@@ -1994,55 +2027,241 @@ fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Optio
                     break;
                 }
             }
-            // A `>` closes an angle group — EXCEPT the `>` of a `->` return arrow, which can appear
-            // INSIDE the param list when a parameter's type is itself a closure (e.g.
-            // `g: Rc<dyn Fn(i64) -> i64>`). Counting that arrow's `>` as an angle-close underflows
-            // depth (saturating to 0), so the param-list's own `)` never returns to depth 0, `end` stays
-            // 0, and the `&after[1..end]` slice below PANICS `begin > end` — aborting the whole gate run
-            // (v-rust-backend hit this probing the closure-PARAM emit). Guard: a `>` immediately preceded
-            // by `-` is an arrow, not a bracket close. (`- >` with a space isn't valid Rust, so the
-            // adjacent-byte check is sufficient.)
             b'>' if i == 0 || bytes[i - 1] != b'-' => depth = depth.saturating_sub(1),
-            b',' if depth == 1 => params += 1,
-            b if depth == 1 && !b.is_ascii_whitespace() => saw_any = true,
+            b',' if depth == 1 => comma_positions.push(i),
             _ => {}
         }
     }
-    // If the walk never found the param-list close (`end` still 0 — a malformed or unexpected signature
-    // shape), this is not a factory we can analyze: return None rather than slicing `&after[1..0]` (which
-    // panics `begin > end`). Defensive belt-and-suspenders alongside the arrow guard above.
+    // If the walk never found the param-list close (`end` still 0 — a malformed/unexpected shape), this is
+    // not a signature we can analyze: return None rather than slicing `&after[1..0]` (panics `begin > end`).
     if end == 0 {
         return None;
     }
-    // `params` counted the commas; the param count is commas+1 if the list is non-empty, else 0.
-    let count = if saw_any { params + 1 } else { 0 };
-    // In ASYNC mode the emitted signature prepends the gas/yield env param (`__cdz_env: &mut __CdzE, …`),
-    // which is backend plumbing, NOT one of the factory's own capture params. Discount it so the split of
-    // the flat `(call …)` args into (captures | closure-application) uses the SAME K on both targets —
-    // otherwise the env param is miscounted as a capture and the closure-application args land in the
-    // factory call (E0061 arg-count mismatch + a lost application). Detect the env param by its LEADING
-    // presence (`__cdz_env`/`&mut __CdzE` as the first param), NOT a blind `-1`: an async signature written
-    // WITHOUT the env prefix (e.g. a hand-authored test string `pub async fn scale<E: CdzEnv>(k)`) has no
-    // env param to discount, so blindly subtracting 1 would undercount its real captures.
-    // The env param's emitted names mirror the rcdzc rust backend's `ENV_PARAM`/`ENV_TYPE_PARAM`
-    // (`backend/rust/mod.rs`): value `__cdz_env`, type `__CdzE`. Kept as literals here (the gate harness
-    // does not depend on rcdzc's internals); if those names ever change, this detection follows.
-    let param_list = &after[1..end];
-    let has_env_param =
-        param_list.trim_start().starts_with("__cdz_env") || param_list.contains("&mut __CdzE");
-    let count = if async_mode && has_env_param && count > 0 {
-        count - 1
+    // Split the param list into top-level params at the recorded commas (indices into `after`; the list
+    // runs `1..end` past the leading `(`). An empty list (nullary fn) → no params.
+    let params: Vec<&str> = if after[1..end].trim().is_empty() {
+        Vec::new()
     } else {
-        count
+        let mut parts = Vec::new();
+        let mut start = 1usize; // just past the `(`
+        for &c in &comma_positions {
+            parts.push(after[start..c].trim());
+            start = c + 1;
+        }
+        parts.push(after[start..end].trim());
+        parts
     };
-    // Confirm the return type is a closure (`-> …Rc<dyn Fn(`) — only then is this a factory.
-    let ret = &after[end + 1..];
-    let ret_head: String = ret.chars().take_while(|&c| c != '{').collect();
-    if ret_head.contains("Rc<dyn Fn(") {
-        Some(count)
-    } else {
-        None
+    let ret_head: String = after[end + 1..].chars().take_while(|&c| c != '{').collect();
+    Some(EmittedSig { params, ret_head })
+}
+
+/// Whether a parameter slice (`<name>: <type>`) is the async gas/yield env param — backend plumbing, not
+/// a source param. Its emitted names mirror the rcdzc rust backend's `ENV_PARAM`/`ENV_TYPE_PARAM`
+/// (`backend/rust/mod.rs`): value `__cdz_env`, type `__CdzE`.
+fn is_env_param(param: &str) -> bool {
+    param.trim_start().starts_with("__cdz_env") || param.contains("&mut __CdzE")
+}
+
+/// Whether a parameter slice (`<name>: <type>`) is a closure — its type is an `Rc<dyn Fn(…)>`.
+fn is_closure_param(param: &str) -> bool {
+    param.contains("std::rc::Rc<dyn Fn(") || param.contains("Rc<dyn Fn(")
+}
+
+/// The closure TYPE of a parameter slice (`g: std::rc::Rc<dyn Fn(i64) -> i64>`) → the `Rc<dyn Fn…>` text,
+/// or `None` if the param is not a closure. Used to match a consumer's closure param to the PRODUCER whose
+/// result type is that same closure type.
+fn closure_param_type(param: &str) -> Option<&str> {
+    let start = param
+        .find("std::rc::Rc<dyn Fn(")
+        .or_else(|| param.find("Rc<dyn Fn("))?;
+    Some(param[start..].trim())
+}
+
+/// The TYPE of a parameter slice `<name>: <type>` → the `<type>` text (everything after the first `:`).
+/// A param is always `name: type` in emitted Rust (no un-annotated params), so the split is unambiguous.
+fn param_type_of(param: &str) -> String {
+    match param.split_once(':') {
+        Some((_, ty)) => ty.trim().to_string(),
+        None => param.trim().to_string(),
     }
+}
+
+/// The `Rc<dyn Fn(…)>` closure type out of a return-head (`-> std::rc::Rc<dyn Fn(i64) -> i64>`), trimming
+/// the leading `->`. `None` if the return is not a closure type.
+fn closure_ret_type(ret_head: &str) -> Option<String> {
+    let start = ret_head
+        .find("std::rc::Rc<dyn Fn(")
+        .or_else(|| ret_head.find("Rc<dyn Fn("))?;
+    Some(ret_head[start..].trim().to_string())
+}
+
+/// Build the driver call for a CLOSURE-PARAMETER consumer export, or `None` if `name` has no closure param
+/// (then the caller falls through to the factory/ordinary path). The consumer's params are mapped
+/// LEFT-TO-RIGHT onto the flat call `args`: a closure param consumes K args (its producer's capture count)
+/// and becomes `prog::<producer>(<those K args>)`; a non-closure param consumes one arg verbatim. Each
+/// closure param is paired to its producer DETERMINISTICALLY: the FIRST not-yet-used export whose result
+/// type equals the param's closure type, scanning producers in module order and consuming each once
+/// (v-fleet-tooling review ask #2 — a stable pairing so a future change cannot silently reorder them).
+/// `prog::` prefixes match the driver's `mod prog { … }` wrapping. Async producers/consumers are driven by
+/// the caller's `block_on` (the closure value itself is a sync `Rc<dyn Fn>` per the option-C rule).
+fn build_closure_consumer_call(
+    module: &str,
+    name: &str,
+    args: &[String],
+    async_mode: bool,
+) -> Option<String> {
+    let sig = parse_emitted_sig(module, name, async_mode)?;
+    // Only a CONSUMER (has a closure param); if none, let the factory/ordinary path handle it.
+    let source_params: Vec<&&str> = sig.params.iter().filter(|p| !is_env_param(p)).collect();
+    if !source_params.iter().any(|p| is_closure_param(p)) {
+        return None;
+    }
+    // Enumerate the PRODUCER exports, in module order. A producer that supplies a closure comes in TWO
+    // emitted shapes, both handled:
+    //  - FACTORY: a def WITH captures returns the closure as a VALUE — `fn make_adder(k) -> Rc<dyn Fn…>`
+    //    (result type IS a closure). Its cap-count args build the closure: `make_adder(<caps>)`.
+    //  - PEELED: a NULLARY def whose closure body is eta-peeled to a direct fn — `fn mk(x) -> i64` (a
+    //    `(fn (x) …)` with no capture; the closure is applied at one site so the emitter inlines it). Its
+    //    closure type is `Rc<dyn Fn(<its params>) -> <its ret>>`; no cap args — the closure IS the fn,
+    //    wrapped `Rc::new(prog::mk as fn(<p>)-><r>) as Rc<dyn Fn…>`.
+    // Each producer is consumed at most once; a closure param pairs to the FIRST unused producer whose
+    // closure type matches (deterministic left-to-right — review ask #2).
+    enum Producer {
+        /// A real factory: its RESULT closure type + capture-arg count.
+        Factory {
+            ident: String,
+            closure_ty: String,
+            cap: usize,
+        },
+        /// An eta-peeled nullary producer: `fn ident(<params>) -> <ret>` == the closure `Rc<dyn Fn(<params
+        /// types>) -> <ret>>`. We store the equivalent closure type + the raw `fn` type for the coercion.
+        Peeled {
+            ident: String,
+            closure_ty: String,
+            fn_ty: String,
+        },
+    }
+    let mut producers: Vec<Producer> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (i, _) in module
+        .match_indices("pub fn ")
+        .chain(module.match_indices("pub async fn "))
+    {
+        let rest = &module[i..];
+        let after_kw = match rest
+            .strip_prefix("pub async fn ")
+            .or_else(|| rest.strip_prefix("pub fn "))
+        {
+            Some(s) => s,
+            None => continue,
+        };
+        let ident: String = after_kw
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if ident.is_empty() || ident == name || !seen.insert(ident.clone()) {
+            continue;
+        }
+        let Some(psig) = parse_emitted_sig(module, &ident, async_mode) else {
+            continue;
+        };
+        let src_params: Vec<&&str> = psig.params.iter().filter(|p| !is_env_param(p)).collect();
+        if psig.ret_head.contains("Rc<dyn Fn(") {
+            // FACTORY: result is a closure.
+            let cty = closure_ret_type(&psig.ret_head)?;
+            producers.push(Producer::Factory {
+                ident,
+                closure_ty: cty,
+                cap: src_params.len(),
+            });
+        } else if !src_params.iter().any(|p| is_closure_param(p)) {
+            // PEELED candidate: a plain fn (no closure param, non-closure return). Its equivalent closure
+            // type is `Rc<dyn Fn(<param types>) -> <ret>>`; the raw `fn(<param types>) -> <ret>` is used
+            // for the coercion. (A fn with a closure param is a CONSUMER, not a producer — skip it.)
+            let param_types: Vec<String> = src_params.iter().map(|p| param_type_of(p)).collect();
+            let ret = psig
+                .ret_head
+                .trim()
+                .trim_start_matches("->")
+                .trim()
+                .to_string();
+            let closure_ty = format!("std::rc::Rc<dyn Fn({}) -> {}>", param_types.join(", "), ret);
+            let fn_ty = format!("fn({}) -> {}", param_types.join(", "), ret);
+            producers.push(Producer::Peeled {
+                ident,
+                closure_ty,
+                fn_ty,
+            });
+        }
+    }
+    let mut used_producer = vec![false; producers.len()];
+    let mut arg_i = 0usize;
+    let mut call_args: Vec<String> = Vec::with_capacity(source_params.len());
+    let ty_matches = |prod: &Producer, cty: &str| match prod {
+        Producer::Factory { closure_ty, .. } | Producer::Peeled { closure_ty, .. } => {
+            closure_ty.contains(cty) || cty.contains(closure_ty.as_str())
+        }
+    };
+    for p in &source_params {
+        if let Some(cty) = closure_param_type(p) {
+            // Pair this closure param to a producer: PREFER the first not-yet-used matching producer
+            // (deterministic left-to-right — review ask #2), but FALL BACK to REUSING a matching producer
+            // when every match is already used. Reuse is correct: the host mints a FRESH closure handle per
+            // param (`app2(f, g, x)` with one nullary `mk` builds `mk`-equivalent closures for both f and
+            // g), so one producer legitimately supplies several closure params.
+            let pi = producers
+                .iter()
+                .enumerate()
+                .position(|(pi, prod)| !used_producer[pi] && ty_matches(prod, cty))
+                .or_else(|| producers.iter().position(|prod| ty_matches(prod, cty)))?;
+            used_producer[pi] = true;
+            match &producers[pi] {
+                Producer::Factory { ident, cap, .. } => {
+                    if arg_i + cap > args.len() {
+                        return None; // not enough args for this producer's captures
+                    }
+                    let caps = &args[arg_i..arg_i + cap];
+                    arg_i += cap;
+                    call_args.push(format!("prog::{ident}({})", caps.join(", ")));
+                }
+                Producer::Peeled {
+                    ident,
+                    fn_ty,
+                    closure_ty,
+                } => {
+                    // No cap args — wrap the peeled fn as the closure value (coerce fn-item → fn-ptr →
+                    // the `dyn Fn` trait object).
+                    call_args.push(format!(
+                        "(std::rc::Rc::new(prog::{ident} as {fn_ty}) as {closure_ty})"
+                    ));
+                }
+            }
+        } else {
+            // A non-closure param consumes exactly one verbatim call arg.
+            if arg_i >= args.len() {
+                return None;
+            }
+            call_args.push(args[arg_i].clone());
+            arg_i += 1;
+        }
+    }
+    // The consumer is called with the synthesized closure(s) + scalar args in param order. `prog::` is added
+    // by the caller's `call_or_await`/render (it prepends `prog::` to `call_expr`), so return the bare
+    // `<name>(<args>)` form the factory branch also returns.
+    Some(format!("{name}({})", call_args.join(", ")))
+}
+
+fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Option<usize> {
+    let sig = parse_emitted_sig(module, name, async_mode)?;
+    // A FACTORY's return type is a closure (`-> …Rc<dyn Fn(`) — only then is this a producer.
+    if !sig.ret_head.contains("Rc<dyn Fn(") {
+        return None;
+    }
+    // The factory's CAPTURE params = its source params minus the async env param (which is backend
+    // plumbing, NOT a capture — counting it would misalign the flat `(call …)` args → captures|application
+    // split, an E0061 arg-count mismatch + a lost application). Detect the env param by NAME rather than a
+    // blind `-1`, so a hand-authored env-less async fixture stays correct.
+    Some(sig.params.iter().filter(|p| !is_env_param(p)).count())
 }
 
 /// The async gate driver's harness: a no-limit `GateEnv` implementing the emitted `CdzEnv` (the gate
@@ -5687,6 +5906,38 @@ mod trap_grading_tests {
         assert_eq!(
             rust_factory_param_count(factory_with_closure_param, "compose", false),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn build_closure_consumer_call_synthesizes_the_producer_closure() {
+        // A CONSUMER export takes a closure param; the driver builds it from a companion PRODUCER export.
+        // (1) FACTORY producer (has a capture): the closure is `make_adder(<cap arg>)`, the scalar param
+        // takes the next arg. `apply-it(g, x)` with `(call apply-it 100 7)` → `apply_it(make_adder(100), 7)`.
+        let m = "pub fn make_adder(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … } \
+                 pub fn apply_it(g: std::rc::Rc<dyn Fn(i64) -> i64>, x: i64) -> i64 { … }";
+        assert_eq!(
+            build_closure_consumer_call(m, "apply_it", &["100".into(), "7".into()], false)
+                .as_deref(),
+            Some("apply_it(prog::make_adder(100), 7)")
+        );
+        // (2) TWO closure params, ONE nullary PEELED producer (`mk` eta-peeled to `fn mk(x)->i64`): both
+        // closures come from `mk` (REUSE — the host mints a fresh handle each), the scalar takes the arg.
+        // `app2(f, g, x)` with `(call app2 5)` → `app2(<mk-closure>, <mk-closure>, 5)`. Pins DETERMINISTIC
+        // multi-closure pairing (review ask #2): both wrap `prog::mk`, in param order, the scalar last.
+        let m2 = "pub fn mk(x: i64) -> i64 { … } \
+                  pub fn app2(f: std::rc::Rc<dyn Fn(i64) -> i64>, g: std::rc::Rc<dyn Fn(i64) -> i64>, x: i64) -> i64 { … }";
+        let call = build_closure_consumer_call(m2, "app2", &["5".into()], false).unwrap();
+        assert_eq!(
+            call,
+            "app2((std::rc::Rc::new(prog::mk as fn(i64) -> i64) as std::rc::Rc<dyn Fn(i64) -> i64>), \
+             (std::rc::Rc::new(prog::mk as fn(i64) -> i64) as std::rc::Rc<dyn Fn(i64) -> i64>), 5)"
+        );
+        // (3) A non-consumer (no closure param) → None (falls through to the factory/ordinary path).
+        let m3 = "pub fn add(a: i64, b: i64) -> i64 { … }";
+        assert_eq!(
+            build_closure_consumer_call(m3, "add", &["1".into(), "2".into()], false),
+            None
         );
     }
 

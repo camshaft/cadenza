@@ -1961,6 +1961,34 @@
   (call   main (: 0 Int64))
   (trap   "divide by zero"))
 
+; ── DIVISION/REMAINDER by the constant ONE: `x / 1` KEEPS x, `x % 1` ANNIHILATES to 0 ────────────────
+; `arith_identity` (lower.rs) folds `(/ x 1)` → x (division by one is the identity — KEEPS the operand,
+; so its own traps stay and a boundary value returns unchanged) and `(% x 1)` → 0 (every integer is
+; divisible by 1, remainder 0 — this DISCARDS x, so it is guarded on `is_trap_free`: a trapping operand
+; must still trap). These are the constant-`1` divisor companions of the self-operand `x / x` above (which
+; must NOT fold) and the `x * 1` keeper / `x * 0`,`x & 0` annihilators — the divide/remainder face of the
+; keeping-vs-annihilating distinction. Both backends; a runtime `x` keeps the op out of the const fold.
+(case "division by one keeps a boundary-crossing runtime operand"
+  (doc    "`(/ x 1)` is the identity — dividing by one never overflows or traps and returns `x` unchanged.
+           Called with Int64.min it comes back Int64.min exactly (a fold that re-derived the boundary would
+           corrupt it); x = -7 → -7. Pins `x / 1 = x` on a genuinely runtime operand — the division
+           companion of the `x + 0`/`x * 1` keepers, distinct from the `x / x` NON-fold above. Both
+           backends.")
+  (input  (do (def (main (: x Int64)) (/ x 1)) (export main)))
+  (call   main (: -9223372036854775808 Int64)) (output (: -9223372036854775808 Int64))
+  (call   main (: -7 Int64)) (output (: -7 Int64)))
+
+(case "remainder by one folds to zero but does not discard a trapping runtime operand"
+  (doc    "`(% x 1)` = 0 for every integer x (all integers are divisible by 1) — an ANNIHILATOR that
+           DISCARDS x. Using `(% (/ 10 z) 1)`: at z = 5 the trap-free operand `(/ 10 z)` = 2 and `% 1`
+           folds to 0. But like `x * 0`/`x & 0` the fold may drop the operand's VALUE, not its EVALUATION:
+           at z = 0 the discarded `(/ 10 z)` divides by zero and MUST still trap. Pins both faces of the
+           `% 1` annihilator — the constant value 0 and the `is_trap_free` guard preserving the operand's
+           trap — on both backends.")
+  (input  (do (def (main (: z Int64)) (% (/ 10 z) 1)) (export main)))
+  (call   main (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: 0 Int64)) (trap "divide by zero"))
+
 ; ── An ANNIHILATOR algebraic identity (x*0, x&0 → 0) must not DISCARD a trapping runtime operand ──────
 ; These are the annihilator companions of the tautology-comparison cases above, aimed at the algebraic
 ; SIMPLIFICATION the compiler applies at the Core (backend-independent) tier: `x * 0` and `x & 0` fold to

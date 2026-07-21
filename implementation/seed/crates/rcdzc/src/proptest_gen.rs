@@ -355,29 +355,16 @@ fn plan_for_item(ast: &Arenas, item: StructId, items: &[StructId]) -> Option<Tes
                         *ml = (*ml).max(m);
                     }
                 }
-                // Apply a param-level match-based `@requires` CONSTRUCTOR filter to a `Sum` param: a
-                // precondition `(match o ((T.Some n) …) ((T.None) false))` forbids the `None` constructor, so
-                // drop it from the generator's variant set — otherwise the wrapper draws `None`, the enforced
-                // (D) precondition traps, and the runner reports a spurious `f(None)`. If ALL variants would be
-                // forbidden (an unsatisfiable precondition) keep them all — generation then trips the trap,
-                // which reports honestly rather than leaving the sum empty (no variant to build).
+                // Apply a param-level match-based `@requires` to a `Sum` param: drop a constructor an arm
+                // forbids (`((T.None) false)` → the wrapper never draws `None`, so the enforced (D)
+                // precondition can't spuriously trap on `f(None)`), and narrow a kept constructor's Int
+                // payload to a same-arm payload range (`((T.Some n) (>= n 0))` → `Some` draws in `[0,…]`, no
+                // spurious `Some(-1)`). Shared with the decode side so the `% k` selector + payload draw stay
+                // in sync. Unsatisfiable-forbid keeps every variant (honest trap over an empty sum).
                 if let (GenTy::Sum { variants, .. }, Some(pname)) =
                     (&mut gt, ast.as_name(param_name_occ))
                 {
-                    let forbidden: std::collections::HashSet<String> = requires_preds
-                        .iter()
-                        .flat_map(|&q| sum_ctors_forbidden_by_match(ast, q, pname))
-                        .collect();
-                    if !forbidden.is_empty() {
-                        let kept: Vec<_> = variants
-                            .iter()
-                            .filter(|(vname, _)| !forbidden.contains(vname))
-                            .cloned()
-                            .collect();
-                        if !kept.is_empty() {
-                            *variants = kept;
-                        }
-                    }
+                    constrain_sum_variants(ast, variants, &requires_preds, pname);
                 }
                 // A SCALAR param (`Int`/`Bool`/`Float`) has a boundary representation → boundary-arg route,
                 // no wrapper. Only a COMPOUND param (no boundary form) forces the synthesized wrapper.
@@ -519,11 +506,11 @@ pub fn gen_ty_of_wrapper_param(db: &crate::db::Db, wrapper_name: &str) -> Option
             *ml = (*ml).max(m);
         }
     }
-    // RE-APPLY the param-level match-based `@requires` CONSTRUCTOR filter on the DECODE side too, matching the
-    // generation-side filter (`plan_for_item`): drop the forbidden variants so the decoder consumes the pool
-    // with the SAME `% k` selector arity the generator used. WITHOUT this, generation draws over the kept
-    // variants but decode re-classifies over the FULL set, and the `% k` selector desyncs → a wrong-variant
-    // counterexample render. Same all-forbidden guard (keep all if the precondition forbids every variant).
+    // RE-APPLY the param-level match-based `@requires` constraints on the DECODE side too, matching the
+    // generation-side (`plan_for_item`): drop the forbidden variants AND narrow a kept ctor's Int payload to
+    // its recognized range, so the decoder consumes the pool with the SAME `% k` selector arity + the SAME
+    // in-range payload the generator drew. WITHOUT this, decode re-classifies over the FULL/unconstrained set
+    // and the `% k` selector or payload width desyncs → a wrong-variant / raw-int counterexample render.
     if let (GenTy::Sum { variants, .. }, Some(pname)) = (
         &mut gt,
         db.ast
@@ -531,21 +518,7 @@ pub fn gen_ty_of_wrapper_param(db: &crate::db::Db, wrapper_name: &str) -> Option
             .and_then(|t| t.first())
             .and_then(|&n| db.ast.as_name(n)),
     ) {
-        let forbidden: std::collections::HashSet<String> = db
-            .requires_of(def)
-            .iter()
-            .flat_map(|&q| sum_ctors_forbidden_by_match(&db.ast, q, pname))
-            .collect();
-        if !forbidden.is_empty() {
-            let kept: Vec<_> = variants
-                .iter()
-                .filter(|(vname, _)| !forbidden.contains(vname))
-                .cloned()
-                .collect();
-            if !kept.is_empty() {
-                *variants = kept;
-            }
-        }
+        constrain_sum_variants(&db.ast, variants, db.requires_of(def), pname);
     }
     Some(gt)
 }
@@ -752,6 +725,17 @@ const ONE_SIDED_INVARIANT_WINDOW: i64 = 1_000_000;
 /// (reject-free fallback). Mirrors the scalar `@requires` bound recognizer, but over `self` and guest-side.
 /// (`self` = [`crate::invariant_establish::VALUE_BINDER`], the operator-canonical `@invariant` binder.)
 fn invariant_int_range(ast: &Arenas, pred: StructId) -> Option<(i64, i64)> {
+    int_range_over(ast, pred, crate::invariant_establish::VALUE_BINDER)
+}
+
+/// Recognize an inclusive integer RANGE `[lo, hi]` from a predicate over the BINDER name `binder` — the
+/// binder-parameterized core of [`invariant_int_range`]. `invariant_int_range` calls this with the
+/// operator-canonical `@invariant` value binder (`self`); the sum-payload-guard recognizer calls it with a
+/// match-arm's PATTERN BINDER (e.g. `n` in `((Opt.Some n) (>= n 0))`), so a guard body that bounds the
+/// payload int maps to an [`GenTy::IntRange`] on that constructor's payload. Same shape vocabulary as before
+/// — `(and (>= b LO) (<= b HI))`, mirrors, a lone bound, `(= b K)`, with one-sided bounds closed by
+/// [`ONE_SIDED_INVARIANT_WINDOW`] and a contradictory two-sided range (`lo > hi`) rejected → unconstrained.
+fn int_range_over(ast: &Arenas, pred: StructId, binder: &str) -> Option<(i64, i64)> {
     let (mut lo, mut hi): (Option<i64>, Option<i64>) = (None, None);
     // Collect comparison conjuncts: descend a top-level `(and …)`/`(& …)`, else treat `pred` as one cmp.
     let mut stack = vec![pred];
@@ -771,8 +755,7 @@ fn invariant_int_range(ast: &Arenas, pred: StructId) -> Option<(i64, i64)> {
             if t.len() != 2 {
                 return None;
             }
-            let it_is =
-                |n: StructId| ast.as_name(n) == Some(crate::invariant_establish::VALUE_BINDER);
+            let it_is = |n: StructId| ast.as_name(n) == Some(binder);
             let lit = |n: StructId| ast.as_int(n).and_then(|v| v.to_i64());
             // `(op self LIT)` or the mirror `(op LIT self)` — normalize to `self OP' LIT`.
             let (val, mirrored) = if it_is(t[0]) {
@@ -911,6 +894,50 @@ fn min_len_for_param(ast: &Arenas, pred: StructId, param: &str) -> Option<usize>
 /// NOT literal `false` (a real guard like `(>= n 0)`) does NOT forbid its constructor — that arm's values may
 /// still be valid, and a payload-level guard is not a constructor-level one (left to reject-free fallback).
 /// Empty if `pred` is not a `(match param …)` over this param, or no arm bodies are literal `false`.
+/// Constrain a `Sum` param's generator variants from the match-based `@requires` predicates over `pname`,
+/// applied IDENTICALLY at generation (`plan_for_item`) and counterexample-decode (`gen_ty_of_wrapper_param`)
+/// so the `% k` variant selector and the payload draw stay in sync between the two sides. Two constraints:
+/// (1) DROP any constructor an arm forbids (body literal `false`) — unless that would empty the sum (an
+/// unsatisfiable precondition keeps every variant so generation trips the honest (D) trap rather than
+/// building an empty sum); (2) NARROW a kept constructor's `Int` payload to the [`GenTy::IntRange`] a
+/// same-arm payload guard imposes (`((T.Some n) (>= n 0))`), so the drawn payload is in-domain and never a
+/// spurious `Some(-1)`. A payload range only narrows an `Int` payload (a non-Int payload keeps its shape;
+/// an unrecognized guard is left unconstrained — reject-free fallback, never wrong).
+fn constrain_sum_variants(
+    ast: &Arenas,
+    variants: &mut Vec<(String, Option<GenTy>)>,
+    preds: &[StructId],
+    pname: &str,
+) {
+    let forbidden: std::collections::HashSet<String> = preds
+        .iter()
+        .flat_map(|&q| sum_ctors_forbidden_by_match(ast, q, pname))
+        .collect();
+    if !forbidden.is_empty() {
+        let kept: Vec<_> = variants
+            .iter()
+            .filter(|(vname, _)| !forbidden.contains(vname))
+            .cloned()
+            .collect();
+        if !kept.is_empty() {
+            *variants = kept;
+        }
+    }
+    // Narrow a KEPT constructor's Int payload to a recognized same-arm payload range. Keyed by ctor name so
+    // it applies to whichever variant survived the forbidden filter.
+    let ranges: std::collections::HashMap<String, (i64, i64)> = preds
+        .iter()
+        .flat_map(|&q| sum_ctor_payload_ranges(ast, q, pname))
+        .collect();
+    if !ranges.is_empty() {
+        for (vname, payload) in variants.iter_mut() {
+            if let (Some(&(lo, hi)), Some(GenTy::Int)) = (ranges.get(vname), payload.as_ref()) {
+                *payload = Some(GenTy::IntRange { lo, hi });
+            }
+        }
+    }
+}
+
 fn sum_ctors_forbidden_by_match(ast: &Arenas, pred: StructId, param: &str) -> Vec<String> {
     // `(match SCRUT (PAT BODY) (PAT BODY) …)` — head `match`, first tail item the scrutinee, rest the arms.
     let Some(tail) = ast.as_form(pred, "match") else {
@@ -944,6 +971,68 @@ fn sum_ctors_forbidden_by_match(ast: &Arenas, pred: StructId, param: &str) -> Ve
         }
     }
     forbidden
+}
+
+/// The set of `(constructor, [lo,hi])` PAYLOAD RANGES a match-based `@requires` on `param` imposes — the
+/// payload-level twin of [`sum_ctors_forbidden_by_match`]. Where that function drops a constructor whose arm
+/// body is literal `false`, this recognizes an arm `((T.Ctor n) GUARD)` whose body is a recognized integer
+/// RANGE over the single pattern BINDER `n` (e.g. `(>= n 0)`, `(and (>= n 0) (<= n 9))`), meaning "a value
+/// built with `Ctor` is in-domain only when its payload satisfies GUARD". The generator then draws that
+/// constructor's `Int` payload IN-RANGE rather than uniformly, so it never produces `Some(-1)` that the
+/// enforced (D) precondition would reject as a spurious counterexample. Returns nothing for an arm whose body
+/// is `false` (that's a forbidden CONSTRUCTOR — `sum_ctors_forbidden_by_match`'s job), `true`/an unrecognized
+/// guard shape (opaque → unconstrained fallback, never wrong), or a pattern binding other than exactly one
+/// name (a nullary or multi-bind pattern has no single payload binder to bound). Only a match on THIS param
+/// constrains its generation.
+fn sum_ctor_payload_ranges(ast: &Arenas, pred: StructId, param: &str) -> Vec<(String, (i64, i64))> {
+    let Some(tail) = ast.as_form(pred, "match") else {
+        return Vec::new();
+    };
+    let Some((&scrut, arms)) = tail.split_first() else {
+        return Vec::new();
+    };
+    if ast.as_name(scrut) != Some(param) {
+        return Vec::new();
+    }
+    let mut ranges = Vec::new();
+    for &arm in arms {
+        let crate::ast::Struct::List(items) = ast.get(arm) else {
+            continue;
+        };
+        let [pat, body] = items.as_slice() else {
+            continue;
+        };
+        // A literal-bool body is a constructor-level verdict (`false` = forbidden, `true` = allow-all), not a
+        // payload bound — leave those to `sum_ctors_forbidden_by_match`.
+        if ast.as_bool(*body).is_some() {
+            continue;
+        }
+        // The pattern must bind EXACTLY one payload name (the int this guard bounds): `((T.Ctor n) …)`.
+        let (Some(ctor), Some(binder)) = (
+            ctor_name_of_pattern(ast, *pat),
+            single_payload_binder(ast, *pat),
+        ) else {
+            continue;
+        };
+        if let Some((lo, hi)) = int_range_over(ast, *body, &binder) {
+            ranges.push((ctor, (lo, hi)));
+        }
+    }
+    ranges
+}
+
+/// The single payload BINDER name of a constructor pattern `((. TYPE Ctor) n)` / `(Ctor n)` → `n`. `None` if
+/// the pattern is nullary (`(. TYPE Ctor)` / bare `Ctor`), binds more than one payload, or binds a non-name
+/// (a nested pattern) — those have no single int binder for a payload range to bound.
+fn single_payload_binder(ast: &Arenas, pat: StructId) -> Option<String> {
+    let crate::ast::Struct::List(items) = ast.get(pat) else {
+        return None; // a bare name / member-access — nullary, no payload bind
+    };
+    // `[ HEAD, bind ]` — HEAD is the constructor (member-access or bare name), the one tail item the binder.
+    let [_, bind] = items.as_slice() else {
+        return None;
+    };
+    ast.as_name(*bind).map(str::to_string)
 }
 
 /// The short constructor name a match PATTERN dispatches on: `(. TYPE Ctor)` → `Ctor`; a payload pattern
@@ -2407,6 +2496,66 @@ mod tests {
             forbidden_of(
                 "(do (type Opt (None) (Some Int64)) \
                  (@ (requires (match o ((Opt.None) false) ((Opt.Some n) true))) \
+                   (def (f (: o Opt) (: p Opt)) 0)) (def (z) 1))",
+                "p"
+            )
+            .is_empty()
+        );
+    }
+
+    /// `sum_ctor_payload_ranges` is the PAYLOAD-level twin of `sum_ctors_forbidden_by_match`: an arm whose
+    /// body is a recognized integer range over the pattern's single payload binder (`((Opt.Some n) (>= n 0))`)
+    /// yields `(Ctor, [lo,hi])`, so the generator draws that constructor's payload IN-RANGE (no spurious
+    /// `Some(-1)`). A `false`/`true` arm body is a CONSTRUCTOR verdict, not a payload range; an unrecognized
+    /// guard, a nullary/multi-bind pattern, or a match on another param yields nothing.
+    #[test]
+    fn sum_ctor_payload_ranges_reads_guard_arms() {
+        let ranges_of = |src: &str, param: &str| -> Vec<(String, (i64, i64))> {
+            let ast = crate::testkit::parse(src);
+            let items: Vec<_> = ast.as_form(ast.root, "do").unwrap().to_vec();
+            let ann = *items
+                .iter()
+                .find(|&&it| ast.as_form(it, "@").is_some())
+                .expect("an @ annotation");
+            let head = ast.as_form(ann, "@").unwrap()[0];
+            let pred = ast.as_form(head, "requires").expect("(requires Q)")[0];
+            super::sum_ctor_payload_ranges(&ast, pred, param)
+        };
+        // A one-sided lower bound on the `Some` payload closes to a window; `None -> false` is NOT a range.
+        assert_eq!(
+            ranges_of(
+                "(do (type Opt (None) (Some Int64)) \
+                 (@ (requires (match o ((Opt.Some n) (>= n 0)) ((Opt.None) false))) \
+                   (def (f (: o Opt)) 0)) (def (z) 1))",
+                "o"
+            ),
+            vec![("Some".to_string(), (0, super::ONE_SIDED_INVARIANT_WINDOW))]
+        );
+        // A two-sided range maps in directly.
+        assert_eq!(
+            ranges_of(
+                "(do (type Opt (None) (Some Int64)) \
+                 (@ (requires (match o ((Opt.Some n) (and (>= n 0) (<= n 9))) ((Opt.None) false))) \
+                   (def (f (: o Opt)) 0)) (def (z) 1))",
+                "o"
+            ),
+            vec![("Some".to_string(), (0, 9))]
+        );
+        // A nullary pattern (no payload binder) and a `true` allow-all arm yield no payload range.
+        assert!(
+            ranges_of(
+                "(do (type T (A) (B Int64)) \
+                 (@ (requires (match o ((T.A) true) ((T.B m) true))) \
+                   (def (f (: o T)) 0)) (def (z) 1))",
+                "o"
+            )
+            .is_empty()
+        );
+        // A match on a DIFFERENT param constrains nothing.
+        assert!(
+            ranges_of(
+                "(do (type Opt (None) (Some Int64)) \
+                 (@ (requires (match o ((Opt.Some n) (>= n 0)) ((Opt.None) false))) \
                    (def (f (: o Opt) (: p Opt)) 0)) (def (z) 1))",
                 "p"
             )

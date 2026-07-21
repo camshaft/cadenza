@@ -10,51 +10,56 @@
 /// Grounds on chord.cdz: candidate voicings are `chord-inversion(c, i)` for `i` in `0 .. size-1`; the cost
 /// is the sum of per-voice absolute distances to the reference (voices paired in order). Pure integer
 /// arithmetic — no floats, exact. Returns the winning note list (and the winning inversion index).
-
 import { Chord } from "chord"
+
 import { chord-inversion, chord-size, major-triad, dominant-seventh } from "chord"
+
 import { Pitch } from "pitch"
 
 // ---- small numeric helpers ---------------------------------------------------------------------------
-
 /// Absolute value of an Int64 (no prelude `abs` for Int64; define locally).
 def iabs(x: Int64) = if x < 0 then 0 - x else x
 
 /// The TOTAL absolute semitone distance between two note lists, pairing voices IN ORDER. Stops at the
 /// shorter list (a 3-note triad vs a 3-note reference pairs fully; mismatched lengths pair the common
 /// prefix). Recursive driver, annotated params (CDZ0201).
-def voice-distance-go(a: List(Int64), b: List(Int64), acc: Int64) =
-  match a with
+def voice-distance-go(a: List(Int64), b: List(Int64), acc: Int64) = match a with
+  | [] => acc
+  | [ha, .. ta] => match b with
     | [] => acc
-    | [ha, .. ta] =>
-      (match b with
-        | [] => acc
-        | [hb, .. tb] => voice-distance-go(ta, tb, acc + iabs(ha - hb)))
+    | [hb, .. tb] => voice-distance-go(ta, tb, acc + iabs(ha - hb))
 
 /// The total absolute semitone motion to move the voices of `from` to `to`, paired in order.
 def voice-distance(from: List(Int64), to: List(Int64)) = voice-distance-go(from, to, 0)
 
 // ---- picking the nearest inversion -------------------------------------------------------------------
-
 /// Scan inversions `i = 0 .. n-1` of chord `c`, tracking the one whose note list is closest (least
 /// `voice-distance`) to `ref`. `best-i`/`best-cost`/`best-notes` carry the running winner; ties keep the
 /// LOWER inversion index (we only replace on a strictly smaller cost). Recursive driver, annotated.
-def nearest-go(c: Chord, ref: List(Int64), i: Int64, n: Int64, best-i: Int64, best-cost: Int64, best-notes: List(Int64)) =
-  if i >= n then best-notes
+def nearest-go(c: Chord, ref: List(Int64), i: Int64, n: Int64, best-i: Int64, best-cost: Int64, best-notes: List(
+  Int64
+)) =
+  if i >= n then
+    best-notes
   else
     let cand = chord-inversion(c, i) in
     let cost = voice-distance(ref, cand) in
-    if cost < best-cost then nearest-go(c, ref, i + 1, n, i, cost, cand)
-    else nearest-go(c, ref, i + 1, n, best-i, best-cost, best-notes)
+    if cost < best-cost then
+      nearest-go(c, ref, i + 1, n, i, cost, cand)
+    else
+      nearest-go(c, ref, i + 1, n, best-i, best-cost, best-notes)
 
 /// The inversion INDEX (0-based) of chord `c` that voice-leads most smoothly from `ref` — same scan as
 /// `nearest-voicing` but returning which inversion won (for analysis/labeling).
 def nearest-index-go(c: Chord, ref: List(Int64), i: Int64, n: Int64, best-i: Int64, best-cost: Int64) =
-  if i >= n then best-i
+  if i >= n then
+    best-i
   else
     let cost = voice-distance(ref, chord-inversion(c, i)) in
-    if cost < best-cost then nearest-index-go(c, ref, i + 1, n, i, cost)
-    else nearest-index-go(c, ref, i + 1, n, best-i, best-cost)
+    if cost < best-cost then
+      nearest-index-go(c, ref, i + 1, n, i, cost)
+    else
+      nearest-index-go(c, ref, i + 1, n, best-i, best-cost)
 
 /// The NOTE LIST of the inversion of `c` that moves the voices least from `ref` (root position if the
 /// chord has no notes). Seeds the scan with inversion 0's cost so the winner is always a real inversion.
@@ -69,17 +74,20 @@ def nearest-inversion(c: Chord, ref: List(Int64)) =
   nearest-index-go(c, ref, 1, n, 0, voice-distance(ref, chord-inversion(c, 0)))
 
 /// ============================ @test suite (voice-leading laws) ============================
-
 @test
 def distance-sums-absolute-per-voice-motion() =
   // [60,64,67] to [60,65,67]: only the middle voice moves, by 1 semitone → total 1.
   if voice-distance([60, 64, 67], [60, 65, 67]) == 1 then
-    (if voice-distance([60, 64, 67], [62, 64, 69]) == 4 then unit else trap("two voices move 2+2"))
-  else trap("one voice moves 1")
+    if voice-distance([60, 64, 67], [62, 64, 69]) == 4 then unit else trap("two voices move 2+2")
+  else
+    trap("one voice moves 1")
 
 @test
 def distance-is-zero-for-identical-voicings() =
-  if voice-distance([60, 64, 67], [60, 64, 67]) == 0 then unit else trap("identical voicings have zero motion")
+  if voice-distance([60, 64, 67], [60, 64, 67]) == 0 then
+    unit
+  else
+    trap("identical voicings have zero motion")
 
 @test
 def nearest-voicing-picks-a-closer-inversion() =
@@ -89,22 +97,32 @@ def nearest-voicing-picks-a-closer-inversion() =
   let c = c-major in
   let ref = [64, 67, 72] in
   let v = nearest-voicing(c, ref) in
-  if voice-distance(ref, v) == 0 then unit else trap("should have found the exact first-inversion match")
+  if voice-distance(ref, v) == 0 then
+    unit
+  else
+    trap("should have found the exact first-inversion match")
 
 @test
 def nearest-inversion-reports-the-winning-index() =
   // With the reference sitting on the first inversion, nearest-inversion returns index 1.
   let c = c-major in
   if nearest-inversion(c, [64, 67, 72]) == 1 then
-    (if nearest-inversion(c, [60, 64, 67]) == 0 then unit else trap("root position wins for a root-position ref"))
-  else trap("first inversion wins for a first-inversion ref")
+    if nearest-inversion(c, [60, 64, 67]) == 0 then
+      unit
+    else
+      trap("root position wins for a root-position ref")
+  else
+    trap("first inversion wins for a first-inversion ref")
 
 @test
 def root-position-wins-a-tie-at-the-lowest-index() =
   // If no inversion strictly beats root position's cost, the lower index (0) is kept — the tie rule.
   // A reference equidistant-or-worse from every inversion keeps inversion 0.
   let c = c-major in
-  if nearest-inversion(c, [60, 64, 67]) == 0 then unit else trap("a root-position reference keeps inversion 0")
+  if nearest-inversion(c, [60, 64, 67]) == 0 then
+    unit
+  else
+    trap("a root-position reference keeps inversion 0")
 
 @test
 def nearest-voicing-never-strays-far-from-the-reference() =
@@ -119,7 +137,7 @@ def nearest-voicing-never-strays-far-from-the-reference() =
 @test
 def iabs-is-nonnegative() =
   // Sanity for the helper: absolute value of a descending motion is positive.
-  if iabs(0 - 7) == 7 then (if iabs(3) == 3 then unit else trap("positive")) else trap("negative")
+  if iabs(0 - 7) == 7 then if iabs(3) == 3 then unit else trap("positive") else trap("negative")
 
 @test
 def voice-leads-a-four-note-seventh-chord() =
@@ -131,12 +149,11 @@ def voice-leads-a-four-note-seventh-chord() =
   let second-inv = chord-inversion(g7, 2) in
   let chosen = nearest-voicing(g7, second-inv) in
   if voice-distance(second-inv, chosen) == 0 then
-    (if nearest-inversion(g7, second-inv) == 2 then unit else trap("2nd inversion should win"))
-  else trap("a seventh chord's own inversion must be matched exactly")
+    if nearest-inversion(g7, second-inv) == 2 then unit else trap("2nd inversion should win")
+  else
+    trap("a seventh chord's own inversion must be matched exactly")
 
 /// C major triad rooted at middle C (60), the fixture for the tests.
 def c-major = major-triad(Pitch.Pitch(60))
 
-export {
-  iabs, voice-distance, nearest-voicing, nearest-inversion,
-}
+export { iabs, voice-distance, nearest-voicing, nearest-inversion }

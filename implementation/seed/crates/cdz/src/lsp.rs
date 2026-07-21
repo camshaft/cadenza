@@ -40,8 +40,8 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
-    DocumentSymbolRequest, FoldingRangeRequest, Formatting, GotoDefinition, HoverRequest,
-    InlayHintRequest, References, Rename, Request as _, SelectionRangeRequest,
+    DocumentSymbolRequest, FoldingRangeRequest, Formatting, GotoDefinition, GotoTypeDefinition,
+    HoverRequest, InlayHintRequest, References, Rename, Request as _, SelectionRangeRequest,
     SemanticTokensFullRequest, Shutdown, SignatureHelpRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
@@ -60,8 +60,8 @@ use lsp_types::{
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
     SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
     SymbolInformation, SymbolKind, TextDocumentContentChangeEvent, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
-    WorkspaceSymbolParams, WorkspaceSymbolResponse,
+    TextDocumentSyncKind, TextEdit, TypeDefinitionProviderCapability, Uri, WorkDoneProgressOptions,
+    WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 
 /// Run the stdio LSP server to completion: perform the initialize handshake, then loop over incoming
@@ -113,6 +113,11 @@ fn capabilities() -> ServerCapabilities {
         )),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(lsp_types::OneOf::Left(true)),
+        // Go-to-TYPE-definition (jump from a value to the declaration of ITS type) — for a value whose
+        // static type is a user-declared type name, jump to that `type …` decl. Backed by `TypeAt` (the
+        // value's rendered type) + the `Symbols` type-name→decl-node lookup. A compound/builtin type (no
+        // single user decl) declines (no jump), so it never lands somewhere wrong.
+        type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
         references_provider: Some(lsp_types::OneOf::Left(true)),
         // Highlight every occurrence of the symbol under the cursor WITHIN the buffer (the editor's
         // subtle same-symbol highlight as you rest the caret on a name) — the single-document sibling of
@@ -323,6 +328,11 @@ impl Server {
                 let result = self.goto_definition(&params);
                 self.send_response(Response::new_ok(id, result))
             }
+            GotoTypeDefinition::METHOD => {
+                let (id, params) = cast_request::<GotoTypeDefinition>(req)?;
+                let result = self.goto_type_definition(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
             References::METHOD => {
                 let (id, params) = cast_request::<References>(req)?;
                 let result = self.references(&params);
@@ -474,6 +484,24 @@ impl Server {
             } else {
                 definition_at(&doc.text, doc.is_ml, pos.position, uri)
             }?;
+        Some(GotoDefinitionResponse::Scalar(loc))
+    }
+
+    /// Answer a `textDocument/typeDefinition`: from the value at the cursor, jump to the declaration of its
+    /// TYPE. For a value whose static type is a USER-DECLARED type name (a `type …` decl in this buffer),
+    /// resolve `TypeAt` → the rendered type, and when that is a bare declared type name, jump to its `type`
+    /// declaration (via the `Symbols` type-name→node lookup). Declines (no jump) for a builtin/compound
+    /// type with no single user declaration — total, never a wrong landing. Single-buffer (a cross-file
+    /// type-def is a later increment). `None` when the document is not open or the type is not navigable.
+    /// (`GotoTypeDefinitionParams`/`Response` are type aliases of the plain go-to-definition params/
+    /// response in `lsp-types`, so this reuses those types directly.)
+    fn goto_type_definition(
+        &self,
+        params: &GotoDefinitionParams,
+    ) -> Option<GotoDefinitionResponse> {
+        let pos = &params.text_document_position_params;
+        let doc = self.docs.get(&pos.text_document.uri)?;
+        let loc = type_definition_at(&doc.text, doc.is_ml, pos.position, &pos.text_document.uri)?;
         Some(GotoDefinitionResponse::Scalar(loc))
     }
 
@@ -1571,6 +1599,37 @@ fn definition_at(text: &str, is_ml: bool, pos: Position, uri: &Uri) -> Option<Lo
     // The `ResolveOf` answer is the defining occurrence's node id (empty = not a navigable reference).
     let target: u32 = answer.trim().parse().ok()?;
     node_location(text, &spans, uri, target)
+}
+
+/// Go-to-TYPE-definition: from the node at `pos`, the source location of the declaration of its TYPE.
+/// Reads `TypeAt` (the node's rendered type), and when that type is a BARE user-declared type NAME —
+/// resolvable via the `Symbols` type-name→decl-node lookup (`top_level_symbol_node`) — returns that
+/// declaration's location. Declines (`None`) when the node has no type, the type is not a bare name (a
+/// builtin scalar like `Int64`, or a compound like `(List Color)` / `(-> …)` — no single user decl to
+/// jump to), or the name is not a declared symbol. Total: never a panic, never a wrong landing.
+fn type_definition_at(text: &str, is_ml: bool, pos: Position, uri: &Uri) -> Option<Location> {
+    let (arenas, spans, _errors) = parse_surface(text, is_ml).ok()?;
+    let byte = position_to_byte(text, pos);
+    let node = spans.node_at_offset(byte)?;
+    let ty = run_query_text(
+        &arenas,
+        rcdzc::sidecar::Query::TypeAt { node: node.0 },
+        rcdzc::sidecar::KIND_TYPE_AT,
+    )?;
+    let ty = ty.trim();
+    // Only a BARE type name is navigable: a single identifier token (no spaces/parens/arrows → not a
+    // compound `(List …)`/`(-> …)`, and an uninformative `unknown` is excluded). A builtin scalar name
+    // (`Int64`) simply won't resolve to a top-level `Symbols` declaration, so it declines below anyway.
+    if ty.is_empty()
+        || ty == "unknown"
+        || ty.contains(|c: char| c.is_whitespace() || c == '(' || c == ')')
+    {
+        return None;
+    }
+    // Map the type NAME to its top-level declaration node (the same `Symbols` lookup references uses),
+    // then to a source location. A name that names no declared type (a builtin) yields None.
+    let decl = top_level_symbol_node(&arenas, ty)?;
+    node_location(text, &spans, uri, decl)
 }
 
 /// Cross-file go-to-definition: resolve the cursor's reference across the entry's `(import …)` closure,
@@ -4221,6 +4280,43 @@ mod tests {
         assert!(definition_at(text, true, Position::new(0, 13), &test_uri()).is_none());
         // Cursor past the end.
         assert!(definition_at(text, true, Position::new(9, 9), &test_uri()).is_none());
+    }
+
+    #[test]
+    fn type_definition_jumps_from_a_value_to_its_type_declaration() {
+        // Go-to-TYPE-definition: from a value whose static type is the user-declared `Color`, jump to the
+        // `type Color = …` declaration (line 0), NOT the value's own definition. `favorite` returns Color;
+        // the cursor on its USE in `main` lands on the `Color` type decl.
+        let text = "type Color = Red | Green | Blue\ndef favorite() -> Color = Green\ndef main() -> Color = favorite()";
+        // Cursor on the `favorite` use in main (line 2, col 22).
+        let loc = type_definition_at(text, true, Position::new(2, 22), &test_uri())
+            .expect("a type definition");
+        assert_eq!(
+            loc.range.start.line, 0,
+            "the type Color is declared on line 0, got {loc:?}"
+        );
+    }
+
+    #[test]
+    fn type_definition_declines_for_a_builtin_scalar_type() {
+        // A value of a BUILTIN type (`Int64`) has no user `type` declaration to jump to — decline (None),
+        // never a wrong landing. `answer : Int64` → go-to-type-definition on its use yields nothing.
+        let text = "def answer = 42\ndef main() -> Int64 = answer";
+        // Cursor on the `answer` use in main (line 1). "def main() -> Int64 = " is 22 chars → col 22.
+        assert!(
+            type_definition_at(text, true, Position::new(1, 22), &test_uri()).is_none(),
+            "a builtin-typed value has no type declaration to jump to"
+        );
+    }
+
+    #[test]
+    fn type_definition_is_total_on_malformed_source() {
+        // Total like the other node-id-keyed queries — an unparseable / out-of-range buffer yields None,
+        // never a panic.
+        assert!(
+            type_definition_at("def (f x = (", true, Position::new(0, 5), &test_uri()).is_none()
+        );
+        assert!(type_definition_at("", true, Position::new(9, 9), &test_uri()).is_none());
     }
 
     #[test]

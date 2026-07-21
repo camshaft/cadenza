@@ -1388,3 +1388,28 @@
                    (match (Map.lookup r 9) ((Some v) v) ((None u) -1)))))
             (export main)))
   (output (: -10 Int64)))
+
+; `Set.union`/`Set.intersection`/`Set.difference` (`Core::SetAlgebra`) emit BOTH set operands at a SHARED
+; scratch `base` (select.rs:7755, `emit(lhs, base); emit(rhs, base)`) — the SAME fixed-base pattern that
+; miscompiled the `Set.remove`/`Map.remove` arms above. This arm is IMMUNE to that width-collision class,
+; though: each operand leaves its RESULT on the wasm stack and nothing is tee'd INTO `base` that must survive
+; the sibling operand's emit, so no wasm local is ever re-typed at two widths. This pins that immunity — an
+; operand carrying an i32 handle scratch (a recursive-call set) unioned with one carrying an i64 checked-arith
+; temp (`Set.of` over `(+ n k)`) must compile and run, so a future rewrite that DID stash across `base` (the
+; way the remove arms did) would flip this to invalid-module and be caught.
+(case "a Set.union of a recursive-call set and a Set.of over checked-arith is disjoint-slotted"
+  (doc    "`(Set.union (g …) (Set.of (list (+ n 2) (+ n 3))))`: the lhs is a RECURSIVE call `(g …)` (an i32
+           set handle in a `dup` slot), the rhs a `Set.of` whose elements are checked `(+ n k)` (i64
+           overflow-guard temps). Both go through the `SetAlgebra` emit at a shared `base`, yet the arm is
+           immune to the fixed-base width-collision (each operand leaves its result on the stack, nothing is
+           stashed into `base` across the sibling). With n=50: `{6}` ∪ `{52, 53}` = three distinct elements,
+           so Set.len = 3. Regression guard for the last shared-`base` compound arm not covered by the
+           `remove` disjoint-slot pins above.")
+  (input  (do
+            (type ILst (INil) (ICons Int64 ILst))
+            (def (g xs) (match xs ((INil) (Set.of (list))) ((ICons v t) (Set.insert (g t) (+ v 1)))))
+            (def (main (: n Int64))
+              (Set.len (Set.union (g (ICons 5 (INil))) (Set.of (list (+ n 2) (+ n 3))))))
+            (export main)))
+  (call   main (: 50 Int64))
+  (output (: 3 Int64)))
