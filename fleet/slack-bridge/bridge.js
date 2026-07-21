@@ -46,7 +46,45 @@ const POLL_MS = Number(process.env.POLL_MS || 2000);
 // fleet state (inboxes) lives at <repo>/.claude/fleet — so run from the main checkout, or set FLEET_DIR.
 const FLEET_DIR = process.env.FLEET_DIR || path.resolve(__dirname, "..", "..", ".claude", "fleet");
 
+// A KNOWN, self-recovering Socket Mode fault: `@slack/socket-mode` drives its connection with the
+// `finity` state machine, and when Slack sends a `server explicit disconnect` frame while the client is
+// still mid-handshake (state `connecting`), finity has no transition for it and THROWS synchronously from
+// the WebSocket message handler — an uncaughtException that kills the whole process. The client would
+// otherwise just reconnect. Rapid connection cycling made this crash-loop the daemon 5× in a minute,
+// which risks tripping systemd's StartLimitBurst and stopping the restart entirely (= operator comms
+// down). Recognize this specific transient and SURVIVE it (the client reconnects on its own); re-throw
+// anything else so a genuine fault still surfaces + exits for the supervisor to restart cleanly.
+function isTransientSocketModeFault(err) {
+  const msg = (err && (err.message || String(err))) || "";
+  // finity's message: "Unhandled event '<event>' in state '<state>'." — the connection-lifecycle events
+  // (disconnect/handshake races) are benign and self-heal; match on the finity shape + a connection event.
+  return (
+    /Unhandled event '.*' in state '.*'\./.test(msg) &&
+    /(disconnect|connecting|connected|reconnect|handshake|authenticated)/i.test(msg)
+  );
+}
+
+function installProcessGuards() {
+  process.on("uncaughtException", (err) => {
+    if (isTransientSocketModeFault(err)) {
+      console.error("survived transient Socket Mode fault (client will reconnect):", err.message);
+      return;
+    }
+    console.error("fatal uncaughtException — exiting for the supervisor to restart:", err);
+    process.exit(1);
+  });
+  process.on("unhandledRejection", (reason) => {
+    if (isTransientSocketModeFault(reason)) {
+      console.error("survived transient Socket Mode rejection (client will reconnect):", reason && reason.message);
+      return;
+    }
+    console.error("fatal unhandledRejection — exiting for the supervisor to restart:", reason);
+    process.exit(1);
+  });
+}
+
 function main() {
+  installProcessGuards();
   const missing = [];
   if (!BOT_TOKEN) missing.push("SLACK_BOT_TOKEN (xoxb-…)");
   if (!APP_TOKEN) missing.push("SLACK_APP_TOKEN (xapp-…, with connections:write)");
@@ -124,4 +162,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { main };
+module.exports = { main, isTransientSocketModeFault };

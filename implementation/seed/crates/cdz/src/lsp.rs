@@ -40,21 +40,21 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
-    DocumentSymbolRequest, FoldingRangeRequest, GotoDefinition, HoverRequest, InlayHintRequest,
-    References, Rename, Request as _, SelectionRangeRequest, SemanticTokensFullRequest, Shutdown,
-    SignatureHelpRequest, WorkspaceSymbolRequest,
+    DocumentSymbolRequest, FoldingRangeRequest, Formatting, GotoDefinition, HoverRequest,
+    InlayHintRequest, References, Rename, Request as _, SelectionRangeRequest,
+    SemanticTokensFullRequest, Shutdown, SignatureHelpRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
     CodeLens, CodeLensOptions, CodeLensParams, CompletionItem, CompletionItemKind,
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbolParams,
-    DocumentSymbolResponse, FoldingRange, FoldingRangeParams, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams,
-    Location, MarkedString, ParameterInformation, ParameterLabel, Position,
-    PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, SelectionRange,
+    DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams,
+    DocumentSymbolParams, DocumentSymbolResponse, FoldingRange, FoldingRangeParams,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InlayHint, InlayHintKind,
+    InlayHintLabel, InlayHintParams, Location, MarkedString, ParameterInformation, ParameterLabel,
+    Position, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, SelectionRange,
     SelectionRangeParams, SemanticToken, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
@@ -161,6 +161,11 @@ fn capabilities() -> ServerCapabilities {
         // still blocked). Increment 1 covers a LOCALLY-defined callee; a cross-file callee + noise
         // suppression are later increments. No resolve step (labels are computed up front).
         inlay_hint_provider: Some(lsp_types::OneOf::Left(true)),
+        // Whole-document formatting (format-on-save / Shift+Alt+F) — reprints the buffer canonically in
+        // its OWN surface via the same `cdz fmt` path (`convert::convert_with` same-surface), so an editor
+        // format is byte-identical to the CLI. Refuses a buffer that only parses with recovered errors
+        // (no half-formatted rewrite), yielding no edit.
+        document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
                 work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -376,6 +381,11 @@ impl Server {
             InlayHintRequest::METHOD => {
                 let (id, params) = cast_request::<InlayHintRequest>(req)?;
                 let result = self.inlay_hint(&params);
+                self.send_response(Response::new_ok(id, result))
+            }
+            Formatting::METHOD => {
+                let (id, params) = cast_request::<Formatting>(req)?;
+                let result = self.formatting(&params);
                 self.send_response(Response::new_ok(id, result))
             }
             _ => {
@@ -749,6 +759,26 @@ impl Server {
                 inlay_hints_at(&doc.text, doc.is_ml, params.range)
             };
         Some(hints)
+    }
+
+    /// Answer a `textDocument/formatting`: reprint the whole buffer canonically in its OWN surface (the
+    /// same `cdz fmt` path), returned as a SINGLE full-document `TextEdit`. `None` when the document is not
+    /// open, the buffer does not parse cleanly (a broken file is never rewritten to a patched-up form —
+    /// matching `cdz fmt`), or it is already canonical (no edit needed). Total — never a panic.
+    fn formatting(&self, params: &DocumentFormattingParams) -> Option<Vec<TextEdit>> {
+        let doc = self.docs.get(&params.text_document.uri)?;
+        let formatted = format_document(&doc.text, doc.is_ml)?;
+        if formatted == doc.text {
+            // Already canonical — no edit (the editor leaves the buffer untouched).
+            return Some(Vec::new());
+        }
+        // Replace the ENTIRE document. The end position is one past the last line, column 0 — an
+        // end-exclusive range covering every existing byte, which the client overwrites with `formatted`.
+        let end = full_document_end(&doc.text);
+        Some(vec![TextEdit {
+            range: Range::new(Position::new(0, 0), end),
+            new_text: formatted,
+        }])
     }
 
     /// Dispatch a client NOTIFICATION — the document-sync lifecycle. Each open/change recomputes and
@@ -2836,6 +2866,42 @@ fn package_inlay_hints_at(
         &params_by_callee,
         range,
     ))
+}
+
+/// Reprint `text` canonically in its OWN surface (ML for `.cdz`/`.ml`, s-expr for `.sexp`/`.sexpr`) — the
+/// in-memory core of `cdz fmt`, so an editor format is byte-identical to the CLI. Uses
+/// `convert::convert_with(from, from)`: a SAME-surface round-trip that reprints the parse tree canonically
+/// (never a cross-surface conversion). Returns `None` when the buffer does not parse cleanly — `convert`'s
+/// reader rejects a program that only survives with recovered errors, so a broken buffer is NOT rewritten
+/// to a patched-up shape (matching `cdz fmt`'s fail-safe). The result carries no trailing newline from the
+/// printer; a single `\n` is appended so a formatted buffer is newline-terminated + stable under re-format
+/// (the CLI's convention).
+fn format_document(text: &str, is_ml: bool) -> Option<String> {
+    let surface = if is_ml {
+        cadenza_syntax::convert::Format::Ml
+    } else {
+        cadenza_syntax::convert::Format::Sexpr
+    };
+    let out = cadenza_syntax::convert::convert_with(
+        text.as_bytes(),
+        surface,
+        surface,
+        cadenza_syntax::convert::Options::default(),
+    )
+    .ok()?;
+    let mut formatted = String::from_utf8(out).ok()?;
+    if !formatted.ends_with('\n') {
+        formatted.push('\n');
+    }
+    Some(formatted)
+}
+
+/// The LSP `Position` one past the END of `text` — line = the number of line-breaks, column 0. Paired with
+/// `(0,0)` it is an end-exclusive range covering every existing byte, so a full-document `TextEdit` over it
+/// replaces the whole buffer regardless of the final line's content.
+fn full_document_end(text: &str) -> Position {
+    let line = text.matches('\n').count() as u32;
+    Position::new(line, 0)
 }
 
 /// Split a rendered arrow type into `[Param1, …, ParamN, Ret]`. The `TypeOf` query renders function types
@@ -5013,6 +5079,85 @@ mod tests {
             labels,
             vec!["x:".to_string()],
             "over-application hints only the single param `x:`, extra args un-hinted; got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn format_document_canonicalizes_an_unformatted_sexpr_buffer() {
+        // A buffer with noisy whitespace reprints to its canonical s-expr form — the in-memory core of
+        // `cdz fmt`. Pins that the formatter collapses the extra spaces to the same output `cdz fmt` gives.
+        let messy = "(module m (def (add a b)   (+ a b)) (export add))";
+        let formatted = format_document(messy, false).expect("a clean parse formats");
+        assert_eq!(
+            formatted, "(module m (def (add a b) (+ a b)) (export add))\n",
+            "the formatter should canonicalize whitespace + newline-terminate, got {formatted:?}"
+        );
+    }
+
+    #[test]
+    fn format_document_canonicalizes_an_unformatted_ml_buffer() {
+        // The ML surface reprints canonically too (spacing around `,`/`=`/operators normalized).
+        let messy = "def   add(a,b)=a+b";
+        let formatted = format_document(messy, true).expect("a clean parse formats");
+        assert_eq!(
+            formatted, "def add(a, b) = a + b\n",
+            "the ML formatter should normalize spacing + newline-terminate, got {formatted:?}"
+        );
+    }
+
+    #[test]
+    fn format_document_is_none_on_a_buffer_that_does_not_parse_cleanly() {
+        // A broken buffer is NOT rewritten to a patched-up shape (matching `cdz fmt`'s fail-safe) — the
+        // formatter returns None, so the LSP handler yields no edit rather than corrupting the source.
+        assert!(
+            format_document("(module m (def (add a b", false).is_none(),
+            "an unparseable s-expr buffer must not be reformatted"
+        );
+    }
+
+    #[test]
+    fn formatting_handler_yields_a_full_document_edit_then_none_when_canonical() {
+        // The handler end-to-end: opening a MESSY buffer yields ONE full-document TextEdit whose new_text
+        // is the canonical form and whose range starts at (0,0); a buffer that is ALREADY canonical yields
+        // an EMPTY edit list (no-op). Drives the real `Server::formatting` via an open document.
+        let (mut server, _client) = memory_server();
+        let uri: Uri = "file:///fmt.sexp".parse().unwrap();
+        let messy = "(module m (def (add a b)   (+ a b)) (export add))";
+        server.docs.insert(
+            uri.clone(),
+            Document {
+                text: messy.to_string(),
+                is_ml: false,
+            },
+        );
+        let params = DocumentFormattingParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            options: lsp_types::FormattingOptions::default(),
+            work_done_progress_params: Default::default(),
+        };
+        let edits = server.formatting(&params).expect("an open doc formats");
+        assert_eq!(edits.len(), 1, "one full-document edit: {edits:?}");
+        assert_eq!(
+            edits[0].range.start,
+            Position::new(0, 0),
+            "edit starts at doc start"
+        );
+        assert_eq!(
+            edits[0].new_text, "(module m (def (add a b) (+ a b)) (export add))\n",
+            "the edit carries the canonical text"
+        );
+        // Now make the doc canonical and re-format → no edit.
+        server.docs.insert(
+            uri.clone(),
+            Document {
+                text: "(module m (def (add a b) (+ a b)) (export add))\n".to_string(),
+                is_ml: false,
+            },
+        );
+        let edits = server.formatting(&params).expect("still an open doc");
+        assert!(
+            edits.is_empty(),
+            "an already-canonical buffer yields no edit: {edits:?}"
         );
     }
 

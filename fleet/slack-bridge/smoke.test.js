@@ -17,6 +17,8 @@ const path = require("node:path");
 
 const { deliver, drain, markProcessed, inboxDir, isValidAgentName } = require("./inbox.js");
 const { parseOperatorMessage, renderFleetMessage, helpText } = require("./format.js");
+// Safe to require: bridge.js only runs main() under `require.main === module`, not when imported.
+const { isTransientSocketModeFault } = require("./bridge.js");
 
 let passed = 0;
 function test(name, fn) {
@@ -233,6 +235,33 @@ test("every parsed recipient is a valid agent name", () => {
   for (const msg of ["@pr-sync go", "@.. x", "@a/b y", "plain", "@-bad z", "@design-jsx !assign do"]) {
     const i = parseOperatorMessage(msg, "concierge");
     assert.ok(isValidAgentName(i.to), `unsafe recipient ${JSON.stringify(i.to)} from ${msg}`);
+  }
+});
+
+// ---- RELIABILITY: transient Socket Mode fault is survived, not crash-looped -----------------------
+
+test("isTransientSocketModeFault matches the finity connecting-disconnect crash (the real crash)", () => {
+  // The exact error that crash-looped the daemon 5x/min: finity throws this synchronously from the
+  // WebSocket handler when Slack disconnects mid-handshake. It self-heals (client reconnects), so the
+  // process must survive it rather than exit and risk tripping systemd's StartLimitBurst.
+  const real = new Error("Unhandled event 'server explicit disconnect' in state 'connecting'.");
+  assert.ok(isTransientSocketModeFault(real), "the real crash must be classified transient");
+  // A string reason (unhandledRejection can pass a non-Error) is handled too.
+  assert.ok(isTransientSocketModeFault("Unhandled event 'server explicit disconnect' in state 'connecting'."));
+  // Other connection-lifecycle races in the same finity shape also self-heal.
+  assert.ok(isTransientSocketModeFault(new Error("Unhandled event 'reconnect' in state 'connected'.")));
+});
+
+test("isTransientSocketModeFault does NOT swallow genuine faults (still exits)", () => {
+  for (const fatal of [
+    new Error("invalid_auth"),
+    new Error("Cannot read properties of undefined (reading 'foo')"),
+    new Error("Unhandled event 'x' in state 'y'."), // finity shape but NOT a connection event → don't swallow
+    "some random string",
+    undefined,
+    null,
+  ]) {
+    assert.ok(!isTransientSocketModeFault(fatal), `must NOT swallow ${JSON.stringify(String(fatal))}`);
   }
 });
 

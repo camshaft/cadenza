@@ -9,18 +9,22 @@
 /// resolve-into-db), extract it from the Db, run `infer-node` over it, merge the type column back. Explicit-Db
 /// threading (P1b's state-effect carrier lands once v-effects' nested-eff-let fix reaches trunk; same memo
 /// semantics either way).
-
 import { Tree } from "parse-db"
+
 import { Typed, infer-node } from "infer-db"
+
 import { Db, db-tree, typed-filled } from "db"
+
 import { resolve-into-db } from "db-resolve"
 
 /// The resolved column of a Db (the whole `Map(NodeId, Resolved)`), destructured from the carrier — what
 /// `infer-node` reads to type each node.
-def db-resolved-col(db: Db) = match db with | Db.Db(_, rc, _, _) => rc
+def db-resolved-col(db: Db) = match db with
+  | Db.Db(_, rc, _, _) => rc
 
 /// The types column of a Db.
-def db-typed-col(db: Db) = match db with | Db.Db(_, _, tc, _) => tc
+def db-typed-col(db: Db) = match db with
+  | Db.Db(_, _, tc, _) => tc
 
 /// Merge a type column into the Db's types column (single column-swap; infer-node produces the whole column).
 def merge-typed(db: Db, tcol: Map(Int64, Typed)) = match db with
@@ -30,65 +34,72 @@ def merge-typed(db: Db, tcol: Map(Int64, Typed)) = match db with
 /// resolved), then run `infer-node` over the Db's RESOLVED column (NOT a re-resolve) to fill the types
 /// column. Returns the Db carrying BOTH columns — the memoization payoff (resolve computed once, reused).
 def infer-into-db(db: Db, root: Int64) =
-  (let db1 = resolve-into-db(db, root) in
-   (let tcol = infer-node(db-tree(db1), root, db-resolved-col(db1), (Map.empty : Map(Int64, Typed))) in
-    merge-typed(db1, tcol)))
+  let db1 = resolve-into-db(db, root) in
+  let tcol = infer-node(db-tree(db1), root, db-resolved-col(db1), Map.empty : Map(Int64, Typed)) in
+  merge-typed(db1, tcol)
 
 /// The INFER producer read (rcdzc `type_of(db, id)`): demand the type fact at `id`, filling resolve+types
 /// first. `(db', Option(Typed))` — updated Db + the fact (`None` = no fact; filled `TErr` = ill-typed decline).
 def typed-of-db(db: Db, root: Int64, id: Int64) =
-  (let db1 = infer-into-db(db, root) in (db1, Map.lookup(db-typed-col(db1), id)))
+  let db1 = infer-into-db(db, root) in
+  (db1, Map.lookup(db-typed-col(db1), id))
 
 // ---- TESTS: infer reads the memoized resolved column; fills types once -------------------------------
-
 import { Tok, parse-tokens } from "parse-db"
+
 import { db-of, resolved-filled } from "db"
 
 /// `let x = 2 in x` as (root, db).
-def let-db() = match parse-tokens([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)]) with
+def let-db() = match parse-tokens(
+    [Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)]
+  ) with
   | (root, tree) => (root, db-of(tree))
 
 @test
 def di-infer-fills-both-columns() =
   // inferring `let x = 2 in x` fills BOTH the resolved column (via resolve-into-db) AND the types column.
-  (match let-db() with | (root, d0) =>
-    (let db1 = infer-into-db(d0, root) in
-     (if (resolved-filled(db1) > 0) then
-        (if (typed-filled(db1) > 0) then unit else trap("types filled"))
-      else trap("resolved filled too (infer demanded it)"))))
+  match let-db() with
+    | (root, d0) => let db1 = infer-into-db(d0, root) in
+    if resolved-filled(db1) > 0 then
+      if typed-filled(db1) > 0 then unit else trap("types filled")
+    else
+      trap("resolved filled too (infer demanded it)")
 
 @test
 def di-root-is-int64() =
   // the root of `let x = 2 in x` types to Int64 (TIntW(true,64)).
-  (match let-db() with | (root, d0) =>
-    (match typed-of-db(d0, root, root) with
-      | (_, Option.Some(Typed.TIntW(s, w))) => (if s then (if w == 64 then unit else trap("width 64")) else trap("signed"))
-      | _ => trap("root has an Int64 type fact")))
+  match let-db() with
+    | (root, d0) => match typed-of-db(d0, root, root) with
+      | (_, Option.Some(Typed.TIntW(s, w))) => (if s then
+        if w == 64 then unit else trap("width 64")
+      else
+        trap("signed"))
+      | _ => trap("root has an Int64 type fact")
 
 @test
 def di-unbound-is-terr() =
   // a bare unbound var `y` types to a FILLED TErr (poison-as-filled — a determined ill-typed decline).
-  (match parse-tokens([Tok.TName(9)]) with | (root, tree) =>
-    (match typed-of-db(db-of(tree), root, root) with
+  match parse-tokens([Tok.TName(9)]) with
+    | (root, tree) => match typed-of-db(db-of(tree), root, root) with
       | (_, Option.Some(Typed.TErr)) => unit
-      | _ => trap("unbound var types to a filled TErr")))
+      | _ => trap("unbound var types to a filled TErr")
 
 @test
 def di-infer-reuses-resolved-not-reresolve() =
   // infer demands resolve ONCE: a 2nd infer-into-db on the returned Db is a resolve HIT (resolved-filled
   // unchanged) — infer read the memoized column, didn't re-resolve.
-  (match let-db() with | (root, d0) =>
-    (let db1 = infer-into-db(d0, root) in
-     (let r1 = resolved-filled(db1) in
-      (let db2 = infer-into-db(db1, root) in
-       (if (resolved-filled(db2) == r1) then unit else trap("second infer is a resolve HIT"))))))
+  match let-db() with
+    | (root, d0) => let db1 = infer-into-db(d0, root) in
+    let r1 = resolved-filled(db1) in
+    let db2 = infer-into-db(db1, root) in
+    if resolved-filled(db2) == r1 then unit else trap("second infer is a resolve HIT")
 
 @test
 def di-comparison-is-bool() =
   // `(1 < 2)` types to TBool at the root.
-  (match parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) with | (root, tree) =>
-    (match typed-of-db(db-of(tree), root, root) with
+  match parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) with
+    | (root, tree) => match typed-of-db(db-of(tree), root, root) with
       | (_, Option.Some(Typed.TBool)) => unit
-      | _ => trap("1 < 2 types to TBool")))
+      | _ => trap("1 < 2 types to TBool")
 
 export { infer-into-db, typed-of-db, db-resolved-col, db-typed-col }
