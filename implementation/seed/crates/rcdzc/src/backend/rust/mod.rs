@@ -804,12 +804,12 @@ fn emit_signature(
         })
     };
     // The export's OWN result: a Tuple/Option/Result/List/sum result renders fine via the driver's
-    // `cdz_render_expr`, but a Bytes/String consumer result needs the byte-list render the consumer path
-    // does NOT do yet (the factory path special-cases it via `cdz_render_bytes_list`) — decline those.
-    let result_render_unsupported = matches!(
-        result.strip_nominal(),
-        crate::ty::Ty::Bytes | crate::ty::Ty::String
-    );
+    // `cdz_render_expr`, and a BARE Bytes/String result now renders too — the driver's consumer path routes
+    // it through `cdz_render_bytes_list` (the byte-int list `(104 105)` form the value takes crossing the
+    // host boundary as `list<u8>`, mirroring the factory branch), so a bare String/Bytes result no longer
+    // declines. (A String/Bytes nested in a COMPOUND result renders via `cdz_render_expr` as before — not
+    // gated here, unchanged by this slice.)
+    let result_render_unsupported = false;
     // ASYNC closure-PARAMETER consumers: the async gate driver must build the closure from an `async fn`
     // producer (drive it through `block_on`) and thread the gas/yield env — more harness wiring than the
     // sync producer→consumer synthesis. Defer that: an async-mode closure-param consumer still DECLINES

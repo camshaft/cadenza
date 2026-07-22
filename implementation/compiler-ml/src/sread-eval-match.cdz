@@ -34,3 +34,20 @@ def sm-match-scrutinee-is-expr() =
   (match run-src("(do (def (main) (match (+ 2 3) (5 111) (_ 222))) (export main))") with
     | Option.Some(v) => (if v == 111 then unit else trap("match (+ 2 3) hits 5-arm → 111"))
     | Option.None(_) => trap("match over an expr scrutinee runs"))
+
+@test
+def sm-match-in-self-recursive-def() =
+  // MATCH + RECURSION: a self-recursive def whose SELF-CALL is inside a match arm. The recursion detector must
+  // traverse NMatch children to see the self-call (else the def isn't recognized recursive → declines). f n
+  // counts down via `(f (- n 1))` in the wildcard arm to the 0-arm base → 100. f 2 → 100.
+  (match run-src("(do (def (f n) (match n (0 100) (_ (f (- n 1))))) (def (main) (f 2)) (export main))") with
+    | Option.Some(v) => (if v == 100 then unit else trap("match+selfrec f 2 counts down to the 0-arm → 100"))
+    | Option.None(_) => trap("a self-call inside a match arm is recognized recursive + runs"))
+
+@test
+def sm-fib-via-match() =
+  // fib with a match base-arm + recursive default: match n (0 0) (_ (if (< n 2) 1 (+ (fib (n-1)) (fib (n-2))))).
+  // fib 6 → 8. Exercises match+recursion+if together (the recursion detector reaching self-calls under NMatch).
+  (match run-src("(do (def (fib n) (match n (0 0) (_ (if (< n 2) 1 (+ (fib (- n 1)) (fib (- n 2))))))) (def (main) (fib 6)) (export main))") with
+    | Option.Some(v) => (if v == 8 then unit else trap("fib 6 via match → 8"))
+    | Option.None(_) => trap("fib-via-match runs (match+recursion)"))

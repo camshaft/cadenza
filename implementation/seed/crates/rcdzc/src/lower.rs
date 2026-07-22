@@ -4313,7 +4313,14 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
         crate::infer::type_of(db, scrutinee),
         crate::ty::Ty::Map(_, _)
     ) && arms.iter().any(|&(pat, _)| {
-        db.ast.head_ctor(pat) == Some("map") || db.ast.head_name(pat) == Some("map")
+        // Peel a `(guard (map …) cond)` wrapper so a GUARDED map arm routes to the map matcher too (the map
+        // twin of the §4b bin routing peel). `lower_match_map` already peels the guard internally + the
+        // runtime desugar threads the cond; the guard cond's value/rest binders resolve via Case 6mg.
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        db.ast.head_ctor(inner) == Some("map") || db.ast.head_name(inner) == Some("map")
     }) {
         return lower_match_map(db, scrutinee, arms);
     }
@@ -7348,6 +7355,27 @@ fn lower_match_map(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
             .iter()
             .all(|&(k, _)| key_present(db, k, &entries));
         if all_present {
+            // A GUARD (guarded map arm) is evaluated after the keys are present. The guard cond reads the
+            // value/rest binders (Case 6mg → `MapField`, folding to constants over a const scrutinee), so
+            // `core_of(cond)` folds to `ConstBool`. TRUE → this arm matches; FALSE → fall through to the next
+            // arm (mirrors the §4b bin const-path guard fold + the scalar guard fold). A guard that does not
+            // fold to a constant over a CONST scrutinee is a decline (a runtime op leaked into a const fold).
+            let guard = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => Some(g[1]),
+                _ => None,
+            };
+            if let Some(cond) = guard {
+                match core_of(db, cond) {
+                    Core::ConstBool(true) => return core_of(db, body),
+                    Core::ConstBool(false) => continue,
+                    Core::Poison(r) => return Core::Poison(r),
+                    _ => {
+                        return Core::Poison(Reject::decline(
+                            "a guarded map-match arm over a constant scrutinee did not fold its guard to a constant",
+                        ));
+                    }
+                }
+            }
             // This arm matches — its body's `MapField` binders fold against the constant scrutinee.
             return core_of(db, body);
         }
@@ -22539,20 +22567,24 @@ fn lower_record_insert(
     // call result / PROJECTION `(. o pos)`) builds a fresh record whose UNCHANGED fields read the source via
     // synth `(. record field)` projections (`runtime_record_fields`) and whose named field carries `value` —
     // the same "yields a new value" result, just with projected sources instead of literal ones.
-    let mut out: std::collections::BTreeMap<_, _> = match const_record_fields(db, record) {
-        Some(fields) => fields.iter().map(|(k, &v)| (k.clone(), v)).collect(),
-        None => match core_of(db, record) {
-            Core::Poison(r) => return Core::Poison(r),
-            _ => match runtime_record_fields(db, record) {
-                Some(m) => m,
-                None => {
-                    return Core::Poison(Reject::decline(
-                        "a record row operation over a runtime record is not yet built",
-                    ));
-                }
+    // `is_runtime` is true when the unchanged fields read the source via synth `(. record field)`
+    // PROJECTIONS (`runtime_record_fields`) — all sharing the ONE `record` operand. Those projections must
+    // then read a MATERIALIZED operand (see the let-bind below), not the raw operand N times.
+    let (mut out, is_runtime): (std::collections::BTreeMap<_, _>, bool) =
+        match const_record_fields(db, record) {
+            Some(fields) => (fields.iter().map(|(k, &v)| (k.clone(), v)).collect(), false),
+            None => match core_of(db, record) {
+                Core::Poison(r) => return Core::Poison(r),
+                _ => match runtime_record_fields(db, record) {
+                    Some(m) => (m, true),
+                    None => {
+                        return Core::Poison(Reject::decline(
+                            "a record row operation over a runtime record is not yet built",
+                        ));
+                    }
+                },
             },
-        },
-    };
+        };
     let Some(label) = crate::resolve::read_label(db, label_node) else {
         return Core::Poison(Reject::coded(
             Code::Malformed,
@@ -22561,8 +22593,29 @@ fn lower_record_insert(
     };
     out.insert(label, value);
     trace!(target: "rcdzc::fold", node = id.0, n = out.len(), "Record.extend/with builds an insert into a (constant or runtime) record");
-    Core::Record {
+    let record_core = Core::Record {
         fields: std::rc::Rc::new(out),
+    };
+    if !is_runtime {
+        return record_core;
+    }
+    // RUNTIME path: every PRESERVED field is a synth `(. record field)` sharing the ONE `record` operand
+    // node. The backend has no CSE, so each `Core::Proj` re-emits `record`'s computation — an ARITY≥3
+    // record (≥2 preserved fields) then evaluates the operand once per preserved field: a perf cliff for a
+    // pure operand and, for an EFFECTFUL operand (a perform-bearing def result), the effect fires N times —
+    // an observable MISCOMPILE (reviewer post-merge finding on 49d6eec14). MATERIALIZE the operand ONCE: a
+    // self-keyed `Core::Let { (record, record) }` whose body is the fresh record; marking `record` a kept
+    // binding makes every `(. record field)` projection lower its operand to a shared `Core::LocalRef`
+    // (a `local.get`), so the operand's computation emits exactly once. This is the runtime-compare /
+    // runtime-bin-match materialize-once precedent (`lower_runtime_compare`). The `value` node (the updated
+    // field) does NOT read `record`, so it is unaffected. (A CONST-folded record has literal field sources,
+    // no shared operand, so it skips this.)
+    db.kept_bindings.insert(record);
+    let record_ty = crate::infer::type_of(db, id);
+    let body = synth_core(db, record_core, record_ty);
+    Core::Let {
+        bindings: vec![(record, record)],
+        body,
     }
 }
 

@@ -1620,6 +1620,16 @@ fn run_program_rust(
     // an ordinary export keeps its `ret_ty` unchanged.
     let is_factory =
         call.is_some() && rust_factory_param_count(&module, &export, async_mode).is_some();
+    // A CLOSURE-PARAMETER CONSUMER export (takes a closure param, supplied by a producer sibling). Its own
+    // RESULT crosses the host boundary the SAME way a factory's does — a String/Bytes result is serialized
+    // as `list<u8>` and the corpus records the bare byte-int list `(104 105)`, NOT the quoted `"hi"` form.
+    // Detected the same way the call-synthesis path does (a consumer builds via `build_closure_consumer_call`);
+    // used only to route a String/Bytes consumer result through `cdz_render_bytes_list` (below), mirroring the
+    // factory branch. (A consumer's return type is not a closure, so it never overlaps `is_factory`.)
+    let is_consumer = call.is_some()
+        && !is_factory
+        && parse_emitted_sig(&module, &export, async_mode)
+            .is_some_and(|sig| sig.params.iter().any(|p| is_closure_param(p)));
     let ret_ty = if is_factory {
         ret_ty.map(|t| peel_arrow_result(&t))
     } else {
@@ -1722,7 +1732,7 @@ fn run_program_rust(
             // uses. (The wasm `call` method copies the String/Bytes handle into linear memory + returns it as
             // list<u8>; the rust target mirrors the observable form.) So for a FACTORY result of String/Bytes,
             // render the byte list directly; every other type (and a plain export) keeps `cdz_render_expr`.
-            if is_factory && (ty == "String" || ty == "Bytes") {
+            if (is_factory || is_consumer) && (ty == "String" || ty == "Bytes") {
                 cdz_render_bytes_list(ty)
             } else if is_factory && factory_result_is_value_form_sum(ty, &sums) {
                 // HOST-CLOSURE FACTORY SUM RESULT (S4a + user-sum): a sum crossing the host boundary AS A

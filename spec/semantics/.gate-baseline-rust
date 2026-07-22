@@ -49,6 +49,7 @@ pass	a BST built by comparison-driven inserts reads back sorted via in-order tra
 pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
+pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
 pass	a PALINDROME two-pointer walk closes from both ends of a runtime rope
 pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
@@ -61,6 +62,7 @@ pass	a STRING run-length grouping counts adjacent equal scalars across a rope se
 pass	a THREE-DEEP compose chain stacks closure envs with a runtime capture mid-chain
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
+pass	a TWO-LIST FIFO queue reverses the back list exactly when the front drains
 pass	a balanced-paren scan tracks depth over a runtime string and fails fast on early close
 pass	a constant algebraic identity over a high UInt64 operand folds to the operand, not a spurious reject
 pass	a constant MUL-by-1 identity over a high UInt64 operand folds to the operand
@@ -1207,6 +1209,7 @@ pass	a read-modify-write of a List value in a Map grows the entry and leaves the
 pass	a record MATCH pattern with a LITERAL field sub-pattern dispatches on the field value
 pass	a record field built by a RUNTIME BRANCH holds a user-sum, projected then matched
 pass	a record key with a float-bearing TUPLE field keys by content
+pass	a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive
 pass	a recursive combinator applies a captured closure a RUNTIME number of times
 pass	a recursive fold SUMS a list of same-unit quantities threading a Qty accumulator
 pass	a recursive fold over a runtime Peano spine recovers its depth
@@ -1385,6 +1388,9 @@ pass	a guard condition applies a let-bound closure
 pass	a guard condition reads a heap list bound outside the match
 pass	a guarded list-match arm whose guard fails falls through to the catch-all
 pass	a guarded list-match arm over a RUNTIME list scrutinee gates on its decoded head
+pass	a guarded map-match arm reads its value binder in the guard and falls through when it fails
+pass	a guarded map-match arm over a CONSTANT map folds the guard and selects the arm
+pass	a guarded map-match arm over a CONSTANT map whose guard fails falls to the next arm
 pass	a guarded match over a runtime scrutinee whose guard fails takes the wildcard
 pass	a guarded match over a runtime scrutinee with constant arms computes correctly
 pass	a guarded out-of-bounds indexed read is not hoisted by the sharing
@@ -4618,13 +4624,13 @@ todo	and performs the right operand's effect when the left is true
 todo	two same-unit Qty host results combine guest-side as a same-dimension add
 todo	and short-circuit does not perform the right operand's effect
 todo	binary operator operands are evaluated left to right
-todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
-todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
+pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
+pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
 todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Record-arg one
 todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Tuple-arg one
-todo	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
-todo	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one
-todo	distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope
+pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
+pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one
+pass	distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope
 pass	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the compound-arg one
 pass	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the scalar-arg one
 todo	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
@@ -4637,27 +4643,27 @@ todo	let bindings' initializers are evaluated in binding order
 todo	mixed-type @param sites share one Param effect and drive control flow
 todo	or performs the right operand's effect when the left is false
 todo	or short-circuit does not perform the right operand's effect
-todo	round-trip byte-rope consumer alongside a plain export — the consumer
-todo	round-trip byte-rope consumer alongside a plain export — the plain
+pass	round-trip byte-rope consumer alongside a plain export — the consumer
+pass	round-trip byte-rope consumer alongside a plain export — the plain
 todo	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
 todo	round-trip: a HIGHER-ORDER closure — its argument is itself a closure built in-guest
-todo	round-trip: a String-returning consumer of a closure
+pass	round-trip: a String-returning consumer of a closure
 pass	round-trip: a closure taking a NESTED compound (Tuple of Tuples) arg
 pass	round-trip: a closure taking a SUM (Option) arg built in-guest
 todo	round-trip: a closure taking a String arg built in-guest
-todo	round-trip: a compound consumer + a byte-rope consumer of the same closure — the byte-rope
-todo	round-trip: a compound consumer + a byte-rope consumer of the same closure — the compound
+pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the byte-rope
+pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the compound
 pass	round-trip: a compound-arg closure whose consumer returns a compound
 pass	round-trip: a consumer applies a closure taking a List arg built in-guest
 todo	round-trip: a consumer applies a closure taking a Record arg built in-guest
 pass	round-trip: a consumer applies a closure taking a Tuple arg built in-guest
-todo	round-trip: a consumer applies the handed-back closure and returns Bytes
-todo	round-trip: a consumer returns a byte-rope built from a single closure result
+pass	round-trip: a consumer applies the handed-back closure and returns Bytes
+pass	round-trip: a consumer returns a byte-rope built from a single closure result
 todo	round-trip: a higher-order closure applied to TWO distinct inner closures
 todo	round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice
 todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
-todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
-todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
+pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
+pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	the generated Param accessor carries the @param's declared type into arithmetic
 todo	the program manifest is the union of its entrypoints' delegations

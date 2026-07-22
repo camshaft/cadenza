@@ -1571,6 +1571,25 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             seg_index,
         });
     }
+    // Case 6mg: `form` is a GUARD `(guard (map (k v) … .. rest) <cond>)`, ascended from `<cond>` → a VALUE
+    // binder `v` (at key `k`) or the REST binder is in scope in the guard cond (`(guard (map (1 v)) (> v 5))`
+    // — the guard reads `v`). The MAP analogue of Case 6lg/6tg/6recg/6bg: the binder resolves to the SAME
+    // `MapField` Case M gives the arm BODY, so the guard reads the map value/rest off the scrutinee exactly as
+    // the body would (the runtime map desugar reuses both the body AND the guard verbatim, so both must carry
+    // their `MapField` resolution BEFORE the desugar runs). Caught here for the same reason as the other
+    // guard-cond cases (at the arm, `from` is the guard wrapper, not the cond).
+    if let Some((scrutinee, key, named, value_steps, value_heads)) =
+        guard_cond_map_binds(db, form, from, name)
+    {
+        return Some(Resolved::MapField {
+            scrutinee,
+            path: std::rc::Rc::from(Vec::new()),
+            key,
+            named: named.into(),
+            value_steps: value_steps.into(),
+            value_heads: value_heads.into(),
+        });
+    }
     // Case 6rec: `form` is a MATCH ARM whose pattern is a `(record (field binder) …)` RECORD pattern
     // binding `name` at a field. A TOP-LEVEL record match destructures a record scrutinee BY FIELD (the
     // match twin of the record BINDING pattern, Increment B): a bare-binder field value `a` in `(record (x
@@ -1824,7 +1843,14 @@ fn match_arm_map_binds(
     if pb.len() != 2 || from != pb[1] {
         return None; // not an arm, or the reference is not from the arm's body
     }
-    let (entries, rest) = map_pattern_of(db, pb[0])?;
+    // Peel a `(guard <map-pattern> <cond>)` wrapper (guarded map arm): the BODY's value/rest binders must see
+    // the inner `(map …)` pattern. A bare `(map …)` reads `pb[0]` directly. (The guard COND path is Case 6mg's
+    // `guard_cond_map_binds`.)
+    let pattern = match db.ast.as_form(pb[0], "guard") {
+        Some(g) if g.len() == 2 => g[0],
+        _ => pb[0],
+    };
+    let (entries, rest) = map_pattern_of(db, pattern)?;
     // `form`'s parent must be a `(match scrutinee arm…)` and `form` an arm (not the scrutinee).
     let parent = db.parent_of(form)?;
     let mtail = db.ast.as_form(parent, "match")?;
@@ -1977,6 +2003,64 @@ fn guard_cond_bin_binds(
         return None;
     }
     Some((scrutinee, segs, seg_index))
+}
+
+/// If `form` is a GUARD `(guard (map (k v) … .. rest) <cond>)` ascended from its `<cond>`, and the map
+/// pattern binds `name` (a value binder at some key, or the rest binder), return `(scrutinee, key, named,
+/// value_steps, value_heads)` for a `MapField` read — the MAP analogue of [`guard_cond_bin_binds`] (Case
+/// 6mg). `(guard (map (1 v)) (> v 5))` binds `v` at key `1` for the guard cond; the guard reads it off the
+/// enclosing match's scrutinee EXACTLY as the arm body does via Case M ([`match_arm_map_binds`]). `None`
+/// otherwise. Complements Case M: a reference in the guard cond ascends into the `(guard …)` form (this
+/// case) before it would reach the arm (where `from` is the guard wrapper, not the cond).
+#[allow(clippy::type_complexity)]
+fn guard_cond_map_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(
+    StructId,
+    Option<StructId>,
+    Vec<StructId>,
+    Vec<crate::core::PathStep>,
+    Vec<StructId>,
+)> {
+    // `form` must be `(guard <map-pattern> <cond>)`, ascended from the cond.
+    let g = db.ast.as_form(form, "guard")?;
+    if g.len() != 2 || g[1] != from {
+        return None;
+    }
+    let pattern = g[0];
+    // Only a `(map …)` inner pattern (a `(bin …)`/`(list …)`/`(tuple …)`/`(record …)`/variant guard is
+    // another case's concern).
+    let (entries, rest) = map_pattern_of(db, pattern)?;
+    // The guard must be the PATTERN of a match arm `((guard …) body)` whose parent is a `(match …)`.
+    let arm = db.parent_of(form)?;
+    let Struct::List(pb) = db.ast.get(arm) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[0] != form {
+        return None; // `form` must be the arm's pattern position
+    }
+    let matchf = db.parent_of(arm)?;
+    let mtail = db.ast.as_form(matchf, "match")?;
+    let scrutinee = *mtail.first()?;
+    if arm == scrutinee {
+        return None;
+    }
+    let named: Vec<StructId> = entries.iter().map(|&(k, _)| k).collect();
+    // A VALUE binder: `name` is bound by the value sub-pattern of some entry — carry that entry's KEY and the
+    // access sub-path into the value (the SAME descent [`match_arm_map_binds`]'s body path uses).
+    for &(k, v) in &entries {
+        if let Some((steps, heads)) = value_subpattern_binds(db, v, name) {
+            return Some((scrutinee, Some(k), named, steps, heads));
+        }
+    }
+    // The REST binder: `name` is the rest occurrence → the scrutinee minus the named keys.
+    if rest.is_some_and(|r| db.ast.as_name(r).is_some_and(|nm| nm == name && nm != "_")) {
+        return Some((scrutinee, None, named, Vec::new(), Vec::new()));
+    }
+    None
 }
 
 /// If `form` is a `(do …)` block ascended from its child `from`, and a do-local `(def …)` before `from`
