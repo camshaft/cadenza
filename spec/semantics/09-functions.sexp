@@ -5927,6 +5927,17 @@
   (call   main (: (Some 5) (Option Int64)))
   (output (: 5 Int64)))
 
+(case "a Symbol entry parameter compares to an interned constant"
+  (doc    "`(def (main (: s Symbol)) (= s (Symbol.of \"read\")))` called with `(: #\"read\" Symbol)` → true.
+           The rust driver marshals the `#\"read\"` symbol literal as `\"read\".to_string()` (a Symbol
+           param emits as an owned String in the rust backend — strip the `#` sigil, marshal like the String
+           entry arm; the driver used to emit the raw `#\"read\"` Cadenza text → a rustc syntax-error
+           no-build, breaker-found, same family as the BigInt entry marshal). wasm declines the Symbol entry
+           arg (a sound todo). Completes the entry-param-marshal family: String / BigInt / Symbol.")
+  (input  (do (def (main (: s Symbol)) (= s (Symbol.of "read"))) (export main)))
+  (call   main (: #"read" Symbol))
+  (output (: true Bool)))
+
 ; ============================================================================================
 ; MATCH-INTO-IF fusion (backend-independent Core opt, v-core-opt): a `match` over a SUM built through an
 ; `if` pushes the match INTO each branch so each branch's constant constructor folds to the arm body —

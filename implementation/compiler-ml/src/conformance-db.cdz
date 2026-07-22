@@ -525,6 +525,16 @@ def c-cx-if-in-let-value() =
     Expect.Runs(15)
   )
 
+/// `-(2 + 3)` → -5 — unary minus applied to a PARENTHESIZED group (an NNeg over a paren-wrapped NBin).
+/// Existing neg cases negate a literal (`--5`) or a bare operand (`-12/4`, `-7%3`); none negate a paren-group.
+/// Pins that TNeg binds the whole parenthesized sub-expression, not just its first operand (which would give
+/// `-2+3=1`).
+def c-cx-neg-paren-group() =
+  Case.Case(
+    [Tok.TNeg, Tok.TLParen, Tok.TNum(2), Tok.TOp(43), Tok.TNum(3), Tok.TRParen],
+    Expect.Runs(0 - 5)
+  )
+
 /// `1 + 7 % 2` → 2 (modulo binds TIGHTER than addition: `1 + (7%2)` = 1+1 = 2). The `%`-precedence companion
 /// of `c-div-precedence` (the corpus pinned `/` vs `+` but not `%` vs `+`).
 def c-cx-mod-precedence() =
@@ -745,6 +755,7 @@ def corpus() = [
   c-cx-sub-left-assoc(),
   c-cx-div-left-assoc(),
   c-cx-if-in-let-value(),
+  c-cx-neg-paren-group(),
   c-cx-mod-precedence(),
   c-cx-mod-precedence-distinguishes(),
   c-cx-neg-dividend(),
@@ -796,7 +807,7 @@ def cf-declines-mismatch-is-fail() =
 
 @test
 def cf-corpus-size-floor() =
-  // The corpus SIZE floor: exactly 66 cases, so a case can't be silently dropped from `corpus()`.
+  // The corpus SIZE floor: exactly 67 cases, so a case can't be silently dropped from `corpus()`.
   // This does NOT re-run the compiles — each case's pass/decline is already proven by its own
   // `conformance-<case>` @test below, and the `count-passing` fold logic by
   // `cf-count-passing-partial`. The old `cf-corpus-all-pass` re-ran the entire corpus
@@ -805,7 +816,7 @@ def cf-corpus-size-floor() =
   // v-fleet-tooling as the compiler-ml gate-throughput + false-hang source). The conformance FLOOR
   // is now: per-case @tests (each case correct) + this size check (no case dropped), with none of
   // the redundant full-corpus re-run.
-  if List.len(corpus()) == 66 then unit else trap("corpus has 66 cases")
+  if List.len(corpus()) == 67 then unit else trap("corpus has 67 cases")
 
 @test
 def cf-count-passing-partial() =
@@ -971,4 +982,4 @@ def conformance-div-precedence() =
 def conformance-bool-div-declines() =
   if check-case(c-bool-div-declines()) then unit else trap("true / 2 declines")
 
-export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass, c-cx-arith-in-cond, c-cx-bool-cmp-operand-declines, c-cx-bool-let-as-cond, c-cx-chained-comparison-declines, c-cx-div-paren-divisor, c-cx-div-left-assoc, c-cx-if-in-let-value, c-cx-let-bool-in-arith-declines, c-cx-let-chain-outer-in-value-and-body, c-cx-mod-by-zero-declines, c-cx-mod-parity, c-cx-mod-precedence, c-cx-mod-precedence-distinguishes, c-cx-mul-prec-in-sub-chain, c-cx-ne-true, c-cx-neg-dividend, c-cx-neg-mod, c-cx-nested-if-in-branch, c-cx-nested-let-precedence, c-cx-nested-redundant-parens, c-cx-paren-if-in-then-branch, c-cx-paren-overrides-precedence, c-cx-paren-right-operand, c-cx-sub-left-assoc, c-cx-var-in-later-binding }
+export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass, c-cx-arith-in-cond, c-cx-bool-cmp-operand-declines, c-cx-bool-let-as-cond, c-cx-chained-comparison-declines, c-cx-div-paren-divisor, c-cx-div-left-assoc, c-cx-if-in-let-value, c-cx-neg-paren-group, c-cx-let-bool-in-arith-declines, c-cx-let-chain-outer-in-value-and-body, c-cx-mod-by-zero-declines, c-cx-mod-parity, c-cx-mod-precedence, c-cx-mod-precedence-distinguishes, c-cx-mul-prec-in-sub-chain, c-cx-ne-true, c-cx-neg-dividend, c-cx-neg-mod, c-cx-nested-if-in-branch, c-cx-nested-let-precedence, c-cx-nested-redundant-parens, c-cx-paren-if-in-then-branch, c-cx-paren-overrides-precedence, c-cx-paren-right-operand, c-cx-sub-left-assoc, c-cx-var-in-later-binding }

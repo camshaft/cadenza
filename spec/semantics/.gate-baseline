@@ -102,6 +102,7 @@ pass	a 1000-element set drains through Set.remove to empty
 pass	a 1000-iteration concat loop builds a 4000-byte rope measured exactly
 pass	a 100k-iteration pure tail loop under a handler runs in constant stack
 pass	a 2000-entry built map answers first, middle, and last keys through deep CHAMP levels
+pass	a 2000-entry map fully drains to empty and regrows on the emptied trie
 pass	a 5000-element pushed list reads head, middle, and last through the deeper trie
 pass	a @param drives a recursive fold's iteration count
 pass	a @param selects a match arm and a SECOND param feeds the selected body
@@ -3675,6 +3676,7 @@ pass	integer division truncates toward zero
 pass	integer to byte (truncate to 0-255)
 pass	integer to byte wraps on overflow
 pass	interleaved do-discarded performs at BOTH nest levels thread their own states independently
+pass	interleaved insert-remove churn at 500 leaves exactly the odd keys
 pass	interleaved same/different Instants keep FIFO within a time and ascending across times
 pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
@@ -4534,6 +4536,7 @@ pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up t
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
 todo	a BigInt entry argument is marshalled through the value's own constructor
+todo	a Symbol entry parameter compares to an interned constant
 todo	a BigInt entry parameter is COMPUTED on, not just compared
 todo	a BigInt entry parameter added to a beyond-i64 annotated literal
 todo	a Bytes entry argument is marshalled as a Vec<u8>

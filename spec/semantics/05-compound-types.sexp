@@ -13383,6 +13383,43 @@
   (call   main (: 2000 Int64))
   (output (: 23998 Int64)))
 
+(case "a 2000-entry map fully drains to empty and regrows on the emptied trie"
+  (doc    "The full lifecycle at 40× the 50-entry pin: build 2000 (deep multi-level trie), remove ALL
+           2000 (node collapse cascades through every level back to the empty root), then INSERT again
+           on the drained value — 2000·100000 + 0·10 + 5 = 200000005. The persistence read (`m` still
+           len 2000 after the drain built from it) rides in the same expression. A collapse that left a
+           phantom interior node breaks the len-0; a drained root in a broken state breaks the regrow.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (< i n) (build (+ i 1) n (Map.insert m i i)) m))
+            (def (drain (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (< i n) (drain (+ i 1) n (Map.remove m i)) m))
+            (def (main (: n Int64))
+              (let ((m (build 0 n Map.empty)))
+                (let ((empty (drain 0 n m)))
+                  (let ((regrown (build 0 5 empty)))
+                    (+ (* 100000 (Map.len m)) (+ (* 10 (Map.len empty)) (Map.len regrown)))))))
+            (export main)))
+  (call   main (: 2000 Int64))
+  (output (: 200000005 Int64)))
+
+(case "interleaved insert-remove churn at 500 leaves exactly the odd keys"
+  (doc    "The scale face of the interleaved churn pin (n=20 above): 500 inserts each immediately
+           followed by a remove when the key is even — 250 odd survivors. Node split/collapse interleave
+           at every trie level across 25× more operations; a churn path that dropped a sibling during a
+           collapse (or failed a remove) drifts the count.")
+  (input  (do
+            (def (churn (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (>= i n) m
+                (churn (+ i 1) n
+                  (let ((m2 (Map.insert m i i)))
+                    (if (= (% i 2) 0) (Map.remove m2 i) m2)))))
+            (def (main (: n Int64))
+              (Map.len (churn 0 n Map.empty)))
+            (export main)))
+  (call   main (: 500 Int64))
+  (output (: 250 Int64)))
+
 (case "a mutually-recursive sum value stored as a MAP VALUE round-trips and evaluates"
   (doc    "A mutual-sum tree (`Expr`/`Term` referencing each other) stored in a CHAMP map VALUE cell,
            retrieved, and evaluated — the recursive-heap payload survives the collection round-trip and
