@@ -363,6 +363,21 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 30790 Int64)))
 
+(case "Record.with grows a LIST field by pushing onto the projected old value"
+  (doc    "The collection-field update idiom: `(Record.with r items (List.push (. r items) a))` — the
+           new field value is BUILT FROM the projection of the old (push onto the existing list), the
+           read-modify-write a stateful record accumulates by. The updated record's list has 3 elements
+           while the ORIGINAL record's field still has 2 (persistence of the record AND the shared list
+           handle: the push must not mutate the field in place). 3·10 + 2 = 32.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((r (record (items (list 1 2)) (tag 7))))
+                (let ((r2 (Record.with r items (List.push (. r items) a))))
+                  (+ (* 10 (List.len (. r2 items))) (List.len (. r items))))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 32 Int64)))
+
 (case "chained Record.with updates on one field compose with the last write winning"
   (doc    "`(Record.with (Record.with r #\"x\" 10) #\"x\" 20)` — two updates of the SAME field chained:
            the outer sees the inner's result, so the last write wins (r2.x = 20) while the ORIGINAL

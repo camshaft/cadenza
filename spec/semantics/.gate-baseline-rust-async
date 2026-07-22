@@ -96,6 +96,7 @@ pass	List.update at BOTH extremes of a 2000-element list lands and preserves the
 pass	Map.remove by a slice-view key drops the flat-keyed entry
 pass	Map.take by a slice-view key yields the flat-keyed value
 pass	Map.to-list over runtime STRING keys enumerates in content byte order (first is byte-smallest)
+pass	Record.with grows a LIST field by pushing onto the projected old value
 pass	Set.contains dispatches on an Option element at a runtime payload
 pass	Set.intersection and Set.difference match a view against a flat element across operands
 pass	Set.union dedups a slice-view element against a flat twin ACROSS the operand boundary
@@ -140,6 +141,7 @@ pass	a closure built OVER another closure applies both capture layers
 pass	a closure capturing a handler-computed VALUE escapes the handle and applies outside
 pass	a constructed huge Ast.Int equals its quoted twin
 pass	a deep rope indexes by scalar at both extremes
+pass	a fallible helper with a runtime-payload `?` is called from INSIDE a handle body
 pass	a fitting Float32 literal in a runtime MATCH arm computes
 pass	a bare-literal-arm float match under Float32 emits valid f32 across the select and probe-chain paths
 pass	a fitting Float32 record field passed through a typed parameter computes
@@ -148,6 +150,7 @@ pass	a float-field RECORD as a SET element dedups by content including the float
 pass	a generated list reverses twice to itself — an involution property over generated content
 pass	a generic fold instantiated at an Int64 AND a String accumulator in one program
 pass	a generic pair-swap crosses a scalar and a heap payload between positions
+pass	a literal pattern at MID-SPINE depth gates the arm while deeper binders still bind
 pass	a model-oracle property — CHAMP Map.len agrees with a counting model over generated inserts
 pass	a module export is a CLOSURE FACTORY capturing a private sibling
 pass	a module export rides an OUTER combinator's fn parameter a runtime number of times
@@ -3910,6 +3913,7 @@ pass	set union is commutative on generated inputs (a grow-only-set CRDT merge co
 pass	set union is idempotent on generated inputs (re-delivering a set changes nothing)
 pass	shift-by-zero is a no-op on a runtime operand for both directions
 pass	shrinking reports the minimal failing input
+pass	sibling patterns over a two-sum tuple diverge on PER-POSITION literals
 pass	sibling performs feeding a subtraction witness the advancing state non-commutatively
 pass	sibling recursive calls sequenced through let bindings thread state
 pass	sibling-recursive effect threading is left-to-right (order-observing)

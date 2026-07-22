@@ -5563,6 +5563,51 @@
   (call   main (: 0 Int64) (: 4 Int64)) (output (: 4 Int64))
   (call   main (: 0 Int64) (: 0 Int64)) (output (: 0 Int64)))
 
+(case "sibling patterns over a two-sum tuple diverge on PER-POSITION literals"
+  (doc    "The 2×2 literal grid over multi-payload sums: four arms test `(P 0 x)` vs `(P _ x)` at EACH
+           tuple position independently — (0,0) takes the both-zero arm reading BOTH second payloads
+           (100·1+2 = 102); (0,5) and (5,0) take the one-sided arms (1002/2001, each reading the OTHER
+           position's payload); (5,5) falls through (-1). A matrix that tested only position 0's literal
+           (or shared one payload binder across arms) conflates the middle rows. The multi-payload-sum
+           sibling of the Option-quadrant pin above (there the discriminant is the variant TAG; here it
+           is a PAYLOAD literal inside the same variant).")
+  (input  (do
+            (type P (P Int64 Int64))
+            (def (main (: a Int64) (: b Int64))
+              (match (tuple (P a 1) (P b 2))
+                ((tuple (P 0 x) (P 0 y)) (+ (* 100 x) y))
+                ((tuple (P 0 x) (P _ y)) (+ 1000 y))
+                ((tuple (P _ x) (P 0 y)) (+ 2000 x))
+                (_ -1)))
+            (export main)))
+  (call   main (: 0 Int64) (: 0 Int64))
+  (output (: 102 Int64))
+  (call   main (: 0 Int64) (: 5 Int64))
+  (output (: 1002 Int64))
+  (call   main (: 5 Int64) (: 0 Int64))
+  (output (: 2001 Int64))
+  (call   main (: 5 Int64) (: 5 Int64))
+  (output (: -1 Int64)))
+
+(case "a literal pattern at MID-SPINE depth gates the arm while deeper binders still bind"
+  (doc    "A literal buried at spine position 2 of a runtime 3-node list: `(Cons 1 (Cons 2 (Cons v
+           (Nil))))` requires the MIDDLE element to be 2 — n=2 matches and binds the DEEPER v=3; n=9
+           falls to the wildcard-middle arm (·10 → 30). The literal test sits between two binders on the
+           same spine path, so the compiled dispatch must interleave test-then-descend (a matcher testing
+           only leading literals, or binding before the mid-test, takes the wrong arm at n=9).")
+  (input  (do
+            (type L (Nil) (Cons Int64 L))
+            (def (main (: n Int64))
+              (match (Cons 1 (Cons n (Cons 3 (Nil))))
+                ((Cons 1 (Cons 2 (Cons v (Nil)))) v)
+                ((Cons 1 (Cons _ (Cons v (Nil)))) (* v 10))
+                (_ -1)))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 3 Int64))
+  (call   main (: 9 Int64))
+  (output (: 30 Int64)))
+
 (case "a homogeneous nested Option distinguishes its outer and inner None"
   (doc    "`Option (Option Int64)` — the SAME `Option` type nested — matched by three arms `((Some (Some v))
            v) ((Some (None _)) -1) (None -2)`. The scrutinee is runtime (an `if`), so no fold: `b`=true →
