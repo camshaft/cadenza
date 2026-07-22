@@ -101,6 +101,15 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
          (let t2 = infer-node(tree, thenId, rcol, t1) in
           (let t3 = infer-node(tree, elseId, rcol, t2) in
            (match if-type(t3, condId, thenId, elseId) with | ty => Map.insert(t3, id, ty)))))
+    | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) =>
+        // M1-a integer match: infer all four children; well-typed iff scrutinee + literal-pattern are the SAME
+        // integer type (they get compared) AND then/else bodies join to a shared type — that join is the match's
+        // type. Mirrors the `if` join (lowers to CIf(CBin(==,scrut,lit),then,else)). Any mismatch/TErr → TErr.
+        (let m1 = infer-node(tree, scrutId, rcol, tcol) in
+         (let m2 = infer-node(tree, litId, rcol, m1) in
+          (let m3 = infer-node(tree, thenId, rcol, m2) in
+           (let m4 = infer-node(tree, elseId, rcol, m3) in
+            (match match-type(m4, scrutId, litId, thenId, elseId) with | ty => Map.insert(m4, id, ty))))))
     | Option.Some(Node.NApp(calleeId, argId)) =>
         // slice-2 NULLARY call semantics: a nullary call `(mk)` is NApp(calleeBodyId, -1) — its type is the
         // callee BODY's type (β-reduction over zero args: the result IS the body). Infer the callee body, then
@@ -667,6 +676,26 @@ def if-type(tcol: Map(Int64, Typed), condId: Int64, thenId: Int64, elseId: Int64
               | Option.None(_) => Typed.TErr)
           | Option.None(_) => Typed.TErr)
     | _ => Typed.TErr)
+
+/// M1-a: the type of an integer `match`. The scrutinee + literal-PATTERN must be the SAME type (they are
+/// compared, `scrut == lit`); the then/else bodies must JOIN (like an if). `Some(joined)` when both hold, else
+/// TErr. Reuses join-branch-types for the arms; scrut~lit sameness via join-branch-types too (a decline if the
+/// literal's type doesn't match the scrutinee — e.g. matching an Int scrutinee against a Bool pattern).
+def match-type(tcol: Map(Int64, Typed), scrutId: Int64, litId: Int64, thenId: Int64, elseId: Int64) =
+  (match Map.lookup(tcol, scrutId) with
+    | Option.Some(st) =>
+        (match Map.lookup(tcol, litId) with
+          | Option.Some(lt) =>
+              (match join-branch-types(st, lt) with          // scrutinee and pattern must share a type
+                | Typed.TErr => Typed.TErr
+                | _ => (match Map.lookup(tcol, thenId) with
+                    | Option.Some(tt) =>
+                        (match Map.lookup(tcol, elseId) with
+                          | Option.Some(et) => join-branch-types(tt, et)   // arms join → the match's type
+                          | Option.None(_) => Typed.TErr)
+                    | Option.None(_) => Typed.TErr))
+          | Option.None(_) => Typed.TErr)
+    | Option.None(_) => Typed.TErr)
 
 /// The infer COLUMN builder: build the resolve column (demanding parse under it), then infer over it. This is
 /// the whole demand chain in one call — infer reaches resolve reaches parse — and the columns memoize.

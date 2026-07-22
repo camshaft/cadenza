@@ -2983,6 +2983,62 @@ fn shadowing_resolves_nearest_through_the_skip_index() {
     assert_eq!(run_returns::<i64>(&bytes, "main"), 2);
 }
 
+/// A SYNTHESIZED def-form's body reference to its OWN parameter still resolves even after an UNRELATED
+/// `extend_scope_skip_*` call grows the scope-skip vector PAST it. This is the monomorphization SCC bug
+/// (`type_specialize` builds a spec-copy `(def (spec p…) body)` after load; a peer's later map-match /
+/// refutable-literal desugar `resize(structure.len(), None)`s the skip vector): before the fix,
+/// `scope_skip_covers` read "id < vector length" as "covered", so the spec body's `p` took the skip
+/// FAST-PATH, bottomed at the resize-default `None`, and reported its own parameter UNBOUND (a spurious
+/// CDZ0101 at whole-program compile — `apply-def-by-name`'s `defs` in the compiler-ml eval-db repro).
+/// The fix distinguishes a GENUINELY-seeded entry from a resize-default: an unseeded synth node falls back
+/// to the exhaustive parent walk. Built directly against `Db` (no ML shape reliably reproduces the timing
+/// — the copy must exist when a later resize fires; see the eval-db `run-src-typed` repro).
+#[test]
+fn a_synth_def_bodys_own_param_resolves_after_an_unrelated_scope_skip_resize() {
+    use crate::db::Db;
+    use crate::resolve::resolved_of;
+    use crate::resolved::Resolved;
+    // Any loaded program — we synthesize NEW nodes past its load boundary below.
+    let mut db = Db::load(crate::testkit::parse(
+        "(module m (def (main) 0) (export main))",
+    ));
+
+    // Synthesize a def-form `(def (spec p) p)` AFTER load — the shape `type_specialize` builds for a
+    // monomorphized SCC member. Both `p` occurrences are fresh synth atoms of the same name; the body `p`
+    // must resolve to the sig's binder `p`.
+    let def_head = db.push_name("def");
+    let spec_name = db.push_name("spec#mono0");
+    let param_binder = db.push_name("p");
+    let sig = db.push_list(vec![spec_name, param_binder]);
+    let body_ref = db.push_name("p");
+    let _def_form = db.push_list(vec![def_head, sig, body_ref]);
+
+    // Sanity: the body reference resolves to the sig's parameter (the exhaustive walk finds it — the synth
+    // node is not yet swept into the skip vector, so `scope_skip_covers` is false and the walk runs).
+    assert!(
+        matches!(resolved_of(&mut db, body_ref), Resolved::Ref { .. }),
+        "the synth def body's own param must resolve to its binder before any resize"
+    );
+
+    // Now an UNRELATED synth subtree + a seeding call that RESIZES the skip vector to the full arena length
+    // (`resize(structure.len(), None)`), sweeping `def_form`/`body_ref` into the vector with a default-`None`
+    // entry. This is exactly what a peer's map-match / refutable-literal desugar does after a spec copy
+    // already exists. Forget the memoized resolution so it re-resolves against the (now larger) index.
+    let plus = db.push_name("+");
+    let q = db.push_name("q");
+    let r = db.push_name("r");
+    let other = db.push_list(vec![plus, q, r]);
+    db.extend_scope_skip_into_subtree(other);
+    crate::resolve::forget_subtree(&mut db, body_ref);
+
+    // The body `p` STILL resolves to its binder — it was never seeded, so `scope_skip_covers` is false and
+    // the exhaustive walk runs, rather than the poisoned fast-path bottoming at the resize-default `None`.
+    assert!(
+        matches!(resolved_of(&mut db, body_ref), Resolved::Ref { .. }),
+        "an unrelated scope-skip resize must NOT sweep the synth def body's param into a spurious unbound"
+    );
+}
+
 /// The value-heap companion: a `let`-bound runtime TUPLE inside a parameterized function, projected —
 /// `(g 10)` inlines `(let ((t (tuple (+ n 1) (+ n 2)))) (. t 0))`, `t`'s init substitutes `n`, and `(. t
 /// 0)` reads element 0 = `n+1` = 11. Exercises the atom-copy fix on a heap-compound let-local (the case
