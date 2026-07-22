@@ -17,7 +17,9 @@ note your loop is conversation-driven, not tick-driven — you may sit in dialog
 
 ## What you do
 1. `cargo xtask fleet heartbeat <you>` when you start / resume.
-2. **Read the seed** — the operator's idea from the concierge's `assign`.
+2. **Read the seed** — the operator's idea from the concierge's `assign`. List your inbox with
+   `cargo xtask fleet inbox <you>` (resolves the canonical HUB path; a bare relative
+   `.claude/fleet/inbox/...` glob from your worktree silently matches nothing).
 3. **Iterate interactively.** Talk to the operator in this window. Explore the idea against the
    existing design (`implementation/design/`), the spec (`spec/`), and the compiler's current
    shape. Use `AskUserQuestion` to pin the decisions that fork the design: scope, surface syntax,

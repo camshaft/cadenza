@@ -2266,6 +2266,147 @@ fn record_with_over_a_runtime_record_materializes_the_operand_once_not_per_prese
     }
 }
 
+#[test]
+fn record_project_and_without_over_a_runtime_record_build_from_projections_materialize_once() {
+    use crate::testkit::parse;
+    // FOLLOW-UP to `Record.with` over a runtime record: `Record.project` (keep the named fields) and
+    // `Record.without` (drop the named fields) over a genuinely-RUNTIME record (a call result / param /
+    // projection — NOT a compile-time-visible record literal) used to DECLINE "a record row operation over
+    // a runtime record is not yet built" (they only folded a const `Core::Record`). FIX: build the kept
+    // fields from synth `(. record field)` projections (the same `runtime_record_fields` helper `Record.with`
+    // uses) and materialize the shared operand ONCE (self-keyed `Core::Let`, the reviewer-49d6eec14
+    // materialize-once fix, now shared via `materialize_row_op_operand`). Operand = `(mk (+ v 987654321))`,
+    // a call (runtime path) whose arg carries a distinctive constant landing at the use site; the result
+    // keeps ≥2 fields, so a re-emit would duplicate the constant. Asserts: COMPILES (was a decline), value
+    // correct, and the operand's constant emits EXACTLY ONCE.
+    let runtime = find_runtime_wasm();
+    let check = |src: &str, expect_val: &str, what: &str| {
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|e| panic!("{what}: runtime row-op must compile, not decline: {e:?}"));
+        let n = count_opcode(
+            &bytes,
+            |op| matches!(op, wasmparser::Operator::I64Const { value } if *value == 987_654_321),
+        );
+        assert_eq!(
+            n, 1,
+            "{what}: the runtime operand must be materialized ONCE (found {n}, expected 1)"
+        );
+        if let Some(rt) = runtime.clone() {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec!["1".to_string()],
+                runtime: Some(rt),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(s, expect_val, "{what}: value"),
+                cdz_run::Outcome::Trap(t) => panic!("{what}: runtime row-op trapped: {t}"),
+            }
+        }
+    };
+    // `project` KEEPS {a, c} (2 fields, so ≥2 projections share the operand); read `a` = mk's base = 1.
+    check(
+        "(module m \
+         (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
+         (def (upd (: v Int64)) (. (Record.project (mk (+ v 987654321)) (a c)) a)) \
+         (def (main (: v Int64)) (upd v)) \
+         (export main))",
+        "1",
+        "Record.project over a runtime record",
+    );
+    // `without` DROPS {b}, keeping {a, c} (2 fields); read `a` = 1.
+    check(
+        "(module m \
+         (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
+         (def (upd (: v Int64)) (. (Record.without (mk (+ v 987654321)) (b)) a)) \
+         (def (main (: v Int64)) (upd v)) \
+         (export main))",
+        "1",
+        "Record.without over a runtime record",
+    );
+}
+
+#[test]
+fn record_merge_and_pop_over_a_runtime_record_build_from_projections_materialize_once() {
+    use crate::testkit::parse;
+    // FINAL slice of the record row-op-over-runtime-record family (after with / project / without):
+    // `Record.merge` (UNION of two records) and `Record.pop` (split into `(popped-value, rest-record)`)
+    // over a genuinely-RUNTIME record used to DECLINE "not yet built" (they folded only const records).
+    // FIX: build fields from synth `(. record field)` projections and materialize each runtime operand ONCE
+    // — pop via the shared `materialize_row_op_operand` (its result is a TUPLE, whose value + rest both read
+    // the one operand); merge via the TWO-operand generalization (a `Core::Let` binding per runtime operand,
+    // since either of merge's two operands may be runtime independently). The distinctive per-operand
+    // constants (987654321 / 111222333) each land at their operand's use site, so a re-emit would duplicate
+    // them; assert each appears EXACTLY ONCE.
+    let runtime = find_runtime_wasm();
+    // POP: `(Record.pop (mk (+ v 987654321)) a)` → `(a-value, {b,c})`; read tuple element 0 = popped a = 1.
+    // The operand feeds BOTH the popped value's projection AND the rest record's ≥1 projection.
+    let pop_src = "(module m \
+        (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
+        (def (upd (: v Int64)) (. (Record.pop (mk (+ v 987654321)) a) 0)) \
+        (def (main (: v Int64)) (upd v)) \
+        (export main))";
+    let pop_bytes = compile_component(&crate::codec::encode(&parse(pop_src)))
+        .expect("Record.pop over a runtime record must compile, not decline");
+    let pop_n = count_opcode(
+        &pop_bytes,
+        |op| matches!(op, wasmparser::Operator::I64Const { value } if *value == 987_654_321),
+    );
+    assert_eq!(
+        pop_n, 1,
+        "Record.pop: runtime operand materialized ONCE (found {pop_n}, expected 1)"
+    );
+    // MERGE: union of TWO runtime records `(mkA (+ v 987654321))` and `(mkB (+ v 111222333))`; read `c`
+    // (from `b`, the second operand) = 3. Each operand carries its own distinctive constant → each once.
+    let merge_src = "(module m \
+        (def (mkA (: n Int64)) (if (= n 0) (record (a 1) (b 2)) (mkA (- n 1)))) \
+        (def (mkB (: n Int64)) (if (= n 0) (record (c 3) (d 4)) (mkB (- n 1)))) \
+        (def (upd (: v Int64)) (. (Record.merge (mkA (+ v 987654321)) (mkB (+ v 111222333))) c)) \
+        (def (main (: v Int64)) (upd v)) \
+        (export main))";
+    let merge_bytes = compile_component(&crate::codec::encode(&parse(merge_src)))
+        .expect("Record.merge over runtime records must compile, not decline");
+    for k in [987_654_321i64, 111_222_333] {
+        let n = count_opcode(
+            &merge_bytes,
+            |op| matches!(op, wasmparser::Operator::I64Const { value } if *value == k),
+        );
+        assert_eq!(
+            n, 1,
+            "Record.merge: operand carrying {k} materialized ONCE (found {n}, expected 1)"
+        );
+    }
+    // Values (if the runtime is linkable): pop's popped `a` = 1, merge's `c` = 3.
+    let Some(rt) = runtime else {
+        eprintln!("runtime wasm not found; skipping merge/pop value checks");
+        return;
+    };
+    let run = |bytes: &[u8], expect: &str, what: &str| {
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["1".to_string()],
+            runtime: Some(rt.clone()),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, expect, "{what}"),
+            cdz_run::Outcome::Trap(t) => panic!("{what}: runtime row-op trapped: {t}"),
+        }
+    };
+    run(
+        &pop_bytes,
+        "1",
+        "Record.pop over a runtime record: popped field value",
+    );
+    run(
+        &merge_bytes,
+        "3",
+        "Record.merge over runtime records: a field from the union",
+    );
+}
+
 /// A bare (unannotated) parameter PROJECTED in a helper's body is UNCONSTRAINED there (typed `Any`
 /// until the def inlines) — so the projection is checked at the CALL SITE, where the argument's
 /// compound type flows in, not standalone. `(def (get-x r) (. r x))` is well-formed even though `r`'s
@@ -23273,6 +23414,14 @@ mod match_engine {
     /// A regression (a copy site not recording provenance, or the relocation reverting to null) re-buries
     /// this whole class of whole-program CDZ0101 as location-less — the exact "very hard to debug"
     /// symptom the report filed.
+    ///
+    /// Tested at the MECHANISM level (not end-to-end on a program) BY DESIGN: after v-inference's SCC fix
+    /// (trunk 8a044187a), a GENUINELY-unbound name anchors at its own user occurrence via the per-body
+    /// `type_errors` walk BEFORE the reached-poison synth path surfaces it — so no stable whole-program
+    /// input produces a synth-anchored CDZ0101 without reintroducing a bug. The relocation is thus a
+    /// DEFENSIVE guarantee (any future synth-anchored poison gets located, never dropped), and the honest
+    /// pin is here: the provenance record + `source_of_synth` chain, plus the null-fallback for a
+    /// sourceless synth node.
     #[test]
     fn a_beta_reduced_name_copy_traces_back_to_its_source_user_node_for_diagnostics() {
         use crate::db::Db;
@@ -23324,6 +23473,25 @@ mod match_engine {
         assert!(
             checked_a_name,
             "the β-copy produced at least one provenance-tracked name atom to verify"
+        );
+        // NULL-FALLBACK branch (the other half of `sanitize_origin`'s decision): a synthesized node with
+        // NO recorded provenance — a freshly PUSHED atom, like the constant-atom / built-`(Int W)` nodes
+        // the evaluator appends — has no source to relocate to, so `source_of_synth` returns None and
+        // `sanitize_origin` still nulls the unmappable anchor (the pre-fix behavior, preserved). This is
+        // what keeps the fix strictly ADDITIVE: it relocates ONLY when a real source is on record, never
+        // inventing a bogus anchor for a genuinely-sourceless synth node.
+        let bare_synth = db.push_atom(crate::ast::Leaf::Int {
+            value: crate::ast::IntValue::from_i64(0),
+            radix: crate::ast::Radix::Dec,
+        });
+        assert!(
+            !db.is_user_node(bare_synth),
+            "the pushed atom is synthesized"
+        );
+        assert_eq!(
+            db.source_of_synth(bare_synth),
+            None,
+            "a synth node with no recorded provenance has nothing to relocate to (null-fallback)"
         );
     }
 

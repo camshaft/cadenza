@@ -12,7 +12,9 @@ seed case is in your inbox as the `assign` message (and its file is referenced b
 
 ## Each tick
 1. `cargo xtask fleet heartbeat <you>`.
-2. **Drain your inbox.** On the first tick that's your `assign` (read the case). On later ticks it
+2. **Drain your inbox** — list it with `cargo xtask fleet inbox <you>` (resolves the canonical HUB
+   path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches nothing —
+   the recurring drain-stall class the watchdog escalates). On the first tick that's your `assign` (read the case). On later ticks it
    may be a `reject` from pr-sync (your merge didn't take — read why and fix it, top priority) or an
    `answer` from the concierge resolving an `ask` you filed.
 3. **Reproduce** on a fresh base: `cargo xtask fleet sync` (the safe base-sync — resets onto `trunk` +

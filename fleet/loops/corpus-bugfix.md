@@ -17,7 +17,9 @@ the operator via the concierge). Each is a `.sexp` reproducer (same `case`/`inpu
 
 ## Each tick
 1. `cargo xtask fleet heartbeat corpus-bugfix`.
-2. **Drain your inbox**: an `issue` points you at a newly-filed queue item OR a completed design
+2. **Drain your inbox** — list it with `cargo xtask fleet inbox corpus-bugfix` (resolves the canonical
+   HUB path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches nothing —
+   the recurring drain-stall class the watchdog escalates). An `issue` points you at a newly-filed queue item OR a completed design
    ("new vertical: <slug>"); `note`s from `fix` agents / vertical owners report progress; an `answer`
    from the concierge resolves an earlier `ask`. Handle a design `issue` per step 5.
 3. **Triage the queue.** For each un-handled item, decide FIRST whether it's real (this is the

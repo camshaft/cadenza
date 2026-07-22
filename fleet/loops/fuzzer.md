@@ -18,7 +18,10 @@ cdz-smith is its OWN cargo workspace, so you run it from its crate dir, not `-p`
 
 ## Each tick
 1. `cargo xtask fleet heartbeat fuzzer`.
-2. **Drain your inbox** (`note`/`answer` only — you take no `merge-request`s).
+2. **Drain your inbox** (`note`/`answer` only — you take no `merge-request`s) — list it with
+   `cargo xtask fleet inbox fuzzer` (resolves the canonical HUB path; a bare relative
+   `.claude/fleet/inbox/...` glob from your worktree silently matches nothing — the recurring
+   drain-stall class the watchdog escalates).
 3. **Run one fuzz cycle.** The pipeline: generator (byte seed → canonical s-expr) → oracle
    (`compile_catching`) → finding store (shrink + dedup by crash site) → emit. Two oracles:
    (1) **crash/hang** — a panic caught on the 64 MB guard stack, or a watchdog-detected hang;

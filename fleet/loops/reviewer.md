@@ -25,7 +25,9 @@ reading a diff, so a build is optional, not every tick.
 
 ## Each tick
 1. `cargo xtask fleet heartbeat reviewer`. Stop cleanly if a stop-file exists.
-2. **Drain your inbox.** The message that matters is a `note` from `pr-sync`: "integrated <sha> onto
+2. **Drain your inbox** — list it with `cargo xtask fleet inbox reviewer` (resolves the canonical HUB
+   path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches nothing —
+   the recurring drain-stall class the watchdog escalates). The message that matters is a `note` from `pr-sync`: "integrated <sha> onto
    trunk" (its `ref` is the merged commit; the body carries the branch/subject). Also possible: an
    `answer` from the concierge. Move each to `processed/`.
 3. **Rebase onto `trunk`** so your tree matches what you're reviewing.

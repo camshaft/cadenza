@@ -22492,14 +22492,25 @@ fn lower_record_project(
     // (record …))) … r …)` lowers each `r` to a `LocalRef`, so a naive `core_of` sees the binding not the
     // literal and used to decline "over a RUNTIME record" — misleading (every field is constant; single-use
     // `r` folds because it copy-propagates). A genuinely runtime record (param/call result) still declines.
-    let Some(fields) = const_record_fields(db, record) else {
-        return match core_of(db, record) {
-            Core::Poison(r) => Core::Poison(r),
-            _ => Core::Poison(Reject::decline(
-                "a record row operation over a runtime record is not yet built",
-            )),
+    // A compile-time-visible record FOLDS (fields are literal occurrences). A RUNTIME record (param / call
+    // result / PROJECTION) builds its kept fields from synth `(. record field)` projections
+    // (`runtime_record_fields`) — the same source-reading `Record.with` uses; `is_runtime` then drives the
+    // materialize-once let-bind so the shared operand evaluates ONCE (not per kept field).
+    let (fields, is_runtime): (std::collections::BTreeMap<_, _>, bool) =
+        match const_record_fields(db, record) {
+            Some(f) => (f.iter().map(|(k, &v)| (k.clone(), v)).collect(), false),
+            None => match core_of(db, record) {
+                Core::Poison(r) => return Core::Poison(r),
+                _ => match runtime_record_fields(db, record) {
+                    Some(m) => (m, true),
+                    None => {
+                        return Core::Poison(Reject::decline(
+                            "a record row operation over a runtime record is not yet built",
+                        ));
+                    }
+                },
+            },
         };
-    };
     let Some(labels) = crate::resolve::record_op_labels(db, labels) else {
         return Core::Poison(Reject::coded(
             Code::Malformed,
@@ -22507,17 +22518,19 @@ fn lower_record_project(
         ));
     };
     // `project` KEEPS the named fields; `without` keeps every field NOT named (the complement). Each
-    // result field carries the operand's own value occurrence (the immutable heap shares them).
+    // result field carries the operand's own value occurrence (const) or a `(. record field)` projection
+    // (runtime) — the immutable heap shares them either way.
     let named: std::collections::BTreeSet<_> = labels.iter().cloned().collect();
     let kept: std::collections::BTreeMap<_, _> = fields
         .iter()
         .filter(|(k, _)| named.contains(*k) != drop)
         .map(|(k, &v)| (k.clone(), v))
         .collect();
-    trace!(target: "rcdzc::fold", node = id.0, n = kept.len(), drop, "record project/without folds a constant record to its result fields");
-    Core::Record {
+    trace!(target: "rcdzc::fold", node = id.0, n = kept.len(), drop, is_runtime, "record project/without builds its result fields from a (constant or runtime) record");
+    let record_core = Core::Record {
         fields: std::rc::Rc::new(kept),
-    }
+    };
+    materialize_row_op_operand(db, id, record, is_runtime, record_core)
 }
 
 /// Lower `(Record.merge a b)` — the UNION of two records' fields (`type-system.md` §Two Records Are
@@ -22526,22 +22539,63 @@ fn lower_record_project(
 /// `infer`'s; here a shared field would be silently overwritten by `b`, but the reject denies the build so
 /// this core is never emitted. A poison operand propagates; a non-constant/non-record operand declines.
 fn lower_record_merge(db: &mut Db, id: StructId, a: StructId, b: StructId) -> Core {
-    match (core_of(db, a), core_of(db, b)) {
-        (Core::Poison(r), _) | (_, Core::Poison(r)) => Core::Poison(r),
-        (Core::Record { fields: fa }, Core::Record { fields: fb }) => {
-            let mut union: std::collections::BTreeMap<_, _> =
-                fa.iter().map(|(k, &v)| (k.clone(), v)).collect();
-            for (k, &v) in fb.iter() {
-                union.insert(k.clone(), v);
+    // Propagate a poison operand first (before probing shapes).
+    if let Core::Poison(r) = core_of(db, a) {
+        return Core::Poison(r);
+    }
+    if let Core::Poison(r) = core_of(db, b) {
+        return Core::Poison(r);
+    }
+    // Each operand's fields come from its const record literal (fold path) OR — for a genuinely-RUNTIME
+    // operand — synth `(. operand field)` projections (`runtime_record_fields`, the same helper the other
+    // row-ops use). Merge is the UNION of both field sets, so BOTH operands contribute; either may be
+    // runtime independently. `runtime_operands` collects the runtime ones so each is materialized ONCE
+    // (its projections share its operand node — the reviewer-49d6eec14 hazard, here for two operands).
+    let mut runtime_operands: Vec<StructId> = Vec::new();
+    let operand_fields =
+        |db: &mut Db,
+         op: StructId,
+         runtime: &mut Vec<StructId>|
+         -> Option<std::collections::BTreeMap<crate::resolved::Symbol, StructId>> {
+            match const_record_fields(db, op) {
+                Some(f) => Some(f.iter().map(|(k, &v)| (k.clone(), v)).collect()),
+                None => runtime_record_fields(db, op).inspect(|_| runtime.push(op)),
             }
-            trace!(target: "rcdzc::fold", node = id.0, n = union.len(), "Record.merge folds two constant records to their union");
-            Core::Record {
-                fields: std::rc::Rc::new(union),
-            }
-        }
-        _ => Core::Poison(Reject::decline(
+        };
+    let Some(fa) = operand_fields(db, a, &mut runtime_operands) else {
+        return Core::Poison(Reject::decline(
             "Record.merge over a runtime record is not yet built",
-        )),
+        ));
+    };
+    let Some(fb) = operand_fields(db, b, &mut runtime_operands) else {
+        return Core::Poison(Reject::decline(
+            "Record.merge over a runtime record is not yet built",
+        ));
+    };
+    // The union — `a`'s fields then `b`'s (a shared field would let `b` win, but the disjointness CDZ0211
+    // `infer` reports denies the build, so this core is never emitted for overlapping sets). Each field
+    // carries its source's value occurrence (const) or its `(. operand field)` projection (runtime).
+    let mut union: std::collections::BTreeMap<_, _> = fa;
+    for (k, v) in fb {
+        union.insert(k, v);
+    }
+    trace!(target: "rcdzc::fold", node = id.0, n = union.len(), runtime = runtime_operands.len(), "Record.merge builds the union of two (constant or runtime) records");
+    let record_core = Core::Record {
+        fields: std::rc::Rc::new(union),
+    };
+    if runtime_operands.is_empty() {
+        return record_core; // both operands folded — no shared runtime operand to materialize.
+    }
+    // Materialize EACH runtime operand once (a self-keyed `Core::Let` binding per operand, every projection
+    // reading its shared `LocalRef`) — the two-operand generalization of `materialize_row_op_operand`.
+    for &op in &runtime_operands {
+        db.kept_bindings.insert(op);
+    }
+    let result_ty = crate::infer::type_of(db, id);
+    let body = synth_core(db, record_core, result_ty);
+    Core::Let {
+        bindings: runtime_operands.iter().map(|&op| (op, op)).collect(),
+        body,
     }
 }
 
@@ -22596,23 +22650,36 @@ fn lower_record_insert(
     let record_core = Core::Record {
         fields: std::rc::Rc::new(out),
     };
+    materialize_row_op_operand(db, id, record, is_runtime, record_core)
+}
+
+/// Wrap a runtime record row-op's result so its shared `record` operand is EVALUATED ONCE. A runtime
+/// row-op (`Record.with`/`project`/`without`/`merge`/`pop` over a genuinely-runtime record) builds its
+/// result from synth `(. record field)` PROJECTIONS via [`runtime_record_fields`], EVERY one sharing the
+/// ONE `record` operand node. The backend has no CSE, so each `Core::Proj` re-emits `record`'s computation
+/// — an arity≥3 record (≥2 preserved fields) then evaluates the operand once PER preserved field: a perf
+/// cliff for a pure operand and, for an EFFECTFUL operand (a perform-bearing def result), the effect fires
+/// N times — an observable MISCOMPILE (reviewer post-merge finding on 49d6eec14). MATERIALIZE the operand
+/// ONCE: a self-keyed `Core::Let { (record, record) }` whose body is the built result; marking `record` a
+/// kept binding makes every `(. record field)` projection lower its operand to a shared `Core::LocalRef`
+/// (a `local.get`), so the operand's computation emits exactly once. The runtime-compare / runtime-bin-match
+/// materialize-once precedent ([`lower_runtime_compare`]). A CONST-folded result (`is_runtime == false`) has
+/// literal field sources — no shared operand — so it is returned unwrapped. `id` is the row-op node (its
+/// solved type is the result the `Core::Let` body carries — a record for with/project/without/merge, a
+/// `(value, rest)` TUPLE for pop). `result_core` is that built body (a `Core::Record` or `Core::Tuple`).
+fn materialize_row_op_operand(
+    db: &mut Db,
+    id: StructId,
+    record: StructId,
+    is_runtime: bool,
+    result_core: Core,
+) -> Core {
     if !is_runtime {
-        return record_core;
+        return result_core;
     }
-    // RUNTIME path: every PRESERVED field is a synth `(. record field)` sharing the ONE `record` operand
-    // node. The backend has no CSE, so each `Core::Proj` re-emits `record`'s computation — an ARITY≥3
-    // record (≥2 preserved fields) then evaluates the operand once per preserved field: a perf cliff for a
-    // pure operand and, for an EFFECTFUL operand (a perform-bearing def result), the effect fires N times —
-    // an observable MISCOMPILE (reviewer post-merge finding on 49d6eec14). MATERIALIZE the operand ONCE: a
-    // self-keyed `Core::Let { (record, record) }` whose body is the fresh record; marking `record` a kept
-    // binding makes every `(. record field)` projection lower its operand to a shared `Core::LocalRef`
-    // (a `local.get`), so the operand's computation emits exactly once. This is the runtime-compare /
-    // runtime-bin-match materialize-once precedent (`lower_runtime_compare`). The `value` node (the updated
-    // field) does NOT read `record`, so it is unaffected. (A CONST-folded record has literal field sources,
-    // no shared operand, so it skips this.)
     db.kept_bindings.insert(record);
-    let record_ty = crate::infer::type_of(db, id);
-    let body = synth_core(db, record_core, record_ty);
+    let result_ty = crate::infer::type_of(db, id);
+    let body = synth_core(db, result_core, result_ty);
     Core::Let {
         bindings: vec![(record, record)],
         body,
@@ -22625,14 +22692,26 @@ fn lower_record_insert(
 /// one leaves no value occurrence, so it declines defensively). A poison/non-constant operand
 /// propagates/declines.
 fn lower_record_pop(db: &mut Db, id: StructId, record: StructId, name: StructId) -> Core {
-    let Core::Record { fields } = core_of(db, record) else {
-        return match core_of(db, record) {
-            Core::Poison(r) => Core::Poison(r),
-            _ => Core::Poison(Reject::decline(
-                "Record.pop over a runtime record is not yet built",
-            )),
+    // A compile-time-visible record FOLDS (fields are literal occurrences). A RUNTIME record (param / call
+    // result / projection) builds every field from a synth `(. record field)` projection
+    // (`runtime_record_fields`) — the same source-reading `Record.with`/`project` use; `is_runtime` then
+    // drives the materialize-once let-bind so the shared operand evaluates ONCE (not once for the popped
+    // value + once per remaining field).
+    let (fields, is_runtime): (std::collections::BTreeMap<_, _>, bool) =
+        match const_record_fields(db, record) {
+            Some(f) => (f.iter().map(|(k, &v)| (k.clone(), v)).collect(), false),
+            None => match core_of(db, record) {
+                Core::Poison(r) => return Core::Poison(r),
+                _ => match runtime_record_fields(db, record) {
+                    Some(m) => (m, true),
+                    None => {
+                        return Core::Poison(Reject::decline(
+                            "Record.pop over a runtime record is not yet built",
+                        ));
+                    }
+                },
+            },
         };
-    };
     let Some(label) = crate::resolve::read_label(db, name) else {
         return Core::Poison(Reject::coded(
             Code::Malformed,
@@ -22644,9 +22723,9 @@ fn lower_record_pop(db: &mut Db, id: StructId, record: StructId, name: StructId)
             "Record.pop of an absent field (reported CDZ0212 by inference)",
         ));
     };
-    // The remaining record — every field EXCEPT the popped one, each carrying its value occurrence. It is
-    // synthesized as its own occurrence (`synth_core`, `Core::Record` + its `Ty::Record`) so it can be the
-    // tuple's second element (a `Core::Tuple`'s elements are node ids).
+    // The remaining record — every field EXCEPT the popped one, each carrying its value occurrence (const)
+    // or its `(. record field)` projection (runtime). Synthesized as its own occurrence (`synth_core`,
+    // `Core::Record` + its `Ty::Record`) so it can be the tuple's second element (elements are node ids).
     let rest: std::collections::BTreeMap<_, _> = fields
         .iter()
         .filter(|(k, _)| **k != label)
@@ -22663,10 +22742,14 @@ fn lower_record_pop(db: &mut Db, id: StructId, record: StructId, name: StructId)
         },
         crate::ty::Ty::Record(std::rc::Rc::new(rest_ty)),
     );
-    trace!(target: "rcdzc::fold", node = id.0, "Record.pop folds to a (value, remaining-record) tuple");
-    Core::Tuple {
+    trace!(target: "rcdzc::fold", node = id.0, is_runtime, "Record.pop builds a (value, remaining-record) tuple from a (constant or runtime) record");
+    // Both the popped `value` and every field of `rest_record` read the ONE `record` operand (via their
+    // synth projections). Materialize it once so the runtime operand's computation emits a single time; the
+    // helper's `type_of(id)` is the pop RESULT tuple type, which it wraps as the `Core::Let` body.
+    let tuple = Core::Tuple {
         elems: vec![value, rest_record],
-    }
+    };
+    materialize_row_op_operand(db, id, record, is_runtime, tuple)
 }
 
 /// Lower `(Tuple.concat a b)` — concatenate two constant `Core::Tuple`s: the elements of `a` in order

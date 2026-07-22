@@ -45,6 +45,27 @@ def sm-match-in-self-recursive-def() =
     | Option.None(_) => trap("a self-call inside a match arm is recognized recursive + runs"))
 
 @test
+def sm-match-three-arm() =
+  // M1-b N-ARM: a 3-arm match (match n (0 10) (1 20) (_ 30)) — desugars to nested 2-arm NMatch. f 1 → 20.
+  (match run-src("(do (def (f n) (match n (0 10) (1 20) (_ 30))) (def (main) (f 1)) (export main))") with
+    | Option.Some(v) => (if v == 20 then unit else trap("3-arm match f 1 hits the 1-arm → 20"))
+    | Option.None(_) => trap("N-arm (3) match runs"))
+
+@test
+def sm-match-four-arm-last-lit() =
+  // M1-b: a 4-arm match, hitting the 3rd literal arm. match n (0 10)(1 20)(2 25)(_ 30), f 2 → 25.
+  (match run-src("(do (def (f n) (match n (0 10) (1 20) (2 25) (_ 30))) (def (main) (f 2)) (export main))") with
+    | Option.Some(v) => (if v == 25 then unit else trap("4-arm match f 2 hits the 2-arm → 25"))
+    | Option.None(_) => trap("N-arm (4) match runs"))
+
+@test
+def sm-match-n-arm-falls-to-wildcard() =
+  // M1-b: N-arm match where no literal matches → the wildcard arm. match 9 (0 10)(1 20)(2 25)(_ 30) → 30.
+  (match run-src("(do (def (f n) (match n (0 10) (1 20) (2 25) (_ 30))) (def (main) (f 9)) (export main))") with
+    | Option.Some(v) => (if v == 30 then unit else trap("N-arm match f 9 falls to _ → 30"))
+    | Option.None(_) => trap("N-arm match wildcard fallthrough runs"))
+
+@test
 def sm-fib-via-match() =
   // fib with a match base-arm + recursive default: match n (0 0) (_ (if (< n 2) 1 (+ (fib (n-1)) (fib (n-2))))).
   // fib 6 → 8. Exercises match+recursion+if together (the recursion detector reaching self-calls under NMatch).
