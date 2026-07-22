@@ -25583,11 +25583,22 @@ mod match_engine {
                 "a SIGNED `>>` must sign-extend: -256 >> 4 = -16, not a logical 0: got {v}"
             );
         }
-        // A genuine signed i64 `<<` overflow is still rejected (unchanged — the i64 path owns signed).
-        // (`(: 1 (Int 64))` shifted 63 = i64::MIN bit pattern, an overflow of signed Int64.)
+        // A small signed `<<` whose result FITS still folds (the i64 path owns signed; `-8 << 1 = -16` fits
+        // Int64). (This is the fold-not-reject case — NOT an overflow; see the overflow assertion below.)
         assert!(
             reject_code("(module m (def (main) (<< (- 0 8) 1)) (export main))").is_none(),
             "a small signed `<<` that fits still folds"
+        );
+        // A genuine signed `<<` OVERFLOW is rejected CDZ0304 (the previously-untested case the mislabeled
+        // comment claimed): `1 << 63` at signed Int64 = 2^63, which overflows Int64 (max 2^63-1). The signed
+        // i64 fold path (fold_arith/checked_shl_i64) catches it — the unsigned-width fold bails on signed.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (<< (: 1 (Int 64)) (: 63 (Int 64)))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304"),
+            "a signed `<<` that overflows Int64 (1 << 63 = 2^63 > Int64.max) must be rejected"
         );
     }
 

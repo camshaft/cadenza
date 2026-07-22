@@ -99,7 +99,7 @@
                                   (scan s (+ i 1) len depth maxd))))
                         ((None _u) (tuple -9 maxd))))))
             (def (run (: s String))
-              (match (scan s 0 (String.byte-len s) 0 0)
+              (match (scan s 0 (String.scalar-len s) 0 0)
                 ((tuple ok maxd) (+ (* ok 10) maxd))))
             (def (main (: n Int64))
               (do
@@ -134,7 +134,7 @@
                           (split-go s (+ i 1) len start acc)))
                     ((None _u) acc))))
             (def (split (: s String))
-              (split-go s 0 (String.byte-len s) 0 (list)))
+              (split-go s 0 (String.scalar-len s) 0 (list)))
             (def (join (: parts (List String)) (: sep String) (: acc String) (: first Bool))
               (match parts
                 ((list) acc)
@@ -150,6 +150,36 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 321 Int64))
   (call   main (: 0 Int64)) (output (: 411 Int64)))
+
+(case "a scalar-indexed split over a MULTIBYTE string bounds its walk by scalar-len, not byte-len"
+  (doc    "The multibyte witness for the scalar-vs-byte loop-bound distinction that the ASCII split case
+           above cannot exercise: the SAME scalar-indexed `split-go` (String.at / String.slice at scalar
+           offsets) over `\"a,é,b\"` — where `é` is ONE scalar but TWO bytes, so byte-len (6) > scalar-len
+           (5). Bounding the walk by `String.scalar-len` visits exactly the 5 scalars and finds all 3
+           fields (`a` · `é` · `b`) → 3. A `String.byte-len` bound would drive `i` past the last scalar
+           into `String.at`'s `(None _u)` arm on the trailing byte-only iterations, dropping the final
+           flush → 2 — precisely the latent bug the scalar-len bound fixes. Directly observable: the
+           value flips 3→2 under a byte-len regression.")
+  (input  (do
+            (def (field (: s String) (: start Int64) (: end Int64))
+              (Option.expect (String.slice s start end) "in-bounds field"))
+            (def (split-go (: s String) (: i Int64) (: len Int64) (: start Int64) (: acc (List String)))
+              (if (>= i len)
+                  (List.push acc (field s start i))
+                  (match (String.at s i)
+                    ((Some c)
+                      (if (= c ",")
+                          (split-go s (+ i 1) len (+ i 1) (List.push acc (field s start i)))
+                          (split-go s (+ i 1) len start acc)))
+                    ((None _u) acc))))
+            (def (split (: s String))
+              (split-go s 0 (String.scalar-len s) 0 (list)))
+            (def (main)
+              (do
+                (def s (String.concat "a," (String.concat "é" ",b")))
+                ((. List len) (split s))))
+            (export main)))
+  (output (: 3 Int64)))
 
 (case "a deep rope indexes by scalar at both extremes"
   (doc    "Scalar addressing through ~500 concat seams: `String.at` reads index 0 (the single \"A\" head
