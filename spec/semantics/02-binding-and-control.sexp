@@ -206,6 +206,23 @@
   (call   twin (: 6 UInt32))
   (output (: 2 Int64)))
 
+(case "an UNSIGNED lower-bound refinement must not fabricate an i64::MAX ceiling for a UInt64 above it"
+  (doc    "The UInt64-ceiling soundness pin for value-facts GAP-A (rcdzc 070a403d7). A lower-bound
+           refinement `(> x 8)` must NOT conclude `x <= i64::MAX` — a UInt64 ranges past i64::MAX. So the
+           nested `(> x 9223372036854775807)` (i.e. `> i64::MAX`) must stay LIVE, not fold to false. The
+           fold operand i64::MAX is itself i64-representable, so a buggy refinement CAN fire the fold — the
+           load-bearing case. At x = 2^63 = 9223372036854775808 (a valid UInt64 one past i64::MAX) the inner
+           test is TRUE => 1; the earlier miscompiling fold yielded 2. Root fix seeds the interval from
+           resolved_int_bounds (UInt64 hi = None), not a hardcoded i64::MAX. The UInt64 companion of the
+           UInt32 same/implied/twin case above (that surface was always sound — this bug only bit types whose
+           max exceeds i64::MAX).")
+  (input  (do (def (f (: x UInt64)) (if (> x 8) (if (> x 9223372036854775807) 1 2) 0)) (export f)))
+  (call   f (: 9223372036854775808 UInt64))
+  (output (: 1 Int64))
+  ; control: a genuinely small x takes neither refined path -> 0
+  (call   f (: 5 UInt64))
+  (output (: 0 Int64)))
+
 (case "conditional propagation respects a shadowing rebind of the condition variable"
   (doc    "The propagation must track the condition's VALUE in scope, not match its text: `(let ((c (< n
            5))) (if c 1 (let ((c true)) (if c 2 3))))` with n = 10 has the OUTER `c` = false (10 < 5 is

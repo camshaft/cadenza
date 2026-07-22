@@ -3733,6 +3733,23 @@ fn role_never_authors(role: &str) -> bool {
     )
 }
 
+/// Whether a `git reset --hard trunk` on the syncing branch would be CONTENT-LOSSLESS: true iff HEAD's
+/// tree-hash equals trunk's tree-hash (both resolved, non-empty). This is the CONTENT-derived counterpart
+/// to [`role_never_authors`]'s role-derived proof, and it closes the gap that path leaves for AUTHORING
+/// verticals: when trunk is rebuilt/rewound under FRESH shas (a re-parent), an authoring branch with NO
+/// own unlanded work still carries the OLD `integrate MR:` commits, whose fresh-sha + differing patch-id
+/// make `git cherry` mark them `+`/"unlanded" — so `sync` would fall through to replay+warn a stack of
+/// FOREIGN re-baked history as the agent's own work (the recurring toil v-diagnostics, v-property-testing,
+/// v-memory-safety, and v-fleet-tooling each hit, shedding it by hand). But if HEAD's TREE is byte-
+/// identical to trunk's, the branch has ZERO unlanded CONTENT by definition — any own commit's content is
+/// already on trunk (that equality is exactly what makes it landed) — so resetting drops only orphaned
+/// commit OBJECTS whose content is fully preserved on trunk. A branch with genuine own unlanded content
+/// has a DIFFERENT tree, so this returns false and the normal replay+warn path runs untouched (we NEVER
+/// auto-drop real work). Pure so the trigger is unit-testable without a git fixture.
+fn tree_equal_reset_is_lossless(head_tree: &str, trunk_tree: &str) -> bool {
+    !head_tree.is_empty() && !trunk_tree.is_empty() && head_tree == trunk_tree
+}
+
 fn sync(fleet: &Fleet, force: bool) {
     let cwd = std::env::current_dir().expect("cwd");
     let git = |args: &[&str]| -> std::process::Output {
@@ -3822,6 +3839,38 @@ fn sync(fleet: &Fleet, force: bool) {
             "fleet sync: role '{role}' never authors merge-requests → reset to trunk ({trunk_sha}) \
              WITHOUT patch-id replay (nothing of yours to preserve; any 'unlanded' commit would be a \
              peer's your base transiently carried). Branch is now clean at trunk."
+        );
+        return;
+    }
+
+    // CONTENT-IDENTICAL FAST-PATH (the re-parent contamination v-diagnostics, v-property-testing,
+    // v-memory-safety, and v-fleet-tooling each hit — corroborated 4×). We are here only because trunk
+    // is NOT an ancestor of HEAD (the no-op guard above returned otherwise) — i.e. trunk DIVERGED, was
+    // rebuilt/rewound under fresh shas. An AUTHORING vertical with no own unlanded work still carries the
+    // OLD `integrate MR:` commits at their stale shas; their fresh-sha + differing patch-id make `git
+    // cherry` mark them `+`, so the normal path below would replay+warn a stack of FOREIGN re-baked
+    // history as the agent's own work (manual `reset --hard trunk` toil, and in my own case a REJECTED
+    // in-lane MR whose ancestry carried a peer's rejected commit). The role-derived never-authors path
+    // can't help an authoring vertical; the CONTENT is the proof instead: if HEAD's TREE is byte-
+    // identical to trunk's, the branch has ZERO unlanded content — every own commit's content is already
+    // on trunk (that equality is what makes it landed) — so `reset --hard trunk` is provably lossless,
+    // dropping only orphaned commit OBJECTS whose content is fully preserved upstream. A branch with
+    // genuine own unlanded content has a DIFFERENT tree, so this stays silent and the replay+warn path
+    // runs untouched (real work is never auto-dropped). No `--ref` orphaning risk: we don't cherry-pick
+    // (no re-sha), and a tree-equal branch adds nothing over trunk for a queued MR to lose.
+    let head_tree = git_stdout(&["rev-parse", &format!("{old_head}^{{tree}}")]);
+    let trunk_tree = git_stdout(&["rev-parse", &format!("{TRUNK}^{{tree}}")]);
+    if tree_equal_reset_is_lossless(&head_tree, &trunk_tree) {
+        if !git_ok(&["reset", "--hard", TRUNK]) {
+            eprintln!("fleet sync: `git reset --hard {TRUNK}` failed.");
+            std::process::exit(1);
+        }
+        let trunk_sha = git_stdout(&["rev-parse", "--short", "HEAD"]);
+        println!(
+            "fleet sync: your branch is CONTENT-IDENTICAL to trunk (same tree) but trunk was re-parented \
+             under fresh shas → reset to trunk ({trunk_sha}) WITHOUT patch-id replay. Any 'unlanded' \
+             commit `git cherry` would flag is FOREIGN re-baked history your base carried, not yours — \
+             its content is already on trunk, so nothing is lost. Branch is now clean at trunk."
         );
         return;
     }
@@ -6944,6 +6993,26 @@ mod tests {
                 "{role} must NOT be never-authoring"
             );
         }
+    }
+
+    #[test]
+    fn tree_equal_reset_is_lossless_only_on_identical_nonempty_trees() {
+        // The re-parent contamination gate: HEAD's tree byte-identical to trunk's → a `reset --hard
+        // trunk` drops only orphaned commit objects, never content, so the auto-reset fast-path is safe
+        // for an AUTHORING vertical too (the role-derived path can't help it).
+        let t = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+        assert!(tree_equal_reset_is_lossless(t, t));
+        // DIFFERENT trees = genuine own unlanded content → must fall through to replay+warn, never
+        // auto-drop. This is the regression pin: a false positive here would silently discard real work.
+        assert!(!tree_equal_reset_is_lossless(
+            t,
+            "0000000000000000000000000000000000000000"
+        ));
+        // Fail CLOSED on an unresolved tree (empty stdout from a git spawn failure) — an empty==empty
+        // must NOT trip the reset, or a git breakage would masquerade as "content-identical".
+        assert!(!tree_equal_reset_is_lossless("", ""));
+        assert!(!tree_equal_reset_is_lossless("", t));
+        assert!(!tree_equal_reset_is_lossless(t, ""));
     }
 
     #[test]

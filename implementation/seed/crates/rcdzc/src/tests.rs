@@ -24883,6 +24883,44 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bare_literal_grounds_to_bigint_in_a_list_element_position() {
+        // SLICE 2 of the contextual BigInt grounding: a bare, un-suffixed integer literal written as an
+        // ELEMENT of a list literal annotated `(List BigInt)` grounds to BigInt — `(: (list 1 2 3) (List
+        // BigInt))` compiles, where it USED to decline CDZ0203 ("elements should be BigInt, but these are
+        // Int64"). The collection-element analogue of the ctor-payload grounding (slice 1) — v-metaprogramming's
+        // hand-written `(Ast.Int N)` inside a `(list …)`. Grounds each bare element; the list's value type
+        // becomes `(List BigInt)`, so the annotation matches.
+        for src in [
+            "(module m (def (main) (: (list 1 2 3) (List BigInt))) (export main))",
+            // An i64-overflowing element grounds LOSSLESSLY (would be a range fault against Int64).
+            "(module m (def (main) (: (list 1 99999999999999999999999) (List BigInt))) (export main))",
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "bare list elements ground to BigInt (was CDZ0203): {src} → {:?}",
+                reject_code(src)
+            );
+        }
+        // DISCIPLINE: only a BARE element grounds. A COMPUTED element stays Int64, so a `(list 1 (g 2))`
+        // annotated `(List BigInt)` is HETEROGENEOUS (BigInt vs Int64) and MUST still decline — the
+        // grounding never silently promotes the computed Int64.
+        assert!(
+            reject_code(
+                "(module m (def (g (: n Int64)) n) (def (main) (: (list 1 (g 2)) (List BigInt))) \
+                 (export main))"
+            )
+            .is_some(),
+            "a computed Int64 list element in a (List BigInt) still declines (grounding is bare-only)"
+        );
+        // A `(List Int64)` list is UNCHANGED (bare elements keep the Int64 default).
+        assert!(
+            reject_code("(module m (def (main) (: (list 1 2 3) (List Int64))) (export main))")
+                .is_none(),
+            "a (List Int64) of bare literals is unaffected"
+        );
+    }
+
+    #[test]
     fn a_float_literal_that_overflows_float32_is_out_of_range() {
         // The float analogue of an out-of-range integer literal: `(: 1.0e300 Float32)` is finite as the
         // default `Float64` but rounds to `±inf` in `Float32` (a value with no written form), so CDZ0302 —

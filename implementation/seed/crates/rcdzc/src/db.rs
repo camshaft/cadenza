@@ -5690,6 +5690,57 @@ fn collect_bigint_ctor_arg_literals(
             }
         }
     }
+    // SLICE 2 — ANNOTATED COLLECTION ELEMENTS: `(: (list 1 2 3) (List BigInt))` grounds each bare element
+    // literal to BigInt (the collection-element analogue of the ctor-payload case — v-metaprogramming's
+    // hand-written `(Ast.Int N)` inside a `(list …)`). Walk every annotation `(: <value> <ty-expr>)` and
+    // mark the bare integer literals the type-expr expects to be `BigInt`.
+    for ix in 0..ast.structure.len() {
+        let id = <StructId as crate::arena::Index>::from_ix(ix);
+        if let Some(tail) = ast.as_form(id, ":")
+            && let [value, ty_expr] = tail
+        {
+            mark_bigint_expected_literals(ast, *value, *ty_expr, out);
+        }
+    }
+}
+
+/// Mark each bare integer literal in `value` whose expected type (from the annotation type-expr `ty_expr`)
+/// is `BigInt`. Descends the two positions where an integer literal sits under a known type-expr shape:
+/// a direct `(: 42 BigInt)` (redundant with the annotation path, but harmless), and a
+/// `(: (list …) (List BigInt))` whose ELEMENT type is BigInt — each bare-literal element grounds. Only a
+/// DIRECT bare `Leaf::Int` is marked (a suffixed/computed/nested-annotated element is a different node and
+/// keeps its own type — the same bare-only discipline the ctor-payload walk uses).
+fn mark_bigint_expected_literals(
+    ast: &Arenas,
+    value: StructId,
+    ty_expr: StructId,
+    out: &mut crate::fxhash::FxHashSet<StructId>,
+) {
+    // A bare `BigInt` type-expr over a bare integer literal → ground it.
+    if ast.as_name(ty_expr) == Some("BigInt") {
+        if ast.as_int(value).is_some() {
+            out.insert(value);
+        }
+        return;
+    }
+    // A `(List BigInt)` type-expr over a list literal (name-headed `(list …)` OR string-headed
+    // `("list" …)` — the ML `[…]` form): ground each bare-literal element. Read the element type from the
+    // `List` type-expr's second position.
+    if let Some(list_ty_tail) = ast
+        .as_form(ty_expr, "List")
+        .or_else(|| ast.as_ctor_form(ty_expr, "List"))
+        && let Some(&elem_ty) = list_ty_tail.first()
+        && ast.as_name(elem_ty) == Some("BigInt")
+        && let Some(elems) = ast
+            .as_form(value, "list")
+            .or_else(|| ast.as_ctor_form(value, "list"))
+    {
+        for &e in elems {
+            if ast.as_int(e).is_some() {
+                out.insert(e);
+            }
+        }
+    }
 }
 
 /// The `default-fraction` analogue of [`collect_default_int_literals`]: record every bare NUMERIC literal

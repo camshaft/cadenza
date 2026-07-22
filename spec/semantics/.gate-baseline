@@ -2022,6 +2022,7 @@ pass	a reduce-shaped wrapper seeding a second generic helper at two element type
 pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a redundant relational check inside its own truthy branch is known-true and its dead branch is eliminated
 pass	an UNSIGNED branch refinement decides a nested comparison and its soundness twin must not over-refine
+pass	an UNSIGNED lower-bound refinement must not fabricate an i64::MAX ceiling for a UInt64 above it
 pass	a reference to an unbound name is rejected before running
 pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
 pass	a reflected quantity type rejects a value of a different dimension
