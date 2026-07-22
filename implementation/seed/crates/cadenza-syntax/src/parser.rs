@@ -2641,17 +2641,32 @@ impl<'a> Parser<'a> {
         let scrut = self.expr(crate::token::PREC_SEQ + 1);
         let mut items = vec![head, scrut];
         self.expect_keyword(Keyword::With, "`with`");
+        // Own-line `//` comment(s) leading the FIRST arm (`match x with\n  // note\n  | 0 => …`) sit in
+        // the leading `|`'s slot (or the pattern's, if no leading `|`). Drain BEFORE consuming the `|` —
+        // `take_comments_here` at the loop top would run AFTER the `|` bump and miss them.
+        let mut pending_leading = self.take_comments_here();
         if self.at(Kind::Pipe) {
             self.bump(); // optional leading `|`
         }
         loop {
+            // Wrap the arm in any own-line LEADING comment(s) drained before its `|` (the match printer
+            // renders them on their own line above the arm; `is_match_shape` unwraps via
+            // `strip_field_comments`). Own-line has no swallow hazard. A comment drained at the `|` slot
+            // AFTER the pattern is the FIRST-arm case; subsequent arms drain at the end-of-loop `|` below.
+            let leading = std::mem::take(&mut pending_leading);
             let arm = self.match_arm();
+            let arm = self.wrap_comments(leading, arm);
             // A `//` trailing this arm on its line (`| pat => body  // note`) sits at the next token's
             // leading slot (the `|` or the match's end), which the arm loop never drains → dropped.
             // Attach it to THIS arm as `(comment-after …)` so it re-prints same-line. `strip_comments`
             // peels it, so the match compiler is unaffected. (Mirrors the sum-variant locus.)
             let trailing = self.take_trailing_comment_here();
             items.push(self.wrap_comment_after(trailing, arm));
+            // Own-line comment(s) leading the NEXT arm sit in the upcoming `|`'s slot — drain them BEFORE
+            // the bump (into `pending_leading` for the next iteration). `take_trailing_comment_here` above
+            // already took any SAME-LINE trailing comment (a `l.trailing` lead); what remains here is an
+            // OWN-LINE comment belonging to the next arm.
+            pending_leading = self.take_comments_here();
             if self.at(Kind::Pipe) {
                 self.bump(); // `|` before the next arm
             } else {

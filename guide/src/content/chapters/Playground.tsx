@@ -100,7 +100,10 @@ export default function Playground() {
         the compiler's suggested edit is spliced in for you. Call a function and the editor writes each
         argument's name in front of it in soft grey, so <C>add(1, 2)</C> reads as <C>add(x: 1, y: 2)</C>{" "}
         with the parameter names taken from the function's own definition, and an argument already named
-        after its parameter is left alone so the hints stay quiet. These aren't editor heuristics guessing from
+        after its parameter is left alone so the hints stay quiet. And where you leave a parameter's type to
+        be inferred, the editor writes that inferred type in the same soft grey, so <C>def double(x)</C>{" "}
+        reads as <C>def double(x: Int64)</C>; a parameter you annotated yourself, or one that stays fully
+        generic, gets no such hint. These aren't editor heuristics guessing from
         spelling: every one is the compiler answering a question about your actual program, live in the
         browser.
       </P>

@@ -293,6 +293,23 @@
             (export main)))
   (output (: 2 Int64)))
 
+(case "a PER-CALL-selected runtime symbol dispatches through the = chain"
+  (doc    "Every runtime-Symbol pin above fixes the symbol content per program (a rope of constant text);
+           here the CONTENT is selected by the boundary parameter — `(Symbol.of (if (= n 0) \"add\"
+           \"sub\"))` — so one compiled `=`-dispatch answers differently per call (1 at n=0, 2 at n=1).
+           Pins the interning + content-eq of a genuinely per-call symbol. (The symbol-literal MATCH over
+           the same value still declines — the match desugar's Str-probe path doesn't reach a per-call
+           symbol yet; the `=` chain is the working form, so the match-agrees-with-chain pin below can
+           extend to per-call symbols when that lands.)")
+  (input  (do
+            (def (main (: n Int64))
+              (if (= (Symbol.of (if (= n 0) "add" "sub")) #"add") 1 2))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64))
+  (call   main (: 1 Int64))
+  (output (: 2 Int64)))
+
 (case "a symbol-literal match agrees with the equivalent if-(= s lit) chain"
   (doc    "The symbol-literal `match` is the sibling of an `if (= s lit)` dispatch chain (the landed doc's
            framing): over the same runtime `#\"sub\"`, `(match s (#\"add\" 1) (#\"sub\" 2) (_ 0))` and
