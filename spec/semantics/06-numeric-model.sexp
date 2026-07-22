@@ -1520,6 +1520,70 @@
   (call   main (: 0 Int64))
   (output (: (tuple 1 1 1 1 1) (Tuple Int64 Int64 Int64 Int64 Int64))))
 
+(case "an integer square root by Newton iteration converges to the floor at perfect squares and off-squares"
+  (doc    "Integer Newton over Int64 truncating `/`: `g' = (g + x/g) / 2` from the seed `x/2`, STOPPING
+           when the guess stops DECREASING (`ng >= g`) — the termination guard is the point: integer
+           Newton OSCILLATES between adjacent guesses near the root, so a converge-on-equality loop
+           (`ng = g`) never exits at some inputs; monotone-descent is the classic correct stop. Every
+           step leans on `/`-truncation (both the inner x/g and the halving). The output carries a
+           FLOOR CERTIFICATE alongside r: bits for `r·r ≤ x` and `(r+1)² > x`, so each probe verifies
+           isqrt-ness algebraically rather than trusting the expected value alone. Probes: the perfect
+           square 49 and BOTH neighbors 48/50 (floor differs by side), the r=0/r=1 tiny cases (0 → r=0,
+           certificate bits only → 11), and the scale pair 10^6 → 1000 vs 999999 → 999 (the off-by-one
+           a snapped-to-perfect-square shortcut gets wrong).")
+  (input  (do
+            (def (step (: x Int64) (: g Int64))
+              (/ (+ g (/ x g)) 2))
+            (def (isqrt-go (: x Int64) (: g Int64))
+              (do
+                (def ng (step x g))
+                (if (>= ng g) g (isqrt-go x ng))))
+            (def (isqrt (: x Int64))
+              (if (< x 2) x (isqrt-go x (/ x 2))))
+            (def (main (: x Int64))
+              (do
+                (def r (isqrt x))
+                (+ (* r 100)
+                   (+ (* (if (<= (* r r) x) 1 0) 10)
+                      (if (> (* (+ r 1) (+ r 1)) x) 1 0)))))
+            (export main)))
+  (call   main (: 49 Int64)) (output (: 711 Int64))
+  (call   main (: 48 Int64)) (output (: 611 Int64))
+  (call   main (: 50 Int64)) (output (: 711 Int64))
+  (call   main (: 1 Int64)) (output (: 111 Int64))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: 1000000 Int64)) (output (: 100011 Int64))
+  (call   main (: 999999 Int64)) (output (: 99911 Int64)))
+
+(case "modular exponentiation by SQUARING halves the exponent and branches on parity"
+  (doc    "The fast-power recursion: square the base, halve the exponent, and multiply the recursive
+           result back in only on ODD frames — a NON-TAIL multiply applied after the return, so odd
+           and even frames take different post-return paths (e=13 descends odd→even→odd→odd, mixing
+           both). The output carries a DIFFERENTIAL oracle: the same power via a naive linear loop,
+           with an equality bit — the isqrt certificate above verifies against algebra, this one
+           verifies the clever path against the simple one (a halving or parity slip diverges from
+           the naive result long before it produces a plausible-looking wrong value). 7^13 mod
+           1000003 = 719743 (7197431 with the bit); e=0 pins the empty-product identity (1 → 11);
+           e=1 the single-frame case (71). All mod-arithmetic stays in Int64 (b·b < 2^40).")
+  (input  (do
+            (def (modpow (: b Int64) (: e Int64) (: m Int64))
+              (if (= e 0)
+                  1
+                  (do
+                    (def half (modpow (% (* b b) m) (/ e 2) m))
+                    (if (= (% e 2) 1) (% (* b half) m) half))))
+            (def (naive (: b Int64) (: e Int64) (: m Int64) (: acc Int64))
+              (if (= e 0) acc (naive b (- e 1) m (% (* acc b) m))))
+            (def (main (: e Int64))
+              (do
+                (def fast (modpow 7 e 1000003))
+                (def slow (naive 7 e 1000003 1))
+                (+ (* fast 10) (if (= fast slow) 1 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: 1 Int64)) (output (: 71 Int64))
+  (call   main (: 13 Int64)) (output (: 7197431 Int64)))
+
 (case "a runtime BigInt in an Option payload crosses the host boundary"
   (doc    "`(Some (* (BigInt.of 1000000) (BigInt.of 1000000)))` — a runtime BigInt (the 10^12 product does
            not fold) wrapped in an `Option` crosses to the host as `(Some 1000000000000) : (Option
@@ -6092,6 +6156,45 @@
            divide-by-zero must still reject CDZ0304 (a trap the fold must not swallow), even with the
            big-u64 exact-IntValue fold path.")
   (input  (do (def (main) (/ (: 18446744073709551615 UInt64) (: 0 UInt64))) (export main)))
+  (error  CDZ0304))
+
+; ---- Wide-operand constant SHIFT/BITWISE fold (third UInt64 fold slice; v-inference edc5e15bf,
+; trunk ecf272d2d). The arith slices (819f5c2e3 identity, b5eb89db4 non-identity /-%-+) left
+; >> & | ^ << on the i64-only path; a wide UInt64 operand (>= 2^63) had no i64 so they spuriously
+; declined CDZ0304. Now they fold over the solved width's u128 bit pattern (a wide operand is always
+; non-negative unsigned, so >> is logical and bitwise ops mask to width). Traps preserved: a shift
+; COUNT >= width and a << that overflows the width still reject CDZ0304 (no silent truncation).
+(case "a constant logical shift-right over a high UInt64 operand folds over the solved width"
+  (doc    "`(>> (: 18446744073709551614 UInt64) (: 1 UInt64))` — the operand (UInt64.max-1) has no i64,
+           so the old i64-only fold declined CDZ0304. The wide block folds it as a LOGICAL shift over the
+           u128 bit pattern of the solved width: (2^64-2) >> 1 = 2^63-1 = 9223372036854775807.")
+  (input  (do (def (main) (>> (: 18446744073709551614 UInt64) (: 1 UInt64))) (export main)))
+  (output (: 9223372036854775807 UInt64)))
+
+(case "a constant bit-and over a high UInt64 operand masks over the solved width"
+  (doc    "`(& (: 18446744073709551615 UInt64) (: 255 UInt64))` — UInt64.max & 0xFF = 255, folded over the
+           width's u128 pattern (the low byte of an all-ones value), no i64 needed for the wide operand.")
+  (input  (do (def (main) (& (: 18446744073709551615 UInt64) (: 255 UInt64))) (export main)))
+  (output (: 255 UInt64)))
+
+(case "a constant bit-or over a high UInt64 operand folds over the solved width"
+  (doc    "`(| (: 18446744073709551614 UInt64) (: 1 UInt64))` — (UInt64.max-1) | 1 sets the low bit back to
+           UInt64.max, folded over the width's u128 pattern.")
+  (input  (do (def (main) (| (: 18446744073709551614 UInt64) (: 1 UInt64))) (export main)))
+  (output (: 18446744073709551615 UInt64)))
+
+(case "a constant shift-left that overflows a high UInt64 width still rejects"
+  (doc    "The overflow boundary: `(<< (: 18446744073709551615 UInt64) (: 1 UInt64))` — UInt64.max << 1
+           overflows the 64-bit width (drops the high bit), a genuine overflow → must still reject CDZ0304,
+           so the wide shift fold does not silently truncate.")
+  (input  (do (def (main) (<< (: 18446744073709551615 UInt64) (: 1 UInt64))) (export main)))
+  (error  CDZ0304))
+
+(case "a constant shift count at or beyond the width over a high UInt64 still rejects"
+  (doc    "The count boundary: `(>> (: 18446744073709551615 UInt64) (: 200 UInt64))` — a shift COUNT >= the
+           width (200 >= 64) is out of range and must reject CDZ0304, even on the wide fold path (the count
+           guard is not swallowed by the u128 fold).")
+  (input  (do (def (main) (>> (: 18446744073709551615 UInt64) (: 200 UInt64))) (export main)))
   (error  CDZ0304))
 
 (case "BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)"

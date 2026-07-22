@@ -16258,84 +16258,27 @@ fn lower_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
                             ),
                         ));
                     }
-                    // A shift/bitwise op with a wide operand — fold over the SOLVED WIDTH's u128 bit
-                    // pattern (below). Any operand reaching here has no `i64`, and a signed value ≥ 2^63
-                    // cannot type (CDZ0302 at its literal), so the wide operand is a NON-NEGATIVE unsigned
-                    // value — no sign-extension concern for `>>` (a logical shift) or the bitwise ops.
+                    // A shift/bitwise op (with a wide operand) is NOT handled in this wide-arith `match` —
+                    // it falls through to the unified shift/bitwise fold just below (which covers BOTH the
+                    // wide-operand and the small-operand-wide-result cases uniformly).
                     _ => {}
                 }
-                // WIDE SHIFT / BITWISE FOLD. `BitAnd`/`BitOr`/`BitXor`/`Shl`/`Shr` over a ≥2^63 unsigned
-                // OPERAND also hit `fold_arith`'s i64-only path and spuriously declined CDZ0304. Fold over the
-                // SOLVED WIDTH's u128 two's-complement pattern: bitwise ops are total on the value bits (mask
-                // to width); `<<` is multiply-by-2^count then range-check against the SOLVED width; `>>` is a
-                // logical shift (the operand is non-negative unsigned). Shift COUNT out of `0..width` traps.
-                // (SCOPE: this handles a WIDE OPERAND. `(<< (: 1 UInt64) 63)` — SMALL operands, result 2^63
-                // fits UInt64 but overflows i64 — is a DISTINCT bug: the i64 `checked_shl_i64` overflow-checks
-                // against Int64 regardless of the solved width, and both operands fit i64 so this block is not
-                // even reached. That is a separate follow-up, not this slice.)
-                if matches!(
-                    op,
-                    Prim::BitAnd | Prim::BitOr | Prim::BitXor | Prim::Shl | Prim::Shr
-                ) && let crate::ty::Ty::Int(it) =
-                    peel_qty_inner_ty(crate::infer::type_of(db, id))
-                {
-                    let (signed, width) = (it.ground_signed(), it.ground_width());
-                    // The operands' low-`width` bit patterns as u128. `wrap_to(signed,width)` gives the
-                    // canonical two's-complement-at-width value the backend uses; a wide operand here is
-                    // non-negative unsigned, so `wrap_to` yields a non-negative `IntValue` whose magnitude
-                    // is exactly the low-`width` bit pattern (`to_u128`, the unsigned magnitude read).
-                    let bits =
-                        |v: &IntValue| -> u128 { v.wrap_to(signed, width).to_u128().unwrap_or(0) };
-                    let (xb, yb) = (bits(&a), bits(&b));
-                    let mask = if width >= 128 {
-                        u128::MAX
-                    } else {
-                        (1u128 << width) - 1
-                    };
-                    let folded: Option<u128> = match op {
-                        Prim::BitAnd => Some((xb & yb) & mask),
-                        Prim::BitOr => Some((xb | yb) & mask),
-                        Prim::BitXor => Some((xb ^ yb) & mask),
-                        // `<<`: count must be in `0..width`; the result is `(x << count)` — but a bit shifted
-                        // OUT of the width is a provable overflow (the checked default traps, matching the i64
-                        // helper's `None`-on-overflow), so fold only when the full (unmasked) product fits.
-                        Prim::Shl => {
-                            let count = yb;
-                            if count >= width as u128 {
-                                None // out-of-range shift count → trap
-                            } else {
-                                match xb.checked_shl(count as u32) {
-                                    Some(s) if s == (s & mask) => Some(s), // no bit shifted past width
-                                    _ => None, // overflow past the width
-                                }
-                            }
-                        }
-                        // `>>`: logical shift (operand non-negative unsigned); count in `0..width`.
-                        Prim::Shr => {
-                            let count = yb;
-                            if count >= width as u128 {
-                                None
-                            } else {
-                                Some((xb >> count) & mask)
-                            }
-                        }
-                        _ => unreachable!("guarded by the matches! above"),
-                    };
-                    return match folded {
-                        Some(r) => {
-                            trace!(target: "rcdzc::fold", op = intrinsic_name(op), "wide constant shift/bitwise folded over the solved width");
-                            Core::ConstInt(IntValue::from_u128(r))
-                        }
-                        None => {
-                            trace!(target: "rcdzc::fold", op = intrinsic_name(op), "wide constant shift traps (count out of range or overflow) → CDZ0304");
-                            Core::Poison(Reject::coded(
-                                Code::ConstTrap,
-                                "this constant shift traps (the count is out of range for the type, \
-                                 or the shifted result overflows it)",
-                            ))
-                        }
-                    };
-                }
+            }
+            // SHIFT / BITWISE over a fixed width, folded over the SOLVED width (NOT `fold_arith`'s i64 path).
+            // Covers BOTH (a) a ≥2^63 UNSIGNED operand (`& (: u64max UInt64) …`, `>> big-u64 1`) — no i64, so
+            // the i64 path would spuriously reject — AND (b) a SMALL-operand shift whose RESULT exceeds i64 but
+            // fits the unsigned width (`(<< (: 1 UInt64) 63)` = 2^63; `checked_shl_i64` overflow-checked against
+            // Int64 → spurious CDZ0304). `fold_shift_bitwise_at_width` range-checks against the SOLVED width and
+            // handles UNSIGNED only (a SIGNED type returns `None` → the i64 path folds it, preserving arithmetic
+            // sign-extending `>>`). Returns `None` for non-shift/bitwise ops → the i64 arith path handles
+            // Add/Sub/Mul/Div/Rem. A shift/bitwise whose result fits i64 folds identically either way, so this
+            // is behavior-preserving for the common narrow case and only fixes the previously-wrong unsigned
+            // wide-result `<<`/`>>`/`&`/`|`/`^` outcomes.
+            if let crate::ty::Ty::Int(it) = peel_qty_inner_ty(crate::infer::type_of(db, id))
+                && let Some(folded) =
+                    fold_shift_bitwise_at_width(op, &a, &b, it.ground_signed(), it.ground_width())
+            {
+                return folded;
             }
             // Fold over i64, THEN range-check the result against the op's SOLVED width. `fold_arith`
             // evaluates at the Stage i64 width, so a NARROW overflow whose true result still fits i64
@@ -18403,6 +18346,92 @@ fn runtime_string_op_decline(db: &mut Db, arg: crate::ast::StructId, msg: &str) 
             "this operation's operand is not a string (see the type error above)",
         ))
     }
+}
+
+/// Fold a constant SHIFT/BITWISE op (`BitAnd`/`BitOr`/`BitXor`/`Shl`/`Shr`) over the SOLVED WIDTH's u128
+/// two's-complement bit pattern, rather than `fold_arith`'s i64 path. This is correct at ANY fixed width
+/// (including UInt64, whose values above `i64::MAX` the i64 path spuriously rejects) AND for a small-operand
+/// shift whose RESULT exceeds i64 but fits the solved width (`(<< (: 1 UInt64) 63)` = 2^63 fits UInt64 —
+/// `checked_shl_i64` wrongly overflow-checked against Int64). Returns `Some(Core)` (the folded `ConstInt`
+/// or a CDZ0304 trap for an out-of-range shift count / an overflow past the width), or `None` when the op is
+/// not a shift/bitwise (caller falls back to `fold_arith`). Operands reaching here are non-negative at their
+/// width (a signed value ≥ 2^63 cannot type — CDZ0302 at its literal), so `>>` is a logical shift; bitwise
+/// ops are total on the value bits (masked to width). Trap semantics match the i64 helpers, generalized to
+/// the solved width: a shift COUNT ≥ width traps, a `<<` bit shifted past the width traps.
+fn fold_shift_bitwise_at_width(
+    op: Prim,
+    a: &IntValue,
+    b: &IntValue,
+    signed: bool,
+    width: u32,
+) -> Option<Core> {
+    if !matches!(
+        op,
+        Prim::BitAnd | Prim::BitOr | Prim::BitXor | Prim::Shl | Prim::Shr
+    ) {
+        return None;
+    }
+    // UNSIGNED ONLY. A SIGNED type keeps `fold_arith`'s i64 path: (a) a signed `>>` is ARITHMETIC
+    // (sign-extending) — `-256 >> 4 = -16` — which this logical-u128 fold would get wrong (it reads the
+    // magnitude of a `wrap_to` result, so a negative value reads as 0); and (b) a signed value's high bits
+    // are sign extension a bitwise mask would mismodel. The i64 path is already CORRECT for every signed
+    // fixed width (its result range-check catches signed overflow); the ONLY thing it got wrong is an
+    // UNSIGNED-width result above `i64::MAX` (`(<< (: 1 UInt64) 63)` = 2^63, `& (: u64max UInt64) …`), where a
+    // logical width-masked fold is exactly right (unsigned operands are non-negative, `>>` is logical).
+    if signed {
+        return None;
+    }
+    // The operands' low-`width` bit patterns as u128 (`wrap_to` = the canonical two's-complement-at-width the
+    // backend uses; a non-negative value's magnitude IS its bit pattern — `to_u128`).
+    let bits = |v: &IntValue| -> u128 { v.wrap_to(signed, width).to_u128().unwrap_or(0) };
+    let (xb, yb) = (bits(a), bits(b));
+    let mask = if width >= 128 {
+        u128::MAX
+    } else {
+        (1u128 << width) - 1
+    };
+    let folded: Option<u128> = match op {
+        Prim::BitAnd => Some((xb & yb) & mask),
+        Prim::BitOr => Some((xb | yb) & mask),
+        Prim::BitXor => Some((xb ^ yb) & mask),
+        // `<<`: count must be in `0..width`; fold only when no bit is shifted PAST the width (else the checked
+        // default traps — matching the i64 helper's `None`-on-overflow, but against the SOLVED width not i64).
+        Prim::Shl => {
+            let count = yb;
+            if count >= width as u128 {
+                None
+            } else {
+                match xb.checked_shl(count as u32) {
+                    Some(s) if s == (s & mask) => Some(s),
+                    _ => None,
+                }
+            }
+        }
+        // `>>`: logical shift (operand non-negative at its width); count in `0..width`.
+        Prim::Shr => {
+            let count = yb;
+            if count >= width as u128 {
+                None
+            } else {
+                Some((xb >> count) & mask)
+            }
+        }
+        _ => unreachable!("guarded by the matches! above"),
+    };
+    Some(match folded {
+        Some(r) => {
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), "constant shift/bitwise folded over the solved width");
+            Core::ConstInt(IntValue::from_u128(r))
+        }
+        None => {
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), "constant shift traps (count out of range or overflow) → CDZ0304");
+            Core::Poison(Reject::coded(
+                Code::ConstTrap,
+                "this constant shift traps (the count is out of range for the type, \
+                 or the shifted result overflows it)",
+            ))
+        }
+    })
 }
 
 /// Fold a constant arithmetic operation with a CHECKED evaluation. Both operands are compile-time

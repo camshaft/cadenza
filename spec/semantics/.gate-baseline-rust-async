@@ -2137,6 +2137,7 @@ pass	an effect op RESUMED with a slice-view Bytes crosses the arm boundary intac
 pass	an effect op resumed with a whole MAP threads the CHAMP through the continuation
 pass	an inner handle's SEED expression performs against the outer handler
 pass	an inner same-effect handle's RESULT feeds the outer handler's next perform
+pass	an integer square root by Newton iteration converges to the floor at perfect squares and off-squares
 pass	an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type
 pass	a reference to an unbound name is rejected before running
 pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
@@ -2879,6 +2880,7 @@ pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an Ast.Int stores an integer wider than Int64 without loss
+pass	modular exponentiation by SQUARING halves the exponent and branches on parity
 pass	structural equality of two Ast.Int wider than Int64 compares by full value
 pass	the byte codec round-trips an Ast.Int wider than Int64
 pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
@@ -4802,3 +4804,8 @@ pass	a constant modulo over a high UInt64 operand folds to the remainder
 pass	a constant add of two high UInt64 operands within range folds to the sum
 pass	a constant MUL over a high UInt64 operand that overflows still rejects
 pass	a constant division by zero over a high UInt64 operand still rejects
+pass	a constant logical shift-right over a high UInt64 operand folds over the solved width
+pass	a constant bit-and over a high UInt64 operand masks over the solved width
+pass	a constant bit-or over a high UInt64 operand folds over the solved width
+pass	a constant shift-left that overflows a high UInt64 width still rejects
+pass	a constant shift count at or beyond the width over a high UInt64 still rejects
