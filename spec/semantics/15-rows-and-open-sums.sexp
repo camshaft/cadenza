@@ -393,6 +393,41 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 207 Int64)))
 
+(case "a nested Record.with rewrites an inner record field through the outer, inline"
+  (doc    "The write-through composite: `(Record.with p0 pos (Record.with (. p0 pos) y d))` — the
+           inner `with` derives a fresh POS record from the projected one, and the outer `with` seats
+           it back into a fresh OUTER record. Both levels are functional: p1.pos.y = d (5) while
+           p1.pos.x rides through unchanged (1) → 51. The chained-with case above composes on ONE
+           record level; this nests the derivation through a record-valued FIELD — the update shape a
+           position/velocity struct takes. (NB the SAME composite through a nested-record-annotated
+           function PARAMETER currently declines — the inline form pinned here is the working face
+           that must not regress while that surface lands.)")
+  (input  (do
+            (def (main (: d Int64))
+              (do
+                (def p0 (record (pos (record (x 1) (y 2))) (vel (record (x 30) (y 40)))))
+                (def p1 (Record.with p0 pos (Record.with (. p0 pos) y d)))
+                (+ (* (. (. p1 pos) y) 10) (. (. p1 pos) x))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 51 Int64)))
+
+(case "a nested-record parameter projects its inner fields through two dot levels"
+  (doc    "The read face of the nested-record param surface: a fn whose parameter is annotated
+           `(Record (: pos (Record …)) (: vel (Record …)))` projects `(. (. outer pos) y)` through
+           TWO dot levels of the parameter. The annotation must ground both record layers for the
+           inner projection to resolve (2 + d = 7 at d=5). This is the PASSING half of the
+           nested-param surface — the write-through half (Record.with through the same parameter)
+           is a known decline; pinning the read guards the boundary from regressing further.")
+  (input  (do
+            (def (gety (: outer (Record (: pos (Record (: x Int64) (: y Int64))) (: vel (Record (: x Int64) (: y Int64))))))
+              (. (. outer pos) y))
+            (def (main (: d Int64))
+              (do
+                (def p0 (record (pos (record (x 1) (y 2))) (vel (record (x 30) (y 40)))))
+                (+ (gety p0) d)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7 Int64)))
+
 (case "chained Record.with at TWO DIFFERENT fields holds both updates"
   (doc    "The cross-field chain (the one-field chain above pins last-write-wins): `(Record.with
            (Record.with r x a) y b)` updates x and y with runtime values while z rides through untouched

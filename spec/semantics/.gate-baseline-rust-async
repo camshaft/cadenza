@@ -38,12 +38,16 @@ pass	BigInt.of a UInt64 at its high bit still works (the full-width control)
 pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
+pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
+pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
 pass	a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN
 pass	a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack
 pass	a STATS record threads min/max/sum/count as one fold accumulator with data-dependent field updates
+pass	a STRING run-length grouping counts adjacent equal scalars across a rope seam
+pass	a THREE-DEEP compose chain stacks closure envs with a runtime capture mid-chain
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
 pass	a balanced-paren scan tracks depth over a runtime string and fails fast on early close
@@ -194,6 +198,8 @@ pass	a module export is a CLOSURE FACTORY capturing a private sibling
 pass	a module export rides an OUTER combinator's fn parameter a runtime number of times
 pass	a module-exported closure factory builds a PERFORMING closure homed at the apply site
 pass	a mutually-recursive sum value stored as a MAP VALUE round-trips and evaluates
+pass	a nested Record.with rewrites an inner record field through the outer, inline
+pass	a nested-record parameter projects its inner fields through two dot levels
 pass	a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add
 pass	a param-left arith-right Float64.of-int equality compiles to a valid module and computes
 pass	Float64.of-int collapses adjacent integers at the 2^53 precision boundary
