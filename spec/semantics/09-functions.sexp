@@ -2589,6 +2589,31 @@
   (call   main)
   (output (: 4096 Int64)))
 
+(case "McCarthy 91 — a self-call nested INSIDE the argument of another self-call"
+  (doc    "The literal chains above nest a FIXED depth the compiler can see; here the nesting is
+           DATA-DEPENDENT: `(m91 (m91 (+ x 11)))` recurses with a self-call as the argument of
+           another self-call, and how deep the double descent goes depends on the runtime x (the
+           inner call is NON-TAIL — its result feeds the outer call, so each frame holds a live
+           continuation). The function is the classic total-but-tricky recursion: m91(x) = x-10 for
+           x > 100, and exactly 91 for EVERY x ≤ 100 (the plateau). Probes walk the boundary: 1, 99,
+           -50 (deep plateau), 100 (the boundary hop — 100 → m91(m91(111)) → m91(101) → 91), 101 (the
+           first direct exit), then 102 → 92 and 200 → 190 on the linear side. A specialization or
+           inline pass that unrolled the visible double-nest but mis-fixed the recursion's exit
+           condition flattens the plateau or shifts the boundary.")
+  (input  (do
+            (def (m91 (: x Int64))
+              (if (> x 100) (- x 10) (m91 (m91 (+ x 11)))))
+            (def (main (: x Int64))
+              (m91 x))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 91 Int64))
+  (call   main (: 99 Int64)) (output (: 91 Int64))
+  (call   main (: 100 Int64)) (output (: 91 Int64))
+  (call   main (: 101 Int64)) (output (: 91 Int64))
+  (call   main (: 102 Int64)) (output (: 92 Int64))
+  (call   main (: 200 Int64)) (output (: 190 Int64))
+  (call   main (: -50 Int64)) (output (: 91 Int64)))
+
 ; The FAULT WALK over a nested call chain must be LINEAR too, not just the reduction. `type_errors`
 ; checks each call at its site AND collects the reduced body — and it separately descended each raw
 ; ARGUMENT for its own faults. On a chain `(f (f … (f 0)))` (where each argument IS the next call) that

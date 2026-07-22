@@ -5238,6 +5238,47 @@
                                           (Node.NPrim (tuple "*" (Node.NInt 2) (Node.NInt 11)))))))) (export main)))
   (output (: 42 Int64)))
 
+(case "a BST built by comparison-driven inserts reads back sorted via in-order traversal"
+  (doc    "The ordered-tree discipline over a user sum (the resolver above transforms a FIXED tree;
+           here the SHAPE is data-dependent): `insert` walks by comparison and PATH-COPIES only the
+           visited spine — the untouched subtree is shared by handle, the persistent-structure
+           discipline — with the EQUAL-key arm returning the node UNCHANGED (BST dedup). `inorder`
+           threads its accumulator left→root→right, so the read-back is the SORTED sequence whatever
+           the insert order — the property a swapped-subtree rebuild or a reversed comparison breaks.
+           Build from `(5 n 8 1 n 9)`: n=3 → in-order 1·3·5·8·9 (13589); n=5 and n=9 each collide with
+           an existing key at a DIFFERENT tree slot and both dedup to 1·5·8·9 (1589) — two distinct
+           collision paths converging on one output, so an accidental pass on one face still fails
+           the other.")
+  (input  (do
+            (type BST (Empty) (Node (Tuple BST Int64 BST)))
+            (def (insert (: t BST) (: v Int64))
+              (match t
+                ((Empty _u) (Node (tuple (Empty) v (Empty))))
+                ((Node p)
+                  (match p
+                    ((tuple l k r)
+                      (if (< v k)
+                          (Node (tuple (insert l v) k r))
+                          (if (> v k)
+                              (Node (tuple l k (insert r v)))
+                              (Node (tuple l k r)))))))))
+            (def (build (: xs (List Int64)) (: t BST))
+              (match xs
+                ((list) t)
+                ((list h .. rest) (build rest (insert t h)))))
+            (def (inorder (: t BST) (: acc Int64))
+              (match t
+                ((Empty _u) acc)
+                ((Node p)
+                  (match p
+                    ((tuple l k r) (inorder r (+ (* (inorder l acc) 10) k)))))))
+            (def (main (: n Int64))
+              (inorder (build (list 5 n 8 1 n 9) (Empty)) 0))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 13589 Int64))
+  (call   main (: 5 Int64)) (output (: 1589 Int64))
+  (call   main (: 9 Int64)) (output (: 1589 Int64)))
+
 (case "a recursive user sum type is built at run time and renders its variant names"
   (doc    "A recursive user sum type — the linked-list / AST shape a self-hosted compiler manipulates —
            constructed at run time. `(IntList.Cons (tuple n (IntList.Nil ())))` with n=5 a runtime value

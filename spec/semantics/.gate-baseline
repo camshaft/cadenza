@@ -36,6 +36,8 @@ pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
 pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
 pass	BigInt.of a UInt64 at its high bit still works (the full-width control)
 pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
+pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
+pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
 pass	a STATS record threads min/max/sum/count as one fold accumulator with data-dependent field updates
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
