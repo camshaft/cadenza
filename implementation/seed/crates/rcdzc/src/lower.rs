@@ -19822,12 +19822,43 @@ pub(crate) fn discharged_no_overflow(_db: &mut Db, _id: StructId) -> bool {
     false
 }
 
+/// The FLOW-FACT disjunct of [`provably_no_overflow`] — whether the value-facts lattice proves the checked
+/// `op` at Core node `id` stays in `result`'s range, licensing the overflow-guard elision (design
+/// `DESIGN-flow-sensitive-value-facts.md` §4.1, the third independently-sound disjunct alongside
+/// `arith_provably_in_range` and v-verification's `discharged_no_overflow`). Ownership is partitioned: this
+/// is v-value-facts' seam, `discharged_no_overflow` is v-verification's, and v-core-opt owns the wrapper.
+///
+/// SLICE 1–2: the integer facet's proof IS the generalized interval analysis, so this delegates to
+/// [`arith_provably_in_range`] — a redundant-but-SOUND disjunct (it can only make the same or more ops
+/// elide, never a false positive), behavior-neutral because that disjunct already fires in the wrapper. It
+/// exists as a NAMED, stable seam so the later non-integer facets (a `nonzero` divisor, a `len_range`
+/// bounds, a `variant_tags` discriminant — each consumed at ITS own guard, not here) plug into the same
+/// fail-closed shape without re-touching the wrapper. FAIL-CLOSED: any uncertainty / missing fact /
+/// unrefined operand ⇒ `false` (the default is always to KEEP the check), so the `OR` is sound.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fact_proven_safe(
+    db: &mut Db,
+    op: Prim,
+    lhs: StructId,
+    rhs: StructId,
+    result: crate::ty::IntTy,
+    _id: StructId,
+) -> bool {
+    // Slice 1–2: the flow-fact proof for an INTEGER overflow is exactly the interval analysis (which
+    // already consults the flow-sensitive refinement env via `value_range`). A dedicated fact path for the
+    // non-integer facets attaches at their own consumers, not this arith guard.
+    arith_provably_in_range(db, op, lhs, rhs, result)
+}
+
 /// The both-backend overflow-guard-elision decision for a checked `+`/`-`/`*` at Core node `id`: elide iff
-/// the result provably stays in the type by INTERVAL ANALYSIS ([`arith_provably_in_range`]) OR a discharged
-/// verification PROOF licenses it ([`discharged_no_overflow`]). This is the single Core-tier decision BOTH
-/// backends consult (rust `emit_arith`, wasm `emit_checked_arith_to`), so range analysis today and a
-/// discharged `Thm` next both elide uniformly with no emit change. The `OR` only ever makes MORE ops elide,
-/// and only on a real proof — so it is sound by the same argument as the predicate alone (default = check).
+/// the result provably stays in the type by INTERVAL ANALYSIS ([`arith_provably_in_range`]), OR the
+/// value-facts lattice proves it ([`fact_proven_safe`]), OR a discharged verification PROOF licenses it
+/// ([`discharged_no_overflow`]). This is the single Core-tier decision BOTH backends consult (rust
+/// `emit_arith`, wasm `emit_checked_arith_to`), so range analysis, a flow-fact, and a discharged `Thm` all
+/// elide uniformly with no emit change. Each disjunct is INDEPENDENTLY SOUND and FAIL-CLOSED, so the `OR`
+/// only ever makes MORE ops elide, and only on a real proof — sound by the same argument as any one alone
+/// (default = keep the check). Ownership is partitioned across the three disjuncts (v-core-opt / v-value-
+/// facts / v-verification); this wrapper is v-core-opt's seam.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn provably_no_overflow(
     db: &mut Db,
@@ -19837,7 +19868,9 @@ pub(crate) fn provably_no_overflow(
     result: crate::ty::IntTy,
     id: StructId,
 ) -> bool {
-    arith_provably_in_range(db, op, lhs, rhs, result) || discharged_no_overflow(db, id)
+    arith_provably_in_range(db, op, lhs, rhs, result)
+        || fact_proven_safe(db, op, lhs, rhs, result, id)
+        || discharged_no_overflow(db, id)
 }
 
 /// Whether `val << k` provably CANNOT overflow the type of `val` — so the shift's overflow round-trip

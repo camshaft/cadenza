@@ -4904,6 +4904,33 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
         {
             let a = type_of(db, args[0]);
             let b = type_of(db, args[1]);
+            // PROVISIONAL-OPERAND DEFER: an arith operand that is `Any` WHILE A SCHEME SOLVE IS IN FLIGHT is
+            // a not-yet-resolved SELF-CALL result — the recursion guard returns `Any` for a self-call typed
+            // inside its own def's body during that def's scheme solve. Committing the arith result NOW
+            // (the numeric arms below all fail to match `Any`, so it falls to the generic `∀a.(Int a)`
+            // scheme → a DEFERRED `Int`) FREEZES the wrong type: once the def's result grounds (e.g. a
+            // sibling `(Leaf n)` arm fixes it `BigInt`), a clean re-solve types the self-calls `BigInt` and
+            // `+` over two BigInts is `BigInt` — but the frozen deferred-`Int` already conflicts with the
+            // `BigInt` arm → a spurious CDZ0203 "arms differ: BigInt vs Int64" (`(+ (s a) (s b))` with two
+            // self-calls and no anchoring literal). Return `Any` here so the node is NOT cached (the
+            // `type_of` memo skips `Any`) and RE-solves cleanly once the operands' real types settle. Only
+            // under `solving_schemes` (a re-grounding fixpoint); outside a solve an `Any` operand is a real
+            // fault the generic path reports. (A single anchoring `BigInt`/`Float` literal operand — the
+            // `(+ 1N (f …))` shape — already grounds via the arms below, so this only catches the
+            // both-provisional case the arms cannot yet classify.)
+            if !db.solving_schemes.is_empty()
+                && (matches!(a, Ty::Any) || matches!(b, Ty::Any))
+                && matches!(
+                    prim,
+                    crate::resolved::Prim::Add
+                        | crate::resolved::Prim::Sub
+                        | crate::resolved::Prim::Mul
+                        | crate::resolved::Prim::Div
+                        | crate::resolved::Prim::Rem
+                )
+            {
+                return Ty::Any;
+            }
             // A QUANTITY operand takes the dimensional arm below, NOT the bare-numeric arms here — even
             // when its SIBLING is a bare `Float`/`BigInt`/`Rational`. `(* (Qty Float64 meter) 3.0)` must
             // stay `(Qty Float64 meter)` (a bare number scales, contributing `Unit.one`), not collapse to

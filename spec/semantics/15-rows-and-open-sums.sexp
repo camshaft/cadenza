@@ -205,6 +205,54 @@
   (call   main (: 3 Int64) (: 10 Int64)) (output (: 7 Int64))
   (call   main (: 50 Int64) (: 8 Int64)) (output (: -42 Int64)))
 
+; The row-op cases above each exercise ONE op and read the result directly. These pin COMPOSITION:
+; a row-op result flowing into an open-row function's parameter (the row variable must unify with the
+; op's RESULT row, not a source literal's), and a multi-op pipeline whose intermediate rows exist only
+; between ops. (An ANNOTATED closed-record parameter `(: r (Record (: x Int64)))` correctly rejects a
+; wider argument — CDZ0203, width is exact when annotated; the open unannotated form is what composes.)
+
+(case "an open-row function accepts a runtime MERGE result and reads the carried field"
+  (doc    "`get-x` (unannotated, open row) applied to `(Record.merge (record (x a)) (record (y 100)))` —
+           the argument's row is the merge's RESULT union {x,y}, built at run time, not a source literal.
+           The row variable must instantiate against the op's result row and resolve x's slot in the
+           merged layout (sorted 2-field erasure). a=7 → 7. Pins row-polymorphic application over a
+           computed record, the composition seam between the merge pins above and the open-row pins at
+           the file top.")
+  (input  (do
+            (def (get-x r) (. r x))
+            (def (main (: a Int64))
+              (get-x (Record.merge (record (x a)) (record (y 100)))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case "an open-row function over a Record.with result reads the UPDATED value"
+  (doc    "The update composition: `(Record.with (record (x 1) (y 2)) x a)` replaces x with the runtime
+           `a`, and the open-row `get-x` reads the update's result — 42, never the stale literal 1. Pins
+           that the with-result's row (same fields, new value) flows through a row-variable application
+           and the projection reads the POST-update slot.")
+  (input  (do
+            (def (get-x r) (. r x))
+            (def (main (: a Int64))
+              (get-x (Record.with (record (x 1) (y 2)) x a)))
+            (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64)))
+
+(case "a row-op pipeline — merge then without then two projections — over runtime values"
+  (doc    "Three row ops composed, intermediates never named in source types: merge unions {x} and {y,z}
+           (both carrying runtime values), `without` drops z, and BOTH survivors project out of the
+           let-bound result — a + b = 42. Each op's result row feeds the next op's operand row; a
+           pipeline that recomputed layout from a source literal (rather than the previous op's result)
+           would misread a slot after the drop shifted positions.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (let ((r (Record.without (Record.merge (record (x a)) (record (y b) (z 9))) (z))))
+                (+ (. r x) (. r y))))
+            (export main)))
+  (call   main (: 30 Int64) (: 12 Int64))
+  (output (: 42 Int64)))
+
 (case "merging records that share a field name is rejected"
   (doc    "Witnesses type-system.md #Two Records Are Combined Only When Their Field Sets Are Disjoint (2nd
            sentence): merging two records that share a field name is a compile-time rejection (CDZ0211), so

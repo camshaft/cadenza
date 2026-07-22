@@ -1858,7 +1858,13 @@ impl<'a> Parser<'a> {
             let span = start.merge(self.prev_span());
             return self.name("unit", span);
         }
+        // Own-line `//` comment(s) leading the first element (`(\n // note\n 1, 2)` or a grouped `(\n
+        // // note\n e)`) sit in its first-token leading slot, which `expr` does not drain — capture +
+        // wrap `(comment "text" first)` so they round-trip (the printer renders a leading comment on its
+        // own line above the expr). Applies to both the tuple and the transparent-grouping outcome.
+        let first_leading = self.take_comments_here();
         let first = self.expr(0);
+        let first = self.wrap_comments(first_leading, first);
         if self.at(Kind::Comma) {
             // a tuple: gather the rest, recovering from a missing `,` between elements. The head is the
             // STRING primitive `"tuple"` (not the name), so the literal builds the unshadowable tuple
@@ -1876,7 +1882,11 @@ impl<'a> Parser<'a> {
             // comment-drop guard refuses the format (no corruption).
             let mut items = vec![head, first];
             while self.sep_continue(Kind::RParen) {
+                // Own-line leading comment before this element (own-line has no swallow hazard — see
+                // `list_literal`), then the element, then a same-line trailing comment on the LAST element.
+                let leading = self.take_comments_here();
                 let elem = self.expr(crate::token::PREC_SEQ + 1);
+                let elem = self.wrap_comments(leading, elem);
                 if self.at(Kind::RParen) {
                     let trailing = self.take_trailing_comment_here();
                     items.push(self.wrap_comment_after(trailing, elem));
@@ -3084,7 +3094,7 @@ impl<'a> Parser<'a> {
                 // `}` token's leading slot; capture it as `(comment-after "text" (name value))` (gated on
                 // `at(RBrace)` — only the last field, the PR#758 rule: a non-last comment would swallow the
                 // following `, …`). The record printer/shape-guard unwraps the wrapper. `strip_comments`
-                // peels it. A non-last comment is left stranded → the comment-drop guard refuses.
+                // peels it. A non-last same-line comment is left stranded → the comment-drop guard refuses.
                 if self.at(Kind::RBrace) {
                     let trailing = self.take_trailing_comment_here();
                     items.push(self.wrap_comment_after(trailing, field));
@@ -3140,7 +3150,7 @@ impl<'a> Parser<'a> {
                     let entry = self.list(vec![key, value], e_span);
                     // Capture a same-line trailing `//` on the LAST entry (gated on `at(RBrace)`), like the
                     // record loop — wrap as `(comment-after "text" (key value))`; the map printer/shape-guard
-                    // unwraps it. A non-last comment is left to the comment-drop guard (no corruption).
+                    // unwraps it. A non-last same-line comment is left to the comment-drop guard (no corruption).
                     if self.at(Kind::RBrace) {
                         let trailing = self.take_trailing_comment_here();
                         items.push(self.wrap_comment_after(trailing, entry));
@@ -3201,12 +3211,15 @@ impl<'a> Parser<'a> {
         if !self.at(Kind::RParen) {
             loop {
                 let before = self.pos;
+                // Own-line leading comment before this element (own-line has no swallow hazard), then the
+                // element, then a same-line trailing comment on the LAST element (gated on `at(RParen)`).
+                let leading = self.take_comments_here();
                 let elem = self.expr(crate::token::PREC_SEQ + 1);
-                // Capture a same-line trailing `//` on the LAST element (gated on `at(RParen)`), like
-                // `list_literal`/the tuple loop — a set literal `#(…)` desugars to `Set.of([…])`, so its
-                // elements ARE list elements and the `#(…)` printer renders them via the shared
-                // comment-aware path. Gated to the last element for the PR#758 reason (a non-last comment
-                // would swallow the following `, …`); a mid-element comment is left to the drop-guard.
+                let elem = self.wrap_comments(leading, elem);
+                // A set literal `#(…)` desugars to `Set.of([…])`, so its elements ARE list elements and the
+                // `#(…)` printer renders them via the shared comment-aware path. The trailing capture is
+                // gated to the last element for the PR#758 reason (a non-last same-line comment would
+                // swallow the following `, …`); a mid-element same-line comment is left to the drop-guard.
                 if self.at(Kind::RParen) {
                     let trailing = self.take_trailing_comment_here();
                     elems.push(self.wrap_comment_after(trailing, elem));
