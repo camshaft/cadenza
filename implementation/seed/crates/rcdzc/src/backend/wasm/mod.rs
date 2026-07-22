@@ -1175,11 +1175,27 @@ fn collect_host_arg_strings_at(db: &mut Db, id: crate::ast::StructId, out: &mut 
                 collect_host_arg_strings(db, f.value, out);
             }
         }
-        Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
-            collect_host_arg_strings(db, bytes, out)
+        Core::BinIntRead {
+            bytes, off_plus, ..
         }
-        Core::BinSizedRead { bytes, len, .. } => {
+        | Core::BinRestRead {
+            bytes, off_plus, ..
+        } => {
             collect_host_arg_strings(db, bytes, out);
+            if let Some(op) = off_plus {
+                collect_host_arg_strings(db, op, out);
+            }
+        }
+        Core::BinSizedRead {
+            bytes,
+            off_plus,
+            len,
+            ..
+        } => {
+            collect_host_arg_strings(db, bytes, out);
+            if let Some(op) = off_plus {
+                collect_host_arg_strings(db, op, out);
+            }
             collect_host_arg_strings(db, len, out);
         }
         Core::Proj { operand, .. } => collect_host_arg_strings(db, operand, out),

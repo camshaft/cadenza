@@ -1295,6 +1295,51 @@
   (call   main (: 2 Int64))
   (output (: 3 Int64)))
 
+(case "a runtime non-final dependent-size body of zero binds empty and rest absorbs everything"
+  (doc    "The §4a non-final shape with a ZERO runtime size: `(bin (u8 n) (bytes body n) (bytes rest))`
+           against `[0, 7, 8, 9]` (h=0) reads `n = 0` → `body = []` (len 0) and `rest = [7, 8, 9]` (len 3),
+           so `Bytes.len body + Bytes.len rest = 3`. Pins that a zero dependent size at a non-final position
+           binds an empty body and the following segment reads at the SAME dynamic offset (`total + 0`) — the
+           runtime companion of the constant zero-size case, exercising the `off_plus`-is-zero dynamic path.")
+  (input  (do (def (main (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9)))
+                  ((bin (u8 n) (bytes body n) (bytes rest)) (+ (Bytes.len body) (Bytes.len rest)))
+                  (_ -1)))
+              (export main)))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))
+
+(case "a runtime non-final dependent-size body that overruns the frame falls through"
+  (doc    "The §4a non-final shape where the runtime size OVERRUNS: `(bin (u8 n) (bytes body n) (bytes rest))`
+           against the four-byte `[5, 7, 8, 9]` (h=5) reads `n = 5`, but only three bytes follow the size
+           byte, so `total(1) + n(5) = 6 > bytes-len(4)` → the arm does NOT match and control falls to the
+           catch-all, yielding -1. Pins that the FLOOR + length predicate (`bytes-len >= total + n`) guards
+           the dynamic-offset payload/rest reads: a size larger than the remainder is a non-match, never a
+           trap or an out-of-bounds read (the runtime companion of the const-path overrun case above).")
+  (input  (do (def (main (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9)))
+                  ((bin (u8 n) (bytes body n) (bytes rest)) (+ (Bytes.len body) (Bytes.len rest)))
+                  (_ -1)))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: -1 Int64)))
+
+(case "a runtime literal int probe reads at a dynamic offset after a dependent-size body"
+  (doc    "A LITERAL fixed-width segment AFTER a non-final dependent-size body — its byte offset is dynamic
+           (`static_base + n`). `(bin (u8 n) (bytes body n) (u8 99))` against `[2, 7, 8, 99]` (h=2) reads
+           `n = 2` → `body = [7, 8]`, then probes the byte at offset `1 + n = 3` against the literal 99 →
+           equal, so the arm matches and returns `Bytes.len body = 2`. Pins that a literal-int PROBE (not
+           just a binder) reads at the §4a dynamic offset, and that the length predicate (`bytes-len == 1 + n
+           + 1`, i.e. exact 4) is ANDed before the probe so the read stays in bounds. A frame whose tag byte
+           is not 99 would fall through to -1.")
+  (input  (do (def (main (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 99)))
+                  ((bin (u8 n) (bytes body n) (u8 99)) (Bytes.len body))
+                  (_ -1)))
+              (export main)))
+  (call   main (: 2 Int64))
+  (output (: 2 Int64)))
+
 (case "a runtime bit-field packs a runtime value into a nibble"
   (doc    "`(bin (bits ((UInt 4).wrap n) 4) (bits 5 4))` with a RUNTIME `n` packs the low nibble of `n`
            into the HIGH nibble and the constant 5 into the low nibble of one byte (most-significant field

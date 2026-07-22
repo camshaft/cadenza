@@ -8991,6 +8991,47 @@
   (call   main (: 6 Int64)) (output (: 412678 Int64))
   (call   main (: 0 Int64)) (output (: 4012078 Int64)))
 
+(case "a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side"
+  (doc    "The selection composite over the partition step above (there the split IS the answer; here
+           it drives a three-way DECISION): take the head as pivot, partition the tail by `< pivot`,
+           then compare k against the low side's length — recurse LEFT keeping k, return the PIVOT
+           when k lands exactly on it, or recurse RIGHT with k REBASED by nl+1 (the rebase is the
+           classic off-by-one: forgetting the pivot's own slot shifts every right-side answer). Over
+           `(5 2 8 1 9 3)` — pivot 5 splits {2,1,3} / {8,9} — five k faces walk every path: k=0 → 1
+           (left twice), k=2 → 3 (left then pivot), k=3 → 5 (the FIRST pivot, k = nl exactly), k=5 →
+           9 (right with k rebased 5→1), k=6 → -1 (past the end, the empty-list bottom). Recursing
+           into ONE side per level distinguishes this from a full sort — the untaken side's contents
+           never influence the answer.")
+  (input  (do
+            (def (part (: xs (List Int64)) (: p Int64) (: lo (List Int64)) (: hi (List Int64)))
+              (match xs
+                ((list) (tuple lo hi))
+                ((list h .. t)
+                  (if (< h p)
+                      (part t p (List.push lo h) hi)
+                      (part t p lo (List.push hi h))))))
+            (def (sel (: xs (List Int64)) (: k Int64))
+              (match xs
+                ((list) -1)
+                ((list p .. t)
+                  (match (part t p (list) (list))
+                    ((tuple lo hi)
+                      (do
+                        (def nl ((. List len) lo))
+                        (if (< k nl)
+                            (sel lo k)
+                            (if (= k nl)
+                                p
+                                (sel hi (- k (+ nl 1)))))))))))
+            (def (main (: k Int64))
+              (sel (list 5 2 8 1 9 3) k))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 3 Int64))
+  (call   main (: 3 Int64)) (output (: 5 Int64))
+  (call   main (: 5 Int64)) (output (: 9 Int64))
+  (call   main (: 6 Int64)) (output (: -1 Int64)))
+
 (case "a PREFIX-SUM scan emits a running total whose each element feeds the next"
   (doc    "The scan idiom (fold that KEEPS its intermediates): walking `(3 n 4 1)`, each step computes
            `run + h` and pushes that SAME value both onward as the next `run` and into the output list —
@@ -9056,6 +9097,37 @@
   (call   main (: 4 Int64)) (output (: 455 Int64))
   (call   main (: 9 Int64)) (output (: 999 Int64))
   (call   main (: 0 Int64)) (output (: 355 Int64)))
+
+(case "KADANE max-subarray threads a best-ending-here and a global best through one fold"
+  (doc    "TWO COUPLED accumulators through one fold, coupled ASYMMETRICALLY: `cur = max(h, cur+h)`
+           (extend the run or RESTART at h — the reset that makes it Kadane and not a prefix sum)
+           and `best = max(best, cur)` reading the FRESH cur (a best that reads the stale cur misses
+           runs that peak on their last element). Seeded from the FIRST element, not 0 — an
+           all-negative list must answer its max element, not 0. Over `(2 -1 n -4 3 3)`: n=4 → the
+           trailing 3+3 run only wins THROUGH the -4 bridge if cur carried 1 into it — best 7 (the
+           bridge face: a cur that reset at -4 answers 6); n=-10 → the deep negative severs the
+           bridge, best = the trailing 3+3 = 6; n=20 → the spike wins immediately (2-1+20 = 21) and
+           the tail extends it to 23 (best must UPDATE on the last element). Each face moves which
+           accumulator is decisive.")
+  (input  (do
+            (def (max2 (: a Int64) (: b Int64)) (if (> a b) a b))
+            (def (go (: xs (List Int64)) (: cur Int64) (: best Int64))
+              (match xs
+                ((list) best)
+                ((list h .. t)
+                  (do
+                    (def nc (max2 h (+ cur h)))
+                    (go t nc (max2 best nc))))))
+            (def (kadane (: xs (List Int64)))
+              (match xs
+                ((list) 0)
+                ((list h .. t) (go t h h))))
+            (def (main (: n Int64))
+              (kadane (list 2 -1 n -4 3 3)))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 7 Int64))
+  (call   main (: -10 Int64)) (output (: 6 Int64))
+  (call   main (: 20 Int64)) (output (: 23 Int64)))
 
 (case "take-while and drop-while split a leading run and reassemble to the original"
   (doc    "The span law: `take-while` and `drop-while` walk the SAME spine with the SAME predicate
@@ -14567,3 +14639,62 @@
             (export main)))
   (call   main (: 4 Int64))
   (output (: 1234 Int64)))
+
+; ---- rust no-build regression guards (breaker FINDING #18; v-rust-backend bb104ceaf).
+; A recursive list helper called INSIDE a match arm with its result immediately matched used to make the
+; RUST/RUST-ASYNC artifact fail to build: the emit wrapped the tail list-match arm block in redundant braces
+; where rustc's unused_braces lint fires (surfaced as a no-build), and an empty-list call arg tripped E0282.
+; bb104ceaf dropped the redundant brace + grounds the empty-list call arg. These two neighbors build now
+; (wasm always did); the tuple-of-two-lists face (n18c) + the original tuple(scalar,list,list) witness need
+; a further empty-list-FIELD grounding (v-rust-backend 015eeef55) and are pinned separately on its land.
+(case "a recursive list-match called in an IF-branch inside a match arm builds on all backends"
+  (doc    "breaker #18 neighbor n18a. `pick`'s empty-`f` arm nests `(match (rev b (list)) …)` inside an
+           `(if (> n 0) …)` — a recursive helper (`rev`) called in an arm, its result matched, but guarded
+           by an if. The rust emit's redundant-brace-on-tail-list-match no-build did NOT fire here (the if
+           wrapping changes the tail position), and this was a PASSING guard that bb104ceaf preserved: n=5
+           takes the empty-front → reversed `(2 5)` head 2 + tail-len 1 → 3; n=-5 takes the if-else →
+           (tuple -2 …) → -2. Both backends build + run.")
+  (input  (do
+            (def (rev (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (rev t (List.concat (list h) acc)))))
+            (def (pick (: f (List Int64)) (: b (List Int64)) (: n Int64))
+              (match f
+                ((list h .. t) (tuple h t b))
+                ((list)
+                  (if (> n 0)
+                      (match (rev b (list))
+                        ((list h .. t) (tuple h t (list)))
+                        ((list) (tuple -1 (list) (list))))
+                      (tuple -2 (list) b)))))
+            (def (main (: n Int64))
+              (match (pick (list) (list n 2) n) ((tuple v f2 _b2) (+ v ((. List len) f2)))))
+            (export main)))
+  (call main (: 5 Int64)) (output (: 3 Int64))
+  (call main (: -5 Int64)) (output (: -2 Int64)))
+
+(case "a recursive list-match in an arm whose arms return a LIST builds on all backends"
+  (doc    "breaker #18 neighbor n18b. `deq`'s empty-`f` arm matches `(rev b (list))` (recursive helper in an
+           arm) and every arm returns a bare `(List Int64)` — NOT a tuple. The rust emit's tail-list-match
+           redundant-brace no-build was fixed by bb104ceaf so this builds; the bare-list return (vs a tuple
+           of ≥2 lists) never needed the empty-list-field grounding that n18c does. n=5: empty front →
+           reversed `(2 5)`, concat head → `(2)`, head·10 + len 1 → 22. Both backends.")
+  (input  (do
+            (def (rev (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (rev t (List.concat (list h) acc)))))
+            (def (deq (: f (List Int64)) (: b (List Int64)))
+              (match f
+                ((list h .. t) (List.concat (list h) t))
+                ((list)
+                  (match (rev b (list))
+                    ((list h .. t) (List.concat (list h) t))
+                    ((list) (list -1))))))
+            (def (main (: n Int64))
+              (do
+                (def out (deq (list) (list n 2)))
+                (+ (* (Option.expect (List.at out 0) "h") 10) ((. List len) out))))
+            (export main)))
+  (call main (: 5 Int64)) (output (: 22 Int64)))

@@ -7577,11 +7577,11 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                     acc = Some(*body);
                 }
                 BinArm::Bin(segs, body) => {
-                    // Handled at runtime: fixed-width INT segments, plus (optionally) a FINAL bytes segment
-                    // that is either UNSIZED `(bytes rest)` (the tail) OR DEPENDENT-SIZE `(bytes payload n)`
-                    // — a header + a variable-length tail/payload (static offsets throughout the int prefix).
-                    // A bit-field `(bits …)`, or a NON-FINAL / mid-stream dependent-size segment (which makes
-                    // a following offset dynamic), is still a later slice.
+                    // Handled at runtime: fixed-width INT segments, bit-field runs, and DEPENDENT-SIZE
+                    // `(bytes body n)` segments at ANY position (§4a: a non-final dependent size makes the
+                    // following offset dynamic — `static_base + Σ preceding n` — which `bin_dynamic_offset`
+                    // now threads). An UNSIZED `(bytes rest)` must still be FINAL: a non-final open-ended rest
+                    // is the permanent CDZ0220 ill-formed shape (nothing can follow an unbounded remainder).
                     let ok = segs.iter().enumerate().all(|(i, s)| match &s.kind {
                         crate::resolved::SegKind::Int { .. } => true,
                         // A BIT-FIELD run is admitted iff each field decodes — `bin_bitfield_run` requires a
@@ -7591,13 +7591,15 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                         crate::resolved::SegKind::Bits { .. } => {
                             bin_bitfield_run(segs, i).is_some()
                         }
-                        // A final bytes segment (unsized rest OR dependent-size payload) is the LAST segment.
-                        crate::resolved::SegKind::Bytes { .. } => i + 1 == segs.len(),
+                        // A DEPENDENT-SIZE `(bytes body n)` is admitted at any position (§4a dynamic offset);
+                        // an UNSIZED `(bytes rest)` only as the FINAL segment (non-final unsized = CDZ0220).
+                        crate::resolved::SegKind::Bytes { size: Some(_) } => true,
+                        crate::resolved::SegKind::Bytes { size: None } => i + 1 == segs.len(),
                         _ => false,
                     });
                     if !ok {
                         return Core::Poison(Reject::decline(
-                            "a runtime bin match with a bit-field or non-final variable-length segment is not yet lowered",
+                            "a runtime bin match with a bit-field or non-final unsized bytes segment is not yet lowered",
                         ));
                     }
                     let Some(else_body) = acc else {
@@ -23672,6 +23674,72 @@ fn bin_static_offset(segs: &[crate::resolved::Segment], seg_index: usize) -> Opt
     Some(off)
 }
 
+/// The read offset of segment `seg_index`, split into a STATIC base (the sum of fixed-width int widths +
+/// bit-field bytes before it) and an OPTIONAL runtime addend `off_plus` — the total bytes any PRECEDING
+/// DEPENDENT-SIZE `(bytes body n)` segments consume, as an i64-count `Core` node (a `BinIntRead` of each
+/// size, summed). This is the §4a generalization of `bin_static_offset`: once a dependent-size segment
+/// appears, every following segment reads at `static_base + off_plus` (§6.4 "constant + a bound local").
+///
+/// Returns `None` when the offset is not computable: a NON-FINAL UNSIZED `(bytes b)` before `seg_index` is
+/// ill-formed (nothing can follow an open-ended rest — CDZ0220); a mid-byte bit-field position; a utf8
+/// segment (not yet built); or a preceding dependent size whose own size field is not a fixed int at a
+/// static offset (`bin_size_len_read` declines). `bytes_src` is the materialized scrutinee read (a
+/// `LocalRef`) the size reads borrow. `off_plus` is `None` for a purely static offset (the common case,
+/// identical to `bin_static_offset`).
+fn bin_dynamic_offset(
+    db: &mut Db,
+    bytes_src: StructId,
+    segs: &[crate::resolved::Segment],
+    seg_index: usize,
+) -> Option<(u32, Option<StructId>)> {
+    use crate::resolved::SegKind;
+    let mut off: u32 = 0; // static byte base
+    let mut bits: u32 = 0; // open sub-byte bits across a bit-field run (0 at a byte boundary)
+    let mut off_plus: Option<StructId> = None; // runtime addend = Σ preceding dependent-size lengths
+    for (j, seg) in segs.iter().take(seg_index).enumerate() {
+        match &seg.kind {
+            SegKind::Int { width, .. } => {
+                if bits != 0 {
+                    return None;
+                }
+                off += *width as u32;
+            }
+            SegKind::Bits { k } => {
+                bits += *k;
+                off += bits / 8;
+                bits %= 8;
+            }
+            // A DEPENDENT-SIZE `(bytes body n)` consumes `n` runtime bytes — fold `n` into the addend. The
+            // size read borrows the scrutinee (a scalar `BinIntRead`, no heap operand). A run must be
+            // byte-aligned before it (a mid-byte bit-field position is ill-formed).
+            SegKind::Bytes { size: Some(n_occ) } => {
+                if bits != 0 {
+                    return None;
+                }
+                let n_read = bin_size_len_read(db, bytes_src, segs, j, *n_occ)?;
+                off_plus = Some(match off_plus {
+                    None => n_read,
+                    Some(prev) => synth_core(
+                        db,
+                        Core::Arith {
+                            op: Prim::Add,
+                            lhs: prev,
+                            rhs: n_read,
+                        },
+                        crate::ty::Ty::Int(crate::ty::IntTy::i64()),
+                    ),
+                });
+            }
+            // A NON-FINAL UNSIZED rest is ill-formed (CDZ0220); a utf8 segment is not yet built.
+            SegKind::Bytes { size: None } | SegKind::Utf8 { .. } => return None,
+        }
+    }
+    if bits != 0 {
+        return None;
+    }
+    Some((off, off_plus))
+}
+
 /// A byte-aligned BIT-FIELD RUN containing segment `seg_index` (which must be a `(bits k)`): its start
 /// BYTE offset, the run's total width in BITS (a whole number of bytes — CDZ0220 keeps a `bits` run
 /// byte-aligned), and this field's bit position (from the run's MSB) + its own width `k`. A run is a
@@ -23757,6 +23825,9 @@ fn bin_bitfield_read(
         Core::BinIntRead {
             bytes: bytes_src,
             byte_offset: run_byte_off,
+            // A bit-field run declines on any preceding dependent-size segment (`bin_bitfield_run` requires
+            // fixed-int-only before the run), so its offset is always static.
+            off_plus: None,
             width: (run_bits / 8) as u8,
             signed: false,
             little_endian: false,
@@ -23817,9 +23888,16 @@ fn decode_bin_field_runtime(
             "a bin pattern segment index is out of range",
         ));
     };
+    // The scrutinee read for a size field's `bin_size_len_read` / the offset walk (a `LocalRef` to the kept
+    // binding). `bin_dynamic_offset` reads any preceding dependent size off this handle (a borrow).
+    let off_src = synth_core(
+        db,
+        Core::LocalRef { binder: scrutinee },
+        crate::ty::Ty::Bytes,
+    );
     match &seg.kind {
-        SegKind::Int { width, signed } => match bin_static_offset(segs, seg_index) {
-            Some(byte_offset) => {
+        SegKind::Int { width, signed } => match bin_dynamic_offset(db, off_src, segs, seg_index) {
+            Some((byte_offset, off_plus)) => {
                 // `lower_match_bin` materialized the scrutinee as a KEPT binding, so read it through a
                 // `LocalRef` (its own occurrence is the binding key) — NOT the raw scrutinee occurrence,
                 // which would re-emit the `BinBuild` construction per binder read.
@@ -23831,21 +23909,22 @@ fn decode_bin_field_runtime(
                 Core::BinIntRead {
                     bytes: scrut_ref,
                     byte_offset,
+                    off_plus,
                     width: *width,
                     signed: *signed,
                     little_endian: seg.little_endian,
                 }
             }
             None => Core::Poison(Reject::decline(
-                "a runtime bin segment after a variable-length segment is not yet decoded",
+                "a runtime bin int segment after a non-final unsized bytes / utf8 segment is not yet decoded",
             )),
         },
         // A FINAL unsized `(bytes rest)` binder — the tail after the fixed prefix. Read it as
-        // `bytes-slice(scrutinee, off, len-off)` via `Core::BinRestRead`; the offset is the static sum of
-        // the preceding int widths (a dependent-size preceding segment would make it dynamic → decline).
+        // `bytes-slice(scrutinee, off, len-off)` via `Core::BinRestRead`; `off = static_base + off_plus`
+        // (a preceding dependent-size segment contributes the runtime `off_plus` — §4a).
         SegKind::Bytes { size: None } if seg_index + 1 == segs.len() => {
-            match bin_static_offset(segs, seg_index) {
-                Some(byte_offset) => {
+            match bin_dynamic_offset(db, off_src, segs, seg_index) {
+                Some((byte_offset, off_plus)) => {
                     let scrut_ref = synth_core(
                         db,
                         Core::LocalRef { binder: scrutinee },
@@ -23854,20 +23933,21 @@ fn decode_bin_field_runtime(
                     Core::BinRestRead {
                         bytes: scrut_ref,
                         byte_offset,
+                        off_plus,
                     }
                 }
                 None => Core::Poison(Reject::decline(
-                    "a runtime bin rest binder after a variable-length segment is not yet decoded",
+                    "a runtime bin rest binder after a non-final unsized bytes / utf8 segment is not yet decoded",
                 )),
             }
         }
-        // A DEPENDENT-SIZE `(bytes payload n)` binder — exactly `n` bytes at the segment's static offset,
-        // where `n` is the RUNTIME value of an EARLIER integer segment (named by `n_occ`). Read it as
-        // `bytes-slice(scrutinee, off, n)` via `Core::BinSizedRead`, whose `len` child is a `BinIntRead` of
-        // the named earlier segment. The offset must be static (a preceding dependent-size segment would
-        // make it dynamic → decline); `n`'s own segment must be a fixed-width int at a static offset. The
-        // caller's predicate guaranteed `bytes-len >= off + n`, so the slice is in bounds.
-        SegKind::Bytes { size: Some(n_occ) } if seg_index + 1 == segs.len() => {
+        // A DEPENDENT-SIZE `(bytes payload n)` binder — exactly `n` bytes at `static_base + off_plus`, where
+        // `n` is the RUNTIME value of an EARLIER integer segment (named by `n_occ`) and `off_plus` is the
+        // total bytes any PRECEDING dependent-size segments consumed (§4a: a non-final dependent size is now
+        // decoded — its offset is `static_base + off_plus`, no longer requiring `size: Some` to be final).
+        // Read as `bytes-slice(scrutinee, off, n)` via `Core::BinSizedRead`, whose `len` child is a
+        // `BinIntRead` of the named earlier segment. The caller's predicate guaranteed `bytes-len >= off + n`.
+        SegKind::Bytes { size: Some(n_occ) } => {
             // The size `n` reads off its own materialized `LocalRef` to the kept scrutinee binding.
             let len_src = synth_core(
                 db,
@@ -23875,10 +23955,10 @@ fn decode_bin_field_runtime(
                 crate::ty::Ty::Bytes,
             );
             match (
-                bin_static_offset(segs, seg_index),
+                bin_dynamic_offset(db, off_src, segs, seg_index),
                 bin_size_len_read(db, len_src, segs, seg_index, *n_occ),
             ) {
-                (Some(byte_offset), Some(len)) => {
+                (Some((byte_offset, off_plus)), Some(len)) => {
                     let scrut_ref = synth_core(
                         db,
                         Core::LocalRef { binder: scrutinee },
@@ -23887,11 +23967,12 @@ fn decode_bin_field_runtime(
                     Core::BinSizedRead {
                         bytes: scrut_ref,
                         byte_offset,
+                        off_plus,
                         len,
                     }
                 }
                 _ => Core::Poison(Reject::decline(
-                    "a runtime dependent-size bin binder needs a static offset and a fixed-int size segment",
+                    "a runtime dependent-size bin binder needs a computable offset and a fixed-int size segment",
                 )),
             }
         }
@@ -23950,12 +24031,16 @@ fn bin_size_len_read(
     // ref in another `LocalRef` yields "no local slot").
     match &segs[idx].kind {
         SegKind::Int { width, signed, .. } => {
-            let byte_offset = bin_static_offset(segs, idx)?;
+            // The size field's own offset may be dynamic (a chained `(u8 a)(bytes x a)(u8 b)(bytes y b)` —
+            // `b` sits after dependent `x`). `bin_dynamic_offset` recurses only over EARLIER segments, so it
+            // terminates. `off_plus` reads borrow `bytes_src` (the same materialized scrutinee handle).
+            let (byte_offset, off_plus) = bin_dynamic_offset(db, bytes_src, segs, idx)?;
             Some(synth_core(
                 db,
                 Core::BinIntRead {
                     bytes: bytes_src,
                     byte_offset,
+                    off_plus,
                     width: *width,
                     signed: *signed,
                     little_endian: segs[idx].little_endian,
@@ -24146,10 +24231,37 @@ fn build_bin_arm_predicate(
         segs.last().map(|s| &s.kind),
         Some(SegKind::Bytes { size: None })
     );
-    let final_dep_size = match segs.last().map(|s| &s.kind) {
-        Some(SegKind::Bytes { size: Some(n_occ) }) => Some(*n_occ),
-        _ => None,
-    };
+    // Collect the DEPENDENT-SIZE segments — `(bytes body n)` at ANY position (§4a). Each contributes its
+    // runtime size `n` to the length accounting. For trap safety under a SINGLE floor (below), every size
+    // field must sit at a STATIC offset — i.e. within the fixed prefix `total`, so `bytes-len >= total`
+    // proves the size read in bounds. A size field at a DYNAMIC offset (a second dependent size before it —
+    // an interleaved chain needing incremental flooring) is not yet lowered → decline cleanly. Store each
+    // dependent segment's index (for `bin_size_len_read`, which resolves the size field by name).
+    let mut dep_seg_indices: Vec<usize> = Vec::new();
+    for (i, s) in segs.iter().enumerate() {
+        if let SegKind::Bytes { size: Some(n_occ) } = &s.kind {
+            let Some(size_name) = db.ast.as_name(*n_occ) else {
+                return Err(Reject::decline(
+                    "a runtime dependent-size bin match needs a named size field",
+                ));
+            };
+            let Some(j) = segs
+                .iter()
+                .take(i)
+                .position(|t| db.ast.as_name(t.slot) == Some(size_name))
+            else {
+                return Err(Reject::decline(
+                    "a runtime dependent-size bin match size field is not an earlier segment",
+                ));
+            };
+            if bin_static_offset(segs, j).is_none() {
+                return Err(Reject::decline(
+                    "a runtime bin match with a dynamically-offset dependent size field is not yet lowered",
+                ));
+            }
+            dep_seg_indices.push(i);
+        }
+    }
     let len_node = synth_core(
         db,
         Core::BytesLen { operand: scrutinee },
@@ -24160,22 +24272,21 @@ fn build_bin_arm_predicate(
         Core::ConstInt(IntValue::from_i64(total as i64)),
         crate::ty::Ty::Int(crate::ty::IntTy::i64()),
     );
-    // The length predicate. For a fixed / final-rest tail it is a single compare (`== total` / `>= total`).
-    // For a DEPENDENT-SIZE tail `(bytes payload n)` the exact test is `bytes-len == total + n`, whose RHS
-    // reads `n` (a `BinIntRead` at the size segment's static offset, which needs the first `total` bytes to
-    // be PRESENT). That read must be GUARDED: on a scrutinee too short to even hold the fixed prefix, an
-    // UNCONDITIONAL read overruns and TRAPS, where the const-fold reference path (`bin_match_decode`) returns
-    // `None` = fall-through at every overrun (`off + w > raw.len()`, a negative size, the size overrunning
-    // the remainder). So FLOOR the predicate before the dependent read, mirroring the const path's guards:
-    //   (bytes-len >= total)  AND  (n >= 0)  AND  (bytes-len == total + n)
-    // with short-circuiting `And { is_and: true }` (`if lhs then rhs else false`), so the `n`-read + the
-    // exact compare are reached ONLY when at least `total` bytes are present. A too-short scrutinee fails the
-    // floor → the whole arm predicate is `false` → fall through to the catch-all, matching the reference.
-    // (The floor is redundant-but-harmless for the fixed/rest tails, which read no dependent `n`, so it is
-    // added only on the dependent-size path.) Reviewer finding 2026-07-18 (corpus-bugfix): a truncated
-    // length-prefixed frame trapped instead of falling through.
-    let mut pred = match final_dep_size {
-        None => synth_core(
+    // The length predicate. With no dependent size it is a single compare: `== total` (whole-scrutinee) or
+    // `>= total` (a final `(bytes rest)` absorbs the remainder). With DEPENDENT sizes, the exact byte count
+    // accounts for the fixed prefix PLUS each dependent body: `total + Σn`. If a final `(bytes rest)` follows
+    // (the §4a non-final shape `(bytes body n) … (bytes rest)`), the rest absorbs whatever is left, so the
+    // test relaxes to `bytes-len >= total + Σn`; otherwise (the tail IS a dependent size, or all-fixed) it is
+    // exact `bytes-len == total + Σn`. Each size read is a `BinIntRead` at a STATIC offset, which needs the
+    // first `total` bytes PRESENT; an UNGUARDED read on a too-short scrutinee TRAPS, where the const-fold
+    // reference (`bin_match_decode`) FALLS THROUGH at every overrun. So FLOOR the predicate:
+    //   (bytes-len >= total)  AND  (each n >= 0)  AND  (bytes-len {==|>=} total + Σn)
+    // with short-circuiting `And { is_and: true }` (`if lhs then rhs else false`), so the size reads + the
+    // length compare are reached ONLY when at least `total` bytes are present. A too-short scrutinee fails
+    // the floor → the arm predicate is `false` → fall through, matching the reference. (Reviewer finding
+    // 2026-07-18 (corpus-bugfix): a truncated length-prefixed frame trapped instead of falling through.)
+    let mut pred = if dep_seg_indices.is_empty() {
+        synth_core(
             db,
             Core::Compare {
                 op: if has_final_rest { Prim::Ge } else { Prim::Eq },
@@ -24183,32 +24294,37 @@ fn build_bin_arm_predicate(
                 rhs: total_node,
             },
             crate::ty::Ty::Bool,
-        ),
-        Some(n_occ) => {
-            // `n` is the runtime value of the earlier int segment named by `n_occ` — a `BinIntRead`.
-            let Some(n_read) = bin_size_len_read(db, scrutinee, segs, segs.len() - 1, n_occ) else {
+        )
+    } else {
+        // FLOOR: `bytes-len >= total` — evaluated FIRST, short-circuits the size reads below when false.
+        let floor = synth_core(
+            db,
+            Core::Compare {
+                op: Prim::Ge,
+                lhs: len_node,
+                rhs: total_node,
+            },
+            crate::ty::Ty::Bool,
+        );
+        // `each n >= 0` — the const path's `filter(|v| *v >= 0)`; a signed size reading negative is a
+        // non-match (else `total + Σn < total` could spuriously satisfy the length compare on a shorter
+        // length). AND-chain the per-size guards (each reads a fresh `BinIntRead` — the read is pure).
+        let mut nonneg: Option<StructId> = None;
+        for &i in &dep_seg_indices {
+            let SegKind::Bytes { size: Some(n_occ) } = &segs[i].kind else {
+                unreachable!("dep_seg_indices holds only dependent-size segments");
+            };
+            let Some(n_read) = bin_size_len_read(db, scrutinee, segs, i, *n_occ) else {
                 return Err(Reject::decline(
                     "a runtime dependent-size bin match needs a fixed-int size segment at a static offset",
                 ));
             };
-            // FLOOR: `bytes-len >= total` — evaluated FIRST, short-circuits the `n`-read below when false.
-            let floor = synth_core(
-                db,
-                Core::Compare {
-                    op: Prim::Ge,
-                    lhs: len_node,
-                    rhs: total_node,
-                },
-                crate::ty::Ty::Bool,
-            );
-            // `n >= 0` — the const path's `filter(|v| *v >= 0)`; a signed size reading negative is a
-            // non-match (else `total + n < total` could spuriously satisfy the `==` on a shorter length).
             let zero_node = synth_core(
                 db,
                 Core::ConstInt(IntValue::from_i64(0)),
                 crate::ty::Ty::Int(crate::ty::IntTy::i64()),
             );
-            let n_nonneg = synth_core(
+            let g = synth_core(
                 db,
                 Core::Compare {
                     op: Prim::Ge,
@@ -24217,53 +24333,74 @@ fn build_bin_arm_predicate(
                 },
                 crate::ty::Ty::Bool,
             );
-            // EXACT: `bytes-len == total + n`. Re-read `n` for the sum (a fresh `BinIntRead` — the read is
-            // pure; the backend materializes each independently, matching the literal-probe reads).
-            let Some(n_read2) = bin_size_len_read(db, scrutinee, segs, segs.len() - 1, n_occ)
-            else {
+            nonneg = Some(match nonneg {
+                None => g,
+                Some(prev) => synth_core(
+                    db,
+                    Core::And {
+                        lhs: prev,
+                        rhs: g,
+                        is_and: true,
+                    },
+                    crate::ty::Ty::Bool,
+                ),
+            });
+        }
+        // `total + Σn` — re-read each `n` for the sum (fresh `BinIntRead`s; the backend materializes each
+        // independently, matching the literal-probe reads).
+        let mut rhs = total_node;
+        for &i in &dep_seg_indices {
+            let SegKind::Bytes { size: Some(n_occ) } = &segs[i].kind else {
+                unreachable!("dep_seg_indices holds only dependent-size segments");
+            };
+            let Some(n_read) = bin_size_len_read(db, scrutinee, segs, i, *n_occ) else {
                 return Err(Reject::decline(
                     "a runtime dependent-size bin match needs a fixed-int size segment at a static offset",
                 ));
             };
-            let total_plus_n = synth_core(
+            rhs = synth_core(
                 db,
                 Core::Arith {
                     op: Prim::Add,
-                    lhs: total_node,
-                    rhs: n_read2,
+                    lhs: rhs,
+                    rhs: n_read,
                 },
                 crate::ty::Ty::Int(crate::ty::IntTy::i64()),
             );
-            let exact = synth_core(
-                db,
-                Core::Compare {
-                    op: Prim::Eq,
-                    lhs: len_node,
-                    rhs: total_plus_n,
-                },
-                crate::ty::Ty::Bool,
-            );
-            // `(n >= 0) AND exact` — the guarded dependent test.
-            let guarded = synth_core(
-                db,
-                Core::And {
-                    lhs: n_nonneg,
-                    rhs: exact,
-                    is_and: true,
-                },
-                crate::ty::Ty::Bool,
-            );
-            // `floor AND (n>=0 AND exact)` — floor short-circuits the whole dependent read.
-            synth_core(
-                db,
-                Core::And {
-                    lhs: floor,
-                    rhs: guarded,
-                    is_and: true,
-                },
-                crate::ty::Ty::Bool,
-            )
         }
+        // `bytes-len == total + Σn` (exact) or `>= total + Σn` (a final rest absorbs the remainder).
+        let len_test = synth_core(
+            db,
+            Core::Compare {
+                op: if has_final_rest { Prim::Ge } else { Prim::Eq },
+                lhs: len_node,
+                rhs,
+            },
+            crate::ty::Ty::Bool,
+        );
+        // `(Σ n>=0) AND len_test` — the guarded dependent test.
+        let guarded = match nonneg {
+            None => len_test,
+            Some(nn) => synth_core(
+                db,
+                Core::And {
+                    lhs: nn,
+                    rhs: len_test,
+                    is_and: true,
+                },
+                crate::ty::Ty::Bool,
+            ),
+        };
+        // `floor AND (Σ n>=0 AND len_test)` — floor short-circuits the whole dependent read chain.
+        synth_core(
+            db,
+            Core::And {
+                lhs: floor,
+                rhs: guarded,
+                is_and: true,
+            },
+            crate::ty::Ty::Bool,
+        )
     };
     // Per LITERAL segment: `<read> == literal`. A binder slot (a bare name) adds no probe. An INT literal
     // reads a `BinIntRead` at its static byte offset; a BIT-FIELD literal reads its run + shift+mask (the
@@ -24277,9 +24414,13 @@ fn build_bin_arm_predicate(
         }
         let read = match &seg.kind {
             SegKind::Int { width, signed } => {
-                let Some(byte_offset) = bin_static_offset(segs, i) else {
+                // The offset may be dynamic (a literal int after a dependent-size segment — §4a). The read is
+                // TRAP-SAFE: the length predicate (`bytes-len {==|>=} total + Σn`) is ANDed BEFORE this probe
+                // and short-circuits, so `total + off_plus + width <= total + Σn <= bytes-len` holds here.
+                let Some((byte_offset, off_plus)) = bin_dynamic_offset(db, scrutinee, segs, i)
+                else {
                     return Err(Reject::decline(
-                        "a runtime bin literal int segment after a variable-length segment is not yet probed",
+                        "a runtime bin literal int segment after a non-final unsized bytes / utf8 segment is not yet probed",
                     ));
                 };
                 // `BinIntRead` always emits an i64; type it FIXED Int64 so the compare's `operand_int_ty`
@@ -24289,6 +24430,7 @@ fn build_bin_arm_predicate(
                     Core::BinIntRead {
                         bytes: scrutinee,
                         byte_offset,
+                        off_plus,
                         width: *width,
                         signed: *signed,
                         little_endian: seg.little_endian,
@@ -24310,6 +24452,8 @@ fn build_bin_arm_predicate(
                     Core::BinIntRead {
                         bytes: scrutinee,
                         byte_offset: run_byte_off,
+                        // A bit-field run declines on any preceding dependent-size segment, so static.
+                        off_plus: None,
                         width: (run_bits / 8) as u8,
                         signed: false,
                         little_endian: false,

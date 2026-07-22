@@ -38,6 +38,17 @@ type Core =
                                    // def-env (B1b); NON-recursive calls still INLINE (no def-env needed).
                                    // Mirrors rcdzc's `Core::Call { callee, args }` (core.rs:1061) — recursion
                                    // as a STATIC code reference by name, never a heap cycle.
+  | CFnRef(Int64)                  // HIGHER-ORDER (fn-value slice): a def-NAME used as a FIRST-CLASS VALUE (a
+                                   // bare def-name in argument/value position, e.g. `inc` in `(apply inc 41)`).
+                                   // Since top-level defs are closed (no free-var capture), a function value IS
+                                   // just its name — eval returns Some(name); the CCallVar site dispatches it
+                                   // through the same name→body def-env as CCall. Out of the emit subset (eval-
+                                   // only slice; emit(B'') = a funcidx const + call_indirect, deferred).
+  | CFnRefVar(Int64, List(Core))   // HIGHER-ORDER apply: call the fn-VALUE held in a binder (a fn-typed PARAM),
+                                   // args already-lowered. `CFnRefVar(fBinderId, args)` = apply `env[fBinderId]`
+                                   // (a def-name from a CFnRef) to args — `(f x)` where `f` is a parameter, not
+                                   // a known def. eval looks up the binder's name value then does the SAME
+                                   // defs-dispatch as CCall (shared apply-def). Out of emit subset (eval-only).
 
 /// The canonical Int64 constant — the width the monomorphic-i64 pipeline lowers every literal to today (a
 /// narrow-width annotation lowers to a NARROW CNum; emit reads the width). A single name so construct sites
@@ -67,6 +78,10 @@ def lower-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
   (match Map.lookup(tcol, id) with
     | Option.Some(Typed.TIntW(_, _)) => lower-ok(tree, id, rcol, tcol)
     | Option.Some(Typed.TBool) => lower-ok(tree, id, rcol, tcol)
+    // HIGHER-ORDER (HO-3): a node typed as a FUNCTION (TFn) also lowers — a def-name-as-value (→ CFnRef) or a
+    // fn-param call `(f x)` (→ CFnRefVar). Without this the gate rejected fn-typed nodes → the CFnRef/CFnRefVar
+    // wiring never fired (the `inc` arg / `(f x)` body declined). eval runs them via the def-env name dispatch.
+    | Option.Some(Typed.TFn(_, _)) => lower-ok(tree, id, rcol, tcol)
     | _ => Option.None(unit))
 
 /// The typed-node case: build the Core node, canonicalizing a var to its binder id via `rcol`.
@@ -83,6 +98,10 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         // since the type fact was TInt). Defensive: a non-RBound fact yields no core form.
         (match Map.lookup(rcol, id) with
           | Option.Some(Resolved.RBound(binder)) => Option.Some(Core.CVar(binder))
+          // HIGHER-ORDER (HO-3): a bare def-name used as a VALUE (RDef) lowers to CFnRef(defName) — a fn-value
+          // (top-level defs are closed, so the value IS the name). eval returns Some(name); a CFnRefVar site
+          // dispatches it. This is the `inc` argument in `(apply inc 41)`.
+          | Option.Some(Resolved.RDef(name)) => Option.Some(Core.CFnRef(name))
           | _ => Option.None(unit))
     | Option.Some(Node.NBin(op, l, r)) =>
         (match lower-node(tree, l, rcol, tcol) with
@@ -131,7 +150,14 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         // returns false when def-body-of misses), so this branch always has a known callee.
         (if (call-is-recursive(tree, calleeId)) then lower-recursive-call(tree, id, calleeId, argId, rcol, tcol)
          else (match def-body-of(tree, calleeId) with
-           | Option.None(_) => Option.None(unit)
+           // HIGHER-ORDER (HO-3): def-body-of MISS = callee is NOT a global def — may be a fn-typed PARAM.
+           // resolve-db (HO-2b-ii-B) stored a callee-fact at THIS NApp id: RBound(binder) → lower to
+           // CFnRefVar(binder, loweredArgs) (eval looks up env[binder]=def-name, dispatches). Else decline.
+           | Option.None(_) => (match Map.lookup(rcol, id) with
+               | Option.Some(Resolved.RBound(binder)) => (match lower-rec-args(tree, id, argId, rcol, tcol) with
+                   | Option.Some(args) => Option.Some(Core.CFnRefVar(binder, args))
+                   | Option.None(_) => Option.None(unit))
+               | _ => Option.None(unit))
            | Option.Some(calleeBody) =>
              (if (argId == (0 - 1)) then lower-node(tree, calleeBody, rcol, tcol)
               else (match param-of(tree, calleeId) with
@@ -304,11 +330,25 @@ def build-def-env(tree: Tree, entries: List(Tuple(Int64, Int64)), acc: Map(Int64
               // is call-is-recursive (transitive) but NOT call-is-self-recursive → stays OUT of the def-env, so
               // its cross-call CCall leaf hits a def-env miss and eval DECLINES cleanly (mutual runtime recursion
               // is out of Slice-B scope — it must decline, not trap). Non-recursive defs stay inlined as before.
-              (if (call-is-self-recursive(tree, nameId)) then
-                 (match lower-one-def(tree, nameId, bodyId) with
-                   | Option.Some(entry) => build-def-env(tree, rest, Map.insert(acc, nameId, entry))
-                   | Option.None(_) => build-def-env(tree, rest, acc))
-               else build-def-env(tree, rest, acc))))   // non-/mutually-recursive def → not in the def-env
+              // Self-recursive defs (fac) for CCall dispatch (Slice-B). HIGHER-ORDER (HO-3): ALSO add NON-recursive
+              // defs so a def used as a fn-VALUE (`inc` in `(apply inc 41)`) is reachable via the CFnRefVar/CFnRef
+              // name dispatch. Normal calls are UNAFFECTED — they still INLINE via the main lower; the def-env is
+              // consulted ONLY by CCall + the HO fn-value dispatch, never by the inline path. A def whose standalone
+              // body fails to lower (lower-one-def None) is skipped (a fn-value call to it declines). NOTE: the
+              // tick-30 concern (a non-rec def whose body has an inline call malforms when lowered standalone) is
+              // real; guarded here by lower-one-def's own decline + the HO milestone shapes (apply/inc/twice) having
+              // clean bodies. ⚠ EXCLUDE a MUTUALLY-recursive def (call-is-recursive TRUE but call-is-self-recursive
+              // FALSE — e.g. ev/od): mutual runtime recursion is OUT of Slice-B scope and MUST DECLINE cleanly (the
+              // se-mutual-recursion-declines-not-hangs invariant, PR#785). Adding it to the def-env would let its
+              // cross-call CCall/name-dispatch actually RUN (ev 4 → 1) — a behavior change that breaks the pinned
+              // decline. So include a def iff it is SELF-recursive (fac, for CCall) OR NON-recursive (for the HO
+              // fn-value name dispatch); a merely-mutually-recursive def stays OUT → its cross-call misses the
+              // def-env and eval declines, exactly as before HO-3.
+              (if (call-is-recursive(tree, nameId) and (if call-is-self-recursive(tree, nameId) then false else true))
+               then build-def-env(tree, rest, acc)                       // mutually-recursive → OUT (must decline)
+               else (match lower-one-def(tree, nameId, bodyId) with
+                 | Option.Some(entry) => build-def-env(tree, rest, Map.insert(acc, nameId, entry))
+                 | Option.None(_) => build-def-env(tree, rest, acc)))))
 
 /// slice-B1b: the DEF-ENV for a whole tree — every def-table name → (paramBinderIds, bodyCore), each body
 /// lowered once and standalone. `eval-core-d` reads this to run a `CCall(name, args)`. Reaches the def-table

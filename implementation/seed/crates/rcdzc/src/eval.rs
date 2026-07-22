@@ -652,7 +652,14 @@ fn copy_structural(db: &mut Db, body: StructId, arg_of: &HashMap<StructId, Struc
         crate::ast::Struct::Atom(lid) => match db.ast.leaf(lid).clone() {
             crate::ast::Leaf::Name(_) => {
                 let leaf = db.ast.leaf(lid).clone();
-                db.push_atom(leaf)
+                let copy = db.push_atom(leaf);
+                // Record the SOURCE occurrence this copy came from so a diagnostic anchored at the copy
+                // (a name that re-resolves UNBOUND in the spliced body — the whole-program CDZ0101 that
+                // otherwise loses its location) can be relocated to the real source reference via
+                // `source_of_synth`. `body` may itself be a prior copy; the chain resolves to the original
+                // user node. Purely a location aid — never changes whether a fault is reported.
+                db.synth_name_origin.insert(copy, body);
+                copy
             }
             _ => body, // a constant leaf — self-contained, share it.
         },
@@ -2307,7 +2314,12 @@ fn rewrite_sum_payload(
         crate::ast::Struct::Atom(lid) => match db.ast.leaf(lid).clone() {
             crate::ast::Leaf::Name(_) => {
                 let leaf = db.ast.leaf(lid).clone();
-                db.push_atom(leaf)
+                let copy = db.push_atom(leaf);
+                // Same source-provenance record as `copy_structural` (see there): a name copied by the
+                // sum-payload rewrite keeps a back-reference to its source occurrence so an unbound
+                // re-resolution in the copy relocates to the author's node rather than losing its span.
+                db.synth_name_origin.insert(copy, body);
+                copy
             }
             _ => body,
         },

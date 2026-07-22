@@ -608,10 +608,17 @@ pub enum Core {
     /// reversed), and sign- or zero-extends to an `Int64` per `signed`. The caller (`lower_match_bin`) has
     /// already guarded that the scrutinee is long enough (the arm's length probe), so this read is in
     /// bounds. `byte_offset` is static — fixed-offset segments only (a dependent-size `(bytes b n)` before
-    /// this segment would make the offset dynamic, which the runtime matcher does not build yet).
+    /// this segment would make the offset dynamic).
+    ///
+    /// `off_plus` is a runtime BYTE-COUNT addend to the static `byte_offset`, present (`Some`) only when an
+    /// earlier DEPENDENT-SIZE `(bytes body n)` segment precedes this read: the effective read offset is then
+    /// `byte_offset + off_plus`, where `off_plus` is a scalar `Core` node (a `BinIntRead`, or a sum of them)
+    /// giving the total bytes those dependent segments consumed. `None` = a purely static offset (the common
+    /// fixed-prefix case). `off_plus` BORROWS its bytes like the other reads (a scalar decode, no heap operand).
     BinIntRead {
         bytes: StructId,
         byte_offset: u32,
+        off_plus: Option<StructId>,
         width: u8,
         signed: bool,
         little_endian: bool,
@@ -620,10 +627,16 @@ pub enum Core {
     /// static `byte_offset` to the end. Emits `bytes-slice(bytes, byte_offset, bytes-len - byte_offset)`
     /// (the tail after the fixed prefix). The caller (`lower_match_bin`) guarded `bytes-len >= byte_offset`
     /// (the arm's length probe), so the slice is in bounds. `byte_offset` is static (a final rest after
-    /// fixed-width int segments; a dependent-size `(bytes b n)` with a dynamic offset is a later slice).
+    /// fixed-width int segments; a dependent-size `(bytes b n)` before it contributes to `off_plus`).
+    ///
+    /// `off_plus` is the runtime byte count that PRECEDING dependent-size segments consumed (see `BinIntRead`):
+    /// present (`Some`) when a `(bytes body n)` precedes this final rest, so the tail begins at `byte_offset +
+    /// off_plus` and its length is `bytes-len - (byte_offset + off_plus)`. `None` = a static offset (a rest
+    /// after only fixed-width int/bit-field segments).
     BinRestRead {
         bytes: StructId,
         byte_offset: u32,
+        off_plus: Option<StructId>,
     },
     /// Read a DEPENDENT-SIZE `(bytes payload n)` segment out of a runtime `Bytes` scrutinee — exactly `n`
     /// bytes at a static `byte_offset`, where `n` is the RUNTIME value of an earlier integer segment
@@ -631,10 +644,16 @@ pub enum Core {
     /// same slice as `BinRestRead` but with a runtime length instead of `bytes-len - byte_offset`. The
     /// caller (`lower_match_bin`) guarded `bytes-len >= byte_offset + n` (the arm's length probe), so the
     /// slice is in bounds. `byte_offset` is static (a dependent-size segment after fixed-width int segments;
-    /// a size whose OWN offset is dynamic — a second dependent size before it — is a later slice).
+    /// a size whose OWN offset is dynamic — a second dependent size before it — contributes to `off_plus`).
+    ///
+    /// `off_plus` is the runtime byte count that PRECEDING dependent-size segments consumed (see `BinIntRead`):
+    /// present (`Some`) when another `(bytes body m)` precedes this one, so the payload begins at `byte_offset +
+    /// off_plus` and reads `len` bytes there. `None` = a static offset (the first dependent-size segment, after
+    /// only fixed-width int/bit-field segments).
     BinSizedRead {
         bytes: StructId,
         byte_offset: u32,
+        off_plus: Option<StructId>,
         len: StructId,
     },
     /// `Bytes.slice` — the FALLIBLE sub-range read, present when the operand is a RUNTIME value (a

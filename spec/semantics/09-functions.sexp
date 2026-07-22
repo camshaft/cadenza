@@ -2774,6 +2774,42 @@
   (call   main (: 10 Int64))
   (output (: 55 Int64)))
 
+(case "FAST-DOUBLING fib recurses on the halved index returning a pair, checked against linear iteration"
+  (doc    "The O(log n) sibling of the naive fibs above: ONE recursive call on the HALVED index returns
+           the PAIR (fib(k), fib(k+1)), and the parity of n selects which doubling identity rebuilds
+           the answer — even keeps (c,d) = (a(2b−a), a²+b²), odd shifts to (d, c+d). The recursion is
+           non-tail (both identities read the returned pair), the intermediate c/d arithmetic runs at
+           every level, and a parity branch taken wrong at ANY level lands on a NEARBY fibonacci —
+           which the DIFFERENTIAL oracle (a linear two-accumulator iteration, agreement bit in the
+           output) catches even when the wrong answer looks plausible. Faces: n=0 (the base pair,
+           loop never entered → 1), n=1 (one odd step → 11), n=10 (55 → 551, even top), n=31 (all-ONES
+           binary — every level takes the ODD branch → 13462691), n=64 (single-bit index — every level
+           but the last takes the EVEN branch; fib(64)=10610209857723, the doubling arithmetic runs
+           near the top of Int64's comfortable range → 106102098577231).")
+  (input  (do
+            (def (fd (: n Int64))
+              (if (= n 0)
+                  (tuple 0 1)
+                  (match (fd (/ n 2))
+                    ((tuple a b)
+                      (do
+                        (def c (* a (- (* 2 b) a)))
+                        (def d (+ (* a a) (* b b)))
+                        (if (= (% n 2) 0) (tuple c d) (tuple d (+ c d))))))))
+            (def (lin (: i Int64) (: n Int64) (: a Int64) (: b Int64))
+              (if (>= i n) a (lin (+ i 1) n b (+ a b))))
+            (def (main (: n Int64))
+              (do
+                (def fast (match (fd n) ((tuple a _b) a)))
+                (def slow (lin 0 n 0 1))
+                (+ (* fast 10) (if (= fast slow) 1 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64)) (output (: 11 Int64))
+  (call   main (: 10 Int64)) (output (: 551 Int64))
+  (call   main (: 31 Int64)) (output (: 13462691 Int64))
+  (call   main (: 64 Int64)) (output (: 106102098577231 Int64)))
+
 ; --- Overflow checking holds THROUGH a recursive call chain, not only at the top level ----
 ; numeric-model.md #Overflow Is Defined: an integer operation that overflows traps under the checked
 ; default. The `(+ Int64.max 1)` and `(* Int64.max 2)` cases (06-numeric-model) pin this for a top-level

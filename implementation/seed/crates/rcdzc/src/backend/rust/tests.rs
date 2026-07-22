@@ -5939,3 +5939,35 @@ fn a_tail_recursive_list_match_arm_emits_no_redundant_brace_and_builds() {
         );
     }
 }
+
+#[test]
+fn an_empty_list_tuple_field_with_an_unsolved_element_grounds_and_builds() {
+    // REGRESSION (breaker #18 n18c, routed back from v-inference): a recursive nested-match whose arms
+    // return a TUPLE of two lists — one arm supplies `List Int64`, the empty-list base arm keeps `List Any`
+    // (the arms' element types were never unified, so the tuple field's SOLVED type is `List(Any)`).
+    // `rust_type(Any)` is `None`, so the empty-list grounding used to bail to a bare `vec![]` that rustc
+    // cannot infer in a tuple-return position (E0282). `emit_elem_grounding_empty_list` now grounds the
+    // element's open vars to the `Int64` default (`ground_open_vars`) before spelling `Vec::<i64>::new()`
+    // — behavior-neutral (the list is empty), and rustc unifies with the sibling arm's `Vec<i64>`. This is
+    // a RUST-EMIT grounding gap, NOT an inference gap: wasm ran the same witness only because its list
+    // handle needs no SPELLED element type — running is not proof the type was solved.
+    let m = compile_rust(
+        "(module m \
+           (def (rev (: xs (List Int64)) (: acc (List Int64))) \
+             (match xs ((list) acc) ((list h .. t) (rev t (List.concat (list h) acc))))) \
+           (def (deq (: f (List Int64)) (: b (List Int64))) \
+             (match f ((list _h .. t) (tuple t b)) \
+                      ((list) (match (rev b (list)) \
+                                ((list _h .. t) (tuple t (list))) \
+                                ((list) (tuple (list) (list))))))) \
+           (def (run (: n Int64)) \
+             (match (deq (list) (list n 2)) ((tuple f2 b2) (+ (* ((. List len) f2) 10) ((. List len) b2))))) \
+           (export run))",
+    );
+    if let Some(out) = rustc_run(&m, "run(5)") {
+        assert_eq!(
+            out, "10",
+            "deq drains front→back: len(f2)*10 + len(b2) = 1*10 + 0 = 10 (builds clean, no E0282)"
+        );
+    }
+}

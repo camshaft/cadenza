@@ -1,0 +1,34 @@
+/// sread-eval-ho.cdz — HIGHER-ORDER end-to-end run pins (HO-3 milestone). A function passed as a VALUE and
+/// called through a PARAMETER now RUNS: (apply inc 41) → 42, (twice inc 40) → 42. These exercise the full
+/// higher-order path — resolve (RDef + callee-fact), infer (arrow types + fn-param call), lower (CFnRef +
+/// CFnRefVar off the callee-fact), and eval (the inline def-env dispatch that runs a fn-value by name).
+///
+/// A small SIBLING (not folded into the fat sread-eval-fns.cdz) to stay under the per-file gate budget.
+/// run-src form: `(do (def (main) ...) (export main))`.
+///
+/// NOTE (HO-3): the eval-db CFnRefVar arm INLINES the def-env dispatch rather than sharing a factored
+/// `apply-def-by-name` fn — factoring it into eval-core-d's mutual-recursion SCC trips a compiler-ml
+/// monomorphization bug (spurious CDZ0101; see queue/mlrepro-new-fn-in-eval-core-mutual-recursion-cycle-...).
+
+import { run-src } from "sread-eval"
+
+@test
+def ho-apply-inc-fortyone() =
+  // (apply f x) = (f x); apply inc to 41 → 42. A def used as a fn-VALUE (inc), applied via a fn-PARAM (f).
+  (match run-src("(do (def (apply f x) (f x)) (def (inc n) (+ n 1)) (def (main) (apply inc 41)) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("apply inc 41 = 42"))
+    | Option.None(_) => trap("apply inc 41 runs (higher-order)"))
+
+@test
+def ho-twice-inc-forty() =
+  // (twice f x) = (f (f x)); the fn-param f applied TWICE. twice inc 40 → 42.
+  (match run-src("(do (def (twice f x) (f (f x))) (def (inc n) (+ n 1)) (def (main) (twice inc 40)) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("twice inc 40 = 42"))
+    | Option.None(_) => trap("twice inc 40 runs (higher-order, fn-param applied twice)"))
+
+@test
+def ho-apply-dbl-twentyone() =
+  // a different fn-value (dbl) through apply: (apply dbl 21) → 42. Pins it's not inc-specific.
+  (match run-src("(do (def (apply f x) (f x)) (def (dbl n) (+ n n)) (def (main) (apply dbl 21)) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("apply dbl 21 = 42"))
+    | Option.None(_) => trap("apply dbl 21 runs"))

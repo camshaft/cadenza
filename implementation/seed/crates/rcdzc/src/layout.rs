@@ -940,11 +940,27 @@ fn collect_closure_codes_at(db: &mut Db, id: StructId, out: &mut std::collection
                 collect_closure_codes(db, f.value, out);
             }
         }
-        Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
-            collect_closure_codes(db, bytes, out)
+        Core::BinIntRead {
+            bytes, off_plus, ..
         }
-        Core::BinSizedRead { bytes, len, .. } => {
+        | Core::BinRestRead {
+            bytes, off_plus, ..
+        } => {
             collect_closure_codes(db, bytes, out);
+            if let Some(op) = off_plus {
+                collect_closure_codes(db, op, out);
+            }
+        }
+        Core::BinSizedRead {
+            bytes,
+            off_plus,
+            len,
+            ..
+        } => {
+            collect_closure_codes(db, bytes, out);
+            if let Some(op) = off_plus {
+                collect_closure_codes(db, op, out);
+            }
             collect_closure_codes(db, len, out);
         }
         Core::Proj { operand, .. } => collect_closure_codes(db, operand, out),
@@ -1209,10 +1225,27 @@ fn collect_call_callees_at(db: &mut Db, id: StructId, out: &mut Vec<usize>) {
                 collect_call_callees(db, f.value, out);
             }
         }
-        crate::core::Core::BinIntRead { bytes, .. }
-        | crate::core::Core::BinRestRead { bytes, .. } => collect_call_callees(db, bytes, out),
-        crate::core::Core::BinSizedRead { bytes, len, .. } => {
+        crate::core::Core::BinIntRead {
+            bytes, off_plus, ..
+        }
+        | crate::core::Core::BinRestRead {
+            bytes, off_plus, ..
+        } => {
             collect_call_callees(db, bytes, out);
+            if let Some(op) = off_plus {
+                collect_call_callees(db, op, out);
+            }
+        }
+        crate::core::Core::BinSizedRead {
+            bytes,
+            off_plus,
+            len,
+            ..
+        } => {
+            collect_call_callees(db, bytes, out);
+            if let Some(op) = off_plus {
+                collect_call_callees(db, op, out);
+            }
             collect_call_callees(db, len, out);
         }
         crate::core::Core::Proj { operand, .. }

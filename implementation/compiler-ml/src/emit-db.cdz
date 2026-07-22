@@ -186,6 +186,10 @@ def can-emit(c: Core) = match c with
       // slice-B1a: a recursive call's CCall is OUT of the emit subset — emitting a real wasm function + call
       // opcode is slice B' (function table, param locals, call encoding). Until then a CCall program declines
       // to emit (emit-module gates on can-emit); the interpreter (eval-db, B1b) runs recursion first.
+  | Core.CFnRef(_) => false
+      // higher-order fn-value slice: a def-name-as-value is EVAL-ONLY for now (emit(B'') = a funcidx const).
+  | Core.CFnRefVar(_, _) => false
+      // higher-order apply (call a fn-value param) is EVAL-ONLY for now (emit(B'') = call_indirect via a table).
 
 /// The position of `x` in `xs` (0-based), or -1 if absent. Used to map a CLet binder node-id to its wasm
 /// LOCAL INDEX (index = order of the binder in the pre-order binder list). Scalar-only (List Int64), so no
