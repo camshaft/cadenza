@@ -71,6 +71,86 @@
   (call   main (: 0 Int64))
   (output (: 1600 Int64)))
 
+(case "a balanced-paren scan tracks depth over a runtime string and fails fast on early close"
+  (doc    "The delimiter recognizer every parser front-end runs: a `String.at` scalar walk over a
+           RUNTIME rope (nested `String.concat`, nothing folds) with a three-way branch per scalar
+           (open/close/other) threading a depth counter and its high-water mark. TWO exits with
+           different shapes: end-of-string checks `depth = 0` (balanced → ok=1), while an early close
+           drives depth NEGATIVE and must short-circuit IMMEDIATELY (ok=-1, the max-depth watermark
+           frozen where the scan died) — a scan that only checks balance at the end accepts \")(\".
+           The runtime n swaps a mid-rope scalar between `(` and `)`: n=1 → the first string `(a(b))`
+           is balanced at max depth 2 (run → 1·10+2 = 12) and the second `)(` + `()` fails at index 0
+           with maxd 0 (run → -10), combined 12·100 + (-10) = 1190; n=0 → the first string becomes
+           `(a)b))` — the swapped scalar now CLOSES, so depth dies at the second `)` with maxd 1
+           (run → -1·10+1 = -9), giving -9·100 + (-10) = -910. The watermark travelling through the
+           failure exit is what distinguishes WHERE each scan died. Encoding per run: ok·10 + maxdepth.")
+  (input  (do
+            (def (scan (: s String) (: i Int64) (: len Int64) (: depth Int64) (: maxd Int64))
+              (if (< depth 0)
+                  (tuple -1 maxd)
+                  (if (>= i len)
+                      (tuple (if (= depth 0) 1 0) maxd)
+                      (match (String.at s i)
+                        ((Some c)
+                          (if (= c "(")
+                              (scan s (+ i 1) len (+ depth 1) (if (> (+ depth 1) maxd) (+ depth 1) maxd))
+                              (if (= c ")")
+                                  (scan s (+ i 1) len (- depth 1) maxd)
+                                  (scan s (+ i 1) len depth maxd))))
+                        ((None _u) (tuple -9 maxd))))))
+            (def (run (: s String))
+              (match (scan s 0 (String.byte-len s) 0 0)
+                ((tuple ok maxd) (+ (* ok 10) maxd))))
+            (def (main (: n Int64))
+              (do
+                (def open (if (> n 0) "(" ")"))
+                (+ (* (run (String.concat "(a" (String.concat open "b))"))) 100)
+                   (run (String.concat ")" (String.concat "(" "()"))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1190 Int64))
+  (call   main (: 0 Int64)) (output (: -910 Int64)))
+
+(case "a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN"
+  (doc    "The inverse of the separator-JOIN pin above: scan for `,` hits and slice each FIELD as a
+           `String.slice` VIEW between them (fallible — unwrapped via Option.expect on provably
+           in-bounds windows), the final field flushed by end-of-string. The fields are then re-JOINED
+           with the same separator and compared `=` to the ORIGINAL rope — split/join round-trip law;
+           a field boundary off by one (separator absorbed into a field, or a dropped final flush)
+           breaks the reassembly bit even when the field count survives. The runtime n swaps a
+           mid-rope scalar between `d` and a SECOND separator: n=1 → `ab,cd,ef` splits to 3 fields,
+           field[1] = `cd` (2 bytes) → 321; n=0 → `ab,c,,ef` has an EMPTY field between adjacent
+           separators — 4 fields, field[1] = `c` (1 byte), and the empty field must survive the
+           round-trip (a split that skips empty fields re-joins to `ab,c,ef` ≠ s) → 411.")
+  (input  (do
+            (def (field (: s String) (: start Int64) (: end Int64))
+              (Option.expect (String.slice s start end) "in-bounds field"))
+            (def (split-go (: s String) (: i Int64) (: len Int64) (: start Int64) (: acc (List String)))
+              (if (>= i len)
+                  (List.push acc (field s start i))
+                  (match (String.at s i)
+                    ((Some c)
+                      (if (= c ",")
+                          (split-go s (+ i 1) len (+ i 1) (List.push acc (field s start i)))
+                          (split-go s (+ i 1) len start acc)))
+                    ((None _u) acc))))
+            (def (split (: s String))
+              (split-go s 0 (String.byte-len s) 0 (list)))
+            (def (join (: parts (List String)) (: sep String) (: acc String) (: first Bool))
+              (match parts
+                ((list) acc)
+                ((list h .. t)
+                  (join t sep (if first h (String.concat acc (String.concat sep h))) false))))
+            (def (main (: n Int64))
+              (do
+                (def s (String.concat "ab,c" (String.concat (if (> n 0) "d" ",") ",ef")))
+                (def parts (split s))
+                (+ (* ((. List len) parts) 100)
+                   (+ (* (String.byte-len (Option.expect (List.at parts 1) "f1")) 10)
+                      (if (= (join parts "," "" true) s) 1 0)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 321 Int64))
+  (call   main (: 0 Int64)) (output (: 411 Int64)))
+
 (case "a deep rope indexes by scalar at both extremes"
   (doc    "Scalar addressing through ~500 concat seams: `String.at` reads index 0 (the single \"A\" head
            leaf) and index n·2 (the LAST scalar, deep in the right spine) of a 1001-scalar rope — 10·1+1

@@ -4765,7 +4765,36 @@ pub(crate) fn sroa_tuple_scrutinee_candidate(
         // ESCAPE; `?` returns `None` (fail-closed), disqualifying the whole match.
         db.ast.as_form(inner, "tuple")?;
     }
+    // PRE-BIND each element to a KEPT let (v-patterns' interface ask): eval-once/trap-once belongs at THIS
+    // bind site, not the dispatch — an element read by ≥2 arms (or a lit-tested position also bound in
+    // another arm) must evaluate EXACTLY ONCE (a re-emitted effectful/trapping elem would double-evaluate =
+    // a miscompile). Marking each elem a kept binding makes every reference to it lower to a
+    // `Core::LocalRef { binder: elem }` (see `core_of`'s `kept_bindings` arm) — the elem evaluates once into
+    // a slot, all reads are `local.get`. Bind EVERY elem unconditionally (even a single-use one: a kept let
+    // of a pure single-use value is free — copy-prop erases it downstream — and it keeps the eval-once
+    // invariant uniform + trivially sound). The caller wraps the dispatch body in the matching `Core::Let`
+    // via `sroa_let_wrap` below, so the kept bindings are actually emitted. Self-keyed (`(elem, elem)`): no
+    // synthetic binder needed — the element's own occurrence is the binding key (the bin-match
+    // materialize-once idiom at `lower_match_sum`).
+    for &elem in &elems {
+        db.kept_bindings.insert(elem);
+    }
     Some(elems)
+}
+
+/// Wrap a SROA dispatch `body` in the `Core::Let` that binds the tuple's elements (the `elems` returned by
+/// [`sroa_tuple_scrutinee_candidate`], already marked kept there). Self-keyed bindings `(elem, elem)` — a
+/// reference to a kept binding lowers to `Core::LocalRef { binder: elem }`, so the dispatch reads each
+/// element via its slot exactly once. This is the caller-side assembly for the SROA rewrite: the
+/// escape-gate, the kept-marking, and this `Let`-wrap are all the v-core-opt binding side, while the `body`
+/// is v-patterns' `lower_tuple_arms_over_locals` dispatch over the same `elems`. Inert until that wiring
+/// calls both.
+#[allow(dead_code)]
+pub(crate) fn sroa_let_wrap(elems: &[StructId], body: StructId) -> Core {
+    Core::Let {
+        bindings: elems.iter().map(|&e| (e, e)).collect(),
+        body,
+    }
 }
 
 /// Sink a COMMON CONSTRUCTOR out of every arm of a scalar `match` — the multi-arm analogue of
