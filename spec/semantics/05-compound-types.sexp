@@ -7039,6 +7039,44 @@
   (call   main (: 1 Int64) (: 99 Int64)) (output (: -1 Int64))
   (call   main (: 9 Int64) (: 0 Int64)) (output (: -2 Int64)))
 
+(case "a two-level UPDATE of a map-of-maps rebuilds the inner and leaves the old outer intact"
+  (doc    "The WRITE path of the map-of-maps case above (that one only reads): `bump` is a two-level
+           read-modify-write — look the inner map up, upsert at the inner key, then RE-INSERT the
+           rebuilt inner into the outer — with an upsert at EACH level (inner hit adds d; inner miss
+           inserts fresh; outer miss creates a whole new inner map). Three bumps exercise all three
+           arms; the counters-by-category shape. Two load-bearing observations: (1) PERSISTENCE — the
+           ORIGINAL outer0 is re-read AFTER the bumps and must still show its old values (100 at 1/10,
+           miss at 1/11 → tail digits 100 + -1 = 99): an implementation that mutates the shared inner
+           CHAMP in place instead of rebuilding corrupts the old handle. (2) at d=-100 the bumped slot
+           lands exactly on ZERO, which the positional encoding absorbs as a leading zero (the composite
+           drops its top digit group, 103752099 → 752099) — the update wrote 0, not a miss.")
+  (input  (do
+            (def (bump (: outer (Map Int64 (Map Int64 Int64))) (: k Int64) (: j Int64) (: d Int64))
+              (match (Map.lookup outer k)
+                ((Some im)
+                  (match (Map.lookup im j)
+                    ((Some v) (Map.insert outer k (Map.insert im j (+ v d))))
+                    ((None _u) (Map.insert outer k (Map.insert im j d)))))
+                ((None _u) (Map.insert outer k (Map.insert Map.empty j d)))))
+            (def (read (: outer (Map Int64 (Map Int64 Int64))) (: k Int64) (: j Int64))
+              (match (Map.lookup outer k)
+                ((Some im) (match (Map.lookup im j) ((Some v) v) ((None _u) -1)))
+                ((None _u) -2)))
+            (def (main (: d Int64))
+              (do
+                (def outer0 (Map.insert (Map.insert Map.empty 1 (Map.insert Map.empty 10 100)) 2 (Map.insert Map.empty 20 200)))
+                (def outer1 (bump outer0 1 10 d))
+                (def outer2 (bump outer1 1 11 7))
+                (def outer3 (bump outer2 9 90 5))
+                (+ (* (read outer3 1 10) 1000000)
+                   (+ (* (read outer3 1 11) 100000)
+                      (+ (* (read outer3 9 90) 10000)
+                         (+ (* (read outer3 2 20) 10)
+                            (+ (read outer0 1 10) (read outer0 1 11))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 103752099 Int64))
+  (call   main (: -100 Int64)) (output (: 752099 Int64)))
+
 (case "a map of lists of tuples: a three-level mixed query with a miss at each level"
   (doc    "The nested-value cases above each nest ONE collection kind one level deep; this composes THREE
            kinds — `{1 ↦ [(10,11),(12,13)], 2 ↦ [(20,21)]}`, a Map whose values are LISTS of TUPLES (the
@@ -8722,6 +8760,60 @@
   (call   main (: 3 Int64))
   (output (: 1234551 Int64)))
 
+(case "a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines"
+  (doc    "The column peel: each transpose level takes `heads` (column i) and `tails` (every row
+           advanced one) as SEPARATE INDEPENDENT walks over the same list-of-rows, then recurses on
+           the tails — so one output row is built per COLUMN, and a skew between the heads walk and
+           the tails walk shears a column into its neighbor. The flatten pin above consumes a
+           list-of-lists; this one REBUILDS a fresh list-of-lists at every level (the tails
+           intermediate is a new spine each step, the transposed rows accumulate as new inner lists).
+           2x3 → 3x2 over `((1 2 3) (4 n 6))`: n=5 → rows (1,4),(2,5),(3,6), digit walk 142536,
+           length 3 → 1425363; n=0 → the zero sits at row 2 column 2 of the ORIGINAL, so it must land
+           in output row 2 (2,0) — 1420363. The `chk2` walk encodes rows pairwise, so a transposed
+           element that lands one row off shifts two digit positions, not one.")
+  (input  (do
+            (def (heads (: rows (List (List Int64))) (: acc (List Int64)))
+              (match rows
+                ((list) acc)
+                ((list r .. rest)
+                  (match r
+                    ((list) acc)
+                    ((list h .. _t) (heads rest (List.push acc h)))))))
+            (def (tails (: rows (List (List Int64))) (: acc (List (List Int64))))
+              (match rows
+                ((list) acc)
+                ((list r .. rest)
+                  (match r
+                    ((list) acc)
+                    ((list _h .. t) (tails rest (List.push acc t)))))))
+            (def (transpose (: rows (List (List Int64))) (: acc (List (List Int64))))
+              (match rows
+                ((list) acc)
+                ((list r .. _rest)
+                  (match r
+                    ((list) acc)
+                    ((list _h .. _t)
+                      (transpose (tails rows (list)) (List.push acc (heads rows (list)))))))))
+            (def (chk2 (: xss (List (List Int64))) (: acc Int64))
+              (match xss
+                ((list) acc)
+                ((list r .. rest)
+                  (chk2 rest
+                    (match r
+                      ((list) acc)
+                      ((list a .. t1)
+                        (match t1
+                          ((list) (+ (* acc 10) a))
+                          ((list b .. _t2) (+ (* (+ (* acc 10) a) 10) b)))))))))
+            (def (main (: n Int64))
+              (do
+                (def m (list (list 1 2 3) (list 4 n 6)))
+                (def tm (transpose m (list)))
+                (+ (* (chk2 tm 0) 10) ((. List len) tm))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1425363 Int64))
+  (call   main (: 0 Int64)) (output (: 1420363 Int64)))
+
 (case "a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at"
   (doc    "The lo/hi halving loop over `(10 20 30 40 50 60 70)`: each step reads the midpoint
            `(/ (+ lo hi) 2)` (integer division floors) through the FALLIBLE `List.at`, then recurses
@@ -8929,6 +9021,37 @@
             (export main)))
   (call   main (: 6 Int64)) (output (: 1236781 Int64))
   (call   main (: 0 Int64)) (output (: 1230781 Int64)))
+
+(case "a STATS record threads min/max/sum/count as one fold accumulator with data-dependent field updates"
+  (doc    "A 4-field RECORD as the fold accumulator (the multi-accumulator stats at 02-binding threads
+           SEPARATE scalar params; here the state is ONE record value rebuilt per step). Each field
+           updates by a DIFFERENT rule in the same `(record …)` construction: mn/mx are CONDITIONAL
+           keeps seeded from the first element via the `ct = 0` test (the placeholder 0s in the initial
+           record must NOT leak into the min of an all-positive list — the seed test is what keeps them
+           out), sm/ct accumulate unconditionally. All four new fields read the OLD record; a lowering
+           that reuses the old record's slot mid-construction (or reorders a field's read after another's
+           write) skews a stat. n=7 over (4 7 9 2): mn 2, mx 9, sm 22, ct 4 → 2092204; n=-5 makes the
+           runtime element the MIN and the composite encoding NEGATIVE (mn·100+mx = -491 → the whole
+           left group) → -4908996, so a sign-mangled field placement can't hide.")
+  (input  (do
+            (def (step (: st (Record (: mn Int64) (: mx Int64) (: sm Int64) (: ct Int64))) (: h Int64))
+              (record
+                (mn (if (= (. st ct) 0) h (if (< h (. st mn)) h (. st mn))))
+                (mx (if (= (. st ct) 0) h (if (> h (. st mx)) h (. st mx))))
+                (sm (+ (. st sm) h))
+                (ct (+ (. st ct) 1))))
+            (def (walk (: xs (List Int64)) (: st (Record (: mn Int64) (: mx Int64) (: sm Int64) (: ct Int64))))
+              (match xs
+                ((list) st)
+                ((list h .. t) (walk t (step st h)))))
+            (def (main (: n Int64))
+              (do
+                (def st (walk (list 4 n 9 2) (record (mn 0) (mx 0) (sm 0) (ct 0))))
+                (+ (* (+ (* (. st mn) 100) (. st mx)) 10000)
+                   (+ (* (. st sm) 100) (. st ct)))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 2092204 Int64))
+  (call   main (: -5 Int64)) (output (: -4908996 Int64)))
 
 (case "an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state"
   (doc    "The apply-events idiom: a fold dispatches per element of a mixed `(Add/Sub/Reset)` list,
@@ -12852,6 +12975,40 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 80 Int64)))
+
+(case "a MAP MERGE folds one map's entries into another, summing values on key collision"
+  (doc    "The two-map combine (the rebuild pins above fold a map's entries into an EMPTY map; here the
+           destination already has entries, so each step is an UPSERT — sum on hit, insert on miss —
+           the counter-merging idiom). `merge-into (Map.to-list b) a` with a = {1↦10, n↦20} and
+           b = {1↦5, 7↦40}. Three collision faces: n=2 → only key 1 collides (15), len 3 → 315240;
+           n=7 → a's SECOND key collides with b's 7 (20+40=60), len 2 → 215660; n=1 (the sharp one) →
+           the collision happens during A's OWN construction — inserting key 1 twice overwrites
+           (10→20, last-wins) and the merge then SUMS b's 5 onto the overwritten value (25): a merge
+           reading the pre-overwrite 10, or applying overwrite instead of sum, lands on 15 or 5
+           instead — len 2 → 225290. Encoding: len·100000 + get(1)·1000 + get(n)·10 + get(7).")
+  (input  (do
+            (def (merge-into (: entries (List (Tuple Int64 Int64))) (: m (Map Int64 Int64)))
+              (match entries
+                ((list) m)
+                ((list (tuple k v) .. t)
+                  (merge-into t
+                    (match (Map.lookup m k)
+                      ((Some old) (Map.insert m k (+ old v)))
+                      ((None _u) (Map.insert m k v)))))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (main (: n Int64))
+              (do
+                (def a (Map.insert (Map.insert Map.empty 1 10) n 20))
+                (def b (Map.insert (Map.insert Map.empty 1 5) 7 40))
+                (def m (merge-into (Map.to-list b) a))
+                (+ (* (Map.len m) 100000)
+                   (+ (* (get m 1) 1000)
+                      (+ (* (get m n) 10) (get m 7))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 315240 Int64))
+  (call   main (: 7 Int64)) (output (: 215660 Int64))
+  (call   main (: 1 Int64)) (output (: 225290 Int64)))
 
 (case "a FILTERED rebuild keeps only entries passing a runtime predicate"
   (doc    "The filter companion: the rebuild's insert is CONDITIONAL on `(> v cut)` with the cutoff a
