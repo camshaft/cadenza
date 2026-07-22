@@ -404,6 +404,30 @@ fn is_heap_type(ty: &Ty) -> bool {
     }
 }
 
+/// [`is_heap_type`], but CONSERVATIVE for the Perceus RETAIN/dup CANDIDATE decision: a type that still
+/// contains a FREE VARIABLE (`Ty::Var` — an unsolved payload/binder type) also counts as heap here.
+///
+/// WHY (a UAF fix, found via v-patterns' slice-5 diagnostic): the retain-candidate collection reads
+/// `type_of(binder)`, but `infer::type_of` DELIBERATELY does not memoize a free-var type (it recomputes so
+/// the later A2 connected-solve can win). So a payload/binder whose type is FIRST DEMANDED while still a
+/// `Ty::Var` — e.g. `(match acc ((Box.Full m) …))` where `acc` is momentarily `(Box ?0)` — reads as a `Var`,
+/// which plain `is_heap_type` classifies NON-heap → the binder is NOT marked a retain candidate → NO `dup`
+/// is emitted → a sum-payload BORROW consumed while a sibling re-extracts it is freed under the live alias
+/// → USE-AFTER-FREE. The verdict was DEMAND-ORDER-sensitive (any pass that reorders the `type_of` demand
+/// across the solve boundary — a peer's emit-time Db mutation did — could flip it into the UAF).
+///
+/// Treating a free-var type as a retain CANDIDATE removes that fragility STRUCTURALLY: a `Ty::Var` can only
+/// become MORE concrete (heap or scalar) once solved, so marking it a candidate is LEAK-SAFE, never a UAF —
+/// and it is only a CANDIDATE mark: the actual `dup`/`drop` EMISSION is independently gated on the CONCRETE
+/// (by-emit-time ground) element/binder type (the `scalar_elem`/`get_op` arms, the `emit`-side drop gate),
+/// so a `Var` that solves to a SCALAR never emits a heap `dup`/`drop` (rc-op on a scalar would be invalid) —
+/// it just was a spurious candidate that emits nothing. Import-collection (`collect_used_ops_into`) uses this
+/// too so the `dup`/`drop` ops are declared when a candidate does turn out heap (a declared-unused import is
+/// harmless if it turns out scalar).
+fn is_heap_type_for_retain(ty: &Ty) -> bool {
+    is_heap_type(ty) || ty.has_free_var()
+}
+
 /// Whether the reference to the `let` binding `binder` ESCAPES the node at `id` — i.e. its reference
 /// flows into a value that OUTLIVES the `let` (the returned result, an element of a constructed tuple,
 /// or a call argument — all CONSUMING positions), as opposed to being used only to BORROW (a
@@ -1095,12 +1119,17 @@ fn collect_retain_candidate_binders(db: &mut Db, id: StructId, out: &mut Vec<Str
     match core_of(db, id) {
         Core::Let { bindings, .. } => {
             for (binder, _) in &bindings {
-                if is_heap_type(&type_of(db, *binder)) {
+                // `is_heap_type_for_retain`: a still-`Var` binder type counts as a candidate (leak-safe;
+                // avoids the demand-order UAF where a not-yet-ground heap payload was skipped). The dup/drop
+                // EMISSION is concrete-type-gated, so a Var that solves to a scalar emits nothing.
+                if is_heap_type_for_retain(&type_of(db, *binder)) {
                     out.push(*binder);
                 }
             }
         }
-        Core::Param { binder } if is_heap_type(&type_of(db, binder)) && !out.contains(&binder) => {
+        Core::Param { binder }
+            if is_heap_type_for_retain(&type_of(db, binder)) && !out.contains(&binder) =>
+        {
             out.push(binder);
         }
         _ => {}
@@ -3003,7 +3032,10 @@ fn collect_used_ops_into(
                 // `drop`. (A scalar binding owns no heap cell → no drop, matching `emit`.) The `dup` a
                 // consumed-then-reused binding needs is imported ONCE at the `collect_used_ops` entry
                 // (over the whole body, covering params too), not per-binding here.
-                if is_heap_type(&type_of(db, *binder)) {
+                // `_for_retain`: a still-`Var` binder that solves to heap needs its `drop` DECLARED (a
+                // declared-but-unused import is harmless if it turns out scalar) — keeps the import set a
+                // superset of what the retain-candidate broadening can emit.
+                if is_heap_type_for_retain(&type_of(db, *binder)) {
                     out.insert(OP_DROP);
                 }
                 collect_used_ops_into(db, *value, out);
