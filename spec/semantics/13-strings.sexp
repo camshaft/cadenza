@@ -1619,6 +1619,27 @@
             (export main)))
   (output (: 2 Int64)))
 
+(case "a Bytes.slice into to-bytes output decodes at a scalar boundary and rejects mid-scalar"
+  (doc    "The window-alignment discriminator: `(String.to-bytes \"caféx\")` is 6 bytes (é = 0xC3 0xA9 at
+           offsets 3-4). A 2-byte `Bytes.slice` at a=3 captures the COMPLETE é sequence — from-bytes
+           decodes it (byte-len 2); at a=2 the window is `(byte-of-f, 0xC3)` — the é's lead byte with no
+           continuation — so from-bytes answers None (-9), the total-decode contract on an ill-formed
+           window. One compiled slice+decode witnesses both the aligned and the mid-scalar cut per call;
+           an offset drift of one byte flips both answers.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Bytes.slice (String.to-bytes "caféx") a 2)
+                ((Some w)
+                  (match (String.from-bytes w)
+                    ((Some s) (String.byte-len s))
+                    ((None u) -9)))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 2 Int64))
+  (call   main (: 2 Int64))
+  (output (: -9 Int64)))
+
 (case "String.from-bytes decodes a RUNTIME byte sequence built by a recursive appender"
   (doc    "The runtime-Bytes decode path: `String.from-bytes` of a byte buffer the compiler CANNOT fold to
            a constant — here `(rep b\"\\x68\" 3)` recursively appends the byte `0x69` ('i') three times to a

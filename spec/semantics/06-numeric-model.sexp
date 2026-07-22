@@ -5882,6 +5882,21 @@
   (call   main (: 2 Int64)) (output (: 1 Int64))
   (call   main (: 5 Int64)) (output (: 2 Int64)))
 
+(case "a Rational ARITHMETIC result probes a map key by its reduced canonical value"
+  (doc    "The computed-key face (the unreduced-construction pin above canonicalizes at Rational.of;
+           this canonicalizes an ADDITION's result): the lookup key is `1/2 + 1/(3n)` — at n=1 that is
+           1/2 + 1/3 = 5/6 via cross-denominator addition (LCM/normalize inside the runtime add), probing
+           the entry stored under `(Rational.of 5 6)` → 42. The arithmetic path's output must be the
+           same canonical node shape construction produces, or the hash diverges.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m (Map.insert Map.empty (Rational.of 5 6) 42)))
+                (match (Map.lookup m (+ (Rational.of 1 2) (Rational.of 1 (* n 3))))
+                  ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 42 Int64)))
+
 (case "a tuple key with a RUNTIME Rational leaf hits and misses by canonical content"
   (doc    "Composes the runtime-Rational canonicalization with the compound-key descent: a map keyed by
            `(tuple (Rational.of n 6) 1)` at `n = 2` (constructs 1/3) is found by the lookup key `(tuple

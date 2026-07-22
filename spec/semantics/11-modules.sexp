@@ -625,6 +625,28 @@
   (call   main (: 2 Int64))
   (output (: 42 Int64)))
 
+(case "a module-exported closure factory builds a PERFORMING closure homed at the apply site"
+  (doc    "The effects composition of the closure factory: `mk`'s closure body PERFORMS `Ctr.next` —
+           declared in the importer's scope, handled at the importer's apply site. Applied TWICE under
+           the handler, each application is a fresh perform against the current state (100+5, then
+           100+6 → 211). Composes three pinned facts across the module boundary: factory capture,
+           apply-site homing (the closure crosses the module boundary carrying an unhomed perform), and
+           per-application state threading. A homing analysis keyed to the closure's DEFINITION module
+           would reject or misroute the perform.")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (module m
+              (def (mk (: k Int64)) (fn ((: u Unit)) (+ k (Ctr.next unit))))
+              (export mk))
+            (def (main (: n Int64))
+              (handle Ctr n
+                ((next (u) s (resume s (+ s 1))))
+                (let ((f ((. m mk) 100)))
+                  (+ (f unit) (f unit)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 211 Int64)))
+
 (case "two module exports are selected by a runtime branch and applied as values"
   (doc    "Module members as branch-selected function values: `((if b (. ops inc) (. ops dbl)) x)` — the
            member projections are first-class arrow values, the `if` joins them, and the application

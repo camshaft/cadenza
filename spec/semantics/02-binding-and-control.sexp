@@ -276,6 +276,43 @@
   (call   raw (: 0 UInt32))
   (trap   "integer overflow"))
 
+(case "a flow refinement folds a compare over a no-overflow arith operand, but the trap survives when overflow is possible"
+  (doc    "The value-facts slice 6c face (rcdzc 621e71135): `refined_comparison_const` now folds a comparison
+           whose operand is a CHECKED-ARITH node (`(+ x 1)`), not just a directly-refined variable — but ONLY
+           when that arith is PROVABLY-NO-OVERFLOW under the flow refinement, because the fold DISCARDS the
+           operand and a checked `+`/`-`/`*` is not trap-free. Two defs, and the pair is the whole point:
+             (a) FOLDS: `(if (and (>= x 0) (< x 10)) (if (< (+ x 1) 11) 1 2) 3)` — under x∈[0,9], (+ x 1)∈[1,10]
+                 cannot overflow AND is always < 11, so the inner compare folds true and the `2` arm dies. The
+                 fold is licensed precisely because dropping the checked add is trap-safe here. Value-only
+                 observable (x=5→1, x=9→1, x=20→3) — the Lir dead-arm elision is unit-pinned in rcdzc
+                 `a_flow_refinement_propagates_through_a_no_overflow_arith_into_a_compare_fold`.
+             (b) SOUNDNESS TWIN — the trap must survive: `(if (> x 0) (if (< (+ x 1) 11) 1 2) 3)`. Under just
+                 `(> x 0)` (x∈[1, i64::MAX], NO upper bound) `(+ x 1)` CAN overflow (x = i64::MAX), so it is
+                 NOT provably_no_overflow → the fold DECLINES, the checked add stays, and at x = i64::MAX the
+                 `(+ x 1)` overflow trap is REACHED. This is the gate-visible witness that the fold does not
+                 over-broaden `discardable` and silently drop a reachable trap — the twin lived only in the
+                 `--lib` test; this pins the trap-preservation fleet-wide on both backends.")
+  (input  (do
+            (def (folded (: x Int64)) (if (and (>= x 0) (< x 10)) (if (< (+ x 1) 11) 1 2) 3))
+            (def (twin   (: x Int64)) (if (> x 0) (if (< (+ x 1) 11) 1 2) 3))
+            (export folded)
+            (export twin)))
+  ; (a) folded: under x∈[0,9], (+ x 1)<11 always → 1; outside the guard → 3. The dropped `2` arm is unreachable.
+  (call   folded (: 5 Int64))
+  (output (: 1 Int64))
+  (call   folded (: 9 Int64))
+  (output (: 1 Int64))
+  (call   folded (: 20 Int64))
+  (output (: 3 Int64))
+  ; (b) twin: x>0 does NOT bound x above, so the add is not provably-no-overflow → it stays; small x is value-correct...
+  (call   twin (: 5 Int64))
+  (output (: 1 Int64))
+  (call   twin (: 0 Int64))
+  (output (: 3 Int64))
+  ; ...and at x = i64::MAX the surviving (+ x 1) overflows — the trap the fold must NOT have dropped.
+  (call   twin (: 9223372036854775807 Int64))
+  (trap   "integer overflow"))
+
 (case "unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)"
   (doc    "The soundness BOUNDARY of the unsigned interval refinement (value-facts GAP-A): an unsigned
            value is always ≥ 0, so a comparison against the domain's lower edge is a tautology the
@@ -3213,6 +3250,26 @@
                 (+ (* 1000 a) (+ (* 100 b) (+ (* 10 c) d)))))
             (export main)))
   (call   main (: 2 Int64)) (output (: 2346 Int64)))
+
+(case "a recursive fold returns a MIXED-representation tuple destructured at the caller"
+  (doc    "The multi-accumulator return shape: `stats` threads an Int64 sum AND a String rope through a
+           recursive walk and returns `(tuple sum txt (List.len xs))` — an i64, a rope handle, and a
+           second i64 in one product crossing the return. The caller destructures all three (6·100 +
+           3·10 + 3 = 633). A return convention that boxed the scalar by the rope's slot kind (or
+           mis-ordered mixed slots) corrupts a component — the RETURN-position companion of the
+           mixed-representation generic and effects-argument pins.")
+  (input  (do
+            (def (stats (: xs (List Int64)) (: i Int64) (: n Int64) (: sum Int64) (: txt String))
+              (if (>= i n) (tuple sum txt (List.len xs))
+                (match (List.at xs i)
+                  ((Some v) (stats xs (+ i 1) n (+ sum v) (String.concat txt "x")))
+                  ((None u) (tuple -1 txt -1)))))
+            (def (main (: a Int64))
+              (match (stats (list a 2 3) 0 3 0 "")
+                ((tuple s t len) (+ (* 100 s) (+ (* 10 (String.byte-len t)) len)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 633 Int64)))
 
 ; A RECORD binding pattern. A record is a fixed-shape product like a tuple, so `(record (x a) (y b))` in a
 ; binder position destructures the value BY FIELD — binding `a`/`b` to the `x`/`y` fields — with NO

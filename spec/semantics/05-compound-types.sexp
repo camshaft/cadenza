@@ -8422,6 +8422,22 @@
             (export main)))
   (output (: 11 Int64)))
 
+(case "a generic sum NESTS ITSELF at a different instantiation and destructures through both layers"
+  (doc    "Self-application of a generic: `(Box (Box n))` instantiates `Box` at `(Box Int64)` — the type
+           argument is the SAME generic at a different instantiation, so the solver's occurs-check-adjacent
+           path must instantiate two distinct monomorphs of one declaration, and the nested pattern
+           `(Box (Box v))` descends both layers to the runtime payload (42). A per-declaration
+           single-instantiation cache (or a layout shared between the two monomorphs) misreads the inner
+           payload. The self-nesting companion of the two-type and two-instantiation pins above.")
+  (input  (do
+            (type (Box a) (Box a))
+            (def (main (: n Int64))
+              (match (Box (Box n))
+                ((Box (Box v)) v)))
+            (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64)))
+
 (case "a runtime-built generic user sum escapes with its parametric type frame"
   (doc    "A GENERIC user sum whose value is BUILT AT RUNTIME (so it lives on the value heap, not folded)
            and returned as the program result escapes with its full PARAMETRIC type frame `(Box Int64)` —
