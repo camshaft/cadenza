@@ -1483,6 +1483,26 @@
   (input  (if true (list 1 2) (list 3 4 5)))
   (output (: (list 1 2) (List Int64))))
 
+(case "a RUNTIME if-chain selects among four different-length heap lists"
+  (doc    "The runtime/depth upgrade of the const two-branch case above: a 3-deep nested `if` chain over a
+           runtime `n` selects among FOUR list literals of lengths 3/2/1/0 — every branch constructs a heap
+           value, only the selected branch's construction is observable, and the four calls exercise every
+           arm (20→3, 7→2, 3→1, -1→0 via List.len). Pins the classify-into-buckets idiom (a threshold
+           ladder returning collections): each arm's heap construction is confined to its branch (an emit
+           hoisting all four constructions, or unifying the branches to one shared list, would still pass
+           len checks — but a branch-confusion in the nested selects would misroute the middle calls).")
+  (input  (do
+            (def (main (: n Int64))
+              (List.len (if (> n 10) (list 1 2 3)
+                        (if (> n 5) (list 1 2)
+                        (if (> n 0) (list 1)
+                        (list))))))
+            (export main)))
+  (call   main (: 20 Int64)) (output (: 3 Int64))
+  (call   main (: 7 Int64)) (output (: 2 Int64))
+  (call   main (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: -1 Int64)) (output (: 0 Int64)))
+
 ; --- A conditional's condition must be a Bool --------------------------------------------
 ; core-semantics.md #Conditionals Evaluate One Branch: a conditional selects a branch by its
 ; condition, which is a Bool. A condition of any other type is ill-typed — the compiler MUST
@@ -3063,6 +3083,40 @@
            fields is equally valid. Pins field-order-independence + partiality of a record binding pattern.")
   (input  (let (((record (z b) (a c)) (record (a 10) (z 20)))) (+ (* 100 c) b)))
   (output (: 1020 Int64)))
+
+(case "a let record pattern destructures a helper CALL's runtime record result"
+  (doc    "The record twin of the tuple-of-call destructure: `stats` returns a RUNTIME record — `(record
+           (lo …) (hi …))` ordering its two arguments — and the caller destructures it at the binder:
+           `(let (((record (lo l) (hi h)) (stats a b))) …)`. (7,3) → lo 3, hi 7 → 307; (2,9) → 209. The
+           literal-RHS record binder cases fold; here the record materializes from a live call and the
+           by-NAME field binding must read the runtime heap record.")
+  (input  (do
+            (def (stats (: a Int64) (: b Int64))
+              (record (lo (if (< a b) a b)) (hi (if (< a b) b a))))
+            (def (main (: a Int64) (: b Int64))
+              (let (((record (lo l) (hi h)) (stats a b)))
+                (+ (* 100 l) h)))
+            (export main)))
+  (call   main (: 7 Int64) (: 3 Int64)) (output (: 307 Int64))
+  (call   main (: 2 Int64) (: 9 Int64)) (output (: 209 Int64)))
+
+(case "a record MATCH pattern with a LITERAL field sub-pattern dispatches on the field value"
+  (doc    "A record pattern in MATCH position whose `tag` sub-pattern is a LITERAL — `((record (tag 1)
+           (v x)) x)` — dispatches on the runtime field value while BINDING the other field: tag 1 → the
+           bound `v` (10); tag 2 → the second arm's transform (100); anything else → the wildcard (-1).
+           The field-access-then-match pin scrutinizes ONE projected field; this matches the WHOLE record
+           with per-field literal/binder sub-patterns — the tagged-record dispatch idiom (a struct-like
+           message with a discriminating field).")
+  (input  (do
+            (def (main (: n Int64))
+              (match (record (tag n) (v 10))
+                ((record (tag 1) (v x)) x)
+                ((record (tag 2) (v x)) (* x 10))
+                (_ -1)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 10 Int64))
+  (call   main (: 2 Int64)) (output (: 100 Int64))
+  (call   main (: 9 Int64)) (output (: -1 Int64)))
 
 (case "a def parameter may be a record pattern that destructures by field"
   (doc    "`(def (f (record (x a) (y b))) (+ a b))` destructures its single record argument by field,

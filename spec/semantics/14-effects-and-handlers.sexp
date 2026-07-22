@@ -1093,11 +1093,11 @@
             (def (double-up (: n Int64) (: k Int64))
               (if (= k 0) n (double-up (* n 2) (- k 1))))
             (def (main (: n Int64))
-              (handle Tw 1
+              (handle Tw n
                 ((next (u) s (resume s (double-up s 2))))
                 (do (Tw.next unit) (Tw.next unit))))
             (export main)))
-  (call   main (: 0 Int64)) (output (: 4 Int64)))
+  (call   main (: 1 Int64)) (output (: 4 Int64)))
 
 (case "a handler arm that resumes NON-tail folds through a PURE one-hole continuation"
   (doc    "The general one-shot arm generalizes past the identity-continuation sliver: when the performed

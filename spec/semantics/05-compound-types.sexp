@@ -36,6 +36,24 @@
             (def (main) (f (Some 7))) (export main)))
   (output (: 7 Int64)))
 
+(case "a record field built by a RUNTIME BRANCH holds a user-sum, projected then matched"
+  (doc    "The runtime-construction upgrade of the sum-in-field pin above (there the sum arrives as an
+           argument; here the field's VARIANT is decided by a runtime branch INSIDE the record
+           construction): `(record (id 7) (st (if (> n 0) (Active n) (Idle))))` — the `st` field holds
+           `(Active 5)` at n=5 (projected+matched → 5) or `(Idle)` at n=0 (→ -1). Pins that a
+           branch-selected USER-sum value constructs into a record field and recovers by
+           projection+match — the node-with-status shape a compiler's IR records take.")
+  (input  (do
+            (type Status (Active Int64) (Idle))
+            (def (main (: n Int64))
+              (let ((r (record (id 7) (st (if (> n 0) (Active n) (Idle))))))
+                (match (. r st)
+                  ((Active v) v)
+                  ((Idle u) -1))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: 0 Int64)) (output (: -1 Int64)))
+
 ; A record field name (and a member-access field name) is a LABEL, not a value reference — so it is
 ; immune to argument substitution when a function is called. A function whose body builds a record with a
 ; field KEYED the same as a parameter, or projects a field whose name matches a parameter, must compute
@@ -1157,6 +1175,19 @@
            function-returned record (witnessed elsewhere).")
   (input  (. (. (record (outer (record (inner 7)))) outer) inner))
   (output (: 7 Int64)))
+
+(case "a THREE-deep member-access chain reads a RUNTIME leaf through nested records"
+  (doc    "The runtime + depth-3 upgrade of the chain above (which is const and folds): the innermost field
+           holds a runtime boundary parameter — `(record (a (record (b (record (c n))))))` — and the chain
+           `(. (. (. r a) b) c)` walks three projection levels to read it back (42). Each intermediate
+           projection yields a live heap record whose next projection must consume it at run time; a chain
+           that folded only to depth 2 (or re-projected from the root) still reads 42 here, but the
+           runtime leaf keeps every level's projection LIVE — the config-tree read idiom.")
+  (input  (do
+            (def (main (: n Int64))
+              (. (. (. (record (a (record (b (record (c n)))))) a) b) c))
+            (export main)))
+  (call   main (: 42 Int64)) (output (: 42 Int64)))
 
 (case "a field is projected off a record bound through a match arm"
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field where the record reaches

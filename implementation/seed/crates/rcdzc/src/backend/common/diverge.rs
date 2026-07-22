@@ -82,9 +82,10 @@ fn sumcont_diverges(db: &mut Db, cont: &crate::core::SumCont) -> bool {
 ///   • `(and a b)` in its holding polarity, `(or a b)` in its failing polarity → refine by each operand;
 ///     the other polarity is a disjunction (no single-variable interval), skip;
 ///   • `(not a)` → refine `a` with the opposite polarity.
-/// Nested `if`s accumulate (each frame merges the parent's). UNSIGNED comparisons and `Eq`/`Ne` yield no
-/// sound one-sided interval and are skipped. The refinement is a narrowing the branch GUARANTEES, so a
-/// guard the narrowed range proves dead is safe to drop.
+/// Nested `if`s accumulate (each frame merges the parent's). A SIGNED ordering refines directly; an
+/// UNSIGNED ordering refines against a NON-NEGATIVE constant (no wraparound — see `refine_from_comparison`);
+/// `Eq`'s then-branch pins `[c,c]` and its else yields no single interval. The refinement is a narrowing
+/// the branch GUARANTEES, so a guard the narrowed range proves dead is safe to drop.
 pub(crate) fn refined_frame_for_branch(
     db: &mut Db,
     cond: StructId,
@@ -117,11 +118,13 @@ pub(crate) fn refined_frame_for_branch(
     }
 }
 
-/// Merge into `base` the one-sided bound a single SIGNED var-vs-const comparison `(op lhs rhs)` guarantees
-/// in the given branch polarity — the atom [`refined_frame_for_branch`] composes for `and`/`or`/`not`.
+/// Merge into `base` the one-sided bound a single var-vs-const comparison `(op lhs rhs)` guarantees in the
+/// given branch polarity — the atom [`refined_frame_for_branch`] composes for `and`/`or`/`not`.
 /// `(op var C)` / `(op C var)` (flipped) → in the `then` branch `var op C` holds, in the `else` its
-/// negation; the resulting `[lo, hi]` bound is intersected with any existing refinement for `var`. A
-/// non-comparison, an unsigned variable, or `Eq`/`Ne` contributes nothing (returns `base`).
+/// negation; the resulting `[lo, hi]` bound is intersected with any existing refinement for `var`. Refines
+/// a SIGNED integer var, or an UNSIGNED one against a NON-NEGATIVE constant (an unsigned ordering vs `c ≥ 0`
+/// has no wraparound — `x < 8` ⇒ `x ∈ [0, 7]`). A non-comparison, a non-integer var, or an unsigned var vs
+/// a NEGATIVE constant (degenerate — the domain edge decides it) contributes nothing (returns `base`).
 pub(crate) fn refine_from_comparison(
     db: &mut Db,
     op: Prim,
@@ -182,10 +185,21 @@ pub(crate) fn refine_from_comparison(
         }
         return frame;
     }
-    // SIGNED integer variable only — an unsigned comparison's order wraps differently.
-    let signed = matches!(type_of(db, var), Ty::Int(it) if it.ground_signed());
-    if !signed {
-        return base;
+    // An integer variable — signed OR unsigned. A SIGNED ordering refines directly. An UNSIGNED ordering
+    // is sound too, but ONLY against a NON-NEGATIVE constant: `x < c` / `x >= c` for `c ≥ 0` narrow `x` to
+    // a sub-interval of `[0, 2^w)` with NO wraparound (both `x` and `c` are ≥ 0, so the ordering is the
+    // ordinary one) — `x < 8` ⇒ `x ∈ [0, 7]`, eliding a downstream mask/bounds guard exactly as the signed
+    // case elides an overflow guard. A NEGATIVE constant against an unsigned var is degenerate (`x < -1` is
+    // always false, `x > -1` always true for `x ≥ 0`) — no useful sub-interval, and those verdicts are
+    // decided by `fold_comparison_at_type_bound` at the type edge, not here — so skip it (return `base`),
+    // never fabricating a refinement from a comparison the domain already settles. The clamp/intersect math
+    // below is signedness-neutral once past this guard (it operates on the i64 values the interval carries).
+    let Ty::Int(it) = type_of(db, var) else {
+        return base; // only an INTEGER variable has an interval refinement
+    };
+    let signed = it.ground_signed();
+    if !signed && c < 0 {
+        return base; // unsigned var vs a negative const — degenerate, no sub-interval
     }
     // The bound the taken branch establishes; the `else` branch negates the op.
     let effective = if then_branch {
