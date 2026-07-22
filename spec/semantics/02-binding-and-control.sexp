@@ -237,6 +237,42 @@
   (call   main (: -6 Int64)) (output (: 2 Int64))
   (call   main (: -10 Int64)) (output (: 3 Int64)))
 
+(case "an INCLUSIVE ordering refinement folds at the boundary but must not over-refine one past it"
+  (doc    "The off-by-one soundness twin for the INCLUSIVE (`<=`/`>=`) clamp math in the interval refinement
+           (refine_from_comparison, diverge.rs): an inclusive bound refines to EXACTLY the constant
+           (`Le → clamp(c)`, `Ge → clamp(c)`), one endpoint tighter than the strict form (`Lt → clamp(c-1)`,
+           `Gt → clamp(c+1)`). The existing flagship pins the STRICT (`>`,`<`) fold; nothing pinned that an
+           inclusive bound lands on the boundary and not one past it. A silent `clamp(c)`↔`clamp(c±1)` swap
+           there is a real miscompile that value-pins alone would miss. Two faces:
+             `fold`: `(if (<= x 5) (if (< x 6) 1 2) 3)` — `x <= 5` ⇒ `x < 6` is always TRUE, so the inner
+                     compare folds and the dead `2` arm is eliminated (x=5→1, x=3→1, x=10→3). The FOLD
+                     itself is unit-pinned in rcdzc
+                     `an_inclusive_ordering_refinement_folds_at_the_boundary_but_never_one_past_it`.
+             `edge`: `(if (<= x 5) (if (< x 5) 1 2) 3)` — `x <= 5` does NOT decide `x < 5` (x=5 satisfies the
+                     outer but not the inner), so BOTH compares survive and x=5 takes the LIVE inner else → 2.
+                     An establisher that over-refined `x<=5` to `[MIN,4]` would wrongly fold this and return 1
+                     at x=5 — the SOUNDNESS TWIN. `edge-ge` is the symmetric `>=` face (over-refine to [6,MAX]).
+           All Int64 scalar, so it gates on both backends. The x=5 boundary calls are the discriminators.")
+  (input  (do
+            (def (fold    (: x Int64)) (if (<= x 5) (if (< x 6) 1 2) 3))
+            (def (edge    (: x Int64)) (if (<= x 5) (if (< x 5) 1 2) 3))
+            (def (edge-ge (: x Int64)) (if (>= x 5) (if (> x 5) 1 2) 3))
+            (export fold)
+            (export edge)
+            (export edge-ge)))
+  ; fold: x<=5 decides x<6 true → inner folds; value unchanged.
+  (call   fold    (: 5 Int64))  (output (: 1 Int64))
+  (call   fold    (: 3 Int64))  (output (: 1 Int64))
+  (call   fold    (: 10 Int64)) (output (: 3 Int64))
+  ; edge: x<=5 does NOT decide x<5 — the x=5 boundary must take the inner else (2), NOT fold to 1.
+  (call   edge    (: 5 Int64))  (output (: 2 Int64))
+  (call   edge    (: 3 Int64))  (output (: 1 Int64))
+  (call   edge    (: 10 Int64)) (output (: 3 Int64))
+  ; edge-ge: symmetric — x>=5 does NOT decide x>5; x=5 boundary takes the inner else (2).
+  (call   edge-ge (: 5 Int64))  (output (: 2 Int64))
+  (call   edge-ge (: 7 Int64))  (output (: 1 Int64))
+  (call   edge-ge (: 0 Int64))  (output (: 3 Int64)))
+
 (case "an EQUALITY test refines the same test in its own else to known-false"
   (doc    "The equality face of branch refinement: inside the ELSE of `(if (= x 5) …)` the fact `x ≠ 5`
            holds, so a repeated `(= x 5)` there is known-false and its then-branch (99) is dead — x = 7 →

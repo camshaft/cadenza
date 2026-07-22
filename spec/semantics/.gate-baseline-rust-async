@@ -1162,6 +1162,7 @@ pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one expo
 pass	a runtime-constructed Ast equals its quoted twin by structural content
 pass	a runtime-index List.update LOOP rewrites every 100th slot of a 1000-element list
 pass	a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence
+pass	a separator JOIN over a runtime parts list handles first-vs-rest and the empty list
 pass	a shift by a RUNTIME amount computes (both operands off the fold)
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
 pass	a slice OF a slice composes the offsets at runtime bounds
@@ -3292,6 +3293,7 @@ pass	byte-len and scalar-len DIVERGE on a multibyte String entry arg by the enco
 pass	capture-avoiding substitution renames a Forall binder to avoid capture (logical-form subst)
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	chained Record.with at TWO DIFFERENT fields holds both updates
+pass	chained `?`s unwrap three List.at reads over a sufficient list
 pass	chained and short-circuits through nesting: a false outer-left skips a NESTED trapping operand
 pass	chained guards of the same variant are tried in order
 pass	chaining two Unit.in conversions is a compile-time error — the inner one already unwrapped
@@ -4203,6 +4205,7 @@ pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the span between two equal Instants is zero — the inclusive lower boundary of `since`
 pass	the swap and take value-yielding forms agree with insert and remove on the resulting map
 pass	the taken arm's checked add still overflows under the operator hoist
+pass	the third `?` List.at read SHORT-CIRCUITS over a two-element list
 pass	the three-way comparison is deconstructed by an exhaustive match
 pass	the three-way comparison orders Bool with false below true
 pass	the three-way comparison orders Float64 by numeric value — Equal

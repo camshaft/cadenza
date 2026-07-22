@@ -6861,6 +6861,76 @@ fn map_or_set_to_list_over_an_owned_temporary_source_leaks_it_known_gap() {
     );
 }
 
+/// DIRECT leak witness for the `Map.to-list`/`Set.to-list` RESULT-list reclaim: the enumeration returns a
+/// FRESH owned `List` (a new vector + boxed entries). When that result is read by a BORROWING op
+/// (`List.len`) and discarded — the enumerate→transform→fold idiom — the fresh list must be reclaimed after
+/// the borrow, or every call LEAKS it. `Core::MapToList`/`Core::SetToList` were NOT in the
+/// `heap_operand_ownership` Owned arm, so they fell to `_ => decline`, the borrowing consumer's reclaim gate
+/// never fired, and the result list (+ boxed tuples) LEAKED per call (value-correct — a leak, not a
+/// miscompile; measured ~5-6 cells/iter). Classifying both Owned makes the borrowing consumer reclaim it. A
+/// PARAM (borrowed) source isolates the RESULT reclaim (the source is the caller's, not an owned temp): the
+/// result list must net to the single live source map. Value-correct (500 iters × 3 = 1500), and the
+/// borrowed source is read via a `let`/param so a spurious result double-free would trap. Distinct from
+/// `..._source_leaks_it_known_gap`, which tracks the still-open owned-temporary SOURCE face.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn map_or_set_to_list_result_over_a_borrowed_source_reclaims_the_fresh_list() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[to-list-result] debug-counters runtime not in the store; skipping reclaim probe"
+        );
+        return;
+    };
+    // The map is a PARAM threaded through the loop → `Map.to-list mp` BORROWS it (the caller owns the one map).
+    // So the ONLY reclaim in question is the fresh RESULT list `List.len` borrows each iter. With MapToList
+    // classified Owned, the result reclaims → net = the single live param map (1 cell), not 1 + N result lists.
+    let map_borrowed = "(module m \
+                 (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64))) \
+                     (if (< i n) (build (+ i 1) n ((. Map insert) mp i (* i 10))) mp)) \
+                 (def (loop (: j Int64) (: n Int64) (: mp (Map Int64 Int64)) (: tot Int64)) \
+                     (if (< j n) (loop (+ j 1) n mp (+ tot ((. List len) ((. Map to-list) mp)))) tot)) \
+                 (def (main (: n Int64)) (loop 0 n (build 0 3 (map)) 0)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(map_borrowed))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[Val::S64(500)]),
+        Val::S64(1500),
+        "500 iters × List.len(Map.to-list mp) = 3 each = 1500 (value-correct + NO UAF)"
+    );
+    // Only the single borrowed param map stays live; every fresh RESULT list is reclaimed after its borrow.
+    // Before the MapToList Owned classification this leaked ~5 cells/iter (the un-reclaimed result list).
+    let live = rt.live_objects();
+    assert!(
+        live <= 3,
+        "Map.to-list RESULT leak: the fresh enumeration list must be reclaimed after the borrowing List.len \
+         — expected ≤3 live cells (the single live param map + its boxed entries), got {live}. A per-iteration \
+         growth = the result-list reclaim regressed."
+    );
+    // Set.to-list companion: a param SET source, result borrowed by List.len — same result-reclaim invariant.
+    let set_borrowed = "(module m \
+                 (def (build (: i Int64) (: n Int64) (: s (Set Int64))) \
+                     (if (< i n) (build (+ i 1) n ((. Set insert) s i)) s)) \
+                 (def (loop (: j Int64) (: n Int64) (: s (Set Int64)) (: tot Int64)) \
+                     (if (< j n) (loop (+ j 1) n s (+ tot ((. List len) ((. Set to-list) s)))) tot)) \
+                 (def (main (: n Int64)) (loop 0 n (build 0 3 ((. Set of) (list))) 0)) (export main))";
+    let sp = compile_component(&crate::codec::encode(&parse(set_borrowed))).expect("compile");
+    let mut rts = ComposedRuntime::new(&sp, &runtime_bytes);
+    assert_eq!(
+        rts.call("main", &[Val::S64(500)]),
+        Val::S64(1500),
+        "500 iters × List.len(Set.to-list s) = 3 each = 1500 (value-correct + NO UAF)"
+    );
+    let live_s = rts.live_objects();
+    assert!(
+        live_s <= 3,
+        "Set.to-list RESULT leak: the fresh enumeration list must be reclaimed after the borrowing List.len \
+         — expected ≤3 live cells (the single live param set), got {live_s}."
+    );
+}
+
 /// KNOWN LEAK (tracking probe): a SINGLE non-recursive `match` over an OWNED COMPOUND-payload sum, whose
 /// payload child is only BORROWED (read by `List.len` → scalar, never moved out) and does NOT escape the arm,
 /// STILL leaks the shell + its payload — the two `MatchSum` reclaim gates require `sum_has_only_scalar_payloads`,
@@ -14375,6 +14445,101 @@ mod runtime_ops {
             run::<i64>("(: n Int64)", "(match n (5 0) (_ (- n 1)))", &[Val::S64(3)]),
             2
         );
+    }
+
+    #[test]
+    fn an_inclusive_ordering_refinement_folds_at_the_boundary_but_never_one_past_it() {
+        // OFF-BY-ONE SOUNDNESS TWIN for the INCLUSIVE (`<=`/`>=`) clamp math in `refine_from_comparison`
+        // (diverge.rs): `Le → clamp(c)` and `Ge → clamp(c)`, versus the STRICT `Lt → clamp(c-1)` /
+        // `Gt → clamp(c+1)`. The existing fold test exercises `>=`/`>` but NOTHING pins that an inclusive
+        // bound refines to EXACTLY the boundary and not one endpoint past it — a silent `clamp(c)`↔`clamp(c±1)`
+        // swap there is a real miscompile the value-pins alone would not catch. Two faces per operator:
+        //   FIRES: `(if (<= x 5) (if (< x 6) 1 2) 3)` — `x <= 5` ⇒ `x < 6` is always true, inner folds (2 dead).
+        //   EDGE : `(if (<= x 5) (if (< x 5) 1 2) 3)` — `x <= 5` does NOT decide `x < 5` (x=5 satisfies outer,
+        //          not inner), so BOTH compares survive. An over-refinement to `[MIN,4]` would wrongly fold it.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |code: &[Lir]| {
+            code.iter()
+                .filter(|i| {
+                    matches!(
+                        i,
+                        Lir::I64GtS | Lir::I64GeS | Lir::I64LtS | Lir::I64LeS | Lir::I64Eq
+                    )
+                })
+                .count()
+        };
+        // Le FIRES: `x <= 5` ⇒ `x < 6` true → the inner `if` folds, ONE comparison remains, dead `2` gone.
+        let le_fold = select(
+            "(module m (def (f (: n Int64)) (if (<= n 5) (if (< n 6) 1 2) 3)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&le_fold),
+            1,
+            "`x<=5` should decide `x<6` true and fold the inner compare, got: {le_fold:?}"
+        );
+        assert!(
+            !le_fold.contains(&Lir::ConstI64(2)),
+            "the dead inner branch `2` is eliminated by the `<=` refinement fold, got: {le_fold:?}"
+        );
+        // Le EDGE: `x <= 5` does NOT decide `x < 5` — both compares must survive (no over-refinement to [MIN,4]).
+        let le_edge = select(
+            "(module m (def (f (: n Int64)) (if (<= n 5) (if (< n 5) 1 2) 3)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&le_edge),
+            2,
+            "`x<=5` must NOT decide `x<5` (x=5 is in range) — both compares stay, got: {le_edge:?}"
+        );
+        // Ge EDGE: symmetric — `x >= 5` does NOT decide `x > 5` (over-refinement to [6,MAX] would fold it).
+        let ge_edge = select(
+            "(module m (def (f (: n Int64)) (if (>= n 5) (if (> n 5) 1 2) 3)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&ge_edge),
+            2,
+            "`x>=5` must NOT decide `x>5` (x=5 is in range) — both compares stay, got: {ge_edge:?}"
+        );
+        // VALUE parity: the boundary case (x=5) must take the LIVE inner else, proving the bound is inclusive
+        // at exactly 5 and the refinement did not shift it by one.
+        let le_fold_s = "(if (<= n 5) (if (< n 6) 1 2) 3)";
+        assert_eq!(run::<i64>("(: n Int64)", le_fold_s, &[Val::S64(5)]), 1);
+        assert_eq!(run::<i64>("(: n Int64)", le_fold_s, &[Val::S64(3)]), 1);
+        assert_eq!(run::<i64>("(: n Int64)", le_fold_s, &[Val::S64(10)]), 3);
+        let le_edge_s = "(if (<= n 5) (if (< n 5) 1 2) 3)";
+        assert_eq!(run::<i64>("(: n Int64)", le_edge_s, &[Val::S64(5)]), 2); // boundary: outer yes, inner no
+        assert_eq!(run::<i64>("(: n Int64)", le_edge_s, &[Val::S64(3)]), 1);
+        assert_eq!(run::<i64>("(: n Int64)", le_edge_s, &[Val::S64(10)]), 3);
+        let ge_edge_s = "(if (>= n 5) (if (> n 5) 1 2) 3)";
+        assert_eq!(run::<i64>("(: n Int64)", ge_edge_s, &[Val::S64(5)]), 2); // boundary: outer yes, inner no
+        assert_eq!(run::<i64>("(: n Int64)", ge_edge_s, &[Val::S64(7)]), 1);
+        assert_eq!(run::<i64>("(: n Int64)", ge_edge_s, &[Val::S64(0)]), 3);
     }
 
     #[test]

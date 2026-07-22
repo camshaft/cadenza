@@ -52,6 +52,25 @@
   (call   main (: 1000 Int64))
   (output (: 4000 Int64)))
 
+(case "a separator JOIN over a runtime parts list handles first-vs-rest and the empty list"
+  (doc    "The join idiom: `join parts sep` prepends the separator to every part EXCEPT the first (a
+           first-flag threaded through the fold) — [\"alpha\", rope-\"beta\", \"gamma\"] joined by \",\"
+           is 16 bytes (5+1+4+1+5); the EMPTY parts list joins to \"\" (0 bytes, the base case a
+           first-flag mishandling breaks). One rope part keeps the fold off the constant path. The
+           CSV/path-assembly shape every formatter runs.")
+  (input  (do
+            (def (join (: parts (List String)) (: sep String) (: acc String) (: first Bool))
+              (match parts
+                ((list) acc)
+                ((list h .. t)
+                  (join t sep (if first h (String.concat acc (String.concat sep h))) false))))
+            (def (main (: n Int64))
+              (+ (* 100 (String.byte-len (join (list "alpha" (String.concat "be" "ta") "gamma") "," "" true)))
+                 (+ (String.byte-len (join (list) "," "" true)) n)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1600 Int64)))
+
 (case "a deep rope indexes by scalar at both extremes"
   (doc    "Scalar addressing through ~500 concat seams: `String.at` reads index 0 (the single \"A\" head
            leaf) and index n·2 (the LAST scalar, deep in the right spine) of a 1001-scalar rope — 10·1+1

@@ -559,6 +559,46 @@
   (call   main (: 5 Int64))
   (output (: 105 Int64)))
 
+(case "chained `?`s unwrap three List.at reads over a sufficient list"
+  (doc    "The collection-lookup chain (the checked-add pins use arithmetic Options): three `(try
+           (List.at xs i))` reads in sequence over a 3-element list all unwrap — 10+2+30 = 42. The
+           safe-multi-index idiom: `List.at`'s totality-as-Option composes with the `?` desugar so
+           indexed reads chain without per-read match ladders. (The short-circuit twin below drives the
+           SAME helper over a 2-element list; two calls to one fallible helper in one body still
+           decline, so the faces pin separately.)")
+  (input  (do
+            (def (get3 (: xs (List Int64)))
+              (let ((a (try (List.at xs 0))))
+                (let ((b (try (List.at xs 1))))
+                  (let ((c (try (List.at xs 2))))
+                    (Some (+ a (+ b c)))))))
+            (def (main (: n Int64))
+              (match (get3 (list n 2 30))
+                ((Some v) v)
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 42 Int64)))
+
+(case "the third `?` List.at read SHORT-CIRCUITS over a two-element list"
+  (doc    "The short-circuit twin: the same three-read chain over a 2-ELEMENT list — reads 0 and 1
+           unwrap, read 2's None exits the boundary before the sum (-1, not a defaulted partial). Proves
+           the third read drives the exit; a chain that defaulted a missing element to 0 would answer
+           n+2.")
+  (input  (do
+            (def (get3 (: xs (List Int64)))
+              (let ((a (try (List.at xs 0))))
+                (let ((b (try (List.at xs 1))))
+                  (let ((c (try (List.at xs 2))))
+                    (Some (+ a (+ b c)))))))
+            (def (main (: n Int64))
+              (match (get3 (list n 2))
+                ((Some v) v)
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: -1 Int64)))
+
 (case "a `?` on an ill-typed operand reports the operand's error, not a `?`-shape cascade"
   (doc    "`(let ((x (try (+ 1 2.0)))) (Some x))` — the operand `(+ 1 2.0)` is itself ill-typed (a numeric
            mismatch, CDZ0301). The `?`-operand-shape check must NOT pile a confusing `?` operand must be a
