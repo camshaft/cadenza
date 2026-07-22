@@ -916,6 +916,28 @@
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
 
+(case "a NESTED runtime bin match re-parses a bin-decoded payload"
+  (doc    "The recursive / chunked-parser shape: an outer `(bin (u8 n) (bytes body n))` decodes a
+           length-prefixed payload, binding `body` to the `n`-byte sub-Bytes, and the arm body then runs a
+           SECOND bin match over that bound `body`. Against `[2, h, 7]` from a runtime `h`: the outer reads
+           n=2 and binds `body = [h, 7]`; the inner `(bin (u8 x) (u8 y))` decodes it → `x=h`, `y=7`, returning
+           `x*10 + y`. h=5 → body `[5,7]` → 57; h=0 → `[0,7]` → 7. Pins that a bin-decoded `bytes` binder is a
+           first-class Bytes value that can itself be the scrutinee of a nested bin match (the outer decode's
+           `BinSizedRead` slice flows into the inner match's materialized scrutinee) — the layered-frame parser
+           idiom, decode a container then decode its contents.")
+  (input  (do (def (main (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap 2) (UInt8.wrap h) (UInt8.wrap 7)))
+                  ((bin (u8 n) (bytes body n))
+                   (match body
+                     ((bin (u8 x) (u8 y)) (+ (* x 10) y))
+                     (_ -1)))
+                  (_ -2)))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 57 Int64))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))
+
 (case "a three-arm runtime literal-tag dispatch hits the middle and last arms and misses past all three"
   (doc    "The two-arm dispatch above can't distinguish a genuine PER-ARM fall-through chain from a
            two-way branch; three literal-tag arms witness the chain at depth: tag 2 falls past arm 1's

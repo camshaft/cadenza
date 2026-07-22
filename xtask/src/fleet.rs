@@ -5972,6 +5972,15 @@ mod tests {
             "# concierge status",
             "v-fleet-tooling"
         ));
+        // A 2-word line whose SECOND word isn't "status" is a real headline, not the title — pins the
+        // `words[1] == "status"` conjunct (every TRUE case above has "status" as the 2nd word, and every
+        // other FALSE case fails on length or on words[0], so without this a mutant dropping the "status"
+        // check would swallow a genuine two-word headline as if it were the redundant title line).
+        assert!(!is_status_title_line("concierge working", "concierge"));
+        assert!(!is_status_title_line(
+            "v-fleet-tooling green",
+            "v-fleet-tooling"
+        ));
     }
 
     #[test]
