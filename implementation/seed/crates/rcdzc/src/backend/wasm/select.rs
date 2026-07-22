@@ -12935,8 +12935,7 @@ fn try_emit_disc_br_table(
             .disc
             .expect("a table arm carries an explicit discriminant");
         let restore = record_entered_payload_ty(db, scrutinee, path, disc, out);
-        let pushed_variant = push_variant_refinement(db, scrutinee, path, disc);
-        let r = emit_sum_cont(
+        emit_sum_cont(
             db,
             scrutinee,
             &arm.cont,
@@ -12949,11 +12948,7 @@ fn try_emit_disc_br_table(
             layout,
             out,
             TailPos::NonTail,
-        );
-        if pushed_variant {
-            db.pop_variant_refinement();
-        }
-        r?;
+        )?;
         restore_entered_payload_ty(scrutinee, path, restore, out);
         // `br` the value to $join — EXCEPT the last arm of an EXHAUSTIVE match (no $default block), whose
         // `br` depth is 0: its body is the final code inside $join, so control falls THROUGH to $join's
@@ -13062,49 +13057,6 @@ fn restore_entered_payload_ty_into(
     }
 }
 
-/// The refinement KEY (a `Param`/`LocalRef` binder `StructId`) a scrutinee occurrence resolves to, or
-/// `None` for anything else — the identity `db.refined_variant`/`push_variant_refinement` frames are keyed
-/// on. Resolved via the CORE_OF-FREE `resolved_of` (the resolve-layer query), NOT `core_of`:
-///
-/// 🪤 `core_of` on a scrutinee that is a CALL (e.g. a nested `(match (head-of node) …)`) β-REDUCES/INLINES
-/// the callee (lower.rs — a named def call inlines unless `inline-never`), MINTING FRESH nodes for the
-/// inlined body. `collect_dup_sites` runs UPFRONT keyed on the pre-inline ids, so a mid-emit `core_of` here
-/// renumbers a payload occurrence out of `dup_sites` → a dropped retain → a use-after-free (the AST-walker
-/// regression). `resolved_of` is a pure backward query that NEVER reduces/inlines, so this check cannot
-/// perturb node identity. It maps exactly to the two binder cores: `Resolved::Param{binder}` → `Core::Param`
-/// (lower.rs), and a `Resolved::Ref{value}` whose `value` is a KEPT multi-use binding → `Core::LocalRef`
-/// (lower.rs — the only `LocalRef` source). Any other resolved shape (a call, a constructor, a literal) is
-/// not a refinable variable → `None`, WITHOUT ever forcing lowering.
-fn refinement_binder_of(db: &mut Db, scrutinee: StructId) -> Option<StructId> {
-    match crate::resolve::resolved_of(db, scrutinee) {
-        crate::resolved::Resolved::Param { binder } => Some(binder),
-        crate::resolved::Resolved::Ref { value } if db.kept_bindings.contains(&value) => {
-            Some(value)
-        }
-        _ => None,
-    }
-}
-
-/// SLICE-5 repro helper: push a variant-refinement frame ({binder: disc}) on the DISJOINT
-/// `variant_refinements` stack for a root-path disc-arm body emit. Returns `true` iff pushed (caller pops).
-fn push_variant_refinement(
-    db: &mut Db,
-    scrutinee: StructId,
-    path: &[crate::core::PathStep],
-    disc: u32,
-) -> bool {
-    if !path.is_empty() {
-        return false;
-    }
-    let Some(binder) = refinement_binder_of(db, scrutinee) else {
-        return false;
-    };
-    let mut frame = crate::fxhash::FxHashMap::default();
-    frame.insert(binder, disc);
-    db.push_variant_refinement(frame);
-    true
-}
-
 /// Emit one SWITCH of the decision tree: for each variant arm, `sum-disc(<scrutinee walked to `path`>)
 /// == disc`, then `if (block_ty) <continuation> else <rest>`; a default arm (`disc: None`) or the LAST
 /// arm (its probe redundant — every earlier disc has been tested and this is the only one left) is the
@@ -13129,21 +13081,6 @@ fn emit_sum_match_arms(
     out: &mut Emit,
     tail: TailPos,
 ) -> Result<(), Reject> {
-    // SLICE-5 variant-refinement elision consult (repro).
-    if path.is_empty()
-        && db.variant_refinement_active()
-        && let Some(binder) = refinement_binder_of(db, scrutinee)
-        && let Some(disc) = db.refined_variant(binder)
-        && let Some(arm) = arms
-            .iter()
-            .find(|a| a.disc == Some(disc))
-            .or_else(|| arms.iter().find(|a| a.disc.is_none()))
-    {
-        return emit_sum_cont(
-            db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
-            out, tail,
-        );
-    }
     // BR_TABLE DECISION TREE: a switch that tests ≥3 DISTINCT discriminants dispatches in O(1) via a
     // jump table instead of a linear `if (disc == k)` cascade (the arms below). Sum discriminants are
     // contiguous `0..variant_count`, so the table is dense with no wasted slots. `try_emit_disc_br_table`
@@ -13174,20 +13111,10 @@ fn emit_sum_match_arms(
         )),
         // A default arm, or the last arm of an exhaustive switch — its probe is redundant, so emit its
         // continuation unconditionally (in the SAME tail position as the whole switch — no `if` opened).
-        Some((arm, [])) => {
-            let pushed_variant = match arm.disc {
-                Some(d) => push_variant_refinement(db, scrutinee, path, d),
-                None => false,
-            };
-            let r = emit_sum_cont(
-                db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty,
-                layout, out, tail,
-            );
-            if pushed_variant {
-                db.pop_variant_refinement();
-            }
-            r
-        }
+        Some((arm, [])) => emit_sum_cont(
+            db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
+            out, tail,
+        ),
         Some((arm, _)) if arm.disc.is_none() => emit_sum_cont(
             db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty, layout,
             out, tail,
@@ -13259,15 +13186,10 @@ fn emit_sum_match_arms(
             // variant's payload — not variant 0. Scoped save/restore fences it to this arm (the ELSE
             // fall-through and sibling arms must not see it). Only for a boxed sum with a real payload.
             let restore = record_entered_payload_ty(db, scrutinee, path, disc, out);
-            let pushed_variant = push_variant_refinement(db, scrutinee, path, disc);
-            let r = emit_sum_cont(
+            emit_sum_cont(
                 db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty,
                 layout, out, deeper,
-            );
-            if pushed_variant {
-                db.pop_variant_refinement();
-            }
-            r?;
+            )?;
             restore_entered_payload_ty(scrutinee, path, restore, out);
             // The fall-through switch (the disc-test's ELSE) starts scratch ABOVE the high-water the
             // matched arm's continuation (the THEN) reached, NOT at `base` — the same discipline as the

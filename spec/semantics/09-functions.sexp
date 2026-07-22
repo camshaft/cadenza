@@ -2089,6 +2089,37 @@
   (call   main (: 5 Int64))
   (output (: 13 Int64)))
 
+(case "a middle curry STAGE is reused — one s1 residual yields an s2 applied twice"
+  (doc    "Three-stage curry with STAGE REUSE: `s1 = (add3 x)` (captures the boundary x), `s2 = (s1 20)`
+           (captures x AND 20), then s2 applies TWICE with different finals — (1+20+300) + (1+20+400) =
+           742. Each stage's environment layers over the previous (x, then x+20); reusing s2 must re-read
+           BOTH captured layers per application, not consume them on first apply (a one-shot environment
+           or a stage that re-captured from the outer scope on second use drifts the sum).")
+  (input  (do
+            (def (add3 (: a Int64)) (fn ((: b Int64)) (fn ((: c Int64)) (+ a (+ b c)))))
+            (def (main (: x Int64))
+              (let ((s1 (add3 x)))
+                (let ((s2 (s1 20)))
+                  (+ (s2 300) (s2 400)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 742 Int64)))
+
+(case "two residuals from ONE curry source hold distinct first-stage captures"
+  (doc    "The sibling-residual face: `(mul2 x)` and `(mul2 (* x 10))` build two residuals from one
+           curried def with DIFFERENT first args (3 and 30); each applied to 2 must use ITS capture —
+           6 + 60 = 66. A closure cache keyed on the def (rather than the applied argument) would alias
+           the two environments.")
+  (input  (do
+            (def (mul2 (: a Int64)) (fn ((: b Int64)) (* a b)))
+            (def (main (: x Int64))
+              (let ((f (mul2 x)))
+                (let ((g (mul2 (* x 10))))
+                  (+ (f 2) (g 2)))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 66 Int64)))
+
 ; A closure RETURNED from a RECURSIVE function, then applied through a recursive HOF — two runtime
 ; function paths composed. `core-semantics.md` §A Function Is A First-Class Value lists both "returned
 ; as a result" and "passed as an argument"; here they meet at run time. Because `pick` is RECURSIVE it

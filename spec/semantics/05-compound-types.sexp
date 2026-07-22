@@ -6803,6 +6803,26 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64)))
 
+(case "an UPSERT into a Map of Lists creates the fresh entry on miss and appends on hit"
+  (doc    "The full upsert idiom (the read-modify-write pin below returns the map UNCHANGED on a miss;
+           real accumulation INSERTS a fresh singleton): `append-at` pushes onto the existing list when
+           the key is present and creates `(list v)` when absent. Two appends at the runtime key `k`
+           then one at fresh key 9: len 2 at k, len 1 at 9 (21). The multimap-accumulate shape a
+           grouping fold uses; an upsert whose miss arm dropped the value (or whose hit arm re-created
+           a singleton) drifts a length.")
+  (input  (do
+            (def (append-at (: m (Map Int64 (List Int64))) (: k Int64) (: v Int64))
+              (match (Map.lookup m k)
+                ((Some xs) (Map.insert m k (List.push xs v)))
+                ((None u) (Map.insert m k (list v)))))
+            (def (main (: k Int64))
+              (let ((m (append-at (append-at (append-at Map.empty k 1) k 2) 9 7)))
+                (+ (* 10 (match (Map.lookup m k) ((Some xs) (List.len xs)) ((None u) -1)))
+                   (match (Map.lookup m 9) ((Some xs) (List.len xs)) ((None u) -1)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 21 Int64)))
+
 (case "a read-modify-write of a List value in a Map grows the entry and leaves the original map unchanged"
   (doc    "The keyed-bucket accumulate idiom (a multimap step): look a List value up by key, push onto it, and
            re-insert at the same key. `m = {k↦[a]}`; `(Map.insert m k (List.push (lookup m k) b))` → `grown`

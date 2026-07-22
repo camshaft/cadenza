@@ -557,6 +557,40 @@
             (export main)))
   (output (: "P,Q,X,Y" String)))
 
+(case "a RUNTIME-count generated batch insorts fully time-ordered, verified by a sortedness walk"
+  (doc    "The parametric-count companion of the fixed-eight drain below: `fill` insorts n events whose
+           times are GENERATED (`(i·7) mod 13` — a scrambled, colliding sequence the author never wrote
+           out), and `check-sorted` walks the result verifying every adjacent pair is `<=` (10 pairs-ok
+           at n=10, or -999 on the first inversion). The PROPERTY-style witness: the ordering invariant
+           holds for a batch whose size and contents arrive at run time, not only for hand-laid events.")
+  (input  (do
+            (type Duration (Duration UInt64))
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (before (: a Instant) (: b Instant)) (< (inst-ns a) (inst-ns b)))
+            (def (insort (: t Instant) (: q (List Instant)))
+              (match q
+                ((list) (list t))
+                ((list h .. rest)
+                  (if (before t h) (List.concat (list t) q)
+                    (List.concat (list h) (insort t rest))))))
+            (def (fill (: i Int64) (: n Int64) (: q (List Instant)))
+              (if (>= i n) q
+                (fill (+ i 1) n (insort (Instant.Instant (UInt64.wrap (% (* i 7) 13))) q))))
+            (def (check-sorted (: q (List Instant)) (: acc Int64))
+              (match q
+                ((list) acc)
+                ((list a .. rest)
+                  (match rest
+                    ((list) (+ acc 1))
+                    ((list b .. more)
+                      (if (<= (inst-ns a) (inst-ns b)) (check-sorted rest (+ acc 1)) -999))))))
+            (def (main (: n Int64))
+              (check-sorted (fill 0 n (list)) 0))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 10 Int64)))
+
 (case "a deep out-of-order queue drains fully time-sorted with FIFO across every tie-group"
   (doc    "A larger stress of the ordering invariant: eight events at times 5,2,8,2,1,8,3,2 (labels a..h)
            inserted in that order drain `e,b,d,h,g,a,c,f` — ascending by time (1,2,2,2,3,5,8,8) with FIFO
