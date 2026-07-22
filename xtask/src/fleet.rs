@@ -5910,11 +5910,23 @@ fn batch_ff_is_safe(current_trunk: &str, staged_base: &str, staged_tip: &str) ->
         && current_trunk == staged_base
 }
 
+/// The outcome of a [`batch_stage`] run: the base it built on, the resulting staged tip + tree, and the
+/// per-ref STAGED/BOUNCE partition (in the given order). Returned by [`batch_stage_inner`] so the staging
+/// behavior (trunk untouched, refs published, conflicts bounced) is testable against a git fixture.
+struct StageReport {
+    staged_base: String,
+    staged_tip: String,
+    staged_tree: String,
+    staged: Vec<String>,
+    bounced: Vec<String>,
+}
+
 /// STAGE a batch of merge-request refs onto `BATCH_STAGING_REF` off the CURRENT `trunk`, WITHOUT moving
 /// `trunk`. Merges (same `--no-ff --no-edit` order pr-sync uses) happen in the reused gate-batch scratch
 /// worktree; on success the resulting commit is recorded on the staging ref and the base it was built on
 /// on `BATCH_STAGING_BASE_REF` (so `batch_commit` can assert `trunk` hasn't drifted). Conflicting refs are
 /// skipped + reported (BOUNCE). Prints the staged base/tip/tree shas so pr-sync can gate exactly that tree.
+/// Thin wrapper over [`batch_stage_inner`] (which holds the logic so it's fixture-testable).
 fn batch_stage(fleet: &Fleet, refs: &[String]) {
     if refs.is_empty() {
         eprintln!("batch-stage: no refs given — nothing to stage.");
@@ -5924,9 +5936,39 @@ fn batch_stage(fleet: &Fleet, refs: &[String]) {
         Some(p) => p,
         None => return,
     };
+    match batch_stage_inner(&wt, refs) {
+        Ok(r) => {
+            println!(
+                "batch-stage: staged {} ref(s) onto {BATCH_STAGING_REF} (trunk NOT moved).",
+                r.staged.len()
+            );
+            println!("  staged-base\t{}", r.staged_base);
+            println!("  staged-tip\t{}", r.staged_tip);
+            println!("  staged-tree\t{}", r.staged_tree);
+            for s in &r.staged {
+                println!("  STAGED\t{s}");
+            }
+            for b in &r.bounced {
+                println!("  BOUNCE-CONFLICT\t{b}");
+            }
+            println!(
+                "batch-stage: gate the staged tree, then `cargo xtask fleet batch-commit --execute` \
+                 to fast-forward trunk (refused if trunk drifted from the staged base)."
+            );
+        }
+        Err(msg) => eprintln!("{msg}"),
+    }
+}
+
+/// The testable core of [`batch_stage`], operating in the scratch worktree at `wt` (whose shared object
+/// store/refs are the hub's). Builds the combined tree on a scratch branch off `trunk`, publishes the
+/// staged tip + base to the scratch refs (WITHOUT touching `trunk`), and returns the [`StageReport`]
+/// partition. On any unrecoverable git failure returns `Err(reason)` with `trunk` untouched. The scratch
+/// branch is always cleaned up (detach back to trunk + delete) regardless of outcome.
+fn batch_stage_inner(wt: &Path, refs: &[String]) -> Result<StageReport, String> {
     let git_out = |args: &[&str]| -> std::process::Output {
         Command::new("git")
-            .current_dir(&wt)
+            .current_dir(wt)
             .args(args)
             .output()
             .unwrap_or_else(|e| panic!("failed to spawn git {args:?}: {e}"))
@@ -5941,8 +5983,9 @@ fn batch_stage(fleet: &Fleet, refs: &[String]) {
     // (the base we captured won't match the moved `trunk`) rather than silently committing a stale tree.
     let staged_base = git_stdout(&["rev-parse", TRUNK]);
     if staged_base.is_empty() {
-        eprintln!("batch-stage: could not resolve `trunk` — aborting (nothing staged).");
-        return;
+        return Err(
+            "batch-stage: could not resolve `trunk` — aborting (nothing staged).".to_string(),
+        );
     }
 
     // Build the combined tree on a scratch branch off trunk (same slate the conflict-prefilter uses).
@@ -5950,31 +5993,33 @@ fn batch_stage(fleet: &Fleet, refs: &[String]) {
     // Detach at trunk first so we can (re)create the scratch branch without "already checked out" errors.
     let _ = git_out(&["checkout", "--detach", TRUNK]);
     let _ = git_out(&["branch", "-D", scratch]);
-    if !git_branch_at(&wt, scratch, TRUNK) {
-        eprintln!(
+    if !git_branch_at(wt, scratch, TRUNK) {
+        return Err(
             "batch-stage: cannot create scratch branch off trunk — aborting (nothing staged)."
+                .to_string(),
         );
-        return;
     }
-    let mut staged: Vec<&str> = Vec::new();
-    let mut bounced: Vec<&str> = Vec::new();
+    let mut staged: Vec<String> = Vec::new();
+    let mut bounced: Vec<String> = Vec::new();
     for r in refs {
-        if git_merge_no_ff_onto(&wt, scratch, r) {
-            staged.push(r);
+        if git_merge_no_ff_onto(wt, scratch, r) {
+            staged.push(r.clone());
         } else {
             // Abort the failed merge so the scratch branch stays at the last clean state, then skip.
             let _ = git_out(&["merge", "--abort"]);
-            bounced.push(r);
+            bounced.push(r.clone());
         }
     }
 
     let staged_tip = git_stdout(&["rev-parse", "HEAD"]);
     let staged_tree = git_stdout(&["rev-parse", "HEAD^{tree}"]);
     if staged_tip.is_empty() || staged_tree.is_empty() {
-        eprintln!("batch-stage: could not resolve the staged tip — aborting (nothing published).");
         let _ = git_out(&["checkout", "--detach", TRUNK]);
         let _ = git_out(&["branch", "-D", scratch]);
-        return;
+        return Err(
+            "batch-stage: could not resolve the staged tip — aborting (nothing published)."
+                .to_string(),
+        );
     }
 
     // Publish the staged commit + its base to the scratch refs (in the shared object store, so pr-sync
@@ -5988,27 +6033,19 @@ fn batch_stage(fleet: &Fleet, refs: &[String]) {
     let _ = git_out(&["checkout", "--detach", TRUNK]);
     let _ = git_out(&["branch", "-D", scratch]);
     if !ok_ref || !ok_base {
-        eprintln!("batch-stage: could not update the staging refs — aborting (trunk untouched).");
-        return;
+        return Err(
+            "batch-stage: could not update the staging refs — aborting (trunk untouched)."
+                .to_string(),
+        );
     }
 
-    println!(
-        "batch-stage: staged {} ref(s) onto {BATCH_STAGING_REF} (trunk NOT moved).",
-        staged.len()
-    );
-    println!("  staged-base\t{staged_base}");
-    println!("  staged-tip\t{staged_tip}");
-    println!("  staged-tree\t{staged_tree}");
-    for r in &staged {
-        println!("  STAGED\t{r}");
-    }
-    for r in &bounced {
-        println!("  BOUNCE-CONFLICT\t{r}");
-    }
-    println!(
-        "batch-stage: gate the staged tree, then `cargo xtask fleet batch-commit --execute` to \
-         fast-forward trunk (refused if trunk drifted from the staged base)."
-    );
+    Ok(StageReport {
+        staged_base,
+        staged_tip,
+        staged_tree,
+        staged,
+        bounced,
+    })
 }
 
 /// COMMIT a staged batch: fast-forward `trunk` to the tip of `BATCH_STAGING_REF`, but only if `trunk` is
@@ -6126,6 +6163,83 @@ mod tests {
             !batch_ff_is_safe("", "", ""),
             "all-empty fails closed despite trivial equality"
         );
+    }
+
+    #[test]
+    fn batch_stage_stages_clean_refs_bounces_conflicts_and_never_moves_trunk() {
+        // The staging contract: build the combined tree off trunk on a scratch ref WITHOUT advancing
+        // trunk (the whole point — no intermediate-rewind window), stage cleanly-mergeable refs in
+        // order, and BOUNCE a ref that conflicts. The scratch worktree in prod is just a checkout of
+        // the hub; a plain repo is a faithful stand-in for the inner's git ops.
+        let dir = init_batch_fixture_repo("stage");
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let trunk_before = git_rev(&dir, TRUNK);
+
+        // Ref 1: a clean feature commit off trunk touching a NEW file (merges cleanly).
+        let _ = git(&["checkout", "-q", "-b", "feat1", TRUNK]);
+        std::fs::write(dir.join("f1.txt"), "one").unwrap();
+        let _ = git(&["add", "f1.txt"]);
+        let _ = git(&["commit", "-q", "-m", "feat1"]);
+        let ref1 = git_rev(&dir, "HEAD");
+
+        // Ref 2: edits the SAME base file `a.txt` differently than ref 3 will → one of them conflicts.
+        let _ = git(&["checkout", "-q", "-b", "feat2", TRUNK]);
+        std::fs::write(dir.join("a.txt"), "changed-by-2").unwrap();
+        let _ = git(&["add", "a.txt"]);
+        let _ = git(&["commit", "-q", "-m", "feat2"]);
+        let ref2 = git_rev(&dir, "HEAD");
+
+        // Ref 3: also edits `a.txt` off trunk → conflicts with ref2 once ref2 is merged first.
+        let _ = git(&["checkout", "-q", "-b", "feat3", TRUNK]);
+        std::fs::write(dir.join("a.txt"), "changed-by-3").unwrap();
+        let _ = git(&["add", "a.txt"]);
+        let _ = git(&["commit", "-q", "-m", "feat3"]);
+        let ref3 = git_rev(&dir, "HEAD");
+
+        // Back to trunk (clean worktree) before staging.
+        let _ = git(&["checkout", "-q", TRUNK]);
+
+        let refs = vec![ref1.clone(), ref2.clone(), ref3.clone()];
+        let report = batch_stage_inner(&dir, &refs).expect("stage should succeed");
+
+        // trunk is UNTOUCHED — the core invariant.
+        assert_eq!(
+            git_rev(&dir, TRUNK),
+            trunk_before,
+            "batch-stage must NOT move trunk"
+        );
+        // ref1 + ref2 stage cleanly; ref3 conflicts with the just-merged ref2 → BOUNCE.
+        assert_eq!(
+            report.staged,
+            vec![ref1, ref2],
+            "clean refs staged in order"
+        );
+        assert_eq!(report.bounced, vec![ref3], "conflicting ref bounced");
+        // The staging refs are published (so pr-sync can gate + commit exactly this tree).
+        assert_eq!(report.staged_base, trunk_before, "staged base is trunk");
+        assert_eq!(
+            git_rev(&dir, BATCH_STAGING_REF),
+            report.staged_tip,
+            "staging ref points at the staged tip"
+        );
+        assert_eq!(
+            git_rev(&dir, BATCH_STAGING_BASE_REF),
+            trunk_before,
+            "staging-base ref records the base"
+        );
+        // The staged tip is NOT trunk (a real combined tree was built on top of the base).
+        assert_ne!(
+            report.staged_tip, trunk_before,
+            "staged tip advanced past base"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Build a throwaway git repo with `trunk` at an initial commit; return its path. Committer/author

@@ -1,5 +1,6 @@
 # gate baseline — per-case verdicts (verdict\tdescription). Regenerate with `cargo xtask gate --save`.
 pass	@ensures / @requires predicate PROJECTS a TUPLE component (`(. ret N)` on the result, `(. p N)` on a param)
+pass	@ensures holds when the guarded def arrives through a runtime branch
 pass	@ensures on a RECURSIVE def whose body is a HANDLE is re-checked at every recursive exit (recursion x effects-fold seam)
 pass	@ensures on a def returning an @invariant type: establish (on construction) AND the postcondition (on ret) both fire (design §10, (D))
 pass	@ensures on a def with a parameter named ret is REJECTED (would silently not enforce — rename the param)
@@ -22,6 +23,7 @@ pass	@invariant ESTABLISH over a single-variant multi-payload newtype: an ordere
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)
 pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `self` + prelude are in scope)
+pass	@requires is enforced when the guarded def is applied through a first-class fn value
 pass	@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
@@ -94,9 +96,13 @@ pass	a Rational ENTRY parameter crosses the boundary and reduces per call
 pass	a Set.of over PRELUDE-Option elements dedups Some by payload and keeps None distinct
 pass	a Set.of over Result elements separates Ok from Err with EQUAL payloads
 pass	a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value
+pass	a VIOLATED @ensures traps when the def arrives through a runtime branch
+pass	a bin tag-dispatch over a RUNTIME-START slice reads the re-based window per call
 pass	a closure built OVER another closure applies both capture layers
 pass	a fitting Float32 literal in a runtime MATCH arm computes
 pass	a fitting Float32 record field passed through a typed parameter computes
+pass	a module export is a CLOSURE FACTORY capturing a private sibling
+pass	a module export rides an OUTER combinator's fn parameter a runtime number of times
 pass	a param-left arith-right Float64.of-int equality compiles to a valid module and computes
 pass	Float64.of-int collapses adjacent integers at the 2^53 precision boundary
 pass	Int64.min crosses the parameter boundary and back unchanged
@@ -1055,8 +1061,10 @@ pass	a record key with a float-bearing TUPLE field keys by content
 pass	a recursive combinator applies a captured closure a RUNTIME number of times
 pass	a recursive fold over a runtime Peano spine recovers its depth
 pass	a recursive walk over a runtime-SHAPED tree dispatches per call
+pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
 pass	a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite
 pass	a right shift of a negative by a RUNTIME amount stays arithmetic
+pass	a row-op pipeline — merge then without then two projections — over runtime values
 pass	a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend
 pass	a runtime = on a sum recursive through a RECORD-of-TUPLE payload walks structurally
 pass	a runtime = over MUTUALLY-recursive sums walks across the type cycle
@@ -3008,7 +3016,9 @@ pass	an open sum with a guarded named arm plus an open-tail arm is exhaustive
 pass	an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones
 pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
 pass	an open sum's payload decodes against a schema to a typed result
+pass	an open-row function accepts a runtime MERGE result and reads the carried field
 pass	an open-row function is applied at TWO different record widths in one program
+pass	an open-row function over a Record.with result reads the UPDATED value
 pass	an open-sum value bound by an open-tail arm is forwarded to another matcher with its variant intact
 pass	an open-sum value matching no named arm in either matcher reaches the forwarded sentinel
 pass	an operation on mismatched types is rejected at compile time
@@ -4151,6 +4161,7 @@ pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
 pass	two maps of different sizes are unequal, not a type error
 pass	two maps with different keys are unequal, not a type error
+pass	two module exports are selected by a runtime branch and applied as values
 pass	two module functions are mutually recursive
 pass	two narrow record fields are projected and added
 pass	two narrow tuple elements are projected and added

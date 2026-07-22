@@ -608,6 +608,60 @@
             ((. lib fac) 5)))
   (output (: 120 Int64)))
 
+(case "a module export is a CLOSURE FACTORY capturing a private sibling"
+  (doc    "The first-class-value face of a module member: exported `mk` returns `(fn (v) (+ (secret v)
+           k))` — a closure that captures BOTH the caller's runtime `k` AND the module-PRIVATE `secret`.
+           The closure escapes the module (applied in `main`), and its body still reaches the private
+           helper — privacy is an IMPORT restriction, not a runtime barrier (the legitimate-escape case
+           above pins a private VALUE escaping; this pins private CODE riding a closure out). (((. m mk)
+           2) 4) = secret(4) + 2 = 42.")
+  (input  (do
+            (module m
+              (def (secret (: x Int64)) (* x 10))
+              (def (mk (: k Int64)) (fn ((: v Int64)) (+ (secret v) k)))
+              (export mk))
+            (def (main (: k Int64)) (((. m mk) k) 4))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 42 Int64)))
+
+(case "two module exports are selected by a runtime branch and applied as values"
+  (doc    "Module members as branch-selected function values: `((if b (. ops inc) (. ops dbl)) x)` — the
+           member projections are first-class arrow values, the `if` joins them, and the application
+           dispatches to whichever the runtime Bool picked (6 / 10 at x=5). The module-member twin of the
+           named-def branch selection in 09-functions; the projection must yield an applyable value in
+           value position, not only in call-head position.")
+  (input  (do
+            (module ops
+              (def (inc (: x Int64)) (+ x 1))
+              (def (dbl (: x Int64)) (* x 2))
+              (export inc)
+              (export dbl))
+            (def (main (: b Bool) (: x Int64))
+              ((if b (. ops inc) (. ops dbl)) x))
+            (export main)))
+  (call   main (: true Bool) (: 5 Int64))
+  (output (: 6 Int64))
+  (call   main (: false Bool) (: 5 Int64))
+  (output (: 10 Int64)))
+
+(case "a module export rides an OUTER combinator's fn parameter a runtime number of times"
+  (doc    "A module member handed to a combinator defined OUTSIDE the module: `(times (. m step) n 1)` —
+           the projection crosses the module boundary as a fn value and is applied per recursive step of
+           the outer `times` (n=5 doublings → 32). Composes the member-projection-as-value with the
+           iterate-combinator pin (09-functions): the indirect call inside `times` must dispatch to the
+           module member exactly as to a top-level def.")
+  (input  (do
+            (module m
+              (def (step (: x Int64)) (* x 2))
+              (export step))
+            (def (times (: f (-> Int64 Int64)) (: n Int64) (: x Int64))
+              (if (< n 1) x (times f (- n 1) (f x))))
+            (def (main (: n Int64)) (times (. m step) n 1))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 32 Int64)))
+
 (case "two module functions are mutually recursive"
   (doc    "Mutual recursion between two module members: `ev` calls `od`, `od` calls `ev` — neither reaches
            a normal form by inlining, so BOTH lower to standalone runtime functions calling each other

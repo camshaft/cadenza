@@ -958,6 +958,45 @@
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
 
+(case "a bin tag-dispatch over a RUNTIME-START slice reads the re-based window per call"
+  (doc    "The slice-decode case above windows at a CONSTANT start (runtime content); here the START is
+           the boundary parameter, so one compiled `(bin (u8 1) (u8 v))` dispatch reads a differently-
+           BASED window per call: a=1 slices `[1, 42]` out of `[9, 1, 42, 7]` — the literal tag 1 matches
+           and v=42; a=0 slices `[9, 1]` — tag 9 misses the literal arm → -1. A view that baked the
+           offset (or always decoded from the parent's byte 0) would answer both calls identically. The
+           bin-dispatch composition of the runtime-start re-basing pin in 10-bytes.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Bytes.slice (Bytes.of (list 9 1 42 7)) a 2)
+                ((Some s) (match s
+                            ((bin (u8 1) (u8 v)) v)
+                            (_ -1)))
+                ((None u) -2)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 42 Int64))
+  (call   main (: 0 Int64))
+  (output (: -1 Int64)))
+
+(case "a rest-binder over a runtime-start slice measures the SLICE length, not the parent's"
+  (doc    "The rest-arm bounds face of the sliced scrutinee: `(bin (u8 1) (bytes rest))` over a 3-byte
+           window of a 6-byte buffer — at a=0 the window is `[1,2,3]`, the tag matches, and `rest` is the
+           2 remaining SLICE bytes (not the parent's 5 remaining). At a=2 the window `[3,4,5]` misses the
+           tag → -1. Pins that the unsized final segment is bounded by the VIEW's extent — a rest that
+           ran to the parent buffer's end would measure 5 and over-read past the window.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Bytes.slice (Bytes.of (list 1 2 3 4 5 6)) a 3)
+                ((Some s) (match s
+                            ((bin (u8 1) (bytes rest)) (Bytes.len rest))
+                            (_ -1)))
+                ((None u) -2)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 2 Int64))
+  (call   main (: 2 Int64))
+  (output (: -1 Int64)))
+
 (case "a NESTED runtime bin match re-parses a bin-decoded payload"
   (doc    "The recursive / chunked-parser shape: an outer `(bin (u8 n) (bytes body n))` decodes a
            length-prefixed payload, binding `body` to the `n`-byte sub-Bytes, and the arm body then runs a

@@ -19,7 +19,47 @@ import { Core, lower-tree } from "lower-db"
 import { overflows } from "int-width"
 
 /// Evaluate a Core term under `env` (binderId → value). Total: an unbound var or divide-by-zero → `None`.
-def eval-core(c: Core, env: Map(Int64, Int64)) = match c with
+/// The DEF-ENV (slice-B1b/B3): `name → (paramBinderIds, bodyCore)`. Recursion is a STATIC name reference
+/// (never a heap cycle — memory-and-resource-model.md §The Value Heap Is Acyclic), so a self-call is a lookup
+/// in `defs`, not a value pointer. Built by `lower-def-env` (lower-db) for the source pipeline; hand-built in
+/// the direct-Core @tests here. `eval-core` keeps its 2-arg shape (empty def-env → a CCall still DECLINES,
+/// exactly the B1a behavior — every existing caller is unchanged); the recursion path threads a real `defs`
+/// through the workhorse `eval-core-d`.
+def eval-core(c: Core, env: Map(Int64, Int64)) =
+  eval-core-d(c, env, (Map.empty : Map(Int64, (List(Int64), Core))))
+
+/// eval-args (slice-B3): eval each arg-term in the CURRENT (caller) env, left-to-right, collecting values.
+/// Index recursion (List.at/List.len) — the compiler-ml idiom (parse-db `tok-at`); a List is never
+/// cons-destructured here. Any arg that declines sinks the whole call to `None` (total).
+def eval-args(args: List(Core), i: Int64, env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), Core))) =
+  if (i == List.len(args)) then Option.Some(([] : List(Int64)))
+  else (match List.at(args, i) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(a) =>
+        (match eval-core-d(a, env, defs) with
+          | Option.None(_) => Option.None(unit)
+          | Option.Some(v) =>
+              (match eval-args(args, i + 1, env, defs) with
+                | Option.None(_) => Option.None(unit)
+                | Option.Some(rest) => Option.Some(List.concat(List.push([], v), rest)))))
+
+/// bind-params (slice-B3): bind param binder-ids positionally to arg values in a FRESH env (lexical — the
+/// callee body sees ONLY its params + defs, never the caller's locals). Index recursion. Ragged arity (a
+/// shorter vals/params list) stops early — the arity guard lives in infer (B2); eval is total.
+def bind-params(params: List(Int64), vals: List(Int64), i: Int64, acc: Map(Int64, Int64)) =
+  if (i == List.len(params)) then acc
+  else (match List.at(params, i) with
+    | Option.None(_) => acc
+    | Option.Some(p) =>
+        (match List.at(vals, i) with
+          | Option.None(_) => acc
+          | Option.Some(v) => bind-params(params, vals, i + 1, Map.insert(acc, p, v))))
+
+/// The workhorse (slice-B3): `eval-core` + a `defs` def-env threaded through every arm. CNum/CVar/CBin/CLet/
+/// CIf just pass `defs` down unchanged; the CCall arm does the real name→body dispatch. Recursion terminates
+/// by the PROGRAM's own base case (a CIf guard), NOT by any fuel bound — matching the reference (a genuinely
+/// non-terminating source non-terminates, which is correct; such programs stay out of the @test suite).
+def eval-core-d(c: Core, env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), Core))) = match c with
   | Core.CNum(v, _, _) => Option.Some(v)   // the interpreter oracle reads the VALUE; width is an emit concern
   | Core.CVar(b) => Map.lookup(env, b)
   | Core.CBin(op, signed, width, l, r) =>
@@ -27,9 +67,9 @@ def eval-core(c: Core, env: Map(Int64, Int64)) = match c with
       // + the reference's CDZ0304 (the unqualified +/-/* traps; wrapping is the opt-in .wrapping-* form, not
       // here). Int64 (width 64) + comparisons (0/1, width 64) never overflow-check. So `(: 100 Int8) +
       // (: 100 Int8)` = 200, overflows Int8 → None (declines); `(: 100 Int8) + (: 20 Int8)` = 120 fits → Some.
-      (match eval-core(l, env) with
+      (match eval-core-d(l, env, defs) with
         | Option.Some(a) =>
-          (match eval-core(r, env) with
+          (match eval-core-d(r, env, defs) with
             | Option.Some(b) => (match eval-bin(op, a, b) with
                 | Option.Some(v) => (if (width < 64) then (if overflows(v, signed, width) then Option.None(unit) else Option.Some(v)) else Option.Some(v))
                 | Option.None(_) => Option.None(unit))
@@ -37,21 +77,29 @@ def eval-core(c: Core, env: Map(Int64, Int64)) = match c with
         | Option.None(_) => Option.None(unit))
   | Core.CLet(binder, valExpr, body) =>
       // non-recursive let: eval the value in the CURRENT env, bind it to the let's canonical id, eval body.
-      (match eval-core(valExpr, env) with
-        | Option.Some(v) => eval-core(body, Map.insert(env, binder, v))
+      (match eval-core-d(valExpr, env, defs) with
+        | Option.Some(v) => eval-core-d(body, Map.insert(env, binder, v), defs)
         | Option.None(_) => Option.None(unit))
   | Core.CIf(cond, thn, els) =>
       // Bool is 0/1 in Core: a non-zero condition takes the then-branch, zero takes the else. Only the taken
       // branch is evaluated (lazy — a divide-by-zero in the untaken branch does NOT sink the result).
-      (match eval-core(cond, env) with
-        | Option.Some(c) => (if (c == 0) then eval-core(els, env) else eval-core(thn, env))
+      (match eval-core-d(cond, env, defs) with
+        | Option.Some(c) => (if (c == 0) then eval-core-d(els, env, defs) else eval-core-d(thn, env, defs))
         | Option.None(_) => Option.None(unit))
-  | Core.CCall(_, _) => Option.None(unit)
-      // slice-B1a: a recursive call lowers to a NON-inlining CCall, but eval has no def-env yet (B1b adds
-      // `defs: Map(name, (params, body))` + the running arm). Until then a CCall DECLINES here — recursion
-      // still doesn't RUN, but the LOWERING is pinned. This keeps the exhaustive match total; B1b replaces
-      // this arm with the real name→body dispatch (eval args in the current env, bind to the callee's params
-      // in a fresh env, eval the body). run-recursive stays a clean decline in B1a (no hang).
+  | Core.CCall(name, args) =>
+      // slice-B3: a recursive call is a NON-inlining name reference. Look the def up in the def-env, eval the
+      // args in the CURRENT env, bind them positionally into a FRESH env, then eval the body under it. An
+      // unknown name (empty def-env — the B1a/existing 2-arg path) or a declining arg → None (recursion still
+      // declines when there's no def-env, exactly as B1a).
+      (match Map.lookup(defs, name) with
+        | Option.None(_) => Option.None(unit)
+        | Option.Some(pb) =>
+            (match pb with
+              | (params, body) =>
+                  (match eval-args(args, 0, env, defs) with
+                    | Option.None(_) => Option.None(unit)
+                    | Option.Some(vals) =>
+                        eval-core-d(body, bind-params(params, vals, 0, (Map.empty : Map(Int64, Int64))), defs))))
 
 /// Apply a binary op: 43 +, 45 -, 42 *, 47 /, and the relational ops 60 `<`, 61 `==`, 62 `>`, 63 `<=`,
 /// 64 `>=`, 65 `!=`. Relational ops yield a Bool encoded as 0/1 (Core represents Bool as an Int); each of
@@ -508,4 +556,86 @@ def ev-nested-clet-two-params() =
     | Option.Some(v) => (if v == 42 then unit else trap("nested CLet (two params) → 40+2 = 42"))
     | Option.None(_) => trap("a two-param nested CLet evaluates"))
 
-export { eval-core, eval-bin, eval-tree, run, milestone-tokens, run-milestone }
+/// slice-B3 def-env eval tests (direct-Core, hand-built def-env — proves the recursion MECHANISM before
+/// `lower-def-env`/B2 wire the source pipeline). fac's param binder-id is 7, name-id 100:
+///   fac(n) = if (n < 1) then 1 else n * fac(n - 1)   as Core:
+///   CIf(CBin(60, CVar 7, CNum 1), CNum 1, CBin(42, CVar 7, CCall(100, [CBin(45, CVar 7, CNum 1)])))
+def b3-fac-body() =
+  Core.CIf(Core.CBin(60, true, 64, Core.CVar(7), Core.CNum(1, true, 64)),
+           Core.CNum(1, true, 64),
+           Core.CBin(42, true, 64, Core.CVar(7),
+             Core.CCall(100, List.push([], Core.CBin(45, true, 64, Core.CVar(7), Core.CNum(1, true, 64))))))
+
+def b3-fac-defs() =
+  Map.insert((Map.empty : Map(Int64, (List(Int64), Core))), 100, (List.push([], 7), b3-fac-body()))
+
+@test
+def ev-recursive-fac-runs-via-def-env-slice-b3() =
+  // (fac 5) => 120 — the whole point of Slice B: recursion RUNS, terminating on the program's own base case.
+  (match eval-core-d(Core.CCall(100, List.push([], Core.CNum(5, true, 64))),
+                     (Map.empty : Map(Int64, Int64)), b3-fac-defs()) with
+    | Option.Some(v) => (if v == 120 then unit else trap("(fac 5) via def-env → 120"))
+    | Option.None(_) => trap("recursive fac should RUN to a value via the def-env"))
+
+@test
+def ev-recursive-fac-base-case-slice-b3() =
+  // (fac 0) => 1 — the base arm of the recursion (n < 1) short-circuits with no self-call.
+  (match eval-core-d(Core.CCall(100, List.push([], Core.CNum(0, true, 64))),
+                     (Map.empty : Map(Int64, Int64)), b3-fac-defs()) with
+    | Option.Some(v) => (if v == 1 then unit else trap("(fac 0) → 1 (base case)"))
+    | Option.None(_) => trap("recursive fac base case should run"))
+
+@test
+def ev-recursive-countdown-runs-slice-b3() =
+  // countdown(n) = if (n < 1) then 0 else countdown(n - 1) ; (countdown 7) => 0 — proves a nullary-result
+  // tail-style recursion drains to the base case (distinct from fac's multiplying spine).
+  (let cd-body =
+     Core.CIf(Core.CBin(60, true, 64, Core.CVar(7), Core.CNum(1, true, 64)),
+              Core.CNum(0, true, 64),
+              Core.CCall(200, List.push([], Core.CBin(45, true, 64, Core.CVar(7), Core.CNum(1, true, 64)))))
+   in (let cd-defs = Map.insert((Map.empty : Map(Int64, (List(Int64), Core))), 200, (List.push([], 7), cd-body))
+       in (match eval-core-d(Core.CCall(200, List.push([], Core.CNum(7, true, 64))),
+                             (Map.empty : Map(Int64, Int64)), cd-defs) with
+            | Option.Some(v) => (if v == 0 then unit else trap("(countdown 7) → 0"))
+            | Option.None(_) => trap("countdown should drain to its base case"))))
+
+@test
+def ev-ccall-empty-def-env-declines-slice-b3() =
+  // REGRESSION GUARD (B1a behavior preserved): a CCall with NO def-env (the 2-arg `eval-core` path every
+  // existing caller uses) still DECLINES — recursion only runs when a real def-env is supplied.
+  (match eval-core(Core.CCall(100, List.push([], Core.CNum(5, true, 64))),
+                   (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(_) => trap("a CCall with no def-env must DECLINE (B1a behavior)")
+    | Option.None(_) => unit)
+
+@test
+def ev-mutual-recursion-ev-od-slice-b3() =
+  // MUTUAL recursion (the design doc's open ev/od question): two defs each CALL the other, both in ONE
+  // def-env. ev(n) = if (n == 0) then 1 else od(n - 1); od(n) = if (n == 0) then 0 else ev(n - 1).
+  // name-ids: ev=300, od=301; both take param binder 7. (ev 4) => 1, (od 4) => 0 (4 is even). Proves the
+  // def-env dispatch handles a cross-referencing SCC — a self-call is a NAME lookup, so ev→od→ev just walks
+  // `defs` with no special mutual-recursion machinery.
+  (let ev-body =
+     Core.CIf(Core.CBin(61, true, 64, Core.CVar(7), Core.CNum(0, true, 64)),
+              Core.CNum(1, true, 64),
+              Core.CCall(301, List.push([], Core.CBin(45, true, 64, Core.CVar(7), Core.CNum(1, true, 64)))))
+   in (let od-body =
+         Core.CIf(Core.CBin(61, true, 64, Core.CVar(7), Core.CNum(0, true, 64)),
+                  Core.CNum(0, true, 64),
+                  Core.CCall(300, List.push([], Core.CBin(45, true, 64, Core.CVar(7), Core.CNum(1, true, 64)))))
+       in (let evod-defs =
+             Map.insert(
+               Map.insert((Map.empty : Map(Int64, (List(Int64), Core))), 300, (List.push([], 7), ev-body)),
+               301, (List.push([], 7), od-body))
+           in (match eval-core-d(Core.CCall(300, List.push([], Core.CNum(4, true, 64))),
+                                 (Map.empty : Map(Int64, Int64)), evod-defs) with
+                | Option.None(_) => trap("(ev 4) should run via mutual dispatch")
+                | Option.Some(evv) =>
+                    (match eval-core-d(Core.CCall(301, List.push([], Core.CNum(4, true, 64))),
+                                       (Map.empty : Map(Int64, Int64)), evod-defs) with
+                      | Option.None(_) => trap("(od 4) should run via mutual dispatch")
+                      | Option.Some(odv) =>
+                          (if ((evv == 1) and (odv == 0)) then unit
+                           else trap("(ev 4)=1 and (od 4)=0 via mutual recursion")))))))
+
+export { eval-core, eval-core-d, eval-bin, eval-tree, run, milestone-tokens, run-milestone }

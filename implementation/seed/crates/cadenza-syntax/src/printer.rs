@@ -5935,6 +5935,45 @@ mod tests {
     }
 
     #[test]
+    fn an_own_line_comment_before_a_tuple_or_set_element_is_preserved_not_dropped() {
+        // The tuple + set siblings of the list own-line interior fix (reader-only: the printer already
+        // renders a leading `(comment …)` above the element). `(\n // note\n 1, 2)` / `#(\n // note\n 1, 2)`
+        // used to DROP the comment (element parsed via `expr`, which doesn't drain the leading slot).
+        // Own-line comments are NOT gated to the last element — no swallow hazard.
+        // Tuple, before first + between elements:
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def t() -> Int64 = (\n  // lead\n  1, 2)").arenas),
+            "(def (t) (: (\"tuple\" (comment \"lead\" 1) 2) Int64))",
+            "own-line comment before the first tuple element is captured"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def t() -> Int64 = (1,\n  // mid\n  2)").arenas),
+            "(def (t) (: (\"tuple\" 1 (comment \"mid\" 2)) Int64))",
+            "own-line comment between tuple elements is captured"
+        );
+        assert_eq!(
+            assert_roundtrip("(\n  // lead\n  1, 2)", 80),
+            "(\n  // lead\n  1,\n  2\n)"
+        );
+        // Set:
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def s() -> Int64 = #(\n  // lead\n  1, 2)").arenas),
+            "(def (s) (: ((. Set of) (\"list\" (comment \"lead\" 1) 2)) Int64))",
+            "own-line comment before the first set element is captured"
+        );
+        // A grouped (non-tuple) parenthesized expr with a leading own-line comment also round-trips (the
+        // `first`-element leading capture covers the transparent-grouping outcome, not just tuples).
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def g() -> Int64 = (\n  // c\n  1)").arenas),
+            "(def (g) (: (comment \"c\" 1) Int64))",
+            "own-line comment before a grouped expr is captured"
+        );
+        // Clean tuple/set keep their flat layout.
+        assert_eq!(assert_roundtrip("(1, 2, 3)", 80), "(1, 2, 3)");
+        assert_eq!(assert_roundtrip("#(1, 2)", 80), "#(1, 2)");
+    }
+
+    #[test]
     fn a_same_line_trailing_comment_on_a_tuple_elem_is_preserved_not_dropped() {
         // The tuple sibling of the list trailing-comment fix (shared `bracketed_comment_aware` +
         // `print_elem_maybe_commented`). `(…, x // note)` used to DROP the `//` (→ `cdz fmt` refused the

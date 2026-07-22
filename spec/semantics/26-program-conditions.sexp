@@ -3066,3 +3066,56 @@
   (output (: true Bool))
   (call   main (: 7 Int64))
   (trap   "unreachable"))
+
+; ── Contracts x first-class function values: enforcement travels WITH the def, not the call site ────
+; Every enforcement case above calls its guarded def directly by name. These pin that the verify_enforce
+; body-rewrite survives the def becoming a VALUE — passed as a fn argument, or selected by a runtime
+; branch — so the contract fires no matter how the call reaches the body (the rewrite is IN the body,
+; not at the direct call site; an implementation enforcing at direct call sites only would silently skip
+; these indirect applications).
+
+(case "@requires is enforced when the guarded def is applied through a first-class fn value"
+  (doc    "`safe` is @requires-guarded and passed BY NAME to `apply1`, which calls it through its fn
+           PARAMETER. The body-entry check travels with the def: `apply1 safe 5` computes 6, and
+           `apply1 safe -1` violates `(>= x 0)` and traps — through the indirect call, exactly as a
+           direct one. An enforcement keyed to direct call sites would return 0 at -1 instead of
+           trapping.")
+  (input  (do
+            (@ (requires (>= x 0)) (def (safe (: x Int64)) (+ x 1)))
+            (def (apply1 (: f (-> Int64 Int64)) (: v Int64)) (f v))
+            (def (main (: v Int64)) (apply1 safe v))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 6 Int64))
+  (call   main (: -1 Int64))
+  (trap   "unreachable"))
+
+(case "@ensures holds when the guarded def arrives through a runtime branch"
+  (doc    "The function-valued-conditional composition: `(if b abs1 idf)` selects between the
+           @ensures-guarded `abs1` and the unguarded `idf` at run time, then applies the selection.
+           b=true routes through the guarded body — the postcondition `(>= ret 0)` checks abs1's result
+           (5, satisfied) inside the selected function. The guard must ride the fn value through the
+           branch join (both arms share the arrow type; only one carries a contract).")
+  (input  (do
+            (@ (ensures (>= ret 0)) (def (abs1 (: x Int64)) (if (< x 0) (- 0 x) x)))
+            (def (idf (: x Int64)) x)
+            (def (main (: b Bool) (: v Int64)) ((if b abs1 idf) v))
+            (export main)))
+  (call   main (: true Bool) (: -5 Int64))
+  (output (: 5 Int64)))
+
+(case "a VIOLATED @ensures traps when the def arrives through a runtime branch"
+  (doc    "The violation twin: `bad` (result x-10, postcondition `(>= ret 0)`) selected by b=true traps at
+           v=3 (ret=-7 violates); the same call through the b=false arm picks the unguarded `idf` and
+           returns 3 — one call site, contract enforcement decided by WHICH function the runtime branch
+           delivered. Pins that the trap fires in the guarded body only (a join that smeared the contract
+           over both arms would trap the idf path too; one that dropped it would return -7).")
+  (input  (do
+            (@ (ensures (>= ret 0)) (def (bad (: x Int64)) (- x 10)))
+            (def (idf (: x Int64)) x)
+            (def (main (: b Bool) (: v Int64)) ((if b bad idf) v))
+            (export main)))
+  (call   main (: true Bool) (: 3 Int64))
+  (trap   "unreachable")
+  (call   main (: false Bool) (: 3 Int64))
+  (output (: 3 Int64)))
