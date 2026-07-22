@@ -1584,6 +1584,31 @@
   (call   main (: 1 Int64)) (output (: 71 Int64))
   (call   main (: 13 Int64)) (output (: 7197431 Int64)))
 
+(case "a user-written EUCLID gcd loops on remainder and certifies divisibility of both operands"
+  (doc    "The third of the number-theory trio (isqrt certifies vs algebra, modpow vs a naive oracle;
+           gcd certifies DIVISIBILITY): `(gcd a b) = (if (= b 0) a (gcd b (% a b)))` — the remainder
+           loop — with certificate bits `a % g = 0` AND `b % g = 0` in the output, so every probe
+           verifies the result divides both operands rather than trusting the expected value. Both
+           operands are runtime parameters (nothing folds). Four faces: 48,18 → 6 (two remainder
+           steps); COPRIME 17,5 → 1 (the loop runs to the bottom); a < b 12,48 → 12 — the FIRST
+           remainder step naturally swaps the operands (`gcd 12 48 → gcd 48 12`), the face an
+           argument-order assumption breaks; EQUAL 7,7 → 7 (one step, `7 % 7 = 0`). Outputs encode
+           g·100 + certificate bits: 611, 111, 1211, 711.")
+  (input  (do
+            (def (gcd (: a Int64) (: b Int64))
+              (if (= b 0) a (gcd b (% a b))))
+            (def (main (: a Int64) (: b Int64))
+              (do
+                (def g (gcd a b))
+                (+ (* g 100)
+                   (+ (* (if (= (% a g) 0) 1 0) 10)
+                      (if (= (% b g) 0) 1 0)))))
+            (export main)))
+  (call   main (: 48 Int64) (: 18 Int64)) (output (: 611 Int64))
+  (call   main (: 17 Int64) (: 5 Int64)) (output (: 111 Int64))
+  (call   main (: 12 Int64) (: 48 Int64)) (output (: 1211 Int64))
+  (call   main (: 7 Int64) (: 7 Int64)) (output (: 711 Int64)))
+
 (case "a runtime BigInt in an Option payload crosses the host boundary"
   (doc    "`(Some (* (BigInt.of 1000000) (BigInt.of 1000000)))` — a runtime BigInt (the 10^12 product does
            not fold) wrapped in an `Option` crosses to the host as `(Some 1000000000000) : (Option
