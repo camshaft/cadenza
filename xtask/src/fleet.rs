@@ -92,6 +92,15 @@ const SAT_NOTIFY_GRACE: u64 = 1800;
 /// short enough that a nudge that landed-but-didn't-act doesn't sit ~8min like v-metaprogramming did.
 const DRAIN_NUDGE_STUCK_GRACE: u64 = 180;
 
+/// Floor (seconds) for the PERSISTENCE window before the watchdog escalates a drain-stall to the
+/// concierge (note-only, default-on — distinct from the opt-in keystroke nudge). The actual window is
+/// `max(this, interval*2)`: a stall must persist past a FULL loop cycle of the stalled agent (so its own
+/// inbox-drain at step 2 of every tick demonstrably ran and skipped the message) before it's "stuck"
+/// rather than "idling between ticks with fresh mail". The floor covers a fast-ticking agent (e.g. a
+/// 4-min interval) so we don't escalate a stall younger than a few missed drains. See
+/// `decide_drain_notify`.
+const DRAIN_NOTIFY_MIN_PERSIST: u64 = 900;
+
 /// Delay (seconds) before the CONFIRMING re-capture of a suspected drain-stalled pane. A single
 /// instantaneous `capture-pane` can catch a busy agent in the sub-second gap BETWEEN its tool-turns —
 /// the prior turn has ended (bare `❯` prompt) but the next model turn hasn't yet re-rendered the "esc to
@@ -2180,6 +2189,7 @@ fn watchdog(
     let mut reissued = 0usize;
     let mut checked = 0usize;
     let mut drain_stalls = 0usize;
+    let mut drain_stall_escalations = 0usize;
     let mut saturated = 0usize;
     let mut wedge_escalations = 0usize;
     for a in &reg.agents {
@@ -2334,6 +2344,75 @@ fn watchdog(
                     );
                 } else {
                     eprintln!("  ! failed to send drain-nudge keys to '{}'", a.name);
+                }
+            }
+
+            // DEFAULT-ON concierge escalation (note-only, distinct from the opt-in keystroke nudge
+            // above): a PERSISTENT drain-stall is escalated so it doesn't sit unseen in watchdog stderr
+            // (which scrolls off). This mirrors the context-saturation escalation below — a `note` is a
+            // safe, non-preempting signal, so it needs no opt-in; the keystroke nudge stays opt-in
+            // because keystrokes-to-a-pane is the higher-risk action. Gated on PERSISTENCE so a normal
+            // between-tick idle with fresh mail is NOT escalated: the flagged message must have been
+            // undelivered-and-unconsumed for >= max(floor, interval*2) — a full loop cycle of the
+            // stalled agent, so its own step-2 inbox-drain demonstrably ran and skipped it. The
+            // persistence clock is the flagged message's own delivery mtime (survives watchdog
+            // restarts). Rate-limited per-message like the saturation note.
+            let persist_window = DRAIN_NOTIFY_MIN_PERSIST.max(interval.saturating_mul(2));
+            let flagged_age = flagged_id
+                .as_deref()
+                .and_then(|id| file_mtime_unix(&fleet.inbox(&a.name).join(id)))
+                .map(|m| now.saturating_sub(m));
+            let seen = flagged_id.as_deref().zip(flagged_age);
+            let last_notify = last_drain_notify(fleet, &a.name, now);
+            let notify = decide_drain_notify(
+                drain_stall,
+                ctx_pct,
+                CTX_SATURATION_THRESHOLD,
+                flagged_id.as_deref(),
+                seen,
+                last_notify.as_ref().map(|(id, age)| (id.as_str(), *age)),
+                persist_window,
+                SAT_NOTIFY_GRACE,
+            );
+            if notify {
+                let flagged = flagged_id.as_deref().unwrap_or("?");
+                if dry_run {
+                    println!(
+                        "  DRY-RUN would escalate '{}' persistent drain-stall to concierge",
+                        a.name
+                    );
+                } else {
+                    deliver(
+                        fleet,
+                        &Message {
+                            from: "watchdog".to_string(),
+                            to: "concierge".to_string(),
+                            kind: "note".to_string(),
+                            subject: format!(
+                                "DRAIN-STALL: '{}' has {actionable_depth} unconsumed actionable msg(s) — not draining",
+                                a.name
+                            ),
+                            body: format!(
+                                "'{}' is IDLE at prompt with {actionable_depth} unconsumed ACTIONABLE hub message(s); \
+                                 the oldest ('{flagged}') has persisted past a full loop cycle, so the agent's own \
+                                 step-2 inbox-drain ran and skipped it — a probable DRAIN-STALL (loop alive, heartbeat \
+                                 fresh, but not draining; e.g. a worktree-relative inbox glob shadowing the hub). \
+                                 Kick its loop (Esc+continue) or have it re-drain via the resolver \
+                                 `cargo xtask fleet inbox {}`. Auto-surfaced so it doesn't sit unseen in watchdog \
+                                 stderr; rate-limited to one note per message per ~30min until it clears.",
+                                a.name, a.name
+                            ),
+                            seq: next_seq(),
+                            r#ref: String::new(),
+                            in_reply_to: String::new(),
+                        },
+                    );
+                    stamp_drain_notify(fleet, &a.name, flagged);
+                    drain_stall_escalations += 1;
+                    println!(
+                        "  + escalated '{}' persistent drain-stall to concierge (rate-limited)",
+                        a.name
+                    );
                 }
             }
             // fall through — still run the normal heartbeat logic below (a drain-stall usually has a
@@ -2700,6 +2779,7 @@ fn watchdog(
                 reissued,
                 reaped,
                 drain_stalls,
+                drain_stall_escalations,
                 saturated,
                 queued_but_landed: landed_queued.len(),
                 wedge_escalations,
@@ -2749,6 +2829,11 @@ struct WatchdogCounts {
     reissued: usize,
     reaped: usize,
     drain_stalls: usize,
+    /// Subset of `drain_stalls` that ESCALATED to a concierge note this sweep (a PERSISTENT stall past a
+    /// full loop cycle, note-only + rate-limited). Distinct from `drain_stalls` (every confirmed stall,
+    /// including transient ones the agent's own next drain clears): a persistently >0 `escalations`
+    /// across sweeps is the tell that an agent is genuinely wedged on its inbox, not just idling.
+    drain_stall_escalations: usize,
     saturated: usize,
     queued_but_landed: usize,
     wedge_escalations: usize,
@@ -2771,6 +2856,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         && c.reissued == 0
         && c.reaped == 0
         && c.drain_stalls == 0
+        && c.drain_stall_escalations == 0
         && c.saturated == 0
         && c.queued_but_landed == 0
         && c.wedge_escalations == 0
@@ -2779,11 +2865,12 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         return None;
     }
     Some(format!(
-        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\tleases_reaped={}",
+        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\tleases_reaped={}",
         c.rearmed,
         c.reissued,
         c.reaped,
         c.drain_stalls,
+        c.drain_stall_escalations,
         c.saturated,
         c.queued_but_landed,
         c.wedge_escalations,
@@ -2845,6 +2932,31 @@ fn stamp_sat_notify(fleet: &Fleet, name: &str) {
     let dir = fleet.root.join("sat-notify");
     std::fs::create_dir_all(&dir).ok();
     std::fs::write(dir.join(name), "sat-notify\n").ok();
+}
+
+/// The drain-stall concierge-notify marker for this agent, as `(flagged-message-id, age-in-secs)`, or
+/// `None` if we never notified. Body = the flagged (oldest actionable) message id at notify time; mtime
+/// = when we notified. Parallels `last_drain_nudge` but for the DEFAULT-ON, note-only concierge
+/// escalation (the keystroke nudge is a separate opt-in marker). Recording the id lets a later sweep
+/// tell the SAME message still stuck (rate-limit the re-notify) from a DIFFERENT message (the agent
+/// drained the old one → the earlier stall cleared, this is a fresh one worth its own note).
+fn last_drain_notify(fleet: &Fleet, name: &str, now: u64) -> Option<(String, u64)> {
+    let path = fleet.root.join("drain-notify").join(name);
+    let age = file_mtime_unix(&path).map(|m| now.saturating_sub(m))?;
+    let id = std::fs::read_to_string(&path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    Some((id, age))
+}
+
+/// Record that we escalated this agent's persistent drain-stall to the concierge: write the flagged
+/// message-id to `.claude/fleet/drain-notify/<name>` (mtime = notify time), for the rate-limit + the
+/// same-vs-different-message discriminator in `decide_drain_notify`.
+fn stamp_drain_notify(fleet: &Fleet, name: &str, flagged_id: &str) {
+    let dir = fleet.root.join("drain-notify");
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(dir.join(name), format!("{flagged_id}\n")).ok();
 }
 
 /// Should the watchdog auto-escalate a context-WEDGED agent to the concierge this sweep? Pure so the
@@ -3383,6 +3495,56 @@ fn decide_drain_nudge(
             }
         }
     }
+}
+
+/// Decide whether to ESCALATE a drain-stall to the concierge as a note (DEFAULT-ON, note-only — the
+/// counterpart to the context-saturation escalation, and distinct from the opt-in `--nudge-drain-stalls`
+/// KEYSTROKE nudge). A note is a safe, non-preempting signal (it lands in the concierge's inbox for the
+/// human to route), so unlike the keystroke nudge it doesn't need an opt-in — but it MUST NOT fire for a
+/// normal between-tick idle, so it is gated on PERSISTENCE, not merely "is a drain-stall this sweep".
+/// Pure so the guards are unit-tested. Fires only when ALL hold:
+///   * `is_drain_stall` — the confirmed signal already fired (idle-at-prompt + unconsumed actionable
+///     hub mail, past the pane-recheck).
+///   * a `flagged_id` exists (the oldest unconsumed actionable message the stall is about).
+///   * NOT context-saturated — a `>=` saturation-threshold pane can't drain because it's WEDGED, and
+///     the saturation escalation already owns it (prescribing a restart, which also clears the stall);
+///     a second drain-note would be redundant noise. `ctx_pct` None = not saturated (safe to notify).
+///   * PERSISTED: the SAME `flagged_id` has been observed stuck for at least `persist_window` (the
+///     caller passes `max(floor, interval*2)`, so the stalled agent's own inbox-drain at step 2 of a
+///     full tick demonstrably ran and skipped the message — a fresh message on an agent merely idling
+///     between long ticks has NOT persisted and is not escalated). A `seen` id that differs from the
+///     current `flagged_id` means the agent drained the old one (the earlier stall cleared) → the clock
+///     restarts, so we never escalate on a message younger than the window.
+///   * NOT rate-limited: don't re-notify for the SAME message within `notify_grace` (one note per
+///     window until it clears), matching the saturation escalation's rate-limit.
+#[allow(clippy::too_many_arguments)]
+fn decide_drain_notify(
+    is_drain_stall: bool,
+    ctx_pct: Option<u8>,
+    saturation_threshold: u8,
+    flagged_id: Option<&str>,
+    seen: Option<(&str, u64)>,
+    last_notify: Option<(&str, u64)>,
+    persist_window: u64,
+    notify_grace: u64,
+) -> bool {
+    if !is_drain_stall {
+        return false;
+    }
+    let Some(flagged) = flagged_id else {
+        return false;
+    };
+    // A saturated pane's stall is a symptom of the wedge — the saturation escalation owns it.
+    if matches!(ctx_pct, Some(p) if p >= saturation_threshold) {
+        return false;
+    }
+    // Persistence gate: this EXACT message must have been observed stuck for >= the window.
+    let persisted = matches!(seen, Some((sid, sage)) if sid == flagged && sage >= persist_window);
+    if !persisted {
+        return false;
+    }
+    // Rate-limit: suppress a re-notify for the SAME message within the grace window.
+    !matches!(last_notify, Some((nid, nage)) if nid == flagged && nage < notify_grace)
 }
 
 /// Capture an agent's visible tmux pane text (no scrollback), or `None` if tmux errors / the window is
@@ -7903,6 +8065,7 @@ mod tests {
                     reissued: 1,
                     reaped: 1,
                     drain_stalls: 0,
+                    drain_stall_escalations: 0,
                     saturated: 3,
                     queued_but_landed: 5,
                     wedge_escalations: 1,
@@ -7910,9 +8073,23 @@ mod tests {
                 }
             ),
             Some(
-                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\tleases_reaped=4"
+                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tdrain_stall_escalations=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\tleases_reaped=4"
                     .to_string()
             )
+        );
+        // A drain-stall ESCALATION alone is notable (pins the new gate conjunct — a stall that only set
+        // `drain_stall_escalations` without `drain_stalls` can't happen in practice, but the gate must
+        // still fire so the counter can't be dropped from the notability check while living in the struct).
+        assert!(
+            watchdog_log_line(
+                1,
+                42,
+                &WatchdogCounts {
+                    drain_stall_escalations: 1,
+                    ..Default::default()
+                }
+            )
+            .is_some()
         );
         // A single drain-stall is notable on its own.
         assert!(
@@ -8172,6 +8349,163 @@ mod tests {
             DrainNudge::Fresh,
             "unresolvable current id past churn grace → Fresh, never Stuck"
         );
+    }
+
+    #[test]
+    fn decide_drain_notify_is_persistence_gated_saturation_guarded_and_rate_limited() {
+        // pw = persistence window (900), ng = notify grace (1800) — representative of the real constants.
+        let (pw, ng) = (900u64, 1800u64);
+        // Happy path: a confirmed stall, not saturated, the flagged message has PERSISTED past the window,
+        // never notified → escalate. (This is exactly the v-rust-backend incident: an unconsumed reject
+        // stuck across many sweeps that the bare sweep never escalated.)
+        assert!(decide_drain_notify(
+            true,
+            None,
+            95,
+            Some("m1"),
+            Some(("m1", 1000)),
+            None,
+            pw,
+            ng
+        ));
+        // Not a drain-stall this sweep → nothing to escalate.
+        assert!(!decide_drain_notify(
+            false,
+            None,
+            95,
+            Some("m1"),
+            Some(("m1", 1000)),
+            None,
+            pw,
+            ng
+        ));
+        // No flagged id (unresolvable) → can't escalate (nothing to key persistence/rate-limit on).
+        assert!(!decide_drain_notify(
+            true,
+            None,
+            95,
+            None,
+            Some(("m1", 1000)),
+            None,
+            pw,
+            ng
+        ));
+        // NOT yet persisted: the same message is younger than the window → this is a normal between-tick
+        // idle with fresh mail, NOT a stall the agent's own drain skipped. Suppress.
+        assert!(!decide_drain_notify(
+            true,
+            None,
+            95,
+            Some("m1"),
+            Some(("m1", 500)),
+            None,
+            pw,
+            ng
+        ));
+        // Persistence EXACT boundary: gate is `age >= window`, so `age == window` is IN. Pins the `>=`
+        // (a `>` mutant would suppress one extra sweep and survive the 500/1000 cases).
+        assert!(decide_drain_notify(
+            true,
+            None,
+            95,
+            Some("m1"),
+            Some(("m1", 900)),
+            None,
+            pw,
+            ng
+        ));
+        // The "seen" message DIFFERS from the currently-flagged one → the agent drained the old one (the
+        // earlier stall cleared); the fresh message's clock restarts → not yet persisted → suppress even
+        // though the seen AGE is large. (Guards against a stale seen-age escalating a brand-new message.)
+        assert!(!decide_drain_notify(
+            true,
+            None,
+            95,
+            Some("m2"),
+            Some(("m1", 5000)),
+            None,
+            pw,
+            ng
+        ));
+        // No "seen" reading at all (flagged message file mtime unavailable) → can't prove persistence → suppress.
+        assert!(!decide_drain_notify(
+            true,
+            None,
+            95,
+            Some("m1"),
+            None,
+            None,
+            pw,
+            ng
+        ));
+        // Context-SATURATED (>= threshold): the wedge owns the stall (its restart clears it); a second
+        // drain-note is redundant noise → suppress. Both at and past the threshold.
+        assert!(!decide_drain_notify(
+            true,
+            Some(95),
+            95,
+            Some("m1"),
+            Some(("m1", 1000)),
+            None,
+            pw,
+            ng
+        ));
+        assert!(!decide_drain_notify(
+            true,
+            Some(100),
+            95,
+            Some("m1"),
+            Some(("m1", 1000)),
+            None,
+            pw,
+            ng
+        ));
+        // Just BELOW the saturation threshold → still escalatable (a non-wedged stall).
+        assert!(decide_drain_notify(
+            true,
+            Some(94),
+            95,
+            Some("m1"),
+            Some(("m1", 1000)),
+            None,
+            pw,
+            ng
+        ));
+        // Rate-limit: the SAME message notified within the grace → suppress the re-notify.
+        assert!(!decide_drain_notify(
+            true,
+            None,
+            95,
+            Some("m1"),
+            Some(("m1", 1000)),
+            Some(("m1", 60)),
+            pw,
+            ng
+        ));
+        // Rate-limit EXACT boundary: suppression is `nage < grace`, so `nage == grace` is already OUT →
+        // re-notify. Pins the `<` (a `<=` mutant survives the 60 case above).
+        assert!(decide_drain_notify(
+            true,
+            None,
+            95,
+            Some("m1"),
+            Some(("m1", 1000)),
+            Some(("m1", 1800)),
+            pw,
+            ng
+        ));
+        // A DIFFERENT message than last notified, past its own persistence → a fresh stall gets its own
+        // note regardless of the prior notify's age (the rate-limit is per-message, not per-agent).
+        assert!(decide_drain_notify(
+            true,
+            None,
+            95,
+            Some("m2"),
+            Some(("m2", 1000)),
+            Some(("m1", 60)),
+            pw,
+            ng
+        ));
     }
 
     #[test]

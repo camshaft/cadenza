@@ -9032,6 +9032,43 @@
   (call   main (: 5 Int64)) (output (: 9 Int64))
   (call   main (: 6 Int64)) (output (: -1 Int64)))
 
+(case "a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted"
+  (doc    "The three-way upgrade of the two-way partition and quickselect pins above: ONE walk routes
+           each element into below/equal/above by a two-comparison chain (`< p`, then `= p`) — THREE
+           list accumulators live per step, exactly one growing. The pivot 5 occurs THREE times in
+           `(5 2 7 5 1 8 5 3)`, so the equal bucket's LENGTH witnesses duplicate collection (a
+           `<=`-style two-way split hides the duplicates in a side). Encoding: lo-digits·100000 +
+           eq-len·10000 + hi-digits, each side in INPUT order. p=5 → 213 / 3 / 78 → 21330078; p=1 →
+           lo EMPTY, eq exactly the one 1, hi everything else (5275853) → 5285853; p=9 → everything
+           in lo (52751853·100000), eq and hi both empty → 5275185300000 — the two boundary pivots
+           drive each accumulator to empty in turn.")
+  (input  (do
+            (def (split3 (: xs (List Int64)) (: p Int64) (: lo (List Int64)) (: eq (List Int64)) (: hi (List Int64)))
+              (match xs
+                ((list) (tuple lo eq hi))
+                ((list h .. t)
+                  (if (< h p)
+                      (split3 t p (List.push lo h) eq hi)
+                      (if (= h p)
+                          (split3 t p lo (List.push eq h) hi)
+                          (split3 t p lo eq (List.push hi h)))))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: p Int64))
+              (do
+                (def xs (list 5 2 7 5 1 8 5 3))
+                (match (split3 xs p (list) (list) (list))
+                  ((tuple lo eq hi)
+                    (+ (* (chk lo 0) 100000)
+                       (+ (* ((. List len) eq) 10000)
+                          (chk hi 0)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 21330078 Int64))
+  (call   main (: 1 Int64)) (output (: 5285853 Int64))
+  (call   main (: 9 Int64)) (output (: 5275185300000 Int64)))
+
 (case "a PREFIX-SUM scan emits a running total whose each element feeds the next"
   (doc    "The scan idiom (fold that KEEPS its intermediates): walking `(3 n 4 1)`, each step computes
            `run + h` and pushes that SAME value both onward as the next `run` and into the output list —
