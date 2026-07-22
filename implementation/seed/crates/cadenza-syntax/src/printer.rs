@@ -6515,6 +6515,54 @@ mod tests {
     }
 
     #[test]
+    fn an_own_line_comment_leading_an_if_branch_is_preserved_not_dropped() {
+        // An own-line `//` above an `if` sub-expression — the condition (`if\n // note\n c then …`), the
+        // then-branch (`if c then\n // note\n t else …`), or the else-branch (`else\n // note\n e`) — used
+        // to be DROPPED (each sub-expr is a single `expr`, whose leading slot `if_expr` didn't drain).
+        // if_expr now captures + wraps each `(comment "text" expr)`; the printer already renders a leading
+        // `(comment …)` on its own line above the expr, so no printer change is needed. `strip_comments`
+        // peels it; compiles to wasm. This is the LAST filed comment surface — the `//` surface is now
+        // complete across all element/branch positions.
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("def f(b: Bool) -> Int64 = if b then\n  // note\n  1 else 2")
+                    .arenas
+            ),
+            "(def (f (: b Bool)) (: (if b (comment \"note\" 1) 2) Int64))",
+            "own-line comment before the then-branch is captured, not dropped"
+        );
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("def f(b: Bool) -> Int64 = if b then 1 else\n  // note\n  2")
+                    .arenas
+            ),
+            "(def (f (: b Bool)) (: (if b 1 (comment \"note\" 2)) Int64))",
+            "own-line comment before the else-branch is captured"
+        );
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("def f(b: Bool) -> Int64 = if\n  // note\n  b then 1 else 2")
+                    .arenas
+            ),
+            "(def (f (: b Bool)) (: (if (comment \"note\" b) 1 2) Int64))",
+            "own-line comment before the condition is captured"
+        );
+        // Round-trips + idempotent.
+        let src = "def f(b: Bool) -> Int64 = if b then\n  // note\n  1 else 2";
+        let printed = print(&parser::read_ml(src).arenas, 80);
+        assert_eq!(
+            print(&parser::read_ml(&printed).arenas, 80),
+            printed,
+            "idempotent"
+        );
+        // A clean `if` keeps its layout.
+        assert_eq!(
+            assert_roundtrip("if b then 1 else 2", 80),
+            "if b then 1 else 2"
+        );
+    }
+
+    #[test]
     fn destructuring_binder_patterns_round_trip() {
         // A destructuring PATTERN in a `def`/`fn` parameter or a `let` binder renders through the
         // pattern surface (the inverse of `param`/`let_expr` routing a pattern-opening binder to

@@ -20133,6 +20133,28 @@ pub(crate) fn value_provably_nonneg(db: &mut Db, id: StructId) -> bool {
     matches!(value_range(db, id), Some((lo, _)) if lo >= 0)
 }
 
+/// Whether the index at `index` is flow-provably `< len(list)` — the operator-greenlit BOUNDS facet, keyed
+/// on COLLECTION IDENTITY. Resolves both operands to their binders and consults `refined_below_len`: the
+/// fact `below_len[index_binder] = list_binder` (established by an enclosing `(< i (List.len xs))` guard)
+/// licenses `List.at list index` to shed its OWN `index < len` bounds check. SOUND ONLY when the accessed
+/// list is the SAME binder the fact names — a guard on a DIFFERENT list must never elide this check (that
+/// would be an out-of-bounds read), so the collection binders must match exactly. Conservative: no fact, a
+/// non-binder operand, or a mismatched collection → `false` (keep the runtime check). Both operands are
+/// leaf occurrences (a param/kept-local ref), so `core_of` here never inlines a payload out of a dup-site
+/// (the slice-5 demand-order hazard does not arise for a leaf ref).
+pub(crate) fn index_provably_below_len(db: &mut Db, index: StructId, list: StructId) -> bool {
+    let binder_of = |db: &mut Db, id: StructId| -> Option<StructId> {
+        match core_of(db, id) {
+            Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+            _ => None,
+        }
+    };
+    let (Some(i), Some(xs)) = (binder_of(db, index), binder_of(db, list)) else {
+        return false;
+    };
+    db.refined_below_len(i) == Some(xs)
+}
+
 /// Whether the value at `id` provably lies within the inclusive `[lo, hi]` — its `value_range` is known
 /// AND fully contained. Consults the same lattice as the guard-elision checks (a mask, an unsigned type,
 /// a flow-refinement). Used by `emit_wrap`'s truncation-elision: a `wrap` to width N is a no-op when the

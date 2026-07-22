@@ -1040,6 +1040,7 @@ pass	a deeply nested constant expression compiles or declines without crashing
 pass	a deeply nested expression is diagnosed by the parser, never crashes it
 pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
+pass	a deeply-nested match on an inline if-of-ctors scrutinee compiles bounded (fuse_match_into_if clone cap)
 pass	a def parameter may be a record pattern that destructures by field
 pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-fraction pragma fixes a type but adds no conversion — no-promotion still holds
@@ -4775,3 +4776,4 @@ pass	CONTROL: a CONST-start slice as a Map-lookup key hits on wasm
 pass	a BORROWED runtime Bytes rope map key is compacted at the key site and found by its flat twin
 pass	unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)
 pass	a flow refinement folds a compare over a no-overflow arith operand, but the trap survives when overflow is possible
+pass	an INCLUSIVE ordering refinement folds at the boundary but must not over-refine one past it

@@ -7444,50 +7444,70 @@ fn emit(
             }
             emit(db, index, slots, floor, high, scratch_ty, layout, out)?; // [index:i64]
             out.push(Lir::LocalSet(index_slot));
-            // in_bounds = (index >= 0) & (index < len), all in i64. LOWER-BOUND ELISION: when the index is
-            // provably NON-NEGATIVE (a masked/length/unsigned/refined value), the `index >= 0` half is a
-            // compile-time `true`, so drop it and test only `index < len` — a masked index (`(& i 15)`), a
-            // `List.len`, or a loop counter refined `≥ 0` sheds the redundant lower check (3 ops).
+            // in_bounds = (index >= 0) & (index < len), all in i64. Each half is INDEPENDENTLY elidable when
+            // provably true:
+            //   • LOWER-BOUND ELISION (`index >= 0`): a NON-NEGATIVE index (a masked/length/unsigned/refined
+            //     value) — a masked index (`(& i 15)`), a `List.len`, a loop counter refined `≥ 0`.
+            //   • UPPER-BOUND ELISION (`index < len`, operator-greenlit BOUNDS facet): an index flow-known
+            //     `< len(this list)` — an enclosing `(< i (List.len xs))` guard proved it, so `List.at xs i`
+            //     inside that branch double-checks. The fact is KEYED ON COLLECTION IDENTITY: a guard on a
+            //     DIFFERENT list does not elide (that would be OOB).
+            // When BOTH halves are proven, `in_bounds` is a compile-time `true`, so the whole runtime test —
+            // AND the `vec-len` call, the `if`, and the `None` arm — is dropped: the access is unconditional.
             let index_nonneg = crate::lower::value_provably_nonneg(db, index);
-            if !index_nonneg {
+            let index_below_len = crate::lower::index_provably_below_len(db, index, list);
+            // The Some(element) arm — shared by the conditional path and the both-proven unconditional path.
+            // `vec-get` yields the element handle BORROWED; `dup` retains it (rc++) so the `Some` payload can
+            // own a reference while the list keeps its own. `dup(handle)` RETURNS NOTHING (it pops the handle
+            // and increments its count), so the handle is stashed in a scratch slot: `tee` (store + keep a
+            // copy for `dup`), `dup` (consume that copy, rc++), then `get` it back as the payload under
+            // `disc_some` for `sum-new`.
+            let emit_some = |out: &mut Vec<Lir>| {
+                out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
+                out.push(Lir::LocalGet(list_slot));
                 out.push(Lir::LocalGet(index_slot));
-                out.push(Lir::ConstI64(0));
-                out.push(Lir::I64GeS); // [index >= 0]
+                out.push(Lir::I32WrapI64); // [disc_some, list, index:i32] — vec-get takes a u32
+                out.push(Lir::CallImport(OP_VEC_GET)); // [disc_some, elem-handle] (borrowed)
+                out.push(Lir::LocalTee(elem_slot)); // [disc_some, elem], elem_slot = elem
+                out.push(Lir::CallImport(OP_DUP)); // pops elem, rc++ → [disc_some]
+                out.push(Lir::LocalGet(elem_slot)); // [disc_some, elem] (the retained handle)
+                out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
+            };
+            if index_nonneg && index_below_len {
+                // BOTH bounds proven — the index is unconditionally in range, so emit Some(element) directly
+                // with no bounds test, no `vec-len`, no `if`, and no `None` arm. The list is still read twice
+                // (get borrows it), so the owned-temporary reclaim below is unchanged.
+                emit_some(out);
+            } else {
+                if !index_nonneg {
+                    out.push(Lir::LocalGet(index_slot));
+                    out.push(Lir::ConstI64(0));
+                    out.push(Lir::I64GeS); // [index >= 0]
+                }
+                if !index_below_len {
+                    out.push(Lir::LocalGet(index_slot));
+                    out.push(Lir::LocalGet(list_slot));
+                    out.push(Lir::CallImport(OP_VEC_LEN)); // [.., index, len:i32]
+                    out.push(Lir::I64ExtendI32U); // [.., index, len:i64]
+                    out.push(Lir::I64LtS); // [(index >= 0,) index < len]
+                }
+                if !index_nonneg && !index_below_len {
+                    out.push(Lir::I32And); // [in_bounds] — both halves survived, combine them
+                }
+                out.push(Lir::If(BlockType::Val(ValType::I32)));
+                emit_some(out);
+                out.push(Lir::Else);
+                // ELSE — None: the unit payload is an empty array.
+                out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
+                // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
+                // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
+                // pushing the derived constant is equivalent and drops one import call per `None` (the same
+                // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
+                // `String.at`/`Bytes.at` None arms to parity).
+                out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
+                out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
+                out.push(Lir::End);
             }
-            out.push(Lir::LocalGet(index_slot));
-            out.push(Lir::LocalGet(list_slot));
-            out.push(Lir::CallImport(OP_VEC_LEN)); // [.., index, len:i32]
-            out.push(Lir::I64ExtendI32U); // [.., index, len:i64]
-            out.push(Lir::I64LtS); // [(index >= 0,) index < len]
-            if !index_nonneg {
-                out.push(Lir::I32And); // [in_bounds]
-            }
-            out.push(Lir::If(BlockType::Val(ValType::I32)));
-            // THEN — Some(element). `vec-get` yields the element handle BORROWED; `dup` retains it (rc++)
-            // so the `Some` payload can own a reference while the list keeps its own. `dup(handle)`
-            // RETURNS NOTHING (it pops the handle and increments its count), so the handle is stashed in
-            // a scratch slot: `tee` (store + keep a copy for `dup`), `dup` (consume that copy, rc++), then
-            // `get` it back as the payload under `disc_some` for `sum-new`.
-            out.push(Lir::ConstI32(disc_some as i32)); // [disc_some]
-            out.push(Lir::LocalGet(list_slot));
-            out.push(Lir::LocalGet(index_slot));
-            out.push(Lir::I32WrapI64); // [disc_some, list, index:i32] — vec-get takes a u32
-            out.push(Lir::CallImport(OP_VEC_GET)); // [disc_some, elem-handle] (borrowed)
-            out.push(Lir::LocalTee(elem_slot)); // [disc_some, elem], elem_slot = elem
-            out.push(Lir::CallImport(OP_DUP)); // pops elem, rc++ → [disc_some]
-            out.push(Lir::LocalGet(elem_slot)); // [disc_some, elem] (the retained handle)
-            out.push(Lir::CallImport(OP_SUM_NEW)); // [Some-handle]
-            out.push(Lir::Else);
-            // ELSE — None: the unit payload is an empty array.
-            out.push(Lir::ConstI32(disc_none as i32)); // [disc_none]
-            // The `None` (nullary) variant's unit payload is the inline-unit CONSTANT (`IMM_UNIT`), NOT a
-            // runtime `arr-alloc(0)` CALL — the runtime's `arr-alloc(0)` returns exactly `imm_unit()`, so
-            // pushing the derived constant is equivalent and drops one import call per `None` (the same
-            // optimization the `SumNew` nullary path already uses; this brings the `List.at`/`Map.lookup`/
-            // `String.at`/`Bytes.at` None arms to parity).
-            out.push(Lir::ConstI32(super::runtime_abi::IMM_UNIT as i32)); // [disc_none, unit-payload]
-            out.push(Lir::CallImport(OP_SUM_NEW)); // [None-handle]
-            out.push(Lir::End);
             if reclaim_list {
                 // [Option] — drop the owned-temporary list now that both borrows (len + get) are done.
                 out.push(Lir::LocalGet(list_slot));
@@ -7768,12 +7788,26 @@ fn emit(
             // runtime reads it as an inspector; see `op_set_to_list` — "BORROWS `s` and `desc`"). So it must
             // be dropped after the op, or every `Set.to-list` call LEAKS the descriptor heap cell. Stash its
             // handle in a scratch slot across the (set, desc)-consuming op call, then drop it.
+            // The SOURCE `set` is ALSO only BORROWED by `set-to-list` — so when it is an OWNED TEMPORARY (a
+            // fresh computed value with no owner slot, e.g. `Set.to-list (Set.of …)`), nothing else reclaims
+            // it and the source set LEAKS one handle per call. Stash it too and drop it after the op when
+            // Owned (a Param/kept-local set is `Borrowed` → left to its owner, never dropped here — mirrors
+            // `SetContains`/`SetLen`). Slots: desc at `base`, the owned source at `base+1`; operands float
+            // above both. The op leaves `[list]` on the stack; the two drops pop only the stashed handles.
+            let set_owned = matches!(heap_operand_ownership(db, set), Ok(HandleOwnership::Owned));
             let desc_slot = base;
-            if desc_slot + 1 > *high {
-                *high = desc_slot + 1;
+            let set_slot = base + 1;
+            if set_slot + 1 > *high {
+                *high = set_slot + 1;
             }
             scratch_ty.insert(desc_slot, ValType::I32);
-            emit(db, set, slots, base + 1, high, scratch_ty, layout, out)?; // [set]
+            if set_owned {
+                scratch_ty.insert(set_slot, ValType::I32);
+            }
+            emit(db, set, slots, base + 2, high, scratch_ty, layout, out)?; // [set]
+            if set_owned {
+                out.push(Lir::LocalTee(set_slot)); // [set], set_slot = the owned source (for the later drop)
+            }
             out.push(Lir::ConstI32(desc.len() as i32)); // [set, len]
             out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [set, desc-buf]
             for (j, &byte) in desc.iter().enumerate() {
@@ -7785,6 +7819,10 @@ fn emit(
             out.push(Lir::CallImport(OP_SET_TO_LIST)); // [set, desc] → [list] (borrows both)
             out.push(Lir::LocalGet(desc_slot)); // [list, desc]
             out.push(Lir::CallImport(OP_DROP)); // → [list] (drop the borrowed-only descriptor Bytes)
+            if set_owned {
+                out.push(Lir::LocalGet(set_slot)); // [list, set]
+                out.push(Lir::CallImport(OP_DROP)); // → [list] (drop the borrowed owned-temporary source set)
+            }
             Ok(()) // leaves [list]
         }
         // `Map.to-list(m)` — the map companion: emit the map, bake a MAP-rooted key/value shape descriptor
@@ -7802,12 +7840,25 @@ fn emit(
             // As in `Set.to-list`: the baked descriptor `Bytes` is an owned temporary `map-to-list` only
             // BORROWS (`op_map_to_list` — "BORROWS `m` and `desc`"), so it must be dropped after the op or
             // every `Map.to-list` call leaks the descriptor heap cell. Stash + drop across the op call.
+            // The SOURCE `map` is ALSO only BORROWED — so when it is an OWNED TEMPORARY (`Map.to-list
+            // (Map.insert …)`, the enumerate→transform→fold idiom with no binding keeping the map live),
+            // nothing reclaims it and the source map LEAKS per call. Stash + drop it after the op when Owned
+            // (a Param/kept-local map is `Borrowed` → left to its owner). Slots: desc at `base`, owned source
+            // at `base+1`; operands float above both.
+            let map_owned = matches!(heap_operand_ownership(db, map), Ok(HandleOwnership::Owned));
             let desc_slot = base;
-            if desc_slot + 1 > *high {
-                *high = desc_slot + 1;
+            let map_slot = base + 1;
+            if map_slot + 1 > *high {
+                *high = map_slot + 1;
             }
             scratch_ty.insert(desc_slot, ValType::I32);
-            emit(db, map, slots, base + 1, high, scratch_ty, layout, out)?; // [map]
+            if map_owned {
+                scratch_ty.insert(map_slot, ValType::I32);
+            }
+            emit(db, map, slots, base + 2, high, scratch_ty, layout, out)?; // [map]
+            if map_owned {
+                out.push(Lir::LocalTee(map_slot)); // [map], map_slot = the owned source (for the later drop)
+            }
             out.push(Lir::ConstI32(desc.len() as i32)); // [map, len]
             out.push(Lir::CallImport(OP_BYTES_ALLOC)); // → [map, desc-buf]
             for (j, &byte) in desc.iter().enumerate() {
@@ -7819,6 +7870,10 @@ fn emit(
             out.push(Lir::CallImport(OP_MAP_TO_LIST)); // [map, desc] → [list] (borrows both)
             out.push(Lir::LocalGet(desc_slot)); // [list, desc]
             out.push(Lir::CallImport(OP_DROP)); // → [list] (drop the borrowed-only descriptor Bytes)
+            if map_owned {
+                out.push(Lir::LocalGet(map_slot)); // [list, map]
+                out.push(Lir::CallImport(OP_DROP)); // → [list] (drop the borrowed owned-temporary source map)
+            }
             Ok(()) // leaves [list]
         }
         // A runtime `Set.contains(s, e)` — the TOTAL membership predicate. Box the element, `set-contains(s,

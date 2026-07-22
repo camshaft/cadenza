@@ -1978,11 +1978,22 @@ impl<'a> Parser<'a> {
         let start = self.cur_span();
         let head = self.keyword_head("if", start);
         self.bump(); // `if`
+        // Own-line `//` comment(s) leading the condition / then-branch / else-branch (`if\n // note\n c
+        // then …`, `if c then\n // note\n t else …`, `else\n // note\n e`) sit in each sub-expr's
+        // first-token leading slot, which `expr` does not drain — capture + wrap `(comment "text" expr)`
+        // so they round-trip (the printer renders a leading comment on its own line above the expr). No
+        // swallow hazard (own-line). Mirrors the collection/let leading-comment capture.
+        let c_lead = self.take_comments_here();
         let c = self.expr(crate::token::PREC_SEQ + 1);
+        let c = self.wrap_comments(c_lead, c);
         self.expect_keyword(Keyword::Then, "`then`");
+        let t_lead = self.take_comments_here();
         let t = self.expr(crate::token::PREC_SEQ + 1);
+        let t = self.wrap_comments(t_lead, t);
         self.expect_keyword(Keyword::Else, "`else`");
+        let e_lead = self.take_comments_here();
         let e = self.expr(crate::token::PREC_SEQ + 1);
+        let e = self.wrap_comments(e_lead, e);
         let span = start.merge(self.prev_span());
         self.list(vec![head, c, t, e], span)
     }

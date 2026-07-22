@@ -6804,38 +6804,33 @@ fn a_recursive_list_fold_leaks_every_node_known_gap() {
     );
 }
 
-/// KNOWN LEAK (tracking probe): `Map.to-list` / `Set.to-list` over an OWNED-TEMPORARY source collection
-/// leaks the source. The `map-to-list`/`set-to-list` runtime ops only BORROW their source (see
-/// `op_map_to_list`/`op_set_to_list` — "BORROWS `m`/`s` and `desc`") — so when the source is a fresh owned
-/// temporary (e.g. `Map.to-list (Map.insert … )`, the enumerate→transform→fold idiom with no binding keeping
-/// the map live), nothing reclaims it and the source collection LEAKS one handle (+ its boxed entries) per
-/// call. VALUE-CORRECT + NON-OOB (the source outlives the borrow; nothing freed early), so only the
-/// live-objects counter sees it. This is DISTINCT from the producers already reclaimed (`ListConcat`/
-/// `ListPush`/`Map.insert` etc. are classified Owned + dropped after a borrowing op): the to-list EMIT arm
-/// drops only the descriptor Bytes, NOT the borrowed owned-temporary source.
-///
-/// ⚠ The sound fix is NOT a one-line `heap_operand_ownership` classification (that governs the to-list
-/// RESULT, not its source) — it needs the to-list EMIT arm to stash + drop the source when Owned, with
-/// careful scratch-slot accounting (a naive attempt collided slots and made the leak WORSE). Deferred to a
-/// focused reclaim-emit increment (v-memory-safety lane, select.rs ~7761/~7792) with the full UAF oracle
-/// battery. This witness pins the current leak so a regression that WORSENS it — or a spurious UAF that
-/// makes it 0-via-double-free — is caught; flip to `== 0` when the source-reclaim increment lands.
-/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
+/// DIRECT leak witness (RESOLVED — was `..._leaks_it_known_gap`): `Map.to-list` / `Set.to-list` over an
+/// OWNED-TEMPORARY source collection RECLAIMS the source. The `map-to-list`/`set-to-list` runtime ops only
+/// BORROW their source (see `op_map_to_list`/`op_set_to_list` — "BORROWS `m`/`s` and `desc`") — so when the
+/// source is a fresh owned temporary (e.g. `Map.to-list (Map.insert … )`, the enumerate→transform→fold idiom
+/// with no binding keeping the map live), the to-list EMIT arm now stashes it and drops it after the op
+/// (mirroring `SetContains`/`SetLen` reclaiming their borrowed owned-temporary source). Previously it dropped
+/// only the descriptor Bytes, NOT the source, so the source LEAKED one handle (+ boxed entries) per call.
+/// A Param/kept-local source is `Borrowed` → left to its owner (never dropped here), so a shared source is
+/// never double-freed. This is the SOURCE face; the RESULT-list face (the fresh list the enumeration returns)
+/// is reclaimed by the `MapToList`/`SetToList` Owned classification + covered by
+/// `map_or_set_to_list_result_over_a_borrowed_source_reclaims_the_fresh_list`. `#[ignore]` — needs the
+/// debug-counters store (`cargo xtask build`), run with `-- --ignored`.
 #[test]
 #[ignore]
-fn map_or_set_to_list_over_an_owned_temporary_source_leaks_it_known_gap() {
+fn map_or_set_to_list_over_an_owned_temporary_source_reclaims_it() {
     use crate::testkit::parse;
     use wasmtime::component::Val;
 
     let Some(runtime_bytes) = find_debug_runtime_wasm() else {
         eprintln!(
-            "[to-list-src] debug-counters runtime not in the store; skipping known-leak probe"
+            "[to-list-src] debug-counters runtime not in the store; skipping source-reclaim probe"
         );
         return;
     };
     // A RUNTIME map (built by a loop so it can't const-fold), enumerated N× with each fresh list borrowed by
     // `List.len` then discarded. The source map `(build 0 3 (map))` is an owned temporary `Map.to-list` only
-    // borrows → it leaks per iteration. VALUE-CORRECT (3 entries → len 3 × 500 = 1500) proves NO UAF.
+    // borrows → the emit must reclaim it. VALUE-CORRECT (3 entries → len 3 × 500 = 1500) proves NO UAF.
     let src = "(module m \
                  (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64))) \
                      (if (< i n) (build (+ i 1) n ((. Map insert) mp i (* i 10))) mp)) \
@@ -6849,15 +6844,33 @@ fn map_or_set_to_list_over_an_owned_temporary_source_leaks_it_known_gap() {
         Val::S64(1500),
         "500 iters × List.len(Map.to-list of a 3-entry map) = 3 each = 1500 (value-correct + NO UAF)"
     );
-    // KNOWN LEAK (pinned): the borrowed owned-temporary source map is left un-dropped by the to-list emit.
-    // Assert PRESENT + BOUNDED so a regression that worsens it, or a spurious 0-via-double-free UAF, is caught.
-    // Flip to `assert_eq!(rt.live_objects(), 0, …)` when the to-list source-reclaim increment lands.
-    let live = rt.live_objects();
-    assert!(
-        live > 0 && live <= 5000,
-        "to-list owned-temporary SOURCE leak: expected a KNOWN bounded leak (the borrowed source map per \
-         iter × 500) pending the to-list emit source-reclaim fix — got {live}. If 0, the fix may have landed \
-         (flip to == 0); if far above 5000, a NEW leak compounded it."
+    // Both the fresh RESULT list AND the owned-temporary SOURCE map are reclaimed each iter → net 0. A
+    // per-iteration leak = the source (or result) reclaim regressed; a trap above = an over-drop double-free.
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "Map.to-list owned-temporary SOURCE reclaim: the borrowed owned-temporary source map (and the fresh \
+         result list) must both be reclaimed after the borrow — expected 0 live cells. > 0 = the source \
+         reclaim regressed; a trap above = an over-drop of a shared source."
+    );
+    // Set.to-list companion: an owned-temporary SET source, result borrowed by List.len — same net-0.
+    let set_src = "(module m \
+                 (def (build (: i Int64) (: n Int64) (: s (Set Int64))) \
+                     (if (< i n) (build (+ i 1) n ((. Set insert) s i)) s)) \
+                 (def (loop (: j Int64) (: n Int64) (: tot Int64)) \
+                     (if (< j n) (loop (+ j 1) n (+ tot ((. List len) ((. Set to-list) (build 0 3 ((. Set of) (list))))))) tot)) \
+                 (def (main (: n Int64)) (loop 0 n 0)) (export main))";
+    let sp = compile_component(&crate::codec::encode(&parse(set_src))).expect("compile");
+    let mut rts = ComposedRuntime::new(&sp, &runtime_bytes);
+    assert_eq!(
+        rts.call("main", &[Val::S64(500)]),
+        Val::S64(1500),
+        "500 iters × List.len(Set.to-list of 3 elems) = 3 each = 1500 (value-correct + NO UAF)"
+    );
+    assert_eq!(
+        rts.live_objects(),
+        0,
+        "Set.to-list owned-temporary SOURCE reclaim: source set + result list both reclaimed → 0 live cells."
     );
 }
 
@@ -14540,6 +14553,80 @@ mod runtime_ops {
         assert_eq!(run::<i64>("(: n Int64)", ge_edge_s, &[Val::S64(5)]), 2); // boundary: outer yes, inner no
         assert_eq!(run::<i64>("(: n Int64)", ge_edge_s, &[Val::S64(7)]), 1);
         assert_eq!(run::<i64>("(: n Int64)", ge_edge_s, &[Val::S64(0)]), 3);
+    }
+
+    #[test]
+    fn a_below_len_guard_elides_the_matching_list_ats_own_bounds_check_but_not_a_different_lists() {
+        // BOUNDED-INDEX (below-len) FACET — operator-greenlit bounds-elision. Inside the then-branch of
+        // `(< i (List.len xs))`, the index `i` is flow-known `< len(xs)`, so a `List.at xs i` there can shed
+        // its OWN redundant `index < len` bounds check (the enclosing guard already proved it). Both the
+        // guard `(List.len xs)` and `List.at`'s internal check emit a `vec-len` (OP_VEC_LEN), so on a
+        // RUNTIME-length list the un-optimized emit has TWO; the facet drops List.at's, leaving ONE.
+        //   • `guarded` — `List.at xs i` under `(< i (List.len xs))`: List.at's vec-len is ELIDED → ONE
+        //     remains (the guard's). The FIRING assertion (confirmed against a facet-disabled baseline of 2).
+        //   • `crosslist` — `List.at ys i` under the SAME `(< i (List.len xs))` guard: the fact is keyed on
+        //     COLLECTION IDENTITY, so a guard on `xs` must NOT license eliding `ys`'s check (that would be an
+        //     out-of-bounds read) → List.at's vec-len STAYS, giving TWO. The SOUNDNESS assertion.
+        // The lists MUST be RUNTIME-length (an `(if … (list …) (list …))` whose length depends on `i`): a
+        // const-length `(list …)`/`List.push` folds `List.len` to a `ConstInt`, so the guard emits no
+        // `Core::ListLen` for the establisher to see — the interval facet already covers that case.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let veclen_count = |src: &str, name: &str| -> usize {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+                .iter()
+                .filter(|i| matches!(i, Lir::CallImport("vec-len")))
+                .count()
+        };
+        // FIRES: the guarded matching-list access elides List.at's own vec-len — only the guard's remains.
+        let guarded = veclen_count(
+            "(module m \
+               (def (f (: i Int64)) \
+                 (let ((xs (if (> i 100) (list 10 20) (list 10 20 30)))) \
+                   (if (< i (List.len xs)) (List.at xs i) (None unit)))) \
+               (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            guarded, 1,
+            "the `(< i (List.len xs))` guard should elide `List.at xs i`'s own bounds check — only the \
+             guard's own vec-len should remain (got {guarded})"
+        );
+        // SOUND: a guard on `xs` must NOT elide a `List.at ys i` on a DIFFERENT list — both vec-lens stay.
+        let crosslist = veclen_count(
+            "(module m \
+               (def (f (: i Int64)) \
+                 (let ((xs (if (> i 100) (list 10 20) (list 10 20 30))) \
+                       (ys (if (> i 100) (list 1) (list 1 2)))) \
+                   (if (< i (List.len xs)) (List.at ys i) (None unit)))) \
+               (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            crosslist, 2,
+            "a guard on `xs` must NOT license eliding `List.at ys i`'s check (collection-identity \
+             soundness) — the guard's vec-len AND List.at's vec-len both stay (got {crosslist})"
+        );
     }
 
     #[test]

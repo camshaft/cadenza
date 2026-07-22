@@ -773,14 +773,27 @@ pub(crate) struct SimpleListBinders {
 /// WIDENS (set-union of possibilities) and the MEET (at a refinement) NARROWS (intersection): a
 /// refinement may only shrink the set to values the branch condition GUARANTEES.
 ///
-/// Slice 1 populates ONLY `int_range` (a behavior-identical port of the former bare `(i64, Option<i64>)`
-/// interval tuple); the other facets are reserved for later slices (nonzero → div-by-zero elision,
-/// len_range → bounds elision, variant_tags → redundant-match elision) and are always ⊤ today.
+/// Slice 1 populates `int_range` (a behavior-identical port of the former bare `(i64, Option<i64>)`
+/// interval tuple); the bounded index<len bounds facet (operator-greenlit) adds `below_len` (a RELATIONAL
+/// fact: this index is `< len(collection)`); the remaining facets are reserved for later slices (nonzero →
+/// div-by-zero elision) and are always ⊤ today. `variant_tags` was tried and REMOVED — the lower tier
+/// already absorbs same-scrutinee nested-match discriminant elision (slice-5, 7828dbd9c).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ValueFact {
     /// Signed integer interval `[lo, hi]` (`hi = None` ⇒ unbounded above) KNOWN to hold here — SUBSUMES the
     /// former `(i64, Option<i64>)` refinement tuple. `None` ⇒ no interval fact (⊤).
     pub(crate) int_range: Option<(i64, Option<i64>)>,
+    /// The BOUNDED-INDEX facet (operator-greenlit bounds-elision): the binder of a COLLECTION whose LENGTH
+    /// this value is KNOWN to be strictly below in the current branch — established by an enclosing
+    /// `(< i (List.len xs))` guard (then-branch), which proves `i < len(xs)`. A `List.at xs i` under this
+    /// fact can shed its OWN redundant `index < len` bounds check (the enclosing guard already proved it),
+    /// exactly as `int_range`'s non-negativity sheds the `index >= 0` half. `None` ⇒ no below-len fact (⊤).
+    /// KEYED ON COLLECTION IDENTITY: a fact for `xs` never licenses eliding a check on a DIFFERENT list —
+    /// the consumer matches the accessed list's binder, so a guard on `ys` cannot silently drop `xs`'s
+    /// check (that would be an out-of-bounds read). This is a RELATIONAL fact (index-binder → collection-
+    /// binder), NOT an interval, so it joins by IDENTITY-equality (a control-flow merge keeps it only when
+    /// BOTH sides agree on the same collection — see `join`).
+    pub(crate) below_len: Option<StructId>,
 }
 
 impl ValueFact {
@@ -788,6 +801,7 @@ impl ValueFact {
     pub(crate) fn from_int_range(lo: i64, hi: Option<i64>) -> ValueFact {
         ValueFact {
             int_range: Some((lo, hi)),
+            below_len: None,
         }
     }
 }
@@ -2846,6 +2860,16 @@ impl Db {
         // Project out the `int_range` facet — slice 1 populates only that, so this is the same interval
         // the interval consumers saw before the `ValueFact` widening.
         self.range_refinements.last()?.get(&b)?.int_range
+    }
+
+    /// The COLLECTION binder that the index binder `b` is flow-known to be `< len(...)` of, in the CURRENT
+    /// branch (the below-len facet). `Some(coll)` ⇒ an enclosing `(< b (List.len coll))` guard proved
+    /// `b < len(coll)` here, so a `List.at coll b` can shed its own `index < len` check. `None` when no
+    /// branch context is active or `b` carries no below-len fact — the caller keeps the runtime check.
+    /// Reads only the TOP frame (like `refined_range`): the fact is branch-scoped, pushed on entry and
+    /// popped on exit, never merged across a control-flow join.
+    pub(crate) fn refined_below_len(&self, b: StructId) -> Option<StructId> {
+        self.range_refinements.last()?.get(&b)?.below_len
     }
 
     /// The current (top) refinement frame, or an empty map — so the `if` emit can clone it as the base a
