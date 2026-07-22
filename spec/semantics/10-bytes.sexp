@@ -1367,3 +1367,54 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 1 Int64)))
+
+; --- Bytes rope SCALE (the composition pins above stay small; these push seam counts to hundreds) ---
+
+(case "a 500-iteration Bytes.concat loop measures exactly and indexes both extremes"
+  (doc    "1001 bytes across ~500 seams: a 1-byte head then 500 (7,8) pairs. `Bytes.len` = 1001 (no seam
+           drop/double-count), byte 0 = 1 (the head leaf), byte 1000 = 8 (the deepest right-spine leaf's
+           last byte). 1001·10000 + 1·100 + 8 = 10010108. The Bytes twin of the 1000-concat String rope
+           pin — the two rope representations lower separately.")
+  (input  (do
+            (def (build (: n Int64) (: acc Bytes))
+              (if (< n 1) acc (build (- n 1) (Bytes.concat acc (Bytes.of (list 7 8))))))
+            (def (main (: n Int64))
+              (let ((b (Bytes.concat (Bytes.of (list 1)) (build n (Bytes.of (list))))))
+                (+ (* 10000 (Bytes.len b))
+                   (+ (* 100 (match (Bytes.at b 0) ((Some v) v) ((None u) -1)))
+                      (match (Bytes.at b (* n 2)) ((Some v) v) ((None u) -1))))))
+            (export main)))
+  (call   main (: 500 Int64))
+  (output (: 10010108 Int64)))
+
+(case "a slice window spanning MANY seams of a built rope reads the logical bytes"
+  (doc    "The seam-crossing slice at scale (the const seam pin crosses ONE): a 102-byte window starting
+           at byte 99 of a 400-byte 200-seam rope spans ~51 leaf boundaries. Its length is 102 and its
+           byte 0 is the parent's byte 99 (odd index → 8): 102+8 = 110. A slice walk that miscounted a
+           seam lands the window one byte off; a length computed per-leaf would drift.")
+  (input  (do
+            (def (build (: n Int64) (: acc Bytes))
+              (if (< n 1) acc (build (- n 1) (Bytes.concat acc (Bytes.of (list 7 8))))))
+            (def (main (: n Int64))
+              (match (Bytes.slice (build n (Bytes.of (list))) 99 102)
+                ((Some w) (+ (Bytes.len w)
+                             (match (Bytes.at w 0) ((Some v) v) ((None u) -1))))
+                ((None u) -2)))
+            (export main)))
+  (call   main (: 200 Int64))
+  (output (: 110 Int64)))
+
+(case "String.from-bytes decodes a 400-byte 200-seam rope end to end"
+  (doc    "The total UTF-8 decode over a DEEP rope: 200 (97,98) pairs = \"abab…\" — the decoder must
+           walk every leaf in order (a well-formedness check that stopped at the first leaf, or a decode
+           that flattened only a prefix, mismeasures). byte-len 400.")
+  (input  (do
+            (def (build (: n Int64) (: acc Bytes))
+              (if (< n 1) acc (build (- n 1) (Bytes.concat acc (Bytes.of (list 97 98))))))
+            (def (main (: n Int64))
+              (match (String.from-bytes (build n (Bytes.of (list))))
+                ((Some s) (String.byte-len s))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 200 Int64))
+  (output (: 400 Int64)))

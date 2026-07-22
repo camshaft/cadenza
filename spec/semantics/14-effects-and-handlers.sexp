@@ -3000,6 +3000,59 @@
             (export main)))
   (call   main (: 30 Int64)) (output (: 360 Int64)))
 
+(case "a closure capturing a handler-computed VALUE escapes the handle and applies outside"
+  (doc    "The escaping-closure acceptance witness (breaker finding, fixed): the perform runs INSIDE the
+           handle (`base = (Cfg.get unit)`), the closure captures the resulting plain VALUE — performing
+           nothing itself — and escapes as the handle's result, applied OUTSIDE (2+40 = 42). The escape
+           analysis must distinguish 'a perform occurred in the body that built this closure' from 'this
+           closure performs' (it once rejected CDZ0401 on exactly this shape); the correct-reject twin —
+           a closure whose BODY performs escaping — stays rejected elsewhere.")
+  (input  (do
+            (effect Cfg (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (let ((f (handle Cfg n
+                         ((get (u) s (resume s s)))
+                         (let ((base (Cfg.get unit)))
+                           (fn ((: x Int64)) (+ x base))))))
+                (f 40)))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 42 Int64)))
+
+(case "TWO closures escaping one handle carry DISTINCT captured state reads"
+  (doc    "The two-capture composition: both closures capture different reads of the SAME advancing
+           counter (a = seed, b = seed+1) and escape in one tuple; applied outside, each must see ITS
+           read — f(100) = 100+3, g(10) = 10·4 → 143. An environment that shared one capture slot (or
+           re-read the final state for both) collapses a and b.")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (match (handle Ctr n
+                       ((next (u) s (resume s (+ s 1))))
+                       (tuple (let ((a (Ctr.next unit))) (fn ((: x Int64)) (+ x a)))
+                              (let ((b (Ctr.next unit))) (fn ((: x Int64)) (* x b)))))
+                ((tuple f g) (+ (f 100) (g 10)))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 143 Int64)))
+
+(case "a closure built OUTSIDE a handler is applied INSIDE it beside performs"
+  (doc    "The inbound direction: a pure closure constructed before the handle is applied within the
+           handle body with a PERFORM as its argument — `(f (Ctr.next unit))` reads the seed 4 through
+           the ×10 capture, the second perform reads 5 → 45. The closure's environment predates the
+           handler frame; application under the handler must not confuse the capture with handler state.")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (def (mk (: k Int64)) (fn ((: x Int64)) (* x k)))
+            (def (main (: n Int64))
+              (let ((f (mk 10)))
+                (handle Ctr n
+                  ((next (u) s (resume s (+ s 1))))
+                  (+ (f (Ctr.next unit)) (Ctr.next unit)))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 45 Int64)))
+
 (case "the heap list a handle BUILDS escapes the handle and is consumed outside it"
   (doc    "The handle's VALUE is a heap list, and it flows OUT of the handle into the enclosing scope. Unlike
            the case above (which reads `List.len` INSIDE the handle body), here the `handle` expression is

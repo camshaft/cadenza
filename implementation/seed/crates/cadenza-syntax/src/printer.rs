@@ -2549,15 +2549,40 @@ impl<'a> Printer<'a> {
         // is always printed, including on the first arm). No braces, no trailing commas.
         let arms = &args[1..];
         for (i, &raw_arm) in arms.iter().enumerate() {
+            // Peel ALL comment wrappers around the arm, in a LOOP over either nesting order (a decoded
+            // AST may nest `(comment-after t (comment lead (pat body)))` or vice versa; `is_match_shape`
+            // accepts any via `strip_field_comments`, so the printer must be total — PR#768-class). A
+            // LEADING `(comment …)` prints as a `// …` line ABOVE the arm (before its `| `); a TRAILING
+            // `(comment-after …)` is collected to print AFTER the body, same line.
+            let mut arm = raw_arm;
+            let mut lead_texts: Vec<StructId> = Vec::new();
+            let mut trail_texts: Vec<StructId> = Vec::new();
+            loop {
+                if let Some(a) = self.a.as_form(arm, "comment")
+                    && a.len() == 2
+                    && self.is_string(a[0])
+                {
+                    lead_texts.push(a[0]);
+                    arm = a[1];
+                    continue;
+                }
+                if let Some(a) = self.a.as_form(arm, "comment-after")
+                    && a.len() == 2
+                    && self.is_string(a[0])
+                {
+                    trail_texts.push(a[0]);
+                    arm = a[1];
+                    continue;
+                }
+                break;
+            }
+            // Leading comments, each on its own line above the arm (outermost first — source top-down).
+            for &text in &lead_texts {
+                self.doc.hardbreak();
+                self.doc.word(format!("//{}", self.doc_line_text(text)));
+            }
             self.doc.hardbreak();
             self.doc.word("| ");
-            // An arm may be `(comment-after "text" (pat body))` — a `//` that trailed the arm on its
-            // line. Unwrap to the real arm; the trailing comment prints AFTER the body, same line.
-            let arm = self.strip_comment_after(raw_arm);
-            let trailing = self
-                .a
-                .as_form(raw_arm, "comment-after")
-                .filter(|a| a.len() == 2);
             if let Struct::List(pair) = self.a.get(arm) {
                 let (pat, body) = (pair[0], pair[1]);
                 self.pattern(pat);
@@ -2569,8 +2594,9 @@ impl<'a> Printer<'a> {
                 let last = i + 1 == arms.len();
                 self.expr(body, if last { 0 } else { PREC_KEYWORD });
             }
-            if let Some(a) = trailing {
-                self.doc.word(format!(" //{}", self.doc_line_text(a[0])));
+            // Trailing comments after the body, same line (innermost closest to the body).
+            for &text in trail_texts.iter().rev() {
+                self.doc.word(format!(" //{}", self.doc_line_text(text)));
             }
         }
         if paren {
@@ -3387,9 +3413,10 @@ impl<'a> Printer<'a> {
             return false;
         }
         args[1..].iter().all(|&a| {
-            // An arm may be wrapped in `(comment-after "text" arm)` (a `//` trailing the arm on its
-            // line) — unwrap to the real arm before checking it's a 2-element `(pat body)`.
-            let arm = self.strip_comment_after(a);
+            // An arm may be wrapped in a LEADING `(comment …)` (an own-line `//` above the arm) and/or a
+            // TRAILING `(comment-after …)` (a `//` on the arm's line) — peel both to the real arm before
+            // checking it's a 2-element `(pat body)`.
+            let arm = self.strip_field_comments(a);
             matches!(self.a.get(arm), Struct::List(p) if p.len() == 2)
         })
     }
@@ -7172,6 +7199,62 @@ mod tests {
                 .count(),
             2,
             "the `(comment-after …)` arm-comments survive the round-trip"
+        );
+    }
+
+    #[test]
+    fn an_own_line_comment_leading_a_match_arm_is_preserved_not_dropped() {
+        // An own-line `//` above a match arm (`match x with\n  // note\n  | 0 => …`) used to be DROPPED
+        // (it sat in the arm's `|`/pattern leading slot, which the arm loop didn't drain → the whole match
+        // fell to the generic call form). match_expr now drains it (before the `|` bump) and wraps the arm
+        // `(comment "text" (pat body))`; `is_match_shape` unwraps via `strip_field_comments` and
+        // `print_match` renders the comment as a `// …` line above the arm's `| `. Own-line, no swallow
+        // hazard → captured on any arm. `strip_comments` peels it (compiles to wasm).
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml(
+                    "def f(x: Int64) -> Int64 = match x with\n  // note\n  | 0 => 0\n  | _ => 1"
+                )
+                .arenas
+            ),
+            "(def (f (: x Int64)) (: (match x (comment \"note\" (0 0)) (_ 1)) Int64))",
+            "own-line comment before the first arm is captured, not dropped"
+        );
+        // Before a NON-first arm too:
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml(
+                    "def f(x: Int64) -> Int64 = match x with\n  | 0 => 0\n  // mid\n  | _ => 1"
+                )
+                .arenas
+            ),
+            "(def (f (: x Int64)) (: (match x (0 0) (comment \"mid\" (_ 1))) Int64))",
+            "own-line comment before a non-first arm is captured"
+        );
+        // Renders above the `| ` and round-trips (idempotent).
+        let src = "def f(x: Int64) -> Int64 = match x with\n  // note\n  | 0 => 0\n  | _ => 1";
+        let printed = print(&parser::read_ml(src).arenas, 80);
+        assert!(
+            printed.contains("with\n  // note\n  | 0 =>"),
+            "leading comment prints on its own line above the arm: {printed}"
+        );
+        assert_eq!(
+            print(&parser::read_ml(&printed).arenas, 80),
+            printed,
+            "idempotent"
+        );
+        // Leading + trailing on one arm compose (nesting normalizes idempotently, nothing dropped).
+        let combo =
+            "def f(x: Int64) -> Int64 = match x with\n  // lead\n  | 0 => 0 // t\n  | _ => 1";
+        let p1 = print(&parser::read_ml(combo).arenas, 80);
+        assert_eq!(
+            print(&parser::read_ml(&p1).arenas, 80),
+            p1,
+            "lead+trail idempotent"
+        );
+        assert!(
+            p1.contains("// lead") && p1.contains("// t"),
+            "both the leading and trailing arm comments survive: {p1}"
         );
     }
 

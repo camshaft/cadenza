@@ -25,6 +25,7 @@ pass	@invariant PRESERVE: an operation returning T discharges the result invaria
 pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `self` + prelude are in scope)
 pass	@requires is enforced when the guarded def is applied through a first-class fn value
 pass	@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)
+pass	@requires over a HEAP argument reads the list's content at body entry
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -99,13 +100,16 @@ pass	Map.to-list over runtime STRING keys enumerates in content byte order (firs
 pass	Set.contains dispatches on an Option element at a runtime payload
 pass	Set.intersection and Set.difference match a view against a flat element across operands
 pass	Set.union dedups a slice-view element against a flat twin ACROSS the operand boundary
+pass	String.from-bytes decodes a 400-byte 200-seam rope end to end
 pass	String.from-bytes of a runtime slice decodes the WINDOW only
 pass	Symbol.of over a slice of a dying rope interns the WINDOW content
+pass	TWO closures escaping one handle carry DISTINCT captured state reads
 pass	a 1000-element set drains through Set.remove to empty
 pass	a 1000-iteration concat loop builds a 4000-byte rope measured exactly
 pass	a 100k-iteration pure tail loop under a handler runs in constant stack
 pass	a 2000-entry built map answers first, middle, and last keys through deep CHAMP levels
 pass	a 2000-entry map fully drains to empty and regrows on the emptied trie
+pass	a 500-iteration Bytes.concat loop measures exactly and indexes both extremes
 pass	a 5000-element pushed list reads head, middle, and last through the deeper trie
 todo	a @param drives a recursive fold's iteration count
 todo	a @param selects a match arm and a SECOND param feeds the selected body
@@ -117,6 +121,7 @@ pass	a MAX-fold over quantities compares through the erased unit wrapper per ste
 pass	a NESTED float tuple as a SET element dedups by deep content
 pass	a NON-tail heap-spine build 5000 deep constructs and drains through real frames
 pass	a NON-tail recursion 10000 deep computes through real stack frames
+pass	a PER-CALL-selected runtime symbol dispatches through the = chain
 pass	a PERFORMING tail loop of 10000 iterations threads state in constant space
 pass	a PURE closure iterated by a recursive combinator composes with a perform in the same body
 pass	a Rational ENTRY parameter crosses the boundary and reduces per call
@@ -131,7 +136,9 @@ pass	a Type.eq width dispatcher answers per WRITTEN type at two call sites in on
 pass	a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value
 pass	a VIOLATED @ensures traps when the def arrives through a runtime branch
 pass	a bin tag-dispatch over a RUNTIME-START slice reads the re-based window per call
+pass	a closure built OUTSIDE a handler is applied INSIDE it beside performs
 pass	a closure built OVER another closure applies both capture layers
+pass	a closure capturing a handler-computed VALUE escapes the handle and applies outside
 pass	a constructed huge Ast.Int equals its quoted twin
 pass	a deep rope indexes by scalar at both extremes
 pass	a fitting Float32 literal in a runtime MATCH arm computes
@@ -1171,6 +1178,7 @@ pass	a slice at a RUNTIME start re-bases indexing per call
 pass	a slice of a runtime-start SLICE composes both offsets
 pass	a slice reads correctly after its parent binding's last direct use
 pass	a slice returned from a helper OUTLIVES the helper's local parent
+pass	a slice window spanning MANY seams of a built rope reads the logical bytes
 pass	a slice-view SET element dedups against its flat twin in a Set.of batch build
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a success `?` unwraps a RUNTIME Ok payload under a Result boundary
@@ -2106,6 +2114,7 @@ pass	a reduce-shaped wrapper seeding a second generic helper at two element type
 pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a redundant relational check inside its own truthy branch is known-true and its dead branch is eliminated
 pass	alternating prepend and push keep both list ends straight
+pass	an @invariant newtype constructed INSIDE a handler arm establishes per resume
 todo	an Ast as a MAP key looks up by structural content
 pass	an Ast.Int carries a BEYOND-64-bit literal losslessly through quote
 pass	an Option-of-Option classifies three ways at RUNTIME through one compiled match

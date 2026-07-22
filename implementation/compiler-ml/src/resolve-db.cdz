@@ -282,4 +282,30 @@ def rd-nullary-call-body-is-lexical-no-caller-capture() =
           (if resolved-poison(tree, root, mkBodyId) then unit
            else trap("callee body var resolves LEXICALLY (fresh scope) → Poison, NOT captured by the caller let")))))))
 
-export { Resolved.*, resolve-tree, resolved-at, resolved-count, resolved-to, resolved-poison }
+@test
+def rd-standalone-body-resolve-contract-b1b() =
+  // B1b CONTRACT PIN: `lower-def-env` (lower-db) will resolve each def body STANDALONE in its param scope,
+  // via the now-EXPORTED `param-scope` + `resolve-node` primitives (mirrors how infer-db exports infer-node /
+  // lower-db exports lower-node for cross-module column building). This pins that composing them on a
+  // recursive body TERMINATES and binds the body's param vars — the exact use B1b depends on. Body:
+  //   if (n < 1) then 1 else (n * (fac (n - 1)))   — param n = NVar(1) at paramId; self-call NApp(900, sub).
+  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
+    (match add-node(t1, Node.NVar(1)) with | (nCond, t2) =>
+      (match add-node(t2, Node.NLit(1)) with | (oneCond, t3) =>
+        (match add-node(t3, Node.NBin(60, nCond, oneCond)) with | (condId, t4) =>
+          (match add-node(t4, Node.NLit(1)) with | (thenId, t5) =>
+            (match add-node(t5, Node.NVar(1)) with | (nMul, t6) =>
+              (match add-node(t6, Node.NVar(1)) with | (nArg, t7) =>
+                (match add-node(t7, Node.NLit(1)) with | (oneArg, t8) =>
+                  (match add-node(t8, Node.NBin(45, nArg, oneArg)) with | (subId, t9) =>
+                    (match add-node(t9, Node.NApp(900, subId)) with | (callId, t10) =>
+                      (match add-node(t10, Node.NBin(42, nMul, callId)) with | (elseId, t11) =>
+                        (match add-node(t11, Node.NIf(condId, thenId, elseId)) with | (bodyId, t12) =>
+                          (let tree = record-def(t12, 900, bodyId) in
+                           (let scope = param-scope(tree, paramId, (Map.empty : Map(Int64, Int64))) in
+                            (let col = resolve-node(tree, bodyId, scope, (Map.empty : Map(Int64, Resolved))) in
+                             (match Map.lookup(col, nMul) with
+                               | Option.Some(Resolved.RBound(b)) => (if b == paramId then unit else trap("body param n binds to paramId"))
+                               | _ => trap("standalone body resolve should bind param n to RBound(paramId)")))))))))))))))))
+
+export { Resolved.*, resolve-tree, resolve-node, param-scope, resolved-at, resolved-count, resolved-to, resolved-poison }

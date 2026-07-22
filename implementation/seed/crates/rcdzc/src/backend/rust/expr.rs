@@ -4218,6 +4218,20 @@ fn emit_sum_match(
 /// declined (a later slice). This is what lets a RUNTIME nested sum match render on the Rust backend, the
 /// two-compiler companion of the wasm decision-tree walk.
 #[allow(clippy::too_many_arguments)]
+/// The refinement KEY (a `Param`/`LocalRef` binder `StructId`) a scrutinee resolves to, or `None`. Resolved
+/// via the CORE_OF-FREE `resolved_of` (NOT `core_of`), for the same reason as the wasm twin: `core_of` on a
+/// CALL scrutinee β-reduces/inlines the callee, minting fresh nodes that renumber a payload occurrence out
+/// of the upfront-computed dup/borrow sites → a use-after-free. `resolved_of` never reduces.
+fn refinement_binder_of(db: &mut Db, scrutinee: StructId) -> Option<StructId> {
+    match crate::resolve::resolved_of(db, scrutinee) {
+        crate::resolved::Resolved::Param { binder } => Some(binder),
+        crate::resolved::Resolved::Ref { value } if db.kept_bindings.contains(&value) => {
+            Some(value)
+        }
+        _ => None,
+    }
+}
+
 fn emit_sum_switch(
     db: &mut Db,
     scrutinee: StructId,
@@ -4254,6 +4268,23 @@ fn emit_sum_switch(
     // scrutinee via `ty_at_sum_path` (which then falls back to the disc-0 payload for a `Payload` step).
     let subject_ty = lookup_sum_path_type(ctx, sw_path)
         .unwrap_or_else(|| ty_at_sum_path(db, scrutinee, sw_path));
+    // VARIANT-REFINEMENT ELISION (slice-5, rust twin of the wasm `emit_sum_match_arms` consult): a switch on
+    // the SCRUTINEE ITSELF (`sw_path` empty) whose scrutinee binder is refined to a known variant `K` by an
+    // enclosing arm emits ONLY the `K` arm's continuation (or the default) — no `match`, no disc test. Fail-
+    // closed. Reads the DISJOINT `variant_refinements` stack; gated on `variant_refinement_active()` first;
+    // `refinement_binder_of` is core_of-free so it never inlines a call scrutinee. Sound because the
+    // enclosing arm already bound this variant's payload into `ctx`.
+    if sw_path.is_empty()
+        && db.variant_refinement_active()
+        && let Some(binder) = refinement_binder_of(db, scrutinee)
+        && let Some(disc) = db.refined_variant(binder)
+        && let Some(arm) = arms
+            .iter()
+            .find(|a| a.disc == Some(disc))
+            .or_else(|| arms.iter().find(|a| a.disc.is_none()))
+    {
+        return emit_sum_cont(db, scrutinee, &arm.cont, result_it, env, ctx);
+    }
     // GROUNDED-DECL CONSISTENCY GUARD (fold-miscompile hazard, coordinated with v-inference). When
     // inference's SCC return-type-fixpoint grounds `subject_ty` (e.g. the `(tuple (fold a) (fold b))`
     // elements of the bottom-up-fold idiom), a resolved `Ty::Sum` reaches here where before it was
@@ -4332,7 +4363,26 @@ fn emit_sum_switch(
                     }
                     (format!("({name})"), c)
                 };
-                let cont = emit_sum_cont(db, scrutinee, &arm.cont, result_it, env, &arm_ctx)?;
+                // Refine the scrutinee to variant `disc` for this arm's body (slice-5 nested-match elision):
+                // a nested `match x` on the same scrutinee folds to its known arm. Only at the root
+                // (`sw_path` empty) over a bare-variable scrutinee (core_of-free resolve); the DISJOINT
+                // `variant_refinements` stack keeps it invisible to the interval/Perceus consumers. Pop on
+                // every exit path (incl. `?`).
+                let pushed_variant = if sw_path.is_empty()
+                    && let Some(binder) = refinement_binder_of(db, scrutinee)
+                {
+                    let mut frame = crate::fxhash::FxHashMap::default();
+                    frame.insert(binder, disc);
+                    db.push_variant_refinement(frame);
+                    true
+                } else {
+                    false
+                };
+                let cont = emit_sum_cont(db, scrutinee, &arm.cont, result_it, env, &arm_ctx);
+                if pushed_variant {
+                    db.pop_variant_refinement();
+                }
+                let cont = cont?;
                 out.push_str(&format!("{vpath}{pat_tail} => {cont}, "));
             }
             None => {

@@ -3119,3 +3119,39 @@
   (trap   "unreachable")
   (call   main (: false Bool) (: 3 Int64))
   (output (: 3 Int64)))
+
+(case "@requires over a HEAP argument reads the list's content at body entry"
+  (doc    "The heap-argument face of the precondition (the enforcement pins guard scalars): `head-of` is
+           guarded by `(> (List.len xs) 0)`, so the check must WALK the heap argument (an RRB len read)
+           at body entry — a non-empty call computes (42), the empty-list call traps before the body's
+           `List.at` could produce its own miss. Pins that verify_enforce's predicate evaluation composes
+           with heap-typed parameters, not only scalar comparisons.")
+  (input  (do
+            (@ (requires (> (List.len xs) 0)) (def (head-of (: xs (List Int64)))
+              (match (List.at xs 0) ((Some v) v) ((None u) -1))))
+            (def (main (: n Int64))
+              (if (> n 0) (head-of (list n 2)) (head-of (list))))
+            (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64))
+  (call   main (: 0 Int64))
+  (trap   "unreachable"))
+
+(case "an @invariant newtype constructed INSIDE a handler arm establishes per resume"
+  (doc    "The effects-composition face of the ESTABLISH divert: the checked constructor runs INSIDE a
+           handler arm (`(resume (Pos v) s)`) — the divert must reach construction sites in arm bodies,
+           and the establish trap must fire through the handler machinery. n=42 constructs and unwraps
+           (42); n=-1 violates `(> self 0)` and traps AT THE ARM's construction, not downstream. Extends
+           the divert-site family (lambda/match-arm/let-init/collection pins) to handler arms.")
+  (input  (do
+            (@ (invariant (> self 0)) (type Pos (Pos Int64)))
+            (effect Mk (op make (-> Int64 Pos)))
+            (def (main (: n Int64))
+              (handle Mk 0
+                ((make (v) s (resume (Pos v) s)))
+                (match (Mk.make n) ((Pos v) v))))
+            (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64))
+  (call   main (: -1 Int64))
+  (trap   "unreachable"))
