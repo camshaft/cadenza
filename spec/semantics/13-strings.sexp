@@ -290,6 +290,40 @@
   (call   main (: 1 Int64)) (output (: 232 Int64))
   (call   main (: 0 Int64)) (output (: 21112 Int64)))
 
+(case "a PALINDROME two-pointer walk closes from both ends of a runtime rope"
+  (doc    "Every pinned scalar walk moves ONE cursor forward; this closes TWO from opposite ends,
+           reading `String.at s lo` and `String.at s hi` each step over a runtime rope whose seams
+           sit at ASYMMETRIC positions relative to the two cursors (lo crosses a seam on a different
+           step than hi). Three termination faces in one probe: the EVEN-length crossover (`abba` —
+           lo passes hi without ever equaling it, so a `= hi` stop test spins), the ODD-length center
+           self-skip (`abcba` — lo = hi lands on the middle scalar, which needs NO check), and the
+           single-scalar immediate-true (`\"a\"` — hi starts AT lo (both 0), so the >= stop fires
+           before any read). The runtime n flips the second scalar: n=1 →
+           all three palindromic (111); n=0 → `axba` fails at step two, the mismatch exit (0·100 →
+           11).")
+  (input  (do
+            (def (pal (: s String) (: lo Int64) (: hi Int64))
+              (if (>= lo hi)
+                  1
+                  (match (String.at s lo)
+                    ((Some a)
+                      (match (String.at s hi)
+                        ((Some b) (if (= a b) (pal s (+ lo 1) (- hi 1)) 0))
+                        ((None _u) -1)))
+                    ((None _u) -1))))
+            (def (check (: s String))
+              (pal s 0 (- (String.byte-len s) 1)))
+            (def (main (: n Int64))
+              (do
+                (def second (if (> n 0) "b" "x"))
+                (def w (String.concat "a" (String.concat second "ba")))
+                (+ (* (check w) 100)
+                   (+ (* (check (String.concat "ab" (String.concat "c" "ba"))) 10)
+                      (check "a")))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 111 Int64))
+  (call   main (: 0 Int64)) (output (: 11 Int64)))
+
 (case "a deep rope indexes by scalar at both extremes"
   (doc    "Scalar addressing through ~500 concat seams: `String.at` reads index 0 (the single \"A\" head
            leaf) and index n·2 (the LAST scalar, deep in the right spine) of a 1001-scalar rope — 10·1+1

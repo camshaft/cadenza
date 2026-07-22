@@ -6935,6 +6935,44 @@
   (call   main (: 4 Int64))
   (output (: 275 Int64)))
 
+(case "an ANAGRAM check builds per-string scalar frequency maps and compares them by map equality"
+  (doc    "The frequency-histogram composite: a scalar walk tallies each one-scalar STRING into a
+           `(Map String Int64)` via the upsert (hit increments, miss seeds 1), one map per string,
+           and the anagram verdict is DEEP MAP EQUALITY `(= (freq a) (freq b))` — canonical map `=`
+           over string keys with Int64 counts, built by two INDEPENDENT walks whose insert orders
+           differ (\"silent\" tallies s,i,l,e,n,t; \"listen\" l,i,s,t,e,n — equality must be
+           order-blind). Faces: `silent`/`listen` are anagrams (1); `silent`/`lister` differ in ONE
+           key (an n↦1 vs r↦1 — a map = that compared only sizes or only keys-of-one-side passes
+           this wrongly) (0); `aab`/`aba` pins the COUNT axis (same keys, counts 2/1 vs 2/1, equal —
+           while a count-blind compare can't distinguish it from `abb`) (1). n=1 → 101; n=0 swaps
+           the word to `silo` — shorter AND different keys vs `listen`/`lister` (00), the aab face
+           still 1 → 1.")
+  (input  (do
+            (def (tally (: s String) (: i Int64) (: len Int64) (: m (Map String Int64)))
+              (if (>= i len)
+                  m
+                  (match (String.at s i)
+                    ((Some c)
+                      (tally s (+ i 1) len
+                        (match (Map.lookup m c)
+                          ((Some k) (Map.insert m c (+ k 1)))
+                          ((None _u) (Map.insert m c 1)))))
+                    ((None _u) m))))
+            (def (freq (: s String))
+              (tally s 0 (String.byte-len s) Map.empty))
+            (def (anagram (: a String) (: b String))
+              (if (= (freq a) (freq b)) 1 0))
+            (def (main (: n Int64))
+              (do
+                (def w (String.concat "sil" (if (> n 0) "ent" "o")))
+                (+ (* (anagram w "listen") 100)
+                   (+ (* (anagram w "lister") 10)
+                      (anagram "aab" "aba"))))
+            )
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 101 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
 (case "a read-modify-write of a List value in a Map grows the entry and leaves the original map unchanged"
   (doc    "The keyed-bucket accumulate idiom (a multimap step): look a List value up by key, push onto it, and
            re-insert at the same key. `m = {k↦[a]}`; `(Map.insert m k (List.push (lookup m k) b))` → `grown`
