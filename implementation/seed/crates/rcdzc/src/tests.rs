@@ -25160,6 +25160,78 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_algebraic_identity_over_a_high_uint64_operand_folds_not_declines() {
+        // REGRESSION (fold): a constant algebraic identity (`x+0`/`0+x`/`x-0`/`x*1`/`1*x`) over a UInt64
+        // operand in [2^63, 2^64-1] must FOLD to the operand, NOT decline. `fold_arith` evaluates over
+        // `i64`, so a UInt64 constant ≥ 2^63 (e.g. `UInt64.max = 2^64-1`) has no `i64` and `fold_arith`
+        // returned CDZ0304 ("constant operand does not fit the integer width") — a SPURIOUS reject of valid
+        // unsigned arithmetic. FIX (lower_arith): try the width-agnostic `arith_identity` BEFORE the i64
+        // fold when an operand is out of i64 range — the identity returns an operand unchanged (correct at
+        // any width). Both-constant folds previously dispatched straight to `fold_arith`, never reaching the
+        // identity (which lived only in the not-both-constant fallthrough).
+        //
+        // These are OPERATIONS (both operands constant), distinct from the bare-literal acceptance the
+        // sibling `a_high_uint64_literal_operand_takes_uint64_from_context` pins. All must compile clean.
+        let compiles = |src: &str| {
+            assert_eq!(
+                reject_code(src),
+                None,
+                "a constant identity over a high UInt64 operand must fold, not decline (was a spurious \
+                 CDZ0304 from the i64-only `fold_arith`): {src}"
+            );
+        };
+        compiles(
+            "(module m (def (main) (+ (: 18446744073709551615 UInt64) (: 0 UInt64))) (export main))",
+        );
+        compiles(
+            "(module m (def (main) (+ (: 0 UInt64) (: 18446744073709551615 UInt64))) (export main))",
+        );
+        compiles(
+            "(module m (def (main) (- (: 18446744073709551615 UInt64) (: 0 UInt64))) (export main))",
+        );
+        compiles(
+            "(module m (def (main) (* (: 18446744073709551615 UInt64) (: 1 UInt64))) (export main))",
+        );
+        compiles(
+            "(module m (def (main) (* (: 1 UInt64) (: 18446744073709551615 UInt64))) (export main))",
+        );
+        // 2^63 exactly (i64::MAX + 1) — the boundary the i64 fold first misses.
+        compiles(
+            "(module m (def (main) (+ (: 9223372036854775808 UInt64) (: 0 UInt64))) (export main))",
+        );
+
+        // NO OVER-ACCEPTANCE: a genuine unsigned OVERFLOW (not an identity — `u64max + 1`) still declines
+        // (the general u64-fold is a separable follow-up; the boundary must not silently miscompile).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (+ (: 18446744073709551615 UInt64) (: 1 UInt64))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304"),
+            "a genuine constant unsigned overflow must still be rejected, not folded to a wrong value"
+        );
+        // And normal in-range i64 identities are unaffected (the fast path is byte-identical).
+        assert_eq!(
+            reject_code("(module m (def (main) (+ 5 0)) (export main))"),
+            None
+        );
+        assert_eq!(
+            reject_code("(module m (def (main) (* 7 1)) (export main))"),
+            None
+        );
+
+        // The folded VALUE is correct (the operand itself), when a runtime is available.
+        if let Some(v) = run_heap_value_escape(
+            "(module m (def (main) (+ (: 18446744073709551615 UInt64) (: 0 UInt64))) (export main))",
+        ) {
+            assert!(
+                v.contains("18446744073709551615"),
+                "the identity folds to the UInt64 operand's value: got {v}"
+            );
+        }
+    }
+
+    #[test]
     fn a_literal_whose_width_is_fixed_transitively_through_arith_ops_rejects_at_check() {
         // A bare literal takes its width from an integer binary-op CONTEXT (numeric-model.md §"An Explicit …
         // Or Other Constraint On An Integer Literal MUST Take Precedence"). When the literal's IMMEDIATE
