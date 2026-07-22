@@ -139,6 +139,30 @@
   (input  (do (def (main) (: (let ((x (try (Ok 42)))) (Ok x)) (Result Int64 Int64))) (export main)))
   (output (: (Ok 42) (Result Int64 Int64))))
 
+(case "a success `?` unwraps a RUNTIME payload (static ctor, per-call value)"
+  (doc    "The first RUNTIME-value pin in this file: every other case's `?` operand is a compile-time
+           constant, so the whole chain could in principle grade by const-folding alone. Here the operand
+           is `(Some a)` for a boundary parameter `a` — the ctor is statically `Some` (so the success fold
+           still fires) but the PAYLOAD is per-call: one compiled body must answer `(Some 10)` at a=5 and
+           `(Some -14)` at a=-7. A desugar that snapshots the payload at fold time, or that only handles
+           literal payloads, answers one of the two wrong. (A runtime-DISC operand — `(try (f a))` where
+           `f` picks the variant at run time — remains BRICK 3b todo; this pins the half that works.)")
+  (input  (do (def (main (: a Int64)) (let ((x (try (Some a)))) (Some (* x 2)))) (export main)))
+  (call main (: 5 Int64))
+  (output (: (Some 10) (Option Int64)))
+  (call main (: -7 Int64))
+  (output (: (Some -14) (Option Int64))))
+
+(case "a success `?` unwraps a RUNTIME Ok payload under a Result boundary"
+  (doc    "The Result companion of the runtime-payload pin: `(try (Ok a))` under an annotated
+           `(Result Int64 String)` boundary unwraps the per-call `a`, and the tail re-wraps `(+ x 1)`, so
+           `main 41` = `(Ok 42)`. Pins that the success fold's payload path is value-polymorphic for
+           Result exactly as for Option — the disc is read by NAME at compile time while the payload
+           stays a runtime operand.")
+  (input  (do (def (main (: a Int64)) (: (let ((x (try (Ok a)))) (Ok (+ x 1))) (Result Int64 String))) (export main)))
+  (call main (: 41 Int64))
+  (output (: (Ok 42) (Result Int64 String))))
+
 (case "two `?`s in one boundary both unwrap (nested happy path)"
   (doc    "The `parse-pair` shape with constant operands: `(let ((x (try (Some 20)))) (let ((y (try (Some
            22)))) (Some (+ x y))))` — both `?`s see a `Some`, so `x` = 20, `y` = 22, and the boundary

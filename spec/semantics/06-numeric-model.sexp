@@ -2533,6 +2533,21 @@
   (call   main (: -9223372036854775808 Int64))
   (trap   "overflow"))
 
+(case "the Int64.max and Int64.min CONSTANTS compare equal to their boundary values at runtime"
+  (doc    "The prelude boundary constants as runtime COMPARANDS: `(= n Int64.max)` and `(= n Int64.min)`
+           over a boundary parameter — the max value hits only the max test (1,0), the min value only the
+           min test (0,2), and an interior value neither (0,0). Pins that the constants materialize as the
+           exact boundary bit patterns for a runtime equality (a constant folded to a wrong width, or
+           off-by-one, would misreport a probe) — the guard-clause idiom `if (= n Int64.max) …` saturation
+           checks are written in.")
+  (input  (do
+            (def (main (: n Int64))
+              (tuple (if (= n Int64.max) 1 0) (if (= n Int64.min) 2 0)))
+            (export main)))
+  (call   main (: 9223372036854775807 Int64)) (output (: (tuple 1 0) (Tuple Int64 Int64)))
+  (call   main (: -9223372036854775808 Int64)) (output (: (tuple 0 2) (Tuple Int64 Int64)))
+  (call   main (: 0 Int64)) (output (: (tuple 0 0) (Tuple Int64 Int64))))
+
 (case "multiplication"
   (input  (* 6 7))
   (output (: 42 Int64)))
@@ -3076,6 +3091,20 @@
   (input  (do (def (main (: a UInt64) (: b UInt64)) (/ a b)) (export main)))
   (call   main (: 100 UInt64) (: 0 UInt64))
   (trap   "divide by zero"))
+
+(case "a full-width UInt64 comparison over a HIGH-BIT operand is unsigned"
+  (doc    "The comparison face of the full-width unsigned family (arith overflow/traps are pinned above;
+           the narrow unsigned comparison at :2196 covers UInt8 — nothing pins the FULL-WIDTH UInt64
+           compare where the sign bit is set): `(> a b)` with a = UInt64.max (all bits set — NEGATIVE as a
+           signed i64) must compare UNSIGNED, so max > 1 → 1 and 1 > max → 0. An emit selecting the signed
+           i64 comparison (lt_s/gt_s) would invert both calls — the classic unsigned-comparison miscompile
+           at the high bit.")
+  (input  (do
+            (def (main (: a UInt64) (: b UInt64))
+              (if (> a b) 1 0))
+            (export main)))
+  (call   main (: 18446744073709551615 UInt64) (: 1 UInt64)) (output (: 1 Int64))
+  (call   main (: 1 UInt64) (: 18446744073709551615 UInt64)) (output (: 0 Int64)))
 
 (case "a runtime signed division by zero traps as divide-by-zero, not overflow"
   (doc    "The trap-KIND the two-guard emit exists to preserve: a SIGNED `(/ 5 0)` must classify as
@@ -5611,6 +5640,29 @@
            form a constant Rational bakes. Mirrors the runtime-BigInt boundary escape.")
   (input  (Rational.of-int (Int64.of (* (BigInt.of 1000000) (BigInt.of 1000000)))))
   (output (: 1000000000000/1 Rational)))
+
+; The boundary escapes above are all RESULT-side (a Rational crosses OUT to the host). The ENTRY-arg
+; direction — a Rational boundary PARAMETER marshaled IN by the driver — is realized on the rust targets
+; only (wasm declines the heap-typed entry arg, the same sound todo as the String/BigInt entry args).
+; Per-target baselined like the String-entry family in 13-strings.
+
+(case "a Rational ENTRY parameter crosses the boundary and reduces per call"
+  (doc    "`(def (main (: a Rational)) (* a (Rational.of 2 3)))` called with n/d argument literals: the
+           driver marshals each as an owned Rational and one compiled multiply reduces per call —
+           3/4 · 2/3 = 1/2 (cross-cancel), -3/2 · 2/3 = -1/1 (sign through reduction to a whole), and
+           0/1 · 2/3 = 0/1 (the zero absorbs, canonical 0/1 render). The entry-arg twin of the
+           result-side runtime-Rational escape above. (wasm declines the Rational entry arg — sound todo,
+           same as the String entry family; rust and rust-async compute. A BARE-INT Rational argument
+           spelling `(: 0 Rational)` does not marshal — write `n/d`.)")
+  (input  (do
+            (def (main (: a Rational)) (* a (Rational.of 2 3)))
+            (export main)))
+  (call   main (: 3/4 Rational))
+  (output (: 1/2 Rational))
+  (call   main (: -3/2 Rational))
+  (output (: -1/1 Rational))
+  (call   main (: 0/1 Rational))
+  (output (: 0/1 Rational)))
 
 (case "a Rational is usable as a map key, matched by its exact value"
   (doc    "`(Map.lookup (Map.insert (Map.insert Map.empty (Rational.of 1 2) 10) (Rational.of 2 3) 20)

@@ -339,3 +339,76 @@
                 (`(+ (+ ,x 0) 0) x)
                 (other           other))) (export main)))
   (output (: true Bool)))
+
+; --- Runtime-valued and runtime-SHAPED trees through the same walks ---------------------------------
+; Every case above transforms a tree that is fully known at compile time, so in principle the whole
+; walk could grade by const-folding alone. These pin the transformations as RESIDUAL CODE: the tree's
+; leaf value — and, stronger, its SHAPE — comes from a boundary parameter, so one compiled walk must
+; dispatch per call. This is the seam an agent-authored refactoring actually runs on (a tree read at
+; run time, not a literal in the source), and the shape a compiler pass takes when its input arrives
+; as a value.
+
+(case "a one-node Ast rewrite over a runtime leaf computes per call"
+  (doc    "The built-in-Ast rewrite case above, with the leaf RUNTIME: `(Ast.Int a)` is constructed from
+           the boundary parameter, rewritten by the same `(Ast.Int n) → (Ast.Int (+ n 100))` match, and
+           read back. a=5 → 105 exactly as the const case; a=-100 → 0 (the rewrite's output leaf, not the
+           read-back match's fall-through — `-100+100 = 0` flows through the `(Ast.Int r)` arm). Pins that
+           the rewrite is residual code over a runtime Ast value, not a compile-time fold that memoized
+           the const case's answer.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((e (Ast.Int a)))
+                (match (match e ((Ast.Int n) (Ast.Int (+ n 100))) (o o))
+                  ((Ast.Int r) r)
+                  (_ 0))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 105 Int64))
+  (call   main (: -100 Int64))
+  (output (: 0 Int64)))
+
+(case "a recursive walk over a runtime-SHAPED tree dispatches per call"
+  (doc    "Stronger than a runtime leaf: the tree's SHAPE is chosen at run time — `build` returns the
+           two-node `(Add (Lit a) (Lit 10))` for positive `a` and the single-leaf `(Lit a)` otherwise, so
+           the recursive `sum-lits` walk cannot be unrolled against a known spine. a=5 walks two leaves
+           (15); a=-7 walks one (-7). Pins that a syntax-tree walk is genuinely recursive residual code:
+           its depth and arm sequence are decided by the value that arrives, the situation every
+           agent-authored transformation over a read-at-runtime program is in.")
+  (input  (do
+            (type Exp (Lit Int64) (Add Exp Exp))
+            (def (sum-lits (: e Exp))
+              (match e
+                ((Lit n) n)
+                ((Add l r) (+ (sum-lits l) (sum-lits r)))))
+            (def (build (: a Int64)) (if (> a 0) (Add (Lit a) (Lit 10)) (Lit a)))
+            (def (main (: a Int64)) (sum-lits (build a)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 15 Int64))
+  (call   main (: -7 Int64))
+  (output (: -7 Int64)))
+
+(case "a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite"
+  (doc    "The full pipeline at run time: `build` assembles `(Add (Lit 0) (Add (Lit a) (Lit 2)))` around
+           the boundary parameter, `simplify` rewrites away the `(Add (Lit 0) r)` identity (recursing into
+           the survivor), and `eval-exp` evaluates the rewritten tree — a=40 → 42. The rewrite runs BEFORE
+           evaluation on a tree whose leaf is unknown to it; dropping the zero node must not drop the
+           runtime leaf beneath it. Pins the meaning-preservation contract (this file's opening: a
+           transformation preserves meaning while it rewrites) as residual code — the peephole idiom
+           applied to a value, not a literal.")
+  (input  (do
+            (type Exp (Lit Int64) (Add Exp Exp))
+            (def (simplify (: e Exp))
+              (match e
+                ((Add (Lit 0) r) (simplify r))
+                ((Add l r) (Add (simplify l) (simplify r)))
+                ((Lit n) (Lit n))))
+            (def (eval-exp (: e Exp))
+              (match e
+                ((Lit n) n)
+                ((Add l r) (+ (eval-exp l) (eval-exp r)))))
+            (def (build (: a Int64)) (Add (Lit 0) (Add (Lit a) (Lit 2))))
+            (def (main (: a Int64)) (eval-exp (simplify (build a))))
+            (export main)))
+  (call   main (: 40 Int64))
+  (output (: 42 Int64)))

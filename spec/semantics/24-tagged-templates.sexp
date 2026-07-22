@@ -365,3 +365,67 @@
                           (_           -1)))
             (export main)))
   (output (: 5 Int64)))
+
+; --- Runtime values through the expansion seam ------------------------------------------------------
+; Every case above is fully compile-time (no `(call …)`). These pin the seam between the one-tier
+; compile-time expansion and RUNTIME values: the expansion happens once at compile time, but its residual
+; must be ordinary code over the function's runtime parameters — an expander that re-runs per call, or
+; that snapshots a runtime-fed hole at fold time, diverges below.
+
+(case "a compile-time expansion residual combines with a runtime param per call"
+  (doc    "`two` returns `(Ast.Int 2)` (fully compile-time), but the surrounding match arm adds the
+           BOUNDARY PARAMETER `a`: `(+ a n)`. The template expands and folds ONCE at compile time to the
+           residual `(+ a 2)`, which then computes per call — a=40 → 42, a=-2 → 0. Pins that the
+           compile-time tier's output composes with runtime data as ordinary code (the expansion is not
+           re-entered per call, and the residual is not constant-folded past the runtime operand).")
+  (input  (do
+            (def (two chunks holes) (Ast.Int 2))
+            (def (main (: a Int64)) (match (tagged-template two (chunks "") (holes))
+                                      ((Ast.Int n) (+ a n))
+                                      (_           0)))
+            (export main)))
+  (call   main (: 40 Int64))
+  (output (: 42 Int64))
+  (call   main (: -2 Int64))
+  (output (: 0 Int64)))
+
+(case "a RUNTIME-dependent hole threads through the tag application per call"
+  (doc    "The hole is `(Ast.Int a)` — an Ast CONSTRUCTOR over the boundary parameter, so the hole's
+           VALUE only exists at run time. The expander's structural rewrite to `(keep (list …) (list
+           (Ast.Int a)))` happens at compile time, but `keep` (echoing its hole) cannot fold to a constant:
+           the applied residual carries the runtime construction, and the match reads back whatever `a`
+           the call supplied (7 → 7, 9 → 9). Pins that a hole is an ORDINARY EXPRESSION (this file's
+           header) in the strongest sense — one whose value is runtime-dependent — and the expansion seam
+           degrades gracefully from fold-to-constant to residual code.")
+  (input  (do
+            (def (keep chunks holes) (match holes
+                                       ((list h) h)
+                                       (_        (Ast.Int 0))))
+            (def (main (: a Int64)) (match (tagged-template keep (chunks "" "") (holes (Ast.Int a)))
+                                      ((Ast.Int n) n)
+                                      (_           -1)))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7 Int64))
+  (call   main (: 9 Int64))
+  (output (: 9 Int64)))
+
+(case "a runtime hole woven into a compound Ast is read back by a nested match"
+  (doc    "The weave case's runtime companion: `wrap` builds `(Ast.List (list (Ast.Name \"f\") h))` around
+           a hole whose payload is the runtime `(* a 10)`. The compound Ast is assembled at run time (its
+           spine from the compile-time expansion, its leaf from the call), and the nested pattern
+           destructures BOTH tiers — the statically-woven `(Ast.Name g)` (byte-len 1) and the
+           runtime-filled `(Ast.Int n)` (a=4 → 40) — summing to 41. Pins that the woven compound keeps
+           its static and runtime parts in their exact positions (a weave that reordered or re-folded
+           the spine would misalign the nested destructure).")
+  (input  (do
+            (def (wrap chunks holes) (match holes
+                                       ((list h) (Ast.List (list (Ast.Name "f") h)))
+                                       (_        (Ast.List (list)))))
+            (def (main (: a Int64))
+              (match (tagged-template wrap (chunks "" "") (holes (Ast.Int (* a 10))))
+                ((Ast.List (list (Ast.Name g) (Ast.Int n))) (+ n (String.byte-len g)))
+                (_ -1)))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 41 Int64)))

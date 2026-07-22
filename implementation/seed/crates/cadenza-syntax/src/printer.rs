@@ -5824,6 +5824,44 @@ mod tests {
     }
 
     #[test]
+    fn an_own_line_comment_before_a_list_element_is_preserved_not_dropped() {
+        // An OWN-LINE `//` comment LEADING a list element (`[\n // note\n 1, …]` or between elements) used
+        // to be DROPPED — `list_literal` parses each element via `expr`, which (unlike `stmt`/`body_expr`)
+        // does not drain the element's leading-comment slot, so the comment was stranded (→ `cdz fmt`
+        // refused the file). list_literal now captures it via `take_comments_here` + wraps the element in a
+        // LEADING `(comment "text" elem)` (distinct from the same-line trailing `(comment-after …)`). The
+        // printer already renders a leading `(comment …)` as a `// …` line above the element; strip_comments
+        // peels it (compiles to wasm). This is the interior (own-line) half of the collection-comment gap.
+        //
+        // Before the FIRST element:
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def l() -> List(Int64) = [\n  // lead\n  1, 2]").arenas),
+            "(def (l) (: (\"list\" (comment \"lead\" 1) 2) (List Int64)))",
+            "an own-line comment before the first element is captured, not dropped"
+        );
+        // BETWEEN elements (own-line before a non-first element) — safe (no swallow hazard, unlike a
+        // same-line trailing mid-element comment which stays refused):
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def l() -> List(Int64) = [1,\n  // mid\n  2]").arenas),
+            "(def (l) (: (\"list\" 1 (comment \"mid\" 2)) (List Int64)))",
+            "an own-line comment between elements is captured, not dropped"
+        );
+        // Round-trips (leading `//` prints on its own line above the element).
+        assert_eq!(
+            assert_roundtrip("[\n  // lead\n  1, 2]", 80),
+            "[\n  // lead\n  1,\n  2\n]"
+        );
+        // Leading (own-line) AND trailing (same-line, last element) compose.
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("def l() -> List(Int64) = [\n  // lead\n  1, 2 // last\n]").arenas
+            ),
+            "(def (l) (: (\"list\" (comment \"lead\" 1) (comment-after \"last\" 2)) (List Int64)))",
+            "leading own-line + trailing same-line comments compose"
+        );
+    }
+
+    #[test]
     fn a_same_line_trailing_comment_on_a_tuple_elem_is_preserved_not_dropped() {
         // The tuple sibling of the list trailing-comment fix (shared `bracketed_comment_aware` +
         // `print_elem_maybe_commented`). `(…, x // note)` used to DROP the `//` (→ `cdz fmt` refused the

@@ -14,6 +14,22 @@
             (def (main) (get-x (record (x 1) (y 2)))) (export main)))
   (output (: 1 Int64)))
 
+(case "an open-row function is applied at TWO different record widths in one program"
+  (doc    "The two-instantiation face of row polymorphism (the case above calls `get-x` at ONE shape):
+           `get-x` is applied to a 1-field record `(record (x n))` AND a 3-field `(record (x 10) (y 20)
+           (z 30))` in the SAME program, summing both projections — n + 10 = 15 at n=5. The open row must
+           instantiate per CALL SITE (the two records have different layouts — field `x` sits at a
+           different physical position in the 1-field and the sorted 3-field erasure), so the projection
+           must resolve x's slot per instantiation, not once for the def. A single-layout specialization
+           would read the wrong slot at one site.")
+  (input  (do
+            (def (get-x r) (. r x))
+            (def (main (: n Int64))
+              (+ (get-x (record (x n)))
+                 (get-x (record (x 10) (y 20) (z 30)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 15 Int64)))
+
 (case "a record whose field is a List projects the list handle and indexes it, alongside a scalar field"
   (doc    "A record field may itself be a variable-length collection — distinct from a fixed-shape tuple
            field (which the ABI flattens depth-first): a `List` field is a HEAP HANDLE that must round-trip

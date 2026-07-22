@@ -1389,6 +1389,104 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: (tuple 11 12) (Tuple Int64 Int64))))
 
+(case "a SELF-RECURSIVE named def passed as a value is applied twice through the parameter"
+  (doc    "The recursive upgrade of first-class named functions: `fact` — a self-recursive def — is passed
+           BY NAME to `apply-twice`, which applies it through its fn PARAMETER twice: `(fact (fact 3))` =
+           `fact 6` = 720. Each indirect application must re-enter fact's own recursion (the inner call runs
+           4 recursive levels, the outer 6) — the callee reference reaching the recursive def through a
+           first-class fn value, not a direct call site. A lift that specialized the parameter to a
+           non-recursive snapshot (or bound the self-call to the wrong frame) would break the outer
+           application.")
+  (input  (do
+            (def (fact (: n Int64))
+              (if (< n 2) 1 (* n (fact (- n 1)))))
+            (def (apply-twice (: f (-> Int64 Int64)) (: x Int64))
+              (f (f x)))
+            (def (main (: n Int64))
+              (apply-twice fact n))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 720 Int64)))
+
+(case "a runtime BRANCH selects between two named functions and the selected one applies"
+  (doc    "The function-valued conditional: `((if b inc dbl) x)` — the `if` yields a FUNCTION value chosen
+           by a runtime Bool, immediately applied. true → inc(5) = 6, false → dbl(5) = 10. The conditional's
+           result type is the arrow `(-> Int64 Int64)` both arms share; the application must dispatch to
+           whichever function the branch selected at run time (an emit binding the call to one arm's callee
+           statically would break the other call). The strategy-selection idiom.")
+  (input  (do
+            (def (inc (: x Int64)) (+ x 1))
+            (def (dbl (: x Int64)) (* x 2))
+            (def (main (: b Bool) (: x Int64))
+              ((if b inc dbl) x))
+            (export main)))
+  (call   main (: true Bool) (: 5 Int64)) (output (: 6 Int64))
+  (call   main (: false Bool) (: 5 Int64)) (output (: 10 Int64)))
+
+(case "a branch selects between MUTUALLY-recursive defs and the selected one runs its cycle"
+  (doc    "The mutual-recursion upgrade: `pick` returns `even` or `odd` — each half of a mutually-recursive
+           PAIR — as a first-class value, and the caller applies the selection. `(pick true) 4` runs
+           even→odd→even→odd→even = 1; `(pick false) 4` starts the cycle at odd = 0. The selected function
+           value must carry its whole mutual-recursion group (a reference resolving only the named def
+           without its partner would break the first cross-call).")
+  (input  (do
+            (def (even (: n Int64)) (if (= n 0) 1 (odd (- n 1))))
+            (def (odd (: n Int64)) (if (= n 0) 0 (even (- n 1))))
+            (def (pick (: b Bool)) (if b even odd))
+            (def (main (: b Bool) (: n Int64))
+              ((pick b) n))
+            (export main)))
+  (call   main (: true Bool) (: 4 Int64)) (output (: 1 Int64))
+  (call   main (: false Bool) (: 4 Int64)) (output (: 0 Int64)))
+
+(case "a recursive combinator applies a captured closure a RUNTIME number of times"
+  (doc    "The iterate combinator: `times f n x` re-applies its fn PARAMETER `f` per recursive step, the
+           count a boundary parameter — `times (·2) 5 1` doubles five times (32), `times (·2) 0 1` applies
+           zero times (the seed, 1). The apply-twice case above fixes the application count at compile
+           time; here the SAME closure value is applied a runtime-decided number of times through the
+           parameter, so the indirect call sits on the loop's spine (a lower that unrolled or specialized
+           per count could not — n arrives per call).")
+  (input  (do
+            (def (times (: f (-> Int64 Int64)) (: n Int64) (: x Int64))
+              (if (< n 1) x (times f (- n 1) (f x))))
+            (def (main (: n Int64))
+              (times (fn ((: v Int64)) (* v 2)) n 1))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 32 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "a closure built OVER another closure applies both capture layers"
+  (doc    "Nested capture: `twice` captures a FUNCTION VALUE `f` (itself a closure capturing the boundary
+           `k`) and returns `(fn (x) (f (f x)))` — a closure whose captured cell holds another closure.
+           `(twice (adder k)) 100` = 100+k+k: k=3 → 106, k=-50 → 0. Both layers must survive — the outer
+           closure's environment carries the inner closure handle, and each application descends through
+           BOTH captures (an environment layout that inlined or flattened the inner capture into the outer
+           would break the second call's k). The compose case pins two peer captures; this pins capture
+           NESTING.")
+  (input  (do
+            (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+            (def (twice (: f (-> Int64 Int64))) (fn ((: x Int64)) (f (f x))))
+            (def (main (: k Int64))
+              ((twice (adder k)) 100))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 106 Int64))
+  (call   main (: -50 Int64)) (output (: 0 Int64)))
+
+(case "a runtime branch selects between two ANONYMOUS closures fed to the iterate combinator"
+  (doc    "The composition of the two pins above with the branch-select idiom: `(if (= pick 0) (fn +1)
+           (fn ·3))` yields one of two ANONYMOUS closures (the named-def branch case above selects defs;
+           anonymous fns lower through the closure path with their own environments), which the `times`
+           combinator then applies n times. pick=0 → 1+1·4 = 5; pick=1 → 3⁴ = 81. The selected closure
+           must ride through the combinator's fn parameter regardless of which arm built it — one call
+           site, two possible environments, a runtime iteration count.")
+  (input  (do
+            (def (times (: f (-> Int64 Int64)) (: n Int64) (: x Int64))
+              (if (< n 1) x (times f (- n 1) (f x))))
+            (def (main (: pick Int64) (: n Int64))
+              (times (if (= pick 0) (fn ((: v Int64)) (+ v 1)) (fn ((: v Int64)) (* v 3))) n 1))
+            (export main)))
+  (call   main (: 0 Int64) (: 4 Int64)) (output (: 5 Int64))
+  (call   main (: 1 Int64) (: 4 Int64)) (output (: 81 Int64)))
+
 ; NESTED CAPTURING CLOSURES — a closure captures another closure that ITSELF captures. `g = (fn (x) (f
 ; (+ x 1)))` captures `f`, and `f = (fn (y) (+ y k))` captures `k`. Inside `g`'s lifted body, `f` is a
 ; runtime closure HANDLE read from `g`'s env cell — NOT the compile-time lambda it was defined from — so
@@ -3183,6 +3281,22 @@
             (export main)))
   (call   main (: 10 Int64))
   (output (: 7 Int64)))
+
+(case "a TWO-of-THREE partial application binds a prefix and the LET-BOUND residual completes"
+  (doc    "The multi-arg prefix face (the pins above partially apply ONE of two args): `add3` takes three
+           parameters, `(add3 x 10)` binds the first TWO — one a runtime parameter, one a literal — and the
+           residual one-param closure is LET-BOUND before its completing application `(add-x 5)` = x+10+5 =
+           115 at x=100. The residual must capture BOTH prefix arguments (the runtime x and the 10) in one
+           environment and survive the let binding — the config-first-then-apply idiom (fix a function's
+           settings, hand the residual around).")
+  (input  (do
+            (def (add3 (: a Int64) (: b Int64) (: c Int64))
+              (+ a (+ b c)))
+            (def (main (: x Int64))
+              (let ((add-x (add3 x 10)))
+                (add-x 5)))
+            (export main)))
+  (call   main (: 100 Int64)) (output (: 115 Int64)))
 
 (case "partial application captures a let-bound value in the residual lambda"
   (doc    "The let-binding companion: `(let ((m 10)) ((sub m) 3))` partially applies `sub` to the

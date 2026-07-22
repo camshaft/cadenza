@@ -182,6 +182,41 @@
   (call   main (: 5 Int64)) (output (: 2 Int64))
   (call   main (: 7 Int64)) (output (: 3 Int64)))
 
+(case "a Set.of over PRELUDE-Option elements dedups Some by payload and keeps None distinct"
+  (doc    "The user-sum variant case above declares its own sum; this pins the PRELUDE Option as the
+           element (the ord-wrapper builtin-sum face, which lowered separately and used to decline on the
+           rust targets while user sums worked): `{(Some a), (None unit), (Some a), (Some (+ a 1))}` at
+           a=3 — the two `(Some 3)`s collapse, `(None unit)` and `(Some 4)` stay distinct → len 3. The
+           element compare must read the variant tag (None ≠ Some) and descend the Some payload, exactly
+           as for a user sum.")
+  (input  (do
+            (def (main (: a Int64))
+              (Set.len (Set.of (list (Some a) (None unit) (Some a) (Some (+ a 1))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3 Int64)))
+
+(case "a Set.of over Result elements separates Ok from Err with EQUAL payloads"
+  (doc    "The Result companion: `{(Ok a), (Err a)}` with the SAME payload value in both — only the
+           variant tag distinguishes them, so a payload-only element hash would collapse the set to 1.
+           Expected len 2. The prelude two-arm sum where each arm carries the same scalar, the sharpest
+           tag-must-participate witness.")
+  (input  (do
+            (def (main (: a Int64))
+              (Set.len (Set.of (list (: (Ok a) (Result Int64 Int64)) (: (Err a) (Result Int64 Int64))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 2 Int64)))
+
+(case "Set.contains dispatches on an Option element at a runtime payload"
+  (doc    "The membership face of the prelude-Option element: `{(Some 5), (None unit)}` probed with
+           `(Some a)` — a=5 hits (the stored Some's payload matches), a=6 misses (same tag, different
+           payload → false, not a trap). One compiled contains must walk tag-then-payload per call.")
+  (input  (do
+            (def (main (: a Int64))
+              (if (Set.contains (Set.of (list (Some 5) (None unit))) (Some a)) 1 0))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: 6 Int64)) (output (: 0 Int64)))
+
 (case "membership of an absent element is false, not a trap"
   (doc    "The absent companion: `(Set.contains (Set.of (list 1 2 3)) 5)` tests an element not in the
            set, so the total predicate yields false — NOT a trap and NOT an error (collections-and-text.md

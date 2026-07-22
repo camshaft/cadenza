@@ -7604,6 +7604,21 @@ mod tests {
             message_kind_is_actionable(""),
             "guard rationale: an empty kind would count as actionable, so it MUST be rejected upstream"
         );
+        // An EMPTY seq or pid field (a leading/doubled dash) is not numeric — the `!s.is_empty()` guard
+        // inside `numeric` rejects it. `"".bytes().all(is_ascii_digit)` is VACUOUSLY true, so without
+        // that guard an empty field would pass the digit test and the name would wrongly parse to
+        // `Some("note")`, miscounting a malformed file as an actionable message. Pins the guard (all
+        // other non-numeric cases above use NON-empty strings like "abc"/"xyz", leaving it uncovered).
+        assert_eq!(
+            message_kind_from_filename("-1961391-note.json"),
+            None,
+            "empty seq field (leading dash) is not numeric"
+        );
+        assert_eq!(
+            message_kind_from_filename("000000000652--note.json"),
+            None,
+            "empty pid field (doubled dash) is not numeric"
+        );
     }
 
     #[test]

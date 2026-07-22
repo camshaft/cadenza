@@ -30,6 +30,25 @@
   (output (: unit Unit))
   (host-calls (call log.emit (: "ready" String))))
 
+(case "a host-op argument COMPUTED by guest arithmetic crosses the boundary evaluated"
+  (doc    "The computed-argument face of the host boundary (the arg-witnessing pins above pass const
+           string literals): the delegated op's argument is a guest arithmetic expression over a runtime
+           parameter — `(out.put (* (+ n 1) 10))` at n = 4 — and the host-calls record witnesses the
+           EVALUATED value 50 crossing the boundary (not the expression, not a lazy thunk). The host's
+           response (99) then becomes the perform's value. Pins that guest computation completes BEFORE
+           the boundary crossing and the recorded call carries the result — the log-a-derived-metric
+           idiom.")
+  (input  (do
+            (effect out (op put (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (host (out)
+                (out.put (* (+ n 1) 10))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (host-responses (respond out.put (: 99 Int64)))
+  (host-calls (call out.put (: 50 Int64)))
+  (output (: 99 Int64)))
+
 ; An entrypoint's delegation reaches an effect performed anywhere in the operations REACHABLE from its
 ; body — including inside a RECURSIVE function it calls. capabilities-and-effects.md #An Entrypoint
 ; Delegates The Capabilities It Grants To The Host: "The compiler MUST determine a program's required

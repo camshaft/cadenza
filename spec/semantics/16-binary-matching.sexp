@@ -776,6 +776,48 @@
   (call   main (: 258 Int64))
   (output (: 1 Int64)))
 
+(case "a wrap-narrowed MULTI-BYTE segment decodes the truncated value back"
+  (doc    "The u8 wrap case above observes only the LENGTH of the construction; here the wrapped VALUE is
+           observed through a decode, at the multi-byte width: `(bin (u16 (UInt16.wrap v)))` matched by
+           `((bin (u16 x)) x)`. In-range values round-trip identically (300 → 300, 65535 → 65535 — the
+           u16 ceiling, every bit set across both big-endian bytes), and out-of-range values decode to
+           their low 16 bits (65536 = 0x10000 → 0, 65537 → 1) — the truncation happens at the WRAP, before
+           the segment, so what the bytes hold IS the wrapped value. A pipeline that range-checked instead
+           of truncating, or that wrapped at 8 bits for a 16-bit segment, diverges at the last two calls.")
+  (input  (do (def (main (: v Int64))
+                (match (bin (u16 (UInt16.wrap v)))
+                  ((bin (u16 x)) x)
+                  (_ -1)))
+              (export main)))
+  (call   main (: 300 Int64))
+  (output (: 300 Int64))
+  (call   main (: 65535 Int64))
+  (output (: 65535 Int64))
+  (call   main (: 65536 Int64))
+  (output (: 0 Int64))
+  (call   main (: 65537 Int64))
+  (output (: 1 Int64)))
+
+(case "wrap-narrowed values fill BOTH segments of a dispatching frame — the wrapped tag selects the arm"
+  (doc    "The wrap idiom composed with multi-arm dispatch: `(bin (u8 (UInt8.wrap t)) (u16 (UInt16.wrap
+           v)))` — a mixed-width frame where BOTH segments take wrap-narrowed runtime `Int64`s, matched by
+           a literal-tag arm then a binder arm. t=1 hits the literal arm and returns the u16 field (65535,
+           its ceiling); t=258 wraps to 2 BEFORE the bytes exist, so the literal-1 arm MISSES and the
+           binder arm decodes `other` = 2 → 2·100000 + 300 = 200300. Pins that dispatch happens on the
+           WRAPPED byte (the arm predicate reads what the wrap stored, not the pre-wrap value — a fold
+           that tested `t` against the literal instead of `t`'s low byte would take the wrong arm at the
+           second call), and that two wrap-narrowed segments of different widths compose in one frame.")
+  (input  (do (def (main (: t Int64) (: v Int64))
+                (match (bin (u8 (UInt8.wrap t)) (u16 (UInt16.wrap v)))
+                  ((bin (u8 1) (u16 x)) x)
+                  ((bin (u8 other) (u16 y)) (+ (* other 100000) y))
+                  (_ -1)))
+              (export main)))
+  (call   main (: 1 Int64) (: 65535 Int64))
+  (output (: 65535 Int64))
+  (call   main (: 258 Int64) (: 300 Int64))
+  (output (: 200300 Int64)))
+
 ; A runtime `(bin …)` construction result IS a Bytes value (this file's opening: "expression position
 ; `(bin …)` CONSTRUCTS a Bytes value"), so it must be `=`-comparable like any Bytes. It builds a FRESH
 ; owned Bytes on the rope heap — exactly as `Bytes.of` does — so as an operand of the borrowing `=` it is
@@ -972,6 +1014,23 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 100 Int64))
   (call   main (: 5 Int64)) (output (: 12 Int64)))
+
+(case "a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value"
+  (doc    "The third fall-through shape, completing the family: not a discarding `_` and not a decoding
+           bin pattern, but a plain VARIABLE arm — `(rest (Bytes.len rest))` — which binds the entire
+           unmatched scrutinee as an ordinary Bytes value. tag=1 hits the literal arm (42); tag=9 misses
+           and the variable arm receives the whole two-byte frame → `Bytes.len` = 2. Pins that the
+           scrutinee flows into the fall-through arm as a first-class Bytes (usable by any Bytes op, not
+           only re-matched or discarded) — this shape used to reject CDZ0203 (the variable arm's binder
+           didn't unify with the Bytes scrutinee) while its `_` and decoding siblings compiled.")
+  (input  (do
+            (def (main (: tag Int64))
+              (match (bin (u8 (UInt8.wrap tag)) (u8 42))
+                ((bin (u8 1) (u8 v)) v)
+                (rest (Bytes.len rest))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 42 Int64))
+  (call   main (: 9 Int64)) (output (: 2 Int64)))
 
 (case "a runtime bytes value is spliced into a length-prefixed frame"
   (doc    "`(bin (u16 3) (bytes b))` with `b` a RUNTIME `Bytes` value splices `b` after a two-byte header,
