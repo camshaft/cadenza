@@ -251,10 +251,10 @@
   (input  (do
             (def (main)
               (let ((e (quote 5)))
-                (match (match e ((Ast.Int n) (Ast.Int (+ n 100))) (o o))
+                (match (match e ((Ast.Int n) (Ast.Int (+ n 100N))) (o o))
                   ((Ast.Int r) r)
-                  (_ 0)))) (export main)))
-  (output (: 105 Int64)))
+                  (_ 0N)))) (export main)))
+  (output (: 105 BigInt)))
 
 ; ============================================================================================
 ; ASPIRATIONAL — the fuller structural-editing surface (a later generation realizes these)
@@ -284,7 +284,7 @@
             (def (main) (= (bump (quote 7)) (Ast.Int 8)))
             (def (bump node)
               (match node
-                ((Ast.Int n) (Ast.Int (+ n 1)))
+                ((Ast.Int n) (Ast.Int (+ n 1N)))
                 (other other))) (export main)))
   (output (: true Bool)))
 
@@ -357,15 +357,15 @@
            the const case's answer.")
   (input  (do
             (def (main (: a Int64))
-              (let ((e (Ast.Int a)))
-                (match (match e ((Ast.Int n) (Ast.Int (+ n 100))) (o o))
+              (let ((e (Ast.Int (BigInt.of a))))
+                (match (match e ((Ast.Int n) (Ast.Int (+ n 100N))) (o o))
                   ((Ast.Int r) r)
-                  (_ 0))))
+                  (_ 0N))))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 105 Int64))
+  (output (: 105 BigInt))
   (call   main (: -100 Int64))
-  (output (: 0 Int64)))
+  (output (: 0 BigInt)))
 
 (case "a recursive walk over a runtime-SHAPED tree dispatches per call"
   (doc    "Stronger than a runtime leaf: the tree's SHAPE is chosen at run time — `build` returns the

@@ -41007,10 +41007,12 @@ mod match_engine {
         );
         // The spliced result folds through the ordinary path (one-tier / fixpoint): `two` returns
         // `(Ast.Int 2)`, and `(+ 40 (…2…))` reduces to 42.
+        // `Ast.Int`'s payload is `BigInt` (non-lossy AST-int storage), so the extracted `n` is a `BigInt`;
+        // narrow it back with `Int64.of` to add the Int64 `40` and read the `i64` result.
         let fixpoint = "(module m \
             (def (two chunks holes) (Ast.Int 2)) \
             (def (main) (match (tagged-template two (chunks \"\") (holes)) \
-                          ((Ast.Int n) (+ 40 n)) (_ 0))) \
+                          ((Ast.Int n) (+ 40 (Int64.of n))) (_ 0))) \
             (export main))";
         assert_eq!(
             run_returns::<i64>(

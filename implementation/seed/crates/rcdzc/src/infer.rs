@@ -4915,9 +4915,14 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             // self-calls and no anchoring literal). Return `Any` here so the node is NOT cached (the
             // `type_of` memo skips `Any`) and RE-solves cleanly once the operands' real types settle. Only
             // under `solving_schemes` (a re-grounding fixpoint); outside a solve an `Any` operand is a real
-            // fault the generic path reports. (A single anchoring `BigInt`/`Float` literal operand — the
-            // `(+ 1N (f …))` shape — already grounds via the arms below, so this only catches the
-            // both-provisional case the arms cannot yet classify.)
+            // fault the generic path reports. EITHER-side provisional defers (the guard is `a || b` Any):
+            // this block PRECEDES the numeric arms, so even `(+ 1N (f …))` — one anchoring literal + one
+            // provisional self-call — defers here rather than committing to the literal's width, which is
+            // correct: the `Any` operand's real type is not yet known (it may ground to `BigInt`/`Float`,
+            // and `+` over a `BigInt` sibling is `BigInt`, not the literal's `Int`), so no width can be
+            // soundly committed until the self-call resolves. A clean re-solve then routes it through the
+            // numeric arms below with both operands' real types. (Deferring on either-Any, not both-Any, is
+            // the safe choice — never commit an arith width while an operand is an unresolved self-call.)
             if !db.solving_schemes.is_empty()
                 && (matches!(a, Ty::Any) || matches!(b, Ty::Any))
                 && matches!(

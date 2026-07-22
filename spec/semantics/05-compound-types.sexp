@@ -12079,6 +12079,44 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 11 Int64)))
 
+; The Map.to-list order pins above use INTEGER keys (canonical order = numeric). STRING keys order by
+; content byte-lexicographics — the SAME unsigned byte order Set.to-list pins for string ELEMENTS
+; (19-sets) — and the keys here are runtime ROPES (built by a concat loop), so the enumeration must
+; flatten and compare content, not leaf pointers.
+(case "Map.to-list over runtime STRING keys enumerates in content byte order (first is byte-smallest)"
+  (doc    "Three rope keys built at run time (`(rep \"z\" 2)` = \"zxx\", \"axx\", \"mxx\") inserted in
+           z-a-m order with values 1,2,3: entry 0 of `Map.to-list` is the byte-smallest key \"axx\", so
+           its VALUE is 2 (insertion order would give 1, hash order something else). The String-key twin
+           of the integer-key first-is-min pin, over genuine ropes — the enumerate comparator's Str arm
+           must flatten before comparing.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main (: n Int64))
+              (let ((m (Map.insert (Map.insert (Map.insert Map.empty (rep "z" n) 1) (rep "a" n) 2) (rep "m" n) 3)))
+                (match (List.at (Map.to-list m) 0)
+                  ((Some p) (match p ((tuple k v) v)))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 2 Int64)))
+
+(case "the LAST Map.to-list entry over runtime String keys is the byte-largest"
+  (doc    "The far-end companion: index 2 of the same z/a/m rope-keyed map is the byte-LARGEST key
+           \"zxx\" → value 1. Together with the first-is-smallest pin this brackets the full order (a
+           comparator right on the min but unsorted in the middle/tail escapes a single index-0 read).")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main (: n Int64))
+              (let ((m (Map.insert (Map.insert (Map.insert Map.empty (rep "z" n) 1) (rep "a" n) 2) (rep "m" n) 3)))
+                (match (List.at (Map.to-list m) 2)
+                  ((Some p) (match p ((tuple k v) v)))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 1 Int64)))
+
 ; The cases above enumerate/index/count a Map.to-list; this closes the ROUND-TRIP that the "map→list-of-
 ; pairs→fold" idiom relies on — rebuilding a map by folding Map.insert over its OWN Map.to-list recovers an
 ; EQUAL map. It exercises enumeration (to-list) + the fold-rebuild + map value-equality together, the Map
