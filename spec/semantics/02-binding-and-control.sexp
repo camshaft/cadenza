@@ -222,6 +222,33 @@
   ; control: a genuinely small x takes neither refined path -> 0
   (call   f (: 5 UInt64))
   (output (: 0 Int64)))
+(case "SIGNED branch refinement over NEGATIVE bounds must not over-refine the inner compare"
+  (doc    "The negative-bound face of the interval-refinement soundness family (the flagship + unsigned
+           pins refine non-negative ranges; nothing pins refinement arithmetic below zero): `(if (> x -8)
+           (if (> x -4) 1 2) 3)` — `x > -8` does NOT decide `x > -4` (x = -6 satisfies the outer but not
+           the inner), so BOTH compares must survive: 0 → 1, -6 → 2, -10 → 3. A refinement pass whose
+           interval arithmetic mishandled negative endpoints (e.g. compared magnitudes, or seeded the
+           lower bound at 0 as the unsigned path does) would fold the inner test and flip the -6 call.")
+  (input  (do
+            (def (main (: x Int64))
+              (if (> x -8) (if (> x -4) 1 2) 3))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: -6 Int64)) (output (: 2 Int64))
+  (call   main (: -10 Int64)) (output (: 3 Int64)))
+
+(case "an EQUALITY test refines the same test in its own else to known-false"
+  (doc    "The equality face of branch refinement: inside the ELSE of `(if (= x 5) …)` the fact `x ≠ 5`
+           holds, so a repeated `(= x 5)` there is known-false and its then-branch (99) is dead — x = 7 →
+           0, never 99; the then-side control (x = 5 → x+1 = 6) confirms the refinement is branch-scoped.
+           The `=`-fact companion of the relational refinements (an equality yields a point fact, not an
+           interval).")
+  (input  (do
+            (def (main (: x Int64))
+              (if (= x 5) (+ x 1) (if (= x 5) 99 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64))
+  (call   main (: 7 Int64)) (output (: 0 Int64)))
 
 (case "conditional propagation respects a shadowing rebind of the condition variable"
   (doc    "The propagation must track the condition's VALUE in scope, not match its text: `(let ((c (< n
@@ -3108,6 +3135,21 @@
                 (+ (* 100 q) r)))
             (export main)))
   (call   main (: 47 Int64) (: 10 Int64)) (output (: 407 Int64)))
+
+(case "a NESTED tuple-of-tuples let pattern destructures a call's runtime result to all four leaves"
+  (doc    "The depth-2 upgrade of the tuple-of-call destructure above (flat pair) composed with the
+           nests-to-any-depth pin (const RHS): `make-pair` returns `((n, n+1), (2n, 3n))` — a runtime
+           tuple OF tuples — and the binder `(tuple (tuple a b) (tuple c d))` reaches all FOUR leaves in
+           one destructure: 2346 at n=2 (a=2,b=3,c=4,d=6). Each inner tuple is a live heap value the
+           nested pattern must open at run time — the matrix-row / interval-pair return shape.")
+  (input  (do
+            (def (make-pair (: n Int64))
+              (tuple (tuple n (+ n 1)) (tuple (* n 2) (* n 3))))
+            (def (main (: n Int64))
+              (let (((tuple (tuple a b) (tuple c d)) (make-pair n)))
+                (+ (* 1000 a) (+ (* 100 b) (+ (* 10 c) d)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 2346 Int64)))
 
 ; A RECORD binding pattern. A record is a fixed-shape product like a tuple, so `(record (x a) (y b))` in a
 ; binder position destructures the value BY FIELD — binding `a`/`b` to the `x`/`y` fields — with NO

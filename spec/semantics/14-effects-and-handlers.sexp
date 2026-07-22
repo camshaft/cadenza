@@ -2017,6 +2017,33 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 1 Int64)))
 
+(case "interleaved do-discarded performs at BOTH nest levels thread their own states independently"
+  (doc    "The composition the single-effect fix case above doesn't reach: TWO counters at different nest
+           levels, both advanced by DO-DISCARDED performs, interleaved in one `(do …)` — outer, inner,
+           outer again — then read via a final `(+ outer-get inner-get)`. CountA (outer, seed 0, +1 per
+           bump) is bumped twice; CountB (inner, seed 100, +10 per bump) once; expected 2 + 110 = 112.
+           Each discarded perform crosses (or doesn't) the inner handler per ITS effect: the A bumps are
+           foreign to the inner handle and must survive its do-fold, the B bump is discharged locally, and
+           neither may clobber the other's threaded slot. The fixed collapse dropped exactly this class of
+           non-final foreign perform; a partial fix that preserved only ONE crossing (or merged the two
+           state slots) lands off by a bump-width at one counter.")
+  (input  (do
+            (effect CountA (op bump (-> Unit Int64)) (op get (-> Unit Int64)))
+            (effect CountB (op bump (-> Unit Int64)) (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle CountA 0
+                ((bump (u) s (resume 0 (+ s 1)))
+                 (get (u) s (resume s s)))
+                (handle CountB 100
+                  ((bump (u) t (resume 0 (+ t 10)))
+                   (get (u) t (resume t t)))
+                  (do (CountA.bump unit)
+                      (CountB.bump unit)
+                      (CountA.bump unit)
+                      (+ (CountA.get unit) (CountB.get unit))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 112 Int64)))
+
 (case "a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom"
   (doc    "The `Result` companion of the Option-result case: an operation whose declared result is a
            `(Result Int64 Int64)`, resumed with an `Ok` or `Err` chosen by the arm, and the body dispatches
@@ -2806,6 +2833,29 @@
               (handle Idx 1 ((next (u) s (resume s (+ s 1))))
                 ((. List len) (build 3)))) (export main)))
   (output (: 3 Int64)))
+
+(case "an effectful walk over an INPUT list combines each element with a fresh perform"
+  (doc    "The input-driven map (the build case above is DEPTH-driven — the recursion count decides the
+           output; here an INPUT list drives the walk and each of ITS elements combines with a perform):
+           `tag-all` reads `xs[i]` and pushes `100·(Idx.next) + v` — pairing the element with a fresh id —
+           recursing until `List.at` misses. Seeded 1: elements 10/20/n pick up ids 1/2/3; the readout
+           encodes `10·len + tagged[2]` = 30 + (100·3 + 30) = 360 at n = 30. Pins the tag-each-element
+           idiom (a compiler numbering its input nodes): per-element state advances interleave with
+           per-element heap reads, and the tagged list escapes the handle.")
+  (input  (do
+            (effect Idx (op next (-> Unit Int64)))
+            (def (tag-all (: xs (List Int64)) (: i Int64) (: acc (List Int64)))
+              (match (List.at xs i)
+                ((Some v) (tag-all xs (+ i 1) (List.push acc (+ (* 100 (Idx.next unit)) v))))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (let ((tagged (handle Idx 1
+                              ((next (u) s (resume s (+ s 1))))
+                              (tag-all (list 10 20 n) 0 (list)))))
+                (+ (* 10 (List.len tagged))
+                   (match (List.at tagged 2) ((Some v) v) ((None u) -1)))))
+            (export main)))
+  (call   main (: 30 Int64)) (output (: 360 Int64)))
 
 (case "the heap list a handle BUILDS escapes the handle and is consumed outside it"
   (doc    "The handle's VALUE is a heap list, and it flows OUT of the handle into the enclosing scope. Unlike

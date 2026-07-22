@@ -658,6 +658,22 @@ def id-bool-literal-is-bool() =
     (if is-bool-at(tree, root, root) then unit else trap("true is TBool")))
 
 @test
+def id-both-bool-arith-is-err() =
+  // "true + false" → TErr. BOTH operands Bool (distinct from the true+1 case = one Bool, one Int): arithmetic
+  // over two Bools must NOT sneak through as Bool. Guards the pr754 fix (typed-to-ty-defer's TBool arm returns
+  // None at infer-db.cdz:404 so an arith RESULT type declines) — the both-bool `==` arm (infer-db.cdz:290-291)
+  // types equality Bool, but `+`/`-`/`*` over Bools stays TErr. Pins the liaison-requested guard (msg 14206).
+  (match parse-of([truelit(), plus(), falselit()]) with | (root, tree) =>
+    (if type-err-at(tree, root, root) then unit else trap("true + false → TErr (arith over two Bools is ill-typed)")))
+
+@test
+def id-both-bool-equality-still-bool() =
+  // the twin the above must NOT over-reject: "true == false" → TBool (the both-bool == arm, infer-db.cdz:290-291,
+  // is untouched by the arith decline). Together these pin the exact + vs == boundary corpus-bugfix flagged.
+  (match parse-of([truelit(), eqop(), falselit()]) with | (root, tree) =>
+    (if is-bool-at(tree, root, root) then unit else trap("true == false is TBool (both-bool equality still types)")))
+
+@test
 def id-bool-literal-as-if-cond-ok() =
   // "if true then 1 else 2" → cond is TBool (bool literal) → well-typed TInt.
   (match parse-of([ifkw(), truelit(), thenkw(), n(1), elsekw(), n(2)]) with | (root, tree) =>

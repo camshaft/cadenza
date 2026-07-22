@@ -89,6 +89,12 @@ pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken bra
 pass	FULL CONTRACT: @requires + @ensures on ONE def fire INDEPENDENTLY — a pre-violation and a post-violation trap on DIFFERENT inputs
 pass	Float32 tuple-key components key at binary32 width (distinctness, lookup, signed zero)
 pass	Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even
+pass	Set.contains dispatches on an Option element at a runtime payload
+pass	a Rational ENTRY parameter crosses the boundary and reduces per call
+pass	a Set.of over PRELUDE-Option elements dedups Some by payload and keeps None distinct
+pass	a Set.of over Result elements separates Ok from Err with EQUAL payloads
+pass	a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value
+pass	a closure built OVER another closure applies both capture layers
 pass	a param-left arith-right Float64.of-int equality compiles to a valid module and computes
 pass	Float64.of-int collapses adjacent integers at the 2^53 precision boundary
 pass	Int64.min crosses the parameter boundary and back unchanged
@@ -148,8 +154,11 @@ pass	MULTI-EXPORT: two same-sig closures each taking TWO Tuple args share one `c
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a BYTE-ROPE result
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call`
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
+pass	Map.remove at a RUNTIME key shrinks only on a hit
 pass	Map.remove of a Rational key canonicalizes: a normalized-equal key removes the entry
 pass	Map.swap and Map.take canonicalize a runtime COMPOUND (tuple) key on their value-yielding paths
+pass	Map.swap at a RUNTIME key replaces on a hit and adds on a miss through one compiled body
+pass	Map.take at a RUNTIME key takes the hit and miss arms through one compiled body
 pass	Map.to-list canonical key order is independent of insertion order
 pass	Map.to-list enumerates the FULL interior key order, not just the smallest
 pass	Map.to-list enumerates the entries as a List of (key value) tuples in canonical KEY order
@@ -180,6 +189,7 @@ pass	Record.with replaces a nested-record field wholesale and the original keeps
 pass	Record.without over runtime field values drops the named field and keeps the rest live
 pass	Result propagates errors without trapping
 pass	Result type for fallible operations
+pass	SIGNED branch refinement over NEGATIVE bounds must not over-refine the inner compare
 pass	STACKED @requires: EVERY precondition is enforced — a violated OUTER @requires traps (not only the innermost)
 pass	STACKED @requires: value-transparent when ALL preconditions are satisfied
 pass	SUM ARG + LIST RESULT declines cleanly (Option arg, List result)
@@ -312,6 +322,7 @@ pass	a @requires predicate that MATCHES on a sum-typed parameter dispatches and 
 pass	a @requires predicate that itself traps keeps its own trap kind
 pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result
 pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
+pass	a BOOL as a Map key routes a runtime lookup to the right entry
 pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
@@ -365,6 +376,7 @@ pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call bound
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
 pass	a Duration constructor `secs` scales a UInt64 count to nanoseconds
 pass	a Duration constructor scaling a count past the UInt64 nanosecond range traps rather than wrapping
+pass	a FILTER-COUNT fold over a list of records tallies by a field predicate
 pass	a FLAT runtime string nested in a tuple is unaffected (control)
 pass	a FLOAT literal that fits its contextually-grounded narrow width through an arith op computes
 pass	a FLOAT-field Tuple closure ARG flattens + rebuilds (box-float imported)
@@ -401,6 +413,7 @@ pass	a List-returning closure alongside a plain export — the closure
 pass	a List-returning closure alongside a plain export — the plain
 pass	a MAP built from generated pairs is equal regardless of insertion order (the Map analogue of set convergence)
 pass	a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds
+pass	a MAX-fold threads a CONDITIONAL accumulator over a list with a runtime element
 pass	a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)
 pass	a MULTI-LEVEL concat-built list SET element (n>=33) is found by a push-built equal element
 pass	a MULTI-LEVEL concat-built list map key (n>=33) is found by a push-built equal key
@@ -438,6 +451,7 @@ pass	a NESTED Tuple ARG with a narrow Bool leaf crosses the direct-call boundary
 pass	a NESTED Tuple arg ALONGSIDE a flat Tuple arg
 pass	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
 pass	a NESTED sum-in-sum map key discriminates by the inner variant
+pass	a NESTED tuple-of-tuples let pattern destructures a call's runtime result to all four leaves
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-hole context
@@ -490,6 +504,7 @@ pass	a RUNTIME string scrutinee matches string literals by equality
 pass	a RUNTIME-built Rational is usable as a map key, matched by its exact value
 pass	a RUNTIME-built Rational set deduplicates by exact value
 pass	a RUNTIME-built unreduced Rational and its reduced form are ONE map key
+pass	a RUNTIME-dependent hole threads through the tag application per call
 pass	a Rational accumulator threaded through recursion sums exactly
 pass	a Rational entry argument is marshalled through Rational::new
 pass	a Rational fanned into a compound then re-read survives (Perceus retain over a BigInt/Rational leaf)
@@ -506,6 +521,7 @@ pass	a Result carrying a Result is matched by a nested pattern to its inner valu
 pass	a Result pipeline short-circuits on the first Err
 pass	a Result-valued `?` under an Option boundary is a type error
 pass	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
+pass	a SELF-RECURSIVE named def passed as a value is applied twice through the parameter
 pass	a SET as a Map key hits by ORDER-INDEPENDENT inner-set content
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
@@ -536,6 +552,7 @@ pass	a THREE-parameter op arm binds all three parameters and the state
 pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
 pass	a TUPLE-result perform's projected field feeds a SECOND perform's argument, threading state across both
 pass	a TUPLE-returning operation resumes a pair built from the handler state, then projected
+pass	a TWO-of-THREE partial application binds a prefix and the LET-BOUND residual completes
 pass	a Thm rides a MAP value through outside code and comes back to the kernel accessor
 pass	a Thm rides a collection through outside code without destructure rights
 pass	a Tuple ARG AFTER a scalar arg crosses the direct-call boundary (scalar, then tuple)
@@ -653,6 +670,7 @@ pass	a boxed runtime closure returning Unit applies without declining
 pass	a boxed runtime closure taking Unit (a lazy thunk) is forced without declining
 pass	a branch perform under two nested handlers threads the inner state to the continuation
 pass	a branch refinement does not leak into the else arm's overflow guard
+pass	a branch selects between MUTUALLY-recursive defs and the selected one runs its cycle
 pass	a branching recursive tree fold infers its unannotated callback across both arms
 pass	a built map renders its entries in canonical key order
 pass	a built-in Ast constructor applied to a wrong-type payload is a type error
@@ -794,6 +812,7 @@ pass	a common constructor composes through a hoisted tuple field to build once
 pass	a comparison walls the FLOAT width from a literal above it
 pass	a comparison's trapping shared bound fires under a trap-free condition
 pass	a comparison-predicate function returns its boolean result
+pass	a compile-time expansion residual combines with a runtime param per call
 pass	a compile-time type branch reads a runtime parameter's static type
 pass	a component's manifest is the union of two entrypoints' distinct rows
 pass	a compose combinator captures TWO function values and applies them in declared order
@@ -1030,13 +1049,16 @@ pass	a fitting payload projected through Option.expect computes
 pass	a fitting recursive annotated result computes at the narrow width
 pass	a float divide by zero takes the DIVIDEND's sign into the infinity
 pass	a float literal compared against a Float32 param computes at the narrow width
+pass	a full-width UInt64 comparison over a HIGH-BIT operand is unsigned
 pass	a handler STATE that is a recursive sum GROWS one constructor per operation
 pass	a handler arm computes its NEXT-STATE with a recursive pure helper
 pass	a handler arm computes its RESUME VALUE with a deeply RECURSIVE pure helper
 todo	a host-delegated result SEEDS an in-program handler's initial state
+todo	a host-op argument COMPUTED by guest arithmetic crosses the boundary evaluated
 pass	a large value in a NON-projected tuple slot does not trip the projection width check
 pass	a let record pattern destructures a helper CALL's runtime record result
 pass	a let tuple pattern destructures a helper CALL's runtime tuple result
+pass	a linear index-of search returns the POSITION of a runtime key, or -1 past the end
 pass	a literal just past the Float32 finite max overflows in a runtime branch
 pass	a literal one past the Int8 min rejects in a runtime branch
 pass	a magnitude literal that overflows the annotated Qty INNER width is rejected
@@ -1049,6 +1071,7 @@ pass	a narrow-width overflow reached ACROSS a function boundary through a match 
 pass	a narrow-width overflow reached through a MATCH projection of a runtime sum is rejected
 pass	a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected
 pass	a negative literal under an UNSIGNED width rejects in a runtime branch
+pass	a one-node Ast rewrite over a runtime leaf computes per call
 pass	a performing closure called TWICE observes the state advance between its calls
 pass	a quantity in a TUPLE inside a LIST element renders scaled (nested composition)
 pass	a quantity in an OPTION inside a MAP value renders scaled (nested composition)
@@ -1057,20 +1080,30 @@ pass	a read-modify-write of a List value in a Map grows the entry and leaves the
 pass	a record MATCH pattern with a LITERAL field sub-pattern dispatches on the field value
 pass	a record field built by a RUNTIME BRANCH holds a user-sum, projected then matched
 pass	a record key with a float-bearing TUPLE field keys by content
+pass	a recursive combinator applies a captured closure a RUNTIME number of times
 pass	a recursive fold over a runtime Peano spine recovers its depth
+pass	a recursive walk over a runtime-SHAPED tree dispatches per call
+pass	a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite
 pass	a right shift of a negative by a RUNTIME amount stays arithmetic
 pass	a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend
 pass	a runtime = on a sum recursive through a RECORD-of-TUPLE payload walks structurally
 pass	a runtime = over MUTUALLY-recursive sums walks across the type cycle
+pass	a runtime BRANCH selects between two named functions and the selected one applies
+pass	a runtime branch selects between two ANONYMOUS closures fed to the iterate combinator
+pass	a runtime hole woven into a compound Ast is read back by a nested match
 pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
 pass	a shift by a RUNTIME amount computes (both operands off the fold)
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
 pass	a slice OF a slice composes the offsets at runtime bounds
+pass	a slice at a RUNTIME start re-bases indexing per call
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
+pass	a success `?` unwraps a RUNTIME Ok payload under a Result boundary
+pass	a success `?` unwraps a RUNTIME payload (static ctor, per-call value)
 pass	a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack
 pass	a tuple key whose element is itself a float-bearing tuple keys by content
 pass	a tuple key with a RUNTIME Rational leaf hits and misses by canonical content
 pass	a tuple key with an ARITH-built BigInt leaf hits and misses by content
+pass	a tuple of two branch-built Options matches all four Some/None quadrants jointly
 pass	a user-sum variant value as a Map KEY keys by variant and payload
 pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
 pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
@@ -2697,6 +2730,7 @@ pass	a wide multi-column match over a bound tuple PARAMETER returns the matched 
 pass	a wider runtime value in a fixed-width segment is a compile-time type error
 pass	a wildcard in a nested pattern position ignores that element
 pass	a wildcard-exported variant whose name shadows a prelude type is constructible in an importer
+pass	a wrap-narrowed MULTI-BYTE segment decodes the truncated value back
 pass	a wrapped byte's zero equality tests the masked value, not the wide slot
 pass	a wrong-arity tuple binding pattern is a shape error
 pass	a wrong-arity tuple pattern nested under a constructor pattern is a type error
@@ -2745,6 +2779,7 @@ pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
 pass	an EFFECTFUL @ensures predicate performs under the caller's handler at body-EXIT, after the body's own perform
 pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body
+pass	an EQUALITY test refines the same test in its own else to known-false
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
 pass	an IEC-prefixed quantity displays scaled to its reference over Int64
@@ -2890,6 +2925,7 @@ pass	an effectful helper whose own parameter name shadows a driver parameter fol
 pass	an effectful init before a failing `?` performs exactly once
 pass	an effectful match scrutinee is performed exactly once across a two-position sink
 pass	an effectful shared operand performs after the condition, exactly once
+pass	an effectful walk over an INPUT list combines each element with a fresh perform
 pass	an element is projected from a runtime-constructed tuple
 pass	an element is projected from a tuple returned by a function
 pass	an element is projected from a tuple returned by a nullary function
@@ -3017,6 +3053,7 @@ pass	an open sum with a guarded named arm plus an open-tail arm is exhaustive
 pass	an open sum's open-tail arm dispatches a NAMED-but-uncovered variant, not only unnamed ones
 pass	an open sum's open-tail arm dispatches a variant the specific arms do not name
 pass	an open sum's payload decodes against a schema to a typed result
+pass	an open-row function is applied at TWO different record widths in one program
 pass	an open-sum value bound by an open-tail arm is forwarded to another matcher with its variant intact
 pass	an open-sum value matching no named arm in either matcher reaches the forwarded sentinel
 pass	an operation on mismatched types is rejected at compile time
@@ -3429,6 +3466,7 @@ pass	eval of an Ast.Float NaN node executes to the NaN value — it does NOT con
 pass	eval of an Ast.List with a non-operator head is the ordinary application type error
 pass	eval of an exported smart constructor still works — the forge fix does not over-reject
 pass	eval on malformed AST traps
+pass	every arm of a three-variant enum match is exercised by RUNTIME calls
 pass	every not-a-number value is equal to every not-a-number value
 pass	exact rational arithmetic is exact and normalized
 pass	exact rational division is total and exact for a nonzero divisor
@@ -3499,6 +3537,7 @@ pass	integer division of a negative dividend truncates toward zero, not toward n
 pass	integer division truncates toward zero
 pass	integer to byte (truncate to 0-255)
 pass	integer to byte wraps on overflow
+pass	interleaved do-discarded performs at BOTH nest levels thread their own states independently
 pass	interleaved same/different Instants keep FIFO within a time and ascending across times
 pass	interning the same string twice yields equal symbols
 pass	intersection cardinality with a runtime-element operand
@@ -3924,6 +3963,7 @@ pass	the Float codec round-trips a negative value
 pass	the INFINITY axiom is minted via new_axiom (an infinite type exists)
 pass	the Int codec round-trips i64::MIN — the two's-complement boundary
 pass	the Int64 total order holds at its extremes
+pass	the Int64.max and Int64.min CONSTANTS compare equal to their boundary values at runtime
 pass	the Int8 max boundary literal fits in a runtime branch
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
@@ -4285,6 +4325,7 @@ pass	updating an absent record field is rejected
 pass	when two abortive performs sit on one spine the FIRST (leftmost) abort wins
 pass	widening a runtime narrow-width unsigned integer to Int64 zero-extends (total, emits)
 pass	widening a runtime signed narrow integer to Int64 sign-extends (total, emits)
+pass	wrap-narrowed values fill BOTH segments of a dispatching frame — the wrapped tag selects the arm
 pass	wrapping addition of in-range operands is ordinary addition
 pass	wrapping addition wraps modulo two to the sixty-fourth on overflow
 pass	wrapping an unwrapped number re-enters the units world at the new unit

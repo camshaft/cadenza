@@ -2471,6 +2471,21 @@
   (call   main (: 2 Int64)) (output (: 42 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64)))
 
+(case "a BOOL as a Map key routes a runtime lookup to the right entry"
+  (doc    "The smallest key domain: a two-entry map keyed by `true`/`false`, looked up with a runtime Bool
+           — `true → 1`, `false → 2`. A Bool key has exactly two hash values, so the two entries land in
+           (at most) two CHAMP slots and the lookup must discriminate them by the one-bit content (a hash
+           collapsing both Bools to one bucket must still compare-discriminate). The feature-flag map
+           idiom, and the degenerate-domain edge of the scalar-key family (Int/Float/Symbol keys are
+           pinned; Bool was not).")
+  (input  (do
+            (def (main (: b Bool))
+              (match (Map.lookup (Map.insert (Map.insert Map.empty true 1) false 2) b)
+                ((Some v) v) ((None u) -1)))
+            (export main)))
+  (call   main (: true Bool)) (output (: 1 Int64))
+  (call   main (: false Bool)) (output (: 2 Int64)))
+
 (case "a deep NESTED-VARIANT pattern selects a runtime recursive sum by spine depth"
   (doc    "Nested constructor patterns to depth 3 over a runtime-built Peano spine: `((S (S (S _))) 3)` /
            `((S (S _)) 2)` / `((S _) 1)` / `((Z u) 0)` — the match must UNWRAP the spine level by level and
@@ -5397,6 +5412,27 @@
   (call   main (: 1 Int64) (: 9 Int64)) (output (: -1 Int64))
   (call   main (: 9 Int64) (: 2 Int64)) (output (: -2 Int64)))
 
+(case "a tuple of two branch-built Options matches all four Some/None quadrants jointly"
+  (doc    "The joint-match idiom over a PAIR of independently-fallible results: both tuple elements are
+           branch-built Options — `(if (> a 0) (Some a) (None))` per side — and ONE four-arm match
+           dispatches every quadrant: both-Some sums (7), left-only takes x (3), right-only takes y (4),
+           neither falls to the wildcard (0). The structural-editing file's docs name this shape as the
+           WORKING non-recursive baseline of the tuple-of-Option-producers pattern (the recursive-arg
+           variant declines) — this pins that baseline: the match must read BOTH elements' tags to select
+           the arm (a dispatch reading only the first tag would conflate the middle quadrants).")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (match (tuple (if (> a 0) (Some a) (None)) (if (> b 0) (Some b) (None)))
+                ((tuple (Some x) (Some y)) (+ x y))
+                ((tuple (Some x) (None u)) x)
+                ((tuple (None u) (Some y)) y)
+                (_ 0)))
+            (export main)))
+  (call   main (: 3 Int64) (: 4 Int64)) (output (: 7 Int64))
+  (call   main (: 3 Int64) (: 0 Int64)) (output (: 3 Int64))
+  (call   main (: 0 Int64) (: 4 Int64)) (output (: 4 Int64))
+  (call   main (: 0 Int64) (: 0 Int64)) (output (: 0 Int64)))
+
 (case "a homogeneous nested Option distinguishes its outer and inner None"
   (doc    "`Option (Option Int64)` — the SAME `Option` type nested — matched by three arms `((Some (Some v))
            v) ((Some (None _)) -1) (None -2)`. The scrutinee is runtime (an `if`), so no fold: `b`=true →
@@ -6309,6 +6345,24 @@
             (def (main) (lookup (list (tuple 1 100) (tuple 2 200)) 0 2)) (export main)))
   (output (: 200 Int64)))
 
+(case "a linear index-of search returns the POSITION of a runtime key, or -1 past the end"
+  (doc    "The index-returning twin of the assoc-list search above (that returns the stored VALUE with
+           const args; this returns the loop COUNTER with a runtime key): `find` recurses by index and on
+           `(= v k)` returns `i` ITSELF — the position where the hit occurred — while walking off the end
+           (`List.at` → None) reports -1. `k = 30` → index 2 (the hit is at the LAST element, so the miss
+           arms of both earlier probes ran first); `k = 99` → -1 (the full walk exhausts). Pins the
+           index-of idiom: the recursion's own counter is the answer, live across the accumulating calls.")
+  (input  (do
+            (def (find (: xs (List Int64)) (: k Int64) (: i Int64))
+              (match (List.at xs i)
+                ((Some v) (if (= v k) i (find xs k (+ i 1))))
+                ((None u) -1)))
+            (def (main (: k Int64))
+              (find (list 10 20 30) k 0))
+            (export main)))
+  (call   main (: 30 Int64)) (output (: 2 Int64))
+  (call   main (: 99 Int64)) (output (: -1 Int64)))
+
 (case "lists are equal by elements in order"
   (doc    "Witnesses collections-and-text.md #A List Is An Ordered Homogeneous Sequence (equality).
            Needs the primitive collections the seed realizes to build an AST (list/map/record).")
@@ -6630,6 +6684,26 @@
   (call   main (: 0 Int64)) (output (: 10 Int64))
   (call   main (: 1 Int64)) (output (: 20 Int64))
   (call   main (: 5 Int64)) (output (: -1 Int64)))
+
+(case "a FILTER-COUNT fold over a list of records tallies by a field predicate"
+  (doc    "The predicate-count over the record-list (the index-read case above reads ONE record; this walks
+           ALL, tallying those whose FIELD satisfies a comparison): `count-adults` threads `(if (>= (. r
+           age) 18) (+ acc 1) acc)` — the accumulator advances only when the projected field passes. One
+           record's age is a runtime parameter, so the tally is decided at run time: 20 → 2 pass, 10 → 1.
+           Composes the field projection INSIDE a conditional accumulator — the count-matching-rows query
+           every report loop takes.")
+  (input  (do
+            (def (count-adults (: xs (List (Record (: name Int64) (: age Int64)))) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some r) (count-adults xs (+ i 1) (if (>= (. r age) 18) (+ acc 1) acc)))
+                ((None u) acc)))
+            (def (main (: cutoff-age Int64))
+              (count-adults (list (record (name 1) (age 30))
+                                  (record (name 2) (age 15))
+                                  (record (name 3) (age cutoff-age))) 0 0))
+            (export main)))
+  (call   main (: 20 Int64)) (output (: 2 Int64))
+  (call   main (: 10 Int64)) (output (: 1 Int64)))
 
 (case "a set as a map value: runtime membership tested through the lookup"
   (doc    "`(Map.lookup {1↦{10,20}} k)` returns a `(Set Int64)` value; `(Set.contains s e)` then tests the
@@ -8186,6 +8260,27 @@
             (def (main) (match (f 2) ((Color.Red) 0) ((Color.Green) 1) ((Color.Blue) 2)))
             (export main)))
   (output (: 2 Int64)))
+
+(case "every arm of a three-variant enum match is exercised by RUNTIME calls"
+  (doc    "The all-arms runtime companion of the enum dispatch above (which selects ONE variant from a
+           const argument and folds): `pick` branches on a runtime boundary parameter, and THREE calls
+           drive each variant through the same compiled match — positive → Red (1), zero → Green (2),
+           negative → Blue (3). Pins that the three-way discriminant dispatch routes every variant
+           correctly from ONE compiled artifact (a two-arm specialization or a wrong-tag decision tree
+           would misroute one call).")
+  (input  (do
+            (type Color (Red) (Green) (Blue))
+            (def (pick (: n Int64))
+              (if (> n 0) (Red) (if (< n 0) (Blue) (Green))))
+            (def (main (: n Int64))
+              (match (pick n)
+                ((Red u) 1)
+                ((Green u) 2)
+                ((Blue u) 3)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64))
+  (call   main (: -5 Int64)) (output (: 3 Int64)))
 
 (case "a two-variant enum match with constant arms dispatches branchlessly — first variant"
   (doc    "A TWO-variant enum `(type Flag On Off)` matched to constant arms is `(if (disc == On) 1 0)` —
@@ -9801,6 +9896,24 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: (tuple 999 5 1099 1100 1050) (Tuple Int64 Int64 Int64 Int64 Int64))))
+(case "a MAX-fold threads a CONDITIONAL accumulator over a list with a runtime element"
+  (doc    "The comparison-accumulator fold (the sum-fold above threads `(+ acc v)` — every element
+           contributes; here the accumulator advances only when the comparison holds): `maxf` walks the
+           list threading `(if (> v best) v best)` — a per-step SELECT between the new element and the
+           running best. One element is a runtime parameter, so the winner is decided at run time: `k = 50`
+           dominates (50), `k = 0` leaves 7 the max. The seed is a sentinel below every element. Pins the
+           running-max/min genre: a fold whose accumulator update is conditional on a comparison of the
+           element against the accumulator itself.")
+  (input  (do
+            (def (maxf (: xs (List Int64)) (: i Int64) (: best Int64))
+              (match (List.at xs i)
+                ((Some v) (maxf xs (+ i 1) (if (> v best) v best)))
+                ((None u) best)))
+            (def (main (: k Int64))
+              (maxf (list 3 k 7 1) 0 -9999))
+            (export main)))
+  (call   main (: 50 Int64)) (output (: 50 Int64))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
 
 ; --- `List.at` at a RUNTIME index: the fallible positional read on the value heap -----------------------
 ; The `List.at` cases elsewhere read at a CONSTANT index (`(List.at (list …) 3)` folds to the element at
@@ -10257,6 +10370,62 @@
   (input  (do
             (def (main) (Map.len (. (Map.take (Map.insert Map.empty 1 10) 2) 1))) (export main)))
   (output (: 1 Int64)))
+
+; The value-yielding remove/insert cases above all use CONSTANT keys, so each case exercises only ONE
+; side of the hit/miss dispatch (and could fold). These drive the SAME compiled body down both sides
+; with a RUNTIME key — the hit arm reads the removed/replaced value, the miss arm proves the map
+; survived intact — pinning that the CHAMP descent, not a fold, selects the tuple's Some/None.
+
+(case "Map.take at a RUNTIME key takes the hit and miss arms through one compiled body"
+  (doc    "`(Map.take {1↦10,2↦20,3↦30} k)` with `k` a boundary parameter: k=2 hits — the dropped value is
+           `(Some 20)` and the rest has 2 entries → 20+2 = 22; k=9 misses — nothing dropped, the map
+           intact at 3 entries → -3. One compiled take must produce BOTH tuple shapes depending on the
+           runtime CHAMP descent (a fold of the const cases above can't — the key isn't known). Pins the
+           value-yielding remove's hit/miss dispatch as residual code.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((m (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 3 30)))
+                (match (Map.take m k)
+                  ((tuple (Some v) rest) (+ v (Map.len rest)))
+                  ((tuple (None u) rest) (- 0 (Map.len rest))))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 22 Int64))
+  (call   main (: 9 Int64))
+  (output (: -3 Int64)))
+
+(case "Map.swap at a RUNTIME key replaces on a hit and adds on a miss through one compiled body"
+  (doc    "`(Map.swap {1↦10,2↦20} k 99)`: k=2 hits — the prior value `(Some 20)` comes back and the new
+           map holds 99 at k, read back by a lookup at the SAME runtime key → 20+99 = 119; k=7 misses —
+           `(None unit)` prior and the entry is ADDED, so the new map has 3 entries → -3. Pins both halves
+           of the value-yielding insert's contract (replace-on-hit, add-on-miss) selected by the runtime
+           descent, plus the lookup-after-swap coherence at a runtime key.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((m (Map.insert (Map.insert Map.empty 1 10) 2 20)))
+                (match (Map.swap m k 99)
+                  ((tuple (Some old) m2) (+ old (match (Map.lookup m2 k) ((Some nv) nv) ((None u) -1))))
+                  ((tuple (None u) m2) (- 0 (Map.len m2))))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 119 Int64))
+  (call   main (: 7 Int64))
+  (output (: -3 Int64)))
+
+(case "Map.remove at a RUNTIME key shrinks only on a hit"
+  (doc    "The plain-remove companion: `(Map.remove {1↦10,2↦20} k)` at k=1 drops the entry (len 1); at
+           k=5 the absent key is a no-op (len 2, removal is total). The const-key cases pin each side
+           separately; here one compiled remove's CHAMP descent decides hit-vs-no-op from the call's
+           value.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((m (Map.insert (Map.insert Map.empty 1 10) 2 20)))
+                (Map.len (Map.remove m k))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64))
+  (call   main (: 5 Int64))
+  (output (: 2 Int64)))
 
 (case "a single Map.swap reports the OLD prior value WHILE the new map holds the NEW value (combined atomicity)"
   (doc    "The cases above read the `Map.swap` tuple's elements SEPARATELY — the prior optional (`.0`) or the

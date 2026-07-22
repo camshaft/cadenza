@@ -189,6 +189,21 @@
   (input  (Bytes.at (Option.expect (Bytes.slice (Bytes.of (list 10 20 30 40)) 1 2) "slice is in bounds") 0))
   (output (: (Some 20) (Option Int64))))
 
+(case "a slice at a RUNTIME start re-bases indexing per call"
+  (doc    "The runtime companion of the re-based-indexing pin above (whose start is the constant 1 and
+           folds): the slice start is a boundary parameter, so ONE compiled read `(Bytes.at s 0)` must
+           re-base against a PER-CALL offset — at `a = 2` slice[0] is the parent's byte 2 (30), at `a = 0`
+           it is byte 0 (10). A view carrying a baked offset (or reading the parent's index 0 regardless
+           of the slice start) would return 10 for both calls.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Bytes.slice (Bytes.of (list 10 20 30 40)) a 2)
+                ((Some s) (match (Bytes.at s 0) ((Some v) v) ((None u) -2)))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 30 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64)))
+
 (case "a slice spanning a concatenation sees the logical bytes"
   (doc    "Slicing across the seam of `(concat a b)` — `(Bytes.slice (concat (list 1 2) (list 3 4)) 1 2)`
            = Some `(Bytes.of (list 2 3))` — reads the LOGICAL bytes in order, independent of how the

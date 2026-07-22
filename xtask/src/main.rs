@@ -1476,8 +1476,41 @@ fn run_program_rust(
         Some(c) => {
             // Each arg is a canonical sexp VALUE; a scalar passes through, a compound (`(tuple …)`,
             // `(record …)`) is rebuilt as the Rust expression the backend's parameter type expects.
-            let args: Vec<String> = c.args.iter().map(|a| rust_call_arg(a)).collect();
+            // TYPE-AWARE marshal for a BIGINT param: the corpus arg is a BARE decimal (`5`) — its
+            // `(: 5 BigInt)` type annotation is stripped by the corpus parser, and unlike a String value
+            // (self-identifying `"…"`) a bare `5` gives `rust_call_arg` no way to know it must cross as a
+            // `cdz_num::Big`. Emitted verbatim `5` is an i64 literal → rustc E0308 against `fn(a: cdz_num::
+            // Big)` (breaker/corpus-bugfix: the BigInt-entry-param artifact-no-build, the BigInt twin of the
+            // FIXED String-entry `.to_string()` marshal). So read the emitted fn's param TYPES off its
+            // signature and, for a `cdz_num::Big` param, marshal the decimal arg via `big_arg_expr` (the
+            // owned-BigInt construction — the BigInt analogue of `.to_string()`). A non-BigInt param, or an
+            // arg not a bare decimal, keeps the ordinary `rust_call_arg`.
             let name = rust_ident(&c.export);
+            let arg_param_tys: Vec<Option<String>> = parse_emitted_sig(&module, &name, async_mode)
+                .map(|sig| {
+                    sig.params
+                        .iter()
+                        .filter(|p| !is_env_param(p))
+                        .map(|p| p.split_once(':').map(|(_, ty)| ty.trim().to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let args: Vec<String> = c
+                .args
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let is_bigint_param = arg_param_tys
+                        .get(i)
+                        .and_then(|o| o.as_deref())
+                        .is_some_and(|ty| ty == "cdz_num::Big");
+                    if is_bigint_param && let Ok(n) = a.trim().parse::<i128>() {
+                        cdz_rust_render::big_arg_expr(n)
+                    } else {
+                        rust_call_arg(a)
+                    }
+                })
+                .collect();
             // HOST-CLOSURE FACTORY export: a def returning a closure (`(def (both (: a)(: b)) (fn (x) …))`)
             // emits `pub fn both(a, b) -> Rc<dyn Fn(x)->r>` — the captured params (a,b) are the factory's
             // OWN params, and the returned `Rc<dyn Fn>` is APPLIED to the remaining call args. The gate's

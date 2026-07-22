@@ -11166,10 +11166,21 @@ fn emit_match_arms_tailable(
         && !matches!(block_ty, BlockType::Empty)
     {
         // The body leaves are grounded to the match's result width (as the probe-chain arms are),
-        // recovered from `result_it` (an Int result) or the block valtype (a Bool result is an i32).
+        // recovered from `result_it` (an Int result) or the block valtype. A FLOAT result (`block_ty` is
+        // `f32`/`f64`) must ground a bare-`ConstFloat` arm to THAT width via `emit_branch` — otherwise a
+        // bare float literal arm defaults to `Float64` and emits `f64.const` under an `f32`-typed select →
+        // an INVALID module (the all-literal-arm Float32 match: `(: (match n (0 1.5) (_ 0.25)) Float32)`,
+        // which routes here as a 2-arm select of two trap-free literal arms). `result_it` is Int-only, so
+        // without the float case `res_ty` fell to `Bool` and `emit_branch` never grounded the ConstFloat.
+        // Read the float width off the (already-solved) `block_ty`; a non-float non-int result is `Bool`
+        // (its ConstBool leaf is always i32, no width to reconcile).
         let res_ty = match result_it {
             Some(rit) => Ty::Int(rit),
-            None => Ty::Bool,
+            None => match block_ty {
+                BlockType::Val(ValType::F32) => Ty::Float(crate::ty::FloatTy::fixed(32)),
+                BlockType::Val(ValType::F64) => Ty::Float(crate::ty::FloatTy::fixed(64)),
+                _ => Ty::Bool,
+            },
         };
         emit_branch(
             db,
@@ -12109,9 +12120,16 @@ fn emit_probe_chain(
         && is_select_arm(db, arms[1].body)
         && !matches!(block_ty, BlockType::Empty)
     {
+        // A FLOAT result grounds a bare-`ConstFloat` arm to the block's float width (read off `block_ty`) —
+        // else the literal defaults `Float64` and emits `f64.const` under an `f32` select (the all-literal
+        // Float32 match's terminal pair). `result_it` is Int-only; mirror the standalone 2-arm select's fix.
         let res_ty = match result_it {
             Some(rit) => Ty::Int(rit),
-            None => Ty::Bool,
+            None => match block_ty {
+                BlockType::Val(ValType::F32) => Ty::Float(crate::ty::FloatTy::fixed(32)),
+                BlockType::Val(ValType::F64) => Ty::Float(crate::ty::FloatTy::fixed(64)),
+                _ => Ty::Bool,
+            },
         };
         emit_branch(
             db,

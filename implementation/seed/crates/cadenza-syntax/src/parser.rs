@@ -3004,7 +3004,15 @@ impl<'a> Parser<'a> {
                 // Elements are single expressions (`PREC_SEQ + 1`) — a `;` is not a list separator, so a
                 // sequence element parenthesizes (`[(a; b), c]`), matching call-argument position.
                 if !self.rest_marker(&mut items, |p| p.expr(crate::token::PREC_SEQ + 1)) {
+                    // Own-line `//` comment(s) LEADING this element (`[\n // note\n 1, …]`) sit in the
+                    // element's first-token leading slot. `expr` does NOT drain that slot (only `stmt`/
+                    // `body_expr` do), so without this the comment is stranded and dropped. Drain it and
+                    // wrap the element in `(comment "text" elem)` (LEADING form) — the printer already
+                    // renders a leading `(comment …)` as a `// …` line above the element (own-line), and
+                    // `strip_comments` peels it. Distinct from the TRAILING `(comment-after …)` below.
+                    let leading = self.take_comments_here();
                     let elem = self.expr(crate::token::PREC_SEQ + 1);
+                    let elem = self.wrap_comments(leading, elem);
                     // A `//` comment trailing the LAST element on the same source line (`[…, x // last]`)
                     // sits in the `]` token's leading slot; capture it as `(comment-after …)` so it
                     // re-prints same-line (the printer forces `]` onto its own line so it isn't swallowed).
@@ -3015,9 +3023,10 @@ impl<'a> Parser<'a> {
                     // element (`[1 // note, 2]`) has `,` next — capturing it there would print `1 // note,
                     // 2` with the `, 2` swallowed into the comment line → invalid re-parse (PR#758 /
                     // Copilot: an unconditional capture is a round-trip BREAK, worse than the drop). So a
-                    // mid-element comment is left stranded → the comment-drop guard refuses the format (no
-                    // corruption); interior comments are the broader filed gap. (Mirrors `variant()`, whose
-                    // capture is also only well-defined at the trailing edge.)
+                    // mid-element TRAILING comment is left stranded → the comment-drop guard refuses the
+                    // format (no corruption). (Mirrors `variant()`, whose capture is only well-defined at
+                    // the trailing edge.) The LEADING own-line capture above has no such hazard: a `//` on
+                    // its OWN line above an element re-prints on its own line and always re-reads correctly.
                     if self.at(Kind::RBracket) {
                         let trailing = self.take_trailing_comment_here();
                         items.push(self.wrap_comment_after(trailing, elem));
