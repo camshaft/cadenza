@@ -346,9 +346,13 @@ impl<'a> Printer<'a> {
         // application, rendered as a call. Checked before the name-head keyword/operator dispatch below.
         if let Some(ctor) = self.literal_ctor(items[0]) {
             let args = &items[1..];
+            // A NON-last `(comment-after …)` element (only from a decoded/synthetic AST) has no faithful
+            // inline rendering — decline the sugared surface so it falls to the generic call form, which
+            // round-trips. `print_record`/`print_map` also self-guard via `is_record_shape`/`is_map_shape`.
+            let inline_ok = !self.has_nonlast_comment_after(args);
             match ctor.as_str() {
-                "list" => return self.print_list_literal(args),
-                "tuple" if !args.is_empty() => return self.print_tuple(args),
+                "list" if inline_ok => return self.print_list_literal(args),
+                "tuple" if !args.is_empty() && inline_ok => return self.print_tuple(args),
                 "record" if self.is_record_shape(args) => return self.print_record(args),
                 "map" if self.is_map_shape(args) => return self.print_map(args),
                 _ => {}
@@ -2272,6 +2276,20 @@ impl<'a> Printer<'a> {
         matches!(self.a.as_form(id, "comment-after"), Some(a) if a.len() == 2 && self.is_string(a[0]))
     }
 
+    /// True if any element EXCEPT the last is a same-line trailing `(comment-after …)` wrapper. Such a node
+    /// only ever arises from a decoded / metaprogramming-built AST (the reader gates its capture to the
+    /// last element), and it has NO faithful inline rendering: `elem // text , next` would swallow the `,`
+    /// into the comment, and `elem, // text` re-reads the comment as LEADING the next element (a different
+    /// tree). So a container carrying one must DECLINE its sugared literal surface and fall back to the
+    /// generic call render (which round-trips `comment-after(...)` faithfully). Prevents the printer-side
+    /// PR#758 break (PR#763 / Copilot: a printer guard must be correct on ANY AST, not just the reader's).
+    fn has_nonlast_comment_after(&self, elems: &[StructId]) -> bool {
+        elems.len() > 1
+            && elems[..elems.len() - 1]
+                .iter()
+                .any(|&e| self.is_comment_after(e))
+    }
+
     /// Print one collection-literal element, unwrapping a `(comment-after "text" elem)` wrapper (a `//`
     /// that trailed the element on the same source line, e.g. `[1, 2 // last]` / `(1, 2 // last)`) so it
     /// re-emits SAME-LINE as `elem // text` — mirroring `print_variant`'s trailing-comment handling. A
@@ -3121,6 +3139,11 @@ impl<'a> Printer<'a> {
         if self.has_rest_marker(elems) {
             return None;
         }
+        // A non-last `(comment-after …)` element has no faithful `#(…)` rendering (would swallow the
+        // following `, …`) — decline so it falls to the generic `Set.of([…])` call form, which round-trips.
+        if self.has_nonlast_comment_after(elems) {
+            return None;
+        }
         Some(elems.to_vec())
     }
 
@@ -3319,9 +3342,18 @@ impl<'a> Printer<'a> {
     /// still round-trips. A record additionally needs its field key to be a name; a map key is any
     /// expression.
     fn is_pairs(&self, args: &[StructId]) -> bool {
+        // A same-line trailing-comment wrapper is only faithfully renderable on the LAST field/entry (the
+        // printer emits ` // text` then forces the closing brace to its own line). A NON-last wrapped pair
+        // — only from a decoded / metaprogramming-built AST, never the gated reader — has NO faithful
+        // `{…}`/`#{…}` rendering (`k = v // text, …` swallows the `,`), so reject it here → the literal
+        // falls back to the generic `"record"(…)`/`"map"(…)` call form, which round-trips (PR#763 /
+        // Copilot: a printer shape-guard must be correct on ANY AST, not just the reader's output).
+        if self.has_nonlast_comment_after(args) {
+            return false;
+        }
         args.iter().all(|&a| {
-            // See through a same-line trailing-comment wrapper on the last field/entry (only the last one
-            // is ever wrapped, by the reader's `at(RBrace)` gate) so it stays a well-formed record/map.
+            // See through the trailing-comment wrapper on the LAST field/entry so it stays a well-formed
+            // record/map (the only position the guard above permits it).
             let inner = self.strip_comment_after(a);
             matches!(self.a.get(inner), Struct::List(p) if p.len() == 2)
         })
@@ -5821,6 +5853,47 @@ mod tests {
         // A clean list with no trailing comment keeps the ordinary flat layout (no forced break).
         assert_eq!(assert_roundtrip("[1, 2, 3]", 80), "[1, 2, 3]");
         assert_eq!(assert_roundtrip("[]", 80), "[]");
+    }
+
+    #[test]
+    fn a_nonlast_comment_after_in_a_decoded_ast_falls_back_and_round_trips_not_swallowed() {
+        // PR#763 (Copilot): a printer shape/render guard must be correct on ANY AST, not just the reader's
+        // (the reader gates same-line-comment capture to the LAST element). A decoded / metaprogramming-
+        // built AST can carry a `(comment-after …)` on a NON-last element. Rendering it inline would emit
+        // `elem // text , next` — the `, next` swallowed into the comment line → invalid re-parse (the
+        // printer-side PR#758 break). Every collection literal now DECLINES its sugared surface when a
+        // non-last element is comment-after-wrapped, falling back to the generic call form, which
+        // round-trips `comment-after(...)` faithfully. Pin round-trip for all five containers.
+        for (label, sx) in [
+            (
+                "list",
+                r#"(def (l) (: ("list" (comment-after "mid" 1) 2) _))"#,
+            ),
+            (
+                "tuple",
+                r#"(def (t) (: ("tuple" (comment-after "mid" 1) 2) _))"#,
+            ),
+            (
+                "record",
+                r#"(def (r) (: ("record" (comment-after "mid" (a 1)) (b 2)) _))"#,
+            ),
+            (
+                "map",
+                r#"(def (m) (: ("map" (comment-after "mid" (1 10)) (2 20)) _))"#,
+            ),
+            (
+                "set",
+                r#"(def (s) (: ((. Set of) ("list" (comment-after "mid" 1) 2)) _))"#,
+            ),
+        ] {
+            let a = sexpr::read(sx).unwrap();
+            let printed = print(&a, 80);
+            let reparsed = sexpr::print(&parser::read_ml(&printed).arenas);
+            assert_eq!(
+                reparsed, sx,
+                "{label}: a non-last comment-after must round-trip via call-form fallback, not swallow the separator (printed: {printed})"
+            );
+        }
     }
 
     #[test]

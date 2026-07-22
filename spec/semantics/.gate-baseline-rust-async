@@ -89,11 +89,14 @@ pass	FULL CONTRACT: @requires + @ensures on ONE def fire INDEPENDENTLY — a pre
 pass	Float32 tuple-key components key at binary32 width (distinctness, lookup, signed zero)
 pass	Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even
 pass	Set.contains dispatches on an Option element at a runtime payload
+pass	a PURE closure iterated by a recursive combinator composes with a perform in the same body
 pass	a Rational ENTRY parameter crosses the boundary and reduces per call
 pass	a Set.of over PRELUDE-Option elements dedups Some by payload and keeps None distinct
 pass	a Set.of over Result elements separates Ok from Err with EQUAL payloads
 pass	a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value
 pass	a closure built OVER another closure applies both capture layers
+pass	a fitting Float32 literal in a runtime MATCH arm computes
+pass	a fitting Float32 record field passed through a typed parameter computes
 pass	a param-left arith-right Float64.of-int equality compiles to a valid module and computes
 pass	Float64.of-int collapses adjacent integers at the 2^53 precision boundary
 pass	Int64.min crosses the parameter boundary and back unchanged
@@ -325,6 +328,8 @@ pass	a BOOL-field Tuple closure ARG flattens + rebuilds (box-bool imported)
 pass	a BOOL-field Tuple closure ARG, false discriminant
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
 pass	a BigInt entry argument is marshalled through the value's own constructor
+pass	a BigInt entry parameter is COMPUTED on, not just compared
+pass	a BigInt entry parameter added to a beyond-i64 annotated literal
 pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
@@ -1058,6 +1063,7 @@ pass	a runtime = over MUTUALLY-recursive sums walks across the type cycle
 pass	a runtime BRANCH selects between two named functions and the selected one applies
 pass	a runtime branch selects between two ANONYMOUS closures fed to the iterate combinator
 pass	a runtime hole woven into a compound Ast is read back by a nested match
+pass	a runtime zero denominator PRODUCED BY ARITHMETIC traps at construction
 pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
 pass	a shift by a RUNTIME amount computes (both operands off the fold)
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
@@ -1071,6 +1077,7 @@ pass	a tuple key whose element is itself a float-bearing tuple keys by content
 pass	a tuple key with a RUNTIME Rational leaf hits and misses by canonical content
 pass	a tuple key with an ARITH-built BigInt leaf hits and misses by content
 pass	a tuple of two branch-built Options matches all four Some/None quadrants jointly
+pass	a user sum named Ast renders BARE with RUNTIME payloads through one compiled body
 pass	a user-sum variant value as a Map KEY keys by variant and payload
 pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
 pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
@@ -3721,6 +3728,7 @@ pass	recursive fibonacci over a RUNTIME argument computes the predecessors corre
 pass	recursive fibonacci with literal match base cases
 pass	recursive-sum equality discriminates a difference at the DEEPEST node
 pass	recursive-sum equality is decided by RUNTIME parameters, both regimes in one export
+pass	recursive-sum equality over FLOAT payloads compares by canonical float bytes along the walk
 pass	redeclaring a built-in unit with its own conversion is admissible
 pass	redeclaring a user-declared unit with the same conversion is admissible
 pass	reifying a constant NaN into an Ast.Float declines (no canonical value form)

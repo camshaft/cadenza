@@ -466,6 +466,27 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 34 Int64)))
 
+(case "a PURE closure iterated by a recursive combinator composes with a perform in the same body"
+  (doc    "The effects-adjacent face of the iterate combinator (09-functions pins it pure): under a
+           handler, the body BOTH performs (`Ctr.next` reads the seed 0 and threads 1) AND runs a
+           recursive `times` combinator over a PURE closure `(fn (u) 5)` a RUNTIME number of times —
+           `(+ (Ctr.next unit) (times (fn 5) n 0))` at n=3 is 0 + 15 = 15. The combinator's fn-param
+           application must not be mistaken for a performing call (no false CDZ0401 on the pure closure,
+           no spurious state advance from its iterations), and the sibling perform must still thread the
+           handler state. (A PERFORMING closure through the same combinator still declines — the homing
+           analysis grants effects where the callee applies its param under a handler, and here the
+           handler sits at the combinator's CALL site, not inside it — so this pins the pure half.)")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (def (times (: f (-> Unit Int64)) (: n Int64) (: acc Int64))
+              (if (< n 1) acc (times f (- n 1) (+ acc (f unit)))))
+            (def (main (: n Int64))
+              (handle Ctr 0
+                ((next (u) s (resume s (+ s 1))))
+                (+ (Ctr.next unit) (times (fn ((: u Unit)) 5) n 0))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 15 Int64)))
+
 (case "a ctl-style arm applying its continuation inside a match scrutinee resolves and folds"
   (doc    "The continuation binder `k` of a `ctl`-style arm must be in scope everywhere in the arm body,
            including inside a MATCH scrutinee. `(flip () s k (match (k 10) (z (* z 2))))` applies `k`

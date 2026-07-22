@@ -634,6 +634,19 @@
   (input  (: (record (x 1.0e300)) (Record (: x Float32))))
   (error  CDZ0302))
 
+(case "a fitting Float32 record field passed through a typed parameter computes"
+  (doc    "The compute twin of the Float32 record-field reject above, through a FUNCTION boundary: `get`
+           takes `(Record (: x Float32))` and projects `x`, and the caller builds `(record (x 1.5))` —
+           the literal grounds to the declared Float32 field width at construction, crosses the call as
+           an f32 field, and projects back out as 1.5. The record-field member of the fitting-Float32
+           emit family (if-branch and match-arm faces pinned nearby); an emit that boxed the field by the
+           bare literal's f64 width instead of the DECLARED field type would mismatch the projection.")
+  (input  (do
+            (def (get (: r (Record (: x Float32)))) (. r x))
+            (def (main) (get (record (x 1.5))))
+            (export main)))
+  (call   main) (output (: 1.5 Float32)))
+
 (case "a Float32-overflowing literal in a compound payload inside a runtime conditional branch is rejected"
   (doc    "The COMPOSITION of the two float width descents: the overflowing literal sits in a compound
            payload (`(Some 1.0e300)`) which itself sits in a RUNTIME if branch — `(if c (: (Some 1.0e300)
@@ -708,6 +721,36 @@
   (output (: 0 Int64))
   (call   main (: false Bool))
   (output (: 1 Int64)))
+
+; The MATCH sibling of the if-branch pin above — the whole Float32-bare-literal-arm family. A `(: (match n …)
+; Float32)` whose arms are ALL bare float literals used to emit an INVALID module: the match lowers to a
+; branchless SELECT (2-arm) or a probe-chain terminal pair, and those paths grounded arm values from
+; `result_it` (INT-only) so a float result fell to `Ty::Bool` and the bare `ConstFloat` arm kept its default
+; `f64` → an `f64.const` under an `f32` select (`expected f32, found f64`, a hard validation error). The fix
+; grounds those select/probe paths' arm width from the already-solved `block_ty` (f32). This pins the fix at
+; the VALUE level across BOTH the 2-arm select path and the 3-arm probe/br_table path (its guard is a `--lib`
+; test; `xtask gate` skips `--lib`, so this is the fleet-visible witness). Each `(match …)` is compared to
+; `(: 1.0 Float32)`: n=0 → both matches take `1.5` (not < 1.0) → 0; n=1 → 2-arm `_`=0.25<1 (1) + 3-arm arm-1
+; =0.75<1 (1) → 100+1; n=7 → both `_`=0.25<1 → 100+1. Completes the Float32 match-arm family (base + residual).
+(case "a bare-literal-arm float match under Float32 emits valid f32 across the select and probe-chain paths"
+  (doc    "The MATCH twin of the Float32 if-branch pin above: `(: (match n (0 1.5) (_ 0.25)) Float32)` (and a
+           3-arm form) whose arms are all bare float literals over a runtime scrutinee. Was an INVALID module —
+           the match's SELECT / probe-chain paths grounded arm width from `result_it` (int-only), so a float
+           arm kept default f64 and pushed `f64.const` under an f32 select. Fixed by grounding those paths from
+           the solved block_ty. Pins the value across both paths (2-arm select + 3-arm probe/br_table): n=0 →
+           0, n=1 → 101, n=7 → 101 (each match compared < `(: 1.0 Float32)`, scaled 100*2arm + 3arm). Both
+           backends; the fix's own guard is `--lib`-only (gate skips `--lib`).")
+  (input  (do
+            (def (main (: n Int64))
+              (+ (* 100 (if (< (: (match n (0 1.5) (_ 0.25)) Float32) (: 1.0 Float32)) 1 0))
+                 (if (< (: (match n (0 1.5) (1 0.75) (_ 0.25)) Float32) (: 1.0 Float32)) 1 0)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64))
+  (call   main (: 1 Int64))
+  (output (: 101 Int64))
+  (call   main (: 7 Int64))
+  (output (: 101 Int64)))
 
 (case "a Float32-overflowing literal in a runtime match arm is rejected at check"
   (doc    "The match face of the Float32 branch descent: `(: (match n (0 0.5) (_ 1.0e300)) Float32)` over
@@ -791,6 +834,22 @@
             (export main)))
   (call   main (: true Bool) (: 1.5 Float32))  (output (: 1.5 Float32))
   (call   main (: false Bool) (: 1.5 Float32)) (output (: 0.25 Float32)))
+
+(case "a fitting Float32 literal in a runtime MATCH arm computes"
+  (doc    "The match-position member of the fitting-Float32 family (the if-branch face above; the
+           overflow REJECT twin is the Float32-overflowing match-arm case): `(: (match n (0 0.5) (_ 1.5))
+           Float32)` over a runtime scrutinee — every arm literal fits binary32 and the emit grounds each
+           bare arm literal to the match's Float32 result width. This was the LAST fitting-Float32 emit
+           gap (select paths derived the result type from an Int-only iterator → an ungrounded f64.const
+           against the f32 block type — an INVALID MODULE, not a wrong value); the if-branch and
+           record-field faces were fixed first and this arm face completed the class. Computes per arm:
+           n=0 → 0.5, n=3 → 1.5.")
+  (input  (do
+            (def (main (: n Int64))
+              (: (match n (0 0.5) (_ 1.5)) Float32))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 0.5 Float32))
+  (call   main (: 3 Int64)) (output (: 1.5 Float32)))
 
 (case "the inclusive Int8 boundaries fit in a runtime branch and one-past rejects"
   (doc    "The INTEGER boundary faces of the branch fit-check, at the annotated-conditional position (the
@@ -1233,6 +1292,19 @@
   (input  (do (def (main (: n Int64) (: d Int64)) (Int64.of (Rational.numerator (Rational.of n d)))) (export main)))
   (call   main (: 1 Int64) (: 2 Int64)) (output (: 1 Int64))
   (call   main (: 1 Int64) (: 0 Int64)) (trap "unreachable"))
+
+(case "a runtime zero denominator PRODUCED BY ARITHMETIC traps at construction"
+  (doc    "The computed-operand face of the runtime zero-denominator trap above (there the zero arrives
+           as the raw parameter; here it is PRODUCED by arithmetic inside the body): `(Rational.of 5 (- a
+           b))` traps exactly when a=b — the guard must fire on the subtraction's RESULT, not only on a
+           directly-tainted parameter. a=3,b=3 → (- 3 3)=0 → trap; a=5,b=3 → 5/2, truncated to 2 (the
+           in-range control through Rational.truncate).")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (Rational.truncate (Rational.of 5 (- a b))))
+            (export main)))
+  (call   main (: 3 Int64) (: 3 Int64)) (trap "unreachable")
+  (call   main (: 5 Int64) (: 3 Int64)) (output (: 2 Int64)))
 
 (case "a rational operation does not silently promote an integer operand"
   (doc    "`(+ (Rational.of 1 2) 1)` mixes a Rational and an Int64 — two distinct numeric types — so it

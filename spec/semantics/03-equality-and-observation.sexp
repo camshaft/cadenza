@@ -1283,6 +1283,24 @@
   (call   main (: 99 Int64)) (output (: true Bool))
   (call   main (: 7 Int64))  (output (: false Bool)))
 
+(case "recursive-sum equality over FLOAT payloads compares by canonical float bytes along the walk"
+  (doc    "The float-leaf member of the recursive-walk family (the Int64-payload cases above compare
+           integer leaves): `(type FL (FNil) (FCons Float64 FL))` — each spine node carries a Float64, so
+           the structural walk's per-node compare descends into the CANONICAL float byte form (the
+           equality float leaves already have at top level, now nested under recursion). `(= (mk 3 x) (mk
+           3 2.5))` from one compiled walk: true at x=2.5 (three float leaves all equal), false at x=0.5.
+           A walk that compared float leaves by raw bits without canonicalization, or that skipped float
+           payloads in the spine compare, diverges at one of the calls.")
+  (input  (do
+            (type FL (FNil) (FCons Float64 FL))
+            (def (mk (: n Int64) (: f Float64))
+              (if (= n 0) (FNil) (FCons f (mk (- n 1) f))))
+            (def (main (: x Float64))
+              (= (mk 3 x) (mk 3 2.5)))
+            (export main)))
+  (call   main (: 2.5 Float64)) (output (: true Bool))
+  (call   main (: 0.5 Float64)) (output (: false Bool)))
+
 (case "two runtime sums with the same payload but different variants compare unequal by a heap walk"
   (doc    "The discriminant half of the runtime heap walk: `pick` builds `(N.I n)` or `(N.J n)` from a
            runtime boolean, so `(pick true 5)` = `(N.I 5)` and `(pick false 5)` = `(N.J 5)` are two

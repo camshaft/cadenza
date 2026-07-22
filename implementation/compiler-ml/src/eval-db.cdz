@@ -46,6 +46,12 @@ def eval-core(c: Core, env: Map(Int64, Int64)) = match c with
       (match eval-core(cond, env) with
         | Option.Some(c) => (if (c == 0) then eval-core(els, env) else eval-core(thn, env))
         | Option.None(_) => Option.None(unit))
+  | Core.CCall(_, _) => Option.None(unit)
+      // slice-B1a: a recursive call lowers to a NON-inlining CCall, but eval has no def-env yet (B1b adds
+      // `defs: Map(name, (params, body))` + the running arm). Until then a CCall DECLINES here — recursion
+      // still doesn't RUN, but the LOWERING is pinned. This keeps the exhaustive match total; B1b replaces
+      // this arm with the real name→body dispatch (eval args in the current env, bind to the callee's params
+      // in a fresh env, eval the body). run-recursive stays a clean decline in B1a (no hang).
 
 /// Apply a binary op: 43 +, 45 -, 42 *, 47 /, and the relational ops 60 `<`, 61 `==`, 62 `>`, 63 `<=`,
 /// 64 `>=`, 65 `!=`. Relational ops yield a Bool encoded as 0/1 (Core represents Bool as an Int); each of

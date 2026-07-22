@@ -572,6 +572,38 @@ pub enum FleetCmd {
         #[arg(long, default_value_t = 0)]
         limit: usize,
     },
+    /// STAGE a batch of merge-request refs into a SCRATCH ref (`refs/fleet/batch-staging`) built off the
+    /// CURRENT `trunk`, WITHOUT touching `trunk`. This closes the intermediate-rewind window at its source:
+    /// pr-sync's historical batch build did `git reset --hard trunk` then `git merge --no-ff` each ref onto
+    /// the LOCAL `trunk` branch, so the `trunk` pointer advanced PER-MR during construction — and a peer's
+    /// `fleet sync` that landed inside that window adopted a half-built (possibly-to-be-rejected) tree as
+    /// its own history (the sync-contamination amplifier). Staging onto a scratch ref means `trunk` never
+    /// moves until the whole batch is gated and FF-committed in one step ([`FleetCmd::BatchCommit`]).
+    ///
+    /// Builds in the reused gate-batch scratch worktree (same `--no-ff --no-edit` merge order pr-sync uses),
+    /// then points `refs/fleet/batch-staging` at the resulting commit and records the base it was built on
+    /// in `refs/fleet/batch-staging-base` (so `batch-commit` can assert `trunk` hasn't drifted). Prints the
+    /// staged base sha, staged tip sha, and tree sha so pr-sync can gate EXACTLY that tree. On a merge
+    /// conflict the offending ref is skipped and reported (same BOUNCE semantics as gate-batch's prefilter).
+    /// Pure ref-plumbing: pr-sync's per-MR vetting, contamination-scan, gate, and publish stay untouched.
+    BatchStage {
+        /// The merge-request commit shas (`--ref` values) to stage, in the intended merge order.
+        #[arg(required = true, value_name = "REF")]
+        refs: Vec<String>,
+    },
+    /// COMMIT a staged batch: fast-forward `trunk` to the tip of `refs/fleet/batch-staging`, but ONLY if
+    /// `trunk` is still exactly the base the batch was staged on (`refs/fleet/batch-staging-base`) — a hard
+    /// ancestor/equality assert (a CAS on the `trunk` pointer). If `trunk` moved under us since staging, the
+    /// staged tree is stale, so this REFUSES (never force-moves `trunk`) and pr-sync re-stages off the new
+    /// base. On gate-red pr-sync simply never calls this and discards the scratch ref — `trunk` never moved,
+    /// which is the whole win. The FF is a pure pointer advance (the staged tip already has `trunk`'s base
+    /// as an ancestor), so it introduces no new tree and no re-sha.
+    BatchCommit {
+        /// Perform the FF (default false = report-only: print whether the assert holds without moving
+        /// `trunk`, so pr-sync can dry-check before committing).
+        #[arg(long)]
+        execute: bool,
+    },
     /// Self-heal the fleet, in two passes. RE-ARM: any ACTIVE agent whose `/loop` has stalled — each
     /// agent stamps a heartbeat touch-file (`.claude/fleet/heartbeat/<agent>`) at the top of every
     /// tick; if that file is older than `min(--stale-mult × interval, --stale-cap)`, its loop is
@@ -736,6 +768,8 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::RerouteUnknown { dry_run } => reroute_unknown(&fleet, dry_run),
         FleetCmd::MergeFloor { ours, theirs } => merge_floor(&ours, &theirs),
         FleetCmd::GateBatch { dry_run, limit } => gate_batch(&fleet, dry_run, limit),
+        FleetCmd::BatchStage { refs } => batch_stage(&fleet, &refs),
+        FleetCmd::BatchCommit { execute } => batch_commit(&fleet, execute),
     }
 }
 
@@ -5855,9 +5889,398 @@ fn git_merge_no_ff_onto(repo: &Path, _branch: &str, r#ref: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The scratch ref holding a staged (but not-yet-committed) batch tree, built off `trunk` by
+/// [`batch_stage`]. `trunk` itself is untouched until [`batch_commit`] fast-forwards it here.
+const BATCH_STAGING_REF: &str = "refs/fleet/batch-staging";
+/// The `trunk` sha the staged batch was built on. [`batch_commit`]'s ancestor-assert compares the LIVE
+/// `trunk` against this: if they differ, `trunk` drifted since staging and the FF is refused.
+const BATCH_STAGING_BASE_REF: &str = "refs/fleet/batch-staging-base";
+
+/// Whether [`batch_commit`] may fast-forward `trunk` to the staged tip. SAFE iff every sha resolved
+/// (non-empty) AND the live `trunk` is STILL exactly the base the batch was staged on. That equality is
+/// the whole safety proof: `batch_stage` built the staged tip by merging onto `staged_base`, so if
+/// `trunk == staged_base` the staged tip has the live `trunk` as its first-parent ancestor and the move
+/// is a pure fast-forward (no new tree, no re-sha, nothing lost). If `trunk` drifted (a peer/pr-sync
+/// advanced it since staging), the staged tree is stale — refuse rather than force-move (which would
+/// discard the drift). Pure so the refusal path is unit-testable without a git fixture.
+fn batch_ff_is_safe(current_trunk: &str, staged_base: &str, staged_tip: &str) -> bool {
+    !current_trunk.is_empty()
+        && !staged_base.is_empty()
+        && !staged_tip.is_empty()
+        && current_trunk == staged_base
+}
+
+/// STAGE a batch of merge-request refs onto `BATCH_STAGING_REF` off the CURRENT `trunk`, WITHOUT moving
+/// `trunk`. Merges (same `--no-ff --no-edit` order pr-sync uses) happen in the reused gate-batch scratch
+/// worktree; on success the resulting commit is recorded on the staging ref and the base it was built on
+/// on `BATCH_STAGING_BASE_REF` (so `batch_commit` can assert `trunk` hasn't drifted). Conflicting refs are
+/// skipped + reported (BOUNCE). Prints the staged base/tip/tree shas so pr-sync can gate exactly that tree.
+fn batch_stage(fleet: &Fleet, refs: &[String]) {
+    if refs.is_empty() {
+        eprintln!("batch-stage: no refs given — nothing to stage.");
+        return;
+    }
+    let wt = match ensure_gate_batch_worktree(fleet) {
+        Some(p) => p,
+        None => return,
+    };
+    let git_out = |args: &[&str]| -> std::process::Output {
+        Command::new("git")
+            .current_dir(&wt)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn git {args:?}: {e}"))
+    };
+    let git_stdout = |args: &[&str]| -> String {
+        String::from_utf8_lossy(&git_out(args).stdout)
+            .trim()
+            .to_string()
+    };
+
+    // Record the base BEFORE building, so a `trunk` advance mid-stage is caught by `batch_commit`'s assert
+    // (the base we captured won't match the moved `trunk`) rather than silently committing a stale tree.
+    let staged_base = git_stdout(&["rev-parse", TRUNK]);
+    if staged_base.is_empty() {
+        eprintln!("batch-stage: could not resolve `trunk` — aborting (nothing staged).");
+        return;
+    }
+
+    // Build the combined tree on a scratch branch off trunk (same slate the conflict-prefilter uses).
+    let scratch = "fleet-batch-stage-scratch";
+    // Detach at trunk first so we can (re)create the scratch branch without "already checked out" errors.
+    let _ = git_out(&["checkout", "--detach", TRUNK]);
+    let _ = git_out(&["branch", "-D", scratch]);
+    if !git_branch_at(&wt, scratch, TRUNK) {
+        eprintln!(
+            "batch-stage: cannot create scratch branch off trunk — aborting (nothing staged)."
+        );
+        return;
+    }
+    let mut staged: Vec<&str> = Vec::new();
+    let mut bounced: Vec<&str> = Vec::new();
+    for r in refs {
+        if git_merge_no_ff_onto(&wt, scratch, r) {
+            staged.push(r);
+        } else {
+            // Abort the failed merge so the scratch branch stays at the last clean state, then skip.
+            let _ = git_out(&["merge", "--abort"]);
+            bounced.push(r);
+        }
+    }
+
+    let staged_tip = git_stdout(&["rev-parse", "HEAD"]);
+    let staged_tree = git_stdout(&["rev-parse", "HEAD^{tree}"]);
+    if staged_tip.is_empty() || staged_tree.is_empty() {
+        eprintln!("batch-stage: could not resolve the staged tip — aborting (nothing published).");
+        let _ = git_out(&["checkout", "--detach", TRUNK]);
+        let _ = git_out(&["branch", "-D", scratch]);
+        return;
+    }
+
+    // Publish the staged commit + its base to the scratch refs (in the shared object store, so pr-sync
+    // sees them). `trunk` is NOT touched. Then detach + drop the scratch branch (the ref holds the tip).
+    let ok_ref = git_out(&["update-ref", BATCH_STAGING_REF, &staged_tip])
+        .status
+        .success();
+    let ok_base = git_out(&["update-ref", BATCH_STAGING_BASE_REF, &staged_base])
+        .status
+        .success();
+    let _ = git_out(&["checkout", "--detach", TRUNK]);
+    let _ = git_out(&["branch", "-D", scratch]);
+    if !ok_ref || !ok_base {
+        eprintln!("batch-stage: could not update the staging refs — aborting (trunk untouched).");
+        return;
+    }
+
+    println!(
+        "batch-stage: staged {} ref(s) onto {BATCH_STAGING_REF} (trunk NOT moved).",
+        staged.len()
+    );
+    println!("  staged-base\t{staged_base}");
+    println!("  staged-tip\t{staged_tip}");
+    println!("  staged-tree\t{staged_tree}");
+    for r in &staged {
+        println!("  STAGED\t{r}");
+    }
+    for r in &bounced {
+        println!("  BOUNCE-CONFLICT\t{r}");
+    }
+    println!(
+        "batch-stage: gate the staged tree, then `cargo xtask fleet batch-commit --execute` to \
+         fast-forward trunk (refused if trunk drifted from the staged base)."
+    );
+}
+
+/// COMMIT a staged batch: fast-forward `trunk` to the tip of `BATCH_STAGING_REF`, but only if `trunk` is
+/// still exactly `BATCH_STAGING_BASE_REF` (the base it was staged on). Refuses on any drift — never force-
+/// moves `trunk`. With `execute=false` this is report-only (prints whether the assert holds). Thin
+/// CLI wrapper over [`batch_commit_inner`] (prints + sets the exit status; the inner holds the logic so
+/// the ancestor-assert refusal path is unit-testable against a git fixture without a `process::exit`).
+fn batch_commit(fleet: &Fleet, execute: bool) {
+    match batch_commit_inner(&fleet.repo, execute) {
+        Ok(msg) => println!("{msg}"),
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// The testable core of [`batch_commit`], operating on a git repo at `repo`. Returns `Ok(report)` on a
+/// clean FF (or a report-only assert-holds check) and `Err(reason)` on any refusal — WITHOUT ever moving
+/// `trunk` on the error path. Refusal cases: no staged batch, `trunk` drifted from the staged base, or a
+/// concurrent advance loses the compare-and-swap.
+fn batch_commit_inner(repo: &Path, execute: bool) -> Result<String, String> {
+    let git_out = |args: &[&str]| -> std::process::Output {
+        Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn git {args:?}: {e}"))
+    };
+    let git_stdout = |args: &[&str]| -> String {
+        String::from_utf8_lossy(&git_out(args).stdout)
+            .trim()
+            .to_string()
+    };
+
+    let staged_tip = git_stdout(&["rev-parse", "--verify", "-q", BATCH_STAGING_REF]);
+    let staged_base = git_stdout(&["rev-parse", "--verify", "-q", BATCH_STAGING_BASE_REF]);
+    let current_trunk = git_stdout(&["rev-parse", "--verify", "-q", TRUNK]);
+    if staged_tip.is_empty() || staged_base.is_empty() {
+        return Err(format!(
+            "batch-commit: no staged batch found ({BATCH_STAGING_REF} / {BATCH_STAGING_BASE_REF} \
+             unset) — run `fleet batch-stage <ref>...` first."
+        ));
+    }
+
+    if !batch_ff_is_safe(&current_trunk, &staged_base, &staged_tip) {
+        return Err(format!(
+            "batch-commit: REFUSED — trunk ({current_trunk}) has DRIFTED from the staged base \
+             ({staged_base}); the staged tree is stale. Re-stage off the current trunk. \
+             (trunk NOT moved.)"
+        ));
+    }
+
+    if !execute {
+        return Ok(format!(
+            "batch-commit: OK to fast-forward trunk {staged_base} → {staged_tip} (assert holds). \
+             Re-run with --execute to advance trunk."
+        ));
+    }
+
+    // FF-move trunk to the staged tip. `update-ref <ref> <new> <old>` is a compare-and-swap: it only
+    // moves if trunk is STILL `staged_base` at write time (closes the tiny window between our assert
+    // above and this write — a concurrent advance makes the CAS fail rather than clobber). The CAS
+    // (old-value) form needs the FULLY-QUALIFIED ref name — a bare `trunk` fails to resolve here (git
+    // is stricter about name resolution when an old-value is supplied) even though `rev-parse trunk`
+    // reads it fine; `refs/heads/trunk` is what the bare hub actually stores.
+    let trunk_ref = format!("refs/heads/{TRUNK}");
+    let ok = git_out(&["update-ref", &trunk_ref, &staged_tip, &staged_base])
+        .status
+        .success();
+    if !ok {
+        return Err(
+            "batch-commit: REFUSED — trunk moved between the assert and the update (CAS failed); \
+             the staged tree is stale. Re-stage off the current trunk. (trunk NOT moved.)"
+                .to_string(),
+        );
+    }
+    // Clear the staging refs — the batch is landed; leaving them would let a stale re-commit fire.
+    let _ = git_out(&["update-ref", "-d", BATCH_STAGING_REF]);
+    let _ = git_out(&["update-ref", "-d", BATCH_STAGING_BASE_REF]);
+    Ok(format!(
+        "batch-commit: trunk fast-forwarded {staged_base} → {staged_tip} (one clean FF, no re-sha)."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_ff_is_safe_only_when_trunk_still_equals_the_staged_base() {
+        // The green case: trunk is STILL the base the batch was staged on → FF is a pure pointer move.
+        assert!(batch_ff_is_safe("aaa", "aaa", "bbb"));
+        // DRIFT: trunk advanced past the staged base since staging → staged tree is stale → REFUSE.
+        assert!(
+            !batch_ff_is_safe("ccc", "aaa", "bbb"),
+            "trunk drifted from the staged base → not safe"
+        );
+        // Any unresolved sha (empty) fails closed — never move trunk on a rev-parse miss.
+        assert!(
+            !batch_ff_is_safe("", "aaa", "bbb"),
+            "empty trunk fails closed"
+        );
+        assert!(
+            !batch_ff_is_safe("aaa", "", "bbb"),
+            "empty staged base fails closed"
+        );
+        assert!(
+            !batch_ff_is_safe("aaa", "aaa", ""),
+            "empty staged tip fails closed"
+        );
+        // Degenerate all-empty must NOT read as safe (empty == empty is true, so the emptiness guards
+        // are what stop a rev-parse-miss on every ref from vacuously passing the equality).
+        assert!(
+            !batch_ff_is_safe("", "", ""),
+            "all-empty fails closed despite trivial equality"
+        );
+    }
+
+    /// Build a throwaway git repo with `trunk` at an initial commit; return its path. Committer/author
+    /// identity is set locally so `git commit` works in CI where no global identity exists.
+    fn init_batch_fixture_repo(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("cdz-batch-commit-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let ok = Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed in fixture");
+        };
+        git(&["init", "-q", "-b", TRUNK]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::write(dir.join("a.txt"), "1").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-q", "-m", "base"]);
+        dir
+    }
+
+    /// Resolve a ref to its sha, or "" if it doesn't exist. `--verify -q` is essential: a plain
+    /// `rev-parse <missing-ref>` echoes the ref NAME to stdout (non-empty), which would defeat an
+    /// emptiness check for a deleted staging ref.
+    fn git_rev(dir: &Path, r#ref: &str) -> String {
+        String::from_utf8_lossy(
+            &Command::new("git")
+                .current_dir(dir)
+                .args(["rev-parse", "--verify", "-q", r#ref])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string()
+    }
+
+    #[test]
+    fn batch_commit_refuses_when_trunk_drifted_from_the_staged_base_and_leaves_trunk_put() {
+        // Requirement 5 (pr-sync's accepted spec): stage a batch, advance trunk UNDERNEATH the staged
+        // base, and `batch-commit` must REFUSE — the whole point is trunk never moves onto a stale tree.
+        let dir = init_batch_fixture_repo("drift");
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let staged_base = git_rev(&dir, TRUNK);
+
+        // Simulate a staged batch on a SEPARATE branch (so trunk's worktree stays clean, exactly as
+        // `batch_stage` leaves it — it builds in a scratch worktree and only writes the staging refs).
+        let _ = git(&["checkout", "-q", "-b", "staging", TRUNK]);
+        std::fs::write(dir.join("b.txt"), "2").unwrap();
+        let _ = git(&["add", "b.txt"]);
+        let _ = git(&["commit", "-q", "-m", "staged tip"]);
+        let staged_tip = git_rev(&dir, "HEAD");
+        let _ = git(&["update-ref", BATCH_STAGING_REF, &staged_tip]);
+        let _ = git(&["update-ref", BATCH_STAGING_BASE_REF, &staged_base]);
+
+        // Now DRIFT trunk: a peer/pr-sync lands something else, advancing trunk past the staged base.
+        let _ = git(&["checkout", "-q", TRUNK]);
+        std::fs::write(dir.join("c.txt"), "3").unwrap();
+        let _ = git(&["add", "c.txt"]);
+        let _ = git(&["commit", "-q", "-m", "drift on trunk"]);
+        let drifted_trunk = git_rev(&dir, TRUNK);
+        assert_ne!(drifted_trunk, staged_base, "trunk should have advanced");
+
+        // batch-commit --execute must REFUSE (drift) and leave trunk exactly where the drift put it.
+        let res = batch_commit_inner(&dir, true);
+        assert!(res.is_err(), "must refuse on drift: {res:?}");
+        assert!(res.unwrap_err().contains("DRIFTED"));
+        assert_eq!(
+            git_rev(&dir, TRUNK),
+            drifted_trunk,
+            "trunk must be UNMOVED after a refused commit"
+        );
+        // The staging refs survive a refusal (pr-sync re-stages off the new base — nothing was consumed).
+        assert!(!git_rev(&dir, BATCH_STAGING_REF).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_commit_fast_forwards_trunk_when_the_base_still_matches() {
+        // The happy path: no drift → trunk fast-forwards to the staged tip, and the staging refs clear.
+        let dir = init_batch_fixture_repo("ff");
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let staged_base = git_rev(&dir, TRUNK);
+        // Build the staged tip on a separate branch so trunk's worktree stays clean (mirrors batch_stage).
+        let _ = git(&["checkout", "-q", "-b", "staging", TRUNK]);
+        std::fs::write(dir.join("b.txt"), "2").unwrap();
+        let _ = git(&["add", "b.txt"]);
+        let _ = git(&["commit", "-q", "-m", "staged tip"]);
+        let staged_tip = git_rev(&dir, "HEAD");
+        let _ = git(&["update-ref", BATCH_STAGING_REF, &staged_tip]);
+        let _ = git(&["update-ref", BATCH_STAGING_BASE_REF, &staged_base]);
+        let _ = git(&["checkout", "-q", TRUNK]);
+        assert_eq!(git_rev(&dir, TRUNK), staged_base, "trunk starts at base");
+
+        // Report-only first (assert holds, trunk not yet moved).
+        let dry = batch_commit_inner(&dir, false);
+        assert!(dry.is_ok(), "report-only should pass the assert: {dry:?}");
+        assert_eq!(
+            git_rev(&dir, TRUNK),
+            staged_base,
+            "report-only must NOT move trunk"
+        );
+
+        // Execute: trunk fast-forwards to the staged tip.
+        let res = batch_commit_inner(&dir, true);
+        assert!(res.is_ok(), "clean FF should succeed: {res:?}");
+        assert_eq!(
+            git_rev(&dir, TRUNK),
+            staged_tip,
+            "trunk fast-forwarded to the staged tip"
+        );
+        // Staging refs are cleared so a stale re-commit can't fire.
+        assert!(
+            git_rev(&dir, BATCH_STAGING_REF).is_empty(),
+            "staging ref cleared"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_commit_refuses_when_no_batch_is_staged() {
+        // No staging refs at all → nothing to commit → clean refusal (not a panic, not a trunk move).
+        let dir = init_batch_fixture_repo("nostage");
+        let before = git_rev(&dir, TRUNK);
+        let res = batch_commit_inner(&dir, true);
+        assert!(res.is_err(), "no staged batch must refuse");
+        assert!(res.unwrap_err().contains("no staged batch"));
+        assert_eq!(
+            git_rev(&dir, TRUNK),
+            before,
+            "trunk unmoved when nothing staged"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn partition_batch_all_green_lands_everything() {
