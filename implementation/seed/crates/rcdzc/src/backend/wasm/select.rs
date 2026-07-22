@@ -12162,7 +12162,7 @@ fn emit_probe_chain(
             refined_frame_for_match_arm(db, scrutinee, &arm.probe, db.current_refinements());
         db.push_range_refinements(frame);
         let r = emit_arm_body(
-            db, arm.body, result_it, slots, base, high, scratch_ty, layout, out, tail,
+            db, arm.body, result_it, block_ty, slots, base, high, scratch_ty, layout, out, tail,
         );
         db.pop_range_refinements();
         return r;
@@ -12412,6 +12412,7 @@ fn try_emit_scalar_br_table(
             db,
             arm.body,
             result_it,
+            block_ty,
             slots,
             base,
             high,
@@ -12428,6 +12429,7 @@ fn try_emit_scalar_br_table(
         db,
         default.body,
         result_it,
+        block_ty,
         slots,
         base,
         high,
@@ -12461,6 +12463,7 @@ fn emit_arm_body(
     db: &mut Db,
     body: StructId,
     result_it: Option<IntTy>,
+    block_ty: BlockType,
     slots: &HashMap<StructId, u32>,
     base: u32,
     high: &mut u32,
@@ -12471,6 +12474,21 @@ fn emit_arm_body(
 ) -> Result<(), Reject> {
     if let (Some(rit), Core::ConstInt(_)) = (result_it, core_of(db, body)) {
         return emit_operand(db, body, rit, slots, base, high, scratch_ty, layout, out);
+    }
+    // A bare `ConstFloat` arm body takes the match's RESULT float width, not its own default `Float64`:
+    // `(: (match n (0 0.5) (_ (f (- n 1)))) Float32)` has the annotation on the `match`, so a literal arm
+    // solves to `Float64` (inference leaves a bare float literal at its default), and `Core::ConstFloat`'s
+    // emit — which reads the node's own solved width — pushes an `f64.const` while the arm's block type is
+    // `f32` → an INVALID module (`expected f32, found f64`). Unlike a narrow INT (masked into the shared i32
+    // slot), `f32`/`f64` are DISTINCT machine types, a hard validation error. Ground it to the result f32
+    // here — the match-arm twin of the if-branch grounding (`emit_tail_branch`/`emit_branch`). A simple
+    // all-literal match slipped past because it const-folds to one `f32.const`; a match with a runtime arm
+    // (a self-call, an arith spine) does not fold, so the bare literal reaches emit ungrounded.
+    if let (BlockType::Val(ValType::F32), Core::ConstFloat(d)) = (block_ty, core_of(db, body)) {
+        out.push(Lir::F32ConstBits(
+            (f64::from_bits(d.to_f64_bits()) as f32).to_bits(),
+        ));
+        return Ok(());
     }
     match tp {
         TailPos::Tail(tl) => emit_tail(db, body, slots, base, high, scratch_ty, layout, out, tl),
@@ -12512,7 +12530,8 @@ fn emit_list_arms_tailable(
     if is_tail_arm {
         // The unconditional final arm — its body is in the SAME tail position as the whole match.
         return emit_arm_body(
-            db, first.body, result_it, arm_slots, arm_base, high, scratch_ty, layout, out, tail,
+            db, first.body, result_it, block_ty, arm_slots, arm_base, high, scratch_ty, layout,
+            out, tail,
         );
     }
     // BRANCHLESS 2-ARM LIST SELECT: a list match of exactly TWO arms — a LENGTH-test arm then a single
@@ -12596,6 +12615,7 @@ fn emit_list_arms_tailable(
                 db,
                 first.body,
                 result_it,
+                block_ty,
                 arm_slots,
                 arm_base,
                 high,
@@ -12615,8 +12635,8 @@ fn emit_list_arms_tailable(
             out.push(Lir::If(block_ty));
             let deeper = deeper_tail(after_len_tail);
             emit_arm_body(
-                db, first.body, result_it, arm_slots, body_base, high, scratch_ty, layout, out,
-                deeper,
+                db, first.body, result_it, block_ty, arm_slots, body_base, high, scratch_ty,
+                layout, out, deeper,
             )?;
             out.push(Lir::Else);
             emit_list_arms_tailable(
@@ -12684,7 +12704,8 @@ fn emit_arm_guarded_body(
         None => {
             db.push_range_refinements(body_frame);
             let r = emit_arm_body(
-                db, arm.body, result_it, slots, base, high, scratch_ty, layout, out, inner,
+                db, arm.body, result_it, block_ty, slots, base, high, scratch_ty, layout, out,
+                inner,
             );
             db.pop_range_refinements();
             r
@@ -12707,7 +12728,8 @@ fn emit_arm_guarded_body(
             // does NOT (the probe failed there — its own arms refine themselves).
             db.push_range_refinements(body_frame);
             let body_res = emit_arm_body(
-                db, arm.body, result_it, slots, body_base, high, scratch_ty, layout, out, deeper,
+                db, arm.body, result_it, block_ty, slots, body_base, high, scratch_ty, layout, out,
+                deeper,
             );
             db.pop_range_refinements();
             body_res?;
@@ -13416,7 +13438,8 @@ fn emit_sum_cont(
             // The arm body emits ABOVE the reserved prefix slots (the base advanced by `materialize_*`).
             let arm_base = (*high).max(base);
             let r = emit_arm_body(
-                db, *body, result_it, slots, arm_base, high, scratch_ty, layout, out, tail,
+                db, *body, result_it, block_ty, slots, arm_base, high, scratch_ty, layout, out,
+                tail,
             );
             for key in prefix_keys {
                 out.payload_prefix_slots.remove(&key);
@@ -13441,7 +13464,8 @@ fn emit_sum_cont(
             // self-loop `br` from either targets the loop top (mirrors `emit_arm_guarded_body`).
             let deeper = deeper_tail(tail);
             emit_arm_body(
-                db, *body, result_it, slots, body_base, high, scratch_ty, layout, out, deeper,
+                db, *body, result_it, block_ty, slots, body_base, high, scratch_ty, layout, out,
+                deeper,
             )?;
             out.push(Lir::Else);
             emit_sum_cont(
@@ -13505,6 +13529,7 @@ fn emit_sum_cont(
                     db,
                     body,
                     result_it,
+                    block_ty,
                     slots,
                     body_base,
                     high,

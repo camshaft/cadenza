@@ -879,6 +879,25 @@
   (call   main (: 9 UInt8) (: 300 UInt16))
   (output (: -1 Int64)))
 
+(case "a runtime bin match whose catch-all BINDS and reads the whole Bytes scrutinee"
+  (doc    "The dispatch-or-handle-the-raw-bytes idiom: a runtime `bin` match whose fall-through arm is not a
+           `_` discard nor a scalar binder but a NAME that binds the WHOLE Bytes scrutinee and reads it. `(bin
+           (u8 1) (u8 x) (u8 y)) => x+y` handles the tag-1 shape; the catch-all `whole => Bytes.len whole`
+           binds the entire scrutinee and returns its length. Over `[h, 7, 8]` from a runtime `h`: h=1 → the
+           bin arm fires → 7+8 = 15; h=9 → no bin arm matches, so `whole` binds the full 3-byte scrutinee →
+           `Bytes.len whole` = 3. Pins that a bin-match catch-all may BIND the whole scrutinee (a Bytes value
+           read in the arm body), not only discard it — the materialized scrutinee flows to the binder, the
+           real fallback shape a parser uses to keep the unrecognized bytes.")
+  (input  (do (def (main (: h Int64))
+                (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8)))
+                  ((bin (u8 1) (u8 x) (u8 y)) (+ x y))
+                  (whole (Bytes.len whole))))
+              (export main)))
+  (call   main (: 1 Int64))
+  (output (: 15 Int64))
+  (call   main (: 9 Int64))
+  (output (: 3 Int64)))
+
 (case "a three-arm runtime literal-tag dispatch hits the middle and last arms and misses past all three"
   (doc    "The two-arm dispatch above can't distinguish a genuine PER-ARM fall-through chain from a
            two-way branch; three literal-tag arms witness the chain at depth: tag 2 falls past arm 1's
