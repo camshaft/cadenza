@@ -537,6 +537,28 @@
                 (+ (match (opt) ((Some v) v) ((None _) -1)) (Ctr.tick unit))))
             (export main)))
   (output (: 3 Int64)))
+(case "a fallible helper with a runtime-payload `?` is called from INSIDE a handle body"
+  (doc    "The effects-composition of the runtime-payload `?`: `run` (a fallible Option-boundary def
+           whose `?` unwraps the boundary parameter) is called from within a `handle` body, its result
+           matched beside a perform — 0 + (5+100) = 105 per call. The `?` desugar's Core::Block boundary
+           lives INSIDE the handler's context; the two abortive machineries (the `?` break and the
+           handler dispatch) must nest without confusing their exit paths. (The effect-state straddle pin
+           above uses const `?` operands inline in the handled body; this is the helper-boundary +
+           runtime-payload face.)")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (def (run (: n Int64))
+              (let ((x (try (Some n))))
+                (Some (+ x 100))))
+            (def (main (: n Int64))
+              (handle Ctr 0
+                ((next (u) s (resume s (+ s 1))))
+                (+ (Ctr.next unit)
+                   (match (run n) ((Some v) v) ((None u) -1)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 105 Int64)))
+
 (case "a `?` on an ill-typed operand reports the operand's error, not a `?`-shape cascade"
   (doc    "`(let ((x (try (+ 1 2.0)))) (Some x))` — the operand `(+ 1 2.0)` is itself ill-typed (a numeric
            mismatch, CDZ0301). The `?`-operand-shape check must NOT pile a confusing `?` operand must be a

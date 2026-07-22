@@ -55,19 +55,19 @@ jobs:
           cache-key: rc-leak-full
       - name: Build the runtime store (release + debug-counters)
         run: cargo xtask build
-      # Run the FULL reclaim/leak probe family. The lone `leaves_no_live_objects` filter MISSED ~40 probes
-      # named `reclaim`/`no_extra_leak`/`not_use_after_freed`/`_known_gap`/`survives_and_balances`/
-      # `owned_temporary_list_producers` (the bytes/list/map/set owned-temporary reclaim family, map/set-remove,
-      # the SITE-A probes, the UAF-guard, the tracked known-gap counts) — so a regression to those reclaim
-      # invariants would have gone uncaught. libtest takes MULTIPLE filter substrings AFTER `--` (OR'd — NOT as
-      # positional `cargo test` args, which only accept one TESTNAME and error on a second). All are debug-store
-      # (`find_debug_runtime_wasm`) probes that skip cleanly if the store is absent. Selects 34 probes (was 23).
-      # Keep this list in sync when a new reclaim probe's name matches none of these substrings.
-      - name: Run the full live-objects leak-probe family
-        run: >-
-          cargo test -p rcdzc --lib -- --ignored --test-threads=1
-          leaves_no_live_objects reclaim no_extra_leak not_use_after_freed
-          _known_gap survives_and_balances owned_temporary_list_producers
+      # Run the FULL `#[ignore]`d probe set — NO name filter. The previous substring allowlist
+      # (`leaves_no_live_objects`/`reclaim`/`no_extra_leak`/`not_use_after_freed`/`_known_gap`/
+      # `survives_and_balances`/`owned_temporary_list_producers`) SILENTLY SKIPPED any leak/UAF probe whose
+      # name matched none of those substrings — an audit (2026-07-22) found 6 such probes uncaught, including
+      # `a_string_at_then_reuse_does_not_double_free_the_source` (a DOUBLE-FREE witness) and
+      # `a_runtime_string_from_bytes_...` (which had regressed to a real leak while CI skipped it). A name
+      # allowlist is structurally fragile: a future leak probe is unprotected until someone remembers to add
+      # its substring. EVERY `#[ignore]`d test in this crate is a runtime-store-dependent probe (leak / UAF /
+      # enumeration / equality — all `find_debug_runtime_wasm`/`find_runtime_wasm` guarded, skipping cleanly if
+      # the store is absent), and this job builds the store above, so a bare `--ignored` run cannot silently
+      # skip a new probe. Runs single-threaded (the live-objects counter is process-global). ~56 probes.
+      - name: Run the full ignored probe set (leak / UAF / enumeration — no name filter)
+        run: cargo test -p rcdzc --lib -- --ignored --test-threads=1
 
   publish:
     name: rolling nightly prerelease

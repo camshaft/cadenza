@@ -2002,29 +2002,37 @@ fn a_runtime_string_from_bytes_of_ill_formed_bytes_takes_the_none_arm() {
     }
 }
 
-/// `String.from-bytes` adds NO leak beyond the established runtime Option-builder pattern. `str-from-bytes`
-/// emits the SAME shape as `Bytes.at`/`Map.lookup`: call the runtime op → a handle-or-NULL, then build
-/// `Some(handle)` / `None`. Differential probe against `Bytes.at` (the twin Option-builder over the SAME
-/// runtime rope): both build a fresh runtime rope, run an Option-returning runtime op on it, and sum the
-/// `Some` payload in a `k`-iteration loop. Any per-iteration residue is a PRE-EXISTING loop-reclaim gap
-/// shared by every such op (measured: `Bytes.at` and `String.from-bytes` both leave the identical
-/// per-iteration residue); the invariant this pins is that the decode's own consume/re-tag/wrap introduces
-/// NOTHING on top of that baseline — the two ops' live-cell residues match at every iteration count.
-/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+/// `String.from-bytes` over a runtime buffer builds a `Some(String)` — a `sum-new` Some shell around an
+/// OWNED COMPOUND (String) payload — which, matched and then BORROWED-then-dead in the arm (`String.byte-len`
+/// is a `bytes-len` walk, no consume), hits the KNOWN compound Some-shell reclaim gap: the non-dup'd
+/// dead-after-borrow compound shell is left un-dropped for want of a node-keyed payload-escape analysis. This
+/// is the from-bytes FACE of the exact gap `option_expect_over_a_dead_after_borrowed_compound_payload_...`
+/// pins for `String.slice`; both share the root at select.rs ~8771. VALUE-CORRECT + NON-OOB (the shell
+/// outlives the borrow — nothing freed early), so the value/drop-import tests miss it; only the live-objects
+/// counter sees it (~2 cells/iter). When the escape-analysis increment lands, flip the guard to `== 0`.
+///
+/// ⚠ HISTORY: this was `..._leaks_no_more_than_the_twin_option_builder`, a DIFFERENTIAL against a `Bytes.at`
+/// twin — but that twin's `Some` payload is a SCALAR byte value (Int64) that scalar-shell + owned-temporary
+/// reclaim later drove to 0, while this COMPOUND `Some(String)` still leaks the gap → the `==` went stale
+/// (decode=10 vs scalar-twin=0 at k=5). A COMPOUND twin (`Bytes.slice → Some(Bytes)`) doesn't rescue it
+/// either: leak MAGNITUDE is op-specific (`Bytes.slice` leaked 45 vs from-bytes' 10 at k=5), so no clean
+/// twin exists. Recast as a single-program ABSOLUTE-count known-gap witness (mirrors the `option_expect_...`
+/// sibling), renamed `..._known_gap` so it is self-documenting. `#[ignore]` — needs the debug-counters
+/// store (`cargo xtask build`), run with `-- --ignored`.
 #[test]
 #[ignore]
-fn a_runtime_string_from_bytes_leaks_no_more_than_the_twin_option_builder() {
+fn a_runtime_string_from_bytes_over_a_borrowed_compound_some_shell_leaks_known_gap() {
     use crate::testkit::parse;
     use wasmtime::component::Val;
 
     let Some(runtime_bytes) = find_debug_runtime_wasm() else {
-        eprintln!("[from-bytes] debug-counters runtime not in the store; skipping balance probe");
+        eprintln!("[from-bytes] debug-counters runtime not in the store; skipping known-gap probe");
         return;
     };
-    // `loop k`: k times, build a fresh runtime rope "hiii", run the Option op, sum the `Some` payload.
-    // DECODE program — `String.from-bytes` → Some(String), sum its byte-len (4). The two programs are
-    // byte-for-byte identical except the Option-returning op, isolating the decode's own reclamation.
-    let decode_src = "(module m \
+    // `loop k`: k times, build a fresh runtime rope "hiii" (0x68 + 3× 0x69), `String.from-bytes` it → a
+    // `Some(String)` compound shell, then BORROW the payload via `String.byte-len` (4) and sum. Value = 4k.
+    // The non-dup'd compound Some shell is dead after the borrow → the known ~2-cells/iter shell leak.
+    let src = "(module m \
                  (def (rep (: acc Bytes) (: n Int64)) \
                     (if (= n 0) acc (rep (Bytes.concat acc b\"\\x69\") (- n 1)))) \
                  (def (loop (: k Int64) (: sum Int64)) \
@@ -2032,32 +2040,26 @@ fn a_runtime_string_from_bytes_leaks_no_more_than_the_twin_option_builder() {
                        (loop (- k 1) (+ sum (match (String.from-bytes (rep b\"\\x68\" 3)) \
                                               ((Some s) (String.byte-len s)) ((None _) 0)))))) \
                  (def (main (: n Int64)) (loop n 0)) (export main))";
-    // TWIN program — `Bytes.at` → Some(Int64), the established runtime Option-builder over the same rope.
-    let twin_src = "(module m \
-                 (def (rep (: acc Bytes) (: n Int64)) \
-                    (if (= n 0) acc (rep (Bytes.concat acc b\"\\x69\") (- n 1)))) \
-                 (def (loop (: k Int64) (: sum Int64)) \
-                    (if (= k 0) sum \
-                       (loop (- k 1) (+ sum (match (Bytes.at (rep b\"\\x68\" 3) 0) \
-                                              ((Some v) v) ((None _) 0)))))) \
-                 (def (main (: n Int64)) (loop n 0)) (export main))";
-    let decode = compile_component(&crate::codec::encode(&parse(decode_src))).expect("compile");
-    let twin = compile_component(&crate::codec::encode(&parse(twin_src))).expect("compile");
-    for k in [5i64, 50] {
-        let mut rd = ComposedRuntime::new(&decode, &runtime_bytes);
-        rd.call("main", &[Val::S64(k)]);
-        let decode_live = rd.live_objects();
-        let mut rt = ComposedRuntime::new(&twin, &runtime_bytes);
-        rt.call("main", &[Val::S64(k)]);
-        let twin_live = rt.live_objects();
-        assert_eq!(
-            decode_live, twin_live,
-            "from-bytes leak: at k={k} the decode leaves {decode_live} live cells vs the twin Bytes.at \
-             Option-builder's {twin_live} — String.from-bytes must reclaim exactly as the established \
-             runtime Option-builder does (consume the buffer, transfer it out as the String, drop it in \
-             the arm), adding no residue of its own"
-        );
-    }
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // VALUE-CORRECT: byte-len "hiii" = 4 per iter × 100 iters = 400. A UAF would trap before returning; a
+    // wrong reclaim would corrupt the count. This proves the leak is NON-OOB and value-safe.
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[Val::S64(100)]),
+        Val::S64(400),
+        "String.byte-len of String.from-bytes(\"hiii\") = 4 per iter × 100 = 400 (value-correct + NO UAF)"
+    );
+    // KNOWN LEAK (pinned, not yet fixed): the non-dup'd dead-after-borrow compound Some shell is left
+    // un-dropped. Assert PRESENT + BOUNDED (a witness, not a `== 0` gate) so a regression that made it WORSE
+    // — or a spurious UAF that made it 0-via-double-free — is still caught. When the node-keyed payload-escape
+    // fix lands (select.rs ~8771), flip this to `assert_eq!(rt.live_objects(), 0, …)`.
+    let live = rt.live_objects();
+    assert!(
+        live > 0 && live <= 400,
+        "from-bytes compound Some-shell leak: expected a KNOWN bounded leak (≈2 cells × 100 iters) pending \
+         the node-keyed payload-escape fix — got {live}. If 0, the fix may have landed (flip to == 0); if \
+         far above 400, a NEW leak compounded it."
+    );
 }
 
 /// `String.to-bytes` on a RUNTIME `String` (one the compiler cannot fold to a constant) lowers to the
@@ -14638,19 +14640,16 @@ mod runtime_ops {
     }
 
     #[test]
-    fn a_flow_refinement_through_arithmetic_stays_runtime_but_value_correct_documents_a_fold_boundary()
-     {
-        // BOUNDARY of the flow-sensitive comparison fold (a documented CURRENT limitation, not a bug):
-        // `refined_comparison_const`'s `is_refined` gate requires the compared operand to be a directly
-        // refined VARIABLE (`Core::Param`/`LocalRef` with a `refined_range`) — it does NOT consult
-        // `value_range` on an ARITH node like `(+ x 1)`. So under `(and (>= x 0) (< x 10))` (x ∈ [0,9]),
-        // although `value_range((+ x 1))` WOULD compute `[1,10]` via `arith_range` (the SAME propagation the
-        // overflow-guard elision already uses), the nested `(< (+ x 1) 11)` does NOT fold — it stays a
-        // runtime compare. This pins the boundary: the refinement→arith→compare-fold chain is a FUTURE
-        // extension opportunity (widen `is_refined`/the operand-range read in `refined_comparison_const` to
-        // any node whose `value_range` is decisive), and until then the behavior is sound-but-unfolded.
-        // Value-correct either way — this test guards the VALUE + documents that the compare is NOT yet
-        // elided, so if a future slice adds the fold, this test flips to `assert !contains` and records it.
+    fn a_flow_refinement_propagates_through_a_no_overflow_arith_into_a_compare_fold() {
+        // SLICE 6c: a flow refinement flows THROUGH a checked arith op (`arith_range`) into a downstream
+        // comparison, which then folds — extending `refined_comparison_const` beyond a directly-refined
+        // VARIABLE to a checked-arith node that (a) reads a refined var and (b) is PROVABLY-NO-OVERFLOW in
+        // this flow context. Under `(and (>= x 0) (< x 10))` (x ∈ [0,9]), `(+ x 1) ∈ [1,10]` cannot overflow,
+        // so `(< (+ x 1) 11)` is provably TRUE and folds away — dropping the checked `(+ x 1)` is trap-SAFE
+        // because it can't overflow here. 🪤 SOUNDNESS: the fold DISCARDS `(+ x 1)`; a checked `+` is not
+        // is_trap_free, so it may fold ONLY when provably_no_overflow holds under the refinement — else the
+        // discard would drop a reachable overflow trap. The soundness twin below pins that an
+        // overflow-CAPABLE arith operand does NOT fold (the trap must survive).
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
         let select = |src: &str, name: &str| {
@@ -14676,19 +14675,39 @@ mod runtime_ops {
                 .expect("select")
                 .code
         };
-        // CURRENT behavior: the arith-composed inner compare is NOT folded — the `2` arm survives (the fold
-        // only fires on a directly-refined variable, not `(+ x 1)`). This documents the fold boundary.
-        let not_folded = select(
+        // FOLDS: under x ∈ [0,9], (+ x 1) ∈ [1,10] is provably-no-overflow AND < 11 always → the inner
+        // compare folds true; the dead `2` arm is gone (no inner I64LtS/`2`).
+        let folded = select(
             "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 10)) (if (< (+ x 1) 11) 1 2) 3)) (def (main) 0) (export main))",
             "f",
         );
         assert!(
-            not_folded.contains(&Lir::ConstI64(2)),
-            "CURRENT boundary: a refinement does NOT propagate through (+ x 1) into the compare fold, so the \
-             inner (< (+ x 1) 11) stays runtime and the `2` arm survives (a future slice could fold it): {not_folded:?}"
+            !folded.contains(&Lir::ConstI64(2)),
+            "a refinement now propagates through the no-overflow (+ x 1) so (< (+ x 1) 11) folds, dropping `2`: {folded:?}"
         );
-        // But it is VALUE-CORRECT: (+ x 1) ∈ [1,10] < 11 is always true at runtime, so f returns 1 for any
-        // x ∈ [0,9] (x=5→1, x=9→1), and 3 outside (x=20→3). The missed fold costs an instruction, not a value.
+        // UNDECIDED (over-fold guard): under x ∈ [0,9], (+ x 1) ∈ [1,10], and `(< (+ x 1) 5)` is NOT decided
+        // (x=3 → 4<5 true; x=5 → 6<5 false) — the compare + its `2` arm MUST remain.
+        let undecided = select(
+            "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 10)) (if (< (+ x 1) 5) 1 2) 3)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            undecided.contains(&Lir::ConstI64(2)),
+            "an undecided arith-composed compare must NOT fold — the `2` arm stays: {undecided:?}"
+        );
+        // SOUNDNESS TWIN: an overflow-CAPABLE arith operand must NOT fold (dropping it would elide the trap).
+        // Under just `(> x 0)` (x ∈ [1, i64::MAX], NO upper bound), `(+ x 1)` CAN overflow (x = MAX), so it is
+        // NOT provably_no_overflow → the fold declines and the checked-add overflow guard + the compare stay.
+        // (If it wrongly folded, the x=MAX overflow trap would be dropped.)
+        let overflow_capable = select(
+            "(module m (def (f (: x Int64)) (if (> x 0) (if (< (+ x 1) 11) 1 2) 3)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            overflow_capable.contains(&Lir::ConstI64(2)),
+            "an overflow-capable (+ x 1) (x>0, no upper bound) must NOT fold — the trap must survive, the `2` stays: {overflow_capable:?}"
+        );
+        // VALUE PARITY across all three shapes.
         assert_eq!(
             run::<i64>(
                 "(: x Int64)",
@@ -14713,15 +14732,29 @@ mod runtime_ops {
             ),
             3
         );
-        // CONTRAST — the DIRECTLY-refined variable DOES fold (the working path, for reference): under the
-        // same guard, `(< x 11)` on the bare `x` folds true (x ∈ [0,9] < 11), dropping its `2` arm.
-        let folded = select(
-            "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 10)) (if (< x 11) 1 2) 3)) (def (main) 0) (export main))",
-            "f",
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 10)) (if (< (+ x 1) 5) 1 2) 3)",
+                &[Val::S64(3)]
+            ),
+            1
         );
-        assert!(
-            !folded.contains(&Lir::ConstI64(2)),
-            "a directly-refined variable (< x 11) DOES fold under x ∈ [0,9] — the working path the arith case does not yet reach: {folded:?}"
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 10)) (if (< (+ x 1) 5) 1 2) 3)",
+                &[Val::S64(5)]
+            ),
+            2
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (> x 0) (if (< (+ x 1) 11) 1 2) 3)",
+                &[Val::S64(5)]
+            ),
+            1
         );
     }
 

@@ -19481,19 +19481,48 @@ pub(crate) fn refined_comparison_const(
         } else {
             return None;
         };
-    // Only a genuinely REFINED variable is interesting here: a bare declared-type range already folds in
-    // `lower` (via `fold_comparison_at_type_bound`), so if this fires only on the type bound it is a
-    // no-op the const-fold tier handled. Require the operand be a variable with an active refinement so
-    // we add value only where `lower` could not see the branch fact.
-    let refined = matches!(
-        core_of(db, v),
-        Core::Param { binder } | Core::LocalRef { binder } if db.refined_range(binder).is_some()
-    );
-    if !refined {
-        return None;
-    }
-    // Discarding `v` must not drop a trap (a refined `Param`/`LocalRef` is trap-free, so this holds).
-    if !is_trap_free(db, v) {
+    // The fold must ADD VALUE beyond the const-fold tier (a bare declared-type range already folds in
+    // `lower` via `fold_comparison_at_type_bound`) AND be SOUND to discard `v` (folding drops it, so `v`
+    // must carry no reachable trap). Two operand shapes qualify:
+    //   (1) a genuinely REFINED variable (`Param`/`LocalRef` with an active `refined_range`) — trap-free,
+    //       and its range reflects the branch fact `lower` could not see; the original case.
+    //   (2) a checked-arith node over such a refined operand whose result PROVABLY cannot overflow here
+    //       (`(+ x 1)` under `x ∈ [0,9]`): `value_range(v)` already composed the refinement through
+    //       `arith_range`, so it can decide the comparison — AND because it is `provably_no_overflow` in
+    //       this flow context, discarding it drops NO reachable trap (a checked `+`/`-`/`*` is otherwise
+    //       possibly-trapping, so `is_trap_free` rejects it; the overflow proof is what makes it
+    //       discardable-in-context). A refined variable operand is what carries the branch fact into the
+    //       arith range, so require one — else this only re-derives the declared-type range `lower` handled.
+    let refined_var = |db: &mut Db, id: StructId| {
+        matches!(
+            core_of(db, id),
+            Core::Param { binder } | Core::LocalRef { binder } if db.refined_range(binder).is_some()
+        )
+    };
+    // `v` is DISCARDABLE-AND-VALUE-ADDING here iff it is a refined variable, OR a checked-arith node that
+    // (a) reads a refined variable (so the fold sees a branch fact) and (b) is provably-no-overflow (so the
+    // discard is trap-safe). Both are then safe to drop when the comparison folds.
+    let discardable = if refined_var(db, v) {
+        true
+    } else if let Core::Arith {
+        op: aop,
+        lhs: al,
+        rhs: ar,
+    } = core_of(db, v)
+        && matches!(aop, Prim::Add | Prim::Sub | Prim::Mul)
+        && (refined_var(db, al) || refined_var(db, ar))
+        && is_trap_free(db, al)
+        && is_trap_free(db, ar)
+        && let crate::ty::Ty::Int(vit) = crate::infer::type_of(db, v)
+    {
+        // Trap-free-IN-CONTEXT: a checked `+`/`-`/`*` is discardable only when the flow facts PROVE it
+        // cannot overflow (so no reachable trap is dropped). Reuses the both-backend overflow-elision oracle.
+        let grounded = crate::ty::IntTy::fixed(vit.ground_signed(), vit.ground_width());
+        provably_no_overflow(db, aop, al, ar, grounded, v)
+    } else {
+        false
+    };
+    if !discardable {
         return None;
     }
     // EQUALITY against the refined range: DECIDABLE when `c` lies OUTSIDE `[min, max]` (→ false) or the
