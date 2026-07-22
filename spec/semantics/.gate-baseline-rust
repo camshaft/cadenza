@@ -109,6 +109,7 @@ todo	a @param selects a match arm and a SECOND param feeds the selected body
 todo	a @param value crosses into a closure capture and applies
 pass	a CONST-FOLDED taken branch with a Float32-overflowing literal is rejected, not folded past the check
 pass	a Float32-overflowing literal grounded CONTEXTUALLY through arith is rejected
+pass	a MAP argument to an effect op is looked up inside the arm at the handler's own state
 pass	a MAX-fold over quantities compares through the erased unit wrapper per step
 pass	a NESTED float tuple as a SET element dedups by deep content
 pass	a NON-tail heap-spine build 5000 deep constructs and drains through real frames
@@ -116,10 +117,12 @@ pass	a NON-tail recursion 10000 deep computes through real stack frames
 pass	a PERFORMING tail loop of 10000 iterations threads state in constant space
 pass	a PURE closure iterated by a recursive combinator composes with a perform in the same body
 pass	a Rational ENTRY parameter crosses the boundary and reduces per call
+pass	a Result-of-Option threads both wrappers through one runtime match
 pass	a Set.of over PRELUDE-Option elements dedups Some by payload and keeps None distinct
 pass	a Set.of over Result elements separates Ok from Err with EQUAL payloads
 pass	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
 pass	a String.slice view returned from a helper OUTLIVES the helper's local parent
+pass	a TUPLE op argument with a HEAP leaf destructures inside the arm
 pass	a TUPLE-wrapped runtime slice as a Map key hits by content through the compound descent
 pass	a Type.eq width dispatcher answers per WRITTEN type at two call sites in one body
 pass	a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value
@@ -1123,6 +1126,7 @@ pass	a narrow-width overflow reached through a MATCH projection of a runtime sum
 pass	a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected
 pass	a negative literal under an UNSIGNED width rejects in a runtime branch
 pass	a one-node Ast rewrite over a runtime leaf computes per call
+pass	a perform in the scrutinee fires exactly ONCE whichever of three arms is selected
 pass	a performing closure called TWICE observes the state advance between its calls
 pass	a prepend-built list drains in order through head-tail matching
 pass	a quantity in a TUPLE inside a LIST element renders scaled (nested composition)
@@ -1146,6 +1150,7 @@ pass	a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on ev
 pass	a runtime = on a sum recursive through a RECORD-of-TUPLE payload walks structurally
 pass	a runtime = over MUTUALLY-recursive sums walks across the type cycle
 pass	a runtime BRANCH selects between two named functions and the selected one applies
+pass	a runtime LIST argument to an effect op is WALKED by a recursive fold inside the arm
 pass	a runtime String.slice STORED as a map key is found by a flat probe
 pass	a runtime String.slice probing a flat-keyed map hits by content
 pass	a runtime branch selects between two ANONYMOUS closures fed to the iterate combinator
@@ -2099,6 +2104,8 @@ pass	a redundant relational check inside its own truthy branch is known-true and
 pass	alternating prepend and push keep both list ends straight
 todo	an Ast as a MAP key looks up by structural content
 pass	an Ast.Int carries a BEYOND-64-bit literal losslessly through quote
+pass	an Option-of-Option classifies three ways at RUNTIME through one compiled match
+pass	an Option-of-Option survives a Map VALUE cell with its exact nesting
 pass	an UNSIGNED branch refinement decides a nested comparison and its soundness twin must not over-refine
 pass	an UNSIGNED lower-bound refinement must not fabricate an i64::MAX ceiling for a UInt64 above it
 pass	an effect op RESUMED with a slice-view Bytes crosses the arm boundary intact
@@ -2854,6 +2861,8 @@ pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an Ast.Int stores an integer wider than Int64 without loss
+pass	structural equality of two Ast.Int wider than Int64 compares by full value
+pass	the byte codec round-trips an Ast.Int wider than Int64
 pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
 pass	an EFFECTFUL @ensures predicate performs under the caller's handler at body-EXIT, after the body's own perform
 pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body
@@ -3585,6 +3594,7 @@ pass	greater-than of an integer and a float is rejected
 pass	greater-than on an unusual signed width orders a positive above the negative minimum
 pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
+pass	halving the minimum subnormal flushes to zero while a double-min stays subnormal
 pass	heap string elements of a hoisted list if select by branch
 pass	heap-valued handler state above an inner abort keeps threading
 pass	hexadecimal, binary, and decimal spellings of one value are equal
@@ -3780,6 +3790,7 @@ pass	pattern matching over AST distinguishes forms
 pass	performing a string-parameter operation with a non-string argument is a type error
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
+pass	performs in match-arm bodies fire ONLY for the selected arm — counter witnesses the count
 pass	performs in the ELEMENTS of a tuple / list CONSTRUCTOR thread left-to-right
 pass	performs in the FIELD VALUES of a RECORD constructor thread in written order
 pass	performs in the VALUES of a MAP constructor thread and the entry reads back correctly
@@ -3937,6 +3948,7 @@ pass	runtime String.concat is associative — (a·b)·c equals a·(b·c), both e
 pass	runtime division and remainder agree across ALL FOUR sign quadrants
 pass	runtime float equality compares by canonical byte form
 pass	runtime float inequality compares by canonical byte form
+pass	runtime float multiplication overflows to infinity, not a trap or a wrap
 pass	runtime float ordering is a strict/non-strict partial order over finite values
 pass	runtime float ordering treats negative and positive zero as equal, unlike equality
 pass	runtime multi-limb BigInt division satisfies q*d + r = n with a bounded remainder

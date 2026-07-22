@@ -722,11 +722,44 @@ impl<'a> Printer<'a> {
     /// Otherwise it is all-or-nothing: inline if it fits, else one arg per line, block-indented,
     /// closing `)` on its own dedented line.
     fn call_args(&mut self, args: &[StructId]) {
+        // A same-line trailing `//` on the LAST argument (`(comment-after "text" arg)`) needs the closing
+        // `)` forced onto its own line (else `arg // text)` swallows the `)` into the comment) — the plain
+        // comment-aware path handles that. A `(comment-after …)` arg is never huggable (its head is
+        // `comment-after`, not `fn`/`match`), so `hug_call` never sees one. A NON-last `comment-after`
+        // (only from a decoded AST) has no faithful `arg // text, …` rendering, so it is NOT routed here —
+        // it falls through to the ordinary render, where it prints as a `comment-after(...)` call that
+        // round-trips faithfully (same total-printer discipline as the collection literals, PR#763).
+        if args.last().is_some_and(|&a| self.is_comment_after(a))
+            && !self.has_nonlast_comment_after(args)
+        {
+            return self.plain_call_comment_aware(args);
+        }
         if !args.is_empty() && self.is_huggable_arg(args[args.len() - 1]) {
             self.hug_call(args);
         } else {
             self.plain_call(args);
         }
+    }
+
+    /// A `plain_call` variant for when the LAST argument carries a same-line trailing `(comment-after
+    /// "text" arg)`: render each arg (unwrapping the last's `comment-after` to `arg // text` same-line),
+    /// then force a hard newline before `)` so the trailing comment ends its line and the `)` is not
+    /// swallowed into it. Mirrors `bracketed_comment_aware` for the collection literals.
+    fn plain_call_comment_aware(&mut self, args: &[StructId]) {
+        self.doc.cbox(INDENT);
+        self.doc.word("(");
+        self.doc.zerobreak();
+        for (i, &arg) in args.iter().enumerate() {
+            if i > 0 {
+                self.doc.word(",");
+                self.doc.space();
+            }
+            self.print_elem_maybe_commented(arg);
+        }
+        // Hard newline before `)` so the last arg's trailing `// …` ends its line.
+        self.doc.hardbreak_with(-INDENT);
+        self.doc.word(")");
+        self.doc.end();
     }
 
     /// All-or-nothing argument layout.
@@ -6053,6 +6086,43 @@ mod tests {
             "g(\n  // lead\n  1,\n  2\n)"
         );
         // A clean call keeps its ordinary layout.
+        assert_eq!(assert_roundtrip("g(1, 2, 3)", 80), "g(1, 2, 3)");
+    }
+
+    #[test]
+    fn a_same_line_trailing_comment_on_the_last_call_argument_is_preserved_not_dropped() {
+        // A same-line `//` trailing the LAST call argument (`g(1, 2 // note)`) used to be DROPPED (it sat
+        // in the `)` leading slot, which `arg_exprs` didn't drain) → `cdz fmt` refused. `arg_exprs` now
+        // captures it as `(comment-after …)` (gated on `at(RParen)`), and `call_args` routes a last-arg
+        // comment-after to `plain_call_comment_aware`, which renders `arg // text` same-line and forces `)`
+        // onto its own line so it isn't swallowed. `strip_comments` peels it; compiles to wasm.
+        let src = "def f() -> Int64 = g(1, 2 // note\n)";
+        assert_eq!(
+            sexpr::print(&parser::read_ml(src).arenas),
+            "(def (f) (: (g 1 (comment-after \"note\" 2)) Int64))",
+            "the same-line trailing comment on the last call arg is captured, not dropped"
+        );
+        assert_eq!(
+            print(&parser::read_ml(src).arenas, 80),
+            "def f() -> Int64 =\n  g(\n    1,\n    2 // note\n  )",
+            "trailing comment prints same-line; `)` breaks to its own line"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml(&print(&parser::read_ml(src).arenas, 80)).arenas),
+            "(def (f) (: (g 1 (comment-after \"note\" 2)) Int64))",
+            "the trailing call-arg comment round-trips"
+        );
+        // A `(comment-after …)` wrapping a would-be-huggable last arg (a `fn`/`match`) is NOT huggable
+        // (its head is `comment-after`), so it routes to the comment-aware plain path and round-trips.
+        let hug =
+            sexpr::read(r#"(def (f) (: (map xs (comment-after "note" (fn (x) (+ x 1)))) _))"#)
+                .unwrap();
+        assert_eq!(
+            sexpr::print(&parser::read_ml(&print(&hug, 80)).arenas),
+            r#"(def (f) (: (map xs (comment-after "note" (fn (x) (+ x 1)))) _))"#,
+            "a comment-after on a would-be-hugged last arg round-trips via the plain comment-aware path"
+        );
+        // A clean call keeps its flat layout (no forced break).
         assert_eq!(assert_roundtrip("g(1, 2, 3)", 80), "g(1, 2, 3)");
     }
 

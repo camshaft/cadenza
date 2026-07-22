@@ -1562,12 +1562,27 @@ fn emit_rust_module(exe: &std::path::Path, source: &str) -> EmitOutcome {
 /// `error <first-stderr-line>` (a bad artifact = a miscompile); a non-zero RUN is `trap <…>` (a panic =
 /// a Cadenza trap); success is `value <stdout>` (the rendered boundary value). The temp dir is removed on
 /// every return via an RAII guard.
+/// Resolve the directory holding cargo's HASHED dependency rlibs, given the dir the `cdz` bin sits in.
+/// Normally `<lib_dir>/deps`. But a `cargo test`-built bin ALREADY lives in `.../deps/`, so the deps dir is
+/// `lib_dir` ITSELF — appending `deps` there gives `.../deps/deps` (nonexistent), which is the PR#772 bug
+/// (the hashed `libcdz_num-<hash>.rlib` search dir goes missing → E0433). Detect the already-in-`deps` case
+/// by the dir's own name so we never double-append.
+fn resolve_deps_dir(lib_dir: &std::path::Path) -> std::path::PathBuf {
+    if lib_dir.file_name().is_some_and(|n| n == "deps") {
+        lib_dir.to_path_buf()
+    } else {
+        lib_dir.join("deps")
+    }
+}
+
 /// Locate a backend dependency rlib (`cdz_rt`/`cdz_num`) for the `run-rust` link. Prefer the PLAIN
 /// top-level `lib<crate>.rlib` in `lib_dir` (a `cargo build`-built workspace has it beside the `cdz` bin);
-/// else fall back to the NEWEST `deps/lib<crate>-<hash>.rlib` (what `cargo test` produces — the plain name
-/// is often absent there, only the hashed one). Newest-by-mtime so a rebuild's fresh artifact wins over a
-/// stale one. `None` if neither exists (the caller then omits the `--extern`, as before — a program that
-/// references the crate then fails rustc loudly, which is strictly better than a silent wrong link).
+/// else fall back to the NEWEST hashed `lib<crate>-<hash>.rlib` in `deps_dir` (what `cargo test` produces —
+/// the plain name is often absent there, only the hashed one). `deps_dir` is the caller's resolved
+/// hashed-rlib dir (`lib_dir/deps`, OR `lib_dir` itself when the bin already lives in `deps/`). Newest-by-
+/// mtime so a rebuild's fresh artifact wins over a stale one. `None` if neither exists (the caller then
+/// omits the `--extern`, as before — a program that references the crate then fails rustc loudly, which is
+/// strictly better than a silent wrong link).
 fn find_backend_rlib(
     lib_dir: &std::path::Path,
     deps_dir: &std::path::Path,
@@ -1628,8 +1643,11 @@ fn compile_and_run_rust_driver(exe: &std::path::Path, driver: &str) -> Result<St
     // Also search `deps/` (cargo's hashed-rlib directory) — a `cargo test`-built `cdz` bin sits in
     // `target/<profile>/deps/` OR `target/<profile>/`, and the dependency rlibs it links against live in
     // `deps/` under HASHED names (`libcdz_num-<hash>.rlib`), NOT as the plain top-level `libcdz_num.rlib`.
-    let deps_dir = lib_dir.join("deps");
-    if deps_dir.is_dir() {
+    // CRITICAL: when `lib_dir` (= exe.parent()) is ITSELF `.../deps` (a `cargo test`-located bin), the deps
+    // dir IS `lib_dir` — a blind `lib_dir.join("deps")` would be `.../deps/deps` (nonexistent), skipping the
+    // search dir + the hashed rlib and reintroducing `E0433 cannot find crate cdz_num` (PR#772 review).
+    let deps_dir = resolve_deps_dir(lib_dir);
+    if deps_dir.is_dir() && deps_dir != lib_dir {
         cmd.arg("-L")
             .arg(format!("dependency={}", deps_dir.display()));
     }
@@ -9062,6 +9080,33 @@ mod tests {
     use super::*;
     // Fix-engine internals the perf-regression tests drive directly (now in the `fix` module).
     use crate::fix::{TRANSFORM_SIBLING_CLONES, localized_change, transform_target};
+
+    #[test]
+    fn resolve_deps_dir_does_not_double_append_when_bin_is_in_deps() {
+        // PR#772 regression: run-rust must find cargo's hashed rlibs (libcdz_num-<hash>.rlib) whether the
+        // `cdz` bin sits in `target/<profile>/` (deps = <that>/deps) OR in `target/<profile>/deps/` (a
+        // `cargo test`-located bin — deps IS the bin's own dir). A blind `lib_dir.join("deps")` in the
+        // latter case gives `.../deps/deps` (nonexistent) → the hashed rlib isn't found → E0433.
+        use std::path::Path;
+        // Bin in target/<profile>/ → deps dir is a `deps` CHILD.
+        assert_eq!(
+            resolve_deps_dir(Path::new("/w/target/debug")),
+            Path::new("/w/target/debug/deps"),
+            "a non-deps lib_dir gets a `deps` child appended"
+        );
+        // Bin ALREADY in .../deps/ → deps dir is lib_dir ITSELF (NOT lib_dir/deps).
+        assert_eq!(
+            resolve_deps_dir(Path::new("/w/target/debug/deps")),
+            Path::new("/w/target/debug/deps"),
+            "a lib_dir already named `deps` is used as-is, NOT double-appended to deps/deps"
+        );
+        // Nested/edge: a path ending in `deps` at any depth is treated as the deps dir.
+        assert_eq!(
+            resolve_deps_dir(Path::new("/a/b/c/deps")),
+            Path::new("/a/b/c/deps"),
+            "any dir named `deps` is the deps dir"
+        );
+    }
 
     #[test]
     fn exit_code_from_child_does_not_wrap_an_out_of_range_code() {

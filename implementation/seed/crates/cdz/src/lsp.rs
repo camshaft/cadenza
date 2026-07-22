@@ -3326,8 +3326,83 @@ fn inlay_hints_at(text: &str, is_ml: bool, range: Range) -> Vec<InlayHint> {
     let Ok((arenas, spans, _errors)) = parse_surface(text, is_ml) else {
         return Vec::new();
     };
+    // Two hint modes, both emitted: (1) PARAMETER-NAME hints at call sites (`add(`a:`1)`), and (2) TYPE
+    // hints on an un-annotated but INFERABLE parameter binder (`def f(x`: Int64`) = …`) — the latter now
+    // that v-inference's TypeAt returns the solved type for such a binder (was `unknown`). A generic
+    // param (no single monomorphic type) still answers `unknown` and is skipped.
     let params_by_callee = local_def_params(&arenas);
-    emit_param_hints(text, &arenas, &spans, &params_by_callee, range)
+    let mut hints = emit_param_hints(text, &arenas, &spans, &params_by_callee, range);
+    hints.extend(emit_param_type_hints(text, &arenas, &spans, range));
+    hints
+}
+
+/// TYPE inlay hints on un-annotated, inferable PARAMETER binders — `def f(x`: Int64`) = x + 1` renders
+/// the solved type after the binder. For each top-level `(def (name param…) …)`, a param that is a BARE
+/// name (not an already-annotated `(: name Type)`) gets its node typed via `TypeAt`; a SOLVED answer (not
+/// `unknown`) yields a `: <type>` hint at the binder's end, an `unknown` (a fully-generic param with no
+/// single monomorphic type) is skipped. Definition-site hints (distinct from the call-site name hints).
+/// Only binders whose start is in `range` are emitted. TypeAt on an un-annotated inferable binder returns
+/// the solved type as of v-inference `071ed9642`.
+fn emit_param_type_hints(
+    text: &str,
+    arenas: &cadenza_syntax::Arenas,
+    spans: &cadenza_syntax::spans::SpanTable,
+    range: Range,
+) -> Vec<InlayHint> {
+    let range_lo = position_to_byte(text, range.start);
+    let range_hi = position_to_byte(text, range.end);
+    let mut hints: Vec<InlayHint> = Vec::new();
+    for i in 0..arenas.structure.len() {
+        let id = cadenza_syntax::StructId(i as u32);
+        let cadenza_syntax::ast::Struct::List(kids) = arenas.get(id) else {
+            continue;
+        };
+        // `(def (name p1 p2 …) body)` — head `def`, second child the signature list.
+        if kids.first().and_then(|&h| arenas.as_name(h)) != Some("def") {
+            continue;
+        }
+        let Some(&sig) = kids.get(1) else { continue };
+        let cadenza_syntax::ast::Struct::List(sig_kids) = arenas.get(sig) else {
+            continue;
+        };
+        // Each param past the sig head. Only a BARE-name param (already-annotated `(: n T)` shows its own
+        // type) is a hint candidate.
+        for &param in sig_kids.iter().skip(1) {
+            if arenas.as_name(param).is_none() {
+                continue; // annotated `(: name T)` (a List) or a non-name — skip
+            }
+            let Some(span) = spans.get(param) else {
+                continue;
+            };
+            if span.start < range_lo || span.start >= range_hi {
+                continue;
+            }
+            let Some(ty) = run_query_text(
+                arenas,
+                rcdzc::sidecar::Query::TypeAt { node: param.0 },
+                rcdzc::sidecar::KIND_TYPE_AT,
+            ) else {
+                continue;
+            };
+            let ty = ty.trim();
+            // A generic param answers `unknown` (no single monomorphic type) — emit no hint there.
+            if ty.is_empty() || ty == "unknown" {
+                continue;
+            }
+            hints.push(InlayHint {
+                // The hint sits AFTER the binder name (`x`: Int64`).
+                position: byte_to_position(text, span.end),
+                label: InlayHintLabel::String(format!(": {ty}")),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: None,
+                padding_left: None,
+                padding_right: None,
+                data: None,
+            });
+        }
+    }
+    hints
 }
 
 /// Cross-file parameter-name inlay hints: like [`inlay_hints_at`] but a callee IMPORTED from a sibling
@@ -5546,6 +5621,19 @@ mod tests {
         Range::new(Position::new(0, 0), Position::new(u32::MAX, 0))
     }
 
+    /// The PARAMETER-kind (call-site name) hint labels over the whole buffer — filters OUT the TYPE-kind
+    /// hints (the def-param `: <inferred>` mode), so a param-name-hint test asserts only its own subject.
+    fn param_name_hint_labels(text: &str) -> Vec<String> {
+        inlay_hints_at(text, false, whole_range())
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| match &h.label {
+                InlayHintLabel::String(s) => s.clone(),
+                other => panic!("expected a string label, got {other:?}"),
+            })
+            .collect()
+    }
+
     #[test]
     fn inlay_hints_do_not_leak_onto_a_defs_own_signature() {
         // A def's SIGNATURE list `(scale (: factor Int64))` is itself a name-headed list whose head is a
@@ -5576,24 +5664,54 @@ mod tests {
         // This uses the callee's declared param NAMES (in the parse tree), NOT the blocked inferred-binder
         // type query. `(add 1 2)` → hints `a:` before `1` and `b:` before `2`.
         let text = "(module m (def (add a b) (+ a b)) (def (main) (add 1 2)) (export main))";
-        let hints = inlay_hints_at(text, false, whole_range());
-        let labels: Vec<String> = hints
-            .iter()
-            .map(|h| match &h.label {
-                InlayHintLabel::String(s) => s.clone(),
-                other => panic!("expected a string label, got {other:?}"),
-            })
-            .collect();
+        // Scope to the PARAMETER-name hints — the def's own un-annotated params ALSO get TYPE hints now
+        // (`a`/`b` → `: Int64`), which is a separate mode asserted elsewhere; here we pin the call-site
+        // name hints.
+        let labels = param_name_hint_labels(text);
         assert!(
             labels.contains(&"a:".to_string()) && labels.contains(&"b:".to_string()),
             "the two positional args should be hinted with the callee's param names `a:`/`b:`, got {labels:?}"
         );
-        assert!(
-            hints
-                .iter()
-                .all(|h| h.kind == Some(InlayHintKind::PARAMETER)),
-            "every hint is a PARAMETER-kind hint: {hints:?}"
+    }
+
+    #[test]
+    fn inlay_hints_type_an_unannotated_inferable_param() {
+        // TYPE-hint mode (unblocked by v-inference's inferred-param TypeAt): an un-annotated but inferable
+        // param binder gets an inline `: <type>` hint. `def f(x) = x + 1` → `x` is solved to Int64 by the
+        // body, so a TYPE hint `: Int64` sits right after the binder.
+        let text = "def f(x) = x + 1";
+        let type_hints: Vec<(String, u32)> = inlay_hints_at(text, true, whole_range())
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::TYPE))
+            .map(|h| match &h.label {
+                InlayHintLabel::String(s) => (s.clone(), h.position.character),
+                other => panic!("expected a string label, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            type_hints,
+            vec![(": Int64".to_string(), 7)],
+            "the inferable param `x` gets a `: Int64` TYPE hint after the binder (col 7); got {type_hints:?}"
         );
+    }
+
+    #[test]
+    fn inlay_hints_do_not_type_a_generic_or_annotated_param() {
+        // No TYPE hint for a param that has no single inferred type: a fully-GENERIC param (`id`'s x → the
+        // query answers `unknown`) OR an already-ANNOTATED param (`scale`'s factor — it shows its own
+        // written type). Both cases: zero TYPE-kind hints.
+        let generic = "def id(x) = x\ndef main() -> Int64 = id(5)";
+        let annotated = "def scale(factor: Int64) -> Int64 = factor * 2";
+        for text in [generic, annotated] {
+            let type_hints = inlay_hints_at(text, true, whole_range())
+                .into_iter()
+                .filter(|h| h.kind == Some(InlayHintKind::TYPE))
+                .count();
+            assert_eq!(
+                type_hints, 0,
+                "no TYPE hint for a generic/annotated param, got {type_hints} in `{text}`"
+            );
+        }
     }
 
     #[test]
@@ -5720,17 +5838,11 @@ mod tests {
         // `passthrough` whose OWN params are `a`/`b`: the args are the names `a`/`b`, matching `add`'s
         // params, so NO hints. But a differently-named arg still gets its hint (see the mixed case below).
         let text = "(module m (def (add a b) (+ a b)) (def (passthrough a b) (add a b)) (export passthrough))";
-        let hints = inlay_hints_at(text, false, whole_range());
+        // Scope to PARAMETER-name hints (the def params also get TYPE hints, asserted elsewhere).
+        let labels = param_name_hint_labels(text);
         assert!(
-            hints.is_empty(),
-            "args that are the same names as the params should be suppressed, got {:?}",
-            hints
-                .iter()
-                .map(|h| match &h.label {
-                    InlayHintLabel::String(s) => s.clone(),
-                    _ => "?".into(),
-                })
-                .collect::<Vec<_>>()
+            labels.is_empty(),
+            "args that are the same names as the params should be suppressed, got {labels:?}"
         );
     }
 
@@ -5740,13 +5852,8 @@ mod tests {
         // suppressed) but the second arg `2` is a literal (≠ param `b` → still hinted `b:`). Pins that the
         // rule hides only the redundant hint, not the whole call's hints.
         let text = "(module m (def (add a b) (+ a b)) (def (g a) (add a 2)) (export g))";
-        let labels: Vec<String> = inlay_hints_at(text, false, whole_range())
-            .iter()
-            .map(|h| match &h.label {
-                InlayHintLabel::String(s) => s.clone(),
-                other => panic!("expected a string label, got {other:?}"),
-            })
-            .collect();
+        // Scope to PARAMETER-name hints (def params also get TYPE hints, asserted elsewhere).
+        let labels = param_name_hint_labels(text);
         assert_eq!(
             labels,
             vec!["b:".to_string()],

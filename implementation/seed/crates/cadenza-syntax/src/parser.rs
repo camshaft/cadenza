@@ -1833,15 +1833,24 @@ impl<'a> Parser<'a> {
             loop {
                 // Own-line `//` comment(s) leading this argument (`g(\n // note\n 1, 2)`) sit in its
                 // first-token leading slot, which `expr` does not drain — capture + wrap `(comment "text"
-                // arg)` so they round-trip (the call printer already renders a leading comment on its own
-                // line above the arg). Distinct from a same-line trailing comment (a separate follow-up:
-                // the two-path call printer needs work to render `arg // text` + force the `)` break).
+                // arg)` so they round-trip (the call printer renders a leading comment on its own line
+                // above the arg).
                 let leading = self.take_comments_here();
                 // An argument is a single expression, not a sequence (`PREC_SEQ + 1`): a `;` here belongs
                 // to an enclosing block, so a sequence passed as an argument must parenthesize —
                 // `f((a; b))` — matching the "parens only for a genuine ambiguity" surface rule.
                 let arg = self.expr(crate::token::PREC_SEQ + 1);
-                args.push(self.wrap_comments(leading, arg));
+                let arg = self.wrap_comments(leading, arg);
+                // A same-line `//` trailing the LAST argument (`g(1, 2 // note)`) sits in the `)` token's
+                // leading slot; capture it as `(comment-after …)` (gated on `at(RParen)`, the PR#758 rule:
+                // a non-last arg's next token is `,`, and a same-line comment there has no faithful inline
+                // rendering). The call printer renders it same-line + forces `)` onto its own line.
+                if self.at(Kind::RParen) {
+                    let trailing = self.take_trailing_comment_here();
+                    args.push(self.wrap_comment_after(trailing, arg));
+                } else {
+                    args.push(arg);
+                }
                 if !self.sep_continue(Kind::RParen) {
                     break;
                 }

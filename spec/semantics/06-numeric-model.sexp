@@ -854,6 +854,34 @@
             (export main)))
   (call   main (: true Bool)) (output (: true Bool)))
 
+(case "halving the minimum subnormal flushes to zero while a double-min stays subnormal"
+  (doc    "The gradual-underflow BOUNDARY at runtime (the Float32 subnormal pin above is a literal FIT
+           check): `(/ a 2.0)` on the minimum positive Float64 subnormal 5.0e-324 has no smaller
+           representable value — it rounds to +0.0 (`> 0.0` false, 0); on 1.0e-323 (two ulps) the half
+           IS representable and stays subnormal-positive (`> 0.0` true, 1). An arithmetic path that
+           flushed all denormals to zero (FTZ mode) or that kept sub-minimum values alive would flip one
+           call. Pins IEEE gradual underflow on the runtime divide.")
+  (input  (do
+            (def (main (: a Float64))
+              (if (> (/ a 2.0) 0.0) 1 0))
+            (export main)))
+  (call   main (: 5.0e-324 Float64))
+  (output (: 0 Int64))
+  (call   main (: 1.0e-323 Float64))
+  (output (: 1 Int64)))
+
+(case "runtime float multiplication overflows to infinity, not a trap or a wrap"
+  (doc    "The float-overflow companion of the /0-infinity pins: `(* a a)` at a = 1.0e200 exceeds
+           Float64.max (~1.8e308) and yields +inf (witnessed by `> 1.0e308`) — float arithmetic NEVER
+           traps (numeric-model.md), and overflow saturates to the infinity, never wrapping or halting.
+           The multiplication face of the never-traps family (divide and NaN faces pinned nearby).")
+  (input  (do
+            (def (main (: a Float64))
+              (if (> (* a a) 1.0e308) 1 0))
+            (export main)))
+  (call   main (: 1.0e200 Float64))
+  (output (: 1 Int64)))
+
 (case "a fitting Float32 literal in a runtime if branch computes"
   (doc    "The no-over-reject witness of the branch fit-check AND the emit-grounding fix: `(: (if c 1.5
            0.25) Float32)` over runtime `c` — both branch literals fit binary32 and the emit grounds each

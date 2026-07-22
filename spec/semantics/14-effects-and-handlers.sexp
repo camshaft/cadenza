@@ -1890,6 +1890,56 @@
 ; halves: the scrutinee performs (advancing the state), the match dispatches, and the SELECTED arm's
 ; body performs again and must read the post-scrutinee state.
 
+(case "performs in match-arm bodies fire ONLY for the selected arm — counter witnesses the count"
+  (doc    "The untaken-arm face (the neighbors pin the taken arm's state read): three arms carry ZERO,
+           ONE, and TWO performs respectively, and a FINAL perform reads the counter — so the result
+           encodes exactly how many arm performs fired. n=0 (one-perform arm): 0 + 10·1 = 10. n=1
+           (two-perform arm): (0+1) + 10·2 = 21. n=5 (zero-perform arm): 100 + 10·0 = 100. An emit that
+           hoisted an arm's perform above the dispatch (or speculatively evaluated an untaken arm)
+           drifts the counter at one of the three calls — the differential-count witness a single-arm
+           case cannot give.")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Ctr 0
+                ((next (u) s (resume s (+ s 1))))
+                (+ (match n
+                     (0 (Ctr.next unit))
+                     (1 (+ (Ctr.next unit) (Ctr.next unit)))
+                     (_ 100))
+                   (* 10 (Ctr.next unit)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 10 Int64))
+  (call   main (: 1 Int64))
+  (output (: 21 Int64))
+  (call   main (: 5 Int64))
+  (output (: 100 Int64)))
+
+(case "a perform in the scrutinee fires exactly ONCE whichever of three arms is selected"
+  (doc    "The once-only guarantee at arm-count 3: the scrutinee's `(Ctr.next unit)` advances the state
+           exactly once, the dispatch selects among three arms on its VALUE, and a second perform reads
+           the post-scrutinee state — seed 0 → 0 dispatches arm-0, then reads 1 (1001); seed 1 → 2002;
+           seed 7 → wildcard, 3008. A dispatch that re-evaluated the scrutinee per arm test (three
+           probes = three performs) would read a drifted counter in the tail perform.")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Ctr n
+                ((next (u) s (resume s (+ s 1))))
+                (+ (match (Ctr.next unit)
+                     (0 1000)
+                     (1 2000)
+                     (_ 3000))
+                   (Ctr.next unit))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1001 Int64))
+  (call   main (: 1 Int64))
+  (output (: 2002 Int64))
+  (call   main (: 7 Int64))
+  (output (: 3008 Int64)))
+
 (case "a matched arm body performs and reads the state the scrutinee advanced"
   (doc    "Seeded 5, the scrutinee `(Ctr.tick)` reads 5 (state → 6) and hits the literal-5 arm, whose
            BODY performs again: the second tick must read 6 — the state the scrutinee's discharge left —
@@ -3904,6 +3954,58 @@
               (handle Add 0 ((sum (p) s (resume (+ (. p 0) (. p 1)) s)))
                 (Add.sum (tuple 3 4)))) (export main)))
   (output (: 7 Int64)))
+
+(case "a runtime LIST argument to an effect op is WALKED by a recursive fold inside the arm"
+  (doc    "The walked-collection upgrade of the compound-parameter pins (the tuple/record args above are
+           const scalar-leaf projections): `(Sink.tally (list a 2 30))` carries a runtime-element list
+           into the arm, whose body runs a full RECURSIVE fold over the bound parameter before resuming —
+           10+2+30 = 42. The RRB handle must arrive intact and support the head-tail destructure loop
+           from inside the handler context (an arm is not a plain function body — the fold runs under the
+           handler's dispatch machinery).")
+  (input  (do
+            (effect Sink (op tally (-> (List Int64) Int64)))
+            (def (sum-l (: xs (List Int64)) (: acc Int64))
+              (match xs ((list) acc) ((list h .. t) (sum-l t (+ acc h)))))
+            (def (main (: a Int64))
+              (handle Sink 0
+                ((tally (xs) s (resume (sum-l xs 0) s)))
+                (Sink.tally (list a 2 30))))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 42 Int64)))
+
+(case "a MAP argument to an effect op is looked up inside the arm at the handler's own state"
+  (doc    "The CHAMP-descent-in-arm face: the perform carries a 2-entry map, and the arm looks it up at
+           the handler's STATE value (`s`, seeded from the boundary parameter) — composing the op
+           argument, the state slot, and the CHAMP descent in one arm expression. k=2 hits (20), k=9
+           misses (-1). A lowering that rebound the arm's parameter or state wrong feeds the lookup the
+           wrong key or trie.")
+  (input  (do
+            (effect Sink (op pick (-> (Map Int64 Int64) Int64)))
+            (def (main (: k Int64))
+              (handle Sink k
+                ((pick (m) s (resume (match (Map.lookup m s) ((Some v) v) ((None u) -1)) s)))
+                (Sink.pick (Map.insert (Map.insert Map.empty 1 10) 2 20))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 20 Int64))
+  (call   main (: 9 Int64))
+  (output (: -1 Int64)))
+
+(case "a TUPLE op argument with a HEAP leaf destructures inside the arm"
+  (doc    "The mixed-representation companion of the scalar tuple-parameter case: `(tuple a \"abc\")`
+           carries an i64 AND a rope handle through the perform; the arm destructures both and measures
+           the string leaf (39 + 3 = 42). The op-argument boxing must carry the heap handle beside the
+           scalar without confusing slots (the effects twin of the mixed-representation generic pins).")
+  (input  (do
+            (effect Sink (op unpack (-> (Tuple Int64 String) Int64)))
+            (def (main (: a Int64))
+              (handle Sink 0
+                ((unpack (p) s (match p ((tuple n str) (resume (+ n (String.byte-len str)) s)))))
+                (Sink.unpack (tuple a "abc"))))
+            (export main)))
+  (call   main (: 39 Int64))
+  (output (: 42 Int64)))
 
 (case "an operation with a RECORD parameter binds the compound and the arm reads its fields"
   (doc    "The record companion of the tuple-parameter case: an operation whose declared PARAMETER is a

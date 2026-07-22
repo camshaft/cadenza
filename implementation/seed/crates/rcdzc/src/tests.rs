@@ -14638,6 +14638,94 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_flow_refinement_through_arithmetic_stays_runtime_but_value_correct_documents_a_fold_boundary()
+     {
+        // BOUNDARY of the flow-sensitive comparison fold (a documented CURRENT limitation, not a bug):
+        // `refined_comparison_const`'s `is_refined` gate requires the compared operand to be a directly
+        // refined VARIABLE (`Core::Param`/`LocalRef` with a `refined_range`) — it does NOT consult
+        // `value_range` on an ARITH node like `(+ x 1)`. So under `(and (>= x 0) (< x 10))` (x ∈ [0,9]),
+        // although `value_range((+ x 1))` WOULD compute `[1,10]` via `arith_range` (the SAME propagation the
+        // overflow-guard elision already uses), the nested `(< (+ x 1) 11)` does NOT fold — it stays a
+        // runtime compare. This pins the boundary: the refinement→arith→compare-fold chain is a FUTURE
+        // extension opportunity (widen `is_refined`/the operand-range read in `refined_comparison_const` to
+        // any node whose `value_range` is decisive), and until then the behavior is sound-but-unfolded.
+        // Value-correct either way — this test guards the VALUE + documents that the compare is NOT yet
+        // elided, so if a future slice adds the fold, this test flips to `assert !contains` and records it.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // CURRENT behavior: the arith-composed inner compare is NOT folded — the `2` arm survives (the fold
+        // only fires on a directly-refined variable, not `(+ x 1)`). This documents the fold boundary.
+        let not_folded = select(
+            "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 10)) (if (< (+ x 1) 11) 1 2) 3)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            not_folded.contains(&Lir::ConstI64(2)),
+            "CURRENT boundary: a refinement does NOT propagate through (+ x 1) into the compare fold, so the \
+             inner (< (+ x 1) 11) stays runtime and the `2` arm survives (a future slice could fold it): {not_folded:?}"
+        );
+        // But it is VALUE-CORRECT: (+ x 1) ∈ [1,10] < 11 is always true at runtime, so f returns 1 for any
+        // x ∈ [0,9] (x=5→1, x=9→1), and 3 outside (x=20→3). The missed fold costs an instruction, not a value.
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 10)) (if (< (+ x 1) 11) 1 2) 3)",
+                &[Val::S64(5)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 10)) (if (< (+ x 1) 11) 1 2) 3)",
+                &[Val::S64(9)]
+            ),
+            1
+        );
+        assert_eq!(
+            run::<i64>(
+                "(: x Int64)",
+                "(if (and (>= x 0) (< x 10)) (if (< (+ x 1) 11) 1 2) 3)",
+                &[Val::S64(20)]
+            ),
+            3
+        );
+        // CONTRAST — the DIRECTLY-refined variable DOES fold (the working path, for reference): under the
+        // same guard, `(< x 11)` on the bare `x` folds true (x ∈ [0,9] < 11), dropping its `2` arm.
+        let folded = select(
+            "(module m (def (f (: x Int64)) (if (and (>= x 0) (< x 10)) (if (< x 11) 1 2) 3)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !folded.contains(&Lir::ConstI64(2)),
+            "a directly-refined variable (< x 11) DOES fold under x ∈ [0,9] — the working path the arith case does not yet reach: {folded:?}"
+        );
+    }
+
+    #[test]
     fn a_narrow_binary_op_with_a_constant_left_operand_emits_valid_wasm() {
         // ⚠ INVALID WASM regression: a narrow binary op whose LEFT operand is a bare integer literal and
         // whose right is a narrow-typed variable mis-emitted the literal at its i64 default beside the i32

@@ -3470,6 +3470,68 @@
   (call   main)
   (output (: 1 Int64)))
 
+(case "an Option-of-Option classifies three ways at RUNTIME through one compiled match"
+  (doc    "The runtime companion of the const `(Some (None))` cases: `classify` picks the wrapper depth
+           from the boundary parameter — negative → `None` (found nothing), zero → `(Some (None))` (found
+           an empty), positive → `(Some (Some n))` (found a value) — and ONE compiled three-arm match
+           discriminates per call (42 / 0 / -1). The lookup-triage idiom (miss vs hit-empty vs hit-value)
+           the double wrap exists for; a lowering collapsing the two None depths merges arms.")
+  (input  (do
+            (def (classify (: n Int64))
+              (if (< n 0) (None unit)
+                (if (= n 0) (Some (None unit)) (Some (Some n)))))
+            (def (main (: n Int64))
+              (match (classify n)
+                ((Some (Some v)) v)
+                ((Some (None u)) 0)
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64))
+  (call   main (: -5 Int64))
+  (output (: -1 Int64)))
+
+(case "a Result-of-Option threads both wrappers through one runtime match"
+  (doc    "The mixed-wrapper composition: `(Result (Option Int64) Int64)` — Err carries a code, Ok
+           carries an Option. One match reaches all three leaves per call: Ok-Some (42), Ok-None (0),
+           Err (-7). The two sums nest in opposite roles (payload vs error), so the arm patterns descend
+           different variants at each level — the fallible-lookup signature (`step` can fail; success can
+           still be empty).")
+  (input  (do
+            (def (step (: n Int64))
+              (: (if (< n 0) (Err n) (Ok (if (= n 0) (None unit) (Some (* n 2))))) (Result (Option Int64) Int64)))
+            (def (main (: n Int64))
+              (match (step n)
+                ((Ok (Some v)) v)
+                ((Ok (None u)) 0)
+                ((Err e) e)))
+            (export main)))
+  (call   main (: 21 Int64))
+  (output (: 42 Int64))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64))
+  (call   main (: -7 Int64))
+  (output (: -7 Int64)))
+
+(case "an Option-of-Option survives a Map VALUE cell with its exact nesting"
+  (doc    "The collection round-trip: `(Some (Some n))` stored as a map value and read back through
+           `Map.lookup`'s own Some — the match must align THREE Some layers (`(Some (Some (Some v)))`)
+           to reach the payload. A value cell that flattened or re-wrapped the nesting misaligns every
+           arm. 42.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m (Map.insert Map.empty 1 (Some (Some n)))))
+                (match (Map.lookup m 1)
+                  ((Some (Some (Some v))) v)
+                  ((Some (Some (None u))) -2)
+                  ((Some (None u)) -3)
+                  ((None u) -4))))
+            (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64)))
+
 (case "a Some carrying an inner-annotated None matches its arm (the control)"
   (doc    "The control pinning the reject above is about the inner nullary variant's UNCONSTRAINED
            payload, not the value itself: annotating the INNERMOST `(None)` — `(Some (: (None) (Option
