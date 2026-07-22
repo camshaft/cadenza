@@ -444,6 +444,29 @@
             (_ 0N)))
   (output (: 12345678901234567890123456789 BigInt)))
 
+(case "the byte codec round-trips an Ast.Int wider than Int64"
+  (doc    "The CODEC face of non-lossy storage (ast-encoding.md — the encoding is a bijection): `Ast.encode`
+           serializes an `Ast.Int` as tag + sign + magnitude-length + magnitude bytes, so a value PAST the
+           i64 range round-trips exactly through `Ast.decode`. `(Ast.decode (Ast.encode (Ast.Int
+           12345678901234567890123456789N)))` re-reads the full 29-digit value — the sign-magnitude wire
+           form carries an arbitrary-width magnitude (a fixed 8-byte i64 field would truncate it). Distinct
+           from the quote+match `stores wider than Int64` pin above: this exercises the BYTE codec at a
+           magnitude that exceeds i64, the regime the length-prefixed format exists for.")
+  (input  (match (Ast.decode (Ast.encode (Ast.Int 12345678901234567890123456789N)))
+            ((Ok (Ast.Int n)) n)
+            (_                0N)))
+  (output (: 12345678901234567890123456789 BigInt)))
+
+(case "structural equality of two Ast.Int wider than Int64 compares by full value"
+  (doc    "Runtime structural `=` over an `Ast.Int` whose payload EXCEEDS i64 compares the full BigInt
+           magnitude, not a truncated i64 window — `(= (Ast.Int 12345678901234567890123456789N) (Ast.Int
+           12345678901234567890123456789N))` is `true`. Pins that the sum's structural equality walks the
+           boxed-BigInt payload at its full width (a comparison that narrowed to i64 first would spuriously
+           equate two distinct >i64 values sharing low bits). The equality face of the non-lossy payload.")
+  (input  (= (Ast.Int 12345678901234567890123456789N)
+             (Ast.Int 12345678901234567890123456789N)))
+  (output (: true Bool)))
+
 (case "eval of a quoted integer literal grounds to Int64 (BigInt is AST storage, not eval width)"
   (doc    "The dual of the lossless-storage pin: while an `Ast.Int` STORES its integer as `BigInt`, an
            `eval` RECONSTRUCTS the source the AST denotes and re-infers it at the ORDINARY context width —
