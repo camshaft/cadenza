@@ -898,6 +898,24 @@
   (call   main (: 9 Int64))
   (output (: 3 Int64)))
 
+(case "a runtime bin match decodes a Bytes.slice sub-range of a larger buffer"
+  (doc    "The parse-a-slice-of-a-buffer idiom: the bin-match scrutinee is itself a runtime `Bytes.slice`
+           sub-range of a bigger buffer (an `Option`, so `Some sub` unwraps it), then `(bin (u8 a) (u8 b))`
+           decodes the two bytes of the slice. `Bytes.slice([99, h, 7], 1, 2)` = the 2-byte window `[h, 7]`
+           (skipping the leading 99), and the bin match reads `a=h`, `b=7`. Over a runtime `h`: h=5 → the slice
+           is `[5, 7]` → a+b = 12; h=0 → `[0, 7]` → 7. Pins that a bin decode composes over a RUNTIME
+           `Bytes.slice` result (a fresh Bytes handle from the O(1) slice op), not only over a top-level
+           scrutinee — the shape a framed-buffer parser takes when it decodes a windowed region.")
+  (input  (do (def (main (: h Int64))
+                (match (Bytes.slice (Bytes.of (list (UInt8.wrap 99) (UInt8.wrap h) (UInt8.wrap 7))) 1 2)
+                  ((Some sub) (match sub ((bin (u8 a) (u8 b)) (+ a b)) (_ -1)))
+                  ((None) -2)))
+              (export main)))
+  (call   main (: 5 Int64))
+  (output (: 12 Int64))
+  (call   main (: 0 Int64))
+  (output (: 7 Int64)))
+
 (case "a three-arm runtime literal-tag dispatch hits the middle and last arms and misses past all three"
   (doc    "The two-arm dispatch above can't distinguish a genuine PER-ARM fall-through chain from a
            two-way branch; three literal-tag arms witness the chain at depth: tag 2 falls past arm 1's

@@ -6540,6 +6540,33 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 2 Int64)) (output (: 2 Int64)))
 
+(case "a read-modify-write of a List value in a Map grows the entry and leaves the original map unchanged"
+  (doc    "The keyed-bucket accumulate idiom (a multimap step): look a List value up by key, push onto it, and
+           re-insert at the same key. `m = {k↦[a]}`; `(Map.insert m k (List.push (lookup m k) b))` → `grown`
+           where `grown[k]` = `[a, b]` (len 2, element 1 is b). And the ORIGINAL `m` is UNCHANGED — `m[k]`
+           still `[a]` (len 1, element 0 is a) — the read-modify-write built a NEW map + NEW list, persistent
+           (copy-on-write), not an in-place mutation observed through the old binding. Exercises Map.lookup +
+           List.push + Map.insert composed on a nested collection value. Encodes 1000·grown-len + 100·(grown[1]
+           == b) + 10·orig-len + (orig[0] == a) = 1000·2 + 100·1 + 10·1 + 1 = 2111. An in-place mutation would
+           corrupt the original (orig-len 2 → 2011); a lost re-insert would drop grown to len 1. MUST be 2111.")
+  (input  (do
+            (def (main (: k Int64) (: a Int64) (: b Int64))
+              (let ((m (Map.insert Map.empty k (list a))))
+                (let ((grown (match (Map.lookup m k)
+                               ((Some xs) (Map.insert m k (List.push xs b)))
+                               ((None _u) m))))
+                  (+ (* 1000 (match (Map.lookup grown k) ((Some xs) (List.len xs)) ((None _u) -1)))
+                     (+ (* 100 (match (Map.lookup grown k)
+                                 ((Some xs) (match (List.at xs 1) ((Some v) (if (= v b) 1 0)) ((None _u) 0)))
+                                 ((None _u) 0)))
+                        (+ (* 10 (match (Map.lookup m k) ((Some xs) (List.len xs)) ((None _u) -1)))
+                           (match (Map.lookup m k)
+                             ((Some xs) (match (List.at xs 0) ((Some v) (if (= v a) 1 0)) ((None _u) 0)))
+                             ((None _u) 0))))))))
+            (export main)))
+  (call   main (: 5 Int64) (: 3 Int64) (: 7 Int64))
+  (output (: 2111 Int64)))
+
 (case "a list of maps: a runtime index then looks a runtime key up in the found map"
   (doc    "`(List.at [{1↦100}, {2↦200}] i)` returns a MAP value (present) or None; the returned map handle is
            then probed by `(Map.lookup m k)` at run time. i=0,k=1 → 100; i=1,k=2 → 200; a key absent from the
@@ -6572,6 +6599,23 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 31 Int64))
   (call   main (: 2 Int64)) (output (: 22 Int64)))
+
+(case "a list of sets: a runtime index then tests membership in the found set"
+  (doc    "The SET sibling of the list-of-maps case: `(List.at [{1,2}, {3}] i)` returns a SET value (present)
+           or None; the returned set handle is then probed by `(Set.contains s e)` at run time. i=0,e=1 → the
+           first set {1,2} contains 1 → 1; i=1,e=3 → the second set {3} contains 3 → 1; i=1,e=1 → {3} does NOT
+           contain 1 → 0; an out-of-bounds list index → -1. Pins that a list ELEMENT that is itself a set
+           round-trips through `List.at` as a usable set handle whose membership tests at run time — the set
+           companion of the list-of-maps and list-of-records cases (collections nest as list elements of
+           every kind).")
+  (input  (do (def (main (: i Int64) (: e Int64))
+                (match (List.at (list (Set.of (list 1 2)) (Set.of (list 3))) i)
+                  ((Some s) (if (Set.contains s e) 1 0))
+                  (None -1))) (export main)))
+  (call   main (: 0 Int64) (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64) (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64) (: 1 Int64)) (output (: 0 Int64))
+  (call   main (: 5 Int64) (: 1 Int64)) (output (: -1 Int64)))
 
 (case "a list of records: a runtime index then reads a field of the found record"
   (doc    "`(List.at [{v↦10,tag↦1}, {v↦20,tag↦2}] i)` returns a RECORD value (present) or None; the returned

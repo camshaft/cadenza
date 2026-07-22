@@ -1866,9 +1866,23 @@ impl<'a> Parser<'a> {
             // at `PREC_SEQ + 1` (not a sequence): a `;` inside would belong to an enclosing block, not
             // the element, and `,` separates elements — so `(a; b, c)` is not a legal tuple element here.
             let head = self.ctor_head("tuple", start);
+            // NOTE: only a LAST-element same-line comment is captured (gated on `at(RParen)`), for the same
+            // reason as `list_literal` — the comment sits in the NEXT token's leading slot, so a non-last
+            // element's comment (next token `,`) would print `x // note, …` swallowing the `, …` into the
+            // comment line → invalid re-parse (PR#758). The `first` element is only the last one in a
+            // 1-tuple `(e,)`, which reaches `)` via the `,`-then-`)` path below, NOT here — so `first`
+            // never needs its own capture (a `(e // c,)` comment sits after the structural comma anyway,
+            // an unrepresentable slot left to the drop-guard). A mid-tuple comment is left stranded → the
+            // comment-drop guard refuses the format (no corruption).
             let mut items = vec![head, first];
             while self.sep_continue(Kind::RParen) {
-                items.push(self.expr(crate::token::PREC_SEQ + 1));
+                let elem = self.expr(crate::token::PREC_SEQ + 1);
+                if self.at(Kind::RParen) {
+                    let trailing = self.take_trailing_comment_here();
+                    items.push(self.wrap_comment_after(trailing, elem));
+                } else {
+                    items.push(elem);
+                }
             }
             self.expect(Kind::RParen, "`)`");
             let span = start.merge(self.prev_span());
@@ -2991,15 +3005,25 @@ impl<'a> Parser<'a> {
                 // sequence element parenthesizes (`[(a; b), c]`), matching call-argument position.
                 if !self.rest_marker(&mut items, |p| p.expr(crate::token::PREC_SEQ + 1)) {
                     let elem = self.expr(crate::token::PREC_SEQ + 1);
-                    // A `//` comment trailing this element on the SAME source line (`[1, // note` or
-                    // `2 // last` before `]`) sits at the NEXT token's leading slot (the `,` or `]`).
-                    // Drain + attach it to THIS element as `(comment-after …)` so it re-prints same-line,
-                    // rather than being stranded at the next element's slot / the `]` slot where the loop
-                    // would DROP it (the trailing-inline comment-loss that made `cdz fmt` refuse the whole
-                    // file). `strip_comments` peels `(comment-after …)`, so the compiler is unaffected.
-                    // (Mirrors the sum-type `variant()` loop's same-line trailing-comment capture.)
-                    let trailing = self.take_trailing_comment_here();
-                    items.push(self.wrap_comment_after(trailing, elem));
+                    // A `//` comment trailing the LAST element on the same source line (`[…, x // last]`)
+                    // sits in the `]` token's leading slot; capture it as `(comment-after …)` so it
+                    // re-prints same-line (the printer forces `]` onto its own line so it isn't swallowed).
+                    // `strip_comments` peels it, so the compiler is unaffected.
+                    //
+                    // GATE on `at(RBracket)`: the trailing comment is in the NEXT token's leading slot, so
+                    // ONLY a last-element comment has `]` as that next token. A comment after a NON-last
+                    // element (`[1 // note, 2]`) has `,` next — capturing it there would print `1 // note,
+                    // 2` with the `, 2` swallowed into the comment line → invalid re-parse (PR#758 /
+                    // Copilot: an unconditional capture is a round-trip BREAK, worse than the drop). So a
+                    // mid-element comment is left stranded → the comment-drop guard refuses the format (no
+                    // corruption); interior comments are the broader filed gap. (Mirrors `variant()`, whose
+                    // capture is also only well-defined at the trailing edge.)
+                    if self.at(Kind::RBracket) {
+                        let trailing = self.take_trailing_comment_here();
+                        items.push(self.wrap_comment_after(trailing, elem));
+                    } else {
+                        items.push(elem);
+                    }
                 }
                 if !self.sep_continue(Kind::RBracket) {
                     break;

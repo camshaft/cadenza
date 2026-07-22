@@ -14,7 +14,7 @@
 /// NO core form (a filled `None`), not a bogus tree. Lowering reads the infer column to make this decision,
 /// and reads the resolve column to canonicalize vars — producer-reads-two-producers.
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
 import { Resolved, resolve-tree } from "resolve-db"
 import { Typed, infer-tree } from "infer-db"
 
@@ -111,12 +111,19 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         // bind it to the param's canonical node-id, eval the body under that binding. The paramId is found by
         // BODYID (`param-of(tree, calleeId)` — sread keyed the param-table by bodyId for exactly this). A call
         // WITH an arg but NO param (an over-applied nullary def) → param-of None → declines (no Core).
-        (if (argId == (0 - 1)) then lower-node(tree, calleeId, rcol, tcol)
-         else (match param-of(tree, calleeId) with
+        // forward-ref: calleeId is the callee NAME → map to its def-body via def-body-of. A RECURSIVE call
+        // (body transitively calls back) would inline-loop lower → DECLINE (None). An unknown name → None.
+        // param-* lookups use the NAME (keyed both ways); only the body INLINE uses calleeBody.
+        (if (call-is-recursive(tree, calleeId)) then Option.None(unit)
+         else (match def-body-of(tree, calleeId) with
+           | Option.None(_) => Option.None(unit)
+           | Option.Some(calleeBody) =>
+             (if (argId == (0 - 1)) then lower-node(tree, calleeBody, rcol, tcol)
+              else (match param-of(tree, calleeId) with
                 | Option.Some(paramId) =>
                     (match lower-node(tree, argId, rcol, tcol) with
                       | Option.Some(argCore) =>
-                          (match lower-node(tree, calleeId, rcol, tcol) with
+                          (match lower-node(tree, calleeBody, rcol, tcol) with
                             | Option.Some(bodyCore) =>
                                 // slice-3d 2-ARG call `(add a b)`: if this NApp node (id) has a 2nd arg recorded
                                 // (arg2-of) AND the callee a 2nd param (param2-of), NEST a second CLet INSIDE the
@@ -139,7 +146,7 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                                   | Option.None(_) => Option.Some(Core.CLet(paramId, argCore, bodyCore)))  // 1-arg
                             | Option.None(_) => Option.None(unit))
                       | Option.None(_) => Option.None(unit))
-                | Option.None(_) => Option.None(unit)))
+                | Option.None(_) => Option.None(unit)))))
     | Option.None(_) => Option.None(unit)
 
 /// slice-3e: the innermost body of a call's nested-CLet chain, optionally wrapping a THIRD `CLet(param3, arg3,
@@ -320,13 +327,15 @@ def lw-narrow-arith-cbin-preserves-width() =
 
 @test
 def lw-napp-nullary-inlines-body-slice2() =
-  // SLICE-2 NULLARY-CALL SEMANTICS: a nullary call NApp(calleeBodyId, -1) lowers by INLINING the callee body's
-  // Core (β-reduction over zero args — no new Core node). Body = NLit(42) → the call lowers to CNum 42.
+  // SLICE-2 NULLARY-CALL SEMANTICS: a nullary call NApp(calleeName, -1) lowers by INLINING the callee body's
+  // Core (β-reduction over zero args — no new Core node). Body = NLit(42), registered under name 900 via
+  // record-def; the call NApp(900, -1) resolves name→body via def-body-of and lowers to CNum 42.
   (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
-    (match add-node(t1, Node.NApp(bodyId, 0 - 1)) with | (root, tree) =>
+    (let t1d = record-def(t1, 900, bodyId) in
+     (match add-node(t1d, Node.NApp(900, 0 - 1)) with | (root, tree) =>
       (match lower-tree(tree, root) with
         | Option.Some(c) => (if is-cnum(c, 42) then unit else trap("nullary NApp inlines the body → CNum 42"))
-        | Option.None(_) => trap("a nullary NApp lowers to its inlined body Core"))))
+        | Option.None(_) => trap("a nullary NApp lowers to its inlined body Core")))))
 
 @test
 def lw-napp-with-arg-still-no-core() =

@@ -2230,33 +2230,41 @@ impl<'a> Printer<'a> {
                 "]",
                 false,
                 elems,
-                |p, e| p.print_list_elem(e),
-                |p, e| p.print_list_elem(e),
+                |p, e| p.print_elem_maybe_commented(e),
+                |p, e| p.print_elem_maybe_commented(e),
             );
         }
-        // If the LAST element carries a same-line trailing `//` comment (`[…, x // note]`), the comment
-        // runs to end-of-line — so the closing `]` MUST move to the next line, else it is swallowed INTO
-        // the comment (`// note]`) and the printed form fails to re-parse. Force that break; a list with no
-        // trailing comment on its last element keeps the ordinary flat/soft-break layout via `bracketed`.
+        self.bracketed_comment_aware("[", "]", false, elems);
+    }
+
+    /// A `bracketed` variant that renders each element via `print_elem_maybe_commented` (so a
+    /// `(comment-after "text" elem)` element re-prints its `//` SAME-LINE) and, when the LAST element
+    /// carries such a same-line comment, FORCES the closing delimiter onto the next line. The forced break
+    /// is essential: a same-line `//` runs to end-of-line, so a flat `[…, x // note]` would swallow the
+    /// `]` INTO the comment (`// note]`) and the printed form would fail to re-parse. A container with no
+    /// trailing comment on its last element keeps the ordinary flat/soft-break layout via `bracketed`.
+    /// Shared by the list and tuple literals (records/maps wrap fields as pairs — a separate follow-up).
+    fn bracketed_comment_aware(&mut self, open: &str, close: &str, pad: bool, elems: &[StructId]) {
         let last_has_trailing = elems.last().is_some_and(|&e| self.is_comment_after(e));
-        if last_has_trailing {
-            self.doc.cbox(INDENT);
-            self.doc.word("[");
-            self.doc.break_with(0, 0);
-            for (i, &e) in elems.iter().enumerate() {
-                if i > 0 {
-                    self.doc.word(",");
-                    self.doc.space();
-                }
-                self.print_list_elem(e);
-            }
-            // Hard newline before `]` so the trailing `// …` on the last element ends its line.
-            self.doc.hardbreak_with(-INDENT);
-            self.doc.word("]");
-            self.doc.end();
-            return;
+        if !last_has_trailing {
+            return self.bracketed(open, close, pad, elems, |p, e| {
+                p.print_elem_maybe_commented(e)
+            });
         }
-        self.bracketed("[", "]", false, elems, |p, e| p.print_list_elem(e));
+        self.doc.cbox(INDENT);
+        self.doc.word(open.to_string());
+        self.doc.break_with(if pad { 1 } else { 0 }, 0);
+        for (i, &e) in elems.iter().enumerate() {
+            if i > 0 {
+                self.doc.word(",");
+                self.doc.space();
+            }
+            self.print_elem_maybe_commented(e);
+        }
+        // Hard newline before the closer so the trailing `// …` on the last element ends its line.
+        self.doc.hardbreak_with(-INDENT);
+        self.doc.word(close.to_string());
+        self.doc.end();
     }
 
     /// True if `id` is a `(comment-after "text" inner)` wrapper — a same-line trailing `//` comment node.
@@ -2264,13 +2272,13 @@ impl<'a> Printer<'a> {
         matches!(self.a.as_form(id, "comment-after"), Some(a) if a.len() == 2 && self.is_string(a[0]))
     }
 
-    /// Print one list-literal element, unwrapping a `(comment-after "text" elem)` wrapper (a `//` that
-    /// trailed the element on the same source line, e.g. `[1, 2 // last]`) so it re-emits SAME-LINE as
-    /// `elem // text` — mirroring `print_variant`'s trailing-comment handling. A plain element prints via
-    /// `expr`. Without this the wrapper would render as a spurious `comment-after(...)` CALL. (Interior
-    /// own-line comments and `///` docs inside a list are a separate, broader gap — see the queue entry
-    /// `gap-trailing-and-interior-comment-in-collection-literals-dropped`.)
-    fn print_list_elem(&mut self, e: StructId) {
+    /// Print one collection-literal element, unwrapping a `(comment-after "text" elem)` wrapper (a `//`
+    /// that trailed the element on the same source line, e.g. `[1, 2 // last]` / `(1, 2 // last)`) so it
+    /// re-emits SAME-LINE as `elem // text` — mirroring `print_variant`'s trailing-comment handling. A
+    /// plain element prints via `expr`. Without this the wrapper would render as a spurious
+    /// `comment-after(...)` CALL. (Interior own-line comments and `///` docs inside a literal are a
+    /// separate, broader gap — see queue `gap-trailing-and-interior-comment-in-collection-literals-dropped`.)
+    fn print_elem_maybe_commented(&mut self, e: StructId) {
         if let Some(a) = self.a.as_form(e, "comment-after")
             && a.len() == 2
             && self.is_string(a[0])
@@ -2286,12 +2294,17 @@ impl<'a> Printer<'a> {
     /// distinguishes it from `(e)` transparent grouping; 2+ elements print `(e, f, …)`.
     fn print_tuple(&mut self, elems: &[StructId]) {
         if elems.len() == 1 {
+            // `(e,)` — the 1-tuple (trailing comma distinguishes it from `(e)` grouping). A same-line
+            // comment on the sole element is an awkward rare edge: the `,` is structural and would sit
+            // between the element and its comment (`(e, // note)`), a slot the reader does not round-trip
+            // — so it is NOT special-cased here; it falls through to the comment-drop guard (fmt refuses,
+            // no corruption), like the module empty-body-comment case. The clean `(e,)` prints as before.
             self.doc.word("(");
             self.expr(elems[0], 0);
             self.doc.word(",)");
             return;
         }
-        self.bracketed("(", ")", false, elems, |p, e| p.expr(e, 0));
+        self.bracketed_comment_aware("(", ")", false, elems);
     }
 
     /// `{ name = e, … }`, with field SHORTHAND: a field whose value is a bare-name reference to the
@@ -5722,6 +5735,60 @@ mod tests {
         // A clean list with no trailing comment keeps the ordinary flat layout (no forced break).
         assert_eq!(assert_roundtrip("[1, 2, 3]", 80), "[1, 2, 3]");
         assert_eq!(assert_roundtrip("[]", 80), "[]");
+    }
+
+    #[test]
+    fn a_same_line_trailing_comment_on_a_tuple_elem_is_preserved_not_dropped() {
+        // The tuple sibling of the list trailing-comment fix (shared `bracketed_comment_aware` +
+        // `print_elem_maybe_commented`). `(…, x // note)` used to DROP the `//` (→ `cdz fmt` refused the
+        // file); the tuple parse loop now captures it as `(comment-after …)` and the printer re-emits it
+        // same-line, forcing `)` onto its own line so it is not swallowed into the comment.
+        let src = "def t() -> Int64 = (1, 2 // last\n)";
+        let tree = sexpr::print(&parser::read_ml(src).arenas);
+        assert_eq!(
+            tree, "(def (t) (: (\"tuple\" 1 (comment-after \"last\" 2)) Int64))",
+            "the same-line trailing `//` on the last tuple elem is captured, not dropped"
+        );
+        let printed = print(&parser::read_ml(src).arenas, 80);
+        assert_eq!(
+            printed, "def t() -> Int64 = (\n  1,\n  2 // last\n)",
+            "trailing comment prints same-line; `)` breaks to its own line"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml(&printed).arenas),
+            "(def (t) (: (\"tuple\" 1 (comment-after \"last\" 2)) Int64))",
+            "the trailing tuple comment round-trips"
+        );
+        // Clean tuples (incl. the 1-tuple `(e,)` and grouping `(e)`) keep their ordinary layout.
+        assert_eq!(assert_roundtrip("(1, 2, 3)", 80), "(1, 2, 3)");
+        assert_eq!(assert_roundtrip("(42,)", 80), "(42,)");
+    }
+
+    #[test]
+    fn a_same_line_comment_on_a_non_last_collection_elem_is_not_captured_no_round_trip_break() {
+        // PR#758 (Copilot): the list/tuple same-line trailing-comment capture must fire ONLY on the LAST
+        // element (gated on the closer being next). A comment on a NON-last element (`[1 // note, 2]`)
+        // sits in the `,` token's slot — capturing it there would print `1 // note, 2` with the `, 2`
+        // swallowed into the comment line → an INVALID re-parse (a round-trip BREAK, worse than a drop).
+        // So a non-last comment is NOT captured; the element is bare and the stranded comment trips the
+        // comment-drop guard (fmt refuses — no corruption). Pin that the TREE carries no comment node here
+        // (the witness the capture didn't fire) and that the bare elements are intact.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def l() -> List(Int64) = [1 // note\n, 2]").arenas),
+            "(def (l) (: (\"list\" 1 2) (List Int64)))",
+            "a comment on a non-last LIST element is not captured (no swallow, no corruption)"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def t() -> Int64 = (1 // note\n, 2)").arenas),
+            "(def (t) (: (\"tuple\" 1 2) Int64))",
+            "a comment on a non-last TUPLE element is not captured (no swallow, no corruption)"
+        );
+        // The LAST-element case still IS captured (the two fixes above remain in force).
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def l() -> List(Int64) = [1, 2 // last\n]").arenas),
+            "(def (l) (: (\"list\" 1 (comment-after \"last\" 2)) (List Int64)))",
+            "a comment on the LAST list element is still captured"
+        );
     }
 
     #[test]

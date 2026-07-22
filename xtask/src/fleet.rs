@@ -5939,6 +5939,11 @@ mod tests {
         // The registry always carries a unit, but a bare number should mean minutes, not seconds —
         // the watchdog must never treat "10" as a 10-second stale window.
         assert_eq!(parse_interval_secs("10"), 600);
+        // "10"→600 coincides with the `_ => 600` malformed fallback, so on its own it can't catch a
+        // mutant that DROPS `""` from the `"m" | ""` arm (bare numbers would then fall through to the
+        // fallback and STILL return 600). Pin a bare number whose minutes-value differs from 600 so the
+        // `""` arm is genuinely exercised: 3×60 = 180 ≠ 600.
+        assert_eq!(parse_interval_secs("3"), 180);
     }
 
     #[test]

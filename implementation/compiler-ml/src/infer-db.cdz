@@ -13,7 +13,7 @@
 /// there is one ground type — so this column is the DB-shaped monomorphic specialization. It widens to call
 /// the HM engine when the language grows function types.)
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed } from "parse-db"
 import { fits-width } from "int-width"
 import { Resolved, resolve-tree } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ty-deferred-int, ground-default } from "ty"
@@ -98,27 +98,33 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         // the call's type = the body's type (TErr if the body is ill-typed → propagates). A call WITH an arg
         // (argId != -1) is the param slice (not yet — declines TErr). rcdzc: type_of(call) reads the callee
         // body's type; nullary needs no param binding.
-        (if (argId == (0 - 1)) then
-           (let t1 = infer-node(tree, calleeId, rcol, tcol) in
-            (match Map.lookup(t1, calleeId) with
-              | Option.Some(bodyTy) => Map.insert(t1, id, bodyTy)
-              | Option.None(_) => Map.insert(t1, id, Typed.TErr)))
-         // slice-3c SINGLE-PARAM call `(f arg)`: type the ARG, bind the param node's type to the arg's type
-         // (so the body's param uses type via var-type's NVar arm), type the body, then the call's type IS the
-         // body's type. The param is found by bodyId (calleeId). A call WITH an arg but NO param → TErr.
-         else (match param-of(tree, calleeId) with
-                | Option.Some(paramId) =>
-                    (let ta = infer-node(tree, argId, rcol, tcol) in
-                     (match Map.lookup(ta, argId) with
-                       // NARROW-INT ENFORCEMENT (CDZ0302): a param with a declared narrow type rejects a
-                       // CONSTANT arg out of its range — `(def (f (: a Int8)) a) (f 200)` → TErr → decline (200
-                       // can't be Int8), NOT a laundered 200. param-fit-ok is true for an untyped param or a
-                       // non-literal arg, so this only fires on the constant-out-of-range case.
-                       | Option.Some(_) => (if (if param-fit-ok(tree, paramId, argId) then false else true)
-                            then Map.insert(ta, id, Typed.TErr)
-                            else infer-app-with-arg-ty(tree, id, calleeId, paramId, argId, rcol, ta, Map.lookup(ta, argId)))
-                       | Option.None(_) => Map.insert(ta, id, Typed.TErr)))
-                | Option.None(_) => Map.insert(tcol, id, Typed.TErr)))
+        // forward-ref: calleeId is the callee NAME → map to its def-body via def-body-of. A RECURSIVE call
+        // (body transitively calls back) would inline-loop infer → DECLINE (TErr). An unknown name → TErr.
+        // param-* lookups (below + in infer-param2/3/4) use the NAME directly (keyed both ways in read-do-def);
+        // only the body-type descent uses calleeBody.
+        (if (call-is-recursive(tree, calleeId)) then Map.insert(tcol, id, Typed.TErr)
+         else (match def-body-of(tree, calleeId) with
+           | Option.None(_) => Map.insert(tcol, id, Typed.TErr)
+           | Option.Some(calleeBody) =>
+             (if (argId == (0 - 1)) then
+                (let t1 = infer-node(tree, calleeBody, rcol, tcol) in
+                 (match Map.lookup(t1, calleeBody) with
+                   | Option.Some(bodyTy) => Map.insert(t1, id, bodyTy)
+                   | Option.None(_) => Map.insert(t1, id, Typed.TErr)))
+              // slice-3c SINGLE-PARAM call `(f arg)`: type the ARG, bind the param node's type to the arg's type
+              // (so the body's param uses type via var-type's NVar arm), type the body, then the call's type IS
+              // the body's type. The param is found by the callee NAME. A call WITH an arg but NO param → TErr.
+              else (match param-of(tree, calleeId) with
+                     | Option.Some(paramId) =>
+                         (let ta = infer-node(tree, argId, rcol, tcol) in
+                          (match Map.lookup(ta, argId) with
+                            // NARROW-INT ENFORCEMENT (CDZ0302): a param with a declared narrow type rejects a
+                            // CONSTANT arg out of its range — `(def (f (: a Int8)) a) (f 200)` → TErr → decline.
+                            | Option.Some(_) => (if (if param-fit-ok(tree, paramId, argId) then false else true)
+                                 then Map.insert(ta, id, Typed.TErr)
+                                 else infer-app-with-arg-ty(tree, id, calleeId, calleeBody, paramId, argId, rcol, ta, Map.lookup(ta, argId)))
+                            | Option.None(_) => Map.insert(ta, id, Typed.TErr)))
+                     | Option.None(_) => Map.insert(tcol, id, Typed.TErr)))))
     | Option.None(_) => tcol
 
 /// The body-typing tail of the single-param NApp arm, factored out so the fit-check guard above stays flat.
@@ -135,7 +141,7 @@ def param-bind-type(tree: Tree, paramId: Int64, argTy: Typed) =
     | Option.Some(enc) => Typed.TIntW(pt-signed(enc), pt-width(enc))   // declared narrow type drives the body
     | Option.None(_) => argTy)                                          // untyped param → arg's type flows
 
-def infer-app-with-arg-ty(tree: Tree, id: Int64, calleeId: Int64, paramId: Int64, argId: Int64, rcol: Map(Int64, Resolved), ta: Map(Int64, Typed), argTyOpt: Option(Typed)) =
+def infer-app-with-arg-ty(tree: Tree, id: Int64, calleeId: Int64, calleeBody: Int64, paramId: Int64, argId: Int64, rcol: Map(Int64, Resolved), ta: Map(Int64, Typed), argTyOpt: Option(Typed)) =
   (match argTyOpt with
     | Option.Some(argTy) =>
         (let tp = Map.insert(ta, paramId, param-bind-type(tree, paramId, argTy)) in   // param1 : declared narrow type, else arg's type
@@ -153,8 +159,8 @@ def infer-app-with-arg-ty(tree: Tree, id: Int64, calleeId: Int64, paramId: Int64
                       // (arg4-of None) passes tb1 through unchanged.
                       (match infer-param4(tree, id, calleeId, rcol, tb1) with
                         | Option.Some(tb2) =>
-                            (let tb = infer-node(tree, calleeId, rcol, tb2) in
-                             (match Map.lookup(tb, calleeId) with
+                            (let tb = infer-node(tree, calleeBody, rcol, tb2) in
+                             (match Map.lookup(tb, calleeBody) with
                                | Option.Some(bodyTy) => Map.insert(tb, id, bodyTy)
                                | Option.None(_) => Map.insert(tb, id, Typed.TErr)))
                         | Option.None(_) => Map.insert(tb1, id, Typed.TErr))   // 4th arg but no param4 → TErr
@@ -800,18 +806,22 @@ def id-mixed-width-arith-is-err() =
 
 @test
 def id-napp-nullary-types-as-body-slice2() =
-  // SLICE-2 NULLARY-CALL SEMANTICS: a nullary call NApp(calleeBodyId, -1) types as the callee BODY's type
-  // (β-reduction over zero args). Body = NLit(42) → Int64, so the call node types Int64. Hand-arena, no sread.
+  // SLICE-2 NULLARY-CALL SEMANTICS: a nullary call NApp(calleeName, -1) types as the callee BODY's type
+  // (β-reduction over zero args). Body = NLit(42) → Int64, registered under name 900; the call NApp(900, -1)
+  // resolves name→body via def-body-of and types Int64. Hand-arena, no sread.
   (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
-    (match add-node(t1, Node.NApp(bodyId, 0 - 1)) with | (root, tree) =>
-      (if is-int-at(tree, root, root) then unit else trap("a nullary NApp types as its callee body (Int64 here)"))))
+    (let t1d = record-def(t1, 900, bodyId) in
+     (match add-node(t1d, Node.NApp(900, 0 - 1)) with | (root, tree) =>
+      (if is-int-at(tree, root, root) then unit else trap("a nullary NApp types as its callee body (Int64 here)")))))
 
 @test
 def id-napp-nullary-bool-body() =
-  // the callee-body type FLOWS: a nullary call over a Bool body types Bool (not a hardcoded type).
+  // the callee-body type FLOWS: a nullary call over a Bool body types Bool (not a hardcoded type). Body
+  // registered under name 900; the call NApp(900, -1) resolves name→body via def-body-of.
   (match add-node(empty-tree(), Node.NBoolLit(1)) with | (bodyId, t1) =>
-    (match add-node(t1, Node.NApp(bodyId, 0 - 1)) with | (root, tree) =>
-      (if is-bool-at(tree, root, root) then unit else trap("a nullary NApp over a Bool body types Bool"))))
+    (let t1d = record-def(t1, 900, bodyId) in
+     (match add-node(t1d, Node.NApp(900, 0 - 1)) with | (root, tree) =>
+      (if is-bool-at(tree, root, root) then unit else trap("a nullary NApp over a Bool body types Bool")))))
 
 @test
 def id-napp-with-arg-still-declines() =

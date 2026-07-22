@@ -19215,7 +19215,7 @@ fn fold_bool_const_eq(db: &mut Db, lhs: StructId, rhs: StructId) -> Option<Core>
 /// SIGNED where the range differs). Signed `N` holds `[-2^(N-1), 2^(N-1)-1]` (both fit i64 for `N <= 64`);
 /// unsigned `N` holds `[0, 2^N - 1]` — the min `0` always fits, but the max `2^64 - 1` at `N == 64` does
 /// NOT, so that bound is `None` (a comparison against it stays a runtime compare, out of i64 reach here).
-fn resolved_int_bounds(it: crate::ty::IntTy) -> Option<(Option<i64>, Option<i64>)> {
+pub(crate) fn resolved_int_bounds(it: crate::ty::IntTy) -> Option<(Option<i64>, Option<i64>)> {
     let crate::ty::Sign::Fixed(signed) = it.sign else {
         return None;
     };
