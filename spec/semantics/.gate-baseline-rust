@@ -40,6 +40,7 @@ pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
+pass	a PALINDROME two-pointer walk closes from both ends of a runtime rope
 pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
@@ -2175,6 +2176,7 @@ pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a redundant relational check inside its own truthy branch is known-true and its dead branch is eliminated
 pass	alternating prepend and push keep both list ends straight
 pass	an @invariant newtype constructed INSIDE a handler arm establishes per resume
+pass	an ANAGRAM check builds per-string scalar frequency maps and compares them by map equality
 todo	an Ast as a MAP key looks up by structural content
 pass	an Ast.Int carries a BEYOND-64-bit literal losslessly through quote
 pass	an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state
