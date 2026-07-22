@@ -3299,6 +3299,29 @@
   (call   main (: 2 Int64))
   (output (: 7 Int64)))
 
+(case "a deeply-nested match on an inline if-of-ctors scrutinee compiles bounded (fuse_match_into_if clone cap)"
+  (doc    "Regression witness for the `fuse_match_into_if` arm-clone PROFITABILITY CAP: an inline `(if …)`
+           over two visible ctors, matched several levels deep on the freshly-rebuilt scrutinee, is exactly
+           the shape whose UNBOUNDED arm-cloning was an ~O(N^3.7) compile-time DoS — each level deep-copied
+           the deeper nest into BOTH `if`-branches and `core_of` re-fused the clones. The cap bails the
+           fusion to the ordinary runtime match once the cloned arm material exceeds a size bound, keeping
+           compile bounded. Value-correctness doubles as the guard: were the fold-duplication to regress,
+           this compiles pathologically (times out) rather than returning. n=5 → the `A` arm every level →
+           a+b+c+d = 5*4 = 20; n=-1 → each level's scrutinee is `(B 0)` so every match takes its `B` arm →
+           u = 0. Pins the shape stays value-correct AND cheap to compile.")
+  (input  (do
+            (type S (A Int64) (B Int64))
+            (def (main (: n Int64))
+              (match (if (> n 0) (A n) (B 0)) ((A a)
+                (match (if (> n 0) (A n) (B 0)) ((A b)
+                  (match (if (> n 0) (A n) (B 0)) ((A c)
+                    (match (if (> n 0) (A n) (B 0)) ((A d) (+ (+ (+ a b) c) d)) ((B u) u))) ((B u) u))) ((B u) u))) ((B u) u)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 20 Int64))
+  (call   main (: -1 Int64))
+  (output (: 0 Int64)))
+
 (case "a tuple-of-two-sums match reads each sum's payload from its own slot (HM-unify shape)"
   (doc    "The HM-UNIFICATION dispatch shape: `match (a, b) with (TArrow(a1,a2), TArrow(b1,b2)) => unify(a2,
            b2)`. A self-recursive call on payload binders extracted from a TUPLE OF TWO SUMS read BOTH `a2`

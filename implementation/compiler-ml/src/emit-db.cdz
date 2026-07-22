@@ -67,6 +67,33 @@ def preamble() = Bytes.of([UInt8.wrap(0), UInt8.wrap(97), UInt8.wrap(115), UInt8
 /// `01 7e`=one result of type i64 (`0x7e`).
 def type-section() = section(1, Bytes.of([UInt8.wrap(1), UInt8.wrap(96), UInt8.wrap(0), UInt8.wrap(1), UInt8.wrap(126)]))
 
+/// slice-B'(Bp1): the FUNCTYPE bytes for an N-i64-param, 1-i64-result function: `60 <uleb N> 7e{N} 01 7e`
+/// (0x60 functype tag, N params each i64=0x7e, one result i64). `functype-bytes(0)` = `60 00 01 7e` (the
+/// nullary `() -> i64` main type); `functype-bytes(1)` = `60 01 7e 01 7e` (a 1-param recursive def like fac).
+/// Foundation for emitting a wasm function PER recursive def (Slice B'): each distinct arity gets one type.
+def functype-bytes(n: Int64) =
+  Bytes.concat(b1(96), Bytes.concat(uleb(n), Bytes.concat(i64-params(n), Bytes.of([UInt8.wrap(1), UInt8.wrap(126)]))))
+
+/// N repetitions of the i64 valtype byte (0x7e) — the param-vector body for `functype-bytes`.
+def i64-params(n: Int64) = i64-params-go(n, Bytes.of([]))
+def i64-params-go(n: Int64, acc: Bytes) =
+  (if n <= 0 then acc else i64-params-go(n - 1, Bytes.concat(acc, b1(126))))
+
+/// slice-B'(Bp1): a TYPE SECTION carrying `types` functypes (each already `functype-bytes`-encoded): a `<uleb
+/// count>` then the concatenated functype bodies, wrapped as section 1. `type-section-multi([functype-bytes(1),
+/// functype-bytes(0)])` = the [fac-type, main-type] table a recursive module needs. The nullary single-main
+/// `type-section()` above stays for the W1/W2 path; this is the multi-function generalization.
+def type-section-multi(types: List(Bytes)) =
+  section(1, Bytes.concat(uleb(List.len(types)), concat-bytes(types)))
+
+/// Concatenate a list of Bytes in order (the emit idiom for a vector body). Index recursion, scalar-safe.
+def concat-bytes(bs: List(Bytes)) = concat-bytes-go(bs, 0, Bytes.of([]))
+def concat-bytes-go(bs: List(Bytes), i: Int64, acc: Bytes) =
+  (if i == List.len(bs) then acc
+   else (match List.at(bs, i) with
+     | Option.Some(b) => concat-bytes-go(bs, i + 1, Bytes.concat(acc, b))
+     | Option.None(_) => acc))
+
 /// Function section: one function declared to use type index 0. `01`=one func, `00`=type index 0.
 def func-section() = section(3, Bytes.of([UInt8.wrap(1), UInt8.wrap(0)]))
 
@@ -179,6 +206,18 @@ def body-of(instrs: Bytes, nlocals: Int64) =
   (let locals = (if nlocals == 0 then b1(0)                              // 00: zero local groups
                  else Bytes.concat(b1(1), Bytes.concat(uleb(nlocals), b1(126)))) in  // 1 group: <n> i64(0x7e)
    Bytes.concat(locals, Bytes.concat(instrs, b1(11))))
+
+/// slice-B'(Bp2): emit ONE recursive def's FUNCTION BODY. A def with param binder-ids `params` and lowered
+/// body `bodyCore` (from lower-def-env's lower-one-def) emits as a wasm function body where the params are the
+/// FIRST locals (local indices 0..N-1 — wasm function params ARE the leading locals, declared in the functype
+/// not the locals vector) and the body's CLet binders follow at indices N.. . The trick: build the binder list
+/// as `params ++ collect-binders(bodyCore)` and reuse emit-instrs — a `CVar(param)` then emits `local.get
+/// <param-index>` for free, and CLet binders index past the params automatically. The locals VECTOR declares
+/// only the CLet-binder count (params are NOT re-declared as locals). Mirrors rcdzc wasm fn-body emission.
+def emit-def-body(params: List(Int64), bodyCore: Core) =
+  (let clets = collect-binders(bodyCore) in
+   (let binders = List.concat(params, clets) in
+    body-of(emit-instrs(bodyCore, binders), List.len(clets))))
 
 /// Code section wrapping a single function body: `01`=one body, `<uleb bodylen>`, `<body>`.
 def code-section(body: Bytes) =
@@ -691,4 +730,76 @@ def em-src-bytes-ill-typed-declines() =
   // an ill-typed program declines through emit-src-bytes too (None), matching emit-src.
   (match emit-src-bytes("x") with | Option.None(_) => unit | Option.Some(_) => trap("unbound x declines"))
 
-export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-src-bytes, bytes-to-list, emit-instrs, can-emit, collect-binders, wasm-op, cmp-op, uleb, sleb }
+// ---- Slice B' (Bp1): multi-arity functype foundation --------------------------------------------------
+@test
+def em-functype-nullary-is-main-type() =
+  // functype-bytes(0) = `60 00 01 7e` — the nullary `() -> i64` main type (4 bytes).
+  (let ft = functype-bytes(0) in
+   (if Bytes.len(ft) == 4 then
+    (if (byte-of(ft, 0) == 96) then                                  // 0x60 functype
+     (if (byte-of(ft, 1) == 0) then                                  // 0 params
+      (if (byte-of(ft, 2) == 1) then                                 // 1 result
+       (if (byte-of(ft, 3) == 126) then unit else trap("result i64 0x7e")) else trap("1 result"))
+       else trap("0 params")) else trap("functype tag 0x60")) else trap("nullary functype is 4 bytes")))
+
+@test
+def em-functype-oneparam-is-fac-type() =
+  // functype-bytes(1) = `60 01 7e 01 7e` — a 1-param recursive def type `(i64) -> i64` (5 bytes).
+  (let ft = functype-bytes(1) in
+   (if Bytes.len(ft) == 5 then
+    (if (byte-of(ft, 0) == 96) then
+     (if (byte-of(ft, 1) == 1) then                                  // 1 param
+      (if (byte-of(ft, 2) == 126) then                               // param i64 0x7e
+       (if (byte-of(ft, 3) == 1) then                                // 1 result
+        (if (byte-of(ft, 4) == 126) then unit else trap("result i64")) else trap("1 result"))
+        else trap("param i64")) else trap("1 param")) else trap("functype tag")) else trap("1-param functype is 5 bytes")))
+
+@test
+def em-functype-threeparam-len() =
+  // functype-bytes(3) = `60 03 7e 7e 7e 01 7e` — 3 i64 params + 1 i64 result (7 bytes).
+  (let ft = functype-bytes(3) in
+   (if Bytes.len(ft) == 7 then
+    (if (byte-of(ft, 1) == 3) then
+     (if (byte-of(ft, 5) == 1) then unit else trap("3-param: 1 result")) else trap("3 params")) else trap("3-param functype is 7 bytes")))
+
+@test
+def em-type-section-multi-matches-single-for-nullary() =
+  // type-section-multi([functype-bytes(0)]) must byte-match the legacy single type-section() — the nullary
+  // main path is unchanged; the multi form just generalizes it. Both are `01 05 01 60 00 01 7e` (sec 1, len 5,
+  // 1 type, `60 00 01 7e`).
+  (let a = type-section-multi(List.push([], functype-bytes(0))) in
+   (let b = type-section() in
+    (if Bytes.len(a) == Bytes.len(b) then
+     (if (byte-of(a, 0) == byte-of(b, 0)) then                       // section id 1
+      (if (byte-of(a, 2) == 1) then                                  // 1 type in the vector
+       (if (byte-of(a, 3) == 96) then unit else trap("functype tag in multi")) else trap("multi 1 type"))
+       else trap("section id")) else trap("multi nullary == legacy type-section len"))))
+
+// ---- Slice B' (Bp2): emit a recursive def's function body (params as leading locals) ------------------
+@test
+def em-def-body-oneparam-uses-param-local() =
+  // f(x) = x + 1: params=[7] (px=7), body = CBin(+, CVar 7, CNum 1). Params are the leading locals, so
+  // CVar(7) → local.get 0. Expected body bytes: `00` (0 CLet locals) `20 00` (local.get 0) `42 01`
+  // (i64.const 1) `7c` (i64.add) `0b` (end) = 7 bytes.
+  (let body = emit-def-body(List.push([], 7), Core.CBin(43, true, 64, Core.CVar(7), Core.CNum(1, true, 64))) in
+   (if Bytes.len(body) == 7 then
+    (if (byte-of(body, 0) == 0) then                                 // 0 local groups (params aren't locals)
+     (if (byte-of(body, 1) == 32) then                               // 0x20 local.get
+      (if (byte-of(body, 2) == 0) then                               // index 0 = first param
+       (if (byte-of(body, 3) == 66) then                             // 0x42 i64.const
+        (if (byte-of(body, 5) == 124) then                           // 0x7c i64.add
+         (if (byte-of(body, 6) == 11) then unit else trap("end 0x0b")) else trap("i64.add 0x7c"))
+         else trap("i64.const")) else trap("param index 0")) else trap("local.get")) else trap("0 local groups"))
+    else trap("f(x)=x+1 body is 7 bytes")))
+
+@test
+def em-def-body-clet-locals-shift-past-params() =
+  // f(x) = let y = x in y: params=[7], one CLet binder (8). The CLet binder is local index 1 (past the 1
+  // param at index 0). Body declares 1 i64 local group. CVar(7)→local.get 0; CLet(8,...)→ local.set 1;
+  // CVar(8)→local.get 1. Pins that CLet locals index PAST the params + the locals vec counts only CLets.
+  (let body = emit-def-body(List.push([], 7), Core.CLet(8, Core.CVar(7), Core.CVar(8))) in
+   (if (byte-of(body, 0) == 1) then                                  // 1 local group (the CLet)
+    (if (byte-of(body, 1) == 1) then                                 // count 1
+     (if (byte-of(body, 2) == 126) then unit else trap("i64 local 0x7e")) else trap("1 local")) else trap("1 local group (CLet past params)")))
+
+export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-src-bytes, bytes-to-list, emit-instrs, emit-def-body, can-emit, collect-binders, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi }

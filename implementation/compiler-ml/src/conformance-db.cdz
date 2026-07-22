@@ -547,6 +547,15 @@ def c-cx-if-as-arith-operand() =
     Expect.Runs(30)
   )
 
+/// `if 1 < 2 then x else 0` (x unbound) → Declines — the TAKEN branch references an unbound name, so the
+/// program is ill-typed (no core form). Pins that the type-gate descends INTO if-branches, not just the
+/// condition (existing declines cover unbound-in-arith + bool-in-relational + div-by-zero, none in an if-branch).
+def c-cx-unbound-in-if-branch-declines() =
+  Case.Case(
+    [Tok.TIf, Tok.TNum(1), Tok.TOp(60), Tok.TNum(2), Tok.TThen, Tok.TName(1), Tok.TElse, Tok.TNum(0)],
+    Expect.Declines
+  )
+
 /// `1 + 7 % 2` → 2 (modulo binds TIGHTER than addition: `1 + (7%2)` = 1+1 = 2). The `%`-precedence companion
 /// of `c-div-precedence` (the corpus pinned `/` vs `+` but not `%` vs `+`).
 def c-cx-mod-precedence() =
@@ -769,6 +778,7 @@ def corpus() = [
   c-cx-if-in-let-value(),
   c-cx-neg-paren-group(),
   c-cx-if-as-arith-operand(),
+  c-cx-unbound-in-if-branch-declines(),
   c-cx-mod-precedence(),
   c-cx-mod-precedence-distinguishes(),
   c-cx-neg-dividend(),
@@ -820,7 +830,7 @@ def cf-declines-mismatch-is-fail() =
 
 @test
 def cf-corpus-size-floor() =
-  // The corpus SIZE floor: exactly 68 cases, so a case can't be silently dropped from `corpus()`.
+  // The corpus SIZE floor: exactly 69 cases, so a case can't be silently dropped from `corpus()`.
   // This does NOT re-run the compiles — each case's pass/decline is already proven by its own
   // `conformance-<case>` @test below, and the `count-passing` fold logic by
   // `cf-count-passing-partial`. The old `cf-corpus-all-pass` re-ran the entire corpus
@@ -829,7 +839,7 @@ def cf-corpus-size-floor() =
   // v-fleet-tooling as the compiler-ml gate-throughput + false-hang source). The conformance FLOOR
   // is now: per-case @tests (each case correct) + this size check (no case dropped), with none of
   // the redundant full-corpus re-run.
-  if List.len(corpus()) == 68 then unit else trap("conformance corpus size changed — expected 68 cases")
+  if List.len(corpus()) == 69 then unit else trap("conformance corpus size changed — expected 69 cases")
 
 @test
 def cf-count-passing-partial() =
@@ -995,4 +1005,4 @@ def conformance-div-precedence() =
 def conformance-bool-div-declines() =
   if check-case(c-bool-div-declines()) then unit else trap("true / 2 declines")
 
-export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass, c-cx-arith-in-cond, c-cx-bool-cmp-operand-declines, c-cx-bool-let-as-cond, c-cx-chained-comparison-declines, c-cx-div-paren-divisor, c-cx-div-left-assoc, c-cx-if-in-let-value, c-cx-neg-paren-group, c-cx-if-as-arith-operand, c-cx-let-bool-in-arith-declines, c-cx-let-chain-outer-in-value-and-body, c-cx-mod-by-zero-declines, c-cx-mod-parity, c-cx-mod-precedence, c-cx-mod-precedence-distinguishes, c-cx-mul-prec-in-sub-chain, c-cx-ne-true, c-cx-neg-dividend, c-cx-neg-mod, c-cx-nested-if-in-branch, c-cx-nested-let-precedence, c-cx-nested-redundant-parens, c-cx-paren-if-in-then-branch, c-cx-paren-overrides-precedence, c-cx-paren-right-operand, c-cx-sub-left-assoc, c-cx-var-in-later-binding }
+export { Expect.*, Case.*, case-passes, check-case, count-passing, corpus, conformance, all-pass, c-cx-arith-in-cond, c-cx-bool-cmp-operand-declines, c-cx-bool-let-as-cond, c-cx-chained-comparison-declines, c-cx-div-paren-divisor, c-cx-div-left-assoc, c-cx-if-in-let-value, c-cx-neg-paren-group, c-cx-if-as-arith-operand, c-cx-unbound-in-if-branch-declines, c-cx-let-bool-in-arith-declines, c-cx-let-chain-outer-in-value-and-body, c-cx-mod-by-zero-declines, c-cx-mod-parity, c-cx-mod-precedence, c-cx-mod-precedence-distinguishes, c-cx-mul-prec-in-sub-chain, c-cx-ne-true, c-cx-neg-dividend, c-cx-neg-mod, c-cx-nested-if-in-branch, c-cx-nested-let-precedence, c-cx-nested-redundant-parens, c-cx-paren-if-in-then-branch, c-cx-paren-overrides-precedence, c-cx-paren-right-operand, c-cx-sub-left-assoc, c-cx-var-in-later-binding }

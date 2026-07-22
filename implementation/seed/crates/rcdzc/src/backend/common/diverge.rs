@@ -145,6 +145,68 @@ pub(crate) fn refine_from_comparison(
             _ => None,
         }
     };
+    // The COLLECTION binder behind a `(List.len coll)` occurrence, if `id` is exactly that op applied to a
+    // simple collection reference. `resolved_of` is NOT needed here: `ListLen`'s operand is a plain
+    // collection occurrence (a param/kept-local ref), so `core_of` on it never inlines/renumbers a payload
+    // out of a dup-site the way a match SCRUTINEE's `core_of` did in slice-5 — the operand is a leaf ref.
+    let list_len_coll = |db: &mut Db, id: StructId| -> Option<StructId> {
+        match core_of(db, id) {
+            Core::ListLen { operand } => match core_of(db, operand) {
+                Core::Param { binder } | Core::LocalRef { binder } => Some(binder),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    // BOUNDED-INDEX (below-len) ESTABLISHER (operator-greenlit bounds facet): recognize `(< i (List.len xs))`
+    // and its flipped/negated equivalents, and — in the branch that GUARANTEES `i < len(xs)` — record the
+    // relational fact `below_len[i] = xs`. A `List.at xs i` under this fact sheds its own `index < len`
+    // check (the guard already proved it). ONLY a STRICT `<` (not `<=`) proves `i < len` — `i <= len` allows
+    // `i == len`, an OOB access, so it establishes nothing. Detect the index binder on one side and a
+    // `List.len` on the other; normalize to `i CMP len`; negate CMP for the else branch; establish iff the
+    // effective relation is strict-less-than. This runs BEFORE the const path (a `List.len` operand is not a
+    // `ConstInt`, so the const path would just `return base` and lose the fact); a non-ListLen comparison
+    // falls through to it unchanged.
+    let idx_len = if let (Some(i), Some(xs)) = (binder_of(db, lhs), list_len_coll(db, rhs)) {
+        Some((i, xs, op)) // `(op i (List.len xs))` — i already on the left
+    } else if let (Some(xs), Some(i)) = (list_len_coll(db, lhs), binder_of(db, rhs)) {
+        // `(op (List.len xs) i)` — flip so the index is on the left (`len op i` ⇒ `i op.flip len`).
+        let flipped = match op {
+            Prim::Lt => Prim::Gt,
+            Prim::Gt => Prim::Lt,
+            Prim::Le => Prim::Ge,
+            Prim::Ge => Prim::Le,
+            other => other,
+        };
+        Some((i, xs, flipped))
+    } else {
+        None
+    };
+    if let Some((i, xs, cmp)) = idx_len {
+        // The relation the TAKEN branch establishes: the else branch negates it.
+        let effective = if then_branch {
+            cmp
+        } else {
+            match cmp {
+                Prim::Lt => Prim::Ge,
+                Prim::Le => Prim::Gt,
+                Prim::Gt => Prim::Le,
+                Prim::Ge => Prim::Lt,
+                other => other,
+            }
+        };
+        // Only STRICT `i < len(xs)` licenses the bounds elision. `i <= len` would admit `i == len` (OOB).
+        if matches!(effective, Prim::Lt) {
+            let mut frame = base;
+            // Compose with any existing interval fact for `i` (keep its `int_range`, add `below_len`) so the
+            // two facets coexist on the same binder — the consumer reads whichever it needs.
+            let entry = frame.entry(i).or_default();
+            entry.below_len = Some(xs);
+            return frame;
+        }
+        // A non-strict / non-establishing ListLen comparison contributes no fact (the runtime check stays).
+        return base;
+    }
     // `(var, op-with-var-on-left, const)`. `(C op var)` flips to `var op.flip C`.
     let (var, cmp, c) = if let (Some(v), Some(k)) = (binder_of(db, lhs), const_of(db, rhs)) {
         (v, op, k)

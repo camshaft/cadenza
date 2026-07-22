@@ -349,6 +349,47 @@
   (call   twin (: 9223372036854775807 Int64))
   (trap   "integer overflow"))
 
+(case "a below-len guard lets List.at shed its own bounds check, yet an out-of-range index still returns None"
+  (doc    "The operator-greenlit BOUNDED-INDEX (below-len) facet: inside the then-branch of
+           `(< i (List.len xs))`, the index `i` is flow-known `< len(xs)`, so a `List.at xs i` there sheds
+           its OWN redundant `index < len` bounds check (the enclosing guard already proved it) — the bounds
+           analogue of the interval facet's overflow-guard elision. KEYED ON COLLECTION IDENTITY: the fact is
+           `below_len[i] = xs`, so it never licenses eliding a check on a DIFFERENT list. The Lir-level
+           elision (List.at's `vec-len` gone, confirmed against a facet-disabled baseline of 2→1) is
+           unit-pinned in rcdzc `a_below_len_guard_elides_the_matching_list_ats_own_bounds_check_but_not_a_different_lists`.
+           Here the value parity + the SOUNDNESS EDGES are pinned:
+             `guarded`: under the guard, an in-range index reads its element (i=0→10, i=2→30). The guard
+                 FALSE path (i=3, `3 < 3` false) takes the else → −2. And the negative-index edge (i=−1: the
+                 guard `−1 < 3` is TRUE, so we enter the then-branch and `List.at xs −1` runs WITH its lower
+                 `index >= 0` half still intact — the facet elides only the UPPER half — so it returns None →
+                 −1, NOT a wild read). This is the soundness twin: eliding `< len` must not also drop `>= 0`.
+             `unguarded`: the SAME access with no guard — value-identical for every index (i=3→None→−1,
+                 i=−1→None→−1), proving the guarded elision changed no observable result.
+           The list is RUNTIME-length (`(if … (list 10 20) (list 10 20 30))`, length depends on `i`): a
+           const-length list folds `List.len` to a constant (the interval facet's domain), so a genuine
+           runtime `Core::ListLen` is required to exercise this facet. Both backends.")
+  (input  (do
+            (def (guarded (: i Int64))
+              (let ((xs (if (> i 100) (list 10 20) (list 10 20 30))))
+                (if (< i (List.len xs))
+                    (match (List.at xs i) ((Some v) v) ((None _) -1))
+                    -2)))
+            (def (unguarded (: i Int64))
+              (let ((xs (if (> i 100) (list 10 20) (list 10 20 30))))
+                (match (List.at xs i) ((Some v) v) ((None _) -1))))
+            (export guarded)
+            (export unguarded)))
+  ; guarded: in-range reads (0→10, 2→30); guard-false else (3→−2); negative-index edge stays None (−1→−1).
+  (call   guarded   (: 0 Int64))  (output (: 10 Int64))
+  (call   guarded   (: 2 Int64))  (output (: 30 Int64))
+  (call   guarded   (: 3 Int64))  (output (: -2 Int64))
+  (call   guarded   (: -1 Int64)) (output (: -1 Int64))
+  ; unguarded: same access, no guard — value-identical for every index (the elision is observably neutral).
+  (call   unguarded (: 0 Int64))  (output (: 10 Int64))
+  (call   unguarded (: 2 Int64))  (output (: 30 Int64))
+  (call   unguarded (: 3 Int64))  (output (: -1 Int64))
+  (call   unguarded (: -1 Int64)) (output (: -1 Int64)))
+
 (case "unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)"
   (doc    "The soundness BOUNDARY of the unsigned interval refinement (value-facts GAP-A): an unsigned
            value is always ≥ 0, so a comparison against the domain's lower edge is a tautology the

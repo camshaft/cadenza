@@ -1573,12 +1573,28 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // to `usize` (a negative index wraps huge → `>= len` → `None`, never a panic — `List.at` is total).
         // `disc_some`/`disc_none` are the wasm discriminants, irrelevant on the native-`Option` rust path.
         Core::ListAt { list, index, .. } => {
+            // BOUNDED-INDEX (below-len) FACET — both-backend parity with wasm's `List.at` bounds elision.
+            // When the index is flow-known `< len(this list)` (an enclosing `(< i (List.len xs))` guard) AND
+            // provably NON-NEGATIVE, the `__i < __v.len()` check is redundant → emit the unconditional read.
+            // BOTH conditions are required here: `__i` is `({i}) as usize`, so a NEGATIVE index wraps to a
+            // huge `usize` that the length check would (correctly) reject — eliding the check on a possibly-
+            // negative index would index-panic. The wasm side elides each half independently; the rust cast
+            // couples them, so parity means the fully-in-range case (the common `(< i (len)) & (i >= 0)`).
+            // Keyed on COLLECTION IDENTITY (`index_provably_below_len` matches the accessed list's binder).
+            let below_len = crate::lower::index_provably_below_len(db, index, list)
+                && crate::lower::value_provably_nonneg(db, index);
             let l = emit(db, list, env, ctx)?;
             let i = emit(db, index, env, ctx)?;
-            Ok(format!(
-                "{{ let __v = {l}; let __i = ({i}) as usize; \
-                 if __i < __v.len() {{ Some(__v[__i].clone()) }} else {{ None }} }}"
-            ))
+            if below_len {
+                Ok(format!(
+                    "{{ let __v = {l}; let __i = ({i}) as usize; Some(__v[__i].clone()) }}"
+                ))
+            } else {
+                Ok(format!(
+                    "{{ let __v = {l}; let __i = ({i}) as usize; \
+                     if __i < __v.len() {{ Some(__v[__i].clone()) }} else {{ None }} }}"
+                ))
+            }
         }
         // MAP construction `(map (k v) …)` → a `BTreeMap` built by inserting each entry in SOURCE ORDER (a
         // later duplicate key overwrites — `BTreeMap::insert` does exactly that, matching the runtime).
