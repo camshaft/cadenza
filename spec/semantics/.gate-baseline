@@ -128,6 +128,7 @@ pass	a NON-tail recursion 10000 deep computes through real stack frames
 pass	a PER-CALL-selected runtime symbol dispatches through the = chain
 pass	a PERFORMING tail loop of 10000 iterations threads state in constant space
 pass	a PURE closure iterated by a recursive combinator composes with a perform in the same body
+pass	a RUNTIME branch selects between an abortive perform and a plain value per call
 pass	a RUNTIME-count generated batch insorts fully time-ordered, verified by a sortedness walk
 pass	a Rational ARITHMETIC result probes a map key by its reduced canonical value
 todo	a Rational ENTRY parameter crosses the boundary and reduces per call
@@ -1224,6 +1225,8 @@ pass	a tuple of two branch-built Options matches all four Some/None quadrants jo
 pass	a type-valued parameter threads through TWO relay layers beside a runtime operand
 pass	a user sum named Ast renders BARE with RUNTIME payloads through one compiled body
 pass	a user-sum variant value as a Map KEY keys by variant and payload
+pass	a user-written FILTER combinator keeps elements passing a captured predicate
+pass	a user-written MAP combinator builds a transformed list through its fn parameter
 pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
 pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
 pass	a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes
@@ -2170,6 +2173,7 @@ pass	an Option-of-Option survives a Map VALUE cell with its exact nesting
 pass	an UNSIGNED branch refinement decides a nested comparison and its soundness twin must not over-refine
 pass	an UNSIGNED lower-bound refinement must not fabricate an i64::MAX ceiling for a UInt64 above it
 pass	an UPSERT into a Map of Lists creates the fresh entry on miss and appends on hit
+pass	an abortive perform MID-WALK carries the accumulated state out as its argument
 pass	an arm's NEXT-STATE expression saturates via a conditional on the current state
 pass	an effect op RESUMED with a slice-view Bytes crosses the arm boundary intact
 pass	an effect op resumed with a whole MAP threads the CHAMP through the continuation
@@ -3751,6 +3755,7 @@ pass	lists are equal by elements in order
 pass	literal payload refinement works in a non-head element position
 pass	literal refinement on two elements of one list pattern
 pass	looking up an absent key yields None
+pass	map THEN filter compose — one combinator's output list is the next's input
 pass	map equality is independent of insertion order
 pass	match on a Result returned by a fallible function
 pass	match on a function-returned sum takes the other variant at runtime

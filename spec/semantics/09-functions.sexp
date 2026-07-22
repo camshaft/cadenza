@@ -2089,6 +2089,65 @@
   (call   main (: 5 Int64))
   (output (: 13 Int64)))
 
+(case "a user-written MAP combinator builds a transformed list through its fn parameter"
+  (doc    "The list-BUILDING HOF (the fold-list pins reduce to a scalar): `map-l` pushes `(f h)` per
+           element, the closure capturing the boundary `k` — element 2 of the result is 3·14 = 42. The
+           map half of the user HOF library; the combinator's output list must hold the closure's
+           per-element results in order.")
+  (input  (do
+            (def (map-l (: f (-> Int64 Int64)) (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (map-l f t (List.push acc (f h))))))
+            (def (main (: k Int64))
+              (match (List.at (map-l (fn ((: v Int64)) (* v k)) (list 1 2 3) (list)) 2)
+                ((Some v) v)
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 14 Int64))
+  (output (: 42 Int64)))
+
+(case "a user-written FILTER combinator keeps elements passing a captured predicate"
+  (doc    "The Bool-returning fn param: `filter-l` keeps `h` when `(p h)` — the predicate closure
+           captures the runtime cutoff, selecting 3 of 4 at cut=10 and 1 at cut=30. The filter half;
+           a combinator inverting the predicate (or evaluating it once) drifts a length.")
+  (input  (do
+            (def (filter-l (: p (-> Int64 Bool)) (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (filter-l p t (if (p h) (List.push acc h) acc)))))
+            (def (main (: cut Int64))
+              (List.len (filter-l (fn ((: v Int64)) (> v cut)) (list 5 15 25 35) (list))))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 3 Int64))
+  (call   main (: 30 Int64))
+  (output (: 1 Int64)))
+
+(case "map THEN filter compose — one combinator's output list is the next's input"
+  (doc    "The pipeline: `filter-l (>10) (map-l (·k) [1,2,3,4])` — the map's freshly-built list feeds
+           the filter, each with its own captured closure. k=5 maps to [5,10,15,20], filters to len 2;
+           k=2 maps to [2,4,6,8], filters to len 0 (the all-rejected empty). One compiled pipeline, two
+           selectivities; the collection-pipeline shape every list-processing program takes.")
+  (input  (do
+            (def (map-l (: f (-> Int64 Int64)) (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (map-l f t (List.push acc (f h))))))
+            (def (filter-l (: p (-> Int64 Bool)) (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (filter-l p t (if (p h) (List.push acc h) acc)))))
+            (def (main (: k Int64))
+              (List.len (filter-l (fn ((: v Int64)) (> v 10))
+                                  (map-l (fn ((: v Int64)) (* v k)) (list 1 2 3 4) (list))
+                                  (list))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 2 Int64))
+  (call   main (: 2 Int64))
+  (output (: 0 Int64)))
+
 (case "a middle curry STAGE is reused — one s1 residual yields an s2 applied twice"
   (doc    "Three-stage curry with STAGE REUSE: `s1 = (add3 x)` (captures the boundary x), `s2 = (s1 20)`
            (captures x AND 20), then s2 applies TWICE with different finals — (1+20+300) + (1+20+400) =
