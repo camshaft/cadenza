@@ -13604,6 +13604,31 @@ mod runtime_ops {
             ),
             2
         );
+        // UInt64 CEILING SOUNDNESS: a lower-bound refinement (`x > 8`) must NOT fabricate an UPPER ceiling
+        // of i64::MAX — a UInt64 value can legitimately exceed i64::MAX (up to 2^64-1). The refinement seeds
+        // its interval from the var's DECLARED-TYPE bounds (resolved_int_bounds → (0, None) for UInt64), NOT
+        // a hardcoded (i64::MIN, i64::MAX). The load-bearing case: the boundary constant i64::MAX
+        // (9223372036854775807) IS i64-representable, so `(> x i64::MAX)` CAN fold — a fabricated ceiling
+        // would fold it to FALSE. But x = 2^63 (= i64::MAX+1, a valid UInt64 > 8) makes `x > i64::MAX` TRUE
+        // → 1, NOT 2. This exact program returned 2 (the miscompile) before the seed fix.
+        assert_eq!(
+            run::<i64>(
+                "(: x UInt64)",
+                "(if (> x 8) (if (> x 9223372036854775807) 1 2) 0)",
+                &[Val::U64(9223372036854775808)]
+            ),
+            1,
+            "under (> x 8), (> x i64::MAX) must NOT fold to false — a UInt64 can exceed i64::MAX"
+        );
+        // The ordinary in-i64-range value still computes (x = 100 → x > i64::MAX false → 2).
+        assert_eq!(
+            run::<i64>(
+                "(: x UInt64)",
+                "(if (> x 8) (if (> x 9223372036854775807) 1 2) 0)",
+                &[Val::U64(100)]
+            ),
+            2
+        );
     }
 
     #[test]
@@ -24796,6 +24821,65 @@ mod match_engine {
                 bare.message
             );
         });
+    }
+
+    #[test]
+    fn a_bare_literal_grounds_to_bigint_in_a_constructor_payload_position() {
+        // A bare, un-suffixed integer literal written as a constructor argument whose DECLARED payload type
+        // is `BigInt` GROUNDS to `Ty::BigInt` — `(W 42)` for `(type W (W BigInt))` compiles, where it USED
+        // to decline CDZ0201 "payload declared BigInt, but Int64 applied". Operator-approved contextual
+        // grounding (`numeric-model.md`: an integer literal grounds to BigInt losslessly, and an explicit
+        // context takes precedence over the declared default — a grounding, not a promotion; the same
+        // mechanism as grounding a bare literal to a narrow width). Unblocks the quoted-Ast `(Ast.Int 42)`
+        // directive (a bare literal against the BigInt-flipped payload, ~97 sites, no `(: … BigInt)` noise).
+        for src in [
+            "(module m (def (main) (match (W 42) ((W x) x))) (type W (W BigInt)) (export main))",
+            // A value that OVERFLOWS i64 — the whole point of BigInt: it grounds LOSSLESSLY (a bare literal
+            // this large would be a CDZ0302 range fault in an Int64 context; against BigInt it just grounds).
+            "(module m (def (main) (match (W 99999999999999999999999) ((W x) x))) (type W (W BigInt)) \
+             (export main))",
+        ] {
+            assert!(
+                reject_code(src).is_none(),
+                "a bare literal grounds to BigInt in a ctor payload (was CDZ0201): {src} → {:?}",
+                reject_code(src)
+            );
+        }
+        // DISCIPLINE (operator's load-bearing guard): the grounding fires ONLY for a BARE, un-suffixed,
+        // uncomputed literal. A COMPUTED Int64 or an explicitly Int64-typed value in a BigInt payload
+        // position is a GENUINE mismatch and MUST still decline (BigInt never silently promotes from Int64).
+        assert_eq!(
+            reject_code(
+                "(module m (def (g (: n Int64)) n) (def (main) (W (g 5))) (type W (W BigInt)) \
+                 (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201"),
+            "a COMPUTED Int64 in a BigInt payload still declines (grounding is bare-literal-only)"
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (W (: 42 Int64))) (type W (W BigInt)) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201"),
+            "an explicitly Int64-typed value in a BigInt payload still declines (typed away from bare)"
+        );
+        // VALUE CORRECTNESS: the grounded payload is a real BigInt (projects + reads back), and a huge
+        // value round-trips losslessly. Store-guarded (links + runs the module).
+        if super::find_runtime_wasm().is_some() {
+            let bytes = component(
+                "(module m (def (main) (match (W 99999999999999999999999) ((W x) x))) \
+                 (type W (W BigInt)) (export main))",
+            );
+            if let Some(v) = super::run_linked(&bytes, "main") {
+                // A BigInt renders in its self-describing value-output form `(: N BigInt)`.
+                assert_eq!(
+                    v, "(: 99999999999999999999999 BigInt)",
+                    "the grounded BigInt payload holds the exact (i64-overflowing) value"
+                );
+            }
+        }
     }
 
     #[test]

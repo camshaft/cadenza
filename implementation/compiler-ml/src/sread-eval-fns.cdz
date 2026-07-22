@@ -303,3 +303,57 @@ def se-four-param-typed-fourth-arg-out-of-range-declines() =
     ) with
     | Option.None(_) => unit
     | Option.Some(_) => trap("arg4 200 out of Int8 range → declines (CDZ0302 on param4)")
+
+@test
+def se-forward-ref-runs() =
+  // FORWARD REFERENCE: a def calls a LATER-defined def. `(def (a x) (b x))` calls `b` (defined AFTER a);
+  // a(5) = b(5) = 6. Before the NApp-carries-name change the reader resolved def-body-of at READ time, so a
+  // forward callee wasn't yet in the def-table → the call read as NBin(-1) → declined. Now the NApp keys by
+  // the callee NAME, resolved LATE (def-body-of after the whole do-block is recorded), so forward refs RUN.
+  match run-src("(do (def (a x) (b x)) (def (b x) (+ x 1)) (def (main) (a 5)) (export main))") with
+    | Option.Some(v) => (if v == 6 then unit else trap("forward-ref a(5)=b(5)=6"))
+    | Option.None(_) => trap("a forward reference (def calls a later def) runs")
+
+@test
+def se-self-recursion-declines-not-hangs() =
+  // SELF-RECURSION must DECLINE (not run — the Core has no call/fix node, calls INLINE), and crucially must NOT
+  // HANG the compiler (infinite inline). The cycle guard (call-is-recursive) detects `fac`'s body calls `fac`
+  // → declines at the NApp arm before descending. Pins that enabling forward-ref did NOT regress recursion from
+  // clean-decline to a hang. (True runtime recursion is a later slice: add a non-inlining Core call form.)
+  match run-src("(do (def (fac n) (if (< n 2) 1 (* n (fac (- n 1))))) (def (main) (fac 5)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("self-recursion declines cleanly (no Core call form yet) — must not run or hang")
+
+@test
+def se-mutual-recursion-declines-not-hangs() =
+  // MUTUAL RECURSION (ev↔od) must also DECLINE cleanly, not hang — the cycle guard follows the transitive call
+  // chain (ev's body calls od, od's calls ev) and declines. Pins the mutual-cycle case of the guard.
+  match run-src("(do (def (ev n) (if (< n 1) 1 (od (- n 1)))) (def (od n) (if (< n 1) 0 (ev (- n 1)))) (def (main) (ev 4)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("mutual recursion declines cleanly (no hang)")
+
+@test
+def se-backward-ref-still-runs() =
+  // REGRESSION GUARD: a BACKWARD reference (a def calls an EARLIER def) still works after the NApp-carries-name
+  // change. `(def (inc x) (+ x 1))` then `(def (inc2 x) (inc (inc x)))` → inc2(5) = inc(inc(5)) = 7.
+  match run-src("(do (def (inc x) (+ x 1)) (def (inc2 x) (inc (inc x))) (def (main) (inc2 5)) (export main))") with
+    | Option.Some(v) => (if v == 7 then unit else trap("backward-ref inc2(5)=7"))
+    | Option.None(_) => trap("a backward reference still runs (no regression)")
+
+@test
+def se-main-first-forward-ref-runs() =
+  // main-anywhere: `main` defined BEFORE the helper it calls now RUNS (was declining — the reader used to STOP
+  // at main, so a def after main was never recorded → main's forward call declined). `(def (main) (helper 10))`
+  // then `(def (helper x) (+ x 5))` → main = helper(10) = 15. Completes definition-order independence: main is
+  // just another recorded def, the module root is threaded (not "found by stopping at main"). Matches rcdzc.
+  match run-src("(do (def (main) (helper 10)) (def (helper x) (+ x 5)) (export main))") with
+    | Option.Some(v) => (if v == 15 then unit else trap("main-first forward call helper(10)=15"))
+    | Option.None(_) => trap("main defined before the helper it calls runs (main-anywhere)")
+
+@test
+def se-main-last-still-runs() =
+  // REGRESSION GUARD for the main-anywhere change: the CANONICAL order (helper first, main LAST) still works —
+  // the root threading returns main's body whether main is first, middle, or last. helper(10)=15.
+  match run-src("(do (def (helper x) (+ x 5)) (def (main) (helper 10)) (export main))") with
+    | Option.Some(v) => (if v == 15 then unit else trap("main-last helper(10)=15"))
+    | Option.None(_) => trap("canonical helper-first/main-last order still runs")

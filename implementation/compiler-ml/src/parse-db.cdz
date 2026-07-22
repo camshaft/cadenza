@@ -48,9 +48,11 @@ type Node =
   | NAnnLit(Int64, Int64, Int64)  // NAnnLit(value, signed(1|0), width) — a WIDTH-ANNOTATED int literal
                                   // `(: v IntN)`; carries its (signed, width) so infer types it TIntW and
                                   // lower builds a NARROW CNum. Bool-as-Int64 for the signed flag (1|0).
-  | NApp(Int64, Int64)            // NApp(calleeId, argId) — a function APPLICATION `(f arg)` / `(mk)`. `calleeId`
-                                  // is the callee's DEF-BODY node (resolve wires a call head to the def it
-                                  // names); `argId` is the single argument's node, or -1 = the NULLARY-call
+  | NApp(Int64, Int64)            // NApp(calleeName, argId) — a function APPLICATION `(f arg)` / `(mk)`.
+                                  // `calleeName` is the callee's NAME-ID (forward-ref: the reader keys the call
+                                  // by name, not the def-body node, so a call to a not-yet-read def is accepted;
+                                  // resolve/infer/lower map name→bodyId via def-body-of AFTER the do-block is
+                                  // recorded). `argId` is the single argument's node, or -1 = the NULLARY-call
                                   // sentinel `(mk)` (no argument). The nullary slice uses argId = -1 and lowers
                                   // by inlining the callee body; a param slice (later) lowers `(f a)` to
                                   // CLet(param, arg, body) — a call binds its param exactly like a let.
@@ -107,6 +109,58 @@ def record-def(tree: Tree, nameId: Int64, bodyId: Int64) = match tree with
 /// The body node-id a def-name binds, or `None` (name not a known def) — a call `(name)` looks its head up here.
 def def-body-of(tree: Tree, nameId: Int64) = match tree with
   | Tree.Arena(_, _, dt, _, _, _, _, _, _, _, _) => Map.lookup(dt, nameId)
+
+/// forward-ref RECURSION GUARD (does the subtree at `id` reach a CALL to `target`, within `fuel` steps?).
+/// Since a call is now inlined by resolve/infer/lower (they descend into the callee's def-body), a self/mutual
+/// recursive call would inline INFINITELY. This bounded static check lets those passes DECLINE a recursive call
+/// (keeping recursion a clean decline, as before the reader change) instead of hanging: at an NApp arm, before
+/// descending into the callee body `b` (name `cn`), if `subtree-calls-name(tree, b, cn, FUEL)` is true, the call
+/// is recursive → decline. `fuel` bounds the whole transitive walk (arena nodes are finite + small; FUEL well
+/// above any corpus def's node count guarantees termination while never false-positiving a non-recursive def).
+/// Walks the AST children of `id` AND, at each NApp, recurses into the CALLED def's body (transitive/mutual
+/// recursion). Returns `(found, fuelLeft)`; `found` = a call to `target` was reached.
+def subtree-calls-name(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
+  (if (fuel <= 0) then (true, 0)   // out of fuel → conservatively treat as recursive (decline, never hang)
+   else (match node-at(tree, id) with
+     | Option.Some(Node.NApp(calleeName, argId)) =>
+         (if (calleeName == target) then (true, fuel - 1)   // a direct call to target → recursive
+          // else recurse into: this call's ARG(s) + the CALLED def's body (transitive/mutual). arg2/3/4 keyed
+          // by this NApp node-id `id`.
+          else (match subtree-calls-name-arg(tree, argId, target, fuel - 1) with
+                 | (true, fl) => (true, fl)
+                 | (false, fl) =>
+                     (match arg2-of(tree, id) with
+                       | Option.Some(a2) => (match subtree-calls-name(tree, a2, target, fl) with | (true, f2) => (true, f2) | (false, f2) => subtree-calls-callee(tree, calleeName, target, f2))
+                       | Option.None(_) => subtree-calls-callee(tree, calleeName, target, fl))))
+     | Option.Some(Node.NBin(_, l, r)) =>
+         (match subtree-calls-name(tree, l, target, fuel - 1) with | (true, fl) => (true, fl) | (false, fl) => subtree-calls-name(tree, r, target, fl))
+     | Option.Some(Node.NLet(_, v, b)) =>
+         (match subtree-calls-name(tree, v, target, fuel - 1) with | (true, fl) => (true, fl) | (false, fl) => subtree-calls-name(tree, b, target, fl))
+     | Option.Some(Node.NIf(c, t, e)) =>
+         (match subtree-calls-name(tree, c, target, fuel - 1) with
+           | (true, fl) => (true, fl)
+           | (false, fl) => (match subtree-calls-name(tree, t, target, fl) with | (true, f2) => (true, f2) | (false, f2) => subtree-calls-name(tree, e, target, f2)))
+     | _ => (false, fuel - 1)))   // NLit/NBoolLit/NVar/NAnnLit — no call
+
+/// Helper: an NApp arg is -1 (nullary, no arg) or a node-id to scan.
+def subtree-calls-name-arg(tree: Tree, argId: Int64, target: Int64, fuel: Int64) =
+  (if (argId == (0 - 1)) then (false, fuel) else subtree-calls-name(tree, argId, target, fuel))
+
+/// Helper: recurse into a CALLED def's body (transitive/mutual recursion). Look up `calleeName`'s body; if it
+/// reaches `target`, recursion. A name with no def-body (unknown / a param used as a value) contributes nothing.
+def subtree-calls-callee(tree: Tree, calleeName: Int64, target: Int64, fuel: Int64) =
+  (if (fuel <= 0) then (true, 0)
+   else (match def-body-of(tree, calleeName) with
+     | Option.Some(b) => subtree-calls-name(tree, b, target, fuel - 1)
+     | Option.None(_) => (false, fuel - 1)))
+
+/// Is a call to `calleeName` RECURSIVE (its body transitively calls back to `calleeName`)? The NApp-arm guard
+/// resolve/infer/lower use to DECLINE a recursive call rather than inline-hang. `def-body-of` miss → not a call
+/// to a known def → not recursive (the unknown-name decline path handles it).
+def call-is-recursive(tree: Tree, calleeName: Int64) =
+  (match def-body-of(tree, calleeName) with
+    | Option.Some(b) => (match subtree-calls-name(tree, b, calleeName, 4000) with | (found, _) => found)
+    | Option.None(_) => false)
 
 /// Record a def's FIRST PARAMETER node-id: name-id → its param node-id (slice-3c). A `(name arg)` call looks
 /// this up to build `CLet(paramId, argCore, bodyCore)`. Only a PARAMETERIZED def records a param; a nullary
@@ -844,4 +898,4 @@ def pd-fully-consumed-parse-keeps-its-root() =
     (if is-bin-op(tree, root, 60) then unit
      else trap("`1 < 2` consumes all tokens → root is the `<` Bin, not a poison")))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, call-is-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }

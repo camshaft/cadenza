@@ -2435,6 +2435,26 @@
             (export main)))
   (output (: 60 Int64)))
 
+(case "a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)"
+  (doc    "The DECLINE-GUARD companion of the two working walks above. The idiomatic fold shape — a recursive
+           `count` re-entered inside a `List.fold` closure whose element is an `Ast` sub-tree bound from an
+           `Ast.List` match — once HUNG the compiler (unbounded monomorphization of the recursive closure over
+           the recursive `Ast` type; breaker-found). It is now bounded: the compile TERMINATES and DECLINES
+           cleanly rather than hanging or overflowing its stack (a compiler must never overflow — the
+           inter-procedural follow-depth guard, self-hosting-and-bootstrap.md). This pins the NON-REGRESSION —
+           the shape may not yet compile to a value (the generic recursive-closure-over-recursive-sum driver is
+           a later increment, v-inference's lane), but it must never again HANG. The explicit-recursion and
+           tail-splice-rest walks above are the working companions; when the driver lands this can flip to a
+           computed `output`.")
+  (input  (do
+            (def (count (: node Ast))
+              (match node
+                ((Ast.List es) (List.fold es 1 (fn (acc e) (+ acc (count e)))))
+                (_ 1)))
+            (def (main) (count (quote (f 1))))
+            (export main)))
+  (declines))
+
 ; --- eval drives CONTROL FLOW reified from quoted source (the Ast.Bool integration faces) ---------
 ; The Ast.Bool cases above pin the leaf (quote/match/eval/encode/print of a bare boolean); these pin
 ; the boolean leaf DOING ITS JOB inside evaluated control flow — an `if` whose condition arrives

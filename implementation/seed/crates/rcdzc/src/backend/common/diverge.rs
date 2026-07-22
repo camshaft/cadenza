@@ -228,11 +228,22 @@ pub(crate) fn refine_from_comparison(
         Prim::Ge => (clamp(c), None),
         _ => return base, // Eq/Ne/compare — no interval bound
     };
+    // The seed interval when `var` has no prior frame bound is its DECLARED-TYPE bounds — NOT a hardcoded
+    // `(i64::MIN, i64::MAX)`. For an UNSIGNED-64 var the real upper bound is `2^64 − 1`, which is NOT
+    // i64-representable, so its type `hi` is `None` (unbounded above in this i64 domain). Seeding the
+    // fabricated `Some(i64::MAX)` there would be UNSOUND: a lower-bound refinement (`x > 8`) would leave
+    // `hi = Some(i64::MAX)`, wrongly excluding `[i64::MAX+1, 2^64−1]` — values a UInt64 legitimately holds —
+    // so a downstream `(> x i64::MAX)` would fold to false and MISCOMPILE. Seeding the type's own `(0, None)`
+    // keeps the lower-bound refinement's `hi` unbounded (sound). `lo`'s `None` (no i64-min, unreachable for a
+    // real integer type) falls back to `i64::MIN`. `value_range` still re-intersects with the type bounds.
+    let (seed_lo, seed_hi) = crate::lower::resolved_int_bounds(it)
+        .map(|(lo, hi)| (lo.unwrap_or(i64::MIN), hi))
+        .unwrap_or((i64::MIN, Some(i64::MAX)));
     let mut frame = base;
     let (mut lo, mut hi) = frame
         .get(&var)
         .and_then(|f| f.int_range)
-        .unwrap_or((i64::MIN, Some(i64::MAX)));
+        .unwrap_or((seed_lo, seed_hi));
     if let Some(nl) = new_lo {
         lo = lo.max(nl);
     }

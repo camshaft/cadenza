@@ -1053,6 +1053,7 @@ pass	a performing closure called TWICE observes the state advance between its ca
 pass	a quantity in a TUPLE inside a LIST element renders scaled (nested composition)
 pass	a quantity in an OPTION inside a MAP value renders scaled (nested composition)
 pass	a quantity read from a map COMBINES with a fresh same-dimension quantity
+pass	a read-modify-write of a List value in a Map grows the entry and leaves the original map unchanged
 pass	a record MATCH pattern with a LITERAL field sub-pattern dispatches on the field value
 pass	a record field built by a RUNTIME BRANCH holds a user-sum, projected then matched
 pass	a record key with a float-bearing TUPLE field keys by content
@@ -1352,6 +1353,7 @@ pass	a list of maps with different keys is homogeneous, not a type error
 pass	a list of maps: a runtime index then looks a runtime key up in the found map
 pass	a list of records with different field sets is a type error
 pass	a list of records: a runtime index then reads a field of the found record
+pass	a list of sets: a runtime index then tests membership in the found set
 pass	a list of tuples with different arities is a type error
 pass	a list operation applied to a non-list names the expected argument type
 pass	a list past 1024 elements builds a three-level RRB trie and indexes correctly at every level
@@ -2102,6 +2104,7 @@ pass	a runtime bin match decodes a byte-aligned bit-field run
 pass	a runtime bin match dispatches on a leading literal bit-field tag
 pass	a runtime bin match dispatches on a literal tag across arms
 pass	a runtime bin match whose catch-all BINDS and reads the whole Bytes scrutinee
+pass	a runtime bin match decodes a Bytes.slice sub-range of a larger buffer
 todo	a guarded bin-match arm reads its decoded binder and falls through when the guard fails
 pass	a runtime bin match reads an int segment after a byte-aligned bit-field run
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
@@ -2667,6 +2670,7 @@ pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
 pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
 pass	a variadic Ast form is folded via a tail-splice rest-binder over its operands
+pass	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 pass	a variant carrying a Char payload constructs, matches, and binds it
 pass	a variant carrying a RECORD payload constructs and matches
 pass	a variant carrying a Rational payload constructs and matches

@@ -228,6 +228,13 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // A bare integer literal: a `(pragma default-fraction Rational)` module grounds it to `Rational`
         // (exact-by-default) — checked FIRST since an exact-fraction default is a stronger statement than
         // an integer-width default; then a `default-integer` width; else the deferred integer default.
+        // A bare integer literal written as a constructor argument whose DECLARED payload type is `BigInt`
+        // GROUNDS to `Ty::BigInt` (operator-approved contextual grounding — lossless, and an explicit
+        // context overrides the Int64 default, so NOT a promotion). Marked at load in
+        // `bigint_ctor_arg_literals` (bare/un-suffixed only — a `42N` is an annotation node, never marked),
+        // consulted here FIRST like the fraction/int defaults. A `Core::ConstInt` typed `BigInt` already
+        // emits as a BigInt leaf, so no lowering change is needed.
+        Resolved::Int(_) if db.bigint_ctor_arg_literals.contains(&id) => Ty::BigInt,
         Resolved::Int(_) => module_default_fraction_ty(db, id)
             .or_else(|| module_default_int_ty(db, id))
             .unwrap_or_else(Ty::int),

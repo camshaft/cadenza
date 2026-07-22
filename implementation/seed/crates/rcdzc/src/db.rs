@@ -873,6 +873,19 @@ pub struct Db {
     /// no-promotion still holds (the default fixes a type, not a coercion).
     pub default_fraction_literals: crate::fxhash::FxHashMap<StructId, StructId>,
 
+    /// Each bare, UN-SUFFIXED integer-literal node WRITTEN as the direct argument of a variant/newtype
+    /// constructor whose corresponding DECLARED payload type is `BigInt` — e.g. `42` in `(W 42)` for
+    /// `(type W (W BigInt))` or `(Ast.Int 42)`. A literal in this set GROUNDS to `Ty::BigInt` instead of
+    /// the `Int64` default (`numeric-model.md`: an integer literal grounds to `BigInt` LOSSLESSLY, and an
+    /// explicit context takes precedence over the declared default — so this is a grounding, NOT a
+    /// promotion). Built ONCE at load by an ARENA walk (`collect_bigint_ctor_arg_literals`), keyed by the
+    /// ORIGINAL source-literal node so it survives the β-copy an inlined body performs. `infer::compute`
+    /// consults it to type the literal `Ty::BigInt`; `lower` needs nothing (a `Core::ConstInt` typed
+    /// `BigInt` already materializes as a BigInt leaf). DISCIPLINE (operator-confirmed): ONLY a bare,
+    /// un-suffixed literal is marked — a suffixed `42N` (already `Ty::BigInt`), an already-typed value, or
+    /// a COMPUTED Int64 expression is NEVER marked, so a genuine Int64/BigInt mismatch still declines.
+    pub bigint_ctor_arg_literals: crate::fxhash::FxHashSet<StructId>,
+
     /// Each bare DECIMAL-LITERAL node WRITTEN inside a `(module … (pragma default-float <T>) …)` → the
     /// pragma's `<T>` type-expression occurrence. A literal in this map defaults to `<T>` (a float width)
     /// instead of `Float64` (`numeric-model.md` §A Module May Declare Its Default Float Literal Type). The
@@ -2417,6 +2430,13 @@ impl Db {
                 );
             }
         }
+        // Mark each bare, un-suffixed integer literal written as the direct argument of a constructor whose
+        // declared payload type is `BigInt` — so it GROUNDS to `Ty::BigInt` instead of the Int64 default
+        // (`numeric-model.md`: an integer literal grounds to BigInt losslessly; an explicit context takes
+        // precedence over the declared default — a grounding, not a promotion). Load-time (not check-time)
+        // because `infer` memoizes the arg's Int64 type before the ctor-payload unify site could intervene.
+        let mut bigint_ctor_arg_literals = crate::fxhash::FxHashSet::default();
+        collect_bigint_ctor_arg_literals(&ast, &type_decls, &mut bigint_ctor_arg_literals);
         // Map each bare DECIMAL literal written inside a `(pragma default-float <T>)` module to its default
         // float type-expr — the floating-point analogue of the integer map (decimals only; an integer
         // literal keeps its integer default).
@@ -2543,6 +2563,7 @@ impl Db {
             newtype_inner: crate::fxhash::FxHashMap::default(),
             default_int_literals,
             default_fraction_literals,
+            bigint_ctor_arg_literals,
             default_float_literals,
             enum_disc: crate::fxhash::FxHashSet::default(),
             parent,
@@ -5603,6 +5624,70 @@ fn mark_int_literals(
     if let Struct::List(children) = ast.get(node) {
         for &c in children {
             mark_int_literals(ast, c, ty_expr, out);
+        }
+    }
+}
+
+/// Mark each bare, un-suffixed integer literal written as the DIRECT argument of a constructor whose
+/// corresponding DECLARED payload type is `BigInt`, so `infer` grounds it to `Ty::BigInt` instead of the
+/// Int64 default (the operator-approved contextual-grounding: an integer literal grounds to BigInt
+/// losslessly, and an explicit context takes precedence over the declared default — a grounding, not a
+/// promotion). Keyed by the literal's ORIGINAL occurrence (β-copy-robust, like the default-literal maps).
+///
+/// SUFFIX DISCIPLINE FALLS OUT OF THE AST SHAPE: a suffixed `42N` reader-desugars to `(: 42 BigInt)` (an
+/// annotation node), and a computed/already-typed argument is a `List`/`Annot` node — NONE is a bare
+/// `Leaf::Int`. So matching a DIRECT integer-literal argument marks EXACTLY the bare, un-suffixed,
+/// uncomputed case; a `42N`, a `(: 42 Int64)`, or a `(+ 1 1)` in a BigInt payload position is never marked
+/// and still declines if it mismatches (the operator's load-bearing guard, enforced structurally).
+fn collect_bigint_ctor_arg_literals(
+    ast: &Arenas,
+    type_decls: &[TypeDecl],
+    out: &mut crate::fxhash::FxHashSet<StructId>,
+) {
+    // A constructor NAME → its declared payload type-expression occurrences (declaration order). A variant
+    // name is the map key; a dotted head `(. Sum Variant)` matches on its `Variant` segment, a bare head on
+    // the name directly. FIRST-wins on a name shared across sums (matches the resolver's own first-wins);
+    // an ambiguous same-named ctor with a DIFFERENT payload type is rare and, if wrong, only misses/adds a
+    // grounding the type-checker still validates (a mismatch still declines) — never unsound.
+    let mut ctor_payloads: crate::fxhash::FxHashMap<&str, &[StructId]> =
+        crate::fxhash::FxHashMap::default();
+    for decl in type_decls {
+        for v in &decl.variants {
+            if !v.payloads.is_empty() {
+                ctor_payloads.entry(&v.name).or_insert(&v.payloads);
+            }
+        }
+    }
+    if ctor_payloads.is_empty() {
+        return; // no payload-carrying constructors → nothing to mark
+    }
+    // Walk EVERY form in the arena; a `(head arg…)` whose head names a known constructor marks each bare
+    // integer-literal arg whose matching declared payload type is `BigInt`.
+    for ix in 0..ast.structure.len() {
+        let id = <StructId as crate::arena::Index>::from_ix(ix);
+        let Struct::List(children) = ast.get(id) else {
+            continue;
+        };
+        let Some((&head, args)) = children.split_first() else {
+            continue;
+        };
+        // The constructor's variant name: a bare head `(W 42)` reads via `as_name`; a dotted head
+        // `(Ast.Int 42)` is `(. Ast Int)` — take the KEY segment (2nd element of the `.` form).
+        let ctor_name = ast.as_name(head).or_else(|| {
+            ast.as_form(head, ".")
+                .and_then(|t| t.get(1).copied())
+                .and_then(|k| ast.as_name(k))
+        });
+        let Some(name) = ctor_name else { continue };
+        let Some(payloads) = ctor_payloads.get(name) else {
+            continue;
+        };
+        for (arg, &payload_ty) in args.iter().zip(payloads.iter()) {
+            // ONLY a DIRECT bare integer literal (not an annotation, not a computed expression) whose
+            // declared payload type is the bare name `BigInt`.
+            if ast.as_int(*arg).is_some() && ast.as_name(payload_ty) == Some("BigInt") {
+                out.insert(*arg);
+            }
         }
     }
 }

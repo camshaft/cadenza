@@ -16,7 +16,7 @@
 /// resolve column (`Map(NodeId, Resolved)`) as it descends. Once built, a lookup is O(1) — the column IS the
 /// memo (the DB discipline; rcdzc's resolve fills all of a tree's resolved facts in one demand-driven walk).
 
-import { Tok, Node, Tree, node-at, parse-tokens, is-let, add-node, empty-tree, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, is-let, add-node, empty-tree, record-def, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
 
 /// The resolve fact for a variable reference. `RBound(binderId)` = bound to the `NLet` at `binderId`;
 /// `RPoison` = the name is unbound (a FILLED negative decision — not absence).
@@ -80,20 +80,29 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
            (let colArg = (match arg4-of(tree, id) with
                             | Option.Some(a4) => resolve-node(tree, a4, env, colA3)  // + arg4 (slice-3f)
                             | Option.None(_) => colA3) in
-            (match param-of(tree, calleeId) with
-              | Option.Some(paramId) =>
-                  (let scope1 = param-scope(tree, paramId, (Map.empty : Map(Int64, Int64))) in
-                   (let scope2 = (match param2-of(tree, calleeId) with
-                                    | Option.Some(param2Id) => param-scope(tree, param2Id, scope1)  // + 2nd param
-                                    | Option.None(_) => scope1) in
-                    (let scope3 = (match param3-of(tree, calleeId) with
-                                        | Option.Some(param3Id) => param-scope(tree, param3Id, scope2)  // + 3rd param (slice-3e)
-                                        | Option.None(_) => scope2) in
-                     (let bodyScope = (match param4-of(tree, calleeId) with
-                                         | Option.Some(param4Id) => param-scope(tree, param4Id, scope3)  // + 4th param (slice-3f)
-                                         | Option.None(_) => scope3) in
-                      resolve-node(tree, calleeId, bodyScope, colArg)))))
-              | Option.None(_) => resolve-node(tree, calleeId, (Map.empty : Map(Int64, Int64)), colArg))))))
+            // forward-ref: calleeId is now the callee NAME-id → map to its def-body node via def-body-of.
+            // A RECURSIVE call (body transitively calls back) would inline-loop, so DECLINE it (don't resolve
+            // the body — the call gets no fact → downstream declines, matching pre-forward-ref behavior). An
+            // unknown name (def-body-of None) also declines. param-* lookups use the NAME directly (params are
+            // keyed by both name and bodyId in read-do-def). The body resolves LEXICALLY in its own param scope.
+            (if (call-is-recursive(tree, calleeId)) then colArg   // recursive → decline (no body resolution)
+             else (match def-body-of(tree, calleeId) with
+               | Option.None(_) => colArg                          // unknown callee → decline
+               | Option.Some(calleeBody) =>
+                   (match param-of(tree, calleeId) with
+                     | Option.Some(paramId) =>
+                         (let scope1 = param-scope(tree, paramId, (Map.empty : Map(Int64, Int64))) in
+                          (let scope2 = (match param2-of(tree, calleeId) with
+                                           | Option.Some(param2Id) => param-scope(tree, param2Id, scope1)  // + 2nd param
+                                           | Option.None(_) => scope1) in
+                           (let scope3 = (match param3-of(tree, calleeId) with
+                                               | Option.Some(param3Id) => param-scope(tree, param3Id, scope2)  // + 3rd param (slice-3e)
+                                               | Option.None(_) => scope2) in
+                            (let bodyScope = (match param4-of(tree, calleeId) with
+                                                | Option.Some(param4Id) => param-scope(tree, param4Id, scope3)  // + 4th param (slice-3f)
+                                                | Option.None(_) => scope3) in
+                             resolve-node(tree, calleeBody, bodyScope, colArg)))))
+                     | Option.None(_) => resolve-node(tree, calleeBody, (Map.empty : Map(Int64, Int64)), colArg))))))))
     | Option.None(_) => col   // an id not in the arena (a malformed tree) resolves to nothing
 
 /// The resolve COLUMN builder: resolve the whole tree from `root`, starting with an empty scope + column.
@@ -266,10 +275,11 @@ def rd-nullary-call-body-is-lexical-no-caller-capture() =
   // before it (caller-env resolve) the body var wrongly bound to the enclosing let (dynamic capture).
   (match add-node(empty-tree(), Node.NLit(0)) with | (valId, t1) =>          // the let value `0`
     (match add-node(t1, Node.NVar(1)) with | (mkBodyId, t2) =>               // mk's body: bare var `x` (name 1)
-      (match add-node(t2, Node.NApp(mkBodyId, 0 - 1)) with | (callId, t3) => // `(mk)` — a nullary call
+      (let t2d = record-def(t2, 900, mkBodyId) in                            // register mk (name 900) → its body
+       (match add-node(t2d, Node.NApp(900, 0 - 1)) with | (callId, t3) =>    // `(mk)` — a nullary call to name 900
         (match add-node(t3, Node.NLet(1, valId, callId)) with | (root, tree) => // `let x(=1) = 0 in (mk)`
           // the callee body's var (mkBodyId) must be POISON — a fresh-scope resolve, no caller-let capture.
           (if resolved-poison(tree, root, mkBodyId) then unit
-           else trap("callee body var resolves LEXICALLY (fresh scope) → Poison, NOT captured by the caller let"))))))
+           else trap("callee body var resolves LEXICALLY (fresh scope) → Poison, NOT captured by the caller let")))))))
 
 export { Resolved.*, resolve-tree, resolved-at, resolved-count, resolved-to, resolved-poison }
