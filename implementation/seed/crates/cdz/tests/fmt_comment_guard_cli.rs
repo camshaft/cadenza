@@ -31,7 +31,14 @@ fn temp_src(tag: &str, src: &str) -> (std::path::PathBuf, String) {
 fn fmt_refuses_to_write_when_it_would_drop_a_trailing_comment() {
     // A trailing inline `//` the reader drops (a known attachment gap): fmt must NOT overwrite the file
     // — it refuses, leaves the file byte-identical, and exits non-zero.
-    let src = "def f() -> Int64 =\n  fuse(1, // the bar\n       2)\n";
+    //
+    // The motivating input is a SAME-LINE trailing `//` on the LAST CALL ARGUMENT (`fuse(1, 2 // the
+    // bar)`): the reader has no slot for a comment that trails the last arg before the `)` (it would sit
+    // in the `)` leading slot, which `arg_exprs` does not drain), so a reprint LOSES it. (The earlier
+    // input `fuse(1, // the bar\n 2)` — a comment on arg 2's OWN line — is now PRESERVED by `arg_exprs`'s
+    // leading-comment capture, so it no longer exercises the drop path; this last-arg trailing case still
+    // genuinely drops until the call printer grows same-line trailing-comment support.)
+    let src = "def f() -> Int64 =\n  fuse(1, 2 // the bar\n  )\n";
     let (dir, path) = temp_src("fmt-refuse", src);
     let (ok, _out, err) = run(&["fmt", &path]);
     assert!(!ok, "must exit non-zero when refusing; stderr={err}");

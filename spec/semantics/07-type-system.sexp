@@ -1778,6 +1778,36 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "a type-valued parameter threads through TWO relay layers beside a runtime operand"
+  (doc    "The depth-2 companion of the one-relay case above, in a body that also computes a RUNTIME
+           value: `relay2 → relay → check` carries `t` across two call boundaries before the `Type.eq`,
+           and `main` adds the boundary parameter `n` so the def cannot fold whole — the type-value
+           substitution and the runtime arithmetic coexist in one lowered body. `(relay2 Int64)` = 1,
+           `(relay2 Bool)` = 0, +41 = 42. A monomorphizer that carried the type only one hop (or
+           specialized `relay2` before `relay`'s substitution resolved) would break an inner Type.eq.")
+  (input  (do
+            (def (check (: t Type)) (if (Type.eq t Int64) 1 0))
+            (def (relay (: t Type)) (check t))
+            (def (relay2 (: t Type)) (relay t))
+            (def (main (: n Int64)) (+ (relay2 Int64) (+ (relay2 Bool) n)))
+            (export main)))
+  (call   main (: 41 Int64))
+  (output (: 42 Int64)))
+
+(case "a Type.eq width dispatcher answers per WRITTEN type at two call sites in one body"
+  (doc    "The dispatch-table idiom over types: `width-of` chains `Type.eq` tests (Int64 → 64, Int8 → 8,
+           else 0) and ONE body calls it at TWO different written types, combining the answers with a
+           runtime operand — 64·100 + 8 + 1 = 6409. Each call site folds its own chain independently
+           (the two instantiations must not share one resolved answer), and the runtime `+ n` keeps the
+           body live. The multi-site companion of the single-comparison cases above.")
+  (input  (do
+            (def (width-of (: t Type)) (if (Type.eq t Int64) 64 (if (Type.eq t Int8) 8 0)))
+            (def (main (: n Int64))
+              (+ (* (width-of Int64) 100) (+ (width-of Int8) n)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 6409 Int64)))
+
 (case "Type.eq of a type-valued parameter against itself is always true"
   (doc    "`(Type.eq t t)` — a type-valued parameter compared to ITSELF — is true at EVERY instantiation,
            whatever type is passed: `(refl Int64 5)` → 1 and `(refl Bool 5)` → 1, sum 2. Pins the reflexivity

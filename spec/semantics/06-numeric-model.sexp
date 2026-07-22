@@ -582,6 +582,14 @@
   (input  (do (type W (W Int8)) (def (main) (match (: (W 999) W) ((W v) v))) (export main)))
   (error  CDZ0302))
 
+(case "a literal in a MULTI-PAYLOAD user sum that overflows the annotated width is rejected"
+  (doc    "`(type P (P Int8 Int8))` then `(: (P 999 5) P)` — a multi-payload variant boxes its payloads as a
+           tuple, so the descent zips each declared payload type against its ctor arg: the FIRST arg 999
+           overflows Int8 → CDZ0302, as the single-payload `(W 999)` above. Pins the descent reaches every
+           position of a MULTI-payload variant (the tuple-zip arm), not only the single-payload newtype.")
+  (input  (do (type P (P Int8 Int8)) (def (main) (match (: (P 999 5) P) ((P u _v) u))) (export main)))
+  (error  CDZ0302))
+
 (case "a literal in a RECORD FIELD that overflows the annotated field width is rejected"
   (doc    "`(: (record (x 999)) (Record (: x Int8)))` — the record type's declared field `x : Int8` grounds
            the field literal `999`, which overflows Int8 → CDZ0302, exactly as the Option/user-sum payloads.
@@ -762,6 +770,42 @@
               (: (match n (0 0.5) (_ 1.0e300)) Float32))
             (export main)))
   (error  CDZ0302))
+
+(case "a CONST-FOLDED taken branch with a Float32-overflowing literal is rejected, not folded past the check"
+  (doc    "The const-scrutinee face: `(: (if true 1.0e300 0.5) Float32)` — the branch is decided at
+           compile time and the TAKEN arm's literal overflows binary32. The fold must not select the arm
+           and materialize inf BEFORE the width check runs (it once computed inf here — breaker finding
+           #8); the check rejects CDZ0302 exactly as the runtime-scrutinee branch face does. Ordering pin:
+           width-check-then-fold, never fold-then-skip-check.")
+  (input  (do
+            (def (main)
+              (: (if true 1.0e300 0.5) Float32))
+            (export main)))
+  (error  CDZ0302))
+
+(case "a Float32-overflowing literal grounded CONTEXTUALLY through arith is rejected"
+  (doc    "The no-annotation face: `(+ a 1.0e300)` with `a : Float32` — the `+` unifies operand widths,
+           grounding the bare literal at Float32 where it overflows binary32. Rejected CDZ0201 (the
+           contextual code, matching the integer arith-spine precedent `(+ a 10000)` at UInt8), NOT
+           silently converted f64→f32 saturating to inf (breaker finding #10 — it once ran to inf on
+           both backends). The FITTING companion below computes; together they pin that the float
+           arith-spine check exists and is a range check, not a blanket reject.")
+  (input  (do
+            (def (main (: a Float32))
+              (+ a 1.0e300))
+            (export main)))
+  (error  CDZ0201))
+
+(case "a fitting contextual float literal computes through the same arith grounding"
+  (doc    "The compute twin of the contextual reject above: `(+ a 3.25)` grounds 3.25 at Float32 (fits
+           binary32 exactly), so the program compiles and runs — 0.5 + 3.25 = 3.75. Guards the reject
+           from over-firing on in-range literals.")
+  (input  (do
+            (def (main (: a Float32))
+              (+ a 3.25))
+            (export main)))
+  (call   main (: 0.5 Float32))
+  (output (: 3.75 Float32)))
 
 (case "a NEGATIVE Float32-overflowing literal in a runtime branch is rejected"
   (doc    "The SIGN face of the Float32 branch descent: `(: (if c -1.0e300 0.5) Float32)` — the negative
@@ -1072,14 +1116,23 @@
            `+` unifies its operand widths, grounding the bare `1.5` at Float32, where it is exactly
            representable in binary32; `2.25 + 1.5` = `3.75` at f32 end-to-end. Pins that a float literal
            grounded by an OPERAND's width (no annotation anywhere) computes at the narrow width. (The
-           OVERFLOWING twin `(+ a 1.0e300)` currently materializes ±inf on both backends instead of
-           rejecting — filed as a check gap; when its reject lands, its case joins this one as the
-           float mirror of the UInt8 10000/100 arith-spine pair.)")
+           OVERFLOWING twin `(+ a 1.0e300)` is the reject case immediately below — the float mirror of the
+           UInt8 10000/100 arith-spine pair.)")
   (input  (do
             (def (main (: a Float32))
               (+ a 1.5))
             (export main)))
   (call   main (: 2.25 Float32)) (output (: 3.75 Float32)))
+
+(case "a FLOAT literal grounded to Float32 through an arith operand overflows to infinity and is rejected"
+  (doc    "The OVERFLOWING float mirror of the UInt8 10000-through-a-spine reject and the fitting `(+ a 1.5)`
+           twin: `(+ a 1.0e300)` over `(: a Float32)` — the `+` unifies operand widths, grounding `1.0e300`
+           at Float32 where it OVERFLOWS binary32 (largest finite ~3.4e38) and would become inf. Contextual
+           (no annotation) → CDZ0201, as the integer arith-spine overflow, NOT annotated CDZ0302. Before the
+           float arith-operand path ran fits_f32 it materialized inf on both backends. Pins the
+           contextual-grounding fit-check covers FLOAT widths.")
+  (input  (do (def (main (: a Float32)) (+ a 1.0e300)) (export main)))
+  (error CDZ0201))
 
 ; A COMPARISON WALLS OFF the arith-spine width climb — the other no-over-rejection face. The arith-spine
 ; fit-check climbs an integer-arith chain because an arith op (`+`/`*`/`%`) unifies its operands to ONE width;

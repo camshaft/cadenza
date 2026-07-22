@@ -2414,6 +2414,15 @@ fn rustc_run_driver(module: &str, driver: &str) -> Option<String> {
             .arg("--extern")
             .arg(format!("cdz_rt={}", rlib.display()));
     }
+    // The emitted preamble declares the prelude `Ast` sum, whose `Int` payload is now `cdz_num::Big` (a
+    // quoted AST stores integers non-lossily), so EVERY emitted module references `cdz_num` — link it here
+    // too (mirrors the sync `rustc_run`; harmless when the crate is otherwise unused).
+    if let Some((dep_dir, rlib)) = cdz_num_link() {
+        cmd.arg("-L")
+            .arg(format!("dependency={}", dep_dir.display()))
+            .arg("--extern")
+            .arg(format!("cdz_num={}", rlib.display()));
+    }
     let status = cmd.output().expect("run rustc");
     assert!(
         status.status.success(),
@@ -4147,7 +4156,7 @@ fn runtime_equality_over_a_recursive_sum_emits_a_recursive_helper_fn() {
     // helper via the `seen`/List path, not a Box deref. A runtime scrutinee so the match isn't folded away.
     let ast = compile_rust(
         "(module m (def (run (: k Int64)) \
-           (if (= (Ast.List (list (Ast.Int k) (Ast.Bool true))) \
+           (if (= (Ast.List (list (Ast.Int (BigInt.of k)) (Ast.Bool true))) \
                   (Ast.List (list (Ast.Int 5) (Ast.Bool true)))) 1 0)) (export run))",
     );
     assert!(

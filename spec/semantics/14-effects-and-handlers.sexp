@@ -4133,6 +4133,23 @@
   (output (: 100 Int64))
   (host-calls))
 
+(case "a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes"
+  (doc    "The String-entry-arg family (13-strings — wasm declines the entry marshal, a sound todo; rust
+           computes) composed with EFFECTS: the boundary `s` is concatenated into a runtime rope, performed
+           as the String ARGUMENT of `Log.emit`, and the handler arm reads the arg's byte length —
+           byte-len(\"xy\"+\"abc\") = 5. Pins the full entry→rope→op-arg→arm chain on the targets that
+           marshal the entry arg; the op-argument String path itself is already pinned const (the blen
+           case above) — this witnesses a RUNTIME-valued op argument flowing from the component boundary.")
+  (input  (do
+            (effect Log (op emit (-> String Int64)))
+            (def (main (: s String))
+              (handle Log 0
+                ((emit (m) st (resume (String.byte-len m) st)))
+                (Log.emit (String.concat s "abc"))))
+            (export main)))
+  (call   main (: "xy" String))
+  (output (: 5 Int64)))
+
 ; (The two "peer op whose compound/SUM RESULT escapes the entrypoint declines" corpus cases were REMOVED
 ;  once the resource-escape × peer-extern envelope FUSION landed — the shapes they witnessed as declines
 ;  now EMIT + run. The corpus gate cannot compose a live peer, so a peer-crossing RUN can't be a graded

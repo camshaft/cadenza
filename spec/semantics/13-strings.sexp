@@ -215,6 +215,81 @@
             (export main)))
   (output (: 42 Int64)))
 
+(case "a runtime String.slice probing a flat-keyed map hits by content"
+  (doc    "The SLICE-view member of the champ-key family (the rope cases above canonicalize CONCAT
+           ropes): the lookup key is a runtime-START `String.slice` of a larger string — a VIEW whose
+           content equals the stored flat key \"bc\". a=1 windows \"bc\" → hit (42); a=0 windows \"ab\" →
+           clean miss (-1). The slice view must content-canonicalize at the champ site exactly as a
+           rope does (a hash over the view node or the parent's bytes would miss the hit case). The
+           String twin of the Bytes slice-view champ-key contract — pinned here because the STRING side
+           already works; the Bytes side is finding #16.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((m (Map.insert Map.empty "bc" 42)))
+                (match (String.slice "abcd" a (+ a 2))
+                  ((Some s) (match (Map.lookup m s) ((Some v) v) ((None u) -1)))
+                  ((None u) -2))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 42 Int64))
+  (call   main (: 0 Int64))
+  (output (: -1 Int64)))
+
+(case "a runtime String.slice STORED as a map key is found by a flat probe"
+  (doc    "The stored-key direction: the slice view goes INTO the map as the key and the flat literal
+           probes it — insert-site canonicalization, the champ-site twin of the probe-side case above.
+           a=1 stores the \"bc\" window → the flat \"bc\" probe finds 42.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (String.slice "abcd" a (+ a 2))
+                ((Some s)
+                  (match (Map.lookup (Map.insert Map.empty s 42) "bc")
+                    ((Some v) v) ((None u) -1)))
+                ((None u) -2)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 42 Int64)))
+
+(case "a String.slice view returned from a helper OUTLIVES the helper's local parent"
+  (doc    "The String twin of the Bytes slice-escape liveness pin (10-bytes): `mk` builds its rope
+           parent as a LOCAL (`String.concat`, runtime storage) and returns a slice view of it — the
+           parent binding dies at the helper's return while the view escapes. The caller compares the
+           escaped view by CONTENT against a flat literal: a=1 windows \"bc\" → equal (1); a=0 windows
+           \"ab\" → unequal (0). A reclaim at scope exit (rather than last-reference) would hand the
+           caller a dangling view; a stale window would flip an answer.")
+  (input  (do
+            (def (mk (: a Int64))
+              (let ((parent (String.concat "ab" "cd")))
+                (match (String.slice parent a (+ a 2))
+                  ((Some s) s)
+                  ((None u) ""))))
+            (def (main (: a Int64))
+              (if (= (mk a) "bc") 1 0))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64)))
+
+(case "Symbol.of over a slice of a dying rope interns the WINDOW content"
+  (doc    "The intern composition of the escape: inside the helper, `Symbol.of` interns a slice view of
+           the local rope — the symbol's identity must be the window's CONTENT (\"bc\" → equals the
+           interned constant `#\"bc\"`), captured before or independent of the parent's death. An intern
+           reading the parent's full bytes, or a window gone stale at the helper return, would produce a
+           different symbol. Composes three pinned facts (slice re-basing, rope flatten at intern,
+           view escape) into the tokenizer idiom: intern a window of a transient buffer.")
+  (input  (do
+            (def (mk (: a Int64))
+              (let ((parent (String.concat "ab" "cd")))
+                (match (String.slice parent a (+ a 2))
+                  ((Some s) (Symbol.of s))
+                  ((None u) (Symbol.of "?")))))
+            (def (main (: a Int64))
+              (if (= (mk a) #"bc") 1 0))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64)))
+
 (case "a runtime string rope inserted into a set is a member"
   (doc    "The SET element-insert companion of the map-key cases: inserting a runtime String ROPE
            `(rep \"hi\" 3)`=\"hixxx\" into an empty set yields a 1-element set (`Set.len` = 1). Two

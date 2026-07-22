@@ -1562,6 +1562,39 @@ fn emit_rust_module(exe: &std::path::Path, source: &str) -> EmitOutcome {
 /// `error <first-stderr-line>` (a bad artifact = a miscompile); a non-zero RUN is `trap <…>` (a panic =
 /// a Cadenza trap); success is `value <stdout>` (the rendered boundary value). The temp dir is removed on
 /// every return via an RAII guard.
+/// Locate a backend dependency rlib (`cdz_rt`/`cdz_num`) for the `run-rust` link. Prefer the PLAIN
+/// top-level `lib<crate>.rlib` in `lib_dir` (a `cargo build`-built workspace has it beside the `cdz` bin);
+/// else fall back to the NEWEST `deps/lib<crate>-<hash>.rlib` (what `cargo test` produces — the plain name
+/// is often absent there, only the hashed one). Newest-by-mtime so a rebuild's fresh artifact wins over a
+/// stale one. `None` if neither exists (the caller then omits the `--extern`, as before — a program that
+/// references the crate then fails rustc loudly, which is strictly better than a silent wrong link).
+fn find_backend_rlib(
+    lib_dir: &std::path::Path,
+    deps_dir: &std::path::Path,
+    crate_name: &str,
+) -> Option<std::path::PathBuf> {
+    let plain = lib_dir.join(format!("lib{crate_name}.rlib"));
+    if plain.exists() {
+        return Some(plain);
+    }
+    // deps/lib<crate>-<hash>.rlib — pick the most recently modified match.
+    let prefix = format!("lib{crate_name}-");
+    std::fs::read_dir(deps_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            n.starts_with(&prefix) && n.ends_with(".rlib")
+        })
+        .max_by_key(|e| {
+            e.metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        })
+        .map(|e| e.path())
+}
+
 fn compile_and_run_rust_driver(exe: &std::path::Path, driver: &str) -> Result<String, String> {
     use std::process::Command;
     let lib_dir = exe
@@ -1592,14 +1625,28 @@ fn compile_and_run_rust_driver(exe: &std::path::Path, driver: &str) -> Result<St
         .arg(&bin);
     cmd.arg("-L")
         .arg(format!("dependency={}", lib_dir.display()));
-    let rt = lib_dir.join("libcdz_rt.rlib");
-    if rt.exists() {
-        cmd.arg("--extern").arg(format!("cdz_rt={}", rt.display()));
+    // Also search `deps/` (cargo's hashed-rlib directory) — a `cargo test`-built `cdz` bin sits in
+    // `target/<profile>/deps/` OR `target/<profile>/`, and the dependency rlibs it links against live in
+    // `deps/` under HASHED names (`libcdz_num-<hash>.rlib`), NOT as the plain top-level `libcdz_num.rlib`.
+    let deps_dir = lib_dir.join("deps");
+    if deps_dir.is_dir() {
+        cmd.arg("-L")
+            .arg(format!("dependency={}", deps_dir.display()));
     }
-    let num = lib_dir.join("libcdz_num.rlib");
-    if num.exists() {
-        cmd.arg("--extern")
-            .arg(format!("cdz_num={}", num.display()));
+    // Locate each backend rlib ROBUSTLY: the plain top-level `lib<crate>.rlib` (a `cargo build`-built
+    // workspace has these) OR the newest `deps/lib<crate>-<hash>.rlib` (what `cargo test` produces — the
+    // plain name may be ABSENT there). Before the built-in `Ast` enum began referencing `cdz_num::Big`
+    // (v-metaprogramming's Ast.Int Int64->BigInt), a program that used neither rlib linked fine when both
+    // were skipped — but now EVERY emitted program references `cdz_num` (the always-emitted `Ast` enum), so
+    // silently skipping the `--extern` on a missing plain rlib produced a cryptic `E0433 cannot find crate
+    // cdz_num` in CI (which lacked the plain-named rlib at `exe.parent()`). Find-either fixes it wherever
+    // cargo put the artifact. `--extern` only MAKES a crate available (not force-linked), so naming one the
+    // program doesn't reference stays harmless.
+    for crate_name in ["cdz_rt", "cdz_num"] {
+        if let Some(rlib) = find_backend_rlib(lib_dir, &deps_dir, crate_name) {
+            cmd.arg("--extern")
+                .arg(format!("{crate_name}={}", rlib.display()));
+        }
     }
     let compile = cmd
         .output()

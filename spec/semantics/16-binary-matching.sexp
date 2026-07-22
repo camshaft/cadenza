@@ -997,6 +997,28 @@
   (call   main (: 2 Int64))
   (output (: -1 Int64)))
 
+(case "a dependent-size body over a runtime-start slice re-bases its size arithmetic per call"
+  (doc    "The size-arithmetic face of the runtime-start slice, completing the axis beside tag-dispatch and
+           the rest-binder above: `(bin (u8 n) (bytes body n))` reads a leading length then binds `body` to
+           the next n SLICE bytes. At a=1 the window is `[2,55,66]`, n=2, so `body` is the 2 bytes `[55,66]`
+           → len 2. At a=0 the window is `[9,2,55]`, n=9 demands 9 bytes but only 2 remain IN THE VIEW → the
+           dependent segment fails its bounds check → non-match → -1. Pins that the `off = slice_start +
+           prior + read(n)` offset is computed against the VIEW's base and length, not the parent buffer's —
+           a size arm that read `n` from the parent's byte 0 (or bounded n against the parent's remaining 4)
+           would decode a different window or spuriously match at a=0.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Bytes.slice (Bytes.of (list 9 2 55 66 7)) a 3)
+                ((Some s) (match s
+                            ((bin (u8 n) (bytes body n)) (Bytes.len body))
+                            (_ -1)))
+                ((None u) -2)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 2 Int64))
+  (call   main (: 0 Int64))
+  (output (: -1 Int64)))
+
 (case "a NESTED runtime bin match re-parses a bin-decoded payload"
   (doc    "The recursive / chunked-parser shape: an outer `(bin (u8 n) (bytes body n))` decodes a
            length-prefixed payload, binding `body` to the `n`-byte sub-Bytes, and the arm body then runs a
