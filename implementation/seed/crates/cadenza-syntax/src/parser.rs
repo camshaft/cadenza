@@ -3321,7 +3321,23 @@ impl<'a> Parser<'a> {
         if !self.at(Kind::RBracket) {
             loop {
                 let before = self.pos;
-                items.push(segment(self));
+                // Own-line `//` comment(s) leading this segment (`b[\n // seg\n u8(1), …]`) sit in its
+                // first-token leading slot, which `expr`/`pattern` do not drain — capture + wrap
+                // `(comment "text" seg)`. A same-line `//` trailing the LAST segment (`b[…, u8(2) // n]`)
+                // sits in the `]` slot; capture as `(comment-after …)` gated on `at(RBracket)` (the PR#758
+                // rule — a non-last segment's next token is `,`, no faithful slot). The `b[…]` printer
+                // (construction) renders both via the shared comment-aware path; `strip_comments` peels
+                // them so the compiler is unaffected. Same shape as `list_literal`.
+                let leading = self.take_comments_here();
+                let seg = segment(self);
+                let seg = self.wrap_comments(leading, seg);
+                let seg = if self.at(Kind::RBracket) {
+                    let trailing = self.take_trailing_comment_here();
+                    self.wrap_comment_after(trailing, seg)
+                } else {
+                    seg
+                };
+                items.push(seg);
                 if !self.sep_continue(Kind::RBracket) {
                     break;
                 }

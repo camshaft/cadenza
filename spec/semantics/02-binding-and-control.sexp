@@ -350,6 +350,40 @@
   (call   nest (: 0 UInt32))
   (output (: 3 Int64)))
 
+(case "a refinement folds a comparison over a no-overflow arith operand, but preserves the trap when it can overflow"
+  (doc    "Value-facts slice 6c: a flow refinement propagates THROUGH a checked arith op into a downstream
+           comparison, which folds — but ONLY when the arith is provably-no-overflow in that flow context, so
+           dropping it (the fold discards the operand) drops no reachable trap. Two shapes, one the elision and
+           one its SOUNDNESS TWIN — the trap the fold must NOT swallow:
+             `bounded`: under `(and (>= x 0) (< x 10))`, `x ∈ [0,9]` ⇒ `(+ x 1) ∈ [1,10]` cannot overflow and
+               is `< 11` always, so `(if (< (+ x 1) 11) 1 2)` folds to `1` (x ∈ [0,9]) / the outer else `3`
+               (x ≥ 10). The `(+ x 1)` is dropped — trap-safe, because it provably cannot overflow here.
+             `unbounded` (SOUNDNESS TWIN): under just `(> x 0)`, `x ∈ [1, Int64.max]` has NO upper bound, so
+               `(+ x 1)` CAN overflow (at `x = Int64.max`). The fold therefore MUST decline (a checked `+` is
+               not trap-free, and it is not provably-no-overflow here), so at `x = Int64.max` the `(+ x 1)`
+               still TRAPS — the trap is preserved, not folded away. This pins that the 6c fold is licensed by
+               the overflow PROOF, not merely by the refinement's presence.
+           Guards the both-backend value + trap behavior of the arith-composed compare fold (the Lir-level
+           fold is unit-pinned in rcdzc `a_flow_refinement_propagates_through_a_no_overflow_arith...`).")
+  (input  (do
+            (def (bounded   (: x Int64)) (if (and (>= x 0) (< x 10)) (if (< (+ x 1) 11) 1 2) 3))
+            (def (unbounded (: x Int64)) (if (> x 0) (if (< (+ x 1) 11) 1 2) 3))
+            (export bounded)
+            (export unbounded)))
+  ; bounded: (+ x 1) ∈ [1,10] < 11 always → 1 for x ∈ [0,9]; x ≥ 10 → outer else 3.
+  (call   bounded (: 5 Int64))
+  (output (: 1 Int64))
+  (call   bounded (: 9 Int64))
+  (output (: 1 Int64))
+  (call   bounded (: 20 Int64))
+  (output (: 3 Int64))
+  ; unbounded (soundness twin): x > 0 has no upper bound → (+ x 1) can overflow → fold DECLINES → the checked
+  ; add TRAPS at x = Int64.max (the trap survives); a small x still computes (5 → (+ x 1)=6 < 11 → 1).
+  (call   unbounded (: 5 Int64))
+  (output (: 1 Int64))
+  (call   unbounded (: 9223372036854775807 Int64))
+  (trap   "integer overflow"))
+
 (case "conditional propagation respects a shadowing rebind of the condition variable"
   (doc    "The propagation must track the condition's VALUE in scope, not match its text: `(let ((c (< n
            5))) (if c 1 (let ((c true)) (if c 2 3))))` with n = 10 has the OUTER `c` = false (10 < 5 is

@@ -559,6 +559,48 @@
   (call   main (: 9 Int64))
   (output (: -1 Int64)))
 
+(case "a handler arm RECURSES through a named helper before resuming"
+  (doc    "The arm-calls-a-def face: `tally`'s arm computes `(triangle v 0)` — a RECURSIVE tail loop over
+           the op argument — before resuming with its result (4 → 10, 10 → 55). The arm body is not a
+           plain expression context: the recursive call runs under the handler's dispatch frame, and its
+           result feeds the resume. An arm lowering that couldn't re-enter user code (or that confused
+           the helper's frames with the handler's) breaks the larger input.")
+  (input  (do
+            (effect Sum (op tally (-> Int64 Int64)))
+            (def (triangle (: n Int64) (: acc Int64))
+              (if (< n 1) acc (triangle (- n 1) (+ acc n))))
+            (def (main (: n Int64))
+              (handle Sum 0
+                ((tally (v) s (resume (triangle v 0) s)))
+                (Sum.tally n)))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 10 Int64))
+  (call   main (: 10 Int64))
+  (output (: 55 Int64)))
+
+(case "an arm's NEXT-STATE expression saturates via a conditional on the current state"
+  (doc    "The state-transition-function face: the arm's next-state is `(if (>= s 3) 3 (+ s 1))` — a
+           CLAMP, not a plain increment. Four bumps from seed 0 read 0,1,2,3 with the final read at the
+           ceiling (3); from seed 5 the first transition already clamps (5 → 3, reads 5 then 3,3,3 —
+           final 3). Pins that the next-state slot accepts arbitrary expressions over the current state
+           (the existing arms all use unconditional arithmetic) and that the transition applies AFTER the
+           read, per resume.")
+  (input  (do
+            (effect Clamp (op bump (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle Clamp n
+                ((bump (u) s (resume s (if (>= s 3) 3 (+ s 1)))))
+                (do (Clamp.bump unit)
+                    (Clamp.bump unit)
+                    (Clamp.bump unit)
+                    (Clamp.bump unit))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64))
+  (call   main (: 5 Int64))
+  (output (: 3 Int64)))
+
 (case "a ctl-style arm applying its continuation inside a match scrutinee resolves and folds"
   (doc    "The continuation binder `k` of a `ctl`-style arm must be in scope everywhere in the arm body,
            including inside a MATCH scrutinee. `(flip () s k (match (k 10) (z (* z 2))))` applies `k`

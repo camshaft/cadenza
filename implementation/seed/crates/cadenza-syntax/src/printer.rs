@@ -2206,7 +2206,11 @@ impl<'a> Printer<'a> {
     /// `(bin)` prints as `b[]`. The `[` is glued to `b` (the lexer emits one `BinOpen` token), so the
     /// open delimiter is the literal string `b[`.
     fn print_bin(&mut self, segs: &[StructId]) {
-        self.bracketed("b[", "]", false, segs, |p, s| p.expr(s, 0));
+        // Comment-aware like the list literal: a leading `(comment …)` on a segment prints on its own
+        // line above it (via `expr`), and a same-line trailing `(comment-after …)` on the LAST segment
+        // re-prints `seg // text` with `]` forced to its own line. A non-last `comment-after` (decoded
+        // AST only) declines the sugar → generic call form (round-trips). `strip_comments` peels both.
+        self.bracketed_comment_aware("b[", "]", false, segs);
     }
 
     /// A tagged template `(tagged-template <tag> (chunks <str>…) (holes <expr>…))` renders back to the
@@ -6386,6 +6390,38 @@ mod tests {
             print(&sexpr::read("(match x ((bin (u16 n)) n))").unwrap(), 80),
             "match x with\n  | b[u16(n)] => n"
         );
+    }
+
+    #[test]
+    fn a_comment_on_a_binary_segment_is_preserved_not_dropped() {
+        // A comment on a `b[…]` CONSTRUCTION segment — own-line leading (`b[\n // seg\n u8(1), …]`) or a
+        // same-line trailing on the LAST segment (`b[…, u8(2) // n]`) — used to be DROPPED (segments are
+        // parsed via `expr`, which doesn't drain the leading slot; the last-segment trailing sat in the
+        // `]` slot). bin_form now captures both (leading `(comment …)`, last-segment `(comment-after …)`
+        // gated on `at(RBracket)`), and print_bin uses the shared `bracketed_comment_aware`. Same as the
+        // list literal. `strip_comments` peels them; compiles to wasm.
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("def b() -> Bytes = b[\n  // seg\n  u8(1), u8(2)]").arenas
+            ),
+            "(def (b) (: (bin (comment \"seg\" (u8 1)) (u8 2)) Bytes))",
+            "own-line comment before the first bin segment is captured"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def b() -> Bytes = b[u8(1), u8(2) // last\n]").arenas),
+            "(def (b) (: (bin (u8 1) (comment-after \"last\" (u8 2))) Bytes))",
+            "same-line trailing comment on the last bin segment is captured"
+        );
+        assert_eq!(
+            assert_roundtrip("b[\n  // seg\n  u8(1), u8(2)]", 80),
+            "b[\n  // seg\n  u8(1),\n  u8(2)\n]"
+        );
+        // Clean binary literals keep their flat layout.
+        assert_eq!(
+            assert_roundtrip("b[u16(258), u8(1)]", 80),
+            "b[u16(258), u8(1)]"
+        );
+        assert_eq!(assert_roundtrip("b[]", 80), "b[]");
     }
 
     #[test]
