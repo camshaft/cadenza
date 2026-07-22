@@ -8986,6 +8986,39 @@
   (call   main (: 2 Int64)) (output (: 30509101 Int64))
   (call   main (: -6 Int64)) (output (: 29701021 Int64)))
 
+(case "a SLIDING-WINDOW max walks a k=3 window by paired index reads"
+  (doc    "The windowed aggregate (the scan above threads state STEP to step; a window re-READS a
+           band of the source per output element): each output i is max(xs[i], xs[i+1], xs[i+2]) via
+           THREE fallible `List.at` reads unwrapped on provably in-bounds indices — adjacent windows
+           OVERLAP by two elements, so one source element feeds up to three outputs (a stale or
+           shifted read shears every window containing it). Over `(3 1 n 5 2)` the runtime n sits in
+           ALL THREE windows: n=4 → maxes 4,5,5 (455 — n wins only the first); n=9 → 9,9,9 (999 —
+           one element dominating every window it touches); n=0 → 3,5,5 (355 — n wins NONE and each
+           window's max comes from a different survivor). The 2-arg max is composed as a 3-way
+           if-chain, so each window also exercises nested comparison selection.")
+  (input  (do
+            (def (at (: xs (List Int64)) (: i Int64))
+              (Option.expect (List.at xs i) "in-bounds"))
+            (def (max3 (: a Int64) (: b Int64) (: c Int64))
+              (if (> a b) (if (> a c) a c) (if (> b c) b c)))
+            (def (windows (: xs (List Int64)) (: i Int64) (: last Int64) (: acc (List Int64)))
+              (if (> i last)
+                  acc
+                  (windows xs (+ i 1) last
+                    (List.push acc (max3 (at xs i) (at xs (+ i 1)) (at xs (+ i 2)))))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: n Int64))
+              (do
+                (def xs (list 3 1 n 5 2))
+                (chk (windows xs 0 2 (list)) 0)))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 455 Int64))
+  (call   main (: 9 Int64)) (output (: 999 Int64))
+  (call   main (: 0 Int64)) (output (: 355 Int64)))
+
 (case "take-while and drop-while split a leading run and reassemble to the original"
   (doc    "The span law: `take-while` and `drop-while` walk the SAME spine with the SAME predicate
            `(< h 5)` independently — one accumulating the leading run, the other just advancing —

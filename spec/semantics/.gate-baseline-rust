@@ -40,6 +40,7 @@ pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
+pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
 pass	a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN
 pass	a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack
 pass	a STATS record threads min/max/sum/count as one fold accumulator with data-dependent field updates
@@ -4816,3 +4817,4 @@ pass	a constant shift-left that overflows a high UInt64 width still rejects
 pass	a constant shift count at or beyond the width over a high UInt64 still rejects
 pass	a constant shift-left of a small UInt64 operand whose result overflows i64 folds over the solved width
 pass	a constant shift-left of a small UInt32 operand into its high bit folds (width-generic guard)
+pass	a scalar-indexed split over a MULTIBYTE string bounds its walk by scalar-len, not byte-len

@@ -13,9 +13,9 @@
 /// there is one ground type — so this column is the DB-shaped monomorphic specialization. It widens to call
 /// the HM engine when the language grows function types.)
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed } from "parse-db"
 import { fits-width } from "int-width"
-import { Resolved, resolve-tree } from "resolve-db"
+import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ty-deferred-int, ground-default } from "ty"
 import { unify-ty } from "unify-ty"
 
@@ -77,6 +77,9 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         // walk does value then body), so tcol already holds it. An unbound var (RPoison) is TErr.
         (match Map.lookup(rcol, id) with
           | Option.Some(Resolved.RBound(binder)) => Map.insert(tcol, id, var-type(tree, binder, tcol))
+          // HIGHER-ORDER (HO-2b-ii-A): a bare def-name used as a VALUE resolves to RDef(defName) → its type is
+          // the def's ARROW (Typed.TFn of its param types → body result). Types `inc` in `(apply inc 41)`.
+          | Option.Some(Resolved.RDef(defName)) => Map.insert(tcol, id, def-arrow-type(tree, defName, rcol, tcol))
           | _ => Map.insert(tcol, id, Typed.TErr))
     | Option.Some(Node.NBin(op, l, r)) =>
         // infer both operands; the result type is op-dependent. Arithmetic (43/45/42) needs Int operands and
@@ -170,6 +173,71 @@ def param-bind-type(tree: Tree, paramId: Int64, argTy: Typed) =
   (match param-type-of(tree, paramId) with
     | Option.Some(enc) => Typed.TIntW(pt-signed(enc), pt-width(enc))   // declared narrow type drives the body
     | Option.None(_) => argTy)                                          // untyped param → arg's type flows
+
+/// HIGHER-ORDER (HO-2b-ii-A): the ARROW type of a def used as a first-class VALUE — `Typed.TFn([param-types],
+/// bodyResult)`. Each param's type = its declared narrow type (`param-type-of`) or Int64 (untyped default —
+/// the monomorphic-i64 pipeline's default, same as a call's arg-flow when untyped). The result = the def
+/// body's inferred type (typed under the params bound to those types, so the body's param uses resolve). A
+/// def with no body → TErr. Mirrors how a call would type, but produces the ARROW instead of the result — so
+/// `inc` as a value is `(Int64) -> Int64`, and the enclosing `(apply inc 41)` can check inc against apply's
+/// fn-param type (HO-2b-ii-B / lower).
+def def-arrow-type(tree: Tree, defName: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  (match def-body-of(tree, defName) with
+    | Option.None(_) => Typed.TErr
+    | Option.Some(bodyId) =>
+        (let params = def-param-ids(tree, defName) in
+         (let ptys = def-param-types(tree, params) in
+          // Resolve the body STANDALONE in the def's PARAM scope (like lower-one-def) so the body's param uses
+          // get RBound facts — WITHOUT this, `n` in `(+ n 1)` has no resolve fact → the body types TErr and the
+          // arrow's result would be wrong. Then bind each param to its type and infer the body's result type.
+          (let scope = def-param-scope-arrow(tree, params, 0, (Map.empty : Map(Int64, Int64))) in
+           (let brcol = resolve-node(tree, bodyId, scope, (Map.empty : Map(Int64, Resolved))) in
+            (let tcol1 = bind-param-types(params, ptys, 0, tcol) in
+             (let tb = infer-node(tree, bodyId, brcol, tcol1) in
+              (match Map.lookup(tb, bodyId) with
+                | Option.Some(rty) => Typed.TFn(ptys, rty)
+                | Option.None(_) => Typed.TErr))))))))
+
+/// Build the def's param SCOPE (nameId→binder for each param) for resolving the body standalone — the arrow
+/// counterpart of lower-db's def-param-scope (param-scope on each param binder-id).
+def def-param-scope-arrow(tree: Tree, params: List(Int64), i: Int64, scope: Map(Int64, Int64)) =
+  (if i == List.len(params) then scope
+   else (match List.at(params, i) with
+     | Option.None(_) => scope
+     | Option.Some(pid) => def-param-scope-arrow(tree, params, i + 1, param-scope(tree, pid, scope))))
+
+/// The param binder-ids of def `defName`, in order (param-of/2/3/4-of; stops at the first missing). ≤4 params
+/// (the current call-arity surface); a 0-param def → empty list.
+def def-param-ids(tree: Tree, defName: Int64) =
+  (match param-of(tree, defName) with
+    | Option.None(_) => ([] : List(Int64))
+    | Option.Some(p1) => (match param2-of(tree, defName) with
+        | Option.None(_) => List.push([], p1)
+        | Option.Some(p2) => (match param3-of(tree, defName) with
+            | Option.None(_) => List.push(List.push([], p1), p2)
+            | Option.Some(p3) => (match param4-of(tree, defName) with
+                | Option.None(_) => List.push(List.push(List.push([], p1), p2), p3)
+                | Option.Some(p4) => List.push(List.push(List.push(List.push([], p1), p2), p3), p4)))))
+
+/// The declared type of each param (param-type-of narrow, else Int64 default), positionally.
+def def-param-types(tree: Tree, params: List(Int64)) = def-param-types-go(tree, params, 0, ([] : List(Typed)))
+def def-param-types-go(tree: Tree, params: List(Int64), i: Int64, acc: List(Typed)) =
+  (if i == List.len(params) then acc
+   else (match List.at(params, i) with
+     | Option.None(_) => acc
+     | Option.Some(pid) => (let pty = (match param-type-of(tree, pid) with
+           | Option.Some(enc) => Typed.TIntW(pt-signed(enc), pt-width(enc))
+           | Option.None(_) => t-int64()) in
+        def-param-types-go(tree, params, i + 1, List.concat(acc, List.push([], pty))))))
+
+/// Bind each param binder-id to its type in tcol (for def-arrow-type's body inference). Index recursion.
+def bind-param-types(params: List(Int64), ptys: List(Typed), i: Int64, tcol: Map(Int64, Typed)) =
+  (if i == List.len(params) then tcol
+   else (match List.at(params, i) with
+     | Option.None(_) => tcol
+     | Option.Some(pid) => (match List.at(ptys, i) with
+         | Option.None(_) => tcol
+         | Option.Some(pty) => bind-param-types(params, ptys, i + 1, Map.insert(tcol, pid, pty)))))
 
 def infer-app-with-arg-ty(tree: Tree, id: Int64, calleeId: Int64, calleeBody: Int64, paramId: Int64, argId: Int64, rcol: Map(Int64, Resolved), ta: Map(Int64, Typed), argTyOpt: Option(Typed)) =
   (match argTyOpt with
@@ -1055,4 +1123,37 @@ def id-if-two-literal-branches-still-type-slice-b1b() =
             (match add-node(t5, Node.NIf(condId, thenId, elseId)) with | (ifId, t6) =>
               (if is-int-at(t6, ifId, ifId) then unit else trap("two-literal if still types Int"))))))))
 
-export { Typed.*, infer-node, infer-tree, type-at, ground-deferred, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }
+/// HO-2b-ii-A test helper: build `inc` (name 900) = (def (inc n) (+ n 1)) + a bare ref NVar(900); returns
+/// (refId, tree). param n = NVar(1); body (+ n 1).
+def ho-inc-ref-tree() =
+  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
+    (match add-node(t1, Node.NVar(1)) with | (nUse, t2) =>
+      (match add-node(t2, Node.NLit(1)) with | (oneId, t3) =>
+        (match add-node(t3, Node.NBin(43, nUse, oneId)) with | (bodyId, t4) =>
+          (let t5 = record-param(t4, 900, paramId) in
+           (let t6 = record-def(t5, 900, bodyId) in
+            (match add-node(t6, Node.NVar(900)) with | (refId, tree) => (refId, tree))))))))
+
+@test
+def id-def-arrow-type-builds-tfn() =
+  // HO-2b-ii-A: def-arrow-type on `inc` (name 900, one Int64 param, body (+ n 1)) → TFn([Int64], Int64).
+  (match ho-inc-ref-tree() with | (_, tree) =>
+    (match def-arrow-type(tree, 900, (Map.empty : Map(Int64, Resolved)), (Map.empty : Map(Int64, Typed))) with
+      | Typed.TFn(ps, r) => (match r with
+          | Typed.TIntW(_, 64) => (if List.len(ps) == 1 then unit else trap("inc arrow has 1 param"))
+          | _ => trap("inc arrow result is Int64"))
+      | Typed.TErr => trap("def-arrow-type = TErr (body infer failed)")
+      | _ => trap("def-arrow-type is a TFn")))
+
+@test
+def id-def-name-as-value-types-as-arrow() =
+  // HO-2b-ii-A: a bare def-name reference NVar(900) resolves to RDef(900) → infers to inc's arrow TFn (not TErr).
+  (match ho-inc-ref-tree() with | (refId, tree) =>
+    (let rcol = resolve-node(tree, refId, (Map.empty : Map(Int64, Int64)), (Map.empty : Map(Int64, Resolved))) in
+     (let tcol = infer-node(tree, refId, rcol, (Map.empty : Map(Int64, Typed))) in
+      (match Map.lookup(tcol, refId) with
+        | Option.Some(Typed.TFn(_, _)) => unit
+        | Option.Some(Typed.TErr) => trap("def-name-as-value should be a TFn arrow, not TErr")
+        | _ => trap("inc-as-value types as TFn")))))
+
+export { Typed.*, infer-node, infer-tree, type-at, ground-deferred, well-typed, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type }

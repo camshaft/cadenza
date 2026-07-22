@@ -18419,20 +18419,31 @@ fn fold_shift_bitwise_at_width(
     } else {
         (1u128 << width) - 1
     };
-    let folded: Option<u128> = match op {
-        Prim::BitAnd => Some((xb & yb) & mask),
-        Prim::BitOr => Some((xb | yb) & mask),
-        Prim::BitXor => Some((xb ^ yb) & mask),
+    // `Ok(value)` folds; `Err(reason)` is a provable trap → CDZ0304 carrying the SPECIFIC cause (an
+    // out-of-range shift count vs a shifted-result overflow), matching `fold_arith`/`const_trap_cause`'s
+    // actionable style rather than one generic "count or overflow" message. Bitwise ops never trap.
+    let folded: Result<u128, String> = match op {
+        Prim::BitAnd => Ok((xb & yb) & mask),
+        Prim::BitOr => Ok((xb | yb) & mask),
+        Prim::BitXor => Ok((xb ^ yb) & mask),
         // `<<`: count must be in `0..width`; fold only when no bit is shifted PAST the width (else the checked
         // default traps — matching the i64 helper's `None`-on-overflow, but against the SOLVED width not i64).
         Prim::Shl => {
             let count = yb;
             if count >= width as u128 {
-                None
+                Err(format!(
+                    "shift count {count} is out of range for the {width}-bit type \
+                     (a shift count must be 0..={})",
+                    width - 1
+                ))
             } else {
                 match xb.checked_shl(count as u32) {
-                    Some(s) if s == (s & mask) => Some(s),
-                    _ => None,
+                    Some(s) if s == (s & mask) => Ok(s),
+                    _ => Err(format!(
+                        "the shifted result overflows the {width}-bit type \
+                         (a `<<` by {count} moves a set bit past the width) — shift a smaller value \
+                         or use a wider type"
+                    )),
                 }
             }
         }
@@ -18440,24 +18451,27 @@ fn fold_shift_bitwise_at_width(
         Prim::Shr => {
             let count = yb;
             if count >= width as u128 {
-                None
+                Err(format!(
+                    "shift count {count} is out of range for the {width}-bit type \
+                     (a shift count must be 0..={})",
+                    width - 1
+                ))
             } else {
-                Some((xb >> count) & mask)
+                Ok((xb >> count) & mask)
             }
         }
         _ => unreachable!("guarded by the matches! above"),
     };
     Some(match folded {
-        Some(r) => {
+        Ok(r) => {
             trace!(target: "rcdzc::fold", op = intrinsic_name(op), "constant shift/bitwise folded over the solved width");
             Core::ConstInt(IntValue::from_u128(r))
         }
-        None => {
-            trace!(target: "rcdzc::fold", op = intrinsic_name(op), "constant shift traps (count out of range or overflow) → CDZ0304");
+        Err(reason) => {
+            trace!(target: "rcdzc::fold", op = intrinsic_name(op), %reason, "constant shift traps → CDZ0304");
             Core::Poison(Reject::coded(
                 Code::ConstTrap,
-                "this constant shift traps (the count is out of range for the type, \
-                 or the shifted result overflows it)",
+                format!("this constant `{}` traps: {reason}", intrinsic_name(op)),
             ))
         }
     })
