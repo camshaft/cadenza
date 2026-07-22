@@ -14,9 +14,9 @@
 /// NO core form (a filled `None`), not a bogus tree. Lowering reads the infer column to make this decision,
 /// and reads the resolve column to canonicalize vars — producer-reads-two-producers.
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
-import { Resolved, resolve-tree } from "resolve-db"
-import { Typed, infer-tree } from "infer-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
+import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
+import { Typed, infer-tree, infer-node } from "infer-db"
 
 /// The integer Core IR. `CVar` carries the BINDER node-id (canonical unique name); `CLet` is keyed by its
 /// own let-node-id. Op codes match the parser/token codes (43 +, 45 -, 42 *).
@@ -245,6 +245,69 @@ def lower-rec-arg-opt(tree: Tree, slot: Option(Int64), rcol: Map(Int64, Resolved
 def lower-tree(tree: Tree, root: Int64) =
   lower-node(tree, root, resolve-tree(tree, root), infer-tree(tree, root))
 
+/// slice-B1b: the param BINDER node-ids a def-name declares, in order (`[]` for a nullary def). The def-env
+/// keys the body's CVar binders by these ids; eval binds args positionally to them in a fresh env.
+def def-param-ids(tree: Tree, nameId: Int64) =
+  (match param-of(tree, nameId) with
+    | Option.None(_) => ([] : List(Int64))
+    | Option.Some(p1) =>
+        (let l1 = List.push([], p1) in
+         (let l2 = (match param2-of(tree, nameId) with | Option.Some(p2) => List.push(l1, p2) | Option.None(_) => l1) in
+          (let l3 = (match param3-of(tree, nameId) with | Option.Some(p3) => List.push(l2, p3) | Option.None(_) => l2) in
+           (match param4-of(tree, nameId) with | Option.Some(p4) => List.push(l3, p4) | Option.None(_) => l3)))))
+
+/// slice-B1b: the param SCOPE (resolve env, nameId→binderNode) for a def body — mirrors the resolve NApp
+/// arm's body scope. Reused to resolve the body standalone.
+def def-param-scope(tree: Tree, nameId: Int64) =
+  (match param-of(tree, nameId) with
+    | Option.None(_) => (Map.empty : Map(Int64, Int64))
+    | Option.Some(p1) =>
+        (let s1 = param-scope(tree, p1, (Map.empty : Map(Int64, Int64))) in
+         (let s2 = (match param2-of(tree, nameId) with | Option.Some(p2) => param-scope(tree, p2, s1) | Option.None(_) => s1) in
+          (let s3 = (match param3-of(tree, nameId) with | Option.Some(p3) => param-scope(tree, p3, s2) | Option.None(_) => s2) in
+           (match param4-of(tree, nameId) with | Option.Some(p4) => param-scope(tree, p4, s3) | Option.None(_) => s3)))))
+
+/// slice-B1b: seed a type column with each param binder-id → Int64, so `infer-node` types a def body
+/// standalone (var-type reads a param's type from tcol by binder-id). Monomorphic-i64: every param is Int64.
+def seed-param-types(params: List(Int64), tcol: Map(Int64, Typed)) =
+  (match params with
+    | [] => tcol
+    | [p, .. rest] => seed-param-types(rest, Map.insert(tcol, p, Typed.TIntW(true, 64))))
+
+/// slice-B1b: lower ONE def body STANDALONE — resolve it in its param scope, infer it under params→Int64,
+/// then lower. `Option((paramBinderIds, bodyCore))` — `None` if the body is ill-typed / doesn't lower (that
+/// def just won't be callable; a call to it declines at eval). The body's recursive self-calls lower to
+/// `CCall` LEAVES (lower-recursive-call does not descend), so this terminates.
+def lower-one-def(tree: Tree, nameId: Int64, bodyId: Int64) =
+  (let params = def-param-ids(tree, nameId) in
+   (let scope = def-param-scope(tree, nameId) in
+    (let rcol = resolve-node(tree, bodyId, scope, (Map.empty : Map(Int64, Resolved))) in
+     (let tcol = infer-node(tree, bodyId, rcol, seed-param-types(params, (Map.empty : Map(Int64, Typed)))) in
+      (match lower-node(tree, bodyId, rcol, tcol) with
+        | Option.Some(bodyCore) => Option.Some((params, bodyCore))
+        | Option.None(_) => Option.None(unit))))))
+
+/// slice-B1b: fold the def-table entries into the def-env `Map(name, (paramBinderIds, bodyCore))`. A def whose
+/// body doesn't lower is SKIPPED (a call to it declines at eval — total). Terminates: each body is lowered
+/// ONCE and its self-calls are CCall leaves (no re-entry into this fold).
+def build-def-env(tree: Tree, entries: List(Tuple(Int64, Int64)), acc: Map(Int64, Tuple(List(Int64), Core))) =
+  (match entries with
+    | [] => acc
+    | [e, .. rest] =>
+        (match e with
+          | (nameId, bodyId) =>
+              (match lower-one-def(tree, nameId, bodyId) with
+                | Option.Some(entry) => build-def-env(tree, rest, Map.insert(acc, nameId, entry))
+                | Option.None(_) => build-def-env(tree, rest, acc))))
+
+/// slice-B1b: the DEF-ENV for a whole tree — every def-table name → (paramBinderIds, bodyCore), each body
+/// lowered once and standalone. `eval-core-d` reads this to run a `CCall(name, args)`. Reaches the def-table
+/// via the `Tree.Arena` def-table field (`dt`, 3rd), enumerated in canonical order by `Map.to-list`.
+def lower-def-env(tree: Tree) =
+  (match tree with
+    | Tree.Arena(_, _, dt, _, _, _, _, _, _, _, _) =>
+        build-def-env(tree, Map.to-list(dt), (Map.empty : Map(Int64, Tuple(List(Int64), Core)))))
+
 /// Probe: is this Core a `CNum v`?
 def is-cnum(c: Core, v: Int64) = match c with | Core.CNum(x, _, _) => x == v | _ => false
 
@@ -435,4 +498,39 @@ def lw-recursive-call-splices-arg-into-ccall-slice-b1a() =
                else trap("1-arg self-call → CCall(900, [CNum 42])"))
           | _ => trap("a recursive call with an arg lowers to CCall with the arg spliced"))))))
 
-export { Core.*, lower-tree, lower-node, cnum64, is-cnum, is-cnum-w, is-cvar }
+/// Test helper (slice-B1b): build a hand-arena `fac` def — body `if (n < 1) then 1 else (n * (fac (n-1)))`,
+/// param n = NVar(1), self-call NApp(900, sub); record-def 900 → body + record-param 900 → n. Kept as a
+/// SEPARATE def (not inlined in the @test) so neither function grows large enough to hit the self-host codegen
+/// size-trap (the class v-inference owns). Returns the tree.
+def b1b-fac-tree() =
+  (match add-node(empty-tree(), Node.NVar(1)) with | (paramId, t1) =>
+    (match add-node(t1, Node.NVar(1)) with | (nCond, t2) =>
+      (match add-node(t2, Node.NLit(1)) with | (oneCond, t3) =>
+        (match add-node(t3, Node.NBin(60, nCond, oneCond)) with | (condId, t4) =>
+          (match add-node(t4, Node.NLit(1)) with | (thenId, t5) =>
+            (match add-node(t5, Node.NVar(1)) with | (nMul, t6) =>
+              (match add-node(t6, Node.NVar(1)) with | (nArg, t7) =>
+                (match add-node(t7, Node.NLit(1)) with | (oneArg, t8) =>
+                  (match add-node(t8, Node.NBin(45, nArg, oneArg)) with | (subId, t9) =>
+                    (match add-node(t9, Node.NApp(900, subId)) with | (callId, t10) =>
+                      (match add-node(t10, Node.NBin(42, nMul, callId)) with | (elseId, t11) =>
+                        (match add-node(t11, Node.NIf(condId, thenId, elseId)) with | (bodyId, t12) =>
+                          (let treeD = record-def(t12, 900, bodyId) in
+                           record-param(treeD, 900, paramId))))))))))))))
+
+@test
+def lw-def-env-lowers-recursive-fac-body-slice-b1b() =
+  // SLICE-B1b: lower-def-env builds a def-env whose `fac` (name 900) entry has ONE param + a CIf body Core
+  // (the self-call inside lowered to a CCall leaf). The tree-build lives in b1b-fac-tree (a separate small
+  // def) so this @test body stays tiny. Proves lower-def-env resolves+infers+lowers a recursive body STANDALONE
+  // (needs the resolve-node/param-scope export + the if-type deferred-branch fix, both in this slice's stack).
+  (match Map.lookup(lower-def-env(b1b-fac-tree()), 900) with
+    | Option.None(_) => trap("def-env should contain fac (name 900)")
+    | Option.Some(entry) =>
+        (match entry with
+          | (params, bodyCore) =>
+              (if List.len(params) == 1 then
+                 (match bodyCore with | Core.CIf(_, _, _) => unit | _ => trap("fac body should lower to a CIf"))
+               else trap("fac has ONE param binder"))))
+
+export { Core.*, lower-tree, lower-node, lower-def-env, cnum64, is-cnum, is-cnum-w, is-cvar }
