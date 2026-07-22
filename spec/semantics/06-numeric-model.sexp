@@ -3259,6 +3259,37 @@
   (call   main (: 18446744073709551615 UInt64) (: 1 UInt64)) (output (: 1 Int64))
   (call   main (: 1 UInt64) (: 18446744073709551615 UInt64)) (output (: 0 Int64)))
 
+(case "a CONSTANT algebraic identity over a high-bit UInt64 operand folds to the operand, not a spurious CDZ0304 decline"
+  (doc    "The COMPILE-TIME const-operand face of the full-width unsigned family (rcdzc lower 819f5c2e3). The
+           runtime cases above pass UInt64.max as an ARGUMENT; this pins a both-CONSTANT algebraic identity
+           whose operand is a UInt64 constant at/above 2^63 (UInt64.max = 2^64-1, which has NO i64). The
+           const-fold's both-constant arm evaluated over i64, so it spuriously REJECTED such an operand
+           CDZ0304 ('constant operand does not fit the integer width') even for an IDENTITY whose value is
+           just the operand and needs no evaluation. The fix tries the width-agnostic identity (x+0/x*1/x-0)
+           BEFORE the i64 fold when an operand is out of i64 range, so these fold cleanly to UInt64.max; x*0
+           folds to a trap-free 0. Nullary defs so the operands are compile-time constants — the fold path.
+           A NON-identity big-UInt64 const op ((+ u64max 1)) still correctly declines CDZ0304 (a genuine
+           u64-fold is a separable follow-up), so this pins ONLY the identity cases. Value-only, both backends;
+           the emit-tier fold is unit-pinned in rcdzc a_constant_algebraic_identity_over_a_high_uint64_operand_folds_not_declines.")
+  (input  (do
+            (def (add0 ) (+ (: 18446744073709551615 UInt64) (: 0 UInt64)))
+            (def (mul1 ) (* (: 18446744073709551615 UInt64) (: 1 UInt64)))
+            (def (sub0 ) (- (: 18446744073709551615 UInt64) (: 0 UInt64)))
+            (def (mul0 ) (* (: 18446744073709551615 UInt64) (: 0 UInt64)))
+            (export add0)
+            (export mul1)
+            (export sub0)
+            (export mul0)))
+  ; x+0 / x*1 / x-0 fold to the operand (UInt64.max); x*0 folds to a trap-free 0.
+  (call   add0)
+  (output (: 18446744073709551615 UInt64))
+  (call   mul1)
+  (output (: 18446744073709551615 UInt64))
+  (call   sub0)
+  (output (: 18446744073709551615 UInt64))
+  (call   mul0)
+  (output (: 0 UInt64)))
+
 (case "a runtime signed division by zero traps as divide-by-zero, not overflow"
   (doc    "The trap-KIND the two-guard emit exists to preserve: a SIGNED `(/ 5 0)` must classify as
            divide-by-zero, NOT overflow — the two conditions carry kind-specific messages (`r == 0` →
@@ -5990,6 +6021,35 @@
   (call   main (: 18446744073709551615 UInt64))
   (output (: true Bool)))
 
+
+(case "a constant algebraic identity over a high UInt64 operand folds to the operand, not a spurious reject"
+  (doc    "`(+ (: 18446744073709551615 UInt64) (: 0 UInt64))` — a constant `x + 0` over a UInt64 operand
+           at UInt64.max (2^64-1, above Int64.max). The i64-only constant fold had no i64 for the operand
+           and REJECTED it CDZ0304 (constant operand does not fit the integer width) — a spurious decline of
+           valid unsigned arithmetic. The width-agnostic identity `x + 0 = x` folds to the operand at any
+           width. Expected: 18446744073709551615.")
+  (input  (do (def (main) (+ (: 18446744073709551615 UInt64) (: 0 UInt64))) (export main)))
+  (output (: 18446744073709551615 UInt64)))
+
+(case "a constant MUL-by-1 identity over a high UInt64 operand folds to the operand"
+  (doc    "The `x * 1 = x` twin of the add-zero identity above, at UInt64.max — folds width-agnostically
+           to the operand rather than spuriously rejecting on the missing i64.")
+  (input  (do (def (main) (* (: 18446744073709551615 UInt64) (: 1 UInt64))) (export main)))
+  (output (: 18446744073709551615 UInt64)))
+
+(case "a constant MUL-by-0 identity over a high UInt64 operand folds to zero"
+  (doc    "The `x * 0 = 0` twin at UInt64.max — folds to 0 width-agnostically (the annihilator identity),
+           no i64 needed for the high operand.")
+  (input  (do (def (main) (* (: 18446744073709551615 UInt64) (: 0 UInt64))) (export main)))
+  (output (: 0 UInt64)))
+
+(case "a NON-identity constant add over a high UInt64 operand still rejects the overflow"
+  (doc    "The boundary guard: `(+ (: 18446744073709551615 UInt64) (: 1 UInt64))` — UInt64.max + 1 is a
+           GENUINE unsigned overflow and MUST still reject CDZ0304, so a future over-eager u64 constant
+           fold does not silently wrap/miscompile. Only the width-agnostic identities (0/1 operand) fold;
+           a real constant overflow is still a compile-time reject.")
+  (input  (do (def (main) (+ (: 18446744073709551615 UInt64) (: 1 UInt64))) (export main)))
+  (error  CDZ0304))
 (case "BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)"
   (doc    "The control: a `UInt64` value BELOW 2^63 has its high bit clear, so the signed and unsigned
            widenings agree — it was always positive. Pins that the fix does not disturb the sub-high-bit

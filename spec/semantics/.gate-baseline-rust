@@ -36,6 +36,10 @@ pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
 pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
 pass	BigInt.of a UInt64 at its high bit still works (the full-width control)
 pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
+pass	a constant algebraic identity over a high UInt64 operand folds to the operand, not a spurious reject
+pass	a constant MUL-by-1 identity over a high UInt64 operand folds to the operand
+pass	a constant MUL-by-0 identity over a high UInt64 operand folds to zero
+pass	a NON-identity constant add over a high UInt64 operand still rejects the overflow
 pass	BigInt.of a UInt64 widens to the exact value (round-trips back through Int64.of where it fits)
 pass	BigInt.of a UInt8 at its high bit widens to the exact value (smallest-width zero-extend)
 pass	BigInt.of a signed Int32 is a positive BigInt (the narrow path breaks regardless of sign)
@@ -4777,3 +4781,4 @@ pass	a BORROWED runtime Bytes rope map key is compacted at the key site and foun
 pass	unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)
 pass	a flow refinement folds a compare over a no-overflow arith operand, but the trap survives when overflow is possible
 pass	an INCLUSIVE ordering refinement folds at the boundary but must not over-refine one past it
+pass	a below-len guard lets List.at shed its own bounds check, yet an out-of-range index still returns None

@@ -16148,6 +16148,65 @@ fn lower_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
                     trace!(target: "rcdzc::fold", op = intrinsic_name(op), "big-unsigned constant identity folded (operand out of i64 range — bypassing the i64 fold)");
                     return simplified;
                 }
+                // GENERAL WIDE FOLD (an operand ≥ 2^63 has no `i64`, so `fold_arith`'s i64 path would
+                // spuriously reject it CDZ0304 — but the SOLVED type is a wide UInt64 whose range the result
+                // may well fit). Evaluate `Add`/`Sub`/`Mul`/`Div`/`Rem` over EXACT arbitrary-precision
+                // `IntValue` (no i64 truncation), THEN range-check the result against the operands' solved
+                // width — the SAME `fits_width` check the i64 path applies below. `(/ (: u64max-1 UInt64) 2)`
+                // → the true quotient (fits UInt64 → folds); a genuine overflow (`(+ u64max 1)` → 2^64,
+                // doesn't fit u64) → CDZ0304, exactly as the i64 path would for a narrow overflow. Trap
+                // semantics: `divmod` returns `None` on a zero divisor (→ CDZ0304 divide-by-zero); UNSIGNED
+                // has no `MIN/-1` trap (signed-only, and `IntValue::divmod` has no such special case), so an
+                // unsigned `/`/`%` never spuriously traps. Shifts/bitwise stay on the i64 path below (a wide
+                // shift-count/mask is out of scope here; they fall through to `fold_arith`). Only reached
+                // when an operand exceeds i64 AND no identity fired, so the in-range fast path is untouched.
+                let wide = match op {
+                    Prim::Add => Some(a.add(&b)),
+                    Prim::Sub => Some(a.sub(&b)),
+                    Prim::Mul => Some(a.mul(&b)),
+                    Prim::Div => a.divmod(&b).map(|(q, _)| q),
+                    Prim::Rem => a.divmod(&b).map(|(_, r)| r),
+                    _ => None, // shifts/bitwise/other — fall through to the i64 fold_arith path below
+                };
+                match (op, wide) {
+                    // A defined result — range-check against the solved width (peeling `Ty::Qty` as the i64
+                    // path does), fold if it fits, else the same OPERATION-overflow CDZ0304.
+                    (Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Rem, Some(r)) => {
+                        return match peel_qty_inner_ty(crate::infer::type_of(db, id)) {
+                            crate::ty::Ty::Int(it)
+                                if !r.fits_width(it.ground_signed(), it.ground_width()) =>
+                            {
+                                trace!(target: "rcdzc::fold", node = id.0, op = intrinsic_name(op), "wide constant arithmetic result overflows the solved width → CDZ0304");
+                                Core::Poison(Reject::coded(
+                                    Code::ConstTrap,
+                                    "this constant arithmetic operation overflows its integer type (a \
+                                     compile-provable overflow traps)",
+                                ))
+                            }
+                            _ => {
+                                trace!(target: "rcdzc::fold", op = intrinsic_name(op), "wide constant arithmetic folded exactly over IntValue (operand out of i64 range)");
+                                Core::ConstInt(r)
+                            }
+                        };
+                    }
+                    // `Div`/`Rem` by a zero divisor — `divmod` gave `None`; the constant operation always
+                    // traps (the same CDZ0304 the i64 path's `checked_div`/`checked_rem` → `None` produces).
+                    (Prim::Div | Prim::Rem, None) => {
+                        trace!(target: "rcdzc::fold", op = intrinsic_name(op), "wide constant divide/rem by zero → CDZ0304");
+                        return Core::Poison(Reject::coded(
+                            Code::ConstTrap,
+                            format!(
+                                "`{}` by the constant 0 always traps (divide by zero) — guard the divisor \
+                                 or remove the division",
+                                intrinsic_name(op)
+                            ),
+                        ));
+                    }
+                    // A shift/bitwise/other op with a wide operand — fall through to `fold_arith` (its
+                    // i64-only path still rejects a genuinely-wide shift/mask CDZ0304, which is correct: a
+                    // wide shift COUNT or bitwise operand is out of scope for this exact-fold slice).
+                    _ => {}
+                }
             }
             // Fold over i64, THEN range-check the result against the op's SOLVED width. `fold_arith`
             // evaluates at the Stage i64 width, so a NARROW overflow whose true result still fits i64
