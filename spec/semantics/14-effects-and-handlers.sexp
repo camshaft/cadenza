@@ -3810,6 +3810,46 @@
               (handle Bail 0 ((bail (n) s n)) (walk 3))) (export main)))
   (output (: 99 Int64)))
 
+(case "a RUNTIME branch selects between an abortive perform and a plain value per call"
+  (doc    "The per-call abort selection (the branch-abort pins use const conditions): `(if (> n 0)
+           (+ (Bail.out n) 999) (- 0 n))` — n=4 takes the abortive path (the arm multiplies, the +999
+           continuation is abandoned → 40); n=-6 takes the plain path (6). ONE compiled body must both
+           abandon and complete depending on the call — an emit specializing the handle to always-abort
+           (or always-resume) breaks the other call.")
+  (input  (do
+            (effect Bail (op out (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Bail 0
+                ((out (v) s (* v 10)))
+                (if (> n 0)
+                  (+ (Bail.out n) 999)
+                  (- 0 n))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 40 Int64))
+  (call   main (: -6 Int64))
+  (output (: 6 Int64)))
+
+(case "an abortive perform MID-WALK carries the accumulated state out as its argument"
+  (doc    "The annotated-walk bail above aborts at the BASE with a const; here the abort fires MID-walk
+           at a sentinel (n=2) and its ARGUMENT is the accumulator built so far — walk(5,0) accumulates
+           5+4+3=12 before bailing with 12; walk(1,0) never hits the sentinel and returns normally (1).
+           The abort value carries live loop state out through the abandoned frames (the early-exit-with-
+           partial-result idiom); an abort that read a stale accumulator drifts.")
+  (input  (do
+            (effect Bail (op out (-> Int64 Int64)))
+            (def (walk (: n Int64) (: acc Int64))
+              (if (< n 1) acc (if (= n 2) (Bail.out acc) (walk (- n 1) (+ acc n)))))
+            (def (main (: n Int64))
+              (handle Bail 0
+                ((out (v) s v))
+                (walk n 0)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 12 Int64))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64)))
+
 (case "a recursive function threads two nested handlers' states at once"
   (doc    "Witnesses that effect-context resolution threads EACH enclosing handler's state
            independently across a recursion (capabilities-and-effects.md #A Handler Threads State

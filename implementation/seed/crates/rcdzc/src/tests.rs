@@ -6804,6 +6804,63 @@ fn a_recursive_list_fold_leaks_every_node_known_gap() {
     );
 }
 
+/// KNOWN LEAK (tracking probe): `Map.to-list` / `Set.to-list` over an OWNED-TEMPORARY source collection
+/// leaks the source. The `map-to-list`/`set-to-list` runtime ops only BORROW their source (see
+/// `op_map_to_list`/`op_set_to_list` — "BORROWS `m`/`s` and `desc`") — so when the source is a fresh owned
+/// temporary (e.g. `Map.to-list (Map.insert … )`, the enumerate→transform→fold idiom with no binding keeping
+/// the map live), nothing reclaims it and the source collection LEAKS one handle (+ its boxed entries) per
+/// call. VALUE-CORRECT + NON-OOB (the source outlives the borrow; nothing freed early), so only the
+/// live-objects counter sees it. This is DISTINCT from the producers already reclaimed (`ListConcat`/
+/// `ListPush`/`Map.insert` etc. are classified Owned + dropped after a borrowing op): the to-list EMIT arm
+/// drops only the descriptor Bytes, NOT the borrowed owned-temporary source.
+///
+/// ⚠ The sound fix is NOT a one-line `heap_operand_ownership` classification (that governs the to-list
+/// RESULT, not its source) — it needs the to-list EMIT arm to stash + drop the source when Owned, with
+/// careful scratch-slot accounting (a naive attempt collided slots and made the leak WORSE). Deferred to a
+/// focused reclaim-emit increment (v-memory-safety lane, select.rs ~7761/~7792) with the full UAF oracle
+/// battery. This witness pins the current leak so a regression that WORSENS it — or a spurious UAF that
+/// makes it 0-via-double-free — is caught; flip to `== 0` when the source-reclaim increment lands.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
+#[test]
+#[ignore]
+fn map_or_set_to_list_over_an_owned_temporary_source_leaks_it_known_gap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[to-list-src] debug-counters runtime not in the store; skipping known-leak probe"
+        );
+        return;
+    };
+    // A RUNTIME map (built by a loop so it can't const-fold), enumerated N× with each fresh list borrowed by
+    // `List.len` then discarded. The source map `(build 0 3 (map))` is an owned temporary `Map.to-list` only
+    // borrows → it leaks per iteration. VALUE-CORRECT (3 entries → len 3 × 500 = 1500) proves NO UAF.
+    let src = "(module m \
+                 (def (build (: i Int64) (: n Int64) (: mp (Map Int64 Int64))) \
+                     (if (< i n) (build (+ i 1) n ((. Map insert) mp i (* i 10))) mp)) \
+                 (def (loop (: j Int64) (: n Int64) (: tot Int64)) \
+                     (if (< j n) (loop (+ j 1) n (+ tot ((. List len) ((. Map to-list) (build 0 3 (map)))))) tot)) \
+                 (def (main (: n Int64)) (loop 0 n 0)) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[Val::S64(500)]),
+        Val::S64(1500),
+        "500 iters × List.len(Map.to-list of a 3-entry map) = 3 each = 1500 (value-correct + NO UAF)"
+    );
+    // KNOWN LEAK (pinned): the borrowed owned-temporary source map is left un-dropped by the to-list emit.
+    // Assert PRESENT + BOUNDED so a regression that worsens it, or a spurious 0-via-double-free UAF, is caught.
+    // Flip to `assert_eq!(rt.live_objects(), 0, …)` when the to-list source-reclaim increment lands.
+    let live = rt.live_objects();
+    assert!(
+        live > 0 && live <= 5000,
+        "to-list owned-temporary SOURCE leak: expected a KNOWN bounded leak (the borrowed source map per \
+         iter × 500) pending the to-list emit source-reclaim fix — got {live}. If 0, the fix may have landed \
+         (flip to == 0); if far above 5000, a NEW leak compounded it."
+    );
+}
+
 /// KNOWN LEAK (tracking probe): a SINGLE non-recursive `match` over an OWNED COMPOUND-payload sum, whose
 /// payload child is only BORROWED (read by `List.len` → scalar, never moved out) and does NOT escape the arm,
 /// STILL leaks the shell + its payload — the two `MatchSum` reclaim gates require `sum_has_only_scalar_payloads`,
