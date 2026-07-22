@@ -287,8 +287,12 @@ def lower-one-def(tree: Tree, nameId: Int64, bodyId: Int64) =
         | Option.Some(bodyCore) => Option.Some((params, bodyCore))
         | Option.None(_) => Option.None(unit))))))
 
-/// slice-B1b: fold the def-table entries into the def-env `Map(name, (paramBinderIds, bodyCore))`. A def whose
-/// body doesn't lower is SKIPPED (a call to it declines at eval — total). Terminates: each body is lowered
+/// slice-B1b: fold the def-table entries into the def-env `Map(name, (paramBinderIds, bodyCore))`. Only a
+/// RECURSIVE def (call-is-recursive) is added — a CCall is emitted ONLY for a recursive callee, so the def-env
+/// only needs recursive-def bodies; a NON-recursive def stays INLINED at its call site by the main lower and
+/// must NOT be lowered standalone here (its body's non-recursive call would hit the inline path without the
+/// caller's column wiring → a malformed Core that traps at eval — the tick-30 bug). A recursive def whose body
+/// doesn't lower is skipped (a call to it declines at eval — total). Terminates: each recursive body is lowered
 /// ONCE and its self-calls are CCall leaves (no re-entry into this fold).
 def build-def-env(tree: Tree, entries: List(Tuple(Int64, Int64)), acc: Map(Int64, Tuple(List(Int64), Core))) =
   (match entries with
@@ -296,9 +300,11 @@ def build-def-env(tree: Tree, entries: List(Tuple(Int64, Int64)), acc: Map(Int64
     | [e, .. rest] =>
         (match e with
           | (nameId, bodyId) =>
-              (match lower-one-def(tree, nameId, bodyId) with
-                | Option.Some(entry) => build-def-env(tree, rest, Map.insert(acc, nameId, entry))
-                | Option.None(_) => build-def-env(tree, rest, acc))))
+              (if (call-is-recursive(tree, nameId)) then
+                 (match lower-one-def(tree, nameId, bodyId) with
+                   | Option.Some(entry) => build-def-env(tree, rest, Map.insert(acc, nameId, entry))
+                   | Option.None(_) => build-def-env(tree, rest, acc))
+               else build-def-env(tree, rest, acc))))   // non-recursive def → not in the def-env (stays inlined)
 
 /// slice-B1b: the DEF-ENV for a whole tree — every def-table name → (paramBinderIds, bodyCore), each body
 /// lowered once and standalone. `eval-core-d` reads this to run a `CCall(name, args)`. Reaches the def-table

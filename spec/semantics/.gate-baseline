@@ -1189,6 +1189,7 @@ pass	a runtime String.slice STORED as a map key is found by a flat probe
 pass	a runtime String.slice probing a flat-keyed map hits by content
 pass	a runtime branch selects between two ANONYMOUS closures fed to the iterate combinator
 pass	a runtime hole woven into a compound Ast is read back by a nested match
+pass	a runtime same-dimension multiply derives the SQUARED dimension and computes the area
 pass	a runtime slice VIEW crosses a helper-function boundary intact
 pass	a runtime zero denominator PRODUCED BY ARITHMETIC traps at construction
 pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
@@ -1207,6 +1208,7 @@ pass	a slice-view SET element dedups against its flat twin in a Set.of batch bui
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a success `?` unwraps a RUNTIME Ok payload under a Result boundary
 pass	a success `?` unwraps a RUNTIME payload (static ctor, per-call value)
+pass	a tag function INTROSPECTS its chunk and hole counts and returns both
 pass	a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack
 pass	a tuple key whose element is itself a float-bearing tuple keys by content
 pass	a tuple key with a RUNTIME Rational leaf hits and misses by canonical content
@@ -4750,3 +4752,4 @@ pass	CONTROL: a CONST-start slice as a Map-lookup key hits on wasm
 pass	a BORROWED runtime Bytes rope map key is compacted at the key site and found by its flat twin
 pass	unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)
 pass	a flow refinement folds a compare over a no-overflow arith operand, but the trap survives when overflow is possible
+pass	a refinement folds a comparison over a no-overflow arith operand, but preserves the trap when it can overflow

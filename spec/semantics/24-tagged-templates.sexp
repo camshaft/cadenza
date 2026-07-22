@@ -366,6 +366,24 @@
             (export main)))
   (output (: 5 BigInt)))
 
+(case "a tag function INTROSPECTS its chunk and hole counts and returns both"
+  (doc    "The count-introspection face: `count-meta` reads `(List.len chunks)` and `(List.len holes)` —
+           the tag sees the template's SHAPE as data, not only its content — and returns both in an
+           Ast.List the match verifies (3 chunks, 2 holes → 42). A DSL that dispatches on arity (a
+           printf-style tag validating hole count against format specifiers) rests on exactly this; an
+           expander that passed truncated or padded lists would misreport a count.")
+  (input  (do
+            (def (count-meta chunks holes)
+              (Ast.List (list (Ast.Int (BigInt.of (List.len chunks))) (Ast.Int (BigInt.of (List.len holes))))))
+            (def (main (: n Int64))
+              (match (tagged-template count-meta (chunks "a" "b" "c") (holes (Ast.Int (BigInt.of 1)) (Ast.Int (BigInt.of 2))))
+                ((Ast.List (list (Ast.Int c) (Ast.Int h)))
+                  (if (= c (BigInt.of 3)) (if (= h (BigInt.of 2)) (+ 42 n) -2) -1))
+                (_ -3)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 42 Int64)))
+
 ; --- Runtime values through the expansion seam ------------------------------------------------------
 ; Every case above is fully compile-time (no `(call …)`). These pin the seam between the one-tier
 ; compile-time expansion and RUNTIME values: the expansion happens once at compile time, but its residual

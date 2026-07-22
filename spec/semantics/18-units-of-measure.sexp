@@ -775,6 +775,20 @@
   (call   main (: 100 Int64) (: 5 Int64)) (output (: 100 Int64))
   (call   main (: 9 Int64) (: 2 Int64)) (output (: 8 Int64)))
 
+(case "a runtime same-dimension multiply derives the SQUARED dimension and computes the area"
+  (doc    "The runtime companion of the const dimension-multiply pin (:508 folds): two boundary-parameter
+           lengths multiply to a meter² AREA — the dimension composition happens at check time while the
+           erased 6·7 = 42 runs at run time. Completes the runtime dimension-algebra trio: quotient
+           (velocity), cancel-back (velocity·time), and now the same-dimension PRODUCT (a lowering
+           confusing the squared result's erasure with a plain meter would still compute 42, but the
+           check-side derivation is what this witnesses — the add-mismatch pin at :814 guards misuse).")
+  (input  (do
+            (def (main (: w Int64) (: h Int64))
+              (Qty.value (* (Qty.of w (Unit.base #"meter")) (Qty.of h (Unit.base #"meter")))))
+            (export main)))
+  (call   main (: 6 Int64) (: 7 Int64))
+  (output (: 42 Int64)))
+
 (case "a runtime same-dimension quotient is dimensionless and its value joins bare integer arithmetic"
   (doc    "`(/ (Qty.of a meter) (Qty.of a meter))` over a runtime magnitude cancels to the dimensionless
            unit; `Qty.value` of the fully-cancelled quantity is a PLAIN Int64 that participates in bare
