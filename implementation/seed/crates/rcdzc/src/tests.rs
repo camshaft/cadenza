@@ -6148,6 +6148,47 @@ fn sroa_tuple_scrutinee_candidate_fires_only_on_an_escape_free_runtime_tuple_des
         None,
         "a const-visible tuple already folds — not a SROA candidate"
     );
+    // PRE-BIND: on a firing candidate, every returned elem is marked a KEPT binding (so references lower to
+    // a `LocalRef`, evaluated once), and `sroa_let_wrap` builds the matching self-keyed `Core::Let` binding
+    // them — the eval-once/trap-once guarantee at the bind site (v-patterns' interface).
+    {
+        use crate::core::Core;
+        use crate::db::Db;
+        use crate::resolve::resolved_of;
+        use crate::resolved::Resolved;
+        let src = "(module m (def (main (: a Int64) (: b Int64)) \
+                     (match (tuple a b) ((tuple 0 y) y) ((tuple x y) (+ x y)))) (export main))";
+        let mut db = Db::load(crate::testkit::parse(src));
+        let d = db.def_by_name("main").expect("def main");
+        let m_body = db.defs[d].body.expect("main body");
+        let (scrutinee, arms) = match resolved_of(&mut db, m_body) {
+            Resolved::Match { scrutinee, arms } => (scrutinee, arms),
+            other => panic!("expected Resolved::Match, got {other:?}"),
+        };
+        let elems = crate::lower::sroa_tuple_scrutinee_candidate(&mut db, scrutinee, &arms)
+            .expect("the pair_match shape is a candidate");
+        assert_eq!(elems.len(), 2, "a 2-tuple has 2 elems");
+        for &e in &elems {
+            assert!(
+                db.kept_bindings.contains(&e),
+                "each SROA elem must be marked a KEPT binding (evaluated once, read via LocalRef)"
+            );
+        }
+        // The caller-side Let-wrap binds every elem self-keyed `(e, e)` around the (here dummy) dispatch body.
+        match crate::lower::sroa_let_wrap(&elems, m_body) {
+            Core::Let { bindings, .. } => {
+                assert_eq!(bindings.len(), 2, "Let binds both elems");
+                for (b, init) in &bindings {
+                    assert_eq!(
+                        b, init,
+                        "SROA bindings are self-keyed (binder == init == the elem)"
+                    );
+                    assert!(elems.contains(b), "each binding keys off a returned elem");
+                }
+            }
+            other => panic!("sroa_let_wrap must build a Core::Let, got {other:?}"),
+        }
+    }
 }
 
 /// The wasmtime run for the empty-set fold: `(List.len (Set.to-list (Set.of (list))))` is 0, and the fold

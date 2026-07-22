@@ -39,9 +39,11 @@ pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
+pass	a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN
 pass	a STATS record threads min/max/sum/count as one fold accumulator with data-dependent field updates
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
+pass	a balanced-paren scan tracks depth over a runtime string and fails fast on early close
 pass	a constant algebraic identity over a high UInt64 operand folds to the operand, not a spurious reject
 pass	a constant MUL-by-1 identity over a high UInt64 operand folds to the operand
 pass	a constant MUL-by-0 identity over a high UInt64 operand folds to zero

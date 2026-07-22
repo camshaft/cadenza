@@ -5261,7 +5261,7 @@
                           (Node (tuple (insert l v) k r))
                           (if (> v k)
                               (Node (tuple l k (insert r v)))
-                              (Node (tuple l k r)))))))))
+                              t)))))))
             (def (build (: xs (List Int64)) (: t BST))
               (match xs
                 ((list) t)
