@@ -4712,6 +4712,62 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     }
 }
 
+/// SCALAR-REPLACEMENT-OF-AGGREGATES (SROA) escape-gate for a match-scrutinee tuple (operator directive,
+/// tick ~353): decide whether `(match <scrutinee> arms)` is a candidate to have its scrutinee tuple
+/// SCALAR-REPLACED — the tuple exploded into its element values instead of heap-allocated — and if so
+/// return the element `StructId`s (in tuple order) for the dispatch to read directly.
+///
+/// A candidate iff BOTH hold:
+///  1. `scrutinee`'s core is a FRESH RUNTIME `Core::Tuple { elems }` — built from runtime operands, NOT a
+///     compile-time-visible constant (a const tuple's `Elem`-reads already fold via `const_at_path`, so it
+///     never allocates — nothing to replace). `is_const_value` screens the const case out.
+///  2. EVERY arm's top-pattern is a TUPLE-DESTRUCTURE (`(tuple …)`, peeling a `(guard …)` wrapper) — so the
+///     tuple is consumed ONLY positionally (each element read by index), NEVER bound WHOLE. A bare-name or
+///     `_` arm at the root binds the aggregate itself (it ESCAPES), so ANY such arm disqualifies the whole
+///     match — FAIL-CLOSED: on any non-tuple-destructure arm (or a scrutinee that isn't a fresh runtime
+///     tuple), return `None` and leave the materialized decision-tree path untouched.
+///
+/// This mirrors v-patterns' `pattern_constraints` classifier (a `(tuple …)` pattern descends `Elem(i)` =
+/// positional = SAFE; a bare name / `_` returns the whole-value binder = ESCAPE) via the same syntactic
+/// head-check they specified, without re-running the full constraint resolution.
+///
+/// The returned element `StructId`s are the tuple's own operand occurrences (already evaluated in tuple
+/// order when the tuple is built), which v-patterns' `lower_tuple_arms_over_locals` dispatch reads directly
+/// instead of an `Elem`-path over a materialized heap slot — so the `arr-alloc`/box for the tuple is
+/// eliminated. The single-arm pure-binder case is ALREADY alloc-free (`const_at_path` reads a runtime
+/// `Core::Tuple`'s `Elem(i)` directly); this gate is what lets the REFUTABLE (lit-test) multi-arm case join
+/// it. Inert until that dispatch consumes the result.
+#[allow(dead_code)]
+pub(crate) fn sroa_tuple_scrutinee_candidate(
+    db: &mut Db,
+    scrutinee: StructId,
+    arms: &[(StructId, StructId)],
+) -> Option<Vec<StructId>> {
+    // (1) The scrutinee must be a FRESH RUNTIME tuple — a `Core::Tuple` that is NOT a compile-time constant
+    // (a const tuple already folds its element reads, never allocates). Screen the const case out.
+    if is_const_value(db, scrutinee) {
+        return None;
+    }
+    let Core::Tuple { elems } = core_of(db, scrutinee) else {
+        return None;
+    };
+    // (2) Every arm's top-pattern must be a tuple-destructure `(tuple …)` (peeling a `(guard …)`), so the
+    // tuple is only ever read positionally. A bare-name/`_`/non-tuple arm binds or escapes the whole
+    // aggregate — disqualify the whole match (fail-closed).
+    for &(pat, _body) in arms {
+        // Peel a `(guard <inner> <cond>)` wrapper to its inner pattern (the guard may reference the bound
+        // elements, which is fine post-scalar-replacement — it reads the same element values).
+        let inner = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => g[0],
+            _ => pat,
+        };
+        // A non-`(tuple …)` head at the root — a bare name / `_` / other — binds the aggregate whole =
+        // ESCAPE; `?` returns `None` (fail-closed), disqualifying the whole match.
+        db.ast.as_form(inner, "tuple")?;
+    }
+    Some(elems)
+}
+
 /// Sink a COMMON CONSTRUCTOR out of every arm of a scalar `match` — the multi-arm analogue of
 /// `hoist_common_ctor`. When all arms build the SAME constructor `K` (same `SumNew` disc + payload
 /// arity, a same-arity `Tuple`, a same-length `List`, or a `Record` with the SAME KEY SET), the heap
@@ -16202,10 +16258,83 @@ fn lower_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
                             ),
                         ));
                     }
-                    // A shift/bitwise/other op with a wide operand — fall through to `fold_arith` (its
-                    // i64-only path still rejects a genuinely-wide shift/mask CDZ0304, which is correct: a
-                    // wide shift COUNT or bitwise operand is out of scope for this exact-fold slice).
+                    // A shift/bitwise op with a wide operand — fold over the SOLVED WIDTH's u128 bit
+                    // pattern (below). Any operand reaching here has no `i64`, and a signed value ≥ 2^63
+                    // cannot type (CDZ0302 at its literal), so the wide operand is a NON-NEGATIVE unsigned
+                    // value — no sign-extension concern for `>>` (a logical shift) or the bitwise ops.
                     _ => {}
+                }
+                // WIDE SHIFT / BITWISE FOLD. `BitAnd`/`BitOr`/`BitXor`/`Shl`/`Shr` over a ≥2^63 unsigned
+                // OPERAND also hit `fold_arith`'s i64-only path and spuriously declined CDZ0304. Fold over the
+                // SOLVED WIDTH's u128 two's-complement pattern: bitwise ops are total on the value bits (mask
+                // to width); `<<` is multiply-by-2^count then range-check against the SOLVED width; `>>` is a
+                // logical shift (the operand is non-negative unsigned). Shift COUNT out of `0..width` traps.
+                // (SCOPE: this handles a WIDE OPERAND. `(<< (: 1 UInt64) 63)` — SMALL operands, result 2^63
+                // fits UInt64 but overflows i64 — is a DISTINCT bug: the i64 `checked_shl_i64` overflow-checks
+                // against Int64 regardless of the solved width, and both operands fit i64 so this block is not
+                // even reached. That is a separate follow-up, not this slice.)
+                if matches!(
+                    op,
+                    Prim::BitAnd | Prim::BitOr | Prim::BitXor | Prim::Shl | Prim::Shr
+                ) && let crate::ty::Ty::Int(it) =
+                    peel_qty_inner_ty(crate::infer::type_of(db, id))
+                {
+                    let (signed, width) = (it.ground_signed(), it.ground_width());
+                    // The operands' low-`width` bit patterns as u128. `wrap_to(signed,width)` gives the
+                    // canonical two's-complement-at-width value the backend uses; a wide operand here is
+                    // non-negative unsigned, so `wrap_to` yields a non-negative `IntValue` whose magnitude
+                    // is exactly the low-`width` bit pattern (`to_u128`, the unsigned magnitude read).
+                    let bits =
+                        |v: &IntValue| -> u128 { v.wrap_to(signed, width).to_u128().unwrap_or(0) };
+                    let (xb, yb) = (bits(&a), bits(&b));
+                    let mask = if width >= 128 {
+                        u128::MAX
+                    } else {
+                        (1u128 << width) - 1
+                    };
+                    let folded: Option<u128> = match op {
+                        Prim::BitAnd => Some((xb & yb) & mask),
+                        Prim::BitOr => Some((xb | yb) & mask),
+                        Prim::BitXor => Some((xb ^ yb) & mask),
+                        // `<<`: count must be in `0..width`; the result is `(x << count)` — but a bit shifted
+                        // OUT of the width is a provable overflow (the checked default traps, matching the i64
+                        // helper's `None`-on-overflow), so fold only when the full (unmasked) product fits.
+                        Prim::Shl => {
+                            let count = yb;
+                            if count >= width as u128 {
+                                None // out-of-range shift count → trap
+                            } else {
+                                match xb.checked_shl(count as u32) {
+                                    Some(s) if s == (s & mask) => Some(s), // no bit shifted past width
+                                    _ => None, // overflow past the width
+                                }
+                            }
+                        }
+                        // `>>`: logical shift (operand non-negative unsigned); count in `0..width`.
+                        Prim::Shr => {
+                            let count = yb;
+                            if count >= width as u128 {
+                                None
+                            } else {
+                                Some((xb >> count) & mask)
+                            }
+                        }
+                        _ => unreachable!("guarded by the matches! above"),
+                    };
+                    return match folded {
+                        Some(r) => {
+                            trace!(target: "rcdzc::fold", op = intrinsic_name(op), "wide constant shift/bitwise folded over the solved width");
+                            Core::ConstInt(IntValue::from_u128(r))
+                        }
+                        None => {
+                            trace!(target: "rcdzc::fold", op = intrinsic_name(op), "wide constant shift traps (count out of range or overflow) → CDZ0304");
+                            Core::Poison(Reject::coded(
+                                Code::ConstTrap,
+                                "this constant shift traps (the count is out of range for the type, \
+                                 or the shifted result overflows it)",
+                            ))
+                        }
+                    };
                 }
             }
             // Fold over i64, THEN range-check the result against the op's SOLVED width. `fold_arith`
