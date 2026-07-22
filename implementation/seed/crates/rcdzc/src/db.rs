@@ -1157,6 +1157,22 @@ pub struct Db {
     /// per-scope binder index). A node with no recorded entry falls back to the plain parent walk.
     scope_skip: Vec<Option<(StructId, StructId)>>,
 
+    /// The load-time boundary of [`scope_skip`]: the arena length when the index was built at load. A node
+    /// id BELOW this is a load-time node whose skip entry is GENUINE (`build_scope_skip` computed it). A
+    /// node id at/above this is a post-load SYNTHESIZED node — its skip entry is genuine ONLY if it was
+    /// explicitly seeded (recorded in [`scope_skip_seeded`]); otherwise a `None` entry there is merely the
+    /// `resize`-default of some UNRELATED `extend_scope_skip_*` call that grew the vector past it, NOT a
+    /// computed "resolves to prelude". Conflating the two is a poison: a synth node swept into the vector by
+    /// a later resize would take the skip FAST-PATH (bottoming at its default-`None` → prelude → a spurious
+    /// unbound), when it should fall back to the exhaustive parent walk. See [`scope_skip_covers`].
+    scope_skip_load_boundary: usize,
+
+    /// Post-load synth node ids whose [`scope_skip`] entry was EXPLICITLY seeded (by an `extend_scope_skip_*`
+    /// call), so the fast-path is safe for them. A synth node NOT in this set — even if the vector was
+    /// resized past it by an unrelated seeding — is treated as UNCOVERED (exhaustive walk), never as a
+    /// computed prelude-fallback. See [`scope_skip_load_boundary`].
+    scope_skip_seeded: crate::fxhash::FxHashSet<StructId>,
+
     /// The set of nested-module SYNTHESIZED RECORD ids — each is a binding scope (its members are mutually
     /// visible), so [`is_binding_candidate`] treats it as a candidate. Retained from load so the
     /// CANDIDATE-AWARE scope-skip extension (`extend_scope_skip_into_subtree`) can re-run
@@ -2232,6 +2248,9 @@ impl Db {
         // Per-node lexical-scope skip pointer (nearest binding-candidate ancestor + entry child) so the
         // scope walk hops over non-binding forms — O(1) per binder instead of O(nesting depth).
         let mut scope_skip = build_scope_skip(&ast, &parent, &module_records);
+        // The load-time boundary: every id currently in the vector has a GENUINE computed entry. A synth
+        // node appended later is uncovered until explicitly seeded (see `scope_skip_seeded`).
+        let scope_skip_load_boundary = scope_skip.len();
         // CHAIN each module's SYNTHESIZED RECORD out to the enclosing scope of its DECLARATION occurrence.
         // A member body's scope walk ascends body → the module's synth `fn` → its synth RECORD (where Case
         // R / `module_sibling_binds` resolves a SIBLING MEMBER of the SAME module). But the record is a
@@ -2595,6 +2614,8 @@ impl Db {
             parent,
             child_ix,
             scope_skip,
+            scope_skip_load_boundary,
+            scope_skip_seeded: crate::fxhash::FxHashSet::default(),
             module_records,
             def_by_body,
             doc_by_sig,
@@ -2984,6 +3005,10 @@ impl Db {
             _ => None,
         };
         self.scope_skip[root.0 as usize] = root_skip;
+        // Mark the root as GENUINELY seeded (its entry is computed, not a resize-default), so the fast-path
+        // is safe for it. Without this, a synth node's entry is indistinguishable from the `None` an
+        // unrelated resize leaves behind. See `scope_skip_covers`.
+        self.scope_skip_seeded.insert(root);
         // Descend: each node passes its skip down to its children (a non-binding synth form is transparent
         // to scope). A child that is a LOAD-TIME node (a reused body occurrence) already has its own final
         // entry — do not overwrite it; only fill fresh (previously-`None`, past-load) synth nodes.
@@ -2997,6 +3022,7 @@ impl Db {
                     // keeps its own final skip — do not overwrite it).
                     if ci >= covered_boundary && ci < self.scope_skip.len() {
                         self.scope_skip[ci] = node_skip;
+                        self.scope_skip_seeded.insert(c);
                         stack.push(c);
                     }
                 }
@@ -3047,6 +3073,9 @@ impl Db {
             _ => None,
         };
         self.scope_skip[root.0 as usize] = root_skip;
+        // Mark the root as GENUINELY seeded (computed entry, not a resize-default) — the fast-path is safe
+        // for it. See `scope_skip_covers`.
+        self.scope_skip_seeded.insert(root);
         // Descend top-down: for each fresh child, its skip = `(node, child)` if `node` is a binding
         // candidate (land inner references on `node`), else `node`'s own skip (hop over the non-binding
         // spine). This is `build_scope_skip`'s unwind rule, applied to the synth subtree.
@@ -3066,6 +3095,7 @@ impl Db {
                         } else {
                             node_skip
                         };
+                        self.scope_skip_seeded.insert(c);
                         stack.push(c);
                     }
                 }
@@ -3156,13 +3186,20 @@ impl Db {
         pos
     }
 
-    /// Whether the lexical-scope SKIP index covers `id` — true for a load-time node (its entry is
-    /// precomputed), false for a node synthesized after load (past the index's length). An uncovered
-    /// node uses the exhaustive parent walk instead. See [`scope_skip`].
+    /// Whether the lexical-scope SKIP index covers `id` — i.e. whether `id`'s [`scope_skip`] entry is
+    /// GENUINE (so the fast-path may be taken) rather than a `resize`-default. True for a LOAD-TIME node
+    /// (below the load boundary — `build_scope_skip` computed its entry) and for a post-load SYNTH node
+    /// that was EXPLICITLY seeded ([`scope_skip_seeded`]). FALSE for an unseeded synth node — even one the
+    /// vector was grown past by an unrelated `extend_scope_skip_*` resize: its `None` entry there is a
+    /// default, not a computed "resolves to prelude", so it must fall back to the exhaustive parent walk.
+    /// Without this distinction a synth node (a β-copied spec body, a lifted closure body) swept into the
+    /// vector by a later seeding would take the fast-path, bottom at its default `None`, and spuriously
+    /// report its own enclosing binder UNBOUND (a CDZ0101). See [`scope_skip`].
     ///
     /// [`scope_skip`]: Db::scope_skip
+    /// [`scope_skip_seeded`]: Db::scope_skip_seeded
     pub fn scope_skip_covers(&self, id: StructId) -> bool {
-        (id.0 as usize) < self.scope_skip.len()
+        ((id.0 as usize) < self.scope_skip_load_boundary) || self.scope_skip_seeded.contains(&id)
     }
 
     /// The nearest binding-CANDIDATE ancestor of `id` and the candidate's direct child on the path to

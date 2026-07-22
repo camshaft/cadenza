@@ -56,6 +56,13 @@ type Node =
                                   // sentinel `(mk)` (no argument). The nullary slice uses argId = -1 and lowers
                                   // by inlining the callee body; a param slice (later) lowers `(f a)` to
                                   // CLet(param, arg, body) — a call binds its param exactly like a let.
+  | NMatch(Int64, Int64, Int64, Int64)  // M1-a INTEGER MATCH (first match slice): NMatch(scrutId, litId,
+                                  // thenId, elseId) for a TWO-ARM literal-or-wildcard match `(match scrut (LIT
+                                  // then) (_ else))` — scrutinee node, the literal-PATTERN node to compare, the
+                                  // matched-arm body, the wildcard `_`-arm body. LOWERS to CIf(CBin(61 ==, scrut,
+                                  // lit), then, else) — reuses existing Core, so eval/emit need NO new handling.
+                                  // A general N-arm + sum-ctor-pattern match is a later slice; this pins the
+                                  // reader→resolve→infer→lower NMatch pipeline on the simplest shape.
 
 /// The arena: nodes keyed by NodeId, the next fresh id, a DEF-TABLE (`Map(nameId, bodyNodeId)`), AND a
 /// PARAM-TABLE (`Map(nameId, paramNodeId)`) — the module's `(def (name) body)` / `(def (name p) body)` forms,

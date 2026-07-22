@@ -69,6 +69,13 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
         (let c1 = resolve-node(tree, condId, env, col) in
          (let c2 = resolve-node(tree, thenId, env, c1) in
           resolve-node(tree, elseId, env, c2)))
+    | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) =>
+        // M1-a integer match: no binder introduced (literal/wildcard patterns bind nothing) — resolve all four
+        // children in the SAME env (scrutinee, literal pattern, then-body, else-body).
+        (let m1 = resolve-node(tree, scrutId, env, col) in
+         (let m2 = resolve-node(tree, litId, env, m1) in
+          (let m3 = resolve-node(tree, thenId, env, m2) in
+           resolve-node(tree, elseId, env, m3))))
     | Option.Some(Node.NApp(calleeId, argId)) =>
         // A call resolves TWO subtrees, in DIFFERENT scopes (matching rcdzc's beta-reduction discipline):
         //  (1) the ARGUMENT resolves in the CALLER's scope (the CURRENT env) — the arg is written where the call

@@ -1,0 +1,36 @@
+/// sread-eval-match.cdz — M1-a INTEGER MATCH end-to-end run pins. `(match scrut (LIT then) (_ else))` runs:
+/// the literal-arm on a match, the wildcard-arm otherwise. First slice of the match/sum-types increment; a
+/// two-arm literal-or-wildcard integer match lowers to CIf(CBin(==,scrut,lit),then,else) — reusing existing
+/// Core, so eval/emit need no new handling. General N-arm + sum-ctor patterns are later slices.
+///
+/// A small SIBLING (not folded into the fat sread-eval-fns.cdz) to stay under the per-file gate budget.
+
+import { run-src } from "sread-eval"
+
+@test
+def sm-match-literal-arm() =
+  // scrut == the literal → the matched arm. match 5 (5 111) (_ 222) → 111.
+  (match run-src("(do (def (main) (match 5 (5 111) (_ 222))) (export main))") with
+    | Option.Some(v) => (if v == 111 then unit else trap("match 5 hits the 5-arm → 111"))
+    | Option.None(_) => trap("integer match runs (literal arm)"))
+
+@test
+def sm-match-wildcard-arm() =
+  // scrut != the literal → the wildcard arm. match 3 (5 111) (_ 222) → 222.
+  (match run-src("(do (def (main) (match 3 (5 111) (_ 222))) (export main))") with
+    | Option.Some(v) => (if v == 222 then unit else trap("match 3 falls to _ → 222"))
+    | Option.None(_) => trap("integer match runs (wildcard arm)"))
+
+@test
+def sm-match-in-def-body() =
+  // a match in a HELPER def body, called from main. classify 0 → 100.
+  (match run-src("(do (def (classify n) (match n (0 100) (_ 200))) (def (main) (classify 0)) (export main))") with
+    | Option.Some(v) => (if v == 100 then unit else trap("classify 0 → match n 0-arm → 100"))
+    | Option.None(_) => trap("match in a def body runs"))
+
+@test
+def sm-match-scrutinee-is-expr() =
+  // the scrutinee can be an arith expr: match (+ 2 3) (5 111) (_ 222) → 111.
+  (match run-src("(do (def (main) (match (+ 2 3) (5 111) (_ 222))) (export main))") with
+    | Option.Some(v) => (if v == 111 then unit else trap("match (+ 2 3) hits 5-arm → 111"))
+    | Option.None(_) => trap("match over an expr scrutinee runs"))

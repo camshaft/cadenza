@@ -158,7 +158,8 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
       else (if (sym == "and") then read-and-form(s, a0, tree)
       else (if (sym == "or") then read-or-form(s, a0, tree)
       else (if (sym == "not") then read-not-form(s, a0, tree)
-      else read-app-or-bin(s, sym, a0, tree))))))))))
+      else (if (sym == "match") then read-match-form(s, a0, tree)   // M1-a: integer match → NMatch
+      else read-app-or-bin(s, sym, a0, tree)))))))))))
 
 /// The paren-form fallthrough head `sym` (not a keyword/op-symbol): either a CALL to a def-name or a binary
 /// op. slice-3b: if `sym` is a known def-name AND the form is NULLARY (the atom is immediately followed by
@@ -542,6 +543,23 @@ def read-if-form(s: String, i: Int64, tree: Tree) =
       (match read-form(s, a2, t2) with | (elseId, a3, t3) =>
         (let a4 = close-paren(s, a3) in
          (match add-node(t3, Node.NIf(condId, thenId, elseId)) with | (id, t4) => (id, a4, t4))))))
+
+/// M1-a INTEGER MATCH: `(match scrut (LIT then) (_ else))` → `NMatch(scrutId, litId, thenId, elseId)`. Read the
+/// SCRUTINEE form, then TWO parenthesized arms: arm1 `(LIT then)` = a literal PATTERN form + a body form; arm2
+/// `(_ else)` = the wildcard `_` (read + discarded) + the else body. `i` is past the `match` atom. Two-arm
+/// literal/wildcard only (M1-a); general N-arm + ctor-patterns is a later slice. Lowers to CIf(CBin(==,scrut,lit)…).
+def read-match-form(s: String, i: Int64, tree: Tree) =
+  (match read-form(s, i, tree) with | (scrutId, a1, t1) =>          // the scrutinee
+    (let b1 = open-paren(s, a1) in                                   // arm1: `(LIT then)`
+     (match read-form(s, b1, t1) with | (litId, b2, t2) =>          // the literal pattern
+       (match read-form(s, b2, t2) with | (thenId, b3, t3) =>       // arm1 body
+         (let b4 = close-paren(s, b3) in
+          (let c1 = open-paren(s, b4) in                             // arm2: `(_ else)`
+           (match scan-atom(s, skip-space(s, c1), "") with | (_wild, c2) =>  // the `_` wildcard (discarded)
+             (match read-form(s, c2, t3) with | (elseId, c3, t4) => // arm2 body
+               (let c4 = close-paren(s, c3) in
+                (let d1 = close-paren(s, c4) in                       // close the (match …)
+                 (match add-node(t4, Node.NMatch(scrutId, litId, thenId, elseId)) with | (id, t5) => (id, d1, t5))))))))))))
 
 /// After `(and` (index `i` past the `and` atom): the short-circuit AND, DESUGARED to `NIf(a, b, false)` —
 /// `(and a b)` ≡ `if a then b else false` (verified equivalent to rcdzc's `and` on every truth-table row).

@@ -132,6 +132,21 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                   | Option.None(_) => Option.None(unit))
               | Option.None(_) => Option.None(unit))
           | Option.None(_) => Option.None(unit))
+    | Option.Some(Node.NMatch(scrutId, litId, thenId, elseId)) =>
+        // M1-a integer match → CIf(CBin(61 ==, scrut, lit), then, else): the match IS "if scrut == lit then <arm>
+        // else <wildcard-arm>". Reuses CIf/CBin so eval/emit need NO new handling. All four children must lower.
+        (match lower-node(tree, scrutId, rcol, tcol) with
+          | Option.Some(cs) =>
+            (match lower-node(tree, litId, rcol, tcol) with
+              | Option.Some(cl) =>
+                (match lower-node(tree, thenId, rcol, tcol) with
+                  | Option.Some(ct) =>
+                    (match lower-node(tree, elseId, rcol, tcol) with
+                      | Option.Some(ce) => Option.Some(Core.CIf(Core.CBin(61, true, 64, cs, cl), ct, ce))  // 61 = ==
+                      | Option.None(_) => Option.None(unit))
+                  | Option.None(_) => Option.None(unit))
+              | Option.None(_) => Option.None(unit))
+          | Option.None(_) => Option.None(unit))
     | Option.Some(Node.NApp(calleeId, argId)) =>
         // NULLARY call `(mk)` = NApp(calleeBodyId, -1) INLINES the callee body's Core (β-reduction over zero
         // args — the call IS the body). slice-3c SINGLE-PARAM call `(f arg)` = NApp(calleeBodyId, argId) lowers
