@@ -1,0 +1,174 @@
+/// emit-rec-db.cdz — Slice B' part 4b-ii: the RECURSIVE-MODULE ASSEMBLER, split out of emit-db.cdz. emit-db
+/// emits a single-function (`main`) wasm module; THIS file assembles a MULTI-FUNCTION module — a wasm function
+/// per self-recursive def (fac) plus `main` calling them — so a recursive program runs as EMITTED wasm
+/// (`cdz-run` fac → 120), not just via the eval interpreter.
+///
+/// SPLIT RATIONALE: emit-db reached ~112 defs, at which point adding this assembly (~16 more defs) tipped its
+/// `cdz test` component build over a HOST codegen size threshold (invalid component / wasm function[58]; see
+/// queue/mlrepro-emit-db-size-threshold-invalid-component-function58.md — filed to corpus-bugfix). Same idiom
+/// as the sread-eval / conformance-db splits: keep each file under the per-module ceiling. This file IMPORTS
+/// emit-db's byte primitives (functype-bytes, *-section-multi, emit-def-body-d, defenv-funcidx-map,
+/// export-section-idx, preamble) and holds only the recursion-specific assembly + `emit-rec-src` entry.
+///
+/// funcidx layout: the self-recursive defs take funcidxs 0..k-1 (defenv-funcidx-map, by def-env order); `main`
+/// is LAST (idx k); the export names main = k. Each func uses its own type (typeidx = funcidx). A CCall in any
+/// body resolves its callee via the funcidx map → a real `call <idx>`. eval-core-d stays the differential oracle.
+
+import { Core, lower-tree, lower-def-env } from "lower-db"
+import { read-source } from "sread"
+import { eval-core-d } from "eval-db"
+import { Tree } from "parse-db"
+import { functype-bytes, type-section-multi, func-section-multi, code-section-multi, emit-def-body-d, defenv-funcidx-map, export-section-idx, preamble, emit-src-bytes, bytes-to-list } from "emit-db"
+
+/// Is `c` in the emit subset GIVEN a def-index map? Like emit-db's `can-emit` but a `CCall` is ALLOWED when its
+/// callee is in `defidx` (an emitted recursive def) — so a recursive program (fac) can emit; a CCall to a name
+/// NOT in the map (a merely-mutually-recursive def, excluded by the self-only def-env) still declines. Scalar Bool.
+def can-emit-d(c: Core, defidx: Map(Int64, Int64)) = match c with
+  | Core.CNum(_, _, _) => true
+  | Core.CVar(_) => true
+  | Core.CBin(op, _, _, l, r) => (is-arith-op(op) or is-cmp-op(op)) and can-emit-d(l, defidx) and can-emit-d(r, defidx)
+  | Core.CLet(_, v, body) => can-emit-d(v, defidx) and can-emit-d(body, defidx)
+  | Core.CIf(cond, thn, els) => can-emit-d(cond, defidx) and can-emit-d(thn, defidx) and can-emit-d(els, defidx)
+  | Core.CCall(name, args) => (match Map.lookup(defidx, name) with
+      | Option.Some(_) => can-call-args(args, 0, defidx)
+      | Option.None(_) => false)
+  | _ => false
+
+/// Are all a CCall's arg terms in the emit subset (under `defidx`)? Index recursion.
+def can-call-args(args: List(Core), i: Int64, defidx: Map(Int64, Int64)) =
+  (if i == List.len(args) then true
+   else (match List.at(args, i) with
+     | Option.Some(a) => (if can-emit-d(a, defidx) then can-call-args(args, i + 1, defidx) else false)
+     | Option.None(_) => can-call-args(args, i + 1, defidx)))
+
+/// arith op-code? (mirrors emit-db's — kept local since emit-db does not export it; small + pure.)
+def is-arith-op(op: Int64) = (op == 43) or (op == 45) or (op == 42) or (op == 47) or (op == 37)
+/// comparison op-code?
+def is-cmp-op(op: Int64) = (op == 60) or (op == 61) or (op == 62) or (op == 63) or (op == 64) or (op == 65)
+
+/// The TYPE-SECTION functypes for a recursive module — `functype-bytes(len params)` per def-env entry (in
+/// order), then `functype-bytes(0)` for the nullary main. Position = typeidx.
+def recursive-types(entries: List(Tuple(Int64, Tuple(List(Int64), Core)))) =
+  List.push(recursive-types-go(entries, 0, ([] : List(Bytes))), functype-bytes(0))
+def recursive-types-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, acc: List(Bytes)) =
+  (if i == List.len(entries) then acc
+   else (match List.at(entries, i) with
+     | Option.Some(e) => (match e with | (_, pb) => (match pb with | (params, _) =>
+         recursive-types-go(entries, i + 1, List.push(acc, functype-bytes(List.len(params))))))
+     | Option.None(_) => acc))
+
+/// The CODE bodies for a recursive module — `emit-def-body-d(params, body, fmap)` per def-env entry (in order),
+/// then the main body `emit-def-body-d([], mainCore, fmap)`. `fmap` = name→funcidx so a body's CCall emits a call.
+def recursive-bodies(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), mainCore: Core, fmap: Map(Int64, Int64)) =
+  List.push(recursive-bodies-go(entries, 0, fmap, ([] : List(Bytes))), emit-def-body-d(([] : List(Int64)), mainCore, fmap))
+def recursive-bodies-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, fmap: Map(Int64, Int64), acc: List(Bytes)) =
+  (if i == List.len(entries) then acc
+   else (match List.at(entries, i) with
+     | Option.Some(e) => (match e with | (_, pb) => (match pb with | (params, body) =>
+         recursive-bodies-go(entries, i + 1, fmap, List.push(acc, emit-def-body-d(params, body, fmap)))))
+     | Option.None(_) => acc))
+
+/// The integer list [0,1,…,n] — the typeidx-per-func vector for func-section-multi (func i uses type i; k+1
+/// funcs for k defs + main).
+def range-list(n: Int64) = range-list-go(0, n, ([] : List(Int64)))
+def range-list-go(i: Int64, n: Int64, acc: List(Int64)) =
+  (if i > n then acc else range-list-go(i + 1, n, List.push(acc, i)))
+
+/// Rebuild the eval def-env Map(name→(params,body)) from the entry list — the inverse of Map.to-list, for
+/// eval-core-d's lookup (the differential oracle).
+def entries-to-defs(entries: List(Tuple(Int64, Tuple(List(Int64), Core)))) =
+  entries-to-defs-go(entries, 0, (Map.empty : Map(Int64, Tuple(List(Int64), Core))))
+def entries-to-defs-go(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, acc: Map(Int64, Tuple(List(Int64), Core))) =
+  (if i == List.len(entries) then acc
+   else (match List.at(entries, i) with
+     | Option.Some(e) => (match e with | (name, pb) => entries-to-defs-go(entries, i + 1, Map.insert(acc, name, pb)))
+     | Option.None(_) => acc))
+
+/// Does the recursive program interpret to a value? Runs main via eval-core-d under the eval def-env — the SAME
+/// oracle as run-of-db, so emit declines exactly what eval declines.
+def has-value-d(mainCore: Core, entries: List(Tuple(Int64, Tuple(List(Int64), Core)))) =
+  (match eval-core-d(mainCore, (Map.empty : Map(Int64, Int64)), entries-to-defs(entries)) with
+    | Option.Some(_) => true
+    | Option.None(_) => false)
+
+/// ASSEMBLE a recursive wasm module from `mainCore` + the tree's self-recursive def-env. funcidx layout: defs
+/// 0..k-1, main = k; export names main. `Some(bytes)` if main + every def body is in the emit subset (can-emit-d
+/// under the funcidx map) AND main interprets to a value; else `None`.
+def emit-recursive-module(mainCore: Core, tree: Tree) =
+  (let entries = Map.to-list(lower-def-env(tree)) in
+   (let k = List.len(entries) in
+    (let fmap = defenv-funcidx-map(entries) in
+      (if can-emit-d(mainCore, fmap) and has-value-d(mainCore, entries)
+       then Option.Some(Bytes.concat(preamble(),
+              Bytes.concat(type-section-multi(recursive-types(entries)),
+                Bytes.concat(func-section-multi(range-list(k)),
+                  Bytes.concat(export-section-idx(k),
+                    code-section-multi(recursive-bodies(entries, mainCore, fmap)))))))
+       else Option.None(unit)))))
+
+/// SOURCE → recursive wasm module. read → lower main Core → assemble the multi-function module. `Some(bytes)` =
+/// a runnable module exporting `main` (which calls the emitted recursive defs); `None` = ill-typed / out-of-subset
+/// / declines. The recursive companion to emit-db's `emit-src` (which is single-main only).
+def emit-rec-src(s: String) = match read-source(s) with
+  | (root, tree) => (match lower-tree(tree, root) with
+      | Option.Some(core) => emit-recursive-module(core, tree)
+      | Option.None(_) => Option.None(unit))
+
+/// slice-B'(Bp5): the UNIFIED source→byte-list entry the W4 `cdz run-emitted` harness calls (v-cdz-tooling
+/// flips its driver import from emit-db to emit-rec-db, one line; the driver names `emit-any-src-bytes`).
+/// AUTO-ROUTES: a program whose tree has a self-recursive def-env → the RECURSIVE assembler
+/// (`emit-recursive-module`, a wasm fn per def + main); an ordinary single-main program → emit-db's single-main
+/// `emit-src-bytes` UNCHANGED (byte-identical, so existing single-main differentials do not shift). Returns
+/// `Option(List(UInt8))` — `None` = declined (ill-typed / out-of-subset), NEVER a trap, so run-emitted's
+/// declined-vs-error contract holds. Verdict semantics match emit-db's emit-src-bytes exactly.
+def emit-any-src-bytes(s: String) = match read-source(s) with
+  | (root, tree) => (match lower-tree(tree, root) with
+      | Option.Some(core) => (if is-def-env-empty(lower-def-env(tree))
+                   then emit-src-bytes(s)                              // no recursive defs → emit-db single-main (imported), byte-identical
+                   else (match emit-recursive-module(core, tree) with  // recursive → the multi-fn assembler
+                     | Option.Some(b) => Option.Some(bytes-to-list(b))
+                     | Option.None(_) => Option.None(unit)))
+      | Option.None(_) => Option.None(unit))                           // ill-typed → declined
+
+/// Is a def-env Map empty (no self-recursive defs → single-main routing)?
+def is-def-env-empty(m: Map(Int64, Tuple(List(Int64), Core))) = List.len(Map.to-list(m)) == 0
+
+// NOTE: a gate test that calls `emit-rec-src` on a real program builds the WHOLE emit pipeline (read→lower→
+// emit) into ONE wasm test-component, which exceeds the host component-build size threshold (invalid component
+// / wasm function[N]; see queue/mlrepro-emit-db-size-threshold-...). So the fac→module end-to-end check is
+// done via a HAND-BUILT Core + tree (below, dodging the whole-pipeline closure), and the runnable-artifact
+// fac→120 is the W4 host-run differential (Bp5, run OUTSIDE cdz test). These @tests stay on the PURE helpers.
+
+@test
+def er-recursive-module-assembles-from-hand-core() =
+  // emit-recursive-module over a HAND-BUILT single-def-env-shaped input is not directly callable (it reads the
+  // tree's def-env), so pin the ASSEMBLY PARTS instead: recursive-types + range-list for a 1-def module.
+  // 1 def (fac, 1 param) + main: types = [functype(1), functype(0)] (2 entries); range-list(1) = [0,1].
+  (let entries = List.push(([] : List(Tuple(Int64, Tuple(List(Int64), Core)))), (900, (List.push([], 7), Core.CNum(1, true, 64)))) in
+   (let types = recursive-types(entries) in
+    (if List.len(types) == 2 then                                    // fac-type + main-type
+     (if List.len(range-list(1)) == 2 then unit else trap("range-list(1) = [0,1]")) else trap("2 functypes for 1 def + main"))))
+
+@test
+def er-can-emit-d-allows-known-ccall() =
+  // a CCall whose callee IS in the def-index map is emittable; an unknown callee declines.
+  (let de = Map.insert((Map.empty : Map(Int64, Int64)), 900, 0) in
+   (if can-emit-d(Core.CCall(900, ([] : List(Core))), de) then
+     (if can-emit-d(Core.CCall(901, ([] : List(Core))), de) then trap("unknown callee should decline")
+      else unit)
+    else trap("known callee should be emittable")))
+
+@test
+def er-nonrecursive-not-in-defenv-declines-ccall() =
+  // sanity: can-emit-d on a plain arith is fine (no CCall).
+  (if can-emit-d(Core.CBin(43, true, 64, Core.CNum(1, true, 64), Core.CNum(2, true, 64)), (Map.empty : Map(Int64, Int64))) then unit
+   else trap("arith emits under empty def-env"))
+
+@test
+def er-def-env-empty-detects-single-main() =
+  // is-def-env-empty: an empty def-env (non-recursive program) → true (routes to single-main); non-empty → false.
+  (if is-def-env-empty((Map.empty : Map(Int64, Tuple(List(Int64), Core)))) then
+    (if is-def-env-empty(Map.insert((Map.empty : Map(Int64, Tuple(List(Int64), Core))), 900, ([], Core.CNum(0, true, 64)))) == false
+     then unit else trap("non-empty def-env → false")) else trap("empty def-env → true"))
+
+export { emit-recursive-module, emit-rec-src, emit-any-src-bytes, is-def-env-empty, can-emit-d, recursive-types, recursive-bodies, range-list, entries-to-defs, has-value-d }

@@ -430,6 +430,33 @@
   (call   main (: 1000 Int64))
   (output (: 10000000 Int64)))
 
+(case "a TOGGLE fold flips set membership per occurrence — odd count in, even count out"
+  (doc    "The parity/light-switch idiom: each occurrence FLIPS membership (`contains ? remove :
+           insert`), so an element ends IN the set iff it occurs an ODD number of times. The drain
+           case above removes monotonically; the churn here is INSERT-AFTER-REMOVE of the same
+           element within one fold — the CHAMP node must rebuild correctly through a full
+           insert→remove→insert cycle at one key. Over `(n 1 2 n 1 3 n)` the runtime n merges its
+           occurrence count with whichever literal it collides with: n=5 → n×3 (odd, IN), 1×2 (out),
+           2,3×1 (in) → {5,2,3}, len 3, encoding 301; n=1 → 1 occurs 5× (IN) → {1,2,3} → 311; n=2 →
+           2 occurs 4× (even, OUT — one flip miscounted at the collided key leaves it in) and the
+           1s cancel too → {3} → 100. Encoding: len·100 + contains(1)·10 + contains(n).")
+  (input  (do
+            (def (toggle (: xs (List Int64)) (: s (Set Int64)))
+              (match xs
+                ((list) s)
+                ((list h .. t)
+                  (toggle t (if (Set.contains s h) (Set.remove s h) (Set.insert s h))))))
+            (def (main (: n Int64))
+              (do
+                (def s (toggle (list n 1 2 n 1 3 n) (Set.of (list))))
+                (+ (* 100 (Set.len s))
+                   (+ (* 10 (if (Set.contains s 1) 1 0))
+                      (if (Set.contains s n) 1 0)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 301 Int64))
+  (call   main (: 1 Int64)) (output (: 311 Int64))
+  (call   main (: 2 Int64)) (output (: 100 Int64)))
+
 ; --- The algebraic laws the three operations satisfy: the empty set as identity/annihilator, and ----
 ; --- the union laws (commutative, idempotent). These pin the operations' DEFINING identities, which
 ; --- the overlapping-operand cases above (which give a nontrivial result) do not exercise — a

@@ -36,6 +36,10 @@ pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
 pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
 pass	BigInt.of a UInt64 at its high bit still works (the full-width control)
 pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
+pass	a MAP MERGE folds one map's entries into another, summing values on key collision
+pass	a STATS record threads min/max/sum/count as one fold accumulator with data-dependent field updates
+pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
+pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
 pass	a constant algebraic identity over a high UInt64 operand folds to the operand, not a spurious reject
 pass	a constant MUL-by-1 identity over a high UInt64 operand folds to the operand
 pass	a constant MUL-by-0 identity over a high UInt64 operand folds to zero
@@ -1193,6 +1197,7 @@ pass	a tuple key whose element is itself a float-bearing tuple keys by content
 pass	a tuple key with a RUNTIME Rational leaf hits and misses by canonical content
 pass	a tuple key with an ARITH-built BigInt leaf hits and misses by content
 pass	a tuple of two branch-built Options matches all four Some/None quadrants jointly
+pass	a two-level UPDATE of a map-of-maps rebuilds the inner and leaves the old outer intact
 pass	a type-valued parameter threads through TWO relay layers beside a runtime operand
 pass	a user sum named Ast renders BARE with RUNTIME payloads through one compiled body
 pass	a user-sum variant value as a Map KEY keys by variant and payload
