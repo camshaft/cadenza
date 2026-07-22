@@ -9798,6 +9798,41 @@ fn runtime_multiplication_traps_on_overflow() {
     ));
 }
 
+/// An UNUSUAL-WIDTH multiply (`(UInt 48)`, storage slot `i64`) TRAPS when the product exceeds the width —
+/// including the STORAGE-WRAP case a product past the i64 SLOT (not just past 2^48). The rust backend once
+/// had a gap here (`wrapping_mul` on the storage prim, then range-check vs 2^N — `2^32 * 2^32 = 2^64` wraps
+/// u64→0, which then falsely passes `[0, 2^48-1]` → silent 0; fixed on rust by computing in i128, MR
+/// be61ae4e7 / PR#756). This pins that the WASM path does NOT have that gap: its `emit_machine_overflow_guard`
+/// mul arm emits a `div_u` round-trip (`if a≠0 { if r/a ≠ b { trap }}`) that runs at EVERY width, so a slot
+/// wrap is caught (`r = 0`, `r/a = 0 ≠ b` → trap) BEFORE the 2^N range-check — sound regardless of whether
+/// the product exceeds the slot or merely the type. (Latent — no corpus case runs unusual-width arith since
+/// CDZ0304 rejects the literal; `(. (UInt 48) wrap)` is the only route to a value. v-rust-backend-flagged.)
+#[test]
+fn an_unusual_width_multiply_traps_on_a_storage_slot_wrap_not_just_a_type_overflow() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    // Wrap two Int64 params into UInt48, multiply, project the result back to Int64 (UInt48 has no boundary
+    // rep, so it cannot be a param/return directly — `wrap` in, `Int64.of` out).
+    let src = "(module m (def (main (: a Int64) (: b Int64)) \
+               (Int64.of (* ((. (UInt 48) wrap) a) ((. (UInt 48) wrap) b)))) (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // Small product fits UInt48 → computes exactly.
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "main", &[Val::S64(3), Val::S64(4)]),
+        12
+    );
+    // STORAGE-WRAP: 2^32 * 2^32 = 2^64 wraps the i64 slot to 0 — must TRAP (the rust-gap repro), not give 0.
+    assert!(
+        call_traps(&bytes, "main", &[Val::S64(1 << 32), Val::S64(1 << 32)]),
+        "a UInt48 product that wraps the i64 storage slot must trap, not silently yield 0"
+    );
+    // TYPE-OVERFLOW that FITS the slot: 2^24 * 2^25 = 2^49 fits i64 but exceeds 2^48 — the range-check traps.
+    assert!(
+        call_traps(&bytes, "main", &[Val::S64(1 << 24), Val::S64(1 << 25)]),
+        "a UInt48 product exceeding 2^48 (but fitting the i64 slot) must trap via the range-check"
+    );
+}
+
 /// A full-width signed `(* a C)` with a constant `C > 0` (non-power-of-two) guards overflow with a
 /// compile-time BOUND CHECK (`a > MAX/C || a < MIN/C → trap`) instead of the `div_s` round-trip — but
 /// must trap at EXACTLY the same points. `(* a 3)`: `a = MAX/3` fits, `a = MAX/3 + 1` overflows up;

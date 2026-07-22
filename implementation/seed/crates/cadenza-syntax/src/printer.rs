@@ -2311,7 +2311,7 @@ impl<'a> Printer<'a> {
     /// field's own name (`(x x)`) prints as just `{ x }` (the inverse of the reader's `{ x }` → `(x x)`
     /// pun). A field with any other value prints the full `name = value`.
     fn print_record(&mut self, fields: &[StructId]) {
-        self.bracketed("{", "}", true, fields, |p, field| {
+        self.bracketed_pairs_comment_aware("{", "}", fields, |p, field| {
             if let Struct::List(pair) = p.a.get(field) {
                 let (name, value) = (pair[0], pair[1]);
                 p.expr(name, 0);
@@ -2321,6 +2321,51 @@ impl<'a> Printer<'a> {
                 }
             }
         });
+    }
+
+    /// Like `bracketed` (padded braces) but each field/entry may be wrapped in `(comment-after "text"
+    /// (pair))` — a same-line trailing `//` on the LAST field/entry. Renders the inner pair via `emit`,
+    /// then ` // text` same-line, and (when the last field is wrapped) forces the closing `}` onto its own
+    /// line so the comment isn't swallowed. Records/maps use this instead of the bare-value
+    /// `bracketed_comment_aware` because their element is a `(name value)` PAIR, not a bare value.
+    fn bracketed_pairs_comment_aware(
+        &mut self,
+        open: &str,
+        close: &str,
+        fields: &[StructId],
+        mut emit: impl FnMut(&mut Self, StructId),
+    ) {
+        let last_has_trailing = fields.last().is_some_and(|&f| self.is_comment_after(f));
+        let emit_field = |p: &mut Self, f: StructId, emit: &mut dyn FnMut(&mut Self, StructId)| {
+            let inner = p.strip_comment_after(f);
+            emit(p, inner);
+            if let Some(a) = p.a.as_form(f, "comment-after")
+                && a.len() == 2
+                && p.is_string(a[0])
+            {
+                p.doc.word(format!(" //{}", p.doc_line_text(a[0])));
+            }
+        };
+        if !last_has_trailing {
+            return self.bracketed(open, close, true, fields, |p, f| {
+                emit_field(p, f, &mut emit)
+            });
+        }
+        // Forced-break path (last field carries a same-line comment): padded braces, hard newline before
+        // the closer so the trailing `// …` on the last field ends its line.
+        self.doc.cbox(INDENT);
+        self.doc.word(open.to_string());
+        self.doc.break_with(1, 0);
+        for (i, &f) in fields.iter().enumerate() {
+            if i > 0 {
+                self.doc.word(",");
+                self.doc.space();
+            }
+            emit_field(self, f, &mut emit);
+        }
+        self.doc.hardbreak_with(-INDENT);
+        self.doc.word(close.to_string());
+        self.doc.end();
     }
 
     /// Whether a record field `(name value)` is a SHORTHAND pun — `value` is a bare-`Name` reference
@@ -2402,7 +2447,7 @@ impl<'a> Printer<'a> {
         if self.has_rest_marker(entries) {
             return self.bracketed_rest("#{", "}", true, entries, entry, |p, e| p.expr(e, 0));
         }
-        self.bracketed("#{", "}", true, entries, entry);
+        self.bracketed_pairs_comment_aware("#{", "}", entries, entry);
     }
 
     /// `match scrut { pat => body, … }` — one arm per line (consistent box) when broken.
@@ -3274,17 +3319,24 @@ impl<'a> Printer<'a> {
     /// still round-trips. A record additionally needs its field key to be a name; a map key is any
     /// expression.
     fn is_pairs(&self, args: &[StructId]) -> bool {
-        args.iter()
-            .all(|&a| matches!(self.a.get(a), Struct::List(p) if p.len() == 2))
+        args.iter().all(|&a| {
+            // See through a same-line trailing-comment wrapper on the last field/entry (only the last one
+            // is ever wrapped, by the reader's `at(RBrace)` gate) so it stays a well-formed record/map.
+            let inner = self.strip_comment_after(a);
+            matches!(self.a.get(inner), Struct::List(p) if p.len() == 2)
+        })
     }
 
     /// A record the `{ name = e, … }` surface handles: every field is a `(name value)` pair whose
     /// key is a plain field name (so it re-reads as a `name = value` binding).
     fn is_record_shape(&self, args: &[StructId]) -> bool {
         self.is_pairs(args)
-            && args.iter().all(|&a| match self.a.get(a) {
-                Struct::List(p) => self.plain_key(p[0]).is_some(),
-                _ => false,
+            && args.iter().all(|&a| {
+                let inner = self.strip_comment_after(a);
+                match self.a.get(inner) {
+                    Struct::List(p) => self.plain_key(p[0]).is_some(),
+                    _ => false,
+                }
             })
     }
 
@@ -5703,6 +5755,40 @@ mod tests {
             assert_roundtrip("#{ \"a\" = 1, \"b\" = 2 }", 80),
             "#{ \"a\" = 1, \"b\" = 2 }"
         );
+        assert_eq!(assert_roundtrip("#{ 1 = 10 }", 80), "#{ 1 = 10 }");
+    }
+
+    #[test]
+    fn a_same_line_trailing_comment_on_the_last_record_or_map_field_is_preserved() {
+        // The record/map siblings of the list/tuple/set trailing-comment fix. A field/entry is a
+        // `(name value)` PAIR (not a bare value), so the `(comment-after "text" (pair))` wrapper is
+        // unwrapped by the shape-guards (`is_pairs`/`is_record_shape`) AND the printer
+        // (`bracketed_pairs_comment_aware`), which re-emits ` // text` after the field and forces `}` to
+        // its own line. Captured only on the LAST field (PR#758 gate); a mid-field comment is left to the
+        // drop-guard. strip_comments peels it — a record with a trailing comment compiles.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def r() -> Int64 = { a = 1, b = 2 // last\n}").arenas),
+            "(def (r) (: (\"record\" (a 1) (comment-after \"last\" (b 2))) Int64))",
+            "a trailing comment on the last RECORD field is captured, not dropped"
+        );
+        assert_eq!(
+            assert_roundtrip("{ a = 1, b = 2 // last\n}", 80),
+            "{\n  a = 1,\n  b = 2 // last\n}"
+        );
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("def m() -> Int64 = #{ 1 = 10, 2 = 20 // last\n}").arenas
+            ),
+            "(def (m) (: (\"map\" (1 10) (comment-after \"last\" (2 20))) Int64))",
+            "a trailing comment on the last MAP entry is captured, not dropped"
+        );
+        assert_eq!(
+            assert_roundtrip("#{ 1 = 10, 2 = 20 // last\n}", 80),
+            "#{\n  1 = 10,\n  2 = 20 // last\n}"
+        );
+        // Clean record/map (incl. field-shorthand pun) keep their ordinary flat layout — no forced break.
+        assert_eq!(assert_roundtrip("{ x = 1, y = 2 }", 80), "{ x = 1, y = 2 }");
+        assert_eq!(assert_roundtrip("{ x, y }", 80), "{ x, y }");
         assert_eq!(assert_roundtrip("#{ 1 = 10 }", 80), "#{ 1 = 10 }");
     }
 

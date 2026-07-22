@@ -2135,6 +2135,7 @@ pass	a runtime bin match dispatches on a leading literal bit-field tag
 pass	a runtime bin match dispatches on a literal tag across arms
 pass	a runtime bin match whose catch-all BINDS and reads the whole Bytes scrutinee
 pass	a runtime bin match decodes a Bytes.slice sub-range of a larger buffer
+pass	a NESTED runtime bin match re-parses a bin-decoded payload
 todo	a guarded bin-match arm reads its decoded binder and falls through when the guard fails
 pass	a runtime bin match reads an int segment after a byte-aligned bit-field run
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee

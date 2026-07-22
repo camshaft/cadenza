@@ -3070,7 +3070,18 @@ impl<'a> Parser<'a> {
                     self.expr(crate::token::PREC_SEQ + 1)
                 };
                 let f_span = f_start.merge(self.prev_span());
-                items.push(self.list(vec![name, value], f_span));
+                let field = self.list(vec![name, value], f_span);
+                // A `//` trailing the LAST field on the same line (`{ a = 1, b = 2 // last }`) sits in the
+                // `}` token's leading slot; capture it as `(comment-after "text" (name value))` (gated on
+                // `at(RBrace)` — only the last field, the PR#758 rule: a non-last comment would swallow the
+                // following `, …`). The record printer/shape-guard unwraps the wrapper. `strip_comments`
+                // peels it. A non-last comment is left stranded → the comment-drop guard refuses.
+                if self.at(Kind::RBrace) {
+                    let trailing = self.take_trailing_comment_here();
+                    items.push(self.wrap_comment_after(trailing, field));
+                } else {
+                    items.push(field);
+                }
                 if !self.sep_continue(Kind::RBrace) {
                     break;
                 }
@@ -3117,7 +3128,16 @@ impl<'a> Parser<'a> {
                     self.expect(Kind::Eq, "`=`");
                     let value = self.expr(crate::token::PREC_SEQ + 1);
                     let e_span = e_start.merge(self.prev_span());
-                    items.push(self.list(vec![key, value], e_span));
+                    let entry = self.list(vec![key, value], e_span);
+                    // Capture a same-line trailing `//` on the LAST entry (gated on `at(RBrace)`), like the
+                    // record loop — wrap as `(comment-after "text" (key value))`; the map printer/shape-guard
+                    // unwraps it. A non-last comment is left to the comment-drop guard (no corruption).
+                    if self.at(Kind::RBrace) {
+                        let trailing = self.take_trailing_comment_here();
+                        items.push(self.wrap_comment_after(trailing, entry));
+                    } else {
+                        items.push(entry);
+                    }
                 }
                 if !self.sep_continue(Kind::RBrace) {
                     break;
