@@ -1106,6 +1106,25 @@
   (call   main (: 7 Int64))
   (output (: 5 Int64)))
 
+(case "a frame body ACCUMULATED by a fold of per-element bin constructions round-trips"
+  (doc    "The serializer-loop idiom: `build` folds n per-element `(bin (u8 (UInt8.wrap i)))` one-byte
+           constructions into one body via Bytes.concat, then a header frame wraps it and the pattern
+           decodes both back — length byte 5, rest 5 bytes (505). Each loop iteration runs a FRESH bin
+           construction whose result concatenates onto the accumulator (the splice pin above splices ONE
+           pre-built value); a construction that reused a buffer across iterations, or a concat that
+           dropped an iteration's byte, drifts the rest length.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc Bytes))
+              (if (>= i n) acc (build (+ i 1) n (Bytes.concat acc (bin (u8 (UInt8.wrap i)))))))
+            (def (main (: n Int64))
+              (let ((body (build 0 n (Bytes.of (list)))))
+                (match (bin (u8 (UInt8.wrap n)) (bytes body))
+                  ((bin (u8 len) (bytes rest)) (+ (* 100 len) (Bytes.len rest)))
+                  (_ -1))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 505 Int64)))
+
 (case "a runtime bin match binds the tail after a fixed header via a final rest segment"
   (doc    "A `(bin …)` pattern ending in a FINAL UNSIZED `(bytes rest)` over a RUNTIME scrutinee: a fixed
            one-byte header then a variable-length tail. The length probe accepts any length `>= 1` (the

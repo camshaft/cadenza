@@ -117,6 +117,7 @@ todo	a @param selects a match arm and a SECOND param feeds the selected body
 todo	a @param value crosses into a closure capture and applies
 pass	a Bytes.slice into the to-bytes output decodes at a scalar boundary and rejects mid-scalar
 pass	a CONST-FOLDED taken branch with a Float32-overflowing literal is rejected, not folded past the check
+pass	a FILTERED rebuild keeps only entries passing a runtime predicate
 pass	a Float32-overflowing literal grounded CONTEXTUALLY through arith is rejected
 pass	a MAP argument to an effect op is looked up inside the arm at the handler's own state
 pass	a MAX-fold over quantities compares through the erased unit wrapper per step
@@ -153,6 +154,8 @@ pass	a bare-literal-arm float match under Float32 emits valid f32 across the sel
 pass	a fitting Float32 record field passed through a typed parameter computes
 pass	a fitting contextual float literal computes through the same arith grounding
 pass	a float-field RECORD as a SET element dedups by content including the float leaf
+pass	a fold over Map.to-list rebuilds a TRANSFORMED map — the map-over-values idiom
+pass	a frame body ACCUMULATED by a fold of per-element bin constructions round-trips
 pass	a generated list reverses twice to itself — an involution property over generated content
 pass	a generic fold instantiated at an Int64 AND a String accumulator in one program
 pass	a generic pair-swap crosses a scalar and a heap payload between positions
@@ -4127,6 +4130,7 @@ pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
 pass	the byte-len of a multi-byte String.slice exceeds its scalar-len (the two measures diverge)
+pass	the compound comparator drives a full INSERTION SORT over runtime tuples
 pass	the decode error's kind is matchable
 pass	the default-integer pragma is definition-site scoped, not use-site
 pass	the difference contains the elements not in the second set

@@ -452,6 +452,31 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "the compound comparator drives a full INSERTION SORT over runtime tuples"
+  (doc    "The ordering pins above each make ONE comparison; this drives the blessed lexicographic
+           `<` as the comparator of a recursive insort over three tuples — {(1,9),(2,5),(2,a)} — and
+           reads the MIDDLE of the sorted result per call: a=3 sorts (2,3) before (2,5) (middle 23);
+           a=7 sorts it after (middle 25). The tie on field 0 forces the comparator into field 1 mid-
+           sort, and each insort step re-runs the full compound compare — the sort-a-table idiom the
+           single-comparison pins cannot witness.")
+  (input  (do
+            (def (insort (: t (Tuple Int64 Int64)) (: q (List (Tuple Int64 Int64))))
+              (match q
+                ((list) (list t))
+                ((list h .. rest)
+                  (if (< t h) (List.concat (list t) q)
+                    (List.concat (list h) (insort t rest))))))
+            (def (main (: a Int64))
+              (let ((sorted (insort (tuple 2 a) (insort (tuple 2 5) (insort (tuple 1 9) (list))))))
+                (match (List.at sorted 1)
+                  ((Some (tuple x y)) (+ (* 10 x) y))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 23 Int64))
+  (call   main (: 7 Int64))
+  (output (: 25 Int64)))
+
 ; The compound-ordering cases above all bottom out in an INTEGER leaf (the numeric leaf order). This pins
 ; that the compound walk uses the BLESSED per-leaf order for a STRING leaf too — a String's order is
 ; content-lexicographic over its Unicode scalar values (collections-and-text.md #An ordering over strings…),

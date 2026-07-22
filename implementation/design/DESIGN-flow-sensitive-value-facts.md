@@ -416,3 +416,64 @@ confirmed**. Their concrete feedback is folded into §2 / §3 / §4 / §4.1 abov
 pointing at this doc, naming subsystem `rcdzc`, and scoping the first increment as **slice 1 (the
 `ValueFact` interval-only refactor — behavior-identical, the safety floor)**. Later slices are follow-on
 increments the vertical carries top-to-bottom.
+
+---
+
+## 8. Implementation outcome (as-built, 2026-07-22 — §0–§7 above are the original proposal)
+
+The `v-value-facts` vertical landed the following. §0–§7 are the design-of-record; this section is the
+honest as-built record, including where reality diverged from the plan.
+
+**LANDED + fleet-gated (12 corpus witnesses + 7 rcdzc unit tests):**
+- **Slice 1** — `ValueFact` interval-only refactor (behavior-identical). ✅
+- **Flagship (§3.1a)** — the redundant-`if` elimination was found ALREADY LIVE (`refined_comparison_const`
+  at the `Core::If` emit); promoted to a headline corpus witness. No new folding needed.
+- **Slice 2 (integer-facet gaps)** — UNSIGNED comparison refinement (vs a non-negative constant, no
+  wraparound). ✅ **Caught + fixed a UInt64 soundness bug pre-land**: seeding the interval from a hardcoded
+  `(i64::MIN, i64::MAX)` fabricated a false ceiling for a UInt64 (whose real hi is `None`); fixed to seed
+  from `resolved_int_bounds`. Pinned with a UInt64-ceiling soundness twin + a domain-edge (0-lower-bound
+  tautology) witness.
+- **`fact_proven_safe` disjunct (§4.1)** — the third independently-sound disjunct, landed behavior-neutral
+  (delegates to `arith_provably_in_range` for the integer facet; the named seam for later facets). ✅
+- **Slice 6c (NEW, beyond the original plan)** — a flow refinement folds a comparison over a checked-arith
+  operand (`(< (+ x 1) 11)` under `x ∈ [0,9]`) when the arith is **provably-no-overflow** (a
+  trap-free-in-context check reusing the overflow oracle — discarding a checked arith is trap-safe only
+  when it can't overflow). Lir + corpus pinned, incl. an overflow-capable soundness twin (must NOT fold).
+
+**DIVERGED from the plan:**
+- **Slice 3 (`nonzero` / div-by-zero)** — DEPRIORITIZED. Finding: the div-by-zero guard is EXPLICIT only on
+  the rust backend; wasm uses the machine's native `div_s`/`div_u` ÷0 hardware trap (no emitted guard to
+  elide). So a `nonzero` fact elides only rust-side — a minor single-backend win. Separately, the signed
+  `MIN/-1` div-overflow elision ALREADY benefits from flow refinement on BOTH backends (`value_provably_nonneg`
+  → `value_range` → `range_refinements`), pinned at the Lir level.
+- **Slice 5 (`variant_tags` / redundant-match elision)** — the FACET (a disjoint `variant_refinements` stack
+  + `refined_variant`) was built and is correct, and v-patterns wired an emit consult — but it turned out
+  the same-scrutinee nested-match elision is ALREADY delivered by `lower_match_sum`'s existing `known_disc`
+  const fold (two tiers up in resolve), so the emit consult fired 0× (dead code). Both the emit consult and
+  the facet were **removed** (behavior-neutral). Net: the sum-facet elision works, via the pre-existing
+  lower fold, not new value-facts code. TWO durable insights survived: (i) a latent **use-after-free class**
+  (a mid-emit `core_of` on a call scrutinee β-reduces/inlines and renumbers a payload out of `dup_sites` →
+  dropped retain; the fix is a `core_of`-free `resolved_of` consult), and (ii) a compile-time **~O(N^1.5)
+  superlinearity** in `lower_match_sum`'s per-level `const_at_path` walk on deep same-scrutinee nests (a
+  `lower_match_sum` concern, memoizable — v-patterns' territory).
+- **Slice 4 (`len_range` / collection-bounds)** — DEFERRED. Finding: the canonical `(if (< i (List.len xs))
+  (List.at xs i) …)` bounds pattern is RELATIONAL (index vs a runtime length — two runtime values), which
+  §2/D2 deliberately excludes from the foundation. A constant-list + constant-index `List.at` already folds
+  in `lower`. So a non-relational `len_range` facet covers only a thin residual (runtime index into a
+  const-length list, const-bounded) — its real payoff is gated on the relational facet below.
+
+**PENDING (operator-gated):**
+- **Relational facet (design (B) / §2 "later ADD-ON")** — the high-value unlock (both `(< i len)` bounds
+  elision AND general `x<y` overflow elision). Operator deferred it as its own future slice ("the real prize
+  later, greenlight on request") because a FULL relational domain is O(vars²)-join. Open question routed to
+  v-compiler-perf: can a BOUNDED relational facet (fixed-cap pair set / index-vs-length-only / known-below
+  map) stay per-var-cheap enough to pass the join guardrail? Awaiting their cost read + the operator greenlight.
+- **Reachability WARNING (§3.1b, CDZ0308)** — v-diagnostics landed the CDZ0308 scaffold; the emit is
+  fork-blocked (the dead branch is folded away before a post-hoc pass can see it → capture must be at the
+  fold site). Routed to the operator (concierge) as a follow-on; the flagship elision itself ships regardless.
+
+**Net:** the operator's "as general as possible / all data types" directive is delivered for the shipped
+surface — the integer facet is complete and thoroughly gated, and the sum-facet elision is live (via the
+pre-existing lower fold). Every landed slice is soundness-gated with a differential twin, and the arc caught
+and fixed two real miscompile classes (the UInt64 ceiling and the slice-5 latent UAF). The remaining
+high-value increment is the relational facet, pending the cost read + operator greenlight.
