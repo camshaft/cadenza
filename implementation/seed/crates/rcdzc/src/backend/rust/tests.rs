@@ -5506,6 +5506,41 @@ fn rustc_roundtrip_closure_parameter_consumer_with_a_compound_arg_closure_s2() {
 }
 
 #[test]
+fn rustc_roundtrip_closure_parameter_consumer_with_a_compound_result_closure_s3() {
+    // CLOSURE-PARAMETER CONSUMER, S3: the consumer's closure param RETURNS a COMPOUND (a Tuple). The
+    // consumer applies `(g x (+ x 10))` and returns the tuple result; the producing sibling `mk` emits a
+    // matching `Rc<dyn Fn(i64, i64) -> (i64, i64)>` (factory S3). The `closure_param_is_simple` guard now
+    // admits a compound closure RESULT (`s2_arg_ok` on the final result, not just the args) — the result
+    // flows into the consumer body and the emitter lowers the native tuple. So `app` emits and the driver
+    // builds the closure from the producer: `app(mk(), 5)` applies g to (5, 15) → (5, 15).
+    let m = compile_rust(
+        "(module m \
+           (def (mk) (fn ((: a Int64) (: b Int64)) (tuple a b))) \
+           (def (app (: g (-> Int64 Int64 (Tuple Int64 Int64))) (: x Int64)) (g x (+ x 10))) \
+           (export mk) (export app))",
+    );
+    assert!(
+        m.contains(
+            "pub fn app(g: std::rc::Rc<dyn Fn(i64, i64) -> (i64, i64)>, x: i64) -> (i64, i64)"
+        ),
+        "the S3 consumer emits a compound-RESULT `Rc<dyn Fn(i64,i64)->(i64,i64)>` param + applies it:\n{m}"
+    );
+    // A compound closure result that CONTAINS a closure (a Tuple with a `Fn` element) still DECLINES —
+    // `s2_arg_ok` recurses into the tuple and rejects the nested `Ty::Fn` (no value-form render). This
+    // guards the widening: only value-renderable compound results are admitted, not fn-carrying ones.
+    let fn_in_result = compile_rust_result(
+        "(module m \
+           (def (mk (: k Int64)) (fn ((: x Int64)) (tuple x (fn ((: y Int64)) (+ y k))))) \
+           (def (app (: g (-> Int64 (Tuple Int64 (-> Int64 Int64)))) (: x Int64)) (. (g x) 0)) \
+           (export mk) (export app))",
+    );
+    assert!(
+        fn_in_result.is_err(),
+        "a closure-param consumer whose closure result TUPLE contains a closure still declines:\n{fn_in_result:?}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_host_closure_factory_compound_arg_s2() {
     // HOST-CLOSURE S2: a closure-factory whose returned closure takes a COMPOUND ARG (Tuple/List) with a
     // SCALAR result now crosses — the arg maps natively (`Rc<dyn Fn((i64, i64)) -> i64>`) and the gate

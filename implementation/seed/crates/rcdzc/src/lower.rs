@@ -4279,9 +4279,17 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
     // scrutinee). A scalar-only match over Bytes (only bare-binder/`_` arms) is NOT here — it has no
     // `(bin …)` arm, so it falls through to the scalar path (a whole-value binder / wildcard).
     if matches!(scrut_ty, crate::ty::Ty::Bytes)
-        && arms
-            .iter()
-            .any(|&(pat, _)| db.ast.head_name(pat) == Some("bin"))
+        && arms.iter().any(|&(pat, _)| {
+            // Peel a `(guard <inner> <cond>)` wrapper before reading the pattern head, so a GUARDED bin arm
+            // `(guard (bin …) cond)` routes to the binary matcher too (§4b). A bare `(bin …)` reads `pat`
+            // directly. (The list/map routes above key on the scrutinee TYPE, not the pattern head, so they
+            // already admit a guarded arm; only the bin route reads the pattern head.)
+            let inner = match db.ast.as_form(pat, "guard") {
+                Some(g) if g.len() == 2 => g[0],
+                _ => pat,
+            };
+            db.ast.head_name(inner) == Some("bin")
+        })
     {
         return lower_match_bin(db, scrutinee, arms);
     }
@@ -7508,17 +7516,35 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     if let Core::Poison(r) = core_of(db, scrutinee) {
         return Core::Poison(r);
     }
-    // Classify arms. A `(bin …)` arm carries its parsed segments; a bare-name/`_` arm is a catch-all.
-    // (A guarded bin pattern is a later refinement — decline if seen so we never mis-select.)
+    // Classify arms. A `(bin …)` arm carries its parsed segments + an OPTIONAL guard `(guard (bin …) cond)`
+    // (§4b): the guard cond reads the arm's decoded segment binders (resolve Case 6bg gives them the same
+    // `BinField` the body sees) and gates the arm — a false guard FALLS THROUGH to the next arm (not a
+    // trap), the bin analogue of the scalar guarded-arm fall-through. A bare-name/`_` arm is a catch-all.
     enum BinArm {
-        Bin(Vec<crate::resolved::Segment>, StructId), // segments, body
-        CatchAll(StructId),                           // body (bare binder or `_`)
+        Bin(Vec<crate::resolved::Segment>, Option<StructId>, StructId), // segments, guard cond, body
+        CatchAll(StructId),                                             // body (bare binder or `_`)
     }
     let mut classified: Vec<BinArm> = Vec::with_capacity(arms.len());
     for &(pat, body) in arms {
-        if db.ast.head_name(pat) == Some("bin") {
-            match crate::resolve::resolved_of(db, pat) {
-                crate::resolved::Resolved::Bin { segs } => classified.push(BinArm::Bin(segs, body)),
+        // Peel a `(guard <inner-pat> <cond>)` wrapper: the inner pattern gives the bin segments, `<cond>` the
+        // guard. A wrong-arity guard is a poison (mirrors the scalar path's guard-arity check).
+        let (inner_pat, guard) = match db.ast.as_form(pat, "guard") {
+            Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+            Some(g) => {
+                return Core::Poison(crate::resolve::fixed_arity_reject(
+                    pat,
+                    g,
+                    2,
+                    "a guarded pattern must be (guard <pattern> <cond>)",
+                ));
+            }
+            None => (pat, None),
+        };
+        if db.ast.head_name(inner_pat) == Some("bin") {
+            match crate::resolve::resolved_of(db, inner_pat) {
+                crate::resolved::Resolved::Bin { segs } => {
+                    classified.push(BinArm::Bin(segs, guard, body))
+                }
                 crate::resolved::Resolved::Poison(r) => return Core::Poison(r),
                 _ => {
                     return Core::Poison(Reject::decline(
@@ -7526,8 +7552,9 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                     ));
                 }
             }
-        } else if db.ast.as_name(pat).is_some() {
-            // A bare name (binder) or `_` — a catch-all binding the whole scrutinee.
+        } else if guard.is_none() && db.ast.as_name(inner_pat).is_some() {
+            // A bare name (binder) or `_` — a catch-all binding the whole scrutinee. (A GUARDED bare-name
+            // catch-all over Bytes is the scalar path's job, not the bin matcher's — decline to it.)
             classified.push(BinArm::CatchAll(body));
         } else {
             // A literal / other pattern against a Bytes scrutinee — not supported here; decline.
@@ -7576,7 +7603,7 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                     // first-match order, but we keep the structure simple — the catch-all is normally last).
                     acc = Some(*body);
                 }
-                BinArm::Bin(segs, body) => {
+                BinArm::Bin(segs, guard, body) => {
                     // Handled at runtime: fixed-width INT segments, bit-field runs, and DEPENDENT-SIZE
                     // `(bytes body n)` segments at ANY position (§4a: a non-final dependent size makes the
                     // following offset dynamic — `static_base + Σ preceding n` — which `bin_dynamic_offset`
@@ -7614,6 +7641,23 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                         Ok(p) => p,
                         Err(r) => return Core::Poison(r),
                     };
+                    // §4b: a GUARD nests INTO the predicate as `pred AND <guard>` (short-circuit — the guard
+                    // reads the decoded segment binders, which are only in bounds once `pred`'s length probe
+                    // holds). A false guard makes the whole arm predicate false → falls through to the next
+                    // arm's predicate, NOT a trap. The guard cond's segment binders resolve to the same
+                    // `BinField` (Case 6bg) the body reads off the materialized scrutinee.
+                    let pred = match guard {
+                        None => pred,
+                        Some(cond) => synth_core(
+                            db,
+                            Core::And {
+                                lhs: pred,
+                                rhs: *cond,
+                                is_and: true,
+                            },
+                            crate::ty::Ty::Bool,
+                        ),
+                    };
                     acc = Some(synth_if(db, pred, *body, else_body));
                 }
             }
@@ -7631,7 +7675,7 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
     for arm in &classified {
         match arm {
             BinArm::CatchAll(body) => return core_of(db, *body),
-            BinArm::Bin(segs, body) => {
+            BinArm::Bin(segs, guard, body) => {
                 // A segment BN3 can't decide (a dependent-size `(bytes b n)`) → we cannot know whether
                 // this arm matches, so we must NOT silently skip it to a later arm (that would MISCOMPILE
                 // a case whose dependent arm should match). `bin_match_decode` handles dependent-size
@@ -7664,6 +7708,24 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                     }
                 }
                 if all_literals_match {
+                    // §4b: a GUARD is evaluated after the literals match. The guard cond reads the decoded
+                    // segment binders (Case 6bg → `BinField` off this const scrutinee, folding to constants),
+                    // so `core_of(cond)` folds to `ConstBool`. TRUE → this arm is the match; FALSE → fall
+                    // through to the next arm (mirrors `lower_match`'s scalar guard fold). A guard that does
+                    // NOT fold to a constant over a CONST scrutinee is a decline (a runtime op leaked into a
+                    // const fold — should not happen for a well-formed guard reading only decoded binders).
+                    if let Some(cond) = guard {
+                        match core_of(db, *cond) {
+                            Core::ConstBool(true) => return core_of(db, *body),
+                            Core::ConstBool(false) => continue,
+                            Core::Poison(r) => return Core::Poison(r),
+                            _ => {
+                                return Core::Poison(Reject::decline(
+                                    "a guarded bin-match arm over a constant scrutinee did not fold its guard to a constant",
+                                ));
+                            }
+                        }
+                    }
                     return core_of(db, *body);
                 }
             }

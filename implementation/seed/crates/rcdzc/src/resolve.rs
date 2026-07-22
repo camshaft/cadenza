@@ -1559,6 +1559,18 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             key,
         });
     }
+    // Case 6bg: `form` is a GUARD `(guard (bin <seg>…) <cond>)`, ascended from `<cond>` → a SEGMENT binder of
+    // the bin pattern is in scope in the guard cond (`(guard (bin (u8 n)) (> n 5))` — the guard reads `n`).
+    // The binary analogue of Case 6lg/6tg/6recg: the binder resolves to the SAME `BinField` Case B gives the
+    // arm BODY, so the guard decodes the segment off the scrutinee exactly as the body would. Caught here for
+    // the same reason as the other guard-cond cases (at the arm, `from` is the guard wrapper, not the cond).
+    if let Some((scrutinee, segs, seg_index)) = guard_cond_bin_binds(db, form, from, name) {
+        return Some(Resolved::BinField {
+            scrutinee,
+            segs: segs.into(),
+            seg_index,
+        });
+    }
     // Case 6rec: `form` is a MATCH ARM whose pattern is a `(record (field binder) …)` RECORD pattern
     // binding `name` at a field. A TOP-LEVEL record match destructures a record scrutinee BY FIELD (the
     // match twin of the record BINDING pattern, Increment B): a bare-binder field value `a` in `(record (x
@@ -1886,6 +1898,13 @@ fn match_arm_bin_binds(
     if from != body {
         return None;
     }
+    // Peel a `(guard <inner-pat> <cond>)` wrapper (§4b): a guarded bin arm `(guard (bin …) cond)` binds its
+    // segment names in the BODY too, so the body reference `n` must see the inner `(bin …)` pattern. A bare
+    // `(bin …)` reads `pattern` directly. (The guard COND path is Case 6bg's `guard_cond_bin_binds`.)
+    let pattern = match db.ast.as_form(pattern, "guard") {
+        Some(g) if g.len() == 2 => g[0],
+        _ => pattern,
+    };
     // The pattern must be a `(bin …)` form. Re-parse its segment list via `resolve_bin` (pure over `&Db`,
     // so this is exactly the `Resolved::Bin` the pattern position resolves to).
     if db.ast.head_name(pattern) != Some("bin") {
@@ -1905,6 +1924,56 @@ fn match_arm_bin_binds(
     let mtail = db.ast.as_form(parent, "match")?;
     let scrutinee = *mtail.first()?;
     if form == scrutinee {
+        return None;
+    }
+    Some((scrutinee, segs, seg_index))
+}
+
+/// If `form` is a GUARD `(guard (bin <seg>…) <cond>)` ascended from its `<cond>`, and the bin pattern binds
+/// `name` at one of its segments, return `(scrutinee, segs, seg_index)` for a `BinField` read — the BINARY
+/// analogue of [`guard_cond_list_binds`]/[`guard_cond_record_binds`] (Case 6bg). `(guard (bin (u8 n)) (> n
+/// 5))` binds `n` at segment 0 for the guard cond; the guard decodes it off the enclosing match's scrutinee
+/// EXACTLY as the arm body does via Case B ([`match_arm_bin_binds`]). `None` otherwise. Complements Case B:
+/// a reference in the guard cond ascends into the `(guard …)` form (this case) before it would reach the arm
+/// (where `from` is the guard wrapper, not the cond).
+fn guard_cond_bin_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<(StructId, Vec<crate::resolved::Segment>, usize)> {
+    // `form` must be `(guard <bin-pattern> <cond>)`, ascended from the cond.
+    let g = db.ast.as_form(form, "guard")?;
+    if g.len() != 2 || g[1] != from {
+        return None;
+    }
+    let pattern = g[0];
+    // Only a `(bin …)` inner pattern (a `(list …)`/`(tuple …)`/`(record …)`/variant guard is another case's
+    // concern).
+    if db.ast.head_name(pattern) != Some("bin") {
+        return None;
+    }
+    let Resolved::Bin { segs } = resolve_bin(db, pattern) else {
+        return None;
+    };
+    // Which segment's slot is the bare name `name`? A literal slot is a probe, not a binder.
+    let seg_index = segs.iter().position(|s| {
+        db.ast
+            .as_name(s.slot)
+            .is_some_and(|nm| nm == name && nm != "_")
+    })?;
+    // The guard must be the PATTERN of a match arm `((guard …) body)` whose parent is a `(match …)`.
+    let arm = db.parent_of(form)?;
+    let Struct::List(pb) = db.ast.get(arm) else {
+        return None;
+    };
+    if pb.len() != 2 || pb[0] != form {
+        return None; // `form` must be the arm's pattern position
+    }
+    let matchf = db.parent_of(arm)?;
+    let mtail = db.ast.as_form(matchf, "match")?;
+    let scrutinee = *mtail.first()?;
+    if arm == scrutinee {
         return None;
     }
     Some((scrutinee, segs, seg_index))
@@ -2246,6 +2315,14 @@ fn guard_cond_variant_binds(
     let mtail = db.ast.as_form(matchf, "match")?;
     let scrutinee = *mtail.first()?;
     if arm == scrutinee {
+        return None;
+    }
+    // A `(bin …)` inner pattern is NOT a variant/ctor — its `(u8 n)` etc. are binary SEGMENTS, not nested
+    // constructor payloads. `find_binder_in_pattern` would otherwise walk `(bin (u8 n))` as a ctor and bind
+    // `n` at a spurious `[Payload, Payload]` sum path (reading the Bytes handle as a boxed sum → garbage),
+    // shadowing Case 6bg's correct `BinField`. Exclude it here (the bin guard cond is `guard_cond_bin_binds`),
+    // exactly as this case already excludes `tuple`/`list`/`record` heads (Cases 6tg/6lg/6recg).
+    if db.ast.head_name(pattern) == Some("bin") {
         return None;
     }
     // Descend the variant pattern to find where `name` is bound (its payload path + per-step heads).

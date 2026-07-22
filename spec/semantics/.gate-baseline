@@ -31,15 +31,20 @@ pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
 pass	BETA over the capture-avoiding substitution still proves the identity theorem (no regression)
+pass	BOYER-MOORE majority vote pairs a cancel-count sweep with a verify recount
 pass	BigInt.of a UInt32 at its high bit is a positive BigInt (narrow zero-extend, not sign)
 pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
 pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
 pass	BigInt.of a UInt64 at its high bit still works (the full-width control)
 pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	FAST-DOUBLING fib recurses on the halved index returning a pair, checked against linear iteration
+pass	HORNER polynomial evaluation folds coefficients high-to-low and agrees with a power-sum oracle
 pass	KADANE max-subarray threads a best-ending-here and a global best through one fold
 pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
+pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
+pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
+pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
@@ -2339,7 +2344,9 @@ pass	a runtime bin match dispatches on a literal tag across arms
 pass	a runtime bin match whose catch-all BINDS and reads the whole Bytes scrutinee
 pass	a runtime bin match decodes a Bytes.slice sub-range of a larger buffer
 pass	a NESTED runtime bin match re-parses a bin-decoded payload
-todo	a guarded bin-match arm reads its decoded binder and falls through when the guard fails
+pass	a guarded bin-match arm over a CONSTANT scrutinee folds the guard and selects the arm
+pass	a guarded bin-match arm over a CONSTANT scrutinee whose guard fails falls to the next arm
+pass	a guarded bin-match arm reads its decoded binder and falls through when the guard fails
 pass	a runtime bin match reads an int segment after a byte-aligned bit-field run
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
 pass	a runtime bit-field literal tag that does not match falls through
@@ -4839,3 +4846,5 @@ pass	sibling match arms each let-binding a DIFFERENT-WIDTH value get disjoint sc
 pass	a recursive list-match called in an IF-branch inside a match arm builds on all backends
 pass	a recursive list-match in an arm whose arms return a LIST builds on all backends
 pass	a Record.with whose TARGET is a runtime record (a projection) builds a fresh record, not declines
+pass	a recursive list-match in an arm returning a tuple of a scalar and two lists builds on all backends
+pass	a recursive list-match in an arm returning a tuple of TWO lists (no scalar) builds on all backends
