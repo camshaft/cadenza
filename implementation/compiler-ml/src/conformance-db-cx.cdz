@@ -10,7 +10,7 @@
 /// is IDENTICAL — same cases, same expectations, just redistributed across two files. corpus()/conformance()
 /// (the aggregate scoreboard) are UNCHANGED in conformance-db and still cover ALL cases incl. these.
 
-import { check-case, c-cx-arith-in-cond, c-cx-bool-cmp-operand-declines, c-cx-bool-let-as-cond, c-cx-chained-comparison-declines, c-cx-div-paren-divisor, c-cx-div-left-assoc, c-cx-if-in-let-value, c-cx-neg-paren-group, c-cx-let-bool-in-arith-declines, c-cx-let-chain-outer-in-value-and-body, c-cx-mod-by-zero-declines, c-cx-mod-parity, c-cx-mod-precedence, c-cx-mod-precedence-distinguishes, c-cx-mul-prec-in-sub-chain, c-cx-ne-true, c-cx-neg-dividend, c-cx-neg-mod, c-cx-nested-if-in-branch, c-cx-nested-let-precedence, c-cx-nested-redundant-parens, c-cx-paren-if-in-then-branch, c-cx-paren-overrides-precedence, c-cx-paren-right-operand, c-cx-sub-left-assoc, c-cx-var-in-later-binding } from "conformance-db"
+import { check-case, c-cx-arith-in-cond, c-cx-bool-cmp-operand-declines, c-cx-bool-let-as-cond, c-cx-chained-comparison-declines, c-cx-div-paren-divisor, c-cx-div-left-assoc, c-cx-if-in-let-value, c-cx-neg-paren-group, c-cx-if-as-arith-operand, c-cx-let-bool-in-arith-declines, c-cx-let-chain-outer-in-value-and-body, c-cx-mod-by-zero-declines, c-cx-mod-parity, c-cx-mod-precedence, c-cx-mod-precedence-distinguishes, c-cx-mul-prec-in-sub-chain, c-cx-ne-true, c-cx-neg-dividend, c-cx-neg-mod, c-cx-nested-if-in-branch, c-cx-nested-let-precedence, c-cx-nested-redundant-parens, c-cx-paren-if-in-then-branch, c-cx-paren-overrides-precedence, c-cx-paren-right-operand, c-cx-sub-left-assoc, c-cx-var-in-later-binding } from "conformance-db"
 
 @test
 def conformance-cx-nested-let-precedence() =
@@ -65,6 +65,10 @@ def conformance-cx-if-in-let-value() =
 @test
 def conformance-cx-neg-paren-group() =
   if check-case(c-cx-neg-paren-group()) then unit else trap("-(2 + 3) → -5 (neg binds the paren-group)")
+
+@test
+def conformance-cx-if-as-arith-operand() =
+  if check-case(c-cx-if-as-arith-operand()) then unit else trap("(if 1<2 then 3 else 4) * 10 → 30")
 
 @test
 def conformance-cx-mod-precedence() =

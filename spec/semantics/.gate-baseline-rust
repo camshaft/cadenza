@@ -120,6 +120,7 @@ pass	a Bytes.slice into the to-bytes output decodes at a scalar boundary and rej
 pass	a CONST-FOLDED taken branch with a Float32-overflowing literal is rejected, not folded past the check
 pass	a FILTERED rebuild keeps only entries passing a runtime predicate
 pass	a Float32-overflowing literal grounded CONTEXTUALLY through arith is rejected
+pass	a LIST OF SUMS resumed from a handler feeds an event-sourcing fold in the body
 pass	a MAP argument to an effect op is looked up inside the arm at the handler's own state
 pass	a MAX-fold over quantities compares through the erased unit wrapper per step
 pass	a NESTED float tuple as a SET element dedups by deep content
@@ -1206,6 +1207,7 @@ pass	a slice-view SET element dedups against its flat twin in a Set.of batch bui
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a success `?` unwraps a RUNTIME Ok payload under a Result boundary
 pass	a success `?` unwraps a RUNTIME payload (static ctor, per-call value)
+pass	a sum-typed STATE MACHINE steps through transitions with an ABSORBING terminal state
 pass	a tag function INTROSPECTS its chunk and hole counts and returns both
 pass	a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack
 pass	a tuple key whose element is itself a float-bearing tuple keys by content
@@ -1217,6 +1219,7 @@ pass	a user sum named Ast renders BARE with RUNTIME payloads through one compile
 pass	a user-sum variant value as a Map KEY keys by variant and payload
 pass	a user-written FILTER combinator keeps elements passing a captured predicate
 pass	a user-written MAP combinator builds a transformed list through its fn parameter
+pass	a user-written ZIP walks two lists in lockstep, truncating at the shorter
 pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
 pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
 pass	a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes
@@ -2143,6 +2146,7 @@ pass	alternating prepend and push keep both list ends straight
 pass	an @invariant newtype constructed INSIDE a handler arm establishes per resume
 todo	an Ast as a MAP key looks up by structural content
 pass	an Ast.Int carries a BEYOND-64-bit literal losslessly through quote
+pass	an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state
 pass	an Option-of-Option classifies three ways at RUNTIME through one compiled match
 pass	an Option-of-Option survives a Map VALUE cell with its exact nesting
 pass	an UNSIGNED branch refinement decides a nested comparison and its soundness twin must not over-refine
