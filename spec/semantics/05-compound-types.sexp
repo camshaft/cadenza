@@ -8809,6 +8809,57 @@
   (call   main (: 5 Int64))
   (output (: 1233589258 Int64)))
 
+(case "a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive"
+  (doc    "The full divide-and-conquer composed over the merge step above: `split-alt` deals elements
+           to even/odd INDEX positions (deliberately scrambling relative order so the merges do all
+           the work), `msort` recurses on BOTH halves (vs quickselect's one side — both results
+           matter, a dropped half loses elements silently), and the single-element base case is its
+           own match arm `((list _single) xs)`. The runtime n appears TWICE in `(5 2 n 7 1 n)`, so
+           duplicate SURVIVAL is pinned — both copies must emerge, adjacent, in the sorted output.
+           Oracle-verified: n=4 → 124457; n=0 → the two zeros sort to the FRONT and the digit
+           encoding absorbs them (1257 — a sort that dropped a duplicate zero still shows, since
+           len would shift every remaining digit's weight); n=9 → both nines sink to the tail
+           (125799).")
+  (input  (do
+            (def (split-alt (: xs (List Int64)) (: ev (List Int64)) (: od (List Int64)) (: i Int64))
+              (match xs
+                ((list) (tuple ev od))
+                ((list h .. t)
+                  (if (= (% i 2) 0)
+                      (split-alt t (List.push ev h) od (+ i 1))
+                      (split-alt t ev (List.push od h) (+ i 1))))))
+            (def (app (: rs (List Int64)) (: acc (List Int64)))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (app t (List.push acc h)))))
+            (def (merge (: a (List Int64)) (: b (List Int64)) (: acc (List Int64)))
+              (match a
+                ((list) (app b acc))
+                ((list ah .. at)
+                  (match b
+                    ((list) (app a acc))
+                    ((list bh .. bt)
+                      (if (<= ah bh)
+                          (merge at b (List.push acc ah))
+                          (merge a bt (List.push acc bh))))))))
+            (def (msort (: xs (List Int64)))
+              (match xs
+                ((list) xs)
+                ((list _single)  xs)
+                (_
+                  (match (split-alt xs (list) (list) 0)
+                    ((tuple ev od) (merge (msort ev) (msort od) (list)))))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: n Int64))
+              (chk (msort (list 5 2 n 7 1 n)) 0))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 124457 Int64))
+  (call   main (: 0 Int64)) (output (: 1257 Int64))
+  (call   main (: 9 Int64)) (output (: 125799 Int64)))
+
 (case "a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number"
   (doc    "The stable priority queue over an ordered assoc list: each element carries (priority, seq),
            `ins` walks to the FIRST position where the new priority is STRICTLY smaller — so among
@@ -8839,6 +8890,51 @@
   (call   main (: 3 Int64)) (output (: 4213 Int64))
   (call   main (: 5 Int64)) (output (: 4123 Int64))
   (call   main (: 9 Int64)) (output (: 4132 Int64)))
+
+(case "a TWO-LIST FIFO queue reverses the back list exactly when the front drains"
+  (doc    "The amortized banker's queue: enqueue prepends to BACK, dequeue pops FRONT — and when the
+           front empties mid-sequence, the back is REVERSED once and becomes the new front (the
+           amortization event; the priority queue above keeps ONE ordered spine, this keeps two
+           unordered ones plus a transition). The dequeue returns a 3-tuple (value, front', back') —
+           this exact shape (a match on the recursive `rev`'s result inside a match arm, arms
+           returning a tuple of two lists) was FINDING #18's rust no-build; the pin is also the
+           regression guard for that emit fix. Sequence: enq 1, enq n, deq (triggers the FIRST
+           reversal — both elements live in back), deq, enq 7, deq (SECOND reversal), deq (empty →
+           -1). FIFO order must hold across both reversals: values 1, n, 7, -1 → digit encoding
+           1000·1 + 100·n + 10·7 + (-1). n=2 → 1269; n=8 → 1869; n=0 → 1069 (the mid-sequence zero
+           digit).")
+  (input  (do
+            (def (rev (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (rev t (List.concat (list h) acc)))))
+            (def (enq (: f (List Int64)) (: b (List Int64)) (: v Int64))
+              (tuple f (List.concat (list v) b)))
+            (def (deq (: f (List Int64)) (: b (List Int64)))
+              (match f
+                ((list h .. t) (tuple h t b))
+                ((list)
+                  (match (rev b (list))
+                    ((list h .. t) (tuple h t (list)))
+                    ((list) (tuple -1 (list) (list)))))))
+            (def (main (: n Int64))
+              (do
+                (def q1 (enq (list) (list) 1))
+                (def q2 (match q1 ((tuple f b) (enq f b n))))
+                (def d1 (match q2 ((tuple f b) (deq f b))))
+                (def d2 (match d1 ((tuple _v f b) (deq f b))))
+                (def q3 (match d2 ((tuple _v f b) (enq f b 7))))
+                (def d3 (match q3 ((tuple f b) (deq f b))))
+                (def d4 (match d3 ((tuple _v f b) (deq f b))))
+                (match d1 ((tuple v1 _f1 _b1)
+                  (match d2 ((tuple v2 _f2 _b2)
+                    (match d3 ((tuple v3 _f3 _b3)
+                      (match d4 ((tuple v4 _f4 _b4)
+                        (+ (* v1 1000) (+ (* v2 100) (+ (* v3 10) v4)))))))))))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1269 Int64))
+  (call   main (: 8 Int64)) (output (: 1869 Int64))
+  (call   main (: 0 Int64)) (output (: 1069 Int64)))
 
 (case "a FLATTEN fold over a runtime list of lists joins across an empty inner spine"
   (doc    "The flatten idiom: fold `List.concat` over a `(List (List Int64))` whose inner lists have
@@ -12302,6 +12398,55 @@
                 (_                            -1)))
             (def (main) (look (Map.insert (Map.empty) "a" (Some 5)))) (export main)))
   (output (: 5 Int64)))
+
+(case "a guarded map-match arm reads its value binder in the guard and falls through when it fails"
+  (doc    "A `(map …)` pattern under a GUARD, over a RUNTIME map — the composition of key-directed map
+           matching and match-arm guards (the map analogue of the guarded list/bin arm). The arm `(guard
+           (map (1 v) .. r) (> v 5))` looks up key 1, binds its value `v`, then gates the arm on `(> v 5)`
+           reading that bound value; a second guarded arm `(guard (map (1 v) .. r) (> v 0))` catches 1..5,
+           and the wildcard catches the rest. The scrutinee `{1: h, 2: 20}` is built from a runtime `h` so
+           it cannot fold. Pins that a guard sees the map-decoded VALUE binder in scope (resolve Case 6mg
+           gives the guard cond the same `MapField` the body reads) AND that a failing guard on a map arm
+           FALLS THROUGH to the next arm (which re-looks-up the same runtime map), not a trap — the map
+           analogue of the scalar/list/bin guarded fall-through. h=9 → first guard `9 > 5` holds → 100; h=3
+           → first fails, second `3 > 0` holds → 200; h=0 → both fail → wildcard 300.")
+  (input  (do (def (main (: h Int64))
+                (match (Map.insert (Map.insert (Map.empty) 1 h) 2 20)
+                  ((guard (map (1 v) .. r) (> v 5)) 100)
+                  ((guard (map (1 v) .. r) (> v 0)) 200)
+                  (_ 300)))
+              (export main)))
+  (call   main (: 9 Int64))
+  (output (: 100 Int64))
+  (call   main (: 3 Int64))
+  (output (: 200 Int64))
+  (call   main (: 0 Int64))
+  (output (: 300 Int64)))
+
+(case "a guarded map-match arm over a CONSTANT map folds the guard and selects the arm"
+  (doc    "The CONST-map companion of the guarded map-match case: the scrutinee `{1: 7, 2: 20}` is a
+           compile-time constant, so the map matcher checks key presence at compile time AND folds the guard
+           (the guard cond reads the value binder `v` via the same `MapField` the body sees — Case 6mg —
+           which over a const map folds to a `ConstBool`). v = 7 at key 1: the first guard `(> v 5)` folds
+           TRUE → arm 1 (100). Pins that a guarded map arm's guard is EVALUATED (not ignored) on the const
+           path and that a TRUE fold selects the arm — the const analogue of the runtime fall-through case.")
+  (input  (match (Map.insert (Map.insert (Map.empty) 1 7) 2 20)
+            ((guard (map (1 v) .. r) (> v 5)) 100)
+            ((guard (map (1 v) .. r) (> v 0)) 200)
+            (_ 300)))
+  (output (: 100 Int64)))
+
+(case "a guarded map-match arm over a CONSTANT map whose guard fails falls to the next arm"
+  (doc    "The const-path guard FALL-THROUGH companion: over the constant `{1: 3, 2: 20}`, v = 3 at key 1,
+           so arm 1's guard `(> v 5)` folds FALSE and the matcher continues to arm 2, whose guard `(> v 0)`
+           folds TRUE → 200. Pins that a FALSE guard fold on the const map path advances to the next arm (not
+           a trap, not a wrong-arm selection) — the const twin of the runtime fall-through, closing the map
+           const-path guard fold's false branch.")
+  (input  (match (Map.insert (Map.insert (Map.empty) 1 3) 2 20)
+            ((guard (map (1 v) .. r) (> v 5)) 100)
+            ((guard (map (1 v) .. r) (> v 0)) 200)
+            (_ 300)))
+  (output (: 200 Int64)))
 
 ; ── An un-projected element / un-referenced field is UNOBSERVED, so its trap is not raised ──────────
 ; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed: a trap occurs when the

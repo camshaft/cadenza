@@ -5541,6 +5541,26 @@ fn rustc_roundtrip_closure_parameter_consumer_with_a_compound_result_closure_s3(
 }
 
 #[test]
+fn a_closure_parameter_consumer_with_a_bare_string_result_emits() {
+    // CLOSURE-PARAMETER CONSUMER with a BARE String/Bytes RESULT: the consumer's OWN result is a String
+    // (here it ignores the closure and returns "hi"). This USED to decline (`result_render_unsupported`) —
+    // the consumer-path gate driver rendered a String as the quoted `"hi"` form, but the value crosses the
+    // host boundary as `list<u8>` and the corpus records the byte-int list `(104 105)`. The driver now
+    // routes a String/Bytes result of a CONSUMER (like a factory) through `cdz_render_bytes_list`, so the
+    // export EMITS (the byte-rope-consumer round-trip family, 14 corpus cases). It builds a normal String
+    // return — the gate drives the producer→consumer synthesis + byte-list render end-to-end.
+    let m = compile_rust(
+        "(module m (def (mk) (fn ((: n Int64)) (+ n 65))) \
+                    (def (label (: g (-> Int64 Int64)) (: x Int64)) \"hi\") \
+                    (export mk) (export label))",
+    );
+    assert!(
+        m.contains("pub fn label(g: std::rc::Rc<dyn Fn(i64) -> i64>, x: i64) -> String"),
+        "a closure-param consumer with a bare String result now emits (no longer declines):\n{m}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_host_closure_factory_compound_arg_s2() {
     // HOST-CLOSURE S2: a closure-factory whose returned closure takes a COMPOUND ARG (Tuple/List) with a
     // SCALAR result now crosses — the arg maps natively (`Rc<dyn Fn((i64, i64)) -> i64>`) and the gate

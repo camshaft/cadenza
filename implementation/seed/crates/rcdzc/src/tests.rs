@@ -2214,6 +2214,58 @@ fn record_with_over_a_runtime_record_builds_from_projections() {
     );
 }
 
+#[test]
+fn record_with_over_a_runtime_record_materializes_the_operand_once_not_per_preserved_field() {
+    use crate::testkit::parse;
+    // REGRESSION (reviewer post-merge on 49d6eec14): `runtime_record_fields` builds a synth `(. record
+    // field)` projection for EVERY preserved field, all sharing the ONE `record` operand node. The backend
+    // has no CSE, so before the fix each `Core::Proj` RE-EMITTED the operand's computation — an ARITY≥3
+    // record (≥2 preserved fields), one field updated, re-evaluated the operand once PER preserved field.
+    // For a PURE operand that is a perf cliff (value still correct); for an EFFECTFUL operand the effect
+    // would fire N times — an observable miscompile. FIX: materialize the operand ONCE into a self-keyed
+    // `Core::Let`, every projection reading the shared slot. This gate pins that the operand's DISTINCTIVE
+    // computation emits exactly ONCE. Operand = `(mk (+ v 987654321))`, a CALL (opaque → runtime path, not a
+    // const record) whose ARGUMENT carries the unmistakable constant `987654321` — so the constant lands at
+    // the operand's USE site (re-emitting the operand duplicates the whole call, arg included). `Record.with`
+    // updates `b`, leaving TWO preserved fields (`a`, `c`). Before the fix the constant appeared TWICE (once
+    // per preserved-field projection); the fix makes it ONE. (Verified: neutralizing the let-bind → 2.)
+    let src = "(module m \
+        (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1)))) \
+        (def (upd (: v Int64)) (. (Record.with (mk (+ v 987654321)) #\"b\" 99) a)) \
+        (def (main (: v Int64)) (upd v)) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    // The operand's distinctive constant must appear EXACTLY ONCE — the operand computation is emitted once.
+    let occurrences = count_opcode(
+        &bytes,
+        |op| matches!(op, wasmparser::Operator::I64Const { value } if *value == 987_654_321),
+    );
+    assert_eq!(
+        occurrences, 1,
+        "the runtime operand of `Record.with` must be materialized ONCE, not re-emitted per preserved \
+         field (found the operand's distinctive constant {occurrences} times, expected 1)"
+    );
+    // And the value is still correct — the preserved field `a` reads the operand's `a` (mk's base = 1).
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found; skipping runtime materialize-once value check");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["1".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "1",
+            "a preserved field reads its source value through the materialized operand"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!("runtime Record.with trapped: {t}"),
+    }
+}
+
 /// A bare (unannotated) parameter PROJECTED in a helper's body is UNCONSTRAINED there (typed `Any`
 /// until the def inlines) — so the projection is checked at the CALL SITE, where the argument's
 /// compound type flows in, not standalone. `(def (get-x r) (. r x))` is well-formed even though `r`'s

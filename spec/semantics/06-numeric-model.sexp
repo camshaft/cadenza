@@ -1555,6 +1555,42 @@
   (call   main (: 1000000 Int64)) (output (: 100011 Int64))
   (call   main (: 999999 Int64)) (output (: 99911 Int64)))
 
+(case "a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides"
+  (doc    "The ceiling-sqrt via the OTHER binary-search discipline (the Newton pin above iterates a
+           formula; the list bsearch walks closed intervals with mid±1 on both arms): here the loop is
+           HALF-OPEN `lo < hi` with `hi = mid` on satisfy — mid stays a live CANDIDATE — and
+           `lo = mid+1` only on fail. Mixing the two disciplines is the classic infinite-loop /
+           off-by-one source, so each gets its own pin. The result is the LEAST r with r·r ≥ n,
+           certified from BOTH sides: `r·r ≥ n` and `(r−1)² < n` (r=0 guarded). The upper seed
+           `hi = 3037000499` (⌊√Int64.max⌋) keeps the first probe's `mid·mid` inside Int64 — a
+           casual `hi = n` seed overflows the square at large n. Faces: 0 → r=0 (11); 1 → 1 (111);
+           2 → 2 (211); the perfect square 100 → 10 (1011); 101 → 11 (the boundary+1 bump, 1111);
+           10¹² → 10⁶ (100000011, ~40 halvings deep).")
+  (input  (do
+            (def (bis (: n Int64) (: lo Int64) (: hi Int64))
+              (if (>= lo hi)
+                  lo
+                  (do
+                    (def mid (/ (+ lo hi) 2))
+                    (if (>= (* mid mid) n)
+                        (bis n lo mid)
+                        (bis n (+ mid 1) hi)))))
+            (def (ceil-sqrt (: n Int64))
+              (bis n 0 3037000499))
+            (def (main (: n Int64))
+              (do
+                (def r (ceil-sqrt n))
+                (+ (* r 100)
+                   (+ (* (if (>= (* r r) n) 1 0) 10)
+                      (if (if (= r 0) true (< (* (- r 1) (- r 1)) n)) 1 0)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: 1 Int64)) (output (: 111 Int64))
+  (call   main (: 2 Int64)) (output (: 211 Int64))
+  (call   main (: 100 Int64)) (output (: 1011 Int64))
+  (call   main (: 101 Int64)) (output (: 1111 Int64))
+  (call   main (: 1000000000000 Int64)) (output (: 100000011 Int64)))
+
 (case "modular exponentiation by SQUARING halves the exponent and branches on parity"
   (doc    "The fast-power recursion: square the base, halve the exponent, and multiply the recursive
            result back in only on ODD frames — a NON-TAIL multiply applied after the return, so odd

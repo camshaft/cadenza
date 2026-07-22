@@ -155,6 +155,14 @@ def subtree-calls-name(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
          (match subtree-calls-name(tree, c, target, fuel - 1) with
            | (true, fl) => (true, fl)
            | (false, fl) => (match subtree-calls-name(tree, t, target, fl) with | (true, f2) => (true, f2) | (false, f2) => subtree-calls-name(tree, e, target, f2)))
+     | Option.Some(Node.NMatch(sc, li, th, el)) =>   // M1-a: scan all 4 match children for a transitive call
+         (match subtree-calls-name(tree, sc, target, fuel - 1) with
+           | (true, fl) => (true, fl)
+           | (false, fl) => (match subtree-calls-name(tree, li, target, fl) with
+               | (true, f2) => (true, f2)
+               | (false, f2) => (match subtree-calls-name(tree, th, target, f2) with
+                   | (true, f3) => (true, f3)
+                   | (false, f3) => subtree-calls-name(tree, el, target, f3))))
      | _ => (false, fuel - 1)))   // NLit/NBoolLit/NVar/NAnnLit — no call
 
 /// Helper: an NApp arg is -1 (nullary, no arg) or a node-id to scan.
@@ -217,6 +225,14 @@ def subtree-calls-self(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
          (match subtree-calls-self(tree, c, target, fuel - 1) with
            | (true, fl) => (true, fl)
            | (false, fl) => (match subtree-calls-self(tree, t, target, fl) with | (true, f2) => (true, f2) | (false, f2) => subtree-calls-self(tree, e, target, f2)))
+     | Option.Some(Node.NMatch(sc, li, th, el)) =>   // M1-a: scan all 4 match children for a DIRECT self-call
+         (match subtree-calls-self(tree, sc, target, fuel - 1) with
+           | (true, fl) => (true, fl)
+           | (false, fl) => (match subtree-calls-self(tree, li, target, fl) with
+               | (true, f2) => (true, f2)
+               | (false, f2) => (match subtree-calls-self(tree, th, target, f2) with
+                   | (true, f3) => (true, f3)
+                   | (false, f3) => subtree-calls-self(tree, el, target, f3))))
      | _ => (false, fuel - 1)))
 
 /// Helper: an NApp arg is -1 (nullary) or a node-id to scan for a DIRECT self-call.

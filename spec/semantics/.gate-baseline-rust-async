@@ -49,6 +49,7 @@ pass	a BST built by comparison-driven inserts reads back sorted via in-order tra
 pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
+pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
 pass	a PALINDROME two-pointer walk closes from both ends of a runtime rope
 pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
@@ -61,6 +62,7 @@ pass	a STRING run-length grouping counts adjacent equal scalars across a rope se
 pass	a THREE-DEEP compose chain stacks closure envs with a runtime capture mid-chain
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
+pass	a TWO-LIST FIFO queue reverses the back list exactly when the front drains
 pass	a balanced-paren scan tracks depth over a runtime string and fails fast on early close
 pass	a constant algebraic identity over a high UInt64 operand folds to the operand, not a spurious reject
 pass	a constant MUL-by-1 identity over a high UInt64 operand folds to the operand
@@ -1174,6 +1176,7 @@ pass	a read-modify-write of a List value in a Map grows the entry and leaves the
 pass	a record MATCH pattern with a LITERAL field sub-pattern dispatches on the field value
 pass	a record field built by a RUNTIME BRANCH holds a user-sum, projected then matched
 pass	a record key with a float-bearing TUPLE field keys by content
+pass	a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive
 pass	a recursive combinator applies a captured closure a RUNTIME number of times
 pass	a recursive fold SUMS a list of same-unit quantities threading a Qty accumulator
 pass	a recursive fold over a runtime Peano spine recovers its depth
@@ -1347,6 +1350,9 @@ pass	a guarded arm is selected when its guard holds
 pass	a guarded list-match arm body reads its element binder
 pass	a guarded list-match arm whose guard fails falls through to the catch-all
 pass	a guarded list-match arm over a RUNTIME list scrutinee gates on its decoded head
+pass	a guarded map-match arm reads its value binder in the guard and falls through when it fails
+pass	a guarded map-match arm over a CONSTANT map folds the guard and selects the arm
+pass	a guarded map-match arm over a CONSTANT map whose guard fails falls to the next arm
 pass	a guarded match over a runtime scrutinee whose guard fails takes the wildcard
 pass	a guarded match over a runtime scrutinee with constant arms computes correctly
 pass	a guarded out-of-bounds indexed read is not hoisted by the sharing
