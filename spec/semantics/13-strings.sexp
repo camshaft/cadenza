@@ -1619,10 +1619,10 @@
             (export main)))
   (output (: 2 Int64)))
 
-(case "a Bytes.slice into to-bytes output decodes at a scalar boundary and rejects mid-scalar"
+(case "a Bytes.slice into the to-bytes output decodes at a scalar boundary and rejects mid-scalar"
   (doc    "The window-alignment discriminator: `(String.to-bytes \"caféx\")` is 6 bytes (é = 0xC3 0xA9 at
            offsets 3-4). A 2-byte `Bytes.slice` at a=3 captures the COMPLETE é sequence — from-bytes
-           decodes it (byte-len 2); at a=2 the window is `(byte-of-f, 0xC3)` — the é's lead byte with no
+           decodes it (byte-len 2); at a=2 the window is `('f' = 0x66, then é's lead byte 0xC3)` — the é's lead byte with no
            continuation — so from-bytes answers None (-9), the total-decode contract on an ill-formed
            window. One compiled slice+decode witnesses both the aligned and the mid-scalar cut per call;
            an offset drift of one byte flips both answers.")

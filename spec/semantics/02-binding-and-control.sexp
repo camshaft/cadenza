@@ -287,7 +287,7 @@
                  observable (x=5→1, x=9→1, x=20→3) — the Lir dead-arm elision is unit-pinned in rcdzc
                  `a_flow_refinement_propagates_through_a_no_overflow_arith_into_a_compare_fold`.
              (b) SOUNDNESS TWIN — the trap must survive: `(if (> x 0) (if (< (+ x 1) 11) 1 2) 3)`. Under just
-                 `(> x 0)` (x∈[1, i64::MAX], NO upper bound) `(+ x 1)` CAN overflow (x = i64::MAX), so it is
+                 `(> x 0)` (x∈[1, i64::MAX] — bounded below by the refinement, only the type max above) `(+ x 1)` CAN overflow (x = i64::MAX), so it is
                  NOT provably_no_overflow → the fold DECLINES, the checked add stays, and at x = i64::MAX the
                  `(+ x 1)` overflow trap is REACHED. This is the gate-visible witness that the fold does not
                  over-broaden `discardable` and silently drop a reachable trap — the twin lived only in the

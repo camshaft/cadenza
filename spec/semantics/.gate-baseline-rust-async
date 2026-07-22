@@ -114,7 +114,7 @@ pass	a 5000-element pushed list reads head, middle, and last through the deeper 
 todo	a @param drives a recursive fold's iteration count
 todo	a @param selects a match arm and a SECOND param feeds the selected body
 todo	a @param value crosses into a closure capture and applies
-pass	a Bytes.slice into to-bytes output decodes at a scalar boundary and rejects mid-scalar
+pass	a Bytes.slice into the to-bytes output decodes at a scalar boundary and rejects mid-scalar
 pass	a CONST-FOLDED taken branch with a Float32-overflowing literal is rejected, not folded past the check
 pass	a Float32-overflowing literal grounded CONTEXTUALLY through arith is rejected
 pass	a MAP argument to an effect op is looked up inside the arm at the handler's own state
@@ -125,6 +125,7 @@ pass	a NON-tail recursion 10000 deep computes through real stack frames
 pass	a PER-CALL-selected runtime symbol dispatches through the = chain
 pass	a PERFORMING tail loop of 10000 iterations threads state in constant space
 pass	a PURE closure iterated by a recursive combinator composes with a perform in the same body
+pass	a RUNTIME-count generated batch insorts fully time-ordered, verified by a sortedness walk
 pass	a Rational ARITHMETIC result probes a map key by its reduced canonical value
 pass	a Rational ENTRY parameter crosses the boundary and reduces per call
 pass	a Result-of-Option threads both wrappers through one runtime match
@@ -157,6 +158,7 @@ pass	a generic pair-swap crosses a scalar and a heap payload between positions
 pass	a generic sum NESTS ITSELF at a different instantiation and destructures through both layers
 pass	a handler arm RECURSES through a named helper before resuming
 pass	a literal pattern at MID-SPINE depth gates the arm while deeper binders still bind
+pass	a middle curry STAGE is reused — one s1 residual yields an s2 applied twice
 pass	a model-oracle property — CHAMP Map.len agrees with a counting model over generated inserts
 pass	a module export is a CLOSURE FACTORY capturing a private sibling
 pass	a module export rides an OUTER combinator's fn parameter a runtime number of times
@@ -2092,6 +2094,7 @@ pass	an Option-of-Option classifies three ways at RUNTIME through one compiled m
 pass	an Option-of-Option survives a Map VALUE cell with its exact nesting
 pass	an UNSIGNED branch refinement decides a nested comparison and its soundness twin must not over-refine
 pass	an UNSIGNED lower-bound refinement must not fabricate an i64::MAX ceiling for a UInt64 above it
+pass	an UPSERT into a Map of Lists creates the fresh entry on miss and appends on hit
 pass	an arm's NEXT-STATE expression saturates via a conditional on the current state
 pass	an effect op RESUMED with a slice-view Bytes crosses the arm boundary intact
 pass	an effect op resumed with a whole MAP threads the CHAMP through the continuation
@@ -4294,6 +4297,7 @@ pass	two performs of a MULTI-parameter op each combine both args with the state 
 pass	two rationals denoting the same number are equal regardless of how they were written
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
+pass	two residuals from ONE curry source hold distinct first-stage captures
 pass	two runtime Bytes values of equal content compare equal (rope vs flat)
 pass	two runtime Ok values of a multi-parameter sum compare equal by a heap walk
 pass	two runtime String entry args compare by content including multibyte
@@ -4745,3 +4749,4 @@ pass	a runtime slice probes a Set of flat Bytes by content
 pass	CONTROL: a CONST-start slice as a Map-lookup key hits on wasm
 pass	a BORROWED runtime Bytes rope map key is compacted at the key site and found by its flat twin
 pass	unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)
+pass	a flow refinement folds a compare over a no-overflow arith operand, but the trap survives when overflow is possible
