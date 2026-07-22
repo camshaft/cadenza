@@ -12376,6 +12376,47 @@
   (call   main (: 3 Int64) (: 7 Int64))
   (output (: 1 Int64)))
 
+(case "a fold over Map.to-list rebuilds a TRANSFORMED map — the map-over-values idiom"
+  (doc    "The identity rebuild above recovers an EQUAL map; this rebuilds with a per-value TRANSFORM
+           (`v·10`) — the map-over-values idiom a pass over a keyed table runs. Both transformed entries
+           read back (n·10 + 50 = 80 at n=3); a rebuild that transformed only some entries (or re-keyed)
+           breaks a lookup.")
+  (input  (do
+            (def (xform (: ps (List (Tuple Int64 Int64))) (: m (Map Int64 Int64)))
+              (match ps
+                ((list) m)
+                ((list h .. t) (match h ((tuple k v) (xform t (Map.insert m k (* v 10))))))))
+            (def (main (: n Int64))
+              (let ((src (Map.insert (Map.insert Map.empty 1 n) 2 5)))
+                (let ((dst (xform (Map.to-list src) Map.empty)))
+                  (+ (match (Map.lookup dst 1) ((Some v) v) ((None u) -1))
+                     (match (Map.lookup dst 2) ((Some v) v) ((None u) -1))))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 80 Int64)))
+
+(case "a FILTERED rebuild keeps only entries passing a runtime predicate"
+  (doc    "The filter companion: the rebuild's insert is CONDITIONAL on `(> v cut)` with the cutoff a
+           boundary parameter — cut=15 keeps {20,30} (len 2), cut=25 keeps {30} (len 1), cut=99 keeps
+           nothing (len 0, the empty rebuild). One compiled filter-fold, three selectivities; the
+           filter-a-table idiom completing the enumerate→transform→filter trio.")
+  (input  (do
+            (def (keep (: ps (List (Tuple Int64 Int64))) (: cut Int64) (: m (Map Int64 Int64)))
+              (match ps
+                ((list) m)
+                ((list h .. t) (match h ((tuple k v)
+                  (keep t cut (if (> v cut) (Map.insert m k v) m)))))))
+            (def (main (: cut Int64))
+              (let ((src (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 3 30)))
+                (Map.len (keep (Map.to-list src) cut Map.empty))))
+            (export main)))
+  (call   main (: 15 Int64))
+  (output (: 2 Int64))
+  (call   main (: 25 Int64))
+  (output (: 1 Int64))
+  (call   main (: 99 Int64))
+  (output (: 0 Int64)))
+
 (case "Map.to-list over Float64 KEYS enumerates by canonical byte key order"
   (doc    "The Float-KEY twin of the Float Set.to-list case (19-sets): a map keyed by Float64 enumerates its
            entries by the KEY's CANONICAL BYTE order (the bit pattern as an unsigned int), NOT numeric order —
