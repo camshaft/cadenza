@@ -3265,6 +3265,40 @@
   (call   main (: 1 Int64))
   (output (: 16 Int64)))
 
+(case "a triple-nested match on the SAME variant-refined scrutinee folds every level to the known arm"
+  (doc    "Frame-STACK-DEPTH face of the (now-landed) variant-refinement nested-match elision: three
+           `(match s …)` on the SAME runtime `s`, each nested in the enclosing `Circle` arm. The elision
+           pushes a `{s: Circle}` refinement frame at EACH level, so the two inner matches each fold to
+           their `Circle` arm (no runtime disc test) — the binders `a`/`b`/`c` all read the one Circle
+           payload → 10+10+10=30. Regression-locks that nested pushes on the SAME binder compose (the frame
+           is per-arm scoped, popped on exit, and the inner consult still sees the outer's refinement).
+           k=0→Circle→30; k=1→Square→4*2=8; k=2→Tri→7. Observably O0..O3 opt-equivalent (the fold is
+           optimization-safe at depth).")
+  (input  (do
+            (type Shape (Circle Int64) (Square Int64) (Tri Int64))
+            (def (f (: s Shape))
+              (match s
+                ((Circle a)
+                  (match s
+                    ((Circle b)
+                      (match s
+                        ((Circle c) (+ (+ a b) c))
+                        ((Square w) w)
+                        ((Tri t)    t)))
+                    ((Square w) w)
+                    ((Tri t)    t)))
+                ((Square w) (* w 2))
+                ((Tri t)    t)))
+            (def (main (: k Int64))
+              (f (if (= k 0) (Circle 10) (if (= k 1) (Square 4) (Tri 7)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 30 Int64))
+  (call   main (: 1 Int64))
+  (output (: 8 Int64))
+  (call   main (: 2 Int64))
+  (output (: 7 Int64)))
+
 (case "a tuple-of-two-sums match reads each sum's payload from its own slot (HM-unify shape)"
   (doc    "The HM-UNIFICATION dispatch shape: `match (a, b) with (TArrow(a1,a2), TArrow(b1,b2)) => unify(a2,
            b2)`. A self-recursive call on payload binders extracted from a TUPLE OF TWO SUMS read BOTH `a2`

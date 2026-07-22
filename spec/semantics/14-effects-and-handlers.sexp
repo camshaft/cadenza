@@ -3398,6 +3398,45 @@
                 (+ (handle E 5 ((get (u) s (resume s s))) (E.get)) (E.get)))) (export main)))
   (output (: 105 Int64)))
 
+(case "an inner handle's SEED expression performs against the outer handler"
+  (doc    "The seed-position perform: `(handle B (+ (A.get unit) 100) …)` — the inner handle's SEED is
+           computed by performing the OUTER effect (A.get reads n=5), so the inner handler starts at 105
+           and the body's `(B.get unit)` reads it back beside a second outer read (105 + 5 = 110). The
+           seed expression evaluates in the OUTER handler's scope BEFORE the inner handler exists; a
+           lowering that evaluated the seed under the inner handler (or defaulted it) mis-seeds.")
+  (input  (do
+            (effect A (op get (-> Unit Int64)))
+            (effect B (op get (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle A n
+                ((get (u) s (resume s s)))
+                (handle B (+ (A.get unit) 100)
+                  ((get (u) t (resume t t)))
+                  (+ (B.get unit) (A.get unit)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 110 Int64)))
+
+(case "an inner same-effect handle's RESULT feeds the outer handler's next perform"
+  (doc    "Cross-region value flow under shadowing: the inner `handle Ctr 100` discharges `(Ctr.bump 2)`
+           with a MULTIPLYING arm (100·2 = 200) and its result becomes the ARGUMENT of the outer region's
+           `(Ctr.bump inner)` — discharged by the outer ADDING arm (10 + 200 = 210). The value crosses
+           from the inner region's arm through the let into the outer region's perform; the shadow pins
+           nearby witness state ISOLATION, this witnesses the VALUE HANDOFF between regions of one
+           effect.")
+  (input  (do
+            (effect Ctr (op bump (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle Ctr n
+                ((bump (v) s (resume (+ s v) (+ s v))))
+                (let ((inner (handle Ctr 100
+                               ((bump (v) t (resume (* t v) t)))
+                               (Ctr.bump 2))))
+                  (Ctr.bump inner))))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 210 Int64)))
+
 (case "same-effect shadowing with ADVANCING states — the outer state survives the inner handle and resumes advanced"
   (doc    "The STATEFUL upgrade of the lexical-partition case above (there both arms resume `s` unchanged,
            so a shared or re-seeded state slot is invisible): here BOTH handlers ADVANCE a counter. The

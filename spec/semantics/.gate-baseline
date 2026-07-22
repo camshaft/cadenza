@@ -142,6 +142,8 @@ pass	a closure built OVER another closure applies both capture layers
 pass	a closure capturing a handler-computed VALUE escapes the handle and applies outside
 pass	a constructed huge Ast.Int equals its quoted twin
 pass	a deep rope indexes by scalar at both extremes
+pass	a discarded trapping item in a do sequence is elided per the dead-init ruling
+pass	a do item OBSERVED by the final expression keeps its trap
 pass	a fallible helper with a runtime-payload `?` is called from INSIDE a handle body
 pass	a fitting Float32 literal in a runtime MATCH arm computes
 pass	a bare-literal-arm float match under Float32 emits valid f32 across the select and probe-chain paths
@@ -1172,6 +1174,7 @@ pass	a row-op pipeline — merge then without then two projections — over runt
 pass	a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend
 pass	a runtime = on a sum recursive through a RECORD-of-TUPLE payload walks structurally
 pass	a runtime = over MUTUALLY-recursive sums walks across the type cycle
+pass	a runtime BEYOND-64-bit BigInt map key looks up by exact multi-limb value
 pass	a runtime BRANCH selects between two named functions and the selected one applies
 pass	a runtime LIST argument to an effect op is WALKED by a recursive fold inside the arm
 pass	a runtime String.slice STORED as a map key is found by a flat probe
@@ -2151,6 +2154,8 @@ pass	an UNSIGNED branch refinement decides a nested comparison and its soundness
 pass	an UNSIGNED lower-bound refinement must not fabricate an i64::MAX ceiling for a UInt64 above it
 pass	an effect op RESUMED with a slice-view Bytes crosses the arm boundary intact
 pass	an effect op resumed with a whole MAP threads the CHAMP through the continuation
+pass	an inner handle's SEED expression performs against the outer handler
+pass	an inner same-effect handle's RESULT feeds the outer handler's next perform
 pass	an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type
 pass	a reference to an unbound name is rejected before running
 pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
@@ -2731,6 +2736,7 @@ pass	a trapping payload in the taken arm of a same-constructor match still traps
 pass	a trapping payload in the untaken arm of a same-constructor if does not trap
 pass	a trapping scrutinee of a same-constructor match traps before any arm
 pass	a trapping shared payload before the differing position must not preempt a trapping cond
+pass	a triple-nested match on the SAME variant-refined scrutinee folds every level to the known arm
 pass	a trivially-true guard does not make its variant arm unconditional
 pass	a truncating conversion keeps the low bits rather than trapping
 pass	a truncating conversion of a negative value uses two's complement
@@ -4403,6 +4409,7 @@ pass	two @param sites generate two accessors under one Param effect
 pass	two @param sites with the same name are rejected as a duplicate effect operation
 pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
+pass	two BigInts differing only PAST BIT 64 stay distinct as set elements
 pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region
 pass	two MUTUALLY-recursive functions dispatching on a recursive sum compute its parity
 pass	two MUTUALLY-recursive sum types fold across their boundary
