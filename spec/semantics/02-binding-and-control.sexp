@@ -172,6 +172,40 @@
   (call   made-false (: 20 Int64))
   (output (: 3 Int64)))
 
+(case "an UNSIGNED branch refinement decides a nested comparison and its soundness twin must not over-refine"
+  (doc    "The GAP-A unsigned companion of the flagship above (value-facts slice 2, rcdzc 77ac05508): the
+           interval refinement now fires for an UNSIGNED comparison too, so a redundant nested `<` test on a
+           `UInt32` folds — while an UNDECIDED nested test must NOT fold (the value-correctness twin). Before
+           GAP-A the unsigned comparison refined nothing, so both compares always stayed. Three shapes:
+             (a) SAME test:    `(if (< x 8) (if (< x 8) 1 2) 3)` — inner known true under x∈[0,7] → never 2.
+             (b) IMPLIED test: `(if (< x 4) (if (< x 8) 1 2) 3)` — `x < 4 ⇒ x < 8`, inner true → never 2.
+             (c) SOUNDNESS TWIN: `(if (< x 8) (if (< x 4) 1 2) 3)` — `x < 8` does NOT decide `x < 4`, so BOTH
+                 compares MUST remain; over-refining here would flip x=6 from 2 to a wrong value (a miscompile).
+           All scalar `UInt32`, so they gate cleanly on both backends. Pins that the unsigned refinement folds
+           the decided cases AND leaves the undecided one intact fleet-wide.")
+  (input  (do
+            (def (same    (: x UInt32)) (if (< x 8) (if (< x 8) 1 2) 3))
+            (def (implied (: x UInt32)) (if (< x 4) (if (< x 8) 1 2) 3))
+            (def (twin    (: x UInt32)) (if (< x 8) (if (< x 4) 1 2) 3))
+            (export same)
+            (export implied)
+            (export twin)))
+  ; (a) same: x < 8 makes the inner `x < 8` known true → 1; x >= 8 → outer else → 3 (inner `2` unreachable)
+  (call   same (: 3 UInt32))
+  (output (: 1 Int64))
+  (call   same (: 50 UInt32))
+  (output (: 3 Int64))
+  ; (b) implied: x < 4 makes the inner `x < 8` known true → 1; x >= 4 → 3 (inner `2` unreachable)
+  (call   implied (: 2 UInt32))
+  (output (: 1 Int64))
+  (call   implied (: 6 UInt32))
+  (output (: 3 Int64))
+  ; (c) twin: x < 8 does NOT decide x < 4 → both remain; x=2 → inner true → 1, x=6 → inner false → 2
+  (call   twin (: 2 UInt32))
+  (output (: 1 Int64))
+  (call   twin (: 6 UInt32))
+  (output (: 2 Int64)))
+
 (case "conditional propagation respects a shadowing rebind of the condition variable"
   (doc    "The propagation must track the condition's VALUE in scope, not match its text: `(let ((c (< n
            5))) (if c 1 (let ((c true)) (if c 2 3))))` with n = 10 has the OUTER `c` = false (10 < 5 is

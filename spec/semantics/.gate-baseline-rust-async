@@ -1950,6 +1950,7 @@ pass	a recursively-built linked list renders its full runtime spine
 pass	a reduce-shaped wrapper seeding a second generic helper at two element types declines pending the transitive tie
 pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a redundant relational check inside its own truthy branch is known-true and its dead branch is eliminated
+pass	an UNSIGNED branch refinement decides a nested comparison and its soundness twin must not over-refine
 pass	a reference to an unbound name is rejected before running
 pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
 pass	a reflected quantity type rejects a value of a different dimension
@@ -2049,6 +2050,7 @@ pass	a runtime bin match binds the tail after a fixed header via a final rest se
 pass	a runtime bin match decodes a byte-aligned bit-field run
 pass	a runtime bin match dispatches on a leading literal bit-field tag
 pass	a runtime bin match dispatches on a literal tag across arms
+pass	a runtime bin match whose catch-all BINDS and reads the whole Bytes scrutinee
 todo	a guarded bin-match arm reads its decoded binder and falls through when the guard fails
 pass	a runtime bin match reads an int segment after a byte-aligned bit-field run
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee

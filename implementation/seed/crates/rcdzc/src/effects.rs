@@ -1154,8 +1154,12 @@ fn param_apply_extra_handled(
     // call graph (`collect_callees` stops at a nested-`fn` boundary), so the callee reads as non-recursive
     // and is chased forever. This `depth` bounds that inter-procedural chase — it seeds the inner `walk` and
     // grows by one per sub-callee follow, so the `depth < 32` gate on the transitive follow terminates the
-    // walk (a compiler must never overflow its stack — `self-hosting-and-bootstrap.md`). External callers
-    // pass 0.
+    // walk (a compiler must never overflow its stack — `self-hosting-and-bootstrap.md`). SEEDED FROM THE
+    // CALLER'S ACTIVE `check_no_home_walk` WALK DEPTH (the sole external caller, ~line 1377), not reset to 0:
+    // this fn is invoked from within that walk's own recursion, so SHARING the budget bounds the COMBINED
+    // stack (outer walk + this inter-procedural follow) by the single 32-gate — strictly more conservative
+    // against overflow than an independent fresh-0 budget, and still sound (a shared budget only trips the
+    // follow-gate EARLIER, never later). The internal recursive follow re-enters at `depth + 1`.
     depth: u32,
 ) -> Vec<Vec<u32>> {
     let Some(params) = crate::eval::lambda_params_of(db, head) else {
