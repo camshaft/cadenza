@@ -47,6 +47,8 @@ pass	TRIAL-DIVISION primality steps odd candidates to the square bound and repor
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
+pass	a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit
+pass	a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
 pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
@@ -63,6 +65,7 @@ pass	a THREE-DEEP compose chain stacks closure envs with a runtime capture mid-c
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
 pass	a TWO-LIST FIFO queue reverses the back list exactly when the front drains
+pass	a WORD COUNT threads an in-word flag through a scalar scan, counting entries not characters
 pass	a balanced-paren scan tracks depth over a runtime string and fails fast on early close
 pass	a constant algebraic identity over a high UInt64 operand folds to the operand, not a spurious reject
 pass	a constant MUL-by-1 identity over a high UInt64 operand folds to the operand

@@ -814,6 +814,77 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: (tuple 1 4 30) (Tuple Int64 Int64 Int64))))
 
+(case "a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string"
+  (doc    "The bytes→text rendering composite: each `Bytes.at` byte splits into high/low NIBBLES by
+           `/ 16` and `% 16`, each nibble indexes the alphabet STRING `\"0123456789abcdef\"` via
+           `String.at` (the alphabet-lookup idiom — a table read, not arithmetic on scalar values),
+           and the two hex digits append to a growing rope. Bytes (0, 15, n, 171, 255) cover the
+           nibble corners: 0x00 (BOTH nibbles zero — leading-zero digits must render), 0x0f (zero
+           HIGH nibble), 0xab (both mid-range), 0xff (both maxed), plus the runtime n as a UInt8
+           boundary parameter (Bytes.of takes (List UInt8), so the runtime element must arrive
+           ALREADY byte-typed — an Int64 there is CDZ0203). Verified by full-string `=` against the
+           expected rope plus byte-length 10 (5 bytes → 10 digits, the 2-digits-per-byte invariant).
+           n=16 → `000f10abff`; n=60 → `000f3cabff`; both encode 1001.")
+  (input  (do
+            (def (digit (: v Int64))
+              (Option.expect (String.at "0123456789abcdef" v) "nibble in range"))
+            (def (hex-go (: bs Bytes) (: i Int64) (: len Int64) (: acc String))
+              (if (>= i len)
+                  acc
+                  (match (Bytes.at bs i)
+                    ((Some b)
+                      (hex-go bs (+ i 1) len
+                        (String.concat acc (String.concat (digit (/ b 16)) (digit (% b 16))))))
+                    ((None _u) acc))))
+            (def (hex (: bs Bytes))
+              (hex-go bs 0 (Bytes.len bs) ""))
+            (def (main (: n UInt8))
+              (do
+                (def bs (Bytes.of (list 0 15 n 171 255)))
+                (def s (hex bs))
+                (+ (* (String.byte-len s) 100)
+                   (if (= s (String.concat "000f" (String.concat (if (= (Bytes.at bs 2) (Some 16)) "10" "3c") "abff"))) 1 0))))
+            (export main)))
+  (call   main (: 16 UInt8)) (output (: 1001 Int64))
+  (call   main (: 60 UInt8)) (output (: 1001 Int64)))
+
+(case "a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit"
+  (doc    "The encoder's inverse (the pin above reads the alphabet POSITIONALLY; the decoder must
+           SEARCH it): each input scalar's value is found by `find-at` — an index-of scan over the
+           same table, a nested search loop inside the outer walk — then accumulated base-16. Two
+           faces the encoder direction lacks: BAD-DIGIT rejection (at n=0 the runtime scalar becomes
+           `y`, the scan misses, and the whole decode of `abyd` short-circuits to -1 — abandoning,
+           not skipping) and LEADING zeros (`\"0010\"` → 16, high-order zeros accumulate silently —
+           certificate bit ·5). n=1 → `abcd` = 43981 (439816 with both cert bits); n=0 → the -1
+           folds through the encoding to -4.")
+  (input  (do
+            (def (find-at (: alpha String) (: c String) (: i Int64) (: len Int64))
+              (if (>= i len)
+                  -1
+                  (match (String.at alpha i)
+                    ((Some d) (if (= d c) i (find-at alpha c (+ i 1) len)))
+                    ((None _u) -1))))
+            (def (dec-go (: s String) (: i Int64) (: len Int64) (: acc Int64))
+              (if (>= i len)
+                  acc
+                  (match (String.at s i)
+                    ((Some c)
+                      (do
+                        (def v (find-at "0123456789abcdef" c 0 16))
+                        (if (< v 0) -1 (dec-go s (+ i 1) len (+ (* acc 16) v)))))
+                    ((None _u) acc))))
+            (def (hexdec (: s String))
+              (dec-go s 0 (String.byte-len s) 0))
+            (def (main (: n Int64))
+              (do
+                (def mid (if (> n 0) "c" "y"))
+                (+ (* (hexdec (String.concat "ab" (String.concat mid "d"))) 10)
+                   (+ (* (if (= (hexdec "0010") 16) 1 0) 5)
+                      (if (= (hexdec "ff") 255) 1 0)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 439816 Int64))
+  (call   main (: 0 Int64)) (output (: -4 Int64)))
+
 ; --- A runtime `Bytes.at` Option is MATCHED — the reader's core idiom -------------------------------
 ; The reader walks the input bytes with `(match (Bytes.at input i) ((Some b) …) (None …))` on every
 ; byte, so this must compile: matching a runtime `Bytes.at` result (an `Option<Int64>` — the byte

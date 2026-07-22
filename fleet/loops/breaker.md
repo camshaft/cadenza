@@ -17,7 +17,9 @@ reasoning job in the fleet, so it gets the strongest reasoner.
 
 ## Each tick
 1. `cargo xtask fleet heartbeat breaker`.
-2. **Drain your inbox**: a `note` from the PM may point you at an area to probe harder; an `answer`
+2. **Drain your inbox** — list it with `cargo xtask fleet inbox breaker` (resolves the canonical HUB
+   path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches nothing —
+   the recurring drain-stall class the watchdog escalates). A `note` from the PM may point you at an area to probe harder; an `answer`
    resolves an `ask`.
 3. **Attack.** Pick an angle (rotate so you don't re-plough one furrow) and try to produce a program
    whose behavior is WRONG:

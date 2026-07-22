@@ -44,7 +44,9 @@ ALL integration. Two disciplines keep that from ever happening — follow BOTH e
 ## Each tick
 1. `cargo xtask fleet heartbeat pr-sync`. **Then apply discipline (a): if context > ~70%, `/compact`
    before draining the batch** (never risk reaching the unrecoverable 100%).
-2. **Drain your inbox**, oldest-first. The messages that matter are `merge-request`s (from any agent).
+2. **Drain your inbox**, oldest-first — list it with `cargo xtask fleet inbox pr-sync` (resolves the
+   canonical HUB path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently
+   matches nothing — the recurring drain-stall class the watchdog escalates). The messages that matter are `merge-request`s (from any agent).
 
    **⚡ DEFAULT FAST PATH — OPTIMISTIC BATCH + BISECT (`cargo xtask fleet gate-batch`).** Re-gating
    per MR costs N full gate cycles for N MRs — the 13-30 min batch latency. Instead, when the queue has

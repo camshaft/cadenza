@@ -324,6 +324,40 @@
   (call   main (: 1 Int64)) (output (: 111 Int64))
   (call   main (: 0 Int64)) (output (: 11 Int64)))
 
+(case "a WORD COUNT threads an in-word flag through a scalar scan, counting entries not characters"
+  (doc    "The wc/lexer-mode idiom — the first Bool MODE FLAG threaded through a string walk (every
+           other pinned scan threads numeric state): a space clears `inw`, a non-space sets it, and
+           the count increments only on the ENTRY transition (non-space seen while `inw` is false) —
+           counting words, not characters. The runtime scalar swaps a mid-string position between
+           space and letter, flipping word-split against word-merge (`ab cd  ef ` = 3 words vs
+           `abxcd  ef ` = 2 — the double space and trailing space must not inflate either). Three
+           degenerate faces ride along: the EMPTY string (0), ALL-spaces (the flag never trips — 0),
+           and NO-spaces (`solo` — exactly one entry, 1). Encoding: main·1000 + empty·100 +
+           spaces·10 + solo. n=1 → 3001; n=0 → 2001.")
+  (input  (do
+            (def (wc-go (: s String) (: i Int64) (: len Int64) (: inw Bool) (: n Int64))
+              (if (>= i len)
+                  n
+                  (match (String.at s i)
+                    ((Some c)
+                      (if (= c " ")
+                          (wc-go s (+ i 1) len false n)
+                          (wc-go s (+ i 1) len true (if inw n (+ n 1)))))
+                    ((None _u) n))))
+            (def (wc (: s String))
+              (wc-go s 0 (String.byte-len s) false 0))
+            (def (main (: n Int64))
+              (do
+                (def mid (if (> n 0) " " "x"))
+                (def s (String.concat "ab" (String.concat mid "cd  ef ")))
+                (+ (* (wc s) 1000)
+                   (+ (* (wc "") 100)
+                      (+ (* (wc "   ") 10)
+                         (wc "solo"))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3001 Int64))
+  (call   main (: 0 Int64)) (output (: 2001 Int64)))
+
 (case "a deep rope indexes by scalar at both extremes"
   (doc    "Scalar addressing through ~500 concat seams: `String.at` reads index 0 (the single \"A\" head
            leaf) and index n·2 (the LAST scalar, deep in the right spine) of a 1001-scalar rope — 10·1+1

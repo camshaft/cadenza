@@ -112,7 +112,9 @@ returning to the tick-top check):
 ## Each tick
 1. `cargo xtask fleet heartbeat <you>`. **Then apply discipline (a): if context > ~70%, `/compact`
    NOW, before draining the inbox or doing any work.**
-2. **Drain your inbox**: a `note` may hand you an issue in your territory from the PM; a `reject`
+2. **Drain your inbox** — list it with `cargo xtask fleet inbox <you>` (resolves the canonical HUB
+   path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches nothing —
+   the recurring drain-stall class the watchdog escalates). A `note` may hand you an issue in your territory from the PM; a `reject`
    from pr-sync means your last slice needs a fix (top priority); an `answer` resolves an `ask`.
    **If the inbox is EMPTY, do NOT stop — self-direct** per "Be a strong owner" above: choose an
    improvement to your slice and do it this tick.
