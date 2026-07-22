@@ -383,6 +383,43 @@
   (call   main (: 3 Int64)) (output (: 8 Int64))
   (call   main (: 100 Int64)) (output (: 105 Int64)))
 
+(case "a recursive fold SUMS a list of same-unit quantities threading a Qty accumulator"
+  (doc    "The COLLECTION face of the same-unit sum above (one binop there; a recursive walk here): a
+           fold over a `(List (Qty Int64 meter))` threads a Qty ACCUMULATOR through `(+ acc h)` per step
+           — the unit layer erases per-element, leaving the plain integer fold (n+2+30 = 42 at n=10). A
+           runtime element keeps the list out of the constant fold. Pins that the erased-magnitude
+           arithmetic composes with the recursive fold spine and the accumulator's Qty type survives the
+           recursion (a per-step re-wrap that lost or double-applied a scale would drift).")
+  (input  (do
+            (def (sum-q (: xs (List (Qty Int64 (Unit.base #"meter")))) (: acc (Qty Int64 (Unit.base #"meter"))))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (sum-q t (+ acc h)))))
+            (def (main (: n Int64))
+              (Qty.value (sum-q (list (Qty.of n (Unit.base #"meter")) (Qty.of 2 (Unit.base #"meter")) (Qty.of 30 (Unit.base #"meter"))) (Qty.of 0 (Unit.base #"meter")))))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 42 Int64)))
+
+(case "a MAX-fold over quantities compares through the erased unit wrapper per step"
+  (doc    "The comparison-accumulator companion: the fold's step is `(if (> h best) h best)` — a Qty
+           COMPARISON deciding which Qty to thread. The `>` peels the unit layer to the erased Int64
+           (equal dimensions), so the winner is by magnitude: n=42 dominates {5, n, 7} → 42; n=1 leaves
+           7 the max. Pins ordering + selection + recursion over the wrapper in one shape (the running-max
+           genre from 05-compound, lifted to quantities).")
+  (input  (do
+            (def (max-q (: xs (List (Qty Int64 (Unit.base #"meter")))) (: best (Qty Int64 (Unit.base #"meter"))))
+              (match xs
+                ((list) best)
+                ((list h .. t) (max-q t (if (> h best) h best)))))
+            (def (main (: n Int64))
+              (Qty.value (max-q (list (Qty.of 5 (Unit.base #"meter")) (Qty.of n (Unit.base #"meter")) (Qty.of 7 (Unit.base #"meter"))) (Qty.of 0 (Unit.base #"meter")))))
+            (export main)))
+  (call   main (: 42 Int64))
+  (output (: 42 Int64))
+  (call   main (: 1 Int64))
+  (output (: 7 Int64)))
+
 (case "a quantity over a BigInt magnitude runs unbounded arithmetic on the erased handles"
   (doc    "A `(Qty BigInt meter)` — a quantity whose inner numeric is the UNBOUNDED BigInt — runs bigint
            arithmetic on the erased inner handles, exactly as a bare `BigInt` `+` does. `(+ (Qty.of

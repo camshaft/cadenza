@@ -359,6 +359,44 @@
   (call   main)
   (output (: true Bool)))
 
+(case "compound equality over a runtime SLICE-view Bytes leaf compares by window content"
+  (doc    "The view-leaf member of the mixed-compound walk family: the Bytes leaf inside the compound is a
+           runtime-START `Bytes.slice` VIEW, so the per-leaf compare must flatten the view to its window
+           content — `(= (tuple 1 s) (tuple 1 flat))` is true exactly when the window equals the flat twin
+           (a=1 windows (20,30) → true; a=0 windows (9,20) → false). Pinned across three positions —
+           tuple element, Option payload, list element — because the walk reaches leaves through distinct
+           descent arms. (The BARE slice as a champ KEY is finding #16 — the compound-eq walk shown here
+           is the arm that already canonicalizes; these pins keep it that way through the #16 fix.)")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+                ((Some s)
+                  (+ (+ (* 100 (if (= (tuple 1 s) (tuple 1 (Bytes.of (list 20 30)))) 1 0))
+                        (* 10 (if (= (Some s) (Some (Bytes.of (list 20 30)))) 1 0)))
+                     (if (= (list s) (list (Bytes.of (list 20 30)))) 1 0)))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 111 Int64))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64)))
+
+(case "a TUPLE-wrapped runtime slice as a Map key hits by content through the compound descent"
+  (doc    "The champ-KEY composition of the view-leaf walk: the map key is `(tuple 1 <Bytes>)` and the
+           probe wraps a runtime slice — the compound-key champ descent flattens the view leaf, so the
+           lookup HITS (42). Notable precisely because the BARE slice key misses today (finding #16, the
+           top-level Bytes arm): the compound descent's leaf canonicalization is the CORRECT behavior the
+           bare arm should share, pinned here so the #16 fix aligns to it rather than regressing it.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((m (Map.insert Map.empty (tuple 1 (Bytes.of (list 20 30))) 42)))
+                (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+                  ((Some s) (match (Map.lookup m (tuple 1 s)) ((Some v) v) ((None u) -1)))
+                  ((None u) -2))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 42 Int64)))
+
 ; --- Runtime compound ORDERING: `<`/`<=`/`>`/`>=` over a runtime compound COMPUTES (blessed lexicographic) --
 ; The cases above pin runtime structural EQUALITY over a compound (the `value-eq`/`champ_eq` heap walk).
 ; ORDERING is the total-order companion, now BLESSED for compounds (operator ruling 2026-07-18; core-

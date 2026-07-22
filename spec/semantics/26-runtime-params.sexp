@@ -268,3 +268,59 @@
   (call   main)
   (host-responses (respond Param.len-num (: 7 Int64)) (respond Param.len-den (: 2 Int64)))
   (output (: 7/2 Rational)))
+
+; --- Param values as ORDINARY runtime values through the language's control machinery -------------
+; The compositions above pin @param x quasiquote and @param x CHAMP-key; these drive a param value
+; through the three remaining control shapes — a recursion bound, a match dispatch feeding a SECOND
+; param in the selected arm, and a closure capture — so an accessor result is witnessed as a plain
+; runtime value everywhere a boundary parameter can go.
+
+(case "a @param drives a recursive fold's iteration count"
+  (doc    "The accessor's value bounds a RECURSION: `(build (Param.n) 0)` sums n..1, so the host's 4
+           yields 10. The loop's depth is decided by the host response at run time — a sidecar value is a
+           first-class loop bound exactly as a boundary parameter is (nothing folds; the recursion emits
+           against a genuinely-runtime count).")
+  (input  (do
+            (pragma param (param (: widget slider)) (: n Int64))
+            (def (build (: i Int64) (: acc Int64))
+              (if (< i 1) acc (build (- i 1) (+ acc i))))
+            (def (main)
+              (host (Param) (build (Param.n) 0)))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.n (: 4 Int64)))
+  (output (: 10 Int64)))
+
+(case "a @param selects a match arm and a SECOND param feeds the selected body"
+  (doc    "Two accessors in one delegation with a CONTROL dependence between them: `(Param.mode)` is the
+           match SCRUTINEE and the selected arm reads `(Param.x)` — mode=1 picks the doubling arm, x=21 →
+           42. Pins accessor-in-scrutinee dispatch plus a second accessor performed only on the taken arm
+           (the untaken arm's read must not be hoisted into an unconditional host call).")
+  (input  (do
+            (pragma param (param (: widget slider)) (: mode Int64))
+            (pragma param (param (: widget slider)) (: x Int64))
+            (def (main)
+              (host (Param)
+                (match (Param.mode)
+                  (0 (+ (Param.x) 1))
+                  (1 (* (Param.x) 2))
+                  (_ -1))))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.mode (: 1 Int64)) (respond Param.x (: 21 Int64)))
+  (output (: 42 Int64)))
+
+(case "a @param value crosses into a closure capture and applies"
+  (doc    "The capture face: `(mk (Param.k))` builds a closure OVER the accessor's result, applied to 40
+           — host k=2 → 42. The param value must ride the closure environment (allocated after the host
+           response arrives) exactly as a boundary parameter would; a capture snapshotting before the
+           delegation or aliasing the accessor call itself would misread.")
+  (input  (do
+            (pragma param (param (: widget slider)) (: k Int64))
+            (def (mk (: a Int64)) (fn ((: v Int64)) (+ v a)))
+            (def (main)
+              (host (Param) ((mk (Param.k)) 40)))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.k (: 2 Int64)))
+  (output (: 42 Int64)))

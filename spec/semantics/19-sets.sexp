@@ -1962,3 +1962,69 @@
             (export main)))
   (call   main (: 50 Int64))
   (output (: 3 Int64)))
+
+; ---- a runtime Bytes.slice VIEW as a CHAMP key must key by CONTENT, not by the view node --------------
+; A runtime-start `Bytes.slice` produces a borrowed [off,len] VIEW over its parent. Used as a CHAMP key
+; (Map key or Set member, either side of the lookup) it must hash + compare by its FLATTENED content, so
+; it hits an equal-content flat Bytes — the equal-means-same-key contract. This missed on wasm (breaker
+; finding #16): the rust emit's `key_needs_compaction` only compacted an OWNED String/Bytes key, so a
+; BORROWED rope/slice key skipped the key-site bytes-compact and reached `champ_hash` as a raw view →
+; hashed differently → lookup MISSED while value-`=` said EQUAL. Fixed (rcdzc `900a8ff3b`) by compacting
+; ANY-ownership at the key site (bytes-compact is refcount-neutral, safe for a borrow). A CONST-start
+; slice always worked (it compacts at fold). These pin every face: value-eq control, slice-probes-flat,
+; slice-stored-flat-probes, Set membership, and the const-start control.
+(case "value-eq CONTROL: a runtime slice compares equal to a flat Bytes of the same content"
+  (input (do
+           (def (main (: a Int64))
+             (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+               ((Some s) (if (= s (Bytes.of (list 20 30))) 1 0))
+               ((None u) -1)))
+           (export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "a runtime slice PROBING a Map keyed by flat Bytes must hit by content"
+  (input (do
+           (def (main (: a Int64))
+             (let ((m (Map.insert Map.empty (Bytes.of (list 20 30)) 42)))
+               (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+                 ((Some s) (match (Map.lookup m s) ((Some v) v) ((None u) -1)))
+                 ((None u) -2))))
+           (export main)))
+  (call main (: 1 Int64))
+  (output (: 42 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
+
+(case "a runtime slice STORED as a Map key must be found by a flat Bytes probe"
+  (input (do
+           (def (main (: a Int64))
+             (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+               ((Some s)
+                 (match (Map.lookup (Map.insert Map.empty s 42) (Bytes.of (list 20 30)))
+                   ((Some v) v) ((None u) -1)))
+               ((None u) -2)))
+           (export main)))
+  (call main (: 1 Int64))
+  (output (: 42 Int64)))
+
+(case "a runtime slice probes a Set of flat Bytes by content"
+  (input (do
+           (def (main (: a Int64))
+             (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+               ((Some s) (if (Set.contains (Set.of (list (Bytes.of (list 20 30)))) s) 1 0))
+               ((None u) -2)))
+           (export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "CONTROL: a CONST-start slice as a Map-lookup key hits on wasm"
+  (input (do
+           (def (main (: a Int64))
+             (let ((m (Map.insert Map.empty (Bytes.of (list 20 30)) 42)))
+               (match (Bytes.slice (Bytes.of (list 9 20 30 8)) 1 2)
+                 ((Some s) (match (Map.lookup m s) ((Some v) v) ((None u) -1)))
+                 ((None u) -2))))
+           (export main)))
+  (call main (: 0 Int64))
+  (output (: 42 Int64)))
