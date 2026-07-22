@@ -102,7 +102,7 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         // (body transitively calls back) would inline-loop infer → DECLINE (TErr). An unknown name → TErr.
         // param-* lookups (below + in infer-param2/3/4) use the NAME directly (keyed both ways in read-do-def);
         // only the body-type descent uses calleeBody.
-        (if (call-is-recursive(tree, calleeId)) then Map.insert(tcol, id, Typed.TErr)
+        (if (call-is-recursive(tree, calleeId)) then infer-recursive-call(tree, id, argId, rcol, tcol)
          else (match def-body-of(tree, calleeId) with
            | Option.None(_) => Map.insert(tcol, id, Typed.TErr)
            | Option.Some(calleeBody) =>
@@ -126,6 +126,30 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
                             | Option.None(_) => Map.insert(ta, id, Typed.TErr)))
                      | Option.None(_) => Map.insert(tcol, id, Typed.TErr)))))
     | Option.None(_) => tcol
+
+/// slice-B2 RECURSIVE-call typing (was a flat TErr decline until B1a). A recursive call `(fac (- n 1))` can't
+/// be typed by descending into the callee body — the body contains the self-call, so that would re-enter here
+/// forever. Instead type it by its monomorphic RESULT: everything in the self-host surface is i64, so a
+/// recursive call's type is Int64 — a 1-step fixpoint (design doc §B2; the reference types a recursive call
+/// by its declared result). We STILL type the argument subtrees (so their nodes get facts and an ill-typed
+/// arg propagates), then stamp the call node Int64. The arg-typing does NOT re-descend into the callee body:
+/// an arg is a caller-scope expression (a literal, a var, arith over them, or ANOTHER recursive self-call
+/// which lands back here and stops at Int64 — never a body descent). This is what lets B1b's `lower-def-env`
+/// later type each body ONCE: the inner self-call types Int64 and terminates the walk.
+def infer-recursive-call(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  (if (argId == (0 - 1)) then Map.insert(tcol, id, t-int64())        // nullary self-call → Int64
+   else (let t1 = infer-node(tree, argId, rcol, tcol) in             // type arg1 (does not descend the body)
+         (let t2 = infer-rec-arg-opt(tree, arg2-of(tree, id), rcol, t1) in
+          (let t3 = infer-rec-arg-opt(tree, arg3-of(tree, id), rcol, t2) in
+           (let t4 = infer-rec-arg-opt(tree, arg4-of(tree, id), rcol, t3) in
+            Map.insert(t4, id, t-int64()))))))
+
+/// Type an OPTIONAL higher-arg slot of a recursive call (arg2/3/4): present → type its subtree; absent → the
+/// column passes through unchanged. Additive — mirrors the non-recursive infer-param2/3/4 arg walk.
+def infer-rec-arg-opt(tree: Tree, argOpt: Option(Int64), rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  (match argOpt with
+    | Option.Some(a) => infer-node(tree, a, rcol, tcol)
+    | Option.None(_) => tcol)
 
 /// The body-typing tail of the single-param NApp arm, factored out so the fit-check guard above stays flat.
 /// `argTyOpt` is `Map.lookup(ta, argId)` (already computed). Binds param1 : arg1's type, types arg2 + binds
@@ -916,5 +940,39 @@ def id-param-bind-type-untyped-takes-arg-type() =
     (match param-bind-type(t1, paramId, Typed.TIntW(false, 16)) with     // no declared type → arg's UInt16 flows
       | Typed.TIntW(s, w) => (if (if s then false else true) and (w == 16) then unit else trap("untyped param takes the arg's type"))
       | _ => trap("untyped param binds to the arg type")))
+
+@test
+def id-recursive-nullary-call-types-int-slice-b2() =
+  // slice-B2: a self-recursive NULLARY call `def f() = f()` now TYPES as Int64 (was TErr until B1a). The body
+  // node IS the call NApp(900, -1); record-def keys 900 → that node, so call-is-recursive(900) fires. infer
+  // must NOT descend the body (it calls back) — it stamps the call Int64 directly. Hand-built arena (parse-
+  // tokens doesn't read def-forms — recursion lives at sread; this pins the infer arm in isolation).
+  (match add-node(empty-tree(), Node.NApp(900, 0 - 1)) with | (callId, t1) =>
+    (let tree = record-def(t1, 900, callId) in
+     (match Map.lookup(infer-node(tree, callId, resolve-tree(tree, callId), (Map.empty : Map(Int64, Typed))), callId) with
+       | Option.Some(Typed.TIntW(_, w)) => (if w == 64 then unit else trap("recursive nullary call → Int64 (width 64)"))
+       | Option.Some(Typed.TErr) => trap("recursive call still TErr — B2 infer arm not reached")
+       | _ => trap("recursive nullary call should type Int64"))))
+
+@test
+def id-recursive-call-with-arith-arg-types-int-slice-b2() =
+  // slice-B2: a self-recursive call WITH an arith arg `def f(n) = f(n - 1)`-shape (here `f(7 - 1)` in a hand
+  // arena) types Int64, AND the arg subtree is typed (7, 1, and the `-` node all get facts — infer-recursive-
+  // call types the arg without descending the callee body). Body = NApp(900, subId) with subId = NBin(45,
+  // NLit 7, NLit 1); record-def keys 900 → the call so call-is-recursive fires.
+  (match add-node(empty-tree(), Node.NLit(7)) with | (lId, t1) =>
+    (match add-node(t1, Node.NLit(1)) with | (rId, t2) =>
+      (match add-node(t2, Node.NBin(45, lId, rId)) with | (subId, t3) =>
+        (match add-node(t3, Node.NApp(900, subId)) with | (callId, t4) =>
+          (let tree = record-def(t4, 900, callId) in
+           (let tc = infer-node(tree, callId, resolve-tree(tree, callId), (Map.empty : Map(Int64, Typed))) in
+            (match Map.lookup(tc, callId) with
+              | Option.Some(Typed.TIntW(_, wc)) =>
+                  (if wc == 64 then
+                     (match Map.lookup(tc, subId) with            // the arg's `-` node must also be typed (Int)
+                       | Option.Some(Typed.TIntW(_, _)) => unit
+                       | _ => trap("recursive call's arith arg subtree should be typed Int"))
+                   else trap("recursive call with arg → Int64"))
+              | _ => trap("recursive call with an arith arg should type Int64"))))))))
 
 export { Typed.*, infer-node, infer-tree, type-at, ground-deferred, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }
