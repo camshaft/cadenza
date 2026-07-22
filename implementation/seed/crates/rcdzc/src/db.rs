@@ -1270,6 +1270,18 @@ pub struct Db {
     /// clipped; the outer value is OR-ed back in so the clip propagates to ancestors.
     pub(crate) reached_clipped: bool,
 
+    /// SYNTHESIZED-NODE → SOURCE-NODE provenance for β-reduction NAME COPIES. When `copy_structural`
+    /// copies a name atom (a fresh occurrence past `user_node_count`, so `is_user_node` is false and it
+    /// has no span), it records here the ORIGINAL source occurrence it was copied from. This lets a
+    /// diagnostic anchored at the copy be RELOCATED to the real source node (`source_of_synth`) rather
+    /// than un-anchored: a name that re-resolves UNBOUND in an inlined copy (a mutual-recursion cycle
+    /// member's param that lost its binder scope in the spliced body — the whole-program CDZ0101 that,
+    /// unlike the per-file `cdz check` path, carries no location) then points at the source reference the
+    /// author wrote. Populated only for name copies (the constant-atom / list arms share or re-push
+    /// without a source name to attribute); a copy-of-a-copy chains through so the anchor lands on the
+    /// original user occurrence. Purely a location aid — it never changes WHETHER a fault is reported.
+    pub(crate) synth_name_origin: crate::fxhash::FxHashMap<StructId, StructId>,
+
     /// Memo of built values the evaluator produced by applying a native constructor — keyed by the
     /// reduction `(prim, arg-values)`, mapping to the built node's occurrence. Without it, a
     /// type-constructor application like `(Int 64)` would append a FRESH module on every demand
@@ -2613,6 +2625,7 @@ impl Db {
             collect_limited: false,
             reached_visited: crate::fxhash::FxHashSet::default(),
             reached_clipped: false,
+            synth_name_origin: crate::fxhash::FxHashMap::default(),
             build_cache: crate::fxhash::FxHashMap::default(),
             recursive: crate::fxhash::FxHashMap::default(),
             reaches_host_call: crate::fxhash::FxHashMap::default(),
@@ -3244,6 +3257,31 @@ impl Db {
     /// this so a synthesized/prelude id is dropped (reported as unanchored) rather than mis-mapped.
     pub fn is_user_node(&self, id: StructId) -> bool {
         id.0 < self.user_node_count
+    }
+
+    /// The USER (source) node a synthesized node ultimately traces to, or `None` if there is no recorded
+    /// provenance ending at a user node. A β-reduction NAME COPY records its source occurrence in
+    /// `synth_name_origin` (`copy_structural`); this follows that chain (a copy-of-a-copy re-points to the
+    /// original) until it reaches a `is_user_node`, so a diagnostic anchored at an inlined copy can be
+    /// RELOCATED to the real source reference the author wrote instead of being dropped as unmappable. A
+    /// bounded walk (the chain is at most the reduction depth; the loop guard stops a cycle defensively).
+    /// Returns `None` for an already-user node (nothing to relocate) or a synth node with no provenance.
+    pub fn source_of_synth(&self, id: StructId) -> Option<StructId> {
+        if self.is_user_node(id) {
+            return None;
+        }
+        let mut cur = id;
+        // A β-copy chain is at most reduction-depth long; cap the follow at the arena size as a cycle
+        // backstop (a self-referential provenance entry could otherwise spin — it never should, but the
+        // guard keeps this total on any map state).
+        for _ in 0..self.ast.structure.len() {
+            match self.synth_name_origin.get(&cur) {
+                Some(&src) if self.is_user_node(src) => return Some(src),
+                Some(&src) if src != cur => cur = src,
+                _ => return None,
+            }
+        }
+        None
     }
 
     // ── Append-during-query — the evaluator builds new nodes on demand ─────────────────────────────

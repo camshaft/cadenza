@@ -36,6 +36,9 @@ pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
 pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
 pass	BigInt.of a UInt64 at its high bit still works (the full-width control)
 pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
+pass	FAST-DOUBLING fib recurses on the halved index returning a pair, checked against linear iteration
+pass	KADANE max-subarray threads a best-ending-here and a global best through one fold
+pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
@@ -43,6 +46,7 @@ pass	a MAP MERGE folds one map's entries into another, summing values on key col
 pass	a PALINDROME two-pointer walk closes from both ends of a runtime rope
 pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
+pass	a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
 pass	a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN
 pass	a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack
@@ -2247,8 +2251,9 @@ pass	a runtime bin construction result unequal to different content is false
 pass	a runtime bin match binds a dependent-size bytes segment over a runtime scrutinee
 pass	a runtime bin match feeds its decoded segment binders into a sum+tuple constructor, then projects back
 pass	a runtime dependent-size match reads a MULTI-BYTE (u16) length prefix
+pass	a runtime literal int probe reads at a dynamic offset after a dependent-size body
 pass	a runtime literal-tag probe gates a dependent-size body in one arm
-todo	a runtime bin match with a NON-FINAL dependent-size segment binds the body then the rest
+pass	a runtime bin match with a NON-FINAL dependent-size segment binds the body then the rest
 pass	a runtime bin match binds the tail after a fixed header via a final rest segment
 pass	a runtime bin match decodes a byte-aligned bit-field run
 pass	a runtime bin match dispatches on a leading literal bit-field tag
@@ -2338,6 +2343,8 @@ pass	a runtime negative dividend mod a constant power of two takes the dividend'
 pass	a runtime negative zero is not equal to positive zero
 pass	a runtime negative-const-multiply one past its lower fitting boundary traps
 pass	a runtime nibble truncation keeps the low four bits
+pass	a runtime non-final dependent-size body of zero binds empty and rest absorbs everything
+pass	a runtime non-final dependent-size body that overruns the frame falls through
 pass	a runtime out-of-bounds list update traps rather than aliasing a valid slot
 pass	a runtime overflowing left shift traps
 pass	a runtime product's derived dimension cancels correctly through a divide
@@ -4828,3 +4835,5 @@ pass	a constant shift-left of a small UInt64 operand whose result overflows i64 
 pass	a constant shift-left of a small UInt32 operand into its high bit folds (width-generic guard)
 pass	a scalar-indexed split over a MULTIBYTE string bounds its walk by scalar-len, not byte-len
 pass	sibling match arms each let-binding a DIFFERENT-WIDTH value get disjoint scratch slots, not an invalid component
+pass	a recursive list-match called in an IF-branch inside a match arm builds on all backends
+pass	a recursive list-match in an arm whose arms return a LIST builds on all backends

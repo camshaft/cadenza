@@ -1609,6 +1609,36 @@
   (call   main (: 12 Int64) (: 48 Int64)) (output (: 1211 Int64))
   (call   main (: 7 Int64) (: 7 Int64)) (output (: 711 Int64)))
 
+(case "KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle"
+  (doc    "Two user-written popcounts DIFFERENTIALLY cross-checked (the gcd/modpow certificate style,
+           here bitwise): Kernighan's loop `x & (x-1)` clears exactly the LOWEST set bit per step —
+           its step count IS the popcount, and it leans on the borrow ripple of `x-1` turning the
+           low run of zeros into ones (a wrong `&`-with-borrow interaction miscounts immediately) —
+           against a 63-step shift-walk summing `(>> x i) & 1`. Faces: 0 (Kernighan's loop never
+           entered — 0 with agreement bit → 1), the single bit 1 and the isolated high bit 1024
+           (both count 1 — position-independence), the dense byte 255 (8 consecutive clears → 81),
+           and 2^62-1 (SIXTY-TWO set bits — the loop runs 62 borrow ripples up the full width;
+           agreement with the shift walk pins that no high-bit step was dropped → 621). Encoding:
+           count·10 + agree.")
+  (input  (do
+            (def (pop-k (: x Int64) (: acc Int64))
+              (if (= x 0) acc (pop-k (& x (- x 1)) (+ acc 1))))
+            (def (pop-s (: x Int64) (: i Int64) (: acc Int64))
+              (if (>= i 63)
+                  acc
+                  (pop-s x (+ i 1) (+ acc (& (>> x i) 1)))))
+            (def (main (: x Int64))
+              (do
+                (def k (pop-k x 0))
+                (def s (pop-s x 0 0))
+                (+ (* k 10) (if (= k s) 1 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: 1 Int64)) (output (: 11 Int64))
+  (call   main (: 255 Int64)) (output (: 81 Int64))
+  (call   main (: 1024 Int64)) (output (: 11 Int64))
+  (call   main (: 4611686018427387903 Int64)) (output (: 621 Int64)))
+
 (case "a runtime BigInt in an Option payload crosses the host boundary"
   (doc    "`(Some (* (BigInt.of 1000000) (BigInt.of 1000000)))` — a runtime BigInt (the 10^12 product does
            not fold) wrapped in an `Option` crosses to the host as `(Some 1000000000000) : (Option

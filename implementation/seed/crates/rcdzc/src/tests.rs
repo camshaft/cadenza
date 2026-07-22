@@ -4627,6 +4627,60 @@ fn dependent_size_bin_match_payload_read_leaves_no_live_objects() {
     );
 }
 
+/// DIRECT leak witness for the §4a NON-FINAL dependent-size bin-match reads (`Core::BinSizedRead` +
+/// `Core::BinRestRead` with a runtime `off_plus`). A `(bin (u8 n) (bytes body n) (bytes rest))` pattern binds
+/// `body` via `bytes-slice(scrutinee, off, n)` AND `rest` via `bytes-slice(scrutinee, off + n, len - (off +
+/// n))` — TWO owned slices per match, each DUPing the borrowed scrutinee and consuming the copy, plus the
+/// dynamic `off_plus` read (a scalar `BinIntRead` that BORROWS the scrutinee, retaining nothing). All the
+/// dups (rc++) and the slice consumes (rc−−) must net to zero, leaving the scrutinee live for its owner and
+/// NO leaked slice/scrutinee cell per match. This pins that the §4a dynamic-offset path preserves the same
+/// dup/consume balance as the static reads (the `off_plus` read must not leak a scrutinee dup).
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
+#[test]
+#[ignore]
+fn non_final_dependent_size_bin_match_reads_leave_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "debug-counters runtime not in the store (run `cargo xtask build`); skipping §4a non-final leak probe"
+        );
+        return;
+    };
+    // `loop` builds a fresh runtime 4-byte frame `[h, 7, 8, 9]` each iteration, matches the NON-FINAL
+    // dependent-size `(bytes body k)` (k = the runtime header `u8`) followed by `(bytes rest)` — `rest` reads
+    // at the DYNAMIC offset `1 + k`. h=2 → body=[7,8] (len 2), rest=[9] (len 1) → 3 per iter. N iterations
+    // create N body slices + N rest slices + N×(dup'd scrutinee frames + off_plus reads), all of which must
+    // net to 0. A missed reclaim (a leaked slice, an unbalanced scrutinee dup, or an off_plus read that dups
+    // without consuming) would leave live-objects ~ N even though the value is correct.
+    let src = "(module m \
+                 (def (loop (: j Int64) (: n Int64) (: h Int64) (: tot Int64)) \
+                     (if (< j n) \
+                         (loop (+ j 1) n h \
+                           (+ tot \
+                              (match (Bytes.of (list (UInt8.wrap h) (UInt8.wrap 7) (UInt8.wrap 8) (UInt8.wrap 9))) \
+                                ((bin (u8 k) (bytes body k) (bytes rest)) (+ (Bytes.len body) (Bytes.len rest))) \
+                                (_ -1)))) \
+                         tot)) \
+                 (def (f (: h Int64)) (loop 0 500 h 0)) (export f))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("f", &[Val::S64(2)]),
+        Val::S64(1500),
+        "non-final dependent-size bin match binds body([7,8]) + rest([9]) = 3 per iter → 500 × 3 = 1500 \
+         (value-correct + NO UAF)"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "§4a non-final leak: a body/rest slice handle (or an unbalanced scrutinee dup from the dynamic \
+         off_plus read) is still live after the match (expected 0 — every dup/bytes-slice-consume pair must \
+         net the heap to zero)"
+    );
+}
+
 /// KNOWN VALUE-CORRECT LEAK WITNESS (pinned, not yet fixed) for the `Option.expect` (`Core::SumExpect`)
 /// OWNED-SHELL reclaim when the extracted payload is a COMPOUND that is BORROWED-then-dead-after. A fallible
 /// String read (`String.slice` → `Option String`) builds a fresh `sum-new` Some shell around an owned slice;
@@ -23052,6 +23106,73 @@ mod match_engine {
                 "a resolvable / literal bare item is not flagged unbound: {ok}"
             );
         }
+    }
+
+    /// A CDZ0101 raised on a SYNTHESIZED β-reduction name copy (the whole-program-monomorphization path,
+    /// where an inlined callee body's name re-resolves — v-compiler-ml's mutual-recursion-cycle unbound
+    /// param) must carry a SOURCE LOCATION, not read as a bare, unanchored "unbound name `x`". The
+    /// per-file `cdz check` path reports such a name at its user occurrence (and suppresses the synth
+    /// copy as an inference artifact — `infer::collect_node`'s `is_user_node` gate); the whole-program
+    /// reached-poison walk instead surfaces the copy, whose id is past `user_node_count` (no span), so
+    /// `sanitize_origin` used to null the anchor. The fix records each β-copied name's SOURCE occurrence
+    /// (`synth_name_origin`, in `eval::copy_structural`) and RELOCATES a synth anchor to it
+    /// (`Db::source_of_synth`) rather than dropping it. This pins the mechanism directly: β-copy a real
+    /// def body via `copy_structural_pub`, then assert every copied NAME atom traces back to a USER node.
+    /// A regression (a copy site not recording provenance, or the relocation reverting to null) re-buries
+    /// this whole class of whole-program CDZ0101 as location-less — the exact "very hard to debug"
+    /// symptom the report filed.
+    #[test]
+    fn a_beta_reduced_name_copy_traces_back_to_its_source_user_node_for_diagnostics() {
+        use crate::db::Db;
+        // A def whose body references a param (`n`) and a sibling (`g`) by name — the shapes a
+        // monomorphization inline copies fresh. `copy_structural_pub` β-copies the body with no
+        // substitution (an empty `arg_of`), producing fresh name occurrences past the user-node ceiling.
+        let mut db = Db::load(crate::testkit::parse(
+            "(module m (def (g (: x Int64)) x) (def (f (: n Int64)) (+ (g n) n)) (export f))",
+        ));
+        let d = db.def_by_name("f").expect("def f");
+        let body = db.defs[d].body.expect("f has a body");
+        let params = db.defs[d].params.clone();
+        // The ceiling is the arena length BEFORE the copy — every node appended by the copy is synth.
+        let ceiling = db.ast.structure.len() as u32;
+        // The body node itself is a USER node — `source_of_synth` returns None (nothing to relocate).
+        assert!(db.is_user_node(body), "the source body is a user node");
+        assert_eq!(
+            db.source_of_synth(body),
+            None,
+            "a user node has no synth provenance to relocate"
+        );
+        let arg_of = crate::fxhash::FxHashMap::default();
+        let copy = crate::eval::copy_structural_pub(&mut db, body, &params, &arg_of);
+        assert!(
+            !db.is_user_node(copy),
+            "the copy root is a synthesized node (past the user-node ceiling)"
+        );
+        // EVERY synthesized NAME atom the copy recorded provenance for must trace back to a USER node —
+        // so a CDZ0101 raised on any of them (an unbound re-resolution) anchors at the author's source
+        // reference, not nowhere.
+        let mut checked_a_name = false;
+        for i in ceiling..(db.ast.structure.len() as u32) {
+            let id = crate::ast::StructId(i);
+            let Some(src) = db.source_of_synth(id) else {
+                continue;
+            };
+            assert!(
+                db.is_user_node(src),
+                "the relocated anchor is a genuine user node with a span"
+            );
+            // The traced source names the SAME identifier — the relocation points at the right token.
+            assert_eq!(
+                db.ast.as_name(id),
+                db.ast.as_name(src),
+                "the copy and its source occurrence are the same name"
+            );
+            checked_a_name = true;
+        }
+        assert!(
+            checked_a_name,
+            "the β-copy produced at least one provenance-tracked name atom to verify"
+        );
     }
 
     #[test]

@@ -623,16 +623,33 @@ fn binding_escapes_dup_aware(
         // skipped its closing drop → the owned `Bytes` scrutinee LEAKED one frame per match (value-correct —
         // a leak, not a miscompile; the fixed-width-only witness in
         // `dependent_size_bin_match_payload_read_leaves_no_live_objects`).
-        Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
+        // `off_plus` (§4a dynamic offset) is a scalar `BinIntRead` decode — it BORROWS its bytes and yields
+        // an i64 count, carrying no heap reference out, so it cannot let the binding escape (recurse
+        // `tail_borrowed: false`, like a scalar `len`).
+        Core::BinIntRead {
+            bytes, off_plus, ..
+        }
+        | Core::BinRestRead {
+            bytes, off_plus, ..
+        } => {
             binding_escapes_dup_aware(db, bytes, binder, true, dup_sites)
+                || off_plus
+                    .is_some_and(|op| binding_escapes_dup_aware(db, op, binder, false, dup_sites))
         }
         // A `BinSizedRead` borrows its bytes operand (DUP-then-`bytes-slice` the copy — the original survives,
         // like `BinRestRead`) and borrows its runtime length operand (a `BinIntRead` scalar read). The binding
         // escapes only if it flows into either as a NON-borrow, so recurse with `tail_borrowed: true` on the
-        // bytes (borrowed) — the `len` is a scalar decode that cannot carry a heap reference out.
-        Core::BinSizedRead { bytes, len, .. } => {
+        // bytes (borrowed) — the `len`/`off_plus` are scalar decodes that cannot carry a heap reference out.
+        Core::BinSizedRead {
+            bytes,
+            off_plus,
+            len,
+            ..
+        } => {
             binding_escapes_dup_aware(db, bytes, binder, true, dup_sites)
                 || binding_escapes_dup_aware(db, len, binder, false, dup_sites)
+                || off_plus
+                    .is_some_and(|op| binding_escapes_dup_aware(db, op, binder, false, dup_sites))
         }
         // `List.push`/`concat` CONSUME both operands (the persistent op takes ownership of the list and
         // the pushed/concatenated value into the result).
@@ -1165,16 +1182,34 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::BigIntToI64 { operand }
         | Core::RationalNum { operand }
         | Core::RationalDen { operand }
-        | Core::BinIntRead { bytes: operand, .. }
-        | Core::BinRestRead { bytes: operand, .. }
         | Core::StrFromBytes { bytes: operand, .. }
         | Core::StrToBytes { string: operand }
         | Core::Convert { operand, .. }
         | Core::Not { operand } => cs.push(operand),
-        // A `BinSizedRead` has two children: the sliced bytes and the runtime length read.
-        Core::BinSizedRead { bytes, len, .. } => {
+        // A `BinIntRead`/`BinRestRead` reads `bytes`, plus a `off_plus` size-sum child (§4a dynamic offset).
+        Core::BinIntRead {
+            bytes, off_plus, ..
+        }
+        | Core::BinRestRead {
+            bytes, off_plus, ..
+        } => {
+            cs.push(bytes);
+            if let Some(op) = off_plus {
+                cs.push(op);
+            }
+        }
+        // A `BinSizedRead` has children: the sliced bytes, the runtime length read, and (§4a) `off_plus`.
+        Core::BinSizedRead {
+            bytes,
+            off_plus,
+            len,
+            ..
+        } => {
             cs.push(bytes);
             cs.push(len);
+            if let Some(op) = off_plus {
+                cs.push(op);
+            }
         }
         Core::ListAt {
             list: a, index: b, ..
@@ -1691,15 +1726,35 @@ fn mark_binder_dups_inner(
         // `dup` at each read of a still-live scrutinee binder (a bin-match reads the scrutinee once per field
         // probe), so the frame's rc was bumped past its single closing drop and LEAKED one frame per match —
         // the dup-placement twin of the `binding_escapes` borrow classification for these ops.
-        Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
-            borrow(db, bytes, live_after, sites)
+        // `off_plus` (§4a dynamic offset) is a scalar `BinIntRead` decode (borrows). Child ORDER must match
+        // the operand-list arm above: `[bytes, off_plus]`.
+        Core::BinIntRead {
+            bytes, off_plus, ..
         }
+        | Core::BinRestRead {
+            bytes, off_plus, ..
+        } => match off_plus {
+            None => borrow(db, bytes, live_after, sites),
+            Some(op) => seq(db, &[(bytes, true), (op, false)], live_after, sites),
+        },
         // A `BinSizedRead` BORROWS its bytes (DUP-then-`bytes-slice` the copy — original survives, like
-        // `BinRestRead`) and reads its runtime length (a `BinIntRead` scalar decode). Mark the bytes borrowed
-        // (`(bytes, true)`) so a still-live scrutinee binder gets no spurious dup; the `len` is a scalar.
-        Core::BinSizedRead { bytes, len, .. } => {
-            seq(db, &[(bytes, true), (len, false)], live_after, sites)
-        }
+        // `BinRestRead`) and reads its runtime length + `off_plus` (scalar `BinIntRead` decodes). Mark the
+        // bytes borrowed (`(bytes, true)`) so a still-live scrutinee binder gets no spurious dup. Child ORDER
+        // must match the operand-list arm above: `[bytes, len, off_plus]`.
+        Core::BinSizedRead {
+            bytes,
+            off_plus,
+            len,
+            ..
+        } => match off_plus {
+            None => seq(db, &[(bytes, true), (len, false)], live_after, sites),
+            Some(op) => seq(
+                db,
+                &[(bytes, true), (len, false), (op, false)],
+                live_after,
+                sites,
+            ),
+        },
         Core::ListPush { list, elem } => {
             seq(db, &[(list, false), (elem, false)], live_after, sites)
         }
@@ -2479,27 +2534,47 @@ fn collect_used_ops_into(
                 collect_used_ops_into(db, f.value, out);
             }
         }
-        // A `BinIntRead` reads its segment bytes with `bytes-get`.
-        Core::BinIntRead { bytes, .. } => {
+        // A `BinIntRead` reads its segment bytes with `bytes-get`. A §4a `off_plus` (a scalar `BinIntRead`)
+        // brings its own ops in via the recurse.
+        Core::BinIntRead {
+            bytes, off_plus, ..
+        } => {
             out.insert(OP_BYTES_GET);
             collect_used_ops_into(db, bytes, out);
+            if let Some(op) = off_plus {
+                collect_used_ops_into(db, op, out);
+            }
         }
         // A `BinRestRead` slices the tail: `dup` the shared scrutinee, then `bytes-slice(bytes, off,
-        // bytes-len - off)` on the copy.
-        Core::BinRestRead { bytes, .. } => {
+        // bytes-len - off)` on the copy. A §4a `off_plus` brings its own ops in via the recurse.
+        Core::BinRestRead {
+            bytes, off_plus, ..
+        } => {
             out.insert(OP_DUP);
             out.insert(OP_BYTES_LEN);
             out.insert(OP_BYTES_SLICE);
             collect_used_ops_into(db, bytes, out);
+            if let Some(op) = off_plus {
+                collect_used_ops_into(db, op, out);
+            }
         }
         // A `BinSizedRead` slices exactly `len` bytes at a static offset: `dup` the shared scrutinee, then
         // `bytes-slice(bytes, off, len)` on the copy. `len` is a runtime `BinIntRead` (its own `bytes-get`
-        // + operand come in via the recurse), so no `bytes-len` here (unlike the rest read).
-        Core::BinSizedRead { bytes, len, .. } => {
+        // + operand come in via the recurse), so no `bytes-len` here (unlike the rest read). A §4a `off_plus`
+        // brings its own ops in via the recurse too.
+        Core::BinSizedRead {
+            bytes,
+            off_plus,
+            len,
+            ..
+        } => {
             out.insert(OP_DUP);
             out.insert(OP_BYTES_SLICE);
             collect_used_ops_into(db, bytes, out);
             collect_used_ops_into(db, len, out);
+            if let Some(op) = off_plus {
+                collect_used_ops_into(db, op, out);
+            }
         }
         // `Bytes.len` uses `bytes-len` and evaluates its operand.
         Core::BytesLen { operand } => {
@@ -7033,6 +7108,7 @@ fn emit(
         Core::BinIntRead {
             bytes,
             byte_offset,
+            off_plus,
             width,
             signed,
             little_endian,
@@ -7042,6 +7118,11 @@ fn emit(
             // it is RE-EMITTED per `bytes-get` rather than stashed in a scratch slot. Claiming a scratch
             // slot here (typed i32) collided with an i64 slot in a nested-if match chain; re-emitting the
             // handle avoids any scratch of our own, so nothing this arm emits can re-type a shared slot.
+            // §4a DYNAMIC OFFSET: when `off_plus` is `Some` (a `(bytes body n)` precedes this read), each byte
+            // position is `byte_offset + p + off_plus`. `off_plus` is a PURE read (a `BinIntRead`, or a sum of
+            // them), so — like `bytes` — it is RE-EMITTED inline per byte rather than stashed in a slot,
+            // keeping this arm scratch-free (an off_plus read of a still-static size claims no slot of its
+            // own; nesting one inside a nested-if chain is what the no-scratch rule above protects against).
             out.push(Lir::ConstI64(0)); // [acc:i64]
             for p in 0..w {
                 let shift = (w - 1 - p) * 8; // MSB-first bit position
@@ -7051,7 +7132,12 @@ fn emit(
                     byte_offset + p
                 };
                 emit(db, bytes, slots, base, high, scratch_ty, layout, out)?; // [acc, bytes]
-                out.push(Lir::ConstI32(pos as i32)); // [acc, bytes, pos]
+                out.push(Lir::ConstI32(pos as i32)); // [acc, bytes, static-pos]
+                if let Some(op) = off_plus {
+                    emit(db, op, slots, base, high, scratch_ty, layout, out)?; // [acc, bytes, static-pos, off:i64]
+                    out.push(Lir::I32WrapI64); // [acc, bytes, static-pos, off:i32]
+                    out.push(Lir::I32Add); // [acc, bytes, pos]
+                }
                 out.push(Lir::CallImport(OP_BYTES_GET)); // [acc, byte:i32]
                 out.push(Lir::I64ExtendI32U); // [acc, byte:i64] (0..=255)
                 if shift > 0 {
@@ -7078,7 +7164,11 @@ fn emit(
         // the original stays live for the enclosing `let`'s scope-end drop. `off` is a static u32 (the sum
         // of the preceding int widths); the length is `bytes-len - off`, computed at i32 width (both are
         // non-negative and `off <= bytes-len` since the arm's length probe already required `len >= off`).
-        Core::BinRestRead { bytes, byte_offset } => {
+        Core::BinRestRead {
+            bytes,
+            byte_offset,
+            off_plus,
+        } => {
             // dup(handle) pops the handle and rc++'s it, returning nothing — so `tee` it into a scratch
             // slot, dup that copy, then get it back as the slice source. The slot is typed i32 (a handle).
             let handle_slot = base;
@@ -7086,16 +7176,40 @@ fn emit(
                 *high = handle_slot + 1;
             }
             scratch_ty.insert(handle_slot, ValType::I32);
-            emit(db, bytes, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes]
+            // §4a DYNAMIC OFFSET: `start = byte_offset + off_plus`, so the tail is `bytes-len - start`.
+            // Materialize `off_plus` (an i64 count) into an i32 scratch slot once, reused for start + length.
+            let (inner_base, off_slot) = match off_plus {
+                None => (base + 1, None),
+                Some(op) => {
+                    let off_slot = base + 1;
+                    if off_slot + 1 > *high {
+                        *high = off_slot + 1;
+                    }
+                    scratch_ty.insert(off_slot, ValType::I32);
+                    emit(db, op, slots, base + 2, high, scratch_ty, layout, out)?; // [off:i64]
+                    out.push(Lir::I32WrapI64); // [off:i32]
+                    out.push(Lir::LocalSet(off_slot)); // off_slot = off
+                    (base + 2, Some(off_slot))
+                }
+            };
+            emit(db, bytes, slots, inner_base, high, scratch_ty, layout, out)?; // [bytes]
             out.push(Lir::LocalTee(handle_slot)); // [bytes], slot = bytes
             out.push(Lir::CallImport(OP_DUP)); // pops the copy, rc++ → []
-            // Slice source (the retained, rc-incremented handle), then start = off, then len = bytes-len - off.
+            // Slice source (the retained, rc-incremented handle), then start, then len = bytes-len - start.
             out.push(Lir::LocalGet(handle_slot)); // [bytes] (owned copy for bytes-slice to consume)
-            out.push(Lir::ConstI32(byte_offset as i32)); // [bytes, off]
-            out.push(Lir::LocalGet(handle_slot)); // [bytes, off, bytes]
-            out.push(Lir::CallImport(OP_BYTES_LEN)); // [bytes, off, len:i32] (borrows)
+            out.push(Lir::ConstI32(byte_offset as i32)); // [bytes, static-off]
+            if let Some(off_slot) = off_slot {
+                out.push(Lir::LocalGet(off_slot));
+                out.push(Lir::I32Add); // [bytes, start]
+            }
+            out.push(Lir::LocalGet(handle_slot)); // [bytes, start, bytes]
+            out.push(Lir::CallImport(OP_BYTES_LEN)); // [bytes, start, len:i32] (borrows)
             out.push(Lir::ConstI32(byte_offset as i32));
-            out.push(Lir::I32Sub); // [bytes, off, len - off]
+            if let Some(off_slot) = off_slot {
+                out.push(Lir::LocalGet(off_slot));
+                out.push(Lir::I32Add); // [bytes, start, len, start]
+            }
+            out.push(Lir::I32Sub); // [bytes, start, len - start]
             out.push(Lir::CallImport(OP_BYTES_SLICE)); // [slice-handle] (consumes the copied bytes)
             Ok(()) // leaves [rest:bytes-handle]
         }
@@ -7108,6 +7222,7 @@ fn emit(
         Core::BinSizedRead {
             bytes,
             byte_offset,
+            off_plus,
             len,
         } => {
             let handle_slot = base;
@@ -7115,13 +7230,33 @@ fn emit(
                 *high = handle_slot + 1;
             }
             scratch_ty.insert(handle_slot, ValType::I32);
-            emit(db, bytes, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes]
+            // §4a DYNAMIC OFFSET: `start = byte_offset + off_plus`. Materialize `off_plus` (an i64 count)
+            // into an i32 scratch slot once (used at the single `start` push). `None` = the static case.
+            let (inner_base, off_slot) = match off_plus {
+                None => (base + 1, None),
+                Some(op) => {
+                    let off_slot = base + 1;
+                    if off_slot + 1 > *high {
+                        *high = off_slot + 1;
+                    }
+                    scratch_ty.insert(off_slot, ValType::I32);
+                    emit(db, op, slots, base + 2, high, scratch_ty, layout, out)?; // [off:i64]
+                    out.push(Lir::I32WrapI64); // [off:i32]
+                    out.push(Lir::LocalSet(off_slot)); // off_slot = off
+                    (base + 2, Some(off_slot))
+                }
+            };
+            emit(db, bytes, slots, inner_base, high, scratch_ty, layout, out)?; // [bytes]
             out.push(Lir::LocalTee(handle_slot)); // [bytes], slot = bytes
             out.push(Lir::CallImport(OP_DUP)); // pops the copy, rc++ → []
             out.push(Lir::LocalGet(handle_slot)); // [bytes] (owned copy for bytes-slice to consume)
-            out.push(Lir::ConstI32(byte_offset as i32)); // [bytes, off]
-            emit(db, len, slots, base + 1, high, scratch_ty, layout, out)?; // [bytes, off, n:i64]
-            out.push(Lir::I32WrapI64); // [bytes, off, n:i32] (a byte count fits i32)
+            out.push(Lir::ConstI32(byte_offset as i32)); // [bytes, static-off]
+            if let Some(off_slot) = off_slot {
+                out.push(Lir::LocalGet(off_slot));
+                out.push(Lir::I32Add); // [bytes, start]
+            }
+            emit(db, len, slots, inner_base, high, scratch_ty, layout, out)?; // [bytes, start, n:i64]
+            out.push(Lir::I32WrapI64); // [bytes, start, n:i32] (a byte count fits i32)
             out.push(Lir::CallImport(OP_BYTES_SLICE)); // [slice-handle] (consumes the copied bytes)
             Ok(()) // leaves [payload:bytes-handle]
         }

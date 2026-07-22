@@ -769,9 +769,20 @@ fn emit_elem_grounding_empty_list(
     if a == "vec![]"
         && let Some(t) = target
         && let Ty::List(elem) = t.strip_nominal()
-        && let Some(rust_elem) = types::rust_type(elem)
     {
-        return Ok(format!("Vec::<{rust_elem}>::new()"));
+        // GROUND the element's still-open vars to the `Int64` default before spelling `Vec::<T>::new()`.
+        // A tuple/record/sum-payload empty-list field whose two match arms did NOT unify their element
+        // type (one arm supplies `List Int64`, the empty-list arm keeps `List Any`) leaves the slot type
+        // `List(Any)` — `rust_type(Any)` is `None`, so without grounding this bailed to a bare `vec![]`
+        // that rustc cannot infer in a tuple-return position (E0282, breaker #18 n18c). The empty list has
+        // NO element, so grounding its phantom element type is behavior-neutral, and rustc unifies the
+        // `Vec::<i64>::new()` with the sibling arm's `Vec<i64>`. A genuinely non-Int64 sibling would error
+        // LOUDLY at rustc (E0308), never a silent miscompile — the same contract `ground_open_vars` carries
+        // for empty `Map`/`Set`. (wasm's list handle needs no spelled element type, so it ran regardless —
+        // NOT proof the type was solved.)
+        if let Some(rust_elem) = types::rust_type(&types::ground_open_vars(elem)) {
+            return Ok(format!("Vec::<{rust_elem}>::new()"));
+        }
     }
     Ok(a)
 }
@@ -2601,24 +2612,33 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::BinIntRead {
             bytes,
             byte_offset,
+            off_plus,
             width,
             signed,
             little_endian,
         } => {
             let v = emit(db, bytes, env, ctx)?;
             let w = width as u32;
-            let mut body = format!("{{ let __bytes = {v}; let mut __acc: i64 = 0; ");
+            let mut body = format!("{{ let __bytes = {v}; ");
+            // §4a DYNAMIC OFFSET: `pos = byte_offset + p + off_plus`. Bind `off_plus` (an i64 count) once as a
+            // usize `__off`; `None` = a static offset (`__off = 0`, no extra emit). The caller's length probe
+            // guaranteed each `pos` in bounds (matching the wasm read; a `Vec<u8>` index panics on overrun).
+            let off_expr = match off_plus {
+                None => "0usize".to_string(),
+                Some(op) => format!("(({}) as usize)", emit(db, op, env, ctx)?),
+            };
+            body.push_str(&format!("let __off = {off_expr}; let mut __acc: i64 = 0; "));
             for p in 0..w {
                 let shift = (w - 1 - p) * 8;
-                let pos = if little_endian {
+                let stat = if little_endian {
                     byte_offset + (w - 1 - p)
                 } else {
                     byte_offset + p
                 };
                 let term = if shift > 0 {
-                    format!("((__bytes[{pos}usize] as i64) << {shift})")
+                    format!("((__bytes[{stat}usize + __off] as i64) << {shift})")
                 } else {
-                    format!("(__bytes[{pos}usize] as i64)")
+                    format!("(__bytes[{stat}usize + __off] as i64)")
                 };
                 body.push_str(&format!("__acc |= {term}; "));
             }
@@ -2629,28 +2649,40 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             body.push_str("__acc }");
             Ok(body)
         }
-        // Read the FINAL `(bytes rest)` segment — the tail of the `Vec<u8>` scrutinee from a STATIC offset to
-        // the end, as an owned `Vec<u8>`. The caller's length probe guaranteed `len >= byte_offset`. Mirror
-        // the wasm `BinRestRead` (`bytes-slice(bytes, off, len - off)`).
-        Core::BinRestRead { bytes, byte_offset } => {
+        // Read the FINAL `(bytes rest)` segment — the tail of the `Vec<u8>` scrutinee from `byte_offset +
+        // off_plus` to the end, as an owned `Vec<u8>`. The caller's length probe guaranteed `len >= start`.
+        // Mirror the wasm `BinRestRead` (`bytes-slice(bytes, start, len - start)`).
+        Core::BinRestRead {
+            bytes,
+            byte_offset,
+            off_plus,
+        } => {
             let v = emit(db, bytes, env, ctx)?;
+            let off_expr = match off_plus {
+                None => "0usize".to_string(),
+                Some(op) => format!("(({}) as usize)", emit(db, op, env, ctx)?),
+            };
             Ok(format!(
-                "{{ let __bytes = {v}; __bytes[{byte_offset}usize..].to_vec() }}"
+                "{{ let __bytes = {v}; __bytes[{byte_offset}usize + {off_expr}..].to_vec() }}"
             ))
         }
-        // Read a DEPENDENT-SIZE `(bytes payload n)` segment — exactly `n` bytes from a STATIC offset, as an
-        // owned `Vec<u8>`, where `n` is the runtime value of an earlier segment (`len` emits an i64). The
-        // caller's length probe guaranteed `byte_offset + n <= len`. Mirror the wasm `BinSizedRead`
-        // (`bytes-slice(bytes, off, n)`).
+        // Read a DEPENDENT-SIZE `(bytes payload n)` segment — exactly `n` bytes from `byte_offset + off_plus`,
+        // as an owned `Vec<u8>`, where `n` is the runtime value of an earlier segment (`len` emits an i64).
+        // The caller's length probe guaranteed `start + n <= len`. Mirror the wasm `BinSizedRead`.
         Core::BinSizedRead {
             bytes,
             byte_offset,
+            off_plus,
             len,
         } => {
             let v = emit(db, bytes, env, ctx)?;
             let n = emit(db, len, env, ctx)?;
+            let off_expr = match off_plus {
+                None => "0usize".to_string(),
+                Some(op) => format!("(({}) as usize)", emit(db, op, env, ctx)?),
+            };
             Ok(format!(
-                "{{ let __bytes = {v}; let __n = ({n}) as usize; __bytes[{byte_offset}usize..{byte_offset}usize + __n].to_vec() }}"
+                "{{ let __bytes = {v}; let __start = {byte_offset}usize + {off_expr}; let __n = ({n}) as usize; __bytes[__start..__start + __n].to_vec() }}"
             ))
         }
         // A host call OR a cross-component call crosses a component boundary — the Rust backend emits no

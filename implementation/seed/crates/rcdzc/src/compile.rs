@@ -435,7 +435,14 @@ fn sanitize_origin(db: &Db, reject: &mut Reject) {
     if let Some(id) = reject.at
         && !db.is_user_node(id)
     {
-        reject.at = None;
+        // A synthesized (β-copy) anchor has no span. Before dropping it, try to RELOCATE it to the
+        // source occurrence the copy was made from (`synth_name_origin`, recorded in `copy_structural`):
+        // a name that re-resolved UNBOUND in an inlined body — the whole-program CDZ0101 that the
+        // per-file `cdz check` reports at its user occurrence but the reached-poison walk produced on the
+        // spliced copy — then anchors at the real source reference instead of being un-anchored (a bare
+        // "unbound name `x`" with nothing to point at, the hard-to-debug symptom). If there is no
+        // recorded provenance to a user node, fall back to the old behavior: null the unmappable anchor.
+        reject.at = db.source_of_synth(id);
     }
 }
 
@@ -4219,11 +4226,27 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
                 collect_reached_poisons(db, f.value, out);
             }
         }
-        Core::BinIntRead { bytes, .. } | Core::BinRestRead { bytes, .. } => {
-            collect_reached_poisons(db, bytes, out)
+        Core::BinIntRead {
+            bytes, off_plus, ..
         }
-        Core::BinSizedRead { bytes, len, .. } => {
+        | Core::BinRestRead {
+            bytes, off_plus, ..
+        } => {
             collect_reached_poisons(db, bytes, out);
+            if let Some(op) = off_plus {
+                collect_reached_poisons(db, op, out);
+            }
+        }
+        Core::BinSizedRead {
+            bytes,
+            off_plus,
+            len,
+            ..
+        } => {
+            collect_reached_poisons(db, bytes, out);
+            if let Some(op) = off_plus {
+                collect_reached_poisons(db, op, out);
+            }
             collect_reached_poisons(db, len, out);
         }
         Core::Proj { operand, .. }
