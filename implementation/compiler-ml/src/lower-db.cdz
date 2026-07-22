@@ -14,7 +14,7 @@
 /// NO core form (a filled `None`), not a bogus tree. Lowering reads the infer column to make this decision,
 /// and reads the resolve column to canonicalize vars — producer-reads-two-producers.
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, call-is-self-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
 import { Typed, infer-tree, infer-node } from "infer-db"
 
@@ -300,11 +300,15 @@ def build-def-env(tree: Tree, entries: List(Tuple(Int64, Int64)), acc: Map(Int64
     | [e, .. rest] =>
         (match e with
           | (nameId, bodyId) =>
-              (if (call-is-recursive(tree, nameId)) then
+              // p3: include ONLY a DIRECTLY self-recursive def (fac). A merely MUTUALLY-recursive def (ev/od)
+              // is call-is-recursive (transitive) but NOT call-is-self-recursive → stays OUT of the def-env, so
+              // its cross-call CCall leaf hits a def-env miss and eval DECLINES cleanly (mutual runtime recursion
+              // is out of Slice-B scope — it must decline, not trap). Non-recursive defs stay inlined as before.
+              (if (call-is-self-recursive(tree, nameId)) then
                  (match lower-one-def(tree, nameId, bodyId) with
                    | Option.Some(entry) => build-def-env(tree, rest, Map.insert(acc, nameId, entry))
                    | Option.None(_) => build-def-env(tree, rest, acc))
-               else build-def-env(tree, rest, acc))))   // non-recursive def → not in the def-env (stays inlined)
+               else build-def-env(tree, rest, acc))))   // non-/mutually-recursive def → not in the def-env
 
 /// slice-B1b: the DEF-ENV for a whole tree — every def-table name → (paramBinderIds, bodyCore), each body
 /// lowered once and standalone. `eval-core-d` reads this to run a `CCall(name, args)`. Reaches the def-table

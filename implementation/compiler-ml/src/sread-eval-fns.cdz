@@ -315,14 +315,13 @@ def se-forward-ref-runs() =
     | Option.None(_) => trap("a forward reference (def calls a later def) runs")
 
 @test
-def se-self-recursion-declines-not-hangs() =
-  // SELF-RECURSION must DECLINE (not run — the Core has no call/fix node, calls INLINE), and crucially must NOT
-  // HANG the compiler (infinite inline). The cycle guard (call-is-recursive) detects `fac`'s body calls `fac`
-  // → declines at the NApp arm before descending. Pins that enabling forward-ref did NOT regress recursion from
-  // clean-decline to a hang. (True runtime recursion is a later slice: add a non-inlining Core call form.)
+def se-self-recursion-runs-slice-boneb() =
+  // SLICE-B (B1a CCall + B1b lower-def-env + B3 eval def-env dispatch, all landed): SELF-RECURSION now RUNS.
+  // `fac`'s body self-call lowers to a non-inlining CCall LEAF; lower-def-env keys fac's body in the def-env;
+  // run-of-db threads that def-env into eval-core-d, which dispatches the CCall by name. (fac 5) = 120.
   match run-src("(do (def (fac n) (if (< n 2) 1 (* n (fac (- n 1))))) (def (main) (fac 5)) (export main))") with
-    | Option.None(_) => unit
-    | Option.Some(_) => trap("self-recursion declines cleanly (no Core call form yet) — must not run or hang")
+    | Option.Some(v) => (if v == 120 then unit else trap("(fac 5) → 120 via CCall def-env dispatch"))
+    | Option.None(_) => trap("self-recursion RUNS now (Slice-B) — must not decline")
 
 @test
 def se-mutual-recursion-declines-not-hangs() =

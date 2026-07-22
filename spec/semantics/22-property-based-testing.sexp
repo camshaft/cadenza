@@ -640,6 +640,35 @@
   (call   main (: 999 Int64))
   (output (: 1 Int64)))
 
+(case "a generated map workload agrees with a linear-scan model at EVERY key of the domain"
+  (doc    "The exhaustive-agreement upgrade of the count-model pin above (which checks ONE aggregate):
+           30 generated inserts over a 16-key masked domain (overwrites guaranteed), then EVERY key
+           0..15 is checked — `Map.lookup` against a linear scan of the map's OWN to-list, misses
+           included (both answer -1). 16 agreements or -999 on the first divergence; two seeds drive two
+           workloads through one compiled verifier. The strongest per-key oracle: any lost overwrite,
+           phantom entry, or enumeration drift shows as a point disagreement the aggregate count can
+           miss.")
+  (input  (do
+            (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+            (def (scan (: ps (List (Tuple Int64 Int64))) (: k Int64))
+              (match ps
+                ((list) -1)
+                ((list h .. t) (match h ((tuple pk pv) (if (= pk k) pv (scan t k)))))))
+            (def (drive (: s Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (< n 1) m (drive (next s) (- n 1) (Map.insert m (& (next s) 15) n))))
+            (def (verify (: m (Map Int64 Int64)) (: ps (List (Tuple Int64 Int64))) (: k Int64) (: acc Int64))
+              (if (> k 15) acc
+                (verify m ps (+ k 1)
+                  (if (= (match (Map.lookup m k) ((Some v) v) ((None u) -1)) (scan ps k)) (+ acc 1) -999))))
+            (def (main (: seed Int64))
+              (let ((m (drive seed 30 Map.empty)))
+                (verify m (Map.to-list m) 0 0)))
+            (export main)))
+  (call   main (: 42 Int64))
+  (output (: 16 Int64))
+  (call   main (: 777 Int64))
+  (output (: 16 Int64)))
+
 (case "a generated list reverses twice to itself — an involution property over generated content"
   (doc    "The involution law over GENERATED content: an 8-element list of masked LCG draws, reversed
            twice, equals itself — `rev` is a fold whose accumulator prepends via `List.concat (list h)`,
