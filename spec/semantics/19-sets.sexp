@@ -457,6 +457,36 @@
   (call   main (: 1 Int64)) (output (: 311 Int64))
   (call   main (: 2 Int64)) (output (: 100 Int64)))
 
+(case "TWO-SUM finds a complement pair via a seen-set built during one walk"
+  (doc    "The complement-lookup idiom: one walk over `(2 7 11 15 3)` tests `target − h` against the
+           set of elements seen SO FAR, inserting h only after the test — so an element can never
+           pair with ITSELF (target 4 = 2+2 must return -1, not pair the single 2 with its own
+           entry; the test-before-insert ordering is the pin). Returns the SECOND element's index at
+           the first hit. The toggle pin above churns one key; here the set only GROWS but the probed
+           key (the complement) is never the inserted key (h) — a CHAMP lookup keyed on the wrong
+           side finds h and answers one step early. Faces: target 9 → i=1 (2+7, immediate); 18 → 2
+           (7+11); 5 → 4 (2+3 — the complement entered the set FOUR steps before the hit); 4 → -1
+           (the self-pair trap); 14 → 4 (11+3 — TWO candidate pairs exist but 7+7 needs a self-pair
+           and must NOT fire at i=1).")
+  (input  (do
+            (def (walk (: xs (List Int64)) (: target Int64) (: seen (Set Int64)) (: i Int64))
+              (match xs
+                ((list) -1)
+                ((list h .. t)
+                  (if (Set.contains seen (- target h))
+                      i
+                      (walk t target (Set.insert seen h) (+ i 1))))))
+            (def (two-sum (: xs (List Int64)) (: target Int64))
+              (walk xs target (Set.of (list)) 0))
+            (def (main (: target Int64))
+              (two-sum (list 2 7 11 15 3) target))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 1 Int64))
+  (call   main (: 18 Int64)) (output (: 2 Int64))
+  (call   main (: 5 Int64)) (output (: 4 Int64))
+  (call   main (: 4 Int64)) (output (: -1 Int64))
+  (call   main (: 14 Int64)) (output (: 4 Int64)))
+
 ; --- The algebraic laws the three operations satisfy: the empty set as identity/annihilator, and ----
 ; --- the union laws (commutative, idempotent). These pin the operations' DEFINING identities, which
 ; --- the overlapping-operand cases above (which give a nontrivial result) do not exercise — a

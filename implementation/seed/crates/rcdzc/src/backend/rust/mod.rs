@@ -749,9 +749,14 @@ fn emit_signature(
         // `<arg>` is built in ITS OWN body (a literal/constructed value the emitter already lowers), and the
         // producing sibling that supplies `g` already emits a matching compound-arg closure via the factory
         // S2 path (`fn_result_renderable`). A HIGHER-ORDER arg (an arg that is itself a `Fn`) stays declined
-        // — `s2_arg_ok` returns false for `Ty::Fn`. The final RESULT must still be an S1 scalar: a COMPOUND
-        // closure result (S3) needs the factory-style result render the consumer path does not do yet, so it
-        // declines cleanly (a `todo`, a later increment).
+        // — `s2_arg_ok` returns false for `Ty::Fn`. The final RESULT may be an S1 scalar OR an S2 compound
+        // (`s2_arg_ok`: Tuple/List/Option/Result over OK elements): the closure result flows into the
+        // CONSUMER's body — `(g <args>)` yields it and the consumer returns/reads it — and the producing
+        // factory ALREADY emits a matching compound-RESULT closure (its `fn_result_renderable` S3 path). The
+        // consumer's OWN export result is rendered/declined SEPARATELY (`result_render_unsupported` below),
+        // so a compound closure result is admitted exactly when it is a type the emitter lowers natively (a
+        // Tuple/List the `(g …)` call yields directly). A HIGHER-ORDER result (`Ty::Fn`) stays declined —
+        // `s2_arg_ok` returns false for it. (This lands the S3-compound-closure-result consumer shape.)
         let mut cur = t.strip_nominal();
         while let crate::ty::Ty::Fn(p, r) = cur {
             if !s2_arg_ok(p) {
@@ -759,7 +764,7 @@ fn emit_signature(
             }
             cur = r.strip_nominal();
         }
-        is_capture_scalar(cur)
+        s2_arg_ok(cur)
     };
     // A closure param needs a PRODUCING sibling export to supply its closure — either a FACTORY (an export
     // whose result is that closure type) or a PEELED producer (a nullary `(fn …)` eta-peeled to a direct

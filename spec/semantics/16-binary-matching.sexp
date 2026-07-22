@@ -899,6 +899,32 @@
   (call   main (: 0 Int64))
   (output (: 300 Int64)))
 
+(case "a guarded bin-match arm over a CONSTANT scrutinee folds the guard and selects the arm"
+  (doc    "The CONST-scrutinee companion of the guarded bin-match case: the scrutinee `(Bytes.of (list 7))`
+           is a compile-time constant, so the bin matcher decodes each arm's segments at compile time AND
+           folds the guard (the guard cond reads the decoded binder `n` via the same `BinField` the body
+           sees — Case 6bg — which over a const scrutinee folds to a `ConstBool`). n = 7: the first guard
+           `(> n 5)` folds TRUE → arm 1 (100). Pins that a guarded bin arm's guard is EVALUATED (not ignored)
+           on the const path and that a TRUE fold selects the arm — the const analogue of the runtime
+           fall-through case, exercising the const-path guard fold rather than the runtime `pred AND guard`.")
+  (input  (match (Bytes.of (list 7))
+            ((guard (bin (u8 n)) (> n 5)) 100)
+            ((guard (bin (u8 n)) (> n 0)) 200)
+            (_ 300)))
+  (output (: 100 Int64)))
+
+(case "a guarded bin-match arm over a CONSTANT scrutinee whose guard fails falls to the next arm"
+  (doc    "The const-path guard FALL-THROUGH companion: over the constant `(Bytes.of (list 3))`, n = 3, so
+           arm 1's guard `(> n 5)` folds FALSE and the matcher continues to arm 2, whose guard `(> n 0)`
+           folds TRUE → 200. Pins that a FALSE guard fold on the const path advances to the next arm (not a
+           trap, not a wrong-arm selection) — the const twin of the runtime fall-through, closing the
+           const-path guard fold's false branch.")
+  (input  (match (Bytes.of (list 3))
+            ((guard (bin (u8 n)) (> n 5)) 100)
+            ((guard (bin (u8 n)) (> n 0)) 200)
+            (_ 300)))
+  (output (: 200 Int64)))
+
 (case "a runtime bin match dispatches on a literal tag across arms"
   (doc    "A multi-arm `bin` match over a RUNTIME scrutinee: a leading LITERAL tag segment selects the arm
            (tag 1 vs tag 2), and a runtime `u16` field fills the payload. The construction takes a `UInt8`

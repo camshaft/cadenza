@@ -9166,6 +9166,43 @@
   (call   main (: -10 Int64)) (output (: 6 Int64))
   (call   main (: 20 Int64)) (output (: 23 Int64)))
 
+(case "BOYER-MOORE majority vote pairs a cancel-count sweep with a verify recount"
+  (doc    "The cancel-count sweep: a (candidate, count) pair threads the fold — count 0 ADOPTS the
+           current element, a match increments, a mismatch DECREMENTS (each non-candidate cancels one
+           candidate occurrence). The sweep's answer is only correct WHEN a majority exists, so the
+           idiom's second half is a verify RECOUNT (`2·count > len`) — and the n=9 face is exactly
+           the one that needs it: no majority exists, the sweep still emits a candidate (9, by
+           adoption order), and the verify bit must come back 0 (a pin of the sweep alone would
+           bless a wrong majority). n=3 → 3 wins 4-of-7 (31); n=7 → 7 wins via LATE adoptions after
+           full cancellation (71 — the count hits zero mid-walk and re-adopts, the face a
+           sticky-candidate implementation gets wrong). Kadane above couples max-accumulators; this
+           couples an ADOPTION register with a saturating-style counter — the reset is data-driven
+           in both, but here the reset REBINDS the candidate identity.")
+  (input  (do
+            (def (vote (: xs (List Int64)) (: cand Int64) (: cnt Int64))
+              (match xs
+                ((list) cand)
+                ((list h .. t)
+                  (if (= cnt 0)
+                      (vote t h 1)
+                      (if (= h cand)
+                          (vote t cand (+ cnt 1))
+                          (vote t cand (- cnt 1)))))))
+            (def (count-of (: xs (List Int64)) (: v Int64) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (count-of t v (if (= h v) (+ acc 1) acc)))))
+            (def (main (: n Int64))
+              (do
+                (def xs (list n 3 n 7 5 3 n))
+                (def cand (vote xs 0 0))
+                (+ (* cand 10)
+                   (if (> (* (count-of xs cand 0) 2) ((. List len) xs)) 1 0))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 31 Int64))
+  (call   main (: 9 Int64)) (output (: 90 Int64))
+  (call   main (: 7 Int64)) (output (: 71 Int64)))
+
 (case "take-while and drop-while split a leading run and reassemble to the original"
   (doc    "The span law: `take-while` and `drop-while` walk the SAME spine with the SAME predicate
            `(< h 5)` independently — one accumulating the leading run, the other just advancing —
@@ -14735,3 +14772,55 @@
                 (+ (* (Option.expect (List.at out 0) "h") 10) ((. List len) out))))
             (export main)))
   (call main (: 5 Int64)) (output (: 22 Int64)))
+
+; ---- The two FINDING #18 faces that additionally needed empty-list-FIELD grounding (v-rust-backend
+; 015eeef55, landed same batch as bb104ceaf's brace/call-arg fixes). A recursive nested-match arm whose
+; result is a TUPLE with ≥2 bare-(list) fields left those fields' element types UNSOLVED (rust E0282
+; 'type annotations needed'); 015eeef55 grounds an empty-list tuple/record/payload field's element var to
+; Int64 so rustc unifies with the sibling Vec<i64>. Original witness (tuple scalar+2 lists) + n18c (tuple
+; of 2 lists, no scalar).
+(case "a recursive list-match in an arm returning a tuple of a scalar and two lists builds on all backends"
+  (doc    "breaker #18 ORIGINAL witness (the two-list FIFO deque shape). `deq`'s empty-front arm matches
+           `(rev b (list))` (recursive helper in an arm) and every arm returns `(Tuple Int64 (List Int64)
+           (List Int64))` — a scalar + TWO lists. The two bare-(list) fields left their element types
+           unsolved on the rust path → E0282; 015eeef55's empty-list-field grounding fixes it. n=5: empty
+           front → reversed `(2 5)`, head 2 + tail `(5)` len 1 → 3. Both backends.")
+  (input  (do
+            (def (rev (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (rev t (List.concat (list h) acc)))))
+            (def (deq (: f (List Int64)) (: b (List Int64)))
+              (match f
+                ((list h .. t) (tuple h t b))
+                ((list)
+                  (match (rev b (list))
+                    ((list h .. t) (tuple h t (list)))
+                    ((list) (tuple -1 (list) (list)))))))
+            (def (main (: n Int64))
+              (match (deq (list) (list n 2)) ((tuple v f2 _b2) (+ v ((. List len) f2)))))
+            (export main)))
+  (call main (: 5 Int64)) (output (: 3 Int64)))
+
+(case "a recursive list-match in an arm returning a tuple of TWO lists (no scalar) builds on all backends"
+  (doc    "breaker #18 n18c — the minimal trigger: a tuple of TWO bare `(List Int64)` fields (no scalar) from
+           a recursive nested-match arm. Both fields' element types were unsolved on rust → E0282; 015eeef55
+           grounds them. Distinct from n18b (single bare list) — the ≥2-list-slot tuple is what breaker's
+           isolation pinpointed as the residual after the brace/call-arg fixes. n=5: empty front → reversed
+           `(2 5)`, tail-after-head `(5)` len 1 · 10 + back-list `()` len 0 → 10. Both backends.")
+  (input  (do
+            (def (rev (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (rev t (List.concat (list h) acc)))))
+            (def (deq (: f (List Int64)) (: b (List Int64)))
+              (match f
+                ((list _h .. t) (tuple t b))
+                ((list)
+                  (match (rev b (list))
+                    ((list _h .. t) (tuple t (list)))
+                    ((list) (tuple (list) (list)))))))
+            (def (main (: n Int64))
+              (match (deq (list) (list n 2)) ((tuple f2 b2) (+ (* ((. List len) f2) 10) ((. List len) b2)))))
+            (export main)))
+  (call main (: 5 Int64)) (output (: 10 Int64)))

@@ -1639,6 +1639,111 @@
   (call   main (: 1024 Int64)) (output (: 11 Int64))
   (call   main (: 4611686018427387903 Int64)) (output (: 621 Int64)))
 
+(case "HORNER polynomial evaluation folds coefficients high-to-low and agrees with a power-sum oracle"
+  (doc    "Horner's rule `acc·x + h` folded over coefficients HIGH-to-low, differentially checked
+           against the naive power-sum (each coefficient times `x^(n−i)` by a separate recursion) —
+           the two walk the SAME list in the same order but combine oppositely (one nests
+           multiplications, one sums independent powers), so an association slip in either diverges.
+           Coefficients (2, −3, 0, 5) = 2x³−3x²+5 include a ZERO coefficient Horner must still
+           multiply THROUGH (skipping it degrades the degree). Faces: x=2 → 9 (91); x=0 → 5 — `acc·0`
+           annihilates all accumulated history and only the constant survives (51); x=−3 → −76 —
+           sign chains through the odd power (−759); x=1 → the plain coefficient sum 4 (41).
+           Encoding: value·10 + agreement bit.")
+  (input  (do
+            (def (horner (: cs (List Int64)) (: x Int64) (: acc Int64))
+              (match cs
+                ((list) acc)
+                ((list h .. t) (horner t x (+ (* acc x) h)))))
+            (def (pw (: x Int64) (: k Int64))
+              (if (= k 0) 1 (* x (pw x (- k 1)))))
+            (def (psum (: cs (List Int64)) (: x Int64) (: i Int64) (: n Int64) (: acc Int64))
+              (match cs
+                ((list) acc)
+                ((list h .. t) (psum t x (+ i 1) n (+ acc (* h (pw x (- n i))))))))
+            (def (main (: x Int64))
+              (do
+                (def cs (list 2 -3 0 5))
+                (def h (horner cs x 0))
+                (def s (psum cs x 1 4 0))
+                (+ (* h 10) (if (= h s) 1 0))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 91 Int64))
+  (call   main (: 0 Int64)) (output (: 51 Int64))
+  (call   main (: -3 Int64)) (output (: -759 Int64))
+  (call   main (: 1 Int64)) (output (: 41 Int64)))
+
+(case "TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list"
+  (doc    "The runtime digit decomposition (the RADIX pins read literal forms; this DERIVES digits):
+           `to-digits` peels with `% 10` and recurses on `/ 10`, PREPENDING — so the list comes out
+           high-order-first and the recursion emits digits in reverse arrival order — then
+           `from-digits` rebuilds Horner-style and the round-trip `=` closes the loop. Encoded:
+           len·10000 + digit-sum·100 + round-trip bit. Faces target the decomposition traps: a single
+           digit 5 (no recursion → 10501); an INTERIOR zero 907 (a dropped zero digit shortens the
+           list → 31601); TRAILING zeros 1000 → digits 1,0,0,0 (len 4, sum 1 — a loop that stops when
+           the quotient hits 0 too early loses them → 40101); all-nines 999999 (the carry-dense face,
+           len 6 sum 54 → 65401).")
+  (input  (do
+            (def (to-digits (: n Int64) (: acc (List Int64)))
+              (if (< n 10)
+                  (List.concat (list n) acc)
+                  (to-digits (/ n 10) (List.concat (list (% n 10)) acc))))
+            (def (from-digits (: ds (List Int64)) (: acc Int64))
+              (match ds
+                ((list) acc)
+                ((list h .. t) (from-digits t (+ (* acc 10) h)))))
+            (def (sum (: ds (List Int64)) (: acc Int64))
+              (match ds
+                ((list) acc)
+                ((list h .. t) (sum t (+ acc h)))))
+            (def (main (: n Int64))
+              (do
+                (def ds (to-digits n (list)))
+                (+ (* ((. List len) ds) 10000)
+                   (+ (* (sum ds 0) 100)
+                      (if (= (from-digits ds 0) n) 1 0)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10501 Int64))
+  (call   main (: 907 Int64)) (output (: 31601 Int64))
+  (call   main (: 1000 Int64)) (output (: 40101 Int64))
+  (call   main (: 999999 Int64)) (output (: 65401 Int64)))
+
+(case "TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor"
+  (doc    "The primality walk, returning the WITNESS not a boolean: 0 = prime, d = the smallest factor
+           found, -1 = below the domain — so a wrong answer identifies WHICH step failed. Odd
+           candidates only from 3 (2 special-cased; evens short-circuit via `% 2`), bounded by
+           `d·d > n` (multiplication, no isqrt dependency). Faces bracket the bound arithmetic:
+           97 prime (tests 3,5,7,9 then 11² > 97 stops → 0); 91 = 7·13 (the semiprime whose smallest
+           factor sits mid-walk — 91 also fools base-2 Fermat, so the corpus records the honest
+           answer → 7); 121 = 11² — the PERFECT SQUARE where d·d = n exactly AT the bound: a `>=`
+           bound would stop before testing d = 11 and call it prime (→ 11); 2 itself (→ 0); 15 → 3;
+           1 → -1 (domain floor); 1000003 prime (the deep face — the walk tests ~500 odd candidates
+           before d·d first exceeds n at d = 1003 → 0).")
+  (input  (do
+            (def (trial (: n Int64) (: d Int64))
+              (if (> (* d d) n)
+                  0
+                  (if (= (% n d) 0)
+                      d
+                      (trial n (+ d 2)))))
+            (def (probe (: n Int64))
+              (if (< n 2)
+                  -1
+                  (if (= n 2)
+                      0
+                      (if (= (% n 2) 0)
+                          2
+                          (trial n 3)))))
+            (def (main (: n Int64))
+              (probe n))
+            (export main)))
+  (call   main (: 97 Int64)) (output (: 0 Int64))
+  (call   main (: 91 Int64)) (output (: 7 Int64))
+  (call   main (: 121 Int64)) (output (: 11 Int64))
+  (call   main (: 2 Int64)) (output (: 0 Int64))
+  (call   main (: 15 Int64)) (output (: 3 Int64))
+  (call   main (: 1 Int64)) (output (: -1 Int64))
+  (call   main (: 1000003 Int64)) (output (: 0 Int64)))
+
 (case "a runtime BigInt in an Option payload crosses the host boundary"
   (doc    "`(Some (* (BigInt.of 1000000) (BigInt.of 1000000)))` — a runtime BigInt (the 10^12 product does
            not fold) wrapped in an `Option` crosses to the host as `(Some 1000000000000) : (Option
