@@ -402,8 +402,32 @@
            catch-all `_` arm for the others.")
   (input  (match (quote 42)
             ((Ast.Int n) n)
-            (_ 0)))
-  (output (: 42 Int64)))
+            (_ 0N)))
+  (output (: 42 BigInt)))
+
+(case "an Ast.Int stores an integer wider than Int64 without loss"
+  (doc    "🔑 THE non-lossy-AST-storage pin (numeric-model.md — a literal grounds to `BigInt` losslessly):
+           `Ast.Int`'s payload is `BigInt`, so a quoted integer with more than 19 digits (past the i64
+           range) is stored + extracted EXACTLY. `(match (quote 12345678901234567890123456789) ((Ast.Int
+           n) n))` binds the full 29-digit value — under the old `Int64` payload this DECLINED (the value
+           did not fit). The extracted `n` is a `BigInt` (a stored AST integer is full-precision), so the
+           catch-all is a `BigInt` (`0N`). This is why the payload is `BigInt`, not `Int64`: a compiler
+           that quotes a program must not lose a large integer literal.")
+  (input  (match (quote 12345678901234567890123456789)
+            ((Ast.Int n) n)
+            (_ 0N)))
+  (output (: 12345678901234567890123456789 BigInt)))
+
+(case "eval of a quoted integer literal grounds to Int64 (BigInt is AST storage, not eval width)"
+  (doc    "The dual of the lossless-storage pin: while an `Ast.Int` STORES its integer as `BigInt`, an
+           `eval` RECONSTRUCTS the source the AST denotes and re-infers it at the ORDINARY context width —
+           so `(eval (quote 5))` is an `Int64` `5`, exactly as the bare literal `5` would be, NOT a
+           `BigInt`. `eval_ast::reconstruct` strips the reifier's `(: N BigInt)` grounding wrapper for
+           this: BigInt is a property of the stored AST value, not one the reconstructed source carries
+           out. Pins the storage-vs-eval-width distinction the operator directed (eval goes through the
+           same int-width inference paths as the rest of the codebase).")
+  (input  (eval (quote 5)))
+  (output (: 5 Int64)))
 
 (case "pattern matching over AST distinguishes forms"
   (doc    "Witnesses metaprogramming.md #Quote Produces An AST Value: the compiler pattern-matches
@@ -460,8 +484,8 @@
            every macro that inspects nested structure relies on.")
   (input  (match (quote (f (g 7)))
             ((Ast.List (list _ (Ast.List (list _ (Ast.Int n))))) n)
-            (_                                                    -1)))
-  (output (: 7 Int64)))
+            (_                                                    -1N)))
+  (output (: 7 BigInt)))
 
 (case "a nested Ast.List match falls through when the inner leaf variant differs"
   (doc    "The discriminator companion: the SAME nested shape but the inner pattern expects an `Ast.Str`
@@ -721,6 +745,17 @@
   (input  (let ((n 42))
             (= (quasiquote (op-const (unquote n)))
                (Ast.List (list (Ast.Name "op-const") (Ast.Int 42))))))
+  (output (: true Bool)))
+
+(case "an active unquote of a BigInt lifts to Ast.Int (the payload type, no widen)"
+  (doc    "The BigInt companion of the let-bound-integer lift: `Ast.Int`'s payload IS `BigInt`, so an
+           operand ALREADY typed `BigInt` lifts to `Ast.Int` by wrapping DIRECTLY — no `Int64`→`BigInt`
+           widen (that arm is for a fixed-width Int64 operand). `` `(op-const ,42N) `` builds `(Ast.List
+           (list (Ast.Name \"op-const\") (Ast.Int 42N)))`. Regression guard for the `lower_ast_lift`
+           `Ty::BigInt` arm — without it a BigInt unquote fell through to decline even though `Ast.Int`
+           is the right leaf (the splice-surface gap the Int64→BigInt payload flip introduced).")
+  (input  (= (quasiquote (op-const (unquote 42N)))
+             (Ast.List (list (Ast.Name "op-const") (Ast.Int 42N)))))
   (output (: true Bool)))
 
 (case "an active unquote of a computed boolean expression lifts to Ast.Bool"
@@ -1351,8 +1386,8 @@
            would still pass the positive `Ast.Int` cases but lose a negative one here.")
   (input  (match (read (print (Ast.Int -42)))
             ((Ast.Int n) n)
-            (_           0)))
-  (output (: -42 Int64)))
+            (_           0N)))
+  (output (: -42 BigInt)))
 
 (case "print then read an Ast.Int at i64::MIN round-trips (text-path two's-complement boundary)"
   (doc    "🔑 The TEXT-path companion of the byte-codec i64::MIN pin below: `Ast.Int -9223372036854775808`
@@ -1362,8 +1397,8 @@
            the boundary, not just the byte path.")
   (input  (match (read (print (Ast.Int -9223372036854775808)))
             ((Ast.Int n) n)
-            (_           0)))
-  (output (: -9223372036854775808 Int64)))
+            (_           0N)))
+  (output (: -9223372036854775808 BigInt)))
 
 (case "print of an exponent-scale Ast.Float round-trips through read"
   (doc    "A large-magnitude float `1e10` is rendered by `print` (shortest round-tripping form, which may
@@ -1721,9 +1756,9 @@
   (input  (do
             (def (main) (dec (Ast.encode (Ast.Int 42))))
             (def (dec b) (match (Ast.decode b)
-                           ((Ok a)  (match a ((Ast.Int n) n) (other -1)))
-                           ((Err _) -2))) (export main)))
-  (output (: 42 Int64)))
+                           ((Ok a)  (match a ((Ast.Int n) n) (other -1N)))
+                           ((Err _) -2N))) (export main)))
+  (output (: 42 BigInt)))
 
 (case "a quote-built and constructor-built AST of the same tree encode to identical bytes"
   (doc    "ast-encoding.md #The Encoding Is A Bijection With One Canonical Byte Form: \"Two abstract
@@ -1822,14 +1857,14 @@
            that the `(List Ast)` identity does not require compile-time-constant elements.")
   (input  (do
             (def (main (: n Int64))
-              (match (quasiquote (f (unquote-splicing (list (Ast.Int n) (Ast.Int 8)))))
+              (match (quasiquote (f (unquote-splicing (list (Ast.Int (BigInt.of n)) (Ast.Int 8)))))
                 ((Ast.List ys) (match (List.at ys 1)
                                  ((Option.Some (Ast.Int v)) v)
-                                 (_ 0)))
-                (_ 0)))
+                                 (_ 0N)))
+                (_ 0N)))
             (export main)))
   (call   main (: 5 Int64))
-  (output (: 5 Int64)))
+  (output (: 5 BigInt)))
 
 (case "unquote-splicing a list of nested lists declines — no scalar leaf to lift into"
   (doc    "The splice-lift wraps a scalar element in its matching `Ast` leaf (or splices an `Ast` element
@@ -1950,8 +1985,8 @@
            so the compiler matches the `Ok` arm and then pattern-matches the AST within it.")
   (input  (match (Ast.decode (Ast.encode (quote 42)))
             ((Ok (Ast.Int n)) n)
-            (_                0)))
-  (output (: 42 Int64)))
+            (_                0N)))
+  (output (: 42 BigInt)))
 
 (case "Ast.encode and Ast.decode round-trip"
   (doc    "Witnesses contracts/ast-encoding.md: encoding an AST to binary and decoding it back
@@ -2119,8 +2154,8 @@
            above.")
   (input  (match (Ast.decode (Bytes.of (list 0 0 1 0 0 0 42)))
             ((Ok (Ast.Int n)) n)
-            (_                -1)))
-  (output (: 42 Int64)))
+            (_                -1N)))
+  (output (: 42 BigInt)))
 
 (case "decode of an empty byte string (no tag) yields the error case"
   (doc    "The zero-length input has no leading tag byte to dispatch on, so `Ast.decode` returns `Err`
@@ -2271,8 +2306,8 @@
            the arm returns n. Pins that unquote takes a full pattern, not only a bare name.")
   (input  (match (quote (+ 7 x))
             (`(+ ,(Ast.Int n) ,b) n)
-            (other                0)))
-  (output (: 7 Int64)))
+            (other                0N)))
+  (output (: 7 BigInt)))
 
 ; A nested unquote pattern matches ANY Ast leaf variant, not just Int — the Float, Str, Bool, and Name
 ; variants (the leaves this vertical realized) destructure by shape exactly as `Ast.Int` does. These pin
@@ -2403,17 +2438,20 @@
            `` `(+ ,x ,y) `` → `eval-expr(x) + eval-expr(y)`, `` `(* ,x ,y) `` → the product — recursing on the
            unquote-bound sub-ASTs. Over `(quote (* (+ 1 2) 4))` it descends two levels: `(+ 1 2)`→3, then
            `3 * 4`→12. Pins the flagship quote-pattern use (a recursive AST evaluator), composing the
-           single-facet cases above into the real multi-level recursive descent a macro/interpreter runs.")
+           single-facet cases above into the real multi-level recursive descent a macro/interpreter runs.
+           `(Ast.Int n)` binds `n : BigInt` (lossless AST-int storage), so `eval-expr`'s result — and the
+           recursive `+`/`*` over it — is `BigInt` (12N); the recursive-call result grounds to that BigInt
+           return type through the self-calls.")
   (input  (do
             (def (eval-expr (: a Ast))
               (match a
                 ((Ast.Int n) n)
                 ((quasiquote (+ (unquote x) (unquote y))) (+ (eval-expr x) (eval-expr y)))
                 ((quasiquote (* (unquote x) (unquote y))) (* (eval-expr x) (eval-expr y)))
-                (_ 0)))
+                (_ 0N)))
             (def (main) (eval-expr (quote (* (+ 1 2) 4))))
             (export main)))
-  (output (: 12 Int64)))
+  (output (: 12 BigInt)))
 
 (case "a variadic Ast form is folded via a tail-splice rest-binder over its operands"
   (doc    "The n-ary / variadic-macro idiom, using the FINAL `,@rest` splice binder: `` `(f ,@rest) `` binds
@@ -2425,15 +2463,15 @@
   (input  (do
             (def (sum-args (: xs (List Ast)))
               (match xs
-                ((list) 0)
-                ((list h .. t) (+ (match h ((Ast.Int n) n) (_ 0)) (sum-args t)))))
+                ((list) 0N)
+                ((list h .. t) (+ (match h ((Ast.Int n) n) (_ 0N)) (sum-args t)))))
             (def (sum-form (: a Ast))
               (match a
                 ((quasiquote (f (unquote-splicing rest))) (sum-args rest))
-                (_ -1)))
+                (_ -1N)))
             (def (main) (sum-form (quote (f 10 20 30))))
             (export main)))
-  (output (: 60 Int64)))
+  (output (: 60 BigInt)))
 
 (case "a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)"
   (doc    "The DECLINE-GUARD companion of the two working walks above. The idiomatic fold shape — a recursive
@@ -2977,8 +3015,8 @@
            trees relies on) computes on wasm.")
   (input  (do
             (def (main (: n Int64))
-              (+ (* 10 (if (= (Ast.Int n) (Ast.Int 3)) 1 0))
-                 (if (= (Ast.List (list (Ast.Int n))) (Ast.List (list (Ast.Int 3)))) 1 0)))
+              (+ (* 10 (if (= (Ast.Int (BigInt.of n)) (Ast.Int 3)) 1 0))
+                 (if (= (Ast.List (list (Ast.Int (BigInt.of n)))) (Ast.List (list (Ast.Int 3)))) 1 0)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 11 Int64))
   (call   main (: 5 Int64)) (output (: 0 Int64)))

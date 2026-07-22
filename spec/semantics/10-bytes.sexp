@@ -204,6 +204,73 @@
   (call   main (: 2 Int64)) (output (: 30 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64)))
 
+(case "a slice of a runtime-start SLICE composes both offsets"
+  (doc    "The view-of-a-view face: an inner `(Bytes.slice outer 1 2)` over an outer runtime-start slice
+           must re-base against the OUTER VIEW's coordinates, composing both offsets down to the parent —
+           a=1: outer windows [2..5]=(2,3,4,5), inner [1..2] of that is (3,4), byte 0 = 3; a=0: outer
+           (1,2,3,4), inner (2,3), byte 0 = 2. A representation composing only ONE level (inner offset
+           against the parent, or dropping the outer offset) answers 2 at a=1. Two calls witness the
+           outer offset participating.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Bytes.slice (Bytes.of (list 1 2 3 4 5 6)) a 4)
+                ((Some outer)
+                  (match (Bytes.slice outer 1 2)
+                    ((Some inner) (match (Bytes.at inner 0) ((Some v) v) ((None u) -3)))
+                    ((None u) -2)))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "Bytes.concat of two runtime SLICES splices window content in order"
+  (doc    "The concat-of-views face (the seam case below slices a CONCAT; this concatenates two SLICES):
+           s1 = window [a..a+2] of (1,2,3,4), s2 = the (7,8) window of (5,6,7,8) — `(concat s1 s2)` at
+           a=0 is (1,2,7,8), so index 2 reads 7. The concat must copy/point to each VIEW's content (not
+           either parent's full buffer); a concat wiring parents in would put 3 at index 2 (s1's parent
+           byte) or shift the s2 window.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Bytes.slice (Bytes.of (list 1 2 3 4)) a 2)
+                ((Some s1)
+                  (match (Bytes.slice (Bytes.of (list 5 6 7 8)) 2 2)
+                    ((Some s2)
+                      (match (Bytes.at (Bytes.concat s1 s2) 2) ((Some v) v) ((None u) -3)))
+                    ((None u) -2)))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
+
+(case "a runtime slice VIEW crosses a helper-function boundary intact"
+  (doc    "The escape face: the slice is passed to a helper `(first-byte b)` whose body indexes its Bytes
+           PARAMETER — the view's re-based coordinates must survive the call ABI (a=2 → parent byte 2 =
+           30, a=0 → 10). A lowering that passed the parent handle + lost the offset at the boundary
+           would answer 10 for both.")
+  (input  (do
+            (def (first-byte (: b Bytes)) (match (Bytes.at b 0) ((Some v) v) ((None u) -1)))
+            (def (main (: a Int64))
+              (match (Bytes.slice (Bytes.of (list 10 20 30 40)) a 2)
+                ((Some s) (first-byte s))
+                ((None u) -2)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 30 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64)))
+
+(case "String.from-bytes of a runtime slice decodes the WINDOW only"
+  (doc    "The decode face: `String.from-bytes` over a runtime-start slice of (x,a,b,y) at a=1 must
+           decode exactly the 2-byte window \"ab\" (byte-len 2) — not the parent's 4 bytes and not a
+           mis-based window. Composes the slice view with the total UTF-8 decode (both pinned separately;
+           the view must present its window as the decoder's whole input).")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Bytes.slice (Bytes.of (list 120 97 98 121)) a 2)
+                ((Some s) (match (String.from-bytes s)
+                            ((Some str) (String.byte-len str))
+                            ((None u) -3)))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 2 Int64)))
+
 (case "a slice spanning a concatenation sees the logical bytes"
   (doc    "Slicing across the seam of `(concat a b)` — `(Bytes.slice (concat (list 1 2) (list 3 4)) 1 2)`
            = Some `(Bytes.of (list 2 3))` — reads the LOGICAL bytes in order, independent of how the
@@ -1147,6 +1214,31 @@
             (def (main) (Option.expect (Map.lookup (Map.insert Map.empty (Bytes.of (list 104 120)) 42) (rep (Bytes.of (list 104)) 1)) "found")) (export main)))
   (call   main)
   (output (: 42 Int64)))
+
+; The BORROWED-key face of the rope map-key compaction. The case above passes a FRESH-OWNED rope key
+; (`(rep …)` directly as the lookup arg) which the emit's old `Owned`-only gate already compacted. But a
+; BORROWED rope key — a kept `let`-local (or a `sum-payload`/`Option.expect` binder) read again after the
+; lookup, so `map-lookup` only BORROWS it — was NOT compacted under that old gate: its raw slice-VIEW node
+; (`[off,len]`) reached `champ_hash` and hashed differently from the equal-content flat key → a wrong-value
+; MISS. The fix compacts a String/Bytes key of ANY ownership at the CHAMP key site (`bytes-compact` is
+; refcount-neutral — safe on a borrow). Here `k` is bound and read TWICE (the lookup key AND `Bytes.len k`),
+; so it is genuinely borrowed at the lookup: 100*42 + 2 = 4202 proves the lookup found the flat twin (42) AND
+; `k` survived for the length read (2). Regression guard for the borrowed-rope-CHAMP-key wrong-value fix.
+(case "a BORROWED runtime Bytes rope map key is compacted at the key site and found by its flat twin"
+  (doc    "The borrowed-key twin of the rope map-key case above: a rope `k` bound in a `let` and read TWICE —
+           once as the `Map.lookup` KEY (borrowed, not consumed) and once by `Bytes.len k` — must be compacted
+           at the CHAMP key site so it hashes to its flat twin's slot. The old Owned-only compaction gate
+           missed it (a borrowed slice-view key hashed differently → wrong-value miss). `k = (rep [104] 1)` =
+           the rope for `[104,120]`; lookup finds 42, and `k` survives for `Bytes.len` = 2 → 100*42 + 2 = 4202.")
+  (input  (do
+            (def (rep (: b Bytes) (: n Int64)) (if (< n 1) b (rep (Bytes.concat b (Bytes.of (list 120))) (- n 1))))
+            (def (main)
+              (let ((k (rep (Bytes.of (list 104)) 1)))
+                (+ (* 100 (Option.expect (Map.lookup (Map.insert Map.empty (Bytes.of (list 104 120)) 42) k) "found"))
+                   (Bytes.len k))))
+            (export main)))
+  (call   main)
+  (output (: 4202 Int64)))
 
 (case "a runtime Bytes rope in a SUM payload compares equal to its flat twin"
   (doc    "The variant-payload face: `(B.Wrap rope)` vs `(B.Wrap flat)` — the Bytes payload is compacted at

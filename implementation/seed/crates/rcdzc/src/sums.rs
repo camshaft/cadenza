@@ -94,10 +94,10 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
         "Ordering",
         &[("Less", &[]), ("Equal", &[]), ("Greater", &[])],
     );
-    // `(type Ast (Int Int64) (Name String) (List (List Ast)))` — THE abstract-syntax-tree type
+    // `(type Ast (Int BigInt) (Name String) (List (List Ast)))` — THE abstract-syntax-tree type
     // (`metaprogramming.md` §Quote Produces An AST Value; type-system.md §The Abstract Syntax Tree Type
     // Is An Ordinary Sum Type). A RECURSIVE, MONOMORPHIC prelude sum: a variant per syntactic form, each
-    // with a CONCRETE or COMPOUND payload (`Int64`, `String`, `(List Ast)`) — richer than the bare
+    // with a CONCRETE or COMPOUND payload (`BigInt`, `String`, `(List Ast)`) — richer than the bare
     // type-parameter payloads `type_form` builds, so its variants are built with explicit payload
     // type-expression nodes. `quote`/`Ast.*` produce this value; a program reaches its variants ONLY
     // QUALIFIED (`Ast.Int` = `(. Ast Int)`), NOT bare — its variant names `Int`/`Name`/`List` collide with
@@ -118,7 +118,7 @@ pub fn prelude_decls(ast: &mut Arenas) -> Vec<TypeDecl> {
     //= spec/capabilities/self-hosting-surface.md#a-program-s-syntax-tree-is-an-ordinary-value
     //# A compiler MUST be able to determine a node's kind and obtain its children from that value, so that it can walk the tree structurally.
     let ast_decl = {
-        let int_pay = push_atom(ast, Leaf::Name("Int64".to_string()));
+        let int_pay = push_atom(ast, Leaf::Name("BigInt".to_string()));
         let float_pay = push_atom(ast, Leaf::Name("Float64".to_string()));
         let bool_pay = push_atom(ast, Leaf::Name("Bool".to_string()));
         let str_pay = push_atom(ast, Leaf::Name("String".to_string()));

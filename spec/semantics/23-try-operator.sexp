@@ -323,6 +323,54 @@
   (input  (do (def (main) (match 0 (0 (let ((x (try (Some 9)))) (Some x))) (_ (None unit)))) (export main)))
   (output (: (Some 9) (Option Int64))))
 
+(case "runtime-payload `?`s in BOTH arms of a RUNTIME-scrutinee match each resolve the boundary"
+  (doc    "The runtime upgrade of the match-arm case above (const scrutinee, const payload, one arm with a
+           `?`): the scrutinee is the boundary parameter AND both arms carry their own runtime-payload
+           `?` — n=0 takes arm 0 (`(try (Some n))` unwraps 0 → `(Some 100)`), n=21 falls to the default
+           arm (`(try (Some (* n 2)))` unwraps 42). One compiled body, two live desugared `?`s in
+           different arms, arm selection at run time — a desugar that wired both `?`s to one arm's
+           continuation (or resolved the boundary only for the first arm) breaks one call.")
+  (input  (do
+            (def (main (: n Int64))
+              (match n
+                (0 (let ((x (try (Some n)))) (Some (+ x 100))))
+                (_ (let ((y (try (Some (* n 2))))) (Some y)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: (Some 100) (Option Int64)))
+  (call   main (: 21 Int64))
+  (output (: (Some 42) (Option Int64))))
+
+(case "runtime-payload `?`s in BOTH branches of a runtime if take their own continuations"
+  (doc    "The if twin: each branch has its own `?` and its own continuation (`+1` vs `-1`), the branch
+           picked by a runtime Bool. true at 41 → 42 through the then-`?`; false at 43 → 42 through the
+           else-`?`. Pins per-branch desugar independence under a runtime condition (the const if-branch
+           case above always takes `true`).")
+  (input  (do
+            (def (main (: b Bool) (: n Int64))
+              (if b
+                (let ((x (try (Some n)))) (Some (+ x 1)))
+                (let ((y (try (Some n)))) (Some (- y 1)))))
+            (export main)))
+  (call   main (: true Bool) (: 41 Int64))
+  (output (: (Some 42) (Option Int64)))
+  (call   main (: false Bool) (: 43 Int64))
+  (output (: (Some 42) (Option Int64))))
+
+(case "a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence"
+  (doc    "The chained-data face: the first `?` unwraps the runtime `n`, and the SECOND `?`'s operand is
+           built FROM that result (`(Some (+ x 2))`) — the unwrapped value flows across the desugared
+           seam into the next `?`'s operand, then out (19 → 21 → 42). The two-`?` const case pins
+           independent unwraps; this pins the DATA DEPENDENCE between them over a runtime value.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((x (try (Some n))))
+                (let ((y (try (Some (+ x 2)))))
+                  (Some (* y 2)))))
+            (export main)))
+  (call   main (: 19 Int64))
+  (output (: (Some 42) (Option Int64))))
+
 (case "a `?` in an anonymous LAMBDA body resolves the lambda as its boundary (happy path)"
   (doc    "`((fn () (let ((x (try (Some 7)))) (Some (+ x 1)))))` — the `?` sits inside an IMMEDIATELY-APPLIED
            anonymous `(fn () …)`, not a named `def`. A `?` short-circuits the enclosing FUNCTION's fallible
@@ -414,6 +462,23 @@
               (match (f) ((Ok v) v) ((Err e) e)))
             (export main)))
   (output (: 7 Int64)))
+
+(case "a failure `?` short-circuits a RUNTIME error payload (static Err ctor, per-call value)"
+  (doc    "The failure-side complement of the runtime-payload SUCCESS pins above: those unwrap `(try (Some
+           a))`/`(try (Ok a))` for a per-call `a`; this short-circuits `(try (Err a))` where the error
+           payload is a boundary parameter. The ctor is statically `Err` (so the constant-failure fold still
+           selects the short-circuit arm) but the PAYLOAD is per-call — one compiled body must flow `Err 7`
+           out at a=7 and `Err -3` at a=-3, each read by the caller's `Err` arm. A desugar that snapshots the
+           error payload at fold time answers one of the two wrong. Pins that the abortive break carries the
+           runtime error VALUE unchanged, the failure analogue of the success runtime-payload path.")
+  (input  (do
+            (def (f (: a Int64)) (: (let ((y (try (Err a)))) (Ok y)) (Result Int64 Int64)))
+            (def (main (: a Int64)) (match (f a) ((Ok v) v) ((Err e) e)))
+            (export main)))
+  (call main (: 7 Int64))
+  (output (: 7 Int64))
+  (call main (: -3 Int64))
+  (output (: -3 Int64)))
 
 (case "a failure `?` preserves a COMPOUND error value through the short-circuit"
   (doc    "The Err-value case above carries a scalar 7; this carries a COMPOUND: `(try (Err (tuple 3 4)))`

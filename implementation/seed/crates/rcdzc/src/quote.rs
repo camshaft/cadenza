@@ -415,12 +415,32 @@ impl BitSet {
 ///    escape UNDER a quasiquote (`under_qq` true — `(quote `(+ ,x))`) is ordinary inert structure and
 ///    reifies as an `Ast.List` mentioning the name (never evaluated), the corpus's inert-nesting case.
 fn reify(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
+    reify_inner(ast, node, under_qq, true)
+}
+
+/// The shared body of `reify`, parameterized by whether an integer-literal payload is GROUNDED to
+/// `BigInt`. In VALUE position (`ground_ints` true — the reifier building an `Ast` value) a bare int
+/// literal is wrapped `(: N BigInt)` so it grounds to `Ast.Int`'s `BigInt` payload. In PATTERN position
+/// (`ground_ints` false — `reify_pattern`'s leaf delegate) the payload is left BARE: a `(: N BigInt)`
+/// ascription is not a pattern, and the nested literal-pattern probe (`lower.rs`) tests a bare literal
+/// against the `BigInt` sub-value directly (`Probe::Int` already carries an arbitrary-precision value).
+fn reify_inner(
+    ast: &mut Arenas,
+    node: StructId,
+    under_qq: bool,
+    ground_ints: bool,
+) -> Option<StructId> {
     match ast.get(node) {
         Struct::Atom(l) => match ast.leaf(*l).clone() {
             // An integer literal -> `(Ast.Int N)`. The payload REUSES the literal's exact value/radix by
             // cloning the leaf, so the reified constant reads back identically.
             leaf @ Leaf::Int { .. } => {
                 let payload = push_atom(ast, leaf);
+                let payload = if ground_ints {
+                    ast_bigint_payload(ast, payload)
+                } else {
+                    payload
+                };
                 Some(ast_ctor(ast, "Int", payload))
             }
             // A float literal -> `(Ast.Float d)`. `Ast.Float` carries a `Float64` payload (a float is a
@@ -528,7 +548,14 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
             // (`[[unquote-computed-ast-needs-inferred-type-lift]]`).
             match ast.get(items[1]) {
                 Struct::Atom(l) => match ast.leaf(*l) {
-                    Leaf::Int { .. } => Some(ast_ctor(ast, "Int", items[1])),
+                    Leaf::Int { .. } => {
+                        // Ground the literal payload to `BigInt` (the `Ast.Int` payload type) before
+                        // wrapping — bind the inner result first (a direct
+                        // `ast_ctor(ast, "Int", ast_bigint_payload(ast, items[1]))` double-mut-borrows
+                        // `ast`, E0499).
+                        let payload = ast_bigint_payload(ast, items[1]);
+                        Some(ast_ctor(ast, "Int", payload))
+                    }
                     Leaf::Float(_) => Some(ast_ctor(ast, "Float", items[1])),
                     Leaf::Bool(_) => Some(ast_ctor(ast, "Bool", items[1])),
                     Leaf::Str(_) => Some(ast_ctor(ast, "Str", items[1])),
@@ -646,8 +673,11 @@ fn reify_active(ast: &mut Arenas, node: StructId, depth: u32) -> Option<StructId
 fn reify_pattern(ast: &mut Arenas, node: StructId, under_qq: bool) -> Option<StructId> {
     let Struct::List(items) = ast.get(node) else {
         // A leaf: an integer/name literal reifies exactly as construction (matches by equality). A leaf
-        // is never an escape head, so `under_qq` is irrelevant — reuse the structural `reify`.
-        return reify(ast, node, under_qq);
+        // is never an escape head, so `under_qq` is irrelevant — reuse the structural `reify`. Pass
+        // `ground_ints: false`: a literal in PATTERN position stays a bare `(Ast.Int N)` (no `(: N BigInt)`
+        // ascription, which is not a pattern) — the nested literal-pattern probe tests it against the
+        // `BigInt` sub-value directly.
+        return reify_inner(ast, node, under_qq, false);
     };
     let items = items.clone();
     let head = items
@@ -776,4 +806,19 @@ fn ast_ctor(ast: &mut Arenas, variant: &str, payload: StructId) -> StructId {
     let variant_name = push_atom(ast, Leaf::Name(variant.to_string()));
     let proj = push_list(ast, vec![dot, ast_name, variant_name]);
     push_list(ast, vec![proj, payload])
+}
+
+/// Ground an integer-literal payload to `BigInt` — wrap it in the type-annotation node `(: <lit> BigInt)`.
+/// `Ast.Int`'s payload is `BigInt` (a quoted AST stores integers non-lossily; `numeric-model.md` — a
+/// literal grounds to `BigInt` losslessly), but a BARE int literal defaults to a deferred `Int64` and
+/// `BigInt` is MONOMORPHIC (`unify.rs` — no silent `Int64`→`BigInt` promotion), so a reified
+/// `(Ast.Int 42)` would decline against the `BigInt` payload. Annotating the payload `(: 42 BigInt)`
+/// grounds the literal to `BigInt` exactly as an explicit annotation does in source — lossless, and
+/// in-spec (explicit context overrides the default width; not a promotion). The eval/splice boundary
+/// STRIPS this wrapper (`eval_ast::reconstruct`) so a reconstructed literal grounds by ordinary
+/// inference — BigInt is a STORAGE property of the AST value, not a property the source carries out.
+fn ast_bigint_payload(ast: &mut Arenas, payload: StructId) -> StructId {
+    let colon = push_atom(ast, Leaf::Name(":".to_string()));
+    let bigint = push_atom(ast, Leaf::Name("BigInt".to_string()));
+    push_list(ast, vec![colon, payload, bigint])
 }
