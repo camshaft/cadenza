@@ -61,6 +61,32 @@ def unify-ty(a: Ty, b: Ty) = match a with
     | _ => Option.None(unit)
   )
   | Ty.TyErr => Option.None(unit)
+  // HIGHER-ORDER: two function types unify iff SAME arity, params unify PAIRWISE, and results unify (rcdzc
+  // unify.rs:209 `(Fn(pa,ra),Fn(pb,rb)) => unify(pa,pb); unify(ra,rb)`, generalized to N-ary). Any arity/param/
+  // result conflict → None (poison propagates). A TyFn never unifies with an int/bool/err (cross-kind → None).
+  | Ty.TyFn(psa, ra) => (match b with
+    | Ty.TyFn(psb, rb) => (if List.len(psa) == List.len(psb)
+        then (match unify-ty-list(psa, psb, 0) with
+          | Option.Some(ps) => (match unify-ty(ra, rb) with
+            | Option.Some(r) => Option.Some(Ty.TyFn(ps, r))
+            | Option.None(_) => Option.None(unit))
+          | Option.None(_) => Option.None(unit))
+        else Option.None(unit))                                 // arity mismatch → conflict
+    | _ => Option.None(unit))                                    // fn ~ non-fn → conflict
+
+/// Unify two same-length param-type lists PAIRWISE (index recursion). `Some(list)` = every pair unified (the
+/// combined param types, in order); `None` = any pair conflicted. Callers guarantee equal length.
+def unify-ty-list(a: List(Ty), b: List(Ty), i: Int64) =
+  (if i == List.len(a) then Option.Some(([] : List(Ty)))
+   else (match List.at(a, i) with
+     | Option.None(_) => Option.None(unit)
+     | Option.Some(ta) => (match List.at(b, i) with
+       | Option.None(_) => Option.None(unit)
+       | Option.Some(tb) => (match unify-ty(ta, tb) with
+         | Option.None(_) => Option.None(unit)
+         | Option.Some(t) => (match unify-ty-list(a, b, i + 1) with
+           | Option.None(_) => Option.None(unit)
+           | Option.Some(rest) => Option.Some(List.concat(List.push([], t), rest)))))))
 
 // ---- TESTS: orthogonal sign/width unification over the shared Ty ------------------------------------
 import { ty-int64, ty-fixed-int, ty-deferred-int } from "ty"
@@ -171,4 +197,40 @@ def ut-bool-unifies() =
   else
     trap("Bool~Bool")
 
-export { unify-sign, unify-width, unify-int, unify-ty }
+// ---- HIGHER-ORDER: arrow (TyFn) unification -------------------------------------------------------
+
+/// A 1-param fn type `(a) -> r`.
+def fn1(a: Ty, r: Ty) = Ty.TyFn(List.push([], a), r)
+
+@test
+def ut-fn-same-unifies() =
+  // (Int64) -> Int64  ~  (Int64) -> Int64  →  (Int64) -> Int64.
+  if unifies-to(unify-ty(fn1(ty-int64(), ty-int64()), fn1(ty-int64(), ty-int64())), fn1(ty-int64(), ty-int64())) then
+    unit else trap("(Int64)->Int64 self-unify")
+
+@test
+def ut-fn-param-grounds() =
+  // (deferred) -> Int64  ~  (Int8) -> Int64  →  (Int8) -> Int64 (the param arg grounds pairwise).
+  if unifies-to(unify-ty(fn1(ty-deferred-int(), ty-int64()), fn1(ty-fixed-int(true, 8), ty-int64())), fn1(ty-fixed-int(true, 8), ty-int64())) then
+    unit else trap("fn param grounds via pairwise unify")
+
+@test
+def ut-fn-result-conflict() =
+  // (Int64) -> Int8  ~  (Int64) -> Int16  →  conflict (results differ).
+  if conflicts(unify-ty(fn1(ty-int64(), ty-fixed-int(true, 8)), fn1(ty-int64(), ty-fixed-int(true, 16)))) then
+    unit else trap("fn result conflict")
+
+@test
+def ut-fn-arity-conflict() =
+  // (Int64) -> Int64  ~  (Int64, Int64) -> Int64  →  conflict (arity differs).
+  if conflicts(unify-ty(fn1(ty-int64(), ty-int64()), Ty.TyFn(List.push(List.push([], ty-int64()), ty-int64()), ty-int64()))) then
+    unit else trap("fn arity conflict")
+
+@test
+def ut-fn-vs-int-conflict() =
+  // a fn type never unifies with an int (cross-kind) — nor with Bool/Err.
+  if conflicts(unify-ty(fn1(ty-int64(), ty-int64()), ty-int64())) then
+    (if conflicts(unify-ty(ty-int64(), fn1(ty-int64(), ty-int64()))) then unit else trap("int~fn conflict (sym)"))
+  else trap("fn~int conflict")
+
+export { unify-sign, unify-width, unify-int, unify-ty, unify-ty-list }

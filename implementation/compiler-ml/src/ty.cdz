@@ -37,6 +37,13 @@
   | TyInt(IntType)
   | TyBool
   | TyErr
+  | TyFn(List(Ty), Ty)             // HIGHER-ORDER (fn-value slice): a FUNCTION type `(a, b, …) -> r`. N-ARY
+                                   // (params list + result) to mirror compiler-ml's N-ary NApp arity model
+                                   // (vs rcdzc's curried `Ty::Fn(Box,Box)` — an N-ary Fn maps the lower's
+                                   // multi-CLet call shape 1:1). Two TyFns unify iff their param lists unify
+                                   // pairwise (same arity) AND their results unify (unify-ty arrow arm).
+                                   // Used to type a fn-valued PARAM (`f` in `apply f x = f x`) and a bare
+                                   // def-name used as a VALUE (`inc` in `apply inc 41`).
 
 /// A bare integer literal's type: BOTH axes deferred (rcdzc `IntType::deferred`) — grounds to the default via
 /// unification/root-defaulting. This is the type a literal STARTS as; an annotation or operator fixes it.
@@ -132,6 +139,22 @@ def ty-eq(a: Ty, b: Ty) = match a with
     | _ => false
   )
   | Ty.TyErr => false
+  // HIGHER-ORDER: two function types are equal iff same arity, params pairwise-equal, and results equal.
+  | Ty.TyFn(psa, ra) => (match b with
+    | Ty.TyFn(psb, rb) => (if List.len(psa) == List.len(psb)
+        then (if ty-eq-list(psa, psb, 0) then ty-eq(ra, rb) else false)
+        else false)
+    | _ => false
+  )
+
+/// Pairwise `ty-eq` over two same-length type lists (index recursion). True iff every pair is equal.
+def ty-eq-list(a: List(Ty), b: List(Ty), i: Int64) =
+  (if i == List.len(a) then true
+   else (match List.at(a, i) with
+     | Option.None(_) => false
+     | Option.Some(ta) => (match List.at(b, i) with
+       | Option.None(_) => false
+       | Option.Some(tb) => (if ty-eq(ta, tb) then ty-eq-list(a, b, i + 1) else false))))
 
 // ---- TESTS -----------------------------------------------------------------------------------------
 @test
@@ -239,6 +262,16 @@ def ty-eq-deferred-matches-deferred() =
     unit
   else
     trap("deferred == deferred (same state)")
+
+@test
+def ty-eq-fn-structural() =
+  // HIGHER-ORDER: (Int64)->Int64 equals itself; differs from (Int64)->Bool (result) and from a plain Int64.
+  (let f = Ty.TyFn(List.push([], ty-int64()), ty-int64()) in
+   (let g = Ty.TyFn(List.push([], ty-int64()), Ty.TyBool) in
+    (if ty-eq(f, f) then
+      (if ty-eq(f, g) then trap("fn result differs → not equal")
+       else (if ty-eq(f, ty-int64()) then trap("fn != int") else unit))
+     else trap("fn == itself"))))
 
 export {
   Sign.*,

@@ -39,7 +39,9 @@ pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
+pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
 pass	a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN
+pass	a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack
 pass	a STATS record threads min/max/sum/count as one fold accumulator with data-dependent field updates
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
@@ -184,6 +186,7 @@ pass	a generic pair-swap crosses a scalar and a heap payload between positions
 pass	a generic sum NESTS ITSELF at a different instantiation and destructures through both layers
 pass	a handler arm RECURSES through a named helper before resuming
 pass	a literal pattern at MID-SPINE depth gates the arm while deeper binders still bind
+pass	a map INVERSION flips keys and values, last-writer-wins on duplicate values
 pass	a memoizing fold caches computed results in a Map and counts its hits
 pass	a middle curry STAGE is reused — one s1 residual yields an s2 applied twice
 pass	a model-oracle property — CHAMP Map.len agrees with a counting model over generated inserts
@@ -4811,3 +4814,5 @@ pass	a constant bit-and over a high UInt64 operand masks over the solved width
 pass	a constant bit-or over a high UInt64 operand folds over the solved width
 pass	a constant shift-left that overflows a high UInt64 width still rejects
 pass	a constant shift count at or beyond the width over a high UInt64 still rejects
+pass	a constant shift-left of a small UInt64 operand whose result overflows i64 folds over the solved width
+pass	a constant shift-left of a small UInt32 operand into its high bit folds (width-generic guard)
