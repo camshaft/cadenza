@@ -113,7 +113,12 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         // only the body-type descent uses calleeBody.
         (if (call-is-recursive(tree, calleeId)) then infer-recursive-call(tree, id, argId, rcol, tcol)
          else (match def-body-of(tree, calleeId) with
-           | Option.None(_) => Map.insert(tcol, id, Typed.TErr)
+           // HIGHER-ORDER (HO-2b-ii-B): def-body-of MISS means the callee is NOT a global def — it may be a
+           // fn-typed PARAM (`(f x)` with f a parameter). resolve-db (option (i)) stored a callee-resolution fact
+           // keyed by THIS NApp node-id `id`: if it's RBound(paramBinder) whose var-type is a TFn arrow, type the
+           // call as the arrow's RESULT (the args' fit against the arrow's param types is checked in the fn-param
+           // helper). Any other callee-fact (or none) → TErr, exactly as before.
+           | Option.None(_) => infer-fn-param-call(tree, id, argId, rcol, tcol)
            | Option.Some(calleeBody) =>
              (if (argId == (0 - 1)) then
                 (let t1 = infer-node(tree, calleeBody, rcol, tcol) in
@@ -152,6 +157,23 @@ def infer-recursive-call(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, R
           (let t3 = infer-rec-arg-opt(tree, arg3-of(tree, id), rcol, t2) in
            (let t4 = infer-rec-arg-opt(tree, arg4-of(tree, id), rcol, t3) in
             Map.insert(t4, id, t-int64()))))))
+
+/// HIGHER-ORDER (HO-2b-ii-B): type a call `(f x)` whose callee `f` is NOT a global def (def-body-of missed) —
+/// it may be a fn-typed PARAM. Read the callee-resolution fact resolve-db stored at THIS NApp node-id `id`
+/// (option (i)): if RBound(paramBinder) whose var-type is a TFn arrow, the call's type is the arrow's RESULT
+/// (we type the args so their nodes get facts + an ill-typed arg propagates; arg/param arity+type checking is a
+/// follow-up — HO-2b-ii-B types the RESULT so `(apply inc 41)`-style bodies type). A non-fn callee-fact, a
+/// non-TFn var-type, or no fact → TErr (a plain unknown callee, exactly as before this arm existed).
+def infer-fn-param-call(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  (let ta = (if (argId == (0 - 1)) then tcol else infer-node(tree, argId, rcol, tcol)) in
+   (let ta2 = infer-rec-arg-opt(tree, arg2-of(tree, id), rcol, ta) in
+    (let ta3 = infer-rec-arg-opt(tree, arg3-of(tree, id), rcol, ta2) in
+     (let ta4 = infer-rec-arg-opt(tree, arg4-of(tree, id), rcol, ta3) in
+      (match Map.lookup(rcol, id) with
+        | Option.Some(Resolved.RBound(binder)) => (match var-type(tree, binder, ta4) with
+            | Typed.TFn(_, rty) => Map.insert(ta4, id, rty)          // param callee is a fn → call types as arrow result
+            | _ => Map.insert(ta4, id, Typed.TErr))                  // param callee is not a fn → ill-typed application
+        | _ => Map.insert(ta4, id, Typed.TErr))))))                  // no callee-fact (plain unknown) → TErr, as before
 
 /// Type an OPTIONAL higher-arg slot of a recursive call (arg2/3/4): present → type its subtree; absent → the
 /// column passes through unchanged. Additive — mirrors the non-recursive infer-param2/3/4 arg walk.
@@ -1155,5 +1177,36 @@ def id-def-name-as-value-types-as-arrow() =
         | Option.Some(Typed.TFn(_, _)) => unit
         | Option.Some(Typed.TErr) => trap("def-name-as-value should be a TFn arrow, not TErr")
         | _ => trap("inc-as-value types as TFn")))))
+
+@test
+def id-fn-param-call-types-as-arrow-result() =
+  // HIGHER-ORDER (HO-2b-ii-B): a call `(f x)` whose callee `f` is a fn-typed PARAM types as the arrow's RESULT.
+  // `f` (name 5) is NOT a def (def-body-of misses) → infer-fn-param-call reads the callee-fact at the NApp id.
+  // Seed: rcol has RBound(fBinder) keyed by the NApp id (what resolve-db's option-(i) arm stores); tcol has
+  // fBinder → TFn([Int64], Int64). Expect the call node → Int64 (the arrow result), NOT TErr.
+  (match add-node(empty-tree(), Node.NVar(7)) with | (fBinder, t1) =>       // f's binder node (a param, NVar)
+    (match add-node(t1, Node.NLit(41)) with | (argId, t2) =>                 // arg x = 41
+      (match add-node(t2, Node.NApp(5, argId)) with | (callId, tree) =>      // (f x): callee name 5, arg
+        (let rcol = Map.insert((Map.empty : Map(Int64, Resolved)), callId, Resolved.RBound(fBinder)) in  // callee-fact at the NApp id
+         (let tcol = Map.insert((Map.empty : Map(Int64, Typed)), fBinder, Typed.TFn(List.push([], t-int64()), t-int64())) in  // f : (Int64)->Int64
+          (let tc = infer-node(tree, callId, rcol, tcol) in
+           (match Map.lookup(tc, callId) with
+             | Option.Some(Typed.TIntW(_, 64)) => unit                        // call types as the arrow result Int64
+             | Option.Some(Typed.TErr) => trap("fn-param call should type as arrow result, not TErr")
+             | _ => trap("fn-param call types as arrow result Int64"))))))))
+
+@test
+def id-fn-param-call-non-fn-callee-is-terr() =
+  // HO-2b-ii-B guard: if the callee-fact binder is NOT a fn (var-type not a TFn), the application is ill-typed
+  // → TErr (applying a non-function). Seed fBinder → Int64 (not a TFn); expect the call → TErr.
+  (match add-node(empty-tree(), Node.NVar(7)) with | (fBinder, t1) =>
+    (match add-node(t1, Node.NLit(41)) with | (argId, t2) =>
+      (match add-node(t2, Node.NApp(5, argId)) with | (callId, tree) =>
+        (let rcol = Map.insert((Map.empty : Map(Int64, Resolved)), callId, Resolved.RBound(fBinder)) in
+         (let tcol = Map.insert((Map.empty : Map(Int64, Typed)), fBinder, t-int64()) in  // f : Int64 (NOT a fn)
+          (let tc = infer-node(tree, callId, rcol, tcol) in
+           (match Map.lookup(tc, callId) with
+             | Option.Some(Typed.TErr) => unit
+             | _ => trap("applying a non-function callee is TErr"))))))))
 
 export { Typed.*, infer-node, infer-tree, type-at, ground-deferred, well-typed, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type }

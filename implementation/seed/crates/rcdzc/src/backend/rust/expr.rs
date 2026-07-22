@@ -1513,9 +1513,37 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             {
                 return Ok(format!("Vec::<{rust_elem}>::new()"));
             }
+            // FALLBACK for an empty `(list)` whose OWN `type_of` left its element UNSOLVED (`List ?`) — e.g.
+            // an empty-list CALL ARGUMENT: the node's own type is `List ?`, but the caller threaded the
+            // callee's param type into `ctx.expected_ty` (`Core::Call`'s List-param arm). Annotate from that
+            // when it is a representable `List(elem)`. Without this a `(rev b (list))` emits `rev(…, vec![])`
+            // whose `vec![]` rustc can't infer (E0282) — surfaced once breaker #18's `unused_braces` no-build
+            // was fixed and the E0282 underneath became the failure. Mirrors `emit_elem_grounding_empty_list`
+            // but keyed on the expected (param/slot) type rather than the node's own solved type.
+            if elems.is_empty()
+                && let Some(exp) = ctx.expected_ty.as_ref()
+                && let Ty::List(elem) = exp.strip_nominal()
+                && let Some(rust_elem) = types::rust_type(elem)
+            {
+                return Ok(format!("Vec::<{rust_elem}>::new()"));
+            }
+            // An element's expected type is NOT this list's expected type — CLEAR `expected_ty` when
+            // recursing into elements so a NESTED inner `(list)` (e.g. the empty `(list)` in `(list (list 1
+            // 2) (list) …)` at expected `List(List Int64)`) does not inherit the OUTER list type and
+            // wrongly ground to `Vec::<Vec<i64>>::new()` (the fallback above would misfire → E0308). A
+            // non-empty element infers from its own contents; an inner empty list falls to its own solved
+            // type (or a bare `vec![]` as before — no regression, and NOT mis-grounded to the outer type).
+            let elem_ctx = if ctx.expected_ty.is_some() {
+                let mut c = ctx.clone();
+                c.expected_ty = None;
+                Some(c)
+            } else {
+                None
+            };
+            let use_ctx = elem_ctx.as_ref().unwrap_or(ctx);
             let mut parts = Vec::with_capacity(elems.len());
             for &e in &elems {
-                parts.push(emit(db, e, env, ctx)?);
+                parts.push(emit(db, e, env, use_ctx)?);
             }
             Ok(format!("vec![{}]", parts.join(", ")))
         }
@@ -3749,7 +3777,15 @@ fn emit_list_match_impl(
             (None, None) => None,
         };
         let body = if tail {
-            format!("{{ {} }}", emit_tail(db, arm.body, env, ctx)?)
+            // `emit_tail` returns a STATEMENT form — `break v;` or a self-loop `{ … continue; }` block — so
+            // it drops directly inside the arm's own `{ … }` (added at the `chain.push_str` below / the
+            // catch-all/bare-binder wraps). Do NOT wrap it in an extra `{ }` here: a self-loop arm would then
+            // be `if c { { { … continue; } } }`, whose inner brace pair rustc's `unused_braces` lint flags as
+            // "unnecessary braces around block return value" — a warning the gate's -D warnings turns into a
+            // NO-BUILD (breaker #18: a nested match on a recursive-call result in a tail arm). The single arm
+            // brace is sufficient; emit_tail's own block (for the continue case) is the value, not doubly
+            // wrapped.
+            emit_tail(db, arm.body, env, ctx)?
         } else {
             match result_it {
                 Some(it) => emit_grounded(db, arm.body, it, env, ctx)?,

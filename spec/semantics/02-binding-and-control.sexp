@@ -75,6 +75,29 @@
             (def (main) (f 99)) (export main)))
   (output (: 5 Int64)))
 
+(case "sibling match arms each let-binding a DIFFERENT-WIDTH value get disjoint scratch slots, not an invalid component"
+  (doc    "The width-partition of the let-binder scratch claim (rcdzc wasm c443bd48d). Sibling match arms
+           each RESET their scratch floor to the same `base`, so arm A's Int64 let-binder and arm B's
+           Int32 let-binder both targeted `base` — but a single wasm local cannot be declared at two
+           widths, so arm A's `LocalSet` stored i64 into an i32-declared slot → 'invalid component:
+           function[N]: type mismatch: expected i64, found i32' (at inlining scale this is where the
+           self-host emit-db.cdz tripped func[58]). The fix reuses a slot only when it is FREE or already
+           recorded at THIS binder's width; a genuine width conflict spills to a fresh slot. Here arm A
+           binds `(: 9000000000 Int64)` (needs i64, exceeds i32) and arm B binds `(: 42 Int32)`; a
+           collision would emit an invalid component. `(pick A)` = 9000000000, `(pick B)` = 42 — both
+           arms compute at their own width, valid component, both backends. The sibling-match-arm
+           companion of the differently-typed-shadow slot cases above.")
+  (input  (do
+            (type Sel (A) (B))
+            (def (pick (: s Sel))
+              (match s
+                ((A) (let ((x (: 9000000000 Int64))) x))
+                ((B) (let ((y (: 42 Int32))) (Int64.of y)))))
+            (def (main (: k Int64)) (pick (if (> k 0) (Sel.A) (Sel.B))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 9000000000 Int64))
+  (call   main (: 0 Int64)) (output (: 42 Int64)))
+
 (case "a let shadowing a parameter whose initializer references that parameter computes"
   (doc    "The demanding shadow: the shadowing binding's INITIALIZER references the shadowed parameter.
            `(def (f x) (let ((x (+ x 1))) (* x 2)))` — the initializer `(+ x 1)` is written before the

@@ -93,14 +93,25 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
            (let colArg = (match arg4-of(tree, id) with
                             | Option.Some(a4) => resolve-node(tree, a4, env, colA3)  // + arg4 (slice-3f)
                             | Option.None(_) => colA3) in
+            // HIGHER-ORDER (HO-2b-ii-B, option (i)): resolve the CALLEE-NAME against the CALLER env FIRST and
+            // store the fact KEYED BY THE NApp NODE-ID `id` (the call site's own resolve slot, otherwise unused —
+            // the NApp carries no var of its own). This lets infer/lower see what the callee resolved to: a
+            // fn-typed PARAM callee → RBound(paramBinder) (so `(f x)` with f a param types as f's arrow result),
+            // else a def-name → the def-body path below (unchanged). Mirrors rcdzc treating an App head as a
+            // resolvable node. `colC` threads this callee-fact into the column before the body/args resolution.
+            (let colC = (match Map.lookup(env, calleeId) with
+                           | Option.Some(cb) => Map.insert(colArg, id, Resolved.RBound(cb))   // callee is a bound PARAM/let
+                           | Option.None(_) => (match def-body-of(tree, calleeId) with
+                               | Option.Some(_) => Map.insert(colArg, id, Resolved.RDef(calleeId))  // callee is a global def
+                               | Option.None(_) => colArg)) in                                       // unknown → no callee-fact
             // forward-ref: calleeId is now the callee NAME-id → map to its def-body node via def-body-of.
             // A RECURSIVE call (body transitively calls back) would inline-loop, so DECLINE it (don't resolve
             // the body — the call gets no fact → downstream declines, matching pre-forward-ref behavior). An
             // unknown name (def-body-of None) also declines. param-* lookups use the NAME directly (params are
             // keyed by both name and bodyId in read-do-def). The body resolves LEXICALLY in its own param scope.
-            (if (call-is-recursive(tree, calleeId)) then colArg   // recursive → decline (no body resolution)
+            (if (call-is-recursive(tree, calleeId)) then colC   // recursive → decline body-resolution (keep callee-fact)
              else (match def-body-of(tree, calleeId) with
-               | Option.None(_) => colArg                          // unknown callee → decline
+               | Option.None(_) => colC                          // unknown callee (or param callee) → callee-fact only
                | Option.Some(calleeBody) =>
                    (match param-of(tree, calleeId) with
                      | Option.Some(paramId) =>
@@ -114,8 +125,8 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
                             (let bodyScope = (match param4-of(tree, calleeId) with
                                                 | Option.Some(param4Id) => param-scope(tree, param4Id, scope3)  // + 4th param (slice-3f)
                                                 | Option.None(_) => scope3) in
-                             resolve-node(tree, calleeBody, bodyScope, colArg)))))
-                     | Option.None(_) => resolve-node(tree, calleeBody, (Map.empty : Map(Int64, Int64)), colArg))))))))
+                             resolve-node(tree, calleeBody, bodyScope, colC)))))
+                     | Option.None(_) => resolve-node(tree, calleeBody, (Map.empty : Map(Int64, Int64)), colC)))))))))
     | Option.None(_) => col   // an id not in the arena (a malformed tree) resolves to nothing
 
 /// The resolve COLUMN builder: resolve the whole tree from `root`, starting with an empty scope + column.

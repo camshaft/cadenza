@@ -4818,3 +4818,4 @@ pass	a constant shift count at or beyond the width over a high UInt64 still reje
 pass	a constant shift-left of a small UInt64 operand whose result overflows i64 folds over the solved width
 pass	a constant shift-left of a small UInt32 operand into its high bit folds (width-generic guard)
 pass	a scalar-indexed split over a MULTIBYTE string bounds its walk by scalar-len, not byte-len
+pass	sibling match arms each let-binding a DIFFERENT-WIDTH value get disjoint scratch slots, not an invalid component
