@@ -38,6 +38,7 @@ pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	BigInt.of a UInt64 widens to the exact value (round-trips back through Int64.of where it fits)
 pass	BigInt.of a UInt8 at its high bit widens to the exact value (smallest-width zero-extend)
 pass	BigInt.of a signed Int32 is a positive BigInt (the narrow path breaks regardless of sign)
+pass	Bytes.concat of two runtime SLICES splices window content in order
 pass	Bytes.of of a computed (concatenated) runtime list builds a byte sequence of that length
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) (Tuple Int64 Int64)) — BOTH sides compound
 pass	COMPOUND RESULT PAYLOAD: (Result (Tuple Int64 Int64) Int64) arg, drive Err (scalar side)
@@ -91,17 +92,24 @@ pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken bra
 pass	FULL CONTRACT: @requires + @ensures on ONE def fire INDEPENDENTLY — a pre-violation and a post-violation trap on DIFFERENT inputs
 pass	Float32 tuple-key components key at binary32 width (distinctness, lookup, signed zero)
 pass	Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even
+pass	Map.to-list over runtime STRING keys enumerates in content byte order (first is byte-smallest)
 pass	Set.contains dispatches on an Option element at a runtime payload
+pass	String.from-bytes of a runtime slice decodes the WINDOW only
 pass	a PURE closure iterated by a recursive combinator composes with a perform in the same body
 pass	a Rational ENTRY parameter crosses the boundary and reduces per call
 pass	a Set.of over PRELUDE-Option elements dedups Some by payload and keeps None distinct
 pass	a Set.of over Result elements separates Ok from Err with EQUAL payloads
+pass	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
+pass	a TUPLE-wrapped runtime slice as a Map key hits by content through the compound descent
 pass	a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value
 pass	a VIOLATED @ensures traps when the def arrives through a runtime branch
 pass	a bin tag-dispatch over a RUNTIME-START slice reads the re-based window per call
 pass	a closure built OVER another closure applies both capture layers
 pass	a fitting Float32 literal in a runtime MATCH arm computes
+pass	a bare-literal-arm float match under Float32 emits valid f32 across the select and probe-chain paths
 pass	a fitting Float32 record field passed through a typed parameter computes
+pass	a generic fold instantiated at an Int64 AND a String accumulator in one program
+pass	a generic pair-swap crosses a scalar and a heap payload between positions
 pass	a module export is a CLOSURE FACTORY capturing a private sibling
 pass	a module export rides an OUTER combinator's fn parameter a runtime number of times
 pass	a param-left arith-right Float64.of-int equality compiles to a valid module and computes
@@ -1032,6 +1040,7 @@ pass	a failing tuple guard falls to a later arm re-binding the elements
 pass	a failure `?` preserves a COMPOUND error value through the short-circuit
 pass	a failure `?` propagates through TWO nested fallible boundaries
 pass	a failure `?` short-circuits BEFORE later computation runs
+pass	a failure `?` short-circuits a RUNTIME error payload (static Err ctor, per-call value)
 pass	a fallible parser threads a Result((value,cursor),String) through mutual recursion, short-circuiting on Err
 pass	a false variant guard shields its arm's trapping body
 pass	a family quantity displays scaled exactly to its reference (Rational)
@@ -1051,6 +1060,7 @@ pass	a file-top default-fraction pragma fixes a type but adds no conversion — 
 pass	a file-top default-fraction pragma grounds a bare literal to its exact fraction
 pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
+pass	a dependent-size body over a runtime-start slice re-bases its size arithmetic per call
 pass	a dependent-size utf8 segment decodes a length-prefixed string
 pass	a fitting Float32 Qty magnitude computes at the narrow inner width
 pass	a fitting Float32 literal in a runtime if branch computes
@@ -1102,14 +1112,19 @@ pass	a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on ev
 pass	a runtime = on a sum recursive through a RECORD-of-TUPLE payload walks structurally
 pass	a runtime = over MUTUALLY-recursive sums walks across the type cycle
 pass	a runtime BRANCH selects between two named functions and the selected one applies
+pass	a runtime String.slice STORED as a map key is found by a flat probe
+pass	a runtime String.slice probing a flat-keyed map hits by content
 pass	a runtime branch selects between two ANONYMOUS closures fed to the iterate combinator
 pass	a runtime hole woven into a compound Ast is read back by a nested match
+pass	a runtime slice VIEW crosses a helper-function boundary intact
 pass	a runtime zero denominator PRODUCED BY ARITHMETIC traps at construction
 pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
+pass	a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence
 pass	a shift by a RUNTIME amount computes (both operands off the fold)
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
 pass	a slice OF a slice composes the offsets at runtime bounds
 pass	a slice at a RUNTIME start re-bases indexing per call
+pass	a slice of a runtime-start SLICE composes both offsets
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a success `?` unwraps a RUNTIME Ok payload under a Result boundary
 pass	a success `?` unwraps a RUNTIME payload (static ctor, per-call value)
@@ -2791,6 +2806,7 @@ pass	an ABORTIVE arm whose value is a COMPOUND matches the handle body type and 
 pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
+pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
 pass	an EFFECTFUL @ensures predicate performs under the caller's handler at body-EXIT, after the body's own perform
 pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body
@@ -3267,6 +3283,7 @@ pass	compound equality over a runtime FLOAT32 NaN leaf: nan equals nan
 pass	compound equality over a runtime FLOAT32 leaf: negative zero is not equal to positive zero
 pass	compound equality over a runtime NaN float leaf: nan equals nan
 pass	compound equality over a runtime Rational leaf compares by the normalized form
+pass	compound equality over a runtime SLICE-view Bytes leaf compares by window content
 pass	compound equality over a runtime float leaf: different floats compare unequal
 pass	compound equality over a runtime float leaf: equal floats compare equal
 pass	compound equality over a runtime float leaf: negative zero is not equal to positive zero
@@ -3461,6 +3478,7 @@ pass	eval of a quoted conditional takes the branch its boolean literal selects
 pass	eval of a quoted disjunction short-circuits to true
 pass	eval of a quoted equality yields the boolean value directly
 pass	eval of a quoted float executes it to the float value
+pass	eval of a quoted integer literal grounds to Int64 (BigInt is AST storage, not eval width)
 pass	eval of a quoted float feeds ordinary float arithmetic
 pass	eval of a quoted List.at folds the indexing operation to its Option result
 pass	eval of a quoted lambda application folds
@@ -3682,6 +3700,7 @@ pass	nullary constructor patterns are uniform with unary
 pass	one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers
 pass	one encode-decode cycle is byte-stable
 pass	one entrypoint's host authority is not reachable by another that does not delegate it
+pass	one generic identity instantiated at a scalar, a heap string, and a compound in one program
 pass	one generic sum instantiated at two different types in one program
 pass	one module's export clause does not affect a same-named member of another module
 pass	one of several same-signature closure exports is made and called by the host
@@ -3874,6 +3893,8 @@ pass	runtime string ordering surfaces all four relational operators
 pass	runtime structural equality over a GENERIC RECURSIVE sum walks the whole tree
 pass	runtime structural equality over a payload-carrying sum agrees on both backends
 pass	runtime tuple concatenation preserves element order across the seam
+pass	runtime-payload `?`s in BOTH arms of a RUNTIME-scrutinee match each resolve the boundary
+pass	runtime-payload `?`s in BOTH branches of a runtime if take their own continuations
 pass	same-Instant queue entries resume in FIFO insertion order (§3.4 tie-break)
 pass	same-arity tuple match arms share an equal element and sink the differing one
 pass	same-effect shadowing with ADVANCING states — the outer state survives the inner handle and resumes advanced
@@ -3983,6 +4004,7 @@ pass	the Int codec round-trips i64::MIN — the two's-complement boundary
 pass	the Int64 total order holds at its extremes
 pass	the Int64.max and Int64.min CONSTANTS compare equal to their boundary values at runtime
 pass	the Int8 max boundary literal fits in a runtime branch
+pass	the LAST Map.to-list entry over runtime String keys is the byte-largest
 pass	the LEB128 byte composition runs on a runtime operand
 pass	the SELECT (choice) axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the additive-zero identity preserves a boundary-crossing runtime operand

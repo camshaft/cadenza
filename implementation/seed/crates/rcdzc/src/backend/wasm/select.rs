@@ -11418,15 +11418,19 @@ fn operand_is_string_or_bytes(db: &mut Db, id: StructId) -> bool {
 /// `value-eq` and the map/set key path use `champ_eq` over physical bytes, so a rope must be canonicalized
 /// at BOTH. Bytes is included alongside String/Symbol (`operand_is_string_or_bytes`) because a `Bytes`
 /// value has the SAME rope representation and the same physical-byte CHAMP key contract — the reasoning is
-/// verbatim the String story. Only a DIRECT, OWNED key is compacted — a BORROWED key (a param / a
-/// kept-local reference) is a FLAT leaf in practice and `bytes-compact` would consume it under its owner
-/// (mirrors the value-eq ownership gate); a String/Bytes NESTED inside a compound key is the same rarer
-/// deferred case value-eq leaves. A compacted owned key is stack- and ownership-NEUTRAL: an owned rope in,
-/// an owned flat leaf out, so each site's existing key accounting (consumed by insert, or the dropped
-/// borrow-temporary at lookup/remove/contains) is unchanged.
+/// verbatim the String story. Compacts a String/Bytes key of ANY ownership: `bytes-compact` is
+/// REFCOUNT-NEUTRAL (it flattens the node IN PLACE and returns the SAME handle — a no-op on an already-flat
+/// leaf), so it is safe on an OWNED or a BORROWED key alike (verbatim the `elem_needs_rope_compaction`
+/// reasoning at the compound-construction sites). This FIXES a wasm WRONG-VALUE: a BORROWED runtime rope/
+/// slice key (a `sum-payload`/`Option.expect` binder / a kept `let`-local of a `Bytes.slice` result) was
+/// previously NOT compacted (the old `Owned`-only gate, on a false "compact would consume it" belief), so
+/// its raw slice-VIEW node (`[off, len]`) reached `champ_hash` and hashed differently from an equal-content
+/// flat Bytes — the lookup missed while value-eq said equal (equal-means-same-key violated). Because
+/// compact is in-place-same-handle, a borrowed key STAYS the owner's handle after compaction, so
+/// `key_handle_is_owned_temporary` (the drop gate) still decides drop-vs-keep on the operand's ACTUAL
+/// ownership — a borrowed key is not dropped (no double-free), an owned key is dropped as before.
 fn key_needs_compaction(db: &mut Db, key: StructId) -> bool {
     operand_is_string_or_bytes(db, key)
-        && matches!(heap_operand_ownership(db, key), Ok(HandleOwnership::Owned))
 }
 
 /// Whether a type CONTAINS a `List` anywhere (the type is a List, or a Tuple/Record/Sum/Nominal/Qty/Frame
@@ -11513,14 +11517,15 @@ fn key_handle_is_owned_temporary(db: &mut Db, key: StructId, key_ty: &Ty) -> Res
     if box_op_for(db, key, key_ty)?.is_some() {
         return Ok(true); // a scalar key → a fresh `box-*` leaf the op borrows, then we drop
     }
-    if key_needs_compaction(db, key) {
-        return Ok(true); // an owned rope key → a fresh compacted flat leaf we drop
-    }
     if key_needs_canonicalize(db, key) {
         return Ok(true); // a list-typed/-containing key → a FRESH owned canonical value we drop
     }
-    // An unboxed, uncompacted key is used as-is: drop it only if the operand is a fresh owned handle (a
-    // constructor / call / const compound); a borrowed param/local/projection is left to its owner.
+    // A String/Bytes key may be `bytes-compact`ed (`key_needs_compaction`), but compact is REFCOUNT-NEUTRAL
+    // and IN-PLACE (same handle), so it does NOT change ownership: a compacted OWNED rope is still owned
+    // (dropped here), a compacted BORROWED rope is still the owner's handle (NOT dropped — dropping it would
+    // free a reference the owner still holds, a use-after-free). So the drop decision — whether compacted or
+    // not — is the operand's ACTUAL ownership: drop iff a fresh owned handle (a constructor / call / const
+    // compound / owned rope); a borrowed param/local/projection is left to its owner.
     Ok(heap_operand_ownership(db, key)? == HandleOwnership::Owned)
 }
 

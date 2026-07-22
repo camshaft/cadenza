@@ -250,6 +250,32 @@
   (call   main (: 5 Int64)) (output (: 6 Int64))
   (call   main (: 7 Int64)) (output (: 0 Int64)))
 
+(case "an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type"
+  (doc    "The operator's motivating value-facts example (`if x > 0` ⇒ `x - 1` cannot underflow) on an
+           UNSIGNED type, which value-facts slice 2 (GAP-A) newly enables — before it, the unsigned `(> x 0)`
+           comparison refined nothing, so the guard always stayed. `dec`: inside the truthy branch of
+           `(if (> x 0) …)`, `x` refines to `[1, 2^32−1]`, so `(- x 1)` cannot underflow and its wrap/trap
+           guard is dropped; the value is unchanged (x=5 → 4, and the else covers x=0 → 0). `raw`: the SAME
+           `(- x 1)` WITHOUT the `(> x 0)` guard is unrefined, so at x=0 it must still TRAP (unsigned
+           underflow = integer overflow) — the SOUNDNESS TWIN proving the elision is licensed by the FACT,
+           not by luck. Pins the operator's headline use case for unsigned + its trap-preservation twin on
+           both backends. Distinct from the redundant-compare pins above (this elides an ARITHMETIC guard).")
+  (input  (do
+            (def (dec (: x UInt32)) (if (> x 0) (: (- x 1) UInt32) 0))
+            (def (raw (: x UInt32)) (: (- x 1) UInt32))
+            (export dec)
+            (export raw)))
+  ; dec: x > 0 refines x to [1, MAX], so (- x 1) sheds its underflow guard; x=0 takes the else → 0.
+  (call   dec (: 5 UInt32))
+  (output (: 4 Int64))
+  (call   dec (: 0 UInt32))
+  (output (: 0 Int64))
+  ; raw: unguarded (- x 1) computes for x>0 but MUST trap at x=0 (unsigned underflow) — the soundness twin.
+  (call   raw (: 3 UInt32))
+  (output (: 2 Int64))
+  (call   raw (: 0 UInt32))
+  (trap   "integer overflow"))
+
 (case "conditional propagation respects a shadowing rebind of the condition variable"
   (doc    "The propagation must track the condition's VALUE in scope, not match its text: `(let ((c (< n
            5))) (if c 1 (let ((c true)) (if c 2 3))))` with n = 10 has the OUTER `c` = false (10 < 5 is

@@ -346,7 +346,14 @@ fn reconstruct(ast: &mut Arenas, node: StructId) -> Option<StructId> {
     // reconstructed source folds through the ordinary compile-time path; a payload that is NOT compile-time-
     // known then declines/errors there as ordinary code would, not here.
     if let Some(payload) = ast_ctor_arg(ast, node, "Int") {
-        return Some(payload);
+        // STRIP the reifier's `(: <lit> BigInt)` grounding wrapper (`quote::ast_bigint_payload`): an
+        // `Ast.Int` VALUE stores its integer as `BigInt` (non-lossy storage), but the source an eval
+        // RECONSTRUCTS must ground by ordinary width inference — an `(eval (quote (+ 1 2)))` yields an
+        // `Int64` `3`, not a `BigInt`, exactly as the un-quoted `(+ 1 2)` would. So the reconstructed
+        // literal is the BARE inner node, not the annotated one; BigInt is a property of the stored AST,
+        // not one the reconstructed source carries out. A payload with no wrapper (a live active-unquote
+        // operand) is returned unchanged.
+        return Some(strip_bigint_grounding(ast, payload));
     }
     // `(Ast.Float payload)` -> the payload AS SOURCE (the float-literal node). A reified float literal
     // `(Ast.Float 1.5)` unwraps back to the `1.5` literal, which evaluates to itself.
@@ -419,6 +426,22 @@ fn ast_lift_arg(ast: &Arenas, node: StructId) -> Option<StructId> {
 /// If `node` is the constructor application `(Ast.<variant> payload)` — a list whose head is the
 /// projection `(. Ast <variant>)` and which carries exactly one argument — that argument. The shape
 /// `crate::quote::ast_ctor` builds and the reader produces for a hand-written `(Ast.<variant> x)`.
+/// Strip a `(: <inner> BigInt)` type-annotation wrapper the reifier adds to ground an `Ast.Int`'s
+/// literal payload to `BigInt` (`quote::ast_bigint_payload`), returning `<inner>`. A node that is not
+/// that exact 3-element `(: _ BigInt)` shape is returned unchanged (a live active-unquote operand — a
+/// name / computed expression — carries no wrapper). Used by `reconstruct` so an eval-reconstructed
+/// integer literal grounds by ordinary width inference (`Int64`), not the stored `BigInt`.
+fn strip_bigint_grounding(ast: &Arenas, node: StructId) -> StructId {
+    if let Struct::List(items) = ast.get(node)
+        && items.len() == 3
+        && ast.as_name(items[0]) == Some(":")
+        && ast.as_name(items[2]) == Some("BigInt")
+    {
+        return items[1];
+    }
+    node
+}
+
 fn ast_ctor_arg(ast: &Arenas, node: StructId, variant: &str) -> Option<StructId> {
     let Struct::List(items) = ast.get(node) else {
         return None;
