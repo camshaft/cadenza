@@ -1930,6 +1930,13 @@ impl<'a> Parser<'a> {
         self.bump(); // `let`
         let mut bindings = Vec::new();
         loop {
+            // Own-line `//` comment(s) leading this binding (`let\n // note\n x = 1 in …`, or before a
+            // `,`-separated later binding) sit in the binder's first-token leading slot, which
+            // `pattern`/`binder`/`expr` do not drain — capture + wrap the `(binder value)` pair in
+            // `(comment "text" …)` so it round-trips (`is_let_shape` peels it; `print_let` renders the
+            // comment on its own line above the binding + forces the bindings to break). Own-line has no
+            // swallow hazard.
+            let leading = self.take_comments_here();
             let b_start = self.cur_span();
             // A `let` binder is normally a plain name, but a binder that OPENS a destructuring pattern
             // (`(a, b)` / `[x, .. rest]` / `#{ k = p }` / `b[u16(n)]`) binds by pattern — the same
@@ -1947,7 +1954,8 @@ impl<'a> Parser<'a> {
             // `(do (let x=a in b) c)` — so a sequence VALUE parenthesizes: `let x = (a; b) in …`.
             let e = self.expr(crate::token::PREC_SEQ + 1);
             let b_span = b_start.merge(self.prev_span());
-            bindings.push(self.list(vec![n, e], b_span));
+            let binding = self.list(vec![n, e], b_span);
+            bindings.push(self.wrap_comments(leading, binding));
             if self.at(Kind::Comma) {
                 self.bump();
             } else {

@@ -972,11 +972,29 @@ impl<'a> Printer<'a> {
         self.doc.cbox(INDENT);
         if let Struct::List(binds) = self.a.get(args[0]) {
             let binds = binds.clone();
-            for (i, &b) in binds.iter().enumerate() {
+            for (i, &raw) in binds.iter().enumerate() {
                 if i > 0 {
                     self.doc.word(",");
                     self.doc.space();
                 }
+                // Peel LEADING own-line `(comment …)` wrapper(s): each prints as a `// …` line ABOVE the
+                // binding (a hardbreak forces the bindings box to break, so the comment ends its line
+                // before the binder). A LOOP handles multiple (decoded ASTs may nest). The remaining
+                // TRAILING `(comment-after …)`, if any, prints after the value, same-line.
+                let mut b = raw;
+                while let Some(a) = self.a.as_form(b, "comment")
+                    && a.len() == 2
+                    && self.is_string(a[0])
+                {
+                    self.doc.word(format!("//{}", self.doc_line_text(a[0])));
+                    self.doc.hardbreak();
+                    b = a[1];
+                }
+                let trailing = self
+                    .a
+                    .as_form(b, "comment-after")
+                    .and_then(|a| (a.len() == 2 && self.is_string(a[0])).then_some(a[0]));
+                let b = self.strip_comment_after(b);
                 if let Struct::List(pair) = self.a.get(b) {
                     let (n, e) = (pair[0], pair[1]);
                     // A binder is a plain NAME (`Atom`) or a destructuring PATTERN (`List` —
@@ -990,6 +1008,9 @@ impl<'a> Printer<'a> {
                     }
                     self.doc.word(" = ");
                     self.value(e);
+                    if let Some(text) = trailing {
+                        self.doc.word(format!(" //{}", self.doc_line_text(text)));
+                    }
                 }
             }
         }
@@ -3363,16 +3384,24 @@ impl<'a> Printer<'a> {
             return false;
         }
         match self.a.get(args[0]) {
-            Struct::List(binds) => binds.iter().all(|&b| match self.a.get(b) {
-                // Each binding is a `(binder value)` pair. The binder is a plain NAME (`head_name`) or
-                // a destructuring PATTERN the surface can round-trip (`is_binder_pattern`). Any OTHER
-                // list binder — e.g. a constructor-application pattern `Mk(n)` (`((. Id Mk) n)`), which
-                // the reader has no let-binder surface for — falls back to the generic call form, which
-                // round-trips via idempotence.
-                Struct::List(p) => {
-                    p.len() == 2 && (self.head_name(p[0]).is_some() || self.is_binder_pattern(p[0]))
+            Struct::List(binds) => binds.iter().all(|&raw| {
+                // A binding may be wrapped in a LEADING `(comment …)` (own-line `//` above it) and/or a
+                // TRAILING `(comment-after …)` — peel both to the real `(binder value)` pair before
+                // checking its shape (else a commented binding fails and the whole `let` falls to the
+                // backtick call form). Own-line comments are printed above the binding by `print_let`.
+                let b = self.strip_field_comments(raw);
+                match self.a.get(b) {
+                    // Each binding is a `(binder value)` pair. The binder is a plain NAME (`head_name`) or
+                    // a destructuring PATTERN the surface can round-trip (`is_binder_pattern`). Any OTHER
+                    // list binder — e.g. a constructor-application pattern `Mk(n)` (`((. Id Mk) n)`), which
+                    // the reader has no let-binder surface for — falls back to the generic call form,
+                    // which round-trips via idempotence.
+                    Struct::List(p) => {
+                        p.len() == 2
+                            && (self.head_name(p[0]).is_some() || self.is_binder_pattern(p[0]))
+                    }
+                    _ => false,
                 }
-                _ => false,
             }),
             _ => false,
         }
@@ -6439,6 +6468,50 @@ mod tests {
             "b[u16(258), u8(1)]"
         );
         assert_eq!(assert_roundtrip("b[]", 80), "b[]");
+    }
+
+    #[test]
+    fn an_own_line_comment_leading_a_let_binding_is_preserved_not_dropped() {
+        // An own-line `//` above a `let` binding (`let\n // note\n x = 1 in …`, or before a `,`-separated
+        // later binding) used to be DROPPED — the binding is a `(binder value)` pair, and the leading slot
+        // sat unfrained, so `is_let_shape` rejected the `(comment … (n e))`-wrapped binding → the whole
+        // `let` fell to the backtick call form. let_expr now captures it (wrap `(comment "text" binding)`),
+        // `is_let_shape` peels via `strip_field_comments`, and `print_let` renders the comment above the
+        // binding (forcing the bindings to break). `strip_comments` peels it; compiles to wasm.
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("def f() -> Int64 = let\n  // note\n  x = 1 in x").arenas
+            ),
+            "(def (f) (: (let ((comment \"note\" (x 1))) x) Int64))",
+            "own-line comment before the first let binding is captured, not dropped"
+        );
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("def f() -> Int64 = let x = 1,\n  // note\n  y = 2 in x + y")
+                    .arenas
+            ),
+            "(def (f) (: (let ((x 1) (comment \"note\" (y 2))) (+ x y)) Int64))",
+            "own-line comment before a non-first let binding is captured"
+        );
+        // Round-trips + idempotent (the layout is faithful even if the comment renders on the `let` line).
+        let src = "def f() -> Int64 = let\n  // note\n  x = 1 in x";
+        let printed = print(&parser::read_ml(src).arenas, 80);
+        assert_eq!(
+            print(&parser::read_ml(&printed).arenas, 80),
+            printed,
+            "idempotent"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml(&printed).arenas),
+            "(def (f) (: (let ((comment \"note\" (x 1))) x) Int64))",
+            "the let-binding comment round-trips"
+        );
+        // Clean lets (incl. multi-binding + pattern binder) keep their layout.
+        assert_eq!(assert_roundtrip("let x = 1 in x", 80), "let x = 1 in\nx");
+        assert_eq!(
+            assert_roundtrip("let x = 1, y = 2 in x + y", 80),
+            "let x = 1, y = 2 in\nx + y"
+        );
     }
 
     #[test]

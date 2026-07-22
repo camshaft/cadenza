@@ -3910,6 +3910,31 @@ fn fuse_match_into_if(
     if !branch_folds(db, then_) || !branch_folds(db, else_) {
         return None;
     }
+    // PROFITABILITY CAP (compile-time DoS guard): the fusion deep-CLONES every arm (pattern + body) into
+    // BOTH branches, and `core_of` on each pushed-in match re-enters `fuse_match_into_if` on the clone — so
+    // when an arm body is itself a large/nested match, each level duplicates the deeper nest into two
+    // branches, giving O(N²)+ synthesized nodes on a deeply-nested same-scrutinee match (v-inference-profiled
+    // ~O(N^3.7): a `(match (if c (A n) (B 0)) ((A v) <N-deep same match>) …)` explodes). The fold's win is
+    // eliminating ONE throwaway heap build per branch — bounded and small — so once the material to clone is
+    // large the duplication cost dwarfs it. Bail to the ordinary runtime match when the total arm subtree
+    // size exceeds a generous cap (the common small fold — `(Some x)`/`(None)` arms — is far under it). The
+    // cap-walk is O(cap), so this guard never itself contributes to the blowup.
+    const FUSE_ARM_SIZE_CAP: usize = 256;
+    let mut arm_size = 0usize;
+    for &(pat, body) in arms {
+        arm_size += ast_subtree_size_capped(db, pat, FUSE_ARM_SIZE_CAP - arm_size);
+        if arm_size >= FUSE_ARM_SIZE_CAP {
+            break;
+        }
+        arm_size += ast_subtree_size_capped(db, body, FUSE_ARM_SIZE_CAP - arm_size);
+        if arm_size >= FUSE_ARM_SIZE_CAP {
+            break;
+        }
+    }
+    if arm_size >= FUSE_ARM_SIZE_CAP {
+        trace!(target: "rcdzc::fold", scrutinee = scrutinee.0, arm_size, "match-into-if fusion declined: arm material exceeds the clone-duplication profitability cap (keeping the runtime match)");
+        return None;
+    }
     // The ORIGINAL match form (scrutinee's parent) — the rewritten `if` grafts UNDER it so a free name
     // inside a cloned arm body (an enclosing param/`let`) ascends through it to the enclosing scope.
     let orig_match = db.parent_of(scrutinee);
@@ -4906,6 +4931,32 @@ fn clone_literal_atom(db: &mut Db, e: StructId) -> StructId {
 /// is recorded — required before a following `resolve_subtree`, whose scope ascent reads `parent_of`. Used
 /// by the MATCH-INTO-IF fusion to give each `if` branch its OWN copy of the arms (a single node cannot have
 /// two parents — `push_list` reparents — so the two branches cannot share one arm set).
+/// AST-node count of the subtree at `id`, SHORT-CIRCUITED at `cap` (returns `cap` once reached, never walks
+/// further). Used by `fuse_match_into_if` as a PROFITABILITY guard: the fusion deep-COPIES each arm into
+/// BOTH `if` branches, so a large arm subtree is duplicated 2× per level — and when the arm body is itself a
+/// nested match the copy recurses the fusion, giving O(size²)+ synthesized nodes (a compile-time blowup on a
+/// deeply-nested same-scrutinee match, v-inference-profiled ~O(N^3.7)). Capping the walk keeps this guard
+/// O(cap), not O(subtree), so the guard itself never contributes to the blowup.
+fn ast_subtree_size_capped(db: &mut Db, id: StructId, cap: usize) -> usize {
+    fn walk(db: &mut Db, id: StructId, cap: usize, acc: &mut usize) {
+        if *acc >= cap {
+            return;
+        }
+        *acc += 1;
+        if let crate::ast::Struct::List(children) = db.ast.get(id).clone() {
+            for c in children {
+                if *acc >= cap {
+                    return;
+                }
+                walk(db, c, cap, acc);
+            }
+        }
+    }
+    let mut acc = 0;
+    walk(db, id, cap, &mut acc);
+    acc
+}
+
 fn clone_subtree_db(db: &mut Db, id: StructId) -> StructId {
     match db.ast.get(id).clone() {
         crate::ast::Struct::Atom(lid) => match db.ast.leaf(lid).clone() {

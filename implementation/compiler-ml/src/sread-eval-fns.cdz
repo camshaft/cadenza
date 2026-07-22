@@ -324,6 +324,16 @@ def se-self-recursion-runs-slice-boneb() =
     | Option.None(_) => trap("self-recursion RUNS now (Slice-B) — must not decline")
 
 @test
+def se-threearg-self-recursion-runs-pr785() =
+  // PR#785 REGRESSION GUARD: a self-recursive call with 3 args must RUN. call-is-self-recursive originally
+  // scanned only arg1/arg2, so a self-call whose recursion rides in a 3rd arg was MISSED → the def was
+  // excluded from the def-env → self-recursion wrongly DECLINED. Now subtree-calls-self scans arg2/arg3/arg4.
+  // f(a,b,c) = if a<1 then c else f(a-1, b, c+b); f(3,5,0) = 15 (0+5+5+5).
+  match run-src("(do (def (f a b c) (if (< a 1) c (f (- a 1) b (+ c b)))) (def (main) (f 3 5 0)) (export main))") with
+    | Option.Some(v) => (if v == 15 then unit else trap("f(3,5,0) → 15 (3-arg self-recursion)"))
+    | Option.None(_) => trap("3-arg self-recursion must RUN (PR#785 — arg3/arg4 self-call detection)")
+
+@test
 def se-mutual-recursion-declines-not-hangs() =
   // MUTUAL RECURSION (ev↔od) must also DECLINE cleanly, not hang — the cycle guard follows the transitive call
   // chain (ev's body calls od, od's calls ev) and declines. Pins the mutual-cycle case of the guard.

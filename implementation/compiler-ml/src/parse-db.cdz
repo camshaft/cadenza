@@ -129,9 +129,17 @@ def subtree-calls-name(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
           else (match subtree-calls-name-arg(tree, argId, target, fuel - 1) with
                  | (true, fl) => (true, fl)
                  | (false, fl) =>
-                     (match arg2-of(tree, id) with
-                       | Option.Some(a2) => (match subtree-calls-name(tree, a2, target, fl) with | (true, f2) => (true, f2) | (false, f2) => subtree-calls-callee(tree, calleeName, target, f2))
-                       | Option.None(_) => subtree-calls-callee(tree, calleeName, target, fl))))
+                     // scan arg2/arg3/arg4 (PR#785: arg3/arg4 were missed) in sequence, THEN descend the callee
+                     // body (transitive/mutual). Any arg or the callee body reaching `target` → recursive.
+                     (match subtree-calls-name-opt(tree, arg2-of(tree, id), target, fl) with
+                       | (true, f2) => (true, f2)
+                       | (false, f2) =>
+                           (match subtree-calls-name-opt(tree, arg3-of(tree, id), target, f2) with
+                             | (true, f3) => (true, f3)
+                             | (false, f3) =>
+                                 (match subtree-calls-name-opt(tree, arg4-of(tree, id), target, f3) with
+                                   | (true, f4) => (true, f4)
+                                   | (false, f4) => subtree-calls-callee(tree, calleeName, target, f4))))))
      | Option.Some(Node.NBin(_, l, r)) =>
          (match subtree-calls-name(tree, l, target, fuel - 1) with | (true, fl) => (true, fl) | (false, fl) => subtree-calls-name(tree, r, target, fl))
      | Option.Some(Node.NLet(_, v, b)) =>
@@ -145,6 +153,13 @@ def subtree-calls-name(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
 /// Helper: an NApp arg is -1 (nullary, no arg) or a node-id to scan.
 def subtree-calls-name-arg(tree: Tree, argId: Int64, target: Int64, fuel: Int64) =
   (if (argId == (0 - 1)) then (false, fuel) else subtree-calls-name(tree, argId, target, fuel))
+
+/// Helper: scan an OPTIONAL higher-arg slot (arg2/arg3/arg4-of → `Option(Int64)`) for a transitive call to
+/// `target`. Absent slot → pass fuel through (false). The arg3/arg4 slots were originally missed (PR#785).
+def subtree-calls-name-opt(tree: Tree, argOpt: Option(Int64), target: Int64, fuel: Int64) =
+  (match argOpt with
+    | Option.Some(a) => subtree-calls-name(tree, a, target, fuel)
+    | Option.None(_) => (false, fuel))
 
 /// Helper: recurse into a CALLED def's body (transitive/mutual recursion). Look up `calleeName`'s body; if it
 /// reaches `target`, recursion. A name with no def-body (unknown / a param used as a value) contributes nothing.
@@ -174,13 +189,19 @@ def subtree-calls-self(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
    else (match node-at(tree, id) with
      | Option.Some(Node.NApp(calleeName, argId)) =>
          (if (calleeName == target) then (true, fuel - 1)   // a DIRECT call to target → self-recursive
-          // else scan only the ARG subtrees (a nested self-call can hide in an arg) — NEVER descend the callee body.
+          // else scan ALL the ARG subtrees (a nested self-call can hide in any arg) — NEVER descend the callee
+          // body. arg1 (argId) + arg2/arg3/arg4 keyed by this NApp node-id `id`. arg3/arg4 were originally
+          // MISSED (PR#785) → a 3-/4-arg self-recursive call was not detected → decl excluded from def-env →
+          // self-recursion wrongly declined. Now each higher arg is scanned in sequence, threading the fuel.
           else (match subtree-calls-self-arg(tree, argId, target, fuel - 1) with
                  | (true, fl) => (true, fl)
                  | (false, fl) =>
-                     (match arg2-of(tree, id) with
-                       | Option.Some(a2) => subtree-calls-self(tree, a2, target, fl)
-                       | Option.None(_) => (false, fl))))
+                     (match subtree-calls-self-opt(tree, arg2-of(tree, id), target, fl) with
+                       | (true, f2) => (true, f2)
+                       | (false, f2) =>
+                           (match subtree-calls-self-opt(tree, arg3-of(tree, id), target, f2) with
+                             | (true, f3) => (true, f3)
+                             | (false, f3) => subtree-calls-self-opt(tree, arg4-of(tree, id), target, f3)))))
      | Option.Some(Node.NBin(_, l, r)) =>
          (match subtree-calls-self(tree, l, target, fuel - 1) with | (true, fl) => (true, fl) | (false, fl) => subtree-calls-self(tree, r, target, fl))
      | Option.Some(Node.NLet(_, v, b)) =>
@@ -194,6 +215,13 @@ def subtree-calls-self(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
 /// Helper: an NApp arg is -1 (nullary) or a node-id to scan for a DIRECT self-call.
 def subtree-calls-self-arg(tree: Tree, argId: Int64, target: Int64, fuel: Int64) =
   (if (argId == (0 - 1)) then (false, fuel) else subtree-calls-self(tree, argId, target, fuel))
+
+/// Helper: scan an OPTIONAL higher-arg slot (arg2/arg3/arg4-of, which return `Option(Int64)`) for a DIRECT
+/// self-call. Absent slot → pass the fuel through unchanged (false). Mirrors infer/lower's optional-arg walk.
+def subtree-calls-self-opt(tree: Tree, argOpt: Option(Int64), target: Int64, fuel: Int64) =
+  (match argOpt with
+    | Option.Some(a) => subtree-calls-self(tree, a, target, fuel)
+    | Option.None(_) => (false, fuel))
 
 /// Is `calleeName` DIRECTLY self-recursive (its own body calls itself), as opposed to merely mutually
 /// recursive? The def-env inclusion predicate for B1b-p3: only directly-self-recursive defs eval via the

@@ -11792,6 +11792,17 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::SetInsert { .. }
         | Core::SetRemove { .. }
         | Core::SetAlgebra { .. }
+        // A collection ENUMERATION returns a FRESH owned `List` handle: `map-to-list` materializes the map's
+        // entries as a new `List (Tuple k v)` (canonical key order), `set-to-list` the set's elements as a new
+        // `List`. So the enumeration RESULT as a borrowing-op operand (`List.len (Map.to-list m)`) is an owned
+        // temporary the borrow must reclaim. WITHOUT this they fell to `_ => decline`, the borrowing consumer's
+        // reclaim gate (e.g. `ListLen`) never fired, and the fresh result list (+ its boxed entries) LEAKED
+        // per call — value-correct, a leak not a miscompile; the enumeration analog of the `ListConcat`/
+        // `ListUpdate` producer gap. (This governs the to-list RESULT; a leak of an owned-temporary SOURCE
+        // handed TO to-list is a separate face — the to-list op borrows its source — tracked by
+        // `map_or_set_to_list_over_an_owned_temporary_source_leaks_it_known_gap`.)
+        | Core::MapToList { .. }
+        | Core::SetToList { .. }
         // A BigInt PRODUCER returns a fresh owned handle: `bigint-of-i64` mints a leaf, and each
         // `bigint-add`/`-sub`/`-mul`/`-div` re-boxes a normalized result (the operands are borrowed, the
         // result is new). So a BigInt operand that is itself the result of another BigInt op is owned —
