@@ -8595,6 +8595,110 @@
   (call   main (: 999 Int64))
   (output (: 140 Int64)))
 
+(case "run-length encode/decode round-trips a runtime list of tuples"
+  (doc    "The RLE pipeline: encode `(5 5 n 2 2 7 n n)` (n=5 runtime, so the runs 5×3 / 2×2 / 7×1 / 5×2
+           only exist at run time) into a `(List (Tuple Int64 Int64))`, checksum the run list positionally
+           (53227152), and DECODE it back — the round-trip `(= (decode rs) xs)` compares the rebuilt list
+           to the original by deep structural `=` (1). Chains three fold shapes through one tuple-list
+           intermediate: a stateful encoder threading (current, count) across run boundaries, a tuple-head
+           destructuring walk `((list (tuple v c) .. t))`, and an inner repeat loop per run. An encoder
+           fusing the runtime n into the wrong run, a decoder splitting a tuple slot wrong, or a repeat
+           off-by-one breaks the checksum or the round-trip bit. Combined 532271521.")
+  (input  (do
+            (def (rle (: xs (List Int64)) (: cur Int64) (: cnt Int64) (: acc (List (Tuple Int64 Int64))))
+              (match xs
+                ((list) (if (= cnt 0) acc (List.push acc (tuple cur cnt))))
+                ((list h .. t)
+                  (if (= cnt 0)
+                      (rle t h 1 acc)
+                      (if (= h cur)
+                          (rle t cur (+ cnt 1) acc)
+                          (rle t h 1 (List.push acc (tuple cur cnt))))))))
+            (def (repeat (: v Int64) (: c Int64) (: acc (List Int64)))
+              (if (= c 0) acc (repeat v (- c 1) (List.push acc v))))
+            (def (decode (: rs (List (Tuple Int64 Int64))) (: acc (List Int64)))
+              (match rs
+                ((list) acc)
+                ((list (tuple v c) .. t) (decode t (repeat v c acc)))))
+            (def (checksum (: rs (List (Tuple Int64 Int64))) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list (tuple v c) .. t) (checksum t (+ (* acc 100) (+ (* v 10) c))))))
+            (def (main (: n Int64))
+              (do
+                (def xs (list 5 5 n 2 2 7 n n))
+                (def rs (rle xs 0 0 (list)))
+                (+ (* 10 (checksum rs 0)) (if (= (decode rs (list)) xs) 1 0))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 532271521 Int64)))
+
+(case "a comparison-driven MERGE of two sorted lists interleaves and drains the remainder"
+  (doc    "The merge step of merge sort: walk two sorted spines, at each step taking the smaller head
+           (ties take the LEFT via `<=` — the stability choice, exercised by the equal 3s), and when
+           either spine empties, DRAIN the other's remainder wholesale. Merging `(1 3 n 9)` with
+           `(2 3 8)` at n=5 interleaves to 1·2·3·3·5·8·9 (digit-chk 1233589; the runtime n sits
+           mid-spine so the comparison path is live, not folded); merging the EMPTY left with
+           `(2 n 8)` is pure drain (258). The zip pin above advances both spines in lockstep;
+           the merge advances exactly ONE per step, chosen by a runtime compare — a walk advancing
+           the wrong spine, dropping the tie's duplicate, or losing the drain remainder misorders
+           the digits. Combined 1233589258.")
+  (input  (do
+            (def (app (: rs (List Int64)) (: acc (List Int64)))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (app t (List.push acc h)))))
+            (def (merge (: xs (List Int64)) (: ys (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) (app ys acc))
+                ((list xh .. xt)
+                  (match ys
+                    ((list) (app xs acc))
+                    ((list yh .. yt)
+                      (if (<= xh yh)
+                          (merge xt ys (List.push acc xh))
+                          (merge xs yt (List.push acc yh))))))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: n Int64))
+              (+ (* (chk (merge (list 1 3 n 9) (list 2 3 8) (list)) 0) 1000)
+                 (chk (merge (list) (list 2 n 8) (list)) 0)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1233589258 Int64)))
+
+(case "a FLATTEN fold over a runtime list of lists joins across an empty inner spine"
+  (doc    "The flatten idiom: fold `List.concat` over a `(List (List Int64))` whose inner lists have
+           MIXED lengths — 2, 0, 2, 1 — with the runtime n heading the third sublist so the fold isn't
+           constant-folded. The EMPTY middle sublist is the adversarial face: each step is
+           `(List.concat acc h)`, an RRB tree join, and joining an empty operand mid-fold must be an
+           identity (a join that pads, drops a boundary element, or misjoins the NEXT sublist after
+           the empty one reorders the digits). Observed three ways — digit walk 12345, length 5, and
+           deep `=` against the expected literal (which contains the same runtime n) — so both the
+           element sequence and the spine length are pinned. Combined 1234551. The two-level-index
+           case above reads a list-of-lists in place; this collapses one level of nesting, the other
+           canonical list-of-lists consumer.")
+  (input  (do
+            (def (flatten (: xss (List (List Int64))) (: acc (List Int64)))
+              (match xss
+                ((list) acc)
+                ((list h .. t) (flatten t (List.concat acc h)))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: n Int64))
+              (do
+                (def flat (flatten (list (list 1 2) (list) (list n 4) (list 5)) (list)))
+                (+ (* (chk flat 0) 100)
+                   (+ (* ((. List len) flat) 10)
+                      (if (= flat (list 1 2 n 4 5)) 1 0)))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 1234551 Int64)))
+
 (case "an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state"
   (doc    "The apply-events idiom: a fold dispatches per element of a mixed `(Add/Sub/Reset)` list,
            threading the accumulator through each variant's transition — Add 10, Sub 3, Add n (runtime,

@@ -118,6 +118,7 @@ todo	a @param value crosses into a closure capture and applies
 pass	a Bytes.slice into the to-bytes output decodes at a scalar boundary and rejects mid-scalar
 pass	a CONST-FOLDED taken branch with a Float32-overflowing literal is rejected, not folded past the check
 pass	a FILTERED rebuild keeps only entries passing a runtime predicate
+pass	a FLATTEN fold over a runtime list of lists joins across an empty inner spine
 pass	a Float32-overflowing literal grounded CONTEXTUALLY through arith is rejected
 pass	a LIST OF SUMS resumed from a handler feeds an event-sourcing fold in the body
 pass	a MAP argument to an effect op is looked up inside the arm at the handler's own state
@@ -146,6 +147,7 @@ pass	a bin tag-dispatch over a RUNTIME-START slice reads the re-based window per
 pass	a closure built OUTSIDE a handler is applied INSIDE it beside performs
 pass	a closure built OVER another closure applies both capture layers
 pass	a closure capturing a handler-computed VALUE escapes the handle and applies outside
+pass	a comparison-driven MERGE of two sorted lists interleaves and drains the remainder
 pass	a constructed huge Ast.Int equals its quoted twin
 pass	a deep rope indexes by scalar at both extremes
 pass	a discarded trapping item in a do sequence is elided per the dead-init ruling
@@ -3894,6 +3896,7 @@ pass	resolving a head against a prelude symbol rejects a length-mismatched prefi
 pass	resolving a name in a shadowing environment returns the innermost binding's slot
 pass	resuming with a value of the wrong type for the operation's result is a type error
 pass	resuming with a wrong-type value for a compound result type is a type error
+pass	run-length encode/decode round-trips a runtime list of tuples
 pass	runtime < on a self operand is false for finite AND NaN (irreflexive, stays false)
 pass	runtime <= on a self operand is true for finite but FALSE for NaN (no reflexivity fold)
 pass	runtime >= and > on a self operand mirror <= and < including the NaN self case

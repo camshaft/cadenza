@@ -16128,6 +16128,27 @@ fn lower_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
     let rhs = core_of(db, args[1]);
     match (lhs, rhs) {
         (Core::ConstInt(a), Core::ConstInt(b)) => {
+            // ALGEBRAIC IDENTITY FIRST — before the i64 fold. `fold_arith` evaluates over `i64`, so an
+            // operand at/above `2^63` (a legitimate `UInt64` constant, e.g. `UInt64.max = 2^64-1`) has no
+            // `i64` and `fold_arith` rejects it CDZ0304 ("constant operand does not fit the integer width")
+            // — a SPURIOUS reject of valid unsigned arithmetic (`(+ (: 18446744073709551615 UInt64) 0)`
+            // declined instead of folding to the operand). The width-agnostic identities (`x+0`/`0+x`/`x-0`/
+            // `x*1`/`1*x`/`x*0`) return an OPERAND unchanged (or a trap-free `0`), so they are correct at
+            // ANY width WITHOUT an i64 evaluation — and the both-constant case never reached them before (it
+            // dispatched straight to `fold_arith`; the `arith_identity` call below is only in the
+            // not-both-constant fallthrough). Trying them here first folds the big-UInt64 identity cleanly.
+            // Only fires when at least one operand is out of i64 range (the case `fold_arith` mishandles); an
+            // in-range both-constant op keeps its exact `fold_arith` result (identical, so no behavior change
+            // for the common case). A NON-identity big-UInt64 op (`(+ u64max 1)`) still falls to `fold_arith`
+            // and its CDZ0304 — a genuine unsigned-overflow fold is a separable follow-up.
+            if a.to_i64().is_none() || b.to_i64().is_none() {
+                let lc = Core::ConstInt(a.clone());
+                let rc = Core::ConstInt(b.clone());
+                if let Some(simplified) = arith_identity(db, op, args[0], &lc, args[1], &rc) {
+                    trace!(target: "rcdzc::fold", op = intrinsic_name(op), "big-unsigned constant identity folded (operand out of i64 range — bypassing the i64 fold)");
+                    return simplified;
+                }
+            }
             // Fold over i64, THEN range-check the result against the op's SOLVED width. `fold_arith`
             // evaluates at the Stage i64 width, so a NARROW overflow whose true result still fits i64
             // (`255 + 1 = 256` over UInt8, `100 * 2 = 200` over Int8) folds to a valid `ConstInt` and
