@@ -239,6 +239,28 @@
   (call   main (: 42 Int64))
   (output (: 42 Int64)))
 
+(case "a Record.with whose TARGET is a runtime record (a projection) builds a fresh record, not declines"
+  (doc    "The runtime-record row-op face (breaker l6; v-inference 49d6eec14). `Record.with` whose target is
+           a genuinely RUNTIME record — here `(. outer pos)`, a PROJECTION of a nested-record param, not a
+           compile-time literal — used to DECLINE 'a record row operation over a runtime record is not yet
+           built' (lower.rs:22368): lower's row-ops only folded over a compile-time-visible Core::Record
+           (const_record_fields, following LocalRef binders). The fix builds a FRESH record from per-field
+           projections when const_record_fields misses but type_of is a concrete Ty::Record — the field set
+           is static and the heap is immutable-shared, so no new runtime primitive. `bump` updates the inner
+           `pos.y` through the projected sub-record `(. outer pos)`; the updated field takes the new value,
+           the sibling `x` is preserved. `(bump p0 5)` → pos.y = 2+5 = 7, both backends. The inline-literal
+           and flat-param forms always worked; this is the first to exercise a row-op on a DERIVED runtime
+           record. project/without/merge/pop over a runtime record are a separate follow-up.")
+  (input  (do
+            (def (bump (: outer (Record (: pos (Record (: x Int64) (: y Int64))) (: vel (Record (: x Int64) (: y Int64))))) (: d Int64))
+              (Record.with outer pos (Record.with (. outer pos) y (+ (. (. outer pos) y) d))))
+            (def (main (: d Int64))
+              (do
+                (def p0 (record (pos (record (x 1) (y 2))) (vel (record (x 30) (y 40)))))
+                (. (. (bump p0 d) pos) y)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 7 Int64)))
+
 (case "a row-op pipeline — merge then without then two projections — over runtime values"
   (doc    "Three row ops composed, intermediates never named in source types: merge unions {x} and {y,z}
            (both carrying runtime values), `without` drops z, and BOTH survivors project out of the

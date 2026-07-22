@@ -1,6 +1,6 @@
 /// sread-eval-nonrec.cdz — a SIBLING regression file for the highest-value non-recursive front-end shapes
-/// surfaced green by the 2026-07-22 run-ml probe (see
-/// queue/vcml-probe-2026-07-22-nonrecursive-shapes-all-green-candidate-regression-tests.md).
+/// surfaced green by a run-ml probe of non-recursive shapes: M cross-def Bool-helper into main's if-condition
+/// (→111), L param compared in the callee's own if-cond + negative computed arg (→0), B multi-binding let (→5).
 ///
 /// WHY A SIBLING (not folded into sread-eval-fns.cdz): sread-eval-fns is the fattest test file (~8min, nearest
 /// the 12min per-file gate cap / RUNAWAY-compile note). Adding more whole-pipeline run-src @tests there risks

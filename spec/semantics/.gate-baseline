@@ -41,6 +41,7 @@ pass	KADANE max-subarray threads a best-ending-here and a global best through on
 pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
+pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
 pass	a PALINDROME two-pointer walk closes from both ends of a runtime rope
@@ -4837,3 +4838,4 @@ pass	a scalar-indexed split over a MULTIBYTE string bounds its walk by scalar-le
 pass	sibling match arms each let-binding a DIFFERENT-WIDTH value get disjoint scratch slots, not an invalid component
 pass	a recursive list-match called in an IF-branch inside a match arm builds on all backends
 pass	a recursive list-match in an arm whose arms return a LIST builds on all backends
+pass	a Record.with whose TARGET is a runtime record (a projection) builds a fresh record, not declines
