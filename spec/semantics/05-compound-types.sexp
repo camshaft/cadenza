@@ -13429,6 +13429,45 @@
   (call   main (: 5000 Int64))
   (output (: 254999 Int64)))
 
+(case "List.update at BOTH extremes of a 2000-element list lands and preserves the original"
+  (doc    "Path-copy at scale, both ends: chained updates at index 0 (the leftmost leaf) and 1999 (deep
+           in the right spine) of a 2000-element trie — both land (111/222), and the ORIGINAL list still
+           reads 0 at index 0 (persistence rides in the same expression). 111·10000 + 222·10 + 0 =
+           1112220. The two paths share almost no interior nodes, so this witnesses two maximally-
+           disjoint path-copies over one deep trie (the third-level update pin touches one path).")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: xs (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push xs i)) xs))
+            (def (at (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None u) -1)))
+            (def (main (: n Int64))
+              (let ((xs (build 0 n (list))))
+                (let ((ys (List.update (List.update xs 0 111) 1999 222)))
+                  (+ (* 10000 (at ys 0)) (+ (* 10 (at ys 1999)) (at xs 0))))))
+            (export main)))
+  (call   main (: 2000 Int64))
+  (output (: 1112220 Int64)))
+
+(case "a runtime-index List.update LOOP rewrites every 100th slot of a 1000-element list"
+  (doc    "The update-in-a-loop idiom (the update pins touch fixed indices): `mark` walks i = 0, 100,
+           …, 900 zeroing each slot via a runtime-index update, threading the successively-updated list
+           through the recursion — ten path-copies stacked on one trie. The full-list sum drops from
+           1000 to 990. A loop whose update built each copy from the ORIGINAL (rather than the previous
+           iteration's result) would end at 999.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: xs (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push xs 1)) xs))
+            (def (mark (: i Int64) (: n Int64) (: xs (List Int64)))
+              (if (>= i n) xs (mark (+ i 100) n (List.update xs i 0))))
+            (def (total (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Some v) (total xs (+ i 1) (+ acc v)))
+                ((None u) acc)))
+            (def (main (: n Int64))
+              (total (mark 0 n (build 0 n (list))) 0 0))
+            (export main)))
+  (call   main (: 1000 Int64))
+  (output (: 990 Int64)))
+
 (case "a 2000-entry built map answers first, middle, and last keys through deep CHAMP levels"
   (doc    "The map twin at 40× the 50-entry churn pin: 2000 keys force additional CHAMP levels. get(0)=0,
            get(1000)=2000, get(1999)=3998 — 0·100000 + 2000·10 + 3998 = 23998. The deep-descent

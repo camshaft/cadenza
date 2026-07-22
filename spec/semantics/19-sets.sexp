@@ -2068,6 +2068,51 @@
   (call   main (: 0 Int64))
   (output (: 2 Int64)))
 
+(case "Set.union dedups a slice-view element against a flat twin ACROSS the operand boundary"
+  (doc    "The set-ALGEBRA face of the view canonicalization (the entry-point pins cover per-element
+           routes): one operand holds the runtime VIEW, the other its FLAT twin — the union's cross-trie
+           merge must recognize them as one element. a=1 (view = (20,30)) → {view/flat, (1,2)} len 2;
+           a=0 (view = (9,20)) → 3 distinct. A merge comparing view nodes structurally would keep both
+           and answer 3 at a=1.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+                ((Some s)
+                  (Set.len (Set.union (Set.of (list s))
+                                      (Set.of (list (Bytes.of (list 20 30)) (Bytes.of (list 1 2)))))))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 2 Int64))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))
+
+(case "Set.intersection and Set.difference match a view against a flat element across operands"
+  (doc    "The remaining two algebra ops in one case: intersection of {view, (1,2)} with {flat (20,30)}
+           finds the overlap exactly when the view's window equals the flat (1 at a=1, 0 at a=0), and
+           difference of {(20,30), (1,2)} minus {view} removes the matched flat (1 at a=1, 2 at a=0 —
+           encoded 10·inter + diff read as separate calls below). Both merges walk different tries per
+           operand role; the canonicalization must hold on whichever side the view sits.")
+  (input  (do
+            (def (main (: a Int64) (: which Int64))
+              (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+                ((Some s)
+                  (if (= which 0)
+                    (Set.len (Set.intersection (Set.of (list s (Bytes.of (list 1 2))))
+                                               (Set.of (list (Bytes.of (list 20 30))))))
+                    (Set.len (Set.difference (Set.of (list (Bytes.of (list 20 30)) (Bytes.of (list 1 2))))
+                                             (Set.of (list s))))))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64))
+  (output (: 1 Int64))
+  (call   main (: 0 Int64) (: 0 Int64))
+  (output (: 0 Int64))
+  (call   main (: 1 Int64) (: 1 Int64))
+  (output (: 1 Int64))
+  (call   main (: 0 Int64) (: 1 Int64))
+  (output (: 2 Int64)))
+
 (case "Map.remove by a slice-view key drops the flat-keyed entry"
   (doc    "The remove face: `(Map.remove {flat↦42} s)` with the view key — a=1 (equal content) removes
            the entry (len 0); a=0 (different window) no-ops (len 1, removal total). A remove path that

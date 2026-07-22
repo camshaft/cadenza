@@ -92,10 +92,13 @@ pass	DOMINATOR CSE does not reuse a condition's perform-product in the taken bra
 pass	FULL CONTRACT: @requires + @ensures on ONE def fire INDEPENDENTLY — a pre-violation and a post-violation trap on DIFFERENT inputs
 pass	Float32 tuple-key components key at binary32 width (distinctness, lookup, signed zero)
 pass	Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even
+pass	List.update at BOTH extremes of a 2000-element list lands and preserves the original
 pass	Map.remove by a slice-view key drops the flat-keyed entry
 pass	Map.take by a slice-view key yields the flat-keyed value
 pass	Map.to-list over runtime STRING keys enumerates in content byte order (first is byte-smallest)
 pass	Set.contains dispatches on an Option element at a runtime payload
+pass	Set.intersection and Set.difference match a view against a flat element across operands
+pass	Set.union dedups a slice-view element against a flat twin ACROSS the operand boundary
 pass	String.from-bytes of a runtime slice decodes the WINDOW only
 pass	Symbol.of over a slice of a dying rope interns the WINDOW content
 pass	a 1000-element set drains through Set.remove to empty
@@ -1159,6 +1162,7 @@ pass	a runtime slice VIEW crosses a helper-function boundary intact
 pass	a runtime zero denominator PRODUCED BY ARITHMETIC traps at construction
 pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
 pass	a runtime-constructed Ast equals its quoted twin by structural content
+pass	a runtime-index List.update LOOP rewrites every 100th slot of a 1000-element list
 pass	a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence
 pass	a shift by a RUNTIME amount computes (both operands off the fold)
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
