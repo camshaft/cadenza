@@ -6099,6 +6099,25 @@ fn batch_commit_inner(repo: &Path, execute: bool) -> Result<String, String> {
         ));
     }
 
+    // Ancestry proof: the drift guard above only proves `trunk == staged_base`; it does NOT prove the
+    // staged tip actually DESCENDS from that base. A stale/mispointed `BATCH_STAGING_REF` (a leftover
+    // from an aborted round, a hand-set ref) could point the tip at an unrelated commit — then the CAS
+    // below (which only enforces trunk still == base at write time, NOT fast-forward-ness) would move
+    // trunk to a non-descendant, DISCARDING every commit reachable only from the old trunk tip. That
+    // is a backward/non-FF move — a violation of the forward-only single-writer invariant. Refuse here,
+    // before either reporting OK or executing, unless the tip is provably a descendant of the base.
+    let is_ff = git_out(&["merge-base", "--is-ancestor", &staged_base, &staged_tip])
+        .status
+        .success();
+    if !is_ff {
+        return Err(format!(
+            "batch-commit: REFUSED — the staged tip ({staged_tip}) is NOT a descendant of the staged \
+             base ({staged_base}); moving trunk to it would be a non-fast-forward that discards \
+             commits. The staging ref is stale or corrupt — re-stage off the current trunk. \
+             (trunk NOT moved.)"
+        ));
+    }
+
     if !execute {
         return Ok(format!(
             "batch-commit: OK to fast-forward trunk {staged_base} → {staged_tip} (assert holds). \
@@ -6393,6 +6412,67 @@ mod tests {
             before,
             "trunk unmoved when nothing staged"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_commit_refuses_when_the_staged_tip_is_not_a_descendant_of_the_staged_base() {
+        // SAFETY (PR#765 review): the drift guard proves trunk == staged_base but NOT that the staged
+        // tip DESCENDS from that base. A stale/mispointed staging ref (leftover from an aborted round)
+        // could point the tip at an unrelated commit; without the ancestry check the CAS below would
+        // still move trunk to it — a NON-FF move discarding the commits reachable only from old trunk.
+        // Here trunk is LEFT exactly at the staged base (drift guard passes), yet the tip is a sibling
+        // commit off the base's parent (an orphan root), so it is NOT a descendant → must REFUSE.
+        let dir = init_batch_fixture_repo("nonff");
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let staged_base = git_rev(&dir, TRUNK);
+
+        // Build an UNRELATED tip on a disjoint history (orphan branch) so it can never be a descendant
+        // of the staged base — the sharpest "stale/corrupt ref" case.
+        let _ = git(&["checkout", "-q", "--orphan", "bogus"]);
+        let _ = git(&["rm", "-rfq", "--cached", "."]);
+        std::fs::write(dir.join("z.txt"), "orphan").unwrap();
+        let _ = git(&["add", "z.txt"]);
+        let _ = git(&["commit", "-q", "-m", "unrelated orphan tip"]);
+        let bogus_tip = git_rev(&dir, "HEAD");
+        assert_ne!(bogus_tip, staged_base);
+
+        // Point the staging refs so trunk still == staged_base (drift guard PASSES) but tip is bogus.
+        let _ = git(&["update-ref", BATCH_STAGING_REF, &bogus_tip]);
+        let _ = git(&["update-ref", BATCH_STAGING_BASE_REF, &staged_base]);
+        let _ = git(&["checkout", "-q", TRUNK]);
+        assert_eq!(
+            git_rev(&dir, TRUNK),
+            staged_base,
+            "trunk still at base → drift guard must pass, leaving ancestry as the sole defense"
+        );
+
+        // Even report-only must refuse (the ancestry check runs before the dry-run OK return).
+        let dry = batch_commit_inner(&dir, false);
+        assert!(
+            dry.is_err(),
+            "report-only must refuse a non-descendant tip: {dry:?}"
+        );
+        assert!(dry.unwrap_err().contains("NOT a descendant"));
+
+        // Execute must refuse AND leave trunk unmoved (no non-FF clobber).
+        let res = batch_commit_inner(&dir, true);
+        assert!(res.is_err(), "must refuse a non-descendant tip: {res:?}");
+        assert!(res.unwrap_err().contains("NOT a descendant"));
+        assert_eq!(
+            git_rev(&dir, TRUNK),
+            staged_base,
+            "trunk must be UNMOVED — no non-FF clobber"
+        );
+        // Staging refs survive the refusal (nothing consumed; operator re-stages).
+        assert!(!git_rev(&dir, BATCH_STAGING_REF).is_empty());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
