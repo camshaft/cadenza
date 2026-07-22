@@ -10,7 +10,7 @@
 /// is IDENTICAL — same cases, same expectations, just redistributed across two files. corpus()/conformance()
 /// (the aggregate scoreboard) are UNCHANGED in conformance-db and still cover ALL cases incl. these.
 
-import { check-case, c-cx-arith-in-cond, c-cx-bool-cmp-operand-declines, c-cx-bool-let-as-cond, c-cx-chained-comparison-declines, c-cx-div-paren-divisor, c-cx-let-bool-in-arith-declines, c-cx-let-chain-outer-in-value-and-body, c-cx-mod-by-zero-declines, c-cx-mod-parity, c-cx-mod-precedence, c-cx-mod-precedence-distinguishes, c-cx-mul-prec-in-sub-chain, c-cx-ne-true, c-cx-neg-dividend, c-cx-neg-mod, c-cx-nested-if-in-branch, c-cx-nested-let-precedence, c-cx-nested-redundant-parens, c-cx-paren-if-in-then-branch, c-cx-paren-overrides-precedence, c-cx-paren-right-operand, c-cx-sub-left-assoc, c-cx-var-in-later-binding } from "conformance-db"
+import { check-case, c-cx-arith-in-cond, c-cx-bool-cmp-operand-declines, c-cx-bool-let-as-cond, c-cx-chained-comparison-declines, c-cx-div-paren-divisor, c-cx-div-left-assoc, c-cx-if-in-let-value, c-cx-let-bool-in-arith-declines, c-cx-let-chain-outer-in-value-and-body, c-cx-mod-by-zero-declines, c-cx-mod-parity, c-cx-mod-precedence, c-cx-mod-precedence-distinguishes, c-cx-mul-prec-in-sub-chain, c-cx-ne-true, c-cx-neg-dividend, c-cx-neg-mod, c-cx-nested-if-in-branch, c-cx-nested-let-precedence, c-cx-nested-redundant-parens, c-cx-paren-if-in-then-branch, c-cx-paren-overrides-precedence, c-cx-paren-right-operand, c-cx-sub-left-assoc, c-cx-var-in-later-binding } from "conformance-db"
 
 @test
 def conformance-cx-nested-let-precedence() =
@@ -53,6 +53,14 @@ def conformance-cx-paren-right-operand() =
 @test
 def conformance-cx-sub-left-assoc() =
   if check-case(c-cx-sub-left-assoc()) then unit else trap("10 - 3 - 2 → 5 (left-assoc)")
+
+@test
+def conformance-cx-div-left-assoc() =
+  if check-case(c-cx-div-left-assoc()) then unit else trap("16 / 4 / 2 → 2 (left-assoc, not 8)")
+
+@test
+def conformance-cx-if-in-let-value() =
+  if check-case(c-cx-if-in-let-value()) then unit else trap("let x=(if 1<2 then 10 else 20) in x+5 → 15")
 
 @test
 def conformance-cx-mod-precedence() =

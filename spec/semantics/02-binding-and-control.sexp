@@ -250,6 +250,69 @@
   (call   main (: 5 Int64)) (output (: 6 Int64))
   (call   main (: 7 Int64)) (output (: 0 Int64)))
 
+(case "an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type"
+  (doc    "The operator's motivating value-facts example (`if x > 0` ⇒ `x - 1` cannot underflow) on an
+           UNSIGNED type, which value-facts slice 2 (GAP-A) newly enables — before it, the unsigned `(> x 0)`
+           comparison refined nothing, so the guard always stayed. `dec`: inside the truthy branch of
+           `(if (> x 0) …)`, `x` refines to `[1, 2^32−1]`, so `(- x 1)` cannot underflow and its wrap/trap
+           guard is dropped; the value is unchanged (x=5 → 4, and the else covers x=0 → 0). `raw`: the SAME
+           `(- x 1)` WITHOUT the `(> x 0)` guard is unrefined, so at x=0 it must still TRAP (unsigned
+           underflow = integer overflow) — the SOUNDNESS TWIN proving the elision is licensed by the FACT,
+           not by luck. Pins the operator's headline use case for unsigned + its trap-preservation twin on
+           both backends. Distinct from the redundant-compare pins above (this elides an ARITHMETIC guard).")
+  (input  (do
+            (def (dec (: x UInt32)) (if (> x 0) (: (- x 1) UInt32) 0))
+            (def (raw (: x UInt32)) (: (- x 1) UInt32))
+            (export dec)
+            (export raw)))
+  ; dec: x > 0 refines x to [1, MAX], so (- x 1) sheds its underflow guard; x=0 takes the else → 0.
+  (call   dec (: 5 UInt32))
+  (output (: 4 Int64))
+  (call   dec (: 0 UInt32))
+  (output (: 0 Int64))
+  ; raw: unguarded (- x 1) computes for x>0 but MUST trap at x=0 (unsigned underflow) — the soundness twin.
+  (call   raw (: 3 UInt32))
+  (output (: 2 Int64))
+  (call   raw (: 0 UInt32))
+  (trap   "integer overflow"))
+
+(case "unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)"
+  (doc    "The soundness BOUNDARY of the unsigned interval refinement (value-facts GAP-A): an unsigned
+           value is always ≥ 0, so a comparison against the domain's lower edge is a tautology the
+           refinement must handle WITHOUT fabricating a bogus/inverted interval. Three edge shapes, all
+           value-pinned (an over-refinement would flip one):
+             (a) `(if (< x 0) 1 9)` — `x < 0` is UNSATISFIABLE for a UInt32 (x ≥ 0), so the then-arm is
+                 unreachable and every call returns 9 (the else). A refinement that produced an inverted
+                 `[0,-1]` interval and mis-decided the branch would wrongly return 1.
+             (b) `(if (>= x 0) 7 1)` — `x >= 0` is ALWAYS TRUE for unsigned, so every call returns 7.
+             (c) `(if (> x 0) (if (< x 0) 1 2) 3)` — inside `x > 0` (so `x ∈ [1, MAX]`), the nested
+                 `(< x 0)` is provably FALSE, so the inner takes its else → 2 (x>0) / 3 (x=0). Pins that the
+                 refinement composes correctly at the edge instead of contradicting itself.
+           All scalar UInt32, both backends. Guards the GAP-A unsigned path against a degenerate-edge
+           miscompile (the sibling of the UInt64-ceiling pin — both are unsigned-domain soundness edges).")
+  (input  (do
+            (def (lt0  (: x UInt32)) (if (< x 0) 1 9))
+            (def (ge0  (: x UInt32)) (if (>= x 0) 7 1))
+            (def (nest (: x UInt32)) (if (> x 0) (if (< x 0) 1 2) 3))
+            (export lt0)
+            (export ge0)
+            (export nest)))
+  ; (a) x < 0 unsatisfiable for unsigned → always the else (9)
+  (call   lt0 (: 0 UInt32))
+  (output (: 9 Int64))
+  (call   lt0 (: 5 UInt32))
+  (output (: 9 Int64))
+  ; (b) x >= 0 always true for unsigned → always the then (7)
+  (call   ge0 (: 0 UInt32))
+  (output (: 7 Int64))
+  (call   ge0 (: 5 UInt32))
+  (output (: 7 Int64))
+  ; (c) nested (< x 0) under (> x 0) is provably false → inner else; x>0 → 2, x=0 → outer else 3
+  (call   nest (: 5 UInt32))
+  (output (: 2 Int64))
+  (call   nest (: 0 UInt32))
+  (output (: 3 Int64)))
+
 (case "conditional propagation respects a shadowing rebind of the condition variable"
   (doc    "The propagation must track the condition's VALUE in scope, not match its text: `(let ((c (< n
            5))) (if c 1 (let ((c true)) (if c 2 3))))` with n = 10 has the OUTER `c` = false (10 < 5 is

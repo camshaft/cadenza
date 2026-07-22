@@ -4193,6 +4193,53 @@ fn a_recursive_match_binder_over_a_heap_scrutinee_leaves_no_live_objects() {
     let _ = rt.live_objects();
 }
 
+/// rc-BALANCE witness for the `Ast.Int` HEAP-BigInt payload the `Int64`->`BigInt` flip introduced
+/// (`1bfb5c29e`): before the flip `Ast.Int`'s payload was an inline scalar (no heap); now constructing
+/// `(Ast.Int x)` over a RUNTIME BigInt boxes a heap `Big`, and matching `(Ast.Int n)` extracts a heap
+/// child — so the sum-payload dup/reclaim discipline now applies to `Ast.Int`. v-memory-safety ran their
+/// 34-probe reclaim family against the flip (all pass — the shape composes from the BigInt-producer +
+/// sum-payload-heap-child paths); this is the dedicated composed pin for the metaprogramming feature.
+/// `main(41)` builds a runtime BigInt `(+ (BigInt.of k) 1N)` = 42 (RUNTIME — driven by the entry param,
+/// so it heap-allocs and does NOT const-fold away), wraps it in `(Ast.Int …)`, matches + narrows the
+/// payload back (`Int64.of n` = 42), then DROPS the `Ast.Int` — which must reclaim the boxed BigInt. A
+/// balanced dup/drop nets live-cells to 0; a leaked payload (the drop not cascading into the boxed Big)
+/// shows as a nonzero live count even though the value is correct.
+#[test]
+#[ignore = "needs the debug-counters store (cargo xtask build)"]
+fn a_quoted_ast_int_over_a_runtime_bigint_leaves_no_live_objects() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[rc] debug-counters runtime not in the store (run `cargo xtask build`); skipping Ast.Int BigInt balance probe"
+        );
+        return;
+    };
+    // `(+ (BigInt.of k) 1N)` is a RUNTIME BigInt (the entry param `k` drives it, so it heap-allocs a
+    // `Big` — a constant here would fold away with no alloc and stop importing the runtime). It is wrapped
+    // in `(Ast.Int …)`, matched, and narrowed back with `Int64.of`; the `Ast.Int` temporary is then
+    // dropped, which must cascade the reclaim into the boxed BigInt payload. A leak = the payload not
+    // reclaimed on the sum drop.
+    let src = "(module m \
+                 (def (main (: k Int64)) \
+                     (let ((x (+ ((. BigInt of) k) 1N))) \
+                         (match ((. Ast Int) x) (((. Ast Int) n) ((. Int64 of) n)) (_ -1)))) \
+                 (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    assert_eq!(
+        rt.call("main", &[Val::S64(41)]),
+        Val::S64(42),
+        "the runtime BigInt round-trips through Ast.Int: (41 + 1) narrowed back = 42"
+    );
+    assert_eq!(
+        rt.live_objects(),
+        0,
+        "leak: the boxed BigInt payload of a dropped Ast.Int was not reclaimed (expected 0 live cells)"
+    );
+}
+
 /// DIRECT leak witness for the owned-temporary BORROWING-OP reclaim family (List.concat / List.push /
 /// List.update as a `List.len` operand): after the round-trip the runtime's live-cell count must be 0.
 /// This is a STRONGER witness than the drop-IMPORT-presence unit tests (which prove `drop` is imported +
@@ -12168,7 +12215,20 @@ mod runtime_ops {
             "(/ x d)",
             &[Val::S8(-128), Val::S8(-1)]
         ));
-        // A flow-refined nonneg dividend elides too.
+        // A FLOW-REFINED nonneg dividend elides too — and this is the VALUE-FACTS-specific invariant: the
+        // range-check drops because the interval refinement (not the type) proves `x` nonneg. Inside the
+        // then-branch of `(> x 0)`, `x` refines to `[1, 127]`, so `value_provably_nonneg(x)` holds at the
+        // `(/ x d)` emit → the MIN/-1 range-check is dead, exactly as the type-level masked case above. Pin
+        // it at the Lir level (not just value parity) so a refinement regression that stopped reaching the
+        // div guard would be caught, not silently keep the guard.
+        let refined_div = lir("(: x Int8) (: d Int8)", "(if (> x 0) (/ x d) 0)");
+        assert!(
+            refined_div.contains(&Lir::I32DivS)
+                && !refined_div
+                    .iter()
+                    .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
+            "a flow-refined nonneg dividend (x>0) drops the MIN/-1 range-check via the interval fact; got {refined_div:?}"
+        );
         assert_eq!(
             run::<i8>(
                 "(: x Int8) (: d Int8)",
@@ -12176,6 +12236,24 @@ mod runtime_ops {
                 &[Val::S8(10), Val::S8(3)]
             ),
             3
+        );
+        // SAFETY: x=0 takes the else (0), and a NEGATIVE divisor on the refined path still computes (no
+        // spurious trap from the elided range-check): 10 / -1 = -10, fits Int8.
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8) (: d Int8)",
+                "(if (> x 0) (/ x d) 0)",
+                &[Val::S8(10), Val::S8(-1)]
+            ),
+            -10
+        );
+        assert_eq!(
+            run::<i8>(
+                "(: x Int8) (: d Int8)",
+                "(if (> x 0) (/ x d) 0)",
+                &[Val::S8(0), Val::S8(3)]
+            ),
+            0
         );
     }
 
@@ -41007,10 +41085,12 @@ mod match_engine {
         );
         // The spliced result folds through the ordinary path (one-tier / fixpoint): `two` returns
         // `(Ast.Int 2)`, and `(+ 40 (…2…))` reduces to 42.
+        // `Ast.Int`'s payload is `BigInt` (non-lossy AST-int storage), so the extracted `n` is a `BigInt`;
+        // narrow it back with `Int64.of` to add the Int64 `40` and read the `i64` result.
         let fixpoint = "(module m \
             (def (two chunks holes) (Ast.Int 2)) \
             (def (main) (match (tagged-template two (chunks \"\") (holes)) \
-                          ((Ast.Int n) (+ 40 n)) (_ 0))) \
+                          ((Ast.Int n) (+ 40 (Int64.of n))) (_ 0))) \
             (export main))";
         assert_eq!(
             run_returns::<i64>(
@@ -66520,6 +66600,42 @@ mod stage1 {
     }
 
     #[test]
+    fn a_module_member_access_survives_reduction_budget_exhaustion() {
+        // Regression for the compiler-ml self-host emit-cache collision (#3) + the sread-eval scaling
+        // CDZ0201s — SAME root: `reduce_nodes` (the cumulative anti-divergence work budget) is monotonic
+        // over a whole `compile()` and never reset, so a large-but-TERMINATING multi-module closure build
+        // exhausts the 1M budget. Once exhausted, `enter_reduction` denied EVERY reduction — INCLUDING a
+        // trivial `Ref{Module}→record` hop in `member_value` — so a well-formed member access like
+        // `Option.None` mis-typed "a … value has no field `None`" and a well-typed program failed its
+        // downstream component build with a locationless CDZ0201.
+        //
+        // The fix: a STRUCTURAL `Ref` hop (`reduce_to_record_id`, `enter_reduction_structural`) charges only
+        // the per-chain DEPTH guard (cycle termination), NOT the cumulative node budget — a `Ref` deref is
+        // O(1), not the exponential-fanout β-reduction the budget targets. So a member access must resolve
+        // even at budget exhaustion. Here: a user module `m` with a member def `k`, accessed `(. m k)`;
+        // pre-load, drive `reduce_nodes` to the budget (simulating a giant closure build), then check the
+        // diagnostics carry NO spurious "no field" reject.
+        // Access a PRELUDE SUM MODULE's variant constructor by member — `(. Option None)` — which routes
+        // `type_of`'s `Resolved::Member` arm → `member_value(Option, None)` → `reduce_to_record_id`, the
+        // exact path that needs the `Ref{Option}→record` hop. (This is the shape the closure build
+        // SYNTHESIZES; here it is written explicitly so a small program exercises it.)
+        let src = "(module m (def (main) (: (. Option None) (Option Int64))) (export main))";
+        let mut db = crate::db::Db::load(parse(src));
+        db.reduce_nodes = crate::db::REDUCE_NODE_BUDGET; // as if a large closure build already spent it
+        let diags = crate::diagnostics(&mut db);
+        let bad: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("no field") || d.message.contains("requires a record"))
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "a module-member access must resolve even at reduction-budget exhaustion (the emit-cache \
+             collision-#3 / scaling root); got spurious: {:?}",
+            bad.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn a_compound_wrapped_self_application_declines_not_a_stack_overflow() {
         // A THIRD hang shape the fuzzer surfaced: `(fn v (tuple (v v) 1))` applied to a copy of itself. Here
         // the reduction BUDGET already terminates inference (β-reduction gives up past `REDUCE_NODE_BUDGET`)
@@ -70677,6 +70793,68 @@ mod sidecar_driven {
             &[],
         );
         assert_eq!(artifact_text(&out, KIND_TYPE_AT).as_deref(), Some("Int64"));
+    }
+
+    #[test]
+    fn hover_on_an_unannotated_but_inferable_param_binder_shows_the_solved_type() {
+        // The v-lsp inlayHint gap: an UN-ANNOTATED param binder used to hover as "unknown" even when its
+        // type is locally inferable — but the whole point of an inlay hint is to show the type the author
+        // did NOT write. A non-recursive def's param inlines at each call and is never solved standalone
+        // (`type_of` at the binder reads `Any`), yet the body's uses constrain it: `(+ x 1)` pins `x` to
+        // `Int64`. `query_param_ty` recovers that via the body-constraint solve, so the binder now hovers
+        // as its inferred type. (`f x)` — the `x` in the SIGNATURE is the binder; the reference in the body
+        // already typed via inlining.)
+        let src = "(module m (def (f x) (+ x 1)) (def (main) (f 5)) (export main))";
+        // Hover the binder occurrence itself (the `x` in the signature `(f x)`).
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse");
+        let off = src.find("f x").expect("sig") + 2; // the binder `x`
+        let node = spans.node_at_offset(off).expect("node at binder");
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::TypeAt { node: node.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert_eq!(
+            artifact_text(&out, KIND_TYPE_AT).as_deref(),
+            Some("Int64"),
+            "an un-annotated but numerically-used param hovers as its inferred Int64"
+        );
+    }
+
+    #[test]
+    fn hover_on_a_fully_generic_param_binder_stays_unknown() {
+        // The no-over-reach twin: a FULLY GENERIC param (`(def (id x) x)`) has NO single monomorphic type —
+        // a query must NOT invent a width. `query_param_ty` returns `None` (the body imposes no operand
+        // constraint), so the binder correctly stays "unknown" rather than being pinned to a call-site's
+        // instantiation. Guards against the fix over-reaching into scheme variables.
+        let src = "(module m (def (id x) x) (def (main) (id 5)) (export main))";
+        let (arenas, spans) = cadenza_syntax::sexpr::read_spanned(src).expect("parse");
+        let off = src.find("id x").expect("sig") + 3; // the binder `x`
+        let node = spans.node_at_offset(off).expect("node at binder");
+        let ast = cadenza_syntax::codec::encode(&arenas);
+        let out = compile(
+            &[
+                Artifact::new(Artifact::KIND_AST, "m", ast),
+                Artifact::new(
+                    sidecar::KIND_SIDECAR,
+                    "drive",
+                    sidecar::encode(&[Request::Query(Query::TypeAt { node: node.0 })]),
+                ),
+            ],
+            &[],
+        );
+        assert_eq!(
+            artifact_text(&out, KIND_TYPE_AT).as_deref(),
+            Some("unknown"),
+            "a fully-generic param must not be pinned to a monomorphic width"
+        );
     }
 
     #[test]

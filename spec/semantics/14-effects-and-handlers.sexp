@@ -487,6 +487,78 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 15 Int64)))
 
+(case "a 100k-iteration pure tail loop under a handler runs in constant stack"
+  (doc    "The SCALE face of loops-under-handlers (existing loop pins are ≤33 deep): a 100000-iteration
+           tail-recursive accumulator inside a handle body, plus one perform reading the seed. The
+           handler context must not break tail-call frame reuse — a lowering that let the handler frame
+           capture the loop (or reified a frame per iteration) overflows long before 100k. 0 + 100000.")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (def (loop (: n Int64) (: acc Int64))
+              (if (< n 1) acc (loop (- n 1) (+ acc 1))))
+            (def (main (: n Int64))
+              (handle Ctr 0
+                ((next (u) s (resume s (+ s 1))))
+                (+ (Ctr.next unit) (loop n 0))))
+            (export main)))
+  (call   main (: 100000 Int64))
+  (output (: 100000 Int64)))
+
+(case "a PERFORMING tail loop of 10000 iterations threads state in constant space"
+  (doc    "The sharper scale face: every iteration PERFORMS (`(+ acc (Ctr.next unit))`), so the
+           tail-resumptive arm discharges 10000 performs — each must resume without reifying a
+           continuation (10k reified frames would exhaust memory/stack). The state threads 0..9999,
+           summing to 49995000. The constant-space guarantee of the E4 tail-resumptive lowering at a
+           scale the ≤33-deep pins cannot witness.")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (def (go (: n Int64) (: acc Int64))
+              (if (< n 1) acc (go (- n 1) (+ acc (Ctr.next unit)))))
+            (def (main (: n Int64))
+              (handle Ctr 0
+                ((next (u) s (resume s (+ s 1))))
+                (go n 0)))
+            (export main)))
+  (call   main (: 10000 Int64))
+  (output (: 49995000 Int64)))
+
+(case "an effect op RESUMED with a slice-view Bytes crosses the arm boundary intact"
+  (doc    "A heap VIEW as the resume value: the arm builds a `Bytes.slice` window and resumes with it;
+           the body indexes the escaped view (byte 0 of (20,30) = 20, +22 = 42). The view's re-based
+           coordinates must survive the continuation crossing — composing the slice-view machinery with
+           the effects lowering (scalars/strings/sums as resume values are pinned; a VIEW is the shape
+           a zero-copy parser hands back).")
+  (input  (do
+            (effect Src (op read (-> Unit Bytes)))
+            (def (main (: a Int64))
+              (handle Src 0
+                ((read (u) s
+                  (match (Bytes.slice (Bytes.of (list 9 20 30 8)) 1 2)
+                    ((Some w) (resume w s))
+                    ((None x) (resume (Bytes.of (list)) s)))))
+                (+ (match (Bytes.at (Src.read unit) 0) ((Some v) v) ((None u) -1)) a)))
+            (export main)))
+  (call   main (: 22 Int64))
+  (output (: 42 Int64)))
+
+(case "an effect op resumed with a whole MAP threads the CHAMP through the continuation"
+  (doc    "A collection HANDLE as the resume value: the arm resumes with a 2-entry map, and the body
+           looks it up at the boundary parameter — k=2 → 20, k=9 → None → -1. The CHAMP handle rides the
+           continuation like any value; the body's descent runs on the arm-built trie. (Map-STATE
+           handlers are pinned nearby; this is the map-as-RESULT face.)")
+  (input  (do
+            (effect Env (op vars (-> Unit (Map Int64 Int64))))
+            (def (main (: k Int64))
+              (handle Env 0
+                ((vars (u) s (resume (Map.insert (Map.insert Map.empty 1 10) 2 20) s)))
+                (match (Map.lookup (Env.vars unit) k)
+                  ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 20 Int64))
+  (call   main (: 9 Int64))
+  (output (: -1 Int64)))
+
 (case "a ctl-style arm applying its continuation inside a match scrutinee resolves and folds"
   (doc    "The continuation binder `k` of a `ctl`-style arm must be in scope everywhere in the arm body,
            including inside a MATCH scrutinee. `(flip () s k (match (k 10) (z (* z 2))))` applies `k`
@@ -4132,6 +4204,23 @@
                 (S.blen "hi"))) (export main)))
   (output (: 100 Int64))
   (host-calls))
+
+(case "a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes"
+  (doc    "The String-entry-arg family (13-strings — wasm declines the entry marshal, a sound todo; rust
+           computes) composed with EFFECTS: the boundary `s` is concatenated into a runtime rope, performed
+           as the String ARGUMENT of `Log.emit`, and the handler arm reads the arg's byte length —
+           byte-len(\"xy\"+\"abc\") = 5. Pins the full entry→rope→op-arg→arm chain on the targets that
+           marshal the entry arg; the op-argument String path itself is already pinned const (the blen
+           case above) — this witnesses a RUNTIME-valued op argument flowing from the component boundary.")
+  (input  (do
+            (effect Log (op emit (-> String Int64)))
+            (def (main (: s String))
+              (handle Log 0
+                ((emit (m) st (resume (String.byte-len m) st)))
+                (Log.emit (String.concat s "abc"))))
+            (export main)))
+  (call   main (: "xy" String))
+  (output (: 5 Int64)))
 
 ; (The two "peer op whose compound/SUM RESULT escapes the entrypoint declines" corpus cases were REMOVED
 ;  once the resource-escape × peer-extern envelope FUSION landed — the shapes they witnessed as declines

@@ -2793,6 +2793,30 @@ impl Db {
         Some(ReductionGuard { db: self })
     }
 
+    /// Like [`enter_reduction`] but for a TRIVIAL STRUCTURAL hop — a `Ref` dereference / a nominal-newtype
+    /// unwrap: an O(1) step that follows one edge, NOT a β-reduction that can drive the exponential
+    /// bounded-reduction fanout the cumulative [`REDUCE_NODE_BUDGET`] exists to bound (a self-applying
+    /// lambda `(fn (v) (v (v v)))`). So this charges ONLY the per-chain DEPTH guard (`REDUCE_DEPTH_LIMIT`,
+    /// which terminates a `Ref`/value cycle — `(def (g) g)`), NOT the whole-compile node budget.
+    ///
+    /// WHY (the bug this fixes): `reduce_nodes` is CUMULATIVE over a whole `compile()` and never reset, so a
+    /// large-but-TERMINATING multi-module closure build (the compiler-ml self-host: emit-db + every imported
+    /// module monomorphized in one compile) legitimately exceeds the 1M budget. Once exhausted,
+    /// `enter_reduction` denied EVERY subsequent reduction — including a trivial `Ref{Option}→record` hop in
+    /// `member_value(Option, "None")` — so `reduce_to_record_id` returned `None`, `Option.None` mis-typed as
+    /// "a Option value has no field `None`", and a WELL-TYPED program failed its downstream component build
+    /// with locationless CDZ0201 (layout-sensitive: the fault fired once the budget happened to run out at
+    /// that call). Charging a structural hop against an EXPONENTIAL-fanout budget was the category error; a
+    /// `Ref` hop does constant work and only needs cycle termination. The `Apply` β-reduction arms keep the
+    /// full [`enter_reduction`] (the budget still bounds the real divergence — the `cdz-smith` timeout).
+    pub fn enter_reduction_structural(&mut self) -> Option<ReductionGuard<'_>> {
+        if self.reduce_depth >= REDUCE_DEPTH_LIMIT {
+            return None;
+        }
+        self.reduce_depth += 1;
+        Some(ReductionGuard { db: self })
+    }
+
     /// Push a flow-sensitive refinement FRAME for a control-flow branch being emitted (see
     /// [`range_refinements`]). The caller MUST call [`pop_range_refinements`] on every exit path — the
     /// emit `if` arm brackets a branch's emission with a push/emit/pop so an early `?` return still pops.

@@ -83,6 +83,21 @@ pub fn rust_call_arg(val: &str) -> String {
         "-inf" => return "f64::NEG_INFINITY".to_string(),
         _ => {}
     }
+    // A SYMBOL literal (`#"read"`) — the canonical value form of a `Symbol` arg. A `Symbol` param emits as
+    // an owned Rust `String` in the rust backend (a symbol erases to its interned text — the export is
+    // `s: String`), so marshal it exactly like a String ENTRY arg: strip the `#` sigil and cross the quoted
+    // text as `"read".to_string()`. Without this the `#"read"` fell through to the String arm's `starts_with
+    // ('"')` check (it starts with `#`, not `"`) and was emitted VERBATIM into the driver's Rust source →
+    // `error: expected one of ! or [, found "read"` (a no-build, not a decline — breaker/corpus-bugfix, the
+    // Symbol twin of the FIXED String/BigInt entry-arg marshals). Checked BEFORE the String arm since the
+    // inner `"read"` is itself a valid String literal we reuse.
+    if let Some(inner) = v.strip_prefix('#')
+        && inner.starts_with('"')
+        && inner.ends_with('"')
+        && inner.len() >= 2
+    {
+        return format!("{inner}.to_string()");
+    }
     // A STRING literal (`"abc"`) — the canonical value form of a `String` arg — must cross as an OWNED
     // `String`, because the emitted export's parameter is `s: String` (owned), NOT `&str`. A bare `"abc"`
     // Rust literal is a `&'static str`, so passing it directly is a type error (E0308) — the exported-entry

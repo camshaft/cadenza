@@ -38,6 +38,54 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "a 1000-iteration concat loop builds a 4000-byte rope measured exactly"
+  (doc    "The rope-SCALE face (the rep pins concat ≤3 leaves): 1000 tail-loop concats of \"abcd\" build
+           a deep rope whose byte-len is exactly 4000 — no leaf dropped, no double-count at any of the
+           999 interior seams, and the build itself doesn't degrade (an O(n) per-concat copy would make
+           this quadratic). The stress companion of the small rope-eq pins.")
+  (input  (do
+            (def (build (: n Int64) (: acc String))
+              (if (< n 1) acc (build (- n 1) (String.concat acc "abcd"))))
+            (def (main (: n Int64))
+              (String.byte-len (build n "")))
+            (export main)))
+  (call   main (: 1000 Int64))
+  (output (: 4000 Int64)))
+
+(case "a deep rope indexes by scalar at both extremes"
+  (doc    "Scalar addressing through ~500 concat seams: `String.at` reads index 0 (the single \"A\" head
+           leaf) and index n·2 (the LAST scalar, deep in the right spine) of a 1001-scalar rope — 10·1+1
+           = 11. A walk that lost count crossing seams, or that flattened per-read (correct but masking
+           the seam walk), answers the same; the wrong-index failure is a different character at either
+           extreme.")
+  (input  (do
+            (def (build (: n Int64) (: acc String))
+              (if (< n 1) acc (build (- n 1) (String.concat acc "xy"))))
+            (def (main (: n Int64))
+              (let ((s (String.concat "A" (build n ""))))
+                (+ (* 10 (match (String.at s 0) ((Some c) (if (= c "A") 1 0)) ((None u) -1)))
+                   (match (String.at s (* n 2)) ((Some c) (if (= c "y") 1 0)) ((None u) -1)))))
+            (export main)))
+  (call   main (: 500 Int64))
+  (output (: 11 Int64)))
+
+(case "two deep ropes built in OPPOSITE orders compare equal by content"
+  (doc    "The tree-shape-independence face: `build-l` appends (`concat acc leaf` — a left-leaning spine)
+           and `build-r` prepends (`concat leaf acc` — right-leaning); at n=500 both denote the same 1000
+           bytes in maximally different tree shapes. `=` must compare CONTENT across the shapes (a
+           structural tree compare, or a flatten applied to only one side, reports unequal). The
+           build-order companion of the rope-vs-flat-twin pin.")
+  (input  (do
+            (def (build-l (: n Int64) (: acc String))
+              (if (< n 1) acc (build-l (- n 1) (String.concat acc "ab"))))
+            (def (build-r (: n Int64) (: acc String))
+              (if (< n 1) acc (build-r (- n 1) (String.concat "ab" acc))))
+            (def (main (: n Int64))
+              (if (= (build-l n "") (build-r n "")) 1 0))
+            (export main)))
+  (call   main (: 500 Int64))
+  (output (: 1 Int64)))
+
 (case "a runtime string rope matches a string-literal arm"
   (doc    "The `match` sibling: `(match (rep \"hi\" 3) (\"hixxx\" 1) (_ 0))` takes the \"hixxx\" arm → 1. A
            string `match` desugars to a chain of `(= scrutinee <literal>)` value-eq tests, so it hit the
@@ -214,6 +262,81 @@
                 ((None) (- 0 1))))
             (export main)))
   (output (: 42 Int64)))
+
+(case "a runtime String.slice probing a flat-keyed map hits by content"
+  (doc    "The SLICE-view member of the champ-key family (the rope cases above canonicalize CONCAT
+           ropes): the lookup key is a runtime-START `String.slice` of a larger string — a VIEW whose
+           content equals the stored flat key \"bc\". a=1 windows \"bc\" → hit (42); a=0 windows \"ab\" →
+           clean miss (-1). The slice view must content-canonicalize at the champ site exactly as a
+           rope does (a hash over the view node or the parent's bytes would miss the hit case). The
+           String twin of the Bytes slice-view champ-key contract — pinned here because the STRING side
+           already works; the Bytes side is finding #16.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((m (Map.insert Map.empty "bc" 42)))
+                (match (String.slice "abcd" a (+ a 2))
+                  ((Some s) (match (Map.lookup m s) ((Some v) v) ((None u) -1)))
+                  ((None u) -2))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 42 Int64))
+  (call   main (: 0 Int64))
+  (output (: -1 Int64)))
+
+(case "a runtime String.slice STORED as a map key is found by a flat probe"
+  (doc    "The stored-key direction: the slice view goes INTO the map as the key and the flat literal
+           probes it — insert-site canonicalization, the champ-site twin of the probe-side case above.
+           a=1 stores the \"bc\" window → the flat \"bc\" probe finds 42.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (String.slice "abcd" a (+ a 2))
+                ((Some s)
+                  (match (Map.lookup (Map.insert Map.empty s 42) "bc")
+                    ((Some v) v) ((None u) -1)))
+                ((None u) -2)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 42 Int64)))
+
+(case "a String.slice view returned from a helper OUTLIVES the helper's local parent"
+  (doc    "The String twin of the Bytes slice-escape liveness pin (10-bytes): `mk` builds its rope
+           parent as a LOCAL (`String.concat`, runtime storage) and returns a slice view of it — the
+           parent binding dies at the helper's return while the view escapes. The caller compares the
+           escaped view by CONTENT against a flat literal: a=1 windows \"bc\" → equal (1); a=0 windows
+           \"ab\" → unequal (0). A reclaim at scope exit (rather than last-reference) would hand the
+           caller a dangling view; a stale window would flip an answer.")
+  (input  (do
+            (def (mk (: a Int64))
+              (let ((parent (String.concat "ab" "cd")))
+                (match (String.slice parent a (+ a 2))
+                  ((Some s) s)
+                  ((None u) ""))))
+            (def (main (: a Int64))
+              (if (= (mk a) "bc") 1 0))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64))
+  (call   main (: 0 Int64))
+  (output (: 0 Int64)))
+
+(case "Symbol.of over a slice of a dying rope interns the WINDOW content"
+  (doc    "The intern composition of the escape: inside the helper, `Symbol.of` interns a slice view of
+           the local rope — the symbol's identity must be the window's CONTENT (\"bc\" → equals the
+           interned constant `#\"bc\"`), captured before or independent of the parent's death. An intern
+           reading the parent's full bytes, or a window gone stale at the helper return, would produce a
+           different symbol. Composes three pinned facts (slice re-basing, rope flatten at intern,
+           view escape) into the tokenizer idiom: intern a window of a transient buffer.")
+  (input  (do
+            (def (mk (: a Int64))
+              (let ((parent (String.concat "ab" "cd")))
+                (match (String.slice parent a (+ a 2))
+                  ((Some s) (Symbol.of s))
+                  ((None u) (Symbol.of "?")))))
+            (def (main (: a Int64))
+              (if (= (mk a) #"bc") 1 0))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64)))
 
 (case "a runtime string rope inserted into a set is a member"
   (doc    "The SET element-insert companion of the map-key cases: inserting a runtime String ROPE
@@ -596,6 +719,26 @@
            MUST be true.")
   (input  (= (Option.expect (String.at "banana" 1) "c") "a"))
   (output (: true Bool)))
+
+(case "a recursive scalar-walk over a guest-built rope classifies characters on every backend"
+  (doc    "The full walk-and-classify loop a lexer runs (the single-index cases above pin one read): a
+           recursive `String.at s i` walk over `String.scalar-len` counting the 'a' scalars of a
+           concat-built \"banana\" → 3. Each iteration maps scalar index → byte offset over a ROPE; the
+           loop bound comes from scalar-len on the same value, so the two scalar-addressing paths must
+           agree at every index, not just index 0.")
+  (input  (do
+            (def (walk (: s String) (: i Int64) (: n Int64) (: acc Int64))
+              (if (>= i n) acc
+                (walk s (+ i 1) n
+                  (match (String.at s i)
+                    ((Some c) (if (= c "a") (+ acc 1) acc))
+                    ((None u) acc)))))
+            (def (main (: k Int64))
+              (let ((s (String.concat "ban" (String.concat "an" "a"))))
+                (+ (walk s 0 (String.scalar-len s) 0) k)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))
 
 (case "a constant-index String.at result compares unequal to a different literal"
   (doc    "The negative companion: index 0 of \"banana\" is \"b\", so `(= (String.at \"banana\" 0) \"a\")`
@@ -2608,3 +2751,38 @@
             (export main)))
   (call   main (: "café" String) (: "café" String)) (output (: 1 Int64))
   (call   main (: "café" String) (: "cafe" String)) (output (: 0 Int64)))
+
+(case "a recursive scalar-walk classifies characters across a multibyte String entry arg"
+  (doc    "The LEXER idiom over an entry arg: a recursive `String.at` walk over `String.scalar-len`
+           counts 'a' scalars — \"banana\" → 3, \"bén-ané\" → 1 (the accented scalars must not desync the
+           index). The guest-rope walk twin passes on wasm; here the CONTENT arrives at the boundary, so
+           the walk runs over marshaled entry bytes. (wasm declines the String entry arg — the family's
+           sound todo; rust and rust-async compute.)")
+  (input  (do
+            (def (walk (: s String) (: i Int64) (: n Int64) (: acc Int64))
+              (if (>= i n) acc
+                (walk s (+ i 1) n
+                  (match (String.at s i)
+                    ((Some c) (if (= c "a") (+ acc 1) acc))
+                    ((None u) acc)))))
+            (def (main (: s String))
+              (walk s 0 (String.scalar-len s) 0))
+            (export main)))
+  (call   main (: "banana" String))
+  (output (: 3 Int64))
+  (call   main (: "bén-ané" String))
+  (output (: 1 Int64)))
+
+(case "byte-len and scalar-len DIVERGE on a multibyte String entry arg by the encoding width"
+  (doc    "The two length notions side by side on one entry arg: `byte-len - scalar-len` = the total
+           extra encoding bytes — \"café\" → 1 (one 2-byte scalar), \"日本語\" → 6 (three 3-byte
+           scalars). A marshal that re-measured in UTF-16 units, or a scalar-len that counted bytes,
+           breaks one input. (wasm declines the entry arg — sound todo; rust computes.)")
+  (input  (do
+            (def (main (: s String))
+              (- (String.byte-len s) (String.scalar-len s)))
+            (export main)))
+  (call   main (: "café" String))
+  (output (: 1 Int64))
+  (call   main (: "日本語" String))
+  (output (: 6 Int64)))

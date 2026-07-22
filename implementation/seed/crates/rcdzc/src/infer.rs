@@ -2416,6 +2416,47 @@ fn callee_param_ty(db: &mut Db, callee: usize, k: usize) -> Option<Ty> {
     }
 }
 
+/// The INFERRED type of a def-parameter `binder` for a QUERY (hover / `TypeAt` / inlayHint), when the
+/// binder carries NO annotation and `type_of(binder)` therefore reads `Any` (a NON-recursive def's param
+/// inlines at each call and is never solved standalone in `db.param_types`). Sources in order: (a) an
+/// explicit annotation (`param_annot_ty`) or an already-solved `db.param_types` entry — the cases hover's
+/// own `type_of` already covers; (b) otherwise, collect the def body's operand constraints and read this
+/// param's solved type (the same body-constraint solve `callee_param_ty` runs to pin `byte-at`'s `b ⇒
+/// Bytes`) — this is what types `f`'s `x` as `Int64` from `(+ x 1)`. Returns `None` (render "unknown", as
+/// today) when the param stays genuinely undetermined (a fully-generic binder like `id`'s `x`) — a query
+/// must not invent a monomorphic width for a scheme variable. READ-ONLY: a fresh `Subst`, does not touch
+/// `db.param_types` — safe to call from the sidecar query path. Guarded against re-entry by `solving_params`.
+pub(crate) fn query_param_ty(db: &mut Db, node: StructId) -> Option<Ty> {
+    // Accept the binder-declaration occurrence (signature) OR a USE of the param in the body — a query may
+    // land on either. A use resolves as `Resolved::Param { binder }` OR `Resolved::Ref { value: binder }`
+    // (a body reference to the param's declaring node); its own parent is the body expression (not the
+    // signature), so `def_of_param` below would miss it. Normalize to the binder first so the positional
+    // lookup finds the def param. (`node` itself, when it IS the binder, resolves to neither — kept as-is.)
+    let binder = match resolved_of(db, node) {
+        crate::resolved::Resolved::Param { binder } => binder,
+        crate::resolved::Resolved::Ref { value } => value,
+        _ => node,
+    };
+    if let Some(t) = param_annot_ty(db, binder) {
+        return Some(t);
+    }
+    if let Some(t) = db.param_types.get(&binder) {
+        return Some(t.clone());
+    }
+    let def = def_of_param(db, binder)?;
+    let params = db.defs[def].params.clone();
+    // The binder's positional index in the signature (bare occurrence, or the name of a `(: name T)`).
+    let k = params.iter().position(|&p| {
+        let b = db
+            .ast
+            .as_form(p, ":")
+            .and_then(|t| t.first().copied())
+            .unwrap_or(p);
+        b == binder
+    })?;
+    callee_param_ty(db, def, k)
+}
+
 /// Solve the machine type of a LAMBDA parameter `binder` from its uses in the lambda `body` — the
 /// lambda analogue of [`solve_recursive_params`], for a lifted closure whose parameter is UNANNOTATED
 /// (a bare `(fn (x) …)`). A bare lambda types with a fresh variable at its own occurrence (inference
@@ -4915,9 +4956,14 @@ fn apply_type(db: &mut Db, head: StructId, args: &[StructId]) -> Ty {
             // self-calls and no anchoring literal). Return `Any` here so the node is NOT cached (the
             // `type_of` memo skips `Any`) and RE-solves cleanly once the operands' real types settle. Only
             // under `solving_schemes` (a re-grounding fixpoint); outside a solve an `Any` operand is a real
-            // fault the generic path reports. (A single anchoring `BigInt`/`Float` literal operand — the
-            // `(+ 1N (f …))` shape — already grounds via the arms below, so this only catches the
-            // both-provisional case the arms cannot yet classify.)
+            // fault the generic path reports. EITHER-side provisional defers (the guard is `a || b` Any):
+            // this block PRECEDES the numeric arms, so even `(+ 1N (f …))` — one anchoring literal + one
+            // provisional self-call — defers here rather than committing to the literal's width, which is
+            // correct: the `Any` operand's real type is not yet known (it may ground to `BigInt`/`Float`,
+            // and `+` over a `BigInt` sibling is `BigInt`, not the literal's `Int`), so no width can be
+            // soundly committed until the self-call resolves. A clean re-solve then routes it through the
+            // numeric arms below with both operands' real types. (Deferring on either-Any, not both-Any, is
+            // the safe choice — never commit an arith width while an operand is an unresolved self-call.)
             if !db.solving_schemes.is_empty()
                 && (matches!(a, Ty::Any) || matches!(b, Ty::Any))
                 && matches!(

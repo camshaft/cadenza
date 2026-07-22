@@ -2476,18 +2476,23 @@ fn lower_ast_splice_lift(db: &mut Db, id: StructId, elems: &[StructId]) -> Optio
         // Otherwise dispatch by CONSTANT core kind to the matching `Ast` leaf. A non-scalar constant
         // (nested list, char, NaN float) or a runtime element has no leaf this increment → decline the
         // whole splice (never build a wrong-typed leaf). Mirrors `lower_ast_lift`'s leaf set + identity.
-        let leaf_disc = match core_of(db, e) {
-            Core::ConstInt(_) => disc.int,
-            Core::ConstFloat(_) => disc.float,
-            Core::ConstBool(_) => disc.bool,
-            Core::ConstStr(_) => disc.str,
+        // An integer element's payload is WIDENED to `BigInt` (the `Ast.Int` payload type): its `ConstInt`
+        // is retyped `BigInt` (value unchanged) so the leaf carries a `BigInt`, not a raw i64.
+        let (leaf_disc, payload) = match core_of(db, e) {
+            Core::ConstInt(v) => (
+                disc.int,
+                synth_core(db, Core::ConstInt(v), crate::ty::Ty::BigInt),
+            ),
+            Core::ConstFloat(_) => (disc.float, e),
+            Core::ConstBool(_) => (disc.bool, e),
+            Core::ConstStr(_) => (disc.str, e),
             _ => return None,
         };
         let node = synth_core(
             db,
             Core::SumNew {
                 disc: leaf_disc,
-                payloads: vec![e],
+                payloads: vec![payload],
             },
             ast_ty.clone(),
         );
@@ -2523,12 +2528,35 @@ fn lower_ast_lift(db: &mut Db, operand: StructId) -> Core {
         // Already an `Ast` — identity. Return the operand's core unchanged (it is the sub-tree to splice).
         crate::ty::Ty::Sum { decl, .. } if Some(*decl) == ast_decl => core_of(db, operand),
         // A scalar the `Ast` sum has a value leaf for — wrap the operand (runtime or constant) as payload.
-        // `Ast.Int`'s payload is Int64, so an operand whose GROUNDED integer type is signed-64 lifts to
-        // `Ast.Int` (a bare `,n` let-bound to `42` stays sign/width-Deferred at reify time but grounds to
-        // the default signed-64 — the `Ast.Int` payload type — so it must lift, matching the old Int-only
-        // wrap). A narrower/unsigned FIXED width mismatches the Int64 payload → declines rather than
-        // mis-wrap (a later increment could widen or add narrower Ast int leaves).
-        crate::ty::Ty::Int(it) if it.ground_signed() && it.ground_width() == 64 => Core::SumNew {
+        // `Ast.Int`'s payload is `BigInt` (a quoted AST stores integers non-lossily), so an operand whose
+        // GROUNDED integer type is signed-64 lifts to `Ast.Int` by WIDENING it to `BigInt` first (a bare
+        // `,n` let-bound to `42` stays sign/width-Deferred at reify time but grounds to the default
+        // signed-64, so it must lift, matching the old Int-only wrap). A CONSTANT source folds to a
+        // `Core::ConstInt` retyped `BigInt` (its `IntValue` is already unbounded — value unchanged, static
+        // type widens); a RUNTIME source widens via `bigint-of-i64` (B3b). A narrower/unsigned FIXED width
+        // mismatches → declines rather than mis-wrap. Without this widen the lifted payload would be a raw
+        // i64 where the `BigInt` leaf is required (a rust-backend E0308 / a wasm slot-shape mismatch).
+        crate::ty::Ty::Int(it) if it.ground_signed() && it.ground_width() == 64 => {
+            let widened = match core_of(db, operand) {
+                Core::ConstInt(v) => synth_core(db, Core::ConstInt(v), crate::ty::Ty::BigInt),
+                Core::Poison(r) => return Core::Poison(r),
+                _ => synth_core(
+                    db,
+                    Core::BigIntOfI64 { value: operand },
+                    crate::ty::Ty::BigInt,
+                ),
+            };
+            Core::SumNew {
+                disc: disc.int,
+                payloads: vec![widened],
+            }
+        }
+        // An operand ALREADY typed `BigInt` — `Ast.Int`'s payload IS `BigInt`, so wrap it DIRECTLY (no
+        // widen). Distinct from the `Ty::Int(64)` arm above (that widens a fixed-width Int64 operand): a
+        // `,x` where `x : BigInt` (a let-bound BigInt, a BigInt-returning call spliced into a quasiquote)
+        // is already the payload type. Without this arm it would fall to `other => decline` even though
+        // `Ast.Int` is exactly the right leaf — the splice-surface regression the payload flip introduced.
+        crate::ty::Ty::BigInt => Core::SumNew {
             disc: disc.int,
             payloads: vec![operand],
         },
@@ -3378,7 +3406,10 @@ fn decode_ast_value(db: &mut Db, raw: &[u8], disc: &AstDiscs) -> Option<(StructI
                 radix: crate::ast::Radix::Dec,
             });
             db.core.fill(payload, Core::ConstInt(value));
-            db.types.fill(payload, crate::ty::Ty::int64());
+            // `Ast.Int`'s payload is `BigInt` (a quoted AST stores integers non-lossily), so a decoded
+            // integer node is typed `BigInt` — not `Int64` — to match the sum's declared payload and the
+            // sign-magnitude wire form this reads (an `IntValue` can exceed i64).
+            db.types.fill(payload, crate::ty::Ty::BigInt);
             let node = synth_core(
                 db,
                 Core::SumNew {
@@ -8451,7 +8482,18 @@ fn pattern_constraints(
     // check, the not-yet-constrained treatment a projection of `Any` gets.)
     let probe = match crate::resolve::resolved_of(db, pat) {
         crate::resolved::Resolved::Int(v) => {
-            Some((crate::core::Probe::Int(v), crate::ty::Ty::int()))
+            // A bare integer literal defaults to `Int64`, but its value is arbitrary-precision
+            // (`Probe::Int` carries an `IntValue`) so it matches by value against EITHER a fixed-width or
+            // a `BigInt` sub-value. When the sub-value at this position is `BigInt` — e.g. an `Ast.Int`
+            // payload in a quote pattern `` `(+ ,x 0) `` — the literal grounds to `BigInt` so its type
+            // AGREES; otherwise it stays the default `Int64`. Without this a `0` literal-pattern against a
+            // `BigInt` payload would spuriously reject (CDZ0201) even though the value test is exact.
+            let lit_ty = if matches!(ty, crate::ty::Ty::BigInt) {
+                crate::ty::Ty::BigInt
+            } else {
+                crate::ty::Ty::int()
+            };
+            Some((crate::core::Probe::Int(v), lit_ty))
         }
         crate::resolved::Resolved::Bool(b) => {
             Some((crate::core::Probe::Bool(b), crate::ty::Ty::Bool))

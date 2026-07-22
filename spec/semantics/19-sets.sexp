@@ -413,6 +413,23 @@
             (export main)))
   (output (: 1321 Int64)))
 
+(case "a 1000-element set drains through Set.remove to empty"
+  (doc    "The Set-side deep shrink at scale (the 50-entry Map grow/shrink/regrow twin exists; the SET
+           trie's full-drain node collapse was unpinned at any size): build 1000 elements (multi-level
+           CHAMP), then `Set.remove` every one — len 1000 before, len 0 after (10000000 = 1000·10000+0).
+           A remove path that mis-merged a collapsing node partway down loses or strands an element.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: s (Set Int64)))
+              (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
+            (def (drain (: i Int64) (: n Int64) (: s (Set Int64)))
+              (if (< i n) (drain (+ i 1) n (Set.remove s i)) s))
+            (def (main (: n Int64))
+              (let ((s (build 0 n (Set.of (list)))))
+                (+ (* 10000 (Set.len s)) (Set.len (drain 0 n s)))))
+            (export main)))
+  (call   main (: 1000 Int64))
+  (output (: 10000000 Int64)))
+
 ; --- The algebraic laws the three operations satisfy: the empty set as identity/annihilator, and ----
 ; --- the union laws (commutative, idempotent). These pin the operations' DEFINING identities, which
 ; --- the overlapping-operand cases above (which give a nontrivial result) do not exercise — a
@@ -1962,3 +1979,152 @@
             (export main)))
   (call   main (: 50 Int64))
   (output (: 3 Int64)))
+
+; ---- a runtime Bytes.slice VIEW as a CHAMP key must key by CONTENT, not by the view node --------------
+; A runtime-start `Bytes.slice` produces a borrowed [off,len] VIEW over its parent. Used as a CHAMP key
+; (Map key or Set member, either side of the lookup) it must hash + compare by its FLATTENED content, so
+; it hits an equal-content flat Bytes — the equal-means-same-key contract. This missed on wasm (breaker
+; finding #16): the rust emit's `key_needs_compaction` only compacted an OWNED String/Bytes key, so a
+; BORROWED rope/slice key skipped the key-site bytes-compact and reached `champ_hash` as a raw view →
+; hashed differently → lookup MISSED while value-`=` said EQUAL. Fixed (rcdzc `900a8ff3b`) by compacting
+; ANY-ownership at the key site (bytes-compact is refcount-neutral, safe for a borrow). A CONST-start
+; slice always worked (it compacts at fold). These pin every face: value-eq control, slice-probes-flat,
+; slice-stored-flat-probes, Set membership, and the const-start control.
+(case "value-eq CONTROL: a runtime slice compares equal to a flat Bytes of the same content"
+  (input (do
+           (def (main (: a Int64))
+             (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+               ((Some s) (if (= s (Bytes.of (list 20 30))) 1 0))
+               ((None u) -1)))
+           (export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "a runtime slice PROBING a Map keyed by flat Bytes must hit by content"
+  (input (do
+           (def (main (: a Int64))
+             (let ((m (Map.insert Map.empty (Bytes.of (list 20 30)) 42)))
+               (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+                 ((Some s) (match (Map.lookup m s) ((Some v) v) ((None u) -1)))
+                 ((None u) -2))))
+           (export main)))
+  (call main (: 1 Int64))
+  (output (: 42 Int64))
+  (call main (: 0 Int64))
+  (output (: -1 Int64)))
+
+(case "a runtime slice STORED as a Map key must be found by a flat Bytes probe"
+  (input (do
+           (def (main (: a Int64))
+             (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+               ((Some s)
+                 (match (Map.lookup (Map.insert Map.empty s 42) (Bytes.of (list 20 30)))
+                   ((Some v) v) ((None u) -1)))
+               ((None u) -2)))
+           (export main)))
+  (call main (: 1 Int64))
+  (output (: 42 Int64)))
+
+(case "a runtime slice probes a Set of flat Bytes by content"
+  (input (do
+           (def (main (: a Int64))
+             (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+               ((Some s) (if (Set.contains (Set.of (list (Bytes.of (list 20 30)))) s) 1 0))
+               ((None u) -2)))
+           (export main)))
+  (call main (: 1 Int64))
+  (output (: 1 Int64)))
+
+(case "CONTROL: a CONST-start slice as a Map-lookup key hits on wasm"
+  (input (do
+           (def (main (: a Int64))
+             (let ((m (Map.insert Map.empty (Bytes.of (list 20 30)) 42)))
+               (match (Bytes.slice (Bytes.of (list 9 20 30 8)) 1 2)
+                 ((Some s) (match (Map.lookup m s) ((Some v) v) ((None u) -1)))
+                 ((None u) -2))))
+           (export main)))
+  (call main (: 0 Int64))
+  (output (: 42 Int64)))
+
+; --- The #16 fix's PERIMETER: view-key canonicalization at EVERY champ entry point ------------------
+; The canonicalization pins above cover lookup (both directions), contains, and value-eq. These pin the
+; REMAINING champ entry points a view key reaches — batch build (Set.of), the plain remove, and the
+; value-yielding take — so a rework that moved canonicalization from the shared key seam into per-op
+; call sites cannot silently miss one.
+
+(case "a slice-view SET element dedups against its flat twin in a Set.of batch build"
+  (doc    "`(Set.of (list s flat))` where `s` is a runtime-start slice view of equal content: the batch
+           build's element canonicalization collapses the two to ONE slot (a=1 windows (20,30) = flat →
+           len 1); a different window stays distinct (a=0 → len 2). The batch-build face of the champ
+           canonicalization — insert-path pins can't witness Set.of's distinct construction route.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+                ((Some s) (Set.len (Set.of (list s (Bytes.of (list 20 30))))))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1 Int64))
+  (call   main (: 0 Int64))
+  (output (: 2 Int64)))
+
+(case "Map.remove by a slice-view key drops the flat-keyed entry"
+  (doc    "The remove face: `(Map.remove {flat↦42} s)` with the view key — a=1 (equal content) removes
+           the entry (len 0); a=0 (different window) no-ops (len 1, removal total). A remove path that
+           hashed the raw view node would miss the hit and leave a phantom entry.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((m (Map.insert Map.empty (Bytes.of (list 20 30)) 42)))
+                (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+                  ((Some s) (Map.len (Map.remove m s)))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 0 Int64))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "Map.take by a slice-view key yields the flat-keyed value"
+  (doc    "The value-yielding-remove face: `(Map.take {flat↦42} s)` — the hit binds `(Some 42)` with an
+           empty rest (42+0); the miss binds `(None unit)` with the map intact (-1). Completes the champ
+           entry-point sweep for view keys: lookup, contains, Set.of, remove, take all canonicalize.")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((m (Map.insert Map.empty (Bytes.of (list 20 30)) 42)))
+                (match (Bytes.slice (Bytes.of (list 9 20 30 8)) a 2)
+                  ((Some s) (match (Map.take m s)
+                              ((tuple (Some v) rest) (+ v (Map.len rest)))
+                              ((tuple (None u) rest) (- 0 (Map.len rest)))))
+                  ((None u) -99))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 42 Int64))
+  (call   main (: 0 Int64))
+  (output (: -1 Int64)))
+
+(case "a float-field RECORD as a SET element dedups by content including the float leaf"
+  (doc    "The float-leaf record as a champ SET element (closed with the slice-canonicalization work —
+           it used to decline): `{(record (f x) (n 1)), (record (f 2.5) (n 1))}` — x=0.5 keeps both (len
+           2), x=2.5 collapses them (len 1). The element hash walks the record's float field by canonical
+           bytes exactly as the map-KEY twin (pinned above) does.")
+  (input  (do
+            (def (main (: x Float64))
+              (Set.len (Set.of (list (record (f x) (n 1)) (record (f 2.5) (n 1))))))
+            (export main)))
+  (call   main (: 0.5 Float64))
+  (output (: 2 Int64))
+  (call   main (: 2.5 Float64))
+  (output (: 1 Int64)))
+
+(case "a NESTED float tuple as a SET element dedups by deep content"
+  (doc    "The depth-2 companion: `(tuple (tuple x 1) 2)` elements — the float sits two levels down, so
+           the element hash must descend both tuple layers to the canonical float bytes. x=0.5 vs 2.5
+           distinct (len 2 via insert-insert); x=2.5 collapses (len 1).")
+  (input  (do
+            (def (main (: x Float64))
+              (Set.len (Set.insert (Set.insert (Set.of (list)) (tuple (tuple x 1) 2)) (tuple (tuple 2.5 1) 2))))
+            (export main)))
+  (call   main (: 0.5 Float64))
+  (output (: 2 Int64))
+  (call   main (: 2.5 Float64))
+  (output (: 1 Int64)))

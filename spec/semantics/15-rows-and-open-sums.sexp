@@ -378,6 +378,35 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 207 Int64)))
 
+(case "chained Record.with at TWO DIFFERENT fields holds both updates"
+  (doc    "The cross-field chain (the one-field chain above pins last-write-wins): `(Record.with
+           (Record.with r x a) y b)` updates x and y with runtime values while z rides through untouched
+           — 100a + 10b + 3 = 453. A chain that rebuilt from the ORIGINAL record on the second with
+           (rather than the first with's result) would lose the x update.")
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (let ((r (Record.with (Record.with (record (x 1) (y 2) (z 3)) x a) y b)))
+                (+ (* 100 (. r x)) (+ (* 10 (. r y)) (. r z)))))
+            (export main)))
+  (call   main (: 4 Int64) (: 5 Int64))
+  (output (: 453 Int64)))
+
+(case "the pre-update record survives a CONDITIONAL Record.with in a branch join"
+  (doc    "Persistence through a runtime branch: `(if b (Record.with r x 99) r)` — reading BOTH `r` and
+           the join result after: b=true → r still 10, r2 is 99 (1099); b=false → both 10 (1010). An
+           in-place update would clobber `r` on the true path (reading 9999); a join that copied the
+           un-updated record into both slots would read 1010 on both.")
+  (input  (do
+            (def (main (: b Bool))
+              (let ((r (record (x 10) (y 20))))
+                (let ((r2 (if b (Record.with r x 99) r)))
+                  (+ (* 100 (. r x)) (. r2 x)))))
+            (export main)))
+  (call   main (: true Bool))
+  (output (: 1099 Int64))
+  (call   main (: false Bool))
+  (output (: 1010 Int64)))
+
 (case "the OLD 2-operand `Record.with (name value)` pair form is rejected (migrated to 3 operands)"
   (doc    "Witnesses DESIGN-record-update-syntax.md §2/§6 (operator DECISION 2026-07-15): the field-pair
            row ops now take THREE positional operands `r #field value`, and the OLD grouped `(name value)`
