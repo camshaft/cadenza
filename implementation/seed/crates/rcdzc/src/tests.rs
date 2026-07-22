@@ -25319,6 +25319,77 @@ mod match_engine {
     }
 
     #[test]
+    fn a_non_identity_constant_op_over_a_high_uint64_operand_folds_exactly_or_traps_on_overflow() {
+        // REGRESSION (fold, follow-up to the identity fix): a NON-identity constant op (`/`/`-`/`%`/`+`)
+        // over a UInt64 operand ≥ 2^63 must fold over EXACT `IntValue` and range-check the result against
+        // the solved width — NOT decline via the i64-only `fold_arith` (which has no `i64` for a ≥2^63
+        // operand and rejected it CDZ0304 "constant operand does not fit the integer width"). The identity
+        // fix handled `x+0`/`x*1`; this handles the general case. FIX (lower_arith): when an operand is out
+        // of i64 range and no identity fired, fold `Add`/`Sub`/`Mul`/`Div`/`Rem` over `IntValue` exactly,
+        // then reuse the same `fits_width` range-check the i64 path applies.
+        let compiles = |src: &str| {
+            assert_eq!(
+                reject_code(src),
+                None,
+                "a non-identity constant op over a high UInt64 operand whose result fits must fold, not \
+                 decline (was a spurious CDZ0304 from the i64-only fold): {src}"
+            );
+        };
+        // Result fits UInt64 → folds exactly.
+        compiles(
+            "(module m (def (main) (/ (: 18446744073709551614 UInt64) (: 2 UInt64))) (export main))",
+        );
+        compiles(
+            "(module m (def (main) (- (: 18446744073709551615 UInt64) (: 1 UInt64))) (export main))",
+        );
+        compiles(
+            "(module m (def (main) (% (: 18446744073709551615 UInt64) (: 10 UInt64))) (export main))",
+        );
+        compiles(
+            "(module m (def (main) (+ (: 9223372036854775808 UInt64) (: 5 UInt64))) (export main))",
+        );
+
+        // Genuine unsigned OVERFLOW (result exceeds the solved width) still traps CDZ0304 — the exact fold
+        // does NOT silently wrap.
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (* (: 18446744073709551615 UInt64) (: 2 UInt64))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304"),
+            "a wide constant op whose result overflows the solved width must still trap"
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (+ (: 9223372036854775808 UInt64) (: 9223372036854775808 UInt64))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304"),
+            "2^63 + 2^63 = 2^64 overflows UInt64 → CDZ0304"
+        );
+        // Divide-by-a-constant-zero over a wide operand still traps CDZ0304 (divmod → None).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (/ (: 18446744073709551615 UInt64) (: 0 UInt64))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304"),
+            "a wide constant divide by zero must still trap"
+        );
+
+        // The folded VALUES are correct (exact IntValue arithmetic, i64-truncation-free), when a runtime
+        // is available.
+        if let Some(v) = run_heap_value_escape(
+            "(module m (def (main) (/ (: 18446744073709551614 UInt64) (: 2 UInt64))) (export main))",
+        ) {
+            assert!(
+                v.contains("9223372036854775807"),
+                "u64max-1 / 2 folds to 9223372036854775807: got {v}"
+            );
+        }
+    }
+
+    #[test]
     fn a_literal_whose_width_is_fixed_transitively_through_arith_ops_rejects_at_check() {
         // A bare literal takes its width from an integer binary-op CONTEXT (numeric-model.md §"An Explicit …
         // Or Other Constraint On An Integer Literal MUST Take Precedence"). When the literal's IMMEDIATE
