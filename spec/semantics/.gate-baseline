@@ -121,6 +121,7 @@ pass	a @param drives a recursive fold's iteration count
 pass	a @param selects a match arm and a SECOND param feeds the selected body
 pass	a @param value crosses into a closure capture and applies
 pass	a Bytes.slice into the to-bytes output decodes at a scalar boundary and rejects mid-scalar
+pass	a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at
 pass	a CONST-FOLDED taken branch with a Float32-overflowing literal is rejected, not folded past the check
 pass	a FILTERED rebuild keeps only entries passing a runtime predicate
 pass	a FLATTEN fold over a runtime list of lists joins across an empty inner spine
@@ -131,14 +132,17 @@ pass	a MAX-fold over quantities compares through the erased unit wrapper per ste
 pass	a NESTED float tuple as a SET element dedups by deep content
 pass	a NON-tail heap-spine build 5000 deep constructs and drains through real frames
 pass	a NON-tail recursion 10000 deep computes through real stack frames
+pass	a PARTITION fold splits one spine into two lists by a runtime predicate
 pass	a PER-CALL-selected runtime symbol dispatches through the = chain
 pass	a PERFORMING tail loop of 10000 iterations threads state in constant space
+pass	a PREFIX-SUM scan emits a running total whose each element feeds the next
 pass	a PURE closure iterated by a recursive combinator composes with a perform in the same body
 pass	a RUNTIME branch selects between an abortive perform and a plain value per call
 pass	a RUNTIME-count generated batch insorts fully time-ordered, verified by a sortedness walk
 pass	a Rational ARITHMETIC result probes a map key by its reduced canonical value
 todo	a Rational ENTRY parameter crosses the boundary and reduces per call
 pass	a Result-of-Option threads both wrappers through one runtime match
+pass	a STABLE DEDUP keeps first occurrences in input order via a seen-Set threaded through the fold
 pass	a Set.of over PRELUDE-Option elements dedups Some by payload and keeps None distinct
 pass	a Set.of over Result elements separates Ok from Err with EQUAL payloads
 todo	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
@@ -2184,6 +2188,7 @@ pass	an Option-of-Option classifies three ways at RUNTIME through one compiled m
 pass	an Option-of-Option survives a Map VALUE cell with its exact nesting
 pass	an UNSIGNED branch refinement decides a nested comparison and its soundness twin must not over-refine
 pass	an UNSIGNED lower-bound refinement must not fabricate an i64::MAX ceiling for a UInt64 above it
+pass	an UNZIP walk splits a list of pairs into two parallel lists that re-zip to the original
 pass	an UPSERT into a Map of Lists creates the fresh entry on miss and appends on hit
 pass	an abortive perform MID-WALK carries the accumulated state out as its argument
 pass	an arm's NEXT-STATE expression saturates via a conditional on the current state
@@ -4192,6 +4197,7 @@ pass	t1(oob) NEGATIVE: with only the LOWER bound (>= i 0), the out-of-bounds obl
 pass	t1(oob): the out-of-bounds obligation (0<=i) AND (i<len) is DISCHARGED from the two bound preconditions
 pass	t1(trap) NEGATIVE: a trap guard NOT contradicted by the precondition is NOT unreachable — the trap STAYS
 pass	t1(trap): an explicit trap under guard (lt x 0) is UNREACHABLE when @requires(>= x 0) — the trap is dead
+pass	take-while and drop-while split a leading run and reassemble to the original
 pass	take-while composed after a map threads both transformers' closures
 pass	take-while excludes the failing element and everything after it (content, not just count)
 pass	take-while where every element satisfies the predicate keeps the whole run
