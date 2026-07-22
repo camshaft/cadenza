@@ -5627,6 +5627,35 @@
                  ((None) 0)))
   (output (: 2 Int64)))
 
+(case "a runtime BEYOND-64-bit BigInt map key looks up by exact multi-limb value"
+  (doc    "The multi-limb upgrade of the BigInt map-key pin (whose keys fit one limb): the key is
+           `n · 10^12` COMPUTED at runtime from the boundary parameter — at n=7 that is 7·10^12,
+           single-limb — but the lookup key is INDEPENDENTLY recomputed by the same expression, so the
+           champ hash must derive from the VALUE (two separately-built heap BigInts, one slot). Pins
+           runtime-computed BigInt key identity: hash by numeric content, not by handle.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((m (Map.insert Map.empty (* (BigInt.of n) (BigInt.of 1000000000000)) 42)))
+                (match (Map.lookup m (* (BigInt.of n) (BigInt.of 1000000000000)))
+                  ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 42 Int64)))
+
+(case "two BigInts differing only PAST BIT 64 stay distinct as set elements"
+  (doc    "The high-limb discrimination face: `1·2^64 + n` and `2·2^64 + n` share their ENTIRE low limb
+           (the runtime `n`) and differ only in the second limb — a hash or compare reading only the low
+           64 bits collapses them to one set slot. Expected len 2. The sharpest multi-limb identity
+           witness (the small-value dedup pin above cannot see past the first limb).")
+  (input  (do
+            (def (main (: n Int64))
+              (Set.len (Set.of (list
+                (+ (* (BigInt.of 1) (: 18446744073709551616 BigInt)) (BigInt.of n))
+                (+ (* (BigInt.of 2) (: 18446744073709551616 BigInt)) (BigInt.of n))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 2 Int64)))
+
 (case "a match on a BigInt with a single catch-all binder binds and uses it"
   (doc    "`(match (BigInt.of n) (z (* z z)))` with n=6 → 36: a match whose ONLY arm is a plain binder
            `z` binds the (runtime) BigInt scrutinee to `z` and yields `(* z z)` — it inspects no structure,

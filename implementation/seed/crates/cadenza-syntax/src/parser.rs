@@ -2133,12 +2133,21 @@ impl<'a> Parser<'a> {
         // OPEN SUM (`type Opaque = .. r` — no variants, only a row tail): skip the variant loop so the
         // trailing-`.. r` handler below reads the tail (without it, the loop's unconditional first
         // `variant()` would try to read a name at `..` and fail — the trunk-red round-trip bug).
+        // Own-line `//` comment(s) leading the FIRST variant sit in the leading `|`'s slot (only `///`
+        // DOCS were drained above, as `(doc)`; a `//` comment is distinct). Drain BEFORE the `|` bump —
+        // a drain after it would miss them (mirrors `match_expr`'s arm-comment capture).
+        let mut pending_leading = self.take_comments_here();
         if self.at(Kind::Pipe) {
             self.bump(); // optional leading `|`
         }
         if !self.at(Kind::DotDot) {
             loop {
+                // Wrap the variant in any own-line LEADING `//` comment(s) drained before its `|` — the
+                // printer renders them on their own line above the variant; `is_type_shape` unwraps them.
+                // Own-line has no swallow hazard.
+                let leading = std::mem::take(&mut pending_leading);
                 let v = self.variant();
+                let v = self.wrap_comments(leading, v);
                 // A `//` comment trailing this variant on the same line (`| Ctor(T)  // note`) sits at
                 // the NEXT token's leading slot (the `|` or the type's end). Drain + attach it to THIS
                 // variant as `(comment-after …)` so it re-prints same-line, rather than being stranded
@@ -2146,6 +2155,9 @@ impl<'a> Parser<'a> {
                 // comment-loss). `strip_comments` peels it, so the type scanner is unaffected.
                 let trailing = self.take_trailing_comment_here();
                 items.push(self.wrap_comment_after(trailing, v));
+                // Own-line comment(s) leading the NEXT variant sit in the upcoming `|`'s slot — drain
+                // before the bump (into `pending_leading` for the next iteration), like `match_expr`.
+                pending_leading = self.take_comments_here();
                 if self.at(Kind::Pipe) {
                     self.bump(); // `|`
                 } else {

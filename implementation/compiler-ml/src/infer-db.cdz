@@ -493,13 +493,26 @@ def type-eq(a: Typed, b: Typed) = ty-eq(typed-to-ty(a), typed-to-ty(b))
 /// The type of an `if`: its two branches' shared type, provided the condition is `TBool` and the then/else
 /// branches have the SAME ground type. A non-Bool cond, mismatched branches, or any missing/erroneous fact
 /// → `TErr`. (The then-type is returned when they match; both are equal so either works.)
+/// slice-B1b(1.5): JOIN two `if` branch types, GROUNDING a deferred-int (`TIntW(_,0)`, an unconstrained
+/// literal branch like `then 1`) against a concrete-int sibling — mirroring how `arith-result-type` grounds a
+/// deferred operand that meets a narrow sibling. Without this, a MIXED branch pair (`then 1` deferred vs
+/// `else (n * ..)` Int64) failed `type-eq` (width 0 ≠ 64) → the `if` wrongly typed TErr. This is LATENT for a
+/// whole-tree infer (the query boundary grounds deferred, and a non-recursive if-body is walked+grounded via
+/// inlining) but HIT when a RECURSIVE def body is inferred STANDALONE (B1b's lower-def-env). Rules: both
+/// deferred → deferred; one deferred + one concrete int → the concrete one (ground the literal to it); else
+/// (both concrete, or a Bool pair) → the existing `type-eq` rule (same type, else TErr).
+def join-branch-types(tt: Typed, et: Typed) =
+  (if is-deferred-int(tt) then (if is-deferred-int(et) then tt else (match et with | Typed.TIntW(_, _) => et | _ => Typed.TErr))
+   else (if is-deferred-int(et) then (match tt with | Typed.TIntW(_, _) => tt | _ => Typed.TErr)
+         else (if type-eq(tt, et) then tt else Typed.TErr)))
+
 def if-type(tcol: Map(Int64, Typed), condId: Int64, thenId: Int64, elseId: Int64) =
   (match Map.lookup(tcol, condId) with
     | Option.Some(Typed.TBool) =>
         (match Map.lookup(tcol, thenId) with
           | Option.Some(tt) =>
             (match Map.lookup(tcol, elseId) with
-              | Option.Some(et) => (if type-eq(tt, et) then tt else Typed.TErr)
+              | Option.Some(et) => join-branch-types(tt, et)
               | Option.None(_) => Typed.TErr)
           | Option.None(_) => Typed.TErr)
     | _ => Typed.TErr)
@@ -974,5 +987,52 @@ def id-recursive-call-with-arith-arg-types-int-slice-b2() =
                        | _ => trap("recursive call's arith arg subtree should be typed Int"))
                    else trap("recursive call with arg → Int64"))
               | _ => trap("recursive call with an arith arg should type Int64"))))))))
+
+@test
+def id-if-mixed-deferred-concrete-branches-ground-slice-b1b() =
+  // slice-B1b(1.5): an `if` whose THEN branch is a bare literal (deferred TIntW(_,0)) and ELSE branch is a
+  // concrete Int64 must type Int64 — NOT TErr. Build `if (n < 1) then 1 else (n * 2)` STANDALONE with param
+  // n = NVar(1) seeded Int64 (the way lower-def-env infers a def body). Before the join-branch-types fix,
+  // `if-type`'s type-eq(deferred, Int64) failed (width 0 ≠ 64) → TErr → lower-def-env declined fac. Now
+  // join-branch-types grounds the deferred branch to the concrete sibling. Tested DIRECTLY on the join (a
+  // hand-arena `if` here triggered the self-host codegen size-trap in this already-large file — the join is
+  // the actual fix logic; if-type just calls it). deferred THEN + Int64 ELSE → Int64.
+  (match join-branch-types(t-int-deferred(), Typed.TIntW(true, 64)) with
+    | Typed.TIntW(_, w) => (if w == 64 then unit else trap("deferred THEN + Int64 ELSE grounds to Int64 (width 64)"))
+    | _ => trap("mixed deferred/concrete branches should ground to the concrete Int64, not TErr"))
+
+@test
+def id-if-join-concrete-then-deferred-else-slice-b1b() =
+  // the SYMMETRIC case: concrete Int64 THEN + deferred ELSE → Int64 (the deferred else grounds to the then).
+  (match join-branch-types(Typed.TIntW(true, 64), t-int-deferred()) with
+    | Typed.TIntW(_, w) => (if w == 64 then unit else trap("Int64 THEN + deferred ELSE grounds to Int64"))
+    | _ => trap("concrete/deferred branches should ground to Int64"))
+
+@test
+def id-if-join-both-deferred-stays-deferred-slice-b1b() =
+  // both branches deferred → stays deferred (width 0); grounds to Int64 at the query boundary later.
+  (match join-branch-types(t-int-deferred(), t-int-deferred()) with
+    | Typed.TIntW(_, w) => (if w == 0 then unit else trap("deferred + deferred stays deferred (width 0)"))
+    | _ => trap("both-deferred branches stay a deferred int"))
+
+@test
+def id-if-join-mismatched-concrete-is-err-slice-b1b() =
+  // two DIFFERENT concrete widths still MISMATCH → TErr (the join must not over-ground; only a deferred side
+  // grounds). Int8 THEN + Int64 ELSE → TErr (no implicit width promotion, matching the pre-fix type-eq rule).
+  (match join-branch-types(Typed.TIntW(true, 8), Typed.TIntW(true, 64)) with
+    | Typed.TErr => unit
+    | _ => trap("two different concrete widths should still be TErr (no promotion)"))
+
+@test
+def id-if-two-literal-branches-still-type-slice-b1b() =
+  // regression guard: a TWO-literal if `if (5 < 2) 10 20` (both branches deferred) still types Int (deferred
+  // == deferred was already fine; the join must not break it). Whole-tree infer grounds the deferred at root.
+  (match add-node(empty-tree(), Node.NLit(5)) with | (l5, t1) =>
+    (match add-node(t1, Node.NLit(2)) with | (l2, t2) =>
+      (match add-node(t2, Node.NBin(60, l5, l2)) with | (condId, t3) =>
+        (match add-node(t3, Node.NLit(10)) with | (thenId, t4) =>
+          (match add-node(t4, Node.NLit(20)) with | (elseId, t5) =>
+            (match add-node(t5, Node.NIf(condId, thenId, elseId)) with | (ifId, t6) =>
+              (if is-int-at(t6, ifId, ifId) then unit else trap("two-literal if still types Int"))))))))
 
 export { Typed.*, infer-node, infer-tree, type-at, ground-deferred, well-typed, type-err-at, typed-count, is-bool-at, is-int-at }

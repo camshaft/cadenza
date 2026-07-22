@@ -4262,6 +4262,38 @@
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
 
+(case "a discarded trapping item in a do sequence is elided per the dead-init ruling"
+  (doc    "The do-sequence member of the §283 discard family: `(do (/ 1 n) 42)` — the non-final item's
+           value is discarded, so its trap is UNOBSERVED and elided; the do yields 42 at n=0 exactly as
+           at n=1 (observation, not construction, forces a trap). The OBSERVED control: `(let ((q (/ 1
+           n))) (do q (+ q 41)))` — q reaches the final item's arithmetic, so the n=0 trap FIRES. One
+           binding-vs-discard pair pinning both sides of the ruling on the do spine (the tuple-projection
+           and dead-let members are pinned nearby; note the FOREIGN-perform exception — a discarded item
+           reaching a PERFORM is preserved, 14-effects' do-fold family).")
+  (input  (do
+            (def (main (: n Int64))
+              (do (/ 1 n)
+                  42))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 42 Int64))
+  (call   main (: 1 Int64))
+  (output (: 42 Int64)))
+
+(case "a do item OBSERVED by the final expression keeps its trap"
+  (doc    "The observed twin: the trapping quotient is LET-bound and the final do item reads it — the
+           trap is demanded, so n=0 traps and n=1 computes 42. Brackets the elide case above: the SAME
+           quotient, elided when discarded, trapping when observed.")
+  (input  (do
+            (def (main (: n Int64))
+              (let ((q (/ 1 n)))
+                (do q (+ q 41))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (trap   "divide by zero")
+  (call   main (: 1 Int64))
+  (output (: 42 Int64)))
+
 (case "an escaping tuple evaluates its trapping element"
   (doc    "`(tuple (/ 10 d) 1)` RETURNED whole (no projection): every element is demanded by the
            escape, so the d = 0 divide trap must fire — no fold may discard it. The escape control the

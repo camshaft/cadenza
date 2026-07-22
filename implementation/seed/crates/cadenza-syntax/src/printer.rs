@@ -1693,7 +1693,20 @@ impl<'a> Printer<'a> {
         // Each variant on its own line, led by `| ` (always, including the first) — symmetric with a
         // `match`'s `|`-led arms. The `|` is the surface separator between the structural variant
         // entries, never a node in the tree.
-        for &v in variants {
+        for &raw in variants {
+            // Peel LEADING own-line `(comment …)` wrapper(s): each prints as a `// …` line ABOVE the
+            // variant (before its `| `). A LOOP handles multiple (decoded ASTs may nest; `is_type_shape`
+            // accepts them via `strip_field_comments`, so the printer must be total). The remaining
+            // TRAILING `(comment-after …)` is handled by `print_variant` (same-line, pre-existing).
+            let mut v = raw;
+            while let Some(a) = self.a.as_form(v, "comment")
+                && a.len() == 2
+                && self.is_string(a[0])
+            {
+                self.doc.hardbreak();
+                self.doc.word(format!("//{}", self.doc_line_text(a[0])));
+                v = a[1];
+            }
             self.doc.hardbreak();
             self.doc.word("| ");
             self.print_variant(v);
@@ -2082,16 +2095,22 @@ impl<'a> Printer<'a> {
         let docs_end = 1 + args[1..].iter().take_while(|&&a| self.is_doc(a)).count();
         let variants = &args[docs_end..];
         !variants.is_empty()
-            && variants.iter().all(|&v| match self.a.get(v) {
-                // nullary: a bare constructor name `A`
-                Struct::Atom(_) => self.head_name(v).is_some(),
-                // a name-headed list variant: `(A)` (nullary, the empty-parens spelling `A()`, len 1) or
-                // `(Ctor T …)` (payload, len >= 2). BOTH are valid — a nullary variant has two arena
-                // spellings (bare atom `A` from `A`, and 1-elem list `(A)` from `A()`), so requiring
-                // len >= 2 here wrongly rejected `(A)` and forced the whole type into the backtick-fallback
-                // application render (`` `type`(T, A(), …) ``), which does not round-trip under an
-                // `@invariant`/annotation wrapper (v-verification). Accept the 1-elem nullary too.
-                Struct::List(items) => !items.is_empty() && self.head_name(items[0]).is_some(),
+            && variants.iter().all(|&raw| {
+                // A variant may be wrapped in a LEADING `(comment …)` (own-line `//` above it) and/or a
+                // TRAILING `(comment-after …)` (same-line `//`) — peel both before checking its shape, so
+                // a commented variant still counts (else the whole type falls to the backtick call form).
+                let v = self.strip_field_comments(raw);
+                match self.a.get(v) {
+                    // nullary: a bare constructor name `A`
+                    Struct::Atom(_) => self.head_name(v).is_some(),
+                    // a name-headed list variant: `(A)` (nullary, the empty-parens spelling `A()`, len 1)
+                    // or `(Ctor T …)` (payload, len >= 2). BOTH are valid — a nullary variant has two
+                    // arena spellings (bare atom `A`, and 1-elem list `(A)` from `A()`), so requiring len
+                    // >= 2 here wrongly rejected `(A)` and forced the whole type into the backtick-fallback
+                    // render (`` `type`(T, A(), …) ``), which does not round-trip under an
+                    // `@invariant`/annotation wrapper (v-verification). Accept the 1-elem nullary too.
+                    Struct::List(items) => !items.is_empty() && self.head_name(items[0]).is_some(),
+                }
             })
     }
 
@@ -7255,6 +7274,45 @@ mod tests {
         assert!(
             p1.contains("// lead") && p1.contains("// t"),
             "both the leading and trailing arm comments survive: {p1}"
+        );
+    }
+
+    #[test]
+    fn an_own_line_comment_leading_a_type_variant_is_preserved_not_dropped() {
+        // An own-line `//` above a sum-type variant (`type T =\n  // note\n  | A\n  | B`) used to be
+        // DROPPED (it sat in the variant's `|` leading slot, which the variant loop didn't drain →
+        // `is_type_shape` rejected the wrapped variant → the type fell to the backtick call form).
+        // type_expr now drains it before the `|` (like match arms) and wraps `(comment "text" variant)`;
+        // `is_type_shape` unwraps via `strip_field_comments` and `print_type` renders it above the `| `.
+        // Distinct from a leading `///` DOC header (a `(doc)` on the whole decl). Own-line, no swallow
+        // hazard → any variant. `strip_comments` peels it; compiles to wasm.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("type T =\n  // note\n  | A\n  | B").arenas),
+            "(type T (comment \"note\" A) B)",
+            "own-line comment before the first variant is captured, not dropped"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml("type T =\n  | A\n  // mid\n  | B").arenas),
+            "(type T A (comment \"mid\" B))",
+            "own-line comment before a non-first variant is captured"
+        );
+        // Renders above the `| ` and round-trips (idempotent).
+        let src = "type T =\n  // note\n  | A\n  | B";
+        let printed = print(&parser::read_ml(src).arenas, 80);
+        assert_eq!(
+            printed, "type T =\n  // note\n  | A\n  | B",
+            "leading comment prints on its own line above the variant"
+        );
+        assert_eq!(
+            print(&parser::read_ml(&printed).arenas, 80),
+            printed,
+            "idempotent"
+        );
+        // A leading `///` DOC header (a `(doc)` on the decl) is DISTINCT and unchanged.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("/// doc\ntype T = | A | B").arenas),
+            "(type T (doc \"doc\") A B)",
+            "a leading /// doc header stays a (doc) on the decl, not a variant comment"
         );
     }
 
