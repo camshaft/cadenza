@@ -5917,3 +5917,25 @@ fn a_sum_with_a_prelude_colliding_variant_emits_the_qualified_heads_note() {
         "a sum with no prelude-colliding variant emits NO qualified-heads note:\n{bare}"
     );
 }
+
+#[test]
+fn a_tail_recursive_list_match_arm_emits_no_redundant_brace_and_builds() {
+    // REGRESSION (breaker #18, corpus-bugfix): a tail-recursive list helper whose arm body is a self-call
+    // (a `continue` loop edge) or a `break` leaf used to be double-brace-wrapped — the list-match arm added
+    // `{ … }` around `emit_tail`'s own block, so a self-loop arm read `if c { { { … continue; } } }`, whose
+    // inner brace pair rustc's `unused_braces` lint flags → the gate's -D warnings turned it into a NO-BUILD.
+    // The arm now drops the redundant wrap (emit_tail returns a statement/block that sits directly in the
+    // arm's own brace). `flatten` is a tail-recursive list-match over `List (List Int64)` with an empty
+    // inner `(list)` — it must build clean AND compute (len of the flattened 1,2,5 = 3).
+    let m = compile_rust(
+        "(module m (def (flatten (: xss (List (List Int64))) (: acc (List Int64))) \
+           (match xss ((list) acc) ((list h .. t) (flatten t ((. List concat) acc h))))) \
+           (def (run) ((. List len) (flatten (list (list 1 2) (list) (list 5)) (list)))) (export run))",
+    );
+    if let Some(out) = rustc_run(&m, "run()") {
+        assert_eq!(
+            out, "3",
+            "flatten of [[1,2],[],[5]] has length 3 (builds clean, no unused_braces no-build)"
+        );
+    }
+}

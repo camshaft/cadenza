@@ -351,11 +351,14 @@ enum Cmd {
     RunRust(RunRustArgs),
 
     /// Run a program through the Cadenza-in-Cadenza (ML) compiler's WASM-EMIT backend and print a verdict
-    /// — the W4 emit-equals-interpret differential seam. compiler-ml's `emit-src-bytes` compiles the source
-    /// to a CORE wasm MODULE (a nullary `main : () -> i64` that imports nothing), which this runs standalone
-    /// via `wasmtime::Module` (NOT a component — no value-heap runtime), invoking `main` and printing its
-    /// i64. Reads source from a FILE or stdin (like `cdz run-ml`); prints ONE verdict line: `value <n>` (the
-    /// emitted module ran to that i64) | `declined` (out of the emit subset — `emit-src-bytes` returned
+    /// — the W4 emit-equals-interpret differential seam. compiler-ml's `emit-any-src-bytes` (emit-rec-db, the
+    /// unified auto-router: a self-recursive def-env routes to the multi-function recursive assembler, else
+    /// delegates byte-identically to emit-db's single-main `emit-src-bytes`) compiles the source to a CORE
+    /// wasm MODULE (`main : () -> i64` + a fn per recursive def, importing nothing), which this runs
+    /// standalone via `wasmtime::Module` (NOT a component — no value-heap runtime), invoking `main` and
+    /// printing its i64. Reads source from a FILE or stdin (like `cdz run-ml`); prints ONE verdict line:
+    /// `value <n>` (the emitted module ran to that i64 — incl. a RECURSIVE program like `fac(5)`→120 via
+    /// real `call` instrs) | `declined` (out of the emit subset — `emit-any-src-bytes` returned
     /// `None`, OR the emitted module TRAPPED at run time: div0/mod0/`MIN/-1` — mapped to `declined` so it
     /// matches the eval-db oracle `cdz run-ml` produces for those) | `error <msg>` (a harness break: the
     /// emitted module failed to build/instantiate). Exit 0 for any run outcome (a harness/usage failure that
@@ -1120,7 +1123,7 @@ struct RunEmittedArgs {
 
 /// `cdz run-emitted` — run a program through compiler-ml's WASM-EMIT backend + print a verdict (the W4
 /// emit-equals-interpret seam). See the `RunEmitted` Cmd doc for the contract. MECHANISM (mirrors run-ml):
-/// write a driver `import { emit-src-bytes } from "emit-db"` whose `main = emit-src-bytes("<source>")` into
+/// write a driver `import { emit-any-src-bytes } from "emit-rec-db"` whose `main = emit-any-src-bytes("<source>")` into
 /// `implementation/compiler-ml/src/` (imports resolve entry-dir-relative), compile+run it via `cdz` to
 /// SELF; the driver returns `Option(List UInt8)` — `None` → declined; `Some(list …)` → the raw module bytes
 /// (parsed from the rendered decimal-`u8` list, lossless), which we run as a core `wasmtime::Module`
@@ -1134,7 +1137,7 @@ fn run_run_emitted(args: &RunEmittedArgs) -> ExitCode {
         Err(()) => return ExitCode::FAILURE,
     };
 
-    // 2. Generate the driver: embed the source as a Cadenza string literal + call emit-src-bytes. Escape
+    // 2. Generate the driver: embed the source as a Cadenza string literal + call emit-any-src-bytes. Escape
     //    `\`/`"` (corpus programs are single-line ASCII; the newline→space is defensive).
     let escaped = source
         .trim()
@@ -1142,10 +1145,10 @@ fn run_run_emitted(args: &RunEmittedArgs) -> ExitCode {
         .replace('"', "\\\"")
         .replace('\n', " ");
     let driver = format!(
-        "import {{ emit-src-bytes }} from \"emit-db\"\ndef main() = emit-src-bytes(\"{escaped}\")\nexport {{ main }}\n"
+        "import {{ emit-any-src-bytes }} from \"emit-rec-db\"\ndef main() = emit-any-src-bytes(\"{escaped}\")\nexport {{ main }}\n"
     );
 
-    // 3. Write the driver INTO the compiler-ml src dir (so `import "emit-db"` resolves — imports are
+    // 3. Write the driver INTO the compiler-ml src dir (so `import "emit-rec-db"` resolves — imports are
     //    entry-dir-relative), located robustly (cwd-independent). Pid-stamped + RAII-cleaned like run-ml's.
     let src_dir = match find_compiler_ml_src() {
         Some(d) => d,

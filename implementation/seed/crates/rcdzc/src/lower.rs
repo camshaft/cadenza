@@ -4751,6 +4751,16 @@ pub(crate) fn sroa_tuple_scrutinee_candidate(
     let Core::Tuple { elems } = core_of(db, scrutinee) else {
         return None;
     };
+    // PROFITABILITY cap by aggregate FIELD-COUNT (v-wasm-opt guidance): there is NO practical wasm
+    // locals ceiling (a u32; engines handle tens of thousands), so we do NOT cap on a locals budget — a
+    // normal match-scrutinee tuple is 2–8 fields. But exploding a HUGE/deeply-nested aggregate spends
+    // locals + copies for no win (and there is no backend coalescing — slots are bump-allocated), so gate
+    // on a small field-count. `SROA_MAX_TUPLE_FIELDS` is a generous ceiling far above any real
+    // match-scrutinee tuple; a wider one keeps the (already alloc-free-for-pure-binders) materialized path.
+    const SROA_MAX_TUPLE_FIELDS: usize = 16;
+    if elems.len() > SROA_MAX_TUPLE_FIELDS {
+        return None;
+    }
     // (2) Every arm's top-pattern must be a tuple-destructure `(tuple …)` (peeling a `(guard …)`), so the
     // tuple is only ever read positionally. A bare-name/`_`/non-tuple arm binds or escapes the whole
     // aggregate — disqualify the whole match (fail-closed).

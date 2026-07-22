@@ -6148,6 +6148,23 @@ fn sroa_tuple_scrutinee_candidate_fires_only_on_an_escape_free_runtime_tuple_des
         None,
         "a const-visible tuple already folds — not a SROA candidate"
     );
+    // DECLINES: a tuple with MORE than SROA_MAX_TUPLE_FIELDS (16) elements — the profitability cap
+    // (exploding a huge aggregate spends locals + copies for no win). A 17-field runtime tuple (all `a`s so
+    // the scrutinee stays a fresh runtime Core::Tuple) with a 17-binder tuple-destructure arm.
+    {
+        let seventeen = std::iter::repeat_n("a", 17).collect::<Vec<_>>().join(" ");
+        let binders = (0..17)
+            .map(|i| format!("x{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            gate(&format!(
+                "(match (tuple {seventeen}) ((tuple {binders}) 0))"
+            )),
+            None,
+            "a 17-field tuple exceeds the SROA field-count profitability cap (16) — declines"
+        );
+    }
     // PRE-BIND: on a firing candidate, every returned elem is marked a KEPT binding (so references lower to
     // a `LocalRef`, evaluated once), and `sroa_let_wrap` builds the matching self-keyed `Core::Let` binding
     // them — the eval-once/trap-once guarantee at the bind site (v-patterns' interface).
