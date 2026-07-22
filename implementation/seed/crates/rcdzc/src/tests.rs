@@ -2158,6 +2158,62 @@ fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
     }
 }
 
+#[test]
+fn record_with_over_a_runtime_record_builds_from_projections() {
+    use crate::testkit::parse;
+    // REGRESSION (row-op over a runtime record — breaker l6): `Record.with` whose TARGET is a RUNTIME record
+    // (a PROJECTION `(. o pos)`, a param, a call result — NOT a compile-time-visible record literal) used to
+    // DECLINE "a record row operation over a runtime record is not yet built" (lower only folded over a
+    // const `Core::Record`). FIX: build a fresh record whose UNCHANGED fields are synth `(. record field)`
+    // projections (per the solved `Ty::Record` field set) and whose named field carries the new value. Here
+    // `setx` takes a nested-record param and does `Record.with (. o pos) #x 99` on the PROJECTED sub-record —
+    // the exact l6 shape. `mk` recurses so the outer record can't fold; the inner Record.with is over the
+    // runtime projection. Reading the UPDATED field = 99, and a PRESERVED sibling `y` = its source value.
+    let updated = "(module m \
+        (def (mk (: n Int64)) (if (= n 0) (record (pos (record (x 1) (y 2))) (vel 5)) (mk (- n 1)))) \
+        (def (setx (: o (Record (: pos (Record (: x Int64) (: y Int64))) (: vel Int64)))) \
+          (Record.with (. o pos) #\"x\" 99)) \
+        (def (main (: v Int64)) (. (setx (mk v)) x)) \
+        (export main))";
+    let preserved = "(module m \
+        (def (mk (: n Int64)) (if (= n 0) (record (pos (record (x 1) (y 2))) (vel 5)) (mk (- n 1)))) \
+        (def (setx (: o (Record (: pos (Record (: x Int64) (: y Int64))) (: vel Int64)))) \
+          (Record.with (. o pos) #\"x\" 99)) \
+        (def (main (: v Int64)) (. (setx (mk v)) y)) \
+        (export main))";
+    // It COMPILES (was a decline) and imports the heap runtime (a genuine runtime record, not a fold).
+    let bytes = compile_component(&crate::codec::encode(&parse(updated)))
+        .expect("Record.with over a runtime record must compile, not decline");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime record row-op builds on the value heap (import the runtime)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found; skipping runtime Record.with run");
+        return;
+    };
+    let run = |src: &str, expect: &str, what: &str| {
+        let b = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["1".to_string()],
+            runtime: Some(runtime.clone()),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&b, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(s, expect, "{what}"),
+            cdz_run::Outcome::Trap(t) => panic!("runtime Record.with trapped (miscompile?): {t}"),
+        }
+    };
+    run(updated, "99", "the UPDATED field reads the new value");
+    run(
+        preserved,
+        "2",
+        "a PRESERVED sibling field reads its source value (fresh-record-from-projections)",
+    );
+}
+
 /// A bare (unannotated) parameter PROJECTED in a helper's body is UNCONSTRAINED there (typed `Any`
 /// until the def inlines) — so the projection is checked at the CALL SITE, where the argument's
 /// compound type flows in, not standalone. `(def (get-x r) (. r x))` is well-formed even though `r`'s

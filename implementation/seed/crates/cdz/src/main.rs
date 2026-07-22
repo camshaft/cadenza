@@ -771,15 +771,24 @@ fn run_run_ml(args: &RunMlArgs) -> ExitCode {
 /// Compile + run the generated driver and MAP its output to a verdict line. `cdz compile <driver> -o <tmp>`
 /// then `cdz run <tmp> --call main`; the run prints `(: (Some N) (Option Int64))` / `(: (None …) …)`. Returns
 /// the verdict STRING (`value N` | `declined` | `error …`) on a successful invocation, or `Err` for a
-/// harness failure (couldn't spawn / the compile itself failed to produce an artifact → treat as `declined`,
-/// since an un-compilable driver means the program is outside the ML compiler's expressible subset).
+/// harness failure (couldn't spawn the compile/run subprocess). A driver COMPILE failure maps to
+/// `error <diagnostic>` (surfacing the real CDZ error), NOT `declined` — the driver is fixed per program
+/// (the user source is a runtime string arg), so a compile failure is a harness/front-end error, not an
+/// out-of-subset decline (that happens at run time via `run-src-typed` → `None`).
 fn compile_run_ml_driver(driver_path: &std::path::Path) -> Result<String, String> {
     use std::process::Command;
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let tmp_wasm = std::env::temp_dir().join(format!("cdz-run-ml-{}.wasm", std::process::id()));
 
-    // Compile. A compile FAILURE (diagnostics / non-zero) → the program isn't expressible → `declined`
-    // (coverage-not-yet), NOT a harness error: the ML compiler "declines" anything its front-end can't build.
+    // Compile the DRIVER. Crucial: the driver embeds the user program as a STRING literal handed to
+    // `run-src-typed` (compiled INSIDE the guest at run time) — so this outer `cdz compile` only builds the
+    // fixed driver + `sread-eval`, which is IDENTICAL for every program. Therefore a driver compile FAILURE
+    // is NOT "the user program is out of the ML subset" (that decline happens at RUN time when
+    // `run-src-typed` returns `None`, and is pre-empted by `looks_in_ml_subset`); it's a genuine
+    // HARNESS/COMPILE error (sread-eval itself failing to build, a driver-gen bug, a real front-end
+    // diagnostic like an unbound name). Surface it as `error <diagnostic>` — NOT a blanket `declined`, which
+    // silently swallowed the real CDZ error and made a specific fault look like "run-ml declines everything"
+    // (corpus-bugfix/v-compiler-ml UX report). Reserve `declined` for a genuine not-yet-supported construct.
     let compile = Command::new(&exe)
         .arg("compile")
         .arg(driver_path)
@@ -789,7 +798,20 @@ fn compile_run_ml_driver(driver_path: &std::path::Path) -> Result<String, String
         .map_err(|e| format!("spawn compile: {e}"))?;
     if !compile.status.success() {
         let _ = std::fs::remove_file(&tmp_wasm);
-        return Ok("declined".to_string());
+        // Prefer the compiler's first diagnostic line (stderr, else stdout); collapse to one line so the
+        // verdict stays single-line. Fall back to a generic message if the compiler emitted nothing.
+        let diag = {
+            let stderr = String::from_utf8_lossy(&compile.stderr);
+            let stdout = String::from_utf8_lossy(&compile.stdout);
+            let first = stderr
+                .lines()
+                .chain(stdout.lines())
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or("driver compile failed with no diagnostic");
+            first.to_string()
+        };
+        return Ok(format!("error {diag}"));
     }
 
     // Run.

@@ -1216,6 +1216,7 @@ pass	a two-level UPDATE of a map-of-maps rebuilds the inner and leaves the old o
 pass	a type-valued parameter threads through TWO relay layers beside a runtime operand
 pass	a user sum named Ast renders BARE with RUNTIME payloads through one compiled body
 pass	a user-sum variant value as a Map KEY keys by variant and payload
+pass	a user-written EUCLID gcd loops on remainder and certifies divisibility of both operands
 pass	a user-written FILTER combinator keeps elements passing a captured predicate
 pass	a user-written MAP combinator builds a transformed list through its fn parameter
 pass	a user-written ZIP walks two lists in lockstep, truncating at the shorter

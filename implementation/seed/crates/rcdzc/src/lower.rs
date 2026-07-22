@@ -21141,6 +21141,45 @@ fn const_record_fields(
     }
 }
 
+/// The field→value map for a RUNTIME record `record` (a parameter, a call result, a PROJECTION `(. o pos)`
+/// — one that `const_record_fields` cannot fold to a compile-time `Core::Record`), for building a row-op's
+/// result. A record's field set is STATICALLY known from its solved type (`Ty::Record`), and the value heap
+/// is immutable-SHARED, so a row op yields a NEW record whose UNCHANGED fields each read the source field —
+/// `(. record field)` — a `Core::Proj` at that field's sorted slot (`type-system.md` §A Record Row Operation
+/// Yields A New Value). This SYNTHESIZES a `(. record #field)` member node per field and RESOLVES it (via
+/// `resolve_subtree`, the `fuse_match_into_if` synth-node-needs-resolution precedent), so each `core_of`s to
+/// a `Core::Proj`. Returns the field→synth-projection-node map, or `None` if the record's solved type is not
+/// a concrete `Ty::Record` (a still-`Any`/free record → the caller keeps its clean decline). The result is
+/// used by the row-op lowerings exactly as `const_record_fields`' map is — each field is an `StructId` that
+/// lowers on demand; here the StructId is the synth projection instead of a literal's field occurrence.
+fn runtime_record_fields(
+    db: &mut Db,
+    record: StructId,
+) -> Option<std::collections::BTreeMap<crate::resolved::Symbol, StructId>> {
+    // The field set comes from the record's SOLVED type (peel a nominal wrapper). A non-record / not-yet-
+    // ground type has no static field set → decline (unchanged behavior for a genuinely unknown operand).
+    let rec_ty = crate::infer::type_of(db, record);
+    let crate::ty::Ty::Record(fields) = rec_ty.strip_nominal() else {
+        return None;
+    };
+    let field_syms: Vec<crate::resolved::Symbol> = fields.keys().cloned().collect();
+    let dot = db.push_name(".");
+    let mut out = std::collections::BTreeMap::new();
+    for sym in field_syms {
+        // Synthesize `(. record <field>)`. The key is a bare NAME node (`read_key` → `Symbol::plain`); a
+        // plain (no-namespace) field name round-trips through it. (A namespaced label can't arise from a
+        // source record type today — `Symbol::namespace` is always `None` here.)
+        let key_node = db.push_name(&sym.name);
+        let member = db.push_list(vec![dot, record, key_node]);
+        // RESOLVE the synth member subtree so `core_of(member)` sees `Resolved::Member{operand: record, key}`
+        // → `Core::Proj` at the field's sorted slot (a synth node is not in the load-time resolve column;
+        // `resolve_subtree` fills it, exactly as `fuse_match_into_if` does for its synth arms).
+        crate::resolve::resolve_subtree(db, member);
+        out.insert(sym, member);
+    }
+    Some(out)
+}
+
 fn lower_list_at(db: &mut Db, id: StructId, list: StructId, index: StructId) -> Core {
     if let Core::Poison(r) = core_of(db, list) {
         return Core::Poison(r);
@@ -22432,13 +22471,23 @@ fn lower_record_insert(
     // (record …))) … r …)` lowers each `r` to a `LocalRef`, so a naive `core_of` sees the binding not the
     // literal and used to decline "over a RUNTIME record" — misleading (every field is constant; single-use
     // `r` folds because it copy-propagates). A genuinely runtime record (param/call result) still declines.
-    let Some(fields) = const_record_fields(db, record) else {
-        return match core_of(db, record) {
-            Core::Poison(r) => Core::Poison(r),
-            _ => Core::Poison(Reject::decline(
-                "a record row operation over a runtime record is not yet built",
-            )),
-        };
+    // A compile-time-visible record FOLDS (its fields are literal occurrences). A RUNTIME record (param /
+    // call result / PROJECTION `(. o pos)`) builds a fresh record whose UNCHANGED fields read the source via
+    // synth `(. record field)` projections (`runtime_record_fields`) and whose named field carries `value` —
+    // the same "yields a new value" result, just with projected sources instead of literal ones.
+    let mut out: std::collections::BTreeMap<_, _> = match const_record_fields(db, record) {
+        Some(fields) => fields.iter().map(|(k, &v)| (k.clone(), v)).collect(),
+        None => match core_of(db, record) {
+            Core::Poison(r) => return Core::Poison(r),
+            _ => match runtime_record_fields(db, record) {
+                Some(m) => m,
+                None => {
+                    return Core::Poison(Reject::decline(
+                        "a record row operation over a runtime record is not yet built",
+                    ));
+                }
+            },
+        },
     };
     let Some(label) = crate::resolve::read_label(db, label_node) else {
         return Core::Poison(Reject::coded(
@@ -22446,10 +22495,8 @@ fn lower_record_insert(
             "the second operand is a `#field` label, e.g. `#z`",
         ));
     };
-    let mut out: std::collections::BTreeMap<_, _> =
-        fields.iter().map(|(k, &v)| (k.clone(), v)).collect();
     out.insert(label, value);
-    trace!(target: "rcdzc::fold", node = id.0, n = out.len(), "Record.extend/with folds an insert into a constant record");
+    trace!(target: "rcdzc::fold", node = id.0, n = out.len(), "Record.extend/with builds an insert into a (constant or runtime) record");
     Core::Record {
         fields: std::rc::Rc::new(out),
     }
