@@ -2334,6 +2334,19 @@
   (input  (do (type Ast (Lit Int64) (Node (List Ast))) (def (main) (Node (list (Lit 5) (Lit 6)))) (export main)))
   (output (: (Node (list (Lit 5) (Lit 6))) Ast)))
 
+(case "a user sum named Ast renders BARE with RUNTIME payloads through one compiled body"
+  (doc    "The runtime companion of the BARE-heads case above: the payloads are computed from a boundary
+           parameter (`(Lit n)`, `(Lit (+ n 1))`), so the value is assembled at run time and the render
+           walks a live heap node, not a folded constant. n=5 renders `(Node (list (Lit 5) (Lit 6)))` with
+           bare heads on every backend — the sum_needs_qualified_heads predicate is a property of the TYPE
+           (computed once), so the runtime path must agree with the const fold above.")
+  (input  (do
+            (type Ast (Lit Int64) (Node (List Ast)))
+            (def (main (: n Int64))
+              (Node (list (Lit n) (Lit (+ n 1)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: (Node (list (Lit 5) (Lit 6))) Ast)))
+
 (case "a user sum whose variant name collides with a built-in renders that head QUALIFIED on all backends"
   (doc    "The disambiguation arm: `(type Ast (Int Int64) (Node (List Ast)))` — the variant `Int` COLLIDES
            with the built-in, so the value `(Int 5)` renders QUALIFIED as `(. Ast Int)` on every backend, to

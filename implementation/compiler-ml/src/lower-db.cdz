@@ -29,6 +29,15 @@ type Core =
                                    // (its result is a 0/1 Bool-as-i64, not a narrow int).
   | CLet(Int64, Core, Core)        // CLet(binderId, value, body)
   | CIf(Core, Core, Core)          // CIf(cond, then, else)
+  | CCall(Int64, List(Core))       // CCall(calleeName, args) — a NON-INLINING call to a def BY NAME, args
+                                   // already-lowered. Emitted ONLY for a RECURSIVE call (call-is-recursive is
+                                   // true): inlining a cycle would loop forever, so a true cycle gets a real
+                                   // call node instead. A self-CCall is a LEAF w.r.t. lowering (it does NOT
+                                   // descend the callee body — that is lower-def-env's job, Slice B1b), which
+                                   // is exactly what breaks the infinite inline. eval runs it via a name→body
+                                   // def-env (B1b); NON-recursive calls still INLINE (no def-env needed).
+                                   // Mirrors rcdzc's `Core::Call { callee, args }` (core.rs:1061) — recursion
+                                   // as a STATIC code reference by name, never a heap cycle.
 
 /// The canonical Int64 constant — the width the monomorphic-i64 pipeline lowers every literal to today (a
 /// narrow-width annotation lowers to a NARROW CNum; emit reads the width). A single name so construct sites
@@ -114,7 +123,13 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         // forward-ref: calleeId is the callee NAME → map to its def-body via def-body-of. A RECURSIVE call
         // (body transitively calls back) would inline-loop lower → DECLINE (None). An unknown name → None.
         // param-* lookups use the NAME (keyed both ways); only the body INLINE uses calleeBody.
-        (if (call-is-recursive(tree, calleeId)) then Option.None(unit)
+        // slice-B1a RECURSION: a recursive call (body transitively calls back) can NOT inline (a cycle would
+        // loop lower forever). Instead it lowers to a NON-inlining `CCall(calleeName, args)` — a LEAF w.r.t.
+        // lowering (we do NOT descend the callee body here; the def-env build in B1b lowers each body once).
+        // Args are the SAME arg slots the inline path reads (argId + arg2/3/4-of), lowered into a List(Core);
+        // any ill-typed arg → the call declines (None). Unknown name can't be recursive (call-is-recursive
+        // returns false when def-body-of misses), so this branch always has a known callee.
+        (if (call-is-recursive(tree, calleeId)) then lower-recursive-call(tree, id, calleeId, argId, rcol, tcol)
          else (match def-body-of(tree, calleeId) with
            | Option.None(_) => Option.None(unit)
            | Option.Some(calleeBody) =>
@@ -183,6 +198,47 @@ def inner-body-with-param4(tree: Tree, id: Int64, calleeId: Int64, bodyCore: Cor
               (match lower-node(tree, arg4Id, rcol, tcol) with
                 | Option.Some(arg4Core) => Option.Some(Core.CLet(param4Id, arg4Core, bodyCore))
                 | Option.None(_) => Option.None(unit))))
+
+/// slice-B1a: lower a RECURSIVE call `(f a1 a2 ..)` to a NON-inlining `CCall(calleeName, args)`. Extracted
+/// from lower-ok's NApp arm to keep that arm small. Lowers the arg slots into a List(Core); any ill-typed arg
+/// declines the whole call (None). A LEAF w.r.t. lowering — does NOT descend the callee body.
+def lower-recursive-call(tree: Tree, id: Int64, calleeId: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  (match lower-rec-args(tree, id, argId, rcol, tcol) with
+    | Option.Some(args) => Option.Some(Core.CCall(calleeId, args))
+    | Option.None(_) => Option.None(unit))
+
+/// slice-B1a: lower a RECURSIVE call's argument nodes into a `List(Core)` for `CCall(calleeName, args)`. The
+/// args are the SAME slots the inline path reads — `argId` (the first arg, or -1 for a nullary call) plus
+/// `arg2-of`/`arg3-of`/`arg4-of` keyed by this NApp node-id `id`. A nullary call → `[]`. Each present arg is
+/// lowered by `lower-node`; if ANY arg is ill-typed / does not lower, the whole call declines (`None`). This
+/// does NOT descend the callee body (that is the def-env's job in B1b) — CCall is a lowering LEAF.
+def lower-rec-args(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  (if (argId == (0 - 1)) then Option.Some(([] : List(Core)))            // nullary recursive call → no args
+   else (match lower-node(tree, argId, rcol, tcol) with
+     | Option.None(_) => Option.None(unit)
+     | Option.Some(a1) =>
+         // splice arg1 then each present higher arg (each a []-or-[core] list) in order via List.concat.
+         (match lower-rec-arg-opt(tree, arg2-of(tree, id), rcol, tcol) with
+           | Option.None(_) => Option.None(unit)
+           | Option.Some(rest2) =>
+               (match lower-rec-arg-opt(tree, arg3-of(tree, id), rcol, tcol) with
+                 | Option.None(_) => Option.None(unit)
+                 | Option.Some(rest3) =>
+                     (match lower-rec-arg-opt(tree, arg4-of(tree, id), rcol, tcol) with
+                       | Option.None(_) => Option.None(unit)
+                       | Option.Some(rest4) =>
+                           Option.Some(List.concat(List.push([], a1), List.concat(rest2, List.concat(rest3, rest4)))))))))
+
+/// Helper: lower an OPTIONAL arg-slot node (from arg2/3/4-of). `None` slot → `Some []` (absent arg, no
+/// contribution); a present slot that lowers → `Some [core]`; a present slot that fails to lower → `None`
+/// (the call declines). Returns `Option(List(Core))` — the singleton-or-empty list is spliced by the caller.
+def lower-rec-arg-opt(tree: Tree, slot: Option(Int64), rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
+  (match slot with
+    | Option.None(_) => Option.Some(([] : List(Core)))
+    | Option.Some(argN) =>
+        (match lower-node(tree, argN, rcol, tcol) with
+          | Option.Some(argCore) => Option.Some(List.push([], argCore))
+          | Option.None(_) => Option.None(unit)))
 
 /// The lower COLUMN builder: build resolve + infer columns (demanding parse under them), then lower over
 /// them. The whole demand chain in one call — lower reaches infer reaches resolve reaches parse.
@@ -344,5 +400,39 @@ def lw-napp-with-arg-still-no-core() =
     (match add-node(t1, Node.NLit(5)) with | (argId, t2) =>
       (match add-node(t2, Node.NApp(bodyId, argId)) with | (root, tree) =>
         (match lower-tree(tree, root) with | Option.None(_) => unit | Option.Some(_) => trap("a call WITH an arg has no core until the param slice")))))
+
+@test
+def lw-recursive-nullary-call-lowers-to-ccall-slice-b1a() =
+  // SLICE-B1a RECURSION: a self-recursive nullary call `def f() = f()` lowers to a NON-inlining `CCall(f, [])`
+  // — NOT a decline (the pre-B1a behavior) and NOT an inline (a cycle can't inline). The body node IS the call
+  // NApp(fName=900, -1); record-def keys name 900 → that node, so call-is-recursive(900) sees the body call
+  // back to 900 → recursive. Real infer marks a recursive NApp TErr (until B2), so lower-tree would filter it
+  // at the tcol gate; we call `lower-node` DIRECTLY with a synthetic tcol typing the call node TIntW(true,64)
+  // — the only way to reach (and thus pin) the new CCall lowering path in B1a.
+  (match add-node(empty-tree(), Node.NApp(900, 0 - 1)) with | (callId, t1) =>
+    (let tree = record-def(t1, 900, callId) in
+     (let tcol = Map.insert((Map.empty : Map(Int64, Typed)), callId, Typed.TIntW(true, 64)) in
+      (match lower-node(tree, callId, (Map.empty : Map(Int64, Resolved)), tcol) with
+        | Option.Some(Core.CCall(name, args)) =>
+            (if (name == 900) and (List.len(args) == 0) then unit else trap("nullary self-call → CCall(900, [])"))
+        | Option.Some(_) => trap("recursive call lowered to a NON-CCall Core (should be CCall)")
+        | Option.None(_) => trap("recursive nullary call DECLINED (lower-node None) — CCall path not reached")))))
+
+@test
+def lw-recursive-call-splices-arg-into-ccall-slice-b1a() =
+  // SLICE-B1a arg-splice: a self-recursive call WITH a (literal) arg `def f(n) = f(42)` lowers to
+  // `CCall(f, [CNum 42])` — lower-rec-args lowers the single arg node into the args List. Body = NApp(900,
+  // litId) with litId = NLit(42); record-def keys 900 → that call node so call-is-recursive fires. Synthetic
+  // tcol types BOTH the call node and the literal TIntW(true,64) (real infer declines recursion until B2).
+  (match add-node(empty-tree(), Node.NLit(42)) with | (litId, t1) =>
+    (match add-node(t1, Node.NApp(900, litId)) with | (callId, t2) =>
+      (let tree = record-def(t2, 900, callId) in
+       (let tcol = Map.insert(Map.insert((Map.empty : Map(Int64, Typed)), callId, Typed.TIntW(true, 64)), litId, Typed.TIntW(true, 64)) in
+        (match lower-node(tree, callId, (Map.empty : Map(Int64, Resolved)), tcol) with
+          | Option.Some(Core.CCall(name, args)) =>
+              (if (name == 900) and (List.len(args) == 1)
+               then (match args with | [a1, .. _] => (if is-cnum(a1, 42) then unit else trap("arg1 is CNum 42")) | [] => trap("args has one element"))
+               else trap("1-arg self-call → CCall(900, [CNum 42])"))
+          | _ => trap("a recursive call with an arg lowers to CCall with the arg spliced"))))))
 
 export { Core.*, lower-tree, lower-node, cnum64, is-cnum, is-cnum-w, is-cvar }

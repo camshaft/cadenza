@@ -118,6 +118,10 @@ def can-emit(c: Core) = match c with
   | Core.CBin(op, _, _, l, r) => (is-arith-op(op) or is-cmp-op(op)) and can-emit(l) and can-emit(r)
   | Core.CLet(_, v, body) => can-emit(v) and can-emit(body)
   | Core.CIf(cond, thn, els) => can-emit(cond) and can-emit(thn) and can-emit(els)
+  | Core.CCall(_, _) => false
+      // slice-B1a: a recursive call's CCall is OUT of the emit subset — emitting a real wasm function + call
+      // opcode is slice B' (function table, param locals, call encoding). Until then a CCall program declines
+      // to emit (emit-module gates on can-emit); the interpreter (eval-db, B1b) runs recursion first.
 
 /// The position of `x` in `xs` (0-based), or -1 if absent. Used to map a CLet binder node-id to its wasm
 /// LOCAL INDEX (index = order of the binder in the pre-order binder list). Scalar-only (List Int64), so no

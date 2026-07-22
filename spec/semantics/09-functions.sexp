@@ -5789,6 +5789,31 @@
   (call   main (: 100N BigInt))
   (output (: true Bool)))
 
+(case "a BigInt entry parameter is COMPUTED on, not just compared"
+  (doc    "The compute face of the BigInt-entry-arg marshal (rust fix c8457fbf5). Where the case above only
+           EQUALITY-checks the arg, this MULTIPLIES it: `(def (main (: a BigInt)) (* a (BigInt.of 1000000)))`.
+           This is the shape that exposed an E0308 artifact-no-build (breaker-found) — `cdz check` accepted
+           it but the emitted rust driver marshaled the arg with a type that did not match the fn signature.
+           The rust gate driver now reads the emitted fn's param types and marshals the bare-decimal arg as an
+           owned `cdz_num::Big` (the BigInt twin of the String `.to_string()` marshal), so main(5)=5000000 and
+           main(-3)=-3000000 build + run. wasm declines the BigInt entry arg (a sound todo, like the case
+           above).")
+  (input  (do (def (main (: a BigInt)) (* a (BigInt.of 1000000))) (export main)))
+  (call   main (: 5 BigInt))
+  (output (: 5000000 BigInt))
+  (call   main (: -3 BigInt))
+  (output (: -3000000 BigInt)))
+
+(case "a BigInt entry parameter added to a beyond-i64 annotated literal"
+  (doc    "The companion face: a BigInt entry param added to a body literal that EXCEEDS i64/i128 range —
+           `(def (main (: a BigInt)) (+ a (: 100000000000000000000 BigInt)))` (10^20 > i64::MAX). Verified
+           that the entry-arg marshal fix (c8457fbf5) covers this too: the beyond-i64 body literal is lowered
+           through the same owned-BigInt path, so main(1) = 100000000000000000001 builds + runs on rust. wasm
+           declines the BigInt entry arg (sound todo).")
+  (input  (do (def (main (: a BigInt)) (+ a (: 100000000000000000000 BigInt))) (export main)))
+  (call   main (: 1 BigInt))
+  (output (: 100000000000000000001 BigInt)))
+
 (case "a Rational entry argument is marshalled through Rational::new"
   (doc    "`(def (main (: r Rational)) (= r 1R))` called with `1R` → true. The driver marshals it as
            `cdz_num::Rational::new(Big::from_i64(1), Big::from_i64(1))`, not the invalid `1R` literal.")
