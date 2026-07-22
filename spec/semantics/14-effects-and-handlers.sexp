@@ -559,6 +559,30 @@
   (call   main (: 9 Int64))
   (output (: -1 Int64)))
 
+(case "a LIST OF SUMS resumed from a handler feeds an event-sourcing fold in the body"
+  (doc    "The heap-of-variants resume: the arm resumes with `(list (Add n) (Reset) (Add 40) (Add 2))` —
+           a list whose ELEMENTS are sum values with mixed payload/nullary variants — and the body runs
+           the apply-events fold over it (the Reset discards the runtime n; 40+2 = 42 regardless).
+           Composes the sum-list construction in an ARM, the crossing of variant-tagged heap elements
+           through the continuation, and the per-variant dispatch fold in the body — the config-provider
+           idiom (a handler supplying a program's event stream).")
+  (input  (do
+            (type Ev (Add Int64) (Reset))
+            (effect Src (op events (-> Unit (List Ev))))
+            (def (apply-ev (: acc Int64) (: e Ev))
+              (match e ((Add v) (+ acc v)) ((Reset) 0)))
+            (def (run (: evs (List Ev)) (: acc Int64))
+              (match evs
+                ((list) acc)
+                ((list h .. t) (run t (apply-ev acc h)))))
+            (def (main (: n Int64))
+              (handle Src 0
+                ((events (u) s (resume (list (Add n) (Reset) (Add 40) (Add 2)) s)))
+                (run (Src.events unit) 0)))
+            (export main)))
+  (call   main (: 999 Int64))
+  (output (: 42 Int64)))
+
 (case "a handler arm RECURSES through a named helper before resuming"
   (doc    "The arm-calls-a-def face: `tally`'s arm computes `(triangle v 0)` — a RECURSIVE tail loop over
            the op argument — before resuming with its result (4 → 10, 10 → 55). The arm body is not a

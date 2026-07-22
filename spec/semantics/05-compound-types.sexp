@@ -8575,6 +8575,81 @@
   (call   main (: 0 Int64)) (output (: 2 Int64))
   (call   main (: -5 Int64)) (output (: 3 Int64)))
 
+(case "a user-written ZIP walks two lists in lockstep, truncating at the shorter"
+  (doc    "The dual-spine walk: each step destructures BOTH lists in nested matches and recurses on both
+           tails — a dot-product fold (1·10 + 2·20 + 3·30 = 140) that STOPS when the shorter operand
+           empties, so the 4th element (the runtime n) is never read (140 regardless of n=999). Every
+           pinned fold walks ONE spine; the zip must keep two independent head-tail decompositions in
+           step (a walk advancing one spine twice, or reading past the shorter list, drifts or traps).")
+  (input  (do
+            (def (zip-sum (: xs (List Int64)) (: ys (List Int64)) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list xh .. xt)
+                  (match ys
+                    ((list) acc)
+                    ((list yh .. yt) (zip-sum xt yt (+ acc (* xh yh))))))))
+            (def (main (: n Int64))
+              (zip-sum (list 1 2 3 n) (list 10 20 30) 0))
+            (export main)))
+  (call   main (: 999 Int64))
+  (output (: 140 Int64)))
+
+(case "an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state"
+  (doc    "The apply-events idiom: a fold dispatches per element of a mixed `(Add/Sub/Reset)` list,
+           threading the accumulator through each variant's transition — Add 10, Sub 3, Add n (runtime,
+           any value), RESET (drops everything so far), Add 42 → 42 regardless of n. The mid-stream
+           Reset makes the pre-reset prefix — including the runtime element — provably irrelevant, so a
+           fold miscarrying the accumulator across the reset (or dispatching the runtime element wrong)
+           surfaces even though its value never reaches the answer. The single-value enum-dispatch pin
+           above exercises arms one call at a time; this walks all three variants in ONE fold spine.")
+  (input  (do
+            (type Ev (Add Int64) (Sub Int64) (Reset))
+            (def (apply-ev (: acc Int64) (: e Ev))
+              (match e
+                ((Add v) (+ acc v))
+                ((Sub v) (- acc v))
+                ((Reset) 0)))
+            (def (run (: evs (List Ev)) (: acc Int64))
+              (match evs
+                ((list) acc)
+                ((list h .. t) (run t (apply-ev acc h)))))
+            (def (main (: n Int64))
+              (run (list (Add 10) (Sub 3) (Add n) (Reset) (Add 42)) 0))
+            (export main)))
+  (call   main (: 100 Int64))
+  (output (: 42 Int64)))
+
+(case "a sum-typed STATE MACHINE steps through transitions with an ABSORBING terminal state"
+  (doc    "The state-machine fold (the event fold above threads a scalar; here the STATE ITSELF is the
+           sum): Idle→Running(v) on a positive input, Running accumulates, input 0 seals to Done, and
+           Done ABSORBS (the trailing 99 must not escape it). n=22: Idle→Running 22→Running 42→Done 42→
+           Done 42 (42); n=-1: the negative input leaves Idle, then 20 starts the run → Done 20 (20 —
+           the runtime input changes the PATH, not just a value). Each step both matches the current
+           state variant AND constructs the next; a machine leaking a transition out of Done (or
+           re-entering Idle mid-run) diverges at the tail input.")
+  (input  (do
+            (type St (Idle) (Running Int64) (Done Int64))
+            (def (step (: s St) (: input Int64))
+              (match s
+                ((Idle) (if (> input 0) (Running input) (Idle)))
+                ((Running acc) (if (= input 0) (Done acc) (Running (+ acc input))))
+                ((Done v) (Done v))))
+            (def (drive (: s St) (: inputs (List Int64)))
+              (match inputs
+                ((list) s)
+                ((list h .. t) (drive (step s h) t))))
+            (def (main (: n Int64))
+              (match (drive (Idle) (list n 20 0 99))
+                ((Done v) v)
+                ((Running acc) (- 0 acc))
+                ((Idle) -999)))
+            (export main)))
+  (call   main (: 22 Int64))
+  (output (: 42 Int64))
+  (call   main (: -1 Int64))
+  (output (: 20 Int64)))
+
 (case "a two-variant enum match with constant arms dispatches branchlessly — first variant"
   (doc    "A TWO-variant enum `(type Flag On Off)` matched to constant arms is `(if (disc == On) 1 0)` —
            the two-arm sum-discriminant analogue of the scalar two-arm select, so the compiler emits a
