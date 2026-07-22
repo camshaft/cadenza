@@ -3172,7 +3172,18 @@ impl<'a> Parser<'a> {
         if !self.at(Kind::RParen) {
             loop {
                 let before = self.pos;
-                elems.push(self.expr(crate::token::PREC_SEQ + 1));
+                let elem = self.expr(crate::token::PREC_SEQ + 1);
+                // Capture a same-line trailing `//` on the LAST element (gated on `at(RParen)`), like
+                // `list_literal`/the tuple loop — a set literal `#(…)` desugars to `Set.of([…])`, so its
+                // elements ARE list elements and the `#(…)` printer renders them via the shared
+                // comment-aware path. Gated to the last element for the PR#758 reason (a non-last comment
+                // would swallow the following `, …`); a mid-element comment is left to the drop-guard.
+                if self.at(Kind::RParen) {
+                    let trailing = self.take_trailing_comment_here();
+                    elems.push(self.wrap_comment_after(trailing, elem));
+                } else {
+                    elems.push(elem);
+                }
                 if !self.sep_continue(Kind::RParen) {
                     break;
                 }

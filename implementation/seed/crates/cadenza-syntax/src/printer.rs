@@ -421,7 +421,7 @@ impl<'a> Printer<'a> {
         // `(. Set of)`, not a name. Like the quantity/unit sugars, `Set` needs no shadow guard (the
         // member access re-reads identically); the inner list IS shadow-gated via `literal_ctor`.
         if let Some(elems) = self.set_literal(items) {
-            return self.bracketed("#(", ")", false, &elems, |p, e| p.expr(e, 0));
+            return self.bracketed_comment_aware("#(", ")", false, &elems);
         }
         // A head that is an Atom(Name) may name a construct or an operator; otherwise it is a
         // computed-callee application.
@@ -5810,6 +5810,18 @@ mod tests {
         assert_eq!(
             assert_roundtrip("#(1000, 2000, 3000, 4000)", 20),
             "#(\n  1000,\n  2000,\n  3000,\n  4000\n)"
+        );
+        // A same-line trailing `//` on the LAST set element is preserved (a set `#(…)` desugars to
+        // `Set.of([…])`, so its elements are list elements rendered via the shared comment-aware path).
+        // Captured as `(comment-after …)`, printed same-line, `)` forced to its own line; round-trips.
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def s() -> Int64 = #(1, 2 // last\n)").arenas),
+            "(def (s) (: ((. Set of) (\"list\" 1 (comment-after \"last\" 2))) Int64))",
+            "a same-line trailing comment on the last set element is captured, not dropped"
+        );
+        assert_eq!(
+            assert_roundtrip("#(1, 2 // last\n)", 80),
+            "#(\n  1,\n  2 // last\n)"
         );
     }
 
