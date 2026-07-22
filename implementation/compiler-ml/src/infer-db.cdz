@@ -31,6 +31,12 @@ type Typed =
   | TIntW(Bool, Int64)
   | TBool
   | TErr
+  | TFn(List(Typed), Typed)        // HIGHER-ORDER (HO-2b): a FUNCTION type in the pipeline's Typed universe —
+                                   // the concrete counterpart of ty.cdz's Ty.TyFn (bridged in ty-bridge). N-ARY
+                                   // (param types + result) matching compiler-ml's N-ary NApp. A fn-typed PARAM
+                                   // and a bare def-name-as-value (RDef) infer to a TFn; `(f x)` infers to the
+                                   // TFn's result. Threaded through ty-bridge (TyFn↔TFn, replacing HO-1's TErr
+                                   // stopgap) so a fn value survives the Typed↔Ty round-trip.
 
 /// The canonical integer type the monomorphic-i64 pipeline produces everywhere: signed, 64-bit. A single
 /// name so the many construct sites don't repeat the `(true, 64)` pair (and a later slice that produces a
@@ -333,6 +339,9 @@ def ty-to-typed-int(t: Ty) = match ground-default(t) with
        (let width = (match w with | Width.WFixed(n) => n | Width.WidthDef => 64) in Typed.TIntW(signed, width))))
   | Ty.TyBool => Typed.TBool
   | Ty.TyErr => Typed.TErr
+  // HIGHER-ORDER (HO-1): a function type is out of the int-combining path — a fn value never appears as an
+  // arith/if-join operand — so it maps to TErr here (Typed gains a fn variant in HO-2). Poison, never a wrong int.
+  | Ty.TyFn(_, _) => Typed.TErr
 
 /// item-3 HM: a unification RESULT `Ty` → `Typed`, PRESERVING a still-deferred width as the deferred sentinel
 /// (`t-int-deferred`) rather than eagerly grounding it to Int64. This is what an ARITH node's result type uses:
@@ -420,6 +429,7 @@ def lit-node-fits(tree: Tree, x: Int64, ts: Bool, tw: Int64) =
 /// HM infer↔ty boundary: it's what turns a deferred literal into the unifier's deferred int.
 def typed-to-ty-defer(t: Typed) = match t with
   | Typed.TIntW(s, w) => (if w == 0 then Option.Some(ty-deferred-int()) else Option.Some(ty-fixed-int(s, w)))
+  | Typed.TFn(_, _) => Option.None(unit)  // a fn value is not an arith operand → None (arith declines it, like TBool/TErr)
   // ARITHMETIC IS INTEGER-ONLY: a Bool operand → None, so arith-result-type declines `(+ true false)` (→ TErr,
   // not a laundered Bool — arith requires TInt). This is NOT a regression for relational ops: bin-type's
   // relational arm (op 60..65) has a `both-bool` fallback, so `(== true false)`/`(< true false)` still type Bool
@@ -482,6 +492,16 @@ def typed-to-ty(t: Typed) = match t with
   | Typed.TIntW(s, w) => ty-fixed-int(s, w)
   | Typed.TBool => Ty.TyBool
   | Typed.TErr => Ty.TyErr
+  // HIGHER-ORDER (HO-2b): a function Typed → the shared Ty.TyFn (recursively convert params + result). This is
+  // the real TyFn↔TFn bridge that replaces HO-1's TErr stopgap — a fn value survives the Typed→Ty crossing.
+  | Typed.TFn(ps, r) => Ty.TyFn(typed-list-to-ty(ps, 0), typed-to-ty(r))
+
+/// Convert a param-type list `Typed → Ty` element-wise (index recursion) for typed-to-ty's TyFn arm.
+def typed-list-to-ty(ps: List(Typed), i: Int64) =
+  (if i == List.len(ps) then ([] : List(Ty))
+   else (match List.at(ps, i) with
+     | Option.Some(p) => List.concat(List.push([], typed-to-ty(p)), typed-list-to-ty(ps, i + 1))
+     | Option.None(_) => typed-list-to-ty(ps, i + 1)))
 
 /// Structural type equality — now DELEGATES to ty.cdz's `ty-eq` (the shared type universe) via the local
 /// `Typed`→`Ty` bridge (convergence step ii, divergence #3): infer's if-join decides sameness with the SAME

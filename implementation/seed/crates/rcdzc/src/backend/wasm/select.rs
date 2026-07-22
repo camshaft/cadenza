@@ -9768,13 +9768,26 @@ fn emit(
             // binding owns no heap cell → no drop.)
             let mut heap_bindings: Vec<(StructId, u32)> = Vec::new();
             for (binder, value) in &bindings {
-                let slot = floor;
                 let ty = type_of(db, *binder);
                 // The binding's machine value type — read off its solved type (the value's type). A
                 // binding whose type has no machine rep (a compound/unresolved value) declines.
                 let vt = valtype_of(&ty).ok_or_else(|| {
                     Reject::decline("a let binding's type has no machine representation")
                 })?;
+                // WIDTH-PARTITIONED CLAIM (func[58] emit-db slot-width collision): reuse `floor` only when
+                // that slot is FREE or already RECORDED at this binding's width; otherwise take a FRESH slot
+                // at `*high`. `scratch_ty` is function-scoped and persists across SIBLING match arms, which
+                // each reset `floor` to `base` — so arm A's i64 binder and arm B's i32 binder both target
+                // `base`, but one wasm local cannot be declared at two widths (last-writer-wins in
+                // `scratch_ty` leaves arm A's `LocalSet` storing i64 into an i32-declared slot → invalid
+                // module, the func[58] collision at scale). Bumping the conflicting claim to `*high` keeps
+                // every slot single-width by construction. Same-width reuse is preserved (the common case —
+                // no local-count growth); only a genuine width conflict spills to a fresh slot. Reads follow
+                // automatically: the binder→slot mapping (`extended`) records the chosen slot.
+                let slot = match scratch_ty.get(&floor) {
+                    Some(&w) if w != vt => *high,
+                    _ => floor,
+                };
                 // RESERVE the binding slot BEFORE emitting the initializer: record its type and lift `*high`
                 // past it now. The initializer emits at `slot + 1`, but many emit sites float their own
                 // scratch off `*high` (a tuple/record element `elem_base = *high`, an `if`-branch base, a

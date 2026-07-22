@@ -16,15 +16,24 @@
 import { Typed } from "infer-db"
 import { Ty, IntType, Sign, Width, ty-fixed-int, ground-default } from "ty"
 
-/// `Typed` → `Ty`: a concrete `TIntW(signed, width)` → the fixed `Ty` int; TBool → TyBool; TErr → TyErr.
+/// `Typed` → `Ty`: a concrete `TIntW(signed, width)` → the fixed `Ty` int; TBool → TyBool; TErr → TyErr;
+/// TFn → the shared Ty.TyFn (HO-2b, recursive over params + result).
 def typed-to-ty(t: Typed) = match t with
   | Typed.TIntW(s, w) => ty-fixed-int(s, w)
   | Typed.TBool => Ty.TyBool
   | Typed.TErr => Ty.TyErr
+  | Typed.TFn(ps, r) => Ty.TyFn(typed-list-to-ty(ps, 0), typed-to-ty(r))
+
+/// `Typed` param-list → `Ty` list, element-wise (index recursion) for typed-to-ty's TyFn arm.
+def typed-list-to-ty(ps: List(Typed), i: Int64) =
+  (if i == List.len(ps) then ([] : List(Ty))
+   else (match List.at(ps, i) with
+     | Option.Some(p) => List.concat(List.push([], typed-to-ty(p)), typed-list-to-ty(ps, i + 1))
+     | Option.None(_) => typed-list-to-ty(ps, i + 1)))
 
 /// `Ty` → `Typed`: a `TyInt` GROUNDED to concrete (deferred sign→signed, width→64 via ground-default) → its
-/// `TIntW(signed, width)`; TyBool → TBool; TyErr → TErr. Grounding first means a `Ty` left partly-deferred by
-/// unification comes back as a concrete pipeline `Typed` (the pipeline has no deferred state).
+/// `TIntW(signed, width)`; TyBool → TBool; TyErr → TErr; TyFn → Typed.TFn (HO-2b, recursive). Grounding first
+/// means a `Ty` left partly-deferred by unification comes back as a concrete pipeline `Typed`.
 def ty-to-typed(t: Ty) = match ground-default(t) with
   | Ty.TyInt(it) => (match it with | IntType.IntType(s, w) =>
       (let signed = (match s with | Sign.Signed => true | Sign.Unsigned => false | Sign.SignDef => true) in
@@ -32,6 +41,16 @@ def ty-to-typed(t: Ty) = match ground-default(t) with
         Typed.TIntW(signed, width))))
   | Ty.TyBool => Typed.TBool
   | Ty.TyErr => Typed.TErr
+  // HIGHER-ORDER (HO-2b): the REAL bridge — a shared Ty.TyFn → the pipeline's Typed.TFn (recursive over params
+  // + result), replacing HO-1's TErr stopgap so a fn value survives the Ty→Typed round-trip.
+  | Ty.TyFn(ps, r) => Typed.TFn(ty-list-to-typed(ps, 0), ty-to-typed(r))
+
+/// `Ty` param-list → `Typed` list, element-wise (index recursion) for ty-to-typed's TFn arm.
+def ty-list-to-typed(ps: List(Ty), i: Int64) =
+  (if i == List.len(ps) then ([] : List(Typed))
+   else (match List.at(ps, i) with
+     | Option.Some(p) => List.concat(List.push([], ty-to-typed(p)), ty-list-to-typed(ps, i + 1))
+     | Option.None(_) => ty-list-to-typed(ps, i + 1)))
 
 // ---- TESTS: round-trip + cross-mapping -------------------------------------------------------------
 
@@ -89,5 +108,26 @@ def tb-partial-deferred-ty-grounds-per-axis() =
           | _ => trap("deferred-sign fixed-width is TIntW"))
       else trap("fixed-sign→Unsigned kept, deferred-width→64"))
     | _ => trap("partly-deferred grounds to TIntW"))
+
+@test
+def tb-fn-round-trips() =
+  // HIGHER-ORDER (HO-2b): a function Typed survives Typed → Ty → Typed. Build (Int64) -> Bool as a TFn, cross
+  // to Ty.TyFn, cross back, confirm the shape (1 param Int64, result Bool). Proves the real TyFn↔TFn bridge
+  // (not HO-1's TErr stopgap).
+  (let f = Typed.TFn(List.push([], Typed.TIntW(true, 64)), Typed.TBool) in
+   (match ty-to-typed(typed-to-ty(f)) with
+     | Typed.TFn(ps, r) => (match r with
+         | Typed.TBool => (match List.at(ps, 0) with
+             | Option.Some(Typed.TIntW(s, w)) => (if s and (w == 64) and (List.len(ps) == 1) then unit else trap("param Int64, arity 1"))
+             | _ => trap("param 0 is TIntW"))
+         | _ => trap("result Bool survives"))
+     | _ => trap("fn round-trips to TFn (not TErr — real bridge)")))
+
+@test
+def tb-fn-to-ty-is-tyfn() =
+  // typed-to-ty on a TFn produces a Ty.TyFn (not TErr) — the HO-1 stopgap is gone.
+  (match typed-to-ty(Typed.TFn(List.push([], Typed.TIntW(true, 64)), Typed.TIntW(true, 64))) with
+    | Ty.TyFn(_, _) => unit
+    | _ => trap("TFn → Ty.TyFn (real bridge, not TErr stopgap)"))
 
 export { typed-to-ty, ty-to-typed }

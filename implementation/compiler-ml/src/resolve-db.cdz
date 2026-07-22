@@ -23,6 +23,14 @@ import { Tok, Node, Tree, node-at, parse-tokens, is-let, add-node, empty-tree, r
 type Resolved =
   | RBound(Int64)
   | RPoison
+  | RDef(Int64)                    // HIGHER-ORDER (HO-2a): a name that misses the var scope (params+lets) BUT
+                                   // names a top-level DEF resolves to `RDef(defNameId)` — a def-name used as a
+                                   // first-class VALUE (e.g. `inc` in `(apply inc 41)`), NOT an unbound RPoison.
+                                   // rcdzc's resolve_name is scope-first THEN def-table (resolved.rs Ref); this
+                                   // mirrors it. The def-ref is inert until HO-2b (infer gives it the def's arrow
+                                   // type) + HO-3 (lower emits a CFnRef fn-value) — downstream consumers that only
+                                   // handle RBound decline it via their wildcards until then (a bare def-name in a
+                                   // value position is out of the int-only subset, so poison/TErr, not miscompiled).
 
 /// Resolve the subtree rooted at `id` under scope `env` (nameId → binder NodeId), threading the resolve
 /// column `col` (NodeId → Resolved) that it fills for every `NVar` reached.
@@ -40,9 +48,14 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
     | Option.Some(Node.NBoolLit(_)) => col
     | Option.Some(Node.NAnnLit(_, _, _)) => col   // an annotated literal binds nothing (like NLit)
     | Option.Some(Node.NVar(nm)) =>
+        // scope-first (params+lets → RBound), THEN the def table (a bare def-name used as a VALUE → RDef),
+        // else unbound → RPoison. Mirrors rcdzc resolve_name's scope-then-def-table order (HO-2a). RDef is
+        // inert downstream until HO-2b/HO-3 give a def-value its arrow type + CFnRef lowering.
         (match Map.lookup(env, nm) with
           | Option.Some(binder) => Map.insert(col, id, Resolved.RBound(binder))
-          | Option.None(_) => Map.insert(col, id, Resolved.RPoison))
+          | Option.None(_) => (match def-body-of(tree, nm) with
+              | Option.Some(_) => Map.insert(col, id, Resolved.RDef(nm))     // names a def → def-ref value
+              | Option.None(_) => Map.insert(col, id, Resolved.RPoison)))    // truly unbound
     | Option.Some(Node.NBin(_, l, r)) =>
         resolve-node(tree, r, env, resolve-node(tree, l, env, col))
     | Option.Some(Node.NLet(nm, valId, bodyId)) =>
@@ -125,6 +138,11 @@ def resolved-to(tree: Tree, root: Int64, id: Int64, b: Int64) = match resolved-a
 /// Probe: is the node at `id` resolved to Poison (an unbound name — a FILLED negative decision)?
 def resolved-poison(tree: Tree, root: Int64, id: Int64) = match resolved-at(tree, root, id) with
   | Option.Some(Resolved.RPoison) => true
+  | _ => false
+
+/// Probe (HO-2a): is the node at `id` resolved to `RDef(name)` — a bare def-name used as a first-class value?
+def resolved-def(tree: Tree, root: Int64, id: Int64, name: Int64) = match resolved-at(tree, root, id) with
+  | Option.Some(Resolved.RDef(nm)) => nm == name
   | _ => false
 
 /// Test-token builders (parse-db does not export its private builders).
@@ -308,4 +326,18 @@ def rd-standalone-body-resolve-contract-b1b() =
                                | Option.Some(Resolved.RBound(b)) => (if b == paramId then unit else trap("body param n binds to paramId"))
                                | _ => trap("standalone body resolve should bind param n to RBound(paramId)")))))))))))))))))
 
-export { Resolved.*, resolve-tree, resolve-node, param-scope, resolved-at, resolved-count, resolved-to, resolved-poison }
+@test
+def rd-bare-def-name-as-value-is-rdef() =
+  // HO-2a: a bare def-name used as a VALUE (not called) resolves to RDef(name), NOT RPoison. Build a def `g`
+  // (name 900) + a body that is the bare var `g` (NVar 900) in value position — `g` misses the (empty) var
+  // scope but names a def → RDef(900). This is the fn-value-as-argument classification (`inc` in `apply inc 41`).
+  (match add-node(empty-tree(), Node.NLit(0)) with | (gBodyId, t1) =>          // g's body (arbitrary)
+    (match add-node(t1, Node.NVar(900)) with | (refId, t2) =>                  // a bare reference to `g` (name 900)
+      (let tree = record-def(t2, 900, gBodyId) in                             // register g (name 900) → its body
+       (let col = resolve-node(tree, refId, (Map.empty : Map(Int64, Int64)), (Map.empty : Map(Int64, Resolved))) in
+        (match Map.lookup(col, refId) with
+          | Option.Some(Resolved.RDef(nm)) => (if nm == 900 then unit else trap("RDef carries the def name 900"))
+          | Option.Some(Resolved.RPoison) => trap("HO-2a: a bare def-name should be RDef, not RPoison")
+          | _ => trap("HO-2a: bare def-name-as-value resolves to RDef(900)"))))))
+
+export { Resolved.*, resolve-tree, resolve-node, param-scope, resolved-at, resolved-count, resolved-to, resolved-poison, resolved-def }

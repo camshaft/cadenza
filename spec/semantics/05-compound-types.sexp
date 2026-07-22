@@ -8771,6 +8771,37 @@
   (call   main (: 5 Int64))
   (output (: 1233589258 Int64)))
 
+(case "a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number"
+  (doc    "The stable priority queue over an ordered assoc list: each element carries (priority, seq),
+           `ins` walks to the FIRST position where the new priority is STRICTLY smaller — so among
+           EQUAL priorities the earlier-inserted element stays in front (FIFO tie-break, the stability
+           contract a scheduler leans on) — and the drain reads back the SEQ numbers, making the
+           stability directly observable (the merge pin above takes ties LEFT per step; here equal
+           keys can pile up across separate inserts and the arrival ORDER must survive). Inserts:
+           (5,#1), (n,#2), (5,#3), (1,#4). n=3 → order 1·3·5·5 → seqs 4,2,1,3 (4213 — both 5s in
+           arrival order); n=5 → THREE equal keys, seqs 4,1,2,3 (4123 — a `<=` instead of `<` in the
+           walk reverses to 4,3,2,1); n=9 → n sinks to the tail, seqs 4,1,3,2 (4132).")
+  (input  (do
+            (def (ins (: q (List (Tuple Int64 Int64))) (: p Int64) (: seq Int64))
+              (match q
+                ((list) (list (tuple p seq)))
+                ((list (tuple hp hs) .. t)
+                  (if (< p hp)
+                      (List.concat (list (tuple p seq)) q)
+                      (List.concat (list (tuple hp hs)) (ins t p seq))))))
+            (def (drain (: q (List (Tuple Int64 Int64))) (: acc Int64))
+              (match q
+                ((list) acc)
+                ((list (tuple _p s) .. t) (drain t (+ (* acc 10) s)))))
+            (def (main (: n Int64))
+              (do
+                (def q0 (ins (ins (ins (ins (list) 5 1) n 2) 5 3) 1 4))
+                (drain q0 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 4213 Int64))
+  (call   main (: 5 Int64)) (output (: 4123 Int64))
+  (call   main (: 9 Int64)) (output (: 4132 Int64)))
+
 (case "a FLATTEN fold over a runtime list of lists joins across an empty inner spine"
   (doc    "The flatten idiom: fold `List.concat` over a `(List (List Int64))` whose inner lists have
            MIXED lengths — 2, 0, 2, 1 — with the runtime n heading the third sublist so the fold isn't
@@ -9118,6 +9149,56 @@
             (export main)))
   (call   main (: 100 Int64))
   (output (: 42 Int64)))
+
+(case "a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack"
+  (doc    "The interpreter-dispatch composite (the event fold above threads a SCALAR through variant
+           dispatch; here the threaded state is a LIST used as an operand STACK, and the arms
+           restructure it non-uniformly): Push prepends; OpAdd/OpMul pop TWO and push the combine;
+           Dup re-prepends the head (aliasing it — the head now sits in two spine positions); Swap
+           REORDERS the top two. The program `Push 2, Push n, Dup, OpMul, OpAdd, Push 4, Swap`
+           computes n²+2 then swaps 4 under it — final stack read top-down. n=3 → (11, 4) → digit
+           walk 114; n=0 → (2, 4) → 24 (0²+2 — a Dup that duplicated the WRONG slot or an OpMul
+           popping one operand lands elsewhere); n=-1 → (3, 4) → 34 ((-1)²=1; sign lost in the
+           Dup·Mul path gives 1²=1 too, but a Dup that re-pushed 2 gives -2+2=0 ≠ 3). The two-slot
+           pops bind `(list a b .. t)` — a two-element HEAD destructure — and Swap's rebuild must
+           not share the popped cells.")
+  (input  (do
+            (type Op (Push Int64) (OpAdd) (OpMul) (Dup) (Swap))
+            (def (exec (: prog (List Op)) (: stack (List Int64)))
+              (match prog
+                ((list) stack)
+                ((list op .. rest)
+                  (exec rest
+                    (match op
+                      ((Push v) (List.concat (list v) stack))
+                      ((OpAdd _u)
+                        (match stack
+                          ((list a b .. t) (List.concat (list (+ a b)) t))
+                          (_ stack)))
+                      ((OpMul _u)
+                        (match stack
+                          ((list a b .. t) (List.concat (list (* a b)) t))
+                          (_ stack)))
+                      ((Dup _u)
+                        (match stack
+                          ((list a .. _t) (List.concat (list a) stack))
+                          (_ stack)))
+                      ((Swap _u)
+                        (match stack
+                          ((list a b .. t) (List.concat (list b a) t))
+                          (_ stack))))))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: n Int64))
+              (do
+                (def prog (list (Push 2) (Push n) (Dup) (OpMul) (OpAdd) (Push 4) (Swap)))
+                (chk (exec prog (list)) 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 114 Int64))
+  (call   main (: 0 Int64)) (output (: 24 Int64))
+  (call   main (: -1 Int64)) (output (: 34 Int64)))
 
 (case "a sum-typed STATE MACHINE steps through transitions with an ABSORBING terminal state"
   (doc    "The state-machine fold (the event fold above threads a scalar; here the STATE ITSELF is the
@@ -13050,6 +13131,36 @@
   (call   main (: 2 Int64)) (output (: 315240 Int64))
   (call   main (: 7 Int64)) (output (: 215660 Int64))
   (call   main (: 1 Int64)) (output (: 225290 Int64)))
+
+(case "a map INVERSION flips keys and values, last-writer-wins on duplicate values"
+  (doc    "The reverse-index build: fold `Map.to-list` of the forward map into an empty map with key
+           and value SWAPPED per entry. Injective values invert cleanly; DUPLICATE values collide in
+           the inverted map and Map.insert's overwrite makes the LAST enumerated entry win — and since
+           `Map.to-list` enumerates in CANONICAL key order, which forward key survives is determined
+           (the higher key's entry lands later). fwd = {1↦10, 2↦n, 3↦30}: n=20 → injective, len 3,
+           inv reads 10→1, 20→2, 30→3 (3123); n=10 → values 10 and 10 collide, canonical order puts
+           key 2's entry after key 1's so 10↦2 survives, len 2 (2223 — the two middle digit groups
+           BOTH read the same surviving slot); n=30 → the collision pairs key 2 with key 3 instead,
+           30↦3 survives, len 2 (2133). A to-list that enumerated in insertion or hash order would
+           flip which writer wins and shear the middle digits.")
+  (input  (do
+            (def (invert (: entries (List (Tuple Int64 Int64))) (: m (Map Int64 Int64)))
+              (match entries
+                ((list) m)
+                ((list (tuple k v) .. t) (invert t (Map.insert m v k)))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (main (: n Int64))
+              (do
+                (def fwd (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 n) 3 30))
+                (def inv (invert (Map.to-list fwd) Map.empty))
+                (+ (* (Map.len inv) 1000)
+                   (+ (* (get inv 10) 100)
+                      (+ (* (get inv n) 10) (get inv 30))))))
+            (export main)))
+  (call   main (: 20 Int64)) (output (: 3123 Int64))
+  (call   main (: 10 Int64)) (output (: 2223 Int64))
+  (call   main (: 30 Int64)) (output (: 2133 Int64)))
 
 (case "a FILTERED rebuild keeps only entries passing a runtime predicate"
   (doc    "The filter companion: the rebuild's insert is CONDITIONAL on `(> v cut)` with the cutoff a

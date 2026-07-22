@@ -6197,6 +6197,26 @@
   (input  (do (def (main) (>> (: 18446744073709551615 UInt64) (: 200 UInt64))) (export main)))
   (error  CDZ0304))
 
+; ---- Small-operand shift-left whose RESULT overflows i64 but fits the width (4th/final UInt64 fold
+; slice; v-inference b2197d097, trunk 8f353b256). The wide slice above only reached the width fold when an
+; OPERAND exceeded i64; this pins the twin where both operands fit i64 but the RESULT does (1<<63 = 2^63).
+; The old checked_shl_i64 overflow-checked against Int64 regardless of the solved width, so it spuriously
+; declined. b2197d097's fold_shift_bitwise_at_width folds over the SOLVED unsigned width for this case too.
+(case "a constant shift-left of a small UInt64 operand whose result overflows i64 folds over the solved width"
+  (doc    "`(<< (: 1 UInt64) (: 63 UInt64))` — both operands fit i64, but the result 2^63 overflows i64 while
+           fitting UInt64. The old checked_shl_i64 overflow-checked against Int64 regardless of the solved
+           width, so it spuriously declined CDZ0304. The width-generic fold (b2197d097) folds over the SOLVED
+           width: 1 << 63 = 9223372036854775808. Expected: 9223372036854775808.")
+  (input  (do (def (main) (<< (: 1 UInt64) (: 63 UInt64))) (export main)))
+  (output (: 9223372036854775808 UInt64)))
+
+(case "a constant shift-left of a small UInt32 operand into its high bit folds (width-generic guard)"
+  (doc    "The already-correct width-generic guard: `(<< (: 1 UInt32) (: 31 UInt32))` = 2^31 = 2147483648.
+           This ALWAYS folded (2^31 fits i64, so the old checked_shl_i64 never spuriously overflowed) — pinned
+           to LOCK the width-generic fold's uniform behavior across widths, not because it was ever broken.")
+  (input  (do (def (main) (<< (: 1 UInt32) (: 31 UInt32))) (export main)))
+  (output (: 2147483648 UInt32)))
+
 (case "BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)"
   (doc    "The control: a `UInt64` value BELOW 2^63 has its high bit clear, so the signed and unsigned
            widenings agree — it was always positive. Pins that the fix does not disturb the sub-high-bit
