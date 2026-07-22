@@ -1389,6 +1389,31 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: (tuple 11 12) (Tuple Int64 Int64))))
 
+(case "a THREE-DEEP compose chain stacks closure envs with a runtime capture mid-chain"
+  (doc    "The two-fn compose above holds two handles in ONE env; stacking compose THREE deep makes a
+           closure whose captured `g` is ITSELF a compose result holding another — application walks
+           a three-level env chain inner-to-outer (id, then ·2+1, then ·2+n, then ·2+3). The MIDDLE
+           stage captures the runtime n, so the chain isn't const-foldable end-to-end and the n cell
+           must survive inside the SECOND env level while the outer level applies after it. f(5) =
+           ((5·2+1)·2+n)·2+3: n=0 → 47, n=10 → 67 (the +20 delta = n routed through exactly ONE
+           doubling — a capture landing one level off doubles it twice or not at all, shifting the
+           delta to 40 or 10). NB the same chain built by a RECURSIVE fold over an op list declines
+           (the fn-typed accumulator through recursion is the known inference frontier); this pins
+           the unrolled form that must keep working.")
+  (input  (do
+            (def (compose (: f (-> Int64 Int64)) (: g (-> Int64 Int64)))
+              (fn ((: x Int64)) (f (g x))))
+            (def (main (: n Int64))
+              (do
+                (def id (fn ((: x Int64)) x))
+                (def s1 (compose (fn ((: x Int64)) (+ (* x 2) 1)) id))
+                (def s2 (compose (fn ((: x Int64)) (+ (* x 2) n)) s1))
+                (def s3 (compose (fn ((: x Int64)) (+ (* x 2) 3)) s2))
+                (s3 5)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 47 Int64))
+  (call   main (: 10 Int64)) (output (: 67 Int64)))
+
 (case "a SELF-RECURSIVE named def passed as a value is applied twice through the parameter"
   (doc    "The recursive upgrade of first-class named functions: `fact` — a self-recursive def — is passed
            BY NAME to `apply-twice`, which applies it through its fn PARAMETER twice: `(fact (fact 3))` =

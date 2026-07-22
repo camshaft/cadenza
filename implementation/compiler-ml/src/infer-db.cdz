@@ -171,9 +171,50 @@ def infer-fn-param-call(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Re
      (let ta4 = infer-rec-arg-opt(tree, arg4-of(tree, id), rcol, ta3) in
       (match Map.lookup(rcol, id) with
         | Option.Some(Resolved.RBound(binder)) => (match var-type(tree, binder, ta4) with
-            | Typed.TFn(_, rty) => Map.insert(ta4, id, rty)          // param callee is a fn → call types as arrow result
+            // HO-2c: the callee is a fn-typed param. Its type is TFn(ptys, rty). Check the ARGS fit the params
+            // (arity + pairwise type-unify) BEFORE returning the result — a mismatched/wrong-arity application is
+            // ill-typed (TErr/CDZ0203), not silently the result type. All fit → rty.
+            | Typed.TFn(ptys, rty) => (if args-fit-params(tree, id, argId, ptys, ta4)
+                then Map.insert(ta4, id, rty)
+                else Map.insert(ta4, id, Typed.TErr))               // arity/type mismatch → ill-typed application
             | _ => Map.insert(ta4, id, Typed.TErr))                  // param callee is not a fn → ill-typed application
         | _ => Map.insert(ta4, id, Typed.TErr))))))                  // no callee-fact (plain unknown) → TErr, as before
+
+/// HO-2c: do the call `id`'s ARGS (argId + arg2/3/4-of, types already in `tcol`) fit the callee-arrow's param
+/// types `ptys`? Checks ARITY (arg count == len(ptys)) AND pairwise TYPE unification (each arg's Typed unifies
+/// with the corresponding param Typed, via the shared `Ty` + unify-ty). Any arity or type mismatch → false
+/// (the application is ill-typed). Args are collected as a list; a nullary call (argId -1) has zero args.
+def args-fit-params(tree: Tree, id: Int64, argId: Int64, ptys: List(Typed), tcol: Map(Int64, Typed)) =
+  (let argIds = collect-arg-ids(tree, id, argId) in
+   (if List.len(argIds) == List.len(ptys)
+    then args-fit-go(argIds, ptys, 0, tcol)
+    else false))                                                     // arity mismatch
+
+/// The arg node-ids of call `id` in order: argId (if not -1) then arg2/3/4-of(id) if present.
+def collect-arg-ids(tree: Tree, id: Int64, argId: Int64) =
+  (if argId == (0 - 1) then ([] : List(Int64))
+   else (let a1 = List.push([], argId) in
+         (let a2 = (match arg2-of(tree, id) with | Option.Some(a) => List.push(a1, a) | Option.None(_) => a1) in
+          (let a3 = (match arg3-of(tree, id) with | Option.Some(a) => List.push(a2, a) | Option.None(_) => a2) in
+           (match arg4-of(tree, id) with | Option.Some(a) => List.push(a3, a) | Option.None(_) => a3)))))
+
+/// Pairwise: does each arg (by node-id, type from tcol) unify with the corresponding param Typed? Index recursion.
+def args-fit-go(argIds: List(Int64), ptys: List(Typed), i: Int64, tcol: Map(Int64, Typed)) =
+  (if i == List.len(argIds) then true
+   else (match List.at(argIds, i) with
+     | Option.None(_) => false
+     | Option.Some(aid) => (match List.at(ptys, i) with
+         | Option.None(_) => false
+         | Option.Some(pty) => (match Map.lookup(tcol, aid) with
+             | Option.None(_) => false
+             // use typed-to-ty-DEFER: a bare-literal arg types as the deferred-int sentinel (TIntW(_,0)); the
+             // plain typed-to-ty would map width 0 to a bogus fixed-width-0 Ty that unifies with nothing. The
+             // defer form maps the sentinel → a deferred Ty that GROUNDS to the param's width via unify-ty.
+             | Option.Some(aty) => (match typed-to-ty-defer(aty) with
+                 | Option.None(_) => false                           // arg not an int/bool operand (e.g. a fn) — no fit here
+                 | Option.Some(tya) => (match unify-ty(tya, typed-to-ty(pty)) with
+                     | Option.Some(_) => args-fit-go(argIds, ptys, i + 1, tcol)
+                     | Option.None(_) => false))))))
 
 /// Type an OPTIONAL higher-arg slot of a recursive call (arg2/3/4): present → type its subtree; absent → the
 /// column passes through unchanged. Additive — mirrors the non-recursive infer-param2/3/4 arg walk.
@@ -1208,5 +1249,34 @@ def id-fn-param-call-non-fn-callee-is-terr() =
            (match Map.lookup(tc, callId) with
              | Option.Some(Typed.TErr) => unit
              | _ => trap("applying a non-function callee is TErr"))))))))
+
+@test
+def id-fn-param-call-arg-type-mismatch-is-terr() =
+  // HO-2c: a fn-param call whose ARG type does not fit the arrow's PARAM type is ill-typed → TErr. f : (Bool)
+  // -> Int64, but the arg is 41 (Int64) — Int64 does NOT unify with Bool → the application declines (TErr), not
+  // silently Int64. Pins the arg↔param type check (was deferred in HO-2b-ii-B).
+  (match add-node(empty-tree(), Node.NVar(7)) with | (fBinder, t1) =>
+    (match add-node(t1, Node.NLit(41)) with | (argId, t2) =>
+      (match add-node(t2, Node.NApp(5, argId)) with | (callId, tree) =>
+        (let rcol = Map.insert((Map.empty : Map(Int64, Resolved)), callId, Resolved.RBound(fBinder)) in
+         (let tcol = Map.insert((Map.empty : Map(Int64, Typed)), fBinder, Typed.TFn(List.push([], Typed.TBool), t-int64())) in  // f : (Bool)->Int64
+          (let tc = infer-node(tree, callId, rcol, tcol) in
+           (match Map.lookup(tc, callId) with
+             | Option.Some(Typed.TErr) => unit                       // Int64 arg vs Bool param → mismatch → TErr
+             | _ => trap("arg type not fitting the param type is TErr"))))))))
+
+@test
+def id-fn-param-call-arity-mismatch-is-terr() =
+  // HO-2c: a fn-param call with the WRONG number of args is ill-typed → TErr. f : (Int64, Int64) -> Int64 (2
+  // params) but the call passes ONE arg → arity mismatch → TErr.
+  (match add-node(empty-tree(), Node.NVar(7)) with | (fBinder, t1) =>
+    (match add-node(t1, Node.NLit(41)) with | (argId, t2) =>
+      (match add-node(t2, Node.NApp(5, argId)) with | (callId, tree) =>
+        (let rcol = Map.insert((Map.empty : Map(Int64, Resolved)), callId, Resolved.RBound(fBinder)) in
+         (let tcol = Map.insert((Map.empty : Map(Int64, Typed)), fBinder, Typed.TFn(List.push(List.push([], t-int64()), t-int64()), t-int64())) in  // f : (Int64,Int64)->Int64
+          (let tc = infer-node(tree, callId, rcol, tcol) in
+           (match Map.lookup(tc, callId) with
+             | Option.Some(Typed.TErr) => unit                       // 1 arg vs 2 params → arity mismatch → TErr
+             | _ => trap("arity mismatch is TErr"))))))))
 
 export { Typed.*, infer-node, infer-tree, type-at, ground-deferred, well-typed, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type }

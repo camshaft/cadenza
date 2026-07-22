@@ -181,6 +181,115 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus"
+  (doc    "The atoi idiom over the scalar walk: each `String.at` scalar is decoded to its digit VALUE
+           by a comparison chain (one-scalar STRINGS compare by `=` — there is no Char arithmetic on
+           this path), accumulated base-10, with two stop conditions layered — end-of-string AND
+           first non-digit (the trailing-garbage stop, which must return the prefix parsed SO FAR,
+           not reject) — plus a leading `-` dispatched BEFORE the digit walk and applied by negation
+           AFTER it. The runtime n swaps the suffix between pure digits and garbage-embedded: n=1 →
+           `142` parses fully (1421 with the minus-check bit); n=0 → `17x9` stops at the `x` and
+           yields 17 — the 9 after the garbage must NOT resume (171). Both calls also parse the rope
+           `-35` (built from three concat pieces) to −35, pinning sign+rope together. A digit chain
+           decoded by scalar-order arithmetic instead of comparison, or a stop that consumes the
+           garbage scalar, drifts by a digit.")
+  (input  (do
+            (def (digit (: c String))
+              (if (= c "0") 0 (if (= c "1") 1 (if (= c "2") 2 (if (= c "3") 3 (if (= c "4") 4
+                (if (= c "5") 5 (if (= c "6") 6 (if (= c "7") 7 (if (= c "8") 8
+                  (if (= c "9") 9 -1)))))))))))
+            (def (go (: s String) (: i Int64) (: len Int64) (: acc Int64))
+              (if (>= i len)
+                  acc
+                  (match (String.at s i)
+                    ((Some c)
+                      (do
+                        (def d (digit c))
+                        (if (< d 0) acc (go s (+ i 1) len (+ (* acc 10) d)))))
+                    ((None _u) acc))))
+            (def (parse (: s String))
+              (match (String.at s 0)
+                ((Some c)
+                  (if (= c "-")
+                      (- 0 (go s 1 (String.byte-len s) 0))
+                      (go s 0 (String.byte-len s) 0)))
+                ((None _u) 0)))
+            (def (main (: n Int64))
+              (do
+                (def suffix (if (> n 0) "42" "7x9"))
+                (+ (* (parse (String.concat "1" suffix)) 10)
+                   (if (= (parse (String.concat "-" (String.concat "3" "5"))) -35) 1 0))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1421 Int64))
+  (call   main (: 0 Int64)) (output (: 171 Int64)))
+
+(case "a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch"
+  (doc    "The dual-string lockstep walk (the parse/scan pins above walk ONE string; this reads the
+           SAME index of TWO strings per step): advance while `String.at a i` equals `String.at b i`,
+           stop at the first mismatch or either end — three exit conditions, each pinned. One operand
+           is a runtime ROPE (concat-built), the other flat, so per-step the walk crosses a seam on
+           one side but not the other (an index cursor shared between the two reads that advances
+           by seam-local offsets drifts on exactly one operand). n=1 → `overlap` vs `overlord` share
+           `overl` (5); self-LCP is the full length (7 — the all-equal exit via length, never a
+           mismatch); LCP vs the empty string is 0 (the immediate-boundary exit). 570 combined.
+           n=0 → `overt` vs `overlord` share `over` (4), self 5, empty 0 → 450.")
+  (input  (do
+            (def (lcp-go (: a String) (: b String) (: i Int64) (: la Int64) (: lb Int64))
+              (if (>= i la)
+                  i
+                  (if (>= i lb)
+                      i
+                      (match (String.at a i)
+                        ((Some ca)
+                          (match (String.at b i)
+                            ((Some cb) (if (= ca cb) (lcp-go a b (+ i 1) la lb) i))
+                            ((None _u) i)))
+                        ((None _u) i)))))
+            (def (lcp (: a String) (: b String))
+              (lcp-go a b 0 (String.byte-len a) (String.byte-len b)))
+            (def (main (: n Int64))
+              (do
+                (def a (String.concat "over" (if (> n 0) "lap" "t")))
+                (def b "overlord")
+                (+ (* (lcp a b) 100)
+                   (+ (* (lcp a a) 10)
+                      (lcp a "")))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 570 Int64))
+  (call   main (: 0 Int64)) (output (: 450 Int64)))
+
+(case "a STRING run-length grouping counts adjacent equal scalars across a rope seam"
+  (doc    "The adjacent-grouping walk: thread (current scalar, count) through a String.at scan,
+           closing a run — appending its count as a digit — exactly when the scalar CHANGES, with the
+           FINAL run flushed by end-of-string (a grouping that only closes on change drops the last
+           run). The scalar equality is one-scalar-STRING `=`. The rope seam sits MID-RUN: the
+           string is `aab` + swap + `bcc`, so at n=1 (`aabbbcc`) the bbb run SPANS the seam — its
+           three scalars come from three different concat pieces, and a scan whose current-scalar
+           state resets at a seam splits the run (232 becomes 2112-ish). Runs 2,3,2 → 232. At n=0
+           (`aababcc`) the same seam position ALTERNATES instead — runs 2,1,1,1,2 → 21112 — so the
+           two calls distinguish seam-state-reset from alternation-miscounting.")
+  (input  (do
+            (def (go (: s String) (: i Int64) (: len Int64) (: cur String) (: cnt Int64) (: acc Int64))
+              (if (>= i len)
+                  (+ (* acc 10) cnt)
+                  (match (String.at s i)
+                    ((Some c)
+                      (if (= c cur)
+                          (go s (+ i 1) len cur (+ cnt 1) acc)
+                          (go s (+ i 1) len c 1 (+ (* acc 10) cnt))))
+                    ((None _u) acc))))
+            (def (runs (: s String))
+              (match (String.at s 0)
+                ((Some c0) (go s 1 (String.byte-len s) c0 1 0))
+                ((None _u) 0)))
+            (def (main (: n Int64))
+              (do
+                (def s (String.concat "aab" (String.concat (if (> n 0) "b" "a") "bcc")))
+                (runs s)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 232 Int64))
+  (call   main (: 0 Int64)) (output (: 21112 Int64)))
+
 (case "a deep rope indexes by scalar at both extremes"
   (doc    "Scalar addressing through ~500 concat seams: `String.at` reads index 0 (the single \"A\" head
            leaf) and index n·2 (the LAST scalar, deep in the right spine) of a 1001-scalar rope — 10·1+1
