@@ -3998,22 +3998,33 @@ mod tests {
     }
 
     #[test]
-    fn hover_on_an_unannotated_parameter_is_none_not_a_misleading_type() {
-        // The far edge of the inlayHint frontier: an UN-ANNOTATED function parameter's type is not yet
-        // recoverable from the `TypeAt` query (it answers "unknown" at both the binder and a use of it —
-        // see the query-typeat-on-unannotated-binder issue). The hover contract is that "unknown" yields
-        // NO popup (total, never a panic, never a misleading concrete type). Pin BOTH cursor positions so
-        // that when v-inference lands the inferred-binder query, THIS test is the tripwire that tells us
-        // hover (and then inlayHint) can start surfacing the param type — its flip is the unblock signal.
+    fn hover_on_an_unannotated_but_inferable_parameter_shows_the_solved_type() {
+        // FLIPPED (was `..._is_none_not_a_misleading_type`) when v-inference landed the inferred-binder
+        // `TypeAt` query (rcdzc `query_param_ty`): an UN-ANNOTATED but locally-inferable parameter now
+        // hovers as its SOLVED type — the unblock signal for inlayHint (inline `param: <inferred>`). In
+        // `def f(x) = x + 1`, `x`'s use as `(+ x 1)` pins it to `Int64`, so BOTH the binder and its use
+        // hover `Int64` (the binder via the new inferred-param query; the use via ordinary inlining). A
+        // genuinely-generic param (`def id(x) = x`) still hovers nothing — covered by the rcdzc-side
+        // `hover_on_a_fully_generic_param_binder_stays_unknown` test; here we pin the inferable case.
         let text = "def f(x) = x + 1";
-        // Binder `x` in `f(x)` (col 6) and its use in `x + 1` (col 11).
+        let rendered_at = |col: u32, what: &str| -> String {
+            let h = hover_at(text, true, Position::new(0, col))
+                .unwrap_or_else(|| panic!("{what} now hovers its inferred type"));
+            match &h.contents {
+                HoverContents::Scalar(MarkedString::String(s)) => s.clone(),
+                other => panic!("unexpected hover contents at {what}: {other:?}"),
+            }
+        };
+        // Binder `x` in `f(x)` (col 6) and its use in `x + 1` (col 11) — both now report the inferred Int64.
+        let binder = rendered_at(6, "the unannotated param binder");
         assert!(
-            hover_at(text, true, Position::new(0, 6)).is_none(),
-            "an unannotated param binder is not yet typeable → no hover (not a misleading type)"
+            binder.contains("Int64"),
+            "the binder hovers its inferred Int64, got: {binder}"
         );
+        let use_ = rendered_at(11, "the use of the unannotated param");
         assert!(
-            hover_at(text, true, Position::new(0, 11)).is_none(),
-            "a use of an unannotated param is not yet typeable → no hover (not a misleading type)"
+            use_.contains("Int64"),
+            "the use hovers its inferred Int64, got: {use_}"
         );
     }
 

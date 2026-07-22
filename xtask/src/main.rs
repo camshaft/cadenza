@@ -6051,6 +6051,9 @@ mod trap_grading_tests {
         // emitted library body), NOT the raw Cadenza text — the exported-entry non-scalar-arg class fix.
         // String → owned String.
         assert_eq!(rust_call_arg("\"abc\""), "\"abc\".to_string()");
+        // Symbol `#"read"` → owned String too (a Symbol param emits as `String`; strip the `#` sigil).
+        // Was emitted VERBATIM (`#"read"`) → rustc syntax error; the driver now marshals it like a String.
+        assert_eq!(rust_call_arg("#\"read\""), "\"read\".to_string()");
         // BigInt `<digits>N` → `cdz_num::Big::from_i64` (in-i64).
         assert_eq!(rust_call_arg("100N"), "cdz_num::Big::from_i64(100)");
         // Rational `<int>R` → `Rational::new(n, 1)`; `<n>/<d>` → `Rational::new(n, d)`.

@@ -5454,7 +5454,9 @@ fn gate_batch(fleet: &Fleet, dry_run: bool, limit: usize) {
     let mut clean: Vec<BatchMr> = Vec::new();
     let mut bounced: Vec<BatchMr> = Vec::new();
     for mr in &mrs {
-        if git_merge_no_ff_onto(&wt, scratch, &mr.r#ref) {
+        // Prefilter re-form: this scratch tree is discarded (gate_subset re-forms the landing tree), so
+        // keep git's default merge message here — the friendly subject is applied at real staging.
+        if git_merge_no_ff_onto(&wt, "", &mr.r#ref) {
             clean.push(mr.clone());
         } else {
             // Abort the failed merge so the scratch branch stays at the last clean state.
@@ -5575,7 +5577,7 @@ fn gate_subset(repo: &Path, branch: &str, clean: &[BatchMr], subset: &[usize]) -
         return false;
     }
     for &i in subset {
-        if !git_merge_no_ff_onto(repo, branch, &clean[i].r#ref) {
+        if !git_merge_no_ff_onto(repo, "", &clean[i].r#ref) {
             let _ = Command::new("git")
                 .current_dir(repo)
                 .args(["merge", "--abort"])
@@ -5603,7 +5605,7 @@ fn diagnose_broken_reason(repo: &Path, branch: &str, mr_ref: &str) -> Option<Str
     if !git_branch_at(repo, branch, "trunk") {
         return None;
     }
-    if !git_merge_no_ff_onto(repo, branch, mr_ref) {
+    if !git_merge_no_ff_onto(repo, "", mr_ref) {
         let _ = Command::new("git")
             .current_dir(repo)
             .args(["merge", "--abort"])
@@ -5879,11 +5881,23 @@ fn git_branch_at(repo: &Path, branch: &str, at: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// `git merge --no-ff <ref>` onto the current branch (no edit). Returns true iff the merge is clean.
-fn git_merge_no_ff_onto(repo: &Path, _branch: &str, r#ref: &str) -> bool {
+/// `git merge --no-ff <ref>` onto the current branch. Returns true iff the merge is clean. When
+/// `subject` is non-empty it becomes the merge commit's message (`-m`) — the staged tip is what pr-sync
+/// fast-forwards `trunk` onto, so these merge commits land in the trunk log; a meaningful subject reads
+/// far better there than git's default "Merge commit <sha> into <scratch-branch>". An empty `subject`
+/// keeps the default `--no-edit` message (used by throwaway gate/diagnosis re-forms that never land).
+fn git_merge_no_ff_onto(repo: &Path, subject: &str, r#ref: &str) -> bool {
+    let mut args = vec!["merge", "--no-ff"];
+    if subject.is_empty() {
+        args.push("--no-edit");
+    } else {
+        args.push("-m");
+        args.push(subject);
+    }
+    args.push(r#ref);
     Command::new("git")
         .current_dir(repo)
-        .args(["merge", "--no-ff", "--no-edit", r#ref])
+        .args(&args)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -6002,7 +6016,16 @@ fn batch_stage_inner(wt: &Path, refs: &[String]) -> Result<StageReport, String> 
     let mut staged: Vec<String> = Vec::new();
     let mut bounced: Vec<String> = Vec::new();
     for r in refs {
-        if git_merge_no_ff_onto(wt, scratch, r) {
+        // These merge commits become the staged tip pr-sync fast-forwards trunk onto, so give each a
+        // readable `integrate <short-sha>: <ref subject>` message (vs git's default "Merge commit …").
+        let short = git_stdout(&["rev-parse", "--short", r]);
+        let ref_subject = git_stdout(&["log", "-1", "--format=%s", r]);
+        let subject = if ref_subject.is_empty() {
+            format!("integrate {short}")
+        } else {
+            format!("integrate {short}: {ref_subject}")
+        };
+        if git_merge_no_ff_onto(wt, &subject, r) {
             staged.push(r.clone());
         } else {
             // Abort the failed merge so the scratch branch stays at the last clean state, then skip.
@@ -6097,6 +6120,46 @@ fn batch_commit_inner(repo: &Path, execute: bool) -> Result<String, String> {
              ({staged_base}); the staged tree is stale. Re-stage off the current trunk. \
              (trunk NOT moved.)"
         ));
+    }
+
+    // Ancestry proof: the drift guard above only proves `trunk == staged_base`; it does NOT prove the
+    // staged tip actually DESCENDS from that base. A stale/mispointed `BATCH_STAGING_REF` (a leftover
+    // from an aborted round, a hand-set ref) could point the tip at an unrelated commit — then the CAS
+    // below (which only enforces trunk still == base at write time, NOT fast-forward-ness) would move
+    // trunk to a non-descendant, DISCARDING every commit reachable only from the old trunk tip. That
+    // is a backward/non-FF move — a violation of the forward-only single-writer invariant. Refuse here,
+    // before either reporting OK or executing, unless the tip is provably a descendant of the base.
+    // `git merge-base --is-ancestor` distinguishes three outcomes by exit code: 0 = ancestor (FF ok),
+    // 1 = genuinely NOT an ancestor (a real non-FF that would discard commits), and 128 (or a spawn
+    // failure → None) = a FATAL git error, e.g. an invalid/missing/corrupt SHA or a broken repo. All
+    // three refuse to move trunk (safe either way), but collapsing 1 and 128 into one message would
+    // print "NOT a descendant / staging ref stale-or-corrupt" for a fatal error too — hiding the real
+    // git fault exactly when a ref IS corrupt (the diagnostic that matters most). So branch on the code
+    // and surface stderr on the fatal path.
+    let ancestry = git_out(&["merge-base", "--is-ancestor", &staged_base, &staged_tip]);
+    match ancestry.status.code() {
+        Some(0) => {} // ancestor — FF is safe, fall through
+        Some(1) => {
+            return Err(format!(
+                "batch-commit: REFUSED — the staged tip ({staged_tip}) is NOT a descendant of the \
+                 staged base ({staged_base}); moving trunk to it would be a non-fast-forward that \
+                 discards commits. The staging ref is stale — re-stage off the current trunk. \
+                 (trunk NOT moved.)"
+            ));
+        }
+        _ => {
+            let stderr = String::from_utf8_lossy(&ancestry.stderr);
+            let stderr = stderr.trim();
+            return Err(format!(
+                "batch-commit: REFUSED — `git merge-base --is-ancestor {staged_base} {staged_tip}` \
+                 failed ({}): {stderr}. The staging ref may be corrupt or point at a missing object \
+                 — could not verify fast-forward-ness. (trunk NOT moved.)",
+                ancestry.status.code().map_or_else(
+                    || "terminated by signal".to_string(),
+                    |c| format!("exit {c}")
+                )
+            ));
+        }
     }
 
     if !execute {
@@ -6237,6 +6300,34 @@ mod tests {
         assert_ne!(
             report.staged_tip, trunk_before,
             "staged tip advanced past base"
+        );
+        // The per-ref merge commits carry the friendly `integrate <short>: <ref subject>` message (so
+        // they read well once pr-sync fast-forwards trunk onto this tip), NOT git's default "Merge
+        // commit …". The staged tip is ref2's merge; check its subject and its first-parent (ref1's).
+        let tip_subject =
+            String::from_utf8_lossy(&git(&["log", "-1", "--format=%s", &report.staged_tip]).stdout)
+                .trim()
+                .to_string();
+        assert!(
+            tip_subject.starts_with("integrate ") && tip_subject.ends_with(": feat2"),
+            "staged tip merge subject should be `integrate <short>: feat2`, got {tip_subject:?}"
+        );
+        // Read the tip's first parent by sha (HEAD is detached at trunk, not the tip) — that's ref1's
+        // merge commit.
+        let tip_parent_subject = String::from_utf8_lossy(
+            &git(&[
+                "log",
+                "-1",
+                "--format=%s",
+                &format!("{}^1", report.staged_tip),
+            ])
+            .stdout,
+        )
+        .trim()
+        .to_string();
+        assert!(
+            tip_parent_subject.ends_with(": feat1"),
+            "first merge subject should be `integrate <short>: feat1`, got {tip_parent_subject:?}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -6393,6 +6484,121 @@ mod tests {
             before,
             "trunk unmoved when nothing staged"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_commit_refuses_when_the_staged_tip_is_not_a_descendant_of_the_staged_base() {
+        // SAFETY (PR#765 review): the drift guard proves trunk == staged_base but NOT that the staged
+        // tip DESCENDS from that base. A stale/mispointed staging ref (leftover from an aborted round)
+        // could point the tip at an unrelated commit; without the ancestry check the CAS below would
+        // still move trunk to it — a NON-FF move discarding the commits reachable only from old trunk.
+        // Here trunk is LEFT exactly at the staged base (drift guard passes), yet the tip is a sibling
+        // commit off the base's parent (an orphan root), so it is NOT a descendant → must REFUSE.
+        let dir = init_batch_fixture_repo("nonff");
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let staged_base = git_rev(&dir, TRUNK);
+
+        // Build an UNRELATED tip on a disjoint history (orphan branch) so it can never be a descendant
+        // of the staged base — the sharpest "stale/corrupt ref" case.
+        let _ = git(&["checkout", "-q", "--orphan", "bogus"]);
+        let _ = git(&["rm", "-rfq", "--cached", "."]);
+        std::fs::write(dir.join("z.txt"), "orphan").unwrap();
+        let _ = git(&["add", "z.txt"]);
+        let _ = git(&["commit", "-q", "-m", "unrelated orphan tip"]);
+        let bogus_tip = git_rev(&dir, "HEAD");
+        assert_ne!(bogus_tip, staged_base);
+
+        // Point the staging refs so trunk still == staged_base (drift guard PASSES) but tip is bogus.
+        let _ = git(&["update-ref", BATCH_STAGING_REF, &bogus_tip]);
+        let _ = git(&["update-ref", BATCH_STAGING_BASE_REF, &staged_base]);
+        let _ = git(&["checkout", "-q", TRUNK]);
+        assert_eq!(
+            git_rev(&dir, TRUNK),
+            staged_base,
+            "trunk still at base → drift guard must pass, leaving ancestry as the sole defense"
+        );
+
+        // Even report-only must refuse (the ancestry check runs before the dry-run OK return).
+        let dry = batch_commit_inner(&dir, false);
+        assert!(
+            dry.is_err(),
+            "report-only must refuse a non-descendant tip: {dry:?}"
+        );
+        assert!(dry.unwrap_err().contains("NOT a descendant"));
+
+        // Execute must refuse AND leave trunk unmoved (no non-FF clobber).
+        let res = batch_commit_inner(&dir, true);
+        assert!(res.is_err(), "must refuse a non-descendant tip: {res:?}");
+        assert!(res.unwrap_err().contains("NOT a descendant"));
+        assert_eq!(
+            git_rev(&dir, TRUNK),
+            staged_base,
+            "trunk must be UNMOVED — no non-FF clobber"
+        );
+        // Staging refs survive the refusal (nothing consumed; operator re-stages).
+        assert!(!git_rev(&dir, BATCH_STAGING_REF).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_commit_surfaces_the_git_error_when_the_ancestry_check_fails_fatally() {
+        // PR#768 review: `--is-ancestor` exits 0 (ancestor), 1 (genuinely not-ancestor), or 128 (FATAL:
+        // invalid/corrupt SHA, not-a-commit, broken repo). All three refuse (safe), but the diagnostic
+        // must NOT print "NOT a descendant / staging ref stale" for the fatal case — that hides the real
+        // git fault. Here we make the check fail FATALLY by pointing the staging ref at a TREE object
+        // (not a commit): `rev-parse --verify -q` still returns it (non-empty, drift guard passes since
+        // trunk stays at the base), but `merge-base --is-ancestor <commit> <tree>` is a fatal error.
+        let dir = init_batch_fixture_repo("fatal");
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let staged_base = git_rev(&dir, TRUNK);
+        // A tree object of the current trunk — a valid object that is NOT a commit.
+        let tree = git_rev(&dir, "HEAD^{tree}");
+        assert!(!tree.is_empty());
+        assert_ne!(tree, staged_base);
+
+        let _ = git(&["update-ref", BATCH_STAGING_REF, &tree]);
+        let _ = git(&["update-ref", BATCH_STAGING_BASE_REF, &staged_base]);
+        assert_eq!(
+            git_rev(&dir, TRUNK),
+            staged_base,
+            "trunk still at base → drift guard passes, so ancestry is the sole (fatally-failing) check"
+        );
+
+        for execute in [false, true] {
+            let res = batch_commit_inner(&dir, execute);
+            assert!(
+                res.is_err(),
+                "a fatal ancestry check must refuse (execute={execute}): {res:?}"
+            );
+            let err = res.unwrap_err();
+            // The distinct fatal-path message — surfaces the git invocation, NOT the non-FF wording.
+            assert!(
+                err.contains("git merge-base --is-ancestor") && err.contains("failed"),
+                "fatal path must surface the failed git command, got: {err}"
+            );
+            assert!(
+                !err.contains("NOT a descendant"),
+                "fatal path must NOT reuse the exit-1 non-FF wording, got: {err}"
+            );
+        }
+        // trunk unmoved, staging refs survive — same safety as the non-FF path.
+        assert_eq!(git_rev(&dir, TRUNK), staged_base, "trunk must be UNMOVED");
+        assert!(!git_rev(&dir, BATCH_STAGING_REF).is_empty());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

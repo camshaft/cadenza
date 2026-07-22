@@ -1832,12 +1832,15 @@ pub(crate) fn reduce_to_record_id(db: &mut Db, id: StructId) -> Option<StructId>
             // to a `Ref` chain that cycles (a node's `Ref` returns to itself or a prior node), so following
             // it unguarded LOOPS FOREVER (the fast borrow path added no bound; the pre-existing owned path
             // relied on an upstream reduction guard this short-circuit skips). Route the Ref hop through the
-            // reduction-depth guard the `Apply` case below uses: past `REDUCE_DEPTH_LIMIT` the guard denies
-            // entry and this yields `None` (does not reduce to a record) — a value cycle bottoms out instead
-            // of hanging. `collect_faults` reports the cycle as CDZ0201 (`resolve::value_ref_cycle`); here we
-            // only need to TERMINATE, not diagnose. A short, well-formed `Ref` chain (`(def (a) 5)(def (b)
-            // a)`) is far under the limit, so this changes no valid program's result.
-            let mut guard = db.enter_reduction()?;
+            // STRUCTURAL depth guard: a `Ref` dereference is an O(1) hop (NOT a β-reduction), so it needs
+            // cycle TERMINATION (`REDUCE_DEPTH_LIMIT`) but must NOT charge the cumulative `REDUCE_NODE_BUDGET`
+            // — else a large-but-terminating multi-module closure build that exhausts the budget starts
+            // denying this trivial hop, so `Option.None`'s `Ref{Option}→record` fails and a well-typed
+            // program mis-faults "a Option value has no field `None`" at its component build (the compiler-ml
+            // self-host emit-db collision + the sread-eval scaling CDZ0201s — same cumulative-budget root).
+            // Past `REDUCE_DEPTH_LIMIT` this still yields `None` so a value cycle bottoms out instead of
+            // hanging; `collect_faults` reports the cycle as CDZ0201 (`resolve::value_ref_cycle`).
+            let mut guard = db.enter_reduction_structural()?;
             return reduce_to_record_id(guard.db(), value);
         }
         _ => {}

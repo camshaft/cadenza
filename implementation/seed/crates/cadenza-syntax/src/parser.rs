@@ -1831,10 +1831,17 @@ impl<'a> Parser<'a> {
         let mut args = Vec::new();
         if !self.at(Kind::RParen) {
             loop {
+                // Own-line `//` comment(s) leading this argument (`g(\n // note\n 1, 2)`) sit in its
+                // first-token leading slot, which `expr` does not drain — capture + wrap `(comment "text"
+                // arg)` so they round-trip (the call printer already renders a leading comment on its own
+                // line above the arg). Distinct from a same-line trailing comment (a separate follow-up:
+                // the two-path call printer needs work to render `arg // text` + force the `)` break).
+                let leading = self.take_comments_here();
                 // An argument is a single expression, not a sequence (`PREC_SEQ + 1`): a `;` here belongs
                 // to an enclosing block, so a sequence passed as an argument must parenthesize —
                 // `f((a; b))` — matching the "parens only for a genuine ambiguity" surface rule.
-                args.push(self.expr(crate::token::PREC_SEQ + 1));
+                let arg = self.expr(crate::token::PREC_SEQ + 1);
+                args.push(self.wrap_comments(leading, arg));
                 if !self.sep_continue(Kind::RParen) {
                     break;
                 }
@@ -3067,6 +3074,10 @@ impl<'a> Parser<'a> {
         if !self.at(Kind::RBrace) {
             loop {
                 let before = self.pos;
+                // Own-line `//` comment(s) leading this field (`{\n // note\n a = 1, … }`) sit in the
+                // field's first-token slot; drain here (before the name) and wrap the `(name value)` pair
+                // below (`is_pairs`/the record printer unwrap it). Own-line has no swallow hazard.
+                let leading = self.take_comments_here();
                 let f_start = self.cur_span();
                 // Capture the field name's spelling BEFORE building the binder, so a shorthand field
                 // can reuse it for the punned value (`binder` consumes the token; the builder doesn't
@@ -3090,6 +3101,8 @@ impl<'a> Parser<'a> {
                 };
                 let f_span = f_start.merge(self.prev_span());
                 let field = self.list(vec![name, value], f_span);
+                // Wrap any own-line LEADING comment around the field pair (printer renders it above).
+                let field = self.wrap_comments(leading, field);
                 // A `//` trailing the LAST field on the same line (`{ a = 1, b = 2 // last }`) sits in the
                 // `}` token's leading slot; capture it as `(comment-after "text" (name value))` (gated on
                 // `at(RBrace)` — only the last field, the PR#758 rule: a non-last comment would swallow the
@@ -3138,6 +3151,9 @@ impl<'a> Parser<'a> {
         if !self.at(Kind::RBrace) {
             loop {
                 let before = self.pos;
+                // Own-line `//` comment(s) leading this entry (`#{\n // note\n 1 = v, … }`) — drain before
+                // the entry and wrap the `(key value)` pair below (printer unwraps). No swallow hazard.
+                let leading = self.take_comments_here();
                 // `.. rest` spreads a tail map into the literal (`#{ 1 = v, .. rest }`); a `key = value`
                 // entry otherwise. The marker is flat (`… ".." rest`), the list analogue's twin.
                 // Key and value are single expressions (`PREC_SEQ + 1`); a sequence parenthesizes.
@@ -3148,6 +3164,7 @@ impl<'a> Parser<'a> {
                     let value = self.expr(crate::token::PREC_SEQ + 1);
                     let e_span = e_start.merge(self.prev_span());
                     let entry = self.list(vec![key, value], e_span);
+                    let entry = self.wrap_comments(leading, entry);
                     // Capture a same-line trailing `//` on the LAST entry (gated on `at(RBrace)`), like the
                     // record loop — wrap as `(comment-after "text" (key value))`; the map printer/shape-guard
                     // unwraps it. A non-last same-line comment is left to the comment-drop guard (no corruption).

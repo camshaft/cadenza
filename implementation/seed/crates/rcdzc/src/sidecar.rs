@@ -1931,7 +1931,23 @@ fn hover_text(db: &mut Db, id: StructId) -> String {
     }
     // (4) The solved type, cleaned up.
     let ty = crate::infer::type_of(db, id).render_name();
-    clean_hover_type(&ty)
+    let cleaned = clean_hover_type(&ty);
+    // (4b) An UN-ANNOTATED def-parameter binder types as `Any` here — a non-recursive def's param is never
+    // solved standalone (it inlines at each call), so `type_of` at the binder reads `Any` → "unknown".
+    // But the body's uses DO constrain it (`(+ x 1)` pins `x` to `Int64`). Recover that INFERRED type for
+    // the hover / `TypeAt` / inlayHint — whose whole purpose is to show the type the author did NOT write.
+    // Only when `type_of` gave nothing (`unknown`) and the node resolves to a `Param` binder; a genuinely
+    // generic param (`id`'s `x`) stays "unknown" (`query_param_ty` returns `None`). Fixes the v-lsp
+    // inlayHint gap (an un-annotated binder returned "unknown" even when locally inferable).
+    // The node may be the binder occurrence (`Resolved::Param`) OR a body USE of it (`Resolved::Ref` to the
+    // binder) — `query_param_ty` normalizes both and returns `None` for a non-param / genuinely-generic
+    // node, so trying it whenever the type is "unknown" is safe (no false hover on a non-param).
+    if cleaned == "unknown"
+        && let Some(t) = crate::infer::query_param_ty(db, id)
+    {
+        return clean_hover_type(&t.render_name());
+    }
+    cleaned
 }
 
 /// The definition a node IDENTIFIES, if any: the def's `(def …)` form, its signature list

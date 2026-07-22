@@ -98,7 +98,16 @@ pub struct Emit {
     /// arm's `Payload` at the same path sees ITS own variant's type, not this arm's. This mirrors the Rust
     /// backend's `Ctx::sum_path_types`. Empty at the root/top level (the walk falls back to variant 0 there,
     /// which IS the root scrutinee's own type via `type_of`).
-    sum_path_types: HashMap<Vec<crate::core::PathStep>, Ty>,
+    ///
+    /// Keyed by `(root scrutinee id, path)` — NOT the path alone. The path is RELATIVE to each match's own
+    /// scrutinee, so two matches that are BOTH live (an outer sum match whose arm body nests an inner sum
+    /// match on a DIFFERENT scrutinee) share the same relative `[Payload]` path; keying by path alone let
+    /// the inner match's entered-payload type OVERWRITE the outer's while the outer arm body still emitted,
+    /// so an outer payload-binder walk resolved the WRONG variant → wrong heap accessor → a garbage handle →
+    /// a runtime `trap_oob` (the large-`lower-ok` miscompile: outer `Node` `[Payload]` shadowed by an inner
+    /// `Core`-result match). Scoping by the scrutinee id fences each match's records to its own scrutinee,
+    /// exactly as the sibling `payload_prefix_slots` map is keyed `(scrutinee, path)`.
+    sum_path_types: HashMap<(StructId, Vec<crate::core::PathStep>), Ty>,
 }
 
 /// A scalar match's binder scope: the `[start, end)` Lir range spanning its arm bodies, and the binder
@@ -3359,7 +3368,7 @@ fn collect_cont_ops(
     // The entered-variant payload types, threaded exactly as the EMIT threads `Emit::sum_path_types`, so the
     // `sub_is_enum` disc-op choice here agrees with `push_discriminant`'s (which now resolves a `Payload`
     // step to the ACTUAL entered variant, not variant 0). Starts empty at the root.
-    let mut recorded: HashMap<Vec<crate::core::PathStep>, Ty> = HashMap::new();
+    let mut recorded: HashMap<(StructId, Vec<crate::core::PathStep>), Ty> = HashMap::new();
     collect_cont_ops_rec(db, scrutinee, cont, &mut recorded, out);
 }
 
@@ -3367,7 +3376,7 @@ fn collect_cont_ops_rec(
     db: &mut Db,
     scrutinee: StructId,
     cont: &crate::core::SumCont,
-    recorded: &mut HashMap<Vec<crate::core::PathStep>, Ty>,
+    recorded: &mut HashMap<(StructId, Vec<crate::core::PathStep>), Ty>,
     out: &mut std::collections::BTreeSet<&'static str>,
 ) {
     match cont {
@@ -3436,7 +3445,7 @@ fn collect_cont_ops_rec(
             // `heap` linkage. Resolve the sub-value's type at `path` USING the recorded entered-variant
             // types (so a non-variant-0 payload agrees with the emit) and branch as the emit does.
             let root = type_of(db, scrutinee);
-            let sub = ty_at_path_recorded(db, &root, path, recorded);
+            let sub = ty_at_path_recorded(db, scrutinee, &root, path, recorded);
             let sub_is_enum = ty_is_enum_disc(db, &sub);
             for step in path {
                 match step {
@@ -3463,7 +3472,7 @@ fn collect_cont_ops_rec(
                     .disc
                     .and_then(|d| record_entered_payload_ty_into(db, scrutinee, path, d, recorded));
                 collect_cont_ops_rec(db, scrutinee, &arm.cont, recorded, out);
-                restore_entered_payload_ty_into(path, restore, recorded);
+                restore_entered_payload_ty_into(scrutinee, path, restore, recorded);
             }
         }
     }
@@ -4472,7 +4481,7 @@ fn materialize_payload_prefixes(
             walked_prefix = prefix[..k].to_vec();
             cur = out
                 .sum_path_types
-                .get(&prefix[..k])
+                .get(&(scrutinee, walked_prefix.clone()))
                 .cloned()
                 .unwrap_or(Ty::Any);
             k
@@ -4499,6 +4508,7 @@ fn materialize_payload_prefixes(
                     cur = match cur.strip_nominal() {
                         Ty::Sum { .. } => payload_step_ty_of(
                             db,
+                            scrutinee,
                             Some(scrutinee),
                             &cur,
                             &walked_prefix,
@@ -6152,11 +6162,12 @@ fn sum_has_only_scalar_payloads(db: &mut Db, sum: &Ty) -> bool {
 /// whose `cur` IS the scrutinee's type). A NOMINAL newtype `Payload` is a static unwrap to its inner type.
 fn payload_step_ty(
     db: &mut Db,
+    scrutinee: StructId,
     cur: &Ty,
     prefix: &[crate::core::PathStep],
-    recorded: &HashMap<Vec<crate::core::PathStep>, Ty>,
+    recorded: &HashMap<(StructId, Vec<crate::core::PathStep>), Ty>,
 ) -> Ty {
-    payload_step_ty_of(db, None, cur, prefix, recorded)
+    payload_step_ty_of(db, scrutinee, None, cur, prefix, recorded)
 }
 
 /// [`payload_step_ty`] with an optional SCRUTINEE node, so a `Payload` step whose entered variant was NOT
@@ -6173,12 +6184,13 @@ fn payload_step_ty(
 /// genuine root/variant-0 case).
 fn payload_step_ty_of(
     db: &mut Db,
+    root_scrutinee: StructId,
     scrutinee: Option<StructId>,
     cur: &Ty,
     prefix: &[crate::core::PathStep],
-    recorded: &HashMap<Vec<crate::core::PathStep>, Ty>,
+    recorded: &HashMap<(StructId, Vec<crate::core::PathStep>), Ty>,
 ) -> Ty {
-    if let Some(t) = recorded.get(prefix) {
+    if let Some(t) = recorded.get(&(root_scrutinee, prefix.to_vec())) {
         return t.clone();
     }
     match cur.strip_nominal() {
@@ -6253,16 +6265,19 @@ fn const_disc_at(db: &mut Db, scrutinee: StructId, path: &[crate::core::PathStep
 /// malformed/unresolvable step (the caller then takes the safe boxed-sum path).
 fn ty_at_path_recorded(
     db: &mut Db,
+    scrutinee: StructId,
     root: &Ty,
     path: &[crate::core::PathStep],
-    recorded: &HashMap<Vec<crate::core::PathStep>, Ty>,
+    recorded: &HashMap<(StructId, Vec<crate::core::PathStep>), Ty>,
 ) -> Ty {
     let mut cur = root.clone();
     let mut prefix: Vec<crate::core::PathStep> = Vec::with_capacity(path.len());
     for step in path {
         prefix.push(*step);
         cur = match step {
-            crate::core::PathStep::Payload => payload_step_ty(db, &cur, &prefix, recorded),
+            crate::core::PathStep::Payload => {
+                payload_step_ty(db, scrutinee, &cur, &prefix, recorded)
+            }
             crate::core::PathStep::Elem(i) => match cur.strip_nominal() {
                 Ty::Tuple(elems) => match elems.get(*i) {
                     Some(e) => e.clone(),
@@ -6299,7 +6314,7 @@ fn push_discriminant(
     out: &mut Emit,
 ) -> Result<(), Reject> {
     let root = type_of(db, scrutinee);
-    let sub = ty_at_path_recorded(db, &root, path, &out.sum_path_types);
+    let sub = ty_at_path_recorded(db, scrutinee, &root, path, &out.sum_path_types);
     let sub_is_enum = ty_is_enum_disc(db, &sub);
     emit(db, scrutinee, slots, base, high, scratch_ty, layout, out)?;
     // Track the CURRENT sub-value's type as the walk descends so an `Elem` step picks the right accessor:
@@ -6336,7 +6351,14 @@ fn push_discriminant(
             crate::core::PathStep::Payload => {
                 out.push(Lir::CallImport(OP_SUM_PAYLOAD));
                 read_from_heap = true;
-                cur = payload_step_ty_of(db, Some(scrutinee), &cur, &prefix, &out.sum_path_types);
+                cur = payload_step_ty_of(
+                    db,
+                    scrutinee,
+                    Some(scrutinee),
+                    &cur,
+                    &prefix,
+                    &out.sum_path_types,
+                );
             }
             crate::core::PathStep::Elem(i) => {
                 out.push(Lir::ConstI32(*i as i32));
@@ -8918,7 +8940,7 @@ fn emit(
                 // picks the right accessor (else a bare payload handle, `Any`).
                 cur = out
                     .sum_path_types
-                    .get(&path[..k])
+                    .get(&(scrutinee, walked_prefix.clone()))
                     .cloned()
                     .unwrap_or(Ty::Any);
             } else {
@@ -8941,6 +8963,7 @@ fn emit(
                         cur = match cur.strip_nominal() {
                             Ty::Sum { .. } => payload_step_ty_of(
                                 db,
+                                scrutinee,
                                 Some(scrutinee),
                                 &cur,
                                 &walked_prefix,
@@ -11418,15 +11441,19 @@ fn operand_is_string_or_bytes(db: &mut Db, id: StructId) -> bool {
 /// `value-eq` and the map/set key path use `champ_eq` over physical bytes, so a rope must be canonicalized
 /// at BOTH. Bytes is included alongside String/Symbol (`operand_is_string_or_bytes`) because a `Bytes`
 /// value has the SAME rope representation and the same physical-byte CHAMP key contract — the reasoning is
-/// verbatim the String story. Only a DIRECT, OWNED key is compacted — a BORROWED key (a param / a
-/// kept-local reference) is a FLAT leaf in practice and `bytes-compact` would consume it under its owner
-/// (mirrors the value-eq ownership gate); a String/Bytes NESTED inside a compound key is the same rarer
-/// deferred case value-eq leaves. A compacted owned key is stack- and ownership-NEUTRAL: an owned rope in,
-/// an owned flat leaf out, so each site's existing key accounting (consumed by insert, or the dropped
-/// borrow-temporary at lookup/remove/contains) is unchanged.
+/// verbatim the String story. Compacts a String/Bytes key of ANY ownership: `bytes-compact` is
+/// REFCOUNT-NEUTRAL (it flattens the node IN PLACE and returns the SAME handle — a no-op on an already-flat
+/// leaf), so it is safe on an OWNED or a BORROWED key alike (verbatim the `elem_needs_rope_compaction`
+/// reasoning at the compound-construction sites). This FIXES a wasm WRONG-VALUE: a BORROWED runtime rope/
+/// slice key (a `sum-payload`/`Option.expect` binder / a kept `let`-local of a `Bytes.slice` result) was
+/// previously NOT compacted (the old `Owned`-only gate, on a false "compact would consume it" belief), so
+/// its raw slice-VIEW node (`[off, len]`) reached `champ_hash` and hashed differently from an equal-content
+/// flat Bytes — the lookup missed while value-eq said equal (equal-means-same-key violated). Because
+/// compact is in-place-same-handle, a borrowed key STAYS the owner's handle after compaction, so
+/// `key_handle_is_owned_temporary` (the drop gate) still decides drop-vs-keep on the operand's ACTUAL
+/// ownership — a borrowed key is not dropped (no double-free), an owned key is dropped as before.
 fn key_needs_compaction(db: &mut Db, key: StructId) -> bool {
     operand_is_string_or_bytes(db, key)
-        && matches!(heap_operand_ownership(db, key), Ok(HandleOwnership::Owned))
 }
 
 /// Whether a type CONTAINS a `List` anywhere (the type is a List, or a Tuple/Record/Sum/Nominal/Qty/Frame
@@ -11513,14 +11540,15 @@ fn key_handle_is_owned_temporary(db: &mut Db, key: StructId, key_ty: &Ty) -> Res
     if box_op_for(db, key, key_ty)?.is_some() {
         return Ok(true); // a scalar key → a fresh `box-*` leaf the op borrows, then we drop
     }
-    if key_needs_compaction(db, key) {
-        return Ok(true); // an owned rope key → a fresh compacted flat leaf we drop
-    }
     if key_needs_canonicalize(db, key) {
         return Ok(true); // a list-typed/-containing key → a FRESH owned canonical value we drop
     }
-    // An unboxed, uncompacted key is used as-is: drop it only if the operand is a fresh owned handle (a
-    // constructor / call / const compound); a borrowed param/local/projection is left to its owner.
+    // A String/Bytes key may be `bytes-compact`ed (`key_needs_compaction`), but compact is REFCOUNT-NEUTRAL
+    // and IN-PLACE (same handle), so it does NOT change ownership: a compacted OWNED rope is still owned
+    // (dropped here), a compacted BORROWED rope is still the owner's handle (NOT dropped — dropping it would
+    // free a reference the owner still holds, a use-after-free). So the drop decision — whether compacted or
+    // not — is the operand's ACTUAL ownership: drop iff a fresh owned handle (a constructor / call / const
+    // compound / owned rope); a borrowed param/local/projection is left to its owner.
     Ok(heap_operand_ownership(db, key)? == HandleOwnership::Owned)
 }
 
@@ -12889,7 +12917,7 @@ fn try_emit_disc_br_table(
             out,
             TailPos::NonTail,
         )?;
-        restore_entered_payload_ty(path, restore, out);
+        restore_entered_payload_ty(scrutinee, path, restore, out);
         // `br` the value to $join — EXCEPT the last arm of an EXHAUSTIVE match (no $default block), whose
         // `br` depth is 0: its body is the final code inside $join, so control falls THROUGH to $join's
         // `end` anyway. A `br 0` there jumps to exactly the next instruction (the `End` below) — a dead
@@ -12946,11 +12974,12 @@ fn record_entered_payload_ty(
 /// Undo [`record_entered_payload_ty`]: restore the prior value at `path + [Payload]` (or remove the key if
 /// it was absent). A `None` `restore` (nothing was inserted) is a no-op.
 fn restore_entered_payload_ty(
+    scrutinee: StructId,
     path: &[crate::core::PathStep],
     restore: Option<Option<Ty>>,
     out: &mut Emit,
 ) {
-    restore_entered_payload_ty_into(path, restore, &mut out.sum_path_types);
+    restore_entered_payload_ty_into(scrutinee, path, restore, &mut out.sum_path_types);
 }
 
 /// The map-level core of [`record_entered_payload_ty`] — records the entered variant's payload type into
@@ -12961,28 +12990,31 @@ fn record_entered_payload_ty_into(
     scrutinee: StructId,
     path: &[crate::core::PathStep],
     disc: u32,
-    recorded: &mut HashMap<Vec<crate::core::PathStep>, Ty>,
+    recorded: &mut HashMap<(StructId, Vec<crate::core::PathStep>), Ty>,
 ) -> Option<Option<Ty>> {
     let root = type_of(db, scrutinee);
-    let sub = ty_at_path_recorded(db, &root, path, recorded);
+    let sub = ty_at_path_recorded(db, scrutinee, &root, path, recorded);
     let payload = variant_payload_ty_at(db, &sub, disc)?;
-    let mut key = path.to_vec();
-    key.push(crate::core::PathStep::Payload);
-    let prior = recorded.insert(key, payload);
+    let mut path_key = path.to_vec();
+    path_key.push(crate::core::PathStep::Payload);
+    let prior = recorded.insert((scrutinee, path_key), payload);
     Some(prior)
 }
 
-/// The map-level core of [`restore_entered_payload_ty`].
+/// The map-level core of [`restore_entered_payload_ty`]. `scrutinee` is the match ROOT — the key is scoped
+/// by it so a nested match on a DIFFERENT scrutinee cannot collide on a shared relative path.
 fn restore_entered_payload_ty_into(
+    scrutinee: StructId,
     path: &[crate::core::PathStep],
     restore: Option<Option<Ty>>,
-    recorded: &mut HashMap<Vec<crate::core::PathStep>, Ty>,
+    recorded: &mut HashMap<(StructId, Vec<crate::core::PathStep>), Ty>,
 ) {
     let Some(prior) = restore else {
         return;
     };
-    let mut key = path.to_vec();
-    key.push(crate::core::PathStep::Payload);
+    let mut path_key = path.to_vec();
+    path_key.push(crate::core::PathStep::Payload);
+    let key = (scrutinee, path_key);
     match prior {
         Some(t) => {
             recorded.insert(key, t);
@@ -13126,7 +13158,7 @@ fn emit_sum_match_arms(
                 db, scrutinee, &arm.cont, result_it, block_ty, slots, base, high, scratch_ty,
                 layout, out, deeper,
             )?;
-            restore_entered_payload_ty(path, restore, out);
+            restore_entered_payload_ty(scrutinee, path, restore, out);
             // The fall-through switch (the disc-test's ELSE) starts scratch ABOVE the high-water the
             // matched arm's continuation (the THEN) reached, NOT at `base` — the same discipline as the
             // `Core::If` / guard sites. The THEN's continuation may contain a guard that stashes an i32
@@ -13201,6 +13233,7 @@ fn emit_littest_probe(
                         holds_handle = true; // sum-payload yields the child HANDLE
                         cur = payload_step_ty_of(
                             db,
+                            scrutinee,
                             Some(scrutinee),
                             &cur,
                             &lit_prefix,

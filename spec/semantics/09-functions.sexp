@@ -2843,6 +2843,35 @@
   (call   main (: 1000000 Int64))
   (output (: 1000000 Int64)))
 
+(case "a NON-tail recursion 10000 deep computes through real stack frames"
+  (doc    "The non-tail counterpart of the constant-stack pins (which all convert to loops): `(+ n
+           (sum-to (- n 1)))` keeps the `+` PENDING across every level, so 10000 genuine frames must
+           coexist — no loop rewrite applies. 50005000. Pins the compiled stack budget at a depth a
+           small default (or a frame far fatter than needed) would overflow; the runtime companion of
+           the small-n sum-to fold pins.")
+  (input  (do
+            (def (sum-to (: n Int64))
+              (if (< n 1) 0 (+ n (sum-to (- n 1)))))
+            (def (main (: n Int64)) (sum-to n))
+            (export main)))
+  (call   main (: 10000 Int64))
+  (output (: 50005000 Int64)))
+
+(case "a NON-tail heap-spine build 5000 deep constructs and drains through real frames"
+  (doc    "The heap companion: `(Cons n (build (- n 1)))` is NON-tail (the constructor wraps the
+           recursive result), so the build holds 5000 pending frames each owning a fresh heap node; the
+           equally non-tail `(+ 1 (len t))` walk re-descends. Composes deep control stack with deep heap
+           allocation in one program — a frame layout that spilled the pending Cons operand wrong at
+           depth corrupts a node. 5000.")
+  (input  (do
+            (type L (Nil) (Cons Int64 L))
+            (def (build (: n Int64)) (if (< n 1) (Nil) (Cons n (build (- n 1)))))
+            (def (len (: xs L)) (match xs ((Nil) 0) ((Cons h t) (+ 1 (len t)))))
+            (def (main (: n Int64)) (len (build n)))
+            (export main)))
+  (call   main (: 5000 Int64))
+  (output (: 5000 Int64)))
+
 (case "a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack"
   (doc    "The heap twin of the scalar tail-accumulator above: `mk-tail` threads a RECURSIVE-SUM
            accumulator (`(S acc)` wraps the heap value one level per step) through its tail call, and
@@ -3503,6 +3532,60 @@
             (def (id x) x)
             (def (main) (id true)) (export main)))
   (output (: true Bool)))
+
+(case "one generic identity instantiated at a scalar, a heap string, and a compound in one program"
+  (doc    "The three-representation stress of the id pins above (each instantiates at ONE type): the SAME
+           `id` applied to a runtime Int64 (scalar), a String literal (heap rope handle), and a tuple
+           (compound) in one body — n + byte-len(\"abc\") + (1+2) = 36+3+3 = 42. The three
+           monomorphizations carry values of DIFFERENT machine representation (i64 / heap handle /
+           multi-slot compound) through the same source def; a lowering that shared one specialized copy
+           across representations (or mis-slotted the compound's fields through the pass-through) would
+           corrupt one of the three reads.")
+  (input  (do
+            (def (id x) x)
+            (def (main (: n Int64))
+              (+ (id n)
+                 (+ (String.byte-len (id "abc"))
+                    (match (id (tuple 1 2)) ((tuple a b) (+ a b))))))
+            (export main)))
+  (call   main (: 36 Int64))
+  (output (: 42 Int64)))
+
+(case "a generic pair-swap crosses a scalar and a heap payload between positions"
+  (doc    "The MIXED-representation structural generic: `swap (tuple n \"x\")` puts a runtime scalar and a
+           heap string in one tuple and swaps them — position 0 (was i64) now holds the rope handle,
+           position 1 (was handle) now holds the i64. Reading both back (`m + byte-len s` = 41+1 = 42)
+           witnesses that the swap moved the VALUES, not just retyped the slots: a lowering with
+           positional physical slots typed by the INPUT tuple would put a handle in an i64 slot or vice
+           versa. The identity pins pass one value THROUGH; this permutes two differently-represented
+           values WITHIN a compound.")
+  (input  (do
+            (def (swap p) (match p ((tuple a b) (tuple b a))))
+            (def (main (: n Int64))
+              (match (swap (tuple n "x"))
+                ((tuple s m) (+ m (String.byte-len s)))))
+            (export main)))
+  (call   main (: 41 Int64))
+  (output (: 42 Int64)))
+
+(case "a generic fold instantiated at an Int64 AND a String accumulator in one program"
+  (doc    "The accumulator-representation face of the monomorphized fold (the closure-arg fold pins below
+           vary the closure's ARGUMENT types; here the ACCUMULATOR type differs per instantiation): one
+           `fold-list` runs with an Int64 accumulator (n+1+2+3) AND a String accumulator (concat over
+           \"ab\",\"cd\" → byte-len 4) in one program — 32+6+4 = 42. The two specialized copies carry the
+           accumulator in different representations (i64 vs rope handle) through the same recursive
+           spine; a shared copy would mis-carry one accumulator across the recursive call.")
+  (input  (do
+            (def (fold-list f acc xs)
+              (match xs
+                ((list) acc)
+                ((list h .. t) (fold-list f (f acc h) t))))
+            (def (main (: n Int64))
+              (+ (fold-list (fn ((: a Int64)) (fn ((: x Int64)) (+ a x))) n (list 1 2 3))
+                 (String.byte-len (fold-list (fn ((: a String)) (fn ((: x String)) (String.concat a x))) "" (list "ab" "cd")))))
+            (export main)))
+  (call   main (: 32 Int64))
+  (output (: 42 Int64)))
 
 ; --- A bare parameter PROJECTED in the body is constrained only at the call site ------------------
 ; A companion of the polymorphic-parameter cases above, for a STRUCTURAL use: a bare (unannotated)

@@ -37,7 +37,7 @@ export default function Metaprogramming() {
       <Runnable
         source={`(match (quote 42)
   ((Ast.Int n) n)
-  (_           0))`}
+  (_           (BigInt.of 0)))`}
       />
       <P>
         The <C>Ast.Int</C> arm binds <C>n = 42</C>. A quoted <em>compound</em> form is an <C>Ast.List</C>,
@@ -237,7 +237,7 @@ export default function Metaprogramming() {
     ((Ast.Int n) n)
     ((quasiquote (+ (unquote x) (unquote y))) (+ (eval-expr x) (eval-expr y)))
     ((quasiquote (* (unquote x) (unquote y))) (* (eval-expr x) (eval-expr y)))
-    (_ 0)))
+    (_ (BigInt.of 0))))
 (def (main) (eval-expr (quote (* (+ 1 2) 4))))`}
       />
       <P>

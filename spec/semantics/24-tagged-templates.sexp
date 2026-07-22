@@ -85,10 +85,10 @@
   (input  (do
             (def (two chunks holes) (Ast.Int 2))
             (def (main) (match (tagged-template two (chunks "") (holes))
-                          ((Ast.Int n) (+ 40 n))
-                          (_           0)))
+                          ((Ast.Int n) (+ 40N n))
+                          (_           0N)))
             (export main)))
-  (output (: 42 Int64)))
+  (output (: 42 BigInt)))
 
 ; A DISTINCT fixpoint dimension: a tag function whose BODY is ITSELF a tagged template (not just a tag
 ; returning a plain Ast). `outer` expands to `(tagged-template inner …)`, which must ITSELF be expanded —
@@ -108,9 +108,9 @@
             (def (outer chunks holes) (tagged-template inner (chunks "") (holes)))
             (def (main) (match (tagged-template outer (chunks "x") (holes))
                           ((Ast.Int n) n)
-                          (_           0)))
+                          (_           0N)))
             (export main)))
-  (output (: 7 Int64)))
+  (output (: 7 BigInt)))
 
 ; --- A RECURSIVE tag function const-folds (the compile-time evaluator reduces recursion) -----------
 ; metaprogramming.md: the tag is "evaluated on the one-tier compile-time evaluator." A tag that calls a
@@ -129,12 +129,12 @@
            depth backstop stops a non-terminating one (this case terminates).")
   (input  (do
             (def (sum-to (: n Int64)) (if (= n 0) 0 (+ n (sum-to (- n 1)))))
-            (def (tri chunks holes) (Ast.Int (sum-to 4)))
+            (def (tri chunks holes) (Ast.Int (BigInt.of (sum-to 4))))
             (def (main) (match (tagged-template tri (chunks "x") (holes))
                           ((Ast.Int n) n)
-                          (_           0)))
+                          (_           0N)))
             (export main)))
-  (output (: 10 Int64)))
+  (output (: 10 BigInt)))
 
 ; The JSX precursor: a recursive tag that BUILDS A COMPOUND `Ast` (not just a scalar) — the shape a real
 ; recursive-descent parser tag has (recursively assembling child nodes into an `Ast.List`). `build-list`
@@ -152,7 +152,7 @@
            code — a strictly stronger capability than a recursive tag returning a bare scalar.")
   (input  (do
             (def (build-list (: n Int64))
-              (if (= n 0) (list) (List.push (build-list (- n 1)) (Ast.Int n))))
+              (if (= n 0) (list) (List.push (build-list (- n 1)) (Ast.Int (BigInt.of n)))))
             (def (mk chunks holes) (Ast.List (build-list 3)))
             (def (main) (match (tagged-template mk (chunks "x") (holes))
                           ((Ast.List xs) (List.len xs))
@@ -180,12 +180,12 @@
                 ((Option.Some c) (count-b bytes (+ i 1) (if (= c 98) (+ acc 1) acc)))
                 ((Option.None _) acc)))
             (def (first-chunk chunks) (match chunks ((list c) c) ((list c .. r) c) (_ "")))
-            (def (scan chunks holes) (Ast.Int (count-b (String.to-bytes (first-chunk chunks)) 0 0)))
+            (def (scan chunks holes) (Ast.Int (BigInt.of (count-b (String.to-bytes (first-chunk chunks)) 0 0))))
             (def (main) (match (tagged-template scan (chunks "abbcbb") (holes))
                           ((Ast.Int n) n)
-                          (_           0)))
+                          (_           0N)))
             (export main)))
-  (output (: 4 Int64)))
+  (output (: 4 BigInt)))
 
 ; --- The tag's TYPE is enforced (dispatch by binding requires the right shape) ---------------------
 ; metaprogramming.md: the tag "MUST … require it to be a compile-time function from a list of the chunk
@@ -226,9 +226,9 @@
             (def (first chunks holes) (match holes ((list h) h) (_ (Ast.Int 0))))
             (def (main) (match (tagged-template first (chunks "" "") (holes (Ast.Int 7)))
                           ((Ast.Int n) n)
-                          (_           0)))
+                          (_           0N)))
             (export main)))
-  (output (: 7 Int64)))
+  (output (: 7 BigInt)))
 
 ; --- MULTIPLE holes + an INTERIOR chunk: the expander's multi-element list construction -------------
 ; Every case above uses zero or one hole (and only edge chunks). The expander builds `(<tag> (list c…)
@@ -255,10 +255,10 @@
                 (_          (Ast.List (list)))))
             (def (main) (match (tagged-template weave (chunks "p" "MID" "q") (holes (Ast.Int 10) (Ast.Int 20)))
                           ((Ast.List (list (Ast.Name nm) (Ast.Int x) (Ast.Int y)))
-                           (+ (String.byte-len nm) (+ x y)))
-                          (_ 0)))
+                           (+ (BigInt.of (String.byte-len nm)) (+ x y)))
+                          (_ 0N)))
             (export main)))
-  (output (: 33 Int64)))
+  (output (: 33 BigInt)))
 
 (case "a three-hole tag reads its holes in exact left-to-right order"
   (doc    "The 2-hole case above uses [10,20]; three holes with distinct DIGIT values catch a position
@@ -272,10 +272,10 @@
               (match holes ((list a b c) (Ast.List (list c a b))) (_ (Ast.List (list)))))
             (def (main)
               (match (tagged-template pick (chunks "" "" "" "") (holes (Ast.Int 1) (Ast.Int 2) (Ast.Int 3)))
-                ((Ast.List (list (Ast.Int x) (Ast.Int y) (Ast.Int z))) (+ (* x 100) (+ (* y 10) z)))
-                (_ 0)))
+                ((Ast.List (list (Ast.Int x) (Ast.Int y) (Ast.Int z))) (+ (* x 100N) (+ (* y 10N) z)))
+                (_ 0N)))
             (export main)))
-  (output (: 312 Int64)))
+  (output (: 312 BigInt)))
 
 ; --- Composition: a hole may itself be a quote/Ast expression ---------------------------------------
 ; A `{expr}` hole is an ORDINARY expression, so it may be a `(quote …)` (or any Ast-valued expression) —
@@ -323,10 +323,10 @@
                 (_        (Ast.List (list)))))
             (def (main) (match (tagged-template outer (chunks "" "") (holes (tagged-template inner (chunks "x") (holes))))
                           ((Ast.List (list (Ast.Name op) (Ast.Int a) (Ast.Int b)))
-                           (+ (String.byte-len op) (+ a b)))
-                          (_ 0)))
+                           (+ (BigInt.of (String.byte-len op)) (+ a b)))
+                          (_ 0N)))
             (export main)))
-  (output (: 46 Int64)))
+  (output (: 46 BigInt)))
 
 ; --- The expander is a STRUCTURAL rewrite, not a validator: the chunks==holes+1 invariant is the READER's
 ; The chunks/holes count invariant (`chunks.len() == holes.len() + 1`) is guaranteed by the READER on the
@@ -349,9 +349,9 @@
             (def (id chunks holes) (Ast.Int 0))
             (def (main) (match (tagged-template id (chunks "a" "b" "c") (holes (Ast.Int 1)))
                           ((Ast.Int n) n)
-                          (_           -1)))
+                          (_           -1N)))
             (export main)))
-  (output (: 0 Int64)))
+  (output (: 0 BigInt)))
 
 (case "the expander threads the hole list to the tag even with zero chunks and zero holes"
   (doc    "The degenerate shape: zero chunks and zero holes. The expander still rewrites `(tagged-template id
@@ -362,9 +362,9 @@
             (def (id chunks holes) (Ast.Int 5))
             (def (main) (match (tagged-template id (chunks) (holes))
                           ((Ast.Int n) n)
-                          (_           -1)))
+                          (_           -1N)))
             (export main)))
-  (output (: 5 Int64)))
+  (output (: 5 BigInt)))
 
 ; --- Runtime values through the expansion seam ------------------------------------------------------
 ; Every case above is fully compile-time (no `(call …)`). These pin the seam between the one-tier
@@ -381,7 +381,7 @@
   (input  (do
             (def (two chunks holes) (Ast.Int 2))
             (def (main (: a Int64)) (match (tagged-template two (chunks "") (holes))
-                                      ((Ast.Int n) (+ a n))
+                                      ((Ast.Int n) (+ a (Int64.of n)))
                                       (_           0)))
             (export main)))
   (call   main (: 40 Int64))
@@ -401,14 +401,14 @@
             (def (keep chunks holes) (match holes
                                        ((list h) h)
                                        (_        (Ast.Int 0))))
-            (def (main (: a Int64)) (match (tagged-template keep (chunks "" "") (holes (Ast.Int a)))
+            (def (main (: a Int64)) (match (tagged-template keep (chunks "" "") (holes (Ast.Int (BigInt.of a))))
                                       ((Ast.Int n) n)
-                                      (_           -1)))
+                                      (_           -1N)))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 7 Int64))
+  (output (: 7 BigInt))
   (call   main (: 9 Int64))
-  (output (: 9 Int64)))
+  (output (: 9 BigInt)))
 
 (case "a runtime hole woven into a compound Ast is read back by a nested match"
   (doc    "The weave case's runtime companion: `wrap` builds `(Ast.List (list (Ast.Name \"f\") h))` around
@@ -423,9 +423,9 @@
                                        ((list h) (Ast.List (list (Ast.Name "f") h)))
                                        (_        (Ast.List (list)))))
             (def (main (: a Int64))
-              (match (tagged-template wrap (chunks "" "") (holes (Ast.Int (* a 10))))
-                ((Ast.List (list (Ast.Name g) (Ast.Int n))) (+ n (String.byte-len g)))
-                (_ -1)))
+              (match (tagged-template wrap (chunks "" "") (holes (Ast.Int (BigInt.of (* a 10)))))
+                ((Ast.List (list (Ast.Name g) (Ast.Int n))) (+ n (BigInt.of (String.byte-len g))))
+                (_ -1N)))
             (export main)))
   (call   main (: 4 Int64))
-  (output (: 41 Int64)))
+  (output (: 41 BigInt)))

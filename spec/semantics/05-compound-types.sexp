@@ -3210,6 +3210,61 @@
             ((None _)     -1)))
   (output (: 5 Int64)))
 
+(case "a nested match on the SAME runtime scrutinee already refined to a variant by the enclosing arm"
+  (doc    "The same-scrutinee re-match shape (distinct from the (Some (Some x)) nested-VALUE dispatch
+           above, which re-matches an inner PAYLOAD): inside the `Circle` arm of `(match s …)` the body
+           runs a SECOND `(match s …)` on the SAME runtime `s` — which the enclosing arm has already
+           proven to be `Circle`. Today this emits a full runtime switch in the inner match (no elision);
+           it MUST stay value-correct — the inner `Circle` arm fires (r2*3), never the `Square`/`Tri`
+           arms. This is the correctness invariant a future variant-refinement disc-elision (v-value-facts
+           slice-5) must preserve: folding the inner switch to the known `Circle` arm may not change the
+           observable result. k=0→Circle 10→inner Circle 10→30; k=1→Square 4→4*4=16; k=2→Tri 7→7.")
+  (input  (do
+            (type Shape (Circle Int64) (Square Int64) (Tri Int64))
+            (def (area (: s Shape))
+              (match s
+                ((Circle r) (match s
+                              ((Circle r2) (* r2 3))
+                              ((Square w) w)
+                              ((Tri t)    t)))
+                ((Square w) (* w w))
+                ((Tri t)    t)))
+            (def (main (: k Int64))
+              (area (if (= k 0) (Circle 10) (if (= k 1) (Square 4) (Tri 7)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 30 Int64))
+  (call   main (: 1 Int64))
+  (output (: 16 Int64))
+  (call   main (: 2 Int64))
+  (output (: 7 Int64)))
+
+(case "a same-scrutinee re-match whose inner arm set OMITS the refined variant falls to the inner default"
+  (doc    "The DEFAULT-arm companion of the same-scrutinee re-match above: inside the `Circle` arm the body
+           re-matches the SAME `s` (proven `Circle`), but the inner arm set is `(Square w)` + a `_` default
+           — it does NOT list `Circle`. So the inner match must fall to `_` → 999; it does NOT spuriously
+           hit `Square`. k=0→outer Circle→inner (Square|_) → default 999; k=1→outer Square→4*4=16. Pins the
+           SECOND fold path of a future variant-refinement elision (v-value-facts slice-5): when the refined
+           variant K is absent from the inner arm set, the fold must select the inner DEFAULT arm, not a
+           named arm — the `or_else(find disc.is_none())` branch of the consult. Value-correct today (full
+           runtime switch, no elision); the elision must preserve exactly this.")
+  (input  (do
+            (type Shape (Circle Int64) (Square Int64) (Tri Int64))
+            (def (f (: s Shape))
+              (match s
+                ((Circle r) (match s
+                              ((Square w) w)
+                              (_          999)))
+                ((Square w) (* w w))
+                ((Tri t)    t)))
+            (def (main (: k Int64))
+              (f (if (= k 0) (Circle 10) (if (= k 1) (Square 4) (Tri 7)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 999 Int64))
+  (call   main (: 1 Int64))
+  (output (: 16 Int64)))
+
 (case "a tuple-of-two-sums match reads each sum's payload from its own slot (HM-unify shape)"
   (doc    "The HM-UNIFICATION dispatch shape: `match (a, b) with (TArrow(a1,a2), TArrow(b1,b2)) => unify(a2,
            b2)`. A self-recursive call on payload binders extracted from a TUPLE OF TWO SUMS read BOTH `a2`
@@ -12079,6 +12134,44 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 11 Int64)))
 
+; The Map.to-list order pins above use INTEGER keys (canonical order = numeric). STRING keys order by
+; content byte-lexicographics — the SAME unsigned byte order Set.to-list pins for string ELEMENTS
+; (19-sets) — and the keys here are runtime ROPES (built by a concat loop), so the enumeration must
+; flatten and compare content, not leaf pointers.
+(case "Map.to-list over runtime STRING keys enumerates in content byte order (first is byte-smallest)"
+  (doc    "Three rope keys built at run time (`(rep \"z\" 2)` = \"zxx\", \"axx\", \"mxx\") inserted in
+           z-a-m order with values 1,2,3: entry 0 of `Map.to-list` is the byte-smallest key \"axx\", so
+           its VALUE is 2 (insertion order would give 1, hash order something else). The String-key twin
+           of the integer-key first-is-min pin, over genuine ropes — the enumerate comparator's Str arm
+           must flatten before comparing.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main (: n Int64))
+              (let ((m (Map.insert (Map.insert (Map.insert Map.empty (rep "z" n) 1) (rep "a" n) 2) (rep "m" n) 3)))
+                (match (List.at (Map.to-list m) 0)
+                  ((Some p) (match p ((tuple k v) v)))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 2 Int64)))
+
+(case "the LAST Map.to-list entry over runtime String keys is the byte-largest"
+  (doc    "The far-end companion: index 2 of the same z/a/m rope-keyed map is the byte-LARGEST key
+           \"zxx\" → value 1. Together with the first-is-smallest pin this brackets the full order (a
+           comparator right on the min but unsorted in the middle/tail escapes a single index-0 read).")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (main (: n Int64))
+              (let ((m (Map.insert (Map.insert (Map.insert Map.empty (rep "z" n) 1) (rep "a" n) 2) (rep "m" n) 3)))
+                (match (List.at (Map.to-list m) 2)
+                  ((Some p) (match p ((tuple k v) v)))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 1 Int64)))
+
 ; The cases above enumerate/index/count a Map.to-list; this closes the ROUND-TRIP that the "map→list-of-
 ; pairs→fold" idiom relies on — rebuilding a map by folding Map.insert over its OWN Map.to-list recovers an
 ; EQUAL map. It exercises enumeration (to-list) + the fold-rebuild + map value-equality together, the Map
@@ -13255,3 +13348,90 @@
             (def (main) (rc (A (B (C 60) 2) 3)))
             (export main)))
   (output (: 65 Int64)))
+
+; --- Builder SCALE and remaining composition faces (breaker bank drain) ----------------------------
+
+(case "a 5000-element pushed list reads head, middle, and last through the deeper trie"
+  (doc    "The scale face past the 1100 three-level pin: 5000 elements is deep into level-2 territory
+           with dozens more interior nodes. Head (0), middle (2500), last (4999) all resolve through the
+           deeper shift path — 0·10000 + 2500·100 + 4999 = 254999. Guards the trie-depth arithmetic at a
+           size where an off-by-one in the level computation lands in the wrong subtree.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: xs (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push xs i)) xs))
+            (def (at (: xs (List Int64)) (: i Int64)) (match (List.at xs i) ((Some v) v) ((None u) -1)))
+            (def (main (: n Int64))
+              (let ((xs (build 0 n (list))))
+                (+ (* 10000 (at xs 0)) (+ (* 100 (at xs 2500)) (at xs 4999)))))
+            (export main)))
+  (call   main (: 5000 Int64))
+  (output (: 254999 Int64)))
+
+(case "a 2000-entry built map answers first, middle, and last keys through deep CHAMP levels"
+  (doc    "The map twin at 40× the 50-entry churn pin: 2000 keys force additional CHAMP levels. get(0)=0,
+           get(1000)=2000, get(1999)=3998 — 0·100000 + 2000·10 + 3998 = 23998. The deep-descent
+           companion of the grow/shrink/regrow pin, at a cardinality where per-level index math must be
+           exact across more levels.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (< i n) (build (+ i 1) n (Map.insert m i (* i 2))) m))
+            (def (get (: m (Map Int64 Int64)) (: k Int64)) (match (Map.lookup m k) ((Some v) v) ((None u) -1)))
+            (def (main (: n Int64))
+              (let ((m (build 0 n Map.empty)))
+                (+ (* 100000 (get m 0)) (+ (* 10 (get m 1000)) (get m 1999)))))
+            (export main)))
+  (call   main (: 2000 Int64))
+  (output (: 23998 Int64)))
+
+(case "a mutually-recursive sum value stored as a MAP VALUE round-trips and evaluates"
+  (doc    "A mutual-sum tree (`Expr`/`Term` referencing each other) stored in a CHAMP map VALUE cell,
+           retrieved, and evaluated — the recursive-heap payload survives the collection round-trip and
+           the alternating evaluators walk it after retrieval (-(42) = -42). The mutual-recursion pins
+           walk trees held in bindings; a collection CELL is a distinct storage route (boxed value slot).")
+  (input  (do
+            (type Expr (Num Int64) (Neg Term))
+            (type Term (Wrap Expr) (Dbl Term))
+            (def (eval-e (: e Expr))
+              (match e ((Num n) n) ((Neg t) (- 0 (eval-t t)))))
+            (def (eval-t (: t Term))
+              (match t ((Wrap e) (eval-e e)) ((Dbl t2) (* 2 (eval-t t2)))))
+            (def (main (: a Int64))
+              (let ((m (Map.insert Map.empty 1 (Neg (Wrap (Num a))))))
+                (match (Map.lookup m 1)
+                  ((Some e) (eval-e e))
+                  ((None u) -99))))
+            (export main)))
+  (call   main (: 42 Int64))
+  (output (: -42 Int64)))
+
+(case "alternating prepend and push keep both list ends straight"
+  (doc    "The deque shape: `push(prepend(push([5],6),a),7)` builds [a,5,6,7] — index 0 is the
+           prepended runtime `a`, index 3 the last push (4·100+7 = 407). Pins that front and back
+           insertion interleave without either end's ordering leaking into the other (the existing
+           prepend pins are single-op).")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((xs (List.push (List.prepend (List.push (list 5) 6) a) 7)))
+                (+ (* 100 (match (List.at xs 0) ((Some v) v) ((None u) -1)))
+                   (match (List.at xs 3) ((Some v) v) ((None u) -1)))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 407 Int64)))
+
+(case "a prepend-built list drains in order through head-tail matching"
+  (doc    "The reverse-free build idiom: `build` prepends i for i=n..1, so the list comes out ASCENDING
+           and the positional-weight fold reads 1234 at n=4 — a prepend that appended at the tail would
+           drain 4321. Pins prepend's front-insertion through a full build-then-drain cycle (the
+           single-op pins read one index).")
+  (input  (do
+            (def (build (: i Int64) (: acc (List Int64)))
+              (if (< i 1) acc (build (- i 1) (List.prepend acc i))))
+            (def (sum-weighted (: xs (List Int64)) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (sum-weighted t (+ (* acc 10) h)))))
+            (def (main (: n Int64))
+              (sum-weighted (build n (list)) 0))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 1234 Int64)))

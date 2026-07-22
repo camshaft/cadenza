@@ -611,3 +611,50 @@
                   (if (>= cx 50) (shrink 0 100) -1)))
               (export main)))
   (call   main (: 12345 Int64)) (output (: 50 Int64)))
+
+; --- MODEL-based properties: the implementation agrees with a simple abstract model ---------------
+; The properties above are algebraic laws over ONE structure (commutativity, idempotence, involution
+; shapes). A MODEL-based property drives the REAL structure and a trivially-correct abstract model with
+; the SAME generated operation sequence and asserts they agree at the end — the strongest generic oracle
+; a property harness offers (it catches any divergence, not just a law violation).
+
+(case "a model-oracle property — CHAMP Map.len agrees with a counting model over generated inserts"
+  (doc    "Twenty seeded-LCG-generated inserts (keys masked to 0..7, guaranteeing collisions) drive the
+           real CHAMP map AND an abstract count-distinct model in one fold: the model increments only
+           when `Map.lookup` misses (a fresh key), the map absorbs every insert. At the end `Map.len m`
+           must equal the model count — an overwrite that grew the map, or an insert that lost an entry,
+           diverges. Two seeds witness two operation sequences through one compiled loop. This is the
+           model-based-testing idiom (real vs abstract state agreeing under a generated workload) the
+           algebraic-law cases above cannot express.")
+  (input  (do
+            (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+            (def (drive (: s Int64) (: n Int64) (: m (Map Int64 Int64)) (: cnt Int64))
+              (if (< n 1) (if (= (Map.len m) cnt) 1 0)
+                (let ((k (& (next s) 7)))
+                  (drive (next s) (- n 1) (Map.insert m k 1)
+                         (match (Map.lookup m k) ((Some v) cnt) ((None u) (+ cnt 1)))))))
+            (def (main (: seed Int64)) (drive seed 20 Map.empty 0))
+            (export main)))
+  (call   main (: 12345 Int64))
+  (output (: 1 Int64))
+  (call   main (: 999 Int64))
+  (output (: 1 Int64)))
+
+(case "a generated list reverses twice to itself — an involution property over generated content"
+  (doc    "The involution law over GENERATED content: an 8-element list of masked LCG draws, reversed
+           twice, equals itself — `rev` is a fold whose accumulator prepends via `List.concat (list h)`,
+           so the double application must restore both length and order for whatever content the seed
+           produced. The classic reverse-involution property, here witnessing the RRB list's push/concat/
+           destructure round-trip under a generated workload rather than a literal.")
+  (input  (do
+            (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+            (def (gen (: s Int64) (: n Int64) (: acc (List Int64)))
+              (if (< n 1) acc (gen (next s) (- n 1) (List.push acc (& (next s) 63)))))
+            (def (rev (: xs (List Int64)) (: acc (List Int64)))
+              (match xs ((list) acc) ((list h .. t) (rev t (List.concat (list h) acc)))))
+            (def (main (: seed Int64))
+              (let ((xs (gen seed 8 (list))))
+                (if (= (rev (rev xs (list)) (list)) xs) 1 0)))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 1 Int64)))

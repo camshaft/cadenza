@@ -2354,17 +2354,51 @@ impl<'a> Printer<'a> {
         mut emit: impl FnMut(&mut Self, StructId),
     ) {
         let last_has_trailing = fields.last().is_some_and(|&f| self.is_comment_after(f));
+        // An own-line LEADING `(comment …)` on any field forces the container to break (the comment prints
+        // on its own line above the field), same as a last-field trailing comment forces the closer break.
+        let any_leading = fields.iter().any(|&f| {
+            self.a
+                .as_form(f, "comment")
+                .is_some_and(|a| a.len() == 2 && self.is_string(a[0]))
+        });
         let emit_field = |p: &mut Self, f: StructId, emit: &mut dyn FnMut(&mut Self, StructId)| {
-            let inner = p.strip_comment_after(f);
+            // Peel EVERY comment wrapper around the field down to the inner `(name value)` pair, in a LOOP
+            // (a field may carry more than one — a decoded / metaprogramming-built AST can nest
+            // `(comment c1 (comment c2 (pair)))` or interleave leading/trailing; `is_pairs` accepts any
+            // via `strip_field_comments`, so the printer must handle all of them — PR#768/PR#763-class:
+            // the printer must be TOTAL, not just cover the reader's single-comment-per-field output).
+            // LEADING `(comment …)` → print `// text` + hardbreak ABOVE the field (own-line). TRAILING
+            // `(comment-after …)` → collect its text to emit AFTER the pair (innermost trails closest).
+            let mut inner = f;
+            let mut trailing_texts: Vec<StructId> = Vec::new();
+            loop {
+                if let Some(a) = p.a.as_form(inner, "comment")
+                    && a.len() == 2
+                    && p.is_string(a[0])
+                {
+                    p.doc.word(format!("//{}", p.doc_line_text(a[0])));
+                    p.doc.hardbreak();
+                    inner = a[1];
+                    continue;
+                }
+                if let Some(a) = p.a.as_form(inner, "comment-after")
+                    && a.len() == 2
+                    && p.is_string(a[0])
+                {
+                    trailing_texts.push(a[0]);
+                    inner = a[1];
+                    continue;
+                }
+                break;
+            }
             emit(p, inner);
-            if let Some(a) = p.a.as_form(f, "comment-after")
-                && a.len() == 2
-                && p.is_string(a[0])
-            {
-                p.doc.word(format!(" //{}", p.doc_line_text(a[0])));
+            // Innermost `comment-after` is closest to the pair on the source line, so print in reverse of
+            // collection order (`… // outer // inner` reads as inner-then-outer up the nesting).
+            for &text in trailing_texts.iter().rev() {
+                p.doc.word(format!(" //{}", p.doc_line_text(text)));
             }
         };
-        if !last_has_trailing {
+        if !last_has_trailing && !any_leading {
             return self.bracketed(open, close, true, fields, |p, f| {
                 emit_field(p, f, &mut emit)
             });
@@ -3337,6 +3371,25 @@ impl<'a> Printer<'a> {
         }
     }
 
+    /// Peel any comment wrappers around a record/map field/entry down to the inner `(name value)` pair:
+    /// a LEADING `(comment "text" inner)` (an own-line `//` above the field) and/or a TRAILING
+    /// `(comment-after "text" inner)` (a same-line `//` after the last field), in any nesting. Returns the
+    /// innermost non-comment node. Used by `is_pairs` so a commented field still counts as a pair.
+    fn strip_field_comments(&self, id: StructId) -> StructId {
+        let mut cur = id;
+        loop {
+            let next = self.strip_comment_after(cur);
+            let next = match self.a.as_form(next, "comment") {
+                Some(a) if a.len() == 2 && self.is_string(a[0]) => a[1],
+                _ => next,
+            };
+            if next == cur {
+                return cur;
+            }
+            cur = next;
+        }
+    }
+
     /// Every arg is a 2-element `(key value)` pair — the shape the record/map surfaces render. A
     /// malformed record/map (an arg that isn't a pair) falls back to the generic call form so it
     /// still round-trips. A record additionally needs its field key to be a name; a map key is any
@@ -3352,9 +3405,9 @@ impl<'a> Printer<'a> {
             return false;
         }
         args.iter().all(|&a| {
-            // See through the trailing-comment wrapper on the LAST field/entry so it stays a well-formed
-            // record/map (the only position the guard above permits it).
-            let inner = self.strip_comment_after(a);
+            // See through any comment wrappers (own-line LEADING `(comment …)` on any field + a same-line
+            // TRAILING `(comment-after …)` on the last) so a commented field still counts as a pair.
+            let inner = self.strip_field_comments(a);
             matches!(self.a.get(inner), Struct::List(p) if p.len() == 2)
         })
     }
@@ -3364,7 +3417,7 @@ impl<'a> Printer<'a> {
     fn is_record_shape(&self, args: &[StructId]) -> bool {
         self.is_pairs(args)
             && args.iter().all(|&a| {
-                let inner = self.strip_comment_after(a);
+                let inner = self.strip_field_comments(a);
                 match self.a.get(inner) {
                     Struct::List(p) => self.plain_key(p[0]).is_some(),
                     _ => false,
@@ -5825,6 +5878,87 @@ mod tests {
     }
 
     #[test]
+    fn an_own_line_comment_before_a_record_or_map_field_is_preserved_not_dropped() {
+        // The record/map own-line interior sibling. A field/entry is a `(name value)` PAIR, so an own-line
+        // leading `//` wraps it as `(comment "text" (name value))` — which the shape-guards (`is_pairs`/
+        // `is_record_shape` via `strip_field_comments`) unwrap, and the printer (`bracketed_pairs_comment_
+        // aware`) renders as a `// …` line ABOVE the field, forcing the container to break. Distinct from
+        // the same-line trailing `(comment-after …)`. Own-line has no swallow hazard → works at any field.
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("def r() -> Int64 = {\n  // lead\n  a = 1, b = 2 }").arenas
+            ),
+            "(def (r) (: (\"record\" (comment \"lead\" (a 1)) (b 2)) Int64))",
+            "own-line comment before the first record field is captured, printer renders it above"
+        );
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("def r() -> Int64 = { a = 1,\n  // mid\n  b = 2 }").arenas
+            ),
+            "(def (r) (: (\"record\" (a 1) (comment \"mid\" (b 2))) Int64))",
+            "own-line comment before a non-first record field is captured (no swallow hazard)"
+        );
+        assert_eq!(
+            assert_roundtrip("{\n  // lead\n  a = 1, b = 2 }", 80),
+            "{\n  // lead\n  a = 1,\n  b = 2\n}"
+        );
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("def m() -> Int64 = #{\n  // lead\n  1 = 10, 2 = 20 }").arenas
+            ),
+            "(def (m) (: (\"map\" (comment \"lead\" (1 10)) (2 20)) Int64))",
+            "own-line comment before a map entry is captured"
+        );
+        // Leading own-line + trailing same-line (last field) compose.
+        assert_eq!(
+            sexpr::print(
+                &parser::read_ml("def r() -> Int64 = {\n  // lead\n  a = 1, b = 2 // last\n}")
+                    .arenas
+            ),
+            "(def (r) (: (\"record\" (comment \"lead\" (a 1)) (comment-after \"last\" (b 2))) Int64))",
+            "leading own-line + trailing same-line record comments compose"
+        );
+        // Clean record/map (incl. pun) keep their flat layout.
+        assert_eq!(assert_roundtrip("{ x = 1, y = 2 }", 80), "{ x = 1, y = 2 }");
+        assert_eq!(assert_roundtrip("{ x, y }", 80), "{ x, y }");
+    }
+
+    #[test]
+    fn multiple_comment_wrappers_on_a_record_field_all_print_not_just_the_first() {
+        // PR#768 (Copilot): `emit_field` peeled only ONE leading `(comment …)` (a single `if let`), so a
+        // field with MORE than one comment wrapper — only from a decoded / metaprogramming-built AST, but
+        // the printer must be TOTAL (PR#763-class) — mis-printed: the inner `(comment c2 (pair))` was
+        // handed to `emit` as if `comment` were the field name (`// c1` then a spurious `comment = "c2"`).
+        // The peel is now a LOOP over both leading `(comment …)` and trailing `(comment-after …)` layers.
+        // TWO leading comments: both print as `// …` lines above the field; round-trips.
+        let a =
+            sexpr::read(r#"(def (r) (: ("record" (comment "c1" (comment "c2" (a 1))) (b 2)) _))"#)
+                .unwrap();
+        let printed = print(&a, 80);
+        assert_eq!(
+            printed, "def r() -> _ = {\n  // c1\n  // c2\n  a = 1,\n  b = 2\n}",
+            "both leading comments print, not just the first (no spurious `comment = ...` field)"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml(&printed).arenas),
+            r#"(def (r) (: ("record" (comment "c1" (comment "c2" (a 1))) (b 2)) _))"#,
+            "a doubly-commented field round-trips"
+        );
+        // A leading + trailing combo on one field normalizes to a stable (idempotent) nesting — nothing
+        // dropped or mis-attributed; re-printing is a fixed point.
+        let combo = sexpr::read(
+            r#"(def (r) (: ("record" (a 1) (comment "lead" (comment-after "trail" (b 2)))) _))"#,
+        )
+        .unwrap();
+        let p1 = print(&combo, 80);
+        let p2 = print(&parser::read_ml(&p1).arenas, 80);
+        assert_eq!(
+            p1, p2,
+            "leading+trailing on one field is idempotent (stable after normalization)"
+        );
+    }
+
+    #[test]
     fn a_same_line_trailing_comment_on_a_list_elem_is_preserved_not_dropped() {
         // A `//` comment trailing a list element on the SAME source line (`[…, x // note]`) used to be
         // DROPPED (it sat in the next token's / the `]`'s leading slot, which the element loop never
@@ -5894,6 +6028,32 @@ mod tests {
                 "{label}: a non-last comment-after must round-trip via call-form fallback, not swallow the separator (printed: {printed})"
             );
         }
+    }
+
+    #[test]
+    fn an_own_line_comment_before_a_call_argument_is_preserved_not_dropped() {
+        // An OWN-LINE `//` comment LEADING a call argument (`g(\n // note\n 1, 2)` or between args) used to
+        // be DROPPED — `arg_exprs` parses each argument via `expr`, which does not drain the argument's
+        // leading-comment slot. `arg_exprs` now captures it as a leading `(comment "text" arg)`; the call
+        // printer already renders a leading `(comment …)` on its own line above the arg. Own-line has no
+        // swallow hazard → not gated to the last arg. (Same-line trailing call-arg comments are a separate
+        // follow-up — the two-path call printer needs work to render `arg // text` + force the `)` break.)
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def f() -> Int64 = g(\n  // lead\n  1, 2)").arenas),
+            "(def (f) (: (g (comment \"lead\" 1) 2) Int64))",
+            "own-line comment before the first call arg is captured, not dropped"
+        );
+        assert_eq!(
+            sexpr::print(&parser::read_ml("def f() -> Int64 = g(1,\n  // mid\n  2)").arenas),
+            "(def (f) (: (g 1 (comment \"mid\" 2)) Int64))",
+            "own-line comment before a non-first call arg is captured"
+        );
+        assert_eq!(
+            assert_roundtrip("g(\n  // lead\n  1, 2)", 80),
+            "g(\n  // lead\n  1,\n  2\n)"
+        );
+        // A clean call keeps its ordinary layout.
+        assert_eq!(assert_roundtrip("g(1, 2, 3)", 80), "g(1, 2, 3)");
     }
 
     #[test]
