@@ -6093,6 +6093,63 @@ fn set_to_list_of_an_empty_set_folds_to_the_empty_list() {
     }
 }
 
+/// SROA escape-gate (operator directive, tick ~353): `sroa_tuple_scrutinee_candidate` must FIRE on a
+/// `match` whose scrutinee is a fresh runtime tuple AND every arm is a tuple-destructure (the alloc-eliding
+/// candidate v-patterns' dispatch consumes), and DECLINE (fail-closed) whenever the tuple escapes — a
+/// whole-value binder arm, a wildcard-root arm, a const-visible tuple (already folded), or a non-tuple
+/// scrutinee. Reaches the private helper via `crate::lower::…`; extracts the match's scrutinee/arms from
+/// the resolved `main` body.
+#[test]
+fn sroa_tuple_scrutinee_candidate_fires_only_on_an_escape_free_runtime_tuple_destructure() {
+    use crate::db::Db;
+    use crate::resolve::resolved_of;
+    use crate::resolved::Resolved;
+    // Build `main`, resolve its body to the `Resolved::Match`, and run the gate on (scrutinee, arms).
+    let gate = |body: &str| -> Option<usize> {
+        let src = format!("(module m (def (main (: a Int64) (: b Int64)) {body}) (export main))");
+        let mut db = Db::load(crate::testkit::parse(&src));
+        let d = db.def_by_name("main").expect("def main");
+        let m_body = db.defs[d].body.expect("main has a body");
+        let (scrutinee, arms) = match resolved_of(&mut db, m_body) {
+            Resolved::Match { scrutinee, arms } => (scrutinee, arms),
+            other => panic!("expected a Resolved::Match, got {other:?}"),
+        };
+        crate::lower::sroa_tuple_scrutinee_candidate(&mut db, scrutinee, &arms).map(|e| e.len())
+    };
+    // FIRES: a fresh runtime tuple `(a, b)` with lit-test + binder tuple-destructure arms — the canonical
+    // pair_match shape. Two elements.
+    assert_eq!(
+        gate("(match (tuple a b) ((tuple 0 y) y) ((tuple x y) (+ x y)))"),
+        Some(2),
+        "a runtime-tuple scrutinee matched only by tuple-destructure arms is a SROA candidate (2 elems)"
+    );
+    // FIRES: a guarded tuple-destructure arm peels to its inner tuple pattern (still positional).
+    assert_eq!(
+        gate("(match (tuple a b) ((guard (tuple x y) (> x 0)) x) ((tuple x y) y))"),
+        Some(2),
+        "a guarded tuple-destructure arm is still positional — candidate"
+    );
+    // DECLINES: a WHOLE-VALUE binder arm `((t) …)` binds the tuple itself — it escapes.
+    assert_eq!(
+        gate("(match (tuple a b) ((tuple 0 y) y) (t 7))"),
+        None,
+        "a bare-name (whole-value) arm binds the aggregate — the tuple escapes, no SROA"
+    );
+    // DECLINES: a wildcard-root arm keeps the aggregate.
+    assert_eq!(
+        gate("(match (tuple a b) ((tuple 0 y) y) (_ 7))"),
+        None,
+        "a wildcard-root arm keeps the aggregate — no SROA"
+    );
+    // DECLINES: a compile-time-CONSTANT tuple already folds its Elem reads (never allocates) — not a
+    // candidate (nothing to replace).
+    assert_eq!(
+        gate("(match (tuple 3 5) ((tuple x y) (+ x y)))"),
+        None,
+        "a const-visible tuple already folds — not a SROA candidate"
+    );
+}
+
 /// The wasmtime run for the empty-set fold: `(List.len (Set.to-list (Set.of (list))))` is 0, and the fold
 /// sees through an inlined nullary `(def (es) (Set.of (list)))` — the exact seed shape. Because the whole
 /// expression const-folds to `0`, the program imports NO runtime (`run_returns`, not `ComposedRuntime`),
@@ -25386,6 +25443,69 @@ mod match_engine {
                 v.contains("9223372036854775807"),
                 "u64max-1 / 2 folds to 9223372036854775807: got {v}"
             );
+        }
+    }
+
+    #[test]
+    fn a_wide_operand_shift_or_bitwise_folds_over_the_solved_width_or_traps() {
+        // REGRESSION (fold, shift/bitwise follow-up): `>>`/`&`/`|`/`^`/`<<` over a UInt64 operand ≥ 2^63
+        // must fold over the solved width's u128 bit pattern — NOT decline via the i64-only `fold_arith`
+        // (which has no i64 for a ≥2^63 operand → spurious CDZ0304). A wide operand is always non-negative
+        // unsigned (a signed value ≥ 2^63 can't type — CDZ0302 at its literal), so `>>` is a logical shift
+        // and the bitwise ops mask to width. FIX (lower_arith wide block): fold BitAnd/BitOr/BitXor/Shl/Shr
+        // over the u128 low-width pattern; shift count out of 0..width or a `<<` result past the width traps.
+        let compiles = |src: &str| {
+            assert_eq!(
+                reject_code(src),
+                None,
+                "a wide-operand shift/bitwise whose result fits the solved width must fold, not decline: {src}"
+            );
+        };
+        compiles(
+            "(module m (def (main) (>> (: 18446744073709551614 UInt64) (: 1 UInt64))) (export main))",
+        );
+        compiles(
+            "(module m (def (main) (& (: 18446744073709551615 UInt64) (: 255 UInt64))) (export main))",
+        );
+        compiles(
+            "(module m (def (main) (| (: 18446744073709551614 UInt64) (: 1 UInt64))) (export main))",
+        );
+        compiles(
+            "(module m (def (main) (^ (: 18446744073709551615 UInt64) (: 255 UInt64))) (export main))",
+        );
+
+        // A `<<` whose result overflows the solved width still traps CDZ0304 (no silent truncation).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (<< (: 18446744073709551615 UInt64) (: 1 UInt64))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304"),
+            "a wide `<<` whose result overflows the width must trap"
+        );
+        // A shift count >= the width traps CDZ0304 (out-of-range count).
+        assert_eq!(
+            reject_code(
+                "(module m (def (main) (>> (: 18446744073709551615 UInt64) (: 200 UInt64))) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0304"),
+            "a shift count past the bit width must trap"
+        );
+
+        // The folded VALUES are correct over the u128 bit pattern, when a runtime is available.
+        if let Some(v) = run_heap_value_escape(
+            "(module m (def (main) (>> (: 18446744073709551614 UInt64) (: 1 UInt64))) (export main))",
+        ) {
+            assert!(
+                v.contains("9223372036854775807"),
+                "(u64max-1) >> 1 folds to 9223372036854775807: got {v}"
+            );
+        }
+        if let Some(v) = run_heap_value_escape(
+            "(module m (def (main) (& (: 18446744073709551615 UInt64) (: 255 UInt64))) (export main))",
+        ) {
+            assert!(v.contains("255"), "u64max & 255 folds to 255: got {v}");
         }
     }
 

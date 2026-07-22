@@ -4788,3 +4788,10 @@ pass	unsigned branch refinement stays value-correct at the domain edges (0-lower
 pass	a flow refinement folds a compare over a no-overflow arith operand, but the trap survives when overflow is possible
 pass	an INCLUSIVE ordering refinement folds at the boundary but must not over-refine one past it
 pass	a below-len guard lets List.at shed its own bounds check, yet an out-of-range index still returns None
+pass	a CONSTANT algebraic identity over a high-bit UInt64 operand folds to the operand, not a spurious CDZ0304 decline
+pass	a constant division over a high UInt64 operand folds exactly to the quotient
+pass	a constant subtraction over a high UInt64 operand folds to the difference
+pass	a constant modulo over a high UInt64 operand folds to the remainder
+pass	a constant add of two high UInt64 operands within range folds to the sum
+pass	a constant MUL over a high UInt64 operand that overflows still rejects
+pass	a constant division by zero over a high UInt64 operand still rejects

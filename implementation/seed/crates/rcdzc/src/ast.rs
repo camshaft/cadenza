@@ -304,6 +304,24 @@ impl IntValue {
         }
     }
 
+    /// The NON-NEGATIVE magnitude as a `u128`, or `None` if it exceeds 128 bits OR the value is negative.
+    /// A pure read of the magnitude bytes (big-endian) — used to fold a wide UNSIGNED shift/bitwise op over
+    /// the low-width bit pattern (the operand reaching that fold is a non-negative unsigned value, so its
+    /// magnitude IS its bit pattern). The unsigned twin of [`to_i128`].
+    pub fn to_u128(&self) -> Option<u128> {
+        if self.negative && !self.is_zero() {
+            return None;
+        }
+        if self.magnitude.len() > 16 {
+            return None;
+        }
+        let mut acc: u128 = 0;
+        for &b in &self.magnitude {
+            acc = (acc << 8) | (b as u128);
+        }
+        Some(acc)
+    }
+
     /// Build from a machine `i128`, the inverse of [`to_i128`] — the canonical minimal-magnitude form.
     /// A pure conversion (no arithmetic): used to rebuild an `IntValue` from a folded unit-conversion
     /// result, which is always a machine-range integer.
