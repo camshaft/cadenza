@@ -8722,6 +8722,214 @@
   (call   main (: 3 Int64))
   (output (: 1234551 Int64)))
 
+(case "a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at"
+  (doc    "The lo/hi halving loop over `(10 20 30 40 50 60 70)`: each step reads the midpoint
+           `(/ (+ lo hi) 2)` (integer division floors) through the FALLIBLE `List.at`, then recurses
+           on the half the comparison selects; `lo > hi` is the exhausted-window miss (-1). Seven
+           runtime targets drive every path: hits at both ENDS (10→0, 70→6 — each needs the window to
+           shrink all the way to a single slot without skipping it), the first-probe hit (40→3), a
+           right-then-left zigzag (60→5), and three misses — between elements (35), below the min
+           (5, hi walks to -1), above the max (99, lo walks past hi at the top). An off-by-one in
+           either boundary update (`mid±1`), a mis-floored midpoint, or a `>`-vs-`>=` window test
+           misses an end element or loops the window past its edge. All probes stay in bounds, so
+           the `None` arm (-99) is dead — reachable code, never taken.")
+  (input  (do
+            (def (bsearch (: xs (List Int64)) (: target Int64) (: lo Int64) (: hi Int64))
+              (if (> lo hi)
+                  -1
+                  (do
+                    (def mid (/ (+ lo hi) 2))
+                    (match (List.at xs mid)
+                      ((Some v)
+                        (if (= v target)
+                            mid
+                            (if (< v target)
+                                (bsearch xs target (+ mid 1) hi)
+                                (bsearch xs target lo (- mid 1)))))
+                      ((None _u) -99)))))
+            (def (main (: t Int64))
+              (bsearch (list 10 20 30 40 50 60 70) t 0 6))
+            (export main)))
+  (call   main (: 60 Int64)) (output (: 5 Int64))
+  (call   main (: 10 Int64)) (output (: 0 Int64))
+  (call   main (: 70 Int64)) (output (: 6 Int64))
+  (call   main (: 40 Int64)) (output (: 3 Int64))
+  (call   main (: 35 Int64)) (output (: -1 Int64))
+  (call   main (: 5 Int64)) (output (: -1 Int64))
+  (call   main (: 99 Int64)) (output (: -1 Int64)))
+
+(case "a PARTITION fold splits one spine into two lists by a runtime predicate"
+  (doc    "The partition idiom: ONE walk over `(4 n 7 1 8 2)` grows TWO accumulator lists — `(< h 5)`
+           routes each element to lows or highs — returned together as a `(Tuple (List Int64) (List
+           Int64))` and projected apart at the call site. Both accumulators are live across every
+           step but only ONE grows per step; the runtime n flips sides between the calls (n=6 →
+           lows 4·1·2 / highs 6·7·8 → 412678; n=0 → lows 4·0·1·2 / highs 7·8 → 4012078 — the 0
+           landing mid-walk also guards the digit encoding against a dropped leading element).
+           Relative order within each side must be input order. A Perceus pass mis-sharing the
+           un-grown accumulator across the recursion, or a lowering that swaps the tuple slots on
+           one branch, crosses the sides. The tuple-accumulator pins above grow list+scalar; this
+           is the list+list twin with data-dependent routing.")
+  (input  (do
+            (def (partition (: xs (List Int64)) (: lows (List Int64)) (: highs (List Int64)))
+              (match xs
+                ((list) (tuple lows highs))
+                ((list h .. t)
+                  (if (< h 5)
+                      (partition t (List.push lows h) highs)
+                      (partition t lows (List.push highs h))))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: n Int64))
+              (do
+                (def parts (partition (list 4 n 7 1 8 2) (list) (list)))
+                (+ (* (chk (. parts 0) 0) 1000) (chk (. parts 1) 0))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 412678 Int64))
+  (call   main (: 0 Int64)) (output (: 4012078 Int64)))
+
+(case "a PREFIX-SUM scan emits a running total whose each element feeds the next"
+  (doc    "The scan idiom (fold that KEEPS its intermediates): walking `(3 n 4 1)`, each step computes
+           `run + h` and pushes that SAME value both onward as the next `run` and into the output list —
+           the two uses of one freshly-computed scalar per step are the point (a lowering that pushes
+           the stale `run`, or re-adds `h` on one path, shears the two copies apart). At n=2 the sums
+           are 3,5,9,10 (base-100 walk 3050910); at n=-6 the running total goes NEGATIVE mid-scan —
+           3,-3,1,2 (2970102) — so the encoding walk carries a negative intermediate without absorbing
+           a neighbor. The final element is cross-checked against an independently-computed total
+           (input sum + 3+n+5) via `List.at 3` (+1 both calls): last-scan-element = fold-total, the
+           scan/fold consistency law. Combined 30509101 / 29701021.")
+  (input  (do
+            (def (scan (: xs (List Int64)) (: run Int64) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t)
+                  (do
+                    (def nxt (+ run h))
+                    (scan t nxt (List.push acc nxt))))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 100) h)))))
+            (def (main (: n Int64))
+              (do
+                (def sums (scan (list 3 n 4 1) 0 (list)))
+                (+ (* (chk sums 0) 10)
+                   (match (List.at sums 3)
+                     ((Some v) (if (= v (+ (+ 3 n) 5)) 1 0))
+                     ((None _u) -1)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 30509101 Int64))
+  (call   main (: -6 Int64)) (output (: 29701021 Int64)))
+
+(case "take-while and drop-while split a leading run and reassemble to the original"
+  (doc    "The span law: `take-while` and `drop-while` walk the SAME spine with the SAME predicate
+           `(< h 5)` independently — one accumulating the leading run, the other just advancing —
+           and `(List.concat pre post)` must reassemble the original list exactly (the `=` bit). An
+           off-by-one between the two walks' stop points drops or double-counts the BOUNDARY element,
+           which only the reassembly check catches (the digit walks alone would still look plausible).
+           Over `(1 3 n 2 4)`, the runtime n is the potential stopper: n=7 stops both walks mid-list
+           (pre 1·3, post 7·2·4 → 1307241); n=0 never stops — pre is the WHOLE list, post is EMPTY,
+           and the empty-side concat still reassembles (1302400001); n=9 stops at the same slot with
+           a different survivor (1309241). The iterator-tier take-while at 09-functions pins a
+           type-inference tie over a custom sum; this is the plain-list op pair and their algebraic
+           relation.")
+  (input  (do
+            (def (take-while (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (if (< h 5) (take-while t (List.push acc h)) acc))))
+            (def (drop-while (: xs (List Int64)))
+              (match xs
+                ((list) xs)
+                ((list h .. t) (if (< h 5) (drop-while t) xs))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: n Int64))
+              (do
+                (def xs (list 1 3 n 2 4))
+                (def pre (take-while xs (list)))
+                (def post (drop-while xs))
+                (+ (* (chk pre 0) 100000)
+                   (+ (* (chk post 0) 10)
+                      (if (= (List.concat pre post) xs) 1 0)))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 1307241 Int64))
+  (call   main (: 0 Int64)) (output (: 1302400001 Int64))
+  (call   main (: 9 Int64)) (output (: 1309241 Int64)))
+
+(case "a STABLE DEDUP keeps first occurrences in input order via a seen-Set threaded through the fold"
+  (doc    "The stable-dedup idiom couples a GROWING CHAMP set to a growing list in one fold: each new
+           element is both membership-tested against `seen` and inserted into it, so the set the NEXT
+           step consults is the one THIS step grew — a fold reusing a stale set handle re-admits a
+           duplicate; one dropping an insert loses a first occurrence. Output order must be INPUT
+           order (first occurrence), not the set's canonical order. Over `(3 n 3 1 n 2 1)`: n=5 keeps
+           3·5·1·2 (35124 with the len digit); n=3 collapses n INTO the literal 3's run — first slot
+           wins, 3·1·2 (3123); n=2 keeps 3·2·1 (3213) — the runtime n colliding with a LATER literal
+           (the 2 at slot 5) must suppress that literal, not itself. The Set pins in 19-sets observe
+           canonical order; this pins the seen-set as a fold-threaded ACCUMULATOR whose observation
+           order is the input's.")
+  (input  (do
+            (def (dedup (: xs (List Int64)) (: seen (Set Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t)
+                  (if (Set.contains seen h)
+                      (dedup t seen acc)
+                      (dedup t (Set.insert seen h) (List.push acc h))))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: n Int64))
+              (do
+                (def out (dedup (list 3 n 3 1 n 2 1) (Set.of (list)) (list)))
+                (+ (* (chk out 0) 10) ((. List len) out))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 35124 Int64))
+  (call   main (: 3 Int64)) (output (: 3123 Int64))
+  (call   main (: 2 Int64)) (output (: 3213 Int64)))
+
+(case "an UNZIP walk splits a list of pairs into two parallel lists that re-zip to the original"
+  (doc    "The unzip/zip inverse law: one walk destructures each pair `((list (tuple k v) .. t))` and
+           grows TWO lists in lockstep — unlike the partition pin (one side grows per step), BOTH
+           accumulators grow at EVERY step, so a Perceus slot-share between them corrupts one side
+           the first time their spines diverge in size. The keys and values are then RE-ZIPPED (the
+           dual-spine walk of the zip pin above) and compared `=` to the original pair list — pair
+           i must be (ks[i], vs[i]), so a walk that skews one accumulator by a step (or swaps k/v on
+           one iteration) fails the round-trip bit even if each digit walk looks right. n=6: keys
+           1·2·3, values 6·7·8 → 1236781; n=0: the zero leads the VALUES walk (values 0·7·8 renders
+           078 = 78 numerically) → 1230781 — the leading-zero face pins the value walk's digit
+           weighting rather than hiding it. Combined = keys·10000 + values·10 + rezip bit.")
+  (input  (do
+            (def (unzip (: ps (List (Tuple Int64 Int64))) (: ks (List Int64)) (: vs (List Int64)))
+              (match ps
+                ((list) (tuple ks vs))
+                ((list (tuple k v) .. t) (unzip t (List.push ks k) (List.push vs v)))))
+            (def (rezip (: ks (List Int64)) (: vs (List Int64)) (: acc (List (Tuple Int64 Int64))))
+              (match ks
+                ((list) acc)
+                ((list kh .. kt)
+                  (match vs
+                    ((list) acc)
+                    ((list vh .. vt) (rezip kt vt (List.push acc (tuple kh vh))))))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: n Int64))
+              (do
+                (def ps (list (tuple 1 n) (tuple 2 7) (tuple 3 8)))
+                (def kv (unzip ps (list) (list)))
+                (+ (* (chk (. kv 0) 0) 10000)
+                   (+ (* (chk (. kv 1) 0) 10)
+                      (if (= (rezip (. kv 0) (. kv 1) (list)) ps) 1 0)))))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 1236781 Int64))
+  (call   main (: 0 Int64)) (output (: 1230781 Int64)))
+
 (case "an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state"
   (doc    "The apply-events idiom: a fold dispatches per element of a mixed `(Add/Sub/Reset)` list,
            threading the accumulator through each variant's transition — Add 10, Sub 3, Add n (runtime,

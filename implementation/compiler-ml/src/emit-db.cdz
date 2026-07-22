@@ -97,6 +97,35 @@ def concat-bytes-go(bs: List(Bytes), i: Int64, acc: Bytes) =
 /// Function section: one function declared to use type index 0. `01`=one func, `00`=type index 0.
 def func-section() = section(3, Bytes.of([UInt8.wrap(1), UInt8.wrap(0)]))
 
+/// slice-B'(Bp4a): a FUNCTION SECTION over a list of TYPE INDICES (one per function, in func-index order):
+/// `<uleb count>` then a `<uleb typeidx>` per func, wrapped as section 3. `func-section-multi([1, 0])` = 2
+/// funcs using type 1 then type 0 — the [fac→type1, main→type0] table a recursive module declares. The
+/// single-func `func-section()` above stays for the W1-W3 path.
+def func-section-multi(typeidxs: List(Int64)) =
+  section(3, Bytes.concat(uleb(List.len(typeidxs)), uleb-each(typeidxs)))
+
+/// `<uleb x>` for each x in the list, concatenated (a uleb vector body). Index recursion, scalar-safe.
+def uleb-each(xs: List(Int64)) = uleb-each-go(xs, 0, Bytes.of([]))
+def uleb-each-go(xs: List(Int64), i: Int64, acc: Bytes) =
+  (if i == List.len(xs) then acc
+   else (match List.at(xs, i) with
+     | Option.Some(x) => uleb-each-go(xs, i + 1, Bytes.concat(acc, uleb(x)))
+     | Option.None(_) => acc))
+
+/// slice-B'(Bp4a): a CODE SECTION over a list of already-`body-of`-wrapped function bodies (in func-index
+/// order): `<uleb count>` then a `<uleb bodylen> <body>` per function, wrapped as section 10. Parallels the
+/// single-body `code-section()`; `code-section-multi([facBody, mainBody])` is the recursive module's code.
+def code-section-multi(bodies: List(Bytes)) =
+  section(10, Bytes.concat(uleb(List.len(bodies)), code-entries(bodies)))
+
+/// `<uleb len(body)> <body>` for each body, concatenated — the code-section entry vector.
+def code-entries(bodies: List(Bytes)) = code-entries-go(bodies, 0, Bytes.of([]))
+def code-entries-go(bodies: List(Bytes), i: Int64, acc: Bytes) =
+  (if i == List.len(bodies) then acc
+   else (match List.at(bodies, i) with
+     | Option.Some(b) => code-entries-go(bodies, i + 1, Bytes.concat(acc, Bytes.concat(uleb(Bytes.len(b)), b)))
+     | Option.None(_) => acc))
+
 /// Export section: export the single function as `main`. `01`=one export, `04`=name length,
 /// `6d 61 69 6e`="main", `00`=export kind func, `00`=func index 0.
 def export-section() =
@@ -173,31 +202,60 @@ def collect-binders(c: Core) = match c with
 /// <index-of b>` (0x21), emit `body` (so the binding is a wasm local, mirroring eval-db's env{b→v}). The
 /// `binders` list is READ-ONLY + scalar (like eval-db's env threading), so no heap payload crosses the
 /// recursion. Out-of-subset (unreached — `emit-module` gates on `can-emit`) → empty.
-def emit-instrs(c: Core, binders: List(Int64)) = match c with
+/// The exported 2-arg emitter — a thin wrapper over the workhorse `emit-instrs-d` with an EMPTY def-index map
+/// (the single-main / W1-W3 path: no CCall, so no funcidx lookups needed). Every existing caller is unchanged;
+/// the recursion path (Bp4) threads a real `defidx` through `emit-instrs-d`. Mirrors eval-db's eval-core/-d split.
+def emit-instrs(c: Core, binders: List(Int64)) =
+  emit-instrs-d(c, binders, (Map.empty : Map(Int64, Int64)))
+
+/// slice-B'(Bp3): emit instruction bytes, threading a `defidx` map (recursive-def NAME → wasm FUNCTION INDEX)
+/// so a `CCall(name, args)` emits `<args> ; call <funcidx>` (0x10). All other arms are the W1-W3 emitter,
+/// unchanged except they forward `defidx` to recursive calls. A CCall to an unknown name (empty/missing) emits
+/// nothing usable — but `can-emit` gates a CCall program on the def being present, so this is unreached there.
+def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64)) = match c with
   | Core.CNum(v, _, _) => Bytes.concat(b1(66), sleb(v))                 // 0x42 i64.const <sleb v> (width read in 2b-ii for i32)
   | Core.CVar(b) => Bytes.concat(b1(32), uleb(index-of(binders, b)))    // 0x20 local.get <idx>
   | Core.CBin(op, _, _, l, r) =>
       // arith: left, right, i64-op (result already i64). comparison: left, right, i64-relational (→ i32),
       // then i64.extend_i32_u (0xad) so the Bool is an i64 0/1 (eval-db's Bool-as-Int64 convention).
-      (let operands = Bytes.concat(emit-instrs(l, binders), emit-instrs(r, binders)) in
+      (let operands = Bytes.concat(emit-instrs-d(l, binders, defidx), emit-instrs-d(r, binders, defidx)) in
        (if is-cmp-op(op)
         then Bytes.concat(operands, Bytes.concat(b1(cmp-op(op)), b1(173)))    // <cmp> ; 0xad extend_i32_u
         else Bytes.concat(operands, b1(wasm-op(op)))))
   | Core.CLet(b, v, body) =>
       // eval `v`, store into the binder's local, then eval `body` (which reads the local via CVar).
-      Bytes.concat(emit-instrs(v, binders),
-        Bytes.concat(b1(33), Bytes.concat(uleb(index-of(binders, b)), emit-instrs(body, binders))))  // 0x21 local.set
+      Bytes.concat(emit-instrs-d(v, binders, defidx),
+        Bytes.concat(b1(33), Bytes.concat(uleb(index-of(binders, b)), emit-instrs-d(body, binders, defidx))))  // 0x21 local.set
   | Core.CIf(cond, thn, els) =>
       // Core cond is an i64 0/1; wasm `if` consumes an i32, so convert via `i64.const 0 ; i64.ne` (→ i32:
       // 1 iff cond ≠ 0). Then `if (result i64) <then> else <else> end` — the taken branch's i64 is the value.
       // Opcodes: i64.const 0x42, i64.ne 0x52, if 0x04, blocktype i64 0x7e, else 0x05, end 0x0b.
-      Bytes.concat(emit-instrs(cond, binders),
+      Bytes.concat(emit-instrs-d(cond, binders, defidx),
         Bytes.concat(Bytes.concat(b1(66), Bytes.concat(sleb(0), b1(82))),      // i64.const 0 ; i64.ne → i32
           Bytes.concat(b1(4), Bytes.concat(b1(126),                            // if (result i64)
-            Bytes.concat(emit-instrs(thn, binders),
+            Bytes.concat(emit-instrs-d(thn, binders, defidx),
               Bytes.concat(b1(5),                                              // else
-                Bytes.concat(emit-instrs(els, binders), b1(11))))))))          // <else> ; end
+                Bytes.concat(emit-instrs-d(els, binders, defidx), b1(11))))))))  // <else> ; end
+  | Core.CCall(name, args) =>
+      // slice-B'(Bp3): a recursive call. Emit each arg onto the stack (left→right, wasm call convention), then
+      // `call <funcidx>` (0x10). funcidx from the def-index map; a missing name (empty map / non-recursive) →
+      // funcidx via a -1 miss, but can-emit gates a CCall program on the callee being an emitted recursive def.
+      Bytes.concat(emit-call-args(args, 0, binders, defidx),
+        Bytes.concat(b1(16), uleb(lookup-idx(defidx, name))))              // 0x10 call <funcidx>
   | _ => Bytes.of([])
+
+/// slice-B'(Bp3): emit a CCall's arg terms left-to-right (index recursion, the emit idiom), each onto the i64
+/// stack, concatenated — the wasm call convention (args pushed in order before `call`).
+def emit-call-args(args: List(Core), i: Int64, binders: List(Int64), defidx: Map(Int64, Int64)) =
+  (if i == List.len(args) then Bytes.of([])
+   else (match List.at(args, i) with
+     | Option.Some(a) => Bytes.concat(emit-instrs-d(a, binders, defidx), emit-call-args(args, i + 1, binders, defidx))
+     | Option.None(_) => emit-call-args(args, i + 1, binders, defidx)))
+
+/// slice-B'(Bp3): a def-name's wasm function index from the def-index map, or -1 (missing — unreached under
+/// can-emit's gate). A plain Map.lookup with an Int64 default.
+def lookup-idx(defidx: Map(Int64, Int64), name: Int64) =
+  (match Map.lookup(defidx, name) with | Option.Some(ix) => ix | Option.None(_) => 0 - 1)
 
 /// Wrap emitted instructions into a function body: the LOCALS vector then the instructions then `0b` end.
 /// `nlocals` i64 locals declare as ONE group `<uleb nlocals> 7e` (all locals are i64); `nlocals == 0` is the
@@ -215,9 +273,16 @@ def body-of(instrs: Bytes, nlocals: Int64) =
 /// <param-index>` for free, and CLet binders index past the params automatically. The locals VECTOR declares
 /// only the CLet-binder count (params are NOT re-declared as locals). Mirrors rcdzc wasm fn-body emission.
 def emit-def-body(params: List(Int64), bodyCore: Core) =
+  emit-def-body-d(params, bodyCore, (Map.empty : Map(Int64, Int64)))
+
+/// slice-B'(Bp4b-i): emit a def's function body threading a `defidx` map, so a body containing a `CCall` to a
+/// (self/sibling) recursive def emits a real `call <funcidx>` — the recursion case. Same locals model as
+/// `emit-def-body` (params = leading locals, CLet binders follow), just via the def-index-aware `emit-instrs-d`.
+/// The 2-arg `emit-def-body` above is the empty-def-env wrapper (a non-recursive body, no CCall).
+def emit-def-body-d(params: List(Int64), bodyCore: Core, defidx: Map(Int64, Int64)) =
   (let clets = collect-binders(bodyCore) in
    (let binders = List.concat(params, clets) in
-    body-of(emit-instrs(bodyCore, binders), List.len(clets))))
+    body-of(emit-instrs-d(bodyCore, binders, defidx), List.len(clets))))
 
 /// Code section wrapping a single function body: `01`=one body, `<uleb bodylen>`, `<body>`.
 def code-section(body: Bytes) =
@@ -802,4 +867,79 @@ def em-def-body-clet-locals-shift-past-params() =
     (if (byte-of(body, 1) == 1) then                                 // count 1
      (if (byte-of(body, 2) == 126) then unit else trap("i64 local 0x7e")) else trap("1 local")) else trap("1 local group (CLet past params)")))
 
-export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-src-bytes, bytes-to-list, emit-instrs, emit-def-body, can-emit, collect-binders, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi }
+// ---- Slice B' (Bp3): CCall → `call <funcidx>` in emit-instrs-d ----------------------------------------
+@test
+def em-ccall-emits-args-then-call() =
+  // CCall(900, [CNum 5]) under defidx {900→0}: emit the arg (`42 05` i64.const 5) then `10 00` (call funcidx 0).
+  // Expected: 42 05 10 00 (4 bytes).
+  (let defidx = Map.insert((Map.empty : Map(Int64, Int64)), 900, 0) in
+   (let bs = emit-instrs-d(Core.CCall(900, List.push([], Core.CNum(5, true, 64))), [], defidx) in
+    (if Bytes.len(bs) == 4 then
+     (if (byte-of(bs, 0) == 66) then                                 // 0x42 i64.const
+      (if (byte-of(bs, 1) == 5) then                                 // value 5
+       (if (byte-of(bs, 2) == 16) then                               // 0x10 call
+        (if (byte-of(bs, 3) == 0) then unit else trap("funcidx 0")) else trap("call opcode 0x10"))
+        else trap("arg value 5")) else trap("i64.const")) else trap("CCall emits arg then call = 4 bytes"))))
+
+@test
+def em-ccall-funcidx-from-map() =
+  // the funcidx comes from the def-index map: CCall(900,[]) under {900→3} → `10 03` (call funcidx 3). Nullary
+  // recursive call (no args) — just the call opcode + index.
+  (let defidx = Map.insert((Map.empty : Map(Int64, Int64)), 900, 3) in
+   (let bs = emit-instrs-d(Core.CCall(900, ([] : List(Core))), [], defidx) in
+    (if Bytes.len(bs) == 2 then
+     (if (byte-of(bs, 0) == 16) then
+      (if (byte-of(bs, 1) == 3) then unit else trap("funcidx 3")) else trap("call opcode")) else trap("nullary CCall = 2 bytes"))))
+
+@test
+def em-instrs-twoarg-wrapper-unchanged() =
+  // the 2-arg emit-instrs wrapper still emits the W1-W3 path identically (empty def-env): CNum 7 → `42 07`.
+  (let bs = emit-instrs(Core.CNum(7, true, 64), []) in
+   (if Bytes.len(bs) == 2 then (if (byte-of(bs, 0) == 66) then (if (byte-of(bs, 1) == 7) then unit else trap("7")) else trap("i64.const")) else trap("CNum 7 = 2 bytes")))
+
+// ---- Slice B' (Bp4a): multi-function func-section + code-section --------------------------------------
+@test
+def em-func-section-multi-matches-single() =
+  // func-section-multi([0]) must byte-match the legacy func-section() (one func using type 0):
+  // `03 02 01 00` (sec 3, len 2, count 1, typeidx 0).
+  (let a = func-section-multi(List.push([], 0)) in
+   (let b = func-section() in
+    (if Bytes.len(a) == Bytes.len(b) then
+     (if (byte-of(a, 0) == 3) then (if (byte-of(a, 2) == 1) then unit else trap("1 func")) else trap("sec 3")) else trap("multi single == legacy func-section"))))
+
+@test
+def em-func-section-multi-two-funcs() =
+  // func-section-multi([1, 0]) = 2 funcs, types 1 then 0: `03 03 02 01 00` (sec 3, len 3, count 2, type 1, type 0).
+  (let s = func-section-multi(List.push(List.push([], 1), 0)) in
+   (if (byte-of(s, 0) == 3) then                                     // section 3
+    (if (byte-of(s, 2) == 2) then                                    // 2 funcs
+     (if (byte-of(s, 3) == 1) then                                   // func0 type 1
+      (if (byte-of(s, 4) == 0) then unit else trap("func1 type 0")) else trap("func0 type 1")) else trap("2 funcs")) else trap("sec 3")))
+
+@test
+def em-code-section-multi-two-bodies() =
+  // code-section-multi([b1,b2]) frames each body as `<uleb len> <body>` after a count. Use two tiny bodies
+  // (each = emit-def-body([], CNum) — `00 42 v 0b`, 4 bytes). Section: `0a <len> 02 04 <b1> 04 <b2>`.
+  (let bd = emit-def-body([], Core.CNum(9, true, 64)) in                // 4-byte body: 00 42 09 0b
+   (let s = code-section-multi(List.push(List.push([], bd), bd)) in
+    (if (byte-of(s, 0) == 10) then                                   // section 10
+     (if (byte-of(s, 2) == 2) then                                   // 2 bodies
+      (if (byte-of(s, 3) == Bytes.len(bd)) then unit else trap("body0 len prefix")) else trap("2 bodies")) else trap("sec 10"))))
+
+// ---- Slice B' (Bp4b-i): emit a recursive def body with a CCall (def-index-aware) ---------------------
+@test
+def em-def-body-d-emits-recursive-call() =
+  // f(n) = f(n): params=[7], body = CCall(900, [CVar 7]) under defidx {900→0}. The body should be:
+  // `00` (0 CLet locals) `20 00` (local.get 0 = param n, the arg) `10 00` (call funcidx 0) `0b` (end) = 6 bytes.
+  (let defidx = Map.insert((Map.empty : Map(Int64, Int64)), 900, 0) in
+   (let body = emit-def-body-d(List.push([], 7), Core.CCall(900, List.push([], Core.CVar(7))), defidx) in
+    (if Bytes.len(body) == 6 then
+     (if (byte-of(body, 0) == 0) then                                // 0 CLet locals
+      (if (byte-of(body, 1) == 32) then                              // local.get
+       (if (byte-of(body, 2) == 0) then                              // param 0 (the arg n)
+        (if (byte-of(body, 3) == 16) then                            // 0x10 call
+         (if (byte-of(body, 4) == 0) then                            // funcidx 0
+          (if (byte-of(body, 5) == 11) then unit else trap("end")) else trap("funcidx 0")) else trap("call"))
+          else trap("param 0")) else trap("local.get")) else trap("0 locals")) else trap("f(n)=f(n) body is 6 bytes"))))
+
+export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-src-bytes, bytes-to-list, emit-instrs, emit-instrs-d, emit-call-args, lookup-idx, emit-def-body, emit-def-body-d, can-emit, collect-binders, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi, func-section-multi, code-section-multi, uleb-each }
