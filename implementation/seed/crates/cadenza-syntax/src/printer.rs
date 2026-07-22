@@ -2305,6 +2305,16 @@ impl<'a> Printer<'a> {
     /// trailing comment on its last element keeps the ordinary flat/soft-break layout via `bracketed`.
     /// Shared by the list and tuple literals (records/maps wrap fields as pairs — a separate follow-up).
     fn bracketed_comment_aware(&mut self, open: &str, close: &str, pad: bool, elems: &[StructId]) {
+        // A NON-last `(comment-after …)` element has NO faithful same-line rendering — `print_elem_maybe_
+        // commented` would emit `elem // text` and the following `, next` would be swallowed into the
+        // comment line → invalid re-parse (PR#763/#781; only a decoded / metaprogramming-built AST can
+        // produce this — the reader gates capture to the last element). Render every element via bare
+        // `expr` so a `comment-after` prints as a `comment-after(...)` CALL, which round-trips. Guarding
+        // HERE defends every caller (bin dispatch is unguarded; list/tuple/set guard at dispatch too, so
+        // this is belt-and-suspenders for them). PR#781 (Copilot): `print_bin` reached here unguarded.
+        if self.has_nonlast_comment_after(elems) {
+            return self.bracketed(open, close, pad, elems, |p, e| p.expr(e, 0));
+        }
         let last_has_trailing = elems.last().is_some_and(|&e| self.is_comment_after(e));
         if !last_has_trailing {
             return self.bracketed(open, close, pad, elems, |p, e| {
@@ -6080,7 +6090,10 @@ mod tests {
         // `elem // text , next` — the `, next` swallowed into the comment line → invalid re-parse (the
         // printer-side PR#758 break). Every collection literal now DECLINES its sugared surface when a
         // non-last element is comment-after-wrapped, falling back to the generic call form, which
-        // round-trips `comment-after(...)` faithfully. Pin round-trip for all five containers.
+        // round-trips `comment-after(...)` faithfully. Pin round-trip for all containers.
+        // PR#781 (Copilot): `print_bin` (b[…]) reached `bracketed_comment_aware` UNGUARDED (no dispatch
+        // guard like list/tuple/record/map/set) — so `bin` was added here after `bracketed_comment_aware`
+        // itself gained the `has_nonlast_comment_after` self-guard (fixing every caller, present + future).
         for (label, sx) in [
             (
                 "list",
@@ -6101,6 +6114,10 @@ mod tests {
             (
                 "set",
                 r#"(def (s) (: ((. Set of) ("list" (comment-after "mid" 1) 2)) _))"#,
+            ),
+            (
+                "bin",
+                r#"(def (b) (: (bin (comment-after "mid" (u8 1)) (u8 2)) Bytes))"#,
             ),
         ] {
             let a = sexpr::read(sx).unwrap();
