@@ -100,6 +100,7 @@ pass	Record.with grows a LIST field by pushing onto the projected old value
 pass	Set.contains dispatches on an Option element at a runtime payload
 pass	Set.intersection and Set.difference match a view against a flat element across operands
 pass	Set.union dedups a slice-view element against a flat twin ACROSS the operand boundary
+pass	String ordering drives an insort over runtime ROPES, verified by content
 pass	String.from-bytes decodes a 400-byte 200-seam rope end to end
 pass	String.from-bytes of a runtime slice decodes the WINDOW only
 pass	Symbol.of over a slice of a dying rope interns the WINDOW content
@@ -156,17 +157,20 @@ pass	a float-field RECORD as a SET element dedups by content including the float
 pass	a fold over Map.to-list rebuilds a TRANSFORMED map — the map-over-values idiom
 pass	a frame body ACCUMULATED by a fold of per-element bin constructions round-trips
 pass	a generated list reverses twice to itself — an involution property over generated content
+pass	a generated map workload agrees with a linear-scan model at EVERY key of the domain
 pass	a generic fold instantiated at an Int64 AND a String accumulator in one program
 pass	a generic pair-swap crosses a scalar and a heap payload between positions
 pass	a generic sum NESTS ITSELF at a different instantiation and destructures through both layers
 pass	a handler arm RECURSES through a named helper before resuming
 pass	a literal pattern at MID-SPINE depth gates the arm while deeper binders still bind
+pass	a memoizing fold caches computed results in a Map and counts its hits
 pass	a middle curry STAGE is reused — one s1 residual yields an s2 applied twice
 pass	a model-oracle property — CHAMP Map.len agrees with a counting model over generated inserts
 pass	a module export is a CLOSURE FACTORY capturing a private sibling
 pass	a module export rides an OUTER combinator's fn parameter a runtime number of times
 pass	a module-exported closure factory builds a PERFORMING closure homed at the apply site
 pass	a mutually-recursive sum value stored as a MAP VALUE round-trips and evaluates
+pass	a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add
 pass	a param-left arith-right Float64.of-int equality compiles to a valid module and computes
 pass	Float64.of-int collapses adjacent integers at the 2^53 precision boundary
 pass	Int64.min crosses the parameter boundary and back unchanged
@@ -4756,4 +4760,3 @@ pass	CONTROL: a CONST-start slice as a Map-lookup key hits on wasm
 pass	a BORROWED runtime Bytes rope map key is compacted at the key site and found by its flat twin
 pass	unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)
 pass	a flow refinement folds a compare over a no-overflow arith operand, but the trap survives when overflow is possible
-pass	a refinement folds a comparison over a no-overflow arith operand, but preserves the trap when it can overflow

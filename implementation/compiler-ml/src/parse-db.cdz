@@ -162,6 +162,47 @@ def call-is-recursive(tree: Tree, calleeName: Int64) =
     | Option.Some(b) => (match subtree-calls-name(tree, b, calleeName, 4000) with | (found, _) => found)
     | Option.None(_) => false)
 
+/// slice-B1b-p3: does `id`'s subtree call `target` DIRECTLY (a self-call), WITHOUT descending into OTHER
+/// callees' bodies? Same structural walk as `subtree-calls-name` but it does NOT follow `subtree-calls-callee`
+/// — so `ev`'s body calling `od` is NOT a self-call of `ev` (mutual recursion is excluded). Used only to decide
+/// def-env INCLUSION for eval dispatch: a DIRECTLY self-recursive def (fac) runs via the def-env; a merely
+/// MUTUALLY-recursive def (ev/od) stays out → its cross-call CCall leaf hits a def-env miss → eval declines
+/// cleanly (mutual runtime recursion is out of Slice-B scope). NOT for the lower's cycle-guard, which needs the
+/// transitive `call-is-recursive` to avoid inline-hang.
+def subtree-calls-self(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
+  (if (fuel <= 0) then (false, 0)   // out of fuel → NOT self-recursive (conservative for INCLUSION: leave it out)
+   else (match node-at(tree, id) with
+     | Option.Some(Node.NApp(calleeName, argId)) =>
+         (if (calleeName == target) then (true, fuel - 1)   // a DIRECT call to target → self-recursive
+          // else scan only the ARG subtrees (a nested self-call can hide in an arg) — NEVER descend the callee body.
+          else (match subtree-calls-self-arg(tree, argId, target, fuel - 1) with
+                 | (true, fl) => (true, fl)
+                 | (false, fl) =>
+                     (match arg2-of(tree, id) with
+                       | Option.Some(a2) => subtree-calls-self(tree, a2, target, fl)
+                       | Option.None(_) => (false, fl))))
+     | Option.Some(Node.NBin(_, l, r)) =>
+         (match subtree-calls-self(tree, l, target, fuel - 1) with | (true, fl) => (true, fl) | (false, fl) => subtree-calls-self(tree, r, target, fl))
+     | Option.Some(Node.NLet(_, v, b)) =>
+         (match subtree-calls-self(tree, v, target, fuel - 1) with | (true, fl) => (true, fl) | (false, fl) => subtree-calls-self(tree, b, target, fl))
+     | Option.Some(Node.NIf(c, t, e)) =>
+         (match subtree-calls-self(tree, c, target, fuel - 1) with
+           | (true, fl) => (true, fl)
+           | (false, fl) => (match subtree-calls-self(tree, t, target, fl) with | (true, f2) => (true, f2) | (false, f2) => subtree-calls-self(tree, e, target, f2)))
+     | _ => (false, fuel - 1)))
+
+/// Helper: an NApp arg is -1 (nullary) or a node-id to scan for a DIRECT self-call.
+def subtree-calls-self-arg(tree: Tree, argId: Int64, target: Int64, fuel: Int64) =
+  (if (argId == (0 - 1)) then (false, fuel) else subtree-calls-self(tree, argId, target, fuel))
+
+/// Is `calleeName` DIRECTLY self-recursive (its own body calls itself), as opposed to merely mutually
+/// recursive? The def-env inclusion predicate for B1b-p3: only directly-self-recursive defs eval via the
+/// def-env; mutual pairs stay out and decline. `def-body-of` miss → not a known def → not self-recursive.
+def call-is-self-recursive(tree: Tree, calleeName: Int64) =
+  (match def-body-of(tree, calleeName) with
+    | Option.Some(b) => (match subtree-calls-self(tree, b, calleeName, 4000) with | (found, _) => found)
+    | Option.None(_) => false)
+
 /// Record a def's FIRST PARAMETER node-id: name-id → its param node-id (slice-3c). A `(name arg)` call looks
 /// this up to build `CLet(paramId, argCore, bodyCore)`. Only a PARAMETERIZED def records a param; a nullary
 /// def never calls this, so `param-of` stays `None` for it (additive — nullary behavior unchanged).
@@ -898,4 +939,4 @@ def pd-fully-consumed-parse-keeps-its-root() =
     (if is-bin-op(tree, root, 60) then unit
      else trap("`1 < 2` consumes all tokens → root is the `<` Bin, not a poison")))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, call-is-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }

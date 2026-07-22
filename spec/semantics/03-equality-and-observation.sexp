@@ -477,6 +477,30 @@
   (call   main (: 7 Int64))
   (output (: 25 Int64)))
 
+(case "String ordering drives an insort over runtime ROPES, verified by content"
+  (doc    "The String-comparator sort: three concat-built ropes (\"axx\", \"mxx\", \"zxx\" at n=2) insort
+           by the blessed content-lexicographic `<`, and the MIDDLE of the sorted result content-equals
+           the m-rope (1). Each insort comparison flattens/walks two ROPES (the single-comparison String
+           pins can't witness repeated comparator invocation over unflattened trees mid-sort); the
+           middle-read catches an order inversion at either end.")
+  (input  (do
+            (def (rep (: s String) (: n Int64))
+              (if (< n 1) s (rep (String.concat s "x") (- n 1))))
+            (def (insort (: t String) (: q (List String)))
+              (match q
+                ((list) (list t))
+                ((list h .. rest)
+                  (if (< t h) (List.concat (list t) q)
+                    (List.concat (list h) (insort t rest))))))
+            (def (main (: n Int64))
+              (let ((sorted (insort (rep "m" n) (insort (rep "z" n) (insort (rep "a" n) (list))))))
+                (match (List.at sorted 1)
+                  ((Some s) (if (= s (rep "m" n)) 1 0))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 1 Int64)))
+
 ; The compound-ordering cases above all bottom out in an INTEGER leaf (the numeric leaf order). This pins
 ; that the compound walk uses the BLESSED per-leaf order for a STRING leaf too — a String's order is
 ; content-lexicographic over its Unicode scalar values (collections-and-text.md #An ordering over strings…),

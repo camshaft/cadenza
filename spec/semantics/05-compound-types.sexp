@@ -4482,6 +4482,28 @@
   (call   main (: 200 UInt8))
   (output (: 200 Int64)))
 
+(case "a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add"
+  (doc    "The domain-typed fold: `total` threads a `Meters` accumulator through `add-m` — each step
+           unwraps both operands, adds, and RE-WRAPS — so every iteration crosses the newtype boundary
+           twice (n+2+30 = 42 unwrapped at the end). The whole pipeline stays in the nominal type (the
+           incompatibility pin nearby guards against leaks); a fold that unwrapped once and threaded the
+           raw Int64 would still compute 42, but the per-step wrap/unwrap is what a units-safe library
+           fold actually emits, and a re-wrap that lost the payload drifts.")
+  (input  (do
+            (type Meters (Meters Int64))
+            (def (add-m (: a Meters) (: b Meters))
+              (match a ((Meters x) (match b ((Meters y) (Meters (+ x y)))))))
+            (def (total (: xs (List Meters)) (: acc Meters))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (total t (add-m acc h)))))
+            (def (main (: n Int64))
+              (match (total (list (Meters n) (Meters 2) (Meters 30)) (Meters 0))
+                ((Meters v) v)))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 42 Int64)))
+
 (case "a narrow newtype boxed in a list round-trips two payloads through binder reads"
   (doc    "The READ/unbox side: a list of two `(W.Wrap n)` narrow newtypes matched with binder payloads
            `(list (W.Wrap a) (W.Wrap b) .. r)`, summing the read-back values `(+ (Int64.of a) (Int64.of b))`
@@ -6822,6 +6844,32 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 21 Int64)))
+
+(case "a memoizing fold caches computed results in a Map and counts its hits"
+  (doc    "The pure memoize spine (the effects twin at 14-effects:2931 threads Map-STATE through
+           handler arms; this is the plain fold): each key looks up the cache first — a hit reuses the
+           stored square and increments the hit counter, a miss computes and inserts. Keys [a,3,a,3,5]
+           at a=3 collapse to one compute + three hits (100·3 + 61 = 361); at a=4 two distinct keys
+           interleave (100·2 + 75 = 275). The hit-count DIFFERENTIAL witnesses the cache actually
+           short-circuiting recomputation (a memoize that recomputed on hit still totals right but
+           counts 0 hits).")
+  (input  (do
+            (def (compute (: k Int64)) (* k k))
+            (def (run (: keys (List Int64)) (: cache (Map Int64 Int64)) (: hits Int64) (: total Int64))
+              (match keys
+                ((list) (+ (* 100 hits) total))
+                ((list k .. rest)
+                  (match (Map.lookup cache k)
+                    ((Some v) (run rest cache (+ hits 1) (+ total v)))
+                    ((None u) (let ((v (compute k)))
+                                (run rest (Map.insert cache k v) hits (+ total v))))))))
+            (def (main (: a Int64))
+              (run (list a 3 a 3 5) Map.empty 0 0))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 361 Int64))
+  (call   main (: 4 Int64))
+  (output (: 275 Int64)))
 
 (case "a read-modify-write of a List value in a Map grows the entry and leaves the original map unchanged"
   (doc    "The keyed-bucket accumulate idiom (a multimap step): look a List value up by key, push onto it, and
