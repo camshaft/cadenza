@@ -25510,6 +25510,47 @@ mod match_engine {
     }
 
     #[test]
+    fn a_small_operand_shift_whose_result_exceeds_i64_folds_at_the_unsigned_width_but_signed_shr_sign_extends()
+     {
+        // REGRESSION (fold): `(<< (: 1 UInt64) 63)` = 2^63 FITS UInt64 but overflows i64. Both operands fit
+        // i64, so the wide-operand fold path was NOT reached, and `fold_arith`'s `checked_shl_i64`
+        // overflow-checked the shifted result against Int64 → a spurious CDZ0304 "overflows Int64". FIX:
+        // `fold_shift_bitwise_at_width` folds a shift/bitwise over the SOLVED width for UNSIGNED types (even
+        // with small operands), range-checking the result against that width, not i64.
+        assert_eq!(
+            reject_code("(module m (def (main) (<< (: 1 UInt64) (: 63 UInt64))) (export main))"),
+            None,
+            "1 << 63 at UInt64 = 2^63 fits the unsigned width and must fold, not decline as an Int64 overflow"
+        );
+        if let Some(v) = run_heap_value_escape(
+            "(module m (def (main) (<< (: 1 UInt64) (: 63 UInt64))) (export main))",
+        ) {
+            assert!(
+                v.contains("9223372036854775808"),
+                "1 << 63 (UInt64) folds to 2^63 = 9223372036854775808: got {v}"
+            );
+        }
+        // CRITICAL GUARD: the unsigned-width fold must NOT swallow a SIGNED `>>`, which is ARITHMETIC
+        // (sign-extending). `fold_shift_bitwise_at_width` bails on a signed type (returns None → the i64
+        // path folds it correctly). A regression here (treating signed `>>` as a logical shift over the
+        // width-masked magnitude) would fold `-256 >> 4` to 0 instead of -16.
+        if let Some(v) =
+            run_heap_value_escape("(module m (def (main) (>> (- 0 256) 4)) (export main))")
+        {
+            assert!(
+                v.contains("-16"),
+                "a SIGNED `>>` must sign-extend: -256 >> 4 = -16, not a logical 0: got {v}"
+            );
+        }
+        // A genuine signed i64 `<<` overflow is still rejected (unchanged — the i64 path owns signed).
+        // (`(: 1 (Int 64))` shifted 63 = i64::MIN bit pattern, an overflow of signed Int64.)
+        assert!(
+            reject_code("(module m (def (main) (<< (- 0 8) 1)) (export main))").is_none(),
+            "a small signed `<<` that fits still folds"
+        );
+    }
+
+    #[test]
     fn a_literal_whose_width_is_fixed_transitively_through_arith_ops_rejects_at_check() {
         // A bare literal takes its width from an integer binary-op CONTEXT (numeric-model.md §"An Explicit …
         // Or Other Constraint On An Integer Literal MUST Take Precedence"). When the literal's IMMEDIATE
