@@ -290,6 +290,45 @@
   (call   main (: 1 Int64)) (output (: 232 Int64))
   (call   main (: 0 Int64)) (output (: 21112 Int64)))
 
+(case "LOOK-AND-SAY iterates run-length description over its own prior output"
+  (doc    "The self-referential upgrade of the run-length grouping above: each iteration DESCRIBES
+           the previous string's runs as `<count><digit>` pairs — the OUTPUT of one round is the
+           INPUT of the next, so any per-round error (a dropped final flush, a count rendered as the
+           wrong scalar via the digit-table read) COMPOUNDS through the iterations rather than
+           surfacing once. From the seed `1`: 1 → 11 → 21 → 1211 → 111221 → 312211 (the classic
+           sequence; k=5's `111221` input has runs 3,2,2 — three ones, two twos, two ones — the
+           first round where a MULTI-run count appears). Verified by byte-length + full-string
+           equality at k = 0 (the untouched seed), 1, 3, 5. Encoding: len·10 + string-match bit
+           (11 / 21 / 41 / 61).")
+  (input  (do
+            (def (digit-str (: v Int64))
+              (Option.expect (String.at "0123456789" v) "single digit"))
+            (def (las-go (: s String) (: i Int64) (: len Int64) (: cur String) (: cnt Int64) (: acc String))
+              (if (>= i len)
+                  (String.concat acc (String.concat (digit-str cnt) cur))
+                  (match (String.at s i)
+                    ((Some c)
+                      (if (= c cur)
+                          (las-go s (+ i 1) len cur (+ cnt 1) acc)
+                          (las-go s (+ i 1) len c 1 (String.concat acc (String.concat (digit-str cnt) cur)))))
+                    ((None _u) acc))))
+            (def (las (: s String))
+              (match (String.at s 0)
+                ((Some c0) (las-go s 1 (String.byte-len s) c0 1 ""))
+                ((None _u) s)))
+            (def (iter (: s String) (: k Int64))
+              (if (= k 0) s (iter (las s) (- k 1))))
+            (def (main (: k Int64))
+              (do
+                (def s (iter "1" k))
+                (+ (* (String.byte-len s) 10)
+                   (if (= s (if (= k 5) "312211" (if (= k 3) "1211" (if (= k 1) "11" "1")))) 1 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: 1 Int64)) (output (: 21 Int64))
+  (call   main (: 3 Int64)) (output (: 41 Int64))
+  (call   main (: 5 Int64)) (output (: 61 Int64)))
+
 (case "a PALINDROME two-pointer walk closes from both ends of a runtime rope"
   (doc    "Every pinned scalar walk moves ONE cursor forward; this closes TWO from opposite ends,
            reading `String.at s lo` and `String.at s hi` each step over a runtime rope whose seams

@@ -874,7 +874,7 @@
                         (if (< v 0) -1 (dec-go s (+ i 1) len (+ (* acc 16) v)))))
                     ((None _u) acc))))
             (def (hexdec (: s String))
-              (dec-go s 0 (String.byte-len s) 0))
+              (dec-go s 0 (String.scalar-len s) 0))
             (def (main (: n Int64))
               (do
                 (def mid (if (> n 0) "c" "y"))

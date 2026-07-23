@@ -2882,6 +2882,44 @@
   (call   main (: 31 Int64)) (output (: 13462691 Int64))
   (call   main (: 64 Int64)) (output (: 106102098577231 Int64)))
 
+(case "a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity"
+  (doc    "The third fibonacci computation (naive recursion, fast-doubling above, now the LINEAR-MAP
+           form): the Q-matrix (1 1 / 1 0) raised by ITERATIVE square-and-multiply — an accumulator
+           seeded with the IDENTITY matrix, squaring the base each halving and folding it in on odd
+           bits (the tail-loop dual of modpow's recursive form). The 2x2 multiply reads all FOUR
+           slots of both flat 4-tuples in the 8-product pattern — a slot transposition anywhere
+           produces a plausible-but-wrong matrix. TWO independent certificates: Q^k's off-diagonal
+           IS fib(k), and det(Q^k) = (-1)^k (the determinant is multiplicative, so a single slot
+           error breaks it at every k where it fires). Faces: k=1 (11), k=10 → 55 (551 — agreeing
+           with BOTH other fib pins), k=30 → 832040 (8320401), k=0 → the untouched IDENTITY (fib 0,
+           det +1 → 1).")
+  (input  (do
+            (def (mm (: a (Tuple Int64 Int64 Int64 Int64)) (: b (Tuple Int64 Int64 Int64 Int64)))
+              (match a
+                ((tuple a11 a12 a21 a22)
+                  (match b
+                    ((tuple b11 b12 b21 b22)
+                      (tuple (+ (* a11 b11) (* a12 b21)) (+ (* a11 b12) (* a12 b22))
+                             (+ (* a21 b11) (* a22 b21)) (+ (* a21 b12) (* a22 b22))))))))
+            (def (mpow (: m (Tuple Int64 Int64 Int64 Int64)) (: k Int64) (: r (Tuple Int64 Int64 Int64 Int64)))
+              (if (= k 0)
+                  r
+                  (mpow (mm m m) (/ k 2) (if (= (% k 2) 1) (mm r m) r))))
+            (def (det (: m (Tuple Int64 Int64 Int64 Int64)))
+              (match m ((tuple a b c d) (- (* a d) (* b c)))))
+            (def (main (: k Int64))
+              (do
+                (def f (mpow (tuple 1 1 1 0) k (tuple 1 0 0 1)))
+                (match f
+                  ((tuple _a fib _c _d)
+                    (+ (* fib 10)
+                       (if (= (det f) (if (= (% k 2) 0) 1 -1)) 1 0))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 11 Int64))
+  (call   main (: 10 Int64)) (output (: 551 Int64))
+  (call   main (: 30 Int64)) (output (: 8320401 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
 ; --- Overflow checking holds THROUGH a recursive call chain, not only at the top level ----
 ; numeric-model.md #Overflow Is Defined: an integer operation that overflows traps under the checked
 ; default. The `(+ Int64.max 1)` and `(* Int64.max 2)` cases (06-numeric-model) pin this for a top-level
