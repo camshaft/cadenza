@@ -1727,43 +1727,21 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
                 println!("  ✓ {fname} (from {}) — reply found", mr.from);
             }
         } else {
-            // No reply names this request. It's either a genuine orphan (silent drop) or was resolved
-            // before `in_reply_to` existed / via a hand-`send`. We can't prove a reply for the latter,
-            // so classify conservatively: flag as ORPHAN only when the sender is a STILL-ACTIVE agent
-            // that would be stuck waiting (a stale one-shot fix agent's pre-audit request is noise) AND
-            // the request isn't a PRE-DURABLE-SEQ (`000000000001-…`) send. A long-lived vertical is
-            // always active, so its ancient pre-`ack` MRs (which can NEVER carry an `in_reply_to`
-            // correlation) would otherwise be flagged as "stuck waiting" every audit forever — 38 such
-            // permanent false orphans here, enough to drown a REAL recent drop. A recent drop carries a
-            // high monotonic delivery-seq, so excluding the `…0001` sentinel can't hide one.
-            if active.contains(&mr.from) && !is_pre_durable_seq_filename(&fname) {
-                // An archived MR with an EMPTY --ref is definitionally UNVERIFIABLE, never an orphan:
-                // with no commit sha there is nothing to check against trunk, so it can be proven
-                // neither landed NOR dropped — and it is un-`ack`-able once in processed/ (`ack`
-                // archives FROM the inbox), so it would flag as a phantom silent-drop orphan on every
-                // strict audit forever with no action able to clear it (exactly the standing 15736
-                // case). Send-side now REFUSES empty-ref MRs (batch #83), so this can't recur; classify
-                // any pre-existing one as unverifiable so the strict guard reflects only REAL drops.
-                if merge_request_ref_is_missing(&mr.r#ref) {
-                    unverifiable += 1;
-                    if verbose {
-                        println!(
-                            "  ? {fname} (from {}) — no reply recorded; EMPTY --ref (unverifiable: \
-                             no sha to check vs trunk, un-ackable in processed/) — not an orphan",
-                            mr.from
-                        );
-                    }
-                    continue;
-                }
-                // Before crying "silent drop", check GROUND TRUTH: is the MR's `--ref` already on
-                // trunk by patch-id? If so, the work LANDED — the sender is not stuck, only the
-                // reply-correlation was lost (a resend-chain sibling got the `ack`, or pr-sync merged
-                // the content under a re-parented sha and acked a different file). Flagging a
-                // provably-landed MR as a stuck-sender orphan is a false positive that re-fires EVERY
-                // audit forever (v-diagnostics 15736/15737 `268d6f648`, 15851 `23dca34fd` — both trunk
-                // ancestors — were re-flagged every tick). Reclassify these as landed-no-reply, not
-                // orphans. Only a NON-landed no-reply MR from an active sender is a real silent drop.
-                if ref_landed_on_trunk(fleet, &mr.r#ref) {
+            // No reply names this request. Classify it (pure `classify_archived_mr`, precedence
+            // documented there). The ONLY non-pure input is "is the ref on trunk?" — a git call we
+            // evaluate LAZILY, exactly as the old inline code did: only after the cheap checks (active
+            // sender + non-pre-durable-seq + non-empty ref) pass, so a stale/ref-less MR never spends a
+            // `git cherry`. `ref_is_landed` is therefore `false` unless those gates already held.
+            let sender_active = active.contains(&mr.from);
+            let is_pre_seq = is_pre_durable_seq_filename(&fname);
+            let ref_missing = merge_request_ref_is_missing(&mr.r#ref);
+            let ref_is_landed = sender_active
+                && !is_pre_seq
+                && !ref_missing
+                && ref_landed_on_trunk(fleet, &mr.r#ref);
+            match classify_archived_mr(sender_active, is_pre_seq, ref_missing, ref_is_landed) {
+                ArchivedMrClass::Orphan => orphans.push((fname.clone(), mr.from.clone())),
+                ArchivedMrClass::LandedNoReply => {
                     landed_no_reply += 1;
                     if verbose {
                         println!(
@@ -1772,21 +1750,22 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
                             mr.from, mr.r#ref
                         );
                     }
-                } else {
-                    orphans.push((fname.clone(), mr.from.clone()));
                 }
-            } else {
-                unverifiable += 1;
-                if verbose {
-                    let why = if is_pre_durable_seq_filename(&fname) {
-                        "pre-durable-seq (predates in_reply_to; uncorrelatable)"
-                    } else {
-                        "sender not active (pre-audit / stale)"
-                    };
-                    println!(
-                        "  ? {fname} (from {}) — no reply recorded; {why} — unverifiable",
-                        mr.from
-                    );
+                ArchivedMrClass::Unverifiable => {
+                    unverifiable += 1;
+                    if verbose {
+                        let why = if is_pre_seq {
+                            "pre-durable-seq (predates in_reply_to; uncorrelatable)"
+                        } else if ref_missing {
+                            "EMPTY --ref (no sha to check vs trunk, un-ackable in processed/)"
+                        } else {
+                            "sender not active (pre-audit / stale)"
+                        };
+                        println!(
+                            "  ? {fname} (from {}) — no reply recorded; {why} — unverifiable",
+                            mr.from
+                        );
+                    }
                 }
             }
         }
@@ -4997,6 +4976,47 @@ const INFORMATIONAL_KINDS: &[&str] = &["note", "merged", "backlog", "status", "r
 /// monotonic seq, so this check can never hide one).
 fn is_pre_durable_seq_filename(name: &str) -> bool {
     name.starts_with("000000000001-")
+}
+
+/// How the audit classifies a single archived merge-request that has NO correlating reply. (A replied
+/// MR is `Verified` and never reaches this fn.) The ORDER of the checks is load-bearing and was the
+/// crux of a self/pr-sync disagreement this session, so it's factored out as a pure decision to be
+/// unit-pinned independently of `audit`'s fs+git loop.
+#[derive(Debug, PartialEq, Eq)]
+enum ArchivedMrClass {
+    /// A still-active sender's ref-bearing, non-landed, correlatable MR: a REAL silent drop.
+    Orphan,
+    /// Ref is already on trunk — the work landed; only the reply-correlation was lost. Benign.
+    LandedNoReply,
+    /// Can't be proven either way: sender inactive (stale one-shot), a pre-durable-seq send that can
+    /// never carry an `in_reply_to`, or an empty `--ref` (no sha to check, un-ackable in processed/).
+    Unverifiable,
+}
+
+/// Pure classifier for a no-reply archived MR. Precedence, each check assuming the ones before it
+/// failed: an inactive sender OR a pre-durable-seq filename is `Unverifiable` (stale/uncorrelatable
+/// noise); else an empty `--ref` is `Unverifiable` (nothing to check vs trunk, un-ackable once
+/// archived); else a ref already on trunk (`ref_is_landed`) is `LandedNoReply` (work landed,
+/// correlation lost); else it's an `Orphan` (active sender, ref-bearing, not landed — a real silent
+/// drop). `ref_is_landed` is passed in (not computed here) so this stays pure + git-free; the caller
+/// supplies the `ref_landed_on_trunk` result and — matching the old inline short-circuit — need only
+/// evaluate that git call once the cheaper checks have passed (see the caller's lazy use).
+fn classify_archived_mr(
+    sender_active: bool,
+    is_pre_durable_seq: bool,
+    ref_is_missing: bool,
+    ref_is_landed: bool,
+) -> ArchivedMrClass {
+    if !sender_active || is_pre_durable_seq {
+        return ArchivedMrClass::Unverifiable;
+    }
+    if ref_is_missing {
+        return ArchivedMrClass::Unverifiable;
+    }
+    if ref_is_landed {
+        return ArchivedMrClass::LandedNoReply;
+    }
+    ArchivedMrClass::Orphan
 }
 
 /// The message `kind` of a bus filename `<seq>-<pid>-<kind>.json`, or `None` if it doesn't match that
@@ -8935,6 +8955,34 @@ mod tests {
             &fleet,
             "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
         ));
+    }
+
+    #[test]
+    fn classify_archived_mr_precedence_is_stale_then_empty_then_landed_then_orphan() {
+        use ArchivedMrClass::*;
+        // (sender_active, is_pre_durable_seq, ref_missing, ref_is_landed)
+        // 1. Inactive sender → Unverifiable regardless of everything else (stale one-shot noise).
+        assert_eq!(
+            classify_archived_mr(false, false, false, false),
+            Unverifiable
+        );
+        assert_eq!(
+            classify_archived_mr(false, false, false, true),
+            Unverifiable
+        );
+        // 2. Pre-durable-seq → Unverifiable even for an active sender (can't carry in_reply_to).
+        assert_eq!(classify_archived_mr(true, true, false, false), Unverifiable);
+        assert_eq!(classify_archived_mr(true, true, false, true), Unverifiable);
+        // 3. Empty ref (active, non-pre-seq) → Unverifiable, NOT orphan (the 15736 class). Takes
+        //    precedence over the landed check — a ref-less MR can't be "landed" anyway.
+        assert_eq!(classify_archived_mr(true, false, true, false), Unverifiable);
+        // 4. Ref on trunk (active, non-pre-seq, ref present) → LandedNoReply (benign, correlation lost).
+        assert_eq!(
+            classify_archived_mr(true, false, false, true),
+            LandedNoReply
+        );
+        // 5. The ONLY real silent drop: active sender, non-pre-seq, ref present, NOT landed.
+        assert_eq!(classify_archived_mr(true, false, false, false), Orphan);
     }
 
     #[test]
