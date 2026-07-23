@@ -73,13 +73,14 @@ def ss-two-sum-types-independent-tagging() =
     | Option.None(_) => trap("two sum types tag independently")
 
 @test
-def ss-payload-ctor-USE-declines() =
-  // a PAYLOAD-carrying constructor USE `(Some 5)` is OUT of this slice (no CCtor value yet) → DECLINES (surfaced,
-  // not mis-parsed). A payload ctor records NO def (only its tag SLOT is consumed), so a use is an unknown
-  // def-name → no callee → None. A later slice adds payload ctor values.
+def ss-payload-ctor-USE-constructs() =
+  // M2-b-2b-ii-b: a PAYLOAD constructor USE `(Some 5)` now CONSTRUCTS — the reader records `Some→tag` in the ct
+  // table, lower turns NApp(Some, 5) into CCtor(tag, [5]), eval store-allocs the payload sum and returns its
+  // Int64 HANDLE. So it RUNS (Some handle), no longer declines. (The handle value is an opaque store index — a
+  // matching arm to READ the payload back is ii-c; here we only pin that construction TYPES + LOWERS + RUNS.)
   match run-src("(do (type Opt (Some Int64) (None)) (def (main) (Some 5)) (export main))") with
-    | Option.None(_) => unit
-    | Option.Some(_) => trap("a payload-carrying constructor USE is out of this slice → must decline")
+    | Option.Some(_) => unit
+    | Option.None(_) => trap("a payload constructor USE (Some 5) should now construct + run, not decline")
 
 @test
 def ss-nullary-sibling-of-payload-ctor-runs() =

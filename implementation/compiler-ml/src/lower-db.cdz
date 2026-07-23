@@ -14,7 +14,7 @@
 /// NO core form (a filled `None`), not a bogus tree. Lowering reads the infer column to make this decision,
 /// and reads the resolve column to canonicalize vars — producer-reads-two-producers.
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, call-is-self-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, call-is-self-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, ctor-tag-of } from "parse-db"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
 import { Typed, infer-tree, infer-node } from "infer-db"
 
@@ -175,6 +175,19 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         // Args are the SAME arg slots the inline path reads (argId + arg2/3/4-of), lowered into a List(Core);
         // any ill-typed arg → the call declines (None). Unknown name can't be recursive (call-is-recursive
         // returns false when def-body-of misses), so this branch always has a known callee.
+        // M2-b-2b-ii PAYLOAD CTOR use `(Some 5)` = NApp(Some, argId) where `Some` is a recorded ctor (ct table)
+        // WITH args: lower to `CCtor(tag, loweredArgs)` — eval store-allocs the payload sum → a handle. Checked
+        // FIRST (a ctor is never recursive/a-def; it has NO def-body, so it would otherwise fall to the HO-miss
+        // decline). A NULLARY ctor use `(None)` has argId == -1 → NOT here; it stays the M2-a nullary-def-inline
+        // path (def-body = NLit tag), so the bare-tag behavior is unchanged. args from the call's arg slots.
+        // ONLY a PAYLOAD ctor use (argId != -1) takes the CCtor path; a NULLARY ctor use `(None)` = NApp(name,-1)
+        // has a def-body (NLit tag, M2-a) and MUST stay the def-body-inline path below (its bare tag is the value).
+        (match (if (argId == (0 - 1)) then Option.None(unit) else ctor-tag-of(tree, calleeId)) with
+          | Option.Some(ctorTag) =>
+              (match lower-rec-args(tree, id, argId, rcol, tcol) with
+                | Option.Some(args) => Option.Some(Core.CCtor(ctorTag, args))
+                | Option.None(_) => Option.None(unit))
+          | Option.None(_) =>
         (if (call-is-recursive(tree, calleeId)) then lower-recursive-call(tree, id, calleeId, argId, rcol, tcol)
          else (match def-body-of(tree, calleeId) with
            // HIGHER-ORDER (HO-3): def-body-of MISS = callee is NOT a global def — may be a fn-typed PARAM.
@@ -214,7 +227,7 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                                   | Option.None(_) => Option.Some(Core.CLet(paramId, argCore, bodyCore)))  // 1-arg
                             | Option.None(_) => Option.None(unit))
                       | Option.None(_) => Option.None(unit))
-                | Option.None(_) => Option.None(unit)))))
+                | Option.None(_) => Option.None(unit))))))
     | Option.None(_) => Option.None(unit)
 
 /// slice-3e: the innermost body of a call's nested-CLet chain, optionally wrapping a THIRD `CLet(param3, arg3,
