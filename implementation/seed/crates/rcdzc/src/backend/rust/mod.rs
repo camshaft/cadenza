@@ -70,11 +70,12 @@ fn is_capture_scalar(t: &crate::ty::Ty) -> bool {
 }
 
 /// Whether a closure ARG type is OK for the host-closure FACTORY slice: a scalar (Int/Bool/Float — the
-/// harness passes each as a literal), or a COMPOUND the harness's `rust_call_arg` rebuilds structurally over
-/// OK elements: a TUPLE (`both(caps)((3, 4))` — the closure reads the native `(i64, i64)`), a LIST
-/// (`…(vec![…])`), or Option/Result (the well-known 2-variant sums, `(Some v)`→`Some(v)` etc.). A
-/// String/Bytes ARG (the harness rebuilds a String literal but the closure-side ABI differs) or a USER sum
-/// arg stays DEFERRED — the factory still emits a valid `Rc<dyn Fn>`, so those cases stay a clean `todo`.
+/// harness passes each as a literal), a String/Bytes applied IN-GUEST (a literal the emitter lowers — see
+/// the arm's own comment for the in-guest-vs-host-boundary distinction), or a COMPOUND the harness's
+/// `rust_call_arg` rebuilds structurally over OK elements: a TUPLE (`both(caps)((3, 4))` — the closure reads
+/// the native `(i64, i64)`), a LIST (`…(vec![…])`), or Option/Result (the well-known 2-variant sums, `(Some
+/// v)`→`Some(v)` etc.). A String/Bytes arg PASSED FROM THE HOST at the boundary (a different ABI) or a USER
+/// sum arg stays DEFERRED — the factory still emits a valid `Rc<dyn Fn>`, so those cases stay a clean `todo`.
 fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
     use crate::ty::Ty;
     match t.strip_nominal() {
@@ -273,6 +274,12 @@ fn s3_result_ok(t: &crate::ty::Ty) -> bool {
         // the quoted `"hi"`/`b"…"` a plain export uses — the factory-result render path special-cases these.
         Ty::String | Ty::Bytes => true,
         Ty::Tuple(elems) => elems.iter().all(s3_result_ok),
+        // A RECORD RESULT renders like a Tuple — the factory-result render walks its SORTED-key fields
+        // positionally (`cdz_render_expr`'s Record arm), the same native tuple the emit produces. Renderable
+        // iff every field type is (recurse over the sorted values). (The record ARG side — `s2_arg_ok` — is
+        // NOT yet widened for Record: the harness's `rust_call_arg` record-literal→positional-tuple rebuild
+        // needs a sorted-field-order fix first, or the arg mis-marshals — a separate follow-up slice.)
+        Ty::Record(fields) => fields.values().all(s3_result_ok),
         Ty::List(elem) => s3_result_ok(elem),
         // A SUM RESULT (S4a + user-sum extension) — Option/Result (the well-known 2-variant sums) OR a USER
         // sum (`(type Dir (N) (S))`). The harness renders all of them via `cdz_render_at` into the corpus

@@ -80,3 +80,56 @@ def ss-payload-ctor-declines() =
   match run-src("(do (type Opt (Some Int64) (None)) (def (main) (None)) (export main))") with
     | Option.None(_) => unit
     | Option.Some(_) => trap("a payload-carrying constructor is out of this slice → must decline")
+
+// ---- nullary CTOR-PATTERNS in match: `(match c (Red 1) (Green 2) (_ 0))` matches on ctor names ----
+// A nullary ctor is a nullary def `Ck → NLit(tag)`, so a pattern `Ck` desugars to its tag literal and reuses
+// the integer-match lowering (CIf(CBin(==, scrut, tag))). No pipeline change beyond the reader.
+
+@test
+def ss-match-on-ctor-pattern-first() =
+  // match (Red) (Red 100) (Green 200) (_ 300) — scrut (Red)=tag 0, pattern Red=tag 0 → the Red-arm → 100.
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Red) (Red 100) (Green 200) (_ 300))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 100 then unit else trap("match (Red) hits the Red-pattern arm → 100"))
+    | Option.None(_) => trap("a nullary ctor pattern in match runs (first arm)")
+
+@test
+def ss-match-on-ctor-pattern-middle() =
+  // match (Green) (Red 100) (Green 200) (_ 300) — (Green)=tag 1, matches the Green pattern → 200.
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Green) (Red 100) (Green 200) (_ 300))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 200 then unit else trap("match (Green) hits the Green-pattern arm → 200"))
+    | Option.None(_) => trap("a nullary ctor pattern in match runs (middle arm)")
+
+@test
+def ss-match-on-ctor-pattern-wildcard() =
+  // match (Blue) (Red 100) (Green 200) (_ 300) — (Blue)=tag 2, no Red/Green pattern matches → wildcard → 300.
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Blue) (Red 100) (Green 200) (_ 300))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 300 then unit else trap("match (Blue) falls to _ → 300"))
+    | Option.None(_) => trap("a nullary ctor pattern match wildcard fallthrough runs")
+
+@test
+def ss-match-ctor-pattern-over-bound-var() =
+  // the scrutinee is a BOUND VARIABLE holding a ctor tag: (def (classify c) (match c (Red 10) (Green 20) (_ 30)))
+  // called with (Green) → c = tag 1 → the Green arm → 20. Proves ctor patterns work when the scrutinee is a
+  // param, not a literal ctor use (the shape a real Option/Result matcher takes).
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (def (classify c) (match c (Red 10) (Green 20) (_ 30))) (def (main) (classify (Green))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 20 then unit else trap("classify (Green) → match c on tag 1 → 20"))
+    | Option.None(_) => trap("a ctor pattern over a bound-var scrutinee runs")
+
+@test
+def ss-match-mixed-literal-and-ctor-patterns() =
+  // a match can MIX integer-literal patterns and ctor-name patterns in one match (both desugar to tag/lit
+  // comparisons). match (Green) (0 100) (Green 200) (_ 300) — (Green)=tag 1; the `0` literal arm misses (1≠0),
+  // the `Green` ctor arm matches (1==1) → 200. Pins that literal and ctor patterns coexist.
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Green) (0 100) (Green 200) (_ 300))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 200 then unit else trap("mixed lit+ctor patterns: (Green) → Green-arm → 200"))
+    | Option.None(_) => trap("a match mixing literal and ctor patterns runs")

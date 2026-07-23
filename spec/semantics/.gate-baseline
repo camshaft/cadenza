@@ -48,6 +48,7 @@ pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
+pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
 pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
 pass	a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit
 pass	a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string
