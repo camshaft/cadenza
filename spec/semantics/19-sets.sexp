@@ -487,6 +487,123 @@
   (call   main (: 4 Int64)) (output (: -1 Int64))
   (call   main (: 14 Int64)) (output (: 4 Int64)))
 
+(case "graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list"
+  (doc    "The worklist algorithm — the compiler's own reachability shape: a `(Map Int64 (List Int64))`
+           adjacency graph, a LIST worklist popped from the front with each node's neighbors pushed
+           to the BACK, and a visited SET guarding re-entry (the seen-check must fire BEFORE
+           expansion, or the 5⇄6 CYCLE face loops forever — termination itself is the pinned
+           property). The graph has a DIAMOND (1→2→4, 1→3→4 — node 4 enters the worklist TWICE and
+           must be expanded once) and a 2-cycle island DISCONNECTED from it (5⇄6 — reachability from
+           1 must NOT leak into the island, and from 5 it must terminate despite the cycle). Faces:
+           start=1 → {1,2,3,4} (len 4, sum 10 → 410); start=5 → the cycle island {5,6} (211);
+           start=4 → the sink alone (104). Encoding: len·100 + element sum via Set.to-list.")
+  (input  (do
+            (def (nbrs (: g (Map Int64 (List Int64))) (: n Int64))
+              (match (Map.lookup g n) ((Some xs) xs) ((None _u) (list))))
+            (def (push-all (: xs (List Int64)) (: work (List Int64)))
+              (match xs
+                ((list) work)
+                ((list h .. t) (push-all t (List.push work h)))))
+            (def (drain (: g (Map Int64 (List Int64))) (: work (List Int64)) (: seen (Set Int64)))
+              (match work
+                ((list) seen)
+                ((list h .. t)
+                  (if (Set.contains seen h)
+                      (drain g t seen)
+                      (drain g (push-all (nbrs g h) t) (Set.insert seen h))))))
+            (def (sum-set (: xs (List Int64)) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (sum-set t (+ acc h)))))
+            (def (main (: start Int64))
+              (do
+                (def g (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert Map.empty
+                          1 (list 2 3)) 2 (list 4)) 3 (list 4)) 4 (list)) 5 (list 6)) 6 (list 5)))
+                (def seen (drain g (list start) (Set.of (list))))
+                (+ (* (Set.len seen) 100) (sum-set (Set.to-list seen) 0))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 410 Int64))
+  (call   main (: 5 Int64)) (output (: 211 Int64))
+  (call   main (: 4 Int64)) (output (: 104 Int64)))
+
+(case "a TOPOLOGICAL sort drains min-ready nodes and verifies every edge points forward"
+  (doc    "The dependency-ordering sibling of the reachability pin above (same Map-adjacency shape,
+           opposite discipline: reachability EXPANDS from a start, topo-sort RETIRES nodes whose
+           in-degree hits zero). In-degrees accumulate through the upsert `bump`; each round scans
+           for the SMALLEST unretired zero-in-degree node (deterministic order — no ready-list
+           ambiguity), retires it, and decrements its neighbors via bump -1 (the SAME upsert helper
+           driven in both directions). Certified structurally: `edges-fwd` re-walks every edge
+           checking source-position < target-position in the output (the defining property, checked
+           independently of the expected literal). The extra=2 face adds edge 4→2, closing the CYCLE
+           2→3→4→2: the drain STOPS when no zero-in-degree node remains — order (1 5), fwd-check 0
+           (edge into the cycle fails) → 150; the acyclic face orders 1,2,3,5,4 with fwd 1 → 123541.")
+  (input  (do
+            (def (nbrs (: g (Map Int64 (List Int64))) (: n Int64))
+              (match (Map.lookup g n) ((Some xs) xs) ((None _u) (list))))
+            (def (bump (: m (Map Int64 Int64)) (: k Int64) (: d Int64))
+              (match (Map.lookup m k)
+                ((Some v) (Map.insert m k (+ v d)))
+                ((None _u) (Map.insert m k d))))
+            (def (fold-edges (: es (List Int64)) (: mm (Map Int64 Int64)))
+              (match es
+                ((list) mm)
+                ((list e .. et) (fold-edges et (bump mm e 1)))))
+            (def (indeg-of (: g (Map Int64 (List Int64))) (: ns (List Int64)) (: m (Map Int64 Int64)))
+              (match ns
+                ((list) m)
+                ((list h .. t) (indeg-of g t (fold-edges (nbrs g h) m)))))
+            (def (get0 (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) 0)))
+            (def (min-ready (: ns (List Int64)) (: indeg (Map Int64 Int64)) (: done (Set Int64)) (: best Int64))
+              (match ns
+                ((list) best)
+                ((list h .. t)
+                  (min-ready t indeg done
+                    (if (if (Set.contains done h) false (= (get0 indeg h) 0))
+                        (if (< best 0) h (if (< h best) h best))
+                        best)))))
+            (def (dec-nbrs (: es (List Int64)) (: indeg (Map Int64 Int64)))
+              (match es
+                ((list) indeg)
+                ((list e .. t) (dec-nbrs t (bump indeg e -1)))))
+            (def (drain (: g (Map Int64 (List Int64))) (: ns (List Int64)) (: indeg (Map Int64 Int64)) (: done (Set Int64)) (: acc (List Int64)))
+              (do
+                (def pick (min-ready ns indeg done -1))
+                (if (< pick 0)
+                    acc
+                    (drain g ns (dec-nbrs (nbrs g pick) indeg) (Set.insert done pick) (List.push acc pick)))))
+            (def (pos-of (: xs (List Int64)) (: v Int64) (: i Int64))
+              (match xs
+                ((list) -1)
+                ((list h .. t) (if (= h v) i (pos-of t v (+ i 1))))))
+            (def (all-fwd (: es (List Int64)) (: order (List Int64)) (: hpos Int64))
+              (match es
+                ((list) 1)
+                ((list e .. et)
+                  (if (< hpos (pos-of order e 0)) (all-fwd et order hpos) 0))))
+            (def (edges-fwd (: g (Map Int64 (List Int64))) (: order (List Int64)) (: ns (List Int64)))
+              (match ns
+                ((list) 1)
+                ((list h .. t)
+                  (if (= (all-fwd (nbrs g h) order (pos-of order h 0)) 1)
+                      (edges-fwd g order t)
+                      0))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: extra Int64))
+              (do
+                (def ns (list 1 2 3 4 5))
+                (def g0 (Map.insert (Map.insert (Map.insert (Map.insert (Map.insert Map.empty
+                           1 (list 3)) 2 (list 3)) 3 (list 4)) 4 (list)) 5 (list 4)))
+                (def g (if (> extra 0) (Map.insert g0 4 (list extra)) g0))
+                (def order (drain g ns (indeg-of g ns Map.empty) (Set.of (list)) (list)))
+                (+ (* (chk order 0) 10) (edges-fwd g order ns))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 123541 Int64))
+  (call   main (: 2 Int64)) (output (: 150 Int64)))
+
 ; --- The algebraic laws the three operations satisfy: the empty set as identity/annihilator, and ----
 ; --- the union laws (commutative, idempotent). These pin the operations' DEFINING identities, which
 ; --- the overlapping-operand cases above (which give a nontrivial result) do not exercise — a

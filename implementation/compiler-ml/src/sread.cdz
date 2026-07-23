@@ -547,24 +547,43 @@ def read-do-type(s: String, d1: Int64, root: Int64, tree: Tree) =
    (match scan-atom(s, n0, "") with | (_tyname, n1) =>          // the type NAME (not recorded — no NType yet)
      read-do-ctors(s, skip-space(s, n1), 0, root, tree)))
 
+/// Skip from index `i` (just INSIDE a `(`, at nesting depth 1) to just PAST that group's matching `)`. Paren-
+/// depth aware: a nested `(` deepens, a `)` shallows; at depth 0 (the matching close consumed) return the next
+/// index. Used to SKIP a payload ctor's contents in read-do-ctors without parsing them (payloads are out of the
+/// nullary slice; a later slice reads their arg types). Bounded by the string length (char-at past end = "" →
+/// treated as a close so it terminates). Tail-recursive counter over the index.
+def skip-to-close(s: String, i: Int64, depth: Int64) =
+  (if (depth == 0) then i
+   else (let c = char-at(s, i) in
+         (if (c == "") then i                                   // ran off the end (malformed) — stop, total
+          else (if (c == "(") then skip-to-close(s, i + 1, depth + 1)
+                else (if (c == ")") then skip-to-close(s, i + 1, depth - 1)
+                      else skip-to-close(s, i + 1, depth))))))
+
 /// Read the constructor list `(C0) (C1) … (Ck)` of a `(type …)` decl, assigning each ctor the ordinal `tag`
-/// (0,1,2,…) as its nullary-def body `NLit(tag)`. `k` is at the next `(` (a ctor) or the `)` that closes the
-/// type decl. A `)` here ENDS the ctor list → continue the do-sequence (read-do-next past the type's `)`). A
-/// `(Ck)` ctor: record `name-id(Ck) → NLit(tag)` in the def-table (exactly a nullary def), then recurse for the
-/// next ctor with `tag + 1`. A ctor WITH a payload — `(Ck T)`, i.e. an atom follows the ctor name before `)` —
-/// is out of this slice → decline (unsupported). Flat (≤2 nesting — the paren-cascade trap).
+/// (0,1,2,…). `k` is at the next `(` (a ctor) or the `)` that closes the type decl. A `)` here ENDS the ctor
+/// list → continue the do-sequence (read-do-next past the type's `)`). A NULLARY `(Ck)` ctor: record
+/// `name-id(Ck) → NLit(tag)` in the def-table (exactly a nullary def), then recurse for the next ctor with
+/// `tag + 1`. A PAYLOAD ctor `(Ck T…)` (an atom follows the ctor name before `)`) is out of THIS slice — its
+/// value/pattern handling is a later slice — BUT it STILL CONSUMES its ordinal tag: we SKIP its contents (via
+/// skip-to-close) and recurse with `tag + 1`, WITHOUT recording a def for it. This keeps a MIXED type's nullary
+/// siblings correct: `(type Opt (Some Int64) (None))` still registers `None → NLit(1)` (tag 1, after Some's
+/// tag-0 slot) so `(None)` runs, while `(Some 5)` declines LATE (unknown def-name → no callee) rather than the
+/// whole `(type …)` decl aborting. Flat (≤2 nesting — the paren-cascade trap).
 def read-do-ctors(s: String, k: Int64, tag: Int64, root: Int64, tree: Tree) =
   (if (char-at(s, k) == ")")
    then read-do-next(s, k + 1, root, tree)                      // ctor list closed → past the type's `)`
-   else (let c0 = open-paren(s, k) in                           // open a `(Ck)`
+   else (let c0 = open-paren(s, k) in                           // open a `(Ck)` — c0 is just inside, at depth 1
          (match scan-atom(s, skip-space(s, c0), "") with | (cnm, c1) =>    // the ctor NAME
            (let c2 = skip-space(s, c1) in
             (if (char-at(s, c2) == ")")                         // NULLARY ctor `(Ck)` → a `Ck → NLit(tag)` def
              then (match add-node(tree, Node.NLit(tag)) with | (bodyId, t1) =>
                     (let t2 = record-def(t1, name-id(cnm), bodyId) in
                      read-do-ctors(s, skip-space(s, c2 + 1), tag + 1, root, t2)))
-             // a PAYLOAD ctor `(Ck T)` (an atom before the `)`) is out of this slice → decline (surfaced).
-             else unsupported-at(tree, c2))))))
+             // a PAYLOAD ctor `(Ck T…)`: SKIP its contents but CONSUME the tag slot (nullary siblings stay
+             // correctly numbered); do NOT record a def, so a use `(Some 5)` declines late. c1 is after the
+             // ctor name, still at depth 1 inside the ctor paren → skip to just past its matching `)`.
+             else read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), tag + 1, root, tree))))))
 
 /// After a def ended at `j`: skip its closing `)` (if present) and read the next form in the do, threading the
 /// accumulated `root` (main's body, or -1 if not yet seen).
