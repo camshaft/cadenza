@@ -1711,6 +1711,67 @@
   (call   main (: 1024 Int64)) (output (: 11 Int64))
   (call   main (: 4611686018427387903 Int64)) (output (: 621 Int64)))
 
+(case "MISSING NUMBER agrees between the arithmetic-sum gap and the XOR cancellation"
+  (doc    "Two SHARED-NOTHING computations of the absent element of 0..n: the ARITHMETIC gap
+           (n(n+1)/2 − sum — closed form minus fold) and the XOR CANCELLATION (fold `^` over the
+           full range, then over the list: every PRESENT value self-cancels, x^x = 0, leaving the
+           absent one — the first XOR-fold composite in the corpus; popcount above uses `&`, this
+           pins `^`'s self-inverse law doing real work). The agreement bit is the certificate —
+           the two paths share no operation. Faces at the boundary positions of n = 4: missing
+           MID (2 → 21); missing ZERO — the face where by-sum = 0 could alias a broken sum, and
+           only the XOR agreement disambiguates (1); missing N itself (4 → 41).")
+  (input  (do
+            (def (sum-l (: xs (List Int64)) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (sum-l t (+ acc h)))))
+            (def (xor-l (: xs (List Int64)) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (xor-l t (^ acc h)))))
+            (def (xor-range (: i Int64) (: n Int64) (: acc Int64))
+              (if (> i n) acc (xor-range (+ i 1) n (^ acc i))))
+            (def (main (: mode Int64))
+              (do
+                (def xs (if (= mode 1) (list 0 1 3 4) (if (= mode 2) (list 1 2 3 4) (list 0 1 2 3))))
+                (def n 4)
+                (def by-sum (- (/ (* n (+ n 1)) 2) (sum-l xs 0)))
+                (def by-xor (xor-l xs (xor-range 0 n 0)))
+                (+ (* by-sum 10) (if (= by-sum by-xor) 1 0))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 21 Int64))
+  (call   main (: 2 Int64)) (output (: 1 Int64))
+  (call   main (: 3 Int64)) (output (: 41 Int64)))
+
+(case "GRAY CODE encodes by shift-xor, decodes by xor-folding, and adjacent codes differ by one bit"
+  (doc    "The reflected binary code, all three bitwise pins composed: encode = `n ^ (n >> 1)` (one
+           expression); decode = the XOR-FOLD of all right-shifts of the code down to zero (the
+           prefix-xor inverse — each iteration xors the shifted remainder in, the loop the closed
+           form unrolls); certificate = the DEFINING property, `popcount(gray(i) ^ gray(i+1)) = 1`
+           for every i — adjacent codes differ in EXACTLY one bit, checked via the pinned Kernighan
+           popcount as a sub-computation. Faces at the binary boundaries: i=0 → code 0 (011 → 11);
+           i=7 → 4 (the 0111→1000 binary carry that flips FOUR bits collapses to one Gray bit —
+           411); i=8 → 12 (1211); i=15 → 8 (811). Encoding: code·100 + round-trip·10 +
+           adjacent-popcount.")
+  (input  (do
+            (def (gray (: n Int64))
+              (^ n (>> n 1)))
+            (def (ungray (: g Int64) (: n Int64))
+              (if (= g 0) n (ungray (>> g 1) (^ n g))))
+            (def (popcount (: x Int64) (: acc Int64))
+              (if (= x 0) acc (popcount (& x (- x 1)) (+ acc 1))))
+            (def (main (: i Int64))
+              (do
+                (def g (gray i))
+                (+ (* g 100)
+                   (+ (* (if (= (ungray g 0) i) 1 0) 10)
+                      (popcount (^ (gray i) (gray (+ i 1))) 0)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: 7 Int64)) (output (: 411 Int64))
+  (call   main (: 8 Int64)) (output (: 1211 Int64))
+  (call   main (: 15 Int64)) (output (: 811 Int64)))
+
 (case "HORNER polynomial evaluation folds coefficients high-to-low and agrees with a power-sum oracle"
   (doc    "Horner's rule `acc·x + h` folded over coefficients HIGH-to-low, differentially checked
            against the naive power-sum (each coefficient times `x^(n−i)` by a separate recursion) —

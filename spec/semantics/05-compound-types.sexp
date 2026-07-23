@@ -9771,6 +9771,46 @@
   (call   main (: 0 Int64)) (output (: 213 Int64))
   (call   main (: 5 Int64)) (output (: 318 Int64)))
 
+(case "a MEDIAN-OF-3 filter smooths interior spikes while endpoints pass through unchanged"
+  (doc    "The TRANSFORMING sibling of the local-peaks pin above (same parameter-sliding window;
+           peaks OBSERVES the window, this REWRITES each interior element as the median of its
+           neighborhood): `med3` is a branch-only median — two-to-three comparisons, no sort, every
+           leaf a distinct comparison path (six orderings collapse to five leaves; a wrong leaf
+           returns a neighbor instead of the median). ENDPOINTS pass through unchanged — the first
+           element seeds the output before the walk, the last is flushed by the empty-rest arm.
+           Faces: the spike train (1 9 2 8 3) — each interior element REPLACED by its
+           neighborhood's median, damping 9→2 and 2→8 swaps into 12833 (note the filter is NOT
+           idempotent here — it rewrites, not clamps); all-equal (555) and already-monotone (1234)
+           are FIXED POINTS — a filter that shifts any element breaks them.")
+  (input  (do
+            (def (med3 (: a Int64) (: b Int64) (: c Int64))
+              (if (> a b)
+                  (if (> b c) b (if (> a c) c a))
+                  (if (> a c) a (if (> b c) c b))))
+            (def (go (: prev Int64) (: cur Int64) (: rest (List Int64)) (: acc (List Int64)))
+              (match rest
+                ((list) (List.push acc cur))
+                ((list nxt .. t) (go cur nxt t (List.push acc (med3 prev cur nxt))))))
+            (def (medfilter (: xs (List Int64)))
+              (match xs
+                ((list a b .. t)
+                  (match t
+                    ((list) xs)
+                    (_ (go a b t (list a)))))
+                (_ xs)))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: mode Int64))
+              (do
+                (def xs (if (= mode 1) (list 1 9 2 8 3) (if (= mode 2) (list 5 5 5) (list 1 2 3 4))))
+                (chk (medfilter xs) 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 12833 Int64))
+  (call   main (: 2 Int64)) (output (: 555 Int64))
+  (call   main (: 3 Int64)) (output (: 1234 Int64)))
+
 (case "KADANE max-subarray threads a best-ending-here and a global best through one fold"
   (doc    "TWO COUPLED accumulators through one fold, coupled ASYMMETRICALLY: `cur = max(h, cur+h)`
            (extend the run or RESTART at h — the reset that makes it Kadane and not a prefix sum)
