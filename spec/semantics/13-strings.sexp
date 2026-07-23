@@ -330,6 +330,57 @@
   (call   main (: 5 Int64)) (output (: 0 Int64))
   (call   main (: 6 Int64)) (output (: 0 Int64)))
 
+(case "EDIT DISTANCE rolls a two-row Levenshtein table over string scalars"
+  (doc    "The general form of the one-edit check above (that one special-cases distance ≤ 1; this
+           computes the FULL Levenshtein): a TWO-ROW rolling table — `prev` is the completed row,
+           `cur` grows left-to-right, and each cell takes min3 of DELETE (prev[j]+1), INSERT
+           (cur[j−1]+1 — a read from the row UNDER CONSTRUCTION), and SUBSTITUTE (prev[j−1] + cost).
+           The cur[j−1] read is the sharp edge: it must see the cell appended MOMENTS ago in the
+           same row walk (an off-by-one reads the seed value and inflates every distance). Row 0
+           seeds 0..lb (transforming from the empty prefix = j inserts); each row starts with i
+           (i deletes). Faces: kitten→sitting = 3 (the textbook mix of sub+sub+insert); identical
+           → 0 (the cost-0 diagonal rides the whole table); EMPTY a → lb (the seed row IS the
+           answer, no row loop runs); flaw→lawn = 2 (delete f, append n — edits at BOTH ends).")
+  (input  (do
+            (def (at0 (: xs (List Int64)) (: i Int64))
+              (Option.expect (List.at xs i) "in-bounds"))
+            (def (min3 (: a Int64) (: b Int64) (: c Int64))
+              (if (< a b) (if (< a c) a c) (if (< b c) b c)))
+            (def (seed (: j Int64) (: n Int64) (: acc (List Int64)))
+              (if (> j n) acc (seed (+ j 1) n (List.push acc j))))
+            (def (row-go (: b String) (: j Int64) (: lb Int64) (: ca String) (: prev (List Int64)) (: cur (List Int64)))
+              (if (> j lb)
+                  cur
+                  (do
+                    (def cb (Option.expect (String.at b (- j 1)) "cb"))
+                    (def cost (if (= ca cb) 0 1))
+                    (def best (min3 (+ (at0 prev j) 1)
+                                    (+ (at0 cur (- j 1)) 1)
+                                    (+ (at0 prev (- j 1)) cost)))
+                    (row-go b (+ j 1) lb ca prev (List.push cur best)))))
+            (def (rows (: a String) (: b String) (: i Int64) (: la Int64) (: lb Int64) (: prev (List Int64)))
+              (if (> i la)
+                  prev
+                  (do
+                    (def ca (Option.expect (String.at a (- i 1)) "ca"))
+                    (rows a b (+ i 1) la lb (row-go b 1 lb ca prev (list i))))))
+            (def (lev (: a String) (: b String))
+              (do
+                (def la (String.byte-len a))
+                (def lb (String.byte-len b))
+                (def final (rows a b 1 la lb (seed 0 lb (list))))
+                (at0 final lb)))
+            (def (main (: mode Int64))
+              (if (= mode 1) (lev "kitten" "sitting")
+              (if (= mode 2) (lev "abc" "abc")
+              (if (= mode 3) (lev "" "abc")
+                             (lev "flaw" "lawn")))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 2 Int64)) (output (: 0 Int64))
+  (call   main (: 3 Int64)) (output (: 3 Int64))
+  (call   main (: 4 Int64)) (output (: 2 Int64)))
+
 (case "a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch"
   (doc    "The dual-string lockstep walk (the parse/scan pins above walk ONE string; this reads the
            SAME index of TWO strings per step): advance while `String.at a i` equals `String.at b i`,
