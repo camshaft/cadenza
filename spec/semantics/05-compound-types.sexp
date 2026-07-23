@@ -9515,6 +9515,39 @@
   (call   main (: 3 Int64)) (output (: 3123 Int64))
   (call   main (: 2 Int64)) (output (: 3213 Int64)))
 
+(case "a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values"
+  (doc    "The debounce twin of the stable dedup above — the two BRACKET the dedup semantics: the
+           seen-set kills ALL recurrences; this collapses only RUNS, so a value recurring after a
+           gap survives twice. The state is a (prev, have) pair where the `have = false` seed avoids
+           a sentinel colliding with real data (a prev=0 seed alone would wrongly merge a leading 0),
+           and the guard `(if have (= h prev) false)` short-circuits the compare on the very first
+           element. Over `(1 1 n 2 2 n n 3)`: n=2 merges into BOTH neighbors' runs — 1·2·3, len 3
+           (1233); n=1 recurs after a gap and survives twice — 1·2·1·3 (12134); n=3 — 1·3·2·3
+           (13234). Encoding: digit walk ·10 + len (the len digit catches a dropped survivor the
+           walk can alias).")
+  (input  (do
+            (def (go (: xs (List Int64)) (: prev Int64) (: have Bool) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t)
+                  (if (if have (= h prev) false)
+                      (go t prev true acc)
+                      (go t h true (List.push acc h))))))
+            (def (dedupc (: xs (List Int64)))
+              (go xs 0 false (list)))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: n Int64))
+              (do
+                (def out (dedupc (list 1 1 n 2 2 n n 3)))
+                (+ (* (chk out 0) 10) ((. List len) out))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1233 Int64))
+  (call   main (: 1 Int64)) (output (: 12134 Int64))
+  (call   main (: 3 Int64)) (output (: 13234 Int64)))
+
 (case "an UNZIP walk splits a list of pairs into two parallel lists that re-zip to the original"
   (doc    "The unzip/zip inverse law: one walk destructures each pair `((list (tuple k v) .. t))` and
            grows TWO lists in lockstep — unlike the partition pin (one side grows per step), BOTH

@@ -5566,6 +5566,24 @@ fn rustc_roundtrip_closure_parameter_consumer_with_a_compound_result_closure_s3(
 }
 
 #[test]
+fn a_closure_factory_returning_a_record_emits() {
+    // HOST-CLOSURE FACTORY with a RECORD RESULT (S3): a factory whose returned closure yields a record now
+    // crosses — `s3_result_ok` admits `Ty::Record` (it renders like a Tuple, the factory-result path walks
+    // its sorted fields positionally). The factory emits `mk(k) -> Rc<dyn Fn(i64) -> (i64, i64)>` (the record
+    // is the sorted-field tuple `(i64, i64)`). This matters chiefly on the ASYNC target, where a record-
+    // returning closure stays a FACTORY (sync eta-peels a nullary one to a plain fn); it flips the record-
+    // result closure round-trip family on rust-async. A record ARG stays deferred (the harness arg-rebuild
+    // needs a sorted-field fix — a separate slice), so `s2_arg_ok` is NOT widened for Record here.
+    let m = compile_rust(
+        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) (record (x x) (y (+ x k))))) (export mk))",
+    );
+    assert!(
+        m.contains("pub fn mk(k: i64) -> std::rc::Rc<dyn Fn(i64) -> (i64, i64)>"),
+        "a record-returning closure factory now emits an `Rc<dyn Fn>` with the sorted-field tuple result:\n{m}"
+    );
+}
+
+#[test]
 fn a_closure_parameter_consumer_with_a_bare_string_result_emits() {
     // CLOSURE-PARAMETER CONSUMER with a BARE String/Bytes RESULT: the consumer's OWN result is a String
     // (here it ignores the closure and returns "hi"). This USED to decline (`result_render_unsupported`) —

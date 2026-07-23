@@ -603,11 +603,34 @@ def read-match-arms(s: String, i: Int64, scrutId: Int64, tree: Tree) =
      then (match scan-atom(s, p, "") with | (_wild, w1) =>          // WILDCARD arm `(_ else)` — terminal
              (match read-form(s, w1, tree) with | (elseId, e1, t1) =>
                (let e2 = close-paren(s, e1) in (elseId, e2, t1))))    // the else body IS the chain's tail
-     else (match read-form(s, o, tree) with | (litId, q1, t1) =>    // LITERAL arm `(LIT body)`
+     else (match read-arm-pattern(s, o, tree) with | (patId, q1, t1) =>    // LITERAL or nullary-CTOR pattern
              (match read-form(s, q1, t1) with | (bodyId, q2, t2) =>
                (let q3 = close-paren(s, q2) in
                 (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>  // recurse for the rest
-                  (match add-node(t3, Node.NMatch(scrutId, litId, bodyId, restId)) with | (id, t4) => (id, r1, t4)))))))))
+                  (match add-node(t3, Node.NMatch(scrutId, patId, bodyId, restId)) with | (id, t4) => (id, r1, t4)))))))))
+
+/// M2-a nullary CTOR-PATTERNS in match: a match-arm pattern is an integer LITERAL (`(0 body)`) OR a nullary
+/// CONSTRUCTOR name (`(Red body)`). A nullary ctor is a nullary def `Ck → NLit(tag)` (recorded by read-do-type),
+/// so a ctor pattern `Ck` compares the scrutinee against Ck's TAG — reusing the integer-match `NMatch →
+/// CIf(CBin(61 ==, scrut, lit))` lowering, ZERO pipeline change (same discipline as the M2-a ctor USE desugar).
+/// A ctor NAME is read via `scan-atom` (NOT `read-form`) because a constructor is CAPITALIZED and `read-form`'s
+/// bare-identifier arm only leads on the lowercase `is-alpha` set — a `Red` bare atom would fall to `unsupported`.
+/// So: a digit / `-digit` lead → a literal pattern (read-form, unchanged); otherwise scan the atom as a ctor
+/// NAME and look it up via `def-body-of` → its `NLit(tag)` body → a FRESH `NLit(tag)` to compare against. An
+/// unknown name (not a recorded nullary-ctor def) → `unsupported` (declines, surfaced — never a wrong match).
+/// Returns `(patNodeId, indexAfterPattern, tree')`.
+def read-arm-pattern(s: String, o: Int64, tree: Tree) =
+  (let p = skip-space(s, o) in
+   (if (is-digit(char-at(s, p)) or ((char-at(s, p) == "-") and is-digit(char-at(s, p + 1))))
+    then read-form(s, o, tree)                                       // an integer-literal pattern — read-form as-is
+    else (match scan-atom(s, p, "") with | (cnm, k) =>               // a CTOR name (possibly capitalized)
+            (match def-body-of(tree, name-id(cnm)) with
+              | Option.None(_) => (match unsupported(tree) with | (id, t1) => (id, k, t1))   // unknown → decline
+              | Option.Some(bodyId) => (match node-at(tree, bodyId) with
+                  | Option.None(_) => (match unsupported(tree) with | (id, t1) => (id, k, t1))
+                  | Option.Some(bn) => (match bn with
+                      | Node.NLit(tag) => (match add-node(tree, Node.NLit(tag)) with | (id, t1) => (id, k, t1))
+                      | _ => (match unsupported(tree) with | (id, t1) => (id, k, t1))))))))  // non-tag def → decline
 
 /// After `(and` (index `i` past the `and` atom): the short-circuit AND, DESUGARED to `NIf(a, b, false)` —
 /// `(and a b)` ≡ `if a then b else false` (verified equivalent to rcdzc's `and` on every truth-table row).

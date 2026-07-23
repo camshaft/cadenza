@@ -211,8 +211,8 @@
               (match (String.at s 0)
                 ((Some c)
                   (if (= c "-")
-                      (- 0 (go s 1 (String.byte-len s) 0))
-                      (go s 0 (String.byte-len s) 0)))
+                      (- 0 (go s 1 (String.scalar-len s) 0))
+                      (go s 0 (String.scalar-len s) 0)))
                 ((None _u) 0)))
             (def (main (: n Int64))
               (do
@@ -246,7 +246,7 @@
                             ((None _u) i)))
                         ((None _u) i)))))
             (def (lcp (: a String) (: b String))
-              (lcp-go a b 0 (String.byte-len a) (String.byte-len b)))
+              (lcp-go a b 0 (String.scalar-len a) (String.scalar-len b)))
             (def (main (: n Int64))
               (do
                 (def a (String.concat "over" (if (> n 0) "lap" "t")))
@@ -280,7 +280,7 @@
                     ((None _u) acc))))
             (def (runs (: s String))
               (match (String.at s 0)
-                ((Some c0) (go s 1 (String.byte-len s) c0 1 0))
+                ((Some c0) (go s 1 (String.scalar-len s) c0 1 0))
                 ((None _u) 0)))
             (def (main (: n Int64))
               (do
@@ -345,7 +345,7 @@
                           (wc-go s (+ i 1) len true (if inw n (+ n 1)))))
                     ((None _u) n))))
             (def (wc (: s String))
-              (wc-go s 0 (String.byte-len s) false 0))
+              (wc-go s 0 (String.scalar-len s) false 0))
             (def (main (: n Int64))
               (do
                 (def mid (if (> n 0) " " "x"))
@@ -426,7 +426,7 @@
                         (dec-go s (+ i 1) len (if (> nxt v) (- acc v) (+ acc v)))))
                     ((None _u) acc))))
             (def (fromroman (: s String))
-              (dec-go s 0 (String.byte-len s) 0))
+              (dec-go s 0 (String.scalar-len s) 0))
             (def (emit (: n Int64) (: v Int64) (: s String) (: acc String))
               (if (< n v)
                   (tuple n acc)
