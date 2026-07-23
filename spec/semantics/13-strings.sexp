@@ -268,6 +268,68 @@
   (call   main (: 1 Int64)) (output (: 1421 Int64))
   (call   main (: 0 Int64)) (output (: 171 Int64)))
 
+(case "ONE-EDIT-APART checks strings for exactly one substitution or one insertion by length case"
+  (doc    "The edit-distance-≤1 special case, dispatched by LENGTH DIFFERENCE: equal lengths →
+           count substitutions in lockstep and demand EXACTLY one (the identical-strings face is 0
+           edits — must answer NO, the ≥-vs-= discipline); off-by-one lengths → walk in lockstep to
+           the first mismatch, then `rest-eq` resumes with the LONG side's index shifted one ahead
+           (the skip — a resume without the shift, or shifting the short side, both fail); a gap of
+           two+ → 0 without any walk. Both insertion sites are faces: `cat`/`cats` appends at the
+           END (the mismatch never fires; skip-match runs off the short end to its ≥-slen exit) and
+           `cat`/`at` deletes at the FRONT (the mismatch fires at index 0 — the earliest shift).
+           `cat`/`dog` = 3 substitutions (0), `ab`/`abcd` = gap 2 (0). Faces: 1/1/1/0/0/0.")
+  (input  (do
+            (def (count-diffs (: a String) (: b String) (: i Int64) (: len Int64) (: d Int64))
+              (if (>= i len)
+                  d
+                  (match (String.at a i)
+                    ((Some ca)
+                      (match (String.at b i)
+                        ((Some cb) (count-diffs a b (+ i 1) len (if (= ca cb) d (+ d 1))))
+                        ((None _u) d)))
+                    ((None _u) d))))
+            (def (rest-eq (: short String) (: long String) (: j Int64) (: slen Int64))
+              (if (>= j slen)
+                  1
+                  (if (= (Option.expect (String.at short j) "s2")
+                         (Option.expect (String.at long (+ j 1)) "l2"))
+                      (rest-eq short long (+ j 1) slen)
+                      0)))
+            (def (skip-match (: short String) (: long String) (: i Int64) (: slen Int64))
+              (if (>= i slen)
+                  1
+                  (do
+                    (def cs (Option.expect (String.at short i) "s"))
+                    (def cl (Option.expect (String.at long i) "l"))
+                    (if (= cs cl)
+                        (skip-match short long (+ i 1) slen)
+                        (rest-eq short long i slen)))))
+            (def (one-apart (: a String) (: b String))
+              (do
+                (def la (String.byte-len a))
+                (def lb (String.byte-len b))
+                (if (= la lb)
+                    (if (= (count-diffs a b 0 la 0) 1) 1 0)
+                    (if (= (+ la 1) lb)
+                        (skip-match a b 0 la)
+                        (if (= la (+ lb 1))
+                            (skip-match b a 0 lb)
+                            0)))))
+            (def (main (: mode Int64))
+              (if (= mode 1) (one-apart "cat" "cut")
+              (if (= mode 2) (one-apart "cat" "cats")
+              (if (= mode 3) (one-apart "cat" "at")
+              (if (= mode 4) (one-apart "cat" "cat")
+              (if (= mode 5) (one-apart "cat" "dog")
+                             (one-apart "ab" "abcd")))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 1 Int64))
+  (call   main (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: 4 Int64)) (output (: 0 Int64))
+  (call   main (: 5 Int64)) (output (: 0 Int64))
+  (call   main (: 6 Int64)) (output (: 0 Int64)))
+
 (case "a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch"
   (doc    "The dual-string lockstep walk (the parse/scan pins above walk ONE string; this reads the
            SAME index of TWO strings per step): advance while `String.at a i` equals `String.at b i`,

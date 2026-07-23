@@ -31,6 +31,7 @@ pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
 pass	BETA over the capture-avoiding substitution still proves the identity theorem (no regression)
+pass	BIJECTIVE base-26 column codec biases each step by one and round-trips at the boundaries
 pass	BOYER-MOORE majority vote pairs a cancel-count sweep with a verify recount
 pass	BST DELETE-MIN walks the left spine, returns the minimum and the rebuilt tree
 pass	BigInt.of a UInt32 at its high bit is a positive BigInt (narrow zero-extend, not sign)
@@ -50,8 +51,10 @@ pass	LOCAL PEAKS counts strict interior maxima through a three-element sliding w
 pass	LONGEST RUN tracks the current and best streak, first run winning ties
 pass	LOOK-AND-SAY iterates run-length description over its own prior output
 pass	MAX PROFIT tracks the running minimum and best spread in one forward pass
+pass	MOVE-ZEROS stably shifts zeros to the tail, preserving non-zero order and total length
 pass	MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
+pass	ONE-EDIT-APART checks strings for exactly one substitution or one insertion by length case
 pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
@@ -4523,8 +4526,8 @@ todo	a @param accessor splices into a quasiquote and the eval computes with the 
 todo	a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)
 todo	a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)
 todo	a Float64 closure captures a Float64 build-time host effect result
-todo	a Map-returning closure alongside a parameterized plain export — the closure
-todo	a Map-returning closure alongside a parameterized plain export — the plain
+pass	a Map-returning closure alongside a parameterized plain export — the closure
+pass	a Map-returning closure alongside a parameterized plain export — the plain
 pass	a NESTED Record ARG (a record containing a record) crosses the direct-call boundary
 pass	a NESTED Record ARG with a LIST result crosses the direct-call boundary
 pass	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
@@ -4546,9 +4549,9 @@ pass	a camelCase round-trip resolves through kebab boundary-name normalization
 todo	a closure captures the result of a build-time host op called with an argument
 pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
 todo	a closure capturing a build-time host effect preserves the order of two host calls
-todo	a closure returning a Map — canonical key order
+pass	a closure returning a Map — canonical key order
 pass	a closure returning a NESTED record crosses as the typed value form
-todo	a closure returning a Set — canonical member order
+pass	a closure returning a Set — canonical member order
 pass	a closure returning a record crosses as the typed value form
 todo	a closure that performs a delegated effect cannot cross the host boundary
 todo	a conditional performs only the taken branch's effect — else
@@ -4569,7 +4572,7 @@ pass	a distinct-signature round-trip alongside a plain export — the plain expo
 pass	a distinct-signature round-trip applies the Int64->Bool closure
 pass	a distinct-signature round-trip applies the Int64->Int64 closure
 pass	a distinct-signature round-trip's Bool closure on a nonzero input
-todo	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
+pass	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a RECORD RESULT crosses the direct-call boundary
 pass	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 pass	a genuinely-runtime MULTIPLY on an unusual signed width traps on overflow rather than wrapping to storage
@@ -4649,8 +4652,8 @@ todo	function arguments are evaluated left to right
 todo	host calls are observed in the order they were made
 todo	let bindings' initializers are evaluated in binding order
 todo	mixed-type @param sites share one Param effect and drive control flow
-todo	multi-export Set-result closures — the singleton one
-todo	multi-export Set-result closures — three sharing one call
+pass	multi-export Set-result closures — the singleton one
+pass	multi-export Set-result closures — three sharing one call
 pass	multi-export record result — canonical field order
 pass	multi-export record result — the second closure, with a negative leaf
 todo	or performs the right operand's effect when the left is false

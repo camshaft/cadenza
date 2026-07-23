@@ -1812,6 +1812,50 @@
   (call   main (: 7 Int64)) (output (: 200021 Int64))
   (call   main (: 16 Int64)) (output (: 6041 Int64)))
 
+(case "BIJECTIVE base-26 column codec biases each step by one and round-trips at the boundaries"
+  (doc    "The spreadsheet-column numbering: BIJECTIVE base 26 has NO zero digit (A=1 … Z=26), so the
+           positional decomposition above does not apply — each step subtracts one BEFORE dividing
+           (`m = n−1; digit = m mod 26; n' = m div 26`), and forgetting the bias renders 26 as `A0`-
+           equivalent garbage instead of Z (the off-by-one IS the number system). The decoder is the
+           plain positional accumulate PLUS one per letter — encode and decode disagree about where
+           the bias lives, which the round-trip settles. Faces sit at the carry boundaries: 1 → A;
+           26 → Z (the LAST single-letter — a biased step must not carry); 27 → AA (the FIRST
+           carry); 702 → ZZ (the last double); 703 → AAA (the second carry). Encoding: length·10 +
+           round-trip bit — the LENGTH transitions (1→2 at 27, 2→3 at 703) are the observable, since
+           they move exactly at the bias-sensitive boundaries.")
+  (input  (do
+            (def (letter (: v Int64))
+              (Option.expect (String.at "ABCDEFGHIJKLMNOPQRSTUVWXYZ" v) "in range"))
+            (def (tocol (: n Int64) (: acc String))
+              (if (= n 0)
+                  acc
+                  (do
+                    (def m (- n 1))
+                    (tocol (/ m 26) (String.concat (letter (% m 26)) acc)))))
+            (def (find-at (: alpha String) (: c String) (: i Int64) (: len Int64))
+              (if (>= i len)
+                  -1
+                  (match (String.at alpha i)
+                    ((Some d) (if (= d c) i (find-at alpha c (+ i 1) len)))
+                    ((None _u) -1))))
+            (def (fromcol (: s String) (: i Int64) (: len Int64) (: acc Int64))
+              (if (>= i len)
+                  acc
+                  (match (String.at s i)
+                    ((Some c) (fromcol s (+ i 1) len (+ (* acc 26) (+ (find-at "ABCDEFGHIJKLMNOPQRSTUVWXYZ" c 0 26) 1))))
+                    ((None _u) acc))))
+            (def (main (: n Int64))
+              (do
+                (def s (tocol n ""))
+                (+ (* (String.byte-len s) 10)
+                   (if (= (fromcol s 0 (String.byte-len s) 0) n) 1 0))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 11 Int64))
+  (call   main (: 26 Int64)) (output (: 11 Int64))
+  (call   main (: 27 Int64)) (output (: 21 Int64))
+  (call   main (: 702 Int64)) (output (: 21 Int64))
+  (call   main (: 703 Int64)) (output (: 31 Int64)))
+
 (case "the LUHN checksum doubles alternate digits from the right with the nine-fold correction"
   (doc    "The check-digit walk over the digit peel: positions count from the RIGHT (the `% 10` /
            `/ 10` loop naturally visits low digits first, so the position parity is just the loop

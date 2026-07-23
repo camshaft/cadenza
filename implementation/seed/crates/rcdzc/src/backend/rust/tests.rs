@@ -5607,6 +5607,23 @@ fn a_closure_factory_returning_a_record_emits() {
 }
 
 #[test]
+fn a_closure_factory_returning_a_set_or_map_emits() {
+    // HOST-CLOSURE FACTORY with a SET/MAP RESULT (S3): a factory whose returned closure yields a Set/Map now
+    // crosses — `s3_result_ok` admits `Ty::Set`/`Ty::Map` (rendered via `cdz_render_expr`'s Set/Map arm into
+    // the canonical `(set …)`/`(map (k v) …)` form). Matters chiefly on ASYNC, where such a closure stays a
+    // FACTORY (sync eta-peels a nullary one to a plain `BTreeSet`/`BTreeMap`-returning fn the render already
+    // handles). A Set-returning factory emits an `Rc<dyn Fn>` whose result is the `BTreeSet<i64>`.
+    let set = compile_rust(
+        "(module m (def (mk (: k Int64)) (fn ((: x Int64)) ((. Set of) (list x k)))) (export mk))",
+    );
+    assert!(
+        set.contains("pub fn mk(k: i64) -> std::rc::Rc<dyn Fn(i64) -> ")
+            && set.contains("BTreeSet<i64>"),
+        "a Set-returning closure factory emits an `Rc<dyn Fn>` with a BTreeSet result:\n{set}"
+    );
+}
+
+#[test]
 fn a_closure_parameter_consumer_with_a_bare_string_result_emits() {
     // CLOSURE-PARAMETER CONSUMER with a BARE String/Bytes RESULT: the consumer's OWN result is a String
     // (here it ignores the closure and returns "hi"). This USED to decline (`result_render_unsupported`) —
