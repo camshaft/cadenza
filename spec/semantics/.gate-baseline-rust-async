@@ -47,6 +47,7 @@ pass	TRIAL-DIVISION primality steps odd candidates to the square bound and repor
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
+pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
 pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
 pass	a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit
 pass	a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string
@@ -4324,6 +4325,7 @@ pass	three events at the same Instant drain in FIFO insertion order (tie-break a
 pass	three leaf variants in one quoted form each dispatch their own tag
 pass	three same-variant literal arms fall through in order
 pass	three sums in a tuple bind three distinct payloads
+pass	tree HEIGHT and BALANCE derive from insertion order over the same BST shape
 pass	triple negation of a runtime boolean is a single negation
 pass	true is greater than false
 pass	true is not less than false

@@ -452,6 +452,50 @@
   (call   main (: 3888 Int64)) (output (: 38881 Int64))
   (call   main (: 3 Int64)) (output (: 31 Int64)))
 
+(case "a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters"
+  (doc    "The substitution cipher over the alphabet-table pair: each scalar's position is found by
+           the index-of SCAN (the decoder direction), shifted `(p + k) mod 26`, and read back by the
+           POSITIONAL String.at (the encoder direction) — one walk drives both table directions per
+           scalar. Non-letters PASS THROUGH untouched (the space in `hello world` — a cipher that
+           shifts the miss sentinel -1 corrupts it). Three certificate layers per call: the encoded
+           string against its expected literal, the DECODE round-trip `rot (rot msg k) (26−k) = msg`,
+           and the same round-trip over `abz` (whose `z` wraps past the alphabet end at any positive
+           k — the mod-26 face). k=13 → ROT13 `uryyb jbeyq` (the involution shift); k=1 → `ifmmp
+           xpsme` (minimal shift, `z`→`a` wrap); k=26 → the IDENTITY (`(p+26) mod 26 = p` — encoded
+           equals the original, and the round-trip shift 26−26 = 0 must also be identity). All → 111.")
+  (input  (do
+            (def (find-at (: alpha String) (: c String) (: i Int64) (: len Int64))
+              (if (>= i len)
+                  -1
+                  (match (String.at alpha i)
+                    ((Some d) (if (= d c) i (find-at alpha c (+ i 1) len)))
+                    ((None _u) -1))))
+            (def (rot-go (: s String) (: k Int64) (: i Int64) (: len Int64) (: acc String))
+              (if (>= i len)
+                  acc
+                  (match (String.at s i)
+                    ((Some c)
+                      (do
+                        (def p (find-at "abcdefghijklmnopqrstuvwxyz" c 0 26))
+                        (def out (if (< p 0)
+                                     c
+                                     (Option.expect (String.at "abcdefghijklmnopqrstuvwxyz" (% (+ p k) 26)) "in range")))
+                        (rot-go s k (+ i 1) len (String.concat acc out))))
+                    ((None _u) acc))))
+            (def (rot (: s String) (: k Int64))
+              (rot-go s k 0 (String.byte-len s) ""))
+            (def (main (: k Int64))
+              (do
+                (def msg "hello world")
+                (def enc (rot msg k))
+                (+ (* (if (= enc (if (= k 13) "uryyb jbeyq" (if (= k 1) "ifmmp xpsme" "hello world"))) 1 0) 100)
+                   (+ (* (if (= (rot enc (- 26 k)) msg) 1 0) 10)
+                      (if (= (rot (rot "abz" k) (- 26 k)) "abz") 1 0)))))
+            (export main)))
+  (call   main (: 13 Int64)) (output (: 111 Int64))
+  (call   main (: 1 Int64)) (output (: 111 Int64))
+  (call   main (: 26 Int64)) (output (: 111 Int64)))
+
 (case "a deep rope indexes by scalar at both extremes"
   (doc    "Scalar addressing through ~500 concat seams: `String.at` reads index 0 (the single \"A\" head
            leaf) and index n·2 (the LAST scalar, deep in the right spine) of a 1001-scalar rope — 10·1+1
