@@ -17,6 +17,7 @@
 import { Tok, Tree, Node, parse-tokens, empty-tree, add-node, record-def, record-param } from "parse-db"
 import { Core, lower-tree } from "lower-db"
 import { overflows } from "int-width"
+import { SumStore, empty-store, store-alloc, store-tag, store-payload } from "sum-store"
 
 /// Evaluate a Core term under `env` (binderId → value). Total: an unbound var or divide-by-zero → `None`.
 /// The DEF-ENV (slice-B1b/B3): `name → (paramBinderIds, bodyCore)`. Recursion is a STATIC name reference
@@ -28,20 +29,23 @@ import { overflows } from "int-width"
 def eval-core(c: Core, env: Map(Int64, Int64)) =
   eval-core-d(c, env, (Map.empty : Map(Int64, (List(Int64), Core))))
 
-/// eval-args (slice-B3): eval each arg-term in the CURRENT (caller) env, left-to-right, collecting values.
-/// Index recursion (List.at/List.len) — the compiler-ml idiom (parse-db `tok-at`); a List is never
-/// cons-destructured here. Any arg that declines sinks the whole call to `None` (total).
-def eval-args(args: List(Core), i: Int64, env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), Core))) =
-  if (i == List.len(args)) then Option.Some(([] : List(Int64)))
+/// eval-args (slice-B3, M2-b-2a store-threaded): eval each arg-term in the CURRENT (caller) env, left-to-right,
+/// collecting values AND threading the growing `SumStore` (an arg may CONSTRUCT a sum → allocates into the
+/// store, whose store' must flow to the next arg's eval). Returns `Option((List(Int64), SumStore))`. Index
+/// recursion (List.at/List.len) — the compiler-ml idiom; a List is never cons-destructured here. Any arg that
+/// declines sinks the whole call to `None` (total).
+def eval-args(args: List(Core), i: Int64, env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), Core)), store: SumStore) =
+  if (i == List.len(args)) then Option.Some((([] : List(Int64)), store))
   else (match List.at(args, i) with
     | Option.None(_) => Option.None(unit)
     | Option.Some(a) =>
-        (match eval-core-d(a, env, defs) with
+        (match eval-core-s(a, env, defs, store) with
           | Option.None(_) => Option.None(unit)
-          | Option.Some(v) =>
-              (match eval-args(args, i + 1, env, defs) with
+          | Option.Some(vs1) => (match vs1 with | (v, store1) =>
+              (match eval-args(args, i + 1, env, defs, store1) with
                 | Option.None(_) => Option.None(unit)
-                | Option.Some(rest) => Option.Some(List.concat(List.push([], v), rest)))))
+                | Option.Some(rs) => (match rs with | (rest, store2) =>
+                    Option.Some((List.concat(List.push([], v), rest), store2)))))))
 
 /// bind-params (slice-B3): bind param binder-ids positionally to arg values in a FRESH env (lexical — the
 /// callee body sees ONLY its params + defs, never the caller's locals). Index recursion. Ragged arity (a
@@ -63,66 +67,81 @@ def bind-params(params: List(Int64), vals: List(Int64), i: Int64, acc: Map(Int64
 /// monomorphization bug (spurious CDZ0101 unbound param; queue/mlrepro-new-fn-in-eval-core-mutual-recursion-
 /// cycle-spurious-unbound-param.md). v-inference fixed that host bug (`5cdc957da`, type_specialize scope-skip),
 /// so the two arms now SHARE this helper.
-def apply-def-by-name(name: Int64, args: List(Core), env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), Core))) =
+def apply-def-by-name(name: Int64, args: List(Core), env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), Core)), store: SumStore) =
   (match Map.lookup(defs, name) with
     | Option.None(_) => Option.None(unit)
     | Option.Some(pb) =>
         (match pb with
           | (params, body) =>
-              (match eval-args(args, 0, env, defs) with
+              (match eval-args(args, 0, env, defs, store) with
                 | Option.None(_) => Option.None(unit)
-                | Option.Some(vals) =>
-                    eval-core-d(body, bind-params(params, vals, 0, (Map.empty : Map(Int64, Int64))), defs))))
+                | Option.Some(vs) => (match vs with | (vals, store1) =>
+                    eval-core-s(body, bind-params(params, vals, 0, (Map.empty : Map(Int64, Int64))), defs, store1)))))
 
-/// The workhorse (slice-B3): `eval-core` + a `defs` def-env threaded through every arm. CNum/CVar/CBin/CLet/
-/// CIf just pass `defs` down unchanged; the CCall arm does the real name→body dispatch. Recursion terminates
-/// by the PROGRAM's own base case (a CIf guard), NOT by any fuel bound — matching the reference (a genuinely
-/// non-terminating source non-terminates, which is correct; such programs stay out of the @test suite).
-def eval-core-d(c: Core, env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), Core))) = match c with
-  | Core.CNum(v, _, _) => Option.Some(v)   // the interpreter oracle reads the VALUE; width is an emit concern
-  | Core.CVar(b) => Map.lookup(env, b)
+/// eval-core-d (slice-B3): the 3-arg PUBLIC workhorse — evaluate a Core term under `env` + `defs`, returning
+/// `Option(Int64)` (the value, store discarded). A thin wrapper over the store-threaded `eval-core-s`: seed an
+/// empty SumStore, run, project out the value. Keeps eval-core-d's signature EXACTLY (every external caller +
+/// @test is unchanged — the M2-b-2a store threading is confined behind this wrapper).
+def eval-core-d(c: Core, env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), Core))) =
+  (match eval-core-s(c, env, defs, empty-store()) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(vs) => (match vs with | (v, _) => Option.Some(v)))
+
+/// The store-threaded workhorse (M2-b-2a): `eval-core-d` + a `SumStore` threaded IN and OUT of every arm, so a
+/// sum-value CONSTRUCTION (CCtor, added M2-b-2b) can ALLOCATE into the store and the grown store' flows onward.
+/// Returns `Option((Int64, SumStore))` — the value + the (possibly-grown) store. Today (M2-b-2a) NO arm allocs
+/// — the store passes through UNCHANGED, so this is byte-for-byte behavior-identical to the old eval-core-d
+/// (every existing @test stays green); the threading is the plumbing M2-b-2b's CCtor/CMatch arms need. `defs`
+/// is read-only (a def-env, per slice-B3); the SumStore GROWS (v-inference's note: unlike defs, thread store'
+/// forward from each sub-eval). CNum/CVar/CFnRef don't touch the store; CBin/CLet/CIf/CCall/CFnRefVar thread it
+/// through their sub-evals. Recursion terminates by the PROGRAM's base case (a CIf guard), never by fuel.
+def eval-core-s(c: Core, env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), Core)), store: SumStore) = match c with
+  | Core.CNum(v, _, _) => Option.Some((v, store))   // the interpreter oracle reads the VALUE; width is an emit concern
+  | Core.CVar(b) => (match Map.lookup(env, b) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(v) => Option.Some((v, store)))
   | Core.CBin(op, signed, width, l, r) =>
       // corrected-2b: a NARROW (width<64) ARITH result TRAPS on overflow (→ None) — matching spec §Overflow
       // + the reference's CDZ0304 (the unqualified +/-/* traps; wrapping is the opt-in .wrapping-* form, not
       // here). Int64 (width 64) + comparisons (0/1, width 64) never overflow-check. So `(: 100 Int8) +
       // (: 100 Int8)` = 200, overflows Int8 → None (declines); `(: 100 Int8) + (: 20 Int8)` = 120 fits → Some.
-      (match eval-core-d(l, env, defs) with
-        | Option.Some(a) =>
-          (match eval-core-d(r, env, defs) with
-            | Option.Some(b) => (match eval-bin(op, a, b) with
-                | Option.Some(v) => (if (width < 64) then (if overflows(v, signed, width) then Option.None(unit) else Option.Some(v)) else Option.Some(v))
-                | Option.None(_) => Option.None(unit))
-            | Option.None(_) => Option.None(unit))
+      // Thread the store L→R (a sub-expr may construct a sum): store → store1 (after l) → store2 (after r).
+      (match eval-core-s(l, env, defs, store) with
+        | Option.Some(as1) => (match as1 with | (a, store1) =>
+          (match eval-core-s(r, env, defs, store1) with
+            | Option.Some(bs2) => (match bs2 with | (b, store2) => (match eval-bin(op, a, b) with
+                | Option.Some(v) => (if (width < 64) then (if overflows(v, signed, width) then Option.None(unit) else Option.Some((v, store2))) else Option.Some((v, store2)))
+                | Option.None(_) => Option.None(unit)))
+            | Option.None(_) => Option.None(unit)))
         | Option.None(_) => Option.None(unit))
   | Core.CLet(binder, valExpr, body) =>
-      // non-recursive let: eval the value in the CURRENT env, bind it to the let's canonical id, eval body.
-      (match eval-core-d(valExpr, env, defs) with
-        | Option.Some(v) => eval-core-d(body, Map.insert(env, binder, v), defs)
+      // non-recursive let: eval the value in the CURRENT env (threading store → store1), bind it to the let's
+      // canonical id, eval body under store1.
+      (match eval-core-s(valExpr, env, defs, store) with
+        | Option.Some(vs1) => (match vs1 with | (v, store1) => eval-core-s(body, Map.insert(env, binder, v), defs, store1))
         | Option.None(_) => Option.None(unit))
   | Core.CIf(cond, thn, els) =>
       // Bool is 0/1 in Core: a non-zero condition takes the then-branch, zero takes the else. Only the taken
-      // branch is evaluated (lazy — a divide-by-zero in the untaken branch does NOT sink the result).
-      (match eval-core-d(cond, env, defs) with
-        | Option.Some(c) => (if (c == 0) then eval-core-d(els, env, defs) else eval-core-d(thn, env, defs))
+      // branch is evaluated (lazy). Thread store: cond → store1, then the taken branch under store1.
+      (match eval-core-s(cond, env, defs, store) with
+        | Option.Some(cs1) => (match cs1 with | (c, store1) => (if (c == 0) then eval-core-s(els, env, defs, store1) else eval-core-s(thn, env, defs, store1)))
         | Option.None(_) => Option.None(unit))
   | Core.CCall(name, args) =>
       // slice-B3: a recursive call is a NON-inlining name reference — dispatched by name via the shared
       // apply-def-by-name (unknown name / declining arg → None). Recursion terminates on the program's own
-      // base case (a CIf guard), never by fuel.
-      apply-def-by-name(name, args, env, defs)
+      // base case (a CIf guard), never by fuel. Threads the store through the args + body.
+      apply-def-by-name(name, args, env, defs, store)
   | Core.CFnRef(name) =>
       // HIGHER-ORDER: a def-name as a first-class fn VALUE. A function value IS its name (top-level defs are
       // closed — no capture), represented as the Int64 name. Some(name); the CFnRefVar site dispatches it.
-      Option.Some(name)
+      Option.Some((name, store))
   | Core.CFnRefVar(fBinder, args) =>
       // HIGHER-ORDER apply: call the fn-value held in binder `fBinder` (a fn-typed param). Look up the binder's
       // value = the callee def-NAME (put there by a CFnRef arg), then dispatch by name via the SHARED
-      // apply-def-by-name — the same helper CCall uses (the HO-3 inline-dispatch workaround is gone now that
-      // v-inference fixed the monomorphization bug `5cdc957da`). An unbound binder / non-fn value / unknown
-      // name → None (declines, never a wrong value).
+      // apply-def-by-name — the same helper CCall uses. An unbound binder / non-fn value / unknown name → None.
       (match Map.lookup(env, fBinder) with
         | Option.None(_) => Option.None(unit)
-        | Option.Some(name) => apply-def-by-name(name, args, env, defs))
+        | Option.Some(name) => apply-def-by-name(name, args, env, defs, store))
 
 /// Apply a binary op: 43 +, 45 -, 42 *, 47 /, and the relational ops 60 `<`, 61 `==`, 62 `>`, 63 `<=`,
 /// 64 `>=`, 65 `!=`. Relational ops yield a Bool encoded as 0/1 (Core represents Bool as an Int); each of

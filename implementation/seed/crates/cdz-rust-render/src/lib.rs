@@ -369,6 +369,43 @@ pub fn cdz_return_type(module: &str, name: &str) -> Option<String> {
     None
 }
 
+/// The export `name`'s per-closure-param CADENZA arrow SHAPES, read off the `// cdz-param-shapes[<ident>]:
+/// <arrow> | <arrow> | …` note the backend emits for a consumer (an export with ≥1 fn-typed param). Each
+/// entry is a closure param's `render_name` arrow type IN PARAMETER ORDER (`(-> (Tuple Int64 Int64) Int64)`
+/// vs `(-> (Record (a Int64) (b Int64)) Int64)`) — the pre-erasure shape the Rust `Rc<dyn Fn((i64,i64))>`
+/// loses. Used to disambiguate producer↔consumer pairing when a Tuple-arg and a Record-arg closure erase to
+/// the same type. Empty `Vec` when no note (a non-consumer, or a consumer with no ambiguity-relevant note).
+/// Split on ` | ` — a separator that cannot occur inside a `render_name` (which uses `(-> …)`/spaces).
+pub fn cdz_param_shapes(module: &str, name: &str) -> Vec<String> {
+    let prefix = format!("// cdz-param-shapes[{name}]:");
+    for line in module.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix(&prefix) {
+            return rest
+                .trim()
+                .split(" | ")
+                .map(|s| s.trim().to_string())
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+/// The `// cdz-produces-closure[<name>]: <arrow>` note for a PEELED producer — the Cadenza arrow it supplies
+/// (`(-> <arg-shapes> <result>)` via `render_name`). A peeled producer's `cdz-return` is its SCALAR result,
+/// not the closure shape, so this carries the pre-erasure arrow for producer↔consumer shape disambiguation
+/// (the async FACTORY producer instead carries the arrow in its own `cdz-return`). `None` when absent.
+pub fn cdz_produces_closure(module: &str, name: &str) -> Option<String> {
+    let prefix = format!("// cdz-produces-closure[{name}]:");
+    for line in module.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix(&prefix) {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
 /// The `// cdz-unit[<name>]: <value-form>` note for a QUANTITY export — the unit's canonical VALUE-form
 /// s-expr (`Unit::render_value_form`, byte-identical to what cdz-run prints inside `((. Qty of) …)`). Only
 /// a Qty-returning fn emits one; `None` for any other result. Spliced verbatim by the top-level Qty render.

@@ -87,6 +87,13 @@ fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
         // the boundary is a different, still-deferred ABI — that shape has no producing-sibling-driven synth.)
         Ty::String | Ty::Bytes => true,
         Ty::Tuple(elems) => elems.iter().all(s2_arg_ok),
+        // A RECORD closure ARG — the harness's `rust_call_arg` rebuilds a `(record …)` literal into the
+        // native positional Rust tuple in SORTED-key order (matching the emit's field layout). Admitted iff
+        // every field type is. NOTE: a Tuple-arg and a same-field-type Record-arg closure erase to the
+        // IDENTICAL `Rc<dyn Fn((i64,i64))>`, so the driver disambiguates producer↔consumer pairing via the
+        // `// cdz-param-shapes` note (the pre-erasure arrow type) — without that, a distinct-sig two-closure
+        // consumer could mispair (breaker; the reason this arm waited for the param-shapes note).
+        Ty::Record(fields) => fields.values().all(s2_arg_ok),
         Ty::List(elem) => s2_arg_ok(elem),
         // Option/Result (the WELL-KNOWN 2-variant sums the harness rebuilds — `(Some v)`→`Some(v)`,
         // `(Ok v)`/`(Err e)`→`Ok(v)`/`Err(e)`, `(None …)`→`None`) over S2-OK payloads. Identified by the
@@ -1018,7 +1025,53 @@ fn emit_signature(
             .map(|(p, num, den)| format!("// cdz-qty-at[{ident}]: {p} {num}/{den}\n"))
             .collect::<String>()
     };
-    let ret_note = format!("{ret_note}{unit_note}{qty_at_notes}");
+    // CLOSURE-PARAM SHAPE note (`// cdz-param-shapes[<ident>]: <arrow> | <arrow> | …`) — one entry per
+    // fn-typed (closure) parameter, IN PARAMETER ORDER, each the param's Cadenza arrow type via `render_name`
+    // (`(-> (Tuple Int64 Int64) Int64)` vs `(-> (Record (a Int64) (b Int64)) Int64)`). WHY: a Tuple-arg and a
+    // Record-arg closure ERASE to the identical Rust `Rc<dyn Fn((i64,i64)) -> i64>`, so the gate driver's
+    // producer↔consumer pairing (which compares that erased type) can MISPAIR them in a distinct-signature
+    // two-closure consumer. This note carries the pre-erasure shape the driver matches against each producer
+    // factory's `cdz-return` arrow type (also `render_name`, same distinction) to disambiguate. Emitted only
+    // for a PUBLIC export with ≥1 fn-typed param (a consumer); inert `//` comment, keyed by ident. The `|`
+    // separator can't occur in a `render_name` (which uses `(-> …)`/spaces), so the driver splits cleanly.
+    let param_shapes_note = {
+        let shapes: Vec<String> = params
+            .iter()
+            .filter(|(_, t)| is_fn_ty(t))
+            .map(|(_, t)| t.render_name())
+            .collect();
+        if public && !shapes.is_empty() {
+            format!("// cdz-param-shapes[{ident}]: {}\n", shapes.join(" | "))
+        } else {
+            String::new()
+        }
+    };
+    // PRODUCES-CLOSURE note (`// cdz-produces-closure[<ident>]: <arrow>`) — the CADENZA arrow a PEELED
+    // producer supplies (`(-> <param shapes> <result>)`, via `render_name`). WHY: a peeled producer (a
+    // nullary `(fn (p) …)` eta-peeled to `pub fn mka(p: (i64,i64)) -> i64`) loses its arrow — its
+    // `cdz-return` is the SCALAR result (`Int64`), not the closure shape — so the driver cannot tell a
+    // Tuple-arg peeled producer from a Record-arg one (both erase to `fn((i64,i64))->i64`). This note gives
+    // the pre-erasure arrow the driver matches against a consumer's `cdz-param-shapes` (the async FACTORY
+    // producer already carries the arrow in its own `cdz-return`, so this covers the SYNC peeled case). Only
+    // for a PUBLIC export with NO closure param + a non-closure result (the peeled-producer candidate shape);
+    // inert `//` comment. The arrow uses the same `render_name` the consumer note does, so they string-match.
+    let produces_closure_note = {
+        let is_peeled_producer_shape =
+            public && !is_fn_ty(result) && !params.iter().any(|(_, t)| is_fn_ty(t));
+        if is_peeled_producer_shape && !params.is_empty() {
+            let arrow = params
+                .iter()
+                .rev()
+                .fold(result.render_name(), |acc, (_, t)| {
+                    format!("(-> {} {acc})", t.render_name())
+                });
+            format!("// cdz-produces-closure[{ident}]: {arrow}\n")
+        } else {
+            String::new()
+        }
+    };
+    let ret_note =
+        format!("{ret_note}{unit_note}{qty_at_notes}{param_shapes_note}{produces_closure_note}");
     if mode.is_async() {
         // `async fn <name><__CdzE: CdzEnv>(env: &mut __CdzE, …) -> <ret> { env.consume(1).await; <body> }`
         // — the per-call fuel charge + cooperative-yield point at entry. The env TYPE PARAMETER is named

@@ -5566,6 +5566,29 @@ fn rustc_roundtrip_closure_parameter_consumer_with_a_compound_result_closure_s3(
 }
 
 #[test]
+fn a_record_arg_closure_consumer_emits_a_param_shapes_note() {
+    // RECORD closure ARG (host-closure S2, record-arg): a consumer taking a `(-> (Record …) Int64)` closure
+    // now crosses (`s2_arg_ok` admits `Ty::Record`). Because a Tuple-arg and a same-field Record-arg closure
+    // erase to the IDENTICAL `Rc<dyn Fn((i64,i64))>`, the backend emits a `// cdz-param-shapes[<ident>]` note
+    // carrying the pre-erasure arrow (Tuple vs Record distinct) so the gate driver pairs producer↔consumer
+    // correctly. Assert the consumer emits + carries the Record-shaped note.
+    let m = compile_rust(
+        "(module m \
+           (def (mkb (: k Int64)) (fn ((: r (Record (a Int64) (b Int64)))) (+ (* (. r a) (. r b)) k))) \
+           (def (appb (: h (-> (Record (a Int64) (b Int64)) Int64)) (: y Int64)) (h (record (a y) (b y)))) \
+           (export mkb) (export appb))",
+    );
+    assert!(
+        m.contains("pub fn appb(h: std::rc::Rc<dyn Fn((i64, i64)) -> i64>, y: i64) -> i64"),
+        "the record-arg consumer emits (record erases to the (i64,i64) tuple):\n{m}"
+    );
+    assert!(
+        m.contains("// cdz-param-shapes[appb]: (-> (Record (a Int64) (b Int64)) Int64)"),
+        "the consumer carries a cdz-param-shapes note with the pre-erasure Record arrow:\n{m}"
+    );
+}
+
+#[test]
 fn a_closure_factory_returning_a_record_emits() {
     // HOST-CLOSURE FACTORY with a RECORD RESULT (S3): a factory whose returned closure yields a record now
     // crosses — `s3_result_ok` admits `Ty::Record` (it renders like a Tuple, the factory-result path walks

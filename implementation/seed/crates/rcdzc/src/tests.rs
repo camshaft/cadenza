@@ -51710,6 +51710,57 @@ mod stage1 {
     }
 
     #[test]
+    fn a_do_local_fn_capturing_a_runtime_computed_sibling_local_survives_inlining() {
+        // corpus-bugfix FINDING #19: a do-local / let-local fn that CAPTURES a RUNTIME-COMPUTED sibling
+        // local, when its enclosing def is inlined, spuriously rejected CDZ0101 "unbound name". β-reduction
+        // copies the `do`/`let`, making the sibling binding's VALUE-RHS a SYNTH node; `pin_free_vars`'s
+        // `is_user_node` gate then SKIPPED the capture (a synth binder) → the copied reference re-resolved
+        // against the orphan → unbound. FIX: `is_synth_captured_value_binder` also pins a synth do-local
+        // `(def x V)` / `let` `(x V)` value binder (like the module-record capture). `cdz check` was CLEAN
+        // (gated on `is_user_node`) while `compile` declined — the check≡compile discrepancy the coded
+        // path closes. A PARAM capture (c2) and a CONST-local capture (c3) always worked; only a
+        // runtime-computed value binder slipped through.
+        let run = |src: &str| -> i64 {
+            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+                "a do-local fn capturing a runtime-computed sibling must compile, not CDZ0101",
+            );
+            run_returns::<i64>(&bytes, "main")
+        };
+        // c4: do-local `(def m (* n 3))` captured by `inner`, `outer` inlined → 5 + 5*3 = 20.
+        assert_eq!(
+            run("(module m (def (outer (: n Int64)) \
+                   (do (def m (* n 3)) (def (inner (: x Int64)) (+ x m)) (inner n))) \
+                   (def (main) (outer 5)) (export main))"),
+            20,
+            "c4: do-local runtime-computed sibling capture"
+        );
+        // c5: the `let`-binding twin — `(let ((mm (* n 3))) …)` captured by `inner` → 20.
+        assert_eq!(
+            run("(module m (def (outer (: n Int64)) \
+                   (let ((mm (* n 3))) (do (def (inner (: x Int64)) (+ x mm)) (inner n)))) \
+                   (def (main) (outer 5)) (export main))"),
+            20,
+            "c5: let-local runtime-computed sibling capture"
+        );
+        // c2 (param capture) + c3 (const-local capture) — always worked, guard against regression.
+        assert_eq!(
+            run(
+                "(module m (def (outer (: n Int64)) (do (def (inner (: x Int64)) (+ x n)) (inner 10))) \
+                   (def (main) (outer 5)) (export main))"
+            ),
+            15,
+            "c2: param capture (regression guard)"
+        );
+        assert_eq!(
+            run("(module m (def (outer (: n Int64)) \
+                   (do (def m 3) (def (inner (: x Int64)) (+ x m)) (inner n))) \
+                   (def (main) (outer 5)) (export main))"),
+            8,
+            "c3: const-local capture (regression guard)"
+        );
+    }
+
+    #[test]
     fn a_recursive_generic_function_is_instantiated_per_type() {
         // 09-functions "a recursive generic function is instantiated at two different types": `loopn`
         // threads `x` UNCHANGED, so `x` is GENERIC (the body never fixes its type). A non-recursive

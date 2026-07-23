@@ -49,6 +49,7 @@ pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shi
 pass	LOCAL PEAKS counts strict interior maxima through a three-element sliding window
 pass	LONGEST RUN tracks the current and best streak, first run winning ties
 pass	LOOK-AND-SAY iterates run-length description over its own prior output
+pass	MAX PROFIT tracks the running minimum and best spread in one forward pass
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division
@@ -69,6 +70,7 @@ pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, cer
 pass	a PALINDROME two-pointer walk closes from both ends of a runtime rope
 pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
 pass	a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum
+pass	a PRIME LIST accumulates by testing each candidate against earlier primes up to its square root
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
 pass	a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side
 pass	a ROMAN DECODER subtracts on lookahead and round-trips through the pinned renderer
@@ -2992,6 +2994,7 @@ pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list
 pass	modular exponentiation by SQUARING halves the exponent and branches on parity
+pass	string REVERSE walks scalars back-to-front and anti-commutes with concatenation
 pass	structural equality of two Ast.Int wider than Int64 compares by full value
 pass	the COLLATZ walk counts steps to 1 and tracks the trajectory peak
 pass	the JOSEPHUS survivor agrees between the modular recurrence and a list elimination simulation
@@ -4654,8 +4657,8 @@ todo	and short-circuit does not perform the right operand's effect
 todo	binary operator operands are evaluated left to right
 pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
 pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
-todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Record-arg one
-todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Tuple-arg one
+pass	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Record-arg one
+pass	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Tuple-arg one
 pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
 pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one
 pass	distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope
@@ -4683,7 +4686,7 @@ pass	round-trip: a compound consumer + a byte-rope consumer of the same closure 
 pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the compound
 pass	round-trip: a compound-arg closure whose consumer returns a compound
 pass	round-trip: a consumer applies a closure taking a List arg built in-guest
-todo	round-trip: a consumer applies a closure taking a Record arg built in-guest
+pass	round-trip: a consumer applies a closure taking a Record arg built in-guest
 pass	round-trip: a consumer applies a closure taking a Tuple arg built in-guest
 pass	round-trip: a consumer applies the handed-back closure and returns Bytes
 pass	round-trip: a consumer returns a byte-rope built from a single closure result
