@@ -79,6 +79,12 @@ fn s2_arg_ok(t: &crate::ty::Ty) -> bool {
     use crate::ty::Ty;
     match t.strip_nominal() {
         Ty::Int(_) | Ty::Bool | Ty::Float(_) => true,
+        // A String/Bytes closure ARG is fine when the closure is APPLIED IN-GUEST with a literal/constructed
+        // value the emitter already lowers (`(g "hello")` — the consumer builds the `String` in its own body,
+        // no host-supplied String crosses the boundary). `rust_call_arg` renders a String literal natively,
+        // and the closure param type maps to `Rc<dyn Fn(String) -> …>`. (A String arg PASSED FROM THE HOST at
+        // the boundary is a different, still-deferred ABI — that shape has no producing-sibling-driven synth.)
+        Ty::String | Ty::Bytes => true,
         Ty::Tuple(elems) => elems.iter().all(s2_arg_ok),
         Ty::List(elem) => s2_arg_ok(elem),
         // Option/Result (the WELL-KNOWN 2-variant sums the harness rebuilds — `(Some v)`→`Some(v)`,

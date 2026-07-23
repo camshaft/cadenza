@@ -5561,6 +5561,25 @@ fn a_closure_parameter_consumer_with_a_bare_string_result_emits() {
 }
 
 #[test]
+fn a_closure_parameter_consumer_with_a_string_arg_closure_emits() {
+    // CLOSURE-PARAMETER CONSUMER whose closure param takes a String ARG applied IN-GUEST: `app` takes
+    // `g: (-> String Int64)` and applies it to a String LITERAL built in its own body (`(g "hello")`). The
+    // arg is a value the emitter already lowers (no host-supplied String crosses the boundary), so it works
+    // like the S2 Tuple/List args — `s2_arg_ok` now admits `Ty::String`/`Ty::Bytes` for this in-guest-applied
+    // shape. The producing sibling `mk` supplies the `Rc<dyn Fn(String) -> i64>`. (A String arg PASSED FROM
+    // THE HOST at the boundary remains deferred — a different ABI with no producer-driven synth.)
+    let m = compile_rust(
+        "(module m (def (mk) (fn ((: s String)) ((. String byte-len) s))) \
+                    (def (app (: g (-> String Int64)) (: x Int64)) (g \"hello\")) \
+                    (export mk) (export app))",
+    );
+    assert!(
+        m.contains("pub fn app(g: std::rc::Rc<dyn Fn(String) -> i64>, x: i64) -> i64"),
+        "a closure-param consumer with a String-arg closure now emits (no longer declines):\n{m}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_host_closure_factory_compound_arg_s2() {
     // HOST-CLOSURE S2: a closure-factory whose returned closure takes a COMPOUND ARG (Tuple/List) with a
     // SCALAR result now crosses — the arg maps natively (`Rc<dyn Fn((i64, i64)) -> i64>`) and the gate

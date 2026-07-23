@@ -1645,6 +1645,42 @@
   (call   main (: 12 Int64) (: 48 Int64)) (output (: 1211 Int64))
   (call   main (: 7 Int64) (: 7 Int64)) (output (: 711 Int64)))
 
+(case "a user-written FRACTION ADD over tuples reduces by gcd and agrees with the built-in Rational"
+  (doc    "The gcd above certified in isolation; here it DRIVES the cross-multiply fraction add over
+           plain `(Tuple Int64 Int64)` pairs — `a/b + c/d = (ad+cb)/bd` reduced to lowest terms — and
+           the result is cross-checked against the BUILT-IN `Rational` doing the same sum (the
+           user-level reimplementation vs the runtime's canonical normalization, compared through
+           `Rational.of num den` which re-normalizes the user result — agreement means the user gcd
+           reduced to exactly the canonical form). Faces at a/6 + 1/4: a=1 → 5/12 (already coprime
+           cross-multiply); a=3 → 3/4 — the interesting reduction, gcd(18,24)=6 (a user add that
+           skipped reduction returns 18/24, which Rational.of NORMALIZES so the equality would still
+           hold — but the tuple digits 1824 vs 304 in the encoding catch it); a=5 → 13/12 (improper,
+           num > den). Encoding: (num·100+den)·10 + agreement.")
+  (input  (do
+            (def (gcd (: a Int64) (: b Int64))
+              (if (= b 0) a (gcd b (% a b))))
+            (def (fadd (: p (Tuple Int64 Int64)) (: q (Tuple Int64 Int64)))
+              (match p
+                ((tuple a b)
+                  (match q
+                    ((tuple c d)
+                      (do
+                        (def num (+ (* a d) (* c b)))
+                        (def den (* b d))
+                        (def g (gcd num den))
+                        (tuple (/ num g) (/ den g))))))))
+            (def (main (: a Int64))
+              (do
+                (def r (fadd (tuple a 6) (tuple 1 4)))
+                (match r
+                  ((tuple num den)
+                    (+ (* (+ (* num 100) den) 10)
+                       (if (= (+ (Rational.of a 6) (Rational.of 1 4)) (Rational.of num den)) 1 0))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 5121 Int64))
+  (call   main (: 3 Int64)) (output (: 3041 Int64))
+  (call   main (: 5 Int64)) (output (: 13121 Int64)))
+
 (case "KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle"
   (doc    "Two user-written popcounts DIFFERENTIALLY cross-checked (the gcd/modpow certificate style,
            here bitwise): Kernighan's loop `x & (x-1)` clears exactly the LOWEST set bit per step —

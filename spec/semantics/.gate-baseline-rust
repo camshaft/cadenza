@@ -54,6 +54,7 @@ pass	a MAP MERGE folds one map's entries into another, summing values on key col
 pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
 pass	a PALINDROME two-pointer walk closes from both ends of a runtime rope
 pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
+pass	a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
 pass	a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
@@ -1267,6 +1268,7 @@ pass	a user sum named Ast renders BARE with RUNTIME payloads through one compile
 pass	a user-sum variant value as a Map KEY keys by variant and payload
 pass	a user-written EUCLID gcd loops on remainder and certifies divisibility of both operands
 pass	a user-written FILTER combinator keeps elements passing a captured predicate
+pass	a user-written FRACTION ADD over tuples reduces by gcd and agrees with the built-in Rational
 pass	a user-written MAP combinator builds a transformed list through its fn parameter
 pass	a user-written ZIP walks two lists in lockstep, truncating at the shorter
 pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
@@ -4653,7 +4655,7 @@ todo	round-trip: a HIGHER-ORDER closure — its argument is itself a closure bui
 pass	round-trip: a String-returning consumer of a closure
 pass	round-trip: a closure taking a NESTED compound (Tuple of Tuples) arg
 pass	round-trip: a closure taking a SUM (Option) arg built in-guest
-todo	round-trip: a closure taking a String arg built in-guest
+pass	round-trip: a closure taking a String arg built in-guest
 pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the byte-rope
 pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the compound
 pass	round-trip: a compound-arg closure whose consumer returns a compound
@@ -4857,3 +4859,4 @@ pass	a recursive list-match in an arm whose arms return a LIST builds on all bac
 pass	a Record.with whose TARGET is a runtime record (a projection) builds a fresh record, not declines
 pass	a recursive list-match in an arm returning a tuple of a scalar and two lists builds on all backends
 pass	a recursive list-match in an arm returning a tuple of TWO lists (no scalar) builds on all backends
+pass	a Record.with over a runtime record with MULTIPLE preserved fields evaluates the operand once

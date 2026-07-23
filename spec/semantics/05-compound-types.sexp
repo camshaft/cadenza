@@ -9198,6 +9198,47 @@
   (call   main (: 2 Int64)) (output (: 30509101 Int64))
   (call   main (: -6 Int64)) (output (: 29701021 Int64)))
 
+(case "a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum"
+  (doc    "The row-derivation composite: `pairs` slides a 2-element window over the previous row
+           summing adjacent entries (matched by a THREE-arm shape — empty, single-tail stop, and
+           `(list a b .. t)` two-head destructure recursing on `b:t`, so each element is read TWICE
+           as right then left neighbor), and `next-row` brackets the sums with 1s. `grow` iterates
+           the derivation n times from the seed `(1)` — each row is built entirely from the LAST one,
+           the wrong-neighbor face compounding with depth. Certified by the binomial row-sum identity
+           `sum(row n) = 2^n` (an independent recursion), so a drifted entry breaks the certificate
+           even where the base-100 digit walk aliases. n=0 → seed (11); n=4 → 1,4,6,4,1
+           (1040604011); n=6 → 1,6,15,20,15,6,1 — MULTI-DIGIT entries in the base-100 encoding
+           (10615201506011), where an off-by-one neighbor sum shifts two digit positions.")
+  (input  (do
+            (def (pairs (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list _last) acc)
+                ((list a b .. t) (pairs (List.concat (list b) t) (List.push acc (+ a b))))))
+            (def (next-row (: row (List Int64)))
+              (List.push (List.concat (list 1) (pairs row (list))) 1))
+            (def (grow (: k Int64) (: row (List Int64)))
+              (if (= k 0) row (grow (- k 1) (next-row row))))
+            (def (row-n (: n Int64))
+              (grow n (list 1)))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 100) h)))))
+            (def (sum (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (sum t (+ acc h)))))
+            (def (pw2 (: k Int64)) (if (= k 0) 1 (* 2 (pw2 (- k 1)))))
+            (def (main (: n Int64))
+              (do
+                (def r (row-n n))
+                (+ (* (chk r 0) 10) (if (= (sum r 0) (pw2 n)) 1 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: 4 Int64)) (output (: 1040604011 Int64))
+  (call   main (: 6 Int64)) (output (: 10615201506011 Int64)))
+
 (case "a SLIDING-WINDOW max walks a k=3 window by paired index reads"
   (doc    "The windowed aggregate (the scan above threads state STEP to step; a window re-READS a
            band of the source per output element): each output i is max(xs[i], xs[i+1], xs[i+2]) via
