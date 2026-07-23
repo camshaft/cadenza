@@ -32,6 +32,7 @@ pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
 pass	BETA over the capture-avoiding substitution still proves the identity theorem (no regression)
 pass	BIJECTIVE base-26 column codec biases each step by one and round-trips at the boundaries
+pass	BINOMIAL nCk multiplies incrementally with exact interleaved division and uses the symmetry cut
 pass	BOYER-MOORE majority vote pairs a cancel-count sweep with a verify recount
 pass	BST DELETE-MIN walks the left spine, returns the minimum and the rebuilt tree
 pass	BigInt.of a UInt32 at its high bit is a positive BigInt (narrow zero-extend, not sign)
@@ -53,6 +54,7 @@ pass	LOCAL PEAKS counts strict interior maxima through a three-element sliding w
 pass	LONGEST RUN tracks the current and best streak, first run winning ties
 pass	LOOK-AND-SAY iterates run-length description over its own prior output
 pass	MAX PROFIT tracks the running minimum and best spread in one forward pass
+pass	MERGE INTERVALS coalesces overlapping spans, touching endpoints join, containment absorbs
 pass	MISSING NUMBER agrees between the arithmetic-sum gap and the XOR cancellation
 pass	MOVE-ZEROS stably shifts zeros to the tail, preserving non-zero order and total length
 pass	MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave
