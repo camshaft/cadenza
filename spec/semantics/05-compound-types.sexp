@@ -9038,6 +9038,36 @@
   (call   main (: 0 Int64)) (output (: 1257 Int64))
   (call   main (: 9 Int64)) (output (: 125799 Int64)))
 
+(case "INVERSION COUNT pairs every element with its successors, zero when sorted and maximal when reversed"
+  (doc    "The sortedness METRIC (inversions are exactly what the merge sort above eliminates —
+           its merge counts them implicitly): the corpus's first ALL-PAIRS nested walk over ONE
+           list — `count-after` runs each head against every successor, i < j pairing without index
+           arithmetic (the outer recursion's tail IS the successor set). The face set carries the
+           algebra: SORTED → 0 (the order-defining boundary); REVERSED → n(n−1)/2 = 10, the MAXIMAL
+           count — every one of the 10 pairs visited exactly once (a skip or double-visit misses the
+           exact bound); ALL-EQUAL → 0, pinning the strict `>` (ties are NOT inversions — a `>=`
+           comparator reports 3 here); the mixed (2 4 1 3 5) → 3 (the pairs 2·1, 4·1, 4·3).")
+  (input  (do
+            (def (count-after (: h Int64) (: rest (List Int64)) (: acc Int64))
+              (match rest
+                ((list) acc)
+                ((list x .. t) (count-after h t (if (> h x) (+ acc 1) acc)))))
+            (def (inversions (: xs (List Int64)) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (inversions t (+ acc (count-after h t 0))))))
+            (def (main (: mode Int64))
+              (do
+                (def xs (if (= mode 1) (list 2 4 1 3 5)
+                        (if (= mode 2) (list 1 2 3 4 5)
+                        (if (= mode 3) (list 5 4 3 2 1) (list 7 7 7)))))
+                (inversions xs 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 2 Int64)) (output (: 0 Int64))
+  (call   main (: 3 Int64)) (output (: 10 Int64))
+  (call   main (: 4 Int64)) (output (: 0 Int64)))
+
 (case "TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow"
   (doc    "The bounded-selection composite: each element insorts into a DESCENDING list (`>=` walk —
            insertion after equal keys), then `take-k` TRUNCATES back to k — the overflow drops from
@@ -9236,6 +9266,66 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 1425363 Int64))
   (call   main (: 0 Int64)) (output (: 1420363 Int64)))
+
+(case "ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix"
+  (doc    "The rotation as a COMPOSITION law: rot90 = transpose ∘ reverse-rows (reversing first then
+           transposing turns the last row into the first column — clockwise; composing the other way
+           rotates counter-clockwise, so the ORDER of the two halves is the pin). The 2×3 input
+           rotates to 3×2 — dimensions swap, and the runtime n at row 1 column 3 must land at row 3
+           column 2. Certified by the CYCLIC law: FOUR rotations restore the original by deep `=` —
+           each intermediate is a fresh dimension-swapped matrix, so the identity survives only if
+           every composition step is exact (one miscomposed rotation shears all four). n=3 →
+           ((4,1),(5,2),(6,3)) = 415263 with the identity bit (4152631); n=9 → 4152691. Reuses the
+           transpose pin's heads/tails column peel as the inner half — the pinned building block
+           driven inside a larger composite.")
+  (input  (do
+            (def (heads (: rows (List (List Int64))) (: acc (List Int64)))
+              (match rows
+                ((list) acc)
+                ((list r .. rest)
+                  (match r
+                    ((list) acc)
+                    ((list h .. _t) (heads rest (List.push acc h)))))))
+            (def (tails (: rows (List (List Int64))) (: acc (List (List Int64))))
+              (match rows
+                ((list) acc)
+                ((list r .. rest)
+                  (match r
+                    ((list) acc)
+                    ((list _h .. t) (tails rest (List.push acc t)))))))
+            (def (transpose (: rows (List (List Int64))) (: acc (List (List Int64))))
+              (match rows
+                ((list) acc)
+                ((list r .. _rest)
+                  (match r
+                    ((list) acc)
+                    ((list _h .. _t)
+                      (transpose (tails rows (list)) (List.push acc (heads rows (list)))))))))
+            (def (rev-rows (: rows (List (List Int64))) (: acc (List (List Int64))))
+              (match rows
+                ((list) acc)
+                ((list r .. t) (rev-rows t (List.concat (list r) acc)))))
+            (def (rot90 (: m (List (List Int64))))
+              (transpose (rev-rows m (list)) (list)))
+            (def (rot4 (: m (List (List Int64))))
+              (rot90 (rot90 (rot90 (rot90 m)))))
+            (def (chk1 (: xs (List Int64)) (: a Int64))
+              (match xs
+                ((list) a)
+                ((list h .. t) (chk1 t (+ (* a 10) h)))))
+            (def (chk2 (: xss (List (List Int64))) (: acc Int64))
+              (match xss
+                ((list) acc)
+                ((list r .. rest) (chk2 rest (chk1 r acc)))))
+            (def (main (: n Int64))
+              (do
+                (def m (list (list 1 2 n) (list 4 5 6)))
+                (def r (rot90 m))
+                (+ (* (chk2 r 0) 10)
+                   (if (= (rot4 m) m) 1 0))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 4152631 Int64))
+  (call   main (: 9 Int64)) (output (: 4152691 Int64)))
 
 (case "CHUNK splits a list into fixed-size sublists with a short final chunk that reflattens intact"
   (doc    "The inverse-of-flatten builder (transpose above builds a list-of-lists by COLUMN; chunk

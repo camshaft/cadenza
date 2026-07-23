@@ -45,6 +45,7 @@ pass	FAST-DOUBLING fib recurses on the halved index returning a pair, checked ag
 pass	HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution
 pass	HORNER polynomial evaluation folds coefficients high-to-low and agrees with a power-sum oracle
 pass	INTERLEAVE alternates two spines and drains the longer tail after the shorter empties
+pass	INVERSION COUNT pairs every element with its successors, zero when sorted and maximal when reversed
 pass	KADANE max-subarray threads a best-ending-here and a global best through one fold
 pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
 pass	LOCAL PEAKS counts strict interior maxima through a three-element sliding window
@@ -58,6 +59,7 @@ pass	ONE-EDIT-APART checks strings for exactly one substitution or one insertion
 pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
+pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow
 pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
