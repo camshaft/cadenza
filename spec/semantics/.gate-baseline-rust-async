@@ -58,7 +58,9 @@ pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a lead
 pass	a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
 pass	a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side
+pass	a ROMAN DECODER subtracts on lookahead and round-trips through the pinned renderer
 pass	a ROMAN NUMERAL renderer walks a value-symbol table greedily with subtractive pairs
+pass	a ROTATE-BY-K splits at the wrapped offset and swaps the halves, identity at multiples of len
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
 pass	a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN
 pass	a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack
@@ -1031,7 +1033,7 @@ pass	a decimal literal annotated Rational grounds to its exact fraction
 pass	a decimal literal annotated Rational is exact for a value no float rounds cleanly
 pass	a decimal token trailing letters is a malformed literal, not an unbound name
 pass	a declaration in a do block shadows an outer binding
-todo	a consumed closure is applied once per iteration of a recursive loop
+pass	a consumed closure is applied once per iteration of a recursive loop
 pass	a decoded field re-encodes into the same-width segment without an explicit narrow
 pass	a decoded length field re-encodes a length-prefixed frame end to end
 pass	a decomposed literal indexes and measures by its normalized length, not the raw scalar count
@@ -2824,7 +2826,7 @@ pass	a type-value in integer-width position is rejected
 pass	a type-valued parameter threaded through a second call reaches Type.eq with its type intact
 pass	a type-valued parameter under a function-arrow annotation dispatches an ad-hoc-polymorphic dict
 pass	a u16 segment encodes an integer big-endian by default
-todo	a trap raised on a consumed closure's result surfaces through the consumer as a trap
+pass	a trap raised on a consumed closure's result surfaces through the consumer as a trap
 pass	a trap raised inside a host-called closure body reaches the host as a trap
 pass	a u16 segment round-trips at its maximum value
 pass	a u32 segment encodes four big-endian bytes
@@ -2927,6 +2929,7 @@ pass	modular exponentiation by SQUARING halves the exponent and branches on pari
 pass	structural equality of two Ast.Int wider than Int64 compares by full value
 pass	the COLLATZ walk counts steps to 1 and tracks the trajectory peak
 pass	the JOSEPHUS survivor agrees between the modular recurrence and a list elimination simulation
+pass	the LUHN checksum doubles alternate digits from the right with the nine-fold correction
 pass	the byte codec round-trips an Ast.Int wider than Int64
 pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
 pass	an EFFECTFUL @ensures predicate performs under the caller's handler at body-EXIT, after the body's own perform
@@ -4511,12 +4514,12 @@ todo	a RECORD closure ARG with a narrow Bool field, among scalars
 todo	a RECORD with a nested TUPLE field crosses the direct-call boundary
 todo	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
 todo	a SOLE RECORD closure ARG crosses the direct-call boundary
-todo	a THREE-argument closure round-trips — flat arrow spelling
+pass	a THREE-argument closure round-trips — flat arrow spelling
 todo	a TRIPLY-nested Record ARG crosses the direct-call boundary
-todo	a UInt64 closure round-trips through a consumer export
+pass	a UInt64 closure round-trips through a consumer export
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 pass	a callee whose body LET-BINDS a handle seeded by its param, called with the caller's runtime arg, keeps that arg bound
-todo	a camelCase round-trip resolves through kebab boundary-name normalization
+pass	a camelCase round-trip resolves through kebab boundary-name normalization
 todo	a closure captures the result of a build-time host op called with an argument
 pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
 todo	a closure capturing a build-time host effect preserves the order of two host calls
@@ -4527,22 +4530,22 @@ todo	a closure returning a record crosses as the typed value form
 todo	a closure that performs a delegated effect cannot cross the host boundary
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
-todo	a consumer applies TWO handed-back closures
-todo	a consumer applies the handed-back closure inside a larger expression
-todo	a consumer applies the handed-back closure to an internal constant
-todo	a consumer returns a different type than the closure it applies
-todo	a consumer takes the handed-back closure as its SECOND parameter
+pass	a consumer applies TWO handed-back closures
+pass	a consumer applies the handed-back closure inside a larger expression
+pass	a consumer applies the handed-back closure to an internal constant
+pass	a consumer returns a different type than the closure it applies
+pass	a consumer takes the handed-back closure as its SECOND parameter
 todo	a delegated effect performed in a closure passed to a HOF is reached and fires
 todo	a delegated effect performed inside an intra-program handler
 todo	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
 todo	a delegated host effect composes with the value-heap runtime
 pass	the mirrored subtract-then-add chain computes at both boundaries without a spurious trap
-todo	a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs
-todo	a distinct-signature round-trip alongside a plain export — the Int64->Int64 side runs
-todo	a distinct-signature round-trip alongside a plain export — the plain export runs
-todo	a distinct-signature round-trip applies the Int64->Bool closure
-todo	a distinct-signature round-trip applies the Int64->Int64 closure
-todo	a distinct-signature round-trip's Bool closure on a nonzero input
+pass	a distinct-signature round-trip alongside a plain export — the Int64->Bool side runs
+pass	a distinct-signature round-trip alongside a plain export — the Int64->Int64 side runs
+pass	a distinct-signature round-trip alongside a plain export — the plain export runs
+pass	a distinct-signature round-trip applies the Int64->Bool closure
+pass	a distinct-signature round-trip applies the Int64->Int64 closure
+pass	a distinct-signature round-trip's Bool closure on a nonzero input
 todo	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
 todo	a fixed-shape Tuple ARG with a RECORD RESULT crosses the direct-call boundary
 todo	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
@@ -4552,12 +4555,12 @@ todo	a host effect with a non-kebab NAME crosses under a normalized interface ex
 todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 todo	a host op with a String parameter composes with the value-heap runtime
-todo	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
-todo	a multi-argument closure round-trips through a consumer
-todo	a multi-argument closure round-trips through a consumer — FLAT arrow spelling
-todo	a multi-argument closure with COMPOUND args round-trips — flat arrow spelling
+pass	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
+pass	a multi-argument closure round-trips through a consumer
+pass	a multi-argument closure round-trips through a consumer — FLAT arrow spelling
+pass	a multi-argument closure with COMPOUND args round-trips — flat arrow spelling
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
-todo	a produced closure is handed back into a consumer export (the round trip)
+pass	a produced closure is handed back into a consumer export (the round trip)
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
 pass	a rational built from a RUNTIME zero denominator traps rather than being a value
@@ -4566,17 +4569,17 @@ todo	a record-returning closure alongside a parameterized plain export — the p
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a recursive evaluator destructures a built Ast by quote patterns and recurses
-todo	a round-trip alongside a parameterized plain export applies its argument
-todo	a round-trip alongside a plain export — the plain export runs
-todo	a round-trip alongside a plain export — the round-trip still works
-todo	a round-trip at a widened scalar width (UInt32)
-todo	a round-trip consumer applies a closure whose result is a nominal-over-scalar
-todo	a round-trip consumer applies the closure in a match wildcard arm
+pass	a round-trip alongside a parameterized plain export applies its argument
+pass	a round-trip alongside a plain export — the plain export runs
+pass	a round-trip alongside a plain export — the round-trip still works
+pass	a round-trip at a widened scalar width (UInt32)
+pass	a round-trip consumer applies a closure whose result is a nominal-over-scalar
+pass	a round-trip consumer applies the closure in a match wildcard arm
 pass	the tautology fold keeps a trapping shared operand
-todo	a round-trip consumer applies the closure only in the taken if-branch
-todo	a round-trip consumer binds the applied closure through a let
-todo	a round-trip consumer takes the non-applying match arm
-todo	a round-trip consumer that does NOT apply the closure on the taken branch
+pass	a round-trip consumer applies the closure only in the taken if-branch
+pass	a round-trip consumer binds the applied closure through a let
+pass	a round-trip consumer takes the non-applying match arm
+pass	a round-trip consumer that does NOT apply the closure on the taken branch
 todo	a run's result is a deterministic function of a host call's recorded response
 todo	a runtime closure whose body calls a recursive top-level function
 todo	an @param of a Bool type generates a Bool-typed accessor
@@ -4593,28 +4596,28 @@ todo	an intra-program handler interposes on a delegated effect, counts it, and f
 todo	and performs the right operand's effect when the left is true
 todo	and short-circuit does not perform the right operand's effect
 todo	binary operator operands are evaluated left to right
-todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
-todo	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
-todo	distinct-sig round-trip: TWO collection consumers of different sigs — the List
-todo	distinct-sig round-trip: TWO collection consumers of different sigs — the Map
+pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
+pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Int64 one
+pass	distinct-sig round-trip: TWO collection consumers of different sigs — the List
+pass	distinct-sig round-trip: TWO collection consumers of different sigs — the Map
 todo	two same-unit Qty host results combine guest-side as a same-dimension add
-todo	distinct-sig round-trip: TWO compound consumers of different sigs — the record one
-todo	distinct-sig round-trip: TWO compound consumers of different sigs — the tuple one
+pass	distinct-sig round-trip: TWO compound consumers of different sigs — the record one
+pass	distinct-sig round-trip: TWO compound consumers of different sigs — the tuple one
 todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Record-arg one
 todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Tuple-arg one
-todo	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the compound
-todo	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the list
-todo	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the list
-todo	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the scalar
-todo	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the collection one
-todo	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the sum one
-todo	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
-todo	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one
-todo	distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope
-todo	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the compound
-todo	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the scalar
-todo	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the compound-arg one
-todo	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the scalar-arg one
+pass	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the compound
+pass	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the list
+pass	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the list
+pass	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the scalar
+pass	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the collection one
+pass	distinct-sig round-trip: a SUM-result consumer + a COLLECTION-result consumer — the sum one
+pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the byte-rope one
+pass	distinct-sig round-trip: a byte-rope consumer + a scalar consumer of another sig — the scalar one
+pass	distinct-sig round-trip: a compound consumer + a byte-rope consumer of different sigs — the byte-rope
+pass	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the compound
+pass	distinct-sig round-trip: a compound consumer + a scalar consumer of another sig — the scalar
+pass	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the compound-arg one
+pass	distinct-sig round-trip: a compound-arg closure + a scalar-arg closure of another sig — the scalar-arg one
 todo	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
 todo	distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another
 todo	expect on an overflowing checked add traps
@@ -4629,51 +4632,51 @@ todo	multi-export record result — canonical field order
 todo	multi-export record result — the second closure, with a negative leaf
 todo	or performs the right operand's effect when the left is false
 todo	or short-circuit does not perform the right operand's effect
-todo	round-trip byte-rope consumer alongside a plain export — the consumer
-todo	round-trip byte-rope consumer alongside a plain export — the plain
+pass	round-trip byte-rope consumer alongside a plain export — the consumer
+pass	round-trip byte-rope consumer alongside a plain export — the plain
 todo	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
 todo	round-trip: a HIGHER-ORDER closure — its argument is itself a closure built in-guest
-todo	round-trip: a String-returning consumer of a closure
-todo	round-trip: a closure taking a NESTED compound (Tuple of Tuples) arg
-todo	round-trip: a closure taking a SUM (Option) arg built in-guest
-todo	round-trip: a closure taking a String arg built in-guest
-todo	round-trip: a compound consumer + a byte-rope consumer of the same closure — the byte-rope
-todo	round-trip: a compound consumer + a byte-rope consumer of the same closure — the compound
-todo	round-trip: a compound consumer alongside a plain export — the plain
-todo	round-trip: a compound-arg closure whose consumer returns a compound
-todo	round-trip: a consumer applies a closure taking a List arg built in-guest
+pass	round-trip: a String-returning consumer of a closure
+pass	round-trip: a closure taking a NESTED compound (Tuple of Tuples) arg
+pass	round-trip: a closure taking a SUM (Option) arg built in-guest
+pass	round-trip: a closure taking a String arg built in-guest
+pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the byte-rope
+pass	round-trip: a compound consumer + a byte-rope consumer of the same closure — the compound
+pass	round-trip: a compound consumer alongside a plain export — the plain
+pass	round-trip: a compound-arg closure whose consumer returns a compound
+pass	round-trip: a consumer applies a closure taking a List arg built in-guest
 todo	round-trip: a consumer applies a closure taking a Record arg built in-guest
-todo	round-trip: a consumer applies a closure taking a Tuple arg built in-guest
-todo	round-trip: a consumer applies the handed-back closure and returns Bytes
-todo	round-trip: a consumer applies the handed-back closure and returns a List
-todo	round-trip: a consumer applies the handed-back closure and returns a tuple
-todo	round-trip: a consumer returns a Map from the closure result
-todo	round-trip: a consumer returns a Map whose VALUE is a list
-todo	round-trip: a consumer returns a Result (Err type pinned) from the closure result
-todo	round-trip: a consumer returns a Result reaching BOTH variants
-todo	round-trip: a consumer returns a Set built from REPEATED closure application
-todo	round-trip: a consumer returns a Set built from the closure result
-todo	round-trip: a consumer returns a byte-rope built from a single closure result
-todo	round-trip: a consumer returns a list of tuples from repeated closure application
-todo	round-trip: a consumer returns a record built from the closure result
-todo	round-trip: a consumer returns a tuple CONTAINING a list built from the closure result
-todo	round-trip: a consumer returns an Option built from the closure result
-todo	round-trip: a consumer returns an Option of a tuple
-todo	round-trip: a consumer returns an Option whose payload is a List
+pass	round-trip: a consumer applies a closure taking a Tuple arg built in-guest
+pass	round-trip: a consumer applies the handed-back closure and returns Bytes
+pass	round-trip: a consumer applies the handed-back closure and returns a List
+pass	round-trip: a consumer applies the handed-back closure and returns a tuple
+pass	round-trip: a consumer returns a Map from the closure result
+pass	round-trip: a consumer returns a Map whose VALUE is a list
+pass	round-trip: a consumer returns a Result (Err type pinned) from the closure result
+pass	round-trip: a consumer returns a Result reaching BOTH variants
+pass	round-trip: a consumer returns a Set built from REPEATED closure application
+pass	round-trip: a consumer returns a Set built from the closure result
+pass	round-trip: a consumer returns a byte-rope built from a single closure result
+pass	round-trip: a consumer returns a list of tuples from repeated closure application
+pass	round-trip: a consumer returns a record built from the closure result
+pass	round-trip: a consumer returns a tuple CONTAINING a list built from the closure result
+pass	round-trip: a consumer returns an Option built from the closure result
+pass	round-trip: a consumer returns an Option of a tuple
+pass	round-trip: a consumer returns an Option whose payload is a List
 todo	round-trip: a higher-order closure applied to TWO distinct inner closures
 todo	round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice
 todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
-todo	round-trip: a producer's returned closure captured an inner closure built in-guest
-todo	round-trip: a scalar consumer + a List consumer of the same closure — the list
-todo	round-trip: a scalar consumer + a List consumer of the same closure — the scalar
-todo	round-trip: a scalar consumer + a compound consumer of the same closure — the compound
-todo	round-trip: a scalar consumer + a compound consumer of the same closure — the scalar
-todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
-todo	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
+pass	round-trip: a producer's returned closure captured an inner closure built in-guest
+pass	round-trip: a scalar consumer + a List consumer of the same closure — the list
+pass	round-trip: a scalar consumer + a List consumer of the same closure — the scalar
+pass	round-trip: a scalar consumer + a compound consumer of the same closure — the compound
+pass	round-trip: a scalar consumer + a compound consumer of the same closure — the scalar
+pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
+pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	the generated Param accessor carries the @param's declared type into arithmetic
 todo	the program manifest is the union of its entrypoints' delegations
-todo	the round trip tracks the produced closure's captured value
+pass	the round trip tracks the produced closure's captured value
 todo	the same conditional delegation makes no host call when the branch is not taken
 todo	the same declared effect is handled in-program by one entrypoint and delegated by another
 todo	the same program with a different response gives a different deterministic result

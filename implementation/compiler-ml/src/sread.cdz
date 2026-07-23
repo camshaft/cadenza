@@ -495,8 +495,9 @@ def read-do-form(s: String, i: Int64, root: Int64, tree: Tree) =
   (let d0 = open-paren(s, i) in
    (match scan-atom(s, skip-space(s, d0), "") with | (kw, d1) =>
      (if (kw == "def") then read-do-def(s, d1, root, tree)
+      else (if (kw == "type") then read-do-type(s, d1, root, tree)   // M2-a: user sum type → nullary-ctor defs
       // non-def head (export / end) → the def sequence is done. root -1 = no main seen → decline (unsupported).
-      else (if (root == (0 - 1)) then unsupported-at(tree, d1) else (root, d1, tree)))))
+      else (if (root == (0 - 1)) then unsupported-at(tree, d1) else (root, d1, tree))))))
 
 /// Handle one `(def …)` inside a `do`: read it (nullary, single-, or two-param); if it's `main`, its body is
 /// the root; if a helper, record its body + (if present) its param(s), then recurse to the next def; if the
@@ -529,6 +530,41 @@ def read-do-def(s: String, d1: Int64, root: Int64, tree: Tree) =
                                        then read-do-next(s, j, root2, t5)          // three-param def
                                        // four-param def: record param4 under BOTH nameId AND bodyId (slice-3f).
                                        else read-do-next(s, j, root2, record-param4(record-param4(t5, nameId, param4Id), bodyId, param4Id)))))))))))))
+
+/// M2-a USER SUM TYPES (first sum slice): `(type Name (C0) (C1) … (Ck))` — a sum type whose constructors are
+/// all NULLARY (no payload), e.g. `(type Color (Red) (Green) (Blue))`. Desugars ENTIRELY in the reader to one
+/// nullary def per constructor, `Ck → NLit(k)`: each constructor is a distinct integer TAG (its ordinal, 0,1,
+/// 2,…), recorded in the def-table exactly like `(def (Ck) k)`. So a constructor USE `(Red)` runs through the
+/// EXISTING nullary-call pipeline (NApp(name, -1) → inline the body NLit → eval to the tag) with ZERO new
+/// Node/arena/resolve/infer/lower/eval machinery — mirroring how M1-b shipped reader-only (desugar to existing
+/// nodes keeps the ripple at zero). The TYPE NAME itself is not recorded (no NType node yet); a later slice adds
+/// TySum + ctor-PATTERNS in match + payload-carrying constructors (the deep design point, v-inference/v-runtime
+/// coordinated). A constructor WITH a payload `(Some Int64)` is OUT of this slice → decline (surfaced, not
+/// mis-parsed). `d1` is just past the `type` atom (at the type NAME). Reads the type name, then each `(Ck)`
+/// variant assigning ordinal tags left-to-right, then continues the do-sequence.
+def read-do-type(s: String, d1: Int64, root: Int64, tree: Tree) =
+  (let n0 = skip-space(s, d1) in
+   (match scan-atom(s, n0, "") with | (_tyname, n1) =>          // the type NAME (not recorded — no NType yet)
+     read-do-ctors(s, skip-space(s, n1), 0, root, tree)))
+
+/// Read the constructor list `(C0) (C1) … (Ck)` of a `(type …)` decl, assigning each ctor the ordinal `tag`
+/// (0,1,2,…) as its nullary-def body `NLit(tag)`. `k` is at the next `(` (a ctor) or the `)` that closes the
+/// type decl. A `)` here ENDS the ctor list → continue the do-sequence (read-do-next past the type's `)`). A
+/// `(Ck)` ctor: record `name-id(Ck) → NLit(tag)` in the def-table (exactly a nullary def), then recurse for the
+/// next ctor with `tag + 1`. A ctor WITH a payload — `(Ck T)`, i.e. an atom follows the ctor name before `)` —
+/// is out of this slice → decline (unsupported). Flat (≤2 nesting — the paren-cascade trap).
+def read-do-ctors(s: String, k: Int64, tag: Int64, root: Int64, tree: Tree) =
+  (if (char-at(s, k) == ")")
+   then read-do-next(s, k + 1, root, tree)                      // ctor list closed → past the type's `)`
+   else (let c0 = open-paren(s, k) in                           // open a `(Ck)`
+         (match scan-atom(s, skip-space(s, c0), "") with | (cnm, c1) =>    // the ctor NAME
+           (let c2 = skip-space(s, c1) in
+            (if (char-at(s, c2) == ")")                         // NULLARY ctor `(Ck)` → a `Ck → NLit(tag)` def
+             then (match add-node(tree, Node.NLit(tag)) with | (bodyId, t1) =>
+                    (let t2 = record-def(t1, name-id(cnm), bodyId) in
+                     read-do-ctors(s, skip-space(s, c2 + 1), tag + 1, root, t2)))
+             // a PAYLOAD ctor `(Ck T)` (an atom before the `)`) is out of this slice → decline (surfaced).
+             else unsupported-at(tree, c2))))))
 
 /// After a def ended at `j`: skip its closing `)` (if present) and read the next form in the do, threading the
 /// accumulated `root` (main's body, or -1 if not yet seen).

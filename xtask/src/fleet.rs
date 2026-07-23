@@ -1455,13 +1455,19 @@ fn send(
     }
     // A `merge-request` with no `--ref` is malformed: pr-sync integrates by the commit sha in `ref`,
     // and an empty one forces it to parse the body / guess — which has caused a premature merged-ack
-    // against the WRONG commit. Warn loudly (still deliver — non-fatal) so the sender fixes it.
-    if kind == "merge-request" && r#ref.trim().is_empty() {
+    // against the WRONG commit. It is ALSO un-auto-clearable downstream: `fleet audit` can only prove
+    // an MR landed by checking its `--ref` against trunk, so an empty-ref MR that gets hand-resolved
+    // (no correlating `ack` reply) flags as a silent-drop ORPHAN forever (this is exactly the 15736
+    // case). There is no legitimate empty-ref merge-request, so REFUSE at the source — same discipline
+    // as the unresolved-sender guard above — rather than the old warn-and-deliver.
+    if kind == "merge-request" && merge_request_ref_is_missing(r#ref) {
         eprintln!(
-            "⚠ fleet send: merge-request with an EMPTY --ref. pr-sync resolves by commit sha; \
-             pass `--ref $(git rev-parse HEAD)` so it integrates + acks the right commit (an empty \
-             ref has caused a mis-verified merged-ack). Delivering anyway."
+            "fleet send: REFUSING a merge-request with an EMPTY --ref. pr-sync integrates by commit \
+             sha, so an empty ref forces it to guess from the body (has caused a mis-verified \
+             merged-ack against the WRONG commit) and can never be proven landed by `fleet audit` \
+             (flags as a phantom silent-drop orphan forever). Pass `--ref $(git rev-parse HEAD)`."
         );
+        std::process::exit(1);
     }
     // CONTAMINATION GUARD (v-compiler-ml issue 10801): during an extreme-load window a fleet-sync
     // replay can strand a PEER's unlanded commit onto this branch (the shared-base HEAD/reflog vector).
@@ -1833,6 +1839,14 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
 /// still `active` (a stale one-shot agent's leftover MR is noise, not a live orphan pr-sync should
 /// reject). Split out of `find_queued_but_landed`'s fs+git loop so both skip conditions are unit-pinned:
 /// dropping either would either waste a git call on a ref-less message or resurrect dead-agent noise.
+/// A merge-request `--ref` is "missing" if it is empty or only whitespace. pr-sync integrates by the
+/// commit sha in `ref`; a missing one is malformed (guessing from the body has mis-acked the wrong
+/// commit) AND un-auto-clearable (`fleet audit` proves landing by checking the ref against trunk, so a
+/// ref-less MR flags as a phantom orphan forever). `send` refuses a merge-request when this is true.
+fn merge_request_ref_is_missing(r#ref: &str) -> bool {
+    r#ref.trim().is_empty()
+}
+
 fn mr_qualifies_for_landed_check(
     r#ref: &str,
     from: &str,
@@ -8903,6 +8917,19 @@ mod tests {
             &fleet,
             "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
         ));
+    }
+
+    #[test]
+    fn merge_request_ref_is_missing_treats_empty_and_whitespace_as_missing() {
+        // `send` refuses a merge-request when this is true. Empty and all-whitespace refs are missing
+        // (an MR with a blank ref can't be integrated by sha nor proven landed by audit); any ref with
+        // real content is present. Whitespace-trimming matters: a stray `--ref " "` from shell quoting
+        // must still be caught, not delivered as a phantom-orphan-forever MR.
+        assert!(merge_request_ref_is_missing(""));
+        assert!(merge_request_ref_is_missing("   "));
+        assert!(merge_request_ref_is_missing("\t\n"));
+        assert!(!merge_request_ref_is_missing("deadbeef"));
+        assert!(!merge_request_ref_is_missing("  deadbeef  ")); // has content once trimmed
     }
 
     #[test]

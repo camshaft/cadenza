@@ -809,6 +809,19 @@ fn emit_signature(
                 && ep.result.strip_nominal() == closure_ret
         })
     };
+    // Whether a closure param has a FACTORY producer specifically (a sibling whose RESULT is the closure
+    // type) — a STRICTER form of `has_producer_for` (which also accepts a PEELED producer). In ASYNC mode
+    // the driver can drive a factory producer through `block_on` (the factory is an `async fn` returning a
+    // sync `Rc<dyn Fn>`), but a PEELED async producer is an `async fn` whose fn-item does NOT coerce to the
+    // `fn(args)->ret` the closure value needs — so an async consumer is admitted only when EVERY closure
+    // param has a factory producer (see the async gate below). In SYNC mode both producer shapes work.
+    let closure_has_factory_producer = |closure_ty: &crate::ty::Ty| -> bool {
+        let ct = closure_ty.strip_nominal();
+        layout
+            .exports
+            .iter()
+            .any(|ep| ep.def != def && ep.result.strip_nominal() == ct)
+    };
     // The export's OWN result: a Tuple/Option/Result/List/sum result renders fine via the driver's
     // `cdz_render_expr`, and a BARE Bytes/String result now renders too — the driver's consumer path routes
     // it through `cdz_render_bytes_list` (the byte-int list `(104 105)` form the value takes crossing the
@@ -816,14 +829,21 @@ fn emit_signature(
     // declines. (A String/Bytes nested in a COMPOUND result renders via `cdz_render_expr` as before — not
     // gated here, unchanged by this slice.)
     let result_render_unsupported = false;
-    // ASYNC closure-PARAMETER consumers: the async gate driver must build the closure from an `async fn`
-    // producer (drive it through `block_on`) and thread the gas/yield env — more harness wiring than the
-    // sync producer→consumer synthesis. Defer that: an async-mode closure-param consumer still DECLINES
-    // (clean `todo`), so this slice lands the SYNC closure-param shape without a red rust-async gate. (The
-    // sync case is the bulk; async closure-param is a follow-up sub-slice.)
-    if mode.is_async() && public && params.iter().any(|(_, t)| is_fn_ty(t)) {
+    // ASYNC closure-PARAMETER consumers: the async gate driver builds each closure from its producer sibling
+    // and drives it through `block_on`, threading `&mut env`. This works when every closure param has a
+    // FACTORY producer (an `async fn` returning a sync `Rc<dyn Fn>` the driver `block_on`s + binds to a
+    // `let`). A PEELED producer (a nullary `(fn …)` eta-peeled to a direct fn) does NOT work in async — its
+    // `async fn` item does not coerce to the `fn(args)->ret` the closure value needs — so an async consumer
+    // with a peeled (non-factory) producer for any closure param still DECLINES (clean `todo`, a follow-up).
+    if mode.is_async()
+        && public
+        && params.iter().any(|(_, t)| is_fn_ty(t))
+        && !params
+            .iter()
+            .all(|(_, t)| !is_fn_ty(t) || closure_has_factory_producer(t))
+    {
         return Err(Reject::decline(format!(
-            "`{name}`: an async closure-PARAMETER consumer is not yet driven by the Rust backend"
+            "`{name}`: an async closure-PARAMETER consumer whose closure has no FACTORY producer sibling is not yet driven by the Rust backend"
         )));
     }
     if public

@@ -1812,6 +1812,41 @@
   (call   main (: 7 Int64)) (output (: 200021 Int64))
   (call   main (: 16 Int64)) (output (: 6041 Int64)))
 
+(case "the LUHN checksum doubles alternate digits from the right with the nine-fold correction"
+  (doc    "The check-digit walk over the digit peel: positions count from the RIGHT (the `% 10` /
+           `/ 10` loop naturally visits low digits first, so the position parity is just the loop
+           index — a left-to-right formulation must know the length first), every ODD position
+           doubles, and a doubled digit above 9 subtracts 9 (the nine-fold correction — the digit
+           sum of the two-digit product, folded to one branch). Validity = total mod 10 = 0. Faces:
+           the canonical test number 79927398713 → total 70, valid (701); the SAME number with its
+           check digit zeroed → 67, invalid (670 — a one-digit perturbation flips the verdict,
+           pinning that the check digit participates); the 16-digit 4539148803436467 → 80, valid
+           (801 — EVEN length flips which absolute positions double, so both parities are exercised
+           across the two valid faces); 1234 → 14, invalid (140). Encoding: total·10 + valid bit.")
+  (input  (do
+            (def (go (: n Int64) (: i Int64) (: total Int64))
+              (if (= n 0)
+                  total
+                  (do
+                    (def d (% n 10))
+                    (def dd (if (= (% i 2) 1)
+                                (do
+                                  (def d2 (* d 2))
+                                  (if (> d2 9) (- d2 9) d2))
+                                d))
+                    (go (/ n 10) (+ i 1) (+ total dd)))))
+            (def (luhn (: n Int64))
+              (go n 0 0))
+            (def (main (: n Int64))
+              (do
+                (def t (luhn n))
+                (+ (* t 10) (if (= (% t 10) 0) 1 0))))
+            (export main)))
+  (call   main (: 79927398713 Int64)) (output (: 701 Int64))
+  (call   main (: 79927398710 Int64)) (output (: 670 Int64))
+  (call   main (: 4539148803436467 Int64)) (output (: 801 Int64))
+  (call   main (: 1234 Int64)) (output (: 140 Int64)))
+
 (case "TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor"
   (doc    "The primality walk, returning the WITNESS not a boolean: 0 = prime, d = the smallest factor
            found, -1 = below the domain — so a wrong answer identifies WHICH step failed. Odd

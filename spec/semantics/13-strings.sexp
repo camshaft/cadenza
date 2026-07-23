@@ -398,6 +398,60 @@
   (call   main (: 40 Int64)) (output (: 21 Int64))
   (call   main (: 3888 Int64)) (output (: 151 Int64)))
 
+(case "a ROMAN DECODER subtracts on lookahead and round-trips through the pinned renderer"
+  (doc    "The decoder's mechanism is entirely different from the renderer above: a per-scalar value
+           chain plus ONE-scalar LOOKAHEAD — peek at i+1, and a smaller value BEFORE a larger one
+           NEGATES instead of adds (the IV/IX rule read from the string side; the lookahead at the
+           final scalar must see 'nothing follows' and add). The strongest face composes both:
+           `fromroman(roman n) = n` runs encode then decode in ONE program, the two implementations
+           certifying each other with the subtractive subtlety live on both sides. Faces: 1994
+           (three subtractive pairs to DETECT via lookahead → 19941); 9 (pure subtractive, the
+           2-scalar string → 91); 3888 (fifteen scalars, ZERO subtractives — the lookahead must
+           never fire → 38881); 3 (the trivial additive run III → 31). Encoding: decoded·10 +
+           round-trip bit.")
+  (input  (do
+            (def (val (: c String))
+              (if (= c "I") 1 (if (= c "V") 5 (if (= c "X") 10 (if (= c "L") 50
+                (if (= c "C") 100 (if (= c "D") 500 (if (= c "M") 1000 0))))))))
+            (def (dec-go (: s String) (: i Int64) (: len Int64) (: acc Int64))
+              (if (>= i len)
+                  acc
+                  (match (String.at s i)
+                    ((Some c)
+                      (do
+                        (def v (val c))
+                        (def nxt (if (< (+ i 1) len)
+                                     (match (String.at s (+ i 1)) ((Some c2) (val c2)) ((None _u) 0))
+                                     0))
+                        (dec-go s (+ i 1) len (if (> nxt v) (- acc v) (+ acc v)))))
+                    ((None _u) acc))))
+            (def (fromroman (: s String))
+              (dec-go s 0 (String.byte-len s) 0))
+            (def (emit (: n Int64) (: v Int64) (: s String) (: acc String))
+              (if (< n v)
+                  (tuple n acc)
+                  (emit (- n v) v s (String.concat acc s))))
+            (def (walk (: n Int64) (: vs (List (Tuple Int64 String))) (: acc String))
+              (match vs
+                ((list) acc)
+                ((list (tuple v s) .. t)
+                  (match (emit n v s acc)
+                    ((tuple n2 acc2) (walk n2 t acc2))))))
+            (def (roman (: n Int64))
+              (walk n
+                (list (tuple 1000 "M") (tuple 900 "CM") (tuple 500 "D") (tuple 400 "CD")
+                      (tuple 100 "C") (tuple 90 "XC") (tuple 50 "L") (tuple 40 "XL")
+                      (tuple 10 "X") (tuple 9 "IX") (tuple 5 "V") (tuple 4 "IV") (tuple 1 "I"))
+                ""))
+            (def (main (: n Int64))
+              (+ (* (fromroman (roman n)) 10)
+                 (if (= (fromroman (roman n)) n) 1 0)))
+            (export main)))
+  (call   main (: 1994 Int64)) (output (: 19941 Int64))
+  (call   main (: 9 Int64)) (output (: 91 Int64))
+  (call   main (: 3888 Int64)) (output (: 38881 Int64))
+  (call   main (: 3 Int64)) (output (: 31 Int64)))
+
 (case "a deep rope indexes by scalar at both extremes"
   (doc    "Scalar addressing through ~500 concat seams: `String.at` reads index 0 (the single \"A\" head
            leaf) and index n·2 (the LAST scalar, deep in the right spine) of a 1001-scalar rope — 10·1+1

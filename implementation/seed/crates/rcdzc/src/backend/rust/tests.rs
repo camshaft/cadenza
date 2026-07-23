@@ -5458,16 +5458,41 @@ fn rustc_roundtrip_closure_parameter_consumer_with_a_producer_sibling() {
         no_producer.is_err(),
         "a closure-param consumer with no producer declines:\n{no_producer:?}"
     );
-    // An ASYNC closure-param consumer declines (deferred sub-slice) — even with a producer.
-    let async_consumer = compile_rust_async_result(
+    // An ASYNC closure-param consumer with a FACTORY producer now EMITS — the gate driver builds the
+    // closure via `block_on(prog::make-adder(&mut env, k))`, binds it to a `let`, then drives the consumer
+    // via `block_on(prog::apply-it(&mut env, __g0, x))`. (`make-adder` captures `k` → a factory.)
+    let async_factory_consumer = compile_rust_async_result(
         "(module m \
            (def (make-adder (: k Int64)) (fn ((: x Int64)) (+ x k))) \
            (def (apply-it (: g (-> Int64 Int64)) (: x Int64)) (g x)) \
            (export make-adder) (export apply-it))",
     );
     assert!(
-        async_consumer.is_err(),
-        "an async closure-param consumer declines (deferred):\n{async_consumer:?}"
+        async_factory_consumer.is_ok(),
+        "an async closure-param consumer with a FACTORY producer now emits:\n{async_factory_consumer:?}"
+    );
+    // A NULLARY-producer async consumer ALSO emits: in async mode a nullary `(fn …)` producer is emitted as
+    // a FACTORY (`async fn mk<E>(env) -> Rc<dyn Fn>`), NOT eta-peeled to a direct fn (the sync case), so it
+    // has a factory producer and the driver drives it the same way. (Async has no peeled producers.)
+    let async_nullary_consumer = compile_rust_async_result(
+        "(module m \
+           (def (mk) (fn ((: x Int64)) (+ x 1))) \
+           (def (apply-it (: g (-> Int64 Int64)) (: x Int64)) (g x)) \
+           (export mk) (export apply-it))",
+    );
+    assert!(
+        async_nullary_consumer.is_ok(),
+        "an async closure-param consumer with a nullary (factory-shaped) producer emits:\n{async_nullary_consumer:?}"
+    );
+    // An ASYNC closure-param consumer with NO producing sibling still DECLINES (no closure to build) —
+    // `closure_has_factory_producer` is false, so the async guard fires (the mode-independent no-producer
+    // decline would also catch it).
+    let async_no_producer = compile_rust_async_result(
+        "(module m (def (apply (: f (-> Int64 Int64)) (: x Int64)) (f x)) (export apply))",
+    );
+    assert!(
+        async_no_producer.is_err(),
+        "an async closure-param consumer with no producer sibling declines:\n{async_no_producer:?}"
     );
 }
 
