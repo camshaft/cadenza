@@ -2889,6 +2889,25 @@ fn watchdog(
         }
     }
 
+    // STRANDED DEAD-LETTERS (report-only) — the SAME live-hub-only rationale as the queued-but-landed
+    // sweep above: actionable mail queued in a STOPPED agent's inbox is a permanent dead-letter (its
+    // loop has exited), and this rots INVISIBLY — the whole point of surfacing it. `fleet audit` finds
+    // it on demand, but the operator watches THIS ~4-min cron, not manual audits, so fold it in here
+    // too (and into the health-log below, so recurrence is greppable like every other anomaly). Never
+    // mutates a peer's inbox — re-routing is the operator's call (a second mutator would race sends).
+    let stranded = find_stranded_stopped_inboxes(fleet, &reg);
+    if !stranded.is_empty() {
+        let total: usize = stranded.iter().map(|(_, n, _)| n).sum();
+        eprintln!(
+            "  ⚠ {total} STRANDED dead-letter(s) queued in {} STOPPED agent(s)' inbox(es) (loops \
+             EXITED — never drained); re-route or reactivate (see `cargo xtask fleet audit`):",
+            stranded.len()
+        );
+        for (name, depth, oldest) in &stranded {
+            eprintln!("    • '{name}' — {depth} undrained; oldest: {oldest}");
+        }
+    }
+
     // ── Out-of-band check-lease reap ─────────────────────────────────────────────────────────────
     // A SIGKILL'd `cargo xtask check` runs no `Drop`, so its lease FILE leaks; the acquire-path reaper
     // (`scan_check_leases` inside `acquire_check_lease`) only runs when SOMEONE tries to acquire — but
@@ -2931,8 +2950,9 @@ fn watchdog(
         );
     }
 
+    let stranded_agents = stranded.len();
     println!(
-        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed{}, {reaped} stopped window(s) reaped, {leases_reaped} leaked lease(s) reaped, {} queued-but-landed MR(s) surfaced.",
+        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed{}, {reaped} stopped window(s) reaped, {leases_reaped} leaked lease(s) reaped, {} queued-but-landed MR(s) surfaced{}.",
         if dry_run { "DRY-RUN: " } else { "" },
         // Surface the cron-death subset inline only when it fired — `reissued` of the re-arms escalated to
         // re-issuing `/loop` because a prior nudge didn't stick (the agent's recurring cron was dead, not a
@@ -2942,7 +2962,14 @@ fn watchdog(
         } else {
             String::new()
         },
-        landed_queued.len()
+        landed_queued.len(),
+        // Surface stranded dead-letters inline only when present — an at-rest fleet has none, so this
+        // keeps the common one-line report unchanged while making the anomaly visible when it matters.
+        if stranded_agents > 0 {
+            format!(", {stranded_agents} stopped agent(s) hold stranded dead-letters")
+        } else {
+            String::new()
+        }
     );
 
     // Persist a health record. The signals above go to stdout/stderr, which SCROLLS OFF the terminal —
@@ -2965,6 +2992,7 @@ fn watchdog(
                 queued_but_landed: landed_queued.len(),
                 wedge_escalations,
                 leases_reaped,
+                stranded_agents,
             },
         );
         if let Some(line) = summary {
@@ -3019,6 +3047,10 @@ struct WatchdogCounts {
     queued_but_landed: usize,
     wedge_escalations: usize,
     leases_reaped: usize,
+    /// STOPPED agents holding stranded (permanently-undrained) actionable dead-letters this sweep. A
+    /// standing anomaly (unlike the transient re-arm/reap counts) — persistently >0 across sweeps is the
+    /// tell that dead-letters are piling up unrouted, so it belongs in the greppable health log.
+    stranded_agents: usize,
 }
 
 /// `checked` is the sweep's DENOMINATOR (active windowed agents examined) — pure CONTEXT, deliberately
@@ -3042,11 +3074,12 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         && c.queued_but_landed == 0
         && c.wedge_escalations == 0
         && c.leases_reaped == 0
+        && c.stranded_agents == 0
     {
         return None;
     }
     Some(format!(
-        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\tleases_reaped={}",
+        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\tleases_reaped={}\tstranded_agents={}",
         c.rearmed,
         c.reissued,
         c.reaped,
@@ -3056,6 +3089,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         c.queued_but_landed,
         c.wedge_escalations,
         c.leases_reaped,
+        c.stranded_agents,
     ))
 }
 
@@ -8343,10 +8377,11 @@ mod tests {
                     queued_but_landed: 5,
                     wedge_escalations: 1,
                     leases_reaped: 4,
+                    stranded_agents: 6,
                 }
             ),
             Some(
-                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tdrain_stall_escalations=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\tleases_reaped=4"
+                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tdrain_stall_escalations=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\tleases_reaped=4\tstranded_agents=6"
                     .to_string()
             )
         );
@@ -8458,6 +8493,19 @@ mod tests {
                 42,
                 &WatchdogCounts {
                     queued_but_landed: 1,
+                    ..Default::default()
+                }
+            )
+            .is_some()
+        );
+        // A stranded-dead-letter agent alone is notable (pins the new gate conjunct so it can't be
+        // dropped from the notability check while the counter lives in the struct/format).
+        assert!(
+            watchdog_log_line(
+                1,
+                42,
+                &WatchdogCounts {
+                    stranded_agents: 1,
                     ..Default::default()
                 }
             )

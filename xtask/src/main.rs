@@ -3895,6 +3895,11 @@ fn check(paths: &Paths, profile: &str) {
     log.step_native("baseline-no-dup-titles", || {
         baseline_no_dup_titles_lint(paths)
     });
+    // WARN-only: surface the byte-len-bounds-scalar-String.at latent-ASCII shape (concierge ruling C
+    // part 2). Never reds the gate — always Ok unless the corpus can't be enumerated.
+    log.step_native("bytelen-scalar-walk-warn", || {
+        bytelen_scalar_walk_warn_lint(paths)
+    });
 
     // The two REPORT-ONLY conformance sweeps below (cadenza-ml + emit≡interpret) each shell `cdz
     // run-ml`/`run-emitted` PLUS the wasm oracle once per corpus case (~3s/case over thousands of
@@ -4470,6 +4475,46 @@ fn needs_clause_lines(text: &str) -> Vec<usize> {
         .collect()
 }
 
+/// The first-argument IDENTIFIER of every `(<head> <arg> …)` call in `program` whose head is exactly
+/// `head` (e.g. `String.byte-len`, `String.at`). A cheap text scan: find each `(<head> ` occurrence and
+/// take the next whitespace-delimited token, keeping it only if it's a bare identifier (not `(`, a string
+/// literal, or a number) — a string being indexed/measured is always a bound variable in the corpus. Used
+/// by the Tier-2 byte-len-vs-scalar-walk lint; pure so the heuristic is unit-tested without the filesystem.
+fn call_first_ident_args(program: &str, head: &str) -> std::collections::BTreeSet<String> {
+    let needle = format!("({head} ");
+    let mut out = std::collections::BTreeSet::new();
+    let mut rest = program;
+    while let Some(pos) = rest.find(&needle) {
+        let after = &rest[pos + needle.len()..];
+        // The first token after the head is the receiver arg. A bare identifier is our target; skip a
+        // nested call `(`, a string literal `"`, or a numeric literal (those aren't the string var).
+        let tok: String = after
+            .chars()
+            .take_while(|c| !c.is_whitespace() && *c != ')' && *c != '(')
+            .collect();
+        if !tok.is_empty() && !tok.starts_with('"') && !tok.chars().next().unwrap().is_ascii_digit()
+        {
+            out.insert(tok);
+        }
+        rest = after;
+    }
+    out
+}
+
+/// The Tier-2 warn-lint heuristic (concierge ruling C part 2): the string identifiers `x` in `program`
+/// that are BOTH measured by `String.byte-len(x)` AND scalar-indexed by `String.at(x …)`/`String.slice(x
+/// …)` — the latent-ASCII bug shape (byte-len bounds a CODEPOINT walk, wrong for multi-byte UTF-8). Returns
+/// the offending idents (empty = clean). EXCLUSIONS fall out for free: a `Bytes.at`/`Bytes.len` walk never
+/// produces a `String.byte-len` match; a byte-len used only as output has no `String.at(x)` on the same x.
+/// Same-x co-occurrence only — a case that RENAMES x between measure and walk slips (Tier-1-only, accepted
+/// per the ruling: warn-level, note holds the rest). Pure; unit-tested against the fixture set.
+fn bytelen_scalar_walk_idents(program: &str) -> Vec<String> {
+    let measured = call_first_ident_args(program, "String.byte-len");
+    let mut walked = call_first_ident_args(program, "String.at");
+    walked.extend(call_first_ident_args(program, "String.slice"));
+    measured.intersection(&walked).cloned().collect()
+}
+
 /// Scan every `spec/semantics/*.sexp` for a `(needs …)` clause (the retired capability tag) and return
 /// an actionable error listing each `file:line` if any survive. Returns `Ok(())` when needs-free.
 fn needs_free_lint(paths: &Paths) -> Result<(), String> {
@@ -4517,6 +4562,97 @@ fn needs_free_lint(paths: &Paths) -> Result<(), String> {
         hits.len(),
         hits.join("\n  ")
     ))
+}
+
+/// Split a corpus `.sexp` file into per-case TEXT blocks, each starting at a top-level `(case ` opener (the
+/// text from one `(case ` up to the next). Cheap + scope-correct for a text-scan lint: the byte-len/String.at
+/// co-occurrence must be checked WITHIN one case (else two unrelated cases could spuriously combine). The
+/// leading preamble before the first `(case ` (comments) is dropped. Pairs each block with the case TITLE
+/// (the quoted string after `(case `) for a readable warning. Pure; unit-tested.
+fn split_corpus_cases(text: &str) -> Vec<(String, String)> {
+    let mut cases = Vec::new();
+    let mut cur: Option<String> = None;
+    for line in text.lines() {
+        if line.trim_start().starts_with("(case ") {
+            if let Some(block) = cur.take() {
+                cases.push(block);
+            }
+            cur = Some(String::new());
+        }
+        if let Some(block) = cur.as_mut() {
+            block.push_str(line);
+            block.push('\n');
+        }
+    }
+    if let Some(block) = cur.take() {
+        cases.push(block);
+    }
+    cases
+        .into_iter()
+        .map(|block| {
+            // Title = the quoted string after `(case `; fall back to the first line.
+            let title = block
+                .split_once("(case ")
+                .and_then(|(_, r)| r.split('"').nth(1))
+                .unwrap_or_else(|| block.lines().next().unwrap_or(""))
+                .to_string();
+            (title, block)
+        })
+        .collect()
+}
+
+/// Tier-2 WARN-level lint (concierge ruling C part 2): scan every `spec/semantics/*.sexp` case for the
+/// byte-len-bounds-a-scalar-String.at shape (`bytelen_scalar_walk_idents`) and PRINT a warning per hit.
+/// WARN-only — always returns `Ok(())` (never fails the gate): the same-x heuristic is deliberately
+/// imprecise (misses a renamed x, and a rare genuine mixed case could false-positive), so it SURFACES the
+/// latent-ASCII risk without blocking. Fails loudly only if it cannot enumerate the corpus (a vacuous pass
+/// would hide the class), mirroring `needs_free_lint`.
+fn bytelen_scalar_walk_warn_lint(paths: &Paths) -> Result<(), String> {
+    let dir = paths.repo.join("spec/semantics");
+    let entries = std::fs::read_dir(&dir)
+        .map_err(|e| format!("cannot read corpus dir {}: {e}", dir.display()))?;
+    let mut files: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("cannot read a corpus dir entry in {}: {e}", dir.display()))?
+            .path();
+        if path.extension().is_some_and(|x| x == "sexp") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        return Err(format!(
+            "no *.sexp corpus files found under {}",
+            dir.display()
+        ));
+    }
+    let mut warnings: Vec<String> = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file)
+            .map_err(|e| format!("cannot read corpus file {}: {e}", file.display()))?;
+        let rel = file.strip_prefix(&paths.repo).unwrap_or(file).display();
+        for (title, block) in split_corpus_cases(&text) {
+            let idents = bytelen_scalar_walk_idents(&block);
+            if !idents.is_empty() {
+                warnings.push(format!("{rel}: case {title:?} — String.byte-len + String.at/slice on the same string ({})", idents.join(", ")));
+            }
+        }
+    }
+    if warnings.is_empty() {
+        return Ok(());
+    }
+    // WARN, not fail: print to stderr and still return Ok.
+    eprintln!(
+        "xtask check [WARN] byte-len-bounds-scalar-walk: {} case(s) measure a string with String.byte-len \
+         (a BYTE count) then scalar-index the SAME string with String.at/String.slice (a CODEPOINT walk) — \
+         wrong for multi-byte UTF-8 (the latent-ASCII bug, concierge ruling C). Prefer a codepoint-length \
+         bound (e.g. String.length) for a String.at walk, or byte-walk via Bytes.at/Bytes.len. If the walk \
+         is genuinely byte-correct, ignore this warn. At:\n  {}",
+        warnings.len(),
+        warnings.join("\n  ")
+    );
+    Ok(())
 }
 
 /// Reproduce CI's STORELESS `test` job locally: run the two crates every store-guard-miss incident came
@@ -5516,6 +5652,52 @@ mod trap_grading_tests {
         // Multiple clauses across a file are all reported, in order.
         let many = "(needs a)\nx\n  (needs b)\n";
         assert_eq!(needs_clause_lines(many), vec![1, 3]);
+    }
+
+    #[test]
+    fn bytelen_scalar_walk_warns_on_same_string_and_excludes_bytes_and_output() {
+        // Tier-2 heuristic (concierge ruling C part 2): flag iff a case measures a string with
+        // String.byte-len AND scalar-indexes the SAME string with String.at/slice. Validated against the
+        // fixture shapes corpus-bugfix handed (3 should-WARN + 2 should-NOT-warn exclusions).
+
+        // should-WARN: byte-len(s) bounds a String.at(s) walk on the same s.
+        let parse_int = "(go s 0 (String.byte-len s) 0) (match (String.at s i) …)";
+        assert_eq!(bytelen_scalar_walk_idents(parse_int), vec!["s".to_string()]);
+
+        // should-WARN: la = byte-len(a), then String.at(a …) — same string a via a let-bound measure.
+        let lev = "(def la (String.byte-len a)) (match (String.at a (- i 1)) …)";
+        assert_eq!(bytelen_scalar_walk_idents(lev), vec!["a".to_string()]);
+
+        // should-WARN: String.slice(s …) bounded by byte-len(s).
+        let slice = "(go s 0 (String.byte-len s) 0) (match (String.slice s i (+ i 1)) …)";
+        assert_eq!(bytelen_scalar_walk_idents(slice), vec!["s".to_string()]);
+
+        // should-NOT-warn (a): a Bytes walk (Bytes.at/Bytes.len) — no String.byte-len match at all.
+        let bytes = "(go b 0 (Bytes.len b) 0) (match (Bytes.at b i) …)";
+        assert!(bytelen_scalar_walk_idents(bytes).is_empty());
+
+        // should-NOT-warn (b): byte-len as pure OUTPUT — measured, never String.at-indexed.
+        let output = "(def (main n) (String.byte-len (build n \"\")))";
+        assert!(bytelen_scalar_walk_idents(output).is_empty());
+
+        // should-NOT-warn: byte-len(x) and String.at(y) on DIFFERENT strings — no same-x co-occurrence.
+        let diff = "(String.byte-len x) (String.at y i)";
+        assert!(bytelen_scalar_walk_idents(diff).is_empty());
+    }
+
+    #[test]
+    fn split_corpus_cases_scopes_each_case_block() {
+        // The lint must scope co-occurrence WITHIN one case: a byte-len in case A + a String.at in case B
+        // must NOT combine. split_corpus_cases yields one (title, block) per `(case ` opener.
+        let corpus = "; preamble comment\n(case \"first\"\n  (input (String.byte-len s)))\n(case \"second\"\n  (input (String.at s i)))\n";
+        let cases = split_corpus_cases(corpus);
+        assert_eq!(cases.len(), 2, "two cases");
+        assert_eq!(cases[0].0, "first");
+        assert_eq!(cases[1].0, "second");
+        // Each block sees only its own text → neither alone triggers the co-occurrence (byte-len in one,
+        // String.at in the other), so per-case scanning stays quiet — the cross-case false-positive is avoided.
+        assert!(bytelen_scalar_walk_idents(&cases[0].1).is_empty());
+        assert!(bytelen_scalar_walk_idents(&cases[1].1).is_empty());
     }
 
     #[test]

@@ -40,6 +40,7 @@ pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
 pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
 pass	BigInt.of a UInt64 at its high bit still works (the full-width control)
 pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
+pass	CATALAN numbers grow by convolving the table with itself and agree with the binomial closed form
 pass	CHUNK splits a list into fixed-size sublists with a short final chunk that reflattens intact
 pass	COIN CHANGE builds a min-coins table where greedy fails and unreachable targets report -1
 pass	DIGITAL ROOT iterates digit sums to a fixed point and agrees with the mod-9 congruence
@@ -54,6 +55,7 @@ pass	INTERLEAVE alternates two spines and drains the longer tail after the short
 pass	INVERSION COUNT pairs every element with its successors, zero when sorted and maximal when reversed
 pass	KADANE max-subarray threads a best-ending-here and a global best through one fold
 pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
+pass	KTH PERMUTATION decodes the factorial number system by indexed removal from the pool
 pass	LCM derives from gcd via overflow-safe divide-first and satisfies the product identity
 pass	LOCAL PEAKS counts strict interior maxima through a three-element sliding window
 pass	LONGEST COMMON SUBSEQUENCE rolls match-diagonal against carry-forward maxima
@@ -4921,3 +4923,4 @@ pass	a do-local fn capturing a runtime-computed sibling via a LET binding surviv
 pass	a do-local fn capturing the enclosing fn PARAMETER directly lowers (capture guard)
 pass	a do-local fn capturing a CONSTANT sibling local lowers (capture guard)
 pass	a top-level do-local fn capturing a constant lowers (capture control)
+pass	a runtime-rope do-def that escapes an if-select in a match arm survives (multi-use heap keep, not a UAF)

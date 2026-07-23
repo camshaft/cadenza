@@ -934,6 +934,44 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "a runtime-rope do-def that escapes an if-select in a match arm survives (multi-use heap keep, not a UAF)"
+  (doc    "breaker FINDING #20 (wasm UAF, rust/rust-async always correct) — v-inference's lower_let
+           keep-analysis fix. Inside a `(match (String.at s 0) ((Some c0) …))` arm, a value do-def
+           `out = comp-go …` builds a RUNTIME rope; `out` is then used MULTIPLE times (three
+           `String.scalar-len`/select reads) and one use ESCAPES the arm via an if-SELECT `(if (< …) out s)`
+           feeding `String.byte-len`. The wasm emit freed the escaping heap do-def after the conditional
+           borrow, so `byte-len` read a DANGLING/doubled handle → 20 (neither out=8 nor s=11), while
+           rust/rust-async returned the correct 8 — a differential wasm wrong-value miscompile. The fix
+           routes a multi-use + escaping heap value do-def through lower_let's keep-analysis (kept as a
+           Core::Let binder → LocalRef → Borrowed, one retain/drop), so the escaping arm returns a LIVE
+           handle. mode 1 (\"aabcccccaaa\" → run-length \"a2b1c5a3\", 8 bytes, shorter than 11) → 8; mode 2
+           (\"abc\" → \"a1b1c1\" longer, so s wins) → 3. Both backends. (The comp-go walk is bound by
+           scalar-len per the authoring convention — ASCII inputs, behavior-neutral.)")
+  (input  (do
+            (def (digit-str (: v Int64))
+              (Option.expect (String.at "0123456789" v) "d"))
+            (def (comp-go (: s String) (: i Int64) (: len Int64) (: cur String) (: cnt Int64) (: acc String))
+              (if (>= i len)
+                  (String.concat acc (String.concat cur (digit-str cnt)))
+                  (match (String.at s i)
+                    ((Some c)
+                      (if (= c cur)
+                          (comp-go s (+ i 1) len cur (+ cnt 1) acc)
+                          (comp-go s (+ i 1) len c 1 (String.concat acc (String.concat cur (digit-str cnt))))))
+                    ((None _u) acc))))
+            (def (main (: mode Int64))
+              (do
+                (def s (if (= mode 1) "aabcccccaaa" "abc"))
+                (match (String.at s 0)
+                  ((Some c0)
+                    (do
+                      (def out (comp-go s 1 (String.scalar-len s) c0 1 ""))
+                      (String.byte-len (if (< (String.byte-len out) (String.byte-len s)) out s))))
+                  ((None _u) -1))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 8 Int64))
+  (call main (: 2 Int64)) (output (: 3 Int64)))
+
 (case "a string equality on an inlined match operand"
   (doc    "A `String ==` whose operand is an INLINED function returning a `match` — `(= (f …) \"z\")` where
            `f` returns `(match (Map.lookup m k) ((Some s) s) ((None) \"?\"))`, β-reduced into the `=`
