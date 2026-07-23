@@ -4864,3 +4864,9 @@ pass	a Record.with whose TARGET is a runtime record (a projection) builds a fres
 pass	a recursive list-match in an arm returning a tuple of a scalar and two lists builds on all backends
 pass	a recursive list-match in an arm returning a tuple of TWO lists (no scalar) builds on all backends
 pass	a Record.with over a runtime record with MULTIPLE preserved fields evaluates the operand once
+pass	a Record.project over a runtime record keeping two fields reads a kept field's value
+pass	a Record.project over a runtime record reads a kept NON-FIRST field's value
+pass	a Record.without over a runtime record dropping one field reads a surviving field's value
+pass	a Record.without over a runtime record reads a surviving NON-FIRST field after the drop
+pass	a Record.pop over a runtime record splits off the named field's value
+pass	a Record.merge of two runtime records reads a field from the second operand
