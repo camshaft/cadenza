@@ -7062,6 +7062,95 @@
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 4 Int64)) (output (: 0 Int64)))
 
+(case "CATALAN numbers grow by convolving the table with itself and agree with the binomial closed form"
+  (doc    "The SELF-convolution (the subset-sum above convolves the table with an INPUT element; the
+           Catalan recurrence convolves the growing table WITH ITSELF — `C(m) = Σ C(i)·C(m−1−i)`
+           reads the same list from BOTH ends in each term, index i ascending while m−1−i descends).
+           The differential is a two-theorem certificate: the closed form binom(2n,n)/(n+1) computed
+           via the exact-nCk walk (the landed pin as a sub-oracle), where the final ÷(n+1) is exact
+           BECAUSE Catalan theory says (n+1) | binom(2n,n) — agreement checks the recurrence, the
+           binomial walk, and the divisibility theorem at once. Faces: n=0 → the seed alone (11);
+           n=4 → 14 (141); n=7 → 429 (4291); n=10 → 16796 (167961 — the convolution reads ten
+           pairs in its final row).")
+  (input  (do
+            (def (at0 (: xs (List Int64)) (: i Int64))
+              (Option.expect (List.at xs i) "in-bounds"))
+            (def (conv (: c (List Int64)) (: i Int64) (: m Int64) (: acc Int64))
+              (if (>= i m)
+                  acc
+                  (conv c (+ i 1) m (+ acc (* (at0 c i) (at0 c (- (- m 1) i)))))))
+            (def (grow (: c (List Int64)) (: m Int64) (: n Int64))
+              (if (> m n)
+                  c
+                  (grow (List.push c (conv c 0 m 0)) (+ m 1) n)))
+            (def (catalan (: n Int64))
+              (at0 (grow (list 1) 1 n) n))
+            (def (min2 (: a Int64) (: b Int64)) (if (< a b) a b))
+            (def (nck-go (: n Int64) (: k Int64) (: i Int64) (: r Int64))
+              (if (>= i k)
+                  r
+                  (nck-go n k (+ i 1) (/ (* r (- n i)) (+ i 1)))))
+            (def (nck (: n Int64) (: k Int64))
+              (nck-go n (min2 k (- n k)) 0 1))
+            (def (main (: n Int64))
+              (do
+                (def c (catalan n))
+                (def closed (/ (nck (* 2 n) n) (+ n 1)))
+                (+ (* c 10) (if (= c closed) 1 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: 4 Int64)) (output (: 141 Int64))
+  (call   main (: 7 Int64)) (output (: 4291 Int64))
+  (call   main (: 10 Int64)) (output (: 167961 Int64)))
+
+(case "KTH PERMUTATION decodes the factorial number system by indexed removal from the pool"
+  (doc    "Two composed mechanisms, neither pinned elsewhere: the FACTORIAL-BASE decode — at each
+           position the digit is `k / f` and the remainder `k mod f` carries into the next round
+           over the SHRINKING factorial (f = (i−1)!) — and INDEXED REMOVAL from a pool, where
+           `remove-at` returns the (removed, rest) pair with order preserved AROUND the gap (a
+           removal that reverses the prefix or drops the suffix scrambles every later position).
+           The pool loses exactly one element per round, so index validity tightens as k shrinks.
+           Faces at the permutation-order boundaries: k=1 → the IDENTITY (every digit 0, always the
+           pool head — 123); k=n! → the full REVERSAL (every digit maximal, always the pool tail —
+           321); an interior k=9 of 4! → 2314 (mixed digits 1,1,0,0); the singleton pool (1).")
+  (input  (do
+            (def (fact (: n Int64))
+              (if (= n 0) 1 (* n (fact (- n 1)))))
+            (def (range1 (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (> i n) acc (range1 (+ i 1) n (List.push acc i))))
+            (def (fold-rest (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (fold-rest t (List.push acc h)))))
+            (def (remove-at (: xs (List Int64)) (: i Int64) (: j Int64) (: acc (List Int64)))
+              (match xs
+                ((list) (tuple -1 acc))
+                ((list h .. t)
+                  (if (= j i)
+                      (tuple h (fold-rest t acc))
+                      (remove-at t i (+ j 1) (List.push acc h))))))
+            (def (build (: pool (List Int64)) (: i Int64) (: k Int64) (: acc (List Int64)))
+              (if (= i 0)
+                  acc
+                  (do
+                    (def f (fact (- i 1)))
+                    (def idx (/ k f))
+                    (match (remove-at pool idx 0 (list))
+                      ((tuple v rest) (build rest (- i 1) (% k f) (List.push acc v)))))))
+            (def (kth-perm (: n Int64) (: k Int64))
+              (build (range1 1 n (list)) n (- k 1) (list)))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: n Int64) (: k Int64))
+              (chk (kth-perm n k) 0))
+            (export main)))
+  (call   main (: 3 Int64) (: 1 Int64)) (output (: 123 Int64))
+  (call   main (: 3 Int64) (: 6 Int64)) (output (: 321 Int64))
+  (call   main (: 4 Int64) (: 9 Int64)) (output (: 2314 Int64))
+  (call   main (: 1 Int64) (: 1 Int64)) (output (: 1 Int64)))
+
 (case "COIN CHANGE builds a min-coins table where greedy fails and unreachable targets report -1"
   (doc    "The corpus's first bottom-up DP TABLE: dp grows as a list where entry i is computed from
            ALREADY-FILLED entries dp[i−c] — the table read via `List.at` DURING its own construction
