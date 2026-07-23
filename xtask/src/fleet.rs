@@ -1694,15 +1694,16 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
         }
     }
 
-    // Precompute the set of ACTIVE agent names ONCE (registry.json is parsed a single time here, not
-    // per-request — the processed/ history can be hundreds of files). An orphan only matters if its
-    // sender is still active and thus stuck waiting.
-    let active: std::collections::HashSet<String> = fleet
-        .load()
+    // Load the registry ONCE (registry.json is parsed a single time here, not per-request — the
+    // processed/ history can be hundreds of files). We reuse it for two things: the ACTIVE-sender set
+    // (an orphan/queued-no-op only matters if its sender is still active and thus stuck waiting) AND the
+    // STOPPED-agent set (for the stranded-dead-letter check at the end).
+    let reg = fleet.load();
+    let active: std::collections::HashSet<String> = reg
         .agents
-        .into_iter()
+        .iter()
         .filter(|a| a.status == "active")
-        .map(|a| a.name)
+        .map(|a| a.name.clone())
         .collect();
 
     // Every merge-request archived in pr-sync/processed is a resolution we expect a reply for.
@@ -1829,6 +1830,53 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
             std::process::exit(1);
         }
     }
+
+    // Third check — STRANDED DEAD-LETTERS: ACTIONABLE mail queued in the inbox of a STOPPED agent. A
+    // stopped agent's `/loop` has EXITED, so it will never run step-2 inbox-drain again — any
+    // assign/issue/reject/merge-request sitting there is a permanent dead-letter (the sender's routed
+    // work silently goes nowhere). `send` now WARNS at delivery-time when the recipient is stopped
+    // (`wake_skip_is_terminal`), but that only guards mail sent AFTER that guard landed — it can't see
+    // the BACKLOG already accumulated before it, delivered via the non-`send` `add`-seed path (the
+    // `assign` in `add`), or simply ignored. This surfaces that standing backlog so it can be re-routed
+    // to a live owner (or the stopped agent reactivated), rather than rotting unseen in a dead inbox.
+    // Only ACTIONABLE kinds count (a stale informational note left un-archived is untidy, not lost
+    // work) — the SAME `actionable_inbox_depth` single-source classifier the drain-stall signal uses.
+    let stranded = find_stranded_stopped_inboxes(fleet, &reg);
+    if !stranded.is_empty() {
+        let total: usize = stranded.iter().map(|(_, n)| n).sum();
+        eprintln!(
+            "\n  ⚠ STRANDED DEAD-LETTER(S) — {total} actionable message(s) queued in {} STOPPED \
+             agent(s)' inbox(es); their loops have EXITED and will never drain them:",
+            stranded.len()
+        );
+        for (name, depth) in &stranded {
+            eprintln!("    • '{name}' — {depth} actionable message(s) undrained (agent stopped)");
+        }
+        eprintln!(
+            "  Re-route each to a live owner (`cargo xtask fleet send`) or reactivate the agent \
+             (`cargo xtask fleet add`/`up`). These will NOT be picked up on any future /loop.\n"
+        );
+        if strict {
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Find STOPPED agents whose inbox still holds ACTIONABLE (non-informational) mail — permanent
+/// dead-letters, since a stopped agent's loop has exited and will never drain them. Returns
+/// `(agent-name, actionable-depth)` for each such agent, in registry order, skipping any with zero
+/// actionable mail. Read-only; reuses `actionable_inbox_depth` so the "what counts as actionable"
+/// rule can never drift from the drain-stall signal + the `fleet inbox` legend (one source of truth,
+/// `INFORMATIONAL_KINDS`). The registry is passed in (not re-loaded) so `audit` parses it once.
+fn find_stranded_stopped_inboxes(fleet: &Fleet, reg: &Registry) -> Vec<(String, usize)> {
+    reg.agents
+        .iter()
+        .filter(|a| a.status == "stopped")
+        .filter_map(|a| {
+            let depth = actionable_inbox_depth(&fleet.inbox(&a.name));
+            (depth > 0).then(|| (a.name.clone(), depth))
+        })
+        .collect()
 }
 
 /// Scan pr-sync's LIVE inbox for merge-requests whose `--ref` content is ALREADY on trunk by patch-id
@@ -9038,6 +9086,60 @@ mod tests {
         std::fs::write(ib2.join("000000000001-1-note.json"), "{}").unwrap();
         std::fs::write(ib2.join("000000000002-2-merged.json"), "{}").unwrap();
         assert_eq!(oldest_actionable_inbox_message(&fleet, "v-y"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn find_stranded_stopped_inboxes_flags_only_stopped_agents_with_actionable_mail() {
+        let root =
+            std::env::temp_dir().join(format!("cdz-stranded-stopped-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: PathBuf::from("/hub/.claude/worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        let agent = |name: &str, status: &str| Agent {
+            name: name.to_string(),
+            role: "fix".to_string(),
+            vertical: String::new(),
+            area: String::new(),
+            worktree: String::new(),
+            branch: String::new(),
+            interval: "10m".to_string(),
+            model: "opus".to_string(),
+            effort: "high".to_string(),
+            status: status.to_string(),
+            disallow_ask: true,
+        };
+        let reg = Registry {
+            agents: vec![
+                agent("fix-stranded", "stopped"),   // stopped + actionable → FLAGGED
+                agent("fix-clean-stop", "stopped"), // stopped, only informational → NOT flagged
+                agent("v-busy", "active"), // active + actionable → NOT flagged (not stopped)
+            ],
+        };
+        // fix-stranded: one actionable assign + one informational note.
+        let ib = fleet.inbox("fix-stranded");
+        std::fs::create_dir_all(&ib).unwrap();
+        std::fs::write(ib.join("000000000001-10-assign.json"), "{}").unwrap();
+        std::fs::write(ib.join("000000000002-11-note.json"), "{}").unwrap();
+        // fix-clean-stop: only informational mail → not a dead-letter.
+        let ib2 = fleet.inbox("fix-clean-stop");
+        std::fs::create_dir_all(&ib2).unwrap();
+        std::fs::write(ib2.join("000000000001-12-merged.json"), "{}").unwrap();
+        // v-busy: actionable mail, but it's ACTIVE so it drains itself — must NOT be flagged.
+        let ib3 = fleet.inbox("v-busy");
+        std::fs::create_dir_all(&ib3).unwrap();
+        std::fs::write(ib3.join("000000000001-13-reject.json"), "{}").unwrap();
+
+        let stranded = find_stranded_stopped_inboxes(&fleet, &reg);
+        assert_eq!(
+            stranded,
+            vec![("fix-stranded".to_string(), 1)],
+            "only the stopped agent with actionable mail is a stranded dead-letter"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
