@@ -1,0 +1,141 @@
+/// sum-store.cdz — M2-b-1: the SUM-VALUE STORE, the representation foundation for user sum-type PAYLOAD values.
+///
+/// M2-a made a NULLARY constructor a bare integer TAG (`Red` = 0), which fits eval's `Value = Int64` model with
+/// zero machinery. A PAYLOAD constructor (`Some 5`, `Pair 3 4`) can't be a bare tag — it carries values. Per
+/// the v-inference value-rep steer (design note t251): keep eval-core-d's `Int64` value type and represent a
+/// sum value as an Int64 HANDLE into a SIDE store mapping hnd → `(tag, payload-values)`, threaded through
+/// eval exactly like the `defs` def-env. This module is that store, as a standalone TESTED unit — the same
+/// "tested foundation, wired later" shape int-width/the HM spikes use. NOTHING references it yet; it drops into
+/// the `src/*.cdz` glob so the pipeline stays byte-for-byte green while the representation is pinned + tested.
+/// M2-b-2 threads a `SumStore` through eval-core-d and adds the CCtor/CMatch arms that allocate + read it.
+///
+/// REPRESENTATION: `SumStore(next, cells)` — `next` = the next fresh hnd (a monotone counter, so every
+/// alloc gets a UNIQUE hnd; handles are never reused, matching the acyclic value-heap model — a sum value is
+/// a static snapshot, never mutated). `cells: Map(Int64, (Int64, List(Int64)))` maps hnd → `(tag, payloads)`.
+/// A payload element is itself an `Int64` — either a scalar value OR (recursively) another sum hnd, so nested
+/// sums (`Some (Some 5)`) work with no representation change (a hnd IS an Int64). This defers the full
+/// Value-ADT ripple until multi-TYPE payloads at the host boundary genuinely need it (design note: a later
+/// increment, not M2).
+/// The store type. `next` is the next hnd to hand out; `cells` maps an allocated hnd to its (tag,
+/// payloads). Handles start at 0 and only grow.
+type SumStore =
+  | SumStore(Int64, Map(Int64, Tuple(Int64, List(Int64))))
+
+/// An empty store — no cells, first hnd 0. eval starts with this (like the empty def-env / empty env).
+def empty-store() = SumStore.SumStore(0, Map.empty : Map(Int64, (Int64, List(Int64))))
+
+/// Allocate a sum value: record `(tag, payloads)` at the current `next` hnd, return `(hnd, store')` with
+/// `next` bumped. The hnd is the Int64 eval VALUE for the constructed sum (what a CCtor arm returns). Pure —
+/// returns a NEW store (no mutation), threaded onward like `defs`.
+def store-alloc(store: SumStore, tag: Int64, payloads: List(Int64)) = match store with
+  | SumStore.SumStore(next, cells) => (
+    next,
+    SumStore.SumStore(next + 1, Map.insert(cells, next, (tag, payloads)))
+  )
+
+/// Read the TAG of the sum value at `hnd` — `Some tag` if allocated, `None` if the hnd is unknown (a
+/// malformed hnd — impossible for a hnd that came from store-alloc, but total). A CMatch arm reads this
+/// to pick the branch (compare against each ctor pattern's tag).
+def store-tag(store: SumStore, hnd: Int64) = match store with
+  | SumStore.SumStore(_, cells) => match Map.lookup(cells, hnd) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(cell) => match cell with
+      | (tag, _) => Option.Some(tag)
+
+/// Read the i-th PAYLOAD element of the sum value at `hnd` — `Some value` if the hnd is allocated AND has
+/// an i-th element, else `None`. A payload-binding ctor pattern (`(Some x) → …`) reads element 0 to bind `x`;
+/// a multi-field ctor (`Pair a b`) reads 0 and 1. Index recursion via List.at (the compiler-ml idiom).
+def store-payload(store: SumStore, hnd: Int64, i: Int64) = match store with
+  | SumStore.SumStore(_, cells) => match Map.lookup(cells, hnd) with
+    | Option.None(_) => Option.None(unit)
+    | Option.Some(cell) => match cell with
+      | (_, payloads) => List.at(payloads, i)
+
+@test
+def sst-alloc-then-read-tag() =
+  // allocate a `Some 5` (tag 1, payload [5]); the hnd reads back tag 1.
+  match store-alloc(empty-store(), 1, List.push([], 5)) with
+    | (h, st) => match store-tag(st, h) with
+      | Option.Some(t) => (if t == 1 then unit else trap("alloc tag 1 reads back 1"))
+      | Option.None(_) => trap("an allocated hnd has a tag")
+
+@test
+def sst-alloc-then-read-payload() =
+  // the `Some 5` hnd reads back payload element 0 = 5.
+  match store-alloc(empty-store(), 1, List.push([], 5)) with
+    | (h, st) => match store-payload(st, h, 0) with
+      | Option.Some(v) => (if v == 5 then unit else trap("Some 5 payload[0] = 5"))
+      | Option.None(_) => trap("an allocated hnd has payload element 0")
+
+@test
+def sst-nullary-payload-empty() =
+  // a NULLARY-shaped alloc (tag 3, no payloads) reads its tag but has NO element 0.
+  match store-alloc(empty-store(), 3, [] : List(Int64)) with
+    | (h, st) => match store-tag(st, h) with
+      | Option.Some(t) => (if t == 3 then
+        match store-payload(st, h, 0) with
+          | Option.None(_) => unit
+          | Option.Some(_) => trap("a no-payload cell has no element 0")
+      else
+        trap("tag 3"))
+      | Option.None(_) => trap("tag readable")
+
+@test
+def sst-unique-handles() =
+  // two allocs get DISTINCT handles (monotone counter), each reading back its OWN tag — no aliasing.
+  match store-alloc(empty-store(), 1, List.push([], 10)) with
+    | (h1, st1) => match store-alloc(st1, 2, List.push([], 20)) with
+      | (h2, st2) => if h1 == h2 then
+        trap("distinct allocs must get distinct handles")
+      else
+        match store-tag(st2, h1) with
+          | Option.Some(t1) => (match store-tag(st2, h2) with
+            | Option.Some(t2) => (if t1 == 1 and t2 == 2 then
+              unit
+            else
+              trap("each hnd keeps its own tag"))
+            | Option.None(_) => trap("h2 tag readable")
+          )
+          | Option.None(_) => trap("h1 still readable after a later alloc")
+
+@test
+def sst-two-field-payload() =
+  // a two-field ctor `Pair 3 4` (tag 0, payloads [3,4]): element 0 = 3, element 1 = 4.
+  match store-alloc(empty-store(), 0, List.concat(List.push([], 3), List.push([], 4))) with
+    | (h, st) => match store-payload(st, h, 0) with
+      | Option.Some(a) => (match store-payload(st, h, 1) with
+        | Option.Some(b) => (if a == 3 and b == 4 then unit else trap("Pair 3 4 → [3,4]"))
+        | Option.None(_) => trap("element 1 present")
+      )
+      | Option.None(_) => trap("element 0 present")
+
+@test
+def sst-nested-sum-hnd-as-payload() =
+  // NESTED sum `Some (Some 5)`: alloc inner `Some 5` → hnd h1; alloc outer `Some h1` with h1 AS its payload.
+  // Reading outer payload[0] gives h1, which reads back as tag 1 / payload 5 — nested sums need no new rep (a
+  // hnd IS an Int64 payload element).
+  match store-alloc(empty-store(), 1, List.push([], 5)) with
+    | (h1, st1) => match store-alloc(st1, 1, List.push([], h1)) with
+      | (h2, st2) => match store-payload(st2, h2, 0) with
+        | Option.Some(inner) => (match store-tag(st2, inner) with
+          | Option.Some(it) => (if it == 1 then
+            match store-payload(st2, inner, 0) with
+              | Option.Some(iv) => (if iv == 5 then unit else trap("inner Some payload = 5"))
+              | Option.None(_) => trap("inner has payload")
+          else
+            trap("inner tag 1"))
+          | Option.None(_) => trap("inner hnd readable")
+        )
+        | Option.None(_) => trap("outer payload[0] is the inner hnd")
+
+@test
+def sst-unknown-hnd-declines() =
+  // a hnd never allocated → tag/payload both None (total, never a wrong value). Handle 99 in an empty store.
+  match store-tag(empty-store(), 99) with
+    | Option.None(_) => (match store-payload(empty-store(), 99, 0) with
+      | Option.None(_) => unit
+      | Option.Some(_) => trap("unknown hnd has no payload")
+    )
+    | Option.Some(_) => trap("an unknown hnd has no tag")
+
+export { SumStore.*, empty-store, store-alloc, store-tag, store-payload }

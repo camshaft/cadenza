@@ -8957,6 +8957,36 @@
   (call   main (: 2 Int64)) (output (: 1234579 Int64))
   (call   main (: 3 Int64)) (output (: 24 Int64)))
 
+(case "PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts"
+  (doc    "The rebuild-REORDERING face of the two-head destructure (the stack-machine and Pascal pins
+           READ `(list a b .. t)` pairs; this pushes them back b-THEN-a): a three-arm match — empty,
+           the `(list solo)` odd-tail arm (the survivor passes through UNswapped), and the swap step.
+           The output carries the INVOLUTION bit: `swap2 (swap2 xs) = xs` by deep `=` — the
+           self-inverse law that catches a systematic pair-order slip at every length, even where a
+           digit walk aliases. Faces: even length (1 2 3 4) → 2143; ODD (1 2 3 4 5) → 21435 with the
+           5 surviving in place; single element → 7 through the solo arm alone. Encoding: digit
+           walk ·10 + involution bit (21431 / 214351 / 71).")
+  (input  (do
+            (def (swap2 (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list solo) (List.push acc solo))
+                ((list a b .. t) (swap2 t (List.push (List.push acc b) a)))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: mode Int64))
+              (do
+                (def xs (if (= mode 1) (list 1 2 3 4) (if (= mode 2) (list 1 2 3 4 5) (list 7))))
+                (def r (swap2 xs (list)))
+                (+ (* (chk r 0) 10)
+                   (if (= (swap2 r (list)) xs) 1 0))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 21431 Int64))
+  (call   main (: 2 Int64)) (output (: 214351 Int64))
+  (call   main (: 3 Int64)) (output (: 71 Int64)))
+
 (case "a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive"
   (doc    "The full divide-and-conquer composed over the merge step above: `split-alt` deals elements
            to even/odd INDEX positions (deliberately scrambling relative order so the merges do all
