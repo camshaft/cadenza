@@ -1737,6 +1737,24 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
             // permanent false orphans here, enough to drown a REAL recent drop. A recent drop carries a
             // high monotonic delivery-seq, so excluding the `…0001` sentinel can't hide one.
             if active.contains(&mr.from) && !is_pre_durable_seq_filename(&fname) {
+                // An archived MR with an EMPTY --ref is definitionally UNVERIFIABLE, never an orphan:
+                // with no commit sha there is nothing to check against trunk, so it can be proven
+                // neither landed NOR dropped — and it is un-`ack`-able once in processed/ (`ack`
+                // archives FROM the inbox), so it would flag as a phantom silent-drop orphan on every
+                // strict audit forever with no action able to clear it (exactly the standing 15736
+                // case). Send-side now REFUSES empty-ref MRs (batch #83), so this can't recur; classify
+                // any pre-existing one as unverifiable so the strict guard reflects only REAL drops.
+                if merge_request_ref_is_missing(&mr.r#ref) {
+                    unverifiable += 1;
+                    if verbose {
+                        println!(
+                            "  ? {fname} (from {}) — no reply recorded; EMPTY --ref (unverifiable: \
+                             no sha to check vs trunk, un-ackable in processed/) — not an orphan",
+                            mr.from
+                        );
+                    }
+                    continue;
+                }
                 // Before crying "silent drop", check GROUND TRUTH: is the MR's `--ref` already on
                 // trunk by patch-id? If so, the work LANDED — the sender is not stuck, only the
                 // reply-correlation was lost (a resend-chain sibling got the `ack`, or pr-sync merged

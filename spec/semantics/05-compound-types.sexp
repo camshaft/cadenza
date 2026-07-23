@@ -5279,6 +5279,64 @@
   (call   main (: 5 Int64)) (output (: 1589 Int64))
   (call   main (: 9 Int64)) (output (: 1589 Int64)))
 
+(case "tree HEIGHT and BALANCE derive from insertion order over the same BST shape"
+  (doc    "Structural metrics over the BST above (the in-order pin reads VALUES; these read SHAPE):
+           `height` folds `1 + max(left, right)` — both children recursed, the MAX coupling their
+           results — and `balanced` demands every node's child heights differ by ≤1, recursing
+           `balanced` under an `abs` of a height DIFFERENCE (a recursion whose guard itself calls the
+           other recursion — height is re-derived per node, the quadratic-but-correct textbook form).
+           The SAME value set in different insertion orders makes shape observable where the in-order
+           pin (deliberately) can't see it: mode 1 inserts (4 2 6 1 3 5 7) — the perfect tree, height
+           3, balanced (31); mode 2 inserts (1 2 3 4 5) SORTED — the right-spine degenerate, height
+           5 = n, UNbalanced (50 — the same 5 values as a set, radically different shape); mode 3 a
+           3-node V (21). A path-copy insert that shared the wrong subtree would collapse the spine
+           and report the wrong height.")
+  (input  (do
+            (type BST (Empty) (Node (Tuple BST Int64 BST)))
+            (def (insert (: t BST) (: v Int64))
+              (match t
+                ((Empty _u) (Node (tuple (Empty) v (Empty))))
+                ((Node p)
+                  (match p
+                    ((tuple l k r)
+                      (if (< v k)
+                          (Node (tuple (insert l v) k r))
+                          (if (> v k)
+                              (Node (tuple l k (insert r v)))
+                              (Node (tuple l k r)))))))))
+            (def (build (: xs (List Int64)) (: t BST))
+              (match xs
+                ((list) t)
+                ((list h .. rest) (build rest (insert t h)))))
+            (def (max2 (: a Int64) (: b Int64)) (if (> a b) a b))
+            (def (height (: t BST))
+              (match t
+                ((Empty _u) 0)
+                ((Node p)
+                  (match p
+                    ((tuple l _k r) (+ 1 (max2 (height l) (height r))))))))
+            (def (abs2 (: x Int64)) (if (< x 0) (- 0 x) x))
+            (def (balanced (: t BST))
+              (match t
+                ((Empty _u) true)
+                ((Node p)
+                  (match p
+                    ((tuple l _k r)
+                      (if (> (abs2 (- (height l) (height r))) 1)
+                          false
+                          (if (balanced l) (balanced r) false)))))))
+            (def (main (: mode Int64))
+              (do
+                (def xs (if (= mode 1)
+                            (list 4 2 6 1 3 5 7)
+                            (if (= mode 2) (list 1 2 3 4 5) (list 5 3 8))))
+                (def t (build xs (Empty)))
+                (+ (* (height t) 10) (if (balanced t) 1 0))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 31 Int64))
+  (call   main (: 2 Int64)) (output (: 50 Int64))
+  (call   main (: 3 Int64)) (output (: 21 Int64)))
+
 (case "a recursive user sum type is built at run time and renders its variant names"
   (doc    "A recursive user sum type — the linked-list / AST shape a self-hosted compiler manipulates —
            constructed at run time. `(IntList.Cons (tuple n (IntList.Nil ())))` with n=5 a runtime value
