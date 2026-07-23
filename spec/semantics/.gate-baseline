@@ -47,9 +47,11 @@ pass	INTERLEAVE alternates two spines and drains the longer tail after the short
 pass	KADANE max-subarray threads a best-ending-here and a global best through one fold
 pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
 pass	LOCAL PEAKS counts strict interior maxima through a three-element sliding window
+pass	LONGEST RUN tracks the current and best streak, first run winning ties
 pass	LOOK-AND-SAY iterates run-length description over its own prior output
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
+pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
