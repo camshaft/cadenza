@@ -9423,6 +9423,45 @@
   (call   main (: 2 Int64)) (output (: 30509101 Int64))
   (call   main (: -6 Int64)) (output (: 29701021 Int64)))
 
+(case "PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division"
+  (doc    "The two-sided upgrade of the prefix-sum scan above (that one accumulates ONE direction;
+           each output slot here needs the product of everything on BOTH sides of it): a forward
+           pass emits prefix products, then the suffix pass walks the REVERSED spine pairing each
+           element with its reversed prefix — a dual-list lockstep fed by two `rev` walks, prepending
+           so the output lands back in source order. NO division anywhere — and the n=0 face is WHY
+           the two-pass form exists: with one zero in the input, the zero's own slot gets the product
+           of all the OTHERS while every other slot is 0 (40000000 in base-1000 — the answer a
+           divide-total-by-self shortcut cannot compute). n=3 → (60,40,30,24) → 60040030024;
+           n=1 → (20,40,10,8) → 20040010008.")
+  (input  (do
+            (def (prefixes (: xs (List Int64)) (: p Int64) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (prefixes t (* p h) (List.push acc p)))))
+            (def (rev (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (rev t (List.concat (list h) acc)))))
+            (def (suffix-mul (: xs (List Int64)) (: pre-rev (List Int64)) (: s Int64) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t)
+                  (match pre-rev
+                    ((list ph .. pt) (suffix-mul t pt (* s h) (List.concat (list (* ph s)) acc)))
+                    ((list) acc)))))
+            (def (eps (: xs (List Int64)))
+              (suffix-mul (rev xs (list)) (rev (prefixes xs 1 (list)) (list)) 1 (list)))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 1000) h)))))
+            (def (main (: n Int64))
+              (chk (eps (list 2 n 4 5)) 0))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 60040030024 Int64))
+  (call   main (: 0 Int64)) (output (: 40000000 Int64))
+  (call   main (: 1 Int64)) (output (: 20040010008 Int64)))
+
 (case "a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum"
   (doc    "The row-derivation composite: `pairs` slides a 2-element window over the previous row
            summing adjacent entries (matched by a THREE-arm shape — empty, single-tail stop, and
@@ -9745,6 +9784,38 @@
   (call   main (: 2 Int64)) (output (: 1233 Int64))
   (call   main (: 1 Int64)) (output (: 12134 Int64))
   (call   main (: 3 Int64)) (output (: 13234 Int64)))
+
+(case "LONGEST RUN tracks the current and best streak, first run winning ties"
+  (doc    "The MEASURING face of run detection (the dedup above COLLAPSES runs; the string-RLE counts
+           them in sequence — this keeps only the MAXIMUM): a (cur, best, best-value) triple threads
+           the fold, cur resetting to 1 on every change and best updating only on STRICT `>` — so
+           among EQUAL-length runs the FIRST wins (the tie discipline; a `>=` update reports the last).
+           The runtime n rides the seam between two runs: n=2 extends the 2-run to length 3 and the
+           7-run TIES it at 3 later — first-wins keeps (3, 2) → 32 (a `>=` update would report 37);
+           n=7 JOINS the 7-run instead,
+           making it 4 (47); n=1 breaks both — runs 2,2 / 1 / 7,7,7 — the 7-run wins alone (37).
+           Encoding: best-len·10 + run value.")
+  (input  (do
+            (def (go (: xs (List Int64)) (: prev Int64) (: cur Int64) (: best Int64) (: bval Int64))
+              (match xs
+                ((list) (tuple best bval))
+                ((list h .. t)
+                  (do
+                    (def nc (if (= h prev) (+ cur 1) 1))
+                    (if (> nc best)
+                        (go t h nc nc h)
+                        (go t h nc best bval))))))
+            (def (longest (: xs (List Int64)))
+              (match xs
+                ((list) (tuple 0 0))
+                ((list h .. t) (go t h 1 1 h))))
+            (def (main (: n Int64))
+              (match (longest (list 1 2 2 n 7 7 7 1))
+                ((tuple b v) (+ (* b 10) v))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 32 Int64))
+  (call   main (: 7 Int64)) (output (: 47 Int64))
+  (call   main (: 1 Int64)) (output (: 37 Int64)))
 
 (case "an UNZIP walk splits a list of pairs into two parallel lists that re-zip to the original"
   (doc    "The unzip/zip inverse law: one walk destructures each pair `((list (tuple k v) .. t))` and
