@@ -9478,6 +9478,47 @@
   (call   main (: 6 Int64)) (output (: 412678 Int64))
   (call   main (: 0 Int64)) (output (: 4012078 Int64)))
 
+(case "MERGE INTERVALS coalesces overlapping spans, touching endpoints join, containment absorbs"
+  (doc    "The span-coalescing fold with its state OUTSIDE the accumulator: the current (start, end)
+           travels as parameters and joins the emitted list only when a GAP closes it (emit-on-gap;
+           the final span flushed by the empty arm) — every other pinned fold appends state to the
+           output immediately. Two semantic edges: TOUCHING endpoints join — (1,4) + (4,5) coalesce
+           under `s <= ce`, where a strict `<` leaves them split (the fencepost of interval algebra);
+           CONTAINMENT absorbs — (1,10) swallowing (2,3) and (4,5) needs `max2` to KEEP the current
+           end, where overwriting with the new interval's smaller end SHRINKS the span mid-merge.
+           Faces: the classic 4-interval mix → three spans (106081015183); the touching pair → one
+           (1051); the containment chain → one (1101). Encoding: span pairs base-10000 ·10 + count.")
+  (input  (do
+            (def (max2 (: a Int64) (: b Int64)) (if (> a b) a b))
+            (def (go (: ivs (List (Tuple Int64 Int64))) (: cs Int64) (: ce Int64) (: acc (List (Tuple Int64 Int64))))
+              (match ivs
+                ((list) (List.push acc (tuple cs ce)))
+                ((list (tuple s e) .. t)
+                  (if (<= s ce)
+                      (go t cs (max2 ce e) acc)
+                      (go t s e (List.push acc (tuple cs ce)))))))
+            (def (merge-iv (: ivs (List (Tuple Int64 Int64))))
+              (match ivs
+                ((list) ivs)
+                ((list (tuple s e) .. t) (go t s e (list)))))
+            (def (chk (: rs (List (Tuple Int64 Int64))) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list (tuple s e) .. t) (chk t (+ (* acc 10000) (+ (* s 100) e))))))
+            (def (main (: mode Int64))
+              (do
+                (def ivs (if (= mode 1)
+                             (list (tuple 1 3) (tuple 2 6) (tuple 8 10) (tuple 15 18))
+                             (if (= mode 2)
+                                 (list (tuple 1 4) (tuple 4 5))
+                                 (list (tuple 1 10) (tuple 2 3) (tuple 4 5)))))
+                (def r (merge-iv ivs))
+                (+ (* (chk r 0) 10) ((. List len) r))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 106081015183 Int64))
+  (call   main (: 2 Int64)) (output (: 1051 Int64))
+  (call   main (: 3 Int64)) (output (: 1101 Int64)))
+
 (case "a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side"
   (doc    "The selection composite over the partition step above (there the split IS the answer; here
            it drives a three-way DECISION): take the head as pivot, partition the tail by `< pivot`,
@@ -9706,6 +9747,44 @@
   (call   main (: 0 Int64)) (output (: 11 Int64))
   (call   main (: 4 Int64)) (output (: 1040604011 Int64))
   (call   main (: 6 Int64)) (output (: 10615201506011 Int64)))
+
+(case "BINOMIAL nCk multiplies incrementally with exact interleaved division and uses the symmetry cut"
+  (doc    "The single-coefficient form against the Pascal row above as its oracle: the multiplicative
+           walk `r' = r·(n−i) / (i+1)` INTERLEAVES each division with its multiplication — each
+           partial r is itself the binomial coefficient C(n, i+1), so the truncating `/` divides
+           exactly at every step (a reordering that multiplies all numerators first overflows
+           early; one that divides before multiplying truncates). The SYMMETRY cut k → min(k, n−k) halves the walk and makes the k=n face run
+           ZERO iterations. Differential: the same coefficient read out of the ADDITIVE Pascal row
+           (List.at into the built row — shared-nothing with the multiplicative path). Faces:
+           C(10,3)=120 (1201); C(10,0)=1 (empty walk, 11); C(10,10)=1 (symmetry-cut empty walk, 11);
+           C(20,10)=184756 (the central coefficient, deepest walk — 1847561).")
+  (input  (do
+            (def (min2 (: a Int64) (: b Int64)) (if (< a b) a b))
+            (def (nck-go (: n Int64) (: k Int64) (: i Int64) (: r Int64))
+              (if (>= i k)
+                  r
+                  (nck-go n k (+ i 1) (/ (* r (- n i)) (+ i 1)))))
+            (def (nck (: n Int64) (: k Int64))
+              (nck-go n (min2 k (- n k)) 0 1))
+            (def (pairs (: xs (List Int64)) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list _last) acc)
+                ((list a b .. t) (pairs (List.concat (list b) t) (List.push acc (+ a b))))))
+            (def (row-n (: rk Int64) (: row (List Int64)))
+              (if (= rk 0)
+                  row
+                  (row-n (- rk 1) (List.push (List.concat (list 1) (pairs row (list))) 1))))
+            (def (main (: n Int64) (: k Int64))
+              (do
+                (def fast (nck n k))
+                (def slow (Option.expect (List.at (row-n n (list 1)) k) "k in row"))
+                (+ (* fast 10) (if (= fast slow) 1 0))))
+            (export main)))
+  (call   main (: 10 Int64) (: 3 Int64)) (output (: 1201 Int64))
+  (call   main (: 10 Int64) (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: 10 Int64) (: 10 Int64)) (output (: 11 Int64))
+  (call   main (: 20 Int64) (: 10 Int64)) (output (: 1847561 Int64)))
 
 (case "a SLIDING-WINDOW max walks a k=3 window by paired index reads"
   (doc    "The windowed aggregate (the scan above threads state STEP to step; a window re-READS a
