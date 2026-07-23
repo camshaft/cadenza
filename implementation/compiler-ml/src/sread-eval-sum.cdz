@@ -159,3 +159,45 @@ def ss-match-mixed-literal-and-ctor-patterns() =
     ) with
     | Option.Some(v) => (if v == 200 then unit else trap("mixed lit+ctor patterns: (Green) → Green-arm → 200"))
     | Option.None(_) => trap("a match mixing literal and ctor patterns runs")
+
+// ---- M2-b-2b-ii-c PAYLOAD ctor-pattern DECONSTRUCT: ((Some x) body) binds + reads the payload back ----
+// A payload ctor USE (Some 5) constructs a store handle (ii-b); a payload PATTERN ((Some x) body) reads its
+// payload[0] back into x. Lowers to CMatchSum(scrut, tag, [binder], body, rest). END-TO-END: construct+deconstruct.
+
+@test
+def ss-payload-pattern-binds-and-reads() =
+  // match (Some 5) ((Some x) x) (_ 0) → 5. Construct Some 5 (CCtor→handle), match on its tag, bind payload[0]=5
+  // to x, eval the body x → 5. THE payoff: a payload sum round-trips through construct + deconstruct.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 5) ((Some x) x) (_ 0))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 5 then unit else trap("(match (Some 5) ((Some x) x)(_ 0)) → 5"))
+    | Option.None(_) => trap("a payload ctor pattern binds + reads its payload")
+
+@test
+def ss-payload-pattern-arith-on-binding() =
+  // the bound payload is an ordinary value: match (Some 20) ((Some x) (+ x 1)) (_ 0) → 21.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 20) ((Some x) (+ x 1)) (_ 0))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 21 then unit else trap("(Some 20) bound x, x+1 → 21"))
+    | Option.None(_) => trap("arith on a bound payload runs")
+
+@test
+def ss-payload-pattern-falls-to-wildcard() =
+  // scrutinee tag differs from the pattern's ctor → the wildcard arm. match (None) ((Some x) x) (_ 99) → 99
+  // (None is tag 1, the Some pattern is tag 0 → mismatch → wildcard). Pins the CMatchSum else-path.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (None) ((Some x) x) (_ 99))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 99 then unit else trap("(None) vs (Some x) pattern → wildcard → 99"))
+    | Option.None(_) => trap("a payload-pattern tag mismatch takes the wildcard arm")
+
+@test
+def ss-payload-ctor-in-helper-roundtrip() =
+  // construct in one def, deconstruct in main: (def (mk) (Some 7)) ; match (mk) ((Some x) x) (_ 0) → 7.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (mk) (Some 7)) (def (main) (match (mk) ((Some x) x) (_ 0))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 7 then unit else trap("(mk)=Some 7, match ((Some x) x) → 7"))
+    | Option.None(_) => trap("a payload sum constructed in a helper deconstructs in main")

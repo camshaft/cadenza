@@ -159,6 +159,19 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                   | Option.None(_) => Option.None(unit))
               | Option.None(_) => Option.None(unit))
           | Option.None(_) => Option.None(unit))
+    | Option.Some(Node.NMatchCtor(scrutId, ctorTag, binderId, bodyId, restId)) =>
+        // M2-b-2b-ii-c payload ctor-pattern arm → CMatchSum(scrut, tag, [binderId], body, rest): eval reads the
+        // scrutinee sum handle's store-tag; if == tag, binds payload[0] to binderId (a CVar key) + evals body,
+        // else evals rest. Single payload field → the binder list is [binderId]. All three children must lower.
+        (match lower-node(tree, scrutId, rcol, tcol) with
+          | Option.Some(cs) =>
+            (match lower-node(tree, bodyId, rcol, tcol) with
+              | Option.Some(cbody) =>
+                (match lower-node(tree, restId, rcol, tcol) with
+                  | Option.Some(crest) => Option.Some(Core.CMatchSum(cs, ctorTag, List.push([], binderId), cbody, crest))
+                  | Option.None(_) => Option.None(unit))
+              | Option.None(_) => Option.None(unit))
+          | Option.None(_) => Option.None(unit))
     | Option.Some(Node.NApp(calleeId, argId)) =>
         // NULLARY call `(mk)` = NApp(calleeBodyId, -1) INLINES the callee body's Core (β-reduction over zero
         // args — the call IS the body). slice-3c SINGLE-PARAM call `(f arg)` = NApp(calleeBodyId, argId) lowers

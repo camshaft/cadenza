@@ -7022,6 +7022,46 @@
   (call   main (: 5 Int64))
   (output (: 21 Int64)))
 
+(case "SUBSET-SUM COUNT folds each element into a fresh ways-table so no element is reused"
+  (doc    "The 0/1 counting DP — the coin-change below REUSES coins freely (its inner loop reads the
+           row UNDER CONSTRUCTION); subset-sum forbids reuse, so each element folds into a FRESH row
+           computed entirely from the OLD one (`next-row` reads only `old` — the one-row-back
+           discipline is exactly the reuse/no-reuse distinction, and reading the new row instead
+           silently turns subsets into multisets). Ways ACCUMULATE additively: cell i = old[i]
+           (skip x) + old[i−x] (take x, guarded for i ≥ x). Seed = 1 way to make 0 from nothing.
+           Faces: (2 3 5 6 8 10)@10 → 3 subsets (2+8, 2+3+5, 10); DUPLICATE elements
+           (1 1 1)@2 → 3 — the three C(3,2) PAIRS count separately (identical values, distinct
+           elements — a dedup-happy fold reports 1); the singleton exact hit (1); the unreachable
+           odd target over evens (0).")
+  (input  (do
+            (def (at0 (: xs (List Int64)) (: i Int64))
+              (Option.expect (List.at xs i) "in-bounds"))
+            (def (zeros-one (: j Int64) (: n Int64) (: acc (List Int64)))
+              (if (> j n) acc (zeros-one (+ j 1) n (List.push acc (if (= j 0) 1 0)))))
+            (def (next-row (: old (List Int64)) (: x Int64) (: i Int64) (: t Int64) (: acc (List Int64)))
+              (if (> i t)
+                  acc
+                  (next-row old x (+ i 1) t
+                    (List.push acc
+                      (+ (at0 old i)
+                         (if (>= i x) (at0 old (- i x)) 0))))))
+            (def (fold-elems (: xs (List Int64)) (: t Int64) (: dp (List Int64)))
+              (match xs
+                ((list) dp)
+                ((list x .. rest) (fold-elems rest t (next-row dp x 0 t (list))))))
+            (def (count-subsets (: xs (List Int64)) (: t Int64))
+              (at0 (fold-elems xs t (zeros-one 0 t (list))) t))
+            (def (main (: mode Int64))
+              (if (= mode 1) (count-subsets (list 2 3 5 6 8 10) 10)
+              (if (= mode 2) (count-subsets (list 1 1 1) 2)
+              (if (= mode 3) (count-subsets (list 5) 5)
+                             (count-subsets (list 2 4) 7)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 2 Int64)) (output (: 3 Int64))
+  (call   main (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: 4 Int64)) (output (: 0 Int64)))
+
 (case "COIN CHANGE builds a min-coins table where greedy fails and unreachable targets report -1"
   (doc    "The corpus's first bottom-up DP TABLE: dp grows as a list where entry i is computed from
            ALREADY-FILLED entries dp[i−c] — the table read via `List.at` DURING its own construction

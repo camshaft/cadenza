@@ -76,6 +76,17 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
          (let m2 = resolve-node(tree, litId, env, m1) in
           (let m3 = resolve-node(tree, thenId, env, m2) in
            resolve-node(tree, elseId, env, m3))))
+    | Option.Some(Node.NMatchCtor(scrutId, _ctorTag, binderId, bodyId, restId)) =>
+        // M2-b-2b-ii-c payload ctor-pattern arm `((Ctor x) body)`: the binder `x` (NVar at binderId) is bound
+        // in the BODY scope ONLY (like a let binds its body) — so `body`'s `x` resolves RBound(binderId) → lower
+        // CVar(binderId), which CMatchSum's bind-payload keys. The scrutinee + the REST (next arm) resolve in the
+        // OUTER env (the binder is not in scope there). Bind the binder's NAME → binderId in the body env.
+        (let r1 = resolve-node(tree, scrutId, env, col) in
+         (let bodyEnv = (match node-at(tree, binderId) with
+                          | Option.Some(Node.NVar(bnm)) => Map.insert(env, bnm, binderId)
+                          | _ => env) in
+          (let r2 = resolve-node(tree, bodyId, bodyEnv, r1) in
+           resolve-node(tree, restId, env, r2))))
     | Option.Some(Node.NApp(calleeId, argId)) =>
         // A call resolves TWO subtrees, in DIFFERENT scopes (matching rcdzc's beta-reduction discipline):
         //  (1) the ARGUMENT resolves in the CALLER's scope (the CURRENT env) — the arg is written where the call

@@ -166,12 +166,14 @@ def eval-core-s(c: Core, env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), 
   | Core.CMatchSum(scrut, tag, binders, thn, els) =>
       // M2-b-2b sum DECONSTRUCT: eval scrut to a handle, read its store-tag. If it EQUALS `tag`, bind each
       // payload element to its binder (store-payload h i → binders[i]) and eval `then` under that env; else
-      // eval `else` (fall-through to the next arm). A malformed handle (no tag) → decline. Threads the store.
+      // eval `else` (fall-through to the next arm). 🔑 a scrutinee that is NOT an allocated handle — e.g. a
+      // NULLARY ctor value (a bare tag Int, M2-a) or any non-sum scalar — has store-tag None: it simply does
+      // NOT match this PAYLOAD-ctor pattern, so take the ELSE arm (NOT a decline). Threads the store.
       (match eval-core-s(scrut, env, defs, store) with
         | Option.None(_) => Option.None(unit)
         | Option.Some(hs) => (match hs with | (h, store1) =>
             (match store-tag(store1, h) with
-              | Option.None(_) => Option.None(unit)
+              | Option.None(_) => eval-core-s(els, env, defs, store1)   // not a payload sum → pattern doesn't match → else
               | Option.Some(scrutTag) =>
                   (if (scrutTag == tag)
                    then eval-core-s(thn, bind-payload(store1, h, binders, 0, env), defs, store1)
