@@ -1108,6 +1108,82 @@
               (if (ev 10) 1 0)))
   (output (: 1 Int64)))
 
+; A do-local function that CAPTURES a sibling local from its enclosing scope lowers by lambda-lift: the
+; captured free variable is threaded into the lifted function. The capture must cover a sibling local
+; whose value is RUNTIME-COMPUTED (not a parameter, not a constant) — when the enclosing function inlines,
+; β-reduction copies the do/let and the sibling binding's value-RHS becomes a SYNTH node; a free-var scan
+; that only pins USER-node captures drops the synth value binder, so the copied capture re-resolves in the
+; orphaned body and reports the sibling unbound (a false-negative CDZ0101 REJECT of a valid program — the
+; FINDING #19 class, rcdzc lambda-lift, fixed by pinning a synth captured value binder). Parameter capture
+; and constant-local capture always worked (the binder is a user node / folds to a constant); only a
+; runtime-computed synth value binder slipped through.
+(case "a do-local fn capturing a runtime-computed sibling local survives the enclosing fn's inlining"
+  (doc    "FINDING #19 (breaker), rcdzc lambda-lift synth-captured-value-binder fix. `outer` has a do-local
+           `(def m (* n 3))` (runtime-computed from param `n`) and a do-local `(def (inner x) (+ x m))` that
+           CAPTURES `m`; `outer` inlines at `main`, β-copying the do so `m`'s RHS is a synth node. The lift
+           must still pin `m` into `inner`'s captured env — else the copied `inner` sees `m` unbound and
+           rejects CDZ0101. `(outer 5)` = inner(5) = 5 + (5*3) = 20. The runtime-computed-capture face that
+           param-capture and constant-capture (below) do not exercise.")
+  (input  (do
+            (def (outer (: n Int64))
+              (do
+                (def m (* n 3))
+                (def (inner (: x Int64)) (+ x m))
+                (inner n)))
+            (def (main (: n Int64)) (outer n))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 20 Int64)))
+
+(case "a do-local fn capturing a runtime-computed sibling via a LET binding survives inlining"
+  (doc    "The let-binder twin of the do-def capture above: the runtime-computed sibling is a `(let ((m (* n
+           3))) …)` binding rather than a `(def m …)`; both binder forms produce a synth value binder when
+           `outer` inlines, and both must be pinned into `inner`'s capture. `(outer 5)` = 20. Pins that the
+           synth-captured-value-binder fix covers the let-binding form, not only do-def.")
+  (input  (do
+            (def (outer (: n Int64))
+              (let ((m (* n 3)))
+                (do
+                  (def (inner (: x Int64)) (+ x m))
+                  (inner n))))
+            (def (main (: n Int64)) (outer n))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 20 Int64)))
+
+(case "a do-local fn capturing the enclosing fn PARAMETER directly lowers (capture guard)"
+  (doc    "FINDING #19 guard c2: `inner` captures the PARAMETER `n` directly (not a computed sibling). The
+           binder is a user node so the free-var scan always pinned it — this always worked and stays a
+           passing guard alongside the runtime-computed-capture fix. `(outer 5)` = inner(1) = 1 + 5 = 6.")
+  (input  (do
+            (def (outer (: n Int64))
+              (do
+                (def (inner (: x Int64)) (+ x n))
+                (inner 1)))
+            (def (main (: n Int64)) (outer n))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
+
+(case "a do-local fn capturing a CONSTANT sibling local lowers (capture guard)"
+  (doc    "FINDING #19 guard c3: `inner` captures a CONSTANT sibling `(def m 3)` — the binder folds to a
+           constant, so the capture always resolved. Stays a passing guard beside the runtime-computed
+           case; distinguishes 'constant sibling' (always worked) from 'runtime-computed sibling' (the fix).
+           `(outer 5)` = inner(5) = 5 + 3 = 8.")
+  (input  (do
+            (def (outer (: n Int64))
+              (do
+                (def m 3)
+                (def (inner (: x Int64)) (+ x m))
+                (inner n)))
+            (def (main (: n Int64)) (outer n))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 8 Int64)))
+
+(case "a top-level do-local fn capturing a constant lowers (capture control)"
+  (doc    "FINDING #19 control c1: a TOP-LEVEL do-local fn `(def (addb n) (+ n base))` capturing a top-level
+           constant `(def base 10)` — no enclosing-fn inlining involved, so no synth-binder copy; the
+           baseline capture path. `(addb 5)` = 5 + 10 = 15. Confirms the top-level capture never regressed.")
+  (input  (do (def base 10) (def (addb (: n Int64)) (+ n base)) (def (main (: n Int64)) (addb n)) (export main)))
+  (call   main (: 5 Int64)) (output (: 15 Int64)))
+
 ; A recursive do-local function nested INSIDE a HELPER that is itself INLINED at its call site still
 ; recurses: β-reduction COPIES the helper's body (fresh occurrences), so the copied recursive self-call
 ; must still lower to a runtime call — the copy's do-local function is registered as an emittable function

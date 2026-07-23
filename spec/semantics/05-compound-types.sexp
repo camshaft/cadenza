@@ -9462,6 +9462,44 @@
   (call   main (: 2 Int64)) (output (: 30509101 Int64))
   (call   main (: -6 Int64)) (output (: 29701021 Int64)))
 
+(case "RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk"
+  (doc    "The QUERY side of the prefix table (the scan above pins construction): `rq(i,j) =
+           pre[j] − pre[i−1]` — the O(1) interval sum — with the i=0 GUARD as the sharp edge: the
+           formula wants pre[-1], which does not exist, so the left edge special-cases to 0 instead
+           of reading out of bounds (the idiom's classic off-by-one; a guard at i=1 or a pre[i] read
+           shifts every left-anchored answer). Certified differentially against a DIRECT bounded
+           walk — an O(n) re-scan filtering k in [i, j] — sharing nothing with the table path.
+           Faces over (3 1 4 1 5 9 2 6): the FULL range (31 → 311); an interior window 2..4
+           (10 → 101); the single-slot i=j=3 (1 → 11); the first-slot query 0..0 that exercises the
+           guard (3 → 31). Encoding: sum·10 + agreement bit.")
+  (input  (do
+            (def (build (: xs (List Int64)) (: run Int64) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (build t (+ run h) (List.push acc (+ run h))))))
+            (def (at0 (: xs (List Int64)) (: i Int64))
+              (Option.expect (List.at xs i) "in-bounds"))
+            (def (rq (: pre (List Int64)) (: i Int64) (: j Int64))
+              (- (at0 pre j) (if (= i 0) 0 (at0 pre (- i 1)))))
+            (def (direct (: xs (List Int64)) (: i Int64) (: j Int64) (: k Int64) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t)
+                  (direct t i j (+ k 1)
+                    (if (if (>= k i) (<= k j) false) (+ acc h) acc)))))
+            (def (main (: i Int64) (: j Int64))
+              (do
+                (def xs (list 3 1 4 1 5 9 2 6))
+                (def pre (build xs 0 (list)))
+                (def fast (rq pre i j))
+                (def slow (direct xs i j 0 0))
+                (+ (* fast 10) (if (= fast slow) 1 0))))
+            (export main)))
+  (call   main (: 0 Int64) (: 7 Int64)) (output (: 311 Int64))
+  (call   main (: 2 Int64) (: 4 Int64)) (output (: 101 Int64))
+  (call   main (: 3 Int64) (: 3 Int64)) (output (: 11 Int64))
+  (call   main (: 0 Int64) (: 0 Int64)) (output (: 31 Int64)))
+
 (case "PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division"
   (doc    "The two-sided upgrade of the prefix-sum scan above (that one accumulates ONE direction;
            each output slot here needs the product of everything on BOTH sides of it): a forward

@@ -59,6 +59,19 @@ def bind-params(params: List(Int64), vals: List(Int64), i: Int64, acc: Map(Int64
           | Option.None(_) => acc
           | Option.Some(v) => bind-params(params, vals, i + 1, Map.insert(acc, p, v))))
 
+/// bind-payload (M2-b-2b): bind a sum value's payload elements to a CMatchSum arm's binder-ids in `env`. For
+/// each binder `binders[i]`, read `store-payload(store, h, i)` and insert `binder → value` (env is the CVar
+/// key space, exactly like bind-params). Index recursion. A missing payload element (ragged — impossible for a
+/// well-typed match, arity comes from the ctor decl) stops early; eval is total.
+def bind-payload(store: SumStore, h: Int64, binders: List(Int64), i: Int64, env: Map(Int64, Int64)) =
+  if (i == List.len(binders)) then env
+  else (match List.at(binders, i) with
+    | Option.None(_) => env
+    | Option.Some(b) =>
+        (match store-payload(store, h, i) with
+          | Option.None(_) => env
+          | Option.Some(v) => bind-payload(store, h, binders, i + 1, Map.insert(env, b, v))))
+
 /// apply-def-by-name (slice-B3 / HO-3, DRY): dispatch a def by NAME — the shared body of CCall and CFnRefVar.
 /// Look the name up in the def-env; eval the args in the CURRENT (caller) env; bind them positionally into a
 /// FRESH env (lexical); eval the body under it. An unknown name (empty def-env — the B1a/existing 2-arg path)
@@ -142,6 +155,27 @@ def eval-core-s(c: Core, env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), 
       (match Map.lookup(env, fBinder) with
         | Option.None(_) => Option.None(unit)
         | Option.Some(name) => apply-def-by-name(name, args, env, defs, store))
+  | Core.CCtor(tag, args) =>
+      // M2-b-2b USER SUM PAYLOAD ctor: eval the payload args (threading the store L→R — an arg may itself
+      // construct a sum), then store-ALLOC (tag, arg-values) → the Int64 HANDLE is this sum value. eval-args
+      // already threads store + collects values; store-alloc bumps the handle counter + records the cell.
+      (match eval-args(args, 0, env, defs, store) with
+        | Option.None(_) => Option.None(unit)
+        | Option.Some(vs) => (match vs with | (vals, store1) =>
+            (match store-alloc(store1, tag, vals) with | (h, store2) => Option.Some((h, store2)))))
+  | Core.CMatchSum(scrut, tag, binders, thn, els) =>
+      // M2-b-2b sum DECONSTRUCT: eval scrut to a handle, read its store-tag. If it EQUALS `tag`, bind each
+      // payload element to its binder (store-payload h i → binders[i]) and eval `then` under that env; else
+      // eval `else` (fall-through to the next arm). A malformed handle (no tag) → decline. Threads the store.
+      (match eval-core-s(scrut, env, defs, store) with
+        | Option.None(_) => Option.None(unit)
+        | Option.Some(hs) => (match hs with | (h, store1) =>
+            (match store-tag(store1, h) with
+              | Option.None(_) => Option.None(unit)
+              | Option.Some(scrutTag) =>
+                  (if (scrutTag == tag)
+                   then eval-core-s(thn, bind-payload(store1, h, binders, 0, env), defs, store1)
+                   else eval-core-s(els, env, defs, store1)))))
 
 /// Apply a binary op: 43 +, 45 -, 42 *, 47 /, and the relational ops 60 `<`, 61 `==`, 62 `>`, 63 `<=`,
 /// 64 `>=`, 65 `!=`. Relational ops yield a Bool encoded as 0/1 (Core represents Bool as an Int); each of
@@ -679,5 +713,69 @@ def ev-mutual-recursion-ev-od-slice-b3() =
                       | Option.Some(odv) =>
                           (if ((evv == 1) and (odv == 0)) then unit
                            else trap("(ev 4)=1 and (od 4)=0 via mutual recursion")))))))
+
+/// M2-b-2b USER SUM PAYLOAD ctor eval tests (direct-Core, hand-built — proves the CCtor/CMatchSum + SumStore
+/// MECHANISM before the reader/infer/lower wiring, exactly like the slice-B3 def-env tests proved recursion
+/// before lower-def-env). A payload ctor `Some 5` = CCtor(1, [CNum 5]); deconstruct via CMatchSum on the tag.
+
+@test
+def ev-cctor-constructs-and-matches-payload() =
+  // `match (Some 5) with Some x => x | _ => 0` → 5. CCtor(1,[5]) allocs a handle; CMatchSum(scrut, tag 1,
+  // binders [100], then=CVar 100, else=CNum 0) reads store-tag==1 → binds payload[0]=5 to binder 100 → CVar 100 = 5.
+  (match eval-core(
+     Core.CMatchSum(Core.CCtor(1, List.push([], Core.CNum(5, true, 64))), 1, List.push([], 100),
+                    Core.CVar(100), Core.CNum(0, true, 64)),
+     (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(v) => (if v == 5 then unit else trap("match (Some 5) Some x => x → 5"))
+    | Option.None(_) => trap("a payload ctor constructs + its payload binds in a matching arm"))
+
+@test
+def ev-cmatchsum-tag-mismatch-takes-else() =
+  // `match (Some 5) with None => 111 | _ => 222` (tag 1 value vs tag-0 pattern) → the else, 222. Proves the
+  // tag test selects the fall-through arm when the discriminant differs.
+  (match eval-core(
+     Core.CMatchSum(Core.CCtor(1, List.push([], Core.CNum(5, true, 64))), 0, ([] : List(Int64)),
+                    Core.CNum(111, true, 64), Core.CNum(222, true, 64)),
+     (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(v) => (if v == 222 then unit else trap("tag mismatch → else arm → 222"))
+    | Option.None(_) => trap("a tag-mismatched sum match takes the else arm"))
+
+@test
+def ev-cctor-two-field-payload-binds-both() =
+  // a two-field ctor `Pair 3 4` = CCtor(0,[3,4]); `match (Pair 3 4) with Pair a b => a + b` → 7. Binds
+  // payload[0]→a(100), payload[1]→b(101), then = CBin(+, CVar 100, CVar 101).
+  (match eval-core(
+     Core.CMatchSum(Core.CCtor(0, List.concat(List.push([], Core.CNum(3, true, 64)), List.push([], Core.CNum(4, true, 64)))),
+                    0, List.concat(List.push([], 100), List.push([], 101)),
+                    Core.CBin(43, true, 64, Core.CVar(100), Core.CVar(101)), Core.CNum(0, true, 64)),
+     (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(v) => (if v == 7 then unit else trap("Pair 3 4 → a+b = 7"))
+    | Option.None(_) => trap("a two-field payload ctor binds both fields"))
+
+@test
+def ev-cmatchsum-nested-arms-second-matches() =
+  // an N-arm sum match = nested CMatchSum. `match (Some 9) with None => 0 | Some x => x` written as
+  // CMatchSum(scrut, tag0, [], CNum 0, CMatchSum(scrut, tag1, [100], CVar 100, CNum -1)) → 9. Pins that the
+  // else-chain re-tests the SAME scrutinee handle against the next arm's tag (mirrors NMatch→CIf chaining).
+  (let scrut = Core.CCtor(1, List.push([], Core.CNum(9, true, 64)))
+   in (match eval-core(
+     Core.CMatchSum(scrut, 0, ([] : List(Int64)), Core.CNum(0, true, 64),
+                    Core.CMatchSum(scrut, 1, List.push([], 100), Core.CVar(100), Core.CNum(0 - 1, true, 64))),
+     (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(v) => (if v == 9 then unit else trap("nested sum arms: (Some 9) → the Some arm → 9"))
+    | Option.None(_) => trap("a nested-arm sum match runs")))
+
+@test
+def ev-cctor-nested-sum-payload() =
+  // NESTED sum `Some (Some 7)` = CCtor(1,[CCtor(1,[CNum 7])]); match the outer Some x => (match x with Some y => y).
+  // Proves a sum handle rides as a payload element (handle IS an Int64) — inner match reads the inner handle's payload.
+  (match eval-core(
+     Core.CMatchSum(Core.CCtor(1, List.push([], Core.CCtor(1, List.push([], Core.CNum(7, true, 64))))),
+                    1, List.push([], 100),
+                    Core.CMatchSum(Core.CVar(100), 1, List.push([], 101), Core.CVar(101), Core.CNum(0, true, 64)),
+                    Core.CNum(0, true, 64)),
+     (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(v) => (if v == 7 then unit else trap("Some (Some 7) → inner payload 7"))
+    | Option.None(_) => trap("a nested sum payload deconstructs"))
 
 export { eval-core, eval-core-d, eval-bin, eval-tree, run, milestone-tokens, run-milestone }

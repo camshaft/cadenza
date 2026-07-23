@@ -49,6 +49,18 @@ type Core =
                                    // (a def-name from a CFnRef) to args — `(f x)` where `f` is a parameter, not
                                    // a known def. eval looks up the binder's name value then does the SAME
                                    // defs-dispatch as CCall (shared apply-def). Out of emit subset (eval-only).
+  | CCtor(Int64, List(Core))       // M2-b-2b USER SUM PAYLOAD ctor: `CCtor(tag, args)` = construct a sum value
+                                   // with discriminant `tag` and already-lowered payload `args`. eval store-ALLOCs
+                                   // (tag, arg-values) into the SumStore and returns the Int64 HANDLE (the sum
+                                   // value). A NULLARY ctor still lowers to CNum(tag) (M2-a, the bare tag needs no
+                                   // heap cell); CCtor is only for ctors WITH payloads. Out of emit subset (eval-
+                                   // only; emit(B) = rcdzc's SumNew{disc,payloads}, deferred).
+  | CMatchSum(Core, Int64, List(Int64), Core, Core)  // M2-b-2b sum DECONSTRUCT: `CMatchSum(scrut, tag, binders,
+                                   // then, else)`. eval `scrut` to a handle, read its store-tag: if it EQUALS
+                                   // `tag`, bind each payload element `store-payload(h, i)` to `binders[i]` in the
+                                   // env and eval `then`; else eval `else` (the fall-through to the next arm).
+                                   // A nested chain of CMatchSum = an N-arm sum match (like NMatch→CIf for ints).
+                                   // Binders are canonical binder-ids (CVar keys), positional to the payload.
 
 /// The canonical Int64 constant — the width the monomorphic-i64 pipeline lowers every literal to today (a
 /// narrow-width annotation lowers to a NARROW CNum; emit reads the width). A single name so construct sites
