@@ -8922,6 +8922,41 @@
   (call   main (: 5 Int64))
   (output (: 1233589258 Int64)))
 
+(case "INTERLEAVE alternates two spines and drains the longer tail after the shorter empties"
+  (doc    "The order-blind counterpart of the sorted MERGE above (merge picks by COMPARISON; weave
+           alternates STRICTLY a-then-b per round regardless of values), with the drain face on
+           EITHER side: when a empties mid-weave the b-tail drains in place, and vice versa — both
+           one-empty arms are live code, unlike merge where the drain helper is shared. Faces: equal
+           lengths (1,3,5)/(2,4,6) → the perfect riffle 123456; a THREE-longer (1,3,5,7,9)/(2,4) →
+           riffle then a-drain 1234579 (the alternation must STOP pairing at b's end, not skip-read);
+           a EMPTY entirely → the b-only weave 24 (the immediate-drain boundary — the first match arm
+           chain must fall through a's empty to b's spine without reading a's head). Digit-walk
+           encoded.")
+  (input  (do
+            (def (weave (: a (List Int64)) (: b (List Int64)) (: acc (List Int64)))
+              (match a
+                ((list)
+                  (match b
+                    ((list) acc)
+                    ((list bh .. bt) (weave (list) bt (List.push acc bh)))))
+                ((list ah .. at)
+                  (match b
+                    ((list) (weave at (list) (List.push acc ah)))
+                    ((list bh .. bt) (weave at bt (List.push (List.push acc ah) bh)))))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: mode Int64))
+              (do
+                (def a (if (= mode 1) (list 1 3 5) (if (= mode 2) (list 1 3 5 7 9) (list))))
+                (def b (if (= mode 1) (list 2 4 6) (list 2 4)))
+                (chk (weave a b (list)) 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 123456 Int64))
+  (call   main (: 2 Int64)) (output (: 1234579 Int64))
+  (call   main (: 3 Int64)) (output (: 24 Int64)))
+
 (case "a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive"
   (doc    "The full divide-and-conquer composed over the merge step above: `split-alt` deals elements
            to even/odd INDEX positions (deliberately scrambling relative order so the merges do all
@@ -9132,6 +9167,53 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 1425363 Int64))
   (call   main (: 0 Int64)) (output (: 1420363 Int64)))
+
+(case "CHUNK splits a list into fixed-size sublists with a short final chunk that reflattens intact"
+  (doc    "The inverse-of-flatten builder (transpose above builds a list-of-lists by COLUMN; chunk
+           builds it by COUNT): take-n/drop-n advance k at a time — the SAME cut helpers as the
+           rotate pin, here driven in a LOOP building nested structure — and the FINAL chunk is
+           short when k doesn't divide the length (a chunker that pads, drops the remainder, or
+           loops forever on the short tail fails its face). Certified by reflattening: `flatten
+           (chunk xs k) = xs` (the chunk/flatten inverse law, deep `=`). Over 7 elements: k=2 →
+           4 chunks, last len 1 (4101); k=3 → 3 chunks, last len 1 (3101); k=7 → ONE chunk, last
+           len 7 — the k ≥ len boundary where the first take consumes everything and the drop must
+           terminate (1701). Encoding: nchunks·1000 + lastlen·100 + reflatten bit.")
+  (input  (do
+            (def (take-n (: xs (List Int64)) (: k Int64) (: acc (List Int64)))
+              (if (= k 0)
+                  acc
+                  (match xs
+                    ((list) acc)
+                    ((list h .. t) (take-n t (- k 1) (List.push acc h))))))
+            (def (drop-n (: xs (List Int64)) (: k Int64))
+              (if (= k 0)
+                  xs
+                  (match xs
+                    ((list) xs)
+                    ((list _h .. t) (drop-n t (- k 1))))))
+            (def (chunk (: xs (List Int64)) (: k Int64) (: acc (List (List Int64))))
+              (match xs
+                ((list) acc)
+                (_ (chunk (drop-n xs k) k (List.push acc (take-n xs k (list)))))))
+            (def (flatten (: xss (List (List Int64))) (: acc (List Int64)))
+              (match xss
+                ((list) acc)
+                ((list h .. t) (flatten t (List.concat acc h)))))
+            (def (last-len (: xss (List (List Int64))) (: cur Int64))
+              (match xss
+                ((list) cur)
+                ((list h .. t) (last-len t ((. List len) h)))))
+            (def (main (: k Int64))
+              (do
+                (def xs (list 1 2 3 4 5 6 7))
+                (def cs (chunk xs k (list)))
+                (+ (* ((. List len) cs) 1000)
+                   (+ (* (last-len cs 0) 100)
+                      (if (= (flatten cs (list)) xs) 1 0)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 4101 Int64))
+  (call   main (: 3 Int64)) (output (: 3101 Int64))
+  (call   main (: 7 Int64)) (output (: 1701 Int64)))
 
 (case "a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at"
   (doc    "The lo/hi halving loop over `(10 20 30 40 50 60 70)`: each step reads the midpoint

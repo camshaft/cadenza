@@ -38,8 +38,10 @@ pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
 pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
 pass	BigInt.of a UInt64 at its high bit still works (the full-width control)
 pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
+pass	CHUNK splits a list into fixed-size sublists with a short final chunk that reflattens intact
 pass	FAST-DOUBLING fib recurses on the halved index returning a pair, checked against linear iteration
 pass	HORNER polynomial evaluation folds coefficients high-to-low and agrees with a power-sum oracle
+pass	INTERLEAVE alternates two spines and drains the longer tail after the shorter empties
 pass	KADANE max-subarray threads a best-ending-here and a global best through one fold
 pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
 pass	LOOK-AND-SAY iterates run-length description over its own prior output
