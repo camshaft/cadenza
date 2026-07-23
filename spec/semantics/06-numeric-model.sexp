@@ -1847,6 +1847,38 @@
   (call   main (: 4539148803436467 Int64)) (output (: 801 Int64))
   (call   main (: 1234 Int64)) (output (: 140 Int64)))
 
+(case "DIGITAL ROOT iterates digit sums to a fixed point and agrees with the mod-9 congruence"
+  (doc    "The fixed-point iteration over the digit peel: `dsum` collapses a number once; `droot`
+           REAPPLIES it until the value drops below 10 — an outer loop whose per-round input is the
+           previous round's output (like look-and-say, but numeric, and CONVERGING rather than
+           growing). The step count travels alongside (the 'additive persistence'). Certified by the
+           independent MOD-9 CONGRUENCE: droot(n) = 1 + (n-1) mod 9 for positive n — computed here as
+           `n mod 9` with the 0→9 fixup — a closed form sharing NO code with the iteration (a digit
+           dropped in any round breaks agreement). Faces: 493193 → root 2 in 3 rounds (29→11→2, the
+           multi-round chain — 231); 9 → already a fixed point, ZERO rounds (901); 99999999 → digit
+           sum 72 then 9, and the congruence needs the 0→9 fixup (921); 10 → the smallest
+           two-digit input, one round (111). Encoding: root·100 + steps·10 + congruence bit.")
+  (input  (do
+            (def (dsum (: n Int64) (: acc Int64))
+              (if (= n 0) acc (dsum (/ n 10) (+ acc (% n 10)))))
+            (def (droot (: n Int64) (: steps Int64))
+              (if (< n 10)
+                  (tuple n steps)
+                  (droot (dsum n 0) (+ steps 1))))
+            (def (cong (: n Int64))
+              (if (= n 0) 0 (do (def m (% n 9)) (if (= m 0) 9 m))))
+            (def (main (: n Int64))
+              (match (droot n 0)
+                ((tuple r steps)
+                  (+ (* r 100)
+                     (+ (* steps 10)
+                        (if (= r (cong n)) 1 0))))))
+            (export main)))
+  (call   main (: 493193 Int64)) (output (: 231 Int64))
+  (call   main (: 9 Int64)) (output (: 901 Int64))
+  (call   main (: 99999999 Int64)) (output (: 921 Int64))
+  (call   main (: 10 Int64)) (output (: 111 Int64)))
+
 (case "TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor"
   (doc    "The primality walk, returning the WITNESS not a boolean: 0 = prime, d = the smallest factor
            found, -1 = below the domain — so a wrong answer identifies WHICH step failed. Odd

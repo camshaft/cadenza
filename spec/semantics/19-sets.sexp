@@ -487,6 +487,34 @@
   (call   main (: 4 Int64)) (output (: -1 Int64))
   (call   main (: 14 Int64)) (output (: 4 Int64)))
 
+(case "HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution"
+  (doc    "Cycle detection via a seen-set over a NUMERIC orbit (the two-sum above probes complements;
+           here the set tracks the iteration's own history): the squared-digit-sum map either reaches
+           the fixed point 1 (happy) or falls into the 4→16→37→58→89→145→42→20→4 cycle — the walk
+           stops the moment a value RE-APPEARS (the seen-check must precede the step, or the cycle
+           spins forever; same termination discipline as the graph pins but over an arithmetic orbit,
+           not an explicit edge list). Faces: 19 → happy in 4 steps (82→68→100→1 — 104); 4 → INSIDE
+           the cycle from the start, detected when 4 recurs after the full 8-step loop (8); 7 →
+           happy in 5 (105); 1 → the fixed point itself, ZERO steps, seen-set never grows (100).
+           Encoding: happy-bit·100 + steps.")
+  (input  (do
+            (def (sq-digits (: n Int64) (: acc Int64))
+              (if (= n 0) acc (sq-digits (/ n 10) (+ acc (* (% n 10) (% n 10))))))
+            (def (walk (: n Int64) (: seen (Set Int64)) (: steps Int64))
+              (if (= n 1)
+                  (tuple 1 steps)
+                  (if (Set.contains seen n)
+                      (tuple 0 steps)
+                      (walk (sq-digits n 0) (Set.insert seen n) (+ steps 1)))))
+            (def (main (: n Int64))
+              (match (walk n (Set.of (list)) 0)
+                ((tuple h steps) (+ (* h 100) steps))))
+            (export main)))
+  (call   main (: 19 Int64)) (output (: 104 Int64))
+  (call   main (: 4 Int64)) (output (: 8 Int64))
+  (call   main (: 7 Int64)) (output (: 105 Int64))
+  (call   main (: 1 Int64)) (output (: 100 Int64)))
+
 (case "graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list"
   (doc    "The worklist algorithm — the compiler's own reachability shape: a `(Map Int64 (List Int64))`
            adjacency graph, a LIST worklist popped from the front with each node's neighbors pushed
