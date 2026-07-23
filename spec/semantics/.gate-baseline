@@ -264,6 +264,8 @@ pass	a module export is a CLOSURE FACTORY capturing a private sibling
 pass	a module export rides an OUTER combinator's fn parameter a runtime number of times
 pass	a module-exported closure factory builds a PERFORMING closure homed at the apply site
 pass	a multi-use rope escapes a select through a Some shell and its twin survives the unwrap
+pass	a multi-use runtime Map do-def escapes an if-select and both CHAMP handles stay live
+pass	a multi-use runtime list do-def escapes an if-select inside a match arm and stays live
 pass	a mutually-recursive sum value stored as a MAP VALUE round-trips and evaluates
 pass	a nested Record.with rewrites an inner record field through the outer, inline
 pass	a nested-record parameter projects its inner fields through two dot levels
