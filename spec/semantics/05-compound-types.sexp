@@ -9038,6 +9038,45 @@
   (call   main (: 0 Int64)) (output (: 1257 Int64))
   (call   main (: 9 Int64)) (output (: 125799 Int64)))
 
+(case "TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow"
+  (doc    "The bounded-selection composite: each element insorts into a DESCENDING list (`>=` walk —
+           insertion after equal keys), then `take-k` TRUNCATES back to k — the overflow drops from
+           the TAIL, i.e. the smallest of the k+1 (a truncation from the head keeps the wrong end;
+           an insort ascending drops the largest). The bound holds per step, not just at the end, so
+           the list never exceeds k+1 even mid-fold. Faces over (5 2 8 1 9 3 7): k=3 → 9,8,7 (987 —
+           the final 7 EVICTS the 5 that was briefly third); k=1 → the max alone, insort degenerate
+           (9); k=10 > len → NOTHING ever drops, the whole input in descending order (9875321 — the
+           k-exceeds-input boundary where take-k's list-empty arm does the bounding). Digit-walk
+           encoded.")
+  (input  (do
+            (def (ins-desc (: xs (List Int64)) (: v Int64))
+              (match xs
+                ((list) (list v))
+                ((list h .. t)
+                  (if (>= h v)
+                      (List.concat (list h) (ins-desc t v))
+                      (List.concat (list v) xs)))))
+            (def (take-k (: xs (List Int64)) (: k Int64) (: acc (List Int64)))
+              (if (= k 0)
+                  acc
+                  (match xs
+                    ((list) acc)
+                    ((list h .. t) (take-k t (- k 1) (List.push acc h))))))
+            (def (top-k (: xs (List Int64)) (: k Int64) (: best (List Int64)))
+              (match xs
+                ((list) best)
+                ((list h .. t) (top-k t k (take-k (ins-desc best h) k (list))))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: k Int64))
+              (chk (top-k (list 5 2 8 1 9 3 7) k (list)) 0))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 987 Int64))
+  (call   main (: 1 Int64)) (output (: 9 Int64))
+  (call   main (: 10 Int64)) (output (: 9875321 Int64)))
+
 (case "a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number"
   (doc    "The stable priority queue over an ordered assoc list: each element carries (priority, seq),
            `ins` walks to the FIRST position where the new priority is STRICTLY smaller — so among

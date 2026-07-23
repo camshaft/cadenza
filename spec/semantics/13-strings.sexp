@@ -110,6 +110,51 @@
   (call   main (: 1 Int64)) (output (: 1190 Int64))
   (call   main (: 0 Int64)) (output (: -910 Int64)))
 
+(case "MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave"
+  (doc    "The depth counter above suffices for ONE bracket type; with three, the counter is provably
+           insufficient — the INTERLEAVE `([)]` has balanced counts PER TYPE yet is malformed, and
+           only a STACK (a list of one-scalar strings: prepend push, two-arm pop) matching each
+           closer against the TOP opener BY TYPE rejects it. Four exits, each a face: the balanced
+           mixed nest `([]{})` empties the stack at end-of-string (1); the interleave hits a
+           TOP-MISMATCH mid-scan and short-circuits (-1); the unclosed `((` reaches the end with
+           LEFTOVERS (0); the EMPTY string is vacuously balanced through the never-grown stack (1).
+           Non-bracket scalars would pass through the closer-of miss arm (the lexer discipline
+           shared with the classifier pin).")
+  (input  (do
+            (def (closer-of (: c String))
+              (if (= c ")") "(" (if (= c "]") "[" (if (= c "}") "{" ""))))
+            (def (is-open (: c String))
+              (if (= c "(") 1 (if (= c "[") 1 (if (= c "{") 1 0))))
+            (def (go (: s String) (: i Int64) (: len Int64) (: st (List String)))
+              (if (>= i len)
+                  (match st ((list) 1) (_ 0))
+                  (match (String.at s i)
+                    ((Some c)
+                      (if (= (is-open c) 1)
+                          (go s (+ i 1) len (List.concat (list c) st))
+                          (do
+                            (def want (closer-of c))
+                            (if (= want "")
+                                (go s (+ i 1) len st)
+                                (match st
+                                  ((list) -1)
+                                  ((list top .. rest)
+                                    (if (= top want)
+                                        (go s (+ i 1) len rest)
+                                        -1)))))))
+                    ((None _u) 0))))
+            (def (bal (: s String))
+              (go s 0 (String.byte-len s) (list)))
+            (def (main (: mode Int64))
+              (do
+                (def s (if (= mode 1) "([]{})" (if (= mode 2) "([)]" (if (= mode 3) "((" ""))))
+                (bal s)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: -1 Int64))
+  (call   main (: 3 Int64)) (output (: 0 Int64))
+  (call   main (: 4 Int64)) (output (: 1 Int64)))
+
 (case "a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN"
   (doc    "The inverse of the separator-JOIN pin above: scan for `,` hits and slice each FIELD as a
            `String.slice` VIEW between them (fallible — unwrapped via Option.expect on provably
@@ -362,6 +407,46 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 111 Int64))
   (call   main (: 0 Int64)) (output (: 11 Int64)))
+
+(case "a THREE-WAY scalar classifier splits vowels, consonants, and other by range and membership"
+  (doc    "The lexer's character-class dispatch: each scalar routes through a MEMBERSHIP chain
+           (vowel — five one-scalar equality tests) then a RANGE test (`\"a\" <= c <= \"z\"` — ORDER
+           comparison on one-scalar strings, the byte-lexicographic `<=` the sort pins established,
+           here driving control flow per scalar), falling through to `other`. Three counters thread
+           the walk; exactly one increments per scalar (the classification is a partition — counts
+           must sum to the length). The RANGE test runs only on the vowel-chain MISS, so the vowel
+           set shadows the range (a classifier testing range first counts vowels as consonants).
+           Faces: `hello world` → 3 vowels, 7 consonants, 1 other — the space falls through BOTH
+           tests (371); `aeiou` → all vowels, range never fires (500); `xyz 123` → 0 vowels, 3
+           consonants at the range TOP edge (x,y,z), 4 other — digits are BELOW `\"a\"` in byte
+           order (34). Encoding: v·100 + k·10 + o.")
+  (input  (do
+            (def (is-vowel (: c String))
+              (if (= c "a") 1 (if (= c "e") 1 (if (= c "i") 1 (if (= c "o") 1 (if (= c "u") 1 0))))))
+            (def (is-lower (: c String))
+              (if (>= c "a") (if (<= c "z") 1 0) 0))
+            (def (go (: s String) (: i Int64) (: len Int64) (: v Int64) (: k Int64) (: o Int64))
+              (if (>= i len)
+                  (tuple v k o)
+                  (match (String.at s i)
+                    ((Some c)
+                      (if (= (is-vowel c) 1)
+                          (go s (+ i 1) len (+ v 1) k o)
+                          (if (= (is-lower c) 1)
+                              (go s (+ i 1) len v (+ k 1) o)
+                              (go s (+ i 1) len v k (+ o 1)))))
+                    ((None _u) (tuple v k o)))))
+            (def (classify (: s String))
+              (go s 0 (String.byte-len s) 0 0 0))
+            (def (main (: mode Int64))
+              (do
+                (def s (if (= mode 1) "hello world" (if (= mode 2) "aeiou" "xyz 123")))
+                (match (classify s)
+                  ((tuple v k o) (+ (* v 100) (+ (* k 10) o))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 371 Int64))
+  (call   main (: 2 Int64)) (output (: 500 Int64))
+  (call   main (: 3 Int64)) (output (: 34 Int64)))
 
 (case "string REVERSE walks scalars back-to-front and anti-commutes with concatenation"
   (doc    "The DESCENDING index walk (every other pinned scan ascends; this starts at byte-len − 1
