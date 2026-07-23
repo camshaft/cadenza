@@ -13,7 +13,7 @@
 /// there is one ground type — so this column is the DB-shaped monomorphic specialization. It widens to call
 /// the HM engine when the language grows function types.)
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed, ctor-tag-of } from "parse-db"
 import { fits-width } from "int-width"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ty-deferred-int, ground-default } from "ty"
@@ -120,6 +120,21 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         // (body transitively calls back) would inline-loop infer → DECLINE (TErr). An unknown name → TErr.
         // param-* lookups (below + in infer-param2/3/4) use the NAME directly (keyed both ways in read-do-def);
         // only the body-type descent uses calleeBody.
+        // M2-b-2b-ii PAYLOAD CTOR use `(Some 5)` = NApp(Some, arg) with `Some` a recorded ctor (ct table):
+        // type the ARG (so it gets a fact + an ill-typed arg propagates TErr), then type the ctor node. This
+        // slice types it INT64 (a placeholder that passes the well-typed gate so lower emits CCtor + eval runs);
+        // the full TySum typing + arg-fit-to-declared-types + cross-type-pattern reject is the v-inference-
+        // reviewed follow-up (ii-c). A NULLARY ctor use (argId -1) is NOT here — it's the def-body-inline path
+        // (M2-a, typed as the NLit tag's Int). Checked FIRST (a ctor is never recursive / a global def).
+        // ONLY a PAYLOAD ctor use (argId != -1) takes this ctor arm; a NULLARY ctor use `(None)` = NApp(name,-1)
+        // stays the def-body path below (typed as the NLit tag's Int, M2-a).
+        (match (if (argId == (0 - 1)) then Option.None(unit) else ctor-tag-of(tree, calleeId)) with
+          | Option.Some(_) =>
+              (let ta = infer-node(tree, argId, rcol, tcol) in
+                (match Map.lookup(ta, argId) with
+                  | Option.Some(_) => Map.insert(ta, id, t-int64())   // placeholder type; TySum in ii-c
+                  | Option.None(_) => Map.insert(ta, id, Typed.TErr)))
+          | Option.None(_) =>
         (if (call-is-recursive(tree, calleeId)) then infer-recursive-call(tree, id, argId, rcol, tcol)
          else (match def-body-of(tree, calleeId) with
            // HIGHER-ORDER (HO-2b-ii-B): def-body-of MISS means the callee is NOT a global def — it may be a
@@ -147,7 +162,7 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
                                  then Map.insert(ta, id, Typed.TErr)
                                  else infer-app-with-arg-ty(tree, id, calleeId, calleeBody, paramId, argId, rcol, ta, Map.lookup(ta, argId)))
                             | Option.None(_) => Map.insert(ta, id, Typed.TErr)))
-                     | Option.None(_) => Map.insert(tcol, id, Typed.TErr)))))
+                     | Option.None(_) => Map.insert(tcol, id, Typed.TErr))))))
     | Option.None(_) => tcol
 
 /// slice-B2 RECURSIVE-call typing (was a flat TErr decline until B1a). A recursive call `(fac (- n 1))` can't

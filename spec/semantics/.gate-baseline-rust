@@ -41,6 +41,7 @@ pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
 pass	BigInt.of a UInt64 at its high bit still works (the full-width control)
 pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	CHUNK splits a list into fixed-size sublists with a short final chunk that reflattens intact
+pass	COIN CHANGE builds a min-coins table where greedy fails and unreachable targets report -1
 pass	DIGITAL ROOT iterates digit sums to a fixed point and agrees with the mod-9 congruence
 pass	FAST-DOUBLING fib recurses on the halved index returning a pair, checked against linear iteration
 pass	GRAY CODE encodes by shift-xor, decodes by xor-folding, and adjacent codes differ by one bit
@@ -52,6 +53,7 @@ pass	KADANE max-subarray threads a best-ending-here and a global best through on
 pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
 pass	LCM derives from gcd via overflow-safe divide-first and satisfies the product identity
 pass	LOCAL PEAKS counts strict interior maxima through a three-element sliding window
+pass	LONGEST INCREASING SUBSEQUENCE fills a per-index table from strictly-smaller predecessors
 pass	LONGEST RUN tracks the current and best streak, first run winning ties
 pass	LOOK-AND-SAY iterates run-length description over its own prior output
 pass	MAX PROFIT tracks the running minimum and best spread in one forward pass

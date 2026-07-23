@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, encode-param-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit, is-app } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, ctor-tag-of, encode-param-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit, is-app } from "parse-db"
 import { recognize, is-int-type, ty-signed, ty-width } from "int-type"
 import { fits-width } from "int-width"
 
@@ -579,11 +579,18 @@ def read-do-ctors(s: String, k: Int64, tag: Int64, root: Int64, tree: Tree) =
             (if (char-at(s, c2) == ")")                         // NULLARY ctor `(Ck)` → a `Ck → NLit(tag)` def
              then (match add-node(tree, Node.NLit(tag)) with | (bodyId, t1) =>
                     (let t2 = record-def(t1, name-id(cnm), bodyId) in
-                     read-do-ctors(s, skip-space(s, c2 + 1), tag + 1, root, t2)))
-             // a PAYLOAD ctor `(Ck T…)`: SKIP its contents but CONSUME the tag slot (nullary siblings stay
-             // correctly numbered); do NOT record a def, so a use `(Some 5)` declines late. c1 is after the
-             // ctor name, still at depth 1 inside the ctor paren → skip to just past its matching `)`.
-             else read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), tag + 1, root, tree))))))
+                     // ALSO record the ctor→tag in the ct table (M2-b-2b-ii): a nullary ctor stays a nullary def
+                     // (used bare via def-body-of=NLit tag, M2-a), AND now carries a ct entry so lower/infer can
+                     // recognize it as a CTOR (e.g. to type it TySum, a later slice). Harmless for M2-a's path.
+                     (let t3 = record-ctor-tag(t2, name-id(cnm), tag) in
+                      read-do-ctors(s, skip-space(s, c2 + 1), tag + 1, root, t3))))
+             // a PAYLOAD ctor `(Ck T…)`: RECORD `Ck → tag` in the ct table (M2-b-2b-ii) so lower turns a use
+             // `(Some 5)` = NApp(Some, arg) into CCtor(tag, args); SKIP the payload type atoms (their arg-types
+             // are a later TySum slice — the arg COUNT lower needs comes from the call site's arg slots). Do NOT
+             // record a def-body (a ctor is not an inlinable def). c1 is after the ctor name, depth 1 → skip to
+             // past its matching `)`, then record the ct entry + recurse with tag+1.
+             else (let t1 = record-ctor-tag(tree, name-id(cnm), tag) in
+                    read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), tag + 1, root, t1)))))))
 
 /// After a def ended at `j`: skip its closing `)` (if present) and read the next form in the do, threading the
 /// accumulated `root` (main's body, or -1 if not yet seen).

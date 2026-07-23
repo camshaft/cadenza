@@ -7022,6 +7022,92 @@
   (call   main (: 5 Int64))
   (output (: 21 Int64)))
 
+(case "COIN CHANGE builds a min-coins table where greedy fails and unreachable targets report -1"
+  (doc    "The corpus's first bottom-up DP TABLE: dp grows as a list where entry i is computed from
+           ALREADY-FILLED entries dp[i−c] — the table read via `List.at` DURING its own construction
+           (the self-referential build every DP pass shares; a dp that reads past the filled prefix
+           or off-by-ones the seed row breaks every later entry). The (25 10 1)@30 face is WHY the
+           table exists: GREEDY takes 25+1·5 = 6 coins, the DP finds 10+10+10 = 3 — a greedy
+           implementation masquerading as DP fails exactly here. Unreachable targets keep the
+           sentinel through every relax and report -1 ((5 10)@3); the zero target is the SEED ROW
+           alone (0 — the build loop never runs). Faces: 3 / 6 (the canonical 63¢) / -1 / 0.")
+  (input  (do
+            (def (at0 (: xs (List Int64)) (: i Int64))
+              (Option.expect (List.at xs i) "in-bounds"))
+            (def (min2 (: a Int64) (: b Int64)) (if (< a b) a b))
+            (def (try-coins (: cs (List Int64)) (: dp (List Int64)) (: i Int64) (: best Int64))
+              (match cs
+                ((list) best)
+                ((list c .. t)
+                  (try-coins t dp i
+                    (if (<= c i)
+                        (min2 best (+ (at0 dp (- i c)) 1))
+                        best)))))
+            (def (build (: cs (List Int64)) (: i Int64) (: t Int64) (: dp (List Int64)))
+              (if (> i t)
+                  dp
+                  (build cs (+ i 1) t (List.push dp (try-coins cs dp i 1000000)))))
+            (def (coins (: cs (List Int64)) (: t Int64))
+              (do
+                (def dp (build cs 1 t (list 0)))
+                (def r (at0 dp t))
+                (if (> r 999999) -1 r)))
+            (def (main (: mode Int64))
+              (if (= mode 1) (coins (list 25 10 1) 30)
+              (if (= mode 2) (coins (list 1 5 10 25) 63)
+              (if (= mode 3) (coins (list 5 10) 3)
+                             (coins (list 1 5 10 25) 0)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 2 Int64)) (output (: 6 Int64))
+  (call   main (: 3 Int64)) (output (: -1 Int64))
+  (call   main (: 4 Int64)) (output (: 0 Int64)))
+
+(case "LONGEST INCREASING SUBSEQUENCE fills a per-index table from strictly-smaller predecessors"
+  (doc    "The coin-change table's sibling with a VALUE-conditioned predecessor scan: dp is indexed
+           by POSITION (not amount), and each entry consults BOTH the source list and the growing
+           table — `dp[i] = 1 + max(dp[j])` over j < i where xs[j] < xs[i] strictly (the inner walk
+           reads two lists in step, the value test gating the table read). The comparator is the
+           pin: ALL-EQUAL (7 7 7) → 1 because ties don't chain — a `<=` in the predecessor test
+           reports 3, silently converting LIS into longest-non-decreasing. Faces: the classic
+           (10 9 2 5 3 7 101 18) → 4 (2·3·7·18, assembled across gaps); strictly increasing → n
+           (every predecessor chains); strictly decreasing → 1 (no predecessor ever qualifies —
+           dp stays all-ones and the answer is the max of ones).")
+  (input  (do
+            (def (at0 (: xs (List Int64)) (: i Int64))
+              (Option.expect (List.at xs i) "in-bounds"))
+            (def (max2 (: a Int64) (: b Int64)) (if (> a b) a b))
+            (def (best-pred (: xs (List Int64)) (: dp (List Int64)) (: j Int64) (: i Int64) (: xi Int64) (: best Int64))
+              (if (>= j i)
+                  best
+                  (best-pred xs dp (+ j 1) i xi
+                    (if (< (at0 xs j) xi)
+                        (max2 best (+ (at0 dp j) 1))
+                        best))))
+            (def (build (: xs (List Int64)) (: i Int64) (: n Int64) (: dp (List Int64)))
+              (if (>= i n)
+                  dp
+                  (build xs (+ i 1) n
+                    (List.push dp (best-pred xs dp 0 i (at0 xs i) 1)))))
+            (def (max-l (: xs (List Int64)) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (max-l t (max2 acc h)))))
+            (def (lis (: xs (List Int64)))
+              (do
+                (def n ((. List len) xs))
+                (if (= n 0) 0 (max-l (build xs 0 n (list)) 0))))
+            (def (main (: mode Int64))
+              (if (= mode 1) (lis (list 10 9 2 5 3 7 101 18))
+              (if (= mode 2) (lis (list 1 2 3))
+              (if (= mode 3) (lis (list 5 4 3))
+                             (lis (list 7 7 7))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 4 Int64))
+  (call   main (: 2 Int64)) (output (: 3 Int64))
+  (call   main (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: 4 Int64)) (output (: 1 Int64)))
+
 (case "a memoizing fold caches computed results in a Map and counts its hits"
   (doc    "The pure memoize spine (the effects twin at 14-effects:2931 threads Map-STATE through
            handler arms; this is the plain fold): each key looks up the cache first — a hit reuses the
