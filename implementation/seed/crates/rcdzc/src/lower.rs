@@ -190,15 +190,63 @@ fn compute(db: &mut Db, id: StructId) -> Core {
         && let Some(forms) = db.ast.as_form(id, "do")
         && let Some((&tail, stmts)) = forms.split_last()
     {
-        let stmts: Vec<StructId> = stmts
+        // VALUE do-defs `(def x V)` that a body reference should KEEP as a runtime binding — the do-block
+        // twin of a `let` binding. A do-local value def resolves to `Resolved::Ref { value: V }` (exactly a
+        // `let`'s `(x V)` shape, `do_def_binds` / `last_binder_named`) but the do-block otherwise DROPS the
+        // def from the Seq below and COPY-PROPAGATES `V` UNCONDITIONALLY at every reference. For a
+        // multi-use HEAP value that both BORROWS (a `String.byte-len out` cond) and ESCAPES (a returned
+        // if-arm `out`), copy-propagation re-emits the SAME producer at both sites, and the reclaim gate
+        // frees the handle after the cond-borrow → the escaping arm returns a FREED handle (a wasm UAF:
+        // wrong value, FINDING#20). A `let`-bound `out` avoids this — it routes through `should_keep_binding`
+        // (count≥2 → kept → `LocalRef` → Borrowed → ONE retain/drop). So run the SAME keep-analysis over the
+        // do-region for each value do-def: a kept one wraps the do-result in a `Core::Let { (V,V)… }` so its
+        // refs lower to `LocalRef`; a single-use one is UNTOUCHED (copy-propagates + drops as sole owner —
+        // keeping the net-0 reclaim pins honest, the case v-memory-safety's emit-tier guard over-suppressed).
+        // Reuses `lower_let` verbatim (keep + dead-binding reclaim), keyed self-referentially on `V` (the
+        // occurrence a reference resolves to). A FUNCTION do-def `(def (f p…) …)` has no `do_value_def_value`
+        // and stays the by-name global path. Done BEFORE the Seq check so a kept value-def composes with
+        // host-ordered statements (the `Core::Let` body IS the Seq/tail).
+        let value_defs: Vec<StructId> = stmts
+            .iter()
+            .copied()
+            .filter(|&f| db.ast.head_name(f) == Some("def"))
+            .filter_map(|f| crate::resolve::do_value_def_value(db, f))
+            .collect();
+        let non_def_stmts: Vec<StructId> = stmts
             .iter()
             .copied()
             .filter(|&f| db.ast.head_name(f) != Some("def"))
             .collect();
-        // Only build a Seq if some non-final statement reaches a host call (else the ordinary Ref{last}
-        // fold is correct + cheaper). `subtree_reaches_host_call` walks the statement's core.
-        if stmts.iter().any(|&s| subtree_reaches_host_call(db, s)) {
-            return Core::Seq { stmts, tail };
+        // The do-block's VALUE (before value-def keeping): a `Core::Seq` if a non-final statement is an
+        // observable host call, else just the tail (the ordinary `Ref{last}` fold).
+        let needs_seq = non_def_stmts
+            .iter()
+            .any(|&s| subtree_reaches_host_call(db, s));
+        let do_value_node = if needs_seq {
+            let seq_ty = crate::infer::type_of(db, tail);
+            synth_core(
+                db,
+                Core::Seq {
+                    stmts: non_def_stmts,
+                    tail,
+                },
+                seq_ty,
+            )
+        } else {
+            tail
+        };
+        if !value_defs.is_empty() {
+            // Route the value do-defs through `lower_let`'s keep-analysis. Self-keyed `(V, V)`: a body
+            // reference to the do-def resolves to `Ref { value: V }`, so `V` is both the count key and the
+            // kept-binding key — `lower_let` keeps only the multi-use ones and lowers their refs to
+            // `LocalRef`. (A do-block with only single-use/const value-defs keeps nothing → `lower_let`
+            // returns the body's core unchanged, byte-identical to the pre-fix copy-propagation.)
+            let bindings: Vec<(StructId, StructId)> = value_defs.iter().map(|&v| (v, v)).collect();
+            return lower_let(db, id, &bindings, do_value_node);
+        }
+        // No value do-defs — the plain Seq (host-ordered); else fall through to the tail's ordinary fold.
+        if needs_seq {
+            return core_of(db, do_value_node);
         }
     }
     match resolved_of(db, id) {

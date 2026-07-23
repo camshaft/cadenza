@@ -1843,14 +1843,19 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
     // work) — the SAME `actionable_inbox_depth` single-source classifier the drain-stall signal uses.
     let stranded = find_stranded_stopped_inboxes(fleet, &reg);
     if !stranded.is_empty() {
-        let total: usize = stranded.iter().map(|(_, n)| n).sum();
+        let total: usize = stranded.iter().map(|(_, n, _)| n).sum();
         eprintln!(
             "\n  ⚠ STRANDED DEAD-LETTER(S) — {total} actionable message(s) queued in {} STOPPED \
              agent(s)' inbox(es); their loops have EXITED and will never drain them:",
             stranded.len()
         );
-        for (name, depth) in &stranded {
-            eprintln!("    • '{name}' — {depth} actionable message(s) undrained (agent stopped)");
+        for (name, depth, oldest) in &stranded {
+            // Show the OLDEST actionable message's `[kind] subject` so the finding is directly
+            // re-routable — otherwise the operator must run a SECOND `fleet inbox <name>` lookup per
+            // agent (15× on the live hub) just to learn WHAT is stuck before it can re-route.
+            eprintln!(
+                "    • '{name}' — {depth} actionable message(s) undrained (agent stopped); oldest: {oldest}"
+            );
         }
         eprintln!(
             "  Re-route each to a live owner (`cargo xtask fleet send`) or reactivate the agent \
@@ -1864,19 +1869,54 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
 
 /// Find STOPPED agents whose inbox still holds ACTIONABLE (non-informational) mail — permanent
 /// dead-letters, since a stopped agent's loop has exited and will never drain them. Returns
-/// `(agent-name, actionable-depth)` for each such agent, in registry order, skipping any with zero
-/// actionable mail. Read-only; reuses `actionable_inbox_depth` so the "what counts as actionable"
-/// rule can never drift from the drain-stall signal + the `fleet inbox` legend (one source of truth,
-/// `INFORMATIONAL_KINDS`). The registry is passed in (not re-loaded) so `audit` parses it once.
-fn find_stranded_stopped_inboxes(fleet: &Fleet, reg: &Registry) -> Vec<(String, usize)> {
+/// `(agent-name, actionable-depth, oldest-actionable-summary)` for each such agent, in registry
+/// order, skipping any with zero actionable mail. The summary is a compact `[kind] subject` of the
+/// OLDEST stuck message (see `stranded_message_summary`) so the finding is directly re-routable
+/// without a second `fleet inbox` lookup per agent. Read-only; reuses `actionable_inbox_depth` +
+/// `oldest_actionable_inbox_message` so the "what counts as actionable" rule can never drift from the
+/// drain-stall signal + the `fleet inbox` legend (one source of truth, `INFORMATIONAL_KINDS`). The
+/// registry is passed in (not re-loaded) so `audit` parses it once.
+fn find_stranded_stopped_inboxes(fleet: &Fleet, reg: &Registry) -> Vec<(String, usize, String)> {
     reg.agents
         .iter()
         .filter(|a| a.status == "stopped")
         .filter_map(|a| {
             let depth = actionable_inbox_depth(&fleet.inbox(&a.name));
-            (depth > 0).then(|| (a.name.clone(), depth))
+            (depth > 0).then(|| {
+                let oldest = oldest_actionable_inbox_message(fleet, &a.name)
+                    .map(|id| stranded_message_summary(&fleet.inbox(&a.name).join(id)))
+                    .unwrap_or_else(|| "(unreadable)".to_string());
+                (a.name.clone(), depth, oldest)
+            })
         })
         .collect()
+}
+
+/// Render a compact `[kind] subject` for a single inbox message file, for the stranded-dead-letter
+/// finding. Reads + parses the message; on any read/parse failure returns `(unparseable)` (a stranded
+/// file that isn't valid JSON is still a real dead-letter worth surfacing, just without detail). The
+/// subject is trimmed and char-boundary truncated (same idiom as `status_headline`) so one finding
+/// stays a single tidy line even if the original subject is long. Pure but for the single file read.
+fn stranded_message_summary(path: &Path) -> String {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return "(unreadable)".to_string();
+    };
+    let Ok(msg) = serde_json::from_str::<Message>(&text) else {
+        return "(unparseable)".to_string();
+    };
+    const MAX: usize = 72;
+    let subject = msg.subject.trim();
+    let subject = if subject.chars().count() > MAX {
+        let cut: String = subject.chars().take(MAX).collect();
+        format!("{cut}…")
+    } else {
+        subject.to_string()
+    };
+    if subject.is_empty() {
+        format!("[{}] (no subject)", msg.kind)
+    } else {
+        format!("[{}] {subject}", msg.kind)
+    }
 }
 
 /// Scan pr-sync's LIVE inbox for merge-requests whose `--ref` content is ALREADY on trunk by patch-id
@@ -9120,10 +9160,15 @@ mod tests {
                 agent("v-busy", "active"), // active + actionable → NOT flagged (not stopped)
             ],
         };
-        // fix-stranded: one actionable assign + one informational note.
+        // fix-stranded: one actionable assign + one informational note. The assign has a real subject
+        // so the finding carries the oldest-message `[kind] subject` summary.
         let ib = fleet.inbox("fix-stranded");
         std::fs::create_dir_all(&ib).unwrap();
-        std::fs::write(ib.join("000000000001-10-assign.json"), "{}").unwrap();
+        std::fs::write(
+            ib.join("000000000001-10-assign.json"),
+            r#"{"from":"fleet","to":"fix-stranded","kind":"assign","subject":"own this issue: foo.sexp","seq":1}"#,
+        )
+        .unwrap();
         std::fs::write(ib.join("000000000002-11-note.json"), "{}").unwrap();
         // fix-clean-stop: only informational mail → not a dead-letter.
         let ib2 = fleet.inbox("fix-clean-stop");
@@ -9137,10 +9182,59 @@ mod tests {
         let stranded = find_stranded_stopped_inboxes(&fleet, &reg);
         assert_eq!(
             stranded,
-            vec![("fix-stranded".to_string(), 1)],
-            "only the stopped agent with actionable mail is a stranded dead-letter"
+            vec![(
+                "fix-stranded".to_string(),
+                1,
+                "[assign] own this issue: foo.sexp".to_string()
+            )],
+            "only the stopped agent with actionable mail is a stranded dead-letter, carrying the oldest message's [kind] subject"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stranded_message_summary_renders_kind_subject_and_degrades_gracefully() {
+        let tmp = std::env::temp_dir().join(format!("cdz-stranded-summary-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // Normal case: `[kind] subject`.
+        let p = tmp.join("m.json");
+        std::fs::write(
+            &p,
+            r#"{"from":"fleet","to":"x","kind":"assign","subject":"own this issue: bar.sexp","seq":1}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            stranded_message_summary(&p),
+            "[assign] own this issue: bar.sexp"
+        );
+        // Empty subject → explicit `(no subject)`, still shows the kind.
+        std::fs::write(
+            &p,
+            r#"{"from":"f","to":"x","kind":"issue","subject":"","seq":1}"#,
+        )
+        .unwrap();
+        assert_eq!(stranded_message_summary(&p), "[issue] (no subject)");
+        // Long subject → char-boundary truncated with an ellipsis.
+        let long = "a".repeat(200);
+        std::fs::write(
+            &p,
+            format!(r#"{{"from":"f","to":"x","kind":"note","subject":"{long}","seq":1}}"#),
+        )
+        .unwrap();
+        let out = stranded_message_summary(&p);
+        assert!(out.starts_with("[note] "));
+        assert!(out.ends_with('…'));
+        assert_eq!(out.chars().filter(|&c| c == 'a').count(), 72);
+        // Unparseable JSON → a benign placeholder (still a real dead-letter, just no detail).
+        std::fs::write(&p, "not json").unwrap();
+        assert_eq!(stranded_message_summary(&p), "(unparseable)");
+        // Missing file → `(unreadable)`, never panics.
+        assert_eq!(
+            stranded_message_summary(&tmp.join("nope.json")),
+            "(unreadable)"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

@@ -330,6 +330,54 @@
   (call   main (: 5 Int64)) (output (: 0 Int64))
   (call   main (: 6 Int64)) (output (: 0 Int64)))
 
+(case "STRING ROTATION check searches the needle inside the doubled haystack at equal length"
+  (doc    "The corpus's first SUBSTRING SEARCH (every other dual-string pin walks in lockstep from
+           index 0; this runs the naive two-level walk — an outer OFFSET scan over the haystack, an
+           inner match-at comparing needle-length scalars at each offset) — applied to the doubled-
+           haystack rotation trick: b is a rotation of a ⟺ b occurs in a++a, at equal length. The
+           equal-length gate runs FIRST; the EMPTY pair is guarded BEFORE the concat (a find with an
+           empty needle vacuously matches at every offset — the guard makes the answer principled).
+           Faces: `abcde`/`cdeab` a true rotation found at offset 2 (1); `abced` — an ANAGRAM that
+           is NOT a rotation (same scalars, wrong order — the inner match fails at every offset, 0);
+           the identity rotation (1); equal-length different content (0); the empty pair (1).")
+  (input  (do
+            (def (match-at (: hay String) (: nee String) (: off Int64) (: j Int64) (: ln Int64))
+              (if (>= j ln)
+                  1
+                  (if (= (Option.expect (String.at hay (+ off j)) "h")
+                         (Option.expect (String.at nee j) "n"))
+                      (match-at hay nee off (+ j 1) ln)
+                      0)))
+            (def (find (: hay String) (: nee String) (: off Int64) (: lh Int64) (: ln Int64))
+              (if (> (+ off ln) lh)
+                  0
+                  (if (= (match-at hay nee off 0 ln) 1)
+                      1
+                      (find hay nee (+ off 1) lh ln))))
+            (def (is-rot (: a String) (: b String))
+              (do
+                (def la (String.byte-len a))
+                (def lb (String.byte-len b))
+                (if (= la lb)
+                    (if (= la 0)
+                        1
+                        (do
+                          (def aa (String.concat a a))
+                          (find aa b 0 (* la 2) lb)))
+                    0)))
+            (def (main (: mode Int64))
+              (if (= mode 1) (is-rot "abcde" "cdeab")
+              (if (= mode 2) (is-rot "abcde" "abced")
+              (if (= mode 3) (is-rot "ab" "ab")
+              (if (= mode 4) (is-rot "a" "b")
+                             (is-rot "" ""))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 0 Int64))
+  (call   main (: 3 Int64)) (output (: 1 Int64))
+  (call   main (: 4 Int64)) (output (: 0 Int64))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
 (case "EDIT DISTANCE rolls a two-row Levenshtein table over string scalars"
   (doc    "The general form of the one-edit check above (that one special-cases distance ≤ 1; this
            computes the FULL Levenshtein): a TWO-ROW rolling table — `prev` is the completed row,

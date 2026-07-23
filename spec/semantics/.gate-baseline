@@ -43,7 +43,9 @@ pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	CHUNK splits a list into fixed-size sublists with a short final chunk that reflattens intact
 pass	COIN CHANGE builds a min-coins table where greedy fails and unreachable targets report -1
 pass	DIGITAL ROOT iterates digit sums to a fixed point and agrees with the mod-9 congruence
+pass	DIVISOR SUM pairs each small divisor with its cofactor and classifies perfect numbers
 pass	EDIT DISTANCE rolls a two-row Levenshtein table over string scalars
+pass	EQUILIBRIUM INDEX finds where left and right sums balance using total minus running
 pass	FAST-DOUBLING fib recurses on the halved index returning a pair, checked against linear iteration
 pass	GRAY CODE encodes by shift-xor, decodes by xor-folding, and adjacent codes differ by one bit
 pass	HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution
@@ -54,6 +56,7 @@ pass	KADANE max-subarray threads a best-ending-here and a global best through on
 pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
 pass	LCM derives from gcd via overflow-safe divide-first and satisfies the product identity
 pass	LOCAL PEAKS counts strict interior maxima through a three-element sliding window
+pass	LONGEST COMMON SUBSEQUENCE rolls match-diagonal against carry-forward maxima
 pass	LONGEST INCREASING SUBSEQUENCE fills a per-index table from strictly-smaller predecessors
 pass	LONGEST RUN tracks the current and best streak, first run winning ties
 pass	LOOK-AND-SAY iterates run-length description over its own prior output
@@ -68,6 +71,7 @@ pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-
 pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
 pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
+pass	STRING ROTATION check searches the needle inside the doubled haystack at equal length
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow
 pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
