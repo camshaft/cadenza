@@ -277,8 +277,11 @@ fn s3_result_ok(t: &crate::ty::Ty) -> bool {
         // A RECORD RESULT renders like a Tuple — the factory-result render walks its SORTED-key fields
         // positionally (`cdz_render_expr`'s Record arm), the same native tuple the emit produces. Renderable
         // iff every field type is (recurse over the sorted values). (The record ARG side — `s2_arg_ok` — is
-        // NOT yet widened for Record: the harness's `rust_call_arg` record-literal→positional-tuple rebuild
-        // needs a sorted-field-order fix first, or the arg mis-marshals — a separate follow-up slice.)
+        // NOT yet widened for Record: `rust_call_arg` ALREADY rebuilds a record literal into the sorted-field
+        // positional tuple, so it is not a rebuild gap; the blocker is a PRODUCER-PAIRING ambiguity — a
+        // `(Tuple a b)`-arg and a `(Record (a)(b))`-arg closure erase to the IDENTICAL `Rc<dyn Fn((i64,i64))>`,
+        // so the gate driver's `ty_matches` can mispair them in a distinct-sig two-closure case. Widening
+        // `s2_arg_ok` needs a closure-arg-shape hint to disambiguate first — a separate follow-up slice.)
         Ty::Record(fields) => fields.values().all(s3_result_ok),
         Ty::List(elem) => s3_result_ok(elem),
         // A SUM RESULT (S4a + user-sum extension) — Option/Result (the well-known 2-variant sums) OR a USER

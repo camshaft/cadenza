@@ -2345,8 +2345,23 @@ fn watchdog(
         // lowers it; new mail raises it). First sweep (no prior) can't drop → not exonerated (correct: a
         // genuinely wedged agent must not get a free pass on the sweep we first see it).
         let queue_draining = queue_is_draining(prev_depth, actionable_depth);
-        let drain_stall =
-            drain_stall_confirmed(suspected_stall, working_on_recheck || queue_draining);
+        // Third exoneration (pr-sync only): a recent trunk advance. During a busy batch new MRs arrive
+        // faster than pr-sync acks them, so the actionable depth fluctuates (8→5→6) and `queue_draining`
+        // never sees the clean drop it needs — pr-sync would be flagged every sweep while integrating
+        // hard. A `trunk` commit inside the stale window is unforgeable proof it's alive (only pr-sync
+        // writes trunk), and the RE-ARM path already trusts exactly this signal — so mirror it into the
+        // stall verdict too. Only spend the `git log` when a stall is already suspected (never per idle
+        // pane), and only for pr-sync.
+        let trunk_exonerates = suspected_stall
+            && trunk_advance_exonerates(
+                &a.name,
+                last_commit_age_secs(&fleet.repo, TRUNK),
+                stale_after,
+            );
+        let drain_stall = drain_stall_confirmed(
+            suspected_stall,
+            working_on_recheck || queue_draining || trunk_exonerates,
+        );
         if drain_stall {
             drain_stalls += 1;
             eprintln!(
@@ -3451,6 +3466,20 @@ fn drain_stall_confirmed(suspected: bool, working_on_recheck: bool) -> bool {
 /// monotonicity is unit-tested; the caller supplies the persisted prior depth.
 fn queue_is_draining(prev_depth: Option<usize>, current_depth: usize) -> bool {
     prev_depth.is_some_and(|prev| current_depth < prev)
+}
+
+/// Does a recent `trunk` advance exonerate a suspected drain-stall? ONLY for pr-sync — it is the sole
+/// writer of `trunk`, so a commit newer than the stale window is unforgeable proof it is alive and
+/// integrating (it just merged + acked an MR), regardless of how its pane or inbox depth reads. This
+/// closes a real false-positive gap: `queue_is_draining` only exonerates on a strict depth DROP across
+/// sweeps, but during a busy batch new merge-requests arrive continuously, so the depth fluctuates
+/// (8→5→6) and never shows a clean drop even while pr-sync drains hard — flagging it every sweep. The
+/// re-arm path already trusts trunk-advance for pr-sync (see the `a.name == "pr-sync"` liveness check);
+/// this mirrors it into the STALL verdict so the board, the re-arm, and the drain-stall advisory all
+/// agree. Non-pr-sync agents are never exonerated this way (they don't write trunk). Pure; the caller
+/// supplies the commit age it already computed.
+fn trunk_advance_exonerates(name: &str, trunk_commit_age: Option<u64>, stale_after: u64) -> bool {
+    name == "pr-sync" && trunk_commit_age.is_some_and(|age| age <= stale_after)
 }
 
 /// What to do about a windowed agent that has NEVER stamped a heartbeat, given how long ago we first
@@ -8678,6 +8707,27 @@ mod tests {
             drain_stall_confirmed(true, queue_is_draining(Some(12), 12)),
             "suspected + idle-recheck + flat queue → still a confirmed stall"
         );
+    }
+
+    #[test]
+    fn trunk_advance_exonerates_only_pr_sync_and_only_within_the_stale_window() {
+        // pr-sync with a fresh trunk commit (age <= stale_after) is alive mid-batch → exonerated,
+        // even when its inbox depth fluctuates and never shows a clean drop (the busy-batch gap this
+        // fixes). Boundary `age == stale_after` is inclusive (matches the re-arm path's `<=`).
+        assert!(trunk_advance_exonerates("pr-sync", Some(60), 600));
+        assert!(
+            trunk_advance_exonerates("pr-sync", Some(600), 600),
+            "== window is inclusive"
+        );
+        // A STALE trunk (older than the window) does NOT exonerate — that's a genuinely wedged pr-sync.
+        assert!(!trunk_advance_exonerates("pr-sync", Some(601), 600));
+        // No commit age resolvable (git failure / no trunk) → can't claim liveness → not exonerated.
+        assert!(!trunk_advance_exonerates("pr-sync", None, 600));
+        // Any NON-pr-sync agent is never exonerated by trunk-advance — it doesn't write trunk, so a
+        // fresh trunk commit says nothing about whether IT is draining. A fresh commit + a wedged
+        // vertical must still flag.
+        assert!(!trunk_advance_exonerates("v-runtime", Some(1), 600));
+        assert!(!trunk_advance_exonerates("reviewer", Some(1), 600));
     }
 
     #[test]
