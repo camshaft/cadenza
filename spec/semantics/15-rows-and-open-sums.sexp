@@ -280,6 +280,78 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 12 Int64)))
 
+; ---- The rest of the row-op-over-runtime-record matrix (v-inference dc685f3a5 project/without +
+; ef3fcdcdf merge/pop, batch #79). All route through the shared materialize_row_op_operand, so the operand
+; emits once (no per-field re-emit). `mk`/`mkA`/`mkB` are recursion-forced so the record is genuinely
+; runtime (not a folded literal); the distinctive `(+ v N)` operand constants are eval-once probes that
+; v-inference's lib tests assert emit 1x — the corpus rows assert VALUE.
+(case "a Record.project over a runtime record keeping two fields reads a kept field's value"
+  (doc    "Record.project over a RUNTIME record (recursion-forced `mk`) keeping {a,c} — was a decline 'not
+           yet built'. Materializes the operand once; reads the kept first field `a` → 1.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (upd (: v Int64)) (. (Record.project (mk (+ v 987654321)) (a c)) a))
+            (def (main (: v Int64)) (upd v))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64)))
+
+(case "a Record.project over a runtime record reads a kept NON-FIRST field's value"
+  (doc    "The preserved-sibling face: the same runtime Record.project keeping {a,c}, reading the non-first
+           kept field `c` → 3 — a kept field other than the first also reads correctly through the
+           materialized operand.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (upd (: v Int64)) (. (Record.project (mk (+ v 987654321)) (a c)) c))
+            (def (main (: v Int64)) (upd v))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64)))
+
+(case "a Record.without over a runtime record dropping one field reads a surviving field's value"
+  (doc    "Record.without over a RUNTIME record dropping {b}, keeping {a,c} — was a decline. Materializes
+           the operand once; reads the surviving first field `a` → 1. The drop-shifts-layout twin of the
+           project case.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (upd (: v Int64)) (. (Record.without (mk (+ v 987654321)) (b)) a))
+            (def (main (: v Int64)) (upd v))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64)))
+
+(case "a Record.without over a runtime record reads a surviving NON-FIRST field after the drop"
+  (doc    "The surviving-sibling face: the same runtime Record.without dropping the MIDDLE field {b},
+           reading the surviving `c` → 3 — after the drop shifts c's position it must still read correctly
+           through the materialized operand.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (upd (: v Int64)) (. (Record.without (mk (+ v 987654321)) (b)) c))
+            (def (main (: v Int64)) (upd v))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64)))
+
+(case "a Record.pop over a runtime record splits off the named field's value"
+  (doc    "Record.pop over a RUNTIME record (recursion-forced `mk`) splits it into (popped-value, rest) at
+           field `a` — was a decline. Materializes the operand once; reads tuple element 0 (the popped `a`)
+           → 1.")
+  (input  (do
+            (def (mk (: n Int64)) (if (= n 0) (record (a 1) (b 2) (c 3)) (mk (- n 1))))
+            (def (upd (: v Int64)) (. (Record.pop (mk (+ v 987654321)) a) 0))
+            (def (main (: v Int64)) (upd v))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64)))
+
+(case "a Record.merge of two runtime records reads a field from the second operand"
+  (doc    "Record.merge unions two disjoint RUNTIME records (both recursion-forced) — was a decline. Each
+           operand materializes once (distinct eval-once probe constants per operand). Reads `c` from the
+           SECOND operand `(mkB …)` = {c,d} → 3 — a field from the second operand's row survives the union
+           at its correct slot.")
+  (input  (do
+            (def (mkA (: n Int64)) (if (= n 0) (record (a 1) (b 2)) (mkA (- n 1))))
+            (def (mkB (: n Int64)) (if (= n 0) (record (c 3) (d 4)) (mkB (- n 1))))
+            (def (upd (: v Int64)) (. (Record.merge (mkA (+ v 987654321)) (mkB (+ v 111222333))) c))
+            (def (main (: v Int64)) (upd v))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64)))
+
 (case "a row-op pipeline — merge then without then two projections — over runtime values"
   (doc    "Three row ops composed, intermediates never named in source types: merge unions {x} and {y,z}
            (both carrying runtime values), `without` drops z, and BOTH survivors project out of the
