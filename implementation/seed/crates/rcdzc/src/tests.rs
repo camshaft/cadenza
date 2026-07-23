@@ -51761,6 +51761,55 @@ mod stage1 {
     }
 
     #[test]
+    fn a_multi_use_escaping_heap_do_def_is_kept_not_copy_propagated_no_uaf() {
+        use crate::testkit::parse;
+        // FINDING#20 (wasm UAF, corpus-bugfix/v-memory-safety/v-wasm-opt root-caused): a VALUE do-def
+        // `(def out V)` whose heap value is used at a BORROW (`String.byte-len out` in an if-cond) AND
+        // ESCAPES (a returned if-arm `out`) was COPY-PROPAGATED unconditionally — do-block value-defs bypass
+        // keep-analysis (filtered from the Seq), so the SAME producer re-emits at both sites and the reclaim
+        // gate frees the handle after the cond-borrow → the escaping arm returns a FREED handle → wrong value
+        // (wasm 20, want 8; rust ok). FIX: route value do-defs through `lower_let`'s keep-analysis — a
+        // multi-use + escaping heap do-def is KEPT (Core::Let binder → LocalRef → Borrowed → ONE retain/drop).
+        // A single-use do-def still copy-propagates + drops as sole owner (net-0 reclaim pins stay honest).
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping FINDING#20 do-def UAF run");
+            return;
+        };
+        // out = comp-go(...) (a String, run-length-encoding "aabcccccaaa" → "a2b1c5a3", byte-len 8), used at
+        // the cond `(< (byte-len out) (byte-len s))` AND returned by the `out` if-arm. mode 1 → 8.
+        let src = "(do \
+            (def (digit-str (: v Int64)) (Option.expect (String.at \"0123456789\" v) \"d\")) \
+            (def (comp-go (: s String) (: i Int64) (: len Int64) (: cur String) (: cnt Int64) (: acc String)) \
+              (if (>= i len) (String.concat acc (String.concat cur (digit-str cnt))) \
+                  (match (String.at s i) \
+                    ((Some c) (if (= c cur) (comp-go s (+ i 1) len cur (+ cnt 1) acc) \
+                                   (comp-go s (+ i 1) len c 1 (String.concat acc (String.concat cur (digit-str cnt)))))) \
+                    ((None _u) acc)))) \
+            (def (main (: mode Int64)) \
+              (do (def s (if (= mode 1) \"aabcccccaaa\" \"abc\")) \
+                  (match (String.at s 0) \
+                    ((Some c0) (do (def out (comp-go s 1 (String.byte-len s) c0 1 \"\")) \
+                                   (String.byte-len (if (< (String.byte-len out) (String.byte-len s)) out s)))) \
+                    ((None _u) -1)))) \
+            (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["1".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "8",
+                "the escaping heap do-def `out` must be kept (not freed after the cond-borrow) — FINDING#20 UAF"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("FINDING#20 repro trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_recursive_generic_function_is_instantiated_per_type() {
         // 09-functions "a recursive generic function is instantiated at two different types": `loopn`
         // threads `x` UNCHANGED, so `x` is GENERIC (the body never fixes its type). A non-recursive

@@ -2012,6 +2012,39 @@
   (call   main (: 99999999 Int64)) (output (: 921 Int64))
   (call   main (: 10 Int64)) (output (: 111 Int64)))
 
+(case "DIVISOR SUM pairs each small divisor with its cofactor and classifies perfect numbers"
+  (doc    "The sqrt-paired divisor walk (the trial-division pin below STOPS at the first divisor;
+           this SUMS them all): each small divisor d ≤ √n contributes itself AND its cofactor n/d —
+           and at d·d = n the pair COLLAPSES, so d joins once, not twice (36 → 55 and 16 → 15 both
+           break under double-counting — the perfect-square face is the pin). n = 1 is the domain
+           floor (no proper divisors, 0; the walk's seed of 1 applies only for n > 1). The
+           perfect/abundant/deficient 3-way classification rides on top: s = n → 2, s > n → 1,
+           s < n → 0. Faces: the perfect pair 6 and 28 (62/282 — s·10 + class); abundant 12 → 16
+           (161); deficient prime 7 → 1 (10); the perfect squares 36 → 55 (551) and 16 → 15 (150).")
+  (input  (do
+            (def (go (: n Int64) (: d Int64) (: s Int64))
+              (if (> (* d d) n)
+                  s
+                  (if (= (% n d) 0)
+                      (go n (+ d 1) (+ s (+ d (if (= (* d d) n) 0 (/ n d)))))
+                      (go n (+ d 1) s))))
+            (def (divsum (: n Int64))
+              (if (= n 1) 0 (go n 2 1)))
+            (def (classify (: n Int64))
+              (do
+                (def s (divsum n))
+                (+ (* s 10)
+                   (if (= s n) 2 (if (> s n) 1 0)))))
+            (def (main (: n Int64))
+              (classify n))
+            (export main)))
+  (call   main (: 6 Int64)) (output (: 62 Int64))
+  (call   main (: 28 Int64)) (output (: 282 Int64))
+  (call   main (: 12 Int64)) (output (: 161 Int64))
+  (call   main (: 7 Int64)) (output (: 10 Int64))
+  (call   main (: 36 Int64)) (output (: 551 Int64))
+  (call   main (: 16 Int64)) (output (: 150 Int64)))
+
 (case "TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor"
   (doc    "The primality walk, returning the WITNESS not a boolean: 0 = prime, d = the smallest factor
            found, -1 = below the domain — so a wrong answer identifies WHICH step failed. Odd

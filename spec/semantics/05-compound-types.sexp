@@ -7108,6 +7108,51 @@
   (call   main (: 3 Int64)) (output (: 1 Int64))
   (call   main (: 4 Int64)) (output (: 1 Int64)))
 
+(case "LONGEST COMMON SUBSEQUENCE rolls match-diagonal against carry-forward maxima"
+  (doc    "The DP trio's third indexing shape (coin-change indexes by AMOUNT, LIS by POSITION, this
+           by POSITION PAIR): the two-row roll mirrors Levenshtein structurally but with OPPOSITE
+           cell semantics — a MATCH takes the diagonal + 1 (extending the shared subsequence), a
+           mismatch CARRIES FORWARD the max of above and left-in-cur (nothing is paid; Levenshtein
+           charges 1). The seed row is the semantic pivot: LCS seeds ZEROS (the empty prefix shares
+           nothing), Levenshtein seeds 0..lb (the empty prefix costs j inserts) — identical
+           machinery, one row apart. Faces: the interleaved (1 3 4 1 2)/(3 4 1 2 1 3) → 4 (3·4·1·2
+           assembled across both lists); identical → n (the diagonal rides the whole table);
+           DISJOINT → 0 (the max-carry never lifts off the zero floor); empty-a → 0 through the
+           untouched seed row.")
+  (input  (do
+            (def (at0 (: xs (List Int64)) (: i Int64))
+              (Option.expect (List.at xs i) "in-bounds"))
+            (def (max2 (: a Int64) (: b Int64)) (if (> a b) a b))
+            (def (zeros (: j Int64) (: n Int64) (: acc (List Int64)))
+              (if (> j n) acc (zeros (+ j 1) n (List.push acc 0))))
+            (def (row-go (: b (List Int64)) (: j Int64) (: lb Int64) (: x Int64) (: prev (List Int64)) (: cur (List Int64)))
+              (if (> j lb)
+                  cur
+                  (do
+                    (def y (at0 b (- j 1)))
+                    (def cell (if (= x y)
+                                  (+ (at0 prev (- j 1)) 1)
+                                  (max2 (at0 prev j) (at0 cur (- j 1)))))
+                    (row-go b (+ j 1) lb x prev (List.push cur cell)))))
+            (def (rows (: a (List Int64)) (: b (List Int64)) (: lb Int64) (: prev (List Int64)))
+              (match a
+                ((list) prev)
+                ((list x .. t) (rows t b lb (row-go b 1 lb x prev (list 0))))))
+            (def (lcs (: a (List Int64)) (: b (List Int64)))
+              (do
+                (def lb ((. List len) b))
+                (at0 (rows a b lb (zeros 0 lb (list))) lb)))
+            (def (main (: mode Int64))
+              (if (= mode 1) (lcs (list 1 3 4 1 2) (list 3 4 1 2 1 3))
+              (if (= mode 2) (lcs (list 1 2 3) (list 1 2 3))
+              (if (= mode 3) (lcs (list 1 2) (list 3 4))
+                             (lcs (list) (list 1 2))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 4 Int64))
+  (call   main (: 2 Int64)) (output (: 3 Int64))
+  (call   main (: 3 Int64)) (output (: 0 Int64))
+  (call   main (: 4 Int64)) (output (: 0 Int64)))
+
 (case "a memoizing fold caches computed results in a Map and counts its hits"
   (doc    "The pure memoize spine (the effects twin at 14-effects:2931 threads Map-STATE through
            handler arms; this is the plain fold): each key looks up the cache first — a hit reuses the
@@ -9762,6 +9807,41 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 30509101 Int64))
   (call   main (: -6 Int64)) (output (: 29701021 Int64)))
+
+(case "EQUILIBRIUM INDEX finds where left and right sums balance using total minus running"
+  (doc    "The pivot-balance scan (the range-sum pin below materializes a prefix TABLE; this needs
+           only the TOTAL and a running left sum — the same information, O(1) space): at each index
+           the right sum is derived, `total − left − h`, never recomputed (a re-walk per index is
+           the quadratic form this one-pass replaces), and the FIRST balancing index wins. NEGATIVE
+           values make the balance non-monotonic — left can overshoot and return (the −7 head means
+           left = −1 at index 3 while the right is also −1). Faces: the mixed-sign classic → 3;
+           all-positive (1 2 3) → −1 (left strictly grows past every balance); the SINGLETON zero →
+           0 (left 0, right 0, the degenerate balance); (2 −2 4) → 2 (the balance at the LAST index
+           — right sum empty-zero, left cancelled to zero).")
+  (input  (do
+            (def (sum-l (: xs (List Int64)) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (sum-l t (+ acc h)))))
+            (def (go (: xs (List Int64)) (: i Int64) (: left Int64) (: total Int64))
+              (match xs
+                ((list) -1)
+                ((list h .. t)
+                  (if (= left (- (- total left) h))
+                      i
+                      (go t (+ i 1) (+ left h) total)))))
+            (def (equi (: xs (List Int64)))
+              (go xs 0 0 (sum-l xs 0)))
+            (def (main (: mode Int64))
+              (if (= mode 1) (equi (list -7 1 5 2 -4 3 0))
+              (if (= mode 2) (equi (list 1 2 3))
+              (if (= mode 3) (equi (list 0))
+                             (equi (list 2 -2 4))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 2 Int64)) (output (: -1 Int64))
+  (call   main (: 3 Int64)) (output (: 0 Int64))
+  (call   main (: 4 Int64)) (output (: 2 Int64)))
 
 (case "RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk"
   (doc    "The QUERY side of the prefix table (the scan above pins construction): `rq(i,j) =
