@@ -1536,6 +1536,15 @@ fn send(
     if !no_wake {
         match wake_window(fleet, to) {
             WakeOutcome::Woke => println!("  ↑ nudged '{to}' awake (immediate tick)"),
+            // A TERMINAL skip (recipient stopped) means its loop has EXITED — the message will NOT be
+            // drained on any tick, so do NOT promise "picks it up next /loop" (that false promise is
+            // how `assign`/`reject` messages pile up unread in a stopped agent's inbox). Warn loudly so
+            // the sender knows to reactivate the recipient (`fleet add`/`up`) or re-route the message.
+            WakeOutcome::Skipped(why) if wake_skip_is_terminal(why) => eprintln!(
+                "  ⚠ NOT woken: {why} — its loop has EXITED, so this `{kind}` will sit UNREAD (a \
+                 dead-letter). Reactivate '{to}' (`fleet add`/`up`) or re-route this message; do NOT \
+                 assume it will be picked up next /loop."
+            ),
             WakeOutcome::Skipped(why) => println!("  (not woken: {why} — picks it up next /loop)"),
         }
     }
@@ -2070,12 +2079,27 @@ fn merge_floor(ours: &Path, theirs: &Path) {
     }
 }
 
+/// The skip reason `wake_window` uses when the recipient is `stopped`. Hoisted to a const so the
+/// terminal-vs-transient classifier ([`wake_skip_is_terminal`]) can never drift from the string
+/// `wake_window` actually emits (a bare string literal in two places would silently desync).
+const STOPPED_SKIP_REASON: &str = "recipient is stopped";
+
 /// Why a delivery did or didn't wake the recipient.
 enum WakeOutcome {
     /// The recipient's window was nudged into an immediate tick.
     Woke,
     /// Not nudged; the reason (recipient will still drain the inbox on its next scheduled tick).
     Skipped(&'static str),
+}
+
+/// True when a `WakeOutcome::Skipped` reason is TERMINAL — the recipient's loop has EXITED (it's
+/// stopped), so the just-delivered message will NOT be drained on any future tick (a dead-letter
+/// unless the agent is reactivated). All other skip reasons (not-in-tmux, no live window yet,
+/// already mid-tick, interactive role, send-keys failed) are TRANSIENT: the recipient's `/loop` is
+/// still running and WILL drain the inbox on its next scheduled tick, so "picks it up next /loop"
+/// is truthful for them. Only the stopped case must NOT make that promise.
+fn wake_skip_is_terminal(why: &str) -> bool {
+    why == STOPPED_SKIP_REASON
 }
 
 /// Nudge a message recipient's tmux window into an immediate tick, subject to the wake guards:
@@ -2094,13 +2118,13 @@ fn wake_window(fleet: &Fleet, to: &str) -> WakeOutcome {
         return WakeOutcome::Skipped("not in a tmux session");
     }
     if fleet.stopfile(to).exists() {
-        return WakeOutcome::Skipped("recipient is stopped");
+        return WakeOutcome::Skipped(STOPPED_SKIP_REASON);
     }
     // Interactive roles talk to the human directly; never inject keystrokes into their window.
     let reg = fleet.load();
     if let Some(a) = reg.agents.iter().find(|a| a.name == to) {
         if a.status == "stopped" {
-            return WakeOutcome::Skipped("recipient is stopped");
+            return WakeOutcome::Skipped(STOPPED_SKIP_REASON);
         }
         if matches!(a.role.as_str(), "concierge" | "design") {
             return WakeOutcome::Skipped("interactive role — left for the human");
@@ -9125,6 +9149,28 @@ mod tests {
         assert!(merge_request_ref_is_missing("\t\n"));
         assert!(!merge_request_ref_is_missing("deadbeef"));
         assert!(!merge_request_ref_is_missing("  deadbeef  ")); // has content once trimmed
+    }
+
+    #[test]
+    fn wake_skip_is_terminal_only_for_a_stopped_recipient() {
+        // `send` prints "picks it up next /loop" ONLY for a TRANSIENT skip (the recipient's loop is
+        // still running). A stopped recipient's loop has EXITED — the delivered message dead-letters —
+        // so that skip is TERMINAL and must NOT get the false promise. Pin the classification so a new
+        // skip reason added to `wake_window` defaults to transient (correct: only `stopped` is terminal)
+        // and the stopped case can never silently regress to the reassuring "next /loop" line.
+        // The terminal reason is exactly the const `wake_window` emits — assert on that, not a copy, so
+        // renaming the reason can't desync the classifier from the emitter.
+        assert!(wake_skip_is_terminal(STOPPED_SKIP_REASON));
+        // Every TRANSIENT skip reason `wake_window` can return → not terminal (loop still ticking).
+        assert!(!wake_skip_is_terminal("not in a tmux session"));
+        assert!(!wake_skip_is_terminal("no live window"));
+        assert!(!wake_skip_is_terminal("already mid-tick"));
+        assert!(!wake_skip_is_terminal(
+            "interactive role — left for the human"
+        ));
+        assert!(!wake_skip_is_terminal("send-keys failed"));
+        // An unrecognized reason defaults to transient (never falsely warns dead-letter on a live loop).
+        assert!(!wake_skip_is_terminal("some future reason"));
     }
 
     #[test]

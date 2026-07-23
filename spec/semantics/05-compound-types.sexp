@@ -8987,6 +8987,53 @@
   (call   main (: 2 Int64)) (output (: 214351 Int64))
   (call   main (: 3 Int64)) (output (: 71 Int64)))
 
+(case "WAVE reorder alternates <= and >= by index parity through a carried-element walk"
+  (doc    "The VALUE-conditional sibling of the pairwise swap above (that one swaps unconditionally;
+           the wave swaps only where the parity constraint fails): a carried element travels the
+           walk — at each step the parity picks the required relation (even i wants cur ≤ nxt, odd
+           wants ≥), and a violation emits NXT while KEEPING cur carried (the local swap), otherwise
+           cur emits and nxt takes over the carry. Verified by an independent `is-wave` recursion
+           re-walking the output against the alternating constraint (structure-checked, not just
+           value-matched). Faces: (3 1 4 1 5) → 1,4,1,5,3 — the initial violation swaps immediately
+           and the 3 carries TWO steps before landing (141531); the strictly-DECREASING (5 4 3 2 1)
+           → every even step swaps (452311); the already-wave pair (1 2) unchanged (121). Encoding:
+           digit walk ·10 + is-wave bit.")
+  (input  (do
+            (def (go (: cur Int64) (: rest (List Int64)) (: i Int64) (: acc (List Int64)))
+              (match rest
+                ((list) (List.push acc cur))
+                ((list nxt .. t)
+                  (do
+                    (def wrong (if (= (% i 2) 0) (> cur nxt) (< cur nxt)))
+                    (if wrong
+                        (go cur t (+ i 1) (List.push acc nxt))
+                        (go nxt t (+ i 1) (List.push acc cur)))))))
+            (def (wave (: xs (List Int64)))
+              (match xs
+                ((list) xs)
+                ((list h .. t) (go h t 0 (list)))))
+            (def (is-wave (: xs (List Int64)) (: i Int64))
+              (match xs
+                ((list) 1)
+                ((list _solo) 1)
+                ((list a b .. t)
+                  (if (if (= (% i 2) 0) (<= a b) (>= a b))
+                      (is-wave (List.concat (list b) t) (+ i 1))
+                      0))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: mode Int64))
+              (do
+                (def xs (if (= mode 1) (list 3 1 4 1 5) (if (= mode 2) (list 5 4 3 2 1) (list 1 2))))
+                (def w (wave xs))
+                (+ (* (chk w 0) 10) (is-wave w 0))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 141531 Int64))
+  (call   main (: 2 Int64)) (output (: 452311 Int64))
+  (call   main (: 3 Int64)) (output (: 121 Int64)))
+
 (case "a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive"
   (doc    "The full divide-and-conquer composed over the merge step above: `split-alt` deals elements
            to even/odd INDEX positions (deliberately scrambling relative order so the merges do all
