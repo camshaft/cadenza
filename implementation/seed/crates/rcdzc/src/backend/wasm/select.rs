@@ -5455,7 +5455,7 @@ fn emit_tail(
                 {
                     emit_operand(db, b, *rit, slots, bbase, high, st, layout, out)
                 } else if let Core::ConstFloat(d) = core_of(db, b)
-                    && let Ty::Float(rft) = &result
+                    && let Ty::Float(rft) = peel_qty_ty(result.clone())
                     && rft.ground_width() == 32
                 {
                     // A bare `ConstFloat` branch takes the `if`'s RESULT float width, not its own default
@@ -5465,6 +5465,12 @@ fn emit_tail(
                     // (`expected f32, found f64`). Unlike a narrow INT (masked into the shared i32 slot),
                     // `f32`/`f64` are DISTINCT machine types — a hard validation error, not a silent mask.
                     // Ground it to the result's f32 here (the float twin of the `ConstInt` grounding above).
+                    // PEEL `Ty::Nominal`/`Ty::Qty` first (via `peel_qty_ty`): `valtype_of` reads THROUGH those
+                    // wrappers to the inner `f32`, so a wrapped-Float32 result (`(type F (Mk Float32))`,
+                    // `(Qty Float32 u)`) gives an `f32` block — but a bare `Ty::Float` match would miss it and
+                    // fall through to the default `f64.const`, the same invalid-module asymmetry the sibling
+                    // int-grounding (`int_ty_of`/`emit_operand`) already avoids by stripping. (Latent today —
+                    // `Qty.of` erases before the branch is a bare `ConstFloat` — but symmetric + hazard-free.)
                     out.push(Lir::F32ConstBits(
                         (f64::from_bits(d.to_f64_bits()) as f32).to_bits(),
                     ));
@@ -14377,7 +14383,13 @@ fn emit_branch(
     // A bare `ConstFloat` branch must take the `if`'s RESULT float width, not its own default `Float64` —
     // the float twin of the `ConstInt`-to-result-width grounding above (see the tail-position `Core::If`
     // arm's `emit_tail_branch` for the full rationale). Only `Float32` differs from the literal's default.
-    if let (Ty::Float(rft), Core::ConstFloat(d)) = (result, core_of(db, id))
+    // PEEL `Ty::Nominal`/`Ty::Qty` (via `peel_qty_ty`) before the `Float32` check: `valtype_of` reads
+    // through those wrappers to the inner `f32` (so a wrapped-Float32 result gives an `f32` block), but a
+    // bare `Ty::Float` match would miss a wrapped result and fall to the default `f64.const` — the same
+    // invalid-module asymmetry the sibling int grounding already avoids. Latent today (Qty.of erases first),
+    // but keeps this symmetric with the int side and closes the hazard.
+    if let Core::ConstFloat(d) = core_of(db, id)
+        && let Ty::Float(rft) = peel_qty_ty(result.clone())
         && rft.ground_width() == 32
     {
         out.push(Lir::F32ConstBits(

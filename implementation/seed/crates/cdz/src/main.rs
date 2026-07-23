@@ -4279,11 +4279,15 @@ fn run_test_file(
     // DEBUG (CDZ_DUMP_TEST_WASM): write the emitted test component to that path, for a WAT-diff of the
     // instantiation-set-dependent emit (bug#4). Throwaway.
     if let Ok(path) = std::env::var("CDZ_DUMP_TEST_WASM") {
-        let _ = std::fs::write(&path, &component);
-        eprintln!(
-            "[dump] wrote test component ({} bytes) to {path}",
-            component.len()
-        );
+        // Report the write outcome honestly — don't print "wrote …" when the write FAILED (a swallowed
+        // permission/path error made this debug dump claim false success; PR#584 nit).
+        match std::fs::write(&path, &component) {
+            Ok(()) => eprintln!(
+                "[dump] wrote test component ({} bytes) to {path}",
+                component.len()
+            ),
+            Err(e) => eprintln!("[dump] FAILED to write test component to {path}: {e}"),
+        }
     }
 
     // Resolve the value-heap runtime ONCE for this file's test component (reused across every test + trial):

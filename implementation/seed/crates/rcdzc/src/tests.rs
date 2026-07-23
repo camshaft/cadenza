@@ -54659,6 +54659,33 @@ mod stage1 {
         assert!(expect_decline("(<< 1 -1)").contains("shift count -1 is out of range"));
     }
 
+    #[test]
+    fn an_unsigned_narrow_width_shift_trap_names_the_width_and_cause() {
+        // The tests above exercise the i64/`fold_arith` shift path (default width 64). The UNSIGNED
+        // SOLVED-WIDTH fold (`fold_shift_bitwise_at_width`) has its OWN, more actionable CDZ0304 messages
+        // that name the concrete width and distinguish an out-of-range COUNT from a shifted-result
+        // OVERFLOW — the improvement PR#796's review asked for. Those narrow-width messages had NO
+        // coverage; pin both so the actionable wording can't silently regress to a generic "count or
+        // overflow". (An unsigned narrow type reaches the width fold; a signed type stays on the i64 path.)
+        //
+        // Count ≥ width: `(: 1 (UInt 8)) << (: 8 …)` — count 8 ≥ the 8-bit width, an out-of-range count.
+        let count_oob = expect_decline("(<< (: 1 (UInt 8)) (: 8 (UInt 8)))");
+        assert!(
+            count_oob.contains("shift count 8 is out of range for the 8-bit type")
+                && count_oob.contains("must be 0..=7"),
+            "an unsigned narrow-width out-of-range shift count names the width + valid range: {count_oob}"
+        );
+        // Result overflow (in-range count): `(: 4 (UInt 8)) << 7` = 512, which moves a set bit past the
+        // 8-bit width — distinct from the count fault, named as an overflow with the offending shift amount.
+        let result_ovf = expect_decline("(<< (: 4 (UInt 8)) (: 7 (UInt 8)))");
+        assert!(
+            result_ovf.contains("the shifted result overflows the 8-bit type")
+                && result_ovf.contains("by 7 moves a set bit past the width"),
+            "an unsigned narrow-width shifted-result overflow names the width + is distinct from a \
+             count fault: {result_ovf}"
+        );
+    }
+
     // ── comparisons: ∀a. a → a → Bool, folded to a boolean, generic over the operand type ────────
 
     #[test]

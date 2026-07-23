@@ -14,7 +14,11 @@
 //! the flat rung is a property of the linearizing backend, not a shared stage
 //! (`backends-and-targets.md` §The Flat Instruction Rung Is A Property Of A Linearizing Backend).
 
-pub mod common;
+// `common` is internal-only (shared backend analyses like `diverge`/`export_name`, used by the `rust`
+// and `wasm` arms within this crate) — NOT part of rcdzc's public surface, so `pub(crate)`. External
+// consumers reach only `backend::wasm` (cdz/cdz-wasm/cdz-kernel/rcdzc-wasm); none names `backend::common`,
+// so tightening it avoids accidentally stabilizing an internal analysis (PR#584 API-hygiene nit).
+pub(crate) mod common;
 pub mod rust;
 pub mod wasm;
 

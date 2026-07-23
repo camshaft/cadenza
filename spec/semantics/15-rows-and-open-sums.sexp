@@ -261,6 +261,25 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 7 Int64)))
 
+(case "a Record.with over a runtime record with MULTIPLE preserved fields evaluates the operand once"
+  (doc    "The materialize-once discipline for a runtime-record row-op (v-inference 13fd27095, after the
+           reviewer's re-emit finding on 49d6eec14). `runtime_record_fields` builds a fresh record from a
+           `(. record field)` projection for EVERY unchanged field; before the fix the raw operand was
+           re-emitted once per preserved field (the backend has no CSE — each Core::Proj re-calls
+           emit(operand)), an N-fold redundant eval (perf cliff for a pure operand). The fix let-binds the
+           runtime operand ONCE (self-keyed Core::Let) so every projection reads a shared LocalRef. Here
+           `(mk v)` is a 3-field runtime record; `Record.with … a 99` updates `a` and leaves TWO preserved
+           fields (`b`, `c`), so the operand would re-emit twice without the fix. Reading the preserved `c`
+           → v+2 = 12 at v=10 (value correct either way; the pin LOCKS the multi-preserved-field path the
+           single-field l6 case does not exercise). Both backends. The effect-count face is SHIELDED by the
+           effect lowering (an effectful operand is materialized once by out-state threading) and guarded
+           structurally by rcdzc's emit-once lib test, so no runtime perform-count row is needed.")
+  (input  (do
+            (def (mk (: n Int64)) (record (a n) (b (+ n 1)) (c (+ n 2))))
+            (def (main (: v Int64)) (. (Record.with (mk v) a 99) c))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 12 Int64)))
+
 (case "a row-op pipeline — merge then without then two projections — over runtime values"
   (doc    "Three row ops composed, intermediates never named in source types: merge unions {x} and {y,z}
            (both carrying runtime values), `without` drops z, and BOTH survivors project out of the
