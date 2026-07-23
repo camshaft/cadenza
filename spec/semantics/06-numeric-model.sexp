@@ -1916,6 +1916,43 @@
   (call   main (: 1 Int64)) (output (: -1 Int64))
   (call   main (: 1000003 Int64)) (output (: 0 Int64)))
 
+(case "a PRIME LIST accumulates by testing each candidate against earlier primes up to its square root"
+  (doc    "The trial-division pin above tests ONE number against raw odd candidates; this builds the
+           whole list, each candidate tested against the ACCUMULATED PRIMES so far — the output of
+           earlier iterations is the test set for later ones (a self-feeding accumulator: admitting
+           one composite pollutes every later test; missing one prime lets its multiples through).
+           The inner walk stops at `p·p > k` — the square-root bound over the GROWING list — and the
+           divisibility test short-circuits on the first hit. Faces: n=20 → the 8 primes
+           2,3,5,7,11,13,17,19 in base-100 with the count digit (2030507111317198); n=2 → the
+           single-prime boundary — 2 is tested against the EMPTY list and admitted vacuously (21);
+           n=1 → the empty range, no candidate ever tested (0). Encoding: base-100 digit walk ·10 +
+           list length.")
+  (input  (do
+            (def (divisible-by-any (: ps (List Int64)) (: k Int64))
+              (match ps
+                ((list) 0)
+                ((list p .. t)
+                  (if (> (* p p) k)
+                      0
+                      (if (= (% k p) 0) 1 (divisible-by-any t k))))))
+            (def (build (: k Int64) (: n Int64) (: ps (List Int64)))
+              (if (> k n)
+                  ps
+                  (build (+ k 1) n
+                    (if (= (divisible-by-any ps k) 0) (List.push ps k) ps))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 100) h)))))
+            (def (main (: n Int64))
+              (do
+                (def ps (build 2 n (list)))
+                (+ (* (chk ps 0) 10) ((. List len) ps))))
+            (export main)))
+  (call   main (: 20 Int64)) (output (: 2030507111317198 Int64))
+  (call   main (: 2 Int64)) (output (: 21 Int64))
+  (call   main (: 1 Int64)) (output (: 0 Int64)))
+
 (case "a runtime BigInt in an Option payload crosses the host boundary"
   (doc    "`(Some (* (BigInt.of 1000000) (BigInt.of 1000000)))` — a runtime BigInt (the 10^12 product does
            not fold) wrapped in an `Option` crosses to the host as `(Some 1000000000000) : (Option

@@ -9635,6 +9635,42 @@
   (call   main (: 9 Int64)) (output (: 90 Int64))
   (call   main (: 7 Int64)) (output (: 71 Int64)))
 
+(case "MAX PROFIT tracks the running minimum and best spread in one forward pass"
+  (doc    "The buy-low-sell-high single pass (Kadane's cousin two pins up — Kadane couples through a
+           RESTART; this couples through a running MINIMUM): both accumulators update in the SAME
+           frame reading the OLD mn — `best` compares `h − mn` against the minimum BEFORE h joins it,
+           so an element can never be its own buy point (the same-frame read-order discipline; a
+           best that reads the NEW mn reports 0 spread at every fresh minimum). The sell must come
+           AFTER the buy: mode 1 (7 3 9 8 2 5) → buy 3 sell 9 (62); mode 2 dips to 1 mid-list —
+           buy 1 sell 8 (71); mode 3's dip is 0 → spread 8 (80); mode 4 STRICTLY DECREASING —
+           no profitable pair exists, best stays 0 while mn walks to 3 (03 → 3, the no-trade face
+           a max-minus-min-anywhere shortcut gets wrong since 9−3 = 6 pairs backwards). Encoding:
+           best·10 + final min.")
+  (input  (do
+            (def (go (: xs (List Int64)) (: mn Int64) (: best Int64))
+              (match xs
+                ((list) (tuple best mn))
+                ((list h .. t)
+                  (go t
+                      (if (< h mn) h mn)
+                      (if (> (- h mn) best) (- h mn) best)))))
+            (def (profit (: xs (List Int64)))
+              (match xs
+                ((list) (tuple 0 0))
+                ((list h .. t) (go t h 0))))
+            (def (main (: mode Int64))
+              (do
+                (def xs (if (= mode 1) (list 7 3 9 8 2 5)
+                        (if (= mode 2) (list 7 3 1 8 2 5)
+                        (if (= mode 3) (list 7 3 0 8 2 5) (list 9 7 5 3)))))
+                (match (profit xs)
+                  ((tuple b m) (+ (* b 10) m)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 62 Int64))
+  (call   main (: 2 Int64)) (output (: 71 Int64))
+  (call   main (: 3 Int64)) (output (: 80 Int64))
+  (call   main (: 4 Int64)) (output (: 3 Int64)))
+
 (case "take-while and drop-while split a leading run and reassemble to the original"
   (doc    "The span law: `take-while` and `drop-while` walk the SAME spine with the SAME predicate
            `(< h 5)` independently — one accumulating the leading run, the other just advancing —

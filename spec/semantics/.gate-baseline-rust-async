@@ -49,6 +49,7 @@ pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shi
 pass	LOCAL PEAKS counts strict interior maxima through a three-element sliding window
 pass	LONGEST RUN tracks the current and best streak, first run winning ties
 pass	LOOK-AND-SAY iterates run-length description over its own prior output
+pass	MAX PROFIT tracks the running minimum and best spread in one forward pass
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division
@@ -69,6 +70,7 @@ pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, cer
 pass	a PALINDROME two-pointer walk closes from both ends of a runtime rope
 pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
 pass	a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum
+pass	a PRIME LIST accumulates by testing each candidate against earlier primes up to its square root
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
 pass	a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side
 pass	a ROMAN DECODER subtracts on lookahead and round-trips through the pinned renderer
@@ -2941,6 +2943,7 @@ pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list
 pass	modular exponentiation by SQUARING halves the exponent and branches on parity
+pass	string REVERSE walks scalars back-to-front and anti-commutes with concatenation
 pass	structural equality of two Ast.Int wider than Int64 compares by full value
 pass	the COLLATZ walk counts steps to 1 and tracks the trajectory peak
 pass	the JOSEPHUS survivor agrees between the modular recurrence and a list elimination simulation
@@ -4509,8 +4512,8 @@ pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 pass	the union of sets of TUPLES holds a shared tuple once and preserves component order
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
-todo	COMPOUND SUM PAYLOAD: (Option (Record (x Int64) (y Int64))) — a RECORD payload
-todo	TWO Record args cross the direct-call boundary
+pass	COMPOUND SUM PAYLOAD: (Option (Record (x Int64) (y Int64))) — a RECORD payload
+pass	TWO Record args cross the direct-call boundary
 todo	Type is a first-class value
 todo	a @param accessor splices into a quasiquote and the eval computes with the host value
 todo	a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)
@@ -4518,20 +4521,20 @@ todo	a @param of type Rational desugars to two scalar num/den accessors the gues
 todo	a Float64 closure captures a Float64 build-time host effect result
 todo	a Map-returning closure alongside a parameterized plain export — the closure
 todo	a Map-returning closure alongside a parameterized plain export — the plain
-todo	a NESTED Record ARG (a record containing a record) crosses the direct-call boundary
-todo	a NESTED Record ARG with a LIST result crosses the direct-call boundary
-todo	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
+pass	a NESTED Record ARG (a record containing a record) crosses the direct-call boundary
+pass	a NESTED Record ARG with a LIST result crosses the direct-call boundary
+pass	a NESTED mixed ARG (a tuple containing a record) crosses the direct-call boundary
 todo	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
-todo	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
-todo	a RECORD closure ARG on the MULTI-EXPORT path
-todo	a RECORD closure ARG whose fields are NOT in sorted source order
-todo	a RECORD closure ARG with a LIST result
-todo	a RECORD closure ARG with a narrow Bool field, among scalars
-todo	a RECORD with a nested TUPLE field crosses the direct-call boundary
+pass	a RECORD closure ARG among scalars crosses the direct-call boundary (scalar result)
+pass	a RECORD closure ARG on the MULTI-EXPORT path
+pass	a RECORD closure ARG whose fields are NOT in sorted source order
+pass	a RECORD closure ARG with a LIST result
+pass	a RECORD closure ARG with a narrow Bool field, among scalars
+pass	a RECORD with a nested TUPLE field crosses the direct-call boundary
 todo	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
-todo	a SOLE RECORD closure ARG crosses the direct-call boundary
+pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a THREE-argument closure round-trips — flat arrow spelling
-todo	a TRIPLY-nested Record ARG crosses the direct-call boundary
+pass	a TRIPLY-nested Record ARG crosses the direct-call boundary
 pass	a UInt64 closure round-trips through a consumer export
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 pass	a callee whose body LET-BINDS a handle seeded by its param, called with the caller's runtime arg, keeps that arg bound
@@ -4564,7 +4567,7 @@ pass	a distinct-signature round-trip applies the Int64->Int64 closure
 pass	a distinct-signature round-trip's Bool closure on a nonzero input
 todo	a fixed-shape Tuple ARG with a Map RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a RECORD RESULT crosses the direct-call boundary
-todo	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
+pass	a fixed-shape scalar RECORD closure ARG crosses the DIRECT-CALL boundary
 pass	a genuinely-runtime MULTIPLY on an unusual signed width traps on overflow rather than wrapping to storage
 todo	a host call's response is an ordinary value that feeds a LATER host call
 todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
@@ -4619,8 +4622,8 @@ pass	distinct-sig round-trip: TWO collection consumers of different sigs — the
 todo	two same-unit Qty host results combine guest-side as a same-dimension add
 pass	distinct-sig round-trip: TWO compound consumers of different sigs — the record one
 pass	distinct-sig round-trip: TWO compound consumers of different sigs — the tuple one
-todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Record-arg one
-todo	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Tuple-arg one
+pass	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Record-arg one
+pass	distinct-sig round-trip: TWO compound-arg closures of different sigs — the Tuple-arg one
 pass	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the compound
 pass	distinct-sig round-trip: a List consumer + a compound consumer of another sig — the list
 pass	distinct-sig round-trip: a List consumer + a scalar consumer of another sig — the list
@@ -4661,7 +4664,7 @@ pass	round-trip: a compound consumer + a byte-rope consumer of the same closure 
 pass	round-trip: a compound consumer alongside a plain export — the plain
 pass	round-trip: a compound-arg closure whose consumer returns a compound
 pass	round-trip: a consumer applies a closure taking a List arg built in-guest
-todo	round-trip: a consumer applies a closure taking a Record arg built in-guest
+pass	round-trip: a consumer applies a closure taking a Record arg built in-guest
 pass	round-trip: a consumer applies a closure taking a Tuple arg built in-guest
 pass	round-trip: a consumer applies the handed-back closure and returns Bytes
 pass	round-trip: a consumer applies the handed-back closure and returns a List

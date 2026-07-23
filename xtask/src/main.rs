@@ -2193,18 +2193,25 @@ fn build_closure_consumer_call(
     // Each producer is consumed at most once; a closure param pairs to the FIRST unused producer whose
     // closure type matches (deterministic left-to-right — review ask #2).
     enum Producer {
-        /// A real factory: its RESULT closure type + capture-arg count.
+        /// A real factory: its RESULT closure type + capture-arg count. `shape` is the factory's `cdz-return`
+        /// arrow render-name (the pre-erasure Cadenza closure type, e.g. `(-> (Tuple Int64 Int64) Int64)` vs
+        /// `(-> (Record (a Int64) (b Int64)) Int64)`) — used to disambiguate a Tuple-arg vs Record-arg
+        /// producer whose ERASED `Rc<dyn Fn>` type collides, matched against the consumer's `cdz-param-shapes`.
         Factory {
             ident: String,
             closure_ty: String,
             cap: usize,
+            shape: Option<String>,
         },
         /// An eta-peeled nullary producer: `fn ident(<params>) -> <ret>` == the closure `Rc<dyn Fn(<params
         /// types>) -> <ret>>`. We store the equivalent closure type + the raw `fn` type for the coercion.
+        /// `shape` is its `cdz-produces-closure` arrow (the pre-erasure Cadenza shape) — used, like the
+        /// Factory's, to disambiguate a Tuple-arg vs Record-arg peeled producer of colliding erasure.
         Peeled {
             ident: String,
             closure_ty: String,
             fn_ty: String,
+            shape: Option<String>,
         },
     }
     let mut producers: Vec<Producer> = Vec::new();
@@ -2233,12 +2240,15 @@ fn build_closure_consumer_call(
         };
         let src_params: Vec<&&str> = psig.params.iter().filter(|p| !is_env_param(p)).collect();
         if psig.ret_head.contains("Rc<dyn Fn(") {
-            // FACTORY: result is a closure.
+            // FACTORY: result is a closure. Its `cdz-return[ident]` note is the arrow render-name (the
+            // pre-erasure closure shape) — captured for the collision-disambiguation pairing below.
             let cty = closure_ret_type(&psig.ret_head)?;
+            let shape = cdz_return_type(module, &ident);
             producers.push(Producer::Factory {
                 ident,
                 closure_ty: cty,
                 cap: src_params.len(),
+                shape,
             });
         } else if !src_params.iter().any(|p| is_closure_param(p)) {
             // PEELED candidate: a plain fn (no closure param, non-closure return). Its equivalent closure
@@ -2253,10 +2263,12 @@ fn build_closure_consumer_call(
                 .to_string();
             let closure_ty = format!("std::rc::Rc<dyn Fn({}) -> {}>", param_types.join(", "), ret);
             let fn_ty = format!("fn({}) -> {}", param_types.join(", "), ret);
+            let shape = cdz_produces_closure(module, &ident);
             producers.push(Producer::Peeled {
                 ident,
                 closure_ty,
                 fn_ty,
+                shape,
             });
         }
     }
@@ -2269,13 +2281,38 @@ fn build_closure_consumer_call(
     // closure to a `let __gN` FIRST (sequential borrows), then call the consumer with the bound names. The
     // collected `let` statements are returned as a prelude the caller splices before the consumer call.
     let mut async_lets: Vec<String> = Vec::new();
-    let ty_matches = |prod: &Producer, cty: &str| match prod {
-        Producer::Factory { closure_ty, .. } | Producer::Peeled { closure_ty, .. } => {
-            closure_ty.contains(cty) || cty.contains(closure_ty.as_str())
+    // The CONSUMER's per-closure-param Cadenza arrow shapes (`// cdz-param-shapes[name]: <arrow> | <arrow>`),
+    // in closure-param order — the pre-erasure types the driver matches against each producer's `shape` to
+    // disambiguate a Tuple-arg vs Record-arg closure whose ERASED `Rc<dyn Fn>` collides. Empty when the note
+    // is absent (a scalar/tuple-only consumer, no ambiguity), in which case pairing falls back to erased-type.
+    let consumer_shapes = cdz_param_shapes(module, name);
+    let mut closure_param_idx = 0usize;
+    // A producer matches a closure param when their ERASED closure types are compatible AND — when BOTH the
+    // producer's `shape` and the consumer's param-shape are known — their pre-erasure shapes agree. The
+    // shape guard only ever NARROWS a match (it never admits an erased-type mismatch), so a consumer/producer
+    // without shape notes behaves exactly as before (erased-type-only pairing).
+    let ty_matches = |prod: &Producer, cty: &str, want_shape: Option<&str>| {
+        let (closure_ty, prod_shape) = match prod {
+            Producer::Factory {
+                closure_ty, shape, ..
+            }
+            | Producer::Peeled {
+                closure_ty, shape, ..
+            } => (closure_ty, shape.as_deref()),
+        };
+        let erased_ok = closure_ty.contains(cty) || cty.contains(closure_ty.as_str());
+        if !erased_ok {
+            return false;
+        }
+        match (want_shape, prod_shape) {
+            (Some(w), Some(p)) => w == p,
+            _ => true, // shape unknown on either side → erased-type match suffices (prior behavior)
         }
     };
     for p in &source_params {
         if let Some(cty) = closure_param_type(p) {
+            let want_shape = consumer_shapes.get(closure_param_idx).map(|s| s.as_str());
+            closure_param_idx += 1;
             // Pair this closure param to a producer: PREFER the first not-yet-used matching producer
             // (deterministic left-to-right — review ask #2), but FALL BACK to REUSING a matching producer
             // when every match is already used. Reuse is correct: the host mints a FRESH closure handle per
@@ -2284,8 +2321,12 @@ fn build_closure_consumer_call(
             let pi = producers
                 .iter()
                 .enumerate()
-                .position(|(pi, prod)| !used_producer[pi] && ty_matches(prod, cty))
-                .or_else(|| producers.iter().position(|prod| ty_matches(prod, cty)))?;
+                .position(|(pi, prod)| !used_producer[pi] && ty_matches(prod, cty, want_shape))
+                .or_else(|| {
+                    producers
+                        .iter()
+                        .position(|prod| ty_matches(prod, cty, want_shape))
+                })?;
             used_producer[pi] = true;
             match &producers[pi] {
                 Producer::Factory { ident, cap, .. } => {
@@ -2313,6 +2354,7 @@ fn build_closure_consumer_call(
                     ident,
                     fn_ty,
                     closure_ty,
+                    ..
                 } => {
                     // No cap args — wrap the peeled fn as the closure value (coerce fn-item → fn-ptr →
                     // the `dyn Fn` trait object). In ASYNC mode the peeled producer is an `async fn` (its
@@ -6257,6 +6299,30 @@ mod trap_grading_tests {
         assert_eq!(
             build_closure_consumer_call(m2, "add", &["1".into(), "2".into()], true),
             None
+        );
+    }
+
+    #[test]
+    fn build_closure_consumer_call_disambiguates_colliding_erasure_by_param_shape() {
+        // COLLIDING ERASURE: a Tuple-arg factory (mka) and a Record-arg factory (mkb) BOTH emit
+        // `Rc<dyn Fn((i64,i64)) -> i64>` — identical erased type. Without the shape notes the driver would
+        // pair a consumer's Record-arg closure to the FIRST matching producer (mka, the tuple one) → wrong
+        // value. The `// cdz-param-shapes[consumer]` note (the consumer's pre-erasure arrow) + each factory's
+        // `// cdz-return` arrow disambiguate: appb (Record) must pair to mkb (Record), NOT mka (Tuple).
+        let m = "// cdz-return[mka]: (-> (Tuple Int64 Int64) Int64)\n\
+                 pub fn mka(k: i64) -> std::rc::Rc<dyn Fn((i64, i64)) -> i64> { … }\n\
+                 // cdz-return[mkb]: (-> (Record (a Int64) (b Int64)) Int64)\n\
+                 pub fn mkb(k: i64) -> std::rc::Rc<dyn Fn((i64, i64)) -> i64> { … }\n\
+                 // cdz-param-shapes[appb]: (-> (Record (a Int64) (b Int64)) Int64)\n\
+                 pub fn appb(h: std::rc::Rc<dyn Fn((i64, i64)) -> i64>, y: i64) -> i64 { … }";
+        // appb's closure must build from mkb (Record), passing its capture arg (y consumed as the scalar):
+        // `appb(prog::mkb(<cap>), <scalar>)`. The cap comes first; here the flat call `(call appb 9 6)` gives
+        // mkb one cap (9) then appb's scalar (6).
+        let call =
+            build_closure_consumer_call(m, "appb", &["9".into(), "6".into()], false).unwrap();
+        assert_eq!(
+            call, "appb(prog::mkb(9), 6)",
+            "the Record-arg consumer pairs to the RECORD factory (mkb), not the tuple mka: {call}"
         );
     }
 

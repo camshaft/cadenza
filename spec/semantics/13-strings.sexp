@@ -363,6 +363,37 @@
   (call   main (: 1 Int64)) (output (: 111 Int64))
   (call   main (: 0 Int64)) (output (: 11 Int64)))
 
+(case "string REVERSE walks scalars back-to-front and anti-commutes with concatenation"
+  (doc    "The DESCENDING index walk (every other pinned scan ascends; this starts at byte-len − 1
+           and steps toward 0, terminating on `< 0` — the off-by-one lives at BOTH ends: starting at
+           byte-len reads one past, stopping at 0 skips the first scalar). Certified by two algebra
+           laws: the ANTI-HOMOMORPHISM `rev(a ++ b) = rev(b) ++ rev(a)` — the operand order SWAPS
+           across the concat, which a law-blind implementation (e.g. one reversing chunks but not
+           their order) breaks — and the INVOLUTION `rev(rev s) = s`. n=1 → `abcde` reversed is 5
+           scalars with both laws holding (511); n=0 makes `a` EMPTY — rev of the empty string is
+           the left identity in the swapped composition, len 2 (211). Encoding: len·100 +
+           anti-hom·10 + involution.")
+  (input  (do
+            (def (srev-go (: s String) (: i Int64) (: acc String))
+              (if (< i 0)
+                  acc
+                  (match (String.at s i)
+                    ((Some c) (srev-go s (- i 1) (String.concat acc c)))
+                    ((None _u) acc))))
+            (def (srev (: s String))
+              (srev-go s (- (String.byte-len s) 1) ""))
+            (def (main (: n Int64))
+              (do
+                (def a (if (> n 0) "abc" ""))
+                (def b "de")
+                (def whole (srev (String.concat a b)))
+                (+ (* (String.byte-len whole) 100)
+                   (+ (* (if (= whole (String.concat (srev b) (srev a))) 1 0) 10)
+                      (if (= (srev (srev (String.concat a b))) (String.concat a b)) 1 0)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 511 Int64))
+  (call   main (: 0 Int64)) (output (: 211 Int64)))
+
 (case "a WORD COUNT threads an in-word flag through a scalar scan, counting entries not characters"
   (doc    "The wc/lexer-mode idiom — the first Bool MODE FLAG threaded through a string walk (every
            other pinned scan threads numeric state): a space clears `inw`, a non-space sets it, and

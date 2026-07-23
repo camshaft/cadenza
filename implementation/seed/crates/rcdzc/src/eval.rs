@@ -377,8 +377,25 @@ fn pin_free_vars(db: &mut Db, node: StructId, lam_body: StructId, own_params: &[
         // scope ONLY via the enclosing module's record, which the β-copy's orphan loses. So it MUST be
         // pinned (shared), exactly as a sibling `def`'s lambda binder is. Pin when the binder is a user
         // node OR such a module record.
+        //
+        // ALSO a SYNTH CAPTURED VALUE binder — the RHS `V` of a `(def x V)` do-local value decl OR a `(x V)`
+        // `let` binding, when that `do`/`let` was itself β-COPIED by an ENCLOSING inline (so `V` is a synth
+        // node, `is_user_node` false). A do-local/let-local fn `inner` that CAPTURES a runtime-computed
+        // sibling `(def m (* n 3))` / `(let ((m (* n 3))) …)` and is then inlined (`(inner n)`) reduces
+        // `inner`'s body; `m`'s binder is that binding's RHS. On the ORIGINAL (user) arena the `is_user_node`
+        // arm pins it — but when the whole `outer` def is inlined FIRST (a nested/outer application copies the
+        // `do`/`let`, making `m`'s RHS synth), the later inline of the copied `inner` sees a SYNTH binder and
+        // the `is_user_node` gate skipped it → the copied `m` re-resolved against the orphan and reported a
+        // spurious CDZ0101 "unbound name `m`" (`cdz check` CLEAN — gated on `is_user_node` — while `cdz
+        // compile` declined: the check≡compile discrepancy). Like a module member, a do-local/let value is in
+        // scope ONLY via its lexical position, which the orphan loses, so a synth one MUST pin too. (A
+        // CONST-local `(def m 3)` was unaffected — its RHS folds to a constant that re-resolves anywhere; a
+        // PARAM capture was unaffected — a `Param` binder is a user sig node. Only a runtime-computed synth
+        // value binder slipped through — corpus-bugfix FINDING #19.)
         if let Some(binder) = ref_binder(db, node)
-            && (db.is_user_node(binder) || db.module_by_synth_record(binder).is_some())
+            && (db.is_user_node(binder)
+                || db.module_by_synth_record(binder).is_some()
+                || is_synth_captured_value_binder(db, binder))
             && !db.is_within(binder, lam_body)
             && !own_params.contains(&binder)
         {
@@ -391,6 +408,47 @@ fn pin_free_vars(db: &mut Db, node: StructId, lam_body: StructId, own_params: &[
             pin_free_vars(db, c, lam_body, own_params);
         }
     }
+}
+
+/// Whether `binder` is the VALUE-RHS `V` of a lexical VALUE binding whose binder a β-copy's orphan would
+/// lose — either a `(def x V)` do-local value declaration (`do_def_binds` → `Ref { value: V }`) or a
+/// `(x V)` `let` binding pair (`last_binder_named` → `Ref { value: V }`). Used by `pin_free_vars` to pin a
+/// captured such binder that is a SYNTH node (a copied `do`/`let`, `is_user_node` false) — the
+/// `is_user_node` arm already covers the user-arena case; this is the copied-arena twin (corpus-bugfix
+/// FINDING #19). A do-local / let-local value is in scope ONLY via its lexical position, which the orphan
+/// loses, so a captured one must be pinned + shared like a module member. Recognized by the binder being
+/// the SECOND element of its parent form: a bare-name `(def x V)` def, or a `(name V)` two-element binding
+/// pair whose grandparent is a `let`. (A `def (f p…) BODY` function resolves to a `Lambda`, not a value
+/// `Ref`, so it never reaches here; only a bare-name value binding does.)
+fn is_synth_captured_value_binder(db: &Db, binder: StructId) -> bool {
+    let Some(parent) = db.parent_of(binder) else {
+        return false;
+    };
+    // `(def x V)` — a do-local VALUE def: sig is a bare name, `binder` is the value (second tail element).
+    if let Some(tail) = db.ast.as_form(parent, "def") {
+        return tail.len() == 2
+            && tail.get(1) == Some(&binder)
+            && tail
+                .first()
+                .is_some_and(|&sig| db.ast.as_name(sig).is_some());
+    }
+    // `(name V)` — a `let` binding pair: `binder` is the value (second of a two-element pair), the pair's
+    // first child is a bare name, and the pair's parent is a `let`'s bindings-LIST (its grandparent is a
+    // `let` form whose FIRST tail element is that list — distinct from the `let` body).
+    if let crate::ast::Struct::List(kv) = db.ast.get(parent)
+        && kv.len() == 2
+        && kv[1] == binder
+        && db.ast.as_name(kv[0]).is_some()
+        && let Some(bindings_list) = db.parent_of(parent)
+        && let Some(let_form) = db.parent_of(bindings_list)
+        && db
+            .ast
+            .as_form(let_form, "let")
+            .is_some_and(|t| t.first() == Some(&bindings_list))
+    {
+        return true;
+    }
+    false
 }
 
 /// The binder occurrence a name reference resolves to (following `Ref`s / a `Param`, or a `Lambda`'s
