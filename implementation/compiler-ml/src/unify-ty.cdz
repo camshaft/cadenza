@@ -73,6 +73,11 @@ def unify-ty(a: Ty, b: Ty) = match a with
           | Option.None(_) => Option.None(unit))
         else Option.None(unit))                                 // arity mismatch → conflict
     | _ => Option.None(unit))                                    // fn ~ non-fn → conflict
+  // M2-b-2b-ii-c2 USER SUM: DECL-IDENTITY unify — two sum types unify (to themselves) iff SAME decl name-id,
+  // never structural inner (closes recursive sums; a cross-type ctor pattern → different decl → None → reject).
+  | Ty.TySum(na) => (match b with
+    | Ty.TySum(nb) => (if na == nb then Option.Some(Ty.TySum(na)) else Option.None(unit))
+    | _ => Option.None(unit))                                    // sum ~ non-sum → conflict
 
 /// Unify two same-length param-type lists PAIRWISE (index recursion). `Some(list)` = every pair unified (the
 /// combined param types, in order); `None` = any pair conflicted. Callers guarantee equal length.

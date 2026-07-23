@@ -23,6 +23,7 @@ def typed-to-ty(t: Typed) = match t with
   | Typed.TBool => Ty.TyBool
   | Typed.TErr => Ty.TyErr
   | Typed.TFn(ps, r) => Ty.TyFn(typed-list-to-ty(ps, 0), typed-to-ty(r))
+  | Typed.TSum(nm) => Ty.TySum(nm)   // M2-b-2b-ii-c2: pipeline sum → shared sum (decl name-id carried across)
 
 /// `Typed` param-list → `Ty` list, element-wise (index recursion) for typed-to-ty's TyFn arm.
 def typed-list-to-ty(ps: List(Typed), i: Int64) =
@@ -44,6 +45,7 @@ def ty-to-typed(t: Ty) = match ground-default(t) with
   // HIGHER-ORDER (HO-2b): the REAL bridge — a shared Ty.TyFn → the pipeline's Typed.TFn (recursive over params
   // + result), replacing HO-1's TErr stopgap so a fn value survives the Ty→Typed round-trip.
   | Ty.TyFn(ps, r) => Typed.TFn(ty-list-to-typed(ps, 0), ty-to-typed(r))
+  | Ty.TySum(nm) => Typed.TSum(nm)   // M2-b-2b-ii-c2: shared sum → pipeline sum (decl-identity, no grounding)
 
 /// `Ty` param-list → `Typed` list, element-wise (index recursion) for ty-to-typed's TFn arm.
 def ty-list-to-typed(ps: List(Ty), i: Int64) =

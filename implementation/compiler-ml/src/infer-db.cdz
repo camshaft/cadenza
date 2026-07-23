@@ -37,6 +37,10 @@ type Typed =
                                    // and a bare def-name-as-value (RDef) infer to a TFn; `(f x)` infers to the
                                    // TFn's result. Threaded through ty-bridge (TyFn↔TFn, replacing HO-1's TErr
                                    // stopgap) so a fn value survives the Typed↔Ty round-trip.
+  | TSum(Int64)                    // M2-b-2b-ii-c2 USER SUM: the pipeline counterpart of Ty.TySum(declName) —
+                                   // a user sum type by DECL name-id. A ctor USE (nullary or payload) + a match
+                                   // over a sum scrutinee infer to TSum; decl-identity unify (bridged to
+                                   // Ty.TySum). Replaces ii-b/ii-c1's Int64 PLACEHOLDER typing of ctor nodes.
 
 /// The canonical integer type the monomorphic-i64 pipeline produces everywhere: signed, 64-bit. A single
 /// name so the many construct sites don't repeat the `(true, 64)` pair (and a later slice that produces a
@@ -509,6 +513,9 @@ def ty-to-typed-int(t: Ty) = match ground-default(t) with
   // HIGHER-ORDER (HO-1): a function type is out of the int-combining path — a fn value never appears as an
   // arith/if-join operand — so it maps to TErr here (Typed gains a fn variant in HO-2). Poison, never a wrong int.
   | Ty.TyFn(_, _) => Typed.TErr
+  // M2-b-2b-ii-c2: a SUM type is out of the int-combining path (a sum value never appears as an arith/if-join
+  // int operand) → TErr here (poison, never a wrong int). A sum's real typing flows via the TSum bridge arms.
+  | Ty.TySum(_) => Typed.TErr
 
 /// item-3 HM: a unification RESULT `Ty` → `Typed`, PRESERVING a still-deferred width as the deferred sentinel
 /// (`t-int-deferred`) rather than eagerly grounding it to Int64. This is what an ARITH node's result type uses:
@@ -597,6 +604,7 @@ def lit-node-fits(tree: Tree, x: Int64, ts: Bool, tw: Int64) =
 def typed-to-ty-defer(t: Typed) = match t with
   | Typed.TIntW(s, w) => (if w == 0 then Option.Some(ty-deferred-int()) else Option.Some(ty-fixed-int(s, w)))
   | Typed.TFn(_, _) => Option.None(unit)  // a fn value is not an arith operand → None (arith declines it, like TBool/TErr)
+  | Typed.TSum(_) => Option.None(unit)    // a sum value is not an arith operand → None (arith declines it)
   // ARITHMETIC IS INTEGER-ONLY: a Bool operand → None, so arith-result-type declines `(+ true false)` (→ TErr,
   // not a laundered Bool — arith requires TInt). This is NOT a regression for relational ops: bin-type's
   // relational arm (op 60..65) has a `both-bool` fallback, so `(== true false)`/`(< true false)` still type Bool
@@ -662,6 +670,7 @@ def typed-to-ty(t: Typed) = match t with
   // HIGHER-ORDER (HO-2b): a function Typed → the shared Ty.TyFn (recursively convert params + result). This is
   // the real TyFn↔TFn bridge that replaces HO-1's TErr stopgap — a fn value survives the Typed→Ty crossing.
   | Typed.TFn(ps, r) => Ty.TyFn(typed-list-to-ty(ps, 0), typed-to-ty(r))
+  | Typed.TSum(nm) => Ty.TySum(nm)   // M2-b-2b-ii-c2: pipeline sum → shared Ty.TySum (decl name-id across)
 
 /// Convert a param-type list `Typed → Ty` element-wise (index recursion) for typed-to-ty's TyFn arm.
 def typed-list-to-ty(ps: List(Typed), i: Int64) =
