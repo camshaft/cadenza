@@ -46,6 +46,7 @@ pass	KADANE max-subarray threads a best-ending-here and a global best through on
 pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
 pass	LOOK-AND-SAY iterates run-length description over its own prior output
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
+pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
