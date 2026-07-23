@@ -291,6 +291,14 @@ fn s3_result_ok(t: &crate::ty::Ty) -> bool {
         // `s2_arg_ok` needs a closure-arg-shape hint to disambiguate first — a separate follow-up slice.)
         Ty::Record(fields) => fields.values().all(s3_result_ok),
         Ty::List(elem) => s3_result_ok(elem),
+        // A SET/MAP RESULT renders via `cdz_render_expr`'s Set/Map arm into the canonical `(set …)`/`(map (k
+        // v) …)` form (members/entries in the runtime's canonical order — the SAME text the wasm `call`
+        // value-encode produces). Renderable iff the element (Set) / key+value (Map) types are. A Set/Map-
+        // returning closure passes on SYNC already (a nullary one eta-peels to a plain `BTreeSet`/`BTreeMap`-
+        // returning fn the render handles); this arm lifts the async FACTORY form (which stays a factory,
+        // not peeled) — the render side was never the gap, only this `s3_result_ok` gate.
+        Ty::Set(e) => s3_result_ok(e),
+        Ty::Map(k, v) => s3_result_ok(k) && s3_result_ok(v),
         // A SUM RESULT (S4a + user-sum extension) — Option/Result (the well-known 2-variant sums) OR a USER
         // sum (`(type Dir (N) (S))`). The harness renders all of them via `cdz_render_at` into the corpus
         // value form: `(Some <p>)`/`(None unit)`/`(Ok <p>)`/`(Err <e>)` for the built-ins, `(<Variant> <p>)`/

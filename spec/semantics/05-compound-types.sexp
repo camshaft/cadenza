@@ -9320,6 +9320,43 @@
   (call   main (: 5 Int64)) (output (: -1 Int64))
   (call   main (: 99 Int64)) (output (: -1 Int64)))
 
+(case "MOVE-ZEROS stably shifts zeros to the tail, preserving non-zero order and total length"
+  (doc    "The asymmetric partition (the general partition below keeps BOTH sides as lists; here one
+           side collapses to a mere COUNT — zeros carry no order, so the split accumulates non-zeros
+           as a list and zeros as an integer, and `pad-zeros` re-materializes them at the tail). The
+           length invariant is load-bearing: len(out) = len(in) even though one side lost its
+           identity (a count off by one shortens or pads the tail — the len digit catches it where
+           the base-100 walk absorbs trailing zeros silently). Faces: (0 1 0 3 12) → 1,3,12,0,0 —
+           non-zero ORDER preserved across the removed zeros, len 5 (1031200005); ALL zeros → the
+           non-zero list is empty and the output is pure padding, digit walk 0, len 3 (3); NO zeros
+           → pad-zeros never runs, identity (102033). Encoding: base-100 walk ·10 + length.")
+  (input  (do
+            (def (split-z (: xs (List Int64)) (: nz (List Int64)) (: zc Int64))
+              (match xs
+                ((list) (tuple nz zc))
+                ((list h .. t)
+                  (if (= h 0)
+                      (split-z t nz (+ zc 1))
+                      (split-z t (List.push nz h) zc)))))
+            (def (pad-zeros (: xs (List Int64)) (: k Int64))
+              (if (= k 0) xs (pad-zeros (List.push xs 0) (- k 1))))
+            (def (movez (: xs (List Int64)))
+              (match (split-z xs (list) 0)
+                ((tuple nz zc) (pad-zeros nz zc))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 100) h)))))
+            (def (main (: mode Int64))
+              (do
+                (def xs (if (= mode 1) (list 0 1 0 3 12) (if (= mode 2) (list 0 0 0) (list 1 2 3))))
+                (def r (movez xs))
+                (+ (* (chk r 0) 10) ((. List len) r))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1031200005 Int64))
+  (call   main (: 2 Int64)) (output (: 3 Int64))
+  (call   main (: 3 Int64)) (output (: 102033 Int64)))
+
 (case "a PARTITION fold splits one spine into two lists by a runtime predicate"
   (doc    "The partition idiom: ONE walk over `(4 n 7 1 8 2)` grows TWO accumulator lists — `(< h 5)`
            routes each element to lows or highs — returned together as a `(Tuple (List Int64) (List
