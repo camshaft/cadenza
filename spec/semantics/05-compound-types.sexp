@@ -9490,6 +9490,61 @@
   (call   main (: 8 Int64)) (output (: 1869 Int64))
   (call   main (: 0 Int64)) (output (: 1069 Int64)))
 
+(case "a multi-use runtime list do-def escapes an if-select inside a match arm and stays live"
+  (doc    "The LIST member of the #20 escape-shape family (the rope original is pinned in 13-strings:
+           a multi-use heap do-def escaping an if-select was freed after its conditional borrow —
+           a wasm UAF). Lists reclaim through the RRB path, not the rope path, so the shape is
+           re-pinned per heap representation. Inside a match arm over s, `pick` selects between two
+           runtime lists by length; the winner is SUMMED after the escape and the loser's length is
+           re-read after its last select use — both handles must survive the join. mode 1: out has 6
+           elements (sum 21) vs s 2 ([7 8], sum 15), 6<2 false → pick=s → 15·100+6·10+7 = 1567.
+           mode 2: out [1] vs s [7 8 9], 1<3 true → pick=out → 1·100+1·10+7 = 117. mode 3: out
+           EMPTY vs s [7 8] → pick=out, sum 0 — an empty RRB spine through the escape → 7.")
+  (input  (do
+            (def (build (: lo Int64) (: n Int64) (: acc (List Int64)))
+              (if (= n 0) acc (build (+ lo 1) (- n 1) (List.push acc lo))))
+            (def (sum-list (: xs (List Int64)) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (sum-list t (+ acc h)))))
+            (def (main (: mode Int64))
+              (do
+                (def out (build 1 (if (= mode 1) 6 (if (= mode 2) 1 0)) (list)))
+                (def s (build 7 (if (= mode 1) 2 (if (= mode 2) 3 2)) (list)))
+                (match s
+                  ((list h .. _t)
+                    (do
+                      (def pick (if (< (List.len out) (List.len s)) out s))
+                      (+ (* (sum-list pick 0) 100) (+ (* (List.len out) 10) h))))
+                  ((list) -1))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 1567 Int64))
+  (call main (: 2 Int64)) (output (: 117 Int64))
+  (call main (: 3 Int64)) (output (: 7 Int64)))
+
+(case "a multi-use runtime Map do-def escapes an if-select and both CHAMP handles stay live"
+  (doc    "The MAP member of the #20 escape-shape family, completing the heap-collection triad
+           (rope pinned in 13-strings, list above): CHAMP nodes reclaim through their own path.
+           `pick` selects between two runtime-built maps by entry count; a LOOKUP goes through the
+           winner after the join and the loser's len is re-read after its last select use. mode 1:
+           m1 has 4 entries vs m2 2, 4<2 false → pick=m2, lookup 1 → 100 → 100·10+4 = 1004.
+           mode 2: m1 1 entry vs m2 3, 1<3 true → pick=m1, lookup 1 → 10 → 10·10+1 = 101. mode 3:
+           BOTH singleton — the length TIE, 1<1 false → pick=m2, lookup 1 → 100 → 1001.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: mul Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n mul (Map.insert acc i (* i mul)))))
+            (def (main (: mode Int64))
+              (do
+                (def m1 (build 1 (if (= mode 1) 4 1) 10 Map.empty))
+                (def m2 (build 1 (if (= mode 1) 2 (if (= mode 2) 3 1)) 100 Map.empty))
+                (def pick (if (< (Map.len m1) (Map.len m2)) m1 m2))
+                (def hit (match (Map.lookup pick 1) ((Some v) v) ((None _u) -1)))
+                (+ (* hit 10) (Map.len m1))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 1004 Int64))
+  (call main (: 2 Int64)) (output (: 101 Int64))
+  (call main (: 3 Int64)) (output (: 1001 Int64)))
+
 (case "a FLATTEN fold over a runtime list of lists joins across an empty inner spine"
   (doc    "The flatten idiom: fold `List.concat` over a `(List (List Int64))` whose inner lists have
            MIXED lengths — 2, 0, 2, 1 — with the runtime n heading the third sublist so the fold isn't
