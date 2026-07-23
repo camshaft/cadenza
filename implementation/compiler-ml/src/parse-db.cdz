@@ -63,6 +63,14 @@ type Node =
                                   // lit), then, else) — reuses existing Core, so eval/emit need NO new handling.
                                   // A general N-arm + sum-ctor-pattern match is a later slice; this pins the
                                   // reader→resolve→infer→lower NMatch pipeline on the simplest shape.
+  | NMatchCtor(Int64, Int64, Int64, Int64, Int64)  // M2-b-2b-ii-c PAYLOAD ctor-pattern arm: NMatchCtor(scrutId,
+                                  // ctorTag, binderId, bodyId, restId) for `(match scrut ((Ctor x) body) REST…)`.
+                                  // scrutId = the scrutinee node; ctorTag = the payload ctor's discriminant;
+                                  // binderId = the NVar node the payload binds to (`x`), bound in the body scope;
+                                  // bodyId = the matched-arm body; restId = the next arm (a chain, like NMatch).
+                                  // LOWERS to CMatchSum(scrut, tag, [binder], body, rest): eval reads the sum
+                                  // handle's store-tag; if == tag, binds payload[0] to binder + evals body, else
+                                  // rest. Single-payload-field first; multi-field is a follow-up.
 
 /// The arena: nodes keyed by NodeId, the next fresh id, a DEF-TABLE (`Map(nameId, bodyNodeId)`), AND a
 /// PARAM-TABLE (`Map(nameId, paramNodeId)`) — the module's `(def (name) body)` / `(def (name p) body)` forms,
@@ -169,6 +177,12 @@ def subtree-calls-name(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
                | (false, f2) => (match subtree-calls-name(tree, th, target, f2) with
                    | (true, f3) => (true, f3)
                    | (false, f3) => subtree-calls-name(tree, el, target, f3))))
+     | Option.Some(Node.NMatchCtor(sc, _tg, _bn, bd, rst)) =>   // M2-b-2b-ii-c: scan scrut/body/rest (tag+binder = no call)
+         (match subtree-calls-name(tree, sc, target, fuel - 1) with
+           | (true, fl) => (true, fl)
+           | (false, fl) => (match subtree-calls-name(tree, bd, target, fl) with
+               | (true, f2) => (true, f2)
+               | (false, f2) => subtree-calls-name(tree, rst, target, f2)))
      | _ => (false, fuel - 1)))   // NLit/NBoolLit/NVar/NAnnLit — no call
 
 /// Helper: an NApp arg is -1 (nullary, no arg) or a node-id to scan.
@@ -239,6 +253,12 @@ def subtree-calls-self(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
                | (false, f2) => (match subtree-calls-self(tree, th, target, f2) with
                    | (true, f3) => (true, f3)
                    | (false, f3) => subtree-calls-self(tree, el, target, f3))))
+     | Option.Some(Node.NMatchCtor(sc, _tg, _bn, bd, rst)) =>   // M2-b-2b-ii-c: scan scrut/body/rest for a self-call
+         (match subtree-calls-self(tree, sc, target, fuel - 1) with
+           | (true, fl) => (true, fl)
+           | (false, fl) => (match subtree-calls-self(tree, bd, target, fl) with
+               | (true, f2) => (true, f2)
+               | (false, f2) => subtree-calls-self(tree, rst, target, f2)))
      | _ => (false, fuel - 1)))
 
 /// Helper: an NApp arg is -1 (nullary) or a node-id to scan for a DIRECT self-call.

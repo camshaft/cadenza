@@ -306,8 +306,8 @@
                         (rest-eq short long i slen)))))
             (def (one-apart (: a String) (: b String))
               (do
-                (def la (String.byte-len a))
-                (def lb (String.byte-len b))
+                (def la (String.scalar-len a))
+                (def lb (String.scalar-len b))
                 (if (= la lb)
                     (if (= (count-diffs a b 0 la 0) 1) 1 0)
                     (if (= (+ la 1) lb)
@@ -356,8 +356,8 @@
                       (find hay nee (+ off 1) lh ln))))
             (def (is-rot (: a String) (: b String))
               (do
-                (def la (String.byte-len a))
-                (def lb (String.byte-len b))
+                (def la (String.scalar-len a))
+                (def lb (String.scalar-len b))
                 (if (= la lb)
                     (if (= la 0)
                         1
@@ -414,8 +414,8 @@
                     (rows a b (+ i 1) la lb (row-go b 1 lb ca prev (list i))))))
             (def (lev (: a String) (: b String))
               (do
-                (def la (String.byte-len a))
-                (def lb (String.byte-len b))
+                (def la (String.scalar-len a))
+                (def lb (String.scalar-len b))
                 (def final (rows a b 1 la lb (seed 0 lb (list))))
                 (at0 final lb)))
             (def (main (: mode Int64))

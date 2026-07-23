@@ -168,6 +168,18 @@ meaning of "a well-typed program does not go wrong."
   Capabilities It Realizes").
 - **Determinism is part of the check.** A case's output is byte-exact; a construct whose output could
   vary is either given a deterministic specification or is not admitted.
+- **Bound a scalar-indexed String walk by `String.scalar-len`, never `String.byte-len`.** `String.at`
+  and `String.slice` are SCALAR-indexed (per the prelude); a loop/recursion that walks a `String` with
+  `String.at s i` / `String.slice s a b` must seed its bound from `String.scalar-len s`, not
+  `String.byte-len s`. For a multibyte scalar `byte-len > scalar-len`, so a byte-len bound drives the
+  index PAST the last scalar into `String.at`'s `(None …)` arm — dropping the final element, returning a
+  sentinel, or (under `Option.expect`) HARD-TRAPPING — even though the case passes on ASCII inputs where
+  the two lengths coincide. `String.byte-len` is correct ONLY for a `Bytes.at`/`Bytes.slice` byte-indexed
+  walk (Bytes is byte-addressed) or as a plain output measurement never re-consumed as a `String.at`
+  index. A multibyte input (e.g. one containing `é`) makes the distinction observable; prefer one when a
+  case's framing is a "scalar walk". (This class has recurred repeatedly — paren-scan/split, parse-int,
+  LCP, run-length, word-count, roman/hex decoders, one-edit/rotation/Levenshtein — each latent behind
+  ASCII inputs; see the byte-len→scalar-len fixes in `13-strings.sexp`/`10-bytes.sexp`.)
 
 ## Which cases a generation runs
 

@@ -110,6 +110,18 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
           (let m3 = infer-node(tree, thenId, rcol, m2) in
            (let m4 = infer-node(tree, elseId, rcol, m3) in
             (match match-type(m4, scrutId, litId, thenId, elseId) with | ty => Map.insert(m4, id, ty))))))
+    | Option.Some(Node.NMatchCtor(scrutId, _ctorTag, binderId, bodyId, restId)) =>
+        // M2-b-2b-ii-c payload ctor-pattern arm: infer the scrutinee (a sum handle — Int64 placeholder from
+        // ii-b), SEED the binder `x`'s type as Int64 (a single-field payload is one Int64 in this slice; full
+        // TySum-derived payload types are ii-c2), infer the body under it + the rest, then the match's type is
+        // the body's type (arms join — full join-check is ii-c2). Any TErr propagates.
+        (let m1 = infer-node(tree, scrutId, rcol, tcol) in
+         (let mb = Map.insert(m1, binderId, t-int64()) in           // the payload binder is Int64 (placeholder)
+          (let m2 = infer-node(tree, bodyId, rcol, mb) in
+           (let m3 = infer-node(tree, restId, rcol, m2) in
+            (match Map.lookup(m3, bodyId) with
+              | Option.Some(bt) => Map.insert(m3, id, bt)
+              | Option.None(_) => Map.insert(m3, id, Typed.TErr))))))
     | Option.Some(Node.NApp(calleeId, argId)) =>
         // slice-2 NULLARY call semantics: a nullary call `(mk)` is NApp(calleeBodyId, -1) — its type is the
         // callee BODY's type (β-reduction over zero args: the result IS the body). Infer the callee body, then

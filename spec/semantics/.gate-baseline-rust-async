@@ -72,6 +72,7 @@ pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without divisi
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
 pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
 pass	STRING ROTATION check searches the needle inside the doubled haystack at equal length
+pass	SUBSET-SUM COUNT folds each element into a fresh ways-table so no element is reused
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow
 pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
