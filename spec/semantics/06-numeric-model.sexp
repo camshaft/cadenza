@@ -1645,6 +1645,34 @@
   (call   main (: 12 Int64) (: 48 Int64)) (output (: 1211 Int64))
   (call   main (: 7 Int64) (: 7 Int64)) (output (: 711 Int64)))
 
+(case "LCM derives from gcd via overflow-safe divide-first and satisfies the product identity"
+  (doc    "The gcd's dual, with the OPERATION ORDER as the pin: `lcm = (a / gcd) · b` divides FIRST —
+           `a / gcd(a,b)` is always exact, and the product stays within one factor of the answer —
+           where the naive `(a·b) / gcd` overflows for large coprime operands long before the lcm
+           itself does. Two certificates per call: divisibility (`lcm mod a = 0`) and the PRODUCT
+           IDENTITY `lcm · gcd = a · b` (the defining relation, computed with the same gcd but
+           checked multiplicatively — a wrong lcm breaks it except on contrived pairs). Faces:
+           4,6 → 12 (the shared-factor classic — 1211); COPRIME 7,13 → 91 = the full product
+           (9111); EQUAL 12,12 → 12 (lcm = gcd = both — 1211); 1,9 → 9 (the identity operand —
+           911). Encoding: lcm·100 + divisibility·10 + product-identity.")
+  (input  (do
+            (def (gcd (: a Int64) (: b Int64))
+              (if (= b 0) a (gcd b (% a b))))
+            (def (lcm (: a Int64) (: b Int64))
+              (* (/ a (gcd a b)) b))
+            (def (main (: a Int64) (: b Int64))
+              (do
+                (def l (lcm a b))
+                (def g (gcd a b))
+                (+ (* l 100)
+                   (+ (* (if (= (% l a) 0) 1 0) 10)
+                      (if (= (* l g) (* a b)) 1 0)))))
+            (export main)))
+  (call   main (: 4 Int64) (: 6 Int64)) (output (: 1211 Int64))
+  (call   main (: 7 Int64) (: 13 Int64)) (output (: 9111 Int64))
+  (call   main (: 12 Int64) (: 12 Int64)) (output (: 1211 Int64))
+  (call   main (: 1 Int64) (: 9 Int64)) (output (: 911 Int64)))
+
 (case "a user-written FRACTION ADD over tuples reduces by gcd and agrees with the built-in Rational"
   (doc    "The gcd above certified in isolation; here it DRIVES the cross-multiply fraction add over
            plain `(Tuple Int64 Int64)` pairs — `a/b + c/d = (ad+cb)/bd` reduced to lowest terms — and
