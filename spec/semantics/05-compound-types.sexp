@@ -9497,6 +9497,37 @@
   (call   main (: 9 Int64)) (output (: 999 Int64))
   (call   main (: 0 Int64)) (output (: 355 Int64)))
 
+(case "LOCAL PEAKS counts strict interior maxima through a three-element sliding window"
+  (doc    "The sliding-window max above RE-READS by index; this SLIDES the window through the
+           recursion's parameters — (prev, cur) travel as arguments and only the tail is matched, so
+           each element occupies all three window roles (nxt, then cur, then prev) across successive
+           frames without any index arithmetic. A peak = strictly greater than BOTH neighbors (the
+           nested-if conjunction short-circuits the right compare when the left fails); ENDPOINTS
+           can never be peaks (the first element enters as prev, the last only as nxt — a window
+           that wraps or pads counts them wrongly). The runtime n sits interior: n=9 → peaks 5, 9, 8
+           (count 3, sum 22 → 322); n=0 → the n-slot valley KILLS the middle peak — peaks 5, 8
+           (213); n=5 → 5, 5, 8 — the n=5 peak EQUALS its left neighbor's peak value but both are
+           strict against their OWN neighbors (318). Encoding: count·100 + peak-value sum.")
+  (input  (do
+            (def (go (: prev Int64) (: cur Int64) (: rest (List Int64)) (: cnt Int64) (: sum Int64))
+              (match rest
+                ((list) (tuple cnt sum))
+                ((list nxt .. t)
+                  (if (if (> cur prev) (> cur nxt) false)
+                      (go cur nxt t (+ cnt 1) (+ sum cur))
+                      (go cur nxt t cnt sum)))))
+            (def (peaks (: xs (List Int64)))
+              (match xs
+                ((list a b .. t) (go a b t 0 0))
+                (_ (tuple 0 0))))
+            (def (main (: n Int64))
+              (match (peaks (list 1 5 2 n 3 8 4))
+                ((tuple c s) (+ (* c 100) s))))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 322 Int64))
+  (call   main (: 0 Int64)) (output (: 213 Int64))
+  (call   main (: 5 Int64)) (output (: 318 Int64)))
+
 (case "KADANE max-subarray threads a best-ending-here and a global best through one fold"
   (doc    "TWO COUPLED accumulators through one fold, coupled ASYMMETRICALLY: `cur = max(h, cur+h)`
            (extend the run or RESTART at h — the reset that makes it Kadane and not a prefix sum)

@@ -2465,15 +2465,11 @@ fn watchdog(
                                 "DRAIN-STALL: '{}' has {actionable_depth} unconsumed actionable msg(s) — not draining",
                                 a.name
                             ),
-                            body: format!(
-                                "'{}' is IDLE at prompt with {actionable_depth} unconsumed ACTIONABLE hub message(s); \
-                                 the oldest ('{flagged}') has persisted past a full loop cycle, so the agent's own \
-                                 step-2 inbox-drain ran and skipped it — a probable DRAIN-STALL (loop alive, heartbeat \
-                                 fresh, but not draining; e.g. a worktree-relative inbox glob shadowing the hub). \
-                                 Kick its loop (Esc+continue) or have it re-drain via the resolver \
-                                 `cargo xtask fleet inbox {}`. Auto-surfaced so it doesn't sit unseen in watchdog \
-                                 stderr; rate-limited to one note per message per ~30min until it clears.",
-                                a.name, a.name
+                            body: drain_stall_note_body(
+                                &a.name,
+                                actionable_depth,
+                                flagged,
+                                ctx_pct,
                             ),
                             seq: next_seq(),
                             r#ref: String::new(),
@@ -3505,6 +3501,43 @@ fn coldstart_verdict(firstseen_age: Option<u64>, coldstart_window: u64) -> ColdS
         Some(seen) if seen <= coldstart_window => ColdStartVerdict::StillWaiting,
         Some(seen) => ColdStartVerdict::Failed(seen),
     }
+}
+
+/// Build the concierge escalation-note body for a persistent drain-stall. Pure (all inputs passed in)
+/// so the wording — which the concierge ACTS on — is unit-tested. Two design points beyond the raw
+/// facts: (1) the cause hypothesis leads with a NON-TICKING/wedged loop, not the worktree-relative
+/// inbox glob — that glob class was closed fleet-wide by the loop-template resolver hardening (batch
+/// #79), so for an agent on a current template a wedged loop is now the likelier cause; the glob is
+/// named only as the secondary "if on an old template" case. (2) the pane context %, when known, is
+/// included with a nudge-vs-restart steer: a high (but sub-saturation, else it wouldn't escalate) pct
+/// means "compact/restart likely needed soon", a low pct means "a plain Esc+continue kick should do".
+fn drain_stall_note_body(
+    name: &str,
+    actionable_depth: usize,
+    flagged: &str,
+    ctx_pct: Option<u8>,
+) -> String {
+    let ctx_hint = match ctx_pct {
+        Some(p) if p >= 70 => format!(
+            " Its pane reads {p}% context — high (though not yet saturated), so it may be close to \
+             needing a `/compact` or restart rather than just a kick."
+        ),
+        Some(p) => format!(
+            " Its pane reads {p}% context — low, so a plain Esc+continue kick should suffice (not a \
+             saturation wedge)."
+        ),
+        None => String::new(),
+    };
+    format!(
+        "'{name}' is IDLE at prompt with {actionable_depth} unconsumed ACTIONABLE hub message(s); the \
+         oldest ('{flagged}') has persisted past a full loop cycle, so the agent's own step-2 \
+         inbox-drain ran and skipped it — a probable DRAIN-STALL (loop alive, heartbeat fresh, but not \
+         draining). Most likely its loop isn't ticking (wedged/not resuming); less likely, it's on an \
+         OLD loop template whose inbox glob is worktree-relative and shadows the hub (that class was \
+         hardened fleet-wide, so it should be rare now).{ctx_hint} Kick its loop (Esc+continue) or have \
+         it re-drain via the resolver `cargo xtask fleet inbox {name}`. Auto-surfaced so it doesn't sit \
+         unseen in watchdog stderr; rate-limited to one note per message per ~30min until it clears."
+    )
 }
 
 /// What the watchdog should do about a probable drain-stall this sweep. Distinguishes a first/fresh
@@ -8706,6 +8739,52 @@ mod tests {
         assert!(
             drain_stall_confirmed(true, queue_is_draining(Some(12), 12)),
             "suspected + idle-recheck + flat queue → still a confirmed stall"
+        );
+    }
+
+    #[test]
+    fn drain_stall_note_body_leads_with_wedged_loop_and_steers_by_context_pct() {
+        // High (sub-saturation) context → restart/compact steer; the wedged-loop cause leads; the
+        // worktree-glob cause is named only as the secondary/rare case.
+        let hi = drain_stall_note_body(
+            "v-compiler-ml",
+            3,
+            "000000015993-159125-issue.json",
+            Some(78),
+        );
+        assert!(hi.contains("v-compiler-ml") && hi.contains("3 unconsumed"));
+        assert!(
+            hi.contains("000000015993-159125-issue.json"),
+            "names the flagged msg"
+        );
+        assert!(
+            hi.contains("loop isn't ticking"),
+            "leads with the wedged-loop cause"
+        );
+        assert!(
+            hi.find("loop isn't ticking").unwrap() < hi.find("worktree-relative").unwrap(),
+            "wedged-loop cause precedes the glob cause"
+        );
+        assert!(
+            hi.contains("78% context") && hi.contains("/compact"),
+            "high-ctx → restart steer"
+        );
+        // Low context → plain-kick steer, no restart language.
+        let lo = drain_stall_note_body("v-runtime", 1, "m.json", Some(20));
+        assert!(lo.contains("20% context") && lo.contains("Esc+continue"));
+        assert!(
+            !lo.contains("/compact"),
+            "low-ctx must NOT suggest a compact/restart"
+        );
+        // Unknown context → no context sentence at all (don't fabricate a reading).
+        let none = drain_stall_note_body("v-syntax", 2, "m.json", None);
+        assert!(
+            !none.contains("% context"),
+            "no ctx reading → omit the ctx hint entirely"
+        );
+        assert!(
+            none.contains("cargo xtask fleet inbox v-syntax"),
+            "always gives the resolver drain"
         );
     }
 
