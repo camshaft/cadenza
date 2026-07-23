@@ -9378,6 +9378,53 @@
   (call   main (: 0 Int64)) (output (: 1302400001 Int64))
   (call   main (: 9 Int64)) (output (: 1309241 Int64)))
 
+(case "a ROTATE-BY-K splits at the wrapped offset and swaps the halves, identity at multiples of len"
+  (doc    "The positional split-and-swap (the span pin above splits by PREDICATE; this splits by
+           COUNT): `take-n`/`drop-n` cut at the wrapped offset `k mod len` and the halves swap via
+           concat. The wrap is pinned directly — k=7 over a 5-element list must equal k=2 — and BOTH
+           identity boundaries are faces: k=0 and k=len each make `drop-n` take everything and
+           `take-n` nothing, exercising the empty-side concat. The output also carries an INVERSE
+           round-trip bit: rotating the result by `len − (k mod len)` must restore the original by
+           deep `=`, closing the rotation algebra (an off-by-one split point survives the digit walk
+           at some k but breaks the inverse at all k). Faces oracle-verified: k=2 → 34512, k=0 →
+           12345, k=7 → 34512 (≡ k=2), k=5 → 12345 (≡ k=0). Encoding: digit walk ·10 + inverse bit.")
+  (input  (do
+            (def (take-n (: xs (List Int64)) (: k Int64) (: acc (List Int64)))
+              (if (= k 0)
+                  acc
+                  (match xs
+                    ((list) acc)
+                    ((list h .. t) (take-n t (- k 1) (List.push acc h))))))
+            (def (drop-n (: xs (List Int64)) (: k Int64))
+              (if (= k 0)
+                  xs
+                  (match xs
+                    ((list) xs)
+                    ((list _h .. t) (drop-n t (- k 1))))))
+            (def (rot (: xs (List Int64)) (: k Int64))
+              (do
+                (def len ((. List len) xs))
+                (if (= len 0)
+                    xs
+                    (do
+                      (def kk (% k len))
+                      (List.concat (drop-n xs kk) (take-n xs kk (list)))))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 10) h)))))
+            (def (main (: k Int64))
+              (do
+                (def xs (list 1 2 3 4 5))
+                (def r (rot xs k))
+                (+ (* (chk r 0) 10)
+                   (if (= (rot r (- ((. List len) xs) (% k ((. List len) xs)))) xs) 1 0))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 345121 Int64))
+  (call   main (: 0 Int64)) (output (: 123451 Int64))
+  (call   main (: 7 Int64)) (output (: 345121 Int64))
+  (call   main (: 5 Int64)) (output (: 123451 Int64)))
+
 (case "a STABLE DEDUP keeps first occurrences in input order via a seen-Set threaded through the fold"
   (doc    "The stable-dedup idiom couples a GROWING CHAMP set to a growing list in one fold: each new
            element is both membership-tested against `seen` and inserted into it, so the set the NEXT

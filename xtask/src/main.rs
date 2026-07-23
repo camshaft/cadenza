@@ -1640,6 +1640,15 @@ fn run_program_rust(
     // gas `Env` + a minimal `block_on` executor and drives `prog::export(&mut env, args)` — the answer
     // must MATCH the sync/wasm oracle (gas metering is invisible to the result), so it grades identically.
     let call_or_await = if async_mode {
+        // A CLOSURE-PARAMETER CONSUMER call is already a fully-driven block in async mode — `build_closure_
+        // consumer_call` returns `{ let __g0 = block_on(prog::mk(&mut env, …)); block_on(prog::app(&mut env,
+        // __g0, …)) }` (it must `let`-bind each closure so the producer + consumer `&mut env` borrows don't
+        // overlap, E0499). It is already `prog::`-qualified + `block_on`-wrapped, so pass it VERBATIM — the
+        // arg-threading rewrites below would double-wrap it. Discriminated by the leading `{` (no other call
+        // shape starts with a block).
+        if call_expr.starts_with('{') {
+            call_expr.clone()
+        } else
         // Rewrite the call to thread the gas/yield `env` as the export's FIRST arg and drive its future to
         // completion. Three call shapes:
         //  - non-factory nullary `export()`         → `block_on(prog::export(&mut env))`
@@ -2254,6 +2263,12 @@ fn build_closure_consumer_call(
     let mut used_producer = vec![false; producers.len()];
     let mut arg_i = 0usize;
     let mut call_args: Vec<String> = Vec::with_capacity(source_params.len());
+    // In ASYNC mode a closure argument built from a FACTORY producer must be driven through `block_on` (the
+    // producer is an `async fn`), and threading `&mut env` into BOTH the producer call AND the consumer call
+    // in one expression would be two simultaneous `&mut env` borrows (E0499). So bind each async-built
+    // closure to a `let __gN` FIRST (sequential borrows), then call the consumer with the bound names. The
+    // collected `let` statements are returned as a prelude the caller splices before the consumer call.
+    let mut async_lets: Vec<String> = Vec::new();
     let ty_matches = |prod: &Producer, cty: &str| match prod {
         Producer::Factory { closure_ty, .. } | Producer::Peeled { closure_ty, .. } => {
             closure_ty.contains(cty) || cty.contains(closure_ty.as_str())
@@ -2279,7 +2294,20 @@ fn build_closure_consumer_call(
                     }
                     let caps = &args[arg_i..arg_i + cap];
                     arg_i += cap;
-                    call_args.push(format!("prog::{ident}({})", caps.join(", ")));
+                    if async_mode {
+                        // `block_on(prog::mk(&mut env, caps))` yields the (sync) `Rc<dyn Fn>` closure; bind it
+                        // to a fresh `__gN` so the consumer call's `&mut env` borrow doesn't overlap it.
+                        let g = format!("__g{}", async_lets.len());
+                        let envcaps = if caps.is_empty() {
+                            "&mut env".to_string()
+                        } else {
+                            format!("&mut env, {}", caps.join(", "))
+                        };
+                        async_lets.push(format!("let {g} = block_on(prog::{ident}({envcaps}));"));
+                        call_args.push(g);
+                    } else {
+                        call_args.push(format!("prog::{ident}({})", caps.join(", ")));
+                    }
                 }
                 Producer::Peeled {
                     ident,
@@ -2287,7 +2315,13 @@ fn build_closure_consumer_call(
                     closure_ty,
                 } => {
                     // No cap args — wrap the peeled fn as the closure value (coerce fn-item → fn-ptr →
-                    // the `dyn Fn` trait object).
+                    // the `dyn Fn` trait object). In ASYNC mode the peeled producer is an `async fn` (its
+                    // signature is `fn(&mut E, …) -> impl Future`, NOT the sync `fn(…) -> ret`), so this
+                    // fn-ptr coercion does not type — DECLINE the async peeled-producer consumer for now (a
+                    // follow-up sub-slice; the async FACTORY-producer consumer is the bulk and lands here).
+                    if async_mode {
+                        return None;
+                    }
                     call_args.push(format!(
                         "(std::rc::Rc::new(prog::{ident} as {fn_ty}) as {closure_ty})"
                     ));
@@ -2302,10 +2336,21 @@ fn build_closure_consumer_call(
             arg_i += 1;
         }
     }
-    // The consumer is called with the synthesized closure(s) + scalar args in param order. `prog::` is added
-    // by the caller's `call_or_await`/render (it prepends `prog::` to `call_expr`), so return the bare
-    // `<name>(<args>)` form the factory branch also returns.
-    Some(format!("{name}({})", call_args.join(", ")))
+    // The consumer is called with the synthesized closure(s) + scalar args in param order.
+    // SYNC: `prog::` is prepended by the caller's `call_or_await`/render, so return the bare `<name>(<args>)`.
+    // ASYNC: the caller's async branch does NOT know how to thread `env`/`block_on` into a synthesized
+    // consumer call (its shapes are nullary/args/factory), so this returns the FULLY-DRIVEN block itself — a
+    // `{ let __g0 = …; block_on(prog::<name>(&mut env, <args>)) }` expression — and the caller uses it
+    // verbatim (it is already `prog::`-qualified + `block_on`-wrapped, so `call_or_await` must NOT re-wrap it).
+    if async_mode {
+        let lets = async_lets.join(" ");
+        Some(format!(
+            "{{ {lets} block_on(prog::{name}(&mut env, {})) }}",
+            call_args.join(", ")
+        ))
+    } else {
+        Some(format!("{name}({})", call_args.join(", ")))
+    }
 }
 
 fn rust_factory_param_count(module: &str, name: &str, async_mode: bool) -> Option<usize> {

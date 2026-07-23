@@ -1,0 +1,82 @@
+/// sread-eval-sum.cdz — M2-a USER SUM TYPES (nullary-constructor slice) end-to-end run pins. A user sum type
+/// `(type Name (C0) (C1) …)` whose constructors are all NULLARY desugars in the READER to one nullary def per
+/// constructor, `Ck → NLit(k)` (its ordinal TAG). So a constructor use `(Ck)` runs through the existing
+/// nullary-call pipeline (NApp(name,-1) → inline NLit → eval) to its tag, with ZERO new pipeline machinery —
+/// mirroring M1-b's reader-only desugar. This is the FIRST sum-type slice; ctor-PATTERNS in match, the TySum
+/// type, and PAYLOAD-carrying constructors are later coordinated slices (v-inference / v-runtime).
+///
+/// A small SIBLING (not folded into sread-eval-fns.cdz) to stay under the per-file gate budget.
+import { run-src } from "sread-eval"
+
+@test
+def ss-first-ctor-is-tag-zero() =
+  // the FIRST constructor of a sum type is tag 0. (type Color (Red)(Green)(Blue)) → (Red) = 0.
+  match run-src("(do (type Color (Red) (Green) (Blue)) (def (main) (Red)) (export main))") with
+    | Option.Some(v) => (if v == 0 then unit else trap("(Red) is the 0th ctor → tag 0"))
+    | Option.None(_) => trap("a nullary constructor use runs (first ctor)")
+
+@test
+def ss-second-ctor-is-tag-one() =
+  // the SECOND constructor is tag 1. (Green) = 1.
+  match run-src("(do (type Color (Red) (Green) (Blue)) (def (main) (Green)) (export main))") with
+    | Option.Some(v) => (if v == 1 then unit else trap("(Green) is the 1st ctor → tag 1"))
+    | Option.None(_) => trap("a nullary constructor use runs (second ctor)")
+
+@test
+def ss-third-ctor-is-tag-two() =
+  // the THIRD constructor is tag 2. (Blue) = 2.
+  match run-src("(do (type Color (Red) (Green) (Blue)) (def (main) (Blue)) (export main))") with
+    | Option.Some(v) => (if v == 2 then unit else trap("(Blue) is the 2nd ctor → tag 2"))
+    | Option.None(_) => trap("a nullary constructor use runs (third ctor)")
+
+@test
+def ss-ctor-tag-compared-in-match() =
+  // a constructor tag flows into a MATCH scrutinee (M1-a integer match over the tag). match (Green) (0 100)(1 200)(_ 300)
+  // → the tag of (Green) is 1 → the 1-arm → 200. Proves ctor-tags compose with the existing match pipeline.
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Green) (0 100) (1 200) (_ 300))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 200 then unit else trap("match on (Green)'s tag 1 → 200"))
+    | Option.None(_) => trap("a ctor tag as a match scrutinee runs")
+
+@test
+def ss-ctor-tag-in-arith() =
+  // a ctor tag is an ordinary integer value: (+ (Blue) (Green)) = 2 + 1 = 3. Pins that a ctor use composes as
+  // an operand (it lowers to the same CNum a literal does).
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (def (main) (+ (Blue) (Green))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 3 then unit else trap("(Blue)+(Green) = 2+1 = 3"))
+    | Option.None(_) => trap("a ctor tag in arith runs")
+
+@test
+def ss-ctor-used-in-helper-def() =
+  // a constructor use inside a HELPER def body, called from main. (def (pick) (Green)) ; (pick) → 1.
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (def (pick) (Green)) (def (main) (pick)) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 1 then unit else trap("(pick) returns (Green) → tag 1"))
+    | Option.None(_) => trap("a ctor use in a helper def runs")
+
+@test
+def ss-two-sum-types-independent-tagging() =
+  // TWO sum types in one module tag INDEPENDENTLY (each ctor list restarts at 0). Bit's (Off)(On) → On = 1;
+  // used alongside Color. (def (main) (On)) with both types declared → 1 (On is Bit's 1st ctor, not affected
+  // by Color's 3 ctors). Pins that ordinals are per-type (each read-do-type call starts tag at 0).
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (type Bit (Off) (On)) (def (main) (On)) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 1 then
+      unit
+    else
+      trap("(On) is Bit's 1st ctor → tag 1 (independent of Color)"))
+    | Option.None(_) => trap("two sum types tag independently")
+
+@test
+def ss-payload-ctor-declines() =
+  // a PAYLOAD-carrying constructor `(Some Int64)` is OUT of this slice → the program DECLINES (surfaced, not
+  // mis-parsed as something else). This pins the slice boundary: nullary ctors run, payload ctors decline
+  // cleanly (a later slice adds payloads). `(type Opt (Some Int64) (None))` has a payload ctor → None.
+  match run-src("(do (type Opt (Some Int64) (None)) (def (main) (None)) (export main))") with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("a payload-carrying constructor is out of this slice → must decline")
