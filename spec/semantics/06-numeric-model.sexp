@@ -1779,6 +1779,39 @@
   (call   main (: 1000 Int64)) (output (: 40101 Int64))
   (call   main (: 999999 Int64)) (output (: 65401 Int64)))
 
+(case "a BASE-N conversion round-trips one value through three runtime radices"
+  (doc    "The digits pin above fixes base 10; here the RADIX is the runtime parameter — the same
+           value 100 decomposes through THREE different bases in one compiled artifact, so the
+           `/ b` / `% b` pair must run on the live parameter (a specialization assuming 10 anywhere
+           produces the wrong digit list for every other base). `tobase` recurses head-first
+           (List.push appends the low digit AFTER the recursive high digits — the non-accumulator
+           shape, unlike the base-10 pin's prepend-under-division), `fromb` rebuilds with the SAME
+           runtime base closing the round-trip. b=2 → seven digits 1100100 (the LONG expansion,
+           digit list length driven by the radix); b=7 → 202 (an interior zero in an odd base);
+           b=16 → 64 (the shortest). Encoding: base-100 digit walk ·10 + round-trip bit.")
+  (input  (do
+            (def (tobase (: n Int64) (: b Int64))
+              (if (< n b)
+                  (list n)
+                  (List.push (tobase (/ n b) b) (% n b))))
+            (def (fromb (: ds (List Int64)) (: b Int64) (: acc Int64))
+              (match ds
+                ((list) acc)
+                ((list h .. t) (fromb t b (+ (* acc b) h)))))
+            (def (chk (: rs (List Int64)) (: acc Int64))
+              (match rs
+                ((list) acc)
+                ((list h .. t) (chk t (+ (* acc 100) h)))))
+            (def (main (: b Int64))
+              (do
+                (def ds (tobase 100 b))
+                (+ (* (chk ds 0) 10)
+                   (if (= (fromb ds b 0) 100) 1 0))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 10100000100001 Int64))
+  (call   main (: 7 Int64)) (output (: 200021 Int64))
+  (call   main (: 16 Int64)) (output (: 6041 Int64)))
+
 (case "TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor"
   (doc    "The primality walk, returning the WITNESS not a boolean: 0 = prime, d = the smallest factor
            found, -1 = below the domain — so a wrong answer identifies WHICH step failed. Odd

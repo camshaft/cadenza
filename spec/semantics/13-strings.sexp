@@ -358,6 +358,46 @@
   (call   main (: 1 Int64)) (output (: 3001 Int64))
   (call   main (: 0 Int64)) (output (: 2001 Int64)))
 
+(case "a ROMAN NUMERAL renderer walks a value-symbol table greedily with subtractive pairs"
+  (doc    "The table-driven greedy renderer: a (value, symbol) assoc list — INCLUDING the subtractive
+           pairs 900/CM, 400/CD, 90/XC, 40/XL, 9/IX, 4/IV interleaved in strictly descending value
+           order — is walked once, and `emit` REPEATS each symbol while the remainder covers its
+           value (an inner loop threading (remainder, acc) as a tuple through the outer table walk;
+           two nested loop levels over different structures — the table spine and the numeric
+           remainder). Skipping a subtractive entry renders the LONG form (VIIII for IX); reordering
+           two entries misfires the greed. Faces: 1994 → MCMXCIV (three subtractives in one render,
+           7 scalars → 71); 9 → IX (a PURE subtractive, the single-entry render → 21); 40 → XL (21);
+           3888 → MMMDCCCLXXXVIII — the LONGEST standard numeral (every additive run at its 3-repeat
+           maximum, 15 scalars, no subtractive fires → 151). Verified by byte-length + full-string
+           equality.")
+  (input  (do
+            (def (emit (: n Int64) (: v Int64) (: s String) (: acc String))
+              (if (< n v)
+                  (tuple n acc)
+                  (emit (- n v) v s (String.concat acc s))))
+            (def (walk (: n Int64) (: vs (List (Tuple Int64 String))) (: acc String))
+              (match vs
+                ((list) acc)
+                ((list (tuple v s) .. t)
+                  (match (emit n v s acc)
+                    ((tuple n2 acc2) (walk n2 t acc2))))))
+            (def (roman (: n Int64))
+              (walk n
+                (list (tuple 1000 "M") (tuple 900 "CM") (tuple 500 "D") (tuple 400 "CD")
+                      (tuple 100 "C") (tuple 90 "XC") (tuple 50 "L") (tuple 40 "XL")
+                      (tuple 10 "X") (tuple 9 "IX") (tuple 5 "V") (tuple 4 "IV") (tuple 1 "I"))
+                ""))
+            (def (main (: n Int64))
+              (do
+                (def s (roman n))
+                (+ (* (String.byte-len s) 10)
+                   (if (= s (if (= n 1994) "MCMXCIV" (if (= n 9) "IX" (if (= n 40) "XL" "MMMDCCCLXXXVIII")))) 1 0))))
+            (export main)))
+  (call   main (: 1994 Int64)) (output (: 71 Int64))
+  (call   main (: 9 Int64)) (output (: 21 Int64))
+  (call   main (: 40 Int64)) (output (: 21 Int64))
+  (call   main (: 3888 Int64)) (output (: 151 Int64)))
+
 (case "a deep rope indexes by scalar at both extremes"
   (doc    "Scalar addressing through ~500 concat seams: `String.at` reads index 0 (the single \"A\" head
            leaf) and index n·2 (the LAST scalar, deep in the right spine) of a 1001-scalar rope — 10·1+1

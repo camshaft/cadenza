@@ -1695,6 +1695,7 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
     let mut orphans: Vec<(String, String)> = Vec::new(); // (filename, sender)
     let mut unverifiable = 0usize;
     let mut verified = 0usize;
+    let mut landed_no_reply = 0usize;
     let mut total = 0usize;
     let Ok(rd) = std::fs::read_dir(&processed) else {
         println!("fleet audit: no pr-sync processed/ dir yet — nothing to audit.");
@@ -1730,7 +1731,26 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
             // permanent false orphans here, enough to drown a REAL recent drop. A recent drop carries a
             // high monotonic delivery-seq, so excluding the `…0001` sentinel can't hide one.
             if active.contains(&mr.from) && !is_pre_durable_seq_filename(&fname) {
-                orphans.push((fname.clone(), mr.from.clone()));
+                // Before crying "silent drop", check GROUND TRUTH: is the MR's `--ref` already on
+                // trunk by patch-id? If so, the work LANDED — the sender is not stuck, only the
+                // reply-correlation was lost (a resend-chain sibling got the `ack`, or pr-sync merged
+                // the content under a re-parented sha and acked a different file). Flagging a
+                // provably-landed MR as a stuck-sender orphan is a false positive that re-fires EVERY
+                // audit forever (v-diagnostics 15736/15737 `268d6f648`, 15851 `23dca34fd` — both trunk
+                // ancestors — were re-flagged every tick). Reclassify these as landed-no-reply, not
+                // orphans. Only a NON-landed no-reply MR from an active sender is a real silent drop.
+                if ref_landed_on_trunk(fleet, &mr.r#ref) {
+                    landed_no_reply += 1;
+                    if verbose {
+                        println!(
+                            "  ~ {fname} (from {}) — no reply recorded, but ref {} is ON TRUNK \
+                             (landed; reply-correlation lost, sender NOT stuck)",
+                            mr.from, mr.r#ref
+                        );
+                    }
+                } else {
+                    orphans.push((fname.clone(), mr.from.clone()));
+                }
             } else {
                 unverifiable += 1;
                 if verbose {
@@ -1750,6 +1770,7 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
 
     println!(
         "fleet audit: {total} archived merge-request(s) — {verified} verified-replied, \
+         {landed_no_reply} landed-no-reply (on trunk; correlation lost, benign), \
          {} orphan(s), {unverifiable} unverifiable (pre-audit / not via `fleet ack`).",
         orphans.len()
     );
@@ -1820,6 +1841,39 @@ fn mr_qualifies_for_landed_check(
     !r#ref.is_empty() && active.contains(from)
 }
 
+/// Ground-truth check: is this commit `--ref` already integrated on `trunk`? Two landing shapes both
+/// count as landed. (1) As-is via merge/ff: the ref is a direct ANCESTOR of trunk (`git merge-base
+/// --is-ancestor`). Note `git cherry trunk <ancestor>` prints NOTHING here (no commits ahead of trunk
+/// to list), so the patch-id path below can't see this case — the ancestry check is what catches it.
+/// (2) Squashed/re-parented: the ref is NOT an ancestor, but its patch is present upstream (`git cherry
+/// trunk <ref>` marks every line `-`, read via the tested `cherry_says_landed`).
+///
+/// Returns `false` on any git error / unresolvable ref (conservative — never claims landed without
+/// proof) and `false` for an empty ref (nothing to check). This is the ONE place the "did the work
+/// actually land?" question is answered, shared by both the queued-inbox no-op sweep AND the
+/// archived-orphan classifier (an archived MR with no correlating reply is NOT a stuck sender if its
+/// ref is on trunk — the work is safe; only the reply-correlation was lost, e.g. a resend-chain
+/// sibling got the `ack`).
+fn ref_landed_on_trunk(fleet: &Fleet, r#ref: &str) -> bool {
+    if r#ref.is_empty() {
+        return false;
+    }
+    // Shape 1: ref is a direct ancestor of trunk (landed as-is). `--is-ancestor` exits 0 on true.
+    let is_ancestor = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["merge-base", "--is-ancestor", r#ref, TRUNK])
+        .output();
+    if matches!(is_ancestor, Ok(o) if o.status.success()) {
+        return true;
+    }
+    // Shape 2: ref was squashed/re-parented but its patch is present upstream (cherry `-` lines).
+    let cherry = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["cherry", TRUNK, r#ref])
+        .output();
+    matches!(cherry, Ok(o) if o.status.success() && cherry_says_landed(&String::from_utf8_lossy(&o.stdout)))
+}
+
 fn find_queued_but_landed(
     fleet: &Fleet,
     active: &std::collections::HashSet<String>,
@@ -1843,14 +1897,7 @@ fn find_queued_but_landed(
         if !mr_qualifies_for_landed_check(&mr.r#ref, &mr.from, active) {
             continue;
         }
-        let cherry = Command::new("git")
-            .current_dir(&fleet.repo)
-            .args(["cherry", TRUNK, &mr.r#ref])
-            .output();
-        if let Ok(o) = cherry
-            && o.status.success()
-            && cherry_says_landed(&String::from_utf8_lossy(&o.stdout))
-        {
+        if ref_landed_on_trunk(fleet, &mr.r#ref) {
             out.push((fname, mr.from.clone(), mr.r#ref.clone()));
         }
     }
@@ -8835,6 +8882,27 @@ mod tests {
         assert!(!cherry_says_landed("- aaaa\nnoise"));
         // Blank lines interspersed are tolerated as long as the real lines are all `-`.
         assert!(cherry_says_landed("\n- aaaa\n\n- bbbb\n"));
+    }
+
+    #[test]
+    fn ref_landed_on_trunk_is_false_on_empty_ref_and_git_error() {
+        // The audit orphan-classifier's ground-truth gate. Two conservative-false paths are pure and
+        // must never claim "landed" without proof: an EMPTY ref short-circuits before any git call, and
+        // a git error (here: a repo path that isn't a git repo) must also yield false — never a spurious
+        // "landed" that would silently reclassify a REAL silent-drop orphan as benign.
+        let fleet = Fleet {
+            root: PathBuf::from("/nonexistent-hub/.claude/fleet"),
+            worktrees: PathBuf::from("/nonexistent-hub/.claude/worktrees"),
+            repo: PathBuf::from("/nonexistent-hub"),
+            src: PathBuf::from("/nonexistent-wt/fleet"),
+        };
+        // Empty ref → false (short-circuit, no git invocation).
+        assert!(!ref_landed_on_trunk(&fleet, ""));
+        // Non-empty ref against a bogus repo → git fails → conservative false (NOT landed).
+        assert!(!ref_landed_on_trunk(
+            &fleet,
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+        ));
     }
 
     #[test]

@@ -2639,6 +2639,78 @@
   (call   main (: 200 Int64)) (output (: 190 Int64))
   (call   main (: -50 Int64)) (output (: 91 Int64)))
 
+(case "the COLLATZ walk counts steps to 1 and tracks the trajectory peak"
+  (doc    "The 3n+1 iteration — like McCarthy above, a recursion whose DEPTH is data-dependent and
+           non-obvious from the argument (27 takes 111 steps and peaks at 9232; 97 takes 118 to the
+           SAME peak — the two trajectories join). The walk threads (steps, peak) as a pair, the
+           peak read from the FRESH next value (a stale-peak read misses a spike hit on the final
+           odd step before a descent). The parity branch alternates `/2` and `3n+1` in a
+           data-dependent pattern no unrolling predicts. Faces: 1 (zero steps — the tuple returns
+           before any iteration; peak = the seed, 1); 6 → 8 steps peak 16 (80016); 27 → the famous
+           long trajectory, 111 steps peak 9232 (1110232); 97 → 118 steps to the same 9232
+           (1180232 — two different step counts converging on one peak pins both fields
+           independently). Encoding: steps·10000 + peak mod 1000.")
+  (input  (do
+            (def (max2 (: a Int64) (: b Int64)) (if (> a b) a b))
+            (def (go (: n Int64) (: steps Int64) (: peak Int64))
+              (if (= n 1)
+                  (tuple steps peak)
+                  (do
+                    (def nx (if (= (% n 2) 0) (/ n 2) (+ (* 3 n) 1)))
+                    (go nx (+ steps 1) (max2 peak nx)))))
+            (def (main (: n Int64))
+              (match (go n 0 n)
+                ((tuple steps peak) (+ (* steps 10000) (% peak 1000)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 6 Int64)) (output (: 80016 Int64))
+  (call   main (: 27 Int64)) (output (: 1110232 Int64))
+  (call   main (: 97 Int64)) (output (: 1180232 Int64)))
+
+(case "the JOSEPHUS survivor agrees between the modular recurrence and a list elimination simulation"
+  (doc    "Two totally different computations of the same survivor, cross-checked: the O(n) MODULAR
+           RECURRENCE `r' = (r + k) mod i` folded over ring sizes 2..n (pure index arithmetic — no
+           ring exists), against a LIST SIMULATION that builds the ring 1..n and eliminates every
+           k-th by `drop-at` (a positional filter rebuilding the spine each round, the cursor
+           wrapping by `mod len` on the SHRINKING list). The two share no code path — recurrence
+           bugs (a mod at the wrong ring size) and simulation bugs (a cursor not adjusted for the
+           removed slot) land on different wrong answers, so the agreement bit is a strong witness.
+           Faces: the classic n=7,k=3 → survivor 4 (41); n=1 (both degenerate — the recurrence loop
+           never runs, the simulation matches `(list survivor)` immediately → 11); n=5,k=2 → 3 (31);
+           k=1 (eliminate-in-order — the survivor is the LAST position, n=10 → 101).")
+  (input  (do
+            (def (go (: i Int64) (: n Int64) (: k Int64) (: r Int64))
+              (if (> i n)
+                  (+ r 1)
+                  (go (+ i 1) n k (% (+ r k) i))))
+            (def (josephus (: n Int64) (: k Int64))
+              (go 2 n k 0))
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (> i n) acc (build (+ i 1) n (List.push acc i))))
+            (def (drop-at (: xs (List Int64)) (: i Int64) (: j Int64) (: acc (List Int64)))
+              (match xs
+                ((list) acc)
+                ((list h .. t)
+                  (drop-at t i (+ j 1) (if (= j i) acc (List.push acc h))))))
+            (def (sim (: ring (List Int64)) (: idx Int64) (: k Int64))
+              (match ring
+                ((list survivor) survivor)
+                (_
+                  (do
+                    (def len ((. List len) ring))
+                    (def hit (% (+ idx (- k 1)) len))
+                    (sim (drop-at ring hit 0 (list)) hit k)))))
+            (def (main (: n Int64) (: k Int64))
+              (do
+                (def fast (josephus n k))
+                (def slow (sim (build 1 n (list)) 0 k))
+                (+ (* fast 10) (if (= fast slow) 1 0))))
+            (export main)))
+  (call   main (: 7 Int64) (: 3 Int64)) (output (: 41 Int64))
+  (call   main (: 1 Int64) (: 5 Int64)) (output (: 11 Int64))
+  (call   main (: 5 Int64) (: 2 Int64)) (output (: 31 Int64))
+  (call   main (: 10 Int64) (: 1 Int64)) (output (: 101 Int64)))
+
 ; The FAULT WALK over a nested call chain must be LINEAR too, not just the reduction. `type_errors`
 ; checks each call at its site AND collects the reduced body — and it separately descended each raw
 ; ARGUMENT for its own faults. On a chain `(f (f … (f 0)))` (where each argument IS the next call) that
