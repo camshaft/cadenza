@@ -44,6 +44,14 @@
                                    // pairwise (same arity) AND their results unify (unify-ty arrow arm).
                                    // Used to type a fn-valued PARAM (`f` in `apply f x = f x`) and a bare
                                    // def-name used as a VALUE (`inc` in `apply inc 41`).
+  | TySum(Int64)                   // M2-b-2b-ii-c2 USER SUM TYPE: `TySum(declNameId)` — a user sum type,
+                                   // identified by its DECL NAME-id (the `(type Name …)` name). 🪤 DECL-IDENTITY:
+                                   // two TySums unify iff SAME declName (never structural inner) — per v-inference,
+                                   // this closes recursive sums (a Tree/List back-edge is the same decl) with no
+                                   // infinite descent, and makes ctor-app + ctor-pattern share a sum's identity so
+                                   // a cross-type ctor pattern (Color.Red vs a Bit scrutinee) is REJECTED. Carrying
+                                   // only the declName (not the ctor list) suffices for unify (decl-identity) —
+                                   // the ctors/arg-types live in the parse-db ct + a decl table, read where needed.
 
 /// A bare integer literal's type: BOTH axes deferred (rcdzc `IntType::deferred`) — grounds to the default via
 /// unification/root-defaulting. This is the type a literal STARTS as; an annotation or operator fixes it.
@@ -144,6 +152,12 @@ def ty-eq(a: Ty, b: Ty) = match a with
     | Ty.TyFn(psb, rb) => (if List.len(psa) == List.len(psb)
         then (if ty-eq-list(psa, psb, 0) then ty-eq(ra, rb) else false)
         else false)
+    | _ => false
+  )
+  // M2-b-2b-ii-c2 USER SUM: DECL-IDENTITY — two sum types are equal iff SAME decl name-id (never structural
+  // inner). This closes recursive sums + enforces ctor-app/pattern sharing a sum's identity (cross-type reject).
+  | Ty.TySum(na) => (match b with
+    | Ty.TySum(nb) => na == nb
     | _ => false
   )
 
