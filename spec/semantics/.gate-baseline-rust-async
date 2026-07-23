@@ -69,6 +69,7 @@ pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit lis
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow
 pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
+pass	WAVE reorder alternates <= and >= by index parity through a carried-element walk
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
