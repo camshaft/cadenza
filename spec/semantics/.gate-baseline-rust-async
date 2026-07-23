@@ -43,6 +43,7 @@ pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	CHUNK splits a list into fixed-size sublists with a short final chunk that reflattens intact
 pass	COIN CHANGE builds a min-coins table where greedy fails and unreachable targets report -1
 pass	DIGITAL ROOT iterates digit sums to a fixed point and agrees with the mod-9 congruence
+pass	EDIT DISTANCE rolls a two-row Levenshtein table over string scalars
 pass	FAST-DOUBLING fib recurses on the halved index returning a pair, checked against linear iteration
 pass	GRAY CODE encodes by shift-xor, decodes by xor-folding, and adjacent codes differ by one bit
 pass	HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution
