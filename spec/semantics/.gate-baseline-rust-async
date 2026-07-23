@@ -54,6 +54,7 @@ pass	MULTI-TYPE bracket matching pushes openers on a list stack and rejects the 
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division
+pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow
 pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
@@ -4895,3 +4896,8 @@ pass	a Record.without over a runtime record dropping one field reads a surviving
 pass	a Record.without over a runtime record reads a surviving NON-FIRST field after the drop
 pass	a Record.pop over a runtime record splits off the named field's value
 pass	a Record.merge of two runtime records reads a field from the second operand
+pass	a do-local fn capturing a runtime-computed sibling local survives the enclosing fn's inlining
+pass	a do-local fn capturing a runtime-computed sibling via a LET binding survives inlining
+pass	a do-local fn capturing the enclosing fn PARAMETER directly lowers (capture guard)
+pass	a do-local fn capturing a CONSTANT sibling local lowers (capture guard)
+pass	a top-level do-local fn capturing a constant lowers (capture control)

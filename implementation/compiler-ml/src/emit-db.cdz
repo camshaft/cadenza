@@ -190,6 +190,10 @@ def can-emit(c: Core) = match c with
       // higher-order fn-value slice: a def-name-as-value is EVAL-ONLY for now (emit(B'') = a funcidx const).
   | Core.CFnRefVar(_, _) => false
       // higher-order apply (call a fn-value param) is EVAL-ONLY for now (emit(B'') = call_indirect via a table).
+  | Core.CCtor(_, _) => false
+      // M2-b-2b user sum PAYLOAD ctor is EVAL-ONLY for now (emit(B) = rcdzc's SumNew{disc,payloads} heap layout).
+  | Core.CMatchSum(_, _, _, _, _) => false
+      // M2-b-2b sum deconstruct is EVAL-ONLY for now (emit(B) = a MatchSum decision tree on the disc + payload loads).
 
 /// The position of `x` in `xs` (0-based), or -1 if absent. Used to map a CLet binder node-id to its wasm
 /// LOCAL INDEX (index = order of the binder in the pre-order binder list). Scalar-only (List Int64), so no
