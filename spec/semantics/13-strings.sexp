@@ -972,6 +972,104 @@
   (call main (: 1 Int64)) (output (: 8 Int64))
   (call main (: 2 Int64)) (output (: 3 Int64)))
 
+(case "STRING COMPRESSION emits char-count pairs but keeps the original unless strictly shorter"
+  (doc    "The full-algorithm sibling of the FINDING #20 minimal pin above: the same comp-go run-length
+           walk, but wrapped in the complete keep-original-unless-STRICTLY-shorter policy and checked
+           for CONTENT, not just length (result = byte-len·10 + an equality bit, so a right-length
+           wrong-content compression cannot pass). Adds the face the minimal pin lacks: the TIE —
+           mode 3 \"aa\" compresses to \"a2\", EQUAL length 2, not strictly shorter, so the original is
+           kept (21 = 2·10 + content-match 1). mode 1 \"aabcccccaaa\" → \"a2b1c5a3\" (8 < 11, compression
+           wins) → 81; mode 2 \"abc\" → \"a1b1c1\" (6 > 3, original kept) → 31. The escaping do-def `r`
+           is again multi-use (measured AND compared), re-crossing the #20 keep-analysis path with the
+           select hoisted OUT of the match arm into main's spine. Walk bound by scalar-len per the
+           authoring convention; the shortness comparison is byte-len, which IS the policy's semantics.")
+  (input  (do
+            (def (digit-str (: v Int64))
+              (Option.expect (String.at "0123456789" v) "single digit"))
+            (def (comp-go (: s String) (: i Int64) (: len Int64) (: cur String) (: cnt Int64) (: acc String))
+              (if (>= i len)
+                  (String.concat acc (String.concat cur (digit-str cnt)))
+                  (match (String.at s i)
+                    ((Some c)
+                      (if (= c cur)
+                          (comp-go s (+ i 1) len cur (+ cnt 1) acc)
+                          (comp-go s (+ i 1) len c 1 (String.concat acc (String.concat cur (digit-str cnt))))))
+                    ((None _u) acc))))
+            (def (compress (: s String))
+              (match (String.at s 0)
+                ((Some c0)
+                  (do
+                    (def out (comp-go s 1 (String.scalar-len s) c0 1 ""))
+                    (if (< (String.byte-len out) (String.byte-len s)) out s)))
+                ((None _u) s)))
+            (def (main (: mode Int64))
+              (do
+                (def s (if (= mode 1) "aabcccccaaa" (if (= mode 2) "abc" "aa")))
+                (def r (compress s))
+                (+ (* (String.byte-len r) 10)
+                   (if (= r (if (= mode 1) "a2b1c5a3" s)) 1 0))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 81 Int64))
+  (call main (: 2 Int64)) (output (: 31 Int64))
+  (call main (: 3 Int64)) (output (: 21 Int64)))
+
+(case "a rope threads TWO chained if-selects, each operand multi-use, and every length stays live"
+  (doc    "The composition face of the FINDING #20 family above: not one escaping select but a CHAIN —
+           pick1 selects between two runtime ropes r1/r2 (each already multi-use: measured in the
+           condition AND selectable), then pick1 is ITSELF multi-use (measured in pick2's condition
+           AND selectable against base). The keep-analysis must keep every operand live across BOTH
+           select joins; a placement bug on either link frees a handle the next link still reads.
+           The result folds ALL the lengths (pick2·100 + r1·10 + r2), so a stale handle at any depth
+           shifts a distinct digit position. mode 1: base \"ab\", r1=\"ababab\"(6), r2=\"aaaaa\"(5) →
+           pick1=r2(5), 5<2 false → pick2=r2 → 565. mode 2: base \"xyz\", r1=\"xyz\"(3), r2=\"xxxxx\"(5) →
+           pick1=r1(3), 3<3 false → pick2=r1 → 335. mode 3: r1=\"\"(0) — an EMPTY rope through the
+           chain — pick1=r1(0), 0<3 true → pick2=base(3) → 305.")
+  (input  (do
+            (def (rep (: s String) (: n Int64) (: acc String))
+              (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
+            (def (main (: mode Int64))
+              (do
+                (def base (if (= mode 1) "ab" "xyz"))
+                (def n1 (if (= mode 1) 3 (if (= mode 2) 1 0)))
+                (def c0 (Option.expect (String.at base 0) "c"))
+                (def r1 (rep base n1 ""))
+                (def r2 (rep c0 5 ""))
+                (def pick1 (if (< (String.byte-len r1) (String.byte-len r2)) r1 r2))
+                (def pick2 (if (< (String.byte-len pick1) (String.byte-len base)) base pick1))
+                (+ (* (String.byte-len pick2) 100)
+                   (+ (* (String.byte-len r1) 10)
+                      (String.byte-len r2)))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 565 Int64))
+  (call main (: 2 Int64)) (output (: 335 Int64))
+  (call main (: 3 Int64)) (output (: 305 Int64)))
+
+(case "a multi-use rope escapes a select through a Some shell and its twin survives the unwrap"
+  (doc    "The sum-shell face of the #20 keep-analysis family: the if-select's escaping result is
+           immediately WRAPPED in a Some constructor, matched back out as `pick`, and only THEN
+           measured — the escape crosses a heap-compound boundary, not just a select join. Meanwhile
+           the NON-picked twin `r` is re-measured AFTER the shell round-trip (the +r term), so both
+           the winner (through the shell) and the loser (past its last select use) must stay live.
+           mode 1: r=\"ababab\"(6) vs s=\"q\"(1), 6<1 false → pick=r → 66. mode 2: r=\"xyz\"(3) vs
+           s(8), 3<8 true → pick=s → 83 (the picked-OTHER case: r's liveness now rests solely on
+           the trailing re-measure). mode 3: r EMPTY(0) vs s(2) → pick=s → 20 (empty rope through
+           the shell's sibling read).")
+  (input  (do
+            (def (rep (: s String) (: n Int64) (: acc String))
+              (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
+            (def (main (: mode Int64))
+              (do
+                (def r (if (= mode 1) (rep "ab" 3 "") (if (= mode 2) (rep "xyz" 1 "") (rep "a" 0 ""))))
+                (def s (if (= mode 1) "q" (if (= mode 2) "qqqqqqqq" "qq")))
+                (def shell (Some (if (< (String.byte-len r) (String.byte-len s)) s r)))
+                (match shell
+                  ((Some pick) (+ (* (String.byte-len pick) 10) (String.byte-len r)))
+                  ((None _u) -1))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 66 Int64))
+  (call main (: 2 Int64)) (output (: 83 Int64))
+  (call main (: 3 Int64)) (output (: 20 Int64)))
+
 (case "a string equality on an inlined match operand"
   (doc    "A `String ==` whose operand is an INLINED function returning a `match` — `(= (f …) \"z\")` where
            `f` returns `(match (Map.lookup m k) ((Some s) s) ((None) \"?\"))`, β-reduced into the `=`

@@ -4492,13 +4492,26 @@ fn call_first_ident_args(program: &str, head: &str) -> std::collections::BTreeSe
             .chars()
             .take_while(|c| !c.is_whitespace() && *c != ')' && *c != '(')
             .collect();
-        if !tok.is_empty() && !tok.starts_with('"') && !tok.chars().next().unwrap().is_ascii_digit()
-        {
+        if !tok.is_empty() && !tok.starts_with('"') && !token_is_numeric_literal(&tok) {
             out.insert(tok);
         }
         rest = after;
     }
     out
+}
+
+/// Does this bare token START a numeric literal (so `call_first_ident_args` must skip it, per its
+/// "skip a numeric literal" contract)? A leading ASCII digit (`0`, `42`) OR a sign followed by a digit
+/// (`-1`, `+1`) — the signed case the first-char-digit-only check missed (PR#836 review), which let a
+/// signed arg be collected as a spurious "identifier". A lone `-`/`+` (an operator head, not a number)
+/// is NOT numeric, so it correctly stays a non-match here. Pure so the classification is unit-pinned.
+fn token_is_numeric_literal(tok: &str) -> bool {
+    let mut chars = tok.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_digit() => true,
+        Some('-' | '+') => chars.next().is_some_and(|c| c.is_ascii_digit()),
+        _ => false,
+    }
 }
 
 /// The Tier-2 warn-lint heuristic (concierge ruling C part 2): the string identifiers `x` in `program`
@@ -4647,7 +4660,7 @@ fn bytelen_scalar_walk_warn_lint(paths: &Paths) -> Result<(), String> {
         "xtask check [WARN] byte-len-bounds-scalar-walk: {} case(s) measure a string with String.byte-len \
          (a BYTE count) then scalar-index the SAME string with String.at/String.slice (a CODEPOINT walk) — \
          wrong for multi-byte UTF-8 (the latent-ASCII bug, concierge ruling C). Prefer a codepoint-length \
-         bound (e.g. String.length) for a String.at walk, or byte-walk via Bytes.at/Bytes.len. If the walk \
+         bound (e.g. String.scalar-len) for a String.at walk, or byte-walk via Bytes.at/Bytes.len. If the walk \
          is genuinely byte-correct, ignore this warn. At:\n  {}",
         warnings.len(),
         warnings.join("\n  ")
@@ -5683,6 +5696,35 @@ mod trap_grading_tests {
         // should-NOT-warn: byte-len(x) and String.at(y) on DIFFERENT strings — no same-x co-occurrence.
         let diff = "(String.byte-len x) (String.at y i)";
         assert!(bytelen_scalar_walk_idents(diff).is_empty());
+
+        // should-NOT-warn (PR#836 regression): a SIGNED numeric first-arg must not be misclassified as an
+        // identifier. `(String.at -1 …)` has a numeric receiver (nonsense to warn on), and it isn't the
+        // same "string" as the byte-len'd s, so the co-occurrence must stay empty — before the fix `-1`
+        // was collected as an ident, and `(String.byte-len -1)`/`(String.at -1)` would spuriously match.
+        let signed = "(String.byte-len -1) (String.at -1 i)";
+        assert!(
+            bytelen_scalar_walk_idents(signed).is_empty(),
+            "a signed numeric literal must not be collected as a string identifier"
+        );
+    }
+
+    #[test]
+    fn token_is_numeric_literal_covers_unsigned_and_signed_and_excludes_bare_signs() {
+        // Unsigned digits.
+        assert!(token_is_numeric_literal("0"));
+        assert!(token_is_numeric_literal("42"));
+        // Signed literals — the PR#836 case the first-char-digit-only check missed.
+        assert!(token_is_numeric_literal("-1"));
+        assert!(token_is_numeric_literal("+1"));
+        assert!(token_is_numeric_literal("-255"));
+        // A bare sign (an operator head like `-`/`+`, not a number) is NOT a numeric literal — it must
+        // stay a non-match so a real operator token isn't silently swallowed by the numeric skip.
+        assert!(!token_is_numeric_literal("-"));
+        assert!(!token_is_numeric_literal("+"));
+        // Ordinary identifiers.
+        assert!(!token_is_numeric_literal("s"));
+        assert!(!token_is_numeric_literal("string-var"));
+        assert!(!token_is_numeric_literal(""));
     }
 
     #[test]

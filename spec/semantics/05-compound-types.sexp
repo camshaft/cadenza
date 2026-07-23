@@ -10263,6 +10263,35 @@
   (call   main (: -10 Int64)) (output (: 6 Int64))
   (call   main (: 20 Int64)) (output (: 23 Int64)))
 
+(case "PAINT FENCE threads same/diff state tracks where no three consecutive posts match"
+  (doc    "The constraint-as-state recurrence (Kadane above couples accumulators through a MAX; this
+           couples them through the constraint's OWN structure): counting k-colorings of n posts
+           with no THREE consecutive alike needs exactly two tracks — `same` (ways ending in a
+           matched pair) and `diff` (ways ending in a mismatch) — because a post may match its
+           predecessor ONLY if that predecessor differed from ITS predecessor: same' = diff (the
+           constraint verbatim), diff' = (same + diff)·(k−1). A single-track count can't express the
+           rule; a same' that includes old same allows triples. Faces: n=3, k=2 → 6 (hand-
+           enumerable: 2³ = 8 minus the 2 all-same); the loop-never-runs boundaries n=1 → k and
+           n=2 → k² (BOTH pairs allowed — the constraint needs three); n=4, k=2 → 10.")
+  (input  (do
+            (def (go (: i Int64) (: n Int64) (: k Int64) (: same Int64) (: diff Int64))
+              (if (> i n)
+                  (+ same diff)
+                  (go (+ i 1) n k diff (* (+ same diff) (- k 1)))))
+            (def (fence (: n Int64) (: k Int64))
+              (if (= n 0)
+                  0
+                  (if (= n 1)
+                      k
+                      (go 3 n k k (* k (- k 1))))))
+            (def (main (: n Int64) (: k Int64))
+              (fence n k))
+            (export main)))
+  (call   main (: 3 Int64) (: 2 Int64)) (output (: 6 Int64))
+  (call   main (: 1 Int64) (: 5 Int64)) (output (: 5 Int64))
+  (call   main (: 2 Int64) (: 3 Int64)) (output (: 9 Int64))
+  (call   main (: 4 Int64) (: 2 Int64)) (output (: 10 Int64)))
+
 (case "BOYER-MOORE majority vote pairs a cancel-count sweep with a verify recount"
   (doc    "The cancel-count sweep: a (candidate, count) pair threads the fold — count 0 ADOPTS the
            current element, a match increments, a mismatch DECREMENTS (each non-candidate cancels one
