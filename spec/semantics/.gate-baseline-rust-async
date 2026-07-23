@@ -42,6 +42,7 @@ pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	CHUNK splits a list into fixed-size sublists with a short final chunk that reflattens intact
 pass	DIGITAL ROOT iterates digit sums to a fixed point and agrees with the mod-9 congruence
 pass	FAST-DOUBLING fib recurses on the halved index returning a pair, checked against linear iteration
+pass	GRAY CODE encodes by shift-xor, decodes by xor-folding, and adjacent codes differ by one bit
 pass	HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution
 pass	HORNER polynomial evaluation folds coefficients high-to-low and agrees with a power-sum oracle
 pass	INTERLEAVE alternates two spines and drains the longer tail after the shorter empties
@@ -52,6 +53,7 @@ pass	LOCAL PEAKS counts strict interior maxima through a three-element sliding w
 pass	LONGEST RUN tracks the current and best streak, first run winning ties
 pass	LOOK-AND-SAY iterates run-length description over its own prior output
 pass	MAX PROFIT tracks the running minimum and best spread in one forward pass
+pass	MISSING NUMBER agrees between the arithmetic-sum gap and the XOR cancellation
 pass	MOVE-ZEROS stably shifts zeros to the tail, preserving non-zero order and total length
 pass	MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
@@ -74,6 +76,7 @@ pass	a HEX DECODER finds each digit's value by alphabet scan and rejects a bad d
 pass	a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
+pass	a MEDIAN-OF-3 filter smooths interior spikes while endpoints pass through unchanged
 pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
 pass	a PALINDROME two-pointer walk closes from both ends of a runtime rope
 pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
