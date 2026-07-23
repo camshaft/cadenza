@@ -45,6 +45,7 @@ pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
+pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
 pass	a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit
@@ -57,6 +58,7 @@ pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a lead
 pass	a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
 pass	a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side
+pass	a ROMAN NUMERAL renderer walks a value-symbol table greedily with subtractive pairs
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
 pass	a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN
 pass	a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack
@@ -2974,6 +2976,8 @@ pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	modular exponentiation by SQUARING halves the exponent and branches on parity
 pass	structural equality of two Ast.Int wider than Int64 compares by full value
+pass	the COLLATZ walk counts steps to 1 and tracks the trajectory peak
+pass	the JOSEPHUS survivor agrees between the modular recurrence and a list elimination simulation
 pass	the byte codec round-trips an Ast.Int wider than Int64
 pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
 pass	an EFFECTFUL @ensures predicate performs under the caller's handler at body-EXIT, after the body's own perform
