@@ -73,13 +73,38 @@ def ss-two-sum-types-independent-tagging() =
     | Option.None(_) => trap("two sum types tag independently")
 
 @test
-def ss-payload-ctor-declines() =
-  // a PAYLOAD-carrying constructor `(Some Int64)` is OUT of this slice → the program DECLINES (surfaced, not
-  // mis-parsed as something else). This pins the slice boundary: nullary ctors run, payload ctors decline
-  // cleanly (a later slice adds payloads). `(type Opt (Some Int64) (None))` has a payload ctor → None.
-  match run-src("(do (type Opt (Some Int64) (None)) (def (main) (None)) (export main))") with
+def ss-payload-ctor-USE-declines() =
+  // a PAYLOAD-carrying constructor USE `(Some 5)` is OUT of this slice (no CCtor value yet) → DECLINES (surfaced,
+  // not mis-parsed). A payload ctor records NO def (only its tag SLOT is consumed), so a use is an unknown
+  // def-name → no callee → None. A later slice adds payload ctor values.
+  match run-src("(do (type Opt (Some Int64) (None)) (def (main) (Some 5)) (export main))") with
     | Option.None(_) => unit
-    | Option.Some(_) => trap("a payload-carrying constructor is out of this slice → must decline")
+    | Option.Some(_) => trap("a payload-carrying constructor USE is out of this slice → must decline")
+
+@test
+def ss-nullary-sibling-of-payload-ctor-runs() =
+  // a MIXED type `(type Opt (Some Int64) (None))` still registers its NULLARY sibling: a payload ctor CONSUMES
+  // its tag slot (Some = tag 0) but records no def, so `None` = tag 1 and `(None)` RUNS → 1. (Previously the
+  // payload ctor aborted the WHOLE type decl, wrongly declining its nullary siblings; now only the payload
+  // ctor's own use declines.) Pins that a payload ctor is SKIPPED-not-fatal and tags stay positionally correct.
+  match run-src("(do (type Opt (Some Int64) (None)) (def (main) (None)) (export main))") with
+    | Option.Some(v) => (if v == 1 then unit else trap("(None) is the 2nd ctor (after Some's tag-0 slot) → tag 1"))
+    | Option.None(_) => trap("a nullary sibling of a payload ctor must run (payload ctor skips, not aborts)")
+
+@test
+def ss-nullary-before-payload-is-tag-zero() =
+  // the complement: a NULLARY ctor BEFORE a payload ctor is tag 0. `(type Res (Ok) (Err Int64))` → (Ok) = 0.
+  match run-src("(do (type Res (Ok) (Err Int64)) (def (main) (Ok)) (export main))") with
+    | Option.Some(v) => (if v == 0 then unit else trap("(Ok) is the 1st ctor → tag 0 (payload Err doesn't shift it)"))
+    | Option.None(_) => trap("a nullary ctor before a payload ctor must run")
+
+@test
+def ss-nullary-sibling-of-payload-matches-on-tag() =
+  // the fixed nullary sibling composes with ctor-pattern match: match (None) (Some ...) can't be written (Some
+  // has no def), but (None) as a scrutinee vs its own tag works. match (None) (None 100) (_ 200) → 100.
+  match run-src("(do (type Opt (Some Int64) (None)) (def (main) (match (None) (None 100) (_ 200))) (export main))") with
+    | Option.Some(v) => (if v == 100 then unit else trap("match (None) hits the None-pattern → 100"))
+    | Option.None(_) => trap("a nullary sibling of a payload ctor matches on its tag")
 
 // ---- nullary CTOR-PATTERNS in match: `(match c (Red 1) (Green 2) (_ 0))` matches on ctor names ----
 // A nullary ctor is a nullary def `Ck → NLit(tag)`, so a pattern `Ck` desugars to its tag literal and reuses

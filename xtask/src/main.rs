@@ -6233,6 +6233,34 @@ mod trap_grading_tests {
     }
 
     #[test]
+    fn build_closure_consumer_call_drives_the_async_factory_closure_through_block_on() {
+        // ASYNC path (PR#813 review — the async branch was untested): a FACTORY-producer consumer must build
+        // each closure via `block_on(prog::mk(&mut env, caps))`, bind it to a `let __gN` FIRST (so the
+        // producer + consumer `&mut env` borrows don't overlap — E0499), then drive the consumer via
+        // `block_on(prog::app(&mut env, __gN, scalars))`. The whole thing is one already-`prog::`-qualified,
+        // already-`block_on`-wrapped block (the caller passes it verbatim — no double-wrap). Async sigs carry
+        // the `&mut __CdzE` env param, which `parse_emitted_sig`/`is_env_param` skips for the arg mapping.
+        let m = "pub async fn make_adder<__CdzE: CdzEnv>(__cdz_env: &mut __CdzE, k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … } \
+                 pub async fn apply_it<__CdzE: CdzEnv>(__cdz_env: &mut __CdzE, g: std::rc::Rc<dyn Fn(i64) -> i64>, x: i64) -> i64 { … }";
+        assert_eq!(
+            build_closure_consumer_call(m, "apply_it", &["100".into(), "7".into()], true)
+                .as_deref(),
+            Some(
+                "{ let __g0 = block_on(prog::make_adder(&mut env, 100)); \
+                 block_on(prog::apply_it(&mut env, __g0, 7)) }"
+            )
+        );
+        // A non-consumer async export → None (the async nullary/args/factory shapes are handled by the
+        // caller's own arg-threading, not here).
+        let m2 =
+            "pub async fn add<__CdzE: CdzEnv>(__cdz_env: &mut __CdzE, a: i64, b: i64) -> i64 { … }";
+        assert_eq!(
+            build_closure_consumer_call(m2, "add", &["1".into(), "2".into()], true),
+            None
+        );
+    }
+
+    #[test]
     fn cdz_render_bytes_list_emits_a_byte_int_list_render() {
         // A factory String result iterates its UTF-8 bytes; a Bytes result iterates the Vec<u8>. Both build
         // the `(b0 b1 …)` list<u8> form (a leading space per byte after the first → `()` when empty).

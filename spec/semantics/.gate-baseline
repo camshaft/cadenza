@@ -32,6 +32,7 @@ pass	Ast.decode decodes bytes that arrive as a function argument
 pass	Ast.encode and Ast.decode round-trip
 pass	BETA over the capture-avoiding substitution still proves the identity theorem (no regression)
 pass	BOYER-MOORE majority vote pairs a cancel-count sweep with a verify recount
+pass	BST DELETE-MIN walks the left spine, returns the minimum and the rebuilt tree
 pass	BigInt.of a UInt32 at its high bit is a positive BigInt (narrow zero-extend, not sign)
 pass	BigInt.of a UInt64 at 2^63 - 1 is positive (the sub-high-bit control)
 pass	BigInt.of a UInt64 at 2^63 is a positive BigInt, not a wrong negative
@@ -72,6 +73,7 @@ pass	a STATS record threads min/max/sum/count as one fold accumulator with data-
 pass	a STRING run-length grouping counts adjacent equal scalars across a rope seam
 pass	a THREE-DEEP compose chain stacks closure envs with a runtime capture mid-chain
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
+pass	a TOPOLOGICAL sort drains min-ready nodes and verifies every edge points forward
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
 pass	a TWO-LIST FIFO queue reverses the back list exactly when the front drains
 pass	a WORD COUNT threads an in-word flag through a scalar scan, counting entries not characters
@@ -3011,6 +3013,7 @@ pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an Ast.Int stores an integer wider than Int64 without loss
+pass	graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list
 pass	modular exponentiation by SQUARING halves the exponent and branches on parity
 pass	structural equality of two Ast.Int wider than Int64 compares by full value
 pass	the COLLATZ walk counts steps to 1 and tracks the trajectory peak

@@ -5337,6 +5337,61 @@
   (call   main (: 2 Int64)) (output (: 50 Int64))
   (call   main (: 3 Int64)) (output (: 21 Int64)))
 
+(case "BST DELETE-MIN walks the left spine, returns the minimum and the rebuilt tree"
+  (doc    "The tree family's REMOVAL face (insert, read-back, and shape metrics are pinned above;
+           nothing removed a node): `del-min` walks the LEFT spine only, and the empty-left arm is
+           the extraction point — the node's key returns as the minimum and its RIGHT subtree splices
+           into the parent's left slot (the splice is where a rebuild goes wrong: dropping the right
+           subtree loses keys silently). The walk returns a (min, tree') PAIR threaded back up
+           through path-copy rebuilds. Faces: mode 1 — min deep in the left spine of (5 3 8 1 9),
+           in-order after = 3,5,8,9 (103589); mode 2 — the ROOT is the min (no left subtree; the
+           extraction fires immediately and the whole right subtree becomes the tree — 200057);
+           mode 3 — a single node (min 4, EMPTY remainder, in-order 0 → 400000). Encoding:
+           min·100000 + in-order digits of the remainder.")
+  (input  (do
+            (type BST (Empty) (Node (Tuple BST Int64 BST)))
+            (def (insert (: t BST) (: v Int64))
+              (match t
+                ((Empty _u) (Node (tuple (Empty) v (Empty))))
+                ((Node p)
+                  (match p
+                    ((tuple l k r)
+                      (if (< v k)
+                          (Node (tuple (insert l v) k r))
+                          (if (> v k)
+                              (Node (tuple l k (insert r v)))
+                              (Node (tuple l k r)))))))))
+            (def (build (: xs (List Int64)) (: t BST))
+              (match xs
+                ((list) t)
+                ((list h .. rest) (build rest (insert t h)))))
+            (def (del-min (: t BST))
+              (match t
+                ((Empty _u) (tuple -1 (Empty)))
+                ((Node p)
+                  (match p
+                    ((tuple l k r)
+                      (match l
+                        ((Empty _u) (tuple k r))
+                        ((Node _q)
+                          (match (del-min l)
+                            ((tuple m l2) (tuple m (Node (tuple l2 k r))))))))))))
+            (def (inorder (: t BST) (: acc Int64))
+              (match t
+                ((Empty _u) acc)
+                ((Node p)
+                  (match p
+                    ((tuple l k r) (inorder r (+ (* (inorder l acc) 10) k)))))))
+            (def (main (: mode Int64))
+              (do
+                (def t (build (if (= mode 1) (list 5 3 8 1 9) (if (= mode 2) (list 2 5 7) (list 4))) (Empty)))
+                (match (del-min t)
+                  ((tuple m t2) (+ (* m 100000) (inorder t2 0))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 103589 Int64))
+  (call   main (: 2 Int64)) (output (: 200057 Int64))
+  (call   main (: 3 Int64)) (output (: 400000 Int64)))
+
 (case "a recursive user sum type is built at run time and renders its variant names"
   (doc    "A recursive user sum type — the linked-list / AST shape a self-hosted compiler manipulates —
            constructed at run time. `(IntList.Cons (tuple n (IntList.Nil ())))` with n=5 a runtime value
