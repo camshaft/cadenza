@@ -554,6 +554,86 @@
   (call   main (: 5 Int64)) (output (: 211 Int64))
   (call   main (: 4 Int64)) (output (: 104 Int64)))
 
+(case "BIPARTITE check two-colors components and rejects the odd cycle"
+  (doc    "The 2-coloring member of the graph family (reachability above, topo-sort below, HAPPY
+           orbit further down): BFS coloring over the same Map-adjacency shape — each neighbor gets
+           1−parent's color through the worklist; a SAME-color edge discovered mid-drain is the
+           odd-cycle witness and rejects immediately (visit-nbrs threads an ok flag through its
+           tuple so the failure short-circuits the drain). The outer loop seeds color 0 at each
+           still-uncolored start, covering MULTI-COMPONENT graphs. Faces: mode 1 = even 4-cycle
+           1→2→3→4→1 → bipartite (1); mode 2 = ODD 3-cycle 1→2→3→1 → rejected (0); mode 3 = two
+           DISCONNECTED edges 1→2, 3→4 → each component colors independently (1).")
+  (input  (do
+            (def (nbrs (: g (Map Int64 (List Int64))) (: n Int64))
+              (match (Map.lookup g n) ((Some xs) xs) ((None _u) (list))))
+            (def (col-of (: colors (Map Int64 Int64)) (: n Int64))
+              (match (Map.lookup colors n) ((Some c) c) ((None _u) -1)))
+            (def (visit-nbrs (: es (List Int64)) (: uc Int64) (: colors (Map Int64 Int64)) (: work (List Int64)))
+              (match es
+                ((list) (tuple 1 colors work))
+                ((list v .. t)
+                  (do
+                    (def vc (col-of colors v))
+                    (if (= vc -1)
+                        (visit-nbrs t uc (Map.insert colors v (- 1 uc)) (List.push work v))
+                        (if (= vc uc)
+                            (tuple 0 colors work)
+                            (visit-nbrs t uc colors work)))))))
+            (def (drain (: g (Map Int64 (List Int64))) (: work (List Int64)) (: colors (Map Int64 Int64)))
+              (match work
+                ((list) (tuple 1 colors))
+                ((list u .. t)
+                  (match (visit-nbrs (nbrs g u) (col-of colors u) colors t)
+                    ((tuple ok colors2 work2)
+                      (if (= ok 0)
+                          (tuple 0 colors2)
+                          (drain g work2 colors2)))))))
+            (def (all-nodes (: ns (List Int64)) (: g (Map Int64 (List Int64))) (: colors (Map Int64 Int64)))
+              (match ns
+                ((list) 1)
+                ((list s .. t)
+                  (if (= (col-of colors s) -1)
+                      (match (drain g (list s) (Map.insert colors s 0))
+                        ((tuple ok colors2)
+                          (if (= ok 0) 0 (all-nodes t g colors2))))
+                      (all-nodes t g colors)))))
+            (def (main (: mode Int64))
+              (do
+                (def g (if (= mode 1)
+                           (Map.insert (Map.insert (Map.insert (Map.insert Map.empty 1 (list 2)) 2 (list 3)) 3 (list 4)) 4 (list 1))
+                           (if (= mode 2)
+                               (Map.insert (Map.insert (Map.insert Map.empty 1 (list 2)) 2 (list 3)) 3 (list 1))
+                               (Map.insert (Map.insert Map.empty 1 (list 2)) 3 (list 4)))))
+                (def ns (if (= mode 3) (list 1 2 3 4) (if (= mode 1) (list 1 2 3 4) (list 1 2 3))))
+                (all-nodes ns g Map.empty)))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 1 Int64))
+  (call main (: 2 Int64)) (output (: 0 Int64))
+  (call main (: 3 Int64)) (output (: 1 Int64)))
+
+(case "dropping a set derived by insert must not free members shared with the survivor"
+  (doc    "The SET member of the generation-sharing reclaim family (map/list members in 05-compound,
+           rope in 13-strings): Sets are CHAMP-backed like Maps but with ELEMENT-ONLY nodes, so the
+           reclaim walk has its own shape. s2 = Set.insert s1 4 shares s1's interior nodes; mode 1
+           keeps the BASE and drops the derivative — the Set.contains walk then traverses exactly
+           the shared nodes after the drop; mode 2 keeps the derivative past the base's last use
+           and additionally hits the fresh element. Encodes len·100 + contains-2·10 + contains-4:
+           mode 1 → 300+10+0 = 310, mode 2 → 400+10+1 = 411.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Set Int64)))
+              (if (> i n) acc (build (+ i 1) n (Set.insert acc i))))
+            (def (main (: mode Int64))
+              (do
+                (def s1 (build 1 3 (Set.of (list))))
+                (def s2 (Set.insert s1 4))
+                (def keep (if (= mode 1) s1 s2))
+                (+ (* (Set.len keep) 100)
+                   (+ (* (if (Set.contains keep 2) 1 0) 10)
+                      (if (Set.contains keep 4) 1 0)))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 310 Int64))
+  (call main (: 2 Int64)) (output (: 411 Int64)))
+
 (case "a TOPOLOGICAL sort drains min-ready nodes and verifies every edge points forward"
   (doc    "The dependency-ordering sibling of the reachability pin above (same Map-adjacency shape,
            opposite discipline: reachability EXPANDS from a start, topo-sort RETIRES nodes whose
