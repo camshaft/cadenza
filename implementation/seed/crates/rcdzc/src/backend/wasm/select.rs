@@ -11938,8 +11938,15 @@ fn elem_needs_rope_compaction(db: &mut Db, id: StructId) -> bool {
 /// BigInt-inner quantity the same — else a `(Qty.of (BigInt.of k) u)` constant emits as a raw `i64.const`
 /// where an i32 handle is expected (invalid wasm). One helper so the peel is consistent across all sites.
 fn is_bigint_valued(db: &mut Db, id: StructId) -> bool {
-    matches!(type_of(db, id), Ty::BigInt)
-        || matches!(type_of(db, id), Ty::Qty { inner, .. } if matches!(*inner, Ty::BigInt))
+    // PEEL nominal + quantity via `peel_qty_ty` (strip_nominal → peel Qty → strip_nominal), NOT a bare
+    // `Ty::BigInt`/`Ty::Qty{BigInt}` match: a single-variant single-payload NEWTYPE over BigInt — e.g.
+    // `(type W (Mk BigInt))` — erases to `Ty::Nominal { inner: BigInt }`, so a constant `(Mk 1)` used as a
+    // runtime value (a call arg) is a `Core::ConstInt` typed `Nominal{BigInt}`. The old bare match missed the
+    // nominal wrapper → the ConstInt emit fell to the raw `i64.const` path → an i32 handle was expected at the
+    // call → INVALID module (FACE-B of the nonzero-BigInt-recursive miscompile). `peel_qty_ty` reaches the
+    // inner BigInt through the newtype (and a nominal-over-Qty-BigInt), the exact strip→peel→strip the
+    // Float32 nominal-over-Qty fix (PR#743) established for its twin.
+    matches!(peel_qty_ty(type_of(db, id)), Ty::BigInt)
 }
 
 /// The byte offset in the shared host `mem` where a RUNTIME string host-arg's bytes are marshaled (the

@@ -469,6 +469,40 @@
   (call   main (: 5 Int64)) (output (: 42 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64)))
 
+(case "a Symbol stored as a map VALUE round-trips through lookup to its content string"
+  (doc    "The VALUE-slot face: the pins above key BY symbols; a compiler symbol table equally maps
+           name→Symbol (an id→name interner, a rename map), so the Symbol must round-trip through the
+           map's VALUE slot — lookup → Some sy → Symbol.to-string → byte-len, with a miss face. A
+           value-slot rep that stored the symbol as anything but its canonical leaf (or lost the tag
+           on the way out) breaks the to-string. k=1 → \"a\" → 1; k=2 → \"bb\" → 2; k=9 miss → 0.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def m (Map.insert (Map.insert Map.empty 1 #"a") 2 #"bb"))
+                (match (Map.lookup m k)
+                  ((Some sy) (String.byte-len (Symbol.to-string sy)))
+                  ((None _u) 0))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 1 Int64))
+  (call main (: 2 Int64)) (output (: 2 Int64))
+  (call main (: 9 Int64)) (output (: 0 Int64)))
+
+(case "a tuple with a Symbol leaf as a SET element dedups and membership-checks by content"
+  (doc    "The SET-element companion of the tuple-map-key case above: the CHAMP hash/eq descends a
+           compound SET element into its Symbol byte-leaf. A literal #\"a\" and a runtime-interned
+           (Symbol.of \"a\") inside otherwise-equal tuples must DEDUP (content identity, not
+           derivation) → len 2; membership rebuilds the tuple with a runtime n — hit at n=1,
+           miss at n=9. len·10 + contains: 21 / 20.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def st (Set.of (list (tuple #"a" 1) (tuple (Symbol.of "a") 1) (tuple #"b" 1))))
+                (+ (* (Set.len st) 10)
+                   (if (Set.contains st (tuple #"a" n)) 1 0))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 21 Int64))
+  (call main (: 9 Int64)) (output (: 20 Int64)))
+
 ; The case above interns a Symbol from a string the compiler can still FOLD (`(String.concat "map"
 ; "-insert")` = the constant `"map-insert"`). Interning a GENUINELY-RUNTIME string — one arriving at
 ; the call boundary, unfoldable — also works: a Symbol IS a String byte-leaf at run time (the value

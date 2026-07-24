@@ -6392,6 +6392,24 @@
             (def (main) (match (Some (+ 1 true)) ((Some x) 1) ((None) 0))) (export main)))
   (error  CDZ0203))
 
+(case "a cross-type constructor pattern NESTED in a matching outer payload is rejected"
+  (doc    "The cross-type reject fired at a NESTED payload position, not just the top level. `Wrap`
+           carries an `Inner`, and `Inner`/`Other` are distinct sums whose first variants (`IA`/`OA`)
+           both restart at tag 0. The OUTER pattern `(W …)` correctly matches the `(W (IA 5))` scrutinee,
+           but its nested sub-pattern `(OA x)` names a constructor of the FOREIGN sum `Other`, not the
+           payload's `Inner` type. A check that fired only on the top-level scrutinee-vs-pattern would let
+           the well-typed outer arm carry an ill-typed inner sub-pattern through, reading `Inner`'s payload
+           under `Other`'s type (the tag-0 collision makes the raw dispatch succeed). The nested
+           constructor pattern must belong to ITS position's sum (`Inner`), so it rejects CDZ0203 — the
+           scrutinee-vs-pattern-constructor-type check recurses into payload sub-patterns, it is not a
+           top-level-only guard.")
+  (input  (do
+            (type Inner (IA Int64))
+            (type Other (OA Int64))
+            (type Wrap (W Inner))
+            (def (main) (match (W (IA 5)) ((W (OA x)) x))) (export main)))
+  (error  CDZ0203))
+
 ; --- A constructor pattern NESTED INSIDE A TUPLE ELEMENT of a payload --------------------------
 ; The nested-payload cases above bind a constructor DIRECTLY under a constructor (`(W.Wrap (N.L v))`).
 ; A distinct shape a compiler / proof kernel hits is a constructor pattern nested inside a TUPLE

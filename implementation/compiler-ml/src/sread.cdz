@@ -630,11 +630,36 @@ def read-match-arms(s: String, i: Int64, scrutId: Int64, tree: Tree) =
                (let e2 = close-paren(s, e1) in (elseId, e2, t1))))    // the else body IS the chain's tail
      else (if (char-at(s, p) == "(")                                // PAYLOAD ctor-pattern arm `((Ctor x) body)`
            then read-ctor-pattern-arm(s, p, scrutId, tree)          // M2-b-2b-ii-c → NMatchCtor
-     else (match read-arm-pattern(s, o, tree) with | (patId, q1, t1) =>    // LITERAL or nullary-CTOR pattern
+     else (if (is-digit(char-at(s, p)) or ((char-at(s, p) == "-") and is-digit(char-at(s, p + 1))))
+           // A digit / `-digit` lead → an integer-LITERAL pattern → NMatch (the M1-a int-match path, unchanged).
+           then (match read-arm-pattern(s, o, tree) with | (patId, q1, t1) =>
              (match read-form(s, q1, t1) with | (bodyId, q2, t2) =>
                (let q3 = close-paren(s, q2) in
                 (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>  // recurse for the rest
-                  (match add-node(t3, Node.NMatch(scrutId, patId, bodyId, restId)) with | (id, t4) => (id, r1, t4))))))))))
+                  (match add-node(t3, Node.NMatch(scrutId, patId, bodyId, restId)) with | (id, t4) => (id, r1, t4))))))
+           // ii-c2b-2: otherwise a NULLARY ctor-NAME pattern `(Green body)` → NMatchCtor with NO binder (sentinel
+           // -1). lower routes it via decl-is-enum-disc: enum-disc decl → CMatchEnum (bare-tag compare), mixed
+           // decl → CMatchSum (boxed store-tag). A ctor name compares the scrutinee's TAG — the M2-a tag-compare,
+           // now TYPE-gated (scrut must be TSum of the ctor's decl) so a raw-int-over-TSum correctly declines.
+           else read-nullary-ctor-pattern-arm(s, p, scrutId, tree))))))
+
+/// ii-c2b-2: read a NULLARY ctor-NAME pattern arm `(Green body)` → NMatchCtor(scrut, ctorName, -1, body, rest).
+/// `p` is at the ctor NAME atom (the arm's outer `(` already consumed). No binder (a nullary ctor carries no
+/// payload) → binder sentinel -1. An unknown ctor name (not in the ct table) → decline (skip the whole arm), like
+/// the payload path. lower re-derives the tag + the enum-disc-vs-boxed rep from the ctor name via decl-is-enum-disc.
+def read-nullary-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tree) =
+  (match scan-atom(s, p, "") with | (cnm, c1) =>                    // the ctor NAME
+    (match ctor-tag-of(tree, name-id(cnm)) with
+      | Option.None(_) =>                                           // unknown ctor → decline: read body + close arm, recurse
+          (match unsupported(tree) with | (id, t0) =>
+            (match read-form(s, c1, t0) with | (_body, b1, t1) =>
+              (let b2 = close-paren(s, b1) in
+               (match read-match-arms(s, b2, scrutId, t1) with | (_rest, r1, t2) => (id, r1, t2)))))
+      | Option.Some(_ctorTag) =>                                    // known ctor → NMatchCtor, binder -1 (no payload)
+          (match read-form(s, c1, tree) with | (bodyId, q2, t2) =>  // the arm body
+            (let q3 = close-paren(s, q2) in                         // close the arm `(Green body)`
+             (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>   // recurse for rest
+               (match add-node(t3, Node.NMatchCtor(scrutId, name-id(cnm), 0 - 1, bodyId, restId)) with | (id, t4) => (id, r1, t4)))))))
 
 /// M2-b-2b-ii-c: read a PAYLOAD ctor-pattern arm `((Ctor x) body)` → NMatchCtor(scrut, patCtorName, binderId, body, rest).
 /// `p` is at the inner `(` of the pattern (the arm's outer `(` already consumed by open-paren in read-match-arms).

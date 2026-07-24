@@ -447,3 +447,39 @@
             (export main)))
   (call   main (: 4 Int64))
   (output (: 41 BigInt)))
+
+(case "a tag DISPATCHES ON CHUNK TEXT to weave different operator spines around runtime holes"
+  (doc    "The content-directed DSL move — none of the pins above BRANCH on chunk content: `op`
+           compares its first chunk string (\"add\" vs \"mul\") to choose the operator NAME woven
+           into the Ast spine around two holes, i.e. the template TEXT is the program (the idiom a
+           JSX-style library is built from). The holes carry a runtime (Ast.Int a) and a constant;
+           the caller destructures the woven compound and computes THROUGH the chosen operator, so
+           a dispatch that picked the wrong arm (or a weave that reordered the spine) diverges at
+           one of the 2×2 faces. add/5 → 8; mul/5 → 15; add/0 → 3; mul/0 → 0 (the annihilator
+           face — a wrong + would give 3).")
+  (input  (do
+            (def (op chunks holes)
+              (match chunks
+                ((list c _t)
+                  (match holes
+                    ((list h0 h1)
+                      (Ast.List (list (Ast.Name (if (= c "add") "+" "*")) h0 h1)))
+                    (_ (Ast.Int 0))))
+                (_ (Ast.Int 0))))
+            (def (main (: a Int64) (: which Int64))
+              (do
+                (def r (if (= which 1)
+                           (match (tagged-template op (chunks "add" "") (holes (Ast.Int (BigInt.of a)) (Ast.Int 3)))
+                             ((Ast.List (list (Ast.Name o) (Ast.Int x) (Ast.Int y)))
+                               (if (= o "+") (+ x y) (* x y)))
+                             (_ -1N))
+                           (match (tagged-template op (chunks "mul" "") (holes (Ast.Int (BigInt.of a)) (Ast.Int 3)))
+                             ((Ast.List (list (Ast.Name o) (Ast.Int x) (Ast.Int y)))
+                               (if (= o "+") (+ x y) (* x y)))
+                             (_ -1N))))
+                r))
+            (export main)))
+  (call main (: 5 Int64) (: 1 Int64)) (output (: 8 BigInt))
+  (call main (: 5 Int64) (: 2 Int64)) (output (: 15 BigInt))
+  (call main (: 0 Int64) (: 1 Int64)) (output (: 3 BigInt))
+  (call main (: 0 Int64) (: 2 Int64)) (output (: 0 BigInt)))

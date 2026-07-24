@@ -21257,6 +21257,28 @@ mod match_engine {
     }
 
     #[test]
+    fn a_constant_bigint_newtype_passed_as_a_recursive_call_arg_emits_a_handle_not_a_raw_i64() {
+        // FACE-B of the nonzero-BigInt-recursive miscompile (an INVALID-MODULE bug, so the guard is that the
+        // emitted bytes VALIDATE): `(type W (Mk BigInt))` is a single-variant single-payload NEWTYPE, so it
+        // erases to `Ty::Nominal { inner: BigInt }`. A CONSTANT `(Mk 7)` passed as a RUNTIME call arg is a
+        // `Core::ConstInt` typed `Nominal{BigInt}`; a BigInt sum is a BOXED i32 HANDLE, so the arg must
+        // materialize via `bigint-of-i64`, NOT a raw `i64.const` (which mismatched the i32 handle param →
+        // `expected i32, found i64` at the call → invalid module). `is_bigint_valued` now peels the nominal
+        // (`peel_qty_ty`) so the `Core::ConstInt` emit routes through the leaf-handle path. Before the fix,
+        // `component` (which asserts the backend validates) panicked on the func-validation failure.
+        let bytes = component(
+            "(module m (type W (Mk BigInt)) \
+               (def (walk (: n Int64) (: w W)) (match w ((Mk v) (if (>= n 0) (walk (- n 1) w) v)))) \
+               (def (main) (walk 0 (Mk 7))) (export main))",
+        );
+        assert!(
+            wasmparser::validate(&bytes).is_ok(),
+            "a constant BigInt-newtype passed as a recursive call arg must emit a boxed handle (valid wasm): {:?}",
+            wasmparser::validate(&bytes).err()
+        );
+    }
+
+    #[test]
     fn a_newtype_over_a_scalar_matches_a_runtime_payload() {
         // The RUNTIME (non-constant) payload path: the payload is behind an `if`, so the match can't fold —
         // it reads the erased value directly (no `sum-payload`, since the box is gone). Exercises the

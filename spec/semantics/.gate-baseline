@@ -114,6 +114,7 @@ pass	a SPLIT on separator slices fields between hits and round-trips through the
 pass	a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack
 pass	a STATS record threads min/max/sum/count as one fold accumulator with data-dependent field updates
 pass	a STRING run-length grouping counts adjacent equal scalars across a rope seam
+pass	a Symbol stored as a map VALUE round-trips through lookup to its content string
 pass	a THREE-DEEP compose chain stacks closure envs with a runtime capture mid-chain
 pass	a THREE-WAY scalar classifier splits vowels, consonants, and other by range and membership
 pass	a THREE-arm match joins a borrowed alias, an owned fresh rope, and a const literal
@@ -121,6 +122,7 @@ pass	a TOGGLE fold flips set membership per occurrence — odd count in, even co
 pass	a TOPOLOGICAL sort drains min-ready nodes and verifies every edge points forward
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
 pass	a TWO-LIST FIFO queue reverses the back list exactly when the front drains
+pass	a TWO-field open-row projection instantiates at three widths with slot-shifting extras
 pass	a WORD COUNT threads an in-word flag through a scalar scan, counting entries not characters
 pass	a balanced-paren scan tracks depth over a runtime string and fails fast on early close
 pass	a capturing closure passed AS AN ARGUMENT is applied twice by the callee and the capture reads after
@@ -1338,6 +1340,7 @@ pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a success `?` unwraps a RUNTIME Ok payload under a Result boundary
 pass	a success `?` unwraps a RUNTIME payload (static ctor, per-call value)
 pass	a sum-typed STATE MACHINE steps through transitions with an ABSORBING terminal state
+pass	a tag DISPATCHES ON CHUNK TEXT to weave different operator spines around runtime holes
 pass	a tag function INTROSPECTS its chunk and hole counts and returns both
 pass	a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack
 pass	a third-generation overwrite path-copies away from both ancestors and all three read true
@@ -1345,6 +1348,7 @@ pass	a tuple key whose element is itself a float-bearing tuple keys by content
 pass	a tuple key with a RUNTIME Rational leaf hits and misses by canonical content
 pass	a tuple key with an ARITH-built BigInt leaf hits and misses by content
 pass	a tuple of two branch-built Options matches all four Some/None quadrants jointly
+pass	a tuple with a Symbol leaf as a SET element dedups and membership-checks by content
 pass	a two-level UPDATE of a map-of-maps rebuilds the inner and leaves the old outer intact
 pass	a type-valued parameter threads through TWO relay layers beside a runtime operand
 pass	a user sum named Ast renders BARE with RUNTIME payloads through one compiled body
@@ -2307,6 +2311,7 @@ pass	an UNSIGNED branch refinement decides a nested comparison and its soundness
 pass	an UNSIGNED lower-bound refinement must not fabricate an i64::MAX ceiling for a UInt64 above it
 pass	an UNZIP walk splits a list of pairs into two parallel lists that re-zip to the original
 pass	an UPSERT into a Map of Lists creates the fresh entry on miss and appends on hit
+pass	an abortive handler discards a suspended body holding live rope and map handles
 pass	an abortive perform MID-WALK carries the accumulated state out as its argument
 pass	an arm's NEXT-STATE expression saturates via a conditional on the current state
 pass	an effect op RESUMED with a slice-view Bytes crosses the arm boundary intact
@@ -2315,6 +2320,7 @@ pass	an inner handle's SEED expression performs against the outer handler
 pass	an inner map shared between two outer generations survives the loser's drop
 pass	an inner same-effect handle's RESULT feeds the outer handler's next perform
 pass	an integer square root by Newton iteration converges to the floor at perfect squares and off-squares
+pass	an open-row record passed through a projecting helper keeps its EXTRA fields readable
 pass	an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type
 pass	a reference to an unbound name is rejected before running
 pass	a referenced let binding whose init overflows IS observed, so its trap occurs (the anchor)
@@ -3014,6 +3020,7 @@ pass	a variant named Bool shadows the prelude Bool within its declaring module
 pass	a variant named like a prelude type is constructed and matched in its declaring module
 pass	a variant pattern over a Bool scrutinee is a type error
 pass	an ill-typed ctor-match scrutinee taints the whole match, not masked by well-typed arms
+pass	a cross-type constructor pattern NESTED in a matching outer payload is rejected
 pass	a variant pattern over a scalar scrutinee is a type error
 pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
 pass	a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit

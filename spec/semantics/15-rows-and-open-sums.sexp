@@ -30,6 +30,41 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 15 Int64)))
 
+(case "a TWO-field open-row projection instantiates at three widths with slot-shifting extras"
+  (doc    "The case above projects ONE field at two widths; here `get-xy` projects x AND y across
+           THREE widths whose extras shift BOTH slots differently per instantiation — under the
+           sorted-field erasure x sits at slot 0/1/1 and y at 1/2/2 in (x y) / (a x y) / (w x y z).
+           A per-def single-layout specialization, or a slot fix-up applied to only ONE projected
+           field, misreads at some site; the runtime `a n` in the middle record blocks folding the
+           whole program away. 12 + 34·100 + 67·10000 = 673412.")
+  (input  (do
+            (def (get-xy r) (+ (* (. r x) 10) (. r y)))
+            (def (main (: n Int64))
+              (+ (get-xy (record (x 1) (y 2)))
+                 (+ (* (get-xy (record (a n) (x 3) (y 4))) 100)
+                    (* (get-xy (record (w 9) (x 6) (y 7) (z 8))) 10000))))
+            (export main)))
+  (call main (: 5 Int64)) (output (: 673412 Int64)))
+
+(case "an open-row record passed through a projecting helper keeps its EXTRA fields readable"
+  (doc    "The PASS-THROUGH face: `touch` projects x then returns its record UNCHANGED; the caller
+           reads x AND both extras (y, and a runtime z) AFTER the round-trip. The helper's open type
+           must not narrow the value to just-the-used-fields at the return boundary — a width-
+           narrowing specialization, or a project-then-rebuild that drops extras, breaks the
+           post-call reads. z=0 face guards the sum encode. 3+40+500 = 543; 3+40+0 = 43.")
+  (input  (do
+            (def (touch r)
+              (do
+                (def _probe (. r x))
+                r))
+            (def (main (: n Int64))
+              (do
+                (def out (touch (record (x 3) (y 40) (z n))))
+                (+ (. out x) (+ (. out y) (. out z)))))
+            (export main)))
+  (call main (: 500 Int64)) (output (: 543 Int64))
+  (call main (: 0 Int64)) (output (: 43 Int64)))
+
 (case "a record whose field is a List projects the list handle and indexes it, alongside a scalar field"
   (doc    "A record field may itself be a variable-length collection — distinct from a fixed-shape tuple
            field (which the ABI flattens depth-first): a `List` field is a HEAP HANDLE that must round-trip

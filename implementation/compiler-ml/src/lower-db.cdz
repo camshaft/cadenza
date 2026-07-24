@@ -14,7 +14,7 @@
 /// NO core form (a filled `None`), not a bogus tree. Lowering reads the infer column to make this decision,
 /// and reads the resolve column to canonicalize vars — producer-reads-two-producers.
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, call-is-self-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, ctor-tag-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, call-is-self-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, ctor-tag-of, ctor-decl-of, decl-is-enum-disc } from "parse-db"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
 import { Typed, infer-tree, infer-node } from "infer-db"
 
@@ -182,6 +182,11 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         // The TAG is re-derived from the pattern ctor's NAME-id via ctor-tag-of (the single-source-of-truth node
         // shape — infer re-derives the decl from the same name-id, so tag + decl cannot drift). An unknown ctor
         // has no ct entry → decline (unreachable in practice: the reader already declined it before this node).
+        // ii-c2b-2 rep dispatch (Z1): a NULLARY ctor pattern (binderId == -1, no payload) over an ENUM-DISC decl
+        // lowers to CMatchEnum (bare-tag compare — the scrutinee is a bare CNum tag, CMatchSum's store-tag would
+        // return None → always-else). A payload pattern (binderId != -1) OR a mixed-decl nullary pattern (boxed)
+        // lowers to CMatchSum (store-tag on the handle). decl-is-enum-disc(declOf patCtorName) is the switch —
+        // mirrors rcdzc's ty_is_enum_disc at select. A -1 binder → an EMPTY binder list (no payload to bind).
         (match ctor-tag-of(tree, patCtorName) with
           | Option.None(_) => Option.None(unit)
           | Option.Some(ctorTag) =>
@@ -190,7 +195,10 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
             (match lower-node(tree, bodyId, rcol, tcol) with
               | Option.Some(cbody) =>
                 (match lower-node(tree, restId, rcol, tcol) with
-                  | Option.Some(crest) => Option.Some(Core.CMatchSum(cs, ctorTag, List.push([], binderId), cbody, crest))
+                  | Option.Some(crest) =>
+                      (if ((binderId == (0 - 1)) and lower-ctor-decl-enum-disc(tree, patCtorName))
+                       then Option.Some(Core.CMatchEnum(cs, ctorTag, cbody, crest))              // enum-disc nullary → bare-tag
+                       else Option.Some(Core.CMatchSum(cs, ctorTag, lower-binder-list(binderId), cbody, crest)))  // boxed
                   | Option.None(_) => Option.None(unit))
               | Option.None(_) => Option.None(unit))
           | Option.None(_) => Option.None(unit)))
@@ -217,11 +225,27 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
         // path (def-body = NLit tag), so the bare-tag behavior is unchanged. args from the call's arg slots.
         // ONLY a PAYLOAD ctor use (argId != -1) takes the CCtor path; a NULLARY ctor use `(None)` = NApp(name,-1)
         // has a def-body (NLit tag, M2-a) and MUST stay the def-body-inline path below (its bare tag is the value).
+        // ii-c2b-2 NULLARY ctor rep (per v-inference: enum-disc is a per-DECL rep). A nullary ctor use `(C)`
+        // (argId == -1, ctor-decl-of hits) lowers by its DECL's rep: an ENUM-DISC decl (≥2 ctors, all nullary) →
+        // a BARE CNum tag (the M2-a def-body inline, no heap cell); a MIXED decl (has a payload sibling) → a BOXED
+        // `CCtor(tag, [])` (empty-payload handle) so it shares the payload siblings' store rep — else a match over
+        // the mixed sum (which reads a store handle) rep-mismatches the bare tag. This is decl-is-enum-disc's
+        // lower consumer. A PAYLOAD ctor use (argId != -1) always → CCtor(tag, args). Checked before the def path.
         (match (if (argId == (0 - 1)) then Option.None(unit) else ctor-tag-of(tree, calleeId)) with
-          | Option.Some(ctorTag) =>
+          | Option.Some(ctorTag) =>                                  // PAYLOAD ctor use → CCtor(tag, args)
               (match lower-rec-args(tree, id, argId, rcol, tcol) with
                 | Option.Some(args) => Option.Some(Core.CCtor(ctorTag, args))
                 | Option.None(_) => Option.None(unit))
+          | Option.None(_) =>
+        (match (if (argId == (0 - 1)) then ctor-decl-of(tree, calleeId) else Option.None(unit)) with
+          | Option.Some(declName) =>                                 // NULLARY ctor use — rep by its decl
+              (if (decl-is-enum-disc(tree, declName))
+               then (match def-body-of(tree, calleeId) with          // enum-disc → bare CNum tag (M2-a inline)
+                      | Option.Some(calleeBody) => lower-node(tree, calleeBody, rcol, tcol)
+                      | Option.None(_) => Option.None(unit))
+               else (match ctor-tag-of(tree, calleeId) with          // mixed decl → boxed CCtor(tag, [])
+                      | Option.Some(ctorTag) => Option.Some(Core.CCtor(ctorTag, ([] : List(Core))))
+                      | Option.None(_) => Option.None(unit)))
           | Option.None(_) =>
         (if (call-is-recursive(tree, calleeId)) then lower-recursive-call(tree, id, calleeId, argId, rcol, tcol)
          else (match def-body-of(tree, calleeId) with
@@ -262,7 +286,7 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                                   | Option.None(_) => Option.Some(Core.CLet(paramId, argCore, bodyCore)))  // 1-arg
                             | Option.None(_) => Option.None(unit))
                       | Option.None(_) => Option.None(unit))
-                | Option.None(_) => Option.None(unit))))))
+                | Option.None(_) => Option.None(unit)))))))
     | Option.None(_) => Option.None(unit)
 
 /// slice-3e: the innermost body of a call's nested-CLet chain, optionally wrapping a THIRD `CLet(param3, arg3,
@@ -313,6 +337,19 @@ def lower-recursive-call(tree: Tree, id: Int64, calleeId: Int64, argId: Int64, r
 /// `arg2-of`/`arg3-of`/`arg4-of` keyed by this NApp node-id `id`. A nullary call → `[]`. Each present arg is
 /// lowered by `lower-node`; if ANY arg is ill-typed / does not lower, the whole call declines (`None`). This
 /// does NOT descend the callee body (that is the def-env's job in B1b) — CCall is a lowering LEAF.
+/// ii-c2b-2: is the ctor named `ctorName` a member of an ENUM-DISC decl (all-nullary, ≥2)? Looks up the ctor's
+/// decl via ctor-decl-of then decl-is-enum-disc. `false` for an unknown ctor. Drives the CMatchEnum vs CMatchSum
+/// rep choice for a nullary ctor pattern (enum-disc → bare-tag CMatchEnum; mixed → boxed CMatchSum).
+def lower-ctor-decl-enum-disc(tree: Tree, ctorName: Int64) =
+  (match ctor-decl-of(tree, ctorName) with
+    | Option.Some(declName) => decl-is-enum-disc(tree, declName)
+    | Option.None(_) => false)
+
+/// A CMatchSum binder list from a pattern's binderId: `[]` for the no-binder sentinel -1 (a mixed-decl nullary
+/// ctor pattern — boxed, but no payload to bind), else `[binderId]` (a single-payload ctor pattern).
+def lower-binder-list(binderId: Int64) =
+  (if (binderId == (0 - 1)) then ([] : List(Int64)) else List.push([], binderId))
+
 def lower-rec-args(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
   (if (argId == (0 - 1)) then Option.Some(([] : List(Core)))            // nullary recursive call → no args
    else (match lower-node(tree, argId, rcol, tcol) with
