@@ -238,4 +238,26 @@ def ut-fn-vs-int-conflict() =
     (if conflicts(unify-ty(ty-int64(), fn1(ty-int64(), ty-int64()))) then unit else trap("int~fn conflict (sym)"))
   else trap("fn~int conflict")
 
+@test
+def ut-sum-same-decl() =
+  // M2-b-2b-ii-c2 DECL-IDENTITY: two sum types with the SAME decl name-id unify to that sum (never structural
+  // inner). TySum(7) ~ TySum(7) → Some(TySum(7)).
+  if unifies-to(unify-ty(Ty.TySum(7), Ty.TySum(7)), Ty.TySum(7)) then unit
+  else trap("TySum(7)~TySum(7) → TySum(7)")
+
+@test
+def ut-sum-diff-decl-conflict() =
+  // two DIFFERENT sum decls never unify (a Color vs a Bit scrutinee is a cross-type reject).
+  if conflicts(unify-ty(Ty.TySum(7), Ty.TySum(8))) then unit
+  else trap("TySum(7)~TySum(8) conflict")
+
+@test
+def ut-sum-vs-non-sum-conflict() =
+  // a sum type never unifies with a non-sum (int / bool / fn) — nor symmetrically.
+  if conflicts(unify-ty(Ty.TySum(7), ty-int64())) then
+    (if conflicts(unify-ty(ty-int64(), Ty.TySum(7))) then
+       (if conflicts(unify-ty(Ty.TySum(7), Ty.TyBool)) then unit else trap("sum~bool conflict"))
+     else trap("int~sum conflict (sym)"))
+  else trap("sum~int conflict")
+
 export { unify-sign, unify-width, unify-int, unify-ty, unify-ty-list }

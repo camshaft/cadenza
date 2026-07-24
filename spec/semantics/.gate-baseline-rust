@@ -95,6 +95,7 @@ pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first m
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
 pass	a MEDIAN-OF-3 filter smooths interior spikes while endpoints pass through unchanged
 pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
+pass	a Map.remove on a derived generation unshares the path without touching the ancestor
 pass	a PALINDROME two-pointer walk closes from both ends of a runtime rope
 pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
 pass	a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum
@@ -2269,6 +2270,7 @@ pass	an arm's NEXT-STATE expression saturates via a conditional on the current s
 pass	an effect op RESUMED with a slice-view Bytes crosses the arm boundary intact
 pass	an effect op resumed with a whole MAP threads the CHAMP through the continuation
 pass	an inner handle's SEED expression performs against the outer handler
+pass	an inner map shared between two outer generations survives the loser's drop
 pass	an inner same-effect handle's RESULT feeds the outer handler's next perform
 pass	an integer square root by Newton iteration converges to the floor at perfect squares and off-squares
 pass	an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type

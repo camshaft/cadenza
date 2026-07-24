@@ -102,7 +102,9 @@ type Node =
 /// eventual idiomatic cleanup — see the queue follow-up. 4 args covers the corpus's widest helpers.)
 type Tree =
   | Arena(Map(Int64, Node), Int64, Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Tuple(Int64, Int64)))
-                                   // The 12th table `ct` (M2-b-2b-ii) is the CTOR-TAG table: `Map(ctorNameId, tag)`
+                                   // The 12th table `ct` (M2-b-2b-ii) is the CTOR-TAG table: `Map(ctorNameId,
+                                   // (declName, tag))` (M2-b TySum: the value is a `(declName, tag)` tuple so a
+                                   // ctor use also types `TSum(declName)`, not just its tag)
                                    // for a USER SUM-TYPE constructor (both nullary + payload) recorded by
                                    // read-do-ctors. lower reads it to turn a payload-ctor CALL `(Some 5)` =
                                    // NApp(Some, arg) into `CCtor(tag, args)` (distinguishing it from an over-applied

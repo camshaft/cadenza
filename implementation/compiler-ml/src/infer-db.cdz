@@ -37,7 +37,7 @@ type Typed =
                                    // and a bare def-name-as-value (RDef) infer to a TFn; `(f x)` infers to the
                                    // TFn's result. Threaded through ty-bridge (TyFn↔TFn, replacing HO-1's TErr
                                    // stopgap) so a fn value survives the Typed↔Ty round-trip.
-  | TSum(Int64)                    // M2-b-2b-ii-c2 USER SUM: the pipeline counterpart of Ty.TySum(declName) —
+  | TSum(Int64)                    // M2-b-2b-ii-c2 USER SUM: the pipeline counterpart of Ty.TySum(declNameId) —
                                    // a user sum type by DECL name-id. A ctor USE (nullary or payload) + a match
                                    // over a sum scrutinee infer to TSum; decl-identity unify (bridged to
                                    // Ty.TySum). Replaces ii-b/ii-c1's Int64 PLACEHOLDER typing of ctor nodes.
@@ -118,13 +118,17 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         // M2-b-2b-ii-c payload ctor-pattern arm: infer the scrutinee (a sum handle — Int64 placeholder from
         // ii-b), SEED the binder `x`'s type as Int64 (a single-field payload is one Int64 in this slice; full
         // TySum-derived payload types are ii-c2), infer the body under it + the rest, then the match's type is
-        // the body's type (arms join — full join-check is ii-c2). Any TErr propagates.
+        // the JOIN of the body arm and the rest arm (like the integer NMatch/if — a Bool rest under an Int body
+        // must decline TErr, not silently take the body's type). Any TErr propagates. (Scrutinee-type checking
+        // — a TSum-typed scrutinee + cross-type ctor-pattern reject — is the coupled ii-c2b-2 follow-up.)
         (let m1 = infer-node(tree, scrutId, rcol, tcol) in
          (let mb = Map.insert(m1, binderId, t-int64()) in           // the payload binder is Int64 (placeholder)
           (let m2 = infer-node(tree, bodyId, rcol, mb) in
            (let m3 = infer-node(tree, restId, rcol, m2) in
             (match Map.lookup(m3, bodyId) with
-              | Option.Some(bt) => Map.insert(m3, id, bt)
+              | Option.Some(bt) => (match Map.lookup(m3, restId) with
+                  | Option.Some(rt) => Map.insert(m3, id, join-branch-types(bt, rt))   // arms must join (else TErr)
+                  | Option.None(_) => Map.insert(m3, id, Typed.TErr))
               | Option.None(_) => Map.insert(m3, id, Typed.TErr))))))
     | Option.Some(Node.NApp(calleeId, argId)) =>
         // slice-2 NULLARY call semantics: a nullary call `(mk)` is NApp(calleeBodyId, -1) — its type is the
