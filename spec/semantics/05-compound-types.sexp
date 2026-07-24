@@ -9495,8 +9495,9 @@
            a multi-use heap do-def escaping an if-select was freed after its conditional borrow —
            a wasm UAF). Lists reclaim through the RRB path, not the rope path, so the shape is
            re-pinned per heap representation. Inside a match arm over s, `pick` selects between two
-           runtime lists by length; the winner is SUMMED after the escape and the loser's length is
-           re-read after its last select use — both handles must survive the join. mode 1: out has 6
+           runtime lists by length; the SELECTED list is SUMMED after the escape and the FIXED handle
+           `out`'s length is re-read after its last select use (`out` is the winner in some modes, the
+           loser in others) — both handles must survive the join. mode 1: out has 6
            elements (sum 21) vs s 2 ([7 8], sum 15), 6<2 false → pick=s → 15·100+6·10+7 = 1567.
            mode 2: out [1] vs s [7 8 9], 1<3 true → pick=out → 1·100+1·10+7 = 117. mode 3: out
            EMPTY vs s [7 8] → pick=out, sum 0 — an empty RRB spine through the escape → 7.")
@@ -9526,7 +9527,8 @@
   (doc    "The MAP member of the #20 escape-shape family, completing the heap-collection triad
            (rope pinned in 13-strings, list above): CHAMP nodes reclaim through their own path.
            `pick` selects between two runtime-built maps by entry count; a LOOKUP goes through the
-           winner after the join and the loser's len is re-read after its last select use. mode 1:
+           SELECTED map after the join and the FIXED handle `m1`'s len is re-read after its last select
+           use (`m1` is the loser in modes 1/3, the winner in mode 2) — both handles must survive. mode 1:
            m1 has 4 entries vs m2 2, 4<2 false → pick=m2, lookup 1 → 100 → 100·10+4 = 1004.
            mode 2: m1 1 entry vs m2 3, 1<3 true → pick=m1, lookup 1 → 10 → 10·10+1 = 101. mode 3:
            BOTH singleton — the length TIE, 1<1 false → pick=m2, lookup 1 → 100 → 1001.")

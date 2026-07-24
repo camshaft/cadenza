@@ -684,6 +684,17 @@ pub enum FleetCmd {
         /// tick or two; a longer suppression avoids keystroke-spamming a genuinely-wedged one.
         #[arg(long, default_value_t = 900)]
         drain_nudge_grace: u64,
+        /// OPT-IN: REAP stranded dead-letters — archive the permanently-undrained actionable mail in a
+        /// STOPPED agent's inbox to its `processed/`, so the `stranded_agents` count doesn't grow
+        /// unbounded and mask a real drain-stall on a LIVE agent (concierge hygiene request). OFF by
+        /// default (report-only) — it MUTATES a peer's inbox, the operator's call, mirroring
+        /// `--nudge-drain-stalls`. LOSSLESS: every reaped message is first APPENDED to the append-only
+        /// `.claude/fleet/dead-letters.log` (a durable record), so a real work item (an `assign`/`issue`
+        /// sent to an agent that stopped before acting) is never silently destroyed — it's recoverable
+        /// from the log for re-routing. Only reaps an agent that is BOTH registry status=stopped AND has
+        /// a stop-file (its loop demonstrably exited — never a merely-idle live agent).
+        #[arg(long)]
+        reap_dead_letters: bool,
     },
 }
 
@@ -758,14 +769,18 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             grace_secs,
             nudge_drain_stalls,
             drain_nudge_grace,
+            reap_dead_letters,
         } => watchdog(
             &fleet,
-            dry_run,
-            stale_mult,
-            stale_cap,
-            grace_secs,
-            nudge_drain_stalls,
-            drain_nudge_grace,
+            WatchdogOpts {
+                dry_run,
+                stale_mult,
+                stale_cap,
+                grace_secs,
+                nudge_drain_stalls,
+                drain_nudge_grace,
+                reap_dead_letters,
+            },
         ),
         FleetCmd::Ack {
             request,
@@ -1892,6 +1907,81 @@ fn find_stranded_stopped_inboxes(fleet: &Fleet, reg: &Registry) -> Vec<(String, 
         .collect()
 }
 
+/// LOSSLESS reap of a STOPPED agent's stranded dead-letters (the opt-in `--reap-dead-letters` path).
+/// For each ACTIONABLE message queued in `name`'s inbox, FIRST append the full record to the
+/// append-only `.claude/fleet/dead-letters.log`, THEN move the file into the agent's `processed/`.
+/// The log-before-move ORDER is load-bearing: a real work item (an `assign`/`issue` sent to an agent
+/// that stopped before acting) must survive the archive so it can be re-routed — a blind `mv` would
+/// silently destroy it. If the durable-log append fails, the file is LEFT in place (not archived), so
+/// the reap can never lose a message it couldn't first record. Returns the count actually archived.
+/// Only ACTIONABLE mail is reaped (informational notes/merged acks are cosmetic clutter, left alone —
+/// the SAME `message_kind_is_actionable` classifier the count uses). Callers gate on stop-file +
+/// status=stopped, so this only ever touches a demonstrably-exited agent's inbox.
+fn reap_stranded_dead_letters(fleet: &Fleet, name: &str, now: u64) -> usize {
+    let dir = fleet.inbox(name);
+    let processed = dir.join("processed");
+    let mut reaped = 0usize;
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let mut names: Vec<String> = rd
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|f| message_kind_from_filename(f).is_some_and(message_kind_is_actionable))
+        .collect();
+    sort_inbox_filenames(&mut names); // oldest-first, so the log records arrival order.
+    for fname in names {
+        let src = dir.join(&fname);
+        // Durable record FIRST — if we can't log it, don't archive it (never lose an unrecorded item).
+        if !append_dead_letter_log(fleet, name, &src, &fname, now) {
+            eprintln!(
+                "  ! could not log dead-letter '{fname}' for '{name}' — LEFT in inbox (not reaped)"
+            );
+            continue;
+        }
+        std::fs::create_dir_all(&processed).ok();
+        if std::fs::rename(&src, processed.join(&fname)).is_ok() {
+            reaped += 1;
+        } else {
+            eprintln!(
+                "  ! logged dead-letter '{fname}' for '{name}' but failed to archive it to processed/"
+            );
+        }
+    }
+    reaped
+}
+
+/// Append one dead-letter to the append-only `.claude/fleet/dead-letters.log` before it is archived,
+/// so a reaped work item is recoverable for re-routing. One tab-separated line per message: reap-time,
+/// recipient (the stopped agent), filename, sender, kind, subject. Returns whether the append
+/// succeeded — the caller LEAVES the file in the inbox on failure, so nothing is archived unrecorded.
+fn append_dead_letter_log(fleet: &Fleet, agent: &str, src: &Path, fname: &str, now: u64) -> bool {
+    // Pull sender/kind/subject from the message for a useful record; fall back to the filename-derived
+    // kind if the JSON won't parse (a malformed dead-letter is still worth logging that it existed).
+    let (from, kind, subject) = match std::fs::read_to_string(src)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Message>(&t).ok())
+    {
+        Some(m) => (m.from, m.kind, m.subject.replace(['\t', '\n'], " ")),
+        None => (
+            "?".to_string(),
+            message_kind_from_filename(fname).unwrap_or("?").to_string(),
+            "(unparseable)".to_string(),
+        ),
+    };
+    use std::io::Write;
+    let log = fleet.root.join("dead-letters.log");
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+    {
+        Ok(mut f) => writeln!(f, "{now}\t{agent}\t{fname}\t{from}\t{kind}\t{subject}").is_ok(),
+        Err(_) => false,
+    }
+}
+
 /// Render a compact `[kind] subject` for a single inbox message file, for the stranded-dead-letter
 /// finding. Reads + parses the message; on any read/parse failure returns `(unparseable)` (a stranded
 /// file that isn't valid JSON is still a real dead-letter worth surfacing, just without detail). The
@@ -2327,17 +2417,33 @@ fn describe(fleet: &Fleet, name: &str) {
 
 // ── watchdog ───────────────────────────────────────────────────────────────────────────────────
 
-/// Self-heal a stalled fleet: re-arm any active agent whose `/loop` heartbeat has gone stale. See the
-/// `Watchdog` doc comment for the full contract. One pass, then return; a cron drives the cadence.
-fn watchdog(
-    fleet: &Fleet,
+/// The tunables for one `watchdog` pass — bundled into a struct so the fn takes ONE options param
+/// instead of a long positional arg list (which tripped `clippy::too_many_arguments` at 8/7 under the
+/// gate's `-D warnings`). Mirrors the `Watchdog` CLI command's fields one-to-one; the dispatch builds
+/// it from the parsed args. Keeps each knob named at the call site (no bare positional bools).
+struct WatchdogOpts {
     dry_run: bool,
     stale_mult: u32,
     stale_cap: u64,
     grace_secs: u64,
     nudge_drain_stalls: bool,
     drain_nudge_grace: u64,
-) {
+    reap_dead_letters: bool,
+}
+
+/// Self-heal a stalled fleet: re-arm any active agent whose `/loop` heartbeat has gone stale. See the
+/// `Watchdog` doc comment for the full contract. One pass, then return; a cron drives the cadence.
+fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
+    // Destructure once so the body reads unchanged (each knob keeps its short local name).
+    let WatchdogOpts {
+        dry_run,
+        stale_mult,
+        stale_cap,
+        grace_secs,
+        nudge_drain_stalls,
+        drain_nudge_grace,
+        reap_dead_letters,
+    } = opts;
     if !in_tmux() {
         eprintln!(
             "fleet watchdog: not inside a tmux session (no $TMUX) — nothing to re-arm. Run it from\n\
@@ -2889,12 +2995,13 @@ fn watchdog(
         }
     }
 
-    // STRANDED DEAD-LETTERS (report-only) — the SAME live-hub-only rationale as the queued-but-landed
-    // sweep above: actionable mail queued in a STOPPED agent's inbox is a permanent dead-letter (its
-    // loop has exited), and this rots INVISIBLY — the whole point of surfacing it. `fleet audit` finds
-    // it on demand, but the operator watches THIS ~4-min cron, not manual audits, so fold it in here
-    // too (and into the health-log below, so recurrence is greppable like every other anomaly). Never
-    // mutates a peer's inbox — re-routing is the operator's call (a second mutator would race sends).
+    // STRANDED DEAD-LETTERS — the SAME live-hub-only rationale as the queued-but-landed sweep above:
+    // actionable mail queued in a STOPPED agent's inbox is a permanent dead-letter (its loop has
+    // exited), and this rots INVISIBLY — the whole point of surfacing it. `fleet audit` finds it on
+    // demand, but the operator watches THIS ~4-min cron, not manual audits, so fold it in here too (and
+    // into the health-log below, so recurrence is greppable like every other anomaly). SURFACING never
+    // mutates a peer's inbox; the OPT-IN `--reap-dead-letters` (below) archives them losslessly so the
+    // count stays a meaningful signal instead of growing unbounded (concierge hygiene request).
     let stranded = find_stranded_stopped_inboxes(fleet, &reg);
     if !stranded.is_empty() {
         let total: usize = stranded.iter().map(|(_, n, _)| n).sum();
@@ -2905,6 +3012,33 @@ fn watchdog(
         );
         for (name, depth, oldest) in &stranded {
             eprintln!("    • '{name}' — {depth} undrained; oldest: {oldest}");
+        }
+    }
+    // OPT-IN LOSSLESS REAP (`--reap-dead-letters`): bound the stranded count so it stays a meaningful
+    // signal (a growing pile masks a real drain-stall on a LIVE agent). For each STOPPED agent (its loop
+    // has demonstrably exited), archive every actionable dead-letter to its `processed/` — but FIRST
+    // append the full message to the append-only `.claude/fleet/dead-letters.log`, so a real work item
+    // (an `assign`/`issue` sent to an agent that stopped before acting) is preserved for re-routing, not
+    // silently destroyed. This is why it's a durable-log-then-move, never a blind `mv`. Report-only by
+    // default (the surface above); the flag opts into the mutation, mirroring `--nudge-drain-stalls`.
+    let mut dead_letters_reaped = 0usize;
+    if reap_dead_letters && !stranded.is_empty() {
+        for (name, _, _) in &stranded {
+            if dry_run {
+                let n = actionable_inbox_depth(&fleet.inbox(name));
+                println!(
+                    "  DRY-RUN would reap {n} dead-letter(s) from stopped '{name}' → processed/ (logged first)"
+                );
+                dead_letters_reaped += n;
+            } else {
+                let n = reap_stranded_dead_letters(fleet, name, now);
+                if n > 0 {
+                    dead_letters_reaped += n;
+                    println!(
+                        "  ⌫ reaped {n} dead-letter(s) from stopped '{name}' → processed/ (logged to dead-letters.log)"
+                    );
+                }
+            }
         }
     }
 
@@ -2952,7 +3086,7 @@ fn watchdog(
 
     let stranded_agents = stranded.len();
     println!(
-        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed{}, {reaped} stopped window(s) reaped, {leases_reaped} leaked lease(s) reaped, {} queued-but-landed MR(s) surfaced{}.",
+        "fleet watchdog: checked {checked} active windowed agent(s); {}{rearmed} re-armed{}, {reaped} stopped window(s) reaped, {leases_reaped} leaked lease(s) reaped, {} queued-but-landed MR(s) surfaced{}{}.",
         if dry_run { "DRY-RUN: " } else { "" },
         // Surface the cron-death subset inline only when it fired — `reissued` of the re-arms escalated to
         // re-issuing `/loop` because a prior nudge didn't stick (the agent's recurring cron was dead, not a
@@ -2967,6 +3101,16 @@ fn watchdog(
         // keeps the common one-line report unchanged while making the anomaly visible when it matters.
         if stranded_agents > 0 {
             format!(", {stranded_agents} stopped agent(s) hold stranded dead-letters")
+        } else {
+            String::new()
+        },
+        // Report the reap only when it fired (opt-in `--reap-dead-letters`) — keeps the default
+        // report-only run's one-liner unchanged.
+        if dead_letters_reaped > 0 {
+            format!(
+                " ({}{dead_letters_reaped} dead-letter(s) reaped → processed/, logged)",
+                if dry_run { "would reap " } else { "" }
+            )
         } else {
             String::new()
         }
@@ -2993,6 +3137,7 @@ fn watchdog(
                 wedge_escalations,
                 leases_reaped,
                 stranded_agents,
+                dead_letters_reaped,
             },
         );
         if let Some(line) = summary {
@@ -3051,6 +3196,10 @@ struct WatchdogCounts {
     /// standing anomaly (unlike the transient re-arm/reap counts) — persistently >0 across sweeps is the
     /// tell that dead-letters are piling up unrouted, so it belongs in the greppable health log.
     stranded_agents: usize,
+    /// Stranded dead-letters ARCHIVED this sweep by the opt-in `--reap-dead-letters` (logged to
+    /// dead-letters.log, then moved to the stopped agent's `processed/`). An action count like `reaped`,
+    /// logged so a reap run is a greppable record — 0 on the default report-only sweep.
+    dead_letters_reaped: usize,
 }
 
 /// `checked` is the sweep's DENOMINATOR (active windowed agents examined) — pure CONTEXT, deliberately
@@ -3075,11 +3224,12 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         && c.wedge_escalations == 0
         && c.leases_reaped == 0
         && c.stranded_agents == 0
+        && c.dead_letters_reaped == 0
     {
         return None;
     }
     Some(format!(
-        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\tleases_reaped={}\tstranded_agents={}",
+        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}",
         c.rearmed,
         c.reissued,
         c.reaped,
@@ -3090,6 +3240,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         c.wedge_escalations,
         c.leases_reaped,
         c.stranded_agents,
+        c.dead_letters_reaped,
     ))
 }
 
@@ -8378,10 +8529,11 @@ mod tests {
                     wedge_escalations: 1,
                     leases_reaped: 4,
                     stranded_agents: 6,
+                    dead_letters_reaped: 7,
                 }
             ),
             Some(
-                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tdrain_stall_escalations=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\tleases_reaped=4\tstranded_agents=6"
+                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tdrain_stall_escalations=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\tleases_reaped=4\tstranded_agents=6\tdead_letters_reaped=7"
                     .to_string()
             )
         );
@@ -8511,6 +8663,75 @@ mod tests {
             )
             .is_some()
         );
+        // A dead-letter reap alone is notable (opt-in `--reap-dead-letters` fired) — pins the new gate
+        // conjunct so it can't be dropped from the notability check while the counter lives in the struct.
+        assert!(
+            watchdog_log_line(
+                1,
+                42,
+                &WatchdogCounts {
+                    dead_letters_reaped: 1,
+                    ..Default::default()
+                }
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn reap_stranded_dead_letters_logs_then_archives_actionable_and_leaves_informational() {
+        let root = std::env::temp_dir().join(format!("cdz-reap-deadletter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: PathBuf::from("/hub/.claude/worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        let ib = fleet.inbox("fix-done");
+        std::fs::create_dir_all(&ib).unwrap();
+        // Two ACTIONABLE dead-letters (an assign work item + a reject) and one INFORMATIONAL note.
+        std::fs::write(
+            ib.join("000000000001-10-assign.json"),
+            r#"{"from":"fleet","to":"fix-done","kind":"assign","subject":"own this issue: foo.sexp","seq":1}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            ib.join("000000000002-11-reject.json"),
+            r#"{"from":"pr-sync","to":"fix-done","kind":"reject","subject":"broke the gate","seq":1}"#,
+        )
+        .unwrap();
+        std::fs::write(ib.join("000000000003-12-note.json"), "{}").unwrap();
+
+        let reaped = reap_stranded_dead_letters(&fleet, "fix-done", 1700000000);
+        assert_eq!(
+            reaped, 2,
+            "both actionable messages archived, the note left"
+        );
+
+        // The two actionable files moved to processed/; the informational note stays in the inbox.
+        assert!(!ib.join("000000000001-10-assign.json").exists());
+        assert!(!ib.join("000000000002-11-reject.json").exists());
+        assert!(ib.join("000000000003-12-note.json").exists());
+        assert!(ib.join("processed/000000000001-10-assign.json").exists());
+        assert!(ib.join("processed/000000000002-11-reject.json").exists());
+        // The actionable count is now zero — the reap bounded it (the note is informational, uncounted).
+        assert_eq!(actionable_inbox_depth(&ib), 0);
+
+        // Both were LOGGED before archiving — the durable record preserves the work item for re-routing.
+        let log = std::fs::read_to_string(root.join("dead-letters.log")).unwrap();
+        assert!(log.contains(
+            "fix-done\t000000000001-10-assign.json\tfleet\tassign\town this issue: foo.sexp"
+        ));
+        assert!(
+            log.contains("fix-done\t000000000002-11-reject.json\tpr-sync\treject\tbroke the gate")
+        );
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "one log line per reaped dead-letter, note not logged"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
