@@ -201,3 +201,29 @@ def ss-payload-ctor-in-helper-roundtrip() =
     ) with
     | Option.Some(v) => (if v == 7 then unit else trap("(mk)=Some 7, match ((Some x) x) → 7"))
     | Option.None(_) => trap("a payload sum constructed in a helper deconstructs in main")
+
+// ---- PR#835 reader-correctness: an unknown-ctor or no-binder ctor-pattern arm DECLINES cleanly ----
+// read-ctor-pattern-arm's decline path must skip the WHOLE arm (pattern + body + arm close) so the remaining
+// arms + the enclosing (match …) still parse — the decline surfaces as None (poison), NEVER a mis-parse of the
+// later arms or a fabricated value. Two shapes: (1) an UNKNOWN ctor in a payload-shaped pattern; (2) a payload
+// ctor pattern with NO binder `((Some) body)` (previously a silent empty-name NVar).
+
+@test
+def ss-ctor-pattern-unknown-ctor-declines-cleanly() =
+  // ((Nope x) …) — Nope is not a recorded ctor → decline. The trailing (_ 0) arm follows the declined arm; the
+  // fix's whole-arm skip means the reader still reaches it and the match declines (None), not a corrupt parse.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 5) ((Nope x) x) (_ 0))) (export main))"
+    ) with
+    | Option.Some(_) => trap("an unknown-ctor pattern arm must DECLINE (None), never fabricate a value")
+    | Option.None(_) => unit
+
+@test
+def ss-ctor-pattern-no-binder-declines-cleanly() =
+  // ((Some) x) — a payload ctor pattern with NO binder → decline (doc: "ctor with NO binder → decline"), rather
+  // than silently binding an empty-name NVar. The following (_ 0) arm is still reached; result is a clean None.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 5) ((Some) 1) (_ 0))) (export main))"
+    ) with
+    | Option.Some(_) => trap("a no-binder ctor pattern arm must DECLINE (None), never bind an empty name")
+    | Option.None(_) => unit

@@ -37,7 +37,7 @@ type Typed =
                                    // and a bare def-name-as-value (RDef) infer to a TFn; `(f x)` infers to the
                                    // TFn's result. Threaded through ty-bridge (TyFn↔TFn, replacing HO-1's TErr
                                    // stopgap) so a fn value survives the Typed↔Ty round-trip.
-  | TSum(Int64)                    // M2-b-2b-ii-c2 USER SUM: the pipeline counterpart of Ty.TySum(declName) —
+  | TSum(Int64)                    // M2-b-2b-ii-c2 USER SUM: the pipeline counterpart of Ty.TySum(declNameId) —
                                    // a user sum type by DECL name-id. A ctor USE (nullary or payload) + a match
                                    // over a sum scrutinee infer to TSum; decl-identity unify (bridged to
                                    // Ty.TySum). Replaces ii-b/ii-c1's Int64 PLACEHOLDER typing of ctor nodes.

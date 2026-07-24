@@ -640,20 +640,29 @@ def read-match-arms(s: String, i: Int64, scrutId: Int64, tree: Tree) =
 /// `p` is at the inner `(` of the pattern (the arm's outer `(` already consumed by open-paren in read-match-arms).
 /// Read the ctor NAME + its single binder NAME (an NVar node bound in the body scope), look the ctor's tag via
 /// ctor-tag-of, consume the pattern's `)`, read the body, recurse for the rest, build NMatchCtor. A ctor with NO
-/// binder or an unknown ctor → decline (the else body / unsupported). Single-payload-field first (one binder).
+/// binder or an unknown ctor → decline. A decline MUST skip the WHOLE arm (pattern + body + the arm's close `)`)
+/// so the remaining arms + the enclosing `(match …)` still parse — `skip-to-close(s, p, 1)` starts at the arm's
+/// inner `(` with the arm's already-open `(` counted as depth 1, so it lands just past the arm's closing `)`. We
+/// then recurse for the remaining arms (positions the reader past the whole arm sequence) and return the poison
+/// `unsupported` node so the match declines cleanly (never a fabricated match). Single-payload-field first.
 def read-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tree) =
   (let pi = open-paren(s, p) in                                     // open the pattern `(Ctor x)`
    (match scan-atom(s, skip-space(s, pi), "") with | (cnm, c1) =>   // the ctor NAME
      (match ctor-tag-of(tree, name-id(cnm)) with
-       | Option.None(_) => (match unsupported(tree) with | (id, t0) => (id, close-paren(s, skip-to-close(s, c1, 1)), t0))  // unknown ctor → decline
+       | Option.None(_) =>                                          // unknown ctor → decline, skip the WHOLE arm
+           (match unsupported(tree) with | (id, t0) =>
+             (match read-match-arms(s, skip-to-close(s, p, 1), scrutId, t0) with | (_rest, r1, t1) => (id, r1, t1)))
        | Option.Some(ctorTag) =>
            (match scan-atom(s, skip-space(s, c1), "") with | (bnm, b1) =>   // the payload BINDER name `x`
-             (match add-node(tree, Node.NVar(name-id(bnm))) with | (binderId, t1) =>   // the binder node (bound in body)
-               (let pc = close-paren(s, b1) in                       // close the pattern `(Ctor x)`
-                (match read-form(s, pc, t1) with | (bodyId, q2, t2) =>    // the arm body
-                  (let q3 = close-paren(s, q2) in                    // close the arm `((Ctor x) body)`
-                   (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>   // recurse for rest
-                     (match add-node(t3, Node.NMatchCtor(scrutId, ctorTag, binderId, bodyId, restId)) with | (id, t4) => (id, r1, t4)))))))))))
+             (if (bnm == "")                                        // NO binder `((Ctor) body)` → decline (skip whole arm)
+              then (match unsupported(tree) with | (id, t0) =>
+                     (match read-match-arms(s, skip-to-close(s, p, 1), scrutId, t0) with | (_rest, r1, t1) => (id, r1, t1)))
+              else (match add-node(tree, Node.NVar(name-id(bnm))) with | (binderId, t1) =>   // the binder node (bound in body)
+                     (let pc = close-paren(s, b1) in                 // close the pattern `(Ctor x)`
+                      (match read-form(s, pc, t1) with | (bodyId, q2, t2) =>    // the arm body
+                        (let q3 = close-paren(s, q2) in              // close the arm `((Ctor x) body)`
+                         (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>   // recurse for rest
+                           (match add-node(t3, Node.NMatchCtor(scrutId, ctorTag, binderId, bodyId, restId)) with | (id, t4) => (id, r1, t4))))))))))))
 
 /// M2-a nullary CTOR-PATTERNS in match: a match-arm pattern is an integer LITERAL (`(0 body)`) OR a nullary
 /// CONSTRUCTOR name (`(Red body)`). A nullary ctor is a nullary def `Ck → NLit(tag)` (recorded by read-do-type),
