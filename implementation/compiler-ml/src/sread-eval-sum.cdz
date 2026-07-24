@@ -252,3 +252,41 @@ def ss-payload-pattern-arms-join-still-runs() =
     ) with
     | Option.Some(v) => (if v == 9 then unit else trap("matching Int arms join + run → 9"))
     | Option.None(_) => trap("a payload-pattern match with joining Int arms must still run")
+
+// ---- MULTI-FIELD payload ctors are OUT of the wired subset → clean DECLINE (boundary guard) ----
+// ii-b/ii-c wired SINGLE-field payloads only. A multi-field ctor `(P Int64 Int64)` must DECLINE cleanly (None),
+// never fabricate a value (lower's lower-rec-args gathers arg2/3/4 into the CCtor, but the well-typed gate
+// declines the under-typed node first). Locks the boundary the ii-c2b-2 slice builds up FROM — verified by a
+// probe this cycle; a future ctor-typing change must not silently start fabricating multi-field payloads.
+
+@test
+def ss-multifield-payload-ctor-bare-declines() =
+  // (P 3 4) as main's result — a 2-field payload construct is out of subset → clean decline (None).
+  match run-src(
+      "(do (type Pair (P Int64 Int64)) (def (main) (P 3 4)) (export main))"
+    ) with
+    | Option.Some(_) => trap("a 2-field payload ctor (P 3 4) must DECLINE, never fabricate a value")
+    | Option.None(_) => unit
+
+@test
+def ss-multifield-payload-ctor-in-match-declines() =
+  // (match (P 3 4) ((P x) x) (_ 0)) — constructing + deconstructing a 2-field payload is out of subset → decline.
+  match run-src(
+      "(do (type Pair (P Int64 Int64)) (def (main) (match (P 3 4) ((P x) x) (_ 0))) (export main))"
+    ) with
+    | Option.Some(_) => trap("a 2-field payload ctor in a match must DECLINE, never fabricate/mis-bind")
+    | Option.None(_) => unit
+
+// ---- NESTED single-field payloads round-trip: a payload whose value is ITSELF a sum handle ----
+// (Some (Some 5)) — the outer ctor's payload IS the inner ctor's store handle. Constructing nests one handle
+// inside another's cell; deconstructing reads the outer payload back as the inner handle, then reads THAT.
+// Within the single-field subset, so it must round-trip (returns 5), NOT fabricate or mis-store the inner handle.
+
+@test
+def ss-nested-payload-some-of-some-roundtrips() =
+  // (Some (Some 5)): match outer → y = inner handle; match y → x = 5. Two levels of store handle round-trip → 5.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (Some (Some 5)) ((Some y) (match y ((Some x) x) (_ 0))) (_ 0))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 5 then unit else trap("nested (Some (Some 5)) must round-trip to 5, not a fabricated value"))
+    | Option.None(_) => trap("nested (Some (Some 5)) must round-trip (a single-field-payload handle nested in another)")
