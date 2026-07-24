@@ -1207,6 +1207,45 @@
             (export main)))
   (output (: 21 Int64)))
 
+(case "an abortive perform in a body tail referencing a do-local binding stays in scope"
+  (doc    "The abortive companion of the resuming do-def-in-perform-arg pin above (v-effects 0d382e3f4 —
+           a SEPARATE bug from the resuming do→let fix e49c698a1, which is why the let form CDZ0101'd
+           identically before this fix). On abort, `reduce_handle` collapsed the handle to the abort value
+           and DISCARDED the body's binding scope, so an abort value referencing a body-local `(def v e)`
+           orphaned it → CDZ0101 unbound. The fix re-wraps the abort value in its bindings when the body
+           fires an abort. `run 5`: v = u+2 = 7, `(Bail.bail v)` abandons the computation → the handle's
+           value is 7. Both backends.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (run (: u Int64))
+              (handle Bail 0
+                ((bail (n) s n))
+                (do
+                  (def v (+ u 2))
+                  (Bail.bail v))))
+            (def (main) (run 5))
+            (export main)))
+  (output (: 7 Int64)))
+
+(case "an abortive perform in a STRICT OPERAND referencing a let-local binding stays in scope"
+  (doc    "The strict-operand face of the abortive scope fix (v-effects 0d382e3f4) — the row that CDZ0101'd
+           on BOTH the do and let forms before the fix, proving it independent of the resuming do→let
+           normalization. The abort perform sits in a strict `+` operand referencing a body-local `let`
+           binding: `(let ((v (+ u 2))) (+ (Bail.bail v) 100))`. The abort abandons before the `+`, so the
+           `+ 100` never runs; the handle value is the abort value 7. `run 5` → 7. Both backends. Pinned
+           beside the resuming pair so the full do-def/abort-in-perform matrix (resuming e49c698a1 +
+           abortive 0d382e3f4) has durable corpus coverage.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (run (: u Int64))
+              (handle Bail 0
+                ((bail (n) s n))
+                (let ((v (+ u 2)))
+                  (+ (Bail.bail v) 100))))
+            (def (main) (run 5))
+            (export main)))
+  (output (: 7 Int64)))
+
 (case "a runtime condition selects an abortive branch reading an enclosing parameter"
   (doc    "The branch-tail abort with a RUNTIME condition over an enclosing parameter — the shape a
            validation routine takes: `(handle Bail 0 ((bail (n) s n)) (if (< x 5) (Bail.bail 7) x))`. The

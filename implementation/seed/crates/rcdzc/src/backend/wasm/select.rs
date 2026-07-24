@@ -3513,7 +3513,47 @@ fn collect_cont_ops_rec(
                     crate::core::PathStep::RestFrom(_) => false, // never on a sum-disc path
                 };
             }
+            // The payload leaf type after the path walk — needed to tell an Int probe over a BOXED
+            // BIGINT leaf (compares via `bigint-cmp` + a materialized leaf, imports below) from an
+            // ordinary fixnum/narrow Int probe (`get-int`). MUST agree with `emit_littest_probe`'s `cur`
+            // so the import set matches the emitted ops exactly (an extra/missing import shifts every
+            // `CallImport` index). Walk from the scrutinee type: a `Payload` over a `Sum` takes the
+            // variant's payload type (variant-0 fallback, matching emit's no-`sum_path_types` case — exact
+            // for a single-variant sum, the `(type W (Mk BigInt))` shape); an erased nominal `Payload`
+            // peels; an `Elem` takes the tuple/list element.
+            let mut lit_cur = type_of(db, scrutinee);
+            for step in path {
+                match step {
+                    crate::core::PathStep::Payload => match lit_cur.strip_nominal().clone() {
+                        Ty::Sum { .. } => {
+                            lit_cur = variant_payload_ty_at(db, &lit_cur, 0).unwrap_or(Ty::Any);
+                        }
+                        inner => lit_cur = inner,
+                    },
+                    crate::core::PathStep::Elem(i) => {
+                        lit_cur = match lit_cur.strip_nominal() {
+                            Ty::List(e) => (**e).clone(),
+                            Ty::Tuple(ts) => ts.get(*i).cloned().unwrap_or(Ty::Any),
+                            _ => Ty::Any,
+                        };
+                    }
+                    crate::core::PathStep::RestFrom(_) => {}
+                }
+            }
+            let int_probe_is_bigint = matches!(lit_cur.strip_nominal(), Ty::BigInt);
             match probe {
+                // A BIGINT-payload Int probe compares via `bigint-cmp` over a materialized literal leaf
+                // (`bigint-of-i64` for a fits-i64 literal, else the sign-magnitude byte leaf), then drops
+                // the owned literal — mirror `emit_littest_probe`'s BigInt branch EXACTLY. An ordinary
+                // (fixnum/narrow) Int probe reads `get-int`.
+                crate::core::Probe::Int(_) if int_probe_is_bigint => {
+                    out.insert(OP_BIGINT_CMP);
+                    out.insert(OP_DROP);
+                    out.insert(OP_BIGINT_OF_I64);
+                    out.insert(OP_BYTES_ALLOC);
+                    out.insert(OP_BYTES_SET);
+                    out.insert(OP_BIGINT_OF_BYTES)
+                }
                 crate::core::Probe::Int(_) => out.insert(OP_GET_INT),
                 crate::core::Probe::Bool(_) => out.insert(OP_GET_BOOL),
                 // A string-literal probe over a RUNTIME payload emits a `value-eq` content compare against a
@@ -13524,6 +13564,29 @@ fn emit_littest_probe(
     // the sum-payload twin of the scalar-probe eqz special case.
     match probe {
         crate::core::Probe::Int(v) => {
+            // A BIGINT payload leaf is a HEAP handle, NOT a boxed fixnum — `get-int` (which reads a boxed
+            // i64 fixnum) is wrong on it: it never equals the literal (silent wrong value), and in a
+            // recursive fn the raw i32 handle vs `i64.const` is a type mismatch (invalid module, breaker
+            // FINDING #22 / corpus adv-nonzero-bigint-literal-probe). Compare the BigInt PROPERLY: the
+            // payload handle is on the stack (a `sum-payload` leaf), MATERIALIZE the literal as a fresh
+            // owned BigInt leaf, `bigint-cmp` (three-way, BORROWS both) → 0 iff equal (`i64.eqz`), then
+            // reclaim the owned literal leaf (the payload stays borrowed from the scrutinee's shell) — the
+            // sum-payload literal-probe twin of `Core::BigIntCmp`'s borrow-and-reclaim. `bigint-cmp` borrows
+            // (does not consume), so TEE the literal handle before the call so a copy survives to drop.
+            // Applies for any literal value (a BigInt `0` is still a heap handle → must NOT take the i64.eqz
+            // fast path below); this branch precedes it.
+            if holds_handle && matches!(cur.strip_nominal(), Ty::BigInt) {
+                let lit_slot = *high;
+                *high += 1;
+                scratch_ty.insert(lit_slot, ValType::I32);
+                emit_const_bigint_leaf(v, out); // [payload, lit:i32] — fresh owned literal leaf
+                out.push(Lir::LocalTee(lit_slot)); // stash a copy of the literal handle to drop after cmp
+                out.push(Lir::CallImport(OP_BIGINT_CMP)); // borrows payload+lit → [cmp:i64] (0 = equal)
+                out.push(Lir::LocalGet(lit_slot));
+                out.push(Lir::CallImport(OP_DROP)); // reclaim the owned literal leaf → [cmp:i64]
+                out.push(Lir::I64Eqz); // [bool]
+                return Ok(());
+            }
             // Read the scalar out of the box (`get-int` → NORMALIZED i64) when the leaf is a heap
             // handle, and compare at i64. An ERASED scalar newtype instead left the RAW payload on
             // the stack at its NATIVE machine width — i64 for `Int64`, but i32 for a NARROW newtype

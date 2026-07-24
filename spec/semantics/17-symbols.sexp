@@ -276,6 +276,28 @@
             (def (main) (f (Mk (Symbol.of (String.concat "su" "b"))))) (export main)))
   (output (: 0 Int64)))
 
+(case "a Symbol-payload literal probe inside a RECURSIVE fn matches (recursive-specialization control)"
+  (doc    "A nested symbol-literal payload probe `(Mk #\"go\")` inside a self-recursive `walk` — the
+           recursive-fn dimension of the nested-payload cases above. `walk` counts `n` down and, at the
+           base, probes its `W` argument's Symbol payload against the literal `#\"go\"`; `(walk 2 (Mk
+           #\"go\"))` recurses twice then matches → 40. Pins that wasm's recursive-fn specialization of a
+           literal-payload probe is SOUND for an interned-heap-handle payload (Symbol), a positive control
+           isolating a known BigInt-payload materialization defect in the SAME recursive context (breaker
+           FINDING #22: a nonzero BigInt literal probe in a recursive fn miscompiles — HELD pin — while
+           this Symbol twin computes correctly, proving the breakage is BigInt-materialization-specific,
+           not the recursive-specialization machinery). Rust declines the literal-payload probe honestly
+           (todo, 'a non-scalar literal-payload probe is not rendered by the Rust backend'), so this is
+           also a rust-coverage marker for when that renders.")
+  (input  (do
+            (type W (Mk Symbol))
+            (def (walk (: n Int64) (: w W))
+              (if (< n 1)
+                (match w ((Mk #"go") 40) (_ (- 0 1)))
+                (walk (- n 1) w)))
+            (def (main) (walk 2 (Mk #"go")))
+            (export main)))
+  (output (: 40 Int64)))
+
 ; The landed symbol-literal cases pin the first-arm match, the wildcard miss, and a nested-payload match.
 ; These pin the neighbors: hitting the SECOND arm (arms are tried by CONTENT, so a symbol-literal match is
 ; order-independent across disjoint literals), the equivalence to the `if (= s lit)` CHAIN the doc names as

@@ -13655,6 +13655,16 @@ impl ShapeTableBuilder {
             Ty::Float(ft) if ft.ground_width() == 64 => self.push(ShapeNode::Float),
             Ty::Float(ft) if ft.ground_width() == 32 => self.push(ShapeNode::Float32),
             Ty::String => self.push(ShapeNode::Str),
+            // A SYMBOL is a String byte-leaf at run time (tagless heap — no `Shape::Sym`, no intern
+            // table; a Symbol IS its canonical UTF-8 leaf, shared rep with String, see `Symbol.of`). So its
+            // orderable descriptor is `ShapeNode::Str` exactly like the String it wraps — the runtime sorts
+            // and renders it through the same `Shape::Str` path. Without this arm a `(Set Symbol)`/`(Map
+            // Symbol _)` passed the `orderable_leaf_or_compound` guard (Symbol IS orderable — its `<`/`=`
+            // pins compute) but then declined at `set_shape_descriptor`/`map_shape_descriptor` ("no
+            // orderable descriptor"), a check/emit divergence: wasm `Set.to-list`/`Map.to-list` over a
+            // Symbol element/key declined while both rust targets computed the content-byte order. The
+            // value form renders `(: … Symbol)` via `type_node_of`'s `Ty::Symbol` leaf.
+            Ty::Symbol => self.push(ShapeNode::Str),
             Ty::Bytes => self.push(ShapeNode::Bytes),
             Ty::Unit => self.push(ShapeNode::Unit),
             Ty::Tuple(elems) => {

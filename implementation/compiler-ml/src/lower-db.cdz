@@ -61,6 +61,17 @@ type Core =
                                    // env and eval `then`; else eval `else` (the fall-through to the next arm).
                                    // A nested chain of CMatchSum = an N-arm sum match (like NMatch→CIf for ints).
                                    // Binders are canonical binder-ids (CVar keys), positional to the payload.
+  | CMatchEnum(Core, Int64, Core, Core)  // ii-c2b-2 ENUM-DISC sum DECONSTRUCT (Z1): `CMatchEnum(scrut, tag,
+                                   // then, else)` for a match arm over an ENUM-DISC (all-nullary, decl-is-enum-disc)
+                                   // sum. Such a value is a BARE TAG (a CNum, no heap cell), so eval compares the
+                                   // scrutinee value DIRECTLY against `tag` (not store-tag, which returns None for
+                                   // a bare tag → the reason plain CMatchSum can't match an enum-disc scrutinee).
+                                   // No binders (a nullary ctor carries no payload). Equal → `then`, else → `else`.
+                                   // SOUND without a runtime discriminator: infer gates the scrutinee to TSum-of-
+                                   // the-decl (a plain Int is TInt ≠ TSum → declined before lower), so the bare Int
+                                   // IS a ctor tag. lower picks CMatchEnum (vs CMatchSum) via decl-is-enum-disc.
+                                   // Mirrors rcdzc's ONE MatchSum whose tag-read branches on ty_is_enum_disc at
+                                   // select. Eval-only for now (emit deferred, like CMatchSum).
 
 /// The canonical Int64 constant — the width the monomorphic-i64 pipeline lowers every literal to today (a
 /// narrow-width annotation lowers to a NARROW CNum; emit reads the width). A single name so construct sites

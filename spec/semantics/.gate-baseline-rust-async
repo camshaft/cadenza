@@ -1904,6 +1904,7 @@ pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
 pass	a nested symbol-literal payload falls through on a non-matching symbol
+todo	a Symbol-payload literal probe inside a RECURSIVE fn matches (recursive-specialization control)
 pass	a nested tuple list element is bound over a runtime list and folded across the rest
 pass	a nested tuple-in-tuple float key MISSES a Map key with a different deep float leaf
 pass	a nested tuple-in-tuple float key is a Map key found by a separately-built equal key
@@ -2934,6 +2935,7 @@ pass	a variant guard reads the payload binder AND an enclosing binding
 pass	a variant named Bool shadows the prelude Bool within its declaring module
 pass	a variant named like a prelude type is constructed and matched in its declaring module
 pass	a variant pattern over a Bool scrutinee is a type error
+pass	an ill-typed ctor-match scrutinee taints the whole match, not masked by well-typed arms
 pass	a variant pattern over a scalar scrutinee is a type error
 pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
 pass	a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit
@@ -4960,3 +4962,5 @@ pass	a top-level do-local fn capturing a constant lowers (capture control)
 pass	a runtime-rope do-def that escapes an if-select in a match arm survives (multi-use heap keep, not a UAF)
 pass	a do-def value in a handle body flows into a perform's argument and stays in scope
 pass	a let-bound value in a handle body flows into a perform's argument (the always-worked twin)
+pass	an abortive perform in a body tail referencing a do-local binding stays in scope
+pass	an abortive perform in a STRICT OPERAND referencing a let-local binding stays in scope
