@@ -1907,6 +1907,17 @@ fn find_stranded_stopped_inboxes(fleet: &Fleet, reg: &Registry) -> Vec<(String, 
         .collect()
 }
 
+/// May the opt-in reap ARCHIVE this stranded stopped agent's dead-letters? Only when its loop is
+/// DEMONSTRABLY exited — i.e. a stop-file is present (`stopfile_exists`), the same belt-and-suspenders
+/// proof the window reap requires. The stranded set is already `status=stopped`-filtered for VISIBILITY
+/// (surfacing shows any stopped agent's dead-letters), but a registry that says `stopped` without a
+/// stop-file may be out of sync — a crash that never dropped one, or a re-activated agent — so the
+/// MUTATING reap must not touch it (PR#841 review). Pure so the mutation gate is unit-pinned apart from
+/// `watchdog`'s tmux-bound body.
+fn dead_letter_reap_allowed(stopfile_exists: bool) -> bool {
+    stopfile_exists
+}
+
 /// LOSSLESS reap of a STOPPED agent's stranded dead-letters (the opt-in `--reap-dead-letters` path).
 /// For each ACTIONABLE message queued in `name`'s inbox, FIRST append the full record to the
 /// append-only `.claude/fleet/dead-letters.log`, THEN move the file into the agent's `processed/`.
@@ -3024,6 +3035,18 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
     let mut dead_letters_reaped = 0usize;
     if reap_dead_letters && !stranded.is_empty() {
         for (name, _, _) in &stranded {
+            // SURFACING (above) shows dead-letters for ANY stopped agent, but the MUTATING reap needs the
+            // stronger "loop DEMONSTRABLY exited" proof — registry status=stopped AND a stop-file — the same
+            // belt-and-suspenders gate the window reap uses (PR#841 review): a registry that says `stopped`
+            // WITHOUT a stop-file may be out of sync (a crash that never dropped one, or a re-activated
+            // agent), so archiving its inbox could move a still-live agent's mail. The stranded set is
+            // status-only by design (visibility); enforce the stop-file here, at the mutation.
+            if !dead_letter_reap_allowed(fleet.stopfile(name).exists()) {
+                eprintln!(
+                    "  ~ NOT reaping '{name}': registry says stopped but NO stop-file (not demonstrably exited) — surfaced only, left in inbox"
+                );
+                continue;
+            }
             if dry_run {
                 let n = actionable_inbox_depth(&fleet.inbox(name));
                 println!(
@@ -8676,6 +8699,14 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    #[test]
+    fn dead_letter_reap_allowed_only_when_stop_file_present() {
+        // The MUTATING reap requires a stop-file (loop demonstrably exited), even though the stranded
+        // set is status=stopped-only for visibility (PR#841 review). No stop-file → surfaced, never reaped.
+        assert!(dead_letter_reap_allowed(true));
+        assert!(!dead_letter_reap_allowed(false));
     }
 
     #[test]
