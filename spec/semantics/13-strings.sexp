@@ -846,6 +846,28 @@
   (call   main (: 500 Int64))
   (output (: 1 Int64)))
 
+(case "dropping a rope built OVER a survivor must not free the shared child node"
+  (doc    "The ROPE member of the generation-sharing reclaim family (the CHAMP/RRB members live in
+           05-compound): r2 = (String.concat r1 suffix) holds r1 as its concat node's LEFT CHILD.
+           mode 1 keeps the CHILD r1 and drops the parent — freeing the concat node must not cascade
+           into the shared child, and the survivor is verified by FULL content equality (a stale
+           length can pass while freed leaf bytes corrupt the content). mode 2 keeps the parent past
+           the child's last direct use. Encodes byte-len·10 + content-ok: mode 1 → \"ababab\"(6) →
+           61, mode 2 → \"abababzzzz\"(10) → 101.")
+  (input  (do
+            (def (rep (: s String) (: n Int64) (: acc String))
+              (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
+            (def (main (: mode Int64))
+              (do
+                (def r1 (rep "ab" 3 ""))
+                (def r2 (String.concat r1 (rep "z" 4 "")))
+                (def keep (if (= mode 1) r1 r2))
+                (def ok (if (= keep (if (= mode 1) "ababab" "abababzzzz")) 1 0))
+                (+ (* (String.byte-len keep) 10) ok)))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 61 Int64))
+  (call main (: 2 Int64)) (output (: 101 Int64)))
+
 (case "a runtime string rope matches a string-literal arm"
   (doc    "The `match` sibling: `(match (rep \"hi\" 3) (\"hixxx\" 1) (_ 0))` takes the \"hixxx\" arm → 1. A
            string `match` desugars to a chain of `(= scrutinee <literal>)` value-eq tests, so it hit the
