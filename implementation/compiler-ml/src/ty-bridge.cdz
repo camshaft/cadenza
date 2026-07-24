@@ -132,4 +132,20 @@ def tb-fn-to-ty-is-tyfn() =
     | Ty.TyFn(_, _) => unit
     | _ => trap("TFn → Ty.TyFn (real bridge, not TErr stopgap)"))
 
+@test
+def tb-sum-round-trips() =
+  // M2-b-2b-ii-c2: a sum type survives the Typed<->Ty bridge WITHOUT grounding or dropping — TSum(1) → TySum(1)
+  // (forward), TySum(1) → TSum(1) (back), and the full round-trip preserves the decl name-id.
+  (match typed-to-ty(Typed.TSum(1)) with
+    | Ty.TySum(nm) => (if nm == 1 then
+        (match ty-to-typed(Ty.TySum(1)) with
+          | Typed.TSum(nb) => (if nb == 1 then
+              (match ty-to-typed(typed-to-ty(Typed.TSum(1))) with
+                | Typed.TSum(nc) => (if nc == 1 then unit else trap("round-trip keeps decl id"))
+                | _ => trap("round-trip stays TSum"))
+            else trap("TySum(1) → TSum(1) keeps id"))
+          | _ => trap("TySum → TSum (back)"))
+      else trap("TSum(1) → TySum(1) keeps id"))
+    | _ => trap("TSum → TySum (forward, no grounding/drop)"))
+
 export { typed-to-ty, ty-to-typed }

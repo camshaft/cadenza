@@ -8766,6 +8766,43 @@ mod tests {
     }
 
     #[test]
+    fn reap_leaves_the_file_in_place_when_the_durable_log_append_fails() {
+        // The load-bearing LOSSLESS invariant: if the append to dead-letters.log FAILS, the message is
+        // NEVER archived (never lost unrecorded). Force the append to fail by making `dead-letters.log` a
+        // DIRECTORY — OpenOptions::append can't open it — then assert the actionable dead-letter stays in
+        // the inbox, is NOT moved to processed/, and nothing is counted reaped.
+        let root = std::env::temp_dir().join(format!("cdz-reap-logfail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: PathBuf::from("/hub/.claude/worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        std::fs::create_dir_all(&root).unwrap();
+        // Make the log path a directory so the append open() fails deterministically.
+        std::fs::create_dir_all(root.join("dead-letters.log")).unwrap();
+        let ib = fleet.inbox("fix-crashed");
+        std::fs::create_dir_all(&ib).unwrap();
+        std::fs::write(
+            ib.join("000000000001-10-assign.json"),
+            r#"{"from":"fleet","to":"fix-crashed","kind":"assign","subject":"own this issue: bar.sexp","seq":1}"#,
+        )
+        .unwrap();
+
+        let reaped = reap_stranded_dead_letters(&fleet, "fix-crashed", 1700000000);
+        assert_eq!(reaped, 0, "log append failed → nothing reaped");
+        // The message MUST still be in the inbox (not archived unrecorded), and processed/ must not hold it.
+        assert!(
+            ib.join("000000000001-10-assign.json").exists(),
+            "message left in inbox when it could not be logged"
+        );
+        assert!(!ib.join("processed/000000000001-10-assign.json").exists());
+        assert_eq!(actionable_inbox_depth(&ib), 1, "still counted as stranded");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn should_notify_saturation_escalates_pre_wall_and_earlier_for_pr_sync() {
         // General agent: escalate at/above the PRE-WALL threshold (95), while /compact still submits —
         // NOT only at 100 (which was too late). Not recently notified, non-concierge.

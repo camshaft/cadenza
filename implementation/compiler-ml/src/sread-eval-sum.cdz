@@ -201,3 +201,54 @@ def ss-payload-ctor-in-helper-roundtrip() =
     ) with
     | Option.Some(v) => (if v == 7 then unit else trap("(mk)=Some 7, match ((Some x) x) → 7"))
     | Option.None(_) => trap("a payload sum constructed in a helper deconstructs in main")
+
+// ---- PR#835 reader-correctness: an unknown-ctor or no-binder ctor-pattern arm DECLINES cleanly ----
+// read-ctor-pattern-arm's decline path must skip the WHOLE arm (pattern + body + arm close) so the remaining
+// arms + the enclosing (match …) still parse — the decline surfaces as None (poison), NEVER a mis-parse of the
+// later arms or a fabricated value. Two shapes: (1) an UNKNOWN ctor in a payload-shaped pattern; (2) a payload
+// ctor pattern with NO binder `((Some) body)` (previously a silent empty-name NVar).
+
+@test
+def ss-ctor-pattern-unknown-ctor-declines-cleanly() =
+  // ((Nope x) …) — Nope is not a recorded ctor → decline. The trailing (_ 0) arm follows the declined arm; the
+  // fix's whole-arm skip means the reader still reaches it and the match declines (None), not a corrupt parse.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 5) ((Nope x) x) (_ 0))) (export main))"
+    ) with
+    | Option.Some(_) => trap("an unknown-ctor pattern arm must DECLINE (None), never fabricate a value")
+    | Option.None(_) => unit
+
+@test
+def ss-ctor-pattern-no-binder-declines-cleanly() =
+  // ((Some) x) — a payload ctor pattern with NO binder → decline (doc: "ctor with NO binder → decline"), rather
+  // than silently binding an empty-name NVar. The following (_ 0) arm is still reached; result is a clean None.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 5) ((Some) 1) (_ 0))) (export main))"
+    ) with
+    | Option.Some(_) => trap("a no-binder ctor pattern arm must DECLINE (None), never bind an empty name")
+    | Option.None(_) => unit
+
+// ---- payload ctor-pattern match ARMS must JOIN (an infer soundness fix) ----
+// The NMatchCtor infer arm previously took the body arm's type unconditionally, ignoring the rest/else arm — so
+// a match with mismatched arm types (Int body vs Bool else) typed as Int instead of declining. Now the arms
+// join like the integer NMatch / if: an Int body under a Bool else → TErr → the program declines (None).
+
+@test
+def ss-payload-pattern-arm-type-mismatch-declines() =
+  // match (Some 5) ((Some x) x) (_ true) — body arm is Int (x), else arm is Bool (true). The arms don't join →
+  // TErr → decline (None). Guards the arm-join in the NMatchCtor infer arm.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 5) ((Some x) x) (_ true))) (export main))"
+    ) with
+    | Option.Some(_) => trap("a payload-pattern match with mismatched arm types (Int body / Bool else) must DECLINE")
+    | Option.None(_) => unit
+
+@test
+def ss-payload-pattern-arms-join-still-runs() =
+  // the join is NON-regressive: matching arms (both Int) still type + run. match (Some 5) ((Some x) x) (_ 0) → 5
+  // (already pinned by ss-payload-pattern-binds-and-reads, restated here as the positive side of the join guard).
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 9) ((Some x) x) (_ 0))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 9 then unit else trap("matching Int arms join + run → 9"))
+    | Option.None(_) => trap("a payload-pattern match with joining Int arms must still run")

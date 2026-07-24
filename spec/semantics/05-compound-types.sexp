@@ -2089,7 +2089,7 @@
            representation further down and in 13-strings): pick selects at RUNTIME between a base
            map and its derived generation — so which generation DIES is itself runtime-chosen, and
            the loser is always a still-shared relative of the escapee. The select condition compares
-           the two lens (3<4 true) against the mode, flipping which side wins without changing the
+           the two lengths (3<4 true) against the mode, flipping which side wins without changing the
            data: mode 1 keeps the base (drop of the derived root must not cascade), mode 2 keeps
            the derived (base's direct refs drop, shared interiors survive through pick). Reads land
            AFTER the join: pick[2] (a shared node both modes) and pick[4] (present only in the
@@ -2111,6 +2111,60 @@
             (export main)))
   (call main (: 1 Int64)) (output (: 3020 Int64))
   (call main (: 2 Int64)) (output (: 4021 Int64)))
+
+(case "a Map.remove on a derived generation unshares the path without touching the ancestor"
+  (doc    "The SHRINK direction of generation sharing (every pin above grows the derived generation
+           via insert): Map.remove path-copies a DELETION — CHAMP nodes can COLLAPSE on the copied
+           path while the ancestor must keep the full node. mode 1 removes a key BOTH generations
+           share: m1 still reads 2→20, m2 misses it. mode 2 removes a different key (4) and reads
+           the SURVIVING shared key 2 through both generations. Sentinel-safe encoding: a miss
+           contributes 0 through a >=0 guard and a hit contributes value+1, so a raw -1 miss can't
+           alias a legitimate sum. len(m2)·10000 + m1[2]·100 + (m2[2]+1 if hit): mode 1 →
+           30000+2000+0 = 32000, mode 2 → 30000+2000+21 = 32021.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (main (: mode Int64))
+              (do
+                (def m1 (build 1 4 Map.empty))
+                (def m2 (Map.remove m1 (if (= mode 1) 2 4)))
+                (def a (get m1 2))
+                (def b (get m2 2))
+                (+ (* (Map.len m2) 10000)
+                   (+ (* (if (>= a 0) a 0) 100)
+                      (if (>= b 0) (+ b 1) 0)))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 32000 Int64))
+  (call main (: 2 Int64)) (output (: 32021 Int64)))
+
+(case "an inner map shared between two outer generations survives the loser's drop"
+  (doc    "One level DEEPER than the node-sharing pins above: here the shared thing is a heap VALUE —
+           an inner map referenced from both outer generations' value slots. outer2 = Map.insert
+           outer1 200 <new inner> replaces one value; the inner under key 100 stays SHARED between
+           the generations. When the losing outer drops, the shared inner must be DECREMENTED not
+           freed (refcount through the value slot, not CHAMP node structure), and both reads land
+           through the keeper after the select. mode 1 keeps outer1 (reads inner[2]=20 and old
+           200-slot [3]=30 → 2030); mode 2 keeps outer2 (same shared inner, new 200-slot [4]=40
+           → 2040).")
+  (input  (do
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (getm (: m (Map Int64 (Map Int64 Int64))) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) Map.empty)))
+            (def (main (: mode Int64))
+              (do
+                (def inner (Map.insert (Map.insert Map.empty 1 10) 2 20))
+                (def outer1 (Map.insert (Map.insert Map.empty 100 inner) 200 (Map.insert Map.empty 3 30)))
+                (def outer2 (Map.insert outer1 200 (Map.insert Map.empty 4 40)))
+                (def keep (if (= mode 1) outer1 outer2))
+                (def v (get (getm keep 100) 2))
+                (def x (get (getm keep 200) (if (= mode 1) 3 4)))
+                (+ (* v 100) x)))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 2030 Int64))
+  (call main (: 2 Int64)) (output (: 2040 Int64)))
 
 (case "a map consumed by Map.swap in one operand is unchanged for a later read of the same binding"
   (doc    "The VALUE-YIELDING-insert twin of the Map.insert persistence case above: `Map.swap` returns

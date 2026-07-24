@@ -45,7 +45,7 @@
                                    // Used to type a fn-valued PARAM (`f` in `apply f x = f x`) and a bare
                                    // def-name used as a VALUE (`inc` in `apply inc 41`).
   | TySum(Int64)                   // M2-b-2b-ii-c2 USER SUM TYPE: `TySum(declNameId)` — a user sum type,
-                                   // identified by its DECL NAME-id (the `(type Name …)` name). 🪤 DECL-IDENTITY:
+                                   // identified by its DECL NAME-id (the `(type Name …)` name). TRAP DECL-IDENTITY:
                                    // two TySums unify iff SAME declName (never structural inner) — per v-inference,
                                    // this closes recursive sums (a Tree/List back-edge is the same decl) with no
                                    // infinite descent, and makes ctor-app + ctor-pattern share a sum's identity so
