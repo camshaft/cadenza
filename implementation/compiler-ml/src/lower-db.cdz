@@ -94,6 +94,11 @@ def lower-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
     // fn-param call `(f x)` (→ CFnRefVar). Without this the gate rejected fn-typed nodes → the CFnRef/CFnRefVar
     // wiring never fired (the `inc` arg / `(f x)` body declined). eval runs them via the def-env name dispatch.
     | Option.Some(Typed.TFn(_, _)) => lower-ok(tree, id, rcol, tcol)
+    // M2-b-2b-ii-c2b: a node typed as a user SUM (TSum) also lowers — a payload ctor use `(Some 5)` (→ CCtor)
+    // or a value of sum type. Without this the gate rejected TSum-typed nodes → the CCtor wiring declined once
+    // infer started typing ctor-apps as TySum (was Int64 placeholder, which the TIntW arm admitted). eval runs
+    // it via the SumStore (CCtor store-alloc / CMatchSum store-read).
+    | Option.Some(Typed.TSum(_)) => lower-ok(tree, id, rcol, tcol)
     | _ => Option.None(unit))
 
 /// The typed-node case: build the Core node, canonicalizing a var to its binder id via `rcol`.

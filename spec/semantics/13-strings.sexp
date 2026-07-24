@@ -1070,6 +1070,62 @@
   (call main (: 2 Int64)) (output (: 83 Int64))
   (call main (: 3 Int64)) (output (: 20 Int64)))
 
+(case "a helper returns the shorter of two borrowed ropes and both caller handles stay live"
+  (doc    "The CALL-BOUNDARY face of the #20 escape family: the select moves into a helper —
+           `shorter` returns one of its two borrowed String params, i.e. the callee returns an
+           ALIAS of a parameter and ownership transfer at the return edge must not free the
+           unreturned twin nor double-count the returned one. The caller then re-measures BOTH
+           source ropes after the call, so each is read past the point the callee last touched it.
+           mode 1: r1=\"ababab\"(6) vs r2=\"zz\"(2), 6<2 false → p=r2 → 2·100+6·10+2 = 262. mode 2:
+           r1=\"x\"(1) vs r2=\"zzzz\"(4), 1<4 true → p=r1 → 1·100+1·10+4 = 114. mode 3: r1 EMPTY
+           wins the select (0<1) — an empty rope crosses the return edge → 0+0+1 = 1.")
+  (input  (do
+            (def (rep (: s String) (: n Int64) (: acc String))
+              (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
+            (def (shorter (: a String) (: b String))
+              (if (< (String.byte-len a) (String.byte-len b)) a b))
+            (def (main (: mode Int64))
+              (do
+                (def r1 (if (= mode 1) (rep "ab" 3 "") (if (= mode 2) (rep "x" 1 "") (rep "a" 0 ""))))
+                (def r2 (rep "z" (if (= mode 1) 2 (if (= mode 2) 4 1)) ""))
+                (def p (shorter r1 r2))
+                (+ (* (String.byte-len p) 100)
+                   (+ (* (String.byte-len r1) 10)
+                      (String.byte-len r2)))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 262 Int64))
+  (call main (: 2 Int64)) (output (: 114 Int64))
+  (call main (: 3 Int64)) (output (: 1 Int64)))
+
+(case "two ropes pack CROSSWISE into a tuple by a runtime select and both unpack live"
+  (doc    "The BOTH-ESCAPE face of the #20 family: previous pins escape ONE rope past a select and
+           keep the loser live via a trailing read; here BOTH ropes escape TOGETHER, packed into a
+           tuple whose FIELD ORDER is chosen by a runtime select — (tuple r1 r2) if r1 is shorter,
+           else (tuple r2 r1). Neither branch drops either rope, but each branch consumes them in a
+           DIFFERENT slot order, so per-branch retain/transfer bookkeeping must agree at the join
+           before the tuple is unpacked and both fields plus the original r1 binding are measured.
+           mode 1: r1(6)/r2(2), 6<2 false → (r2 r1) → a=2,b=6 → 266. mode 2: r1(1)/r2(4) →
+           (r1 r2) → a=1,b=4 → 141. mode 3: r1 EMPTY, 0<1 → (r1 r2) → a=0,b=1,r1=0 → 10.")
+  (input  (do
+            (def (rep (: s String) (: n Int64) (: acc String))
+              (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
+            (def (main (: mode Int64))
+              (do
+                (def r1 (if (= mode 1) (rep "ab" 3 "") (if (= mode 2) (rep "x" 1 "") (rep "a" 0 ""))))
+                (def r2 (rep "z" (if (= mode 1) 2 (if (= mode 2) 4 1)) ""))
+                (def packed (if (< (String.byte-len r1) (String.byte-len r2))
+                                (tuple r1 r2)
+                                (tuple r2 r1)))
+                (match packed
+                  ((tuple a b)
+                    (+ (* (String.byte-len a) 100)
+                       (+ (* (String.byte-len b) 10)
+                          (String.byte-len r1)))))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 266 Int64))
+  (call main (: 2 Int64)) (output (: 141 Int64))
+  (call main (: 3 Int64)) (output (: 10 Int64)))
+
 (case "a string equality on an inlined match operand"
   (doc    "A `String ==` whose operand is an INLINED function returning a `match` — `(= (f …) \"z\")` where
            `f` returns `(match (Map.lookup m k) ((Some s) s) ((None) \"?\"))`, β-reduced into the `=`

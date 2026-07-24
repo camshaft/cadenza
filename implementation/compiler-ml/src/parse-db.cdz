@@ -101,7 +101,7 @@ type Node =
 /// (NB: the growing per-arity table set is a known trade-off; a List-based N-ary param/arg rep is the
 /// eventual idiomatic cleanup — see the queue follow-up. 4 args covers the corpus's widest helpers.)
 type Tree =
-  | Arena(Map(Int64, Node), Int64, Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64))
+  | Arena(Map(Int64, Node), Int64, Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Tuple(Int64, Int64)))
                                    // The 12th table `ct` (M2-b-2b-ii) is the CTOR-TAG table: `Map(ctorNameId, tag)`
                                    // for a USER SUM-TYPE constructor (both nullary + payload) recorded by
                                    // read-do-ctors. lower reads it to turn a payload-ctor CALL `(Some 5)` =
@@ -378,13 +378,23 @@ def param-type-of(tree: Tree, paramId: Int64) = match tree with
 /// ctors record here (sread `read-do-ctors`); lower reads it to turn a payload-ctor CALL `(Some 5)` into
 /// `CCtor(tag, args)` — the ct entry is what DISTINGUISHES a payload-ctor call from an over-applied nullary def
 /// (which has a def-body but NO ct entry → the existing decline path). ADDITIVE: only a `(type …)` ctor records.
-def record-ctor-tag(tree: Tree, ctorName: Int64, tag: Int64) = match tree with
-  | Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, ct) => Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, Map.insert(ct, ctorName, tag))
+def record-ctor-tag(tree: Tree, ctorName: Int64, declName: Int64, tag: Int64) = match tree with
+  | Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, ct) => Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, Map.insert(ct, ctorName, (declName, tag)))
 
 /// The TAG of a user sum-type constructor by name-id, or `None` (not a recorded ctor — a normal def/var).
 /// lower's NApp arm consults this: `Some tag` + args present → a payload-ctor call → `CCtor(tag, loweredArgs)`.
 def ctor-tag-of(tree: Tree, ctorName: Int64) = match tree with
-  | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => Map.lookup(ct, ctorName)
+  | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(dt2) => (match dt2 with | (_declName, tag) => Option.Some(tag)))
+
+/// M2-b-2b-ii-c2b: the DECL NAME-id of the sum type a ctor belongs to, or `None` (not a recorded ctor). infer
+/// types a ctor-app/pattern as `TySum(declName)` — this is what gives a ctor VALUE its sum identity so a
+/// cross-type ctor pattern (Color.Red vs a Bit scrutinee) is REJECTED (different declName → unify None).
+def ctor-decl-of(tree: Tree, ctorName: Int64) = match tree with
+  | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(dt2) => (match dt2 with | (declName, _tag) => Option.Some(declName)))
 
 /// Encode a param's declared `(signed, width)` into the single Int64 the param-type table stores: `width*2 +
 /// (1 if signed else 0)`. Width ≤ 64, so the low bit is the sign and the rest is the width — unambiguous.
@@ -1028,4 +1038,4 @@ def pd-fully-consumed-parse-keeps-its-root() =
     (if is-bin-op(tree, root, 60) then unit
      else trap("`1 < 2` consumes all tokens → root is the `<` Bin, not a poison")))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, ctor-tag-of, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, ctor-tag-of, ctor-decl-of, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }

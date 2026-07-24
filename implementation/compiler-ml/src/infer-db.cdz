@@ -13,7 +13,7 @@
 /// there is one ground type — so this column is the DB-shaped monomorphic specialization. It widens to call
 /// the HM engine when the language grows function types.)
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed, ctor-tag-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed, ctor-tag-of, ctor-decl-of } from "parse-db"
 import { fits-width } from "int-width"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ty-deferred-int, ground-default } from "ty"
@@ -146,9 +146,14 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         // stays the def-body path below (typed as the NLit tag's Int, M2-a).
         (match (if (argId == (0 - 1)) then Option.None(unit) else ctor-tag-of(tree, calleeId)) with
           | Option.Some(_) =>
+              // M2-b-2b-ii-c2b: a PAYLOAD ctor use `(Some 5)` types as TySum(declName) — the sum type it belongs
+              // to (NOT the Int64 placeholder). This gives the ctor VALUE its sum identity, so a match over it
+              // shares the sum type + a cross-type pattern is rejected. Still infer the arg (fact + TErr-propagate).
               (let ta = infer-node(tree, argId, rcol, tcol) in
                 (match Map.lookup(ta, argId) with
-                  | Option.Some(_) => Map.insert(ta, id, t-int64())   // placeholder type; TySum in ii-c
+                  | Option.Some(_) => (match ctor-decl-of(tree, calleeId) with
+                      | Option.Some(declName) => Map.insert(ta, id, Typed.TSum(declName))
+                      | Option.None(_) => Map.insert(ta, id, Typed.TErr))
                   | Option.None(_) => Map.insert(ta, id, Typed.TErr)))
           | Option.None(_) =>
         (if (call-is-recursive(tree, calleeId)) then infer-recursive-call(tree, id, argId, rcol, tcol)
