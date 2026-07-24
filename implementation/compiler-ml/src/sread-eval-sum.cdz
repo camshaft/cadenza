@@ -30,24 +30,27 @@ def ss-third-ctor-is-tag-two() =
     | Option.None(_) => trap("a nullary constructor use runs (third ctor)")
 
 @test
-def ss-ctor-tag-compared-in-match() =
-  // a constructor tag flows into a MATCH scrutinee (M1-a integer match over the tag). match (Green) (0 100)(1 200)(_ 300)
-  // → the tag of (Green) is 1 → the 1-arm → 200. Proves ctor-tags compose with the existing match pipeline.
+def ss-ctor-int-literal-match-declines() =
+  // ii-c2b-2 (ruling a): a ctor use is TSum(Color), NOT an int — so matching it against INT-LITERAL patterns
+  // `(match (Green) (0 100) (1 200) (_ 300))` is a type mismatch → DECLINE (None). Retires the M2-a rep-leak
+  // (this test previously expected 200, treating (Green) as its tag int). rcdzc rejects this CDZ0203. The
+  // idiomatic form is a CTOR-pattern match `(match (Green) (Red …) (Green …) …)` — see ss-match-on-ctor-pattern-*.
   match run-src(
       "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Green) (0 100) (1 200) (_ 300))) (export main))"
     ) with
-    | Option.Some(v) => (if v == 200 then unit else trap("match on (Green)'s tag 1 → 200"))
-    | Option.None(_) => trap("a ctor tag as a match scrutinee runs")
+    | Option.Some(_) => trap("an int-literal match over a ctor (Green : Color, not int) must DECLINE per ruling (a)")
+    | Option.None(_) => unit
 
 @test
-def ss-ctor-tag-in-arith() =
-  // a ctor tag is an ordinary integer value: (+ (Blue) (Green)) = 2 + 1 = 3. Pins that a ctor use composes as
-  // an operand (it lowers to the same CNum a literal does).
+def ss-ctor-in-arith-declines() =
+  // ii-c2b-2 (ruling a): a ctor use is TSum(Color), NOT an int, so `(+ (Blue) (Green))` is arithmetic on a
+  // non-int → DECLINE (None). Retires the rep-leak (previously expected 3). rcdzc rejects `(+ (Blue)(Green))`
+  // CDZ0201 "arithmetic is not defined on Color". The idiomatic way to use a ctor's ordinal is a ctor-pattern match.
   match run-src(
       "(do (type Color (Red) (Green) (Blue)) (def (main) (+ (Blue) (Green))) (export main))"
     ) with
-    | Option.Some(v) => (if v == 3 then unit else trap("(Blue)+(Green) = 2+1 = 3"))
-    | Option.None(_) => trap("a ctor tag in arith runs")
+    | Option.Some(_) => trap("arithmetic over ctors (Blue/Green : Color, not int) must DECLINE per ruling (a)")
+    | Option.None(_) => unit
 
 @test
 def ss-ctor-used-in-helper-def() =
@@ -84,12 +87,13 @@ def ss-payload-ctor-USE-constructs() =
 
 @test
 def ss-nullary-sibling-of-payload-ctor-runs() =
-  // a MIXED type `(type Opt (Some Int64) (None))` still registers its NULLARY sibling: a payload ctor CONSUMES
-  // its tag slot (Some = tag 0) but records no def, so `None` = tag 1 and `(None)` RUNS → 1. (Previously the
-  // payload ctor aborted the WHOLE type decl, wrongly declining its nullary siblings; now only the payload
-  // ctor's own use declines.) Pins that a payload ctor is SKIPPED-not-fatal and tags stay positionally correct.
-  match run-src("(do (type Opt (Some Int64) (None)) (def (main) (None)) (export main))") with
-    | Option.Some(v) => (if v == 1 then unit else trap("(None) is the 2nd ctor (after Some's tag-0 slot) → tag 1"))
+  // a MIXED type `(type Opt (Some Int64) (None))` registers its NULLARY sibling: `None` = tag 1 (after Some's
+  // tag-0 slot). ii-c2b-2: (None) is TSum(Opt), a MIXED decl → it BOXES to CCtor(1, []) (a store handle, sharing
+  // Some's rep), NOT a bare tag int. So we can't read its bare value; instead MATCH it on its tag to prove it
+  // constructs + deconstructs: match (None) (None 7) (_ 9) → 7 (the None-arm, tag 1, via the boxed store-tag —
+  // a nullary ctor-NAME pattern `(None body)`, single paren, lowered to CMatchSum since Opt is a MIXED decl).
+  match run-src("(do (type Opt (Some Int64) (None)) (def (main) (match (None) (None 7) (_ 9))) (export main))") with
+    | Option.Some(v) => (if v == 7 then unit else trap("(None) boxes (mixed decl) + matches its own tag → 7"))
     | Option.None(_) => trap("a nullary sibling of a payload ctor must run (payload ctor skips, not aborts)")
 
 @test
@@ -150,15 +154,16 @@ def ss-match-ctor-pattern-over-bound-var() =
     | Option.None(_) => trap("a ctor pattern over a bound-var scrutinee runs")
 
 @test
-def ss-match-mixed-literal-and-ctor-patterns() =
-  // a match can MIX integer-literal patterns and ctor-name patterns in one match (both desugar to tag/lit
-  // comparisons). match (Green) (0 100) (Green 200) (_ 300) — (Green)=tag 1; the `0` literal arm misses (1≠0),
-  // the `Green` ctor arm matches (1==1) → 200. Pins that literal and ctor patterns coexist.
+def ss-match-mixed-int-literal-over-ctor-declines() =
+  // ii-c2b-2 (ruling a): an INT-LITERAL pattern `(0 100)` over a TSum scrutinee `(Green)` is a type mismatch →
+  // the whole match DECLINES (None). Previously this test MIXED an int-literal arm with a ctor arm and expected
+  // 200 (treating (Green) as its tag int) — that rep-leak is retired. The idiomatic form uses ONLY ctor-name
+  // patterns (see ss-match-on-ctor-pattern-*); an int literal over a sum scrutinee is rejected like rcdzc's CDZ0203.
   match run-src(
       "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Green) (0 100) (Green 200) (_ 300))) (export main))"
     ) with
-    | Option.Some(v) => (if v == 200 then unit else trap("mixed lit+ctor patterns: (Green) → Green-arm → 200"))
-    | Option.None(_) => trap("a match mixing literal and ctor patterns runs")
+    | Option.Some(_) => trap("an int-literal pattern (0 100) over a TSum scrutinee (Green) must DECLINE per ruling (a)")
+    | Option.None(_) => unit
 
 // ---- M2-b-2b-ii-c PAYLOAD ctor-pattern DECONSTRUCT: ((Some x) body) binds + reads the payload back ----
 // A payload ctor USE (Some 5) constructs a store handle (ii-b); a payload PATTERN ((Some x) body) reads its
@@ -305,6 +310,18 @@ def ss-crosstype-payload-pattern-rejects() =
       "(do (type A (MkA Int64)) (type B (MkB Int64)) (def (main) (match (MkA 5) ((MkB x) x) (_ 0))) (export main))"
     ) with
     | Option.Some(_) => trap("a cross-type ctor pattern (MkB over an A scrutinee) must REJECT, never match a wrong-sum value")
+    | Option.None(_) => unit
+
+@test
+def ss-crosstype-nullary-pattern-rejects() =
+  // ii-c2b-2: the cross-type reject also covers NULLARY (enum-disc) patterns now that they route through
+  // NMatchCtor. (match (Green) (On 1) (_ 0)) — Green : Color, On : Bit (different decls, both enum-disc, tags
+  // collide: Green=1, On=1). ctor-pattern-cross-type sees scrut TSum(Color) != On's decl Bit → REJECT → None.
+  // Without the reject, On (tag 1) would tag-match Green (tag 1) via CMatchEnum → an unsound cross-sum match.
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (type Bit (Off) (On)) (def (main) (match (Green) (On 1) (_ 0))) (export main))"
+    ) with
+    | Option.Some(_) => trap("a cross-type nullary pattern (On:Bit over a Color scrutinee) must REJECT, not tag-match")
     | Option.None(_) => unit
 
 @test

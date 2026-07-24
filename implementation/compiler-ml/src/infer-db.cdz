@@ -159,17 +159,25 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         // (M2-a, typed as the NLit tag's Int). Checked FIRST (a ctor is never recursive / a global def).
         // ONLY a PAYLOAD ctor use (argId != -1) takes this ctor arm; a NULLARY ctor use `(None)` = NApp(name,-1)
         // stays the def-body path below (typed as the NLit tag's Int, M2-a).
-        (match (if (argId == (0 - 1)) then Option.None(unit) else ctor-tag-of(tree, calleeId)) with
-          | Option.Some(_) =>
-              // M2-b-2b-ii-c2b: a PAYLOAD ctor use `(Some 5)` types as TySum(declName) — the sum type it belongs
-              // to (NOT the Int64 placeholder). This gives the ctor VALUE its sum identity, so a match over it
-              // shares the sum type + a cross-type pattern is rejected. Still infer the arg (fact + TErr-propagate).
-              (let ta = infer-node(tree, argId, rcol, tcol) in
-                (match Map.lookup(ta, argId) with
-                  | Option.Some(_) => (match ctor-decl-of(tree, calleeId) with
-                      | Option.Some(declName) => Map.insert(ta, id, Typed.TSum(declName))
-                      | Option.None(_) => Map.insert(ta, id, Typed.TErr))
-                  | Option.None(_) => Map.insert(ta, id, Typed.TErr)))
+        // M2-b-2b-ii CTOR use = NApp(ctorName, arg), `ctorName` a recorded ctor (ct table). ii-c2b-2 option (a),
+        // v-inference ruling: a ctor use — NULLARY `(Red)` OR payload `(Some 5)` — types as TSum(declName), the
+        // sum it belongs to, NOT its Int tag. Retires the M2-a rep-transparency (a nullary ctor used as its
+        // ordinal Int was a rep-leak — rcdzc rejects `(+ (Blue)(Green))` + an int-literal match over a nullary
+        // ctor). The VALUE still LOWERS to a tag rep (enum-disc → bare CNum; mixed nullary → CCtor(tag,[]); payload
+        // → CCtor), so eval runs — only the TYPE is the sum, so arith / int-literal matches over a ctor DECLINE.
+        // NULLARY: MUST still infer the def-body node (its NLit tag) — else that node has no type fact and lower's
+        // lower-node(calleeBody) declines (the non-ctor nullary path infers it too). PAYLOAD: infer the arg.
+        (match ctor-decl-of(tree, calleeId) with
+          | Option.Some(declName) =>
+              (if (argId == (0 - 1))
+               then (match def-body-of(tree, calleeId) with        // NULLARY ctor use `(Red)` → TSum(declName)
+                      | Option.Some(calleeBody) => (let tb = infer-node(tree, calleeBody, rcol, tcol) in
+                                                     Map.insert(tb, id, Typed.TSum(declName)))
+                      | Option.None(_) => Map.insert(tcol, id, Typed.TSum(declName)))
+               else (let ta = infer-node(tree, argId, rcol, tcol) in   // PAYLOAD ctor use `(Some 5)` → TSum(declName)
+                      (match Map.lookup(ta, argId) with
+                        | Option.Some(_) => Map.insert(ta, id, Typed.TSum(declName))
+                        | Option.None(_) => Map.insert(ta, id, Typed.TErr))))
           | Option.None(_) =>
         (if (call-is-recursive(tree, calleeId)) then infer-recursive-call(tree, id, argId, rcol, tcol)
          else (match def-body-of(tree, calleeId) with

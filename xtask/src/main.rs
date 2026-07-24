@@ -5645,6 +5645,18 @@ pub(crate) fn build_component_with_features(
 mod trap_grading_tests {
     use super::*;
 
+    /// Serializes the tests that MUTATE process-global env (`CDZ_SUITE_TIMEOUT_SECS` /
+    /// `CDZ_ML_PER_FILE_TIMEOUT_SECS`). `cargo test` runs this binary MULTI-THREADED, and env is
+    /// process-global — so a test that `set_var`s a timeout var races a sibling that `remove_var`s it or
+    /// READS it (via `suite_timeout_for`/`ml_per_file_timeout`). That flaked
+    /// `ml_per_file_timeout_reads_env_with_hang_bound_default` in a gate batch (pr-sync report): its
+    /// `per-file < suite` assert reads `CDZ_SUITE_TIMEOUT_SECS` while `suite_timeout_reads_env…`
+    /// concurrently set it to 480, making `720 < 480` false. Every env-touching test locks this FIRST so
+    /// they run mutually exclusive — no `serial_test` dep needed. (Same class as the process-global
+    /// metric-counter contamination.) A poisoned lock (a panicking sibling) is recovered — the env is
+    /// restored by each test's own cleanup, so a stale poison must not wedge the rest.
+    static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn needs_clause_lint_flags_only_leading_needs_clauses() {
         // A retired `(needs …)` clause is caught wherever it opens a line (leading whitespace ok),
@@ -6770,7 +6782,9 @@ mod trap_grading_tests {
         // Default is generous (6min for a normal suite, 45min for the heavy compiler-ml sweep) so a
         // slow-but-passing suite isn't false-failed; a positive override parses + applies to ALL suites;
         // zero/garbage fall back. (Env is process-global; set+clear around the assert.)
-        // SAFETY: single-threaded test, no other thread reads the env concurrently.
+        // Serialize with the other env-mutating test (multi-threaded binary; see ENV_TEST_LOCK).
+        let _env_guard = ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: the ENV_TEST_LOCK guard makes env mutation exclusive across the env-touching tests.
         unsafe { std::env::remove_var("CDZ_SUITE_TIMEOUT_SECS") };
         assert_eq!(
             suite_timeout_for(""),
@@ -6812,9 +6826,13 @@ mod trap_grading_tests {
     fn ml_per_file_timeout_reads_env_with_hang_bound_default() {
         // The per-file cap is a HANG bound (2× the measured ~300s worst-case file), tighter than the
         // whole-suite ceiling so ONE runaway compile fails fast+named instead of burning the 45min suite
-        // budget; a positive override applies; zero/garbage fall back. (Env is process-global; the
-        // separate env var means this can't collide with `CDZ_SUITE_TIMEOUT_SECS`.)
-        // SAFETY: single-threaded test, no other thread reads the env concurrently.
+        // budget; a positive override applies; zero/garbage fall back. (Env is process-global; a separate
+        // env var, BUT the `per-file < suite` assert below READS CDZ_SUITE_TIMEOUT_SECS via
+        // suite_timeout_for — so it races the suite-timeout test's writes unless serialized.)
+        // Serialize with the other env-mutating test (multi-threaded binary; see ENV_TEST_LOCK) — this is
+        // the race that flaked the batch-124 gate (pr-sync report).
+        let _env_guard = ENV_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: the ENV_TEST_LOCK guard makes env mutation exclusive across the env-touching tests.
         unsafe { std::env::remove_var("CDZ_ML_PER_FILE_TIMEOUT_SECS") };
         assert_eq!(
             ml_per_file_timeout(),

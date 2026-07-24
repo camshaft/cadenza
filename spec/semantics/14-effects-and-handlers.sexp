@@ -343,6 +343,39 @@
   (call main (: 1 Int64)) (output (: 2271 Int64))
   (call main (: 2 Int64)) (output (: 2260 Int64)))
 
+(case "an abortive handler discards a suspended body holding live rope and map handles"
+  (doc    "The ABORT companion of the resume-boundary pin above: the body builds a rope (a do-def —
+           exercising the #21 abortive-face fix, v-effects 0d382e3f4) and performs with its byte-len;
+           the `bail` arm NEVER resumes, so the suspended body — which still holds the rope AND a
+           borrowed read of the caller's map queued after the perform — is DISCARDED. The abandoned
+           frame's heap must reclaim exactly once (no leak, no double-free), and the caller's map
+           must survive the abandonment: c reads m AFTER the aborted handle. r = arm value =
+           byte-len \"ababab\" = 6; mode 1 c = m[2]=20 (+1 sentinel-safe → 21), mode 2 c = m[9]
+           miss → 0: mode 1 → 621, mode 2 → 600.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (rep (: s String) (: n Int64) (: acc String))
+              (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
+            (def (run (: m (Map Int64 Int64)))
+              (handle Bail 0
+                ((bail (n) s n))
+                (do
+                  (def rope (rep "ab" 3 ""))
+                  (+ (Bail.bail (String.byte-len rope)) (get m 1)))))
+            (def (main (: mode Int64))
+              (do
+                (def m (build 1 3 Map.empty))
+                (def r (run m))
+                (def c (get m (if (= mode 1) 2 9)))
+                (+ (* r 100) (if (>= c 0) (+ c 1) 0))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 621 Int64))
+  (call main (: 2 Int64)) (output (: 600 Int64)))
+
 (case "a single-task DES scheduler sleeps a task and fast-forwards the clock to its wake instant"
   (doc    "The discrete-event-simulation single-task gate (v-discrete-event-sim's step-3 forcing repro,
            minimal distillation). A `worker` task sleeps then returns its label; the `Sim` handler's `sleep`
