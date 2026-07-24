@@ -114,7 +114,7 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
           (let m3 = infer-node(tree, thenId, rcol, m2) in
            (let m4 = infer-node(tree, elseId, rcol, m3) in
             (match match-type(m4, scrutId, litId, thenId, elseId) with | ty => Map.insert(m4, id, ty))))))
-    | Option.Some(Node.NMatchCtor(scrutId, _ctorTag, binderId, bodyId, restId, patCtorName)) =>
+    | Option.Some(Node.NMatchCtor(scrutId, patCtorName, binderId, bodyId, restId)) =>
         // M2-b-2b-ii-c payload ctor-pattern arm: infer the scrutinee (a sum — TSum(decl) since ii-c2b-1), SEED the
         // binder `x`'s type as Int64 (a single-field payload is one Int64 in this slice; full TySum-derived payload
         // types are the ct-argTypes follow-up), infer the body under it + the rest, then the match's type is the

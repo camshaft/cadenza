@@ -279,6 +279,34 @@
             (def (main) (run false)) (export main)))
   (output (: 200 Int64)))
 
+(case "a handler arm applies a closure capturing a heap map and the map outlives the handle"
+  (doc    "EFFECTS × CAPTURE: the `look` arm applies f — a closure whose capture cell holds main's
+           heap map — so the arm runs in the HANDLER's frame while the capture belongs to the
+           performer's. The body performs TWICE, so arm + closure apply twice through the
+           perform/resume machinery (each round-trip suspends and re-enters frames), and m is read
+           AFTER the handle exits — the capture must survive every suspension. r = look(2)·100 +
+           look(1) = 20·100 + 10 = 2010 via the arm's (resume (f k) s); post-handle c = m[3]=30
+           hit (mode 1, sentinel-safe +1 → 31) or m[9] miss → 0 (mode 2): mode 1 → 2041,
+           mode 2 → 2010.")
+  (input  (do
+            (effect Look (op look (-> Int64 Int64)))
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (main (: mode Int64))
+              (do
+                (def m (build 1 3 Map.empty))
+                (def f (fn ((: k Int64)) (get m k)))
+                (def r (handle Look 0
+                         ((look (k) s (resume (f k) s)))
+                         (+ (* (Look.look 2) 100) (Look.look 1))))
+                (def c (get m (if (= mode 1) 3 9)))
+                (+ r (if (>= c 0) (+ c 1) 0))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 2041 Int64))
+  (call main (: 2 Int64)) (output (: 2010 Int64)))
+
 (case "a single-task DES scheduler sleeps a task and fast-forwards the clock to its wake instant"
   (doc    "The discrete-event-simulation single-task gate (v-discrete-event-sim's step-3 forcing repro,
            minimal distillation). A `worker` task sleeps then returns its label; the `Sim` handler's `sleep`

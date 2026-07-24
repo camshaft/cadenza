@@ -1937,6 +1937,17 @@ pub fn reduce_handle(
             return None;
         }
     }
+    // DO-LOCAL VALUE-DEF → LET normalization. A handle body `(do (def v e) … rest)` binds `v` LOCAL to the
+    // `do`. Several downstream folds (the abortive one-hole splice, the tail-resume thread's collapse-to-last)
+    // DROP non-final do items and re-splice only the surviving expression — orphaning any `(def v e)` whose
+    // `v` a LATER item references (notably a perform's ARGUMENT, `(Bail.bail v)` / `(Ask.ask v)`), which then
+    // reads UNBOUND → spurious CDZ0101 (the do-def-in-perform-argument false-reject, corpus-bugfix 2026-07-24;
+    // the `let`-twin never hit it because `let` rebuilds its scope). Rewrite each non-final value def to a
+    // `let` wrapping the continuation up front — `(do (def v e) rest…)` ≡ `(let ((v e)) (do rest…))` — so
+    // EVERY consumer below (abortive/pure-hole/thread) sees the scoped form. Sound: `e` runs once, in order,
+    // before `rest` (a pure value def sequences no effect); only `v`'s visibility widens. A FUNCTION def
+    // `(def (f p…) body)` (sig is a list, not a bare name) is left untouched — it resolves to a lambda.
+    let body = lift_do_local_value_defs(db, body);
     // ABORTIVE (E4) NON-TAIL HOIST. An abort in a strict OPERAND under a conditional — `(+ 100 (if c
     // (Bail.bail 7) 50))` — is not directly foldable (the abort must escape the `+`). But an abort
     // ABANDONS the enclosing computation, so distributing the surrounding strict op INTO both `if` branches
@@ -4733,6 +4744,45 @@ fn body_returns_lambda(db: &mut Db, node: StructId) -> bool {
             .filter(|tail| tail.len() == 2)
             .is_some_and(|tail| body_returns_lambda(db, tail[1])),
     }
+}
+
+/// Rewrite a handle body `(do (def v e) rest…)` whose FIRST item is a do-local VALUE def into `(let ((v e))
+/// (do rest…))` — recursively, so a chain of leading value defs all become nested `let`s scoping the rest.
+/// This runs ONCE at the top of `reduce_handle` so every downstream fold (abortive one-hole, pure one-hole,
+/// tail-resume thread) sees a properly-scoped body: those folds drop non-final `do` items and re-splice only
+/// a surviving expression, which would orphan a `(def v e)` a later item references (e.g. a perform's arg) →
+/// spurious CDZ0101 unbound. A `let` binding, by contrast, is rebuilt with its scope intact, so lifting to
+/// `let` fixes the leak uniformly. Only a leading VALUE def (`(def NAME expr)`, sig a bare name) lifts — a
+/// FUNCTION def (`(def (f p…) body)`, sig a list) resolves to a lambda and is left in place; a non-`(do …)`
+/// body or a `do` whose first item is not a value def returns unchanged (byte-identical to before).
+fn lift_do_local_value_defs(db: &mut Db, body: StructId) -> StructId {
+    let Some(items) = db.ast.as_form(body, "do").map(<[_]>::to_vec) else {
+        return body;
+    };
+    if items.len() < 2 {
+        return body;
+    }
+    let first = items[0];
+    let Some(tail) = db.ast.as_form(first, "def") else {
+        return body;
+    };
+    // A VALUE def is exactly `(def NAME expr)`: two tail elements, the sig a bare name (a function def's sig
+    // is a `(f p…)` list, which `as_name` rejects — leave it in place).
+    if tail.len() != 2 || db.ast.as_name(tail[0]).is_none() {
+        return body;
+    }
+    let name = tail[0];
+    let value = tail[1];
+    // `(do rest…)` — the remaining items; recurse so a further leading def lifts too.
+    let do_head = db.push_name("do");
+    let mut cont = vec![do_head];
+    cont.extend_from_slice(&items[1..]);
+    let cont_raw = db.push_list(cont);
+    let cont_do = lift_do_local_value_defs(db, cont_raw);
+    let pair = db.push_list(vec![name, value]);
+    let binds = db.push_list(vec![pair]);
+    let let_head = db.push_name("let");
+    db.push_list(vec![let_head, binds, cont_do])
 }
 
 /// A do-item's `(let (binds) lbody)` shape — either the item IS a `let`, or it is a cross-fn effectful

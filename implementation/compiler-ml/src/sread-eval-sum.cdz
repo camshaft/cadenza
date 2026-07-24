@@ -316,3 +316,29 @@ def ss-sametype-payload-pattern-still-matches() =
     ) with
     | Option.Some(v) => (if v == 5 then unit else trap("same-type pattern (MkA over an A scrutinee) → 5"))
     | Option.None(_) => trap("a same-type payload pattern must still match (reject only on decl mismatch)")
+
+// ---- NON-Int payload binder is OUT of subset → clean DECLINE (boundary guard) ----
+// The payload binder is typed Int64 placeholder (ct records only (declName,tag), not arg-types yet). A ctor with
+// a NON-Int payload used AS that type (e.g. a Bool payload in `(if b …)`) mis-types against the Int64 placeholder
+// → clean decline (None), never fabricate. Locks the boundary the ct-argTypes follow-up (binder<-argTypes[i])
+// builds up from; a future binder-typing change must not silently start running an under-typed non-Int payload.
+
+@test
+def ss-bool-payload-binder-declines() =
+  // (BB true) matched ((BB b) (if b then 1 else 0)) — b is a Bool payload but typed Int64 placeholder; (if b …)
+  // needs b : Bool → mis-type → decline (None). Was verified by a probe; pins the non-Int-payload boundary.
+  match run-src(
+      "(do (type BoxB (BB Bool)) (def (main) (match (BB true) ((BB b) (if b then 1 else 0)) (_ 9))) (export main))"
+    ) with
+    | Option.Some(_) => trap("a non-Int (Bool) payload binder used as Bool must DECLINE while the binder is an Int64 placeholder")
+    | Option.None(_) => unit
+
+@test
+def ss-int-payload-binder-still-runs() =
+  // control: an Int payload used as Int still runs. (BI 7) match ((BI x) (+ x 1)) → 8. Guards the boundary is not
+  // over-broad — a well-typed Int payload binder must still deconstruct + compute.
+  match run-src(
+      "(do (type BoxI (BI Int64)) (def (main) (match (BI 7) ((BI x) (+ x 1)) (_ 0))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 8 then unit else trap("Int payload (BI 7), x+1 → 8"))
+    | Option.None(_) => trap("an Int payload binder used as Int must still run")

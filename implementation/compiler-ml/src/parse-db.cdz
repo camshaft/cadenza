@@ -63,15 +63,16 @@ type Node =
                                   // lit), then, else) — reuses existing Core, so eval/emit need NO new handling.
                                   // A general N-arm + sum-ctor-pattern match is a later slice; this pins the
                                   // reader→resolve→infer→lower NMatch pipeline on the simplest shape.
-  | NMatchCtor(Int64, Int64, Int64, Int64, Int64, Int64)  // M2-b-2b-ii-c PAYLOAD ctor-pattern arm: NMatchCtor(
-                                  // scrutId, ctorTag, binderId, bodyId, restId, patCtorName) for `(match scrut
-                                  // ((Ctor x) body) REST…)`. scrutId = the scrutinee node; ctorTag = the payload
-                                  // ctor's discriminant; binderId = the NVar node the payload binds to (`x`),
-                                  // bound in the body scope; bodyId = the matched-arm body; restId = the next arm
-                                  // (a chain, like NMatch); patCtorName = the pattern ctor's NAME-id (ii-c2b-2:
-                                  // infer looks up its DECL via ctor-decl-of + REJECTS a cross-type pattern whose
-                                  // decl differs from the scrutinee's TSum decl — tags collide across sums since
-                                  // each restarts at 0, so tag-only matching is unsound without this).
+  | NMatchCtor(Int64, Int64, Int64, Int64, Int64)  // M2-b-2b-ii-c PAYLOAD ctor-pattern arm: NMatchCtor(scrutId,
+                                  // patCtorName, binderId, bodyId, restId) for `(match scrut ((Ctor x) body) REST…)`.
+                                  // scrutId = the scrutinee node; patCtorName = the pattern ctor's NAME-id — the
+                                  // SINGLE source of truth (ii-c2b-2, per v-inference): ONE ct-table lookup yields
+                                  // BOTH the ctor's DECL (infer's ctor-decl-of → cross-type reject: scrutinee
+                                  // TSum(decl) vs pattern ctor's decl, tags collide across sums since each restarts
+                                  // at 0 so tag-only matching is unsound) AND its TAG (lower's ctor-tag-of →
+                                  // CMatchSum discriminant). Carrying name-id and deriving both means they cannot
+                                  // drift. binderId = the NVar node the payload binds to (`x`), bound in the body
+                                  // scope; bodyId = the matched-arm body; restId = the next arm (a chain, like NMatch).
                                   // LOWERS to CMatchSum(scrut, tag, [binder], body, rest): eval reads the sum
                                   // handle's store-tag; if == tag, binds payload[0] to binder + evals body, else
                                   // rest. Single-payload-field first; multi-field is a follow-up.
@@ -183,7 +184,7 @@ def subtree-calls-name(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
                | (false, f2) => (match subtree-calls-name(tree, th, target, f2) with
                    | (true, f3) => (true, f3)
                    | (false, f3) => subtree-calls-name(tree, el, target, f3))))
-     | Option.Some(Node.NMatchCtor(sc, _tg, _bn, bd, rst, _pcn)) =>   // M2-b-2b-ii-c: scan scrut/body/rest (tag+binder+patName = no call)
+     | Option.Some(Node.NMatchCtor(sc, _pcn, _bn, bd, rst)) =>   // M2-b-2b-ii-c: scan scrut/body/rest (patName+binder = no call)
          (match subtree-calls-name(tree, sc, target, fuel - 1) with
            | (true, fl) => (true, fl)
            | (false, fl) => (match subtree-calls-name(tree, bd, target, fl) with
@@ -259,7 +260,7 @@ def subtree-calls-self(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
                | (false, f2) => (match subtree-calls-self(tree, th, target, f2) with
                    | (true, f3) => (true, f3)
                    | (false, f3) => subtree-calls-self(tree, el, target, f3))))
-     | Option.Some(Node.NMatchCtor(sc, _tg, _bn, bd, rst, _pcn)) =>   // M2-b-2b-ii-c: scan scrut/body/rest for a self-call
+     | Option.Some(Node.NMatchCtor(sc, _pcn, _bn, bd, rst)) =>   // M2-b-2b-ii-c: scan scrut/body/rest for a self-call
          (match subtree-calls-self(tree, sc, target, fuel - 1) with
            | (true, fl) => (true, fl)
            | (false, fl) => (match subtree-calls-self(tree, bd, target, fl) with

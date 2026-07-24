@@ -2139,6 +2139,36 @@
   (call main (: 1 Int64)) (output (: 2131 Int64))
   (call main (: 2 Int64)) (output (: 2100 Int64)))
 
+(case "two capturing closures stored in a LIST are selected at runtime and the capture reads after"
+  (doc    "The IN-COLLECTION face closing the capture family: two closures over the same map are
+           stored in a runtime (List (-> Int64 Int64)) — a TWO-HOP ownership chain, list → closure
+           handle → capture cell. One element is selected at RUNTIME (destructure + if), applied,
+           and m is read after: dropping the list must not cascade through the UNSELECTED closure
+           into the capture the survivor still uses. The list match carries a trailing _ arm
+           (returning a dummy closure) because an exact-length list match must cover every length
+           (CDZ0210). a = f0(2)=20 (mode 1) or f1(2)=40 (mode 2), c = m[1]=10: mode 1 → 200+10 =
+           210; mode 2 → 400+10 = 410.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (main (: mode Int64))
+              (do
+                (def m (build 1 3 Map.empty))
+                (def fs (list (fn ((: k Int64)) (get m k))
+                              (fn ((: k Int64)) (* (get m k) 2))))
+                (def g (match fs
+                         ((list f0 f1)
+                           (if (= mode 1) f0 f1))
+                         (_ (fn ((: _k Int64)) -1))))
+                (def a (g 2))
+                (def c (get m 1))
+                (+ (* a 10) c)))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 210 Int64))
+  (call main (: 2 Int64)) (output (: 410 Int64)))
+
 (case "a map consumed by Map.insert in one operand is unchanged for a later read of the same binding"
   (doc    "The single-function `let`-bound twin of the recursive-sibling map case above (and the direct
            companion of the shared-`let` List.push and Set.insert persistence cases): `m = build 0 3` =
