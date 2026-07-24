@@ -164,7 +164,7 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                   | Option.None(_) => Option.None(unit))
               | Option.None(_) => Option.None(unit))
           | Option.None(_) => Option.None(unit))
-    | Option.Some(Node.NMatchCtor(scrutId, ctorTag, binderId, bodyId, restId)) =>
+    | Option.Some(Node.NMatchCtor(scrutId, ctorTag, binderId, bodyId, restId, _patCtorName)) =>
         // M2-b-2b-ii-c payload ctor-pattern arm → CMatchSum(scrut, tag, [binderId], body, rest): eval reads the
         // scrutinee sum handle's store-tag; if == tag, binds payload[0] to binderId (a CVar key) + evals body,
         // else evals rest. Single payload field → the binder list is [binderId]. All three children must lower.

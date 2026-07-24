@@ -290,3 +290,29 @@ def ss-nested-payload-some-of-some-roundtrips() =
     ) with
     | Option.Some(v) => (if v == 5 then unit else trap("nested (Some (Some 5)) must round-trip to 5, not a fabricated value"))
     | Option.None(_) => trap("nested (Some (Some 5)) must round-trip (a single-field-payload handle nested in another)")
+
+// ---- ii-c2b-2 CROSS-TYPE ctor-pattern REJECT (soundness) ----
+// Tags restart at 0 per sum decl, so a pattern ctor from a DIFFERENT sum (e.g. MkB : B) tag-collides with a
+// scrutinee of another sum (MkA : A, also tag 0) and would UNSOUNDLY match on tag alone. The NMatchCtor node
+// now carries the pattern ctor's name-id; infer looks up its decl (ctor-decl-of) and REJECTS (TErr → decline)
+// when the scrutinee is a TSum whose decl differs. Was a confirmed miscompile (B-pattern returned an A-value).
+
+@test
+def ss-crosstype-payload-pattern-rejects() =
+  // (match (MkA 5) ((MkB x) x) (_ 0)) — MkB belongs to B, scrutinee (MkA 5) is TSum(A). Different decls (both
+  // tag 0) → REJECT → decline (None). Previously this matched and returned 5 (unsound). The soundness payoff.
+  match run-src(
+      "(do (type A (MkA Int64)) (type B (MkB Int64)) (def (main) (match (MkA 5) ((MkB x) x) (_ 0))) (export main))"
+    ) with
+    | Option.Some(_) => trap("a cross-type ctor pattern (MkB over an A scrutinee) must REJECT, never match a wrong-sum value")
+    | Option.None(_) => unit
+
+@test
+def ss-sametype-payload-pattern-still-matches() =
+  // control: a SAME-type pattern must still match. (match (MkA 5) ((MkA x) x) (_ 0)) → 5. Guards the reject is
+  // not over-broad (it only fires on a decl MISMATCH, not on every ctor pattern).
+  match run-src(
+      "(do (type A (MkA Int64)) (type B (MkB Int64)) (def (main) (match (MkA 5) ((MkA x) x) (_ 0))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 5 then unit else trap("same-type pattern (MkA over an A scrutinee) → 5"))
+    | Option.None(_) => trap("a same-type payload pattern must still match (reject only on decl mismatch)")

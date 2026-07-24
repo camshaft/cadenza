@@ -114,22 +114,28 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
           (let m3 = infer-node(tree, thenId, rcol, m2) in
            (let m4 = infer-node(tree, elseId, rcol, m3) in
             (match match-type(m4, scrutId, litId, thenId, elseId) with | ty => Map.insert(m4, id, ty))))))
-    | Option.Some(Node.NMatchCtor(scrutId, _ctorTag, binderId, bodyId, restId)) =>
-        // M2-b-2b-ii-c payload ctor-pattern arm: infer the scrutinee (a sum handle — Int64 placeholder from
-        // ii-b), SEED the binder `x`'s type as Int64 (a single-field payload is one Int64 in this slice; full
-        // TySum-derived payload types are ii-c2), infer the body under it + the rest, then the match's type is
-        // the JOIN of the body arm and the rest arm (like the integer NMatch/if — a Bool rest under an Int body
-        // must decline TErr, not silently take the body's type). Any TErr propagates. (Scrutinee-type checking
-        // — a TSum-typed scrutinee + cross-type ctor-pattern reject — is the coupled ii-c2b-2 follow-up.)
+    | Option.Some(Node.NMatchCtor(scrutId, _ctorTag, binderId, bodyId, restId, patCtorName)) =>
+        // M2-b-2b-ii-c payload ctor-pattern arm: infer the scrutinee (a sum — TSum(decl) since ii-c2b-1), SEED the
+        // binder `x`'s type as Int64 (a single-field payload is one Int64 in this slice; full TySum-derived payload
+        // types are the ct-argTypes follow-up), infer the body under it + the rest, then the match's type is the
+        // JOIN of the body arm and the rest arm (like the integer NMatch/if — a Bool rest under an Int body must
+        // decline TErr). Any TErr propagates.
+        // ii-c2b-2 CROSS-TYPE REJECT: tags restart at 0 per sum, so a pattern ctor from a DIFFERENT decl (e.g. a
+        // Bit pattern over a Color scrutinee) would tag-collide and unsoundly match. If the scrutinee is a
+        // TSum(scrutDecl) and the pattern ctor's decl (ctor-decl-of patCtorName) differs → the whole match is
+        // TErr (the CDZ0203 cross-type decline). A non-TSum scrutinee (or an unknown pattern ctor) leaves the
+        // check permissive — the arm-join + downstream still gate; this reject only fires on a decl MISMATCH.
         (let m1 = infer-node(tree, scrutId, rcol, tcol) in
          (let mb = Map.insert(m1, binderId, t-int64()) in           // the payload binder is Int64 (placeholder)
           (let m2 = infer-node(tree, bodyId, rcol, mb) in
            (let m3 = infer-node(tree, restId, rcol, m2) in
-            (match Map.lookup(m3, bodyId) with
-              | Option.Some(bt) => (match Map.lookup(m3, restId) with
-                  | Option.Some(rt) => Map.insert(m3, id, join-branch-types(bt, rt))   // arms must join (else TErr)
-                  | Option.None(_) => Map.insert(m3, id, Typed.TErr))
-              | Option.None(_) => Map.insert(m3, id, Typed.TErr))))))
+            (if (ctor-pattern-cross-type(tree, m3, scrutId, patCtorName))
+             then Map.insert(m3, id, Typed.TErr)                    // cross-type pattern → reject
+             else (match Map.lookup(m3, bodyId) with
+               | Option.Some(bt) => (match Map.lookup(m3, restId) with
+                   | Option.Some(rt) => Map.insert(m3, id, join-branch-types(bt, rt))   // arms must join (else TErr)
+                   | Option.None(_) => Map.insert(m3, id, Typed.TErr))
+               | Option.None(_) => Map.insert(m3, id, Typed.TErr)))))))
     | Option.Some(Node.NApp(calleeId, argId)) =>
         // slice-2 NULLARY call semantics: a nullary call `(mk)` is NApp(calleeBodyId, -1) — its type is the
         // callee BODY's type (β-reduction over zero args: the result IS the body). Infer the callee body, then
@@ -706,6 +712,20 @@ def type-eq(a: Typed, b: Typed) = ty-eq(typed-to-ty(a), typed-to-ty(b))
 /// inlining) but HIT when a RECURSIVE def body is inferred STANDALONE (B1b's lower-def-env). Rules: both
 /// deferred → deferred; one deferred + one concrete int → the concrete one (ground the literal to it); else
 /// (both concrete, or a Bool pair) → the existing `type-eq` rule (same type, else TErr).
+/// ii-c2b-2 cross-type ctor-pattern reject: is a payload ctor-pattern arm matching a scrutinee of the WRONG sum
+/// type? Tags restart at 0 per sum decl, so a pattern ctor from a different decl tag-collides with the scrutinee
+/// and would unsoundly match. Returns `true` (→ the match declines TErr) ONLY when the scrutinee's inferred type
+/// is a `TSum(scrutDecl)` AND the pattern ctor's decl (via ctor-decl-of on its name-id) is KNOWN and DIFFERS.
+/// A non-TSum scrutinee, an unknown pattern ctor, or matching decls → `false` (permissive — the reject fires only
+/// on a proven decl mismatch; downstream arm-join + lower gates handle the rest).
+def ctor-pattern-cross-type(tree: Tree, tcol: Map(Int64, Typed), scrutId: Int64, patCtorName: Int64) =
+  (match Map.lookup(tcol, scrutId) with
+    | Option.Some(Typed.TSum(scrutDecl)) =>
+        (match ctor-decl-of(tree, patCtorName) with
+          | Option.Some(patDecl) => (if scrutDecl == patDecl then false else true)
+          | Option.None(_) => false)
+    | _ => false)
+
 def join-branch-types(tt: Typed, et: Typed) =
   (if is-deferred-int(tt) then (if is-deferred-int(et) then tt else (match et with | Typed.TIntW(_, _) => et | _ => Typed.TErr))
    else (if is-deferred-int(et) then (match tt with | Typed.TIntW(_, _) => tt | _ => Typed.TErr)
