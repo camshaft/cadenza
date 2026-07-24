@@ -307,6 +307,42 @@
   (call main (: 1 Int64)) (output (: 2041 Int64))
   (call main (: 2 Int64)) (output (: 2010 Int64)))
 
+(case "a rope built before a perform survives the resume and the arm's own heap does not leak into it"
+  (doc    "RESUME-boundary heap liveness, both directions: the performing BODY holds a rope (passed
+           in as a param) across the suspension — read AFTER the resume returns, so the suspended
+           frame's heap must stay live through the arm's execution; meanwhile the ARM builds its
+           OWN rope (a do-def, folded into the resume value via byte-len) — arm-frame heap that must
+           reclaim at arm exit without leaking into or freeing the resumed frame's. (The arm's
+           do-def flows into the RESUME argument, which works — only the body-side PERFORM-argument
+           path has the #21 do-def scoping gap, hence rope arrives as a param.) r = look(2)·10 +
+           (byte-len rope − 6) + byte-len rope = (20+2)·10 + 0 + 6 = 226; post-handle c = m[1]=10
+           hit (mode 1 → +11) or m[9] miss → 0: mode 1 → 2271, mode 2 → 2260.")
+  (input  (do
+            (effect Look (op look (-> Int64 Int64)))
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (rep (: s String) (: n Int64) (: acc String))
+              (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
+            (def (body (: rope String))
+              (+ (* (Look.look 2) 10)
+                 (+ (- (String.byte-len rope) 6) (String.byte-len rope))))
+            (def (main (: mode Int64))
+              (do
+                (def m (build 1 2 Map.empty))
+                (def r (handle Look 0
+                         ((look (k) s
+                           (do
+                             (def arope (rep "z" 2 ""))
+                             (resume (+ (get m k) (String.byte-len arope)) s))))
+                         (body (rep "ab" 3 ""))))
+                (def c (get m (if (= mode 1) 1 9)))
+                (+ (* r 10) (if (>= c 0) (+ c 1) 0))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 2271 Int64))
+  (call main (: 2 Int64)) (output (: 2260 Int64)))
+
 (case "a single-task DES scheduler sleeps a task and fast-forwards the clock to its wake instant"
   (doc    "The discrete-event-simulation single-task gate (v-discrete-event-sim's step-3 forcing repro,
            minimal distillation). A `worker` task sleeps then returns its label; the `Sim` handler's `sleep`
