@@ -1942,11 +1942,14 @@ pub fn reduce_handle(
     // DROP non-final do items and re-splice only the surviving expression — orphaning any `(def v e)` whose
     // `v` a LATER item references (notably a perform's ARGUMENT, `(Bail.bail v)` / `(Ask.ask v)`), which then
     // reads UNBOUND → spurious CDZ0101 (the do-def-in-perform-argument false-reject, corpus-bugfix 2026-07-24;
-    // the `let`-twin never hit it because `let` rebuilds its scope). Rewrite each non-final value def to a
-    // `let` wrapping the continuation up front — `(do (def v e) rest…)` ≡ `(let ((v e)) (do rest…))` — so
-    // EVERY consumer below (abortive/pure-hole/thread) sees the scoped form. Sound: `e` runs once, in order,
-    // before `rest` (a pure value def sequences no effect); only `v`'s visibility widens. A FUNCTION def
-    // `(def (f p…) body)` (sig is a list, not a bare name) is left untouched — it resolves to a lambda.
+    // the `let`-twin never hit it because `let` rebuilds its scope). Rewrite a LEADING CHAIN of value defs
+    // to nested `let`s wrapping the continuation up front — `(do (def v e) rest…)` ≡ `(let ((v e)) (do
+    // rest…))`, recursively — so EVERY consumer below (abortive/pure-hole/thread) sees the scoped form.
+    // Sound: `e` is evaluated once, in the SAME position and order it held in the `do` (its RHS may itself
+    // perform — the `let` init runs exactly where the `do` item did); only `v`'s visibility widens to the
+    // continuation. A FUNCTION def `(def (f p…) body)` (sig is a list, not a bare name) is left untouched —
+    // it resolves to a lambda. (Rewrites only the LEADING chain, not every non-final def: a def AFTER a
+    // non-def item is reached by re-threading the `do` tail, which normalizes it in turn.)
     let body = lift_do_local_value_defs(db, body);
     // ABORTIVE (E4) NON-TAIL HOIST. An abort in a strict OPERAND under a conditional — `(+ 100 (if c
     // (Bail.bail 7) 50))` — is not directly foldable (the abort must escape the `+`). But an abort

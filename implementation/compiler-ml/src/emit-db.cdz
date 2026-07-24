@@ -194,6 +194,8 @@ def can-emit(c: Core) = match c with
       // M2-b-2b user sum PAYLOAD ctor is EVAL-ONLY for now (emit(B) = rcdzc's SumNew{disc,payloads} heap layout).
   | Core.CMatchSum(_, _, _, _, _) => false
       // M2-b-2b sum deconstruct is EVAL-ONLY for now (emit(B) = a MatchSum decision tree on the disc + payload loads).
+  | Core.CMatchEnum(_, _, _, _) => false
+      // ii-c2b-2 enum-disc deconstruct is EVAL-ONLY for now (emit(B) = a MatchSum on a bare i32 disc, deferred).
 
 /// The position of `x` in `xs` (0-based), or -1 if absent. Used to map a CLet binder node-id to its wasm
 /// LOCAL INDEX (index = order of the binder in the pre-order binder list). Scalar-only (List Int64), so no

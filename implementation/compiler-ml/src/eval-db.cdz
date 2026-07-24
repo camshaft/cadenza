@@ -178,6 +178,17 @@ def eval-core-s(c: Core, env: Map(Int64, Int64), defs: Map(Int64, (List(Int64), 
                   (if (scrutTag == tag)
                    then eval-core-s(thn, bind-payload(store1, h, binders, 0, env), defs, store1)
                    else eval-core-s(els, env, defs, store1)))))
+  | Core.CMatchEnum(scrut, tag, thn, els) =>
+      // ii-c2b-2 ENUM-DISC deconstruct (Z1): an all-nullary sum value is a BARE TAG (a CNum, no heap cell) — so
+      // eval the scrutinee to its value and compare it DIRECTLY against `tag` (NOT store-tag, which returns None
+      // for a bare tag). Equal → `then` (no binders — a nullary ctor has no payload), else → `else`. Sound
+      // without a runtime marker: infer gated the scrutinee to TSum-of-the-decl, so the Int IS a ctor tag.
+      (match eval-core-s(scrut, env, defs, store) with
+        | Option.None(_) => Option.None(unit)
+        | Option.Some(vs) => (match vs with | (v, store1) =>
+            (if (v == tag)
+             then eval-core-s(thn, env, defs, store1)
+             else eval-core-s(els, env, defs, store1))))
 
 /// Apply a binary op: 43 +, 45 -, 42 *, 47 /, and the relational ops 60 `<`, 61 `==`, 62 `>`, 63 `<=`,
 /// 64 `>=`, 65 `!=`. Relational ops yield a Bool encoded as 0/1 (Core represents Bool as an Int); each of
@@ -730,6 +741,28 @@ def ev-cctor-constructs-and-matches-payload() =
      (Map.empty : Map(Int64, Int64))) with
     | Option.Some(v) => (if v == 5 then unit else trap("match (Some 5) Some x => x → 5"))
     | Option.None(_) => trap("a payload ctor constructs + its payload binds in a matching arm"))
+
+@test
+def ev-cmatchenum-bare-tag-matches() =
+  // ii-c2b-2 Z1: a match arm over an ENUM-DISC (all-nullary) sum. The scrutinee is a BARE TAG — here CNum 1
+  // (e.g. (Green) of Color, which lowers to its ordinal tag, no heap cell). CMatchEnum(scrut, tag 1, then=CNum
+  // 200, else=CNum 300) compares the scrutinee VALUE directly (== 1) → the then-arm → 200. This is the path
+  // plain CMatchSum can't take (store-tag None on a bare tag → always-else); CMatchEnum bare-tag-compares.
+  (match eval-core(
+     Core.CMatchEnum(Core.CNum(1, true, 64), 1, Core.CNum(200, true, 64), Core.CNum(300, true, 64)),
+     (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(v) => (if v == 200 then unit else trap("CMatchEnum bare-tag == 1 → then arm → 200"))
+    | Option.None(_) => trap("an enum-disc bare-tag match hits its arm"))
+
+@test
+def ev-cmatchenum-bare-tag-mismatch-takes-else() =
+  // the complement: a bare-tag scrutinee CNum 2 vs a tag-1 CMatchEnum → the else, 300. Pins the direct-compare
+  // fall-through (a different enum-disc variant takes the next arm).
+  (match eval-core(
+     Core.CMatchEnum(Core.CNum(2, true, 64), 1, Core.CNum(200, true, 64), Core.CNum(300, true, 64)),
+     (Map.empty : Map(Int64, Int64))) with
+    | Option.Some(v) => (if v == 300 then unit else trap("CMatchEnum bare-tag 2 != 1 → else arm → 300"))
+    | Option.None(_) => trap("an enum-disc bare-tag mismatch takes the else arm"))
 
 @test
 def ev-cmatchsum-tag-mismatch-takes-else() =

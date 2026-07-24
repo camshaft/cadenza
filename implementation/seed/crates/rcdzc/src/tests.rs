@@ -9991,22 +9991,6 @@ fn a_re_performing_escaping_continuation_declines_cleanly_until_reentry_at_apply
     }
 }
 
-/// A handler arm that DESTRUCTURES its state (or its arg) with a `match` and resumes inside EACH branch —
-/// e.g. `(get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s))))`. This now FOLDS under a
-/// MULTI-perform body when the branches thread the SAME next-state: the perform arm peels the resume from
-/// each match branch and rebuilds BOTH a value-match and a next-state-match over the (pure) scrutinee, so
-/// the match-valued next-state threads forward to the next perform (see `peel_resume_from_arm_body`).
-/// `(do (St.get) (+ 1 (St.get)))` over a `(Some 5)` seed: both gets read `(Some 5)` → 5 (both branches
-/// thread `s` unchanged), so `(+ 1 5)` = 6. (Previously this DECLINED "not yet reducible"; the match-shaped
-/// arm-body fix — v-compiler-ml's memoized-DB dogfood — folds it.) A genuinely BRANCH-DIVERGENT next-state
-/// (each branch threads a DIFFERENT advanced state, `(resume n (Some (+ n 1)))`) NOW ALSO FOLDS, and to the
-/// CORRECT value: the match-valued next-state threads forward as a `(match arg (pat s)…)` expression whose
-/// branches carry each branch's own advanced state, so a subsequent perform reading the state re-evaluates
-/// the match against the (pure) arg and sees the right per-branch state. `(+ (St.get) (+ (St.get) (St.get)))`
-/// over `(Some 5)`: L→R the seed advances 5→6→7 (each `get` reads then the `(Some (+ n 1))` next-state bumps
-/// it), so `5 + (6 + 7)` = 18. This USED to decline ("deeper match-valued-state re-threading not yet served");
-/// it now folds soundly. Pinned as a HARD fold-to-18 (was folds-or-declines) so a regression to a WRONG value
-/// — the state-threading ledger's wrong-branch hazard — is caught, not silently accepted as a re-decline.
 /// A `do`-local VALUE def whose binding flows into a PERFORM ARGUMENT under a handle must compile — it used
 /// to be spuriously CDZ0101-rejected "unbound name" (the do-def-in-perform-argument false-reject, corpus-
 /// bugfix/breaker 2026-07-24), while the semantically identical `let`-twin computed fine. Root cause: the
@@ -10224,6 +10208,22 @@ fn a_do_sequenced_outer_perform_under_an_inner_handle_threads_its_state_advance(
     );
 }
 
+/// A handler arm that DESTRUCTURES its state (or its arg) with a `match` and resumes inside EACH branch —
+/// e.g. `(get (u) s (match s ((Some n) (resume n s)) (None (resume 0 s))))`. This now FOLDS under a
+/// MULTI-perform body when the branches thread the SAME next-state: the perform arm peels the resume from
+/// each match branch and rebuilds BOTH a value-match and a next-state-match over the (pure) scrutinee, so
+/// the match-valued next-state threads forward to the next perform (see `peel_resume_from_arm_body`).
+/// `(do (St.get) (+ 1 (St.get)))` over a `(Some 5)` seed: both gets read `(Some 5)` → 5 (both branches
+/// thread `s` unchanged), so `(+ 1 5)` = 6. (Previously this DECLINED "not yet reducible"; the match-shaped
+/// arm-body fix — v-compiler-ml's memoized-DB dogfood — folds it.) A genuinely BRANCH-DIVERGENT next-state
+/// (each branch threads a DIFFERENT advanced state, `(resume n (Some (+ n 1)))`) NOW ALSO FOLDS, and to the
+/// CORRECT value: the match-valued next-state threads forward as a `(match arg (pat s)…)` expression whose
+/// branches carry each branch's own advanced state, so a subsequent perform reading the state re-evaluates
+/// the match against the (pure) arg and sees the right per-branch state. `(+ (St.get) (+ (St.get) (St.get)))`
+/// over `(Some 5)`: L→R the seed advances 5→6→7 (each `get` reads then the `(Some (+ n 1))` next-state bumps
+/// it), so `5 + (6 + 7)` = 18. This USED to decline ("deeper match-valued-state re-threading not yet served");
+/// it now folds soundly. Pinned as a HARD fold-to-18 (was folds-or-declines) so a regression to a WRONG value
+/// — the state-threading ledger's wrong-branch hazard — is caught, not silently accepted as a re-decline.
 #[test]
 fn a_state_destructuring_arm_under_a_multi_perform_body_folds_or_declines_never_miscompiles() {
     use crate::testkit::parse;

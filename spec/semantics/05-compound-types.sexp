@@ -6378,6 +6378,20 @@
             (def (main) (match true ((C.Red) 1) ((C.Green) 0))) (export main)))
   (error  CDZ0203))
 
+(case "an ill-typed ctor-match scrutinee taints the whole match, not masked by well-typed arms"
+  (doc    "The scrutinee-SUBTREE type-error face: the constructor-match arms `((Some x) 1) ((None) 0)`
+           are themselves well-typed, but the scrutinee VALUE `(Some (+ 1 true))` is ill-typed — `(+ 1
+           true)` mixes Int64 and Bool. A TErr in the scrutinee must TAINT the whole match (CDZ0203); an
+           inference that derived the match type ONLY from the cross-type check + the arm-join — never
+           consulting the scrutinee's own type — would let the well-typed arms MASK the ill-typed
+           scrutinee and (wrongly) accept, returning 1. Pins that a ctor-match propagates a TErr scrutinee
+           the same way an integer `match`/`if` does ('any TErr propagates'), so an ill-typed matched
+           subtree can never be laundered through a well-typed arm. (Reference-backend guard for the
+           PR#849 NMatchCtor soundness gap; the compiler-ml self-host carries the twin fix.)")
+  (input  (do
+            (def (main) (match (Some (+ 1 true)) ((Some x) 1) ((None) 0))) (export main)))
+  (error  CDZ0203))
+
 ; --- A constructor pattern NESTED INSIDE A TUPLE ELEMENT of a payload --------------------------
 ; The nested-payload cases above bind a constructor DIRECTLY under a constructor (`(W.Wrap (N.L v))`).
 ; A distinct shape a compiler / proof kernel hits is a constructor pattern nested inside a TUPLE
