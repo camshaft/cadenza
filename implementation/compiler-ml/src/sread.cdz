@@ -544,8 +544,8 @@ def read-do-def(s: String, d1: Int64, root: Int64, tree: Tree) =
 /// variant assigning ordinal tags left-to-right, then continues the do-sequence.
 def read-do-type(s: String, d1: Int64, root: Int64, tree: Tree) =
   (let n0 = skip-space(s, d1) in
-   (match scan-atom(s, n0, "") with | (_tyname, n1) =>          // the type NAME (not recorded — no NType yet)
-     read-do-ctors(s, skip-space(s, n1), 0, root, tree)))
+   (match scan-atom(s, n0, "") with | (tyname, n1) =>           // the type NAME → its decl name-id (for TySum)
+     read-do-ctors(s, skip-space(s, n1), name-id(tyname), 0, root, tree)))
 
 /// Skip from index `i` (just INSIDE a `(`, at nesting depth 1) to just PAST that group's matching `)`. Paren-
 /// depth aware: a nested `(` deepens, a `)` shallows; at depth 0 (the matching close consumed) return the next
@@ -570,7 +570,7 @@ def skip-to-close(s: String, i: Int64, depth: Int64) =
 /// siblings correct: `(type Opt (Some Int64) (None))` still registers `None → NLit(1)` (tag 1, after Some's
 /// tag-0 slot) so `(None)` runs, while `(Some 5)` declines LATE (unknown def-name → no callee) rather than the
 /// whole `(type …)` decl aborting. Flat (≤2 nesting — the paren-cascade trap).
-def read-do-ctors(s: String, k: Int64, tag: Int64, root: Int64, tree: Tree) =
+def read-do-ctors(s: String, k: Int64, declName: Int64, tag: Int64, root: Int64, tree: Tree) =
   (if (char-at(s, k) == ")")
    then read-do-next(s, k + 1, root, tree)                      // ctor list closed → past the type's `)`
    else (let c0 = open-paren(s, k) in                           // open a `(Ck)` — c0 is just inside, at depth 1
@@ -579,18 +579,17 @@ def read-do-ctors(s: String, k: Int64, tag: Int64, root: Int64, tree: Tree) =
             (if (char-at(s, c2) == ")")                         // NULLARY ctor `(Ck)` → a `Ck → NLit(tag)` def
              then (match add-node(tree, Node.NLit(tag)) with | (bodyId, t1) =>
                     (let t2 = record-def(t1, name-id(cnm), bodyId) in
-                     // ALSO record the ctor→tag in the ct table (M2-b-2b-ii): a nullary ctor stays a nullary def
-                     // (used bare via def-body-of=NLit tag, M2-a), AND now carries a ct entry so lower/infer can
-                     // recognize it as a CTOR (e.g. to type it TySum, a later slice). Harmless for M2-a's path.
-                     (let t3 = record-ctor-tag(t2, name-id(cnm), tag) in
-                      read-do-ctors(s, skip-space(s, c2 + 1), tag + 1, root, t3))))
-             // a PAYLOAD ctor `(Ck T…)`: RECORD `Ck → tag` in the ct table (M2-b-2b-ii) so lower turns a use
-             // `(Some 5)` = NApp(Some, arg) into CCtor(tag, args); SKIP the payload type atoms (their arg-types
-             // are a later TySum slice — the arg COUNT lower needs comes from the call site's arg slots). Do NOT
-             // record a def-body (a ctor is not an inlinable def). c1 is after the ctor name, depth 1 → skip to
-             // past its matching `)`, then record the ct entry + recurse with tag+1.
-             else (let t1 = record-ctor-tag(tree, name-id(cnm), tag) in
-                    read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), tag + 1, root, t1)))))))
+                     // ALSO record the ctor→(declName,tag) in the ct table (M2-b-2b-ii/c2b): a nullary ctor stays
+                     // a nullary def (used bare via def-body-of=NLit tag, M2-a), AND carries a ct entry so lower
+                     // recognizes it + infer types it TySum(declName). Harmless for M2-a's bare-tag eval path.
+                     (let t3 = record-ctor-tag(t2, name-id(cnm), declName, tag) in
+                      read-do-ctors(s, skip-space(s, c2 + 1), declName, tag + 1, root, t3))))
+             // a PAYLOAD ctor `(Ck T…)`: RECORD `Ck → (declName,tag)` so lower turns a use `(Some 5)` = NApp(Some,
+             // arg) into CCtor(tag, args) + infer types it TySum(declName); SKIP the payload type atoms (their
+             // arg-types for binder-typing are ii-c2b-2). Do NOT record a def-body (a ctor is not an inlinable
+             // def). c1 is after the ctor name, depth 1 → skip past its matching `)`, record + recurse tag+1.
+             else (let t1 = record-ctor-tag(tree, name-id(cnm), declName, tag) in
+                    read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), declName, tag + 1, root, t1)))))))
 
 /// After a def ended at `j`: skip its closing `)` (if present) and read the next form in the do, threading the
 /// accumulated `root` (main's body, or -1 if not yet seen).

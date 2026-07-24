@@ -254,6 +254,7 @@ pass	a generic fold instantiated at an Int64 AND a String accumulator in one pro
 pass	a generic pair-swap crosses a scalar and a heap payload between positions
 pass	a generic sum NESTS ITSELF at a different instantiation and destructures through both layers
 pass	a handler arm RECURSES through a named helper before resuming
+pass	a helper returns the shorter of two borrowed ropes and both caller handles stay live
 pass	a literal pattern at MID-SPINE depth gates the arm while deeper binders still bind
 pass	a map INVERSION flips keys and values, last-writer-wins on duplicate values
 pass	a memoizing fold caches computed results in a Map and counts its hits
@@ -4442,6 +4443,7 @@ pass	two rationals denoting the same number are equal regardless of how they wer
 pass	two recursion-built linked lists compare equal by a deep heap walk
 pass	two recursion-built linked lists of different lengths compare unequal by a heap walk
 pass	two residuals from ONE curry source hold distinct first-stage captures
+pass	two ropes pack CROSSWISE into a tuple by a runtime select and both unpack live
 pass	two runtime Bytes values of equal content compare equal (rope vs flat)
 pass	two runtime Ok values of a multi-parameter sum compare equal by a heap walk
 pass	two runtime String entry args compare by content including multibyte
