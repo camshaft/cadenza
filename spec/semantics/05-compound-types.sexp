@@ -1991,6 +1991,154 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "a map threaded through recursion is read at every depth and once more at the base"
+  (doc    "The MULTI-DEPTH borrow face of the recursive seam above (that one pins persistence across
+           a self-call; this pins LIVENESS): a single-owner map threads through NON-TAIL recursion
+           and is read at EVERY depth — each frame uses m twice (a borrow for the get, then passed
+           onward in the same expression) plus a final read at the unwind base. Retain-per-frame and
+           single-owner-threading are both valid disciplines, but an off-by-one drop at any middle
+           frame frees the map mid-walk. The map is built INLINE in the call (never let-bound in
+           main — the anonymous-owner face). walk sums m[3]+m[2]+m[1]+m[k]: k=2 → 30+20+10+20 = 80;
+           k=9 → 60 + (-1 miss at the base) = 59.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (walk (: m (Map Int64 Int64)) (: depth Int64) (: k Int64))
+              (if (= depth 0)
+                  (get m k)
+                  (+ (get m depth) (walk m (- depth 1) k))))
+            (def (main (: k Int64))
+              (walk (build 1 3 Map.empty) 3 k))
+            (export main)))
+  (call main (: 2 Int64)) (output (: 80 Int64))
+  (call main (: 9 Int64)) (output (: 59 Int64)))
+
+(case "a map threaded through MUTUAL recursion is read in both functions at alternating depths"
+  (doc    "The TWO-function escalation of the threaded-borrow pin above: the map crosses fa⇄fb call
+           boundaries at every level, so per-frame borrow accounting must hand off between TWO
+           functions rather than one self-call — a drop-on-transfer bug in EITHER direction frees it
+           mid-chain. fa's base reads key 0 (hit, 0); fb's base reads key 100 (the MISS face: -1
+           folds through the ×2 chain). which=1: fa(3) = 30+fb(2) = 30+(40+fa(1)) = 30+40+(10+fb(0))
+           = 30+40+10+(-1) → 79. which=2: fb(3) = 60+fa(2) = 60+(20+fb(1)) = 60+20+(20+fa(0)) =
+           60+20+20+0 → 100.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (fa (: m (Map Int64 Int64)) (: d Int64))
+              (if (= d 0)
+                  (get m 0)
+                  (+ (get m d) (fb m (- d 1)))))
+            (def (fb (: m (Map Int64 Int64)) (: d Int64))
+              (if (= d 0)
+                  (get m 100)
+                  (+ (* (get m d) 2) (fa m (- d 1)))))
+            (def (main (: which Int64))
+              (do
+                (def m (build 0 3 Map.empty))
+                (if (= which 1) (fa m 3) (fb m 3))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 79 Int64))
+  (call main (: 2 Int64)) (output (: 100 Int64)))
+
+(case "a closure capturing a heap map is applied twice and the map is read once more after"
+  (doc    "The CAPTURE-CELL face of heap-map liveness: f captures m; each of two applications
+           borrows the capture through the cell, then m is read DIRECTLY after the last call. The
+           hazards are capture-cell refcount errors against the original binding: over-transferring
+           m INTO the cell frees the direct handle early; a per-call over-drop frees the capture
+           between the two calls. Guest-internal closure (the host-ABI closures live in
+           21-host-closures). a=m[1]=10, b=m[2]=20 (mode 1) or m[9] miss→0 (mode 2), c=len=3:
+           mode 1 → 1000+200+3 = 1203; mode 2 → 1000+0+3 = 1003.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (main (: mode Int64))
+              (do
+                (def m (build 1 3 Map.empty))
+                (def f (fn ((: k Int64)) (match (Map.lookup m k) ((Some v) v) ((None _u) -1))))
+                (def a (f 1))
+                (def b (f (if (= mode 1) 2 9)))
+                (def c (Map.len m))
+                (+ (* a 100) (+ (* (if (>= b 0) b 0) 10) c))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 1203 Int64))
+  (call main (: 2 Int64)) (output (: 1003 Int64)))
+
+(case "TWO closures capture the SAME heap map and the map outlives both applications"
+  (doc    "The SHARED-capture face: f and g each hold a capture-cell reference to m — with the
+           binding itself that's THREE owners of one map, so the refcount must land at exactly 3
+           (an under-count during either capture frees m while the other closure still holds it).
+           Both closures apply, then m is read directly with hit (mode 1: m[3]=30) and miss
+           (mode 2: m[9]→0) faces. a=10, b=m[2]·2=40: mode 1 → 1000+400+30 = 1430; mode 2 →
+           1000+400+0 = 1400.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (main (: mode Int64))
+              (do
+                (def m (build 1 3 Map.empty))
+                (def f (fn ((: k Int64)) (match (Map.lookup m k) ((Some v) v) ((None _u) -1))))
+                (def g (fn ((: k Int64)) (match (Map.lookup m k) ((Some v) (* v 2)) ((None _u) -1))))
+                (def a (f 1))
+                (def b (g 2))
+                (def c (match (Map.lookup m (if (= mode 1) 3 9)) ((Some v) v) ((None _u) -1)))
+                (+ (* a 100) (+ (* b 10) (if (>= c 0) c 0)))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 1430 Int64))
+  (call main (: 2 Int64)) (output (: 1400 Int64)))
+
+(case "a closure RETURNS its captured map and the alias plus the original both read after"
+  (doc    "The ESCAPE face of capture: r = (f 0) hands the captured map OUT of the closure call —
+           the return must RETAIN through the cell, not hand out a borrowed cell-slot that dies
+           with the closure. Afterward the alias r AND the original m are both read, plus len
+           through the alias (three post-escape uses across two handles of one map). a=r[2]=20;
+           mode 1 b=m[1]=10, mode 2 b=m[9] miss→0; len=3: mode 1 → 2000+100+3 = 2103; mode 2 →
+           2000+0+3 = 2003.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (main (: mode Int64))
+              (do
+                (def m (build 1 3 Map.empty))
+                (def f (fn ((: _u Int64)) m))
+                (def r (f 0))
+                (def a (get r 2))
+                (def b (get m (if (= mode 1) 1 9)))
+                (+ (* a 100) (+ (* (if (>= b 0) b 0) 10) (Map.len r)))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 2103 Int64))
+  (call main (: 2 Int64)) (output (: 2003 Int64)))
+
+(case "a capturing closure passed AS AN ARGUMENT is applied twice by the callee and the capture reads after"
+  (doc    "The HIGHER-ORDER face of capture: the closure handle crosses a call boundary as a typed
+           (-> Int64 Int64) parameter and is invoked TWICE from a frame that does not own the
+           capture — the callee's double application must borrow-not-consume the handle (an own-
+           style consume on the first apply kills the second). The capture is read back in main
+           AFTER the callee returns. s = m[1] + m[2]·10 = 210; mode 1 c=m[3]=30 (+1 sentinel-safe
+           → 31), mode 2 c=m[9] miss→0: mode 1 → 2100+31 = 2131; mode 2 → 2100+0 = 2100.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (apply2 (: g (-> Int64 Int64)) (: k1 Int64) (: k2 Int64))
+              (+ (g k1) (* (g k2) 10)))
+            (def (main (: mode Int64))
+              (do
+                (def m (build 1 3 Map.empty))
+                (def f (fn ((: k Int64)) (get m k)))
+                (def s (apply2 f 1 2))
+                (def c (get m (if (= mode 1) 3 9)))
+                (+ (* s 10) (if (>= c 0) (+ c 1) 0))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 2131 Int64))
+  (call main (: 2 Int64)) (output (: 2100 Int64)))
+
 (case "a map consumed by Map.insert in one operand is unchanged for a later read of the same binding"
   (doc    "The single-function `let`-bound twin of the recursive-sibling map case above (and the direct
            companion of the shared-`let` List.push and Set.insert persistence cases): `m = build 0 3` =

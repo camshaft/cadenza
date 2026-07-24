@@ -81,6 +81,7 @@ pass	SUBSET-SUM COUNT folds each element into a fresh ways-table so no element i
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow
 pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
+pass	TWO closures capture the SAME heap map and the map outlives both applications
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	WAVE reorder alternates <= and >= by index parity through a carried-element walk
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
@@ -112,12 +113,16 @@ pass	a STATS record threads min/max/sum/count as one fold accumulator with data-
 pass	a STRING run-length grouping counts adjacent equal scalars across a rope seam
 pass	a THREE-DEEP compose chain stacks closure envs with a runtime capture mid-chain
 pass	a THREE-WAY scalar classifier splits vowels, consonants, and other by range and membership
+pass	a THREE-arm match joins a borrowed alias, an owned fresh rope, and a const literal
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
 pass	a TOPOLOGICAL sort drains min-ready nodes and verifies every edge points forward
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
 pass	a TWO-LIST FIFO queue reverses the back list exactly when the front drains
 pass	a WORD COUNT threads an in-word flag through a scalar scan, counting entries not characters
 pass	a balanced-paren scan tracks depth over a runtime string and fails fast on early close
+pass	a capturing closure passed AS AN ARGUMENT is applied twice by the callee and the capture reads after
+pass	a closure RETURNS its captured map and the alias plus the original both read after
+pass	a closure capturing a heap map is applied twice and the map is read once more after
 pass	a constant algebraic identity over a high UInt64 operand folds to the operand, not a spurious reject
 pass	a constant MUL-by-1 identity over a high UInt64 operand folds to the operand
 pass	a constant MUL-by-0 identity over a high UInt64 operand folds to zero
@@ -260,6 +265,8 @@ pass	a handler arm RECURSES through a named helper before resuming
 pass	a helper returns the shorter of two borrowed ropes and both caller handles stay live
 pass	a literal pattern at MID-SPINE depth gates the arm while deeper binders still bind
 pass	a map INVERSION flips keys and values, last-writer-wins on duplicate values
+pass	a map threaded through MUTUAL recursion is read in both functions at alternating depths
+pass	a map threaded through recursion is read at every depth and once more at the base
 pass	a memoizing fold caches computed results in a Map and counts its hits
 pass	a middle curry STAGE is reused — one s1 residual yields an s2 applied twice
 pass	a model-oracle property — CHAMP Map.len agrees with a counting model over generated inserts

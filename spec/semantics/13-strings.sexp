@@ -1203,6 +1203,31 @@
   (call   main (: 1 Int64))
   (output (: 0 Int64)))
 
+(case "a THREE-arm match joins a borrowed alias, an owned fresh rope, and a const literal"
+  (doc    "The two ownership-join pins above cover two arms (mixed → borrowed, all-owned → owned);
+           this joins THREE distinct ownership classes at one match: arm 1 returns src ITSELF (a
+           borrowed alias of a live binding), arm 2 an OWNED fresh rope (concat borrows src into a
+           new temporary), arm 3 a CONST literal (baked handle, no refcount at all). After the join
+           BOTH r and src are measured — src's last-use analysis differs per arm (aliased out /
+           borrowed into the concat / never touched), so the join's reconciliation can't be a
+           single static class without a retain. mode 1 → r=src(6) → 66; mode 2 → r=\"ababab\"+
+           \"zz\"(8) → 86; mode 3 → r=\"kk\"(2) → 26 (src(6) still live in every mode).")
+  (input  (do
+            (def (rep (: s String) (: n Int64) (: acc String))
+              (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
+            (def (main (: mode Int64))
+              (do
+                (def src (rep "ab" 3 ""))
+                (def r (match mode
+                         (1 src)
+                         (2 (String.concat src "zz"))
+                         (_ "kk")))
+                (+ (* (String.byte-len r) 10) (String.byte-len src))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 66 Int64))
+  (call main (: 2 Int64)) (output (: 86 Int64))
+  (call main (: 3 Int64)) (output (: 26 Int64)))
+
 (case "a runtime string rope map key is found by its flat twin"
   (doc    "The MAP-KEY companion of the rope-eq cases above: a map keyed by a runtime String ROPE
            `(rep \"hi\" 3)` = \"hixxx\" looked up with the flat literal \"hixxx\" MUST find 42. The map-key
