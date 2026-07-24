@@ -1164,6 +1164,49 @@
   (call   main (: 10 Int64))
   (output (: 15 Int64)))
 
+; A do-local value def in a handle body must stay in scope for a perform's ARGUMENT (breaker FINDING;
+; v-effects e49c698a1). The handle-body folds dropped non-final do-items and re-spliced only a survivor,
+; orphaning a `(def v e)` that a later perform arg referenced → a false CDZ0101 'unbound name'; the
+; semantically identical `let`-bound form rebuilt its scope and worked. The fix normalizes a leading
+; do-local value def to a `let` up front in reduce_handle, so every consumer — including the perform-arg
+; path — sees the scoped binding. Pinned as a REPRO + let-twin regression pair. (A do-def flowing into a
+; RESUME arg in an arm, and a do-def in a NON-perform arg, were always fine — this was specific to the
+; perform-arg path in the body.)
+(case "a do-def value in a handle body flows into a perform's argument and stays in scope"
+  (doc    "FINDING repro (v-effects e49c698a1). Inside the handle body, `(def v (+ u 2))` is referenced from
+           the ARGUMENT of `(Ask.ask v)` and again after it; before the fix the body fold orphaned `v` →
+           CDZ0101 unbound. Now the do-local value def is scoped for the perform-arg path. `run 5`: v = 7,
+           `(Ask.ask 7)` resumes 7·2 = 14, plus v = 7 → 21. Both backends.")
+  (input  (do
+            (effect Ask (op ask (-> Int64 Int64)))
+            (def (run (: u Int64))
+              (handle Ask 0
+                ((ask (n) s (resume (* n 2) s)))
+                (do
+                  (def v (+ u 2))
+                  (+ (Ask.ask v) v))))
+            (def (main) (run 5))
+            (export main)))
+  (output (: 21 Int64)))
+
+(case "a let-bound value in a handle body flows into a perform's argument (the always-worked twin)"
+  (doc    "The let-twin of the do-def perform-arg repro above — the semantically identical shape with the
+           value `let`-bound instead of do-def. This ALWAYS computed correctly (the let rebuilt its scope,
+           so the perform-arg path saw the binding); it's the reference the fix normalized the do-def form
+           to match. `run 5`: v = 7, `(Ask.ask 7)`→14, +7 → 21. Both backends. Pinned as the regression
+           twin so a future fold change that re-breaks the do form (but not the let) is caught by the pair
+           diverging.")
+  (input  (do
+            (effect Ask (op ask (-> Int64 Int64)))
+            (def (run (: u Int64))
+              (handle Ask 0
+                ((ask (n) s (resume (* n 2) s)))
+                (let ((v (+ u 2)))
+                  (+ (Ask.ask v) v))))
+            (def (main) (run 5))
+            (export main)))
+  (output (: 21 Int64)))
+
 (case "a runtime condition selects an abortive branch reading an enclosing parameter"
   (doc    "The branch-tail abort with a RUNTIME condition over an enclosing parameter — the shape a
            validation routine takes: `(handle Bail 0 ((bail (n) s n)) (if (< x 5) (Bail.bail 7) x))`. The

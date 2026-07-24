@@ -6339,6 +6339,23 @@
   (call   main)
   (output (: 5 Int64)))
 
+(case "a cross-type variant pattern of the SAME payload width and colliding tag is rejected"
+  (doc    "The subtle face the width-differ witness above cannot catch: two DISTINCT sums whose FIRST
+           variants share the identical Int64 payload width — `(type A (MkA Int64))` and `(type B (MkB
+           Int64))`. Sum tags restart at 0 per declaration, so `MkA` and `MkB` are BOTH tag 0; a
+           generation that compared only the stored tag (not the constructor's declaring sum) fired the
+           `(MkB x)` arm on an `(MkA 5)` value and bound `x = 5` — a VALID module returning a WRONG value
+           (5, not the `_`-arm's 0), strictly worse than the differing-width case's invalid-module refusal
+           because nothing refuses to load it. `MkB` belongs to `B`, not the scrutinee's `A`, so it MUST
+           reject CDZ0203 — sum identity is by declaration occurrence, never by a colliding ordinal tag.
+           Uses UNQUALIFIED constructor patterns to pin that the check does not depend on a `T.`-qualified
+           spelling to notice the cross-type mismatch.")
+  (input  (do
+            (type A (MkA Int64))
+            (type B (MkB Int64))
+            (def (main) (match (MkA 5) ((MkB x) x) (_ 0))) (export main)))
+  (error  CDZ0203))
+
 (case "a variant pattern over a scalar scrutinee is a type error"
   (doc    "The scalar mirror of the cross-type rejects above: a variant pattern demands a SUM to dispatch
            on, so `(match 5 ((C.Red) 1) ((C.Green) 0))` — a variant pattern over an `Int64` scrutinee — is

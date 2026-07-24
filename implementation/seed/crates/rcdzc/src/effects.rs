@@ -4655,10 +4655,29 @@ fn thread_bounded(
             } else {
                 crate::eval::beta_reduce(db, body_occ, &capture_subst)
             };
+            // Snapshot the abort cell BEFORE threading the body, so we can tell if THIS body fires an abort.
+            let abort_before = ctx.abort_value.get();
             let (rbody, cur) = thread_bounded(db, body_occ, cur, ctx, inline_depth)?;
             let let_head = db.push_atom(Leaf::Name("let".to_string()));
             let rbindings = db.push_list(rpairs);
-            Some((db.push_list(vec![let_head, rbindings, rbody]), cur))
+            let wrapped = db.push_list(vec![let_head, rbindings, rbody]);
+            // ABORT-VALUE RE-SCOPE. If threading the body FIRED AN ABORT (`(let ((v e)) (Bail.bail v))` — the
+            // abortive arm `(bail (n) s n)` materializes `v` as the abort value), `reduce_handle` collapses
+            // the whole handle to that abort value and DISCARDS this `let` wrapper — so a `v` in the abort
+            // value orphans → spurious CDZ0101 (the abortive-perform-referencing-a-body-local-binding bug,
+            // the abortive twin of the do-def-in-perform-arg fix). Re-wrap the abort value in THIS let's
+            // bindings so its free names re-resolve, and update the cell. Only when the abort fired DURING
+            // this body (`abort_before` was None) and the value carries free names this let could bind — a
+            // bare-param abort (`(Bail.bail u)`) sets no such value, so this is a no-op there. Sound: the
+            // bindings' inits ran (pure, in order) before the perform on this spine, so scoping the abort
+            // value under them changes no evaluation order; it only restores the binder's visibility.
+            if abort_before.is_none()
+                && let Some(av) = ctx.abort_value.get()
+            {
+                let rewrapped = db.push_list(vec![let_head, rbindings, av]);
+                ctx.abort_value.set(Some(rewrapped));
+            }
+            Some((wrapped, cur))
         }
         // A NESTED `handle` in the handled body. TWO ways it composes:
         //

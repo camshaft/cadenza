@@ -317,6 +317,17 @@ def ss-sametype-payload-pattern-still-matches() =
     | Option.Some(v) => (if v == 5 then unit else trap("same-type pattern (MkA over an A scrutinee) → 5"))
     | Option.None(_) => trap("a same-type payload pattern must still match (reject only on decl mismatch)")
 
+@test
+def ss-terr-scrutinee-taints-ctor-match() =
+  // PR#849: a TErr scrutinee (an ill-typed subtree being matched) must taint the WHOLE match → decline (None),
+  // NOT be masked by well-typed arms. (+ true 5) is TErr (bool+int); match it with a ((MkA x) x) arm → the arm
+  // is well-typed but the scrutinee is TErr → the match is TErr → None. Pins the "Any TErr propagates" discipline.
+  match run-src(
+      "(do (type A (MkA Int64)) (def (main) (match (+ true 5) ((MkA x) x) (_ 0))) (export main))"
+    ) with
+    | Option.Some(_) => trap("a TErr scrutinee (ill-typed (+ true 5)) must taint the match → decline, not be masked by the arms")
+    | Option.None(_) => unit
+
 // ---- NON-Int payload binder is OUT of subset → clean DECLINE (boundary guard) ----
 // The payload binder is typed Int64 placeholder (ct records only (declName,tag), not arg-types yet). A ctor with
 // a NON-Int payload used AS that type (e.g. a Bool payload in `(if b …)`) mis-types against the Int64 placeholder

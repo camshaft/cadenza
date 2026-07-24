@@ -1074,6 +1074,7 @@ pass	a contradictory arrow annotation on a function stored as a Map KEY is rejec
 pass	a correctly-annotated function parameter is accepted
 pass	a cross-function recursive fold's out-state threads to a later perform in the caller's continuation
 pass	a cross-type variant pattern whose payload width differs is rejected, not miscompiled
+pass	a cross-type variant pattern of the SAME payload width and colliding tag is rejected
 pass	a crossing text-literal arm is rejected even beside a same-kind sibling arm
 pass	a ctl-style arm applying its continuation inside a match scrutinee resolves and folds
 pass	a ctl-style arm that applies its continuation lexically folds through the delimited context
@@ -1250,9 +1251,11 @@ pass	a recursive combinator applies a captured closure a RUNTIME number of times
 pass	a recursive fold SUMS a list of same-unit quantities threading a Qty accumulator
 pass	a recursive fold over a runtime Peano spine recovers its depth
 pass	a recursive fold returns a MIXED-representation tuple destructured at the caller
+pass	a recursive parser drains a STREAM of length-prefixed frames to the empty base case
 pass	a recursive scalar-walk classifies characters across a multibyte String entry arg
 pass	a recursive scalar-walk over a guest-built rope classifies characters on every backend
 pass	a recursive walk over a runtime-SHAPED tree dispatches per call
+pass	a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
 pass	a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite
 pass	a right shift of a negative by a RUNTIME amount stays arithmetic
@@ -4955,3 +4958,5 @@ pass	a do-local fn capturing the enclosing fn PARAMETER directly lowers (capture
 pass	a do-local fn capturing a CONSTANT sibling local lowers (capture guard)
 pass	a top-level do-local fn capturing a constant lowers (capture control)
 pass	a runtime-rope do-def that escapes an if-select in a match arm survives (multi-use heap keep, not a UAF)
+pass	a do-def value in a handle body flows into a perform's argument and stays in scope
+pass	a let-bound value in a handle body flows into a perform's argument (the always-worked twin)

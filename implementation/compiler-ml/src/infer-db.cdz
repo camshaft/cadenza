@@ -129,13 +129,18 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
          (let mb = Map.insert(m1, binderId, t-int64()) in           // the payload binder is Int64 (placeholder)
           (let m2 = infer-node(tree, bodyId, rcol, mb) in
            (let m3 = infer-node(tree, restId, rcol, m2) in
+            // A TErr SCRUTINEE taints the whole match (an ill-typed subtree being matched must not be masked by
+            // well-typed arms) — the "Any TErr propagates" discipline the integer NMatch/if follow. Checked FIRST.
+            (match Map.lookup(m3, scrutId) with
+              | Option.Some(Typed.TErr) => Map.insert(m3, id, Typed.TErr)
+              | _ =>
             (if (ctor-pattern-cross-type(tree, m3, scrutId, patCtorName))
              then Map.insert(m3, id, Typed.TErr)                    // cross-type pattern → reject
              else (match Map.lookup(m3, bodyId) with
                | Option.Some(bt) => (match Map.lookup(m3, restId) with
                    | Option.Some(rt) => Map.insert(m3, id, join-branch-types(bt, rt))   // arms must join (else TErr)
                    | Option.None(_) => Map.insert(m3, id, Typed.TErr))
-               | Option.None(_) => Map.insert(m3, id, Typed.TErr)))))))
+               | Option.None(_) => Map.insert(m3, id, Typed.TErr))))))))
     | Option.Some(Node.NApp(calleeId, argId)) =>
         // slice-2 NULLARY call semantics: a nullary call `(mk)` is NApp(calleeBodyId, -1) — its type is the
         // callee BODY's type (β-reduction over zero args: the result IS the body). Infer the callee body, then

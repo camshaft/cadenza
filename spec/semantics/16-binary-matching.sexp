@@ -1067,6 +1067,68 @@
   (call   main (: 0 Int64))
   (output (: 7 Int64)))
 
+(case "a recursive parser drains a STREAM of length-prefixed frames to the empty base case"
+  (doc    "The chunked-parser pin above decodes ONE nested frame; this pins the STREAM idiom — a
+           dependent-size segment AND a rest-binder in one pattern, `(bin (u8 n) (bytes body n)
+           (bytes tail))`, with the parser recursing on `tail` until the `(bin)` empty base fires.
+           The accumulator weights each frame's byte-sum by its 1-based INDEX, so frame BOUNDARIES
+           matter: a mis-split that moves a byte between frames changes the weighted sum even when
+           the plain sum is preserved. (A dependent size field must be an earlier segment of the
+           SAME bin — splitting the decode across nested matches declines.) mode 1: frames
+           [10],[20 30],[1·40] → 10·1+50·2+40·3 = 230; mode 2: one 3-byte frame → 18·1 = 18;
+           mode 3: EMPTY stream → base case → 0.")
+  (input  (do
+            (def (sum-bytes (: b Bytes) (: i Int64) (: acc Int64))
+              (if (>= i (Bytes.len b))
+                  acc
+                  (match (Bytes.at b i)
+                    ((Some v) (sum-bytes b (+ i 1) (+ acc v)))
+                    ((None _u) -1))))
+            (def (drain (: s Bytes) (: idx Int64) (: acc Int64))
+              (match s
+                ((bin) acc)
+                ((bin (u8 n) (bytes body n) (bytes tail))
+                  (drain tail (+ idx 1) (+ acc (* (sum-bytes body 0 0) idx))))
+                (_ -3)))
+            (def (main (: mode Int64))
+              (do
+                (def s (if (= mode 1)
+                           (Bytes.of (list 1 10 2 20 30 1 40))
+                           (if (= mode 2)
+                               (Bytes.of (list 3 5 6 7))
+                               (Bytes.of (list)))))
+                (drain s 1 0)))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 230 Int64))
+  (call main (: 2 Int64)) (output (: 18 Int64))
+  (call main (: 3 Int64)) (output (: 0 Int64)))
+
+(case "a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin"
+  (doc    "The transcoder pin further down re-encodes the SAME decoded n and checks only Bytes.len;
+           this pins the TRANSFORM: `(bin (u8 (UInt8.wrap (+ n 1))) (u8 255) (bytes body))` —
+           arithmetic on a decoded field re-entering a width-typed segment through an EXPLICIT wrap
+           (the +1 widens past UInt8, so the narrow is the caller's job per the fit rule), a literal
+           sentinel byte, and the body splice. The output is compared BYTE-EQUAL to an independently
+           constructed twin — and the mode-2 NEGATIVE face (twin differs in the last byte → 0)
+           witnesses that the equality discriminates, so a wrong-content reframe with the right
+           length cannot pass. mode 1 → 4·10+1 = 41; mode 2 → 40.")
+  (input  (do
+            (def (reframe (: b Bytes))
+              (match b
+                ((bin (u8 n) (bytes body n))
+                  (bin (u8 (UInt8.wrap (+ n 1))) (u8 255) (bytes body)))
+                (_ (bin))))
+            (def (main (: mode Int64))
+              (do
+                (def out (reframe (Bytes.of (list 2 20 30))))
+                (def expected (if (= mode 1)
+                                  (Bytes.of (list 3 255 20 30))
+                                  (Bytes.of (list 3 255 20 31))))
+                (+ (* (Bytes.len out) 10) (if (= out expected) 1 0))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 41 Int64))
+  (call main (: 2 Int64)) (output (: 40 Int64)))
+
 (case "a three-arm runtime literal-tag dispatch hits the middle and last arms and misses past all three"
   (doc    "The two-arm dispatch above can't distinguish a genuine PER-ARM fall-through chain from a
            two-way branch; three literal-tag arms witness the chain at depth: tag 2 falls past arm 1's
