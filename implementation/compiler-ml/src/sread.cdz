@@ -636,7 +636,7 @@ def read-match-arms(s: String, i: Int64, scrutId: Int64, tree: Tree) =
                 (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>  // recurse for the rest
                   (match add-node(t3, Node.NMatch(scrutId, patId, bodyId, restId)) with | (id, t4) => (id, r1, t4))))))))))
 
-/// M2-b-2b-ii-c: read a PAYLOAD ctor-pattern arm `((Ctor x) body)` → NMatchCtor(scrut, tag, binderId, body, rest).
+/// M2-b-2b-ii-c: read a PAYLOAD ctor-pattern arm `((Ctor x) body)` → NMatchCtor(scrut, tag, binderId, body, rest, patCtorName).
 /// `p` is at the inner `(` of the pattern (the arm's outer `(` already consumed by open-paren in read-match-arms).
 /// Read the ctor NAME + its single binder NAME (an NVar node bound in the body scope), look the ctor's tag via
 /// ctor-tag-of, consume the pattern's `)`, read the body, recurse for the rest, build NMatchCtor. A ctor with NO
@@ -662,7 +662,7 @@ def read-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tree) =
                       (match read-form(s, pc, t1) with | (bodyId, q2, t2) =>    // the arm body
                         (let q3 = close-paren(s, q2) in              // close the arm `((Ctor x) body)`
                          (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>   // recurse for rest
-                           (match add-node(t3, Node.NMatchCtor(scrutId, ctorTag, binderId, bodyId, restId)) with | (id, t4) => (id, r1, t4))))))))))))
+                           (match add-node(t3, Node.NMatchCtor(scrutId, ctorTag, binderId, bodyId, restId, name-id(cnm))) with | (id, t4) => (id, r1, t4))))))))))))
 
 /// M2-a nullary CTOR-PATTERNS in match: a match-arm pattern is an integer LITERAL (`(0 body)`) OR a nullary
 /// CONSTRUCTOR name (`(Red body)`). A nullary ctor is a nullary def `Ck → NLit(tag)` (recorded by read-do-type),
