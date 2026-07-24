@@ -10007,14 +10007,75 @@ fn a_re_performing_escaping_continuation_declines_cleanly_until_reentry_at_apply
 /// it), so `5 + (6 + 7)` = 18. This USED to decline ("deeper match-valued-state re-threading not yet served");
 /// it now folds soundly. Pinned as a HARD fold-to-18 (was folds-or-declines) so a regression to a WRONG value
 /// — the state-threading ledger's wrong-branch hazard — is caught, not silently accepted as a re-decline.
-/// A DO-SEQUENCED perform of an OUTER effect, DISCARDED (its value thrown away in a `do`) and crossing an
-/// INNER handler of a DIFFERENT effect, must thread its state advance out to the outer handler — it MUST
-/// NOT be silently dropped (the do-sequenced-outer-perform-under-inner-handle miscompile, corpus-bugfix
-/// 2026-07-21). The inner handler folds its body `(do (A.bump) (A.get))` inside-out; `A.bump`/`A.get` are
-/// FOREIGN to the inner `B` handler (it discharges only `noop`), so it threads them into no slot — and the
-/// `do` fold used to collapse to only the last item, ERASING the non-final `(A.bump)`. The outer `A` then
-/// never saw the advance and `(A.get)` read the stale seed `0`. Fix: the `do` fold PRESERVES a non-final
-/// item that still reaches a foreign perform. Oracle: `bump` advances `0→1`, `get` reads `1`.
+/// A `do`-local VALUE def whose binding flows into a PERFORM ARGUMENT under a handle must compile — it used
+/// to be spuriously CDZ0101-rejected "unbound name" (the do-def-in-perform-argument false-reject, corpus-
+/// bugfix/breaker 2026-07-24), while the semantically identical `let`-twin computed fine. Root cause: the
+/// handle body's downstream folds (pure/tail-resume) drop non-final `do` items and re-splice only a surviving
+/// expression, orphaning the `(def v e)` a later perform arg references. Fix: `reduce_handle` normalizes a
+/// leading do-local value def to a `let` (`lift_do_local_value_defs`) so every fold sees a properly-scoped
+/// body. Oracle: `run 5` → `v = 7`, `(Ask.ask 7)` resumes `14`, `+ 7` = 21.
+#[test]
+fn a_do_local_def_flowing_into_a_perform_argument_under_a_handle_compiles() {
+    use crate::testkit::parse;
+    // The witness's live repro: do-def `v` in the perform arg AND referenced after → 21.
+    let repro = "(do \
+        (effect Ask (op ask (-> Int64 Int64))) \
+        (def (run (: u Int64)) \
+          (handle Ask 0 \
+            ((ask (n) s (resume (* n 2) s))) \
+            (do (def v (+ u 2)) (+ (Ask.ask v) v)))) \
+        (def (main) (run 5)) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(repro))).expect(
+        "a do-def flowing into a perform argument under a handle must compile (no CDZ0101)",
+    );
+    if let Some(v) = run_linked(&bytes, "main") {
+        assert_eq!(v, "21", "v=7, (Ask.ask 7) resumes 14, +7 = 21");
+    }
+    // LET-twin: the shape that always worked — must still compute 21 (fix leaves it untouched).
+    let lt = "(do \
+        (effect Ask (op ask (-> Int64 Int64))) \
+        (def (run (: u Int64)) \
+          (handle Ask 0 \
+            ((ask (n) s (resume (* n 2) s))) \
+            (let ((v (+ u 2))) (+ (Ask.ask v) v)))) \
+        (def (main) (run 5)) \
+        (export main))";
+    let lb = compile_component(&crate::codec::encode(&parse(lt))).expect("let-twin compiles");
+    if let Some(v) = run_linked(&lb, "main") {
+        assert_eq!(v, "21", "let-twin: same oracle");
+    }
+    // CONST-arg control: do-def NOT in the perform arg (const arg), referenced after → (Ask.ask 3)=6, +v=7 → 13.
+    let cst = "(do \
+        (effect Ask (op ask (-> Int64 Int64))) \
+        (def (run (: u Int64)) \
+          (handle Ask 0 \
+            ((ask (n) s (resume (* n 2) s))) \
+            (do (def v (+ u 2)) (+ (Ask.ask 3) v)))) \
+        (def (main) (run 5)) \
+        (export main))";
+    let cb =
+        compile_component(&crate::codec::encode(&parse(cst))).expect("const-arg-perform compiles");
+    if let Some(v) = run_linked(&cb, "main") {
+        assert_eq!(v, "13", "(Ask.ask 3) resumes 6, + v(7) = 13");
+    }
+    // VIA-HELPER: the do-def is passed to a HELPER that performs → 15. (fn (poke v) = Ask.ask v; (Ask.ask 7)=14, +1=15)
+    let helper = "(do \
+        (effect Ask (op ask (-> Int64 Int64))) \
+        (def (poke (: v Int64)) (Ask.ask v)) \
+        (def (run (: u Int64)) \
+          (handle Ask 0 \
+            ((ask (n) s (resume (* n 2) s))) \
+            (do (def v (+ u 2)) (+ (poke v) 1)))) \
+        (def (main) (run 5)) \
+        (export main))";
+    let hb = compile_component(&crate::codec::encode(&parse(helper)))
+        .expect("do-def passed to a performing helper compiles");
+    if let Some(v) = run_linked(&hb, "main") {
+        assert_eq!(v, "15", "(poke 7) = (Ask.ask 7) resumes 14, + 1 = 15");
+    }
+}
+
 #[test]
 fn a_do_sequenced_outer_perform_under_an_inner_handle_threads_its_state_advance() {
     use crate::testkit::parse;

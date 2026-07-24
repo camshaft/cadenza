@@ -76,7 +76,7 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
          (let m2 = resolve-node(tree, litId, env, m1) in
           (let m3 = resolve-node(tree, thenId, env, m2) in
            resolve-node(tree, elseId, env, m3))))
-    | Option.Some(Node.NMatchCtor(scrutId, _ctorTag, binderId, bodyId, restId, _patCtorName)) =>
+    | Option.Some(Node.NMatchCtor(scrutId, _patCtorName, binderId, bodyId, restId)) =>
         // M2-b-2b-ii-c payload ctor-pattern arm `((Ctor x) body)`: the binder `x` (NVar at binderId) is bound
         // in the BODY scope ONLY (like a let binds its body) — so `body`'s `x` resolves RBound(binderId) → lower
         // CVar(binderId), which CMatchSum's bind-payload keys. The scrutinee + the REST (next arm) resolve in the
