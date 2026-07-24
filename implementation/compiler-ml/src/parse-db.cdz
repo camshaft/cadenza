@@ -403,6 +403,34 @@ def ctor-decl-of(tree: Tree, ctorName: Int64) = match tree with
       | Option.None(_) => Option.None(unit)
       | Option.Some(dt2) => (match dt2 with | (declName, _tag) => Option.Some(declName)))
 
+/// M2-b-2b-ii-c2 ENUM-DISC REPRESENTATION predicate (ii-c2b-2, v-inference-confirmed against rcdzc db.rs:2789):
+/// is `declName` a C-style enum — `>= 2` constructors, EVERY one NULLARY (no payload)? Such a sum value carries
+/// no data beyond WHICH variant, so it reps as a BARE tag (the ordinal Int it lowers to), NOT a boxed store
+/// handle — matching rcdzc's `is_enum_disc` (enum_disc set = decls with ≥2 variants all payload-empty; a
+/// single-variant nullary sum is a newtype Unit, a DIFFERENT rep, so the `>= 2` gate is REQUIRED to match the
+/// reference — don't drop it). A MIXED sum (any payload ctor) is boxed. Used by eval/export to dispatch a TSum
+/// value's rep: an enum-disc-decl TSum IS its bare tag (read directly); a boxed-decl TSum is a store handle.
+/// Distinguishes nullary from payload per-ctor via `def-body-of`: a nullary ctor records a def-body (its NLit
+/// tag, read-do-ctors) — Some; a payload ctor records only a ct entry — None. Scans the ct-table for the decl's
+/// ctors (keyed by ctorName → (declName, tag)), counting matches + requiring each nullary.
+def decl-is-enum-disc(tree: Tree, declName: Int64) = match tree with
+  | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => decl-enum-disc-go(tree, Map.to-list(ct), declName, 0, 0, 0)
+
+/// Fold the ct-entry list for `decl-is-enum-disc` by INDEX `i`: `nullary` counts the decl's NULLARY ctors,
+/// `payload` its PAYLOAD ctors. Enum-disc iff (payload == 0) AND (nullary >= 2). A payload ctor of the decl
+/// makes the rep boxed (any payload → not enum-disc). Index recursion over the (ctorName, (declName, tag))
+/// entries (no list-tail — the arena has no generic list-tail; `List.at(entries, i)` walks positionally).
+def decl-enum-disc-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64))), declName: Int64, i: Int64, nullary: Int64, payload: Int64) =
+  (if (i == List.len(entries)) then (if (payload == 0) then (nullary >= 2) else false)
+   else (match List.at(entries, i) with
+     | Option.None(_) => (if (payload == 0) then (nullary >= 2) else false)
+     | Option.Some(e) => (match e with | (ctorName, dt) => (match dt with | (dn, _tag) =>
+          (if (dn == declName)
+           then (match def-body-of(tree, ctorName) with               // nullary ctor has a def-body; payload doesn't
+                  | Option.Some(_) => decl-enum-disc-go(tree, entries, declName, i + 1, nullary + 1, payload)
+                  | Option.None(_) => decl-enum-disc-go(tree, entries, declName, i + 1, nullary, payload + 1))
+           else decl-enum-disc-go(tree, entries, declName, i + 1, nullary, payload))))))
+
 /// Encode a param's declared `(signed, width)` into the single Int64 the param-type table stores: `width*2 +
 /// (1 if signed else 0)`. Width ≤ 64, so the low bit is the sign and the rest is the width — unambiguous.
 def encode-param-type(signed: Bool, width: Int64) = (width * 2) + (if signed then 1 else 0)
@@ -1045,4 +1073,42 @@ def pd-fully-consumed-parse-keeps-its-root() =
     (if is-bin-op(tree, root, 60) then unit
      else trap("`1 < 2` consumes all tokens → root is the `<` Bin, not a poison")))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, ctor-tag-of, ctor-decl-of, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
+// ---- ii-c2b-2 decl-is-enum-disc: the sum-rep predicate (>=2 ctors, all nullary → bare tag; else boxed) ----
+// Builds a ct-table directly (record-ctor-tag + record-def for nullary ctors, record-ctor-tag ALONE for payload
+// ctors — mirroring read-do-ctors) so the predicate is unit-tested without the s-expr reader. A nullary ctor's
+// def-body is what marks it nullary; a payload ctor has a ct entry but no def-body.
+
+@test
+def pd-enum-disc-all-nullary-two-plus() =
+  // decl 100 with TWO nullary ctors (1→tag0, 2→tag1) — a C-style enum → enum-disc TRUE (bare tag rep).
+  (match add-node(empty-tree(), Node.NLit(0)) with | (b0, t1) =>
+    (match add-node(t1, Node.NLit(1)) with | (b1, t2) =>
+      (let t3 = record-def(t2, 1, b0) in                          // ctor 1 nullary (def-body b0)
+       (let t4 = record-ctor-tag(t3, 1, 100, 0) in
+        (let t5 = record-def(t4, 2, b1) in                        // ctor 2 nullary (def-body b1)
+         (let t6 = record-ctor-tag(t5, 2, 100, 1) in
+          (if decl-is-enum-disc(t6, 100) then unit
+           else trap("a decl with >=2 nullary ctors is enum-disc (bare-tag rep)"))))))))
+
+@test
+def pd-enum-disc-mixed-is-boxed() =
+  // decl 200 with a nullary ctor (3→tag0) AND a PAYLOAD ctor (4→tag1, ct entry but NO def-body) → NOT enum-disc
+  // (a mixed sum is boxed — any payload ctor makes the rep a store handle).
+  (match add-node(empty-tree(), Node.NLit(0)) with | (b0, t1) =>
+    (let t2 = record-def(t1, 3, b0) in                            // ctor 3 nullary
+     (let t3 = record-ctor-tag(t2, 3, 200, 0) in
+      (let t4 = record-ctor-tag(t3, 4, 200, 1) in                 // ctor 4 PAYLOAD (ct entry, no record-def)
+       (if decl-is-enum-disc(t4, 200) then trap("a MIXED sum (has a payload ctor) is NOT enum-disc — it's boxed")
+        else unit)))))
+
+@test
+def pd-enum-disc-single-variant-not-enum() =
+  // decl 300 with ONE nullary ctor (5→tag0) → NOT enum-disc: the >=2 gate (matches rcdzc — a single-variant
+  // nullary sum is a newtype Unit, a DIFFERENT rep). Guards the parity rule that the >=2 requirement is not dropped.
+  (match add-node(empty-tree(), Node.NLit(0)) with | (b0, t1) =>
+    (let t2 = record-def(t1, 5, b0) in
+     (let t3 = record-ctor-tag(t2, 5, 300, 0) in
+      (if decl-is-enum-disc(t3, 300) then trap("a SINGLE-variant nullary sum is NOT enum-disc (>=2 required, newtype Unit otherwise)")
+       else unit))))
+
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, ctor-tag-of, ctor-decl-of, decl-is-enum-disc, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
