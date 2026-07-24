@@ -1458,6 +1458,117 @@
   (call   main (: 500 Int64))
   (output (: 10010108 Int64)))
 
+(case "a FLETCHER-16 checksum walks a concat-built byte rope across its seams"
+  (doc    "The checksum-class algorithm face: Fletcher-16's DOUBLE accumulator is position-dependent —
+           s2 folds s1 at every byte, so a byte read wrong AT ANY SEAM shifts s2 differently than s1
+           (a plain sum is order-insensitive and can't see seam misreads that preserve the multiset).
+           Each byte comes through Bytes.at's Option unwrap; r=4 crosses 4 concat seams; r=0 pins the
+           empty-rope boundary (checksum of nothing = 0). Modulo 255 per the Fletcher definition.
+           r=1 [10,20,30] → s1=60,s2=100·… → 25660; r=4 (12 bytes) → 52720; r=0 → 0.")
+  (input  (do
+            (def (build (: r Int64) (: acc Bytes))
+              (if (= r 0) acc (build (- r 1) (Bytes.concat acc (Bytes.of (list 10 20 30))))))
+            (def (go (: b Bytes) (: i Int64) (: n Int64) (: s1 Int64) (: s2 Int64))
+              (if (>= i n)
+                  (+ (* s2 256) s1)
+                  (match (Bytes.at b i)
+                    ((Some v)
+                      (do
+                        (def t1 (% (+ s1 v) 255))
+                        (go b (+ i 1) n t1 (% (+ s2 t1) 255))))
+                    ((None _u) -1))))
+            (def (fletcher (: b Bytes))
+              (go b 0 (Bytes.len b) 0 0))
+            (def (main (: r Int64))
+              (fletcher (build r (Bytes.of (list)))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 25660 Int64))
+  (call main (: 4 Int64)) (output (: 52720 Int64))
+  (call main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "a Fletcher-16 over a seam-spanning slice VIEW equals the checksum of its logical bytes"
+  (doc    "Composes the checksum with #Sharing Is Not Observable: slice(2,2) of [10,20,30]⧺[40,50,60]
+           SPANS the concat seam — a view realized by storage-sharing must hand the walk the LOGICAL
+           byte sequence [30,40]; the position-sensitive s2 catches a view that leaks physical seam
+           structure or misaligns the base offset. + the identity slice(0,6) and the EMPTY slice(3,0)
+           → 0. slice(2,2)=[30,40] → 25670; whole → 13010; empty → 0.")
+  (input  (do
+            (def (go (: b Bytes) (: i Int64) (: n Int64) (: s1 Int64) (: s2 Int64))
+              (if (>= i n)
+                  (+ (* s2 256) s1)
+                  (match (Bytes.at b i)
+                    ((Some v)
+                      (do
+                        (def t1 (% (+ s1 v) 255))
+                        (go b (+ i 1) n t1 (% (+ s2 t1) 255))))
+                    ((None _u) -1))))
+            (def (fletcher (: b Bytes))
+              (go b 0 (Bytes.len b) 0 0))
+            (def (main (: st Int64) (: ln Int64))
+              (do
+                (def rope (Bytes.concat (Bytes.of (list 10 20 30)) (Bytes.of (list 40 50 60))))
+                (match (Bytes.slice rope st ln)
+                  ((Some s) (fletcher s))
+                  ((None _u) -1))))
+            (export main)))
+  (call main (: 2 Int64) (: 2 Int64)) (output (: 25670 Int64))
+  (call main (: 0 Int64) (: 6 Int64)) (output (: 13010 Int64))
+  (call main (: 3 Int64) (: 0 Int64)) (output (: 0 Int64)))
+
+(case "a slice OF a seam-spanning slice re-offsets into the logical bytes of the parent view"
+  (doc    "The NESTED-view face: outer slice(1,4) of the seamed rope spans the seam; an inner slice
+           then re-offsets INTO the outer view — offset composition against the PARENT's logical
+           space is exactly where a sharing implementation drops or double-counts the base offset.
+           inner slice(1,2) = logical [30,40], bytes on OPPOSITE sides of the physical seam →
+           25670 (equals the direct seam-spanning checksum above — the nesting must be invisible);
+           identity inner slice(0,4) = [20..50] → 11660; single-byte tail inner(3,1) = [50] → 12850.")
+  (input  (do
+            (def (go (: b Bytes) (: i Int64) (: n Int64) (: s1 Int64) (: s2 Int64))
+              (if (>= i n)
+                  (+ (* s2 256) s1)
+                  (match (Bytes.at b i)
+                    ((Some v)
+                      (do
+                        (def t1 (% (+ s1 v) 255))
+                        (go b (+ i 1) n t1 (% (+ s2 t1) 255))))
+                    ((None _u) -1))))
+            (def (fletcher (: b Bytes))
+              (go b 0 (Bytes.len b) 0 0))
+            (def (main (: st Int64) (: ln Int64))
+              (do
+                (def rope (Bytes.concat (Bytes.of (list 10 20 30)) (Bytes.of (list 40 50 60))))
+                (match (Bytes.slice rope 1 4)
+                  ((Some outer)
+                    (match (Bytes.slice outer st ln)
+                      ((Some inner) (fletcher inner))
+                      ((None _u) -1)))
+                  ((None _u) -2))))
+            (export main)))
+  (call main (: 1 Int64) (: 2 Int64)) (output (: 25670 Int64))
+  (call main (: 0 Int64) (: 4 Int64)) (output (: 11660 Int64))
+  (call main (: 3 Int64) (: 1 Int64)) (output (: 12850 Int64)))
+
+(case "String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts"
+  (doc    "The None face of the decode path (the landed from-bytes pins are happy-path): the bytes of
+           \"aé\" are [97, 195, 169] — a slice(0,2) cuts the 2-byte é MID-SEQUENCE, so from-bytes
+           must reject (None → -1: UTF-8 validity is checked, not assumed); the aligned cuts decode —
+           slice(0,3) whole (\"aé\", byte-len 3 → 103) and slice(1,2) the é alone (a multibyte scalar
+           at offset 0 of the view → 102). The validity boundary composed with slice views.")
+  (input  (do
+            (def (main (: st Int64) (: ln Int64))
+              (do
+                (def b (Bytes.of (list 97 195 169)))
+                (match (Bytes.slice b st ln)
+                  ((Some s)
+                    (match (String.from-bytes s)
+                      ((Some str) (+ 100 (String.byte-len str)))
+                      ((None _u) -1)))
+                  ((None _u) -2))))
+            (export main)))
+  (call main (: 0 Int64) (: 2 Int64)) (output (: -1 Int64))
+  (call main (: 0 Int64) (: 3 Int64)) (output (: 103 Int64))
+  (call main (: 1 Int64) (: 2 Int64)) (output (: 102 Int64)))
+
 (case "a slice window spanning MANY seams of a built rope reads the logical bytes"
   (doc    "The seam-crossing slice at scale (the const seam pin crosses ONE): a 102-byte window starting
            at byte 99 of a 400-byte 200-seam rope spans ~51 leaf boundaries. Its length is 102 and its
