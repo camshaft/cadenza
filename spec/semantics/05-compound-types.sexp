@@ -2012,6 +2012,106 @@
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 5 Int64)) (output (: 11 Int64)))
 
+(case "dropping a map derived by persistent insert must not free nodes shared with the survivor"
+  (doc    "The RECLAIM side of the persistence pins above: those check the SURVIVOR's content when a
+           derived map is built; these check what happens when one generation DIES. m2 = Map.insert m1
+           shares interior CHAMP nodes with m1; a runtime select KEEPS one and the other's last use is
+           behind it. mode 1 keeps the BASE and drops the derived m2 — freeing m2's root must not
+           cascade into interiors the survivor still references (the reads a=1→10, b=3→30 walk exactly
+           those shared nodes after the drop); mode 2 keeps the derived past the base's last use and
+           additionally reads the fresh key 4→400. Encodes a + b·10 + fresh-hit·1000 + len·10000:
+           mode 1 → 10+300+0+30000 = 30310, mode 2 → 10+300+1000+40000 = 41310.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (main (: mode Int64))
+              (do
+                (def m1 (build 1 3 Map.empty))
+                (def m2 (Map.insert m1 4 400))
+                (def keep (if (= mode 1) m1 m2))
+                (def a (get keep 1))
+                (def b (get keep 3))
+                (def c (get keep 4))
+                (+ a (+ (* b 10) (+ (* (if (= c 400) 1 0) 1000) (* (Map.len keep) 10000))))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 30310 Int64))
+  (call main (: 2 Int64)) (output (: 41310 Int64)))
+
+(case "a third-generation overwrite path-copies away from both ancestors and all three read true"
+  (doc    "The OVERWRITE face of generation sharing: m1 → m2 (insert 4) → m3, where mode 2's m3
+           overwrites key 2 — a key shared with BOTH ancestors (value 20 since m1). The path copy
+           must isolate the overwrite: m1 still reads 20 (not 999) while m3 reads 999, and m3's len
+           stays 4 (an overwrite is not growth). mode 1 is the fresh-key control (m3 inserts 5,
+           len 5). All-const build — this also exercises the const-map path, distinct from the
+           runtime-built sibling above. Encodes m1[2] + m3[2]·100 + len(m3)·10000: mode 1 →
+           20+2000+50000 = 52020, mode 2 → 20+99900+40000 = 139920.")
+  (input  (do
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (main (: mode Int64))
+              (do
+                (def m1 (Map.insert (Map.insert (Map.insert Map.empty 1 10) 2 20) 3 30))
+                (def m2 (Map.insert m1 4 400))
+                (def m3 (if (= mode 1) (Map.insert m2 5 500) (Map.insert m2 2 999)))
+                (+ (get m1 2) (+ (* (get m3 2) 100) (* (Map.len m3) 10000)))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 52020 Int64))
+  (call main (: 2 Int64)) (output (: 139920 Int64)))
+
+(case "dropping a list pushed FROM a survivor must not free the shared spine"
+  (doc    "The RRB member of the generation-sharing reclaim family (map members above): l2 =
+           List.push l1 shares l1's spine as its prefix. mode 1 keeps the SHORTER survivor l1 and
+           drops the pushed derivative — freeing l2's tail node must not cascade into the shared
+           spine, and the sum-walk re-reads EVERY shared element after the drop (a freed spine node
+           corrupts the sum, not just the length). mode 2 keeps the derivative past the base's last
+           use. Encodes sum·10 + len: mode 1 → (1+2+3+4)·10+4 = 104, mode 2 → 60·10+5 = 605.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
+              (if (> i n) acc (build (+ i 1) n (List.push acc i))))
+            (def (sum-list (: xs (List Int64)) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (sum-list t (+ acc h)))))
+            (def (main (: mode Int64))
+              (do
+                (def l1 (build 1 4 (list)))
+                (def l2 (List.push l1 50))
+                (def keep (if (= mode 1) l1 l2))
+                (+ (* (sum-list keep 0) 10) (List.len keep))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 104 Int64))
+  (call main (: 2 Int64)) (output (: 605 Int64)))
+
+(case "a select between a base map and its derived generation frees the loser but not shared nodes"
+  (doc    "The COMPOSITION of generation sharing with the escape shape (the #20 family, pinned per
+           representation further down and in 13-strings): pick selects at RUNTIME between a base
+           map and its derived generation — so which generation DIES is itself runtime-chosen, and
+           the loser is always a still-shared relative of the escapee. The select condition compares
+           the two lens (3<4 true) against the mode, flipping which side wins without changing the
+           data: mode 1 keeps the base (drop of the derived root must not cascade), mode 2 keeps
+           the derived (base's direct refs drop, shared interiors survive through pick). Reads land
+           AFTER the join: pick[2] (a shared node both modes) and pick[4] (present only in the
+           derived). Encodes len·1000 + pick[2] + fresh-hit: mode 1 → 3000+20+0 = 3020, mode 2 →
+           4000+20+1 = 4021.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: acc (Map Int64 Int64)))
+              (if (> i n) acc (build (+ i 1) n (Map.insert acc i (* i 10)))))
+            (def (get (: m (Map Int64 Int64)) (: k Int64))
+              (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+            (def (main (: mode Int64))
+              (do
+                (def m1 (build 1 3 Map.empty))
+                (def m2 (Map.insert m1 4 400))
+                (def pick (if (= (< (Map.len m1) (Map.len m2)) (= mode 1)) m1 m2))
+                (def a (get pick 2))
+                (def b (get pick 4))
+                (+ (* (Map.len pick) 1000) (+ a (if (= b 400) 1 0)))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 3020 Int64))
+  (call main (: 2 Int64)) (output (: 4021 Int64)))
+
 (case "a map consumed by Map.swap in one operand is unchanged for a later read of the same binding"
   (doc    "The VALUE-YIELDING-insert twin of the Map.insert persistence case above: `Map.swap` returns
            `(tuple <prior-value-optional> <new-map>)`, so it likewise must NOT FBIP-mutate a shared

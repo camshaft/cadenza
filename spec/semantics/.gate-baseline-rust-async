@@ -1262,6 +1262,7 @@ pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one expo
 pass	a runtime-constructed Ast equals its quoted twin by structural content
 pass	a runtime-index List.update LOOP rewrites every 100th slot of a 1000-element list
 pass	a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence
+pass	a select between a base map and its derived generation frees the loser but not shared nodes
 pass	a separator JOIN over a runtime parts list handles first-vs-rest and the empty list
 pass	a shift by a RUNTIME amount computes (both operands off the fold)
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
@@ -1278,6 +1279,7 @@ pass	a success `?` unwraps a RUNTIME payload (static ctor, per-call value)
 pass	a sum-typed STATE MACHINE steps through transitions with an ABSORBING terminal state
 pass	a tag function INTROSPECTS its chunk and hole counts and returns both
 pass	a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack
+pass	a third-generation overwrite path-copies away from both ancestors and all three read true
 pass	a tuple key whose element is itself a float-bearing tuple keys by content
 pass	a tuple key with a RUNTIME Rational leaf hits and misses by canonical content
 pass	a tuple key with an ARITH-built BigInt leaf hits and misses by content
@@ -2974,6 +2976,8 @@ pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an Ast.Int stores an integer wider than Int64 without loss
+pass	dropping a list pushed FROM a survivor must not free the shared spine
+pass	dropping a map derived by persistent insert must not free nodes shared with the survivor
 pass	graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list
 pass	modular exponentiation by SQUARING halves the exponent and branches on parity
 pass	string REVERSE walks scalars back-to-front and anti-commutes with concatenation
