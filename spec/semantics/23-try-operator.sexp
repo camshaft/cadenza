@@ -415,6 +415,26 @@
             (export main)))
   (output (: 0 Int64)))
 
+(case "a perform BETWEEN two `?`s advances state that survives the second's cut"
+  (doc    "The effectful-init pin performs BEFORE the first ?; this performs BETWEEN a succeeding ?
+           and a failing one — the state advance from the mid-spine perform must SURVIVE the second
+           ?'s cut (the abortive try must not roll back the effect discipline's state; the trailing
+           tick reads 1 → -9).")
+  (input (do
+        (effect Ctr (op tick (-> Unit Int64)))
+        (def (opt)
+          (: (let ((x (try (Some 10))))
+               (let ((a (Ctr.tick unit)))
+                 (let ((y (try (None unit))))
+                   (Some (+ x (+ a y))))))
+             (Option Int64)))
+        (def (main)
+          (handle Ctr 0 ((tick (_u) s (resume s (+ s 1))))
+            (+ (* (match (opt) ((Some v) v) ((None _u) -1)) 10)
+               (Ctr.tick unit))))
+        (export main)))
+  (output (: -9 Int64)))
+
 (case "a success `?` then a failure `?` short-circuits at the second"
   (doc    "`x = (try (Some 1))` unwraps (the happy path); the SECOND `?` sees None and cuts the
            boundary → the caller matches None → -1. Pins the chain semantics: each `?` is its own cut

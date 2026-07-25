@@ -108,9 +108,11 @@ pass	a Fletcher-16 over a seam-spanning slice VIEW equals the checksum of its lo
 pass	a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit
 pass	a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string
 pass	a LET shadow of a do-def heap binding closes its scope and the do-def survives
+pass	a LIST built in the handle body from perform results crosses the handle exit live
 pass	a LIST shrinker drops elements greedily and converges to a minimal failing sublist
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
+pass	a MAP keyed by perform results in the handle body crosses the exit and looks up by those keys
 pass	a MEDIAN-OF-3 filter smooths interior spikes while endpoints pass through unchanged
 pass	a MIXED-endian frame packs big and little fields side by side and round-trips both
 pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
@@ -126,7 +128,9 @@ pass	a RELATIONAL @requires over two parameters enforces their order at entry
 pass	a ROMAN DECODER subtracts on lookahead and round-trips through the pinned renderer
 pass	a ROMAN NUMERAL renderer walks a value-symbol table greedily with subtractive pairs
 pass	a ROTATE-BY-K splits at the wrapped offset and swaps the halves, identity at multiples of len
+pass	a RUNTIME negative signed field beside an unsigned one round-trips with independent sign handling
 pass	a RUNTIME-selected combiner closure crosses a join and drives a fold
+pass	a Rational compare whose naive cross-multiply would OVERFLOW i64 still orders exactly
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
 pass	a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN
 pass	a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack
@@ -283,6 +287,7 @@ pass	a bare-literal-arm float match under Float32 emits valid f32 across the sel
 pass	a fitting Float32 record field passed through a typed parameter computes
 pass	a fitting contextual float literal computes through the same arith grounding
 pass	a float-field RECORD as a SET element dedups by content including the float leaf
+pass	a fold of unit fractions sums EXACTLY to one - the harmonic identity float cannot hold
 pass	a fold over Map.to-list rebuilds a TRANSFORMED map — the map-over-values idiom
 pass	a frame body ACCUMULATED by a fold of per-element bin constructions round-trips
 pass	a generated insert/remove Set workload agrees with a BITMASK model at every step's end
@@ -293,6 +298,7 @@ pass	a generic pair-swap crosses a scalar and a heap payload between positions
 pass	a generic sum NESTS ITSELF at a different instantiation and destructures through both layers
 pass	a handler arm RECURSES through a named helper before resuming
 pass	a handler arm applies a closure capturing a heap map and the map outlives the handle
+pass	a handler threads a TUPLE of two heaps as state with different ops touching different halves
 pass	a helper returns the shorter of two borrowed ropes and both caller handles stay live
 todo	a host response SIZES a guest-built collection which is then folded and keyed
 pass	a length-prefixed frame built FRESH from a runtime payload round-trips through its own parser
@@ -1273,6 +1279,7 @@ pass	a narrow-width overflow reached through a MATCH projection of a runtime sum
 pass	a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected
 pass	a negative literal under an UNSIGNED width rejects in a runtime branch
 pass	a one-node Ast rewrite over a runtime leaf computes per call
+pass	a perform BETWEEN two `?`s advances state that survives the second's cut
 pass	a perform in the scrutinee fires exactly ONCE whichever of three arms is selected
 pass	a performing closure called TWICE observes the state advance between its calls
 pass	a prepend-built list drains in order through head-tail matching
@@ -1296,6 +1303,7 @@ pass	a reframed packet with a TRANSFORMED header compares byte-equal to its inde
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
 pass	a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite
 todo	a NONZERO BigInt literal probe in a recursive quasiquote-pattern simp matches its own constructor
+pass	a rope accumulates across perform/resume boundaries and content-checks at the exit
 pass	a runtime multibyte rope matches a MULTIBYTE string-literal arm by content
 pass	a runtime-built BigInt sum-payload literal probe matches its constructor
 pass	a runtime-built BigInt sum-payload literal probe falls through on a non-matching payload
@@ -1456,9 +1464,14 @@ pass	difference DISTRIBUTES over union but is NOT associative - both facts witne
 pass	digit-separator literals in decimal and hex drive runtime modular arithmetic
 pass	doubling a subnormal crosses UP into the minimum normal exactly
 pass	exponent-notation floats drive runtime arithmetic with a negative exponent live
+pass	generated small-alphabet strings dedup in a Set by content across per-draw construction
+pass	generated string keys OVERWRITE by content and the first word's final value is observable
 pass	hex and binary literals drive a runtime mask-extract across radix notations
+pass	mixed-sign Rational add and multiply normalize signs through one runtime chain
+pass	multi-limb BigInts equal in the LOW limb compare by the HIGH limb
 pass	print/read round-trips a tree carrying every leaf kind in one canonical form
 pass	runtime-packed nibbles MATCH back out through bits patterns - the pack-unpack identity
+pass	symbols interned from GENERATED strings dedup by content in a symbol set
 pass	the RUNTIME division identity a=(a/b)*b+(a%b) holds across all four sign quadrants
 pass	the runtime narrow-width add in range does not trap (the control)
 pass	a genuinely-runtime negative right-shift count traps rather than masking
@@ -5037,5 +5050,9 @@ pass	a top-level do-local fn capturing a constant lowers (capture control)
 pass	a runtime-rope do-def that escapes an if-select in a match arm survives (multi-use heap keep, not a UAF)
 pass	a do-def value in a handle body flows into a perform's argument and stays in scope
 pass	a let-bound value in a handle body flows into a perform's argument (the always-worked twin)
+pass	a do-def shared across BOTH resume slots stays in scope (the accumulator-arm shape)
+pass	the let-form of the dual-resume-slot arm computes (the always-worked oracle twin)
+pass	a SCALAR do-def resumed in both slots stays in scope (scalar twin of the dual-slot fix)
+pass	a do-def referenced twice WITHIN one resume operand compiles (the within-slot control)
 pass	an abortive perform in a body tail referencing a do-local binding stays in scope
 pass	an abortive perform in a STRICT OPERAND referencing a let-local binding stays in scope

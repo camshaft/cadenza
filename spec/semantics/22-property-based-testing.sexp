@@ -697,6 +697,88 @@
   (call main (: 99 Int64) (: 25 Int64)) (output (: 41 Int64))
   (call main (: 7 Int64) (: 12 Int64)) (output (: 51 Int64)))
 
+(case "generated small-alphabet strings dedup in a Set by content across per-draw construction"
+  (doc    "A STRING generator (seeded picks from a 4-letter alphabet, 1-or-2-char words via a draw
+           bit, built by per-draw CONCAT) driving Set-of-STRING dedup — each inserted string is a
+           fresh heap value whose content may collide with a prior draw's (champ_eq byte-walk under
+           a generated workload). 3 seed/length faces with distinct counts.")
+  (input (do
+        (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+        (def (pick (: s Int64))
+          (match (& s 3)
+            (0 "a") (1 "b") (2 "c") (_ "d")))
+        (def (run (: s Int64) (: n Int64) (: seen (Set String)))
+          (if (= n 0)
+              (Set.len seen)
+              (do
+                (def s2 (next s))
+                (def c1 (pick s2))
+                (def two (& (>> s2 4) 1))
+                (def s3 (next s2))
+                (def w (if (= two 1) (String.concat c1 (pick s3)) c1))
+                (run s3 (- n 1) (Set.insert seen w)))))
+        (def (main (: seed Int64) (: n Int64))
+          (run seed n (Set.of (list))))
+        (export main)))
+  (call main (: 12345 Int64) (: 3 Int64)) (output (: 3 Int64))
+  (call main (: 7 Int64) (: 5 Int64)) (output (: 3 Int64))
+  (call main (: 99 Int64) (: 2 Int64)) (output (: 2 Int64)))
+
+(case "generated string keys OVERWRITE by content and the first word's final value is observable"
+  (doc    "The value-side companion: word→draw-index inserted per draw (collided keys OVERWRITE by
+           content), then the FIRST word is RE-DERIVED from the seed and its final value read — the
+           deterministic-generator property composed with map overwrite (31 = w1 never collided;
+           43 = w1's slot overwritten by draw 3).")
+  (input (do
+        (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+        (def (pick (: s Int64))
+          (match (& s 3)
+            (0 "a") (1 "b") (2 "c") (_ "d")))
+        (def (word (: s Int64))
+          (do
+            (def s2 (next s))
+            (def c1 (pick s2))
+            (def two (& (>> s2 4) 1))
+            (def s3 (next s2))
+            (tuple (if (= two 1) (String.concat c1 (pick s3)) c1) s3)))
+        (def (run (: s Int64) (: i Int64) (: n Int64) (: m (Map String Int64)))
+          (if (> i n)
+              m
+              (match (word s)
+                ((tuple w s2) (run s2 (+ i 1) n (Map.insert m w i))))))
+        (def (main (: seed Int64) (: n Int64))
+          (do
+            (def m (run seed 1 n Map.empty))
+            (def w1 (match (word seed) ((tuple w _s) w)))
+            (+ (* (Map.len m) 10)
+               (match (Map.lookup m w1) ((Some v) v) ((None _u) 0)))))
+        (export main)))
+  (call main (: 12345 Int64) (: 3 Int64)) (output (: 31 Int64))
+  (call main (: 99 Int64) (: 4 Int64)) (output (: 41 Int64))
+  (call main (: 11 Int64) (: 6 Int64)) (output (: 43 Int64)))
+
+(case "symbols interned from GENERATED strings dedup by content in a symbol set"
+  (doc    "The symbol-intern analogue: Symbol.of over generator-produced strings dedups by CONTENT
+           in a (Set Symbol) — each Symbol.of canonicalizes a fresh runtime string; an allocation-
+           order identity would never dedup (count = n). 3 seed faces.")
+  (input (do
+        (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+        (def (pick (: s Int64))
+          (match (& s 3)
+            (0 "a") (1 "b") (2 "c") (_ "d")))
+        (def (run (: s Int64) (: n Int64) (: seen (Set Symbol)))
+          (if (= n 0)
+              (Set.len seen)
+              (do
+                (def s2 (next s))
+                (run s2 (- n 1) (Set.insert seen (Symbol.of (pick s2)))))))
+        (def (main (: seed Int64) (: n Int64))
+          (run seed n (Set.of (list))))
+        (export main)))
+  (call main (: 12345 Int64) (: 3 Int64)) (output (: 3 Int64))
+  (call main (: 99 Int64) (: 6 Int64)) (output (: 4 Int64))
+  (call main (: 5 Int64) (: 2 Int64)) (output (: 2 Int64)))
+
 (case "a LIST shrinker drops elements greedily and converges to a minimal failing sublist"
   (doc    "COMPOUND shrinking (the scalar shrink pins above search upward over integers): greedy
            drop-one-element with RESTART-on-success over a failing list (sum >= 100) converges from
