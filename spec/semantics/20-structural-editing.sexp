@@ -490,3 +490,22 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: -1 Int64)))
+
+(case "a plain-sum recursive CONSTANT BigInt literal probe matches its own constructor"
+  (doc    "The CONSTANT-scrutinee companion of the runtime probes above (breaker FINDING #22 FACE-B): a
+           minimal plain sum `(type W (Mk BigInt))` recursively walked, probing a CONSTANT `(Mk 1)` against
+           the nonzero literal `(Mk 1)` → 40. This was originally an INVALID wasm module (the const (Mk 1)
+           materialized its BigInt payload as a raw i64, not a heap leaf) AND a rust build-fail
+           (error[E0308]: mismatched types — is_bigint_valued didn't strip the erased newtype's nominal, so
+           the const fell to the int-literal path). FIXED across the stack: wasm const-fold by v-inference
+           77e8ca8b1, rust const path by v-rust-backend add3eca3a (is_bigint_valued strips the nominal so
+           the const goes through const_big_expr). Green on all three backends — completes the
+           nonzero-recursive-BigInt-probe matrix (FACE-A quote + runtime probe + this const face).")
+  (input  (do
+            (type W (Mk BigInt))
+            (def (walk (: n Int64) (: w W))
+              (if (< n 1) (- 0 1)
+                (match w ((Mk 1) 40) (_ (walk (- n 1) w)))))
+            (def (main) (walk 2 (Mk 1)))
+            (export main)))
+  (output (: 40 Int64)))

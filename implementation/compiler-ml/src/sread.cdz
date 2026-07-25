@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, ctor-tag-of, encode-param-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit, is-app } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, ctor-tag-of, encode-param-type, encode-bool-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit, is-app } from "parse-db"
 import { recognize, is-int-type, ty-signed, ty-width } from "int-type"
 import { fits-width } from "int-width"
 
@@ -592,11 +592,13 @@ def read-do-ctors(s: String, k: Int64, declName: Int64, tag: Int64, root: Int64,
              // encoding is a later slice). Do NOT record a def-body (a ctor is not an inlinable def). Skip past the
              // payload's matching `)` and recurse tag+1.
              else (match scan-atom(s, c2, "") with | (pty, _pn) =>          // the single payload type atom
-                    // argType: an INT type → encode-param-type (non-zero); a NON-int payload (Bool / nested sum /
-                    // compound the reader can't encode) → -1 = UNSUPPORTED sentinel (infer TErr's the binder → any
-                    // use declines — NOT 0, which means "no payload/Int64-placeholder" and would MISREAD a Bool
-                    // binder as Int64, silently type-checking `(+ b 1)` on a Bool payload; v-inference's trap).
-                    (let argType = (if (is-int-type(pty)) then encode-param-type(ty-signed(pty), ty-width(pty)) else (0 - 1)) in
+                    // argType: an INT type → encode-param-type (≥2); the BOOL type → encode-bool-type (1, the
+                    // reserved Bool sentinel — infer decodes it to TBool so a Bool-payload binder type-checks);
+                    // any OTHER non-int-non-bool payload (nested sum / compound the reader can't encode) → -1 =
+                    // UNSUPPORTED sentinel (infer TErr's the binder → any use declines — NOT 0, which means "no
+                    // payload/Int64-placeholder" and would MISREAD the binder as Int64).
+                    (let argType = (if (is-int-type(pty)) then encode-param-type(ty-signed(pty), ty-width(pty))
+                                    else (if (pty == "Bool") then encode-bool-type() else (0 - 1))) in
                      (let t1 = record-ctor-tag-typed(tree, name-id(cnm), declName, tag, argType) in
                       read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), declName, tag + 1, root, t1)))))))))
 
@@ -1443,5 +1445,46 @@ def sr-untyped-param-records-no-type() =
             | Option.None(_) => unit
             | Option.Some(_) => trap("an untyped param records no declared type"))
       | Option.None(_) => trap("f has a first param node")))
+
+// ---- PR#835: read-ctor-pattern-arm decline discipline (unknown-ctor mis-positioning + no-binder rule) ----
+
+@test
+def sr-ctor-pattern-payload-arm-reads-to-nmatchctor() =
+  // BASELINE (the positive shape the decline cases contrast with): a well-formed payload ctor-pattern arm
+  // `((BB x) x)` over a known ctor reads to an NMatchCtor at main's body root, and its REST chain reaches the
+  // wildcard body — so the reader consumed the arm + positioned correctly for the following arms.
+  (match read-source("(do (type Box (BB Int64)) (def (main c) (match c ((BB x) x) (_ 9))) (export main))") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NMatchCtor(_, _, _, _, restId)) =>
+          (match node-at(tree, restId) with
+            | Option.Some(Node.NLit(9)) => unit                       // the wildcard body (9) — later arm NOT corrupted
+            | _ => trap("the ctor arm's REST reaches the wildcard body NLit 9 (reader positioned past the whole arm)"))
+      | _ => trap("a known payload ctor-pattern arm reads to NMatchCtor")))
+
+@test
+def sr-ctor-pattern-unknown-ctor-declines-cleanly-pr835() =
+  // PR#835 (mis-positioning): an UNKNOWN pattern ctor `((Unknown x) 7)` must DECLINE by skipping the WHOLE arm
+  // (past body + arm close) and recursing for the rest, so the reader is positioned to continue. Pre-fix the
+  // unknown-ctor branch returned at the arm BODY, corrupting everything AFTER it. The sharp witness is a def
+  // FOLLOWING the match-def: `helper` must still parse to body NLit 42. Under the pre-fix mis-position the reader
+  // over/under-consumes and `helper` is lost/corrupted. (A plain poison-root check does NOT catch this — the
+  // match still poisons either way; only a following form exposes the index corruption.)
+  (match read-source("(do (type Color (Red) (Green)) (def (main c) (match c ((Unknown x) 7) (_ 9))) (def (helper) 42) (export main))") with | (_root, tree) =>
+    (match def-body-of(tree, name-id("helper")) with
+      | Option.Some(b) => (match node-at(tree, b) with
+          | Option.Some(Node.NLit(42)) => unit                        // following def intact → reader positioned correctly
+          | _ => trap("the def FOLLOWING an unknown-ctor match must parse intact (helper = NLit 42) — PR#835 mis-position"))
+      | Option.None(_) => trap("the following `helper` def must be recorded (reader not corrupted by the unknown-ctor arm)")))
+
+@test
+def sr-ctor-pattern-no-binder-declines-pr835() =
+  // PR#835 (no-binder rule): a payload ctor pattern with NO binder `((BB) 7)` must DECLINE (the doc's "ctor with
+  // NO binder → decline"), NOT silently build an empty-name binder `NVar(name-id(""))`. scan-atom returns "" at
+  // the pattern's `)`; the reader checks `bnm == ""` → declines to poison. Pins the empty-binder guard.
+  (match read-source("(do (type Box (BB Int64)) (def (main c) (match c ((BB) 7) (_ 9))) (export main))") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NVar(0)) => unit                             // clean poison — no empty-name binder built
+      | Option.Some(Node.NMatchCtor(_, _, _, _, _)) => trap("a NO-binder ctor pattern must DECLINE, not build an empty-name binder NMatchCtor")
+      | _ => trap("a no-binder ctor pattern `((BB) body)` declines to poison NVar(0) (PR#835)")))
 
 export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id }

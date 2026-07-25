@@ -13,7 +13,7 @@
 /// there is one ground type — so this column is the DB-shaped monomorphic specialization. It widens to call
 /// the HM engine when the language grows function types.)
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, pt-width, pt-signed, ctor-tag-of, ctor-decl-of, ctor-argtype-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, encode-bool-type, pt-width, pt-signed, ctor-tag-of, ctor-decl-of, ctor-argtype-of, record-ctor-tag-typed } from "parse-db"
 import { fits-width } from "int-width"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ty-deferred-int, ground-default } from "ty"
@@ -734,19 +734,30 @@ def type-eq(a: Typed, b: Typed) = ty-eq(typed-to-ty(a), typed-to-ty(b))
 /// A non-TSum scrutinee, an unknown pattern ctor, or matching decls → `false` (permissive — the reject fires only
 /// on a proven decl mismatch; downstream arm-join + lower gates handle the rest).
 /// ii-c2b-2 payload-binder type: the type to SEED a ctor pattern's payload binder from the ct-recorded argType.
-/// Three cases on `ctor-argtype-of`:
-///  - Some(enc), enc > 0 → a reader-encoded INT type → TIntW(pt-signed enc, pt-width enc), so `(Err Int32)`'s
+/// Cases on `ctor-argtype-of`:
+///  - Some(enc), enc ≥ 2 → a reader-encoded INT type → TIntW(pt-signed enc, pt-width enc), so `(Err Int32)`'s
 ///    binder is Int32 (reference-faithful narrow payload).
-///  - Some(-1) → the UNSUPPORTED sentinel (a non-int payload — Bool / nested sum / compound the reader couldn't
-///    encode) → TErr, so ANY use of the binder declines. This is the fix for v-inference's trap: without it a
+///  - Some(1) → the BOOL sentinel (encode-bool-type) → Typed.TBool, so a `(BB Bool)` binder type-checks as Bool
+///    and `(if b …)` runs. Completes the GROUND-payload story (int widths + Bool).
+///  - Some(-1) → the UNSUPPORTED sentinel (a non-int-non-bool payload — nested sum / compound the reader can't
+///    encode) → TErr, so ANY use of the binder declines. Fixes v-inference's trap: without a distinct sentinel a
 ///    non-int payload's binder defaulted to Int64 and a Bool payload silently type-checked `(+ b 1)` as int.
 ///  - Some(0) (nullary ctor / no payload — record-ctor-tag's shorthand) or None (unrecorded / a nullary pattern's
 ///    -1 binder) → Int64 default (harmless: a nullary pattern has no payload binder to use).
 def ctor-payload-binder-type(tree: Tree, patCtorName: Int64) =
   (match ctor-argtype-of(tree, patCtorName) with
     | Option.Some(enc) => (if (enc == 0) then t-int64()
-                           else (if (enc == (0 - 1)) then Typed.TErr
-                                 else Typed.TIntW(pt-signed(enc), pt-width(enc))))
+                           // ii-c2b-2 Bool payload: the sentinel (1) is RESERVED + recorded by the reader, but the
+                           // Bool-payload VALUE path is NOT yet wired — typing the binder TBool made `(if b …)` over
+                           // a Bool payload COMPILE to invalid wasm (b128 gate: ss-bool-payload-binder trapped
+                           // `wasm unreachable` — the store/extract hands an i64 the TBool `if` emit can't consume).
+                           // So a Bool payload binder DECLINES (TErr) for now, exactly like the unsupported -1 case,
+                           // until the Bool value round-trip (construct→store→extract→use) is wired as its own slice.
+                           // The sentinel + reader recording stay (harmless: the ct records argType 1) so that slice
+                           // is a one-line re-enable here. mlrepro filed for the compiled Bool-binder trap.
+                           else (if (enc == 1) then Typed.TErr                      // Bool payload NOT-yet-wired → decline
+                                 else (if (enc == (0 - 1)) then Typed.TErr          // unsupported → TErr (declines)
+                                       else Typed.TIntW(pt-signed(enc), pt-width(enc)))))  // int type
     | Option.None(_) => t-int64())
 
 def ctor-pattern-cross-type(tree: Tree, tcol: Map(Int64, Typed), scrutId: Int64, patCtorName: Int64) =
@@ -1403,5 +1414,95 @@ def id-fn-param-call-arity-mismatch-is-terr() =
            (match Map.lookup(tc, callId) with
              | Option.Some(Typed.TErr) => unit                       // 1 arg vs 2 params → arity mismatch → TErr
              | _ => trap("arity mismatch is TErr"))))))))
+
+@test
+def id-payload-binder-type-bool-sentinel-declines-not-yet-wired() =
+  // ii-c2b-2 payload-binder decode (ctor-payload-binder-type): a ct-argType of encode-bool-type()=1 (the reserved
+  // Bool sentinel) decodes to Typed.TErr FOR NOW — the Bool-payload VALUE path is not yet wired (typing it TBool
+  // made `(if b …)` over a Bool payload compile to invalid wasm: b128 gate `wasm unreachable` trap). So a Bool
+  // payload binder DECLINES (like the unsupported -1), which is SOUND (never a trap/wrong value). The sentinel +
+  // reader recording stay; re-enable to TBool here when the Bool value round-trip (construct→store→extract→use) is
+  // wired as its own slice. Pins that enc==1 currently → TErr (a decline), NOT TBool (which traps at runtime).
+  (let tree = record-ctor-tag-typed(empty-tree(), 840, 800, 0, encode-bool-type()) in
+    (match ctor-payload-binder-type(tree, 840) with
+      | Typed.TErr => unit
+      | _ => trap("a Bool-sentinel (1) ct-argType decodes to TErr (Bool payload not-yet-wired → declines, not the trapping TBool)")))
+
+@test
+def id-payload-binder-type-unsupported-sentinel-decodes-terr() =
+  // the SOUNDNESS sentinel: a ct-argType of -1 (a non-int-non-bool payload the reader can't encode — a nested sum
+  // / compound) decodes to Typed.TErr, so ANY use of the binder DECLINES (never a wrong Int64 default). Pins
+  // v-inference's non-int-payload soundness fix — without the distinct -1 the binder defaulted to Int64.
+  (let tree = record-ctor-tag-typed(empty-tree(), 841, 800, 1, 0 - 1) in
+    (match ctor-payload-binder-type(tree, 841) with
+      | Typed.TErr => unit
+      | _ => trap("an unsupported (-1) ct-argType decodes to TErr (declines)")))
+
+@test
+def id-payload-binder-type-int-width-decodes-tintw() =
+  // an int ct-argType (encode-param-type spans 2..129) decodes to the matching TIntW(signed, width). Int32 signed
+  // = encode-param-type(true, 32) = 65 → TIntW(true, 32). Pins the narrow-int payload binder typing (a `(WW Int32)`
+  // binder is Int32, so its arith overflow-checks at width 32) — the int half of the ground-payload story.
+  (let tree = record-ctor-tag-typed(empty-tree(), 842, 800, 2, encode-param-type(true, 32)) in
+    (match ctor-payload-binder-type(tree, 842) with
+      | Typed.TIntW(s, w) => (if ((if s then true else false) and (w == 32)) then unit else trap("Int32 argType decodes to TIntW(signed, 32)"))
+      | _ => trap("an int ct-argType decodes to a TIntW")))
+
+@test
+def id-payload-binder-type-nullary-shorthand-decodes-int64() =
+  // the argType=0 shorthand (record-ctor-tag / a nullary ctor / an as-yet-unparsed payload) decodes to the Int64
+  // default — harmless, a nullary pattern has no payload binder to use. Pins the 0/None fall-through so a future
+  // change can't turn the placeholder into a spurious TErr/decline.
+  (let tree = record-ctor-tag-typed(empty-tree(), 843, 800, 3, 0) in
+    (match ctor-payload-binder-type(tree, 843) with
+      | Typed.TIntW(s, w) => (if ((if s then true else false) and (w == 64)) then unit else trap("argType 0 decodes to Int64 default"))
+      | _ => trap("the argType=0 shorthand decodes to the Int64 placeholder")))
+
+@test
+def id-payload-binder-type-unrecorded-ctor-decodes-int64() =
+  // a ctor with NO ct entry (ctor-argtype-of None) also falls to the Int64 default — the total-on-missing branch.
+  (match ctor-payload-binder-type(empty-tree(), 999) with
+    | Typed.TIntW(s, w) => (if ((if s then true else false) and (w == 64)) then unit else trap("an unrecorded ctor decodes to Int64 default"))
+    | _ => trap("an unrecorded ctor's payload-binder-type is the Int64 placeholder (total)"))
+
+@test
+def id-ctor-pattern-cross-type-different-decl-rejects() =
+  // ii-c2b-1 cross-type reject (ctor-pattern-cross-type): a pattern ctor whose decl DIFFERS from the TSum
+  // scrutinee's decl is a cross-type match → true (the CDZ0203 decline). Scrutinee typed TSum(800) (a Color), a
+  // pattern ctor 850 belonging to decl 810 (a different sum, Bit) → cross-type. Pins the decl-identity guard that
+  // stops `match (a Color) with (Bit.On …)` from matching the wrong sum. Fast infer-layer witness.
+  (let tree = record-ctor-tag-typed(empty-tree(), 850, 810, 0, 0) in
+    (let scrutId = 3 in
+     (let tcol = Map.insert((Map.empty : Map(Int64, Typed)), scrutId, Typed.TSum(800)) in
+      (if (ctor-pattern-cross-type(tree, tcol, scrutId, 850)) then unit else trap("a pattern ctor of a DIFFERENT decl than the TSum scrutinee is cross-type (reject)")))))
+
+@test
+def id-ctor-pattern-same-decl-not-cross-type() =
+  // the negative twin: a pattern ctor of the SAME decl as the scrutinee's TSum is NOT cross-type → false (the match
+  // proceeds). Scrutinee TSum(800), pattern ctor 851 also of decl 800 → same decl → not cross-type. Pins that the
+  // guard rejects ONLY genuine cross-type patterns (else every well-typed sum match would wrongly decline).
+  (let tree = record-ctor-tag-typed(empty-tree(), 851, 800, 0, 0) in
+    (let scrutId = 3 in
+     (let tcol = Map.insert((Map.empty : Map(Int64, Typed)), scrutId, Typed.TSum(800)) in
+      (if (ctor-pattern-cross-type(tree, tcol, scrutId, 851)) then trap("a same-decl pattern is NOT cross-type") else unit))))
+
+@test
+def id-nmatchctor-terr-scrutinee-taints-match-pr849() =
+  // PR#849 (soundness): a TErr SCRUTINEE must taint the WHOLE NMatchCtor → TErr, even when the arms are
+  // well-typed — an ill-typed subtree being matched must not be masked by well-typed arms ("Any TErr
+  // propagates", matching the integer NMatch/if discipline). Build `(match <unbound c> ((BB x) 7) 9)`: the
+  // scrutinee is an UNBOUND NVar (no rcol → RPoison → TErr), the body/rest are well-typed NLits (7, 9), and BB
+  // is a recorded payload ctor. infer MUST type the match node TErr (not the arm-join Int64). Fast infer-layer
+  // witness for the TErr-scrutinee short-circuit (was pinned only by the ref-backend guard / slow e2e file).
+  (match add-node(empty-tree(), Node.NVar(7)) with | (scrutId, t1) =>          // an UNBOUND scrutinee → TErr
+    (match add-node(t1, Node.NVar(8)) with | (binderId, t2) =>                 // the payload binder `x`
+      (match add-node(t2, Node.NLit(7)) with | (bodyId, t3) =>                 // well-typed body arm
+        (match add-node(t3, Node.NLit(9)) with | (restId, t4) =>               // well-typed rest arm
+          (let t5 = record-ctor-tag-typed(t4, 860, 800, 1, encode-param-type(true, 64)) in   // BB (860) of decl 800, Int64 payload
+           (match add-node(t5, Node.NMatchCtor(scrutId, 860, binderId, bodyId, restId)) with | (root, tree) =>
+             (let tc = infer-node(tree, root, (Map.empty : Map(Int64, Resolved)), (Map.empty : Map(Int64, Typed))) in   // no rcol → scrut unbound → TErr
+              (match Map.lookup(tc, root) with
+                | Option.Some(Typed.TErr) => unit                              // TErr scrutinee taints the match
+                | _ => trap("a TErr scrutinee must taint the whole NMatchCtor → TErr, not be masked by well-typed arms (PR#849)")))))))))
 
 export { Typed.*, infer-node, infer-tree, type-at, ground-deferred, well-typed, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type }
