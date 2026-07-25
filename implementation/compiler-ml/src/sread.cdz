@@ -691,11 +691,11 @@ def read-nullary-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tre
             (match read-form(s, c1, t0) with | (_body, b1, t1) =>
               (let b2 = close-paren(s, b1) in
                (match read-match-arms(s, b2, scrutId, t1) with | (_rest, r1, t2) => (id, r1, t2)))))
-      | Option.Some(_ctorTag) =>                                    // known ctor → NMatchCtor, binder -1 (no payload)
+      | Option.Some(_ctorTag) =>                                    // known ctor → NMatchCtor, EMPTY binder list (no payload)
           (match read-form(s, c1, tree) with | (bodyId, q2, t2) =>  // the arm body
             (let q3 = close-paren(s, q2) in                         // close the arm `(Green body)`
              (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>   // recurse for rest
-               (match add-node(t3, Node.NMatchCtor(scrutId, name-id(cnm), 0 - 1, bodyId, restId)) with | (id, t4) => (id, r1, t4)))))))
+               (match add-node(t3, Node.NMatchCtor(scrutId, name-id(cnm), ([] : List(Int64)), bodyId, restId)) with | (id, t4) => (id, r1, t4)))))))
 
 /// M2-b-2b-ii-c: read a PAYLOAD ctor-pattern arm `((Ctor x) body)` → NMatchCtor(scrut, patCtorName, binderId, body, rest).
 /// `p` is at the inner `(` of the pattern (the arm's outer `(` already consumed by open-paren in read-match-arms).
@@ -733,7 +733,9 @@ def read-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tree) =
                          (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>   // recurse for rest
                            // NMatchCtor carries the pattern ctor's NAME-id (single source of truth): lower re-derives
                            // the tag via ctor-tag-of, infer re-derives the decl via ctor-decl-of — they cannot drift.
-                           (match add-node(t3, Node.NMatchCtor(scrutId, name-id(cnm), binderId, bodyId, restId)) with | (id, t4) => (id, r1, t4))))))))))))
+                           // binderIds is a LIST (schema slice): a single-binder pattern records [binderId]. The
+                           // multi-binder behavior slice will loop the binders into this list at this same site.
+                           (match add-node(t3, Node.NMatchCtor(scrutId, name-id(cnm), List.push([], binderId), bodyId, restId)) with | (id, t4) => (id, r1, t4))))))))))))
 
 /// M2-a nullary CTOR-PATTERNS in match: a match-arm pattern is an integer LITERAL (`(0 body)`) OR a nullary
 /// CONSTRUCTOR name (`(Red body)`). A nullary ctor is a nullary def `Ck → NLit(tag)` (recorded by read-do-type),

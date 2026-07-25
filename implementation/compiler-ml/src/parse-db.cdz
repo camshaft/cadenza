@@ -63,8 +63,12 @@ type Node =
                                   // lit), then, else) — reuses existing Core, so eval/emit need NO new handling.
                                   // A general N-arm + sum-ctor-pattern match is a later slice; this pins the
                                   // reader→resolve→infer→lower NMatch pipeline on the simplest shape.
-  | NMatchCtor(Int64, Int64, Int64, Int64, Int64)  // M2-b-2b-ii-c PAYLOAD ctor-pattern arm: NMatchCtor(scrutId,
-                                  // patCtorName, binderId, bodyId, restId) for `(match scrut ((Ctor x) body) REST…)`.
+  | NMatchCtor(Int64, Int64, List(Int64), Int64, Int64)  // M2-b-2b-ii-c PAYLOAD ctor-pattern arm: NMatchCtor(scrutId,
+                                  // patCtorName, binderIds, bodyId, restId) for `(match scrut ((Ctor x y…) body) REST…)`.
+                                  // binderIds is a LIST (compound-payload slice: one id per payload field, positionally;
+                                  // a single-binder pattern is [id], a nullary/no-binder pattern is []). The reader still
+                                  // only PRODUCES [id] or [] today (multi-binder still declines pre-behavior-slice); this
+                                  // schema carries the list so the multi-binder behavior slice needs no further schema change.
                                   // scrutId = the scrutinee node; patCtorName = the pattern ctor's NAME-id — the
                                   // SINGLE source of truth (ii-c2b-2, per v-inference): ONE ct-table lookup yields
                                   // BOTH the ctor's DECL (infer's ctor-decl-of → cross-type reject: scrutinee
