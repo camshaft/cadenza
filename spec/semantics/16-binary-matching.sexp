@@ -1522,6 +1522,20 @@
   (call main (: 258 Int64) (: 772 Int64)) (output (: 1030 Int64))
   (call main (: 0 Int64) (: 65535 Int64)) (output (: 65535 Int64)))
 
+(case "a RUNTIME negative signed field beside an unsigned one round-trips with independent sign handling"
+  (doc    "The SIGN twin of the mixed-endian pin: a runtime NEGATIVE (i8 (Int8.wrap v)) beside
+           (u8 (wrap w)) — the i8 read must SIGN-EXTEND (-5 from byte 251) while the adjacent u8
+           stays zero-extended. Boundary faces 127/255; the negative face also exercises a negative
+           RESULT through the harness.")
+  (input (do
+        (def (main (: v Int64) (: w Int64))
+          (match (bin (i8 (Int8.wrap v)) (u8 (UInt8.wrap w)))
+            ((bin (i8 x) (u8 y)) (+ (* x 1000) y))
+            (_ 1)))
+        (export main)))
+  (call main (: -5 Int64) (: 7 Int64)) (output (: -4993 Int64))
+  (call main (: 127 Int64) (: 255 Int64)) (output (: 127255 Int64)))
+
 (case "a runtime bit-field run spans two bytes and composes with an int segment"
   (doc    "A runtime bit-field RUN that spans a byte boundary and is followed by a byte-aligned int
            segment: `(bits ((UInt 4).wrap n) 4) (bits 1 4) (u8 42)` packs the low nibble of `n` and the

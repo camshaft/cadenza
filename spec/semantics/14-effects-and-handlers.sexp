@@ -1240,6 +1240,77 @@
             (export main)))
   (output (: 21 Int64)))
 
+(case "a do-def shared across BOTH resume slots stays in scope (the accumulator-arm shape)"
+  (doc    "The RESUME-arg companion of the #21 perform-arg pins above (v-effects 500e59d51 — the multi-use
+           residue of the do→let normalization e49c698a1). A handler arm's leading `(def s2 …)` referenced
+           in BOTH resume operands — the value arg AND the next-state arg — was CDZ0101 'unbound' in a LIVE
+           handler: `peel_resume_from_arm_body` wrapped only the resume VALUE in the leading do-defs and
+           returned the next-state BARE, so a do-def feeding both slots orphaned. The fix wraps BOTH slots
+           in the leading defs (mirroring the let/match peels — why the let-form below always worked). The
+           natural accumulator arm: compute the new state once, resume the derived value + the state.
+           `(note (v) s (do (def s2 (List.push s v)) (resume (List.len s2) s2)))` — main(5): note 5 →
+           s2=[5], resume len 1 + state [5]; note 20 → s2=[5,20], resume len 2; (1*10 + 2) = 12. All
+           backends.")
+  (input  (do
+            (effect L (op note (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle L (list)
+                ((note (v) s (do (def s2 (List.push s v)) (resume (List.len s2) s2))))
+                (+ (* (L.note n) 10) (L.note 20))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 12 Int64)))
+
+(case "the let-form of the dual-resume-slot arm computes (the always-worked oracle twin)"
+  (doc    "The let-twin of the do-def dual-resume-slot pin above — semantically identical with `s2`
+           let-bound. This ALWAYS compiled (the let rebuilt its scope so both resume operands saw the
+           binding); it's the reference 500e59d51 normalized the do-form to match. main(5) → 12, same as
+           the do-form. Pinned as the regression twin so a future peel change that re-breaks the do form
+           (but not the let) is caught by the pair diverging. All backends.")
+  (input  (do
+            (effect L (op note (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle L (list)
+                ((note (v) s (let ((s2 (List.push s v))) (resume (List.len s2) s2))))
+                (+ (* (L.note n) 10) (L.note 20))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 12 Int64)))
+
+(case "a SCALAR do-def resumed in both slots stays in scope (scalar twin of the dual-slot fix)"
+  (doc    "The scalar twin of the dual-resume-slot fix: a scalar `(def d (+ s v))` resumed as BOTH the
+           value and the next-state — `(resume d d)`. Before 500e59d51 this was CDZ0101 (the bare
+           next-state slot orphaned `d`); now it stays in scope. `handle L 0`, main(5): note 5 → d=5,
+           resume value 5 + state 5; note 20 → d=25, resume 25; (5*10 + 25) = 75. Confirms the fix covers
+           the scalar shape, not just heap payloads. All backends.")
+  (input  (do
+            (effect L (op note (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle L 0
+                ((note (v) s (do (def d (+ s v)) (resume d d))))
+                (+ (* (L.note n) 10) (L.note 20))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 75 Int64)))
+
+(case "a do-def referenced twice WITHIN one resume operand compiles (the within-slot control)"
+  (doc    "The discriminator control (breaker #24 perimeter): multi-reference of a do-def WITHIN a single
+           resume operand `(resume (+ d d) s)` ALWAYS compiled — the break was STRICTLY CROSS-slot (a
+           shared def spanning the value-arg AND state-arg), because the two operands were lowered as
+           separate scopes and only the value arg carried the leading defs. This pins that within-slot
+           multi-reference is not the bug: `(def d (+ v 1))` used as `(+ d d)` in the value slot, state
+           `s` bare. main(5): note 5 → d=6, resume (6+6)=12 + state 0; note 20 → d=21, resume 42; (12*10 +
+           42) = 162. All backends. Triangulates the fix to the cross-slot peel, not do-defs in general.")
+  (input  (do
+            (effect L (op note (-> Int64 Int64)))
+            (def (main (: n Int64))
+              (handle L 0
+                ((note (v) s (do (def d (+ v 1)) (resume (+ d d) s))))
+                (+ (* (L.note n) 10) (L.note 20))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 162 Int64)))
+
 (case "an abortive perform in a body tail referencing a do-local binding stays in scope"
   (doc    "The abortive companion of the resuming do-def-in-perform-arg pin above (v-effects 0d382e3f4 —
            a SEPARATE bug from the resuming do→let fix e49c698a1, which is why the let form CDZ0101'd
@@ -3109,6 +3180,95 @@
               (handle Seen (Set.of (list 1)) ((add (k) m (resume k (Set.insert m k))) (count (u) m (resume (Set.len m) m)))
                 (let ((a (Seen.add 2))) (let ((b (Seen.add 2))) (Seen.count))))) (export main)))
   (output (: 2 Int64)))
+
+(case "a handler threads a TUPLE of two heaps as state with different ops touching different halves"
+  (doc    "The SPLIT-state idiom: state = (tuple (list) Map.empty), note touches the LIST half and
+           tag the MAP half — each arm PROJECTS its half ((. st 0)/(. st 1)), updates it, rebuilds
+           the tuple; the untouched half's handle threads through unchanged, and tag reads List.len
+           of the OTHER half so the halves must stay in sync. (Arm bodies use projections rather
+           than match — a handler arm whose body is a match trips the ML-printer arm-extent
+           ambiguity, filed separately.)")
+  (input (do
+        (effect S (op note (-> Int64 Int64)) (op tag (-> Int64 Int64)))
+        (def (main (: n Int64))
+          (handle S (tuple (list) Map.empty)
+            ((note (v) st
+              (let ((lg2 (List.push (. st 0) v)))
+                (resume (List.len lg2) (tuple lg2 (. st 1)))))
+             (tag (k) st
+              (let ((ix2 (Map.insert (. st 1) k (List.len (. st 0)))))
+                (let ((got (match (Map.lookup ix2 k) ((Some x) x) ((None _u) -1))))
+                  (resume got (tuple (. st 0) ix2))))))
+            (do
+              (def r1 (S.note 10))
+              (def t1 (S.tag 5))
+              (def r2 (S.note n))
+              (def t2 (S.tag 5))
+              (+ (* r1 1000) (+ (* t1 100) (+ (* r2 10) t2))))))
+        (export main)))
+  (call main (: 20 Int64)) (output (: 1122 Int64))
+  (call main (: 0 Int64)) (output (: 1122 Int64)))
+(case "a LIST built in the handle body from perform results crosses the handle exit live"
+  (doc    "The collect pin's list exits via STATE; this one is constructed IN the body from perform
+           RESULTS interleaved with a runtime param — element evaluation interleaves with
+           perform/resume round-trips, and the finished heap value survives handler teardown.")
+  (input (do
+        (effect Ctr (op tick (-> Unit Int64)))
+        (def (sum-l (: l (List Int64)) (: acc Int64))
+          (match l
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (main (: n Int64))
+          (do
+            (def xs (handle Ctr 0
+                      ((tick (_u) c (resume c (+ c 1))))
+                      (list (Ctr.tick) (Ctr.tick) n)))
+            (+ (* (sum-l xs 0) 10) (List.len xs))))
+        (export main)))
+  (call main (: 5 Int64)) (output (: 63 Int64))
+  (call main (: 0 Int64)) (output (: 13 Int64)))
+
+(case "a MAP keyed by perform results in the handle body crosses the exit and looks up by those keys"
+  (doc    "The CHAMP composition: the map's KEYS are perform results — insert-arg evaluation
+           interleaves with perform/resume, the champ hash runs on resumed values, and the map is
+           looked up by those keys post-exit.")
+  (input (do
+        (effect Ctr (op tick (-> Unit Int64)))
+        (def (get (: m (Map Int64 Int64)) (: k Int64))
+          (match (Map.lookup m k) ((Some v) v) ((None _u) -1)))
+        (def (main (: n Int64))
+          (do
+            (def m (handle Ctr 0
+                     ((tick (_u) c (resume c (+ c 1))))
+                     (Map.insert (Map.insert Map.empty (Ctr.tick) 10) (Ctr.tick) n)))
+            (+ (* (get m 0) 10) (get m 1))))
+        (export main)))
+  (call main (: 20 Int64)) (output (: 120 Int64))
+  (call main (: 0 Int64)) (output (: 100 Int64)))
+
+(case "a rope accumulates across perform/resume boundaries and content-checks at the exit"
+  (doc    "The strings member: a recursive builder concats a chunk per perform, each chunk selected
+           by the resume value — the accumulating rope survives N suspension boundaries, and the
+           handler SEED shifts which letters are picked (content-checked at exit).")
+  (input (do
+        (effect Ctr (op tick (-> Unit Int64)))
+        (def (pick (: k Int64))
+          (match (& k 3)
+            (0 "a") (1 "b") (2 "c") (_ "d")))
+        (def (go (: i Int64) (: acc String))
+          (if (= i 0)
+              acc
+              (go (- i 1) (String.concat acc (pick (Ctr.tick))))))
+        (def (main (: n Int64))
+          (do
+            (def s (handle Ctr n
+                     ((tick (_u) c (resume c (+ c 1))))
+                     (go 3 "")))
+            (+ (* (String.byte-len s) 10)
+               (if (= s "abc") 1 0))))
+        (export main)))
+  (call main (: 0 Int64)) (output (: 31 Int64))
+  (call main (: 1 Int64)) (output (: 30 Int64)))
 
 (case "a handler threads a MAP as its state — a key-value store deduping keys across performs"
   (doc    "The Map analogue of the Set-state seen-set: the threaded state is a MAP (a key→value store), and a

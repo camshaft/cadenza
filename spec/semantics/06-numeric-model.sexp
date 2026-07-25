@@ -1580,6 +1580,73 @@
   (call   main (: 0 Int64))
   (output (: (tuple 1 1 1 1 1) (Tuple Int64 Int64 Int64 Int64 Int64))))
 
+(case "multi-limb BigInts equal in the LOW limb compare by the HIGH limb"
+  (doc    "The bigint-cmp pins use single-limb values; these operands are EQUAL in the low limb and
+           differ only in the HIGH limb — a compare that only walked the low 64 bits calls them
+           equal. All three relations digit-encoded.")
+  (input (do
+        (def (main (: ha Int64) (: hb Int64))
+          (do
+            (def b64 (* (BigInt.of 4294967296) (BigInt.of 4294967296)))
+            (def a (+ (* b64 (BigInt.of ha)) (BigInt.of 5)))
+            (def b (+ (* b64 (BigInt.of hb)) (BigInt.of 5)))
+            (+ (* (if (< a b) 1 0) 100)
+               (+ (* (if (< b a) 1 0) 10)
+                  (if (= a b) 1 0)))))
+        (export main)))
+  (call main (: 3 Int64) (: 7 Int64)) (output (: 100 Int64))
+  (call main (: 7 Int64) (: 3 Int64)) (output (: 10 Int64))
+  (call main (: 5 Int64) (: 5 Int64)) (output (: 1 Int64)))
+
+(case "a Rational compare whose naive cross-multiply would OVERFLOW i64 still orders exactly"
+  (doc    "(2^62)/3 vs (2^62+d)/3: a naive i64 cross-multiply OVERFLOWS 2^63 — the compare must
+           route through the bigint limbs, not a fast-path i64 cross-mul. Adjacent values differing
+           by 1 + the equal face.")
+  (input (do
+        (def (main (: d Int64))
+          (do
+            (def a (Rational.of 4611686018427387904 3))
+            (def b (Rational.of (+ 4611686018427387904 d) 3))
+            (+ (* (if (< a b) 1 0) 10)
+               (if (= a b) 1 0))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 10 Int64))
+  (call main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "a fold of unit fractions sums EXACTLY to one - the harmonic identity float cannot hold"
+  (doc    "A Rational accumulator over a runtime denominator list summing EXACTLY to 1/1 — every
+           intermediate reduces to lowest terms and the = against (Rational.of 1 1) pins the
+           whole-number canonical form.")
+  (input (do
+        (def (sum-fracs (: xs (List Int64)) (: acc Rational))
+          (match xs
+            ((list) acc)
+            ((list d .. t) (sum-fracs t (+ acc (Rational.of 1 d))))))
+        (def (main (: mode Int64))
+          (do
+            (def dens (if (= mode 1) (list 2 3 6) (list 2 4 6 12)))
+            (def s (sum-fracs dens (Rational.of 0 1)))
+            (if (= s (Rational.of 1 1)) 1 0)))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 1 Int64))
+  (call main (: 2 Int64)) (output (: 1 Int64)))
+
+(case "mixed-sign Rational add and multiply normalize signs through one runtime chain"
+  (doc    "Runtime sign params steer add AND multiply against one expected value (-1/6): face 1 hits
+           both, the double-negative face MISSES both (the product flips POSITIVE — the discriminating
+           bit), face 3 hits product only. All three sign-combination classes.")
+  (input (do
+        (def (main (: sa Int64) (: sb Int64))
+          (do
+            (def a (Rational.of sa 2))
+            (def b (Rational.of sb 3))
+            (+ (* (if (= (+ a b) (Rational.of -1 6)) 1 0) 10)
+               (if (= (* a b) (Rational.of -1 6)) 1 0))))
+        (export main)))
+  (call main (: -1 Int64) (: 1 Int64)) (output (: 11 Int64))
+  (call main (: -1 Int64) (: -2 Int64)) (output (: 0 Int64))
+  (call main (: 1 Int64) (: -1 Int64)) (output (: 1 Int64)))
+
 (case "an integer square root by Newton iteration converges to the floor at perfect squares and off-squares"
   (doc    "Integer Newton over Int64 truncating `/`: `g' = (g + x/g) / 2` from the seed `x/2`, STOPPING
            when the guess stops DECREASING (`ng >= g`) — the termination guard is the point: integer
