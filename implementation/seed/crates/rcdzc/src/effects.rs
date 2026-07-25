@@ -5794,15 +5794,35 @@ fn peel_resume_from_arm_body(db: &mut Db, arm_body: StructId) -> Option<(StructI
     if let Some(vs) = tail_resume(db, arm_body) {
         return Some(vs);
     }
-    // `(do stmt… (resume v s))` — peel the trailing resume, keep the leading statements around the value.
+    // `(do stmt… (resume v s))` — peel the trailing resume, keeping the leading statements around BOTH the
+    // value AND the next-state. A leading `(def d e)` binds `d` LOCAL to the `do`, and `d` may be referenced
+    // by the VALUE, the NEXT-STATE, or BOTH — the accumulator arm `(do (def s2 (List.push s v)) (resume
+    // (List.len s2) s2))` uses `s2` in both. Wrapping only the value (as this arm did before) returned the
+    // next-state `s2` BARE → orphaned → spurious CDZ0101 "unbound s2" (the do-def-shared-across-both-resume-
+    // slots false-reject, corpus-bugfix/breaker 2026-07-25 — the multi-use residue of the #21 do→let work;
+    // the `let`-peel just below already wraps both, which is why the let-twin worked). Wrap EACH in its own
+    // copy of the leading statements (binders copied so the two copies bind independently in the single-
+    // parent arena). Sound: the leading stmts are pure do-local bindings on the arm's tail spine (an
+    // effectful stmt would be an earlier hole the thread path handles, not reached here), so materializing
+    // them around both the value and the next-state is the same evaluation, only widening each binder's
+    // visibility. The value/next-state COPY is what breaks the shared-node aliasing (a `resume(d, d)` peels
+    // to the same node twice — distinct wrappers must not share it). Mirrors the `let`/`match` peels below.
     if let Some(items) = db.ast.as_form(arm_body, "do").map(|t| t.to_vec()) {
         let (&last, stmts) = items.split_last()?;
         let (v, s) = peel_resume_from_arm_body(db, last)?;
-        let do_head = db.push_name("do");
-        let mut children = vec![do_head];
-        children.extend_from_slice(stmts);
-        children.push(v);
-        return Some((db.push_list(children), s));
+        let stmts = stmts.to_vec();
+        let wrap = |db: &mut Db, inner: StructId| -> StructId {
+            let do_head = db.push_name("do");
+            let mut children = vec![do_head];
+            for &st in &stmts {
+                children.push(copy_pure(db, st));
+            }
+            children.push(inner);
+            db.push_list(children)
+        };
+        let vw = wrap(db, v);
+        let sw = wrap(db, s);
+        return Some((vw, sw));
     }
     // `(let ((x e)…) (resume v s))` — a resume in the TAIL of a `let` body. The resume IS the tail (the
     // let's value is its body's value), so peel it and keep the `let` around BOTH the value and the

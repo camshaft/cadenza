@@ -1443,6 +1443,85 @@
   (call   main (: 10 Int64))
   (output (: 165 Int64)))
 
+(case "runtime-packed nibbles MATCH back out through bits patterns - the pack-unpack identity"
+  (doc    "The runtime bit-field pins construct and read a raw byte; this round-trips through bits
+           PATTERNS — two runtime nibbles packed then matched back out: construction and destructuring
+           must agree on field order/offsets (a mismatch swaps a and b). Boundary nibbles 0/15.")
+  (input (do
+        (def (main (: v Int64) (: w Int64))
+          (match (bin (bits ((UInt 4).wrap v) 4) (bits ((UInt 4).wrap w) 4))
+            ((bin (bits a 4) (bits b 4)) (+ (* a 100) b))
+            (_ -1)))
+        (export main)))
+  (call main (: 10 Int64) (: 5 Int64)) (output (: 1005 Int64))
+  (call main (: 0 Int64) (: 15 Int64)) (output (: 15 Int64)))
+
+(case "a nibble OPCODE dispatches arms of different shapes with a byte-aligned dependent size"
+  (doc    "The single-tag probe and the bit-field-sized bytes exist separately; this dispatches a
+           nibble OPCODE across arms of DIFFERENT residual shapes — arm 1 with a byte-aligned
+           (bits n 8)(bytes body n) dependent read, arm 2 a single-byte flags frame, + miss. (A
+           dependent size sourced from a NON-byte-aligned bit-field over a runtime scrutinee is the
+           documented dynamically-offset not-yet.)")
+  (input (do
+        (def (sum-bytes (: b Bytes) (: i Int64) (: acc Int64))
+          (if (>= i (Bytes.len b))
+              acc
+              (match (Bytes.at b i)
+                ((Some v) (sum-bytes b (+ i 1) (+ acc v)))
+                ((None _u) -1))))
+        (def (parse (: b Bytes))
+          (match b
+            ((bin (bits 1 4) (bits _f 4) (bits n 8) (bytes body n)) (sum-bytes body 0 0))
+            ((bin (bits 2 4) (bits f 4)) (* f 10))
+            (_ -1)))
+        (def (main (: mode Int64))
+          (parse (if (= mode 1)
+                     (Bytes.of (list 16 2 5 6))
+                     (if (= mode 2) (Bytes.of (list 39)) (Bytes.of (list 153))))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 11 Int64))
+  (call main (: 2 Int64)) (output (: 70 Int64))
+  (call main (: 3 Int64)) (output (: -1 Int64)))
+
+(case "a length-prefixed frame built FRESH from a runtime payload round-trips through its own parser"
+  (doc    "The reframe pins re-encode a DECODED n; this COMPUTES the header from the payload at
+           build time ((u8 (wrap (Bytes.len body))) (bytes body)) then round-trips through its own
+           parser with a rest-exhaustion check. EMPTY-payload face → the one-byte n=0 frame.")
+  (input (do
+        (def (sum-bytes (: b Bytes) (: i Int64) (: acc Int64))
+          (if (>= i (Bytes.len b))
+              acc
+              (match (Bytes.at b i)
+                ((Some v) (sum-bytes b (+ i 1) (+ acc v)))
+                ((None _u) -1))))
+        (def (frame (: body Bytes))
+          (bin (u8 (UInt8.wrap (Bytes.len body))) (bytes body)))
+        (def (main (: mode Int64))
+          (do
+            (def body (if (= mode 1) (Bytes.of (list 5 6 7)) (Bytes.of (list))))
+            (match (frame body)
+              ((bin (u8 n) (bytes got n) (bytes rest))
+                (if (= (Bytes.len rest) 0)
+                    (+ (* n 100) (sum-bytes got 0 0))
+                    -2))
+              (_ -1))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 318 Int64))
+  (call main (: 2 Int64)) (output (: 0 Int64)))
+
+(case "a MIXED-endian frame packs big and little fields side by side and round-trips both"
+  (doc    "Per-SEGMENT byte-order independence: a BIG-endian u16 beside a LITTLE-endian u16 in one
+           bin over RUNTIME values, both matched back — an endianness applied per-frame rather than
+           per-segment corrupts one field. Boundary face 0xFFFF.")
+  (input (do
+        (def (main (: a Int64) (: b Int64))
+          (match (bin (u16 (UInt16.wrap a)) (u16 (UInt16.wrap b) le))
+            ((bin (u16 x) (u16 y le)) (+ x y))
+            (_ -1)))
+        (export main)))
+  (call main (: 258 Int64) (: 772 Int64)) (output (: 1030 Int64))
+  (call main (: 0 Int64) (: 65535 Int64)) (output (: 65535 Int64)))
+
 (case "a runtime bit-field run spans two bytes and composes with an int segment"
   (doc    "A runtime bit-field RUN that spans a byte boundary and is followed by a byte-aligned int
            segment: `(bits ((UInt 4).wrap n) 4) (bits 1 4) (u8 42)` packs the low nibble of `n` and the
