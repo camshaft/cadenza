@@ -1809,6 +1809,93 @@
             (export main)))
   (output (: 100 Int64)))
 
+(case "a @requires predicate over a HEAP collection is enforced at entry and value-transparent when satisfied"
+  (doc    "The runtime-enforce pins above use SCALAR predicates; this precondition READS a heap
+           param ((> (List.len xs) 0)) — the injected entry check must BORROW xs then leave it live
+           for the body's own match+len (a consuming check breaks the pass path). Satisfied → 52;
+           empty → entry trap.")
+  (input (do
+        (@ (requires (> (List.len xs) 0))
+           (def (headx (: xs (List Int64)))
+             (match xs
+               ((list h .. _t) (+ (* h 10) (List.len xs)))
+               ((list) -1))))
+        (def (main (: mode Int64))
+          (headx (if (= mode 1) (list 5 6) (list))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 52 Int64))
+  (call main (: 2 Int64)) (trap "unreachable"))
+
+(case "a @ensures postcondition over a HEAP result checks at exit and returns the live collection"
+  (doc    "The exit-side twin: (let ((it <body>)) (if (> (List.len it) 0) it (trap))) must borrow
+           the RESULT list for the check then hand the LIVE handle to the caller — value-transparency
+           over a heap handle, not a scalar (a consuming check breaks the caller's fold). Satisfied →
+           caller folds 11; empty-returning mode → exit trap.")
+  (input (do
+        (@ (ensures (> (List.len ret) 0))
+           (def (mk (: mode Int64))
+             (if (= mode 1) (list 5 6) (list))))
+        (def (sum-l (: xs (List Int64)) (: acc Int64))
+          (match xs
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (main (: mode Int64))
+          (sum-l (mk mode) 0))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 11 Int64))
+  (call main (: 2 Int64)) (trap "unreachable"))
+
+(case "STACKED @requires and @ensures both enforce at runtime on one def with a heap precondition"
+  (doc    "Both wrappers on ONE def: entry borrows xs (len>0), exit guards ret>=0, the value flows
+           through both injections (15). NB the conditions sit on a WRAPPER with recursion in a plain
+           helper — @requires re-checks EVERY entry including self-calls (the recursive-@requires pin),
+           so conditions directly on a self-recursive def whose tail shrinks to empty trap at their
+           own base case. Empty input → entry trap.")
+  (input (do
+        (def (go (: xs (List Int64)) (: acc Int64))
+          (match xs
+            ((list) acc)
+            ((list h .. t) (go t (+ acc (if (< h 0) (- 0 h) h))))))
+        (@ (requires (> (List.len xs) 0))
+           (@ (ensures (>= ret 0))
+              (def (abs-sum (: xs (List Int64)))
+                (go xs 0))))
+        (def (main (: mode Int64))
+          (abs-sum (if (= mode 1) (list 3 -7 5) (list))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 15 Int64))
+  (call main (: 2 Int64)) (trap "unreachable"))
+
+(case "a RELATIONAL @requires over two parameters enforces their order at entry"
+  (doc    "The fn-level relational face (the type-level twin is the @invariant ordered-pair): one
+           injected check reads BOTH params ((< lo hi)). Ordered → 14; swapped → entry trap.")
+  (input (do
+        (def (go (: i Int64) (: hi Int64) (: acc Int64))
+          (if (> i hi) acc (go (+ i 1) hi (+ acc i))))
+        (@ (requires (< lo hi))
+           (def (range-sum (: lo Int64) (: hi Int64))
+             (go lo hi 0)))
+        (def (main (: lo Int64) (: hi Int64))
+          (range-sum lo hi))
+        (export main)))
+  (call main (: 2 Int64) (: 5 Int64)) (output (: 14 Int64))
+  (call main (: 5 Int64) (: 2 Int64)) (trap "unreachable"))
+
+(case "a @ensures relating the RESULT to a PARAMETER enforces the relation at exit"
+  (doc    "The pins above check ret against CONSTANTS; (>= ret x) needs the param IN SCOPE inside
+           the injected exit-let. The sign-flip face is the point: at x=-3 doubling SHRINKS (-6 < -3)
+           so the postcondition genuinely fires; x=0 pins the boundary (0>=0).")
+  (input (do
+        (@ (ensures (>= ret x))
+           (def (double-up (: x Int64))
+             (* x 2)))
+        (def (main (: x Int64))
+          (double-up x))
+        (export main)))
+  (call main (: 5 Int64)) (output (: 10 Int64))
+  (call main (: 0 Int64)) (output (: 0 Int64))
+  (call main (: -3 Int64)) (trap "unreachable"))
+
 (case "a PLAIN @ensures relating ret to a PARAMETER (> ret x) is enforced — the param stays in scope alongside ret in the predicate"
   (doc    "The most common real-world postcondition shape: the result related to an INPUT, not just a
            constant. Every other runtime @ensures case pins `ret` against a literal (`>= ret 0`,

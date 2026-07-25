@@ -870,6 +870,66 @@
   (call   main (: 1.0e-323 Float64))
   (output (: 1 Int64)))
 
+(case "the sign of ZERO propagates through multiply and add per IEEE at runtime"
+  (doc    "Zero-sign PROPAGATION: (* a 0.0) yields -0.0 iff a<0 — witnessed via the canonical =
+           that DISTINGUISHES zeros; a backend folding (* a 0.0)→0.0 blindly (the classic unsound
+           float rewrite) flips digit 1. Mixed-sign sum rounds to +0; same-sign keeps -0.")
+  (input (do
+        (def (main (: a Float64))
+          (+ (* (if (= (* a 0.0) -0.0) 1 0) 100)
+             (+ (* (if (= (+ -0.0 0.0) 0.0) 1 0) 10)
+                (if (= (+ -0.0 -0.0) -0.0) 1 0))))
+        (export main)))
+  (call main (: -1.0 Float64)) (output (: 111 Int64))
+  (call main (: 1.0 Float64)) (output (: 11 Int64)))
+
+(case "a comparison-select over the two zeros returns the UNTAKEN operand and the canonical eq sees which"
+  (doc    "min-by-< over (-0.0, 0.0): the compare is FALSE (IEEE order treats zeros equal) so the
+           select returns b=+0.0 — the mode-1 face proves -0.0 did NOT survive (an f64.min lowering
+           would give -0.0 → 01). The compare-order/value-eq divergence through a select.")
+  (input (do
+        (def (min-lt (: a Float64) (: b Float64))
+          (if (< a b) a b))
+        (def (main (: mode Int64))
+          (do
+            (def a (if (= mode 1) -0.0 0.0))
+            (def m (min-lt a 0.0))
+            (+ (* (if (= m 0.0) 1 0) 10)
+               (if (= m -0.0) 1 0))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 10 Int64))
+  (call main (: 2 Int64)) (output (: 10 Int64)))
+
+(case "a signed zero survives a TUPLE round-trip and its sign still steers arithmetic after unboxing"
+  (doc    "The sign bit survives heap boxing/unboxing (canonical eq) AND still steers arithmetic
+           after ((* z -3.0) = +0.0 iff z=-0.0; mode 2 gives 0 outright since (* 0.0 -3.0) = -0.0
+           ≠ 0.0 under canonical eq).")
+  (input (do
+        (def (main (: mode Int64))
+          (do
+            (def a (if (= mode 1) -0.0 0.0))
+            (def t (tuple a 1.0))
+            (match t
+              ((tuple z _one)
+                (+ (* (if (= z -0.0) 1 0) 10)
+                   (if (= (* z -3.0) 0.0) 1 0))))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 11 Int64))
+  (call main (: 2 Int64)) (output (: 0 Int64)))
+
+(case "doubling a subnormal crosses UP into the minimum normal exactly"
+  (doc    "The halving pin crosses DOWN; the ascent: doubling 2^-1023 lands EXACTLY on min-normal
+           2^-1022 — gradual underflow's upper boundary. Control face → 0.")
+  (input (do
+        (def (main (: n Int64))
+          (do
+            (def x 1.1125369292536007e-308)
+            (def s (if (= n 2) (+ x x) x))
+            (if (= s 2.2250738585072014e-308) 1 0)))
+        (export main)))
+  (call main (: 2 Int64)) (output (: 1 Int64))
+  (call main (: 1 Int64)) (output (: 0 Int64)))
+
 (case "runtime float multiplication overflows to infinity, not a trap or a wrap"
   (doc    "The float-overflow companion of the /0-infinity pins: `(* a a)` at a = 1.0e200 exceeds
            Float64.max (~1.8e308) and yields +inf (witnessed by `> 1.0e308`) — float arithmetic NEVER
@@ -3421,6 +3481,39 @@
 ; is distinct from the OVERFLOW trap `(/ Int64.min -1)`: divide-by-zero has no quotient at all, at
 ; any dividend. A lowering that emitted a value (0, or the dividend) would be an unspecified value the
 ; contract forbids; wasm's i64.div_s / i64.rem_s trap on a zero divisor, matching this.
+
+(case "hex and binary literals drive a runtime mask-extract across radix notations"
+  (doc    "01-literals pins 0xFF/0b1010 as constants; here they are live MASKS in a runtime extract
+           mixing both radixes with decimal in one expression. (Call args are decimal — the wasm
+           harness arg parser takes decimal only.)")
+  (input (do
+        (def (main (: x Int64))
+          (+ (* (& (>> x 8) 0xFF) 100)
+             (& x 0b1111)))
+        (export main)))
+  (call main (: 4660 Int64)) (output (: 1804 Int64))
+  (call main (: 43981 Int64)) (output (: 17113 Int64)))
+
+(case "digit-separator literals in decimal and hex drive runtime modular arithmetic"
+  (doc    "Separators as LIVE operands: a decimal multiplier, a hex addend with a separator, and a
+           separator modulus in one runtime expression — the reader strips separators identically
+           across radix contexts.")
+  (input (do
+        (def (main (: x Int64))
+          (% (+ (* x 1_000_000) 0xFF_FF) 1_000_003))
+        (export main)))
+  (call main (: 7 Int64)) (output (: 65514 Int64))
+  (call main (: 0 Int64)) (output (: 65535 Int64)))
+
+(case "exponent-notation floats drive runtime arithmetic with a negative exponent live"
+  (doc    "Exponent literals as RUNTIME operands including a NEGATIVE exponent — the neg-exponent
+           parse into a live f64 multiply.")
+  (input (do
+        (def (main (: x Float64))
+          (+ (* x 2.5e-1) 1.5e2))
+        (export main)))
+  (call main (: 4.0 Float64)) (output (: 151.0 Float64))
+  (call main (: 0.0 Float64)) (output (: 150.0 Float64)))
 
 (case "the RUNTIME division identity a=(a/b)*b+(a%b) holds across all four sign quadrants"
   (doc    "The sign-convention pins above are CONST-folded singles; this drives the identity with

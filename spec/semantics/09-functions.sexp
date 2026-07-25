@@ -1435,6 +1435,89 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: (tuple 11 12) (Tuple Int64 Int64))))
 
+(case "a compose combinator over HEAP-typed functions pipelines list transformers"
+  (doc    "The compose pins are scalar-arrow; this combinator is over (-> (List Int64) (List Int64))
+           stages from a closure factory — each stage's result becomes the next's borrowed argument,
+           an ownership hand-off chained through closure arrows. seed=0 face.")
+  (input (do
+        (def (compose (: f (-> (List Int64) (List Int64))) (: g (-> (List Int64) (List Int64))))
+          (fn ((: xs (List Int64))) (f (g xs))))
+        (def (pusher (: v Int64))
+          (fn ((: xs (List Int64))) (List.push xs v)))
+        (def (sum-l (: xs (List Int64)) (: acc Int64))
+          (match xs
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (main (: seed Int64))
+          (do
+            (def p (compose (pusher 2) (pusher 1)))
+            (def r (p (list seed)))
+            (+ (* (sum-l r 0) 10) (List.len r))))
+        (export main)))
+  (call main (: 9 Int64)) (output (: 123 Int64))
+  (call main (: 0 Int64)) (output (: 33 Int64)))
+
+(case "a RUNTIME-selected combiner closure crosses a join and drives a fold"
+  (doc    "The fold-fn pins take the closure as a CONST param (devirtualizable); this SELECTS the
+           combiner at a runtime join then folds with it — no devirtualization, N indirect applies.
+           The order-sensitive mode-2 combiner catches an arg swap in the indirect-call ABI.")
+  (input (do
+        (def (foldc (: xs (List Int64)) (: acc Int64) (: g (-> Int64 Int64 Int64)))
+          (match xs
+            ((list) acc)
+            ((list h .. t) (foldc t (g acc h) g))))
+        (def (main (: mode Int64))
+          (do
+            (def g (if (= mode 1)
+                       (fn ((: a Int64) (: h Int64)) (+ a h))
+                       (fn ((: a Int64) (: h Int64)) (+ (* a 10) h))))
+            (foldc (list 1 2 3) 0 g)))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 6 Int64))
+  (call main (: 2 Int64)) (output (: 123 Int64)))
+
+(case "a list of closure-carrying variants interprets as a command pipeline over an accumulator"
+  (doc    "The payload pin extracts ONE closure; this folds a heterogeneous (List Op) of
+           closure-carrying variants + unit Skips through a recursive interpreter; ordering matters.
+           All-skip face → identity.")
+  (input (do
+        (type Op (Apply (-> Int64 Int64)) (Skip Unit))
+        (def (run (: ops (List Op)) (: acc Int64))
+          (match ops
+            ((list) acc)
+            ((list h .. t)
+              (match h
+                ((Op.Apply f) (run t (f acc)))
+                ((Op.Skip _u) (run t acc))))))
+        (def (main (: mode Int64))
+          (do
+            (def ops (if (= mode 1)
+                         (list (Op.Apply (fn ((: a Int64)) (+ a 3)))
+                               (Op.Skip unit)
+                               (Op.Apply (fn ((: a Int64)) (* a 2))))
+                         (list (Op.Skip unit) (Op.Skip unit))))
+            (run ops 10)))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 26 Int64))
+  (call main (: 2 Int64)) (output (: 10 Int64)))
+
+(case "a THREE-deep transitive closure-capture chain applies with each level's own capture live"
+  (doc    "The 2-deep capture pin extended: h→g→f where EACH level adds its OWN scalar capture —
+           each closure cell holds the previous closure handle + a fresh scalar; each capture
+           resolves from ITS definition scope. Digit-separated 326/321.")
+  (input (do
+        (def (main (: a Int64))
+          (let ((c1 1))
+            (let ((f (fn ((: x Int64)) (+ x c1))))
+              (let ((c2 20))
+                (let ((g (fn ((: x Int64)) (+ (f x) c2))))
+                  (let ((c3 300))
+                    (let ((h (fn ((: x Int64)) (+ (g x) c3))))
+                      (h a))))))))
+        (export main)))
+  (call main (: 5 Int64)) (output (: 326 Int64))
+  (call main (: 0 Int64)) (output (: 321 Int64)))
+
 (case "a THREE-DEEP compose chain stacks closure envs with a runtime capture mid-chain"
   (doc    "The two-fn compose above holds two handles in ONE env; stacking compose THREE deep makes a
            closure whose captured `g` is ITSELF a compose result holding another — application walks
