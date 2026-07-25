@@ -269,6 +269,54 @@
             (export main)))
   (output (: "B,B2,A,main" String)))
 
+(case "INTERLEAVED pops and inserts keep the event queue min-ordered across live mutation"
+  (doc    "The LIVE-MUTATION face (the draining case above inserts everything THEN drains): pops and
+           inserts interleave as in a running scheduler where wakes file while events drain — pop A,
+           insert B EARLIER than the resident D (a later insert beating an already-resident entry),
+           pop B, insert C mid-queue; mode 2 adds Z@0 straight to the FRONT after two pops have
+           restructured the spine. Trace A,B,C,D / A,B,Z,C,D.")
+  (input (do
+        (type Instant (Instant UInt64))
+        (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+        (def (before? (: a Instant) (: b Instant)) (< (inst-ns a) (inst-ns b)))
+        (type Q QNil (QCons (Tuple Instant String Q)))
+        (def (q-insert (: q Q) (: t Instant) (: v String))
+          (match q
+            ((Q.QNil _) (Q.QCons (tuple t v (Q.QNil ()))))
+            ((Q.QCons (tuple ht hv rest))
+              (if (before? t ht)
+                  (Q.QCons (tuple t v (Q.QCons (tuple ht hv rest))))
+                  (Q.QCons (tuple ht hv (q-insert rest t v)))))))
+        (def (q-pop (: q Q))
+          (match q
+            ((Q.QNil _) (tuple "empty" (Q.QNil ())))
+            ((Q.QCons (tuple _t hv rest)) (tuple hv rest))))
+        (def (q-drain (: q Q))
+          (match q
+            ((Q.QNil _) "")
+            ((Q.QCons (tuple _ hv rest))
+              (match rest
+                ((Q.QNil _) hv)
+                ((Q.QCons _) (String.concat hv (String.concat "," (q-drain rest))))))))
+        (def (main (: mode Int64))
+          (do
+            (def q1 (q-insert (q-insert (Q.QNil ()) (Instant.Instant 3) "A") (Instant.Instant 4) "D"))
+            (def p1 (q-pop q1))
+            (match p1
+              ((tuple v1 q2)
+                (do
+                  (def q3 (q-insert q2 (Instant.Instant 1) "B"))
+                  (def p2 (q-pop q3))
+                  (match p2
+                    ((tuple v2 q4)
+                      (do
+                        (def q5 (q-insert q4 (Instant.Instant 2) "C"))
+                        (def q6 (if (= mode 2) (q-insert q5 (Instant.Instant 0) "Z") q5))
+                        (String.concat v1 (String.concat "," (String.concat v2 (String.concat "," (q-drain q6)))))))))))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: "A,B,C,D" String))
+  (call main (: 2 Int64)) (output (: "A,B,Z,C,D" String)))
+
 (case "the ready-queue is a plain FIFO — spawned-ready tasks run in enqueue order"
   (doc    "Beside the time-ordered event queue, the scheduler keeps a READY queue for work that can run
            at the current instant without a wake-time (a freshly-spawned task's thunk, a resumed

@@ -208,6 +208,19 @@
             (export main)))
   (output (: 4.0 Float64)))
 
+(case "eval of a quasiquote with TWO unquotes splices a bound and a computed value in one form"
+  (doc    "The eval-splice pins above are SINGLE-unquote; this reconstructs a form with TWO active
+           unquotes at different nesting depths — one LET-BOUND (a=5) and one COMPUTED ((+ 3 4)) —
+           so the desugar must lift and reconstruct BOTH (a per-form single-unquote assumption, or a
+           lift that clobbers the first splice while processing the second, breaks it). 5 + 7·2 = 19.")
+  (input (do
+        (def (main)
+          (let ((a 5)
+                (b (+ 3 4)))
+            (eval (quasiquote (+ (unquote a) (* (unquote b) 2))))))
+        (export main)))
+  (output (: 19 Int64)))
+
 (case "eval of a quasiquote splicing a string works through String ops"
   (doc    "The string companion: `(let ((s \"hi\")) (String.byte-len (eval `(String.concat ,s \"x\"))))`
            splices the runtime string `s` into the reconstructed `(String.concat s \"x\")`, evaluates it to

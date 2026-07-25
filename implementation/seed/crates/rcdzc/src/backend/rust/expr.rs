@@ -4523,6 +4523,19 @@ fn emit_sum_cont(
                     // read at the now-empty path must compare at `u8`, not default to `i64` → E0308).
                     let sub = lookup_sum_path_type(ctx, path)
                         .unwrap_or_else(|| ty_at_sum_path(db, scrutinee, path));
+                    // A BIGINT sub-value probes by BigInt EQUALITY, not an integer cast: the payload is a
+                    // `cdz_num::Big` (arbitrary-precision heap), so `(<Big>) as i64` is a non-primitive cast
+                    // (rustc E0605 — corpus-bugfix's runtime-BigInt-literal-probe build-fail, the rust twin of
+                    // FINDING #22). Compare against the materialized `Big` literal (`const_big_expr`, in-i64 →
+                    // `Big::from_i64`, beyond → sign-magnitude bytes); `Big` derives `PartialEq`, so `==` types.
+                    if matches!(sub.strip_nominal(), Ty::BigInt) {
+                        let then_ = emit_sum_cont(db, scrutinee, then_, result_it, env, ctx)?;
+                        let els = emit_sum_cont(db, scrutinee, els, result_it, env, ctx)?;
+                        return Ok(format!(
+                            "if ({subject}) == {} {{ {then_} }} else {{ {els} }}",
+                            const_big_expr(v)
+                        ));
+                    }
                     let it = match sub.strip_nominal() {
                         Ty::Int(it) => *it,
                         _ => IntTy {

@@ -143,6 +143,18 @@ def ss-match-on-ctor-pattern-wildcard() =
     | Option.None(_) => trap("a nullary ctor pattern match wildcard fallthrough runs")
 
 @test
+def ss-ctor-pattern-match-no-wildcard-declines-cleanly() =
+  // READER TOTALITY: a ctor-pattern match with NO terminal `_` wildcard `(match (Red) (Red 100))` must DECLINE
+  // cleanly (None), NOT hang. Before the read-match-arms totality guard, a nullary ctor-name arm reader reached
+  // at the match's `)` scanned an empty atom + read a non-advancing body → INFINITE LOOP (wasm interrupt/timeout).
+  // The guard declines when the arms are exhausted with no wildcard. Pins the reader is TOTAL on this malformed shape.
+  match run-src(
+      "(do (type Color (Red) (Green) (Blue)) (def (main) (match (Red) (Red 100))) (export main))"
+    ) with
+    | Option.Some(_) => trap("a wildcard-less ctor-pattern match must DECLINE (a match chain must end in _)")
+    | Option.None(_) => unit
+
+@test
 def ss-match-ctor-pattern-over-bound-var() =
   // the scrutinee is a BOUND VARIABLE holding a ctor tag: (def (classify c) (match c (Red 10) (Green 20) (_ 30)))
   // called with (Green) → c = tag 1 → the Green arm → 20. Proves ctor patterns work when the scrutinee is a
@@ -189,6 +201,18 @@ def ss-payload-pattern-arith-on-binding() =
     | Option.None(_) => trap("arith on a bound payload runs")
 
 @test
+def ss-narrow-int-payload-binds-typed() =
+  // ii-c2b-2 ct-argType: a NARROW-int payload `(Wrap Int8)` records its declared type in the ct table; infer
+  // seeds the pattern binder as Int8 (via ctor-argtype-of) instead of the Int64 placeholder. match (Wrap 5)
+  // ((Wrap x) (+ x 1)) (_ 0) → 6 — the Int8 binder computes normally (x=5, x+1). Pins the reader records the
+  // payload int type + infer reads it (an Int8 binder still round-trips; the type is now the DECLARED narrow one).
+  match run-src(
+      "(do (type W (Wrap Int8)) (def (main) (match (Wrap 5) ((Wrap x) (+ x 1)) (_ 0))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 6 then unit else trap("(Wrap 5) Int8 payload binds x=5, x+1 → 6"))
+    | Option.None(_) => trap("a narrow-int payload binds its binder as the declared type + runs")
+
+@test
 def ss-payload-pattern-falls-to-wildcard() =
   // scrutinee tag differs from the pattern's ctor → the wildcard arm. match (None) ((Some x) x) (_ 99) → 99
   // (None is tag 1, the Some pattern is tag 0 → mismatch → wildcard). Pins the CMatchSum else-path.
@@ -197,6 +221,28 @@ def ss-payload-pattern-falls-to-wildcard() =
     ) with
     | Option.Some(v) => (if v == 99 then unit else trap("(None) vs (Some x) pattern → wildcard → 99"))
     | Option.None(_) => trap("a payload-pattern tag mismatch takes the wildcard arm")
+
+@test
+def ss-mixed-payload-and-nullary-arms-compose() =
+  // the realistic Option idiom: ONE match with BOTH a payload arm `((Some x) …)` AND a nullary arm `(None …)`
+  // over the same MIXED sum — proving they compose in one N-arm chain (both read the boxed handle: the Some arm
+  // via CMatchSum binding payload[0], the None arm via CMatchSum on its tag). match (Some 8) ((Some x) (+ x 1))
+  // (None 0) → 9 (Some arm binds x=8, x+1). The None sibling being present must not disturb the Some match.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (Some 8) ((Some x) (+ x 1)) (None 0) (_ 5))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 9 then unit else trap("mixed Some+None arms: (Some 8) → Some arm x+1 → 9"))
+    | Option.None(_) => trap("a match with both a payload arm and a nullary arm over a mixed sum runs")
+
+@test
+def ss-mixed-nullary-arm-hits-on-none() =
+  // the complement: the SAME match shape, scrutinee (None) → the None arm (tag 1), NOT the Some arm (tag 0).
+  // match (None) ((Some x) (+ x 1)) (None 77) → 77. Pins the nullary arm of a mixed match fires on its own tag.
+  match run-src(
+      "(do (type Opt (Some Int64) (None)) (def (main) (match (None) ((Some x) (+ x 1)) (None 77) (_ 5))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 77 then unit else trap("mixed match on (None) → the None arm → 77"))
+    | Option.None(_) => trap("the nullary arm of a mixed payload+nullary match fires on (None)")
 
 @test
 def ss-payload-ctor-in-helper-roundtrip() =
@@ -353,12 +399,25 @@ def ss-terr-scrutinee-taints-ctor-match() =
 
 @test
 def ss-bool-payload-binder-declines() =
-  // (BB true) matched ((BB b) (if b then 1 else 0)) — b is a Bool payload but typed Int64 placeholder; (if b …)
-  // needs b : Bool → mis-type → decline (None). Was verified by a probe; pins the non-Int-payload boundary.
+  // (BB true) matched ((BB b) (if b then 1 else 0)) — b is a Bool (non-int) payload → the reader records argType
+  // -1 (UNSUPPORTED sentinel) → infer seeds the binder TErr → any use declines (None). A Bool-payload binder is
+  // out of subset (encode-param-type is int-only); it must decline, not run under-typed.
   match run-src(
       "(do (type BoxB (BB Bool)) (def (main) (match (BB true) ((BB b) (if b then 1 else 0)) (_ 9))) (export main))"
     ) with
-    | Option.Some(_) => trap("a non-Int (Bool) payload binder used as Bool must DECLINE while the binder is an Int64 placeholder")
+    | Option.Some(_) => trap("a non-Int (Bool) payload binder used as Bool must DECLINE (argType -1 → TErr binder)")
+    | Option.None(_) => unit
+
+@test
+def ss-bool-payload-binder-used-as-int-declines() =
+  // THE SOUNDNESS GUARD (v-inference's trap): a Bool payload binder used ARITHMETICALLY `(+ b 1)` must DECLINE,
+  // not silently treat the Bool value as an int. Before the argType -1 sentinel, a non-int payload defaulted to
+  // Int64 → (+ b 1) ran (Bool true=1 used as int → 2), UNSOUND. Now the reader records -1 → binder TErr → (+ b 1)
+  // has a TErr operand → TErr → decline. Pins that a non-int payload can't be misread as Int64.
+  match run-src(
+      "(do (type BoxB (BB Bool)) (def (main) (match (BB true) ((BB b) (+ b 1)) (_ 9))) (export main))"
+    ) with
+    | Option.Some(_) => trap("a Bool payload binder used as int must DECLINE, never treat the Bool value as an int")
     | Option.None(_) => unit
 
 @test

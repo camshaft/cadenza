@@ -4669,11 +4669,15 @@ fn thread_bounded(
             // the whole handle to that abort value and DISCARDS this `let` wrapper — so a `v` in the abort
             // value orphans → spurious CDZ0101 (the abortive-perform-referencing-a-body-local-binding bug,
             // the abortive twin of the do-def-in-perform-arg fix). Re-wrap the abort value in THIS let's
-            // bindings so its free names re-resolve, and update the cell. Only when the abort fired DURING
-            // this body (`abort_before` was None) and the value carries free names this let could bind — a
-            // bare-param abort (`(Bail.bail u)`) sets no such value, so this is a no-op there. Sound: the
-            // bindings' inits ran (pure, in order) before the perform on this spine, so scoping the abort
-            // value under them changes no evaluation order; it only restores the binder's visibility.
+            // bindings (and update the cell) so it carries the same scope + init evaluation the discarded
+            // wrapper would have. Fired UNCONDITIONALLY whenever this body set the abort cell (`abort_before`
+            // was None and it is now Some) — NOT gated on the value's free names: the rewrap preserves the
+            // bindings' EVALUATION as well as their name scope, so re-wrapping even a closed abort value (a
+            // bare-param abort like `(Bail.bail u)`, whose value binds no `let` name) is still correct — the
+            // extra `let` is inert but harmless, and NOT special-casing it keeps this branch simple and
+            // uniform. Sound: the bindings' inits ran (pure, in order) before the perform on this spine, so
+            // scoping the abort value under them changes no evaluation order; it only restores what the
+            // collapsed wrapper carried.
             if abort_before.is_none()
                 && let Some(av) = ctx.abort_value.get()
             {

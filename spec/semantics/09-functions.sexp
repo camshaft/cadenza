@@ -35,6 +35,27 @@
 ; by reference / late-bound the name, or that shared one environment cell across closures, would give a
 ; different — and here numerically distinct — answer.
 
+(case "one staged partial application fans out to TWO second stages sharing the first capture"
+  (doc    "The fan-out face of currying (the chains above stage one path): ONE stage-1 closure
+           f1 = (f 2) feeds TWO stage-2 closures g1/g2 that are alive SIMULTANEOUSLY — the x=2
+           capture cell is shared by two second-stage environments, so a stage-2 build that MOVED
+           rather than borrowed the stage-1 environment kills its sibling before both apply.
+           (g1 5)+(g2 5) = 305+405 = 710; the n=0 face zeroes g2's middle coordinate → 510.")
+  (input (do
+        (def (f (: x Int64))
+          (fn ((: y Int64))
+            (fn ((: z Int64))
+              (+ (* x 100) (+ (* y 10) z)))))
+        (def (main (: n Int64))
+          (do
+            (def f1 (f 2))
+            (def g1 (f1 10))
+            (def g2 (f1 n))
+            (+ (g1 5) (g2 5))))
+        (export main)))
+  (call main (: 20 Int64)) (output (: 710 Int64))
+  (call main (: 0 Int64)) (output (: 510 Int64)))
+
 (case "a closure captures its environment by value at creation, unaffected by a later same-named binding"
   (doc    "`(let ((k n)) (let ((f (fn (x) (+ x k)))) (let ((k 1000)) (f 1))))` — `f` captures `k = n` at
            creation; the INNER `(let ((k 1000)) …)` introduces a NEW `k` in scope at the APPLICATION site,

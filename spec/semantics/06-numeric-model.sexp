@@ -3285,6 +3285,27 @@
   (call   main (: -9223372036854775808 Int64))
   (trap   "overflow"))
 
+(case "a genuinely-runtime NARROW-width unsigned overflow traps on the emitted operation"
+  (doc    "The narrow-width companion of the Int64 runtime-overflow set above: `(+ x (: 1 UInt8))` over an
+           entry parameter `x : UInt8`, called with x = 255 (UInt8.max). The operands are the exported
+           entry's own runtime value + a literal, so no β-reduction folds them — the overflow must trap on
+           the emitted CHECKED narrow add at run time (not a compile-time CDZ0304). Pins that the emitted
+           narrow-width `+` is checked at ITS width (255+1 wraps to 0 in an unchecked u8), not just at
+           Int64 — a backend emitting a wrapping u8 add, or widening to Int64 before the add, would return
+           0 (or 256) here instead of trapping. Traps on all backends (wasm 'integer overflow', rust
+           'integer overflow in addition').")
+  (input  (do (def (main (: x UInt8)) (+ x (: 1 UInt8))) (export main)))
+  (call   main (: 255 UInt8))
+  (trap   "overflow"))
+
+(case "the runtime narrow-width add in range does not trap (the control)"
+  (doc    "The trap-free twin: the same `(+ x (: 1 UInt8))` called with x = 100 stays in UInt8 range and
+           returns 101 — no trap. Triangulates that the case above traps on the genuine overflow, not on
+           the narrow-width add in general; the emitted checked u8 add is correct for in-range operands.")
+  (input  (do (def (main (: x UInt8)) (+ x (: 1 UInt8))) (export main)))
+  (call   main (: 100 UInt8))
+  (output (: 101 UInt8)))
+
 (case "the Int64.max and Int64.min CONSTANTS compare equal to their boundary values at runtime"
   (doc    "The prelude boundary constants as runtime COMPARANDS: `(= n Int64.max)` and `(= n Int64.min)`
            over a boundary parameter — the max value hits only the max test (1,0), the min value only the

@@ -325,6 +325,25 @@
 ; (Ast.Name "+") x (Ast.Int 0))) (Ast.Int 0)))` pattern and binds `x` at depth 2 — a printer/lowering
 ; that flattened the nesting or mis-scoped the inner unquote would break it. Green on all backends.
 
+(case "OVERLAPPING quote patterns dispatch first-match-wins on the ambiguous scrutinee"
+  (doc    "The peephole rule set above is DISJOINT; a real simplifier's rules OVERLAP, and rule
+           PRIORITY is semantics: `(+ ,_x 0) and `(+ 0 ,_x) BOTH match (+ 0 0) — arm 1 must win.
+           An engine that reordered or unified overlapping quote rows rewrites with the wrong rule.
+           (+ 0 5) matches only arm 2; (+ 5 3) falls through. Encoded 1·100 + 2·10 + 0 = 120.
+           All pattern literals are 0 (the nonzero row is the HELD recursive-BigInt miscompile).")
+  (input (do
+        (def (classify node)
+          (match node
+            (`(+ ,_x 0) 1)
+            (`(+ 0 ,_x) 2)
+            (_          0)))
+        (def (main)
+          (+ (* (classify (quote (+ 0 0))) 100)
+             (+ (* (classify (quote (+ 0 5))) 10)
+                (classify (quote (+ 5 3))))))
+        (export main)))
+  (output (: 120 Int64)))
+
 (case "a nested quote pattern matches a compound-within-a-compound two levels deep"
   (doc    "A single quote pattern with a compound inside a compound — `` `(+ (+ ,x 0) 0) `` — matches a
            two-level-deep addition `(+ (+ y 0) 0)` in ONE pattern, binding the inner operand `x` (= the

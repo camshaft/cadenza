@@ -2536,6 +2536,34 @@ fn rustc_roundtrip_bigint_arithmetic_and_render() {
 }
 
 #[test]
+fn a_runtime_bigint_sum_payload_literal_probe_compares_by_bigint_not_an_i64_cast() {
+    // REGRESSION (corpus-bugfix, rust twin of breaker FINDING #22): a match on a sum whose payload is a
+    // RUNTIME BigInt, probed against an integer literal (`((Mk 1) …)`), used to emit the compare as a raw
+    // `(<Big>) as i64` — a NON-primitive cast (rustc E0605, a HARD build-fail, not an honest todo). The
+    // literal-probe compare now detects a `Ty::BigInt` sub-value and compares by BigInt equality against the
+    // materialized `Big` literal (`const_big_expr` → `Big::from_i64(1)`); `Big` derives `PartialEq`, so it
+    // types. Build clean AND compute: `Mk (BigInt.of 1)` matches `(Mk 1)` → 40; `BigInt.of 2` falls through.
+    let m = compile_rust(
+        "(module m (type W (Mk BigInt)) \
+           (def (go (: k Int64)) (match (Mk (BigInt.of k)) ((Mk 1) 40) (_ (- 0 1)))) \
+           (export go))",
+    );
+    assert!(
+        m.contains("== cdz_num::Big::from_i64(1)") && !m.contains(") as i64)) == 1i64"),
+        "the BigInt payload probe compares by Big equality, not an `as i64` cast:\n{m}"
+    );
+    if let Some(out) = rustc_run(&m, "go(1)") {
+        assert_eq!(
+            out, "40",
+            "Mk(BigInt.of 1) matches the (Mk 1) literal probe"
+        );
+    }
+    if let Some(out) = rustc_run(&m, "go(2)") {
+        assert_eq!(out, "-1", "Mk(BigInt.of 2) falls through to the wildcard");
+    }
+}
+
+#[test]
 fn rustc_roundtrip_rational_arithmetic_and_render() {
     // Rational emit-side: `Ty::Rational` → `cdz_num::Rational` (a Big num/den pair, canonical normalized);
     // `Rational.of`/`.of-int` widen + build, `+`/`-`/`*`/`/` are Rational methods, cmp reduces to a bool,

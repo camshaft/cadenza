@@ -232,6 +232,26 @@
   (host-responses (respond Param.k (: 2 Int64)))
   (output (: 20 Int64)))
 
+(case "one @param read bound ONCE fans out to a map key, a set probe, and arithmetic"
+  (doc    "The read-once-use-many discipline: ONE (Param.k) accessor perform bound in a do-def, then
+           fanned to a map KEY, a Set membership probe, and arithmetic. host-responses carries exactly
+           ONE respond, so a lowering that re-performed the accessor per use (double-billing the host)
+           diverges rather than silently passing. k=2: map hit 20 + in-set 100 + 2000 = 2120.")
+  (input  (do
+            (pragma param (param (: widget slider)) (: k Int64))
+            (def (main)
+              (host (Param)
+                (do
+                  (def k (Param.k))
+                  (def v (match (Map.lookup (Map.insert (Map.insert Map.empty 1 10) 2 20) k)
+                           ((Some x) x) ((None _u) -1)))
+                  (def inn (if (Set.contains (Set.of (list 2 5)) k) 1 0))
+                  (+ v (+ (* inn 100) (* k 1000))))))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.k (: 2 Int64)))
+  (output (: 2120 Int64)))
+
 (case "a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)"
   (doc    "A heap `Rational` has no host boundary form (only scalar/unit results cross), so a
            `@param(...) rate : Rational` cannot generate one `(op rate (-> Unit Rational))` host accessor.

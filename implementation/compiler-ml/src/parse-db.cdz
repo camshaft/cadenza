@@ -106,7 +106,7 @@ type Node =
 /// (NB: the growing per-arity table set is a known trade-off; a List-based N-ary param/arg rep is the
 /// eventual idiomatic cleanup — see the queue follow-up. 4 args covers the corpus's widest helpers.)
 type Tree =
-  | Arena(Map(Int64, Node), Int64, Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Tuple(Int64, Int64)))
+  | Arena(Map(Int64, Node), Int64, Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Tuple(Int64, Int64, Int64)))
                                    // The 12th table `ct` (M2-b-2b-ii) is the CTOR-TAG table: `Map(ctorNameId,
                                    // (declName, tag))` (M2-b TySum: the value is a `(declName, tag)` tuple so a
                                    // ctor use also types `TSum(declName)`, not just its tag)
@@ -385,15 +385,22 @@ def param-type-of(tree: Tree, paramId: Int64) = match tree with
 /// ctors record here (sread `read-do-ctors`); lower reads it to turn a payload-ctor CALL `(Some 5)` into
 /// `CCtor(tag, args)` — the ct entry is what DISTINGUISHES a payload-ctor call from an over-applied nullary def
 /// (which has a def-body but NO ct entry → the existing decline path). ADDITIVE: only a `(type …)` ctor records.
-def record-ctor-tag(tree: Tree, ctorName: Int64, declName: Int64, tag: Int64) = match tree with
-  | Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, ct) => Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, Map.insert(ct, ctorName, (declName, tag)))
+def record-ctor-tag(tree: Tree, ctorName: Int64, declName: Int64, tag: Int64) =
+  record-ctor-tag-typed(tree, ctorName, declName, tag, 0)
+
+/// M2-b-2b-ii-c2b payload-argType variant: record a ctor with its single payload's DECLARED TYPE `argType`
+/// (an encoded int type per encode-param-type, or 0 = none/Int64-placeholder for a nullary ctor or an as-yet-
+/// unparsed payload). infer seeds a payload binder from this instead of the Int64 placeholder (non-Int payloads).
+/// `record-ctor-tag` is the argType=0 shorthand (unchanged callers). The ct value is (declName, tag, argType).
+def record-ctor-tag-typed(tree: Tree, ctorName: Int64, declName: Int64, tag: Int64, argType: Int64) = match tree with
+  | Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, ct) => Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, Map.insert(ct, ctorName, (declName, tag, argType)))
 
 /// The TAG of a user sum-type constructor by name-id, or `None` (not a recorded ctor — a normal def/var).
 /// lower's NApp arm consults this: `Some tag` + args present → a payload-ctor call → `CCtor(tag, loweredArgs)`.
 def ctor-tag-of(tree: Tree, ctorName: Int64) = match tree with
   | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(dt2) => (match dt2 with | (_declName, tag) => Option.Some(tag)))
+      | Option.Some(dt2) => (match dt2 with | (_declName, tag, _argType) => Option.Some(tag)))
 
 /// M2-b-2b-ii-c2b: the DECL NAME-id of the sum type a ctor belongs to, or `None` (not a recorded ctor). infer
 /// types a ctor-app/pattern as `TySum(declName)` — this is what gives a ctor VALUE its sum identity so a
@@ -401,7 +408,16 @@ def ctor-tag-of(tree: Tree, ctorName: Int64) = match tree with
 def ctor-decl-of(tree: Tree, ctorName: Int64) = match tree with
   | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(dt2) => (match dt2 with | (declName, _tag) => Option.Some(declName)))
+      | Option.Some(dt2) => (match dt2 with | (declName, _tag, _argType) => Option.Some(declName)))
+
+/// M2-b-2b-ii-c2b payload-argType accessor: the ENCODED declared type of a ctor's single payload (0 = none /
+/// Int64-placeholder — a nullary ctor or an as-yet-unparsed payload), or `None` (not a recorded ctor). infer
+/// seeds a payload binder from this (decode via pt-signed/pt-width) instead of the hardcoded Int64, so a non-Int
+/// payload (a Bool binder) types correctly. Reads the 3rd ct-tuple slot.
+def ctor-argtype-of(tree: Tree, ctorName: Int64) = match tree with
+  | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(dt2) => (match dt2 with | (_declName, _tag, argType) => Option.Some(argType)))
 
 /// M2-b-2b-ii-c2 ENUM-DISC REPRESENTATION predicate (ii-c2b-2, v-inference-confirmed against rcdzc db.rs:2789):
 /// is `declName` a C-style enum — `>= 2` constructors, EVERY one NULLARY (no payload)? Such a sum value carries
@@ -420,11 +436,11 @@ def decl-is-enum-disc(tree: Tree, declName: Int64) = match tree with
 /// `payload` its PAYLOAD ctors. Enum-disc iff (payload == 0) AND (nullary >= 2). A payload ctor of the decl
 /// makes the rep boxed (any payload → not enum-disc). Index recursion over the (ctorName, (declName, tag))
 /// entries (no list-tail — the arena has no generic list-tail; `List.at(entries, i)` walks positionally).
-def decl-enum-disc-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64))), declName: Int64, i: Int64, nullary: Int64, payload: Int64) =
+def decl-enum-disc-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64, Int64))), declName: Int64, i: Int64, nullary: Int64, payload: Int64) =
   (if (i == List.len(entries)) then (if (payload == 0) then (nullary >= 2) else false)
    else (match List.at(entries, i) with
      | Option.None(_) => (if (payload == 0) then (nullary >= 2) else false)
-     | Option.Some(e) => (match e with | (ctorName, dt) => (match dt with | (dn, _tag) =>
+     | Option.Some(e) => (match e with | (ctorName, dt) => (match dt with | (dn, _tag, _argType) =>
           (if (dn == declName)
            then (match def-body-of(tree, ctorName) with               // nullary ctor has a def-body; payload doesn't
                   | Option.Some(_) => decl-enum-disc-go(tree, entries, declName, i + 1, nullary + 1, payload)
@@ -1111,4 +1127,40 @@ def pd-enum-disc-single-variant-not-enum() =
       (if decl-is-enum-disc(t3, 300) then trap("a SINGLE-variant nullary sum is NOT enum-disc (>=2 required, newtype Unit otherwise)")
        else unit))))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, ctor-tag-of, ctor-decl-of, decl-is-enum-disc, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
+// ---- ii-c2b-2 ctor-argtype-of: the ct 3rd slot (payload's declared type; 0 = none/Int64-placeholder) ----
+
+@test
+def pd-ctor-argtype-default-zero() =
+  // record-ctor-tag (the argType=0 shorthand) records argType 0 → ctor-argtype-of = Some(0) (Int64-placeholder /
+  // no declared type). The tag + decl accessors still project correctly from the 3-tuple. Behavior-neutral default.
+  (let t1 = record-ctor-tag(empty-tree(), 7, 400, 2) in
+    (match ctor-argtype-of(t1, 7) with
+      | Option.Some(a) => (if a == 0 then
+          (match ctor-tag-of(t1, 7) with | Option.Some(tg) => (if tg == 2 then
+            (match ctor-decl-of(t1, 7) with | Option.Some(dn) => (if dn == 400 then unit else trap("decl 400"))
+              | Option.None(_) => trap("decl present"))
+            else trap("tag 2")) | Option.None(_) => trap("tag present"))
+        else trap("record-ctor-tag records argType 0 (placeholder)"))
+      | Option.None(_) => trap("a recorded ctor has an argType slot")))
+
+@test
+def pd-ctor-argtype-typed-records() =
+  // record-ctor-tag-typed records a declared payload type: encode-param-type(false, 1) = a Bool-ish encoding (a
+  // non-zero argType). ctor-argtype-of reads it back; tag + decl still project. Pins the typed-payload ct entry.
+  (let enc = encode-param-type(false, 8) in                        // an encoded UInt8 (non-zero) as a stand-in payload type
+    (let t1 = record-ctor-tag-typed(empty-tree(), 8, 500, 0, enc) in
+      (match ctor-argtype-of(t1, 8) with
+        | Option.Some(a) => (if a == enc then
+            (match ctor-tag-of(t1, 8) with | Option.Some(tg) => (if tg == 0 then unit else trap("tag 0"))
+              | Option.None(_) => trap("tag present"))
+          else trap("record-ctor-tag-typed records the given argType"))
+        | Option.None(_) => trap("a typed ctor has its argType"))))
+
+@test
+def pd-ctor-argtype-unrecorded-none() =
+  // an UNrecorded ctor name → ctor-argtype-of None (same absence discipline as ctor-tag-of/ctor-decl-of).
+  (match ctor-argtype-of(empty-tree(), 999) with
+    | Option.None(_) => unit
+    | Option.Some(_) => trap("an unrecorded ctor has no argType"))
+
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, ctor-tag-of, ctor-decl-of, ctor-argtype-of, decl-is-enum-disc, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }

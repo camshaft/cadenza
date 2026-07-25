@@ -53,6 +53,7 @@ pass	GRAY CODE encodes by shift-xor, decodes by xor-folding, and adjacent codes 
 pass	HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution
 pass	HORNER polynomial evaluation folds coefficients high-to-low and agrees with a power-sum oracle
 pass	INTERLEAVE alternates two spines and drains the longer tail after the shorter empties
+pass	INTERLEAVED pops and inserts keep the event queue min-ordered across live mutation
 pass	INVERSION COUNT pairs every element with its successors, zero when sorted and maximal when reversed
 pass	KADANE max-subarray threads a best-ending-here and a global best through one fold
 pass	KERNIGHAN popcount clears the lowest set bit per step and agrees with a shift-walk oracle
@@ -70,14 +71,17 @@ pass	MOVE-ZEROS stably shifts zeros to the tail, preserving non-zero order and t
 pass	MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	ONE-EDIT-APART checks strings for exactly one substitution or one insertion by length case
+pass	OVERLAPPING quote patterns dispatch first-match-wins on the ambiguous scrutinee
 pass	PAINT FENCE threads same/diff state tracks where no three consecutive posts match
 pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
 pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division
+pass	Qty map VALUES unwrap, ADD, and COMPARE in one chain preserving the unit through the collection
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
 pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
 pass	STRING COMPRESSION emits char-count pairs but keeps the original unless strictly shorter
 pass	STRING ROTATION check searches the needle inside the doubled haystack at equal length
 pass	SUBSET-SUM COUNT folds each element into a fresh ways-table so no element is reused
+pass	Set.to-list over symbols enumerates in content-byte order regardless of insertion order
 pass	String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow
@@ -95,6 +99,7 @@ pass	a FLETCHER-16 checksum walks a concat-built byte rope across its seams
 pass	a Fletcher-16 over a seam-spanning slice VIEW equals the checksum of its logical bytes
 pass	a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit
 pass	a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string
+pass	a LIST shrinker drops elements greedily and converges to a minimal failing sublist
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
 pass	a MEDIAN-OF-3 filter smooths interior spikes while endpoints pass through unchanged
@@ -260,6 +265,7 @@ pass	a fitting contextual float literal computes through the same arith groundin
 pass	a float-field RECORD as a SET element dedups by content including the float leaf
 pass	a fold over Map.to-list rebuilds a TRANSFORMED map — the map-over-values idiom
 pass	a frame body ACCUMULATED by a fold of per-element bin constructions round-trips
+pass	a generated insert/remove Set workload agrees with a BITMASK model at every step's end
 pass	a generated list reverses twice to itself — an involution property over generated content
 pass	a generated map workload agrees with a linear-scan model at EVERY key of the domain
 pass	a generic fold instantiated at an Int64 AND a String accumulator in one program
@@ -1305,6 +1311,7 @@ pass	a tuple key whose element is itself a float-bearing tuple keys by content
 pass	a tuple key with a RUNTIME Rational leaf hits and misses by canonical content
 pass	a tuple key with an ARITH-built BigInt leaf hits and misses by content
 pass	a tuple of two branch-built Options matches all four Some/None quadrants jointly
+pass	a tuple with a Qty leaf as a map key hits by magnitude-and-unit content
 pass	a tuple with a Symbol leaf as a SET element dedups and membership-checks by content
 pass	a two-level UPDATE of a map-of-maps rebuilds the inner and leaves the old outer intact
 pass	a type-valued parameter threads through TWO relay layers beside a runtime operand
@@ -1402,6 +1409,8 @@ pass	a genuinely-runtime left-shift count beyond the bit width traps rather than
 pass	a genuinely-runtime left-shift count equal to the bit width traps rather than masking
 pass	a genuinely-runtime multiplication overflow traps on the emitted operation
 pass	a genuinely-runtime negation of the minimum integer traps
+pass	a genuinely-runtime NARROW-width unsigned overflow traps on the emitted operation
+pass	the runtime narrow-width add in range does not trap (the control)
 pass	a genuinely-runtime negative right-shift count traps rather than masking
 pass	a genuinely-runtime shift count that is a multiple of 2^32 traps rather than truncating to zero
 pass	a genuinely-runtime subtraction underflow at the minimum traps
@@ -2942,6 +2951,7 @@ pass	a variant named Bool shadows the prelude Bool within its declaring module
 pass	a variant named like a prelude type is constructed and matched in its declaring module
 pass	a variant pattern over a Bool scrutinee is a type error
 pass	an ill-typed ctor-match scrutinee taints the whole match, not masked by well-typed arms
+pass	an ill-typed inner-match scrutinee taints the outer match
 pass	a cross-type constructor pattern NESTED in a matching outer payload is rejected
 pass	a variant pattern over a scalar scrutinee is a type error
 pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
@@ -3008,8 +3018,11 @@ pass	dropping a list pushed FROM a survivor must not free the shared spine
 pass	dropping a map derived by persistent insert must not free nodes shared with the survivor
 pass	dropping a rope built OVER a survivor must not free the shared child node
 pass	dropping a set derived by insert must not free members shared with the survivor
+pass	eval of a quasiquote with TWO unquotes splices a bound and a computed value in one form
 pass	graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list
 pass	modular exponentiation by SQUARING halves the exponent and branches on parity
+todo	one @param read bound ONCE fans out to a map key, a set probe, and arithmetic
+pass	one staged partial application fans out to TWO second stages sharing the first capture
 pass	string REVERSE walks scalars back-to-front and anti-commutes with concatenation
 pass	structural equality of two Ast.Int wider than Int64 compares by full value
 pass	the COLLATZ walk counts steps to 1 and tracks the trajectory peak

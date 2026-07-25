@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, ctor-tag-of, encode-param-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit, is-app } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, ctor-tag-of, encode-param-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit, is-app } from "parse-db"
 import { recognize, is-int-type, ty-signed, ty-width } from "int-type"
 import { fits-width } from "int-width"
 
@@ -584,12 +584,21 @@ def read-do-ctors(s: String, k: Int64, declName: Int64, tag: Int64, root: Int64,
                      // recognizes it + infer types it TySum(declName). Harmless for M2-a's bare-tag eval path.
                      (let t3 = record-ctor-tag(t2, name-id(cnm), declName, tag) in
                       read-do-ctors(s, skip-space(s, c2 + 1), declName, tag + 1, root, t3))))
-             // a PAYLOAD ctor `(Ck T…)`: RECORD `Ck → (declName,tag)` so lower turns a use `(Some 5)` = NApp(Some,
-             // arg) into CCtor(tag, args) + infer types it TySum(declName); SKIP the payload type atoms (their
-             // arg-types for binder-typing are ii-c2b-2). Do NOT record a def-body (a ctor is not an inlinable
-             // def). c1 is after the ctor name, depth 1 → skip past its matching `)`, record + recurse tag+1.
-             else (let t1 = record-ctor-tag(tree, name-id(cnm), declName, tag) in
-                    read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), declName, tag + 1, root, t1)))))))
+             // a PAYLOAD ctor `(Ck T…)`: RECORD `Ck → (declName, tag, argType)` so lower turns a use `(Some 5)` =
+             // NApp(Some, arg) into CCtor(tag, args) + infer types it TySum(declName) + seeds the payload binder
+             // from argType. Parse the single payload TYPE ATOM at `c2` (the atom after the ctor name): an INT type
+             // (Int<N>/UInt<N>, is-int-type) → encode-param-type(signed, width); a non-int type (e.g. Bool) or
+             // multi-field → argType 0 (Int64-placeholder, the binder still declines for now — a Bool-payload
+             // encoding is a later slice). Do NOT record a def-body (a ctor is not an inlinable def). Skip past the
+             // payload's matching `)` and recurse tag+1.
+             else (match scan-atom(s, c2, "") with | (pty, _pn) =>          // the single payload type atom
+                    // argType: an INT type → encode-param-type (non-zero); a NON-int payload (Bool / nested sum /
+                    // compound the reader can't encode) → -1 = UNSUPPORTED sentinel (infer TErr's the binder → any
+                    // use declines — NOT 0, which means "no payload/Int64-placeholder" and would MISREAD a Bool
+                    // binder as Int64, silently type-checking `(+ b 1)` on a Bool payload; v-inference's trap).
+                    (let argType = (if (is-int-type(pty)) then encode-param-type(ty-signed(pty), ty-width(pty)) else (0 - 1)) in
+                     (let t1 = record-ctor-tag-typed(tree, name-id(cnm), declName, tag, argType) in
+                      read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), declName, tag + 1, root, t1)))))))))
 
 /// After a def ended at `j`: skip its closing `)` (if present) and read the next form in the do, threading the
 /// accumulated `root` (main's body, or -1 if not yet seen).
@@ -622,6 +631,15 @@ def read-match-form(s: String, i: Int64, tree: Tree) =
 /// Peek the arm's pattern atom: `_` → this is the terminal wildcard arm (return its body); else a LITERAL arm →
 /// build NMatch(scrut, lit, body, <rest>) and recurse for the rest. Returns (nodeId, indexAfterArms, tree).
 def read-match-arms(s: String, i: Int64, scrutId: Int64, tree: Tree) =
+  // TOTALITY guard: a well-formed match chain terminates in a `_` wildcard arm. If the arms are EXHAUSTED with no
+  // wildcard — the next non-space char is the match's close `)` (or EOF `""`) — DECLINE cleanly (an unsupported
+  // poison node at the current index) rather than open-paren into nothing. Without this, a ctor-name arm reader
+  // (read-nullary-ctor-pattern-arm) reached at `)` scans an empty atom + reads a non-advancing body → INFINITE
+  // LOOP (a wasm interrupt/timeout, not a decline). The reader must be TOTAL on malformed input.
+  (let g = skip-space(s, i) in
+   (if ((char-at(s, g) == ")") or (char-at(s, g) == ""))
+    then (match unsupported(tree) with | (id, t0) => (id, g, t0))
+    else
   (let o = open-paren(s, i) in                                      // open the arm `(pat body)`
    (let p = skip-space(s, o) in
     (if (char-at(s, p) == "_")
@@ -641,7 +659,7 @@ def read-match-arms(s: String, i: Int64, scrutId: Int64, tree: Tree) =
            // -1). lower routes it via decl-is-enum-disc: enum-disc decl → CMatchEnum (bare-tag compare), mixed
            // decl → CMatchSum (boxed store-tag). A ctor name compares the scrutinee's TAG — the M2-a tag-compare,
            // now TYPE-gated (scrut must be TSum of the ctor's decl) so a raw-int-over-TSum correctly declines.
-           else read-nullary-ctor-pattern-arm(s, p, scrutId, tree))))))
+           else read-nullary-ctor-pattern-arm(s, p, scrutId, tree))))))))
 
 /// ii-c2b-2: read a NULLARY ctor-NAME pattern arm `(Green body)` → NMatchCtor(scrut, ctorName, -1, body, rest).
 /// `p` is at the ctor NAME atom (the arm's outer `(` already consumed). No binder (a nullary ctor carries no
