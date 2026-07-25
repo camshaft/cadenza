@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, ctor-tag-of, encode-param-type, encode-bool-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit, is-app } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, record-ctor-tag-typed-list, ctor-tag-of, ctor-argtype-of, ctor-argtypes-of, encode-param-type, encode-bool-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit, is-app } from "parse-db"
 import { recognize, is-int-type, ty-signed, ty-width } from "int-type"
 import { fits-width } from "int-width"
 
@@ -560,6 +560,27 @@ def skip-to-close(s: String, i: Int64, depth: Int64) =
                 else (if (c == ")") then skip-to-close(s, i + 1, depth - 1)
                       else skip-to-close(s, i + 1, depth))))))
 
+/// compound-payload slice-1b: read the payload TYPE ATOMS of a ctor `(Ck T0 T1 …)` starting at `p` (the first
+/// type atom, after the ctor name), stopping at the group's closing `)`. Each field encodes exactly like the
+/// single-field argType: an INT type (`Int<N>`/`UInt<N>`, is-int-type) → encode-param-type(signed, width) (≥2);
+/// the BOOL type → encode-bool-type() (1); any OTHER scalar the reader can't encode → -1 (UNSUPPORTED sentinel,
+/// infer TErr's that binder → any use declines). A NESTED `(` payload field (a compound/sum type, out of the
+/// SCALAR slice) can't be scanned as an atom → recorded -1 and skipped past its matching `)` (via skip-to-close)
+/// so the field COUNT stays correct (a later slice reads nested field types). Returns the per-field List(Int64)
+/// in DECLARATION order — List.push appends at the end (emit-db's "append in order"), so field i lands at index i.
+/// Tail-recursive over the index; flat (≤2 nesting — the paren-cascade trap). This GENERALIZES the old
+/// single-atom parse: a 1-field ctor yields `[enc]` (identical to the record-ctor-tag-typed shim), a multi-field
+/// ctor `(Pair Int64 Bool)` yields `[enc-int, enc-bool]` (was truncated to `[enc-int]`, losing field 1+).
+def read-payload-argtypes(s: String, p: Int64, acc: List(Int64)) =
+  (let q = skip-space(s, p) in
+   (if (char-at(s, q) == ")") then acc
+    else (if (char-at(s, q) == "(")
+          then read-payload-argtypes(s, skip-to-close(s, q + 1, 1), List.push(acc, 0 - 1))   // nested/compound field → -1
+          else (match scan-atom(s, q, "") with | (pty, pn) =>
+                 (let enc = (if (is-int-type(pty)) then encode-param-type(ty-signed(pty), ty-width(pty))
+                             else (if (pty == "Bool") then encode-bool-type() else (0 - 1))) in
+                  read-payload-argtypes(s, pn, List.push(acc, enc)))))))
+
 /// Read the constructor list `(C0) (C1) … (Ck)` of a `(type …)` decl, assigning each ctor the ordinal `tag`
 /// (0,1,2,…). `k` is at the next `(` (a ctor) or the `)` that closes the type decl. A `)` here ENDS the ctor
 /// list → continue the do-sequence (read-do-next past the type's `)`). A NULLARY `(Ck)` ctor: record
@@ -584,23 +605,18 @@ def read-do-ctors(s: String, k: Int64, declName: Int64, tag: Int64, root: Int64,
                      // recognizes it + infer types it TySum(declName). Harmless for M2-a's bare-tag eval path.
                      (let t3 = record-ctor-tag(t2, name-id(cnm), declName, tag) in
                       read-do-ctors(s, skip-space(s, c2 + 1), declName, tag + 1, root, t3))))
-             // a PAYLOAD ctor `(Ck T…)`: RECORD `Ck → (declName, tag, argType)` so lower turns a use `(Some 5)` =
-             // NApp(Some, arg) into CCtor(tag, args) + infer types it TySum(declName) + seeds the payload binder
-             // from argType. Parse the single payload TYPE ATOM at `c2` (the atom after the ctor name): an INT type
-             // (Int<N>/UInt<N>, is-int-type) → encode-param-type(signed, width); a non-int type (e.g. Bool) or
-             // multi-field → argType 0 (Int64-placeholder, the binder still declines for now — a Bool-payload
-             // encoding is a later slice). Do NOT record a def-body (a ctor is not an inlinable def). Skip past the
-             // payload's matching `)` and recurse tag+1.
-             else (match scan-atom(s, c2, "") with | (pty, _pn) =>          // the single payload type atom
-                    // argType: an INT type → encode-param-type (≥2); the BOOL type → encode-bool-type (1, the
-                    // reserved Bool sentinel — infer decodes it to TBool so a Bool-payload binder type-checks);
-                    // any OTHER non-int-non-bool payload (nested sum / compound the reader can't encode) → -1 =
-                    // UNSUPPORTED sentinel (infer TErr's the binder → any use declines — NOT 0, which means "no
-                    // payload/Int64-placeholder" and would MISREAD the binder as Int64).
-                    (let argType = (if (is-int-type(pty)) then encode-param-type(ty-signed(pty), ty-width(pty))
-                                    else (if (pty == "Bool") then encode-bool-type() else (0 - 1))) in
-                     (let t1 = record-ctor-tag-typed(tree, name-id(cnm), declName, tag, argType) in
-                      read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), declName, tag + 1, root, t1)))))))))
+             // a PAYLOAD ctor `(Ck T0 T1 …)`: RECORD `Ck → (declName, tag, argTypes)` so lower turns a use
+             // `(Some 5)` / `(Pair 3 4)` = NApp(Some, args) into CCtor(tag, args) + infer types it TySum(declName)
+             // + seeds each payload binder from its per-field argType. Slice-1b: parse ALL payload TYPE ATOMS from
+             // `c2` (the first atom after the ctor name) to the ctor's `)` into a List(Int64) (read-payload-argtypes)
+             // — was a SINGLE atom (multi-field `(Pair Int64 Int64)` truncated to `[Int64]`, losing field 1+). Each
+             // field: INT type → encode-param-type (≥2); BOOL → encode-bool-type (1, infer decodes TBool); any other
+             // scalar / nested → -1 (UNSUPPORTED sentinel, infer TErr's the binder → use declines; NOT 0, which means
+             // Int64-placeholder). Do NOT record a def-body (a ctor is not an inlinable def). Skip past the payload's
+             // matching `)` and recurse tag+1.
+             else (let argTypes = read-payload-argtypes(s, c2, []) in
+                    (let t1 = record-ctor-tag-typed-list(tree, name-id(cnm), declName, tag, argTypes) in
+                     read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), declName, tag + 1, root, t1))))))))
 
 /// After a def ended at `j`: skip its closing `)` (if present) and read the next form in the do, threading the
 /// accumulated `root` (main's body, or -1 if not yet seen).
@@ -1486,5 +1502,53 @@ def sr-ctor-pattern-no-binder-declines-pr835() =
       | Option.Some(Node.NVar(0)) => unit                             // clean poison — no empty-name binder built
       | Option.Some(Node.NMatchCtor(_, _, _, _, _)) => trap("a NO-binder ctor pattern must DECLINE, not build an empty-name binder NMatchCtor")
       | _ => trap("a no-binder ctor pattern `((BB) body)` declines to poison NVar(0) (PR#835)")))
+
+@test
+def sr-multi-field-ctor-reads-all-payload-argtypes-slice1b() =
+  // compound-payload slice-1b: a 2-field payload ctor `(Pair Int64 Bool)` records BOTH field argTypes in the ct
+  // table (was TRUNCATED to field 0). ctor-argtypes-of returns the full list [Int64-enc, Bool-enc] in decl order;
+  // ctor-argtype-of (single-field fast path) still returns the HEAD (field 0). Pins the reader now parses N atoms.
+  (match read-source("(do (type P (Pair Int64 Bool)) (def (main) 0) (export main))") with | (_root, tree) =>
+    (match ctor-argtypes-of(tree, name-id("Pair")) with
+      | Option.Some(ats) =>
+          (if (List.len(ats) == 2) then
+             (match List.at(ats, 0) with
+               | Option.Some(a0) => (if (a0 == encode-param-type(true, 64)) then
+                                       (match List.at(ats, 1) with
+                                         | Option.Some(a1) => (if (a1 == encode-bool-type()) then unit else trap("field 1 = Bool sentinel"))
+                                         | Option.None(_) => trap("field 1 present"))
+                                     else trap("field 0 = Int64 enc"))
+               | Option.None(_) => trap("field 0 present"))
+           else trap("a 2-field ctor records a 2-element argTypes list (slice-1b — not truncated to 1)"))
+      | Option.None(_) => trap("Pair is a recorded ctor with an argTypes list")))
+
+@test
+def sr-single-field-ctor-argtypes-still-one-element-slice1b() =
+  // slice-1b backward-compat: a 1-field payload ctor `(BB Int64)` still yields a 1-element list [Int64-enc] — the
+  // generalized N-atom reader reduces to the old single-atom behavior for arity 1 (no regression vs slice-1a shim).
+  (match read-source("(do (type Box (BB Int64)) (def (main) 0) (export main))") with | (_root, tree) =>
+    (match ctor-argtypes-of(tree, name-id("BB")) with
+      | Option.Some(ats) =>
+          (if (List.len(ats) == 1) then
+             (match ctor-argtype-of(tree, name-id("BB")) with
+               | Option.Some(a0) => (if (a0 == encode-param-type(true, 64)) then unit else trap("BB field 0 = Int64 enc"))
+               | Option.None(_) => trap("BB field 0 present"))
+           else trap("a 1-field ctor records a 1-element argTypes list"))
+      | Option.None(_) => trap("BB is a recorded ctor")))
+
+@test
+def sr-multi-field-ctor-unsupported-field-is-neg1-slice1b() =
+  // slice-1b sentinel: a non-int, non-Bool scalar payload field (`Foo`, an unknown type the reader can't encode)
+  // records -1 (UNSUPPORTED) at that field's position — infer TErr's that binder so any use declines (NOT 0, which
+  // would misread it as an Int64-placeholder). Field 0 (Int64) stays correct; field 1 (Foo) is -1.
+  (match read-source("(do (type Q (Two Int64 Foo)) (def (main) 0) (export main))") with | (_root, tree) =>
+    (match ctor-argtypes-of(tree, name-id("Two")) with
+      | Option.Some(ats) =>
+          (if (List.len(ats) == 2) then
+             (match List.at(ats, 1) with
+               | Option.Some(a1) => (if (a1 == (0 - 1)) then unit else trap("unsupported field 1 = -1 sentinel"))
+               | Option.None(_) => trap("field 1 present"))
+           else trap("Two records a 2-element list"))
+      | Option.None(_) => trap("Two is a recorded ctor")))
 
 export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id }
