@@ -14,7 +14,7 @@
 /// NO core form (a filled `None`), not a bogus tree. Lowering reads the infer column to make this decision,
 /// and reads the resolve column to canonicalize vars — producer-reads-two-producers.
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, call-is-self-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, ctor-tag-of, ctor-decl-of, decl-is-enum-disc } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, call-is-self-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, ctor-tag-of, ctor-decl-of, decl-is-enum-disc, record-ctor-tag, record-ctor-tag-typed } from "parse-db"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
 import { Typed, infer-tree, infer-node } from "infer-db"
 
@@ -482,6 +482,21 @@ def is-cnum-w(c: Core, v: Int64, signed: Bool, w: Int64) = match c with
   | Core.CNum(x, s, cw) => (x == v) and (((if s then true else false) == signed) and (cw == w))
   | _ => false
 
+/// Probe: is this Core a `CMatchEnum(scrut, tag, _, _)` with the given tag? (the ENUM-DISC nullary rep — a
+/// bare-tag compare, no store handle). Pins the rep-dispatch that lower picks for an all-nullary sum pattern.
+def is-cmatchenum-tag(c: Core, tag: Int64) = match c with
+  | Core.CMatchEnum(_, t, _, _) => t == tag | _ => false
+
+/// Probe: is this Core a `CMatchSum(scrut, tag, binders, _, _)` with the given tag AND binder-count? (the BOXED
+/// rep — a store-tag read; binders=[] for a mixed-decl nullary pattern, [binder] for a payload pattern).
+def is-cmatchsum-tag-nbinders(c: Core, tag: Int64, nbinders: Int64) = match c with
+  | Core.CMatchSum(_, t, bs, _, _) => (t == tag) and (List.len(bs) == nbinders) | _ => false
+
+/// Probe: is this Core a `CCtor(tag, args)` with the given tag AND arg-count? (a boxed sum construct — a
+/// mixed-decl nullary ctor USE lowers to `CCtor(tag, [])`; a payload ctor use to `CCtor(tag, [args…])`).
+def is-cctor-tag-nargs(c: Core, tag: Int64, nargs: Int64) = match c with
+  | Core.CCtor(t, args) => (t == tag) and (List.len(args) == nargs) | _ => false
+
 /// Test-token builders (parse-db doesn't export its private builders).
 def n(v: Int64) = Tok.TNum(v)
 def var(nm: Int64) = Tok.TName(nm)
@@ -694,5 +709,81 @@ def lw-def-env-lowers-recursive-fac-body-slice-b1b() =
               (if List.len(params) == 1 then
                  (match bodyCore with | Core.CIf(_, _, _) => unit | _ => trap("fac body should lower to a CIf"))
                else trap("fac has ONE param binder"))))
+
+/// Test helper: a hand-arena `(type Color (Red)(Green))` — an ENUM-DISC decl (Color = name 800; Red = name
+/// 810 tag 0, Green = name 811 tag 1). Each nullary ctor records a def-body (its NLit tag, so def-body-of hits
+/// → decl-enum-disc-go counts it nullary) AND a ct entry (declName+tag). ≥2 ctors, all nullary → enum-disc.
+def color-enum-tree() =
+  (match add-node(empty-tree(), Node.NLit(0)) with | (redBody, t1) =>
+    (match add-node(t1, Node.NLit(1)) with | (greenBody, t2) =>
+      (let t3 = record-def(record-def(t2, 810, redBody), 811, greenBody) in
+       record-ctor-tag(record-ctor-tag(t3, 810, 800, 0), 811, 800, 1))))
+
+/// Test helper: a hand-arena `(type Opt (None)(Some x))` — a MIXED decl (Opt = name 820; None = name 830 tag
+/// 0 NULLARY with a def-body; Some = name 831 tag 1 PAYLOAD, a ct entry with NO def-body). A payload ctor →
+/// decl-is-enum-disc false → the boxed store rep (CMatchSum / CCtor-with-handle).
+def opt-mixed-tree() =
+  (match add-node(empty-tree(), Node.NLit(0)) with | (noneBody, t1) =>
+    (let t2 = record-def(t1, 830, noneBody) in
+     record-ctor-tag(record-ctor-tag(t2, 830, 820, 0), 831, 820, 1)))
+
+@test
+def lw-enum-disc-nullary-pattern-lowers-to-cmatchenum() =
+  // ii-c2b-2 rep-dispatch (lower-db NMatchCtor arm): a NULLARY ctor pattern `(Red …)` over an ENUM-DISC scrutinee
+  // lowers to CMatchEnum(scrut, tag 0, body, rest) — the BARE-tag compare (a CMatchSum store-tag read would
+  // return None on a bare tag → always-else). binderId = -1 (no payload) AND lower-ctor-decl-enum-disc true →
+  // CMatchEnum. Today only the slow sread-eval-sum e2e file pins this; this is the fast-gate witness.
+  (let t0 = color-enum-tree() in
+   (match add-node(t0, Node.NLit(0)) with | (scrutId, t1) =>
+    (match add-node(t1, Node.NLit(7)) with | (bodyId, t2) =>
+     (match add-node(t2, Node.NLit(9)) with | (restId, t3) =>
+      (match add-node(t3, Node.NMatchCtor(scrutId, 810, 0 - 1, bodyId, restId)) with | (root, tree) =>
+       (let tcol = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Typed)), scrutId, Typed.TSum(800)), bodyId, Typed.TIntW(true, 64)), restId, Typed.TIntW(true, 64)), root, Typed.TIntW(true, 64)) in
+        (match lower-node(tree, root, (Map.empty : Map(Int64, Resolved)), tcol) with
+          | Option.Some(c) => (if is-cmatchenum-tag(c, 0) then unit else trap("Red pattern over enum-disc Color lowers to CMatchEnum tag 0"))
+          | Option.None(_) => trap("an enum-disc nullary pattern lowers to CMatchEnum"))))))))
+
+@test
+def lw-mixed-decl-nullary-pattern-lowers-to-cmatchsum() =
+  // the BOXED twin: a nullary ctor pattern `(None …)` over a MIXED decl (has a payload sibling `Some`) lowers to
+  // CMatchSum(scrut, tag 0, [], body, rest) — a store-tag read on the boxed handle, NOT CMatchEnum. lower-binder-
+  // list(-1) = [] (no payload to bind). Pins that a mixed-decl nullary pattern stays boxed (rep-shares its payload
+  // siblings) so it matches the store handle the ctor USE builds — the divergence CMatchEnum-over-boxed would cause.
+  (let t0 = opt-mixed-tree() in
+   (match add-node(t0, Node.NLit(0)) with | (scrutId, t1) =>
+    (match add-node(t1, Node.NLit(7)) with | (bodyId, t2) =>
+     (match add-node(t2, Node.NLit(9)) with | (restId, t3) =>
+      (match add-node(t3, Node.NMatchCtor(scrutId, 830, 0 - 1, bodyId, restId)) with | (root, tree) =>
+       (let tcol = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Typed)), scrutId, Typed.TSum(820)), bodyId, Typed.TIntW(true, 64)), restId, Typed.TIntW(true, 64)), root, Typed.TIntW(true, 64)) in
+        (match lower-node(tree, root, (Map.empty : Map(Int64, Resolved)), tcol) with
+          | Option.Some(c) => (if is-cmatchsum-tag-nbinders(c, 0, 0) then unit else trap("None pattern over mixed Opt lowers to CMatchSum tag 0, 0 binders"))
+          | Option.None(_) => trap("a mixed-decl nullary pattern lowers to CMatchSum"))))))))
+
+@test
+def lw-enum-disc-nullary-use-lowers-to-bare-cnum() =
+  // ii-c2b-2 nullary ctor USE rep (lower-db NApp arm): a use `(Red)` = NApp(Red, -1) over an ENUM-DISC decl lowers
+  // to the BARE tag (the M2-a def-body inline → CNum 0), NO heap cell. This is the value side that must AGREE with
+  // the CMatchEnum pattern side above — both bare-tag. Pins the enum-disc branch of decl-is-enum-disc's lower use.
+  (let tree = color-enum-tree() in
+   (match def-body-of(tree, 810) with
+     | Option.None(_) => trap("Red records a nullary def-body")
+     | Option.Some(redBody) =>
+    (match add-node(tree, Node.NApp(810, 0 - 1)) with | (root, t1) =>
+     (let tcol = Map.insert(Map.insert((Map.empty : Map(Int64, Typed)), root, Typed.TSum(800)), redBody, Typed.TIntW(true, 64)) in
+      (match lower-node(t1, root, (Map.empty : Map(Int64, Resolved)), tcol) with
+        | Option.Some(c) => (if is-cnum(c, 0) then unit else trap("(Red) over enum-disc Color lowers to the bare tag CNum 0"))
+        | Option.None(_) => trap("an enum-disc nullary ctor use lowers to its bare tag"))))))
+
+@test
+def lw-mixed-decl-nullary-use-lowers-to-boxed-cctor() =
+  // the BOXED twin: a use `(None)` = NApp(None, -1) over a MIXED decl lowers to a boxed empty CCtor(tag 0, []) — a
+  // store handle sharing the payload siblings' rep — NOT the bare tag. This is the value side that must AGREE with
+  // the CMatchSum pattern side (both read/build a store handle). Pins the mixed branch of the nullary-use rep.
+  (let tree = opt-mixed-tree() in
+   (match add-node(tree, Node.NApp(830, 0 - 1)) with | (root, t1) =>
+    (let tcol = Map.insert((Map.empty : Map(Int64, Typed)), root, Typed.TSum(820)) in
+     (match lower-node(t1, root, (Map.empty : Map(Int64, Resolved)), tcol) with
+       | Option.Some(c) => (if is-cctor-tag-nargs(c, 0, 0) then unit else trap("(None) over mixed Opt lowers to boxed CCtor tag 0, no args"))
+       | Option.None(_) => trap("a mixed-decl nullary ctor use lowers to a boxed empty CCtor")))))
 
 export { Core.*, lower-tree, lower-node, lower-def-env, cnum64, is-cnum, is-cnum-w, is-cvar }

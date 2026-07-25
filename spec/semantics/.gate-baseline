@@ -1319,6 +1319,7 @@ pass	a rewrite-then-eval pipeline over a runtime tree preserves meaning through 
 pass	a NONZERO BigInt literal probe in a recursive quasiquote-pattern simp matches its own constructor
 pass	a runtime-built BigInt sum-payload literal probe matches its constructor
 pass	a runtime-built BigInt sum-payload literal probe falls through on a non-matching payload
+pass	a plain-sum recursive CONSTANT BigInt literal probe matches its own constructor
 pass	a right shift of a negative by a RUNTIME amount stays arithmetic
 pass	a rope built before a perform survives the resume and the arm's own heap does not leak into it
 pass	a rope threads TWO chained if-selects, each operand multi-use, and every length stays live
@@ -2769,6 +2770,8 @@ pass	a single-variant UInt8 newtype literal-payload arm falls through to the bin
 pass	a single-variant abstract theorem's constructor match outside the kernel is a withheld-constructor rejection (CDZ0214)
 pass	a single-variant abstract type's constructor match outside its module is rejected CDZ0214 (withheld-ctor)
 pass	a single-variant newtype BOOL literal-payload arm falls through on false
+pass	a Bool-payload ctor BINDER used as a Bool in an if computes on the compiled path
+pass	a runtime Bool-payload ctor binder threads its Bool through construction and destructure
 pass	a single-variant newtype BOOL literal-payload arm is reached, not silently dead
 pass	a single-variant newtype list element falls through on a non-matching payload
 pass	a single-variant newtype list element with a binder payload stays irrefutable

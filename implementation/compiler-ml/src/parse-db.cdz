@@ -106,7 +106,7 @@ type Node =
 /// (NB: the growing per-arity table set is a known trade-off; a List-based N-ary param/arg rep is the
 /// eventual idiomatic cleanup — see the queue follow-up. 4 args covers the corpus's widest helpers.)
 type Tree =
-  | Arena(Map(Int64, Node), Int64, Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Tuple(Int64, Int64, Int64)))
+  | Arena(Map(Int64, Node), Int64, Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Tuple(Int64, Int64, List(Int64))))
                                    // The 12th table `ct` (M2-b-2b-ii) is the CTOR-TAG table: `Map(ctorNameId,
                                    // (declName, tag))` (M2-b TySum: the value is a `(declName, tag)` tuple so a
                                    // ctor use also types `TSum(declName)`, not just its tag)
@@ -388,19 +388,30 @@ def param-type-of(tree: Tree, paramId: Int64) = match tree with
 def record-ctor-tag(tree: Tree, ctorName: Int64, declName: Int64, tag: Int64) =
   record-ctor-tag-typed(tree, ctorName, declName, tag, 0)
 
-/// M2-b-2b-ii-c2b payload-argType variant: record a ctor with its single payload's DECLARED TYPE `argType`
+/// M2-b-2b-ii-c2b payload-argType variant: record a ctor with its SINGLE payload's DECLARED TYPE `argType`
 /// (an encoded int type per encode-param-type, or 0 = none/Int64-placeholder for a nullary ctor or an as-yet-
 /// unparsed payload). infer seeds a payload binder from this instead of the Int64 placeholder (non-Int payloads).
-/// `record-ctor-tag` is the argType=0 shorthand (unchanged callers). The ct value is (declName, tag, argType).
-def record-ctor-tag-typed(tree: Tree, ctorName: Int64, declName: Int64, tag: Int64, argType: Int64) = match tree with
-  | Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, ct) => Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, Map.insert(ct, ctorName, (declName, tag, argType)))
+/// `record-ctor-tag` is the argType=0 shorthand (unchanged callers). The ct value is (declName, tag, List(Int64)):
+/// this single-field shim wraps `argType` as a 1-element list `[argType]` (compound-payload slice-1a — the ct
+/// argType is now a per-field LIST; a nullary/1-field ctor is `[argType]`, a multi-field ctor uses the -list
+/// variant below). ctor-argtype-of (head-or-0) preserves every existing single-field caller unchanged.
+def record-ctor-tag-typed(tree: Tree, ctorName: Int64, declName: Int64, tag: Int64, argType: Int64) =
+  record-ctor-tag-typed-list(tree, ctorName, declName, tag, List.push([], argType))
+
+/// compound-payload slice-1a: record a ctor with its per-field payload argType LIST (each element encoded like
+/// the single argType: 0=none/Int64, 1=Bool, -1=unsupported, ≥2=int via encode-param-type). A nullary ctor is
+/// `[]` (or the single-field shim's `[0]`); a 1-field ctor `[enc]`; a multi-field `(Pair Int64 Bool)` → `[65, 1]`.
+/// The ct value's 3rd slot is this list (v-inference t443 steer: co-located tag+argTypes in ONE ct entry, feeds
+/// CMatchSum's binder-list positionally). Same 12th arena field, so only the ct accessors change (no arena ripple).
+def record-ctor-tag-typed-list(tree: Tree, ctorName: Int64, declName: Int64, tag: Int64, argTypes: List(Int64)) = match tree with
+  | Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, ct) => Tree.Arena(m, next, dt, pt, p2, a2, ptty, p3, a3, p4, a4, Map.insert(ct, ctorName, (declName, tag, argTypes)))
 
 /// The TAG of a user sum-type constructor by name-id, or `None` (not a recorded ctor — a normal def/var).
 /// lower's NApp arm consults this: `Some tag` + args present → a payload-ctor call → `CCtor(tag, loweredArgs)`.
 def ctor-tag-of(tree: Tree, ctorName: Int64) = match tree with
   | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(dt2) => (match dt2 with | (_declName, tag, _argType) => Option.Some(tag)))
+      | Option.Some(dt2) => (match dt2 with | (_declName, tag, _argTypes) => Option.Some(tag)))
 
 /// M2-b-2b-ii-c2b: the DECL NAME-id of the sum type a ctor belongs to, or `None` (not a recorded ctor). infer
 /// types a ctor-app/pattern as `TySum(declName)` — this is what gives a ctor VALUE its sum identity so a
@@ -408,16 +419,28 @@ def ctor-tag-of(tree: Tree, ctorName: Int64) = match tree with
 def ctor-decl-of(tree: Tree, ctorName: Int64) = match tree with
   | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(dt2) => (match dt2 with | (declName, _tag, _argType) => Option.Some(declName)))
+      | Option.Some(dt2) => (match dt2 with | (declName, _tag, _argTypes) => Option.Some(declName)))
 
-/// M2-b-2b-ii-c2b payload-argType accessor: the ENCODED declared type of a ctor's single payload (0 = none /
-/// Int64-placeholder — a nullary ctor or an as-yet-unparsed payload), or `None` (not a recorded ctor). infer
-/// seeds a payload binder from this (decode via pt-signed/pt-width) instead of the hardcoded Int64, so a non-Int
-/// payload (a Bool binder) types correctly. Reads the 3rd ct-tuple slot.
+/// M2-b-2b-ii-c2b payload-argType accessor (SINGLE-FIELD fast path, v-inference t443 refinement): the ENCODED
+/// declared type of a ctor's FIRST payload (0 = none/Int64-placeholder — a nullary ctor or an as-yet-unparsed
+/// payload), or `None` (not a recorded ctor). infer seeds a single payload binder from this (decode via
+/// pt-signed/pt-width) instead of the hardcoded Int64, so a non-Int payload (a Bool binder) types correctly.
+/// Now that the 3rd ct slot is a LIST (slice-1a), this returns the HEAD-or-0: `[]`→0 (nullary/none), `[enc]`→enc,
+/// `[e0, e1…]`→e0 (first field). This preserves EVERY existing single-field caller unchanged — a multi-field
+/// consumer uses `ctor-argtypes-of` (the full list) instead.
 def ctor-argtype-of(tree: Tree, ctorName: Int64) = match tree with
   | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
       | Option.None(_) => Option.None(unit)
-      | Option.Some(dt2) => (match dt2 with | (_declName, _tag, argType) => Option.Some(argType)))
+      | Option.Some(dt2) => (match dt2 with | (_declName, _tag, argTypes) =>
+          (match List.at(argTypes, 0) with | Option.Some(a0) => Option.Some(a0) | Option.None(_) => Option.Some(0))))
+
+/// compound-payload slice-1a: the FULL per-field payload argType LIST of a ctor (each element encoded like the
+/// single argType), or `None` (not a recorded ctor). A nullary ctor is `[]`/`[0]` (single-field shim), a 1-field
+/// ctor `[enc]`, a multi-field `[e0, e1, …]`. infer's multi-binder pattern arm seeds binder[i] from argTypes[i].
+def ctor-argtypes-of(tree: Tree, ctorName: Int64) = match tree with
+  | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => (match Map.lookup(ct, ctorName) with
+      | Option.None(_) => Option.None(unit)
+      | Option.Some(dt2) => (match dt2 with | (_declName, _tag, argTypes) => Option.Some(argTypes)))
 
 /// M2-b-2b-ii-c2 ENUM-DISC REPRESENTATION predicate (ii-c2b-2, v-inference-confirmed against rcdzc db.rs:2789):
 /// is `declName` a C-style enum — `>= 2` constructors, EVERY one NULLARY (no payload)? Such a sum value carries
@@ -436,11 +459,11 @@ def decl-is-enum-disc(tree: Tree, declName: Int64) = match tree with
 /// `payload` its PAYLOAD ctors. Enum-disc iff (payload == 0) AND (nullary >= 2). A payload ctor of the decl
 /// makes the rep boxed (any payload → not enum-disc). Index recursion over the (ctorName, (declName, tag))
 /// entries (no list-tail — the arena has no generic list-tail; `List.at(entries, i)` walks positionally).
-def decl-enum-disc-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64, Int64))), declName: Int64, i: Int64, nullary: Int64, payload: Int64) =
+def decl-enum-disc-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64, List(Int64)))), declName: Int64, i: Int64, nullary: Int64, payload: Int64) =
   (if (i == List.len(entries)) then (if (payload == 0) then (nullary >= 2) else false)
    else (match List.at(entries, i) with
      | Option.None(_) => (if (payload == 0) then (nullary >= 2) else false)
-     | Option.Some(e) => (match e with | (ctorName, dt) => (match dt with | (dn, _tag, _argType) =>
+     | Option.Some(e) => (match e with | (ctorName, dt) => (match dt with | (dn, _tag, _argTypes) =>
           (if (dn == declName)
            then (match def-body-of(tree, ctorName) with               // nullary ctor has a def-body; payload doesn't
                   | Option.Some(_) => decl-enum-disc-go(tree, entries, declName, i + 1, nullary + 1, payload)
@@ -450,6 +473,16 @@ def decl-enum-disc-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64,
 /// Encode a param's declared `(signed, width)` into the single Int64 the param-type table stores: `width*2 +
 /// (1 if signed else 0)`. Width ≤ 64, so the low bit is the sign and the rest is the width — unambiguous.
 def encode-param-type(signed: Bool, width: Int64) = (width * 2) + (if signed then 1 else 0)
+
+/// ii-c2b-2 ctor-argType Bool sentinel: encode-param-type only spans int types (width*2+sign → 2..129); value
+/// 1 (width=0, signed bit) is UNUSED + non-colliding, so it's the reserved BOOL encoding for a ctor's payload
+/// argType (v-inference's steer). 0 = none/Int64-placeholder, -1 = unsupported (non-int-non-bool), 1 = Bool,
+/// ≥2 = an int type. infer decodes 1 → Typed.TBool. (This is the ct-argType space ONLY — the param-type table
+/// never stores a Bool, so no collision with encode-param-type's consumers there.)
+def encode-bool-type() = 1
+
+/// Is an encoded ct-argType the Bool sentinel (value 1)?
+def argtype-is-bool(encoded: Int64) = encoded == 1
 
 /// Decode the WIDTH from an encoded param type (`encoded / 2` — the sign is the low bit).
 def pt-width(encoded: Int64) = encoded / 2
@@ -1042,6 +1075,91 @@ def pd-param4-arg4-none-when-unrecorded() =
     | Option.Some(_) => trap("empty tree has no param4"))
 
 @test
+def pd-self-call-in-arg3-detected-pr785() =
+  // PR#785 regression pin: a DIRECT self-call nested in a call's 3rd ARG must be detected by subtree-calls-self
+  // (so the def is included in the def-env and self-recursion RUNS, not declines). Build `f` (name 900) whose body
+  // is `(g a1 a2 (f))` — a call to g (name 901) with the self-call NApp(900,-1) in arg3. subtree-calls-self
+  // originally capped at arg2 → this was MISSED. call-is-self-recursive(tree, 900) MUST be true. Pins the arg3 scan.
+  (match add-node(empty-tree(), Node.NApp(900, 0 - 1)) with | (selfCall, t1) =>     // the self-call `(f)` in arg3
+    (match add-node(t1, Node.NLit(1)) with | (a1, t2) =>                            // arg1 (a plain literal)
+      (match add-node(t2, Node.NLit(2)) with | (a2, t3) =>                          // arg2 (a plain literal)
+        (match add-node(t3, Node.NApp(901, a1)) with | (body, t4) =>                // body = `(g a1 …)`, argId=a1
+          (let t5 = record-arg2(t4, body, a2) in                                    // its 2nd arg (keyed by the body NApp id)
+           (let t6 = record-arg3(t5, body, selfCall) in                             // its 3rd arg = the self-call
+            (let t7 = record-def(t6, 900, body) in                                  // f (900) body = this call
+             (if (call-is-self-recursive(t7, 900)) then unit
+              else trap("a self-call in arg3 is detected → f is directly self-recursive (PR#785)")))))))))
+
+@test
+def pd-transitive-call-in-arg4-detected-pr785() =
+  // PR#785 sibling pin (subtree-calls-name, the TRANSITIVE walker used for lower's recursion cycle-guard): a call
+  // back to the target nested in a 4th ARG must be detected. Build `f` (900) whose body is `(g a1 a2 a3 (f))` — a
+  // 4-arg call to g with the recursive call NApp(900,-1) in arg4. call-is-recursive(tree, 900) MUST be true (else
+  // the cycle-guard would try to INLINE the cycle → inline-hang risk). Pins the arg4 scan of the transitive walker.
+  (match add-node(empty-tree(), Node.NApp(900, 0 - 1)) with | (recCall, t1) =>      // the recursive call `(f)` in arg4
+    (match add-node(t1, Node.NLit(1)) with | (a1, t2) =>
+      (match add-node(t2, Node.NLit(2)) with | (a2, t3) =>
+        (match add-node(t3, Node.NLit(3)) with | (a3, t4) =>
+          (match add-node(t4, Node.NApp(901, a1)) with | (body, t5) =>              // body = `(g a1 …)`, argId=a1
+            (let t6 = record-arg2(t5, body, a2) in
+             (let t7 = record-arg3(t6, body, a3) in
+              (let t8 = record-arg4(t7, body, recCall) in                           // its 4th arg = the recursive call
+               (let t9 = record-def(t8, 900, body) in
+                (if (call-is-recursive(t9, 900)) then unit
+                 else trap("a recursive call in arg4 is detected by the transitive walker (PR#785)")))))))))))
+
+@test
+def pd-multi-field-ctor-argtypes-list() =
+  // compound-payload slice-1a: a MULTI-field ctor records its per-field argType LIST via record-ctor-tag-typed-list,
+  // and ctor-argtypes-of returns the whole list. Pair (870) of decl 800, tag 0, fields [Int64-enc, Bool-enc] =
+  // [encode-param-type(true,64), encode-bool-type()] = [129, 1]. Pins the co-located per-field List rep (v-inference t443 Q1).
+  (let ints = List.push(List.push([], encode-param-type(true, 64)), encode-bool-type()) in   // [129, 1]
+   (let tree = record-ctor-tag-typed-list(empty-tree(), 870, 800, 0, ints) in
+    (match ctor-argtypes-of(tree, 870) with
+      | Option.Some(lst) =>
+          (if (List.len(lst) == 2)
+           then (match List.at(lst, 0) with
+             | Option.Some(f0) => (match List.at(lst, 1) with
+                 | Option.Some(f1) => (if ((f0 == encode-param-type(true, 64)) and (f1 == encode-bool-type())) then unit else trap("argTypes = [Int64-enc, Bool-enc]"))
+                 | Option.None(_) => trap("field 1 present"))
+             | Option.None(_) => trap("field 0 present"))
+           else trap("a 2-field ctor records a 2-element argTypes list"))
+      | Option.None(_) => trap("a recorded multi-field ctor has an argTypes list"))))
+
+@test
+def pd-multi-field-ctor-argtype-of-returns-head() =
+  // slice-1a fast-path preservation: ctor-argtype-of (single-field callers) returns the HEAD of the list for a
+  // multi-field ctor — so existing single-field consumers read field 0 unchanged (never crash on a multi-field ctor).
+  (let ints = List.push(List.push([], encode-param-type(true, 64)), encode-bool-type()) in   // [129, 1]
+   (let tree = record-ctor-tag-typed-list(empty-tree(), 871, 800, 0, ints) in
+    (match ctor-argtype-of(tree, 871) with
+      | Option.Some(a0) => (if (a0 == encode-param-type(true, 64)) then unit else trap("ctor-argtype-of returns field 0 (head) of a multi-field ctor"))
+      | Option.None(_) => trap("a recorded multi-field ctor has a head argType"))))
+
+@test
+def pd-single-field-shim-wraps-as-one-element-list() =
+  // slice-1a backward-compat: the single-field shim record-ctor-tag-typed(…, enc) stores [enc], so ctor-argtypes-of
+  // is a 1-element list AND ctor-argtype-of returns enc — the exact pre-slice-1a single-field behavior, now via the list.
+  (let tree = record-ctor-tag-typed(empty-tree(), 872, 800, 0, encode-bool-type()) in   // 1-field Bool, shim
+   (match ctor-argtypes-of(tree, 872) with
+     | Option.Some(lst) =>
+         (if (List.len(lst) == 1)
+          then (match ctor-argtype-of(tree, 872) with
+            | Option.Some(a0) => (if (a0 == encode-bool-type()) then unit else trap("head = the Bool sentinel"))
+            | Option.None(_) => trap("single-field head present"))
+          else trap("the single-field shim stores a 1-element list"))
+     | Option.None(_) => trap("shim-recorded ctor has an argTypes list")))
+
+@test
+def pd-nullary-shim-argtype-head-is-zero() =
+  // slice-1a: record-ctor-tag (nullary shorthand, argType 0) → [0], so ctor-argtype-of returns 0 (the Int64/none
+  // placeholder) exactly as before — a nullary ctor's absent payload still reads 0 through the list head.
+  (let tree = record-ctor-tag(empty-tree(), 873, 800, 0) in
+   (match ctor-argtype-of(tree, 873) with
+     | Option.Some(a0) => (if (a0 == 0) then unit else trap("a nullary ctor's argType head is 0"))
+     | Option.None(_) => trap("nullary ctor recorded")))
+
+@test
 def pd-record-param-type-then-lookup() =
   // narrow-int-enforcement foundation (slice annotation-2): the PARAM-TYPE table, keyed by the param NODE-id.
   // record-param-type(paramId → encode-param-type(signed, width)) then param-type-of(paramId) round-trips to the
@@ -1163,4 +1281,4 @@ def pd-ctor-argtype-unrecorded-none() =
     | Option.None(_) => unit
     | Option.Some(_) => trap("an unrecorded ctor has no argType"))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, ctor-tag-of, ctor-decl-of, ctor-argtype-of, decl-is-enum-disc, encode-param-type, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, record-ctor-tag-typed-list, ctor-tag-of, ctor-decl-of, ctor-argtype-of, ctor-argtypes-of, decl-is-enum-disc, encode-param-type, encode-bool-type, argtype-is-bool, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }

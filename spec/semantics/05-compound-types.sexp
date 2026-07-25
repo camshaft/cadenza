@@ -5393,6 +5393,37 @@
   (call   main (: false Bool))
   (output (: 0 Int64)))
 
+(case "a Bool-payload ctor BINDER used as a Bool in an if computes on the compiled path"
+  (doc    "The Bool-payload BINDER face (distinct from the literal-payload arms above, which dispatch on
+           `(W.Wrap true)`): bind the Bool payload to `b` and USE it as a Bool — `(match (BB true) ((BB b)
+           (if b 1 0)) (_ 9))` → 1. The binder types `b : Bool`, the `(if b …)` consumes it, and the
+           emitted path must round-trip the Bool payload VALUE (store on construct, extract on bind) as a
+           usable Bool — not hand the if-cond a raw payload word it can't consume. The reference backend
+           computes this correctly on both wasm and rust; pins the Bool-payload value round-trip through a
+           binder (a compiler-ml self-host stress-test surfaced a compiled-path trap for exactly this shape,
+           so this locks the reference-backend behavior as the acceptance oracle for that fix).")
+  (input  (do
+            (type BoxB (BB Bool))
+            (def (main) (match (BB true) ((BB b) (if b 1 0)) (_ 9)))
+            (export main)))
+  (output (: 1 Int64)))
+
+(case "a runtime Bool-payload ctor binder threads its Bool through construction and destructure"
+  (doc    "The runtime companion: the Bool payload is built from a RUNTIME comparison `(BB (> n 0))`, then
+           bound and used — `(match (mk (> n 0)) ((BB b) (if b 1 0)))`. n=5 → BB true → 1; n=-3 → BB false
+           → 0. Exercises the Bool-payload value round-trip on a non-const-folded scrutinee (construct at
+           one site, destructure at another), so a backend that dropped or mis-widened the Bool payload
+           word between construction and the binder's `if` use would diverge. Green on all backends.")
+  (input  (do
+            (type BoxB (BB Bool))
+            (def (mk (: p Bool)) (BB p))
+            (def (main (: n Int64)) (match (mk (> n 0)) ((BB b) (if b 1 0))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64))
+  (call   main (: -3 Int64))
+  (output (: 0 Int64)))
+
 ; The erased-newtype literal-payload read above must also compare at the payload's NATIVE WIDTH. An erased
 ; scalar newtype leaves the RAW payload on the stack at its machine width — i64 for `Int64`, but i32 for a
 ; NARROW newtype (`(Wrap UInt8)`/`Int8`/`Int16`/`Int32`, whose raw rep is an i32 slot). Reading the raw

@@ -26825,6 +26825,95 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nonzero_bigint_literal_probe_in_a_recursive_fn_matches_across_all_shapes() {
+        // REGRESSION (breaker finding 2026-07-24, closed by a2e7bea0d): a NONZERO BigInt-payload
+        // literal probe inside a RECURSIVE fn. The breaker matrix isolated it to BigInt-ONLY,
+        // NONZERO-only, RECURSIVE-only (Int64/String payloads, literal 0, and non-recursive forms
+        // all worked) — so the corpus's root-only/zero-literal peephole pins never caught it. Two
+        // reported faces: FACE A (built-in Ast quote pattern → silent -1 fall-through, VALID module
+        // wrong value) and FACE B (plain single-variant sum → INVALID module). Both are subsumed by
+        // the a2e7bea0d fix (collect resolves the entered-variant leaf type via `ty_at_path_recorded`
+        // instead of hardcoding variant 0), which is recursion- and variant-agnostic. This pins the
+        // structurally-distinct recursive faces the landed multi-variant runtime-scrutinee test
+        // (`a_bigint_literal_probe_on_a_nonzero_variant_of_a_multivariant_sum...`) does not cover.
+        //
+        // Each `run_linked` is store-guarded (None when no runtime wasm is present), but
+        // compile_component must ALWAYS succeed — a failure there is FACE B (invalid/uncompilable).
+
+        // FACE B — single-variant plain sum `(type W (Mk BigInt))`, recursive scrutinee. Was invalid.
+        let face_b = "(module m \
+                    (def (build (: k Int64)) (if (< k 0) (build (+ k 1)) (Mk 1))) \
+                    (def (main) (match (build 0) ((Mk 1) 40) (_ -1))) \
+                    (type W (Mk BigInt)) \
+                    (export main))";
+        let bb = compile_component(&crate::codec::encode(&parse(face_b)))
+            .expect("FACE B: single-variant recursive BigInt probe compiles (was invalid module)");
+        if let Some(v) = super::run_linked(&bb, "main") {
+            assert_eq!(
+                v, "40",
+                "FACE B single-variant recursive BigInt probe: expected 40"
+            );
+        }
+
+        // FACE A — the real peephole shape: recursive `simp` with a nonzero-literal quote pattern
+        // `(* ,x 1)` over the built-in Ast (Ast.Int payload = BigInt). Was a silent -1 fall-through.
+        let face_a = "(do \
+                    (def (simp node) (match node (`(* ,x 1) (simp x)) (other other))) \
+                    (def (main) (match (simp (quote (* y 1))) ((Ast.Name _n) 40) (_ -1))) \
+                    (export main))";
+        let ba = compile_component(&crate::codec::encode(&parse(face_a)))
+            .expect("FACE A: recursive quote-pattern BigInt probe compiles");
+        if let Some(v) = super::run_linked(&ba, "main") {
+            assert_eq!(
+                v, "40",
+                "FACE A recursive quote-pattern BigInt probe: expected 40"
+            );
+        }
+
+        // Mutual recursion via a wrapper (simp -> go -> simp) — same probe must still match.
+        let mutual = "(do \
+                    (def (simp node) (go node)) \
+                    (def (go node) (match node (`(* ,x 1) (simp x)) (other other))) \
+                    (def (main) (match (simp (quote (* y 1))) ((Ast.Name _n) 40) (_ -1))) \
+                    (export main))";
+        let bm = compile_component(&crate::codec::encode(&parse(mutual)))
+            .expect("mutual-recursion wrapper compiles");
+        if let Some(v) = super::run_linked(&bm, "main") {
+            assert_eq!(
+                v, "40",
+                "mutual-recursion wrapper BigInt probe: expected 40"
+            );
+        }
+
+        // Plus-head nonzero literal `(+ ,x 1)` — a distinct head, same BigInt-literal comparison.
+        let plus = "(do \
+                    (def (simp node) (match node (`(+ ,x 1) (simp x)) (other other))) \
+                    (def (main) (match (simp (quote (+ y 1))) ((Ast.Name _n) 40) (_ -1))) \
+                    (export main))";
+        let bp = compile_component(&crate::codec::encode(&parse(plus)))
+            .expect("plus-head nonzero probe compiles");
+        if let Some(v) = super::run_linked(&bp, "main") {
+            assert_eq!(v, "40", "plus-head nonzero BigInt probe: expected 40");
+        }
+
+        // SOUNDNESS control — pattern literal 1 vs input literal 0 must correctly NOT match (→ -1),
+        // proving the fix restores the real comparison rather than making the probe unconditionally
+        // true. (The finding matrix flagged pattern-1-vs-input-0 as a broken-comparison row.)
+        let mismatch = "(do \
+                    (def (simp node) (match node (`(* ,x 1) (simp x)) (other other))) \
+                    (def (main) (match (simp (quote (* y 0))) ((Ast.Name _n) 40) (_ -1))) \
+                    (export main))";
+        let bx = compile_component(&crate::codec::encode(&parse(mismatch)))
+            .expect("literal-mismatch probe compiles");
+        if let Some(v) = super::run_linked(&bx, "main") {
+            assert_eq!(
+                v, "-1",
+                "pattern 1 vs input 0 correctly does NOT match → -1"
+            );
+        }
+    }
+
+    #[test]
     fn a_bare_literal_grounds_to_bigint_in_a_list_element_position() {
         // SLICE 2 of the contextual BigInt grounding: a bare, un-suffixed integer literal written as an
         // ELEMENT of a list literal annotated `(List BigInt)` grounds to BigInt — `(: (list 1 2 3) (List

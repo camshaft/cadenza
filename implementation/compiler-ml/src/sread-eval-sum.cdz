@@ -391,33 +391,36 @@ def ss-terr-scrutinee-taints-ctor-match() =
     | Option.Some(_) => trap("a TErr scrutinee (ill-typed (+ true 5)) must taint the match → decline, not be masked by the arms")
     | Option.None(_) => unit
 
-// ---- NON-Int payload binder is OUT of subset → clean DECLINE (boundary guard) ----
-// The payload binder is typed Int64 placeholder (ct records only (declName,tag), not arg-types yet). A ctor with
-// a NON-Int payload used AS that type (e.g. a Bool payload in `(if b …)`) mis-types against the Int64 placeholder
-// → clean decline (None), never fabricate. Locks the boundary the ct-argTypes follow-up (binder<-argTypes[i])
-// builds up from; a future binder-typing change must not silently start running an under-typed non-Int payload.
+// ---- BOOL payload binder: TYPED as Bool (ground-payload complete) ----
+// ii-c2b-2 Bool sentinel: a Bool payload `(BB Bool)` records the ct argType Bool sentinel (encode-bool-type=1);
+// infer seeds the pattern binder as Typed.TBool. So a Bool binder used AS a Bool (`(if b …)`) now RUNS, while
+// used as an int (`(+ b 1)`) still DECLINES (a TBool operand to arithmetic is a type error — the soundness that
+// the -1→TErr sentinel used to provide by declining ALL uses; now Bool uses run + int-misuses decline). This
+// completes the GROUND-payload story: int widths (Int<N>/UInt<N>) + Bool. Nested/compound payloads → -1 → decline.
 
 @test
-def ss-bool-payload-binder-declines() =
-  // (BB true) matched ((BB b) (if b then 1 else 0)) — b is a Bool (non-int) payload → the reader records argType
-  // -1 (UNSUPPORTED sentinel) → infer seeds the binder TErr → any use declines (None). A Bool-payload binder is
-  // out of subset (encode-param-type is int-only); it must decline, not run under-typed.
+def ss-bool-payload-binder-declines-not-yet-wired() =
+  // (BB true) matched ((BB b) (if b then 1 else 0)) — b is a Bool payload. The Bool-payload VALUE path is NOT yet
+  // wired: typing the binder TBool made this COMPILE to invalid wasm (b128 gate: `wasm unreachable` trap — the
+  // store/extract hands an i64 the TBool `if` emit can't consume). So a Bool payload binder DECLINES (ctor-payload-
+  // binder-type enc==1 → TErr, like the unsupported -1 case) → the match is TErr → run-src None. SOUND (a clean
+  // decline, never a trap or a wrong value). Re-enable to RUN when the Bool value round-trip is wired (mlrepro filed).
   match run-src(
       "(do (type BoxB (BB Bool)) (def (main) (match (BB true) ((BB b) (if b then 1 else 0)) (_ 9))) (export main))"
     ) with
-    | Option.Some(_) => trap("a non-Int (Bool) payload binder used as Bool must DECLINE (argType -1 → TErr binder)")
+    | Option.Some(_) => trap("a Bool payload binder is NOT yet wired — must DECLINE (TErr), not run/trap")
     | Option.None(_) => unit
 
 @test
 def ss-bool-payload-binder-used-as-int-declines() =
-  // THE SOUNDNESS GUARD (v-inference's trap): a Bool payload binder used ARITHMETICALLY `(+ b 1)` must DECLINE,
-  // not silently treat the Bool value as an int. Before the argType -1 sentinel, a non-int payload defaulted to
-  // Int64 → (+ b 1) ran (Bool true=1 used as int → 2), UNSOUND. Now the reader records -1 → binder TErr → (+ b 1)
-  // has a TErr operand → TErr → decline. Pins that a non-int payload can't be misread as Int64.
+  // THE SOUNDNESS GUARD: a Bool payload binder used ARITHMETICALLY `(+ b 1)` must DECLINE. b's binder is TErr
+  // (Bool payload not-yet-wired → ctor-payload-binder-type enc==1 → TErr), so `(+ b 1)` has a TErr operand → TErr →
+  // decline. (Even when the Bool value path IS wired to TBool later, this still declines: arith on a Bool is a type
+  // error.) Either way a Bool payload is NEVER silently treated as an int (the tick-415 int-misread trap stays shut).
   match run-src(
       "(do (type BoxB (BB Bool)) (def (main) (match (BB true) ((BB b) (+ b 1)) (_ 9))) (export main))"
     ) with
-    | Option.Some(_) => trap("a Bool payload binder used as int must DECLINE, never treat the Bool value as an int")
+    | Option.Some(_) => trap("a Bool payload binder used as int must DECLINE (TBool operand to arith → TErr)")
     | Option.None(_) => unit
 
 @test

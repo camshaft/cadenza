@@ -647,10 +647,17 @@ fn suite_timeout_for(suite: &str) -> std::time::Duration {
 /// generous 45min suite budget before the step can fail, and pr-sync re-runs `check` several times a
 /// batch, so ONE bad file freezes the whole backlog for ~1h. Bounding each file individually kills
 /// only the offending compile, at a tight cap, NAMED and auto-bisectable, while every innocent file
-/// still runs. The heaviest legitimate file (sread-eval: 40 run-src @tests, each building the whole
-/// pipeline into its own component) measured >300s UNDER LOAD, so the default clears that with margin
-/// — this is a HANG bound, not a throughput throttle. `CDZ_ML_PER_FILE_TIMEOUT_SECS` overrides (an
-/// operator escape hatch for a genuinely-slow-but-passing file); `=0`/garbage falls back to the default.
+/// still runs. TWO legitimate files now sit near the cap under load (pr-sync report): sread-eval
+/// (40 run-src @tests, each building the whole pipeline into its own component) at ~480s, and
+/// conformance-db-cx at ~580-700s — both slow-but-PASSING (the compile progresses, doesn't loop),
+/// racing the old 720s cap NONDETERMINISTICALLY when fleet load is high (they finish at ~750-900s under
+/// contention). So the default is 1200s — the value pr-sync had to set by hand (CDZ_ML_PER_FILE_TIMEOUT_
+/// SECS=1200) on EVERY re-gate, which was doubling the ~3hr suite per batch; making it the default lets
+/// the FIRST gate pass and ends that wasted double-gate. Enough headroom that a genuinely-slow file
+/// finishes under load, while
+/// still FAR below the 45-min whole-suite ceiling (so one true runaway is still killed fast+named). This
+/// is a HANG bound, not a throughput throttle (concurrency — JOBS=2 — is the throughput lever).
+/// `CDZ_ML_PER_FILE_TIMEOUT_SECS` overrides (operator escape hatch); `=0`/garbage → default.
 fn ml_per_file_timeout() -> std::time::Duration {
     if let Ok(secs) = std::env::var("CDZ_ML_PER_FILE_TIMEOUT_SECS")
         && let Ok(secs) = secs.parse::<u64>()
@@ -658,7 +665,7 @@ fn ml_per_file_timeout() -> std::time::Duration {
     {
         return std::time::Duration::from_secs(secs);
     }
-    std::time::Duration::from_secs(12 * 60) // 2× the measured ~300s worst-case file, a hang bound
+    std::time::Duration::from_secs(1200) // covers the ~750-900s-under-load worst case (sread-eval-sum/conformance-db-cx); pr-sync-validated. Hang bound.
 }
 
 /// One worker's captured outcome for a single `cdz test <file>` in the parallel per-file sweep. The
@@ -6832,10 +6839,11 @@ mod trap_grading_tests {
 
     #[test]
     fn ml_per_file_timeout_reads_env_with_hang_bound_default() {
-        // The per-file cap is a HANG bound (2× the measured ~300s worst-case file), tighter than the
-        // whole-suite ceiling so ONE runaway compile fails fast+named instead of burning the 45min suite
-        // budget; a positive override applies; zero/garbage fall back. (Env is process-global; a separate
-        // env var, BUT the `per-file < suite` assert below READS CDZ_SUITE_TIMEOUT_SECS via
+        // The per-file cap is a HANG bound (1200s: covers the ~750-900s-under-load worst case, the value
+        // pr-sync validated on its re-gates), tighter
+        // than the whole-suite ceiling so ONE runaway compile fails fast+named instead of burning the 45min
+        // suite budget; a positive override applies; zero/garbage fall back. (Env is process-global; a
+        // separate env var, BUT the `per-file < suite` assert below READS CDZ_SUITE_TIMEOUT_SECS via
         // suite_timeout_for — so it races the suite-timeout test's writes unless serialized.)
         // Serialize with the other env-mutating test (multi-threaded binary; see ENV_TEST_LOCK) — this is
         // the race that flaked the batch-124 gate (pr-sync report).
@@ -6844,8 +6852,8 @@ mod trap_grading_tests {
         unsafe { std::env::remove_var("CDZ_ML_PER_FILE_TIMEOUT_SECS") };
         assert_eq!(
             ml_per_file_timeout(),
-            std::time::Duration::from_secs(12 * 60),
-            "default is the 12min per-file hang bound"
+            std::time::Duration::from_secs(1200),
+            "default is the 1200s per-file hang bound (covers the ~750-900s-under-load legit-slow files)"
         );
         // Tighter than the whole-suite cap — the whole point (a runaway file can't eat the suite budget).
         assert!(
@@ -6861,13 +6869,13 @@ mod trap_grading_tests {
         unsafe { std::env::set_var("CDZ_ML_PER_FILE_TIMEOUT_SECS", "0") };
         assert_eq!(
             ml_per_file_timeout(),
-            std::time::Duration::from_secs(12 * 60),
+            std::time::Duration::from_secs(1200),
             "zero rejected → default"
         );
         unsafe { std::env::set_var("CDZ_ML_PER_FILE_TIMEOUT_SECS", "nope") };
         assert_eq!(
             ml_per_file_timeout(),
-            std::time::Duration::from_secs(12 * 60),
+            std::time::Duration::from_secs(1200),
             "garbage → default"
         );
         unsafe { std::env::remove_var("CDZ_ML_PER_FILE_TIMEOUT_SECS") };
