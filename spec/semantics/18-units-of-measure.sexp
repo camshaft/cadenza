@@ -2316,6 +2316,45 @@
             (export main)))
   (output (: 100 Int8)))
 
+(case "Qty map VALUES unwrap, ADD, and COMPARE in one chain preserving the unit through the collection"
+  (doc    "The WORKING-chain face of quantities in collections (the case above round-trips ONE value):
+           two lookups Option-unwrap through a helper whose miss face returns the 0m identity, the
+           same-unit Qty ADD runs over COLLECTION-sourced operands, and the Qty COMPARE against a
+           threshold exercises the scalar-Int Ty::Qty-peeling arm on exactly the map-sourced operand
+           shape its doc names — then Qty.value out. k=2: 10m+25m = 35m > 30m → 351; k=9: miss →
+           10m+0m = 10m, not > 30m → 100.")
+  (input  (do
+            (def (getq (: m (Map Int64 (Qty Int64 (Unit.base #"meter")))) (: k Int64))
+              (match (Map.lookup m k)
+                ((Some q) q)
+                ((None _u) (Qty.of 0 (Unit.base #"meter")))))
+            (def (main (: k Int64))
+              (do
+                (def m (Map.insert (Map.insert Map.empty 1 (Qty.of 10 (Unit.base #"meter"))) 2 (Qty.of 25 (Unit.base #"meter"))))
+                (def s (+ (getq m 1) (getq m k)))
+                (+ (* (Qty.value s) 10)
+                   (if (> s (Qty.of 30 (Unit.base #"meter"))) 1 0))))
+            (export main)))
+  (call main (: 2 Int64)) (output (: 351 Int64))
+  (call main (: 9 Int64)) (output (: 100 Int64)))
+
+(case "a tuple with a Qty leaf as a map key hits by magnitude-and-unit content"
+  (doc    "The COMPOUND-key face (the bare-Qty-key cluster below pins Int/BigInt/Rational inners
+           directly as keys): a Qty INSIDE a tuple key — the CHAMP compound descent must erase the
+           Qty to its inner numeric at the LEAF position, completing the tuple-leaf-kind matrix
+           (float/BigInt/Rational/Symbol leaves are pinned in 05-compound/17-symbols; this is the
+           Qty leaf). Keyed at runtime v, hit by a rebuilt (tuple 10m 3) at v=10, miss at v=11.")
+  (input  (do
+            (def (main (: v Int64))
+              (do
+                (def m (Map.insert Map.empty (tuple (Qty.of v (Unit.base #"meter")) 3) 42))
+                (match (Map.lookup m (tuple (Qty.of 10 (Unit.base #"meter")) 3))
+                  ((Some x) x)
+                  ((None _u) -1))))
+            (export main)))
+  (call main (: 10 Int64)) (output (: 42 Int64))
+  (call main (: 11 Int64)) (output (: -1 Int64)))
+
 (case "a quantity read from a map COMBINES with a fresh same-dimension quantity"
   (doc    "The arithmetic face of the Qty-in-collection round-trip (the round-trip pins above read and
            UNWRAP; this one reads and COMPUTES): a runtime-magnitude `(Qty.of n meter)` stored as a map

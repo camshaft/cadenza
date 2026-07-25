@@ -6392,6 +6392,23 @@
             (def (main) (match (Some (+ 1 true)) ((Some x) 1) ((None) 0))) (export main)))
   (error  CDZ0203))
 
+(case "an ill-typed inner-match scrutinee taints the outer match"
+  (doc    "The nested face of the ill-typed-scrutinee taint: the OUTER match `(match (Some 1) ((Some x) …)
+           ((None) 0))` is well-typed and selects its first arm, but that arm's body is itself a match
+           whose SCRUTINEE `(Some (+ 1 true))` is ill-typed (`(+ 1 true)` mixes Int64 and Bool). The inner
+           TErr must taint the inner match, which taints the arm body, which taints the whole outer match
+           → CDZ0203. Pins that the 'any TErr propagates' discipline for a ctor-match scrutinee holds at
+           NESTED depth, not just the top level — an ill-typed subtree cannot be laundered by being buried
+           one match deeper inside a well-typed outer arm. Companion of the top-level ill-typed-scrutinee
+           taint case (the PR#849 NMatchCtor reference-backend guard).")
+  (input  (do
+            (def (main)
+              (match (Some 1)
+                ((Some x) (match (Some (+ 1 true)) ((Some y) y) (_ 0)))
+                ((None) 0)))
+            (export main)))
+  (error  CDZ0203))
+
 (case "a cross-type constructor pattern NESTED in a matching outer payload is rejected"
   (doc    "The cross-type reject fired at a NESTED payload position, not just the top level. `Wrap`
            carries an `Inner`, and `Inner`/`Other` are distinct sums whose first variants (`IA`/`OA`)

@@ -3517,29 +3517,16 @@ fn collect_cont_ops_rec(
             // BIGINT leaf (compares via `bigint-cmp` + a materialized leaf, imports below) from an
             // ordinary fixnum/narrow Int probe (`get-int`). MUST agree with `emit_littest_probe`'s `cur`
             // so the import set matches the emitted ops exactly (an extra/missing import shifts every
-            // `CallImport` index). Walk from the scrutinee type: a `Payload` over a `Sum` takes the
-            // variant's payload type (variant-0 fallback, matching emit's no-`sum_path_types` case — exact
-            // for a single-variant sum, the `(type W (Mk BigInt))` shape); an erased nominal `Payload`
-            // peels; an `Elem` takes the tuple/list element.
-            let mut lit_cur = type_of(db, scrutinee);
-            for step in path {
-                match step {
-                    crate::core::PathStep::Payload => match lit_cur.strip_nominal().clone() {
-                        Ty::Sum { .. } => {
-                            lit_cur = variant_payload_ty_at(db, &lit_cur, 0).unwrap_or(Ty::Any);
-                        }
-                        inner => lit_cur = inner,
-                    },
-                    crate::core::PathStep::Elem(i) => {
-                        lit_cur = match lit_cur.strip_nominal() {
-                            Ty::List(e) => (**e).clone(),
-                            Ty::Tuple(ts) => ts.get(*i).cloned().unwrap_or(Ty::Any),
-                            _ => Ty::Any,
-                        };
-                    }
-                    crate::core::PathStep::RestFrom(_) => {}
-                }
-            }
+            // `CallImport` index → invalid module). Resolve it ENTERED-VARIANT-AWARE, mirroring emit's
+            // `payload_step_ty_of(.., sum_path_types)`: a `Payload` over a MULTI-variant sum entered at a
+            // NON-zero variant must take THAT variant's payload, not variant 0. `ty_at_path_recorded`
+            // consults the same `recorded` map the Switch arm threads (scoped save/restore per entered
+            // disc), so `int_probe_is_bigint` here agrees with emit's BigInt-branch for EVERY variant — a
+            // hardcoded variant-0 walk was exact only for the single-variant `(type W (Mk BigInt))` shape
+            // the original fix's test covered, and omitted the 6 bigint imports for a BigInt payload on a
+            // non-variant-0 arm.
+            let lit_root = type_of(db, scrutinee);
+            let lit_cur = ty_at_path_recorded(db, scrutinee, &lit_root, path, recorded);
             let int_probe_is_bigint = matches!(lit_cur.strip_nominal(), Ty::BigInt);
             match probe {
                 // A BIGINT-payload Int probe compares via `bigint-cmp` over a materialized literal leaf

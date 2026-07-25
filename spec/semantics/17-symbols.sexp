@@ -511,6 +511,29 @@
 ; symbols of equal content compare equal because both are canonical. That IS interning under a
 ; by-content representation — no runtime `str-intern` op needed. These pin the runtime-string→Symbol
 ; path (the intern analogue of the runtime String.slice byte-walk).
+(case "Set.to-list over symbols enumerates in content-byte order regardless of insertion order"
+  (doc    "The ENUMERATION face of the symbol order (the </<= pins above compare pairs; this pins the
+           to-list SORT): symbols inserted out of order — #\"c\", a runtime-interned mode symbol, #\"aa\",
+           and a DUPLICATE #\"c\" — dedup to 3 and enumerate content-byte-ordered, digit-encoded by
+           byte-len per position. Regression pin for the wasm shape_of Symbol descriptor arm
+           (096c1652a): shape_of ADMITTED Symbol as orderable but built no descriptor, so wasm's
+           to-list sort declined while the comparison pins passed — a check/emit divergence. mode 1:
+           {aa,b,c} → 211; mode 2: {aa,c,zzzz} → 214 (the runtime symbol sorts LAST — order is by
+           content, not insertion or length). +3000 for len 3.")
+  (input  (do
+            (def (fold-lens (: xs (List Symbol)) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (fold-lens t (+ (* acc 10) (String.byte-len (Symbol.to-string h)))))))
+            (def (main (: mode Int64))
+              (do
+                (def s (if (= mode 1) "b" "zzzz"))
+                (def st (Set.insert (Set.insert (Set.insert (Set.insert (Set.of (list)) #"c") (Symbol.of s)) #"aa") #"c"))
+                (+ (* (Set.len st) 1000) (fold-lens (Set.to-list st) 0))))
+            (export main)))
+  (call main (: 1 Int64)) (output (: 3211 Int64))
+  (call main (: 2 Int64)) (output (: 3214 Int64)))
+
 (case "a runtime string interns to a symbol matched by content"
   (doc    "`Symbol.of` on a GENUINELY-RUNTIME string — built by the `rep` concat loop `(rep \"\" 3)` =
            \"xxx\", a byte-rope the compiler cannot fold — interns it, and the resulting Symbol compares

@@ -7077,6 +7077,74 @@ fn a_runtime_closure_leaks_exactly_one_cell_known_gap() {
     );
 }
 
+/// KNOWN LEAK (tracking probe): the HEAP-PAYLOAD-SUM instance of the cross-cutting recursive-borrowed-param
+/// gap that `a_runtime_closure_leaks_exactly_one_cell_known_gap` documents (closure) and its comment
+/// generalizes (tuple). A self-recursive `walk` takes a sum with a HEAP payload (`W = (Mk BigInt)`) as a
+/// BORROWED param, threads it down the recursion, and destructures it only at the base case; the owned sum
+/// `(mk 3)` built by the caller leaks exactly 1 cell on unwind. SAME root: whole-function last-use param-drop
+/// insertion does not exist, so a heap value threaded through a recursion as a borrowed param is never
+/// dropped once the frames unwind. Surfaced by v-wasm-opt's drift-guard co-verify of the FACE-B land
+/// (2026-07-24); isolated to be INDEPENDENT of the BigInt-probe (5505b5010) and const-nominal-peel
+/// (77e8ca8b1) faces — a plain `(Mk x)` bind (no probe) and a String-payload variant leak the identical 1,
+/// and the Int64-scalar-payload / non-recursive twins are 0. VALUE-CORRECT + NON-OOB (pure leak, no UAF).
+/// Pins that this stays a BOUNDED O(1) leak (a per-level growth would be a real regression); flip to `== 0`
+/// when the general Perceus param-drop pass lands (the same fix that flips the closure/tuple twins).
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore]
+fn a_recursive_heap_payload_sum_borrowed_param_leaks_one_cell_known_gap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "[rec-sum-leak] debug-counters runtime not in the store; skipping known-leak probe"
+        );
+        return;
+    };
+    // `walk n w` threads the heap-payload sum `w` (borrowed) down `n` recursion levels, destructuring it only
+    // at the base case (`(match w ((Mk x) (Int64.of x)))`). `main` builds an owned `(mk 3)` = `(Mk (BigInt.of
+    // 3))` and passes it in. Value 3 (the payload), but the owned sum leaks 1 cell on unwind. `#[ignore]`.
+    let src = "(module m \
+                 (type W (Mk BigInt)) \
+                 (def (mk (: k Int64)) (Mk (BigInt.of k))) \
+                 (def (walk (: n Int64) (: w W)) \
+                    (if (>= n 0) (walk (- n 1) w) (match w ((Mk x) (Int64.of x))))) \
+                 (def (main) (walk 1 (mk 3))) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    // VALUE-CORRECT despite the leak (no UAF — a freed-early sum would trap/garble the payload read).
+    assert_eq!(
+        rt.call("main", &[]),
+        Val::S64(3),
+        "walk destructures (Mk (BigInt.of 3)) at the base case → payload 3 (value-correct + NO UAF)"
+    );
+    // ONE cell leaks regardless of depth — the owned sum is built once and only borrowed down the recursion;
+    // whole-function last-use param-drop (the general Perceus pass) is not yet inserted. A count > 1 would be
+    // a per-recursion-level allocation REGRESSION. Deeper recursion must leak the SAME one cell.
+    let deep = "(module m \
+                 (type W (Mk BigInt)) \
+                 (def (mk (: k Int64)) (Mk (BigInt.of k))) \
+                 (def (walk (: n Int64) (: w W)) \
+                    (if (>= n 0) (walk (- n 1) w) (match w ((Mk x) (Int64.of x))))) \
+                 (def (main) (walk 50 (mk 3))) (export main))";
+    let dp = compile_component(&crate::codec::encode(&parse(deep))).expect("compile");
+    let mut rtd = ComposedRuntime::new(&dp, &runtime_bytes);
+    assert_eq!(rtd.call("main", &[]), Val::S64(3), "n=50 same value 3");
+    assert_eq!(
+        rt.live_objects(),
+        1,
+        "KNOWN GAP: a heap-payload sum threaded through recursion as a borrowed param leaks exactly 1 cell \
+         (the cross-cutting recursive-param gap; same root as the closure/tuple twins). Flip to 0 when the \
+         general Perceus param-drop pass lands. A count > 1 is a REGRESSION (per-level allocation)."
+    );
+    assert_eq!(
+        rtd.live_objects(),
+        1,
+        "the leak is O(1): n=50 leaks the same ONE cell as n=1 (no per-recursion-level growth)"
+    );
+}
+
 /// A PARTIALLY-APPLIED CONSTRUCTOR held in a GENUINELY-RUNTIME compound element, projected + applied,
 /// completes via the synthesized runtime eta-closure lift — the WORKING fix for the FACE-B miscompile
 /// (was invalid wasm: a newtype erased `(T.Mk 10)` to the bare `10`, storing a scalar where a closure
@@ -10225,7 +10293,7 @@ fn a_do_sequenced_outer_perform_under_an_inner_handle_threads_its_state_advance(
 /// it now folds soundly. Pinned as a HARD fold-to-18 (was folds-or-declines) so a regression to a WRONG value
 /// — the state-threading ledger's wrong-branch hazard — is caught, not silently accepted as a re-decline.
 #[test]
-fn a_state_destructuring_arm_under_a_multi_perform_body_folds_or_declines_never_miscompiles() {
+fn a_state_destructuring_arm_under_a_multi_perform_body_folds_to_18_never_miscompiles() {
     use crate::testkit::parse;
     // Two performs of `get` under a state-matching arm, both branches threading `s` unchanged → FOLDS to 6.
     let src = "(do (effect St (op get (-> Unit Int64))) \
@@ -26574,6 +26642,38 @@ mod match_engine {
                     "the grounded BigInt payload holds the exact (i64-overflowing) value"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_bigint_literal_probe_on_a_nonzero_variant_of_a_multivariant_sum_compiles_and_matches() {
+        // REGRESSION (reviewer post-merge note on 5505b5010): the BigInt sum-payload literal-probe branch
+        // must import the 6 bigint ops (bigint-cmp/drop/bigint-of-i64/bytes-alloc/bytes-set/bigint-of-bytes)
+        // for a BigInt payload on ANY variant — not just variant 0. `emit_littest_probe` derives the leaf
+        // type ENTERED-variant-aware (via `sum_path_types`), but the collect side originally HARDCODED
+        // variant 0 when computing `int_probe_is_bigint`. So a multi-variant sum whose BigInt payload sits on
+        // a NON-zero variant, literal-probed over a runtime scrutinee, made emit push the 6 ops while collect
+        // omitted them → a missing import shifts every `CallImport` index → INVALID MODULE. The collect walk
+        // now consults the same recorded entered-variant map (`ty_at_path_recorded`), so the import set
+        // agrees for every variant. `W` puts the Int64 payload on variant 0 and BigInt on variant 1 (`Mk`);
+        // `build` is recursive so the scrutinee is a genuine RUNTIME value (no const-fold collapsing the match).
+        let src = "(module m \
+                    (def (build (: k Int64)) (if (< k 0) (build (+ k 1)) (Mk 1))) \
+                    (def (main) (match (build 0) ((Mk 1) 40) (_ -1))) \
+                    (type W (A Int64) (Mk BigInt)) \
+                    (export main))";
+        // The core of the fix: the module VALIDATES (an import-index shift would fail `Component::from_binary`
+        // in the runner). Compilation itself must succeed; validation happens on link/run below.
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+            "a BigInt probe on a non-variant-0 sum payload compiles (import set matches emit)",
+        );
+        // Store-guarded: link + run to confirm both that the module is VALID (from_binary) and that the probe
+        // MATCHES the BigInt literal on the entered non-zero variant → 40 (was -1 / invalid under the bug).
+        if let Some(v) = super::run_linked(&bytes, "main") {
+            assert_eq!(
+                v, "40",
+                "the BigInt literal probe matches its constructor on the non-zero variant"
+            );
         }
     }
 

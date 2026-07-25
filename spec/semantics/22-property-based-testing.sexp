@@ -669,6 +669,74 @@
   (call   main (: 777 Int64))
   (output (: 16 Int64)))
 
+(case "a generated insert/remove Set workload agrees with a BITMASK model at every step's end"
+  (doc    "The model-oracles above drive INSERT-only workloads; this one mixes DELETIONS: the seeded
+           stream drives Set.insert/Set.remove (key = s&7, op = bit 8) against a bitmask model
+           compared by popcount at the end — the CHAMP remove path's node collapse under a generated
+           adversarial sequence, including dedup-then-remove-then-reinsert orbits. Three seeds:
+           41/41/51 (len·10 + agree; the seed-7 face reaches a different live-set size, so the
+           encode is not seed-degenerate).")
+  (input (do
+        (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+        (def (popcount (: b Int64) (: acc Int64))
+          (if (= b 0) acc (popcount (>> b 1) (+ acc (& b 1)))))
+        (def (run (: s Int64) (: n Int64) (: st (Set Int64)) (: mask Int64))
+          (if (= n 0)
+              (+ (* (Set.len st) 10)
+                 (if (= (Set.len st) (popcount mask 0)) 1 0))
+              (do
+                (def s2 (next s))
+                (def k (& s2 7))
+                (if (= (& (>> s2 8) 1) 1)
+                    (run s2 (- n 1) (Set.insert st k) (| mask (<< 1 k)))
+                    (run s2 (- n 1) (Set.remove st k) (& mask (^ (<< 1 k) -1)))))))
+        (def (main (: seed Int64) (: n Int64))
+          (run seed n (Set.of (list)) 0))
+        (export main)))
+  (call main (: 12345 Int64) (: 40 Int64)) (output (: 41 Int64))
+  (call main (: 99 Int64) (: 25 Int64)) (output (: 41 Int64))
+  (call main (: 7 Int64) (: 12 Int64)) (output (: 51 Int64)))
+
+(case "a LIST shrinker drops elements greedily and converges to a minimal failing sublist"
+  (doc    "COMPOUND shrinking (the scalar shrink pins above search upward over integers): greedy
+           drop-one-element with RESTART-on-success over a failing list (sum >= 100) converges from
+           [60 50 30] to the minimal failing SUBLIST [60 50] — every further single-drop passes,
+           the 1-minimality that defines a convergent compound shrinker. The never-fails control
+           face returns the ok marker.")
+  (input (do
+        (def (sum-l (: xs (List Int64)) (: acc Int64))
+          (match xs
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (fails (: xs (List Int64)))
+          (>= (sum-l xs 0) 100))
+        (def (drop-at (: xs (List Int64)) (: i Int64) (: j Int64) (: acc (List Int64)))
+          (match xs
+            ((list) acc)
+            ((list h .. t)
+              (if (= j i)
+                  (drop-at t i (+ j 1) acc)
+                  (drop-at t i (+ j 1) (List.push acc h))))))
+        (def (try-drops (: xs (List Int64)) (: i Int64))
+          (if (>= i (List.len xs))
+              xs
+              (do
+                (def cand (drop-at xs i 0 (list)))
+                (if (fails cand)
+                    (try-drops cand 0)
+                    (try-drops xs (+ i 1))))))
+        (def (main (: mode Int64))
+          (do
+            (def xs (if (= mode 1) (list 60 50 30) (list 10 20 30)))
+            (if (fails xs)
+                (do
+                  (def m (try-drops xs 0))
+                  (+ (* (sum-l m 0) 10) (List.len m)))
+                -1)))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 1102 Int64))
+  (call main (: 2 Int64)) (output (: -1 Int64)))
+
 (case "a generated list reverses twice to itself — an involution property over generated content"
   (doc    "The involution law over GENERATED content: an 8-element list of masked LCG draws, reversed
            twice, equals itself — `rev` is a fold whose accumulator prepends via `List.concat (list h)`,
