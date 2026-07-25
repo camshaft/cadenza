@@ -33,6 +33,85 @@
 ; that cannot yet allocate a fresh slot for a differently-typed shadow of a parameter declines rather than
 ; emitting an invalid component.
 
+(case "an arm binder SHADOWS an outer heap list and the outer survives the shadow's scope"
+  (doc    "Two same-named HEAP handles with disjoint live ranges: an arm binder named xs shadows an
+           outer heap list, the arm consumes the SHADOW (sum 18), then the OUTER xs is read after the
+           arm's scope closes — the shadow's reclaim at arm-exit must not touch the outer's handle.")
+  (input (do
+        (def (sum-l (: l (List Int64)) (: acc Int64))
+          (match l
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (main (: n Int64))
+          (do
+            (def xs (list 1 2 n))
+            (def o (Some (list 9 9)))
+            (def inner (match o
+                         ((Some xs) (sum-l xs 0))
+                         ((None _u) -1)))
+            (+ (* inner 100) (sum-l xs 0))))
+        (export main)))
+  (call main (: 3 Int64)) (output (: 1806 Int64))
+  (call main (: 0 Int64)) (output (: 1803 Int64)))
+
+(case "a LET shadow of a do-def heap binding closes its scope and the do-def survives"
+  (doc    "The mixed-BINDER-KIND interleave: do-def xs at do-scope, a let re-binds xs for an inner
+           expression, the do-scope xs read after the let closes — the two binder forms take
+           different lowering paths (statement- vs expression-position), so the shadow crosses
+           lowering kinds; both handles are heap lists with distinct reclaim points.")
+  (input (do
+        (def (sum-l (: l (List Int64)) (: acc Int64))
+          (match l
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (main (: n Int64))
+          (do
+            (def xs (list 1 n))
+            (def inner (let ((xs (list 7))) (sum-l xs 0)))
+            (+ (* inner 100) (sum-l xs 0))))
+        (export main)))
+  (call main (: 5 Int64)) (output (: 706 Int64))
+  (call main (: 0 Int64)) (output (: 701 Int64)))
+
+(case "a closure captures a heap binding BEFORE a shadow and applies AFTER seeing the original"
+  (doc    "The face where capture-time vs apply-time name resolution DIVERGE observably: f captures
+           the OUTER heap xs, a second (def xs …) shadows it, f applies AFTER — the capture cell must
+           hold the ORIGINAL handle (dynamic scoping would see the shadow).")
+  (input (do
+        (def (sum-l (: l (List Int64)) (: acc Int64))
+          (match l
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (main (: n Int64))
+          (do
+            (def xs (list 1 n))
+            (def f (fn ((: _u Int64)) (sum-l xs 0)))
+            (def xs (list 7 8))
+            (+ (* (f 0) 100) (sum-l xs 0))))
+        (export main)))
+  (call main (: 2 Int64)) (output (: 315 Int64))
+  (call main (: 0 Int64)) (output (: 115 Int64)))
+
+(case "TWO closures capture DIFFERENT generations of one shadowed name and each sees its own"
+  (doc    "Two live capture cells holding DIFFERENT heap handles under ONE source name: f captures
+           gen-1 xs, the shadow rebinds, g captures gen-2, BOTH apply after — a capture keyed by NAME
+           rather than binding-instance would alias them (both seeing gen-2 → 1515 not 315).")
+  (input (do
+        (def (sum-l (: l (List Int64)) (: acc Int64))
+          (match l
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (main (: n Int64))
+          (do
+            (def xs (list 1 n))
+            (def f (fn ((: _u Int64)) (sum-l xs 0)))
+            (def xs (list 7 8))
+            (def g (fn ((: _u Int64)) (sum-l xs 0)))
+            (+ (* (f 0) 100) (g 0))))
+        (export main)))
+  (call main (: 2 Int64)) (output (: 315 Int64))
+  (call main (: 0 Int64)) (output (: 115 Int64)))
+
 (case "a let shadowing a parameter with a differently-typed value is not an invalid component"
   (doc    "`(def (f x) (let ((x true)) x))` shadows the Int64 parameter `x` with the Bool `x = true`; the
            body returns the inner `x`, so `(f 99)` = `true`. The shadow is well-defined (core-semantics.md
