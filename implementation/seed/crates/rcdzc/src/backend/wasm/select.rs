@@ -1392,23 +1392,64 @@ fn cont_child_ids(cont: &crate::core::SumCont, cs: &mut Vec<StructId>) {
 /// occurrence scan visits each node of the subtree ONCE per call (the enclosing `seq` levels make it
 /// O(depth × subtree) overall — polynomial, not exponential). Memoized via `cache` so a shared subterm
 /// (a DAG re-walk) is not re-scanned within one query.
+/// A CYCLIC Core graph (the new nullary-ctor mutual-recursion SCC can produce one) would recurse forever
+/// here — the memoization above guards COMPLETED subtrees, but a node re-entered while still on the stack
+/// has no cache entry yet. An `in_progress` guard breaks the cycle SOUNDLY: a back-edge to a node still
+/// being computed contributes NO occurrence (any real occurrence is a `LocalRef`/`Param` LEAF, which has
+/// no children and so is never on a cycle — it is always reachable via FORWARD edges), so returning
+/// `false` for the back-edge can never hide a real occurrence. But a result whose computation TOUCHED a
+/// back-edge is `tainted` — its `false` may be a cycle artifact for that path (a sibling querying the same
+/// node off the stack must recompute it) — so only fully-determined (untainted) results are memoized. The
+/// acyclic DAG bulk still memoizes, preserving the polynomial bound the doc above describes.
 fn binder_occurs(
     db: &mut Db,
     id: StructId,
     binder: StructId,
     cache: &mut HashMap<StructId, bool>,
 ) -> bool {
+    let mut in_progress: HashSet<StructId> = HashSet::new();
+    binder_occurs_rec(db, id, binder, cache, &mut in_progress).0
+}
+
+/// Returns `(occurs, tainted)` — `tainted` iff the walk hit an `in_progress` back-edge, in which case the
+/// result is NOT cached (see [`binder_occurs`]).
+fn binder_occurs_rec(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    cache: &mut HashMap<StructId, bool>,
+    in_progress: &mut HashSet<StructId>,
+) -> (bool, bool) {
     if let Some(&hit) = cache.get(&id) {
-        return hit;
+        return (hit, false);
     }
-    let here = match core_of(db, id) {
-        Core::LocalRef { binder: b } | Core::Param { binder: b } => b == binder,
-        _ => core_child_ids(db, id)
-            .into_iter()
-            .any(|c| binder_occurs(db, c, binder, cache)),
+    if in_progress.contains(&id) {
+        // Back-edge in a cyclic Core graph: no NEW occurrence on this path; taint so the caller does not
+        // memoize a cycle-artifact `false`.
+        return (false, true);
+    }
+    let (here, tainted) = match core_of(db, id) {
+        Core::LocalRef { binder: b } | Core::Param { binder: b } => (b == binder, false),
+        _ => {
+            in_progress.insert(id);
+            let mut occurred = false;
+            let mut tainted = false;
+            for c in core_child_ids(db, id) {
+                let (o, t) = binder_occurs_rec(db, c, binder, cache, in_progress);
+                occurred |= o;
+                tainted |= t;
+            }
+            in_progress.remove(&id);
+            (occurred, tainted)
+        }
     };
-    cache.insert(id, here);
-    here
+    // A definite `true` (a real leaf occurrence reached via forward edges) is correct regardless of taint,
+    // so it is always safe to memoize; only a `tainted` `false` is withheld (it may be a cycle artifact —
+    // a future query entering this node OFF the stack could reach an occurrence through the back-edge).
+    if here || !tainted {
+        cache.insert(id, here);
+    }
+    (here, tainted)
 }
 
 fn mark_binder_dups(

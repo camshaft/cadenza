@@ -685,13 +685,18 @@ enum PerFileVerdict {
 }
 
 /// How many compiler-ml `cdz test` files to run CONCURRENTLY in the per-file gate sweep. Each job is a
-/// full-pipeline WASM compile (memory-heavy — every run-src `@test` builds the whole pipeline into its
-/// own component), and the gate host is SHARED with the rest of the fleet, so the default is deliberately
-/// conservative — `min(cores, 4)`, not all cores. The suite's wall-clock is a SUM of per-file compiles
-/// dominated by ONE ~480s file (sread-eval), so even a few jobs collapse the serial ~45min sum toward
-/// that single-file floor without risking OOM under fleet load. `CDZ_ML_JOBS` overrides (an operator
-/// throughput/pressure lever); `=0`/garbage falls back to the default; the result is clamped to
-/// `[1, file_count]` so we never spawn idle workers.
+/// full-pipeline WASM compile (memory-heavy AND CPU-heavy — every run-src `@test` builds the whole
+/// pipeline into its own component), and the gate host is SHARED with the rest of the fleet, so the
+/// default is deliberately conservative — `min(cores, 2)`, not all cores.
+///
+/// WHY 2, not 4 (pr-sync systemic-timeout report, batch #124+): under real fleet CPU contention, 4-way
+/// concurrency made EACH `cdz test` process too slow to finish within the per-file cap — and raising the
+/// cap (720→1200) just moved the kill to the next-slowest file (sum→conformance-db-cx), proving it's a
+/// THROUGHPUT problem, not a cap or a code hang (every file passes in isolation). Halving concurrency
+/// gives each file ~2× the CPU so it finishes within the cap; the wall-clock is a SUM dominated by the
+/// slowest file, so 2 jobs still collapse the serial ~45min sum toward that floor while leaving CPU
+/// headroom for the rest of the fleet. `CDZ_ML_JOBS` overrides (an operator throughput lever — raise it
+/// on a DEDICATED/idle host); `=0`/garbage falls back to the default; clamped to `[1, file_count]`.
 fn ml_test_jobs(file_count: usize) -> usize {
     // Split env-reading (impure) from the clamping (pure) so the logic is testable without mutating
     // process-global env — `#[test]`s run in parallel, so touching env in a test races sibling tests.
@@ -709,7 +714,10 @@ fn ml_test_jobs_from(override_opt: Option<usize>, file_count: usize) -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
-    let default = cores.clamp(1, 4);
+    // Cap the default at 2 (was 4): 4-way concurrency raced the per-file timeout under shared-fleet CPU
+    // contention (pr-sync systemic-timeout report). 2 gives each memory+CPU-heavy compile enough CPU to
+    // finish within the cap while still collapsing the serial sum toward the slowest-file floor.
+    let default = cores.clamp(1, 2);
     let jobs = override_opt.unwrap_or(default);
     jobs.clamp(1, file_count.max(1))
 }
@@ -6870,15 +6878,16 @@ mod trap_grading_tests {
         // Drives the PURE core with an injected override (`None` = unset/zero/garbage) so the test never
         // touches process-global env — cargo runs #[test]s in parallel, and a sibling test also reads env,
         // so env mutation here would be a data race (the reason `set_var`/`remove_var` are `unsafe`).
-        // Default is conservative (min(cores, 4)) AND clamped to the file count so we never spawn idle
-        // workers — with 2 files the pool is at most 2 regardless of cores.
+        // Default is conservative (min(cores, 2) — lowered from 4 after the pr-sync systemic-timeout
+        // report: 4-way concurrency raced the per-file cap under fleet load) AND clamped to the file count
+        // so we never spawn idle workers — with 2 files the pool is at most 2 regardless of cores.
         assert!(
-            ml_test_jobs_from(None, 2) <= 2,
+            ml_test_jobs_from(None, 1) <= 1,
             "default clamped to file count"
         );
         assert!(
-            ml_test_jobs_from(None, 100) <= 4,
-            "default never exceeds the conservative cap of 4"
+            ml_test_jobs_from(None, 100) <= 2,
+            "default never exceeds the conservative cap of 2 (throughput under shared-fleet contention)"
         );
         assert!(ml_test_jobs_from(None, 100) >= 1, "always at least one job");
 

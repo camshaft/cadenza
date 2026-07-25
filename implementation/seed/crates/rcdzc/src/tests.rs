@@ -7145,6 +7145,153 @@ fn a_recursive_heap_payload_sum_borrowed_param_leaks_one_cell_known_gap() {
     );
 }
 
+/// VALUE-CORRECTNESS REGRESSION GUARD for the Perceus copy-on-consume-when-aliased invariant — a heap
+/// payload extracted as a BORROW (sum-payload destructure or tuple projection, no rc++) and then consumed
+/// by an FBIP op (`List.push`) MUST be COPIED, not mutated in place, whenever the enclosing container is
+/// STILL LIVE (so the payload's true rc is > 1). A missing dup-before-consume would let `push` FBIP-mutate
+/// the shared backing store, corrupting the OTHER live reference — a WRONG-VALUE miscompile (not a leak).
+/// These three shapes (surfaced by the queued `mlrepro-miscompile-*` repros, 2026-07-24) all currently
+/// compute the CORRECT value — this pins that they stay correct, since a future dup-elision could silently
+/// reintroduce the aliasing bug that only a multi-read witness catches. `run_linked` (ordinary runtime, no
+/// debug counters — this is a VALUE check, not a leak check); `#[ignore]` only because it needs the runtime
+/// store (`cargo xtask build`), like the sibling composed-run probes.
+#[test]
+#[ignore]
+fn a_borrowed_heap_payload_consumed_while_its_container_is_live_is_copied_not_mutated() {
+    use crate::testkit::parse;
+    // Each case threads a live container (sum `bx` / tuple `pr`), extracts its heap list payload by BORROW,
+    // and consumes it with `List.push` while the container is still read again — so `push` must copy.
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            // Straight-line: push the destructured payload (borrow) while `bx` is matched a SECOND time.
+            // If push mutated in place, the second read would see the grown list (len 3) → total 6, not 5.
+            "sum payload consumed while scrutinee re-matched",
+            "(module m (type Box (B (List Int64))) \
+             (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
+             (def (main) (let ((bx (B (mb 0 2 (list))))) \
+               (+ ((. List len) ((. List push) (match bx ((B xs) xs)) 99)) \
+                  ((. List len) (match bx ((B ys) ys)))))) (export main))",
+            "5",
+        ),
+        (
+            // Loop: `bx` threaded UNCHANGED; each of 4 iters extracts+pushes its payload. Every iter must
+            // see len(push(len-2 list, 99)) = 3 → 4*3 = 12. In-place mutation would drift (3,7,12,18…).
+            "sum payload consumed each iter with scrutinee threaded unchanged",
+            "(module m (type Box (B (List Int64))) \
+             (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
+             (def (loop j m bx tot) (if (< j m) (loop (+ j 1) m bx (+ tot ((. List len) ((. List push) (match bx ((B xs) xs)) 99)))) tot)) \
+             (def (main) (loop 0 4 (B (mb 0 2 (list))) 0)) (export main))",
+            "12",
+        ),
+        (
+            // Loop-carried TUPLE `pr=(tuple L 0)`, threaded unchanged; inner list `(. pr 0)` consumed each
+            // iter. The tuple keeps its reference to `L` → projected `L` has rc>1 → push copies. 3 iters *
+            // len 3 = 9. In-place mutation would drift from the 3rd iter (3,3,4,…).
+            "loop-carried tuple's projected list consumed each iter",
+            "(module m \
+             (def (mb i n acc) (if (< i n) (mb (+ i 1) n ((. List push) acc i)) acc)) \
+             (def (loop j m pr tot) (if (< j m) (loop (+ j 1) m pr (+ tot ((. List len) ((. List push) (. pr 0) 99)))) tot)) \
+             (def (main) (loop 0 3 (tuple (mb 0 2 (list)) 0) 0)) (export main))",
+            "9",
+        ),
+    ];
+    for (label, src, want) in cases {
+        let prog = compile_component(&crate::codec::encode(&parse(src)))
+            .unwrap_or_else(|e| panic!("{label}: compile failed: {e:?}"));
+        let Some(got) = run_linked(&prog, "main") else {
+            eprintln!("[alias-cow] runtime wasm not found (run `cargo xtask build`); skipping");
+            return;
+        };
+        assert_eq!(
+            &got, want,
+            "{label}: a borrowed heap payload consumed while its container is LIVE must be COPIED, not \
+             FBIP-mutated in place (that would corrupt the still-live second reference). A drift from \
+             {want} = the dup-before-consume-when-aliased guard regressed (WRONG VALUE, not a leak)."
+        );
+    }
+}
+
+/// KNOWN GAP — O(n) shell ACCUMULATION (distinct, MORE SEVERE than the O(1) borrowed-param twins). A
+/// self-recursive `f` returns an OWNED sum `(Mk list)`, and every frame `(match (f …) ((Mk t) (Mk t)))`
+/// destructures the owned result of the recursive call and RE-WRAPS the payload into a FRESH `(Mk t)`.
+/// The incoming shell (the owned scrutinee = the callee's owned return) is DEAD after its payload `t` is
+/// extracted, but no drop is inserted — so each of the N frames leaks its shell (and, since the child is
+/// dup'd on re-wrap without a matching drop of the old owner, the child cells accumulate too). The leak
+/// therefore GROWS WITH RECURSION DEPTH — unlike `a_recursive_heap_payload_sum_borrowed_param_leaks_one_cell…`
+/// (a heap sum threaded as a BORROWED param leaks a single O(1) origin cell). ROOT: no drop of an OWNED
+/// match scrutinee's sum shell after its payload is extracted (the general Perceus match/sum-shell-drop
+/// pass — the same one the O(1) twins defer to). Surfaced by the queued `mlrepro-leak-*` repros
+/// (2026-07-24). VALUE-CORRECT (2) at every depth — a pure leak, NO UAF (a freed-early shell would trap or
+/// garble the `List.len`). PINS the SHAPE of the gap: value correct + leaks + the leak is depth-monotone
+/// (deeper recursion leaks strictly more). A partial emit drop here risks a DOUBLE-FREE if the extracted
+/// payload aliases the shell rather than being an independently-ref-counted child, so it stays a known-gap
+/// until the general pass verifies the dup/alias invariant across all sum shapes. Flip BOTH asserts to a
+/// constant `== 0` (depth-independent) when that pass lands. `#[ignore]` — needs the debug-counters store.
+#[test]
+#[ignore]
+fn a_recursive_rewrap_of_a_matched_owned_sum_child_accumulates_shells_known_gap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!("[rewrap-accum-leak] debug-counters runtime not in the store; skipping probe");
+        return;
+    };
+    // `f n` recurses UP to the base (n == 0), builds one owned `(Mk (bl 0 2 (list)))`, then every returning
+    // frame does `(match (f (+ n 1)) ((Mk t) (Mk t)))` — extract the owned child, re-wrap it. `main` matches
+    // the top result and reads the list length (always 2). The owned incoming shell of each frame is never
+    // dropped after extraction → the leak scales with the number of frames.
+    let src = |arg: i64| {
+        format!(
+            "(module m (type Box (Mk (List Int64))) \
+               (def (bl (: i Int64) (: n Int64) (: a (List Int64))) \
+                  (if (< i n) (bl (+ i 1) n ((. List push) a i)) a)) \
+               (def (f (: n Int64)) \
+                  (if (= n 0) (Mk (bl 0 2 (list))) (match (f (+ n 1)) ((Mk t) (Mk t))))) \
+               (def (main (: n Int64)) (match (f n) ((Mk t) ((. List len) t)))) (export main)) \
+               ; arg {arg}"
+        )
+    };
+    // n = -2 → 2 re-wrap frames above the base; n = -6 → 6 frames.
+    let shallow_src = src(-2);
+    let deep_src = src(-6);
+    let shallow = compile_component(&crate::codec::encode(&parse(&shallow_src))).expect("compile");
+    let deep = compile_component(&crate::codec::encode(&parse(&deep_src))).expect("compile");
+
+    let mut rt_s = ComposedRuntime::new(&shallow, &runtime_bytes);
+    assert_eq!(
+        rt_s.call("main", &[Val::S64(-2)]),
+        Val::S64(2),
+        "the re-wrapped list keeps its 2 elements — value-correct despite the shell leak (NO UAF)"
+    );
+    let live_shallow = rt_s.live_objects();
+
+    let mut rt_d = ComposedRuntime::new(&deep, &runtime_bytes);
+    assert_eq!(
+        rt_d.call("main", &[Val::S64(-6)]),
+        Val::S64(2),
+        "same value 2 at depth 6"
+    );
+    let live_deep = rt_d.live_objects();
+
+    // Current (buggy) behavior: a nonzero leak that GROWS with recursion depth — the distinguishing property
+    // of this O(n) accumulation gap vs. the O(1) borrowed-param twin. Deeper recursion re-wraps more owned
+    // shells, each left un-dropped after its payload is extracted.
+    assert!(
+        live_shallow > 0,
+        "KNOWN GAP: an owned match-scrutinee sum shell is not dropped after its payload is extracted and \
+         re-wrapped, so a recursive re-wrap leaks a shell per frame (got {live_shallow} at depth 2). Flip \
+         to `== 0` when the general Perceus match/sum-shell-drop pass lands."
+    );
+    assert!(
+        live_deep > live_shallow,
+        "KNOWN GAP: the leak is depth-MONOTONE — 6 re-wrap frames leak strictly more than 2 (got \
+         deep={live_deep}, shallow={live_shallow}). This is the O(n) shell-accumulation shape, distinct \
+         from the O(1) `a_recursive_heap_payload_sum_borrowed_param_leaks_one_cell_known_gap`. When the \
+         general pass lands, BOTH counts become a depth-independent 0 and these asserts flip to `== 0`."
+    );
+}
+
 /// A PARTIALLY-APPLIED CONSTRUCTOR held in a GENUINELY-RUNTIME compound element, projected + applied,
 /// completes via the synthesized runtime eta-closure lift — the WORKING fix for the FACE-B miscompile
 /// (was invalid wasm: a newtype erased `(T.Mk 10)` to the bare `10`, storing a scalar where a closure
