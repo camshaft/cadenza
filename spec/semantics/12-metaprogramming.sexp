@@ -221,6 +221,51 @@
         (export main)))
   (output (: 19 Int64)))
 
+(case "a runtime-woven Ast compares structurally equal to an equivalent quote"
+  (doc    "The quote-vs-constructor eq pins compare const-foldable operands; a RUNTIME BigInt leaf
+           inside the constructor-built tree forces the LIVE deep Ast walk against the reader-built
+           quote. Hit + miss faces.")
+  (input (do
+        (def (main (: a Int64))
+          (if (= (Ast.List (list (Ast.Name "+") (Ast.Int (BigInt.of a)) (Ast.Int 2)))
+                 (quote (+ 5 2)))
+              1 0))
+        (export main)))
+  (call main (: 5 Int64)) (output (: 1 Int64))
+  (call main (: 6 Int64)) (output (: 0 Int64)))
+
+(case "a THREE-deep constructor-woven Ast destructures through nested patterns to its runtime leaf"
+  (doc    "The nested-quote-pattern pin is 2-deep with const leaves; this weaves a 3-deep
+           constructor tree carrying a runtime BigInt leaf at the bottom and destructures through
+           THREE nested Ast.List patterns; the negative face rides the BigInt round-trip.")
+  (input (do
+        (def (main (: a Int64))
+          (do
+            (def t (Ast.List (list (Ast.Name "g")
+                     (Ast.List (list (Ast.Name "h")
+                       (Ast.List (list (Ast.Name "i") (Ast.Int (BigInt.of a)))))))))
+            (match t
+              ((Ast.List (list (Ast.Name _g)
+                 (Ast.List (list (Ast.Name _h)
+                   (Ast.List (list (Ast.Name _i) (Ast.Int n)))))))
+                (Int64.of n))
+              (_ -1))))
+        (export main)))
+  (call main (: 7 Int64)) (output (: 7 Int64))
+  (call main (: -3 Int64)) (output (: -3 Int64)))
+
+(case "a constructor-tree eval's folded result composes with a runtime parameter per call"
+  (doc    "The eval pins return the fold directly; this let-binds it and adds a per-call runtime a
+           — the eval-then-use idiom; also pins the explicit Int64.of on eval's BigInt result (no
+           silent promotion). Zero-crossing face at a=-3.")
+  (input (do
+        (def (main (: a Int64))
+          (let ((v (eval (Ast.List (list (Ast.Name "+") (Ast.Int 1) (Ast.Int 2))))))
+            (+ a (Int64.of v))))
+        (export main)))
+  (call main (: 39 Int64)) (output (: 42 Int64))
+  (call main (: -3 Int64)) (output (: 0 Int64)))
+
 (case "eval of a quasiquote splicing a string works through String ops"
   (doc    "The string companion: `(let ((s \"hi\")) (String.byte-len (eval `(String.concat ,s \"x\"))))`
            splices the runtime string `s` into the reconstructed `(String.concat s \"x\")`, evaluates it to

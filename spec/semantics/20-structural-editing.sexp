@@ -509,3 +509,61 @@
             (def (main) (walk 2 (Mk 1)))
             (export main)))
   (output (: 40 Int64)))
+
+(case "TWO distinct nonzero BigInt literal probes dispatch in one recursive fn"
+  (doc    "#22-fix perimeter: the pins above are single-literal; TWO distinct nonzero probes
+           ((Mk 1)→10, (Mk 5)→50) in one recursive fn share the entered-variant collect and the
+           const pool — a fix that tracked one literal per fn would misdispatch one arm. Runtime
+           scrutinee via (Mk (BigInt.of k)); miss face -1.")
+  (input (do
+        (type W (Mk BigInt))
+        (def (walk (: n Int64) (: w W))
+          (match w
+            ((Mk 1) (if (= n 0) 10 (walk (- n 1) w)))
+            ((Mk 5) (if (= n 0) 50 (walk (- n 1) w)))
+            (_ -1)))
+        (def (main (: k Int64))
+          (walk 2 (Mk (BigInt.of k))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 10 Int64))
+  (call main (: 5 Int64)) (output (: 50 Int64))
+  (call main (: 9 Int64)) (output (: -1 Int64)))
+
+(case "a nonzero BigInt literal probe dispatches across MUTUAL recursion post-fix"
+  (doc    "#22-fix perimeter: the pre-fix matrix showed wrapper-recursion breaking; this pins the
+           fixed entered-variant collect crossing FUNCTION boundaries (fa⇄fb, parity-dependent
+           10/20 by depth) — not just self-calls. Miss face -1.")
+  (input (do
+        (type W (Mk BigInt))
+        (def (fa (: n Int64) (: w W))
+          (match w
+            ((Mk 1) (if (= n 0) 10 (fb (- n 1) w)))
+            (_ -1)))
+        (def (fb (: n Int64) (: w W))
+          (match w
+            ((Mk 1) (if (= n 0) 20 (fa (- n 1) w)))
+            (_ -1)))
+        (def (main (: n Int64) (: k Int64))
+          (fa n (Mk (BigInt.of k))))
+        (export main)))
+  (call main (: 2 Int64) (: 1 Int64)) (output (: 10 Int64))
+  (call main (: 3 Int64) (: 1 Int64)) (output (: 20 Int64))
+  (call main (: 2 Int64) (: 9 Int64)) (output (: -1 Int64)))
+
+(case "a nonzero BigInt probe over a scrutinee REBUILT each recursive frame dispatches every time"
+  (doc    "#22-fix perimeter: the scrutinee (Mk (BigInt.of k)) is allocated FRESH each recursive
+           frame (not threaded), so the probe compares a NEW heap value against the const-pool
+           literal per iteration — per-frame allocation + probe + reclaim under recursion. Base-case
+           + miss faces.")
+  (input (do
+        (type W (Mk BigInt))
+        (def (walk (: n Int64) (: k Int64))
+          (match (Mk (BigInt.of k))
+            ((Mk 1) (if (= n 0) 40 (walk (- n 1) k)))
+            (_ -1)))
+        (def (main (: n Int64) (: k Int64))
+          (walk n k))
+        (export main)))
+  (call main (: 2 Int64) (: 1 Int64)) (output (: 40 Int64))
+  (call main (: 0 Int64) (: 1 Int64)) (output (: 40 Int64))
+  (call main (: 2 Int64) (: 9 Int64)) (output (: -1 Int64)))

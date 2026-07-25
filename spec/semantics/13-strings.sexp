@@ -226,6 +226,63 @@
             (export main)))
   (output (: 3 Int64)))
 
+(case "a concat-built rope of 1-, 2-, and 3-byte scalars measures and indexes at every width"
+  (doc    "The divergence pin measures an entry arg once; this rope is built by RUNTIME concat from
+           1-/2-/3-byte scalars, both lens read (6/3), and String.at indexes EVERY position — the
+           returned scalar's OWN byte-len (1/2/3) proves the walk is scalar-boundary not byte-offset,
+           across two seams that don't align with scalar widths. Past-end → 0.")
+  (input (do
+        (def (main (: n Int64))
+          (do
+            (def r (String.concat (String.concat "a" "é") "日"))
+            (def b (String.byte-len r))
+            (def s (String.scalar-len r))
+            (def w (match (String.at r n)
+                     ((Some c) (String.byte-len c))
+                     ((None _u) 0)))
+            (+ (* b 100) (+ (* s 10) w))))
+        (export main)))
+  (call main (: 0 Int64)) (output (: 631 Int64))
+  (call main (: 1 Int64)) (output (: 632 Int64))
+  (call main (: 2 Int64)) (output (: 633 Int64))
+  (call main (: 3 Int64)) (output (: 630 Int64)))
+
+(case "a scalar slice spanning a width TRANSITION carries its multibyte content exactly"
+  (doc    "The scalar-slice pins extract ASCII from multibyte strings; this slice's CONTENT is
+           itself multibyte spanning a 1→2→3-byte transition (slice(1,3), 2 scalars 5 bytes,
+           content-verified by = — a byte-indexed slice or an off-by-one at either boundary yields
+           wrong BYTES, not just wrong length). Adjacent windows pin both alignments.")
+  (input (do
+        (def (main (: st Int64) (: en Int64))
+          (do
+            (def r (String.concat (String.concat "a" "é") (String.concat "日" "x")))
+            (match (String.slice r st en)
+              ((Some sl)
+                (+ (* (String.byte-len sl) 10)
+                   (if (= sl "é日") 1 0)))
+              ((None _u) -1))))
+        (export main)))
+  (call main (: 1 Int64) (: 3 Int64)) (output (: 51 Int64))
+  (call main (: 0 Int64) (: 2 Int64)) (output (: 30 Int64))
+  (call main (: 2 Int64) (: 4 Int64)) (output (: 40 Int64)))
+
+(case "a runtime multibyte rope matches a MULTIBYTE string-literal arm by content"
+  (doc    "The string-match desugar pins use ASCII literals; this arm is multibyte over a runtime
+           concat rope, with a SHARED-PREFIX sibling (both arms start with the 2-byte scalar, so the
+           probe chain must compare past the shared multibyte prefix). Fall-through face.")
+  (input (do
+        (def (classify (: s String))
+          (match s
+            ("é日" 1)
+            ("éx" 2)
+            (_ 0)))
+        (def (main (: mode Int64))
+          (classify (String.concat "é" (if (= mode 1) "日" (if (= mode 2) "x" "y")))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 1 Int64))
+  (call main (: 2 Int64)) (output (: 2 Int64))
+  (call main (: 3 Int64)) (output (: 0 Int64)))
+
 (case "a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus"
   (doc    "The atoi idiom over the scalar walk: each `String.at` scalar is decoded to its digit VALUE
            by a comparison chain (one-scalar STRINGS compare by `=` — there is no Char arithmetic on

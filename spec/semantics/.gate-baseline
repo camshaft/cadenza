@@ -78,6 +78,7 @@ pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without divisi
 pass	Qty map VALUES unwrap, ADD, and COMPARE in one chain preserving the unit through the collection
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
 pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
+pass	STACKED @requires and @ensures both enforce at runtime on one def with a heap precondition
 pass	STRING COMPRESSION emits char-count pairs but keeps the original unless strictly shorter
 pass	STRING ROTATION check searches the needle inside the doubled haystack at equal length
 pass	SUBSET-SUM COUNT folds each element into a fresh ways-table so no element is reused
@@ -89,9 +90,13 @@ pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit lis
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow
 pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
 pass	TWO closures capture the SAME heap map and the map outlives both applications
+pass	TWO distinct nonzero BigInt literal probes dispatch in one recursive fn
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	WAVE reorder alternates <= and >= by index parity through a carried-element walk
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
+pass	a @ensures postcondition over a HEAP result checks at exit and returns the live collection
+pass	a @ensures relating the RESULT to a PARAMETER enforces the relation at exit
+pass	a @requires predicate over a HEAP collection is enforced at entry and value-transparent when satisfied
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
@@ -114,9 +119,11 @@ pass	a PASCAL row derives from its predecessor by pairwise sums, certified by th
 pass	a PRIME LIST accumulates by testing each candidate against earlier primes up to its square root
 pass	a PRIORITY insert orders by key with FIFO tie-break carried as a sequence number
 pass	a QUICKSELECT finds the kth smallest by partitioning and recursing into ONE side
+pass	a RELATIONAL @requires over two parameters enforces their order at entry
 pass	a ROMAN DECODER subtracts on lookahead and round-trips through the pinned renderer
 pass	a ROMAN NUMERAL renderer walks a value-symbol table greedily with subtractive pairs
 pass	a ROTATE-BY-K splits at the wrapped offset and swaps the halves, identity at multiples of len
+pass	a RUNTIME-selected combiner closure crosses a join and drives a fold
 pass	a SLIDING-WINDOW max walks a k=3 window by paired index reads
 pass	a SPLIT on separator slices fields between hits and round-trips through the pinned JOIN
 pass	a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack
@@ -126,6 +133,8 @@ pass	a Symbol stored as a map VALUE round-trips through lookup to its content st
 pass	a THREE-DEEP compose chain stacks closure envs with a runtime capture mid-chain
 pass	a THREE-WAY scalar classifier splits vowels, consonants, and other by range and membership
 pass	a THREE-arm match joins a borrowed alias, an owned fresh rope, and a const literal
+pass	a THREE-deep constructor-woven Ast destructures through nested patterns to its runtime leaf
+pass	a THREE-deep transitive closure-capture chain applies with each level's own capture live
 pass	a TOGGLE fold flips set membership per occurrence — odd count in, even count out
 pass	a TOPOLOGICAL sort drains min-ready nodes and verifies every edge points forward
 pass	a TRANSPOSE of a 2x3 list-of-rows walks columns across row spines
@@ -136,6 +145,9 @@ pass	a balanced-paren scan tracks depth over a runtime string and fails fast on 
 pass	a capturing closure passed AS AN ARGUMENT is applied twice by the callee and the capture reads after
 pass	a closure RETURNS its captured map and the alias plus the original both read after
 pass	a closure capturing a heap map is applied twice and the map is read once more after
+pass	a comparison-select over the two zeros returns the UNTAKEN operand and the canonical eq sees which
+pass	a compose combinator over HEAP-typed functions pipelines list transformers
+pass	a concat-built rope of 1-, 2-, and 3-byte scalars measures and indexes at every width
 pass	a constant algebraic identity over a high UInt64 operand folds to the operand, not a spurious reject
 pass	a constant MUL-by-1 identity over a high UInt64 operand folds to the operand
 pass	a constant MUL-by-0 identity over a high UInt64 operand folds to zero
@@ -258,6 +270,7 @@ pass	a closure built OVER another closure applies both capture layers
 pass	a closure capturing a handler-computed VALUE escapes the handle and applies outside
 pass	a comparison-driven MERGE of two sorted lists interleaves and drains the remainder
 pass	a constructed huge Ast.Int equals its quoted twin
+pass	a constructor-tree eval's folded result composes with a runtime parameter per call
 pass	a deep rope indexes by scalar at both extremes
 pass	a discarded trapping item in a do sequence is elided per the dead-init ruling
 pass	a do item OBSERVED by the final expression keeps its trap
@@ -279,6 +292,7 @@ pass	a handler arm RECURSES through a named helper before resuming
 pass	a handler arm applies a closure capturing a heap map and the map outlives the handle
 pass	a helper returns the shorter of two borrowed ropes and both caller handles stay live
 pass	a host response SIZES a guest-built collection which is then folded and keyed
+pass	a list of closure-carrying variants interprets as a command pipeline over an accumulator
 pass	a literal pattern at MID-SPINE depth gates the arm while deeper binders still bind
 pass	a map INVERSION flips keys and values, last-writer-wins on duplicate values
 pass	a map threaded through MUTUAL recursion is read in both functions at alternating depths
@@ -299,6 +313,8 @@ pass	a mutually-recursive sum value stored as a MAP VALUE round-trips and evalua
 pass	a nested Record.with rewrites an inner record field through the outer, inline
 pass	a nested-record parameter projects its inner fields through two dot levels
 pass	a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add
+pass	a nonzero BigInt literal probe dispatches across MUTUAL recursion post-fix
+pass	a nonzero BigInt probe over a scrutinee REBUILT each recursive frame dispatches every time
 pass	a param-left arith-right Float64.of-int equality compiles to a valid module and computes
 pass	Float64.of-int collapses adjacent integers at the 2^53 precision boundary
 pass	Int64.min crosses the parameter boundary and back unchanged
@@ -1317,6 +1333,7 @@ pass	a reframed packet with a TRANSFORMED header compares byte-equal to its inde
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
 pass	a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite
 pass	a NONZERO BigInt literal probe in a recursive quasiquote-pattern simp matches its own constructor
+pass	a runtime multibyte rope matches a MULTIBYTE string-literal arm by content
 pass	a runtime-built BigInt sum-payload literal probe matches its constructor
 pass	a runtime-built BigInt sum-payload literal probe falls through on a non-matching payload
 pass	a plain-sum recursive CONSTANT BigInt literal probe matches its own constructor
@@ -1342,9 +1359,12 @@ pass	a runtime-constructed Ast equals its quoted twin by structural content
 pass	a runtime-index List.update LOOP rewrites every 100th slot of a 1000-element list
 pass	a runtime-key swap-then-take chain threads both value-yields and the shrinking map
 pass	a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence
+pass	a runtime-woven Ast compares structurally equal to an equivalent quote
+pass	a scalar slice spanning a width TRANSITION carries its multibyte content exactly
 pass	a select between a base map and its derived generation frees the loser but not shared nodes
 pass	a separator JOIN over a runtime parts list handles first-vs-rest and the empty list
 pass	a shift by a RUNTIME amount computes (both operands off the fold)
+pass	a signed zero survives a TUPLE round-trip and its sign still steers arithmetic after unboxing
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
 pass	a slice OF a seam-spanning slice re-offsets into the logical bytes of the parent view
 pass	a slice OF a slice composes the offsets at runtime bounds
@@ -1473,6 +1493,10 @@ pass	an exported UNANNOTATED helper instantiates at TWO types from the IMPORTER'
 pass	an imported helper's performs discharge at a handler whose STATE is the importer's heap Map
 pass	an unannotated tuple-SWAP instantiates at two mixed scalar-heap element pairings in one program
 pass	difference DISTRIBUTES over union but is NOT associative - both facts witnessed live
+pass	digit-separator literals in decimal and hex drive runtime modular arithmetic
+pass	doubling a subnormal crosses UP into the minimum normal exactly
+pass	exponent-notation floats drive runtime arithmetic with a negative exponent live
+pass	hex and binary literals drive a runtime mask-extract across radix notations
 pass	print/read round-trips a tree carrying every leaf kind in one canonical form
 pass	the RUNTIME division identity a=(a/b)*b+(a%b) holds across all four sign quadrants
 pass	the runtime narrow-width add in range does not trap (the control)
@@ -4563,6 +4587,7 @@ pass	the sequent-shaped kernel Thm is unforgeable — building Thm.Seq outside t
 pass	the set De Morgan law relates difference-over-union to intersection-of-differences on runtime sets
 pass	the shift-by-zero identities preserve a runtime narrow UInt8 (x << 0 = x, x >> 0 = x)
 pass	the shrinking search terminates via its fuel bound rather than searching unboundedly
+pass	the sign of ZERO propagates through multiply and add per IEEE at runtime
 pass	the slice overflow guard holds on a chained slice-of-a-slice
 pass	the span between two equal Instants is zero — the inclusive lower boundary of `since`
 pass	the swap and take value-yielding forms agree with insert and remove on the resulting map
