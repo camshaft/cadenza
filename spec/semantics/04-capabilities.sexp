@@ -312,6 +312,33 @@
   (host-calls (call ask.ask))
   (output (: 42 Int64)))
 
+(case "a host response SIZES a guest-built collection which is then folded and keyed"
+  (doc    "The response-to-COLLECTION composition (the chain pins above stay scalar): one crossing
+           scalar becomes the iteration BOUND of a list build, the built list is folded, and the
+           SAME response keys a Map holding the fold — three uses of one boundary value through
+           the collection machinery. (rust: host-delegation cases todo per this file's convention.)")
+  (input (do
+        (effect ask (op size (-> Unit Int64)))
+        (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
+          (if (> i n) acc (build (+ i 1) n (List.push acc i))))
+        (def (sum-l (: xs (List Int64)) (: acc Int64))
+          (match xs
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (main)
+          (host (ask)
+            (do
+              (def n (ask.size))
+              (def xs (build 1 n (list)))
+              (def m (Map.insert Map.empty n (sum-l xs 0)))
+              (match (Map.lookup m n)
+                ((Some v) (+ (* v 10) n))
+                ((None _u) -1)))))
+        (export main)))
+  (host-responses (respond ask.size (: 3 Int64)))
+  (host-calls (call ask.size))
+  (output (: 63 Int64)))
+
 (case "a host call's response is an ordinary value that feeds a LATER host call"
   (doc    "Witnesses capabilities-and-effects.md #A Host Call Returns A Response: a host call is a plain
            function call that returns its response to the program, so the response is an ordinary value the

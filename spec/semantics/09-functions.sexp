@@ -56,6 +56,31 @@
   (call main (: 20 Int64)) (output (: 710 Int64))
   (call main (: 0 Int64)) (output (: 510 Int64)))
 
+(case "an unannotated tuple-SWAP instantiates at two mixed scalar-heap element pairings in one program"
+  (doc    "The mixed scalar-heap instantiation face: swap p = (b a) at (Int64, String-rope) AND
+           ((List Int64), Int64) in one program — the specializer must produce two layouts where the
+           heap handle sits in OPPOSITE tuple slots, with a runtime-built rope riding through; the
+           n=0 face sends an EMPTY rope through the swap.")
+  (input (do
+        (def (swap p)
+          (match p
+            ((tuple a b) (tuple b a))))
+        (def (rep (: s String) (: n Int64) (: acc String))
+          (if (= n 0) acc (rep s (- n 1) (String.concat acc s))))
+        (def (main (: n Int64))
+          (do
+            (def r1 (swap (tuple 3 (rep "ab" n ""))))
+            (def r2 (swap (tuple (list 1 2 3) 7)))
+            (match r1
+              ((tuple s x)
+                (match r2
+                  ((tuple y xs)
+                    (+ (* (String.byte-len s) 100)
+                       (+ (* x 10) (+ (List.len xs) y)))))))))
+        (export main)))
+  (call main (: 2 Int64)) (output (: 440 Int64))
+  (call main (: 0 Int64)) (output (: 40 Int64)))
+
 (case "a closure captures its environment by value at creation, unaffected by a later same-named binding"
   (doc    "`(let ((k n)) (let ((f (fn (x) (+ x k)))) (let ((k 1000)) (f 1))))` — `f` captures `k = n` at
            creation; the INNER `(let ((k 1000)) …)` introduces a NEW `k` in scope at the APPLICATION site,

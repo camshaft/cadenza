@@ -3422,6 +3422,23 @@
 ; any dividend. A lowering that emitted a value (0, or the dividend) would be an unspecified value the
 ; contract forbids; wasm's i64.div_s / i64.rem_s trap on a zero divisor, matching this.
 
+(case "the RUNTIME division identity a=(a/b)*b+(a%b) holds across all four sign quadrants"
+  (doc    "The sign-convention pins above are CONST-folded singles; this drives the identity with
+           RUNTIME operands through (+,+)/(−,+)/(+,−)/(−,−) in one program, digit-encoded 1111 — a
+           wrong-sign remainder or a floor-division at any quadrant zeroes its own digit. Second
+           face: a non-divisible pair (100/9).")
+  (input (do
+        (def (check (: a Int64) (: b Int64))
+          (if (= (+ (* (/ a b) b) (% a b)) a) 1 0))
+        (def (main (: a Int64) (: b Int64))
+          (+ (* (check a b) 1000)
+             (+ (* (check (- 0 a) b) 100)
+                (+ (* (check a (- 0 b)) 10)
+                   (check (- 0 a) (- 0 b))))))
+        (export main)))
+  (call main (: 7 Int64) (: 3 Int64)) (output (: 1111 Int64))
+  (call main (: 100 Int64) (: 9 Int64)) (output (: 1111 Int64)))
+
 (case "division by zero traps"
   (doc    "`(/ 5 0)` has no quotient — division by zero has no result. The compiler can prove the
            divisor is zero via constant folding, so it rejects at compile time (CDZ0304) rather than
