@@ -103,6 +103,13 @@ pub const KIND_SYMBOLS: &str = "symbols";
 /// (browser/CAD/notebook) reads to render controls for a program's parameters.
 pub const KIND_PARAM_MANIFEST: &str = "param-manifest";
 
+/// The output artifact kind for a `FuncLayout` query result — the emitted-function layout: each reachable
+/// definition's absolute wasm func-index paired with a content-hash of its AST subtree, in func-index
+/// order, preceded by a `defs-begin` marker row carrying the def-region base (`import_base`). The
+/// observation mechanism behind the compile-reuse prove-first witness (shared defs must get stable
+/// func-indices + identical content across per-file test builds) and the Option-A cache-key basis.
+pub const KIND_FUNC_LAYOUT: &str = "func-layout";
+
 /// One request in a sidecar's list. Either MATERIALIZE an output column (`Emit`) or READ a fact column
 /// (`Query`). `Rewrite` (the validated-transaction arm of `DESIGN-sidecar-api.md`) is a later rung and
 /// not modeled here yet.
@@ -274,6 +281,20 @@ pub enum Query {
     /// `name-node` is the param NAME occurrence, mapped to `file:line:col`. TOTAL: a program with no
     /// `@param` sites yields the empty result.
     ParamManifest,
+    /// The EMITTED-FUNCTION LAYOUT — every reachable definition's absolute wasm FUNCTION INDEX paired with
+    /// a CONTENT-HASH of its AST subtree, in func-index order. FORCES monomorphization then runs
+    /// `layout::compute` (like `Instantiations`), so the reported set + order equal what a real emit lays.
+    /// Answered as one line per reachable def, `func-index<TAB>content-hash<TAB>def-name`, preceded by a
+    /// single MARKER line `defs-begin<TAB><import_base><TAB>-` giving the def-region base (runtime-op
+    /// imports occupy `0..import_base` ahead of the first defined function), so a consumer knows where the
+    /// def region starts and compares the right range. The content-hash is a stable hash of the def's
+    /// `(def …)` AST subtree (structure + leaves), so two builds that SHARE a def (byte-identical source)
+    /// report the SAME hash — the observation the compile-reuse prove-first witness diffs (a shared def
+    /// must get the SAME func-index AND the SAME content-hash across two per-file test builds) and the
+    /// basis for the Option-A content-addressed cache key. TOTAL: a program with no reachable def (e.g. no
+    /// export/@test) yields just the marker line (or empty if layout declines). Deterministic (func-index
+    /// order). A `--test`-mode build (EmitTests) lays the def region from the `@test` defs' reachability.
+    FuncLayout,
 }
 
 /// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
@@ -314,6 +335,7 @@ mod tag {
     pub const QUERY_INSTANTIATIONS: u8 = 0x1a;
     pub const QUERY_SYMBOLS: u8 = 0x1b;
     pub const QUERY_PARAM_MANIFEST: u8 = 0x1c;
+    pub const QUERY_FUNC_LAYOUT: u8 = 0x1d;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -371,6 +393,7 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         })),
         tag::QUERY_SYMBOLS => Some(Request::Query(Query::Symbols)),
         tag::QUERY_PARAM_MANIFEST => Some(Request::Query(Query::ParamManifest)),
+        tag::QUERY_FUNC_LAYOUT => Some(Request::Query(Query::FuncLayout)),
         _ => None,
     }
 }
@@ -431,6 +454,7 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
         }
         Request::Query(Query::Symbols) => out.push(tag::QUERY_SYMBOLS),
         Request::Query(Query::ParamManifest) => out.push(tag::QUERY_PARAM_MANIFEST),
+        Request::Query(Query::FuncLayout) => out.push(tag::QUERY_FUNC_LAYOUT),
     }
 }
 
@@ -771,6 +795,87 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 name: "param-manifest".to_string(),
                 bytes: text.into_bytes(),
             }
+        }
+        Query::FuncLayout => {
+            let text = func_layout_text(db);
+            QueryResult {
+                kind: KIND_FUNC_LAYOUT,
+                name: "func-layout".to_string(),
+                bytes: text.into_bytes(),
+            }
+        }
+    }
+}
+
+/// The `FuncLayout` read: force monomorphization then lay out the boundary, and report each reachable
+/// definition's absolute wasm FUNCTION INDEX + a content-hash of its `(def …)` AST subtree, in func-index
+/// order. Preceded by a `defs-begin<TAB><import_base><TAB>-` marker so a consumer knows where the def
+/// region starts (runtime-op imports occupy `0..import_base`). FORCES monomorphization + runs
+/// `layout::compute` like `Instantiations`, so the set + order equal a real emit's. The content-hash is a
+/// stable structural hash of the def's AST subtree (see [`def_content_hash`]) — a def shared byte-identically
+/// across two builds hashes the SAME, which is what the compile-reuse witness diffs (same func-index AND
+/// same content-hash per shared def) and the Option-A cache-key basis. TOTAL: a layout that declines (no
+/// export/@test) yields the empty result; an empty program yields just the marker.
+fn func_layout_text(db: &mut Db) -> String {
+    // Force monomorphization so the reachable set is complete + stable regardless of what a query-only run
+    // would otherwise lower (mirrors `Instantiations`); then lay out the boundary to get the func-index
+    // order. A layout decline (a program with no export) yields the empty result — the query is total.
+    crate::layout::force_monomorphize(db);
+    let layout = match crate::layout::compute(db) {
+        Ok(l) => l,
+        Err(_) => return String::new(),
+    };
+    let mut text = format!("defs-begin\t{}\t-\n", layout.import_base);
+    // `layout.order` is the defined-function emission sequence; def at position `k` is wasm func
+    // `import_base + k` (== `layout.abs(def)`). Emit in that order so the rows are func-index-ascending.
+    for &def in &layout.order {
+        let idx = layout
+            .abs(def)
+            .map_or_else(|| "-".to_string(), |i| i.to_string());
+        let name = db.defs[def].name.clone();
+        let hash = def_content_hash(db, def);
+        text.push_str(&format!("{idx}\t{hash:016x}\t{name}\n"));
+    }
+    text
+}
+
+/// A stable structural content-hash of definition `def`'s `(def …)` AST subtree — the identity a
+/// compile-reuse cache keys on and the witness diffs. Hashes the def's signature + body subtrees by walking
+/// their arena structure (node shape + leaf bytes) into an [`FxHasher`], so two byte-identical source defs
+/// (even at different global `StructId`s, since link splices files at an offset) hash the SAME. Independent
+/// of the def's global id and of surrounding files — only its own subtree content.
+fn def_content_hash(db: &Db, def: usize) -> u64 {
+    use std::hash::Hasher;
+    let mut h = crate::fxhash::FxHasher::default();
+    hash_subtree(db, db.defs[def].sig_occ, &mut h);
+    if let Some(body) = db.defs[def].body {
+        hash_subtree(db, body, &mut h);
+    }
+    h.finish()
+}
+
+/// Feed the AST subtree rooted at `id` into `h` — the node's structural KIND then, recursively, its
+/// children (a list) or its leaf bytes (a name/literal). A pure function of the subtree's shape + leaf
+/// content, so it is identical for two byte-identical source subtrees regardless of their arena position.
+fn hash_subtree(db: &Db, id: StructId, h: &mut crate::fxhash::FxHasher) {
+    use crate::ast::Struct;
+    use std::hash::{Hash, Hasher};
+    match db.ast.get(id) {
+        Struct::List(kids) => {
+            h.write_u8(0); // tag: list
+            h.write_u32(kids.len() as u32);
+            let kids: Vec<StructId> = kids.clone();
+            for k in kids {
+                hash_subtree(db, k, h);
+            }
+        }
+        Struct::Atom(leaf) => {
+            h.write_u8(1); // tag: atom
+            // The `Leaf` (Int/Float/Str/Name/Char/…) IS the atom's content identity; it derives `Hash`,
+            // so hash it directly — two byte-identical source atoms produce the same leaf, hence the same
+            // contribution regardless of arena position.
+            let leaf = *leaf;
+            db.ast.leaf(leaf).hash(h);
         }
     }
 }
@@ -2158,6 +2263,7 @@ mod tests {
             Request::Query(Query::Instantiations { name: "n".into() }),
             Request::Query(Query::Symbols),
             Request::Query(Query::ParamManifest),
+            Request::Query(Query::FuncLayout),
         ];
         // Exhaustiveness guard: adding a Request/Query variant fails to compile until listed above AND here.
         for r in &each {
@@ -2177,7 +2283,8 @@ mod tests {
                     | Query::DocAt { .. }
                     | Query::Instantiations { .. }
                     | Query::Symbols
-                    | Query::ParamManifest,
+                    | Query::ParamManifest
+                    | Query::FuncLayout,
                 ) => {}
             }
         }

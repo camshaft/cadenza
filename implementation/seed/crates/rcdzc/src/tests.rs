@@ -72055,9 +72055,9 @@ mod sidecar_driven {
     use crate::backend::Target;
     use crate::compile::compile;
     use crate::sidecar::{
-        self, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORTS, KIND_HIGHLIGHT, KIND_INSTANTIATIONS,
-        KIND_PARAM_MANIFEST, KIND_RESOLVE, KIND_SCOPE, KIND_SYMBOLS, KIND_TYPE_AT, KIND_TYPE_INFO,
-        KIND_USES, Query, Request,
+        self, KIND_DIAGNOSTICS, KIND_DOC, KIND_EXPORTS, KIND_FUNC_LAYOUT, KIND_HIGHLIGHT,
+        KIND_INSTANTIATIONS, KIND_PARAM_MANIFEST, KIND_RESOLVE, KIND_SCOPE, KIND_SYMBOLS,
+        KIND_TYPE_AT, KIND_TYPE_INFO, KIND_USES, Query, Request,
     };
     use crate::testkit::parse;
 
@@ -73273,6 +73273,80 @@ mod sidecar_driven {
         assert_eq!(
             artifact_text(&out, KIND_PARAM_MANIFEST).as_deref(),
             Some("")
+        );
+    }
+
+    #[test]
+    fn a_func_layout_query_reports_the_defs_begin_marker_and_a_recursive_defs_func_index_row() {
+        // A `FuncLayout` request lays out the boundary and reports each reachable EMITTED def's absolute
+        // func-index + a content-hash, preceded by a `defs-begin<TAB><import_base><TAB>-` marker. A
+        // RECURSIVE def with a runtime arg stays a standalone function (a non-recursive small def would
+        // INLINE and not appear) — so `sumto` is an emitted row. Scalar program → import_base 0.
+        let src = "(module m \
+                   (def (sumto (: n Int64)) (if (= n 0) 0 (+ n (sumto (- n 1))))) \
+                   (def (main) (sumto 5)) (export main))";
+        let out = compile(&inputs(src, &[Request::Query(Query::FuncLayout)]), &[]);
+        assert!(
+            !out.has_error(),
+            "a query does not fail: {:?}",
+            out.diagnostics
+        );
+        let text = artifact_text(&out, KIND_FUNC_LAYOUT).expect("a func-layout artifact");
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some("defs-begin\t0\t-"),
+            "first row is the defs-begin marker with import_base:\n{text}"
+        );
+        // `sumto` is a standalone emitted function (recursive); the linear-recursion accumulator transform
+        // emits it under a `sumto$acc` name (a tail-recursive copy), so match by the `sumto` prefix.
+        let row = text
+            .lines()
+            .find(|l| l.split('\t').nth(2).is_some_and(|n| n.starts_with("sumto")))
+            .unwrap_or_else(|| panic!("a `sumto*` row (recursive def stays standalone):\n{text}"));
+        let cols: Vec<&str> = row.split('\t').collect();
+        assert_eq!(cols.len(), 3, "row is idx<TAB>hash<TAB>name: {row:?}");
+        assert!(
+            cols[0].parse::<u32>().is_ok(),
+            "func-index is a number: {row:?}"
+        );
+        assert!(
+            cols[1].len() == 16 && cols[1].chars().all(|c| c.is_ascii_hexdigit()),
+            "the content-hash is 16 hex digits: {row:?}"
+        );
+    }
+
+    #[test]
+    fn a_func_layout_content_hash_is_stable_for_a_byte_identical_def_across_programs() {
+        // The prove-first invariant the compile-reuse witness rides on: a def byte-identical in two DIFFERENT
+        // programs reports the SAME content-hash — a function of the def's own AST subtree, NOT its global
+        // StructId (which shifts when other defs precede it) nor the surrounding program. Use a RECURSIVE def
+        // (`sumto`) so it stays a standalone emitted function (a non-recursive one inlines away).
+        // Match the emitted row by NAME PREFIX (a recursive def emits under `<name>$acc` after the
+        // accumulator transform), reading the hash column.
+        let hash_of = |src: &str, name: &str| -> String {
+            let out = compile(&inputs(src, &[Request::Query(Query::FuncLayout)]), &[]);
+            assert!(!out.has_error(), "{:?}", out.diagnostics);
+            let text = artifact_text(&out, KIND_FUNC_LAYOUT).expect("func-layout");
+            text.lines()
+                .find(|l| l.split('\t').nth(2).is_some_and(|n| n.starts_with(name)))
+                .and_then(|l| l.split('\t').nth(1))
+                .unwrap_or_else(|| panic!("a `{name}*` row with a hash:\n{text}"))
+                .to_string()
+        };
+        // Program A: `sumto` + `main`. Program B: an EXTRA recursive `dbl` declared BEFORE `sumto` (shifting
+        // sumto's global StructId + func-index) + a `main` using both. `sumto`'s own source is identical.
+        let a = "(module m \
+                 (def (sumto (: n Int64)) (if (= n 0) 0 (+ n (sumto (- n 1))))) \
+                 (def (main) (sumto 5)) (export main))";
+        let b = "(module m \
+                 (def (dbl (: k Int64)) (if (= k 0) 0 (+ 2 (dbl (- k 1))))) \
+                 (def (sumto (: n Int64)) (if (= n 0) 0 (+ n (sumto (- n 1))))) \
+                 (def (main) (+ (sumto 5) (dbl 3))) (export main))";
+        assert_eq!(
+            hash_of(a, "sumto"),
+            hash_of(b, "sumto"),
+            "a byte-identical `sumto` hashes the same regardless of surrounding defs / its StructId"
         );
     }
 
