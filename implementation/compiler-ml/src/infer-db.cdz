@@ -114,7 +114,7 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
           (let m3 = infer-node(tree, thenId, rcol, m2) in
            (let m4 = infer-node(tree, elseId, rcol, m3) in
             (match match-type(m4, scrutId, litId, thenId, elseId) with | ty => Map.insert(m4, id, ty))))))
-    | Option.Some(Node.NMatchCtor(scrutId, patCtorName, binderId, bodyId, restId)) =>
+    | Option.Some(Node.NMatchCtor(scrutId, patCtorName, binderIds, bodyId, restId)) =>
         // M2-b-2b-ii-c payload ctor-pattern arm: infer the scrutinee (a sum — TSum(decl) since ii-c2b-1), SEED the
         // binder `x`'s type from the ctor's recorded payload argType (ct-argTypes, ii-c2b-2 follow-on): a recorded
         // INT type (encoded, non-zero) → its TIntW(signed, width) so e.g. `(Err Int32)`'s binder is Int32, not the
@@ -128,7 +128,7 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         // TErr (the CDZ0203 cross-type decline). A non-TSum scrutinee (or an unknown pattern ctor) leaves the
         // check permissive — the arm-join + downstream still gate; this reject only fires on a decl MISMATCH.
         (let m1 = infer-node(tree, scrutId, rcol, tcol) in
-         (let mb = Map.insert(m1, binderId, ctor-payload-binder-type(tree, patCtorName)) in   // binder type from ct argType
+         (let mb = seed-ctor-binders(m1, tree, patCtorName, binderIds) in   // seed each payload binder's type from ct argType
           (let m2 = infer-node(tree, bodyId, rcol, mb) in
            (let m3 = infer-node(tree, restId, rcol, m2) in
             // A TErr SCRUTINEE taints the whole match (an ill-typed subtree being matched must not be masked by
@@ -759,6 +759,17 @@ def ctor-payload-binder-type(tree: Tree, patCtorName: Int64) =
                                  else (if (enc == (0 - 1)) then Typed.TErr          // unsupported → TErr (declines)
                                        else Typed.TIntW(pt-signed(enc), pt-width(enc)))))  // int type
     | Option.None(_) => t-int64())
+
+/// Seed the payload binder types for a ctor-pattern arm into the type column. binderIds is the pattern's positional
+/// binder list (schema slice): [] (nullary — nothing to seed), [id] (single binder — seed `id` from the ctor's
+/// payload argType, EXACTLY the pre-list single-binder behavior), or [id0,id1,…] (compound — the multi-binder BEHAVIOR
+/// slice will seed binder[i] ← the i-th field type via ctor-argtypes-of; this schema-only version seeds the HEAD like
+/// today and leaves any extra binders unseeded, since the reader does not yet PRODUCE a multi-binder list — a
+/// behavior-preserving no-op for every pattern the reader emits). Tail-recursive over the list is deferred to that slice.
+def seed-ctor-binders(tcol: Map(Int64, Typed), tree: Tree, patCtorName: Int64, binderIds: List(Int64)) =
+  (match List.at(binderIds, 0) with
+    | Option.None(_) => tcol                                                    // nullary pattern → nothing to bind
+    | Option.Some(b0) => Map.insert(tcol, b0, ctor-payload-binder-type(tree, patCtorName)))
 
 def ctor-pattern-cross-type(tree: Tree, tcol: Map(Int64, Typed), scrutId: Int64, patCtorName: Int64) =
   (match Map.lookup(tcol, scrutId) with
@@ -1499,7 +1510,7 @@ def id-nmatchctor-terr-scrutinee-taints-match-pr849() =
       (match add-node(t2, Node.NLit(7)) with | (bodyId, t3) =>                 // well-typed body arm
         (match add-node(t3, Node.NLit(9)) with | (restId, t4) =>               // well-typed rest arm
           (let t5 = record-ctor-tag-typed(t4, 860, 800, 1, encode-param-type(true, 64)) in   // BB (860) of decl 800, Int64 payload
-           (match add-node(t5, Node.NMatchCtor(scrutId, 860, binderId, bodyId, restId)) with | (root, tree) =>
+           (match add-node(t5, Node.NMatchCtor(scrutId, 860, List.push([], binderId), bodyId, restId)) with | (root, tree) =>
              (let tc = infer-node(tree, root, (Map.empty : Map(Int64, Resolved)), (Map.empty : Map(Int64, Typed))) in   // no rcol → scrut unbound → TErr
               (match Map.lookup(tc, root) with
                 | Option.Some(Typed.TErr) => unit                              // TErr scrutinee taints the match

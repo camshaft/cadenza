@@ -42,6 +42,23 @@ def param-scope(tree: Tree, paramId: Int64, scope: Map(Int64, Int64)) =
     | Option.Some(Node.NVar(pnm)) => Map.insert(scope, pnm, paramId)
     | _ => scope)
 
+/// Bind every ctor-pattern payload binder into the body scope. `binderIds` is the pattern's positional binder list
+/// (schema slice): [] binds nothing, [id] binds the single binder (the pre-list behavior), [id0,id1,…] binds each
+/// positionally. Each id is an NVar node; its NAME → id goes into env (like `param-scope` for a param). Tail-recursive
+/// over the list index `i`. The scrutinee + rest arm resolve in the OUTER env (binders are body-scoped only).
+def bind-ctor-binders-go(tree: Tree, env: Map(Int64, Int64), binderIds: List(Int64), i: Int64) =
+  (if (i == List.len(binderIds)) then env
+   else (match List.at(binderIds, i) with
+          | Option.None(_) => env
+          | Option.Some(bid) =>
+              (let env2 = (match node-at(tree, bid) with
+                            | Option.Some(Node.NVar(bnm)) => Map.insert(env, bnm, bid)
+                            | _ => env) in
+               bind-ctor-binders-go(tree, env2, binderIds, i + 1))))
+
+def bind-ctor-binders(tree: Tree, env: Map(Int64, Int64), binderIds: List(Int64)) =
+  bind-ctor-binders-go(tree, env, binderIds, 0)
+
 def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, Resolved)) =
   match node-at(tree, id) with
     | Option.Some(Node.NLit(_)) => col
@@ -76,15 +93,14 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
          (let m2 = resolve-node(tree, litId, env, m1) in
           (let m3 = resolve-node(tree, thenId, env, m2) in
            resolve-node(tree, elseId, env, m3))))
-    | Option.Some(Node.NMatchCtor(scrutId, _patCtorName, binderId, bodyId, restId)) =>
-        // M2-b-2b-ii-c payload ctor-pattern arm `((Ctor x) body)`: the binder `x` (NVar at binderId) is bound
-        // in the BODY scope ONLY (like a let binds its body) — so `body`'s `x` resolves RBound(binderId) → lower
-        // CVar(binderId), which CMatchSum's bind-payload keys. The scrutinee + the REST (next arm) resolve in the
-        // OUTER env (the binder is not in scope there). Bind the binder's NAME → binderId in the body env.
+    | Option.Some(Node.NMatchCtor(scrutId, _patCtorName, binderIds, bodyId, restId)) =>
+        // M2-b-2b-ii-c payload ctor-pattern arm `((Ctor x y…) body)`: each binder (NVar at binderIds[i]) is bound
+        // in the BODY scope ONLY (like a let binds its body) — so `body`'s uses resolve RBound(binderIds[i]) → lower
+        // CVar, which CMatchSum's bind-payload keys positionally. The scrutinee + the REST (next arm) resolve in the
+        // OUTER env (the binders are not in scope there). Bind each binder's NAME → its id in the body env (a single-
+        // binder list [id] = the pre-list behavior; [] = no binding; a compound list binds each positionally).
         (let r1 = resolve-node(tree, scrutId, env, col) in
-         (let bodyEnv = (match node-at(tree, binderId) with
-                          | Option.Some(Node.NVar(bnm)) => Map.insert(env, bnm, binderId)
-                          | _ => env) in
+         (let bodyEnv = bind-ctor-binders(tree, env, binderIds) in
           (let r2 = resolve-node(tree, bodyId, bodyEnv, r1) in
            resolve-node(tree, restId, env, r2))))
     | Option.Some(Node.NApp(calleeId, argId)) =>

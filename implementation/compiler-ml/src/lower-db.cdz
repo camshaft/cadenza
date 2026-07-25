@@ -175,18 +175,19 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
                   | Option.None(_) => Option.None(unit))
               | Option.None(_) => Option.None(unit))
           | Option.None(_) => Option.None(unit))
-    | Option.Some(Node.NMatchCtor(scrutId, patCtorName, binderId, bodyId, restId)) =>
-        // M2-b-2b-ii-c payload ctor-pattern arm → CMatchSum(scrut, tag, [binderId], body, rest): eval reads the
-        // scrutinee sum handle's store-tag; if == tag, binds payload[0] to binderId (a CVar key) + evals body,
-        // else evals rest. Single payload field → the binder list is [binderId]. All three children must lower.
-        // The TAG is re-derived from the pattern ctor's NAME-id via ctor-tag-of (the single-source-of-truth node
-        // shape — infer re-derives the decl from the same name-id, so tag + decl cannot drift). An unknown ctor
-        // has no ct entry → decline (unreachable in practice: the reader already declined it before this node).
-        // ii-c2b-2 rep dispatch (Z1): a NULLARY ctor pattern (binderId == -1, no payload) over an ENUM-DISC decl
+    | Option.Some(Node.NMatchCtor(scrutId, patCtorName, binderIds, bodyId, restId)) =>
+        // M2-b-2b-ii-c payload ctor-pattern arm → CMatchSum(scrut, tag, binderIds, body, rest): eval reads the
+        // scrutinee sum handle's store-tag; if == tag, binds payload[i] to binderIds[i] (CVar keys) + evals body,
+        // else evals rest. binderIds is already the CMatchSum binder LIST (schema slice) — a single-binder pattern
+        // is [binderId], a compound is [id0, id1, …]. All three children must lower. The TAG is re-derived from the
+        // pattern ctor's NAME-id via ctor-tag-of (the single-source-of-truth node shape — infer re-derives the decl
+        // from the same name-id, so tag + decl cannot drift). An unknown ctor has no ct entry → decline (unreachable
+        // in practice: the reader already declined it before this node).
+        // ii-c2b-2 rep dispatch (Z1): a NULLARY ctor pattern (EMPTY binderIds, no payload) over an ENUM-DISC decl
         // lowers to CMatchEnum (bare-tag compare — the scrutinee is a bare CNum tag, CMatchSum's store-tag would
-        // return None → always-else). A payload pattern (binderId != -1) OR a mixed-decl nullary pattern (boxed)
+        // return None → always-else). A payload pattern (non-empty binderIds) OR a mixed-decl nullary pattern (boxed)
         // lowers to CMatchSum (store-tag on the handle). decl-is-enum-disc(declOf patCtorName) is the switch —
-        // mirrors rcdzc's ty_is_enum_disc at select. A -1 binder → an EMPTY binder list (no payload to bind).
+        // mirrors rcdzc's ty_is_enum_disc at select.
         (match ctor-tag-of(tree, patCtorName) with
           | Option.None(_) => Option.None(unit)
           | Option.Some(ctorTag) =>
@@ -196,9 +197,9 @@ def lower-ok(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64,
               | Option.Some(cbody) =>
                 (match lower-node(tree, restId, rcol, tcol) with
                   | Option.Some(crest) =>
-                      (if ((binderId == (0 - 1)) and lower-ctor-decl-enum-disc(tree, patCtorName))
+                      (if ((List.len(binderIds) == 0) and lower-ctor-decl-enum-disc(tree, patCtorName))
                        then Option.Some(Core.CMatchEnum(cs, ctorTag, cbody, crest))              // enum-disc nullary → bare-tag
-                       else Option.Some(Core.CMatchSum(cs, ctorTag, lower-binder-list(binderId), cbody, crest)))  // boxed
+                       else Option.Some(Core.CMatchSum(cs, ctorTag, lower-binder-list(binderIds), cbody, crest)))  // boxed
                   | Option.None(_) => Option.None(unit))
               | Option.None(_) => Option.None(unit))
           | Option.None(_) => Option.None(unit)))
@@ -347,8 +348,10 @@ def lower-ctor-decl-enum-disc(tree: Tree, ctorName: Int64) =
 
 /// A CMatchSum binder list from a pattern's binderId: `[]` for the no-binder sentinel -1 (a mixed-decl nullary
 /// ctor pattern — boxed, but no payload to bind), else `[binderId]` (a single-payload ctor pattern).
-def lower-binder-list(binderId: Int64) =
-  (if (binderId == (0 - 1)) then ([] : List(Int64)) else List.push([], binderId))
+// The CMatchSum payload-binder list from the pattern's binderIds. The reader already produces the positional list
+// ([] nullary, [id] single-binder, [id0,id1,…] compound), so this is the identity — the wrapper is kept as the ONE
+// seam where binder lowering could specialize (e.g. drop a `-1` placeholder field) without touching the arm above.
+def lower-binder-list(binderIds: List(Int64)) = binderIds
 
 def lower-rec-args(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
   (if (argId == (0 - 1)) then Option.Some(([] : List(Core)))            // nullary recursive call → no args
@@ -737,7 +740,7 @@ def lw-enum-disc-nullary-pattern-lowers-to-cmatchenum() =
    (match add-node(t0, Node.NLit(0)) with | (scrutId, t1) =>
     (match add-node(t1, Node.NLit(7)) with | (bodyId, t2) =>
      (match add-node(t2, Node.NLit(9)) with | (restId, t3) =>
-      (match add-node(t3, Node.NMatchCtor(scrutId, 810, 0 - 1, bodyId, restId)) with | (root, tree) =>
+      (match add-node(t3, Node.NMatchCtor(scrutId, 810, ([] : List(Int64)), bodyId, restId)) with | (root, tree) =>
        (let tcol = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Typed)), scrutId, Typed.TSum(800)), bodyId, Typed.TIntW(true, 64)), restId, Typed.TIntW(true, 64)), root, Typed.TIntW(true, 64)) in
         (match lower-node(tree, root, (Map.empty : Map(Int64, Resolved)), tcol) with
           | Option.Some(c) => (if is-cmatchenum-tag(c, 0) then unit else trap("Red pattern over enum-disc Color lowers to CMatchEnum tag 0"))
@@ -753,7 +756,7 @@ def lw-mixed-decl-nullary-pattern-lowers-to-cmatchsum() =
    (match add-node(t0, Node.NLit(0)) with | (scrutId, t1) =>
     (match add-node(t1, Node.NLit(7)) with | (bodyId, t2) =>
      (match add-node(t2, Node.NLit(9)) with | (restId, t3) =>
-      (match add-node(t3, Node.NMatchCtor(scrutId, 830, 0 - 1, bodyId, restId)) with | (root, tree) =>
+      (match add-node(t3, Node.NMatchCtor(scrutId, 830, ([] : List(Int64)), bodyId, restId)) with | (root, tree) =>
        (let tcol = Map.insert(Map.insert(Map.insert(Map.insert((Map.empty : Map(Int64, Typed)), scrutId, Typed.TSum(820)), bodyId, Typed.TIntW(true, 64)), restId, Typed.TIntW(true, 64)), root, Typed.TIntW(true, 64)) in
         (match lower-node(tree, root, (Map.empty : Map(Int64, Resolved)), tcol) with
           | Option.Some(c) => (if is-cmatchsum-tag-nbinders(c, 0, 0) then unit else trap("None pattern over mixed Opt lowers to CMatchSum tag 0, 0 binders"))
