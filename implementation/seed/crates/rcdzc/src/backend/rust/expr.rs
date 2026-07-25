@@ -3155,9 +3155,9 @@ fn emit_const_int(db: &mut Db, id: StructId, v: &IntValue) -> Result<String, Rej
 /// admit a BigInt-magnitude quantity while still declining a constant that reaches the op typed plain
 /// `Int`. Mirrors the wasm backend's `Ty::Qty { inner, .. } if matches!(*inner, Ty::BigInt)`.
 fn is_bigint_valued(ty: &Ty) -> bool {
-    match ty {
+    match ty.strip_nominal() {
         Ty::BigInt => true,
-        Ty::Qty { inner, .. } => matches!(**inner, Ty::BigInt),
+        Ty::Qty { inner, .. } => matches!(inner.strip_nominal(), Ty::BigInt),
         _ => false,
     }
 }

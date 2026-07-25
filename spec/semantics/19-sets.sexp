@@ -347,6 +347,82 @@
              (Set.of (list (tuple 3 4)))))
   (output (: true Bool)))
 
+(case "two sets of TUPLES built in different orders compare equal through the compound elements"
+  (doc    "The runtime whole-set eq face: the intersection/difference pins above assert set-eq on
+           CONST-folded operands; here a RUNTIME v inside one tuple forces the LIVE CHAMP walk, the
+           operands are built in different orders, and the v=5 NEGATIVE face witnesses the equality
+           discriminates (the landed pins have no unequal face).")
+  (input (do
+        (def (main (: v Int64))
+          (do
+            (def s1 (Set.of (list (tuple 1 2) (tuple 3 v))))
+            (def s2 (Set.of (list (tuple 3 4) (tuple 1 2))))
+            (if (= s1 s2) 1 0)))
+        (export main)))
+  (call main (: 4 Int64)) (output (: 1 Int64))
+  (call main (: 5 Int64)) (output (: 0 Int64)))
+
+(case "the two algebraic subset formulations agree on subset, superset, and equal operands"
+  (doc    "No subset predicate exists in the surface; the two algebraic encodings — A⊆B as
+           (A∪B)=B and as (A∩B)=A — route through DIFFERENT op+eq pipelines and must agree at every
+           face: proper subset (11), proper superset (00), equal operands (11, reflexivity). A bug
+           in union, intersection, or set-eq breaks one digit of the agreement.")
+  (input (do
+        (def (sub1 (: a (Set Int64)) (: b (Set Int64)))
+          (if (= (Set.union a b) b) 1 0))
+        (def (sub2 (: a (Set Int64)) (: b (Set Int64)))
+          (if (= (Set.intersection a b) a) 1 0))
+        (def (both (: a (Set Int64)) (: b (Set Int64)))
+          (+ (* (sub1 a b) 10) (sub2 a b)))
+        (def (main (: n Int64))
+          (do
+            (def small (Set.of (list 1 n)))
+            (def big (Set.of (list 1 2 3)))
+            (+ (* (both small big) 10000)
+               (+ (* (both big small) 100)
+                  (both small small)))))
+        (export main)))
+  (call main (: 2 Int64)) (output (: 110011 Int64))
+  (call main (: 9 Int64)) (output (: 11 Int64)))
+
+(case "difference DISTRIBUTES over union but is NOT associative - both facts witnessed live"
+  (doc    "A LAW and a NON-law in one program: (A∪B)∖C = (A∖C)∪(B∖C) must HOLD (digit 1) while
+           (A∖B)∖C = A∖(B∖C) must FAIL ({1} vs {1,2}, digit 0) — the law digit catches an op bug,
+           the NON-law digit catches an over-eager rewrite treating difference as associative.
+           Runtime n threads all three sets.")
+  (input (do
+        (def (main (: n Int64))
+          (do
+            (def a (Set.of (list 1 n)))
+            (def b (Set.of (list n 3)))
+            (def c (Set.of (list n)))
+            (def dist (if (= (Set.difference (Set.union a b) c)
+                             (Set.union (Set.difference a c) (Set.difference b c))) 1 0))
+            (def nonassoc (if (= (Set.difference (Set.difference a b) c)
+                                 (Set.difference a (Set.difference b c))) 1 0))
+            (+ (* dist 10) nonassoc)))
+        (export main)))
+  (call main (: 2 Int64)) (output (: 10 Int64)))
+
+(case "SYMMETRIC difference built two ways from primitives agrees and dedups the overlap"
+  (doc    "No sym-diff op exists; the two derived forms — (A∪B)∖(A∩B) and (A∖B)∪(B∖A) — must
+           agree (three ops each through different pipelines), with len + membership digits. The
+           n=1 face feeds Set.of DUPLICATE-carrying lists ((1 2 1) → {1,2}) so construction dedup
+           composes into the algebra; 1 lands in the intersection there, so contains-1 is 0.")
+  (input (do
+        (def (main (: n Int64))
+          (do
+            (def a (Set.of (list 1 2 n)))
+            (def b (Set.of (list 2 n 4)))
+            (def l (Set.difference (Set.union a b) (Set.intersection a b)))
+            (def r (Set.union (Set.difference a b) (Set.difference b a)))
+            (+ (* (if (= l r) 1 0) 100)
+               (+ (* (Set.len l) 10)
+                  (if (Set.contains l 1) 1 0)))))
+        (export main)))
+  (call main (: 3 Int64)) (output (: 121 Int64))
+  (call main (: 1 Int64)) (output (: 110 Int64)))
+
 (case "the union of sets of TUPLES holds a shared tuple once and preserves component order"
   (doc    "The UNION member of the compound-element algebra (intersection/difference above): `(Set.union
            {(1,2),(3,a)} {(3,4),(5,6)})` at a = 4 shares the tuple (3,4) — the union must hold it ONCE

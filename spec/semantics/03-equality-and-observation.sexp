@@ -81,6 +81,42 @@
   (call   main (: nan Float64) (: 1.0 Float64))
   (output (: false Bool)))
 
+(case "a max-FOLD over a list containing a computed NaN keeps the ordered maximum"
+  (doc    "NaN riding a heap-list FOLD (the pins above are single compares): (if (< best h) h best)
+           keeps the ordered max because BOTH NaN compares are false — a fold compiled with a
+           total-order compare or a flipped-operand select would let NaN win. NaN mid-list and
+           tail faces; both → m=7.0 → 1. (Float64.nan is the canonical NaN source — (/ 0.0 0.0)
+           has no value form.)")
+  (input (do
+        (def (max-f (: xs (List Float64)) (: best Float64))
+          (match xs
+            ((list) best)
+            ((list h .. t) (max-f t (if (< best h) h best)))))
+        (def (main (: mode Int64))
+          (do
+            (def nan Float64.nan)
+            (def xs (if (= mode 1) (list 3.0 nan 7.0) (list 3.0 7.0 nan)))
+            (def m (max-f xs 0.0))
+            (if (= m 7.0) 1 0)))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 1 Int64))
+  (call main (: 2 Int64)) (output (: 1 Int64)))
+
+(case "a NaN selected through a runtime if-join stays self-equal and unordered downstream"
+  (doc    "NaN through a runtime if-JOIN, both disciplines checked downstream: (= r r) is the
+           canonicalizing self-eq (1 in BOTH modes — value-eq, not f64.eq) while (< r 5.0) is the
+           IEEE partial order (0 for NaN, 1 for 3.0). The join must neither lose the canonical NaN
+           bit pattern nor let the eq/ord disciplines cross-contaminate.")
+  (input (do
+        (def (main (: c Int64))
+          (do
+            (def r (if (= c 1) Float64.nan 3.0))
+            (+ (* (if (= r r) 1 0) 10)
+               (if (< r 5.0) 1 0))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 10 Int64))
+  (call main (: 0 Int64)) (output (: 11 Int64)))
+
 (case "the false-literal coercion negates a float ordering compare, turning an unordered pair true"
   (doc    "The dual and the adversarial case: `(= (< a b) false)` = `¬(< a b)`. Finite ordered (1.0,2.0):
            `1<2` true, `= false` → false. The UNORDERED (nan,1.0): `nan<1` is FALSE, `= false` → TRUE —

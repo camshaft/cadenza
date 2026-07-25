@@ -2564,6 +2564,41 @@ fn a_runtime_bigint_sum_payload_literal_probe_compares_by_bigint_not_an_i64_cast
 }
 
 #[test]
+fn a_constant_bigint_newtype_payload_materializes_a_big_not_an_i64() {
+    // REGRESSION (corpus-bugfix FACE-B, sibling of the runtime E0605 probe fix): a CONSTANT integer that is
+    // the payload of a BigInt-typed ERASED NEWTYPE construction (`(Mk 1)` where `W = (Mk BigInt)`) used to
+    // emit as a fixed-width int literal (`1u64 as i64`) because `is_bigint_valued` did NOT strip the nominal
+    // wrapper — so a `Ty::Nominal { inner: BigInt }`-typed constant fell to the int-literal path, mismatching
+    // the `cdz_num::Big` slot (rustc E0308). `is_bigint_valued` now strips the nominal, so the constant
+    // materializes `Big::from_i64(1)`. Build clean AND compute: `(Mk 1)` fed through a const-scrutinee probe
+    // matches `(Mk 1)` → 40.
+    let m = compile_rust(
+        "(module m (type W (Mk BigInt)) \
+           (def (walk (: n Int64) (: w W)) (if (< n 1) (- 0 1) (match w ((Mk 1) 40) (_ (walk (- n 1) w))))) \
+           (def (go) (walk 2 (Mk 1))) (export go))",
+    );
+    assert!(
+        m.contains("cdz_num::Big::from_i64(1))")
+            && !m.contains("walk((2u64 as i64), (1u64 as i64))"),
+        "the constant (Mk 1) BigInt payload materializes a Big, not an i64 literal:\n{m}"
+    );
+    if let Some(out) = rustc_run(&m, "go()") {
+        assert_eq!(
+            out, "40",
+            "walk 2 (Mk 1) matches the (Mk 1) const probe → 40"
+        );
+    }
+    // The isolated newtype constructor: `(Mk 1)` returned as W (= Big) is the Big 1, not an i64.
+    let id = compile_rust(
+        "(module m (type W (Mk BigInt)) (def (id (: w W)) w) (def (go) (id (Mk 1))) (export go))",
+    );
+    assert!(
+        id.contains("-> cdz_num::Big") && id.contains("cdz_num::Big::from_i64(1)"),
+        "a constant BigInt-newtype value materializes a Big:\n{id}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_rational_arithmetic_and_render() {
     // Rational emit-side: `Ty::Rational` → `cdz_num::Rational` (a Big num/den pair, canonical normalized);
     // `Rational.of`/`.of-int` widen + build, `+`/`-`/`*`/`/` are Rational methods, cmp reduces to a bool,

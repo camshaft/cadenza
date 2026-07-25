@@ -13247,6 +13247,28 @@
             (def (main) (Map.len (. (Map.swap (Map.insert Map.empty 1 10) 2 99) 1))) (export main)))
   (output (: 2 Int64)))
 
+(case "a runtime-key swap-then-take chain threads both value-yields and the shrinking map"
+  (doc    "The value-yielding singles above project one tuple slot of one op; this THREADS both
+           yields and the evolving map through a chain — swap {1↦10} at runtime k to 99, destructure
+           BOTH slots, take from the new map, destructure again. Present-key path: prior Some 10 /
+           taken 99 / empty map (10990); absent-key path: prior None / the added entry taken back /
+           len 1 (991) — both Option regimes and both map generations in one program.")
+  (input (do
+        (def (unwrap (: o (Option Int64)))
+          (match o ((Some v) v) ((None _u) 0)))
+        (def (main (: k Int64))
+          (do
+            (def m (Map.insert Map.empty 1 10))
+            (match (Map.swap m k 99)
+              ((tuple prior m2)
+                (match (Map.take m2 k)
+                  ((tuple taken m3)
+                    (+ (* (unwrap prior) 1000)
+                       (+ (* (unwrap taken) 10) (Map.len m3)))))))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 10990 Int64))
+  (call main (: 2 Int64)) (output (: 991 Int64)))
+
 (case "the value-yielding remove reports None when the key is absent"
   (doc    "The None arm the `Map.take` case above only describes: taking a key the map does NOT hold reports
            `(None unit)` as the dropped-value optional (nothing was dropped) — removal is total, never a

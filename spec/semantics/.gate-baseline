@@ -81,8 +81,10 @@ pass	ROTATE-90 composes row-reverse with transpose and four rotations restore th
 pass	STRING COMPRESSION emits char-count pairs but keeps the original unless strictly shorter
 pass	STRING ROTATION check searches the needle inside the doubled haystack at equal length
 pass	SUBSET-SUM COUNT folds each element into a fresh ways-table so no element is reused
+pass	SYMMETRIC difference built two ways from primitives agrees and dedups the overlap
 pass	Set.to-list over symbols enumerates in content-byte order regardless of insertion order
 pass	String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts
+pass	THREE stacked guards on one constructor classify a heap payload into bands in order
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow
 pass	TRIAL-DIVISION primality steps odd candidates to the square bound and reports the witness divisor
@@ -105,6 +107,7 @@ pass	a MAP MERGE folds one map's entries into another, summing values on key col
 pass	a MEDIAN-OF-3 filter smooths interior spikes while endpoints pass through unchanged
 pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
 pass	a Map.remove on a derived generation unshares the path without touching the ancestor
+pass	a NaN selected through a runtime if-join stays self-equal and unordered downstream
 pass	a PALINDROME two-pointer walk closes from both ends of a runtime rope
 pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
 pass	a PASCAL row derives from its predecessor by pairwise sums, certified by the 2^n row-sum
@@ -275,15 +278,19 @@ pass	a generic sum NESTS ITSELF at a different instantiation and destructures th
 pass	a handler arm RECURSES through a named helper before resuming
 pass	a handler arm applies a closure capturing a heap map and the map outlives the handle
 pass	a helper returns the shorter of two borrowed ropes and both caller handles stay live
+pass	a host response SIZES a guest-built collection which is then folded and keyed
 pass	a literal pattern at MID-SPINE depth gates the arm while deeper binders still bind
 pass	a map INVERSION flips keys and values, last-writer-wins on duplicate values
 pass	a map threaded through MUTUAL recursion is read in both functions at alternating depths
 pass	a map threaded through recursion is read at every depth and once more at the base
+pass	a match guard reads a HEAP payload's length and the arm body reuses the same binder
+pass	a max-FOLD over a list containing a computed NaN keeps the ordered maximum
 pass	a memoizing fold caches computed results in a Map and counts its hits
 pass	a middle curry STAGE is reused — one s1 residual yields an s2 applied twice
 pass	a model-oracle property — CHAMP Map.len agrees with a counting model over generated inserts
 pass	a module export is a CLOSURE FACTORY capturing a private sibling
 pass	a module export rides an OUTER combinator's fn parameter a runtime number of times
+pass	a module-PRIVATE heap Map is read through an exported accessor across repeated calls
 pass	a module-exported closure factory builds a PERFORMING closure homed at the apply site
 pass	a multi-use rope escapes a select through a Some shell and its twin survives the unwrap
 pass	a multi-use runtime Map do-def escapes an if-select and both CHAMP handles stay live
@@ -1309,6 +1316,9 @@ pass	a recursive walk over a runtime-SHAPED tree dispatches per call
 pass	a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
 pass	a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite
+pass	a NONZERO BigInt literal probe in a recursive quasiquote-pattern simp matches its own constructor
+pass	a runtime-built BigInt sum-payload literal probe matches its constructor
+pass	a runtime-built BigInt sum-payload literal probe falls through on a non-matching payload
 pass	a right shift of a negative by a RUNTIME amount stays arithmetic
 pass	a rope built before a perform survives the resume and the arm's own heap does not leak into it
 pass	a rope threads TWO chained if-selects, each operand multi-use, and every length stays live
@@ -1329,6 +1339,7 @@ pass	a runtime zero denominator PRODUCED BY ARITHMETIC traps at construction
 pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
 pass	a runtime-constructed Ast equals its quoted twin by structural content
 pass	a runtime-index List.update LOOP rewrites every 100th slot of a 1000-element list
+pass	a runtime-key swap-then-take chain threads both value-yields and the shrinking map
 pass	a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence
 pass	a select between a base map and its derived generation frees the loser but not shared nodes
 pass	a separator JOIN over a runtime parts list handles first-vs-rest and the empty list
@@ -1457,6 +1468,12 @@ pass	a genuinely-runtime left-shift count equal to the bit width traps rather th
 pass	a genuinely-runtime multiplication overflow traps on the emitted operation
 pass	a genuinely-runtime negation of the minimum integer traps
 pass	a genuinely-runtime NARROW-width unsigned overflow traps on the emitted operation
+pass	an exported UNANNOTATED helper instantiates at TWO types from the IMPORTER's call sites
+pass	an imported helper's performs discharge at a handler whose STATE is the importer's heap Map
+pass	an unannotated tuple-SWAP instantiates at two mixed scalar-heap element pairings in one program
+pass	difference DISTRIBUTES over union but is NOT associative - both facts witnessed live
+pass	print/read round-trips a tree carrying every leaf kind in one canonical form
+pass	the RUNTIME division identity a=(a/b)*b+(a%b) holds across all four sign quadrants
 pass	the runtime narrow-width add in range does not trap (the control)
 pass	a genuinely-runtime negative right-shift count traps rather than masking
 pass	a genuinely-runtime shift count that is a multiple of 2^32 traps rather than truncating to zero
@@ -4565,6 +4582,7 @@ pass	the three-way comparison over an equal runtime String yields Equal
 pass	the three-way comparison over equal runtime scalars yields Equal
 pass	the three-way comparison over runtime booleans orders false before true
 pass	the true-literal coercion of a float ordering compare returns the compare, NaN stays false
+pass	the two algebraic subset formulations agree on subset, superset, and equal operands
 pass	the two variants of Result compare unequal
 pass	the underlying numeric type obeys the numeric core — no silent promotion under a unit
 pass	the union contains the elements of either set
@@ -4689,6 +4707,7 @@ pass	two same-signature closures alongside a plain export all coexist
 pass	two same-signature closures alongside a plain export — the plain export runs
 pass	two same-variant ctor list elements refining the payload by literal fall through, not trap
 pass	two scalar matches of different widths beside i32 handles in one recursive emit frame stay valid
+pass	two sets of TUPLES built in different orders compare equal through the compound elements
 pass	two sets of different sizes are unequal, not a type error
 pass	two sets with different elements are unequal, not a type error
 pass	two sibling modules may each define a private helper of the same name

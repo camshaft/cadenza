@@ -413,6 +413,52 @@
   (call   unguarded (: 3 Int64))  (output (: -1 Int64))
   (call   unguarded (: -1 Int64)) (output (: -1 Int64)))
 
+(case "a match guard reads a HEAP payload's length and the arm body reuses the same binder"
+  (doc    "A guard that reads the heap payload it just destructured: (guard (Some xs) (> (List.len
+           xs) 2)) BORROWS xs for the predicate, then the SAME binder is consumed by whichever arm
+           wins — a guard that consumed the payload on failure would break the fall-through arm's
+           own List.len read. Faces: pass→sum 18 / fail→fall-through -1 / None→0.")
+  (input (do
+        (def (sum-l (: xs (List Int64)) (: acc Int64))
+          (match xs
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (f (: o (Option (List Int64))))
+          (match o
+            ((guard (Some xs) (> (List.len xs) 2)) (sum-l xs 0))
+            ((Some xs) (- 0 (List.len xs)))
+            ((None _u) 0)))
+        (def (main (: mode Int64))
+          (f (if (= mode 1) (Some (list 5 6 7)) (if (= mode 2) (Some (list 5)) (None unit)))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 18 Int64))
+  (call main (: 2 Int64)) (output (: -1 Int64))
+  (call main (: 3 Int64)) (output (: 0 Int64)))
+
+(case "THREE stacked guards on one constructor classify a heap payload into bands in order"
+  (doc    "The stacked face: three guards on ONE constructor classify by length bands (>4/>2/>0 →
+           3/2/1, bare (Some _) → 0). Each failing guard must RE-borrow xs for the next guard's
+           List.len — the payload survives N guard evaluations — and band order is first-match
+           semantics over overlapping predicates (a reorder or a consume-at-guard-1 breaks bands
+           2/3). Runtime-built list per call.")
+  (input (do
+        (def (build (: n Int64) (: acc (List Int64)))
+          (if (= n 0) acc (build (- n 1) (List.push acc 1))))
+        (def (band (: o (Option (List Int64))))
+          (match o
+            ((guard (Some xs) (> (List.len xs) 4)) 3)
+            ((guard (Some xs) (> (List.len xs) 2)) 2)
+            ((guard (Some xs) (> (List.len xs) 0)) 1)
+            ((Some _xs) 0)
+            ((None _u) -1)))
+        (def (main (: n Int64))
+          (band (Some (build n (list)))))
+        (export main)))
+  (call main (: 5 Int64)) (output (: 3 Int64))
+  (call main (: 3 Int64)) (output (: 2 Int64))
+  (call main (: 1 Int64)) (output (: 1 Int64))
+  (call main (: 0 Int64)) (output (: 0 Int64)))
+
 (case "unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)"
   (doc    "The soundness BOUNDARY of the unsigned interval refinement (value-facts GAP-A): an unsigned
            value is always ≥ 0, so a comparison against the domain's lower edge is a tautology the

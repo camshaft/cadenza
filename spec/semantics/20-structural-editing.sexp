@@ -431,3 +431,62 @@
             (export main)))
   (call   main (: 40 Int64))
   (output (: 42 Int64)))
+
+; --- The NONZERO recursive-BigInt-literal-probe row (breaker FINDING #22), now closed ---------------
+; The peephole cases above use only literal-0 patterns; the doc at "OVERLAPPING quote patterns" notes the
+; NONZERO row was a HELD wasm miscompile. Root (v-wasm-opt): a BigInt sum-payload literal-test's collect
+; walk resolved the payload via a hardcoded variant-0 import while emit used the ENTERED variant, so a
+; recursive self-call inside a quasiquote-pattern arm that matched a const-folded quote emitted a call to
+; an unresolved func index (u32::MAX sentinel) → invalid wasm module. FIXED wasm by a2e7bea0d (collect
+; uses ty_at_path_recorded, the entered variant); the runtime-scrutinee compare by 5505b5010; and the
+; RUST literal-probe render (was E0605 `Big as i64`) by ecadf1221 (compares by BigInt equality). These pin
+; the row the corpus never covered because every landed peephole used literal 0. (The plain-sum CONSTANT
+; `(Mk 1)` face — FACE-B — is separately HELD for rust: af3e8531f, the const-nominal-peel, is queued.)
+
+(case "a NONZERO BigInt literal probe in a recursive quasiquote-pattern simp matches its own constructor"
+  (doc    "The nonzero row of the peephole simp (breaker FINDING #22): `simp`'s quasiquote arm
+           `` `(* ,x 1) `` carries the NONZERO literal `1` (an `Ast.Int` = BigInt payload) and RECURSES
+           `(simp x)` on a match. Applied to `(quote (* y 1))` it rewrites to `(quote y)`, an `Ast.Name`,
+           so the probe returns 40. This was a wasm invalid-module (the recursive self-call in a
+           quasiquote arm matching a const-folded quote emitted an unresolved func index) until a2e7bea0d
+           made collect resolve the BigInt payload via the ENTERED variant, not a hardcoded variant-0
+           import. Rust declines the non-scalar literal-payload probe honestly (todo), so this is also a
+           rust-coverage marker for when that renders. wasm 40.")
+  (input  (do
+            (def (simp node)
+              (match node
+                (`(* ,x 1) (simp x))
+                (other     other)))
+            (def (main)
+              (match (simp (quote (* y 1)))
+                ((Ast.Name _n) 40)
+                (_ -1)))
+            (export main)))
+  (output (: 40 Int64)))
+
+(case "a runtime-built BigInt sum-payload literal probe matches its constructor"
+  (doc    "The runtime-scrutinee companion (no quote/Ast): a plain sum `(type W (Mk BigInt))` whose payload
+           is built from a RUNTIME parameter `(Mk (BigInt.of k))`, probed against the nonzero literal
+           `(Mk 1)`. At k=1 the probe matches → 40. This exercises the BigInt-payload literal-compare on the
+           emitted path (fixed on wasm by 5505b5010's entered-variant compare, and on rust by ecadf1221's
+           BigInt-equality render, replacing the prior `Big as i64` E0605 build-fail). Green on all
+           backends — the runtime-value analogue of the const-quote FACE above.")
+  (input  (do
+            (type W (Mk BigInt))
+            (def (main (: k Int64)) (match (Mk (BigInt.of k)) ((Mk 1) 40) (_ (- 0 1))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 40 Int64)))
+
+(case "a runtime-built BigInt sum-payload literal probe falls through on a non-matching payload"
+  (doc    "The miss companion: the same `(match (Mk (BigInt.of k)) ((Mk 1) 40) (_ -1))` at k=2 does NOT
+           match the literal `1` and takes the wildcard → -1. Confirms the emitted BigInt literal compare
+           is a genuine value test (not a zeroed/always-true probe — the falsified pattern-1-vs-input-2
+           case that a hardcoded-variant-0 or `Big as i64` cast would have mis-decided). Green on all
+           backends, the negative twin of the match case above.")
+  (input  (do
+            (type W (Mk BigInt))
+            (def (main (: k Int64)) (match (Mk (BigInt.of k)) ((Mk 1) 40) (_ (- 0 1))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: -1 Int64)))

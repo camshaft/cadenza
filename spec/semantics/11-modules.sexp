@@ -1094,6 +1094,49 @@
             (export main)))
   (output (: 42 Int64)))
 
+(case "a module-PRIVATE heap Map is read through an exported accessor across repeated calls"
+  (doc    "A module-level HEAP def (the member pins above cover scalars/closures/effects): private
+           tbl is a built Map, readable ONLY through the exported accessor, called repeatedly from
+           the importer — the module-level heap value must initialize once (or rebuild consistently)
+           per call, and its handle survives the module boundary with no owner in the importer's
+           frame. Hit ×2 + miss faces.")
+  (input (do
+        (import "table" (get))
+        (def (main (: k Int64))
+          (+ (* (get 1) 10) (+ (get k) 1)))
+        (export main)))
+  (module "table"
+    (do
+      (def tbl (Map.insert (Map.insert Map.empty 1 10) 2 20))
+      (def (get (: k Int64))
+        (match (Map.lookup tbl k) ((Some v) v) ((None _u) 0)))
+      (export get)))
+  (call main (: 2 Int64)) (output (: 121 Int64))
+  (call main (: 9 Int64)) (output (: 101 Int64)))
+
+(case "an exported UNANNOTATED helper instantiates at TWO types from the IMPORTER's call sites"
+  (doc    "The generic-VALUE crossing above lands one instantiation chosen by the LIB; here the
+           exported unannotated helper's TWO instantiations come from the IMPORTER's call sites
+           ((List Int64) + (List String)) — specialization must resolve against calls the defining
+           module never sees. Runtime n rides the int path, byte-len reads the string path.")
+  (input (do
+        (import "lib" (first))
+        (def (main (: n Int64))
+          (do
+            (def a (first (list n 6)))
+            (def s (first (list "ab" "c")))
+            (+ (* a 10) (String.byte-len s))))
+        (export main)))
+  (module "lib"
+    (do
+      (def (first xs)
+        (match xs
+          ((list h .. _t) h)
+          (_ (trap "empty"))))
+      (export first)))
+  (call main (: 5 Int64)) (output (: 52 Int64))
+  (call main (: 0 Int64)) (output (: 2 Int64)))
+
 (case "a sum TYPE and its constructors are imported by a wildcard and constructed in the entry"
   (doc    "Beyond exporting a sum VALUE (the cases above, where the entry RE-DECLARES a structurally-
            identical type), here `lib` EXPORTS the nominal sum TYPE `Color` CONCRETELY with the wildcard
@@ -1435,6 +1478,30 @@
                 (emit-twice n)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 70 Int64)))
+
+(case "an imported helper's performs discharge at a handler whose STATE is the importer's heap Map"
+  (doc    "The cross-module effect pin above threads SCALAR state; here the handle is seeded with
+           the importer's MAP — heap state the defining module never sees. The imported helper
+           performs twice; each arm Map.lookups the threaded state and re-threads it, so heap state
+           must survive perform/resume round-trips ACROSS the module boundary. Miss face -1·10+10=0.")
+  (input (do
+        (import "probe" (Look sum2))
+        (def (main (: b Int64))
+          (do
+            (def m (Map.insert (Map.insert Map.empty 1 10) 2 20))
+            (handle Look m
+              ((look (k) st (resume (match (Map.lookup st k) ((Some v) v) ((None _u) -1)) st)))
+              (sum2 1 b))))
+        (export main)))
+  (module "probe"
+    (do
+      (effect Look (op look (-> Int64 Int64)))
+      (def (sum2 (: a Int64) (: b Int64))
+        (+ (Look.look a) (* (Look.look b) 10)))
+      (export Look)
+      (export sum2)))
+  (call main (: 2 Int64)) (output (: 210 Int64))
+  (call main (: 9 Int64)) (output (: 0 Int64)))
 
 (case "a transitive re-export reaches the base module's function through the middle module"
   (doc    "`mid` imports `f` from `base` and re-exports it (`f` in mid's export clause); the entry imports

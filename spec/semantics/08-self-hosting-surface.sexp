@@ -20,3 +20,12 @@
   (input  (= (read (print (quote (+ 1 2))))
              (quote (+ 1 2))))
   (output (: true Bool)))
+
+(case "print/read round-trips a tree carrying every leaf kind in one canonical form"
+  (doc    "The all-leaf-kinds face of the round-trip law: one tree carries an int, a FLOAT (2.5 must
+           re-read as a float — a printer dropping the trailing '.' breaks it), a STRING (quote/escape
+           discipline), a bare NAME, and a nested compound with a NEGATIVE int and ZERO. read∘print
+           must be identity over the whole leaf alphabet at once, not per-kind.")
+  (input (= (read (print (quote (f 1 2.5 "s" x (g -3 0)))))
+            (quote (f 1 2.5 "s" x (g -3 0)))))
+  (output (: true Bool)))
