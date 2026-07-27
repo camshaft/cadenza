@@ -8102,11 +8102,15 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
 /// `cdz func-layout FILE` — the emitted-function LAYOUT of FILE's whole (linked import-closure) program.
 /// Follows the entry's IMPORT CLOSURE (like `cdz check`), so a package entry lays out every reachable def
 /// across the linked program — the SAME func-index set + order a real emit (`cdz test`/`cdz build`) uses.
-/// Drives `Query::FuncLayout`, which forces monomorphization + `layout::compute`. Prints the query's rows
-/// verbatim: a `defs-begin<TAB><import-base><TAB>-` marker then one `<func-index>\t<hash16>\t<name>` row per
-/// reachable def, func-index-ascending. The rows are already machine-readable (TAB-separated); this is a
-/// pass-through so a consumer (the compile-reuse witness, a cache-key builder) reads the layout directly.
-/// A layout that DECLINES (no export/@test to anchor emit) yields just the marker — a total query, rc 0.
+/// Drives `Query::FuncLayout`, which forces monomorphization then lays out the boundary — rooting on the
+/// program's `(export …)` clauses, and (since the @test-rooted fallback) falling back to the `@test` defs
+/// when there is no export, so a pure-`@test` file (a compiler-ml conformance file) lays out too. Prints
+/// the query's rows verbatim: a `defs-begin<TAB><import-base><TAB>-` marker then one
+/// `<func-index>\t<hash16>\t<name>` row per reachable def, func-index-ascending. The rows are already
+/// machine-readable (TAB-separated); this is a pass-through so a consumer (the compile-reuse witness, a
+/// cache-key builder) reads the layout directly. A layout that DECLINES — only when there is NEITHER an
+/// export NOR a `@test` to anchor emit — yields the EMPTY output (no marker, no rows); still a total query,
+/// rc 0.
 fn run_func_layout(args: &FuncLayoutArgs) -> ExitCode {
     // Follow the entry file's IMPORT CLOSURE so the layout spans the whole linked program (a compiler-ml
     // entry pulls its ~1360-def closure), matching what an emit sees. A file importing nothing loads as a
@@ -8147,7 +8151,8 @@ fn run_func_layout(args: &FuncLayoutArgs) -> ExitCode {
     };
     let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_FUNC_LAYOUT) else {
         // No artifact = the AST itself failed to decode/compile at the entry (a total query otherwise
-        // always produces at least the marker — or the empty string on a layout decline).
+        // always produces the func-layout artifact — the marker + rows, or the EMPTY string when the
+        // layout declines with neither an export nor a `@test`).
         report_errors(&out);
         return ExitCode::FAILURE;
     };

@@ -1410,6 +1410,19 @@ fn collect_callees(db: &mut Db, node: StructId, out: &mut Vec<StructId>) {
             if matches!(db.ast.head_name(item), Some("type") | Some("effect")) {
                 continue;
             }
+            // A do-local VALUE def `(def x V)` runs its RHS `V` when the block runs — a self-call in `V`
+            // (`(def hh (f …))`) is a REAL recursion edge. But the `def` form resolves to a declaration
+            // (`Poison`/`Ref`), NOT an expression, so the general descent below would treat it as a leaf and
+            // MISS the call in `V` → `is_recursive` returns false for a fn whose only self-call sits in a
+            // do-def RHS → the caller β-reduces it as non-recursive, descending REDUCE_DEPTH_LIMIT levels and
+            // mis-typing a heap-scalar recursive result as kind `Type` (the bogus CDZ0201 / >100s hang,
+            // recursive-BigInt-rebind bug). Descend into the value-RHS explicitly. (A FUNCTION do-def
+            // `(def (g p…) body)` is a separate lifted def — `do_value_def_value` returns None for it, so it
+            // is not walked here; its own recursion is analyzed at its own body.)
+            if let Some(v) = crate::resolve::do_value_def_value(db, item) {
+                collect_callees(db, v, out);
+                continue;
+            }
             collect_callees(db, item, out);
         }
         return;

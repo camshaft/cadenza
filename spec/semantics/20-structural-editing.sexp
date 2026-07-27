@@ -604,3 +604,32 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64)))
+
+;; A mutually-recursive fold that rebuilds an Ast list, then reads a payload derived from the
+;; rebuilt-list binder (`xs2`) while a sibling arm reuses that same binder, MUST build on every
+;; backend. Regression: on the rust/rust-async backends this used to fail to build with
+;; `E0382: borrow of moved value` (the non-Copy tuple/record field read moved the value out from
+;; under the sibling reuse); wasm already computed 102. Fixed by cloning the non-Copy field read
+;; so the sibling arm re-reads it intact. (breaker/corpus-bugfix routed → v-rust-backend f4ae338d1.)
+(case "a mutually-recursive fold matching a rebuilt list with a payload binder builds and computes"
+  (input (do
+        (def (fold node)
+          (match node
+            ((Ast.List xs)
+              (match (fold-list xs (list) 0)
+                ((tuple xs2 k)
+                  (match xs2
+                    ((list (Ast.Int a)) (tuple (Ast.Int a) (+ k 1)))
+                    (_ (tuple (Ast.List xs2) k))))))
+            (other (tuple other 0))))
+        (def (fold-list (: xs (List Ast)) (: acc (List Ast)) (: k Int64))
+          (match xs
+            ((list) (tuple acc k))
+            ((list h .. t)
+              (match (fold h)
+                ((tuple h2 k2) (fold-list t (List.push acc h2) (+ k k2)))))))
+        (def (main (: n Int64))
+          (match (fold (Ast.List (list (Ast.Int (BigInt.of n)))))
+            ((tuple _r k) (+ (* k 100) n))))
+        (export main)))
+  (call main (: 2 Int64)) (output (: 102 Int64)))
