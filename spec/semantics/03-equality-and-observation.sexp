@@ -488,6 +488,48 @@
             (export main)))
   (output (: 1 Int64)))
 
+(case "a tuple mixing an int, a runtime ROPE, and a FLOAT compares whole by per-kind leaf walks"
+  (doc    "The compound walk dispatches per-LEAF-KIND in one traversal (i64 compare / rope
+           content-canonicalize / canonical float-bit compare); the mode-2 face differs ONLY in the
+           float leaf so a walk that skipped the third kind passes falsely.")
+  (input (do
+        (def (main (: mode Int64))
+          (do
+            (def t1 (tuple 3 (String.concat "ab" "c") 2.5))
+            (def t2 (if (= mode 1) (tuple 3 "abc" 2.5) (tuple 3 "abc" 2.6)))
+            (if (= t1 t2) 1 0)))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 1 Int64))
+  (call main (: 2 Int64)) (output (: 0 Int64)))
+
+(case "a tuple key mixing int, rope, and float hashes and matches by all three leaf kinds"
+  (doc    "The CHAMP twin: hash AND eq both dispatch per-leaf-kind — the rope key canonicalizes at
+           the champ site, the mode-2 probe differs only in the FLOAT leaf → miss. Adds the MIXED
+           row to the tuple-leaf-kind matrix (single-heap-leaf rows landed earlier).")
+  (input (do
+        (def (main (: mode Int64))
+          (do
+            (def m (Map.insert Map.empty (tuple 3 (String.concat "ab" "c") 2.5) 42))
+            (match (Map.lookup m (if (= mode 1) (tuple 3 "abc" 2.5) (tuple 3 "abc" 2.6)))
+              ((Some v) v)
+              ((None _u) -1))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 42 Int64))
+  (call main (: 2 Int64)) (output (: -1 Int64)))
+
+(case "same-variant sums order by PAYLOAD when the discriminant ties"
+  (doc    "The sum-order pin above has the discriminant DECIDING; this pins the TIE — (A a) < (A b)
+           at runtime payloads, both directions + the equal face (the discriminant-then-payload
+           rule's second half witnessed).")
+  (input (do
+        (type Ord2 (A Int64) (B Int64))
+        (def (main (: a Int64) (: b Int64))
+          (if (< (Ord2.A a) (Ord2.A b)) 1 0))
+        (export main)))
+  (call main (: 2 Int64) (: 3 Int64)) (output (: 1 Int64))
+  (call main (: 3 Int64) (: 2 Int64)) (output (: 0 Int64))
+  (call main (: 2 Int64) (: 2 Int64)) (output (: 0 Int64)))
+
 (case "the compound comparator drives a full INSERTION SORT over runtime tuples"
   (doc    "The ordering pins above each make ONE comparison; this drives the blessed lexicographic
            `<` as the comparator of a recursive insort over three tuples — {(1,9),(2,5),(2,a)} — and

@@ -54,6 +54,109 @@ fn try_compile_rust(src: &str) -> Result<String, Vec<String>> {
 }
 
 #[test]
+fn a_recursive_fold_reusing_a_rebuilt_list_across_sibling_arms_builds_and_computes() {
+    // Perimeter companions to the payload-binder case (corpus-bugfix/breaker corrected discriminator,
+    // 2026-07-25): the E0382 trigger is a recursion whose match arm reads a payload DERIVED FROM the
+    // rebuilt-list binder `xs2` (a non-Copy Vec tuple field) while a SIBLING arm REUSES `xs2` — NOT
+    // list-pattern-specific. The clone-on-read of the `xs2` tuple field covers all such shapes. Both → 102.
+    // (a) a WILDCARD-element list pattern `(list _one)` — no payload binder — with sibling `xs2` reuse.
+    let wildcard = "(do \
+      (def (fold node) \
+        (match node \
+          ((Ast.List xs) \
+            (match (fold-list xs (list) 0) \
+              ((tuple xs2 k) \
+                (match xs2 \
+                  ((list _one) (tuple (Ast.List xs2) (+ k 1))) \
+                  (_ (tuple (Ast.List xs2) k)))))) \
+          (other (tuple other 0)))) \
+      (def (fold-list (: xs (List Ast)) (: acc (List Ast)) (: k Int64)) \
+        (match xs \
+          ((list) (tuple acc k)) \
+          ((list h .. t) \
+            (match (fold h) \
+              ((tuple h2 k2) (fold-list t (List.push acc h2) (+ k k2))))))) \
+      (def (run (: n Int64)) \
+        (match (fold (Ast.List (list (Ast.Int (BigInt.of n))))) \
+          ((tuple _r k) (+ (* k 100) n)))) \
+      (export run))";
+    let rs = compile_rust(wildcard);
+    if let Some(out) = rustc_run(&rs, "run(2)") {
+        assert_eq!(out, "102", "wildcard list-pattern + sibling reuse:\n{rs}");
+    }
+    // (b) a `List.at` OPTION destructure + sibling `xs2` reuse — no list pattern at all.
+    let option_at = "(do \
+      (def (fold node) \
+        (match node \
+          ((Ast.List xs) \
+            (match (fold-list xs (list) 0) \
+              ((tuple xs2 k) \
+                (match (List.at xs2 0) \
+                  ((Some (Ast.Int a)) (tuple (Ast.Int a) (+ k 1))) \
+                  (_ (tuple (Ast.List xs2) k)))))) \
+          (other (tuple other 0)))) \
+      (def (fold-list (: xs (List Ast)) (: acc (List Ast)) (: k Int64)) \
+        (match xs \
+          ((list) (tuple acc k)) \
+          ((list h .. t) \
+            (match (fold h) \
+              ((tuple h2 k2) (fold-list t (List.push acc h2) (+ k k2))))))) \
+      (def (run (: n Int64)) \
+        (match (fold (Ast.List (list (Ast.Int (BigInt.of n))))) \
+          ((tuple _r k) (+ (* k 100) n)))) \
+      (export run))";
+    let rs = compile_rust(option_at);
+    if let Some(out) = rustc_run(&rs, "run(2)") {
+        assert_eq!(
+            out, "102",
+            "List.at Option destructure + sibling reuse:\n{rs}"
+        );
+    }
+}
+
+#[test]
+fn a_recursive_fold_matching_a_rebuilt_list_with_a_payload_binder_builds_and_computes() {
+    // REGRESSION (breaker/corpus-bugfix, 2026-07-25): a MUTUALLY-RECURSIVE tree-fold that REBUILDS an Ast
+    // list then matches it with a PAYLOAD-binding list pattern `((list (Ast.Int a)) …)` used to NO-BUILD on
+    // rust with error[E0382]: borrow of moved value (the match-scrutinee temp), while wasm computed → 102.
+    // ROOT: the rebuilt-list binder `xs2` is a non-Copy `Vec` read off a tuple field `(__msN).0`; it is used
+    // BOTH as a list-match scrutinee (bound `let __lm = (__msN).0`, a MOVE) AND re-referenced in the
+    // catch-all `(Ast.List xs2)` → use-after-move. FIX: (1) a non-Copy tuple/record field read clones (leaves
+    // the tuple intact for a sibling field `.1`), and (2) the list-match registers its scrutinee local so arm
+    // reads borrow the one bound value. `main(2)` = fold reduces the single-element `[Ast.Int 2]` to
+    // `(Ast.Int 2, 1)`, then `k*100 + n = 1*100 + 2 = 102`.
+    let src = "(do \
+      (def (fold node) \
+        (match node \
+          ((Ast.List xs) \
+            (match (fold-list xs (list) 0) \
+              ((tuple xs2 k) \
+                (match xs2 \
+                  ((list (Ast.Int a)) (tuple (Ast.Int a) (+ k 1))) \
+                  (_ (tuple (Ast.List xs2) k)))))) \
+          (other (tuple other 0)))) \
+      (def (fold-list (: xs (List Ast)) (: acc (List Ast)) (: k Int64)) \
+        (match xs \
+          ((list) (tuple acc k)) \
+          ((list h .. t) \
+            (match (fold h) \
+              ((tuple h2 k2) (fold-list t (List.push acc h2) (+ k k2))))))) \
+      (def (run (: n Int64)) \
+        (match (fold (Ast.List (list (Ast.Int (BigInt.of n))))) \
+          ((tuple _r k) (+ (* k 100) n)))) \
+      (export run))";
+    // It must EMIT (not decline) — the E0382 was a hard rustc build-fail on emitted source.
+    let rs = compile_rust(src);
+    // End-to-end through rustc: the emitted source builds AND computes 102 (the wasm oracle).
+    if let Some(out) = rustc_run(&rs, "run(2)") {
+        assert_eq!(
+            out, "102",
+            "mutually-recursive rebuilt-list fold computes:\n{rs}"
+        );
+    }
+}
+
+#[test]
 fn a_nullary_export_emits_a_pub_fn_returning_a_constant() {
     let src = "(module m (def (main) 42) (export main))";
     let rs = compile_rust(src);

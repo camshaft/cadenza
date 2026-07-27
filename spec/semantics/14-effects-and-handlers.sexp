@@ -307,6 +307,23 @@
   (call main (: 1 Int64)) (output (: 2041 Int64))
   (call main (: 2 Int64)) (output (: 2010 Int64)))
 
+(case "a NON-LAST handler arm whose body is a MATCH round-trips through the ML printer"
+  (doc    "The regression witness for the arm-extent printer fix (v-syntax, batch #136): a NON-LAST
+           handler arm whose body is a match, followed by a sibling arm — pre-fix the inner match's
+           pipe-arms absorbed the next handler arm on ML re-read (AST mismatch); print_handle_arm
+           now paren-guards greedy block bodies. Exercises ml_surface_round_trips_the_corpus
+           end-to-end (the lib-side printer test uses hand-built ASTs). Both dispatch faces compute.")
+  (input (do
+        (effect S (op a (-> Int64 Int64)) (op b (-> Int64 Int64)))
+        (def (main (: n Int64))
+          (handle S 0
+            ((a (v) s (match v (0 (resume 1 s)) (_ (resume 2 s))))
+             (b (v) s (resume v s)))
+            (+ (S.a n) (S.b 10))))
+        (export main)))
+  (call main (: 0 Int64)) (output (: 11 Int64))
+  (call main (: 5 Int64)) (output (: 12 Int64)))
+
 (case "a rope built before a perform survives the resume and the arm's own heap does not leak into it"
   (doc    "RESUME-boundary heap liveness, both directions: the performing BODY holds a rope (passed
            in as a param) across the suspension — read AFTER the resume returns, so the suspended

@@ -291,9 +291,11 @@ pub enum Query {
     /// `(def …)` AST subtree (structure + leaves), so two builds that SHARE a def (byte-identical source)
     /// report the SAME hash — the observation the compile-reuse prove-first witness diffs (a shared def
     /// must get the SAME func-index AND the SAME content-hash across two per-file test builds) and the
-    /// basis for the Option-A content-addressed cache key. TOTAL: a program with no reachable def (e.g. no
-    /// export/@test) yields just the marker line (or empty if layout declines). Deterministic (func-index
-    /// order). A `--test`-mode build (EmitTests) lays the def region from the `@test` defs' reachability.
+    /// basis for the Option-A content-addressed cache key. Roots on `(export …)`; a program with NO export
+    /// falls back to the `@test`-rooted layout (`layout::compute_tests`, what `EmitTests`/`cdz test` lays),
+    /// so a pure-`@test` file reports the marker + its `@test`-reachable def rows. TOTAL: the result is
+    /// empty ONLY when BOTH layouts decline (no export AND no `@test`); an empty-but-laid-out program yields
+    /// just the marker line. Deterministic (func-index order).
     FuncLayout,
 }
 
@@ -874,8 +876,9 @@ fn hash_subtree(db: &Db, id: StructId, h: &mut crate::fxhash::FxHasher) {
         Struct::List(kids) => {
             h.write_u8(0); // tag: list
             h.write_u32(kids.len() as u32);
-            let kids: Vec<StructId> = kids.clone();
-            for k in kids {
+            // Iterate by ref — `hash_subtree` only borrows `db` immutably, so the shared borrow of `kids`
+            // (into `db.ast`) coexists with the recursive shared borrows; no clone needed.
+            for &k in kids {
                 hash_subtree(db, k, h);
             }
         }
