@@ -737,8 +737,10 @@ def type-eq(a: Typed, b: Typed) = ty-eq(typed-to-ty(a), typed-to-ty(b))
 /// Cases on `ctor-argtype-of`:
 ///  - Some(enc), enc ≥ 2 → a reader-encoded INT type → TIntW(pt-signed enc, pt-width enc), so `(Err Int32)`'s
 ///    binder is Int32 (reference-faithful narrow payload).
-///  - Some(1) → the BOOL sentinel (encode-bool-type) → Typed.TBool, so a `(BB Bool)` binder type-checks as Bool
-///    and `(if b …)` runs. Completes the GROUND-payload story (int widths + Bool).
+///  - Some(1) → the BOOL sentinel (encode-bool-type) → Typed.TErr for now: a `(BB Bool)` binder DECLINES because the
+///    Bool-payload VALUE round-trip (construct→store→extract→use-as-cond) is not-yet-wired — typing it TBool made
+///    the compiled `(if b …)` over an i64-repped payload trap `wasm unreachable` (b128). Re-enable to TBool is a
+///    1-line change here once the value path is wired. Ground-payload story = int widths complete, Bool declines.
 ///  - Some(-1) → the UNSUPPORTED sentinel (a non-int-non-bool payload — nested sum / compound the reader can't
 ///    encode) → TErr, so ANY use of the binder declines. Fixes v-inference's trap: without a distinct sentinel a
 ///    non-int payload's binder defaulted to Int64 and a Bool payload silently type-checked `(+ b 1)` as int.
