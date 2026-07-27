@@ -1137,6 +1137,43 @@
   (call main (: 5 Int64)) (output (: 52 Int64))
   (call main (: 0 Int64)) (output (: 2 Int64)))
 
+(case "an exported OPEN-ROW projector instantiates at importer widths the module never saw"
+  (doc    "The row companion of the generic-instantiation pin above: get-x instantiated by the
+           IMPORTER at a 3-field record AND a 1-field record — x sits at different physical offsets
+           under the sorted erasure, resolved per call site the defining module never saw.")
+  (input (do
+        (import "lib" (get-x))
+        (def (main (: n Int64))
+          (+ (* (get-x (record (x 5) (y 6) (z n))) 10)
+             (get-x (record (x 3)))))
+        (export main)))
+  (module "lib"
+    (do
+      (def (get-x r) (. r x))
+      (export get-x)))
+  (call main (: 7 Int64)) (output (: 53 Int64))
+  (call main (: 0 Int64)) (output (: 53 Int64)))
+
+(case "a module-private Symbol-keyed table resolves the IMPORTER's own symbol literals by content"
+  (doc    "Symbol content-identity ACROSS the module boundary: the module's literals key a private
+           map; the importer probes with ITS OWN literals — reader-interned literals of equal
+           content are ONE value at the champ hash (a per-module intern table leaking identity
+           would miss). The compiler symbol-table idiom cross-module. Miss face -1.")
+  (input (do
+        (import "ops" (op-code))
+        (def (main (: mode Int64))
+          (op-code (if (= mode 1) #"add" (if (= mode 2) #"mul" #"div"))))
+        (export main)))
+  (module "ops"
+    (do
+      (def tbl (Map.insert (Map.insert Map.empty #"add" 1) #"mul" 2))
+      (def (op-code (: s Symbol))
+        (match (Map.lookup tbl s) ((Some v) v) ((None _u) -1)))
+      (export op-code)))
+  (call main (: 1 Int64)) (output (: 1 Int64))
+  (call main (: 2 Int64)) (output (: 2 Int64))
+  (call main (: 3 Int64)) (output (: -1 Int64)))
+
 (case "a sum TYPE and its constructors are imported by a wildcard and constructed in the entry"
   (doc    "Beyond exporting a sum VALUE (the cases above, where the entry RE-DECLARES a structurally-
            identical type), here `lib` EXPORTS the nominal sum TYPE `Color` CONCRETELY with the wildcard

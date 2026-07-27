@@ -814,16 +814,26 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
 /// `layout::compute` like `Instantiations`, so the set + order equal a real emit's. The content-hash is a
 /// stable structural hash of the def's AST subtree (see [`def_content_hash`]) — a def shared byte-identically
 /// across two builds hashes the SAME, which is what the compile-reuse witness diffs (same func-index AND
-/// same content-hash per shared def) and the Option-A cache-key basis. TOTAL: a layout that declines (no
-/// export/@test) yields the empty result; an empty program yields just the marker.
+/// same content-hash per shared def) and the Option-A cache-key basis. Roots on `(export …)`; a program
+/// with NO export falls back to the `@test`-rooted layout (`compute_tests`) so a pure-`@test` file — the
+/// witness's target — lays out the same func-index set `cdz test` emits. TOTAL: only when BOTH decline (no
+/// export AND no `@test`) is the result empty; an empty program yields just the marker.
 fn func_layout_text(db: &mut Db) -> String {
     // Force monomorphization so the reachable set is complete + stable regardless of what a query-only run
     // would otherwise lower (mirrors `Instantiations`); then lay out the boundary to get the func-index
     // order. A layout decline (a program with no export) yields the empty result — the query is total.
     crate::layout::force_monomorphize(db);
+    // Root on `(export …)` when the program has any (a normal library/export build); otherwise fall back to
+    // the `@test`-rooted layout (`compute_tests`), which lays out the SAME func-index set `cdz test` emits.
+    // A pure-`@test` file (no export) is exactly the compile-reuse witness's target (sread-eval-fns / -ho),
+    // so without this fallback the query would decline (empty) on the files it most needs to observe. Both
+    // declining (no export AND no `@test`) yields the empty result — the query stays total.
     let layout = match crate::layout::compute(db) {
         Ok(l) => l,
-        Err(_) => return String::new(),
+        Err(_) => match crate::layout::compute_tests(db) {
+            Ok(l) => l,
+            Err(_) => return String::new(),
+        },
     };
     let mut text = format!("defs-begin\t{}\t-\n", layout.import_base);
     // `layout.order` is the defined-function emission sequence; def at position `k` is wasm func

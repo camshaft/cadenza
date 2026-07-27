@@ -78,6 +78,8 @@ pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without divisi
 pass	Qty map VALUES unwrap, ADD, and COMPARE in one chain preserving the unit through the collection
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
 pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
+pass	Record.merge carries HEAP-list fields from both operands into the merged layout
+pass	Record.with REPLACES one heap-list field while the sibling and the ORIGINAL stay live
 pass	STACKED @requires and @ensures both enforce at runtime on one def with a heap precondition
 pass	STRING COMPRESSION emits char-count pairs but keeps the original unless strictly shorter
 pass	STRING ROTATION check searches the needle inside the doubled haystack at equal length
@@ -92,6 +94,7 @@ pass	TRIAL-DIVISION primality steps odd candidates to the square bound and repor
 pass	TWO closures capture DIFFERENT generations of one shadowed name and each sees its own
 pass	TWO closures capture the SAME heap map and the map outlives both applications
 pass	TWO distinct nonzero BigInt literal probes dispatch in one recursive fn
+pass	TWO sequential inner handles seed from the outer's ADVANCING state
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	WAVE reorder alternates <= and >= by index parity through a carried-element walk
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
@@ -316,11 +319,13 @@ pass	a module export is a CLOSURE FACTORY capturing a private sibling
 pass	a module export rides an OUTER combinator's fn parameter a runtime number of times
 pass	a module-PRIVATE heap Map is read through an exported accessor across repeated calls
 pass	a module-exported closure factory builds a PERFORMING closure homed at the apply site
+pass	a module-private Symbol-keyed table resolves the IMPORTER's own symbol literals by content
 pass	a multi-use rope escapes a select through a Some shell and its twin survives the unwrap
 pass	a multi-use runtime Map do-def escapes an if-select and both CHAMP handles stay live
 pass	a multi-use runtime list do-def escapes an if-select inside a match arm and stays live
 pass	a mutually-recursive sum value stored as a MAP VALUE round-trips and evaluates
 pass	a nested Record.with rewrites an inner record field through the outer, inline
+pass	a nested handle's INIT expression performs against the OUTER handler before installing
 pass	a nested-record parameter projects its inner fields through two dot levels
 pass	a newtype-typed ACCUMULATOR threads a recursive fold through a wrapping add
 pass	a nibble OPCODE dispatches arms of different shapes with a byte-aligned dependent size
@@ -1456,7 +1461,9 @@ pass	a genuinely-runtime left-shift count equal to the bit width traps rather th
 pass	a genuinely-runtime multiplication overflow traps on the emitted operation
 pass	a genuinely-runtime negation of the minimum integer traps
 pass	a genuinely-runtime NARROW-width unsigned overflow traps on the emitted operation
+pass	an OPEN-sum value stored as a MAP VALUE matches back out with its open-tail arm
 pass	an arm binder SHADOWS an outer heap list and the outer survives the shadow's scope
+pass	an exported OPEN-ROW projector instantiates at importer widths the module never saw
 pass	an exported UNANNOTATED helper instantiates at TWO types from the IMPORTER's call sites
 pass	an imported helper's performs discharge at a handler whose STATE is the importer's heap Map
 pass	an unannotated tuple-SWAP instantiates at two mixed scalar-heap element pairings in one program
@@ -1469,6 +1476,7 @@ pass	generated string keys OVERWRITE by content and the first word's final value
 pass	hex and binary literals drive a runtime mask-extract across radix notations
 pass	mixed-sign Rational add and multiply normalize signs through one runtime chain
 pass	multi-limb BigInts equal in the LOW limb compare by the HIGH limb
+pass	outer handler state threads AROUND a completed inner handle of a different effect
 pass	print/read round-trips a tree carrying every leaf kind in one canonical form
 pass	runtime-packed nibbles MATCH back out through bits patterns - the pack-unpack identity
 pass	symbols interned from GENERATED strings dedup by content in a symbol set

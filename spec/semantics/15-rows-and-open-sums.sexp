@@ -65,6 +65,61 @@
   (call main (: 500 Int64)) (output (: 543 Int64))
   (call main (: 0 Int64)) (output (: 43 Int64)))
 
+(case "Record.merge carries HEAP-list fields from both operands into the merged layout"
+  (doc    "The merge pins carry scalars; these fields are LISTS (one runtime-valued) — the disjoint
+           merge must carry both heap HANDLES into the merged sorted layout, both projected+folded
+           after (a merge copying field slots as scalars corrupts a handle).")
+  (input (do
+        (def (sum-l (: l (List Int64)) (: acc Int64))
+          (match l
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (main (: n Int64))
+          (do
+            (def m (Record.merge (record (xs (list 1 n))) (record (ys (list 7)))))
+            (+ (* (sum-l (. m xs) 0) 10) (sum-l (. m ys) 0))))
+        (export main)))
+  (call main (: 2 Int64)) (output (: 37 Int64))
+  (call main (: 0 Int64)) (output (: 17 Int64)))
+
+(case "Record.with REPLACES one heap-list field while the sibling and the ORIGINAL stay live"
+  (doc    "The update path's heap discipline: one LIST field replaced, the runtime-valued sibling
+           carries through, and the ORIGINAL record's replaced field stays live (persistence: r
+           reads [1 2] after r2 replaced it) — three heap handles across two record generations.")
+  (input (do
+        (def (sum-l (: l (List Int64)) (: acc Int64))
+          (match l
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (main (: n Int64))
+          (do
+            (def r (record (xs (list 1 2)) (ys (list 7 n))))
+            (def r2 (Record.with r xs (list 9)))
+            (+ (* (sum-l (. r2 xs) 0) 100)
+               (+ (* (sum-l (. r2 ys) 0) 10)
+                  (sum-l (. r xs) 0)))))
+        (export main)))
+  (call main (: 3 Int64)) (output (: 1003 Int64))
+  (call main (: 0 Int64)) (output (: 973 Int64)))
+
+(case "an OPEN-sum value stored as a MAP VALUE matches back out with its open-tail arm"
+  (doc    "The nesting pins put open sums in SUM payloads; this is the collection slot — stored as
+           map values, looked up, matched with named + open-tail + miss arms (the rep round-trips
+           the CHAMP value slot with its tag intact).")
+  (input (do
+        (type Ev (A Int64) (B Int64) .. r)
+        (def (main (: k Int64))
+          (do
+            (def m (Map.insert (Map.insert Map.empty 1 (Ev.A 10)) 2 (Ev.B 7)))
+            (match (Map.lookup m k)
+              ((Some (A n)) (* n 10))
+              ((Some _) 7)
+              ((None _u) 0))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 100 Int64))
+  (call main (: 2 Int64)) (output (: 7 Int64))
+  (call main (: 9 Int64)) (output (: 0 Int64)))
+
 (case "a record whose field is a List projects the list handle and indexes it, alongside a scalar field"
   (doc    "A record field may itself be a variable-length collection — distinct from a fixed-shape tuple
            field (which the ABI flattens depth-first): a `List` field is a HEAP HANDLE that must round-trip

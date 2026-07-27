@@ -271,7 +271,7 @@
 
 (case "INTERLEAVED pops and inserts keep the event queue min-ordered across live mutation"
   (doc    "The LIVE-MUTATION face (the draining case above inserts everything THEN drains): pops and
-           inserts interleave as in a running scheduler where wakes file while events drain — pop A,
+           inserts interleave as in a running scheduler where wakes fire while events drain — pop A,
            insert B EARLIER than the resident D (a later insert beating an already-resident entry),
            pop B, insert C mid-queue; mode 2 adds Z@0 straight to the FRONT after two pops have
            restructured the spine. Trace A,B,C,D / A,B,Z,C,D.")

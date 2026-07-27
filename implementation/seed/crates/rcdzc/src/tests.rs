@@ -73351,6 +73351,36 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn a_func_layout_query_roots_on_tests_when_a_program_has_no_export() {
+        // The compile-reuse witness targets PURE `@test` files (sread-eval-fns / -ho) — no `(export …)`. A
+        // FuncLayout on such a file must NOT decline (empty): it falls back to the `@test`-rooted layout
+        // (`compute_tests`), the SAME func-index set `cdz test` emits, so the witness can diff the shared
+        // (non-test) rows. Here a nullary `@test` calls a recursive `sumto`, which stays a standalone
+        // emitted function (a shared def a real witness would key on).
+        let src = "(do \
+                    (def (sumto (: n Int64)) (if (= n 0) 0 (+ n (sumto (- n 1))))) \
+                    (@ test (def (t) (if (= (sumto 5) 15) unit (trap \"x\"))))) ";
+        let out = compile(&inputs(src, &[Request::Query(Query::FuncLayout)]), &[]);
+        assert!(
+            !out.has_error(),
+            "a query does not fail: {:?}",
+            out.diagnostics
+        );
+        let text = artifact_text(&out, KIND_FUNC_LAYOUT).expect("a func-layout artifact");
+        assert!(
+            text.starts_with("defs-begin\t"),
+            "a pure-@test program still lays out (rooted on @tests), not an empty decline:\n{text:?}"
+        );
+        // `sumto` (recursive, reachable from the @test) is a standalone emitted row — the kind of shared
+        // def the witness diffs across the two files.
+        assert!(
+            text.lines()
+                .any(|l| l.split('\t').nth(2).is_some_and(|n| n.starts_with("sumto"))),
+            "the @test-rooted layout reaches + emits `sumto`:\n{text}"
+        );
+    }
+
+    #[test]
     fn a_doc_of_query_reads_a_definitions_docstring() {
         // A `DocOf` request answers with a definition's `(doc "…")` text — captured off the def body at
         // load (`strip_def_docs`) and read from the doc column, for both a value and a function def.

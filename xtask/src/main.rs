@@ -651,11 +651,11 @@ fn suite_timeout_for(suite: &str) -> std::time::Duration {
 /// (40 run-src @tests, each building the whole pipeline into its own component) at ~480s, and
 /// conformance-db-cx at ~580-700s — both slow-but-PASSING (the compile progresses, doesn't loop),
 /// racing the old 720s cap NONDETERMINISTICALLY when fleet load is high (they finish at ~750-900s under
-/// contention). So the default is 1200s — the value pr-sync had to set by hand (CDZ_ML_PER_FILE_TIMEOUT_
-/// SECS=1200) on EVERY re-gate, which was doubling the ~3hr suite per batch; making it the default lets
-/// the FIRST gate pass and ends that wasted double-gate. Enough headroom that a genuinely-slow file
-/// finishes under load, while
-/// still FAR below the 45-min whole-suite ceiling (so one true runaway is still killed fast+named). This
+/// contention). So the default is 1200s — the value pr-sync had to set by hand
+/// (`CDZ_ML_PER_FILE_TIMEOUT_SECS=1200`) on EVERY re-gate, which was doubling the ~3hr suite per batch;
+/// making it the default lets the FIRST gate pass and ends that wasted double-gate. Enough headroom that
+/// a genuinely-slow file finishes under load, while still FAR below the 45-min whole-suite ceiling (so
+/// one true runaway is still killed fast+named). This
 /// is a HANG bound, not a throughput throttle (concurrency — JOBS=2 — is the throughput lever).
 /// `CDZ_ML_PER_FILE_TIMEOUT_SECS` overrides (operator escape hatch); `=0`/garbage → default.
 fn ml_per_file_timeout() -> std::time::Duration {
@@ -6889,9 +6889,10 @@ mod trap_grading_tests {
         // Default is conservative (min(cores, 2) — lowered from 4 after the pr-sync systemic-timeout
         // report: 4-way concurrency raced the per-file cap under fleet load) AND clamped to the file count
         // so we never spawn idle workers — with 2 files the pool is at most 2 regardless of cores.
-        assert!(
-            ml_test_jobs_from(None, 1) <= 1,
-            "default clamped to file count"
+        assert_eq!(
+            ml_test_jobs_from(None, 1),
+            1,
+            "default clamped to file count = EXACTLY 1 (not 0 — catches an accidental under-clamp)"
         );
         assert!(
             ml_test_jobs_from(None, 100) <= 2,

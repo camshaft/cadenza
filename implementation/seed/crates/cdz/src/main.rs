@@ -301,6 +301,16 @@ enum Cmd {
     /// arguments (a recursive generic at each element type, a type-valued-parameter def at each type, and
     /// a `const` dictionary parameter at each concrete dictionary — the ad-hoc-polymorphism case).
     Instantiations(InstantiationsArgs),
+    /// The EMITTED-FUNCTION LAYOUT of FILE's whole (linked import-closure) program — each reachable
+    /// definition's absolute wasm FUNCTION INDEX + a stable content-hash of its `(def …)` AST subtree, in
+    /// func-index order, preceded by a `defs-begin<TAB><import-base><TAB>-` marker (runtime-op imports
+    /// occupy `0..import-base`). Drives `Query::FuncLayout`, which forces monomorphization + lays out the
+    /// boundary exactly as a real emit does, so the reported set + order equal what `cdz test`/`cdz build`
+    /// would emit. Each row is `<func-index>\t<content-hash-16hex>\t<name>`. The content-hash is a function
+    /// of the def's own subtree, so a def byte-identical across two programs hashes the SAME regardless of
+    /// its global position — the basis for compile-reuse cache-keying and the byte-identity witness that a
+    /// shared import-closure emits identically across test files.
+    FuncLayout(FuncLayoutArgs),
     /// The `@param` WIDGET MANIFEST of FILE — one record per `@param(widget: …) name : Type` site, the
     /// data a HOST (browser/CAD/notebook) reads to render a control per program parameter. Prints
     /// `file:line:col: name : type [widget=… range=[lo,hi] options=[…] default=…]` per site (`--json`
@@ -480,6 +490,7 @@ fn main() -> ExitCode {
         Cmd::Doc(a) => run_doc(&a),
         Cmd::DocAt(a) => run_doc_at(&a),
         Cmd::Instantiations(a) => run_instantiations(&a),
+        Cmd::FuncLayout(a) => run_func_layout(&a),
         Cmd::ParamManifest(a) => run_param_manifest(&a),
         Cmd::Lsp => run_lsp(),
         Cmd::RunMl(a) => run_run_ml(&a),
@@ -6339,6 +6350,14 @@ struct InstantiationsArgs {
 }
 
 #[derive(clap::Args)]
+struct FuncLayoutArgs {
+    /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr). Its whole import closure is laid
+    /// out, so a package entry reports every reachable def across the linked program (the same set an
+    /// emit produces), not just the entry file's own defs.
+    file: String,
+}
+
+#[derive(clap::Args)]
 struct ParamManifestArgs {
     /// The program file (`.cdz`/`.ml` → ml, `.sexp`/`.sexpr` → sexpr).
     file: String,
@@ -8072,6 +8091,93 @@ fn run_instantiations(args: &InstantiationsArgs) -> ExitCode {
                 malformed = true;
             }
         }
+    }
+    if malformed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// `cdz func-layout FILE` — the emitted-function LAYOUT of FILE's whole (linked import-closure) program.
+/// Follows the entry's IMPORT CLOSURE (like `cdz check`), so a package entry lays out every reachable def
+/// across the linked program — the SAME func-index set + order a real emit (`cdz test`/`cdz build`) uses.
+/// Drives `Query::FuncLayout`, which forces monomorphization + `layout::compute`. Prints the query's rows
+/// verbatim: a `defs-begin<TAB><import-base><TAB>-` marker then one `<func-index>\t<hash16>\t<name>` row per
+/// reachable def, func-index-ascending. The rows are already machine-readable (TAB-separated); this is a
+/// pass-through so a consumer (the compile-reuse witness, a cache-key builder) reads the layout directly.
+/// A layout that DECLINES (no export/@test to anchor emit) yields just the marker — a total query, rc 0.
+fn run_func_layout(args: &FuncLayoutArgs) -> ExitCode {
+    // Follow the entry file's IMPORT CLOSURE so the layout spans the whole linked program (a compiler-ml
+    // entry pulls its ~1360-def closure), matching what an emit sees. A file importing nothing loads as a
+    // lone file, byte-identical to a standalone layout.
+    let files = match load_import_closure_with(&args.file, &|_| None) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{PROG}: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Route through the package/link path whenever the ENTRY declares an `(import …)` — splice all closure
+    // files into one program so cross-file references resolve, exactly as the `check` package path does.
+    let is_package = !declared_import_paths(&files[0].arenas).is_empty();
+    let out = if is_package {
+        let mut inputs: Vec<rcdzc::Artifact> = files
+            .iter()
+            .map(|f| {
+                rcdzc::Artifact::new(
+                    rcdzc::Artifact::KIND_AST,
+                    f.name.clone(),
+                    cadenza_syntax::codec::encode(&f.arenas),
+                )
+            })
+            .collect();
+        inputs.push(rcdzc::Artifact::new(
+            rcdzc::sidecar::KIND_SIDECAR,
+            "drive",
+            rcdzc::sidecar::encode(&[rcdzc::Request::Query(rcdzc::sidecar::Query::FuncLayout)]),
+        ));
+        inputs.push(compiler_cli::entry_artifact(&files[0].name));
+        rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
+    } else {
+        run_sidecar(
+            &files[0].arenas,
+            rcdzc::Request::Query(rcdzc::sidecar::Query::FuncLayout),
+        )
+    };
+    let Some(bytes) = out.artifact(rcdzc::sidecar::KIND_FUNC_LAYOUT) else {
+        // No artifact = the AST itself failed to decode/compile at the entry (a total query otherwise
+        // always produces at least the marker — or the empty string on a layout decline).
+        report_errors(&out);
+        return ExitCode::FAILURE;
+    };
+    let text = String::from_utf8_lossy(bytes);
+    // Validate each row's shape loudly rather than silently passing a format-skewed line through (the
+    // silent-skip class other query readers guard against). The marker is `defs-begin<TAB>N<TAB>-`; every
+    // other row is `<idx>\t<hash>\t<name>`. A layout decline is the empty string — a valid (rc 0) result.
+    let mut malformed = false;
+    for (n, line) in text.lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let cols: Vec<&str> = line.split('\t').collect();
+        let ok = if n == 0 {
+            cols.len() == 3 && cols[0] == "defs-begin" && cols[1].parse::<u32>().is_ok()
+        } else {
+            // idx is a func-index number or `-` (an emitted def with no assigned slot is reported `-`);
+            // hash is 16 hex digits; name is non-empty.
+            cols.len() == 3
+                && (cols[0] == "-" || cols[0].parse::<u32>().is_ok())
+                && cols[1].len() == 16
+                && cols[1].chars().all(|c| c.is_ascii_hexdigit())
+                && !cols[2].is_empty()
+        };
+        if !ok {
+            report_malformed_query_row("func-layout", line);
+            malformed = true;
+            continue;
+        }
+        println!("{line}");
     }
     if malformed {
         ExitCode::FAILURE
