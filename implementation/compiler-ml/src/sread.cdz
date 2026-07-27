@@ -681,10 +681,11 @@ def read-match-arms(s: String, i: Int64, scrutId: Int64, tree: Tree) =
            // now TYPE-gated (scrut must be TSum of the ctor's decl) so a raw-int-over-TSum correctly declines.
            else read-nullary-ctor-pattern-arm(s, p, scrutId, tree))))))))
 
-/// ii-c2b-2: read a NULLARY ctor-NAME pattern arm `(Green body)` → NMatchCtor(scrut, ctorName, -1, body, rest).
+/// ii-c2b-2: read a NULLARY ctor-NAME pattern arm `(Green body)` → NMatchCtor(scrut, ctorName, [], body, rest).
 /// `p` is at the ctor NAME atom (the arm's outer `(` already consumed). No binder (a nullary ctor carries no
-/// payload) → binder sentinel -1. An unknown ctor name (not in the ct table) → decline (skip the whole arm), like
-/// the payload path. lower re-derives the tag + the enum-disc-vs-boxed rep from the ctor name via decl-is-enum-disc.
+/// payload) → an EMPTY binder LIST `[]` (binder-LIST schema; a single-binder pattern is [id], a compound [id0,id1…]).
+/// An unknown ctor name (not in the ct table) → decline (skip the whole arm), like the payload path. lower re-derives
+/// the tag + the enum-disc-vs-boxed rep from the ctor name via decl-is-enum-disc (empty binder list → CMatchEnum).
 def read-nullary-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tree) =
   (match scan-atom(s, p, "") with | (cnm, c1) =>                    // the ctor NAME
     (match ctor-tag-of(tree, name-id(cnm)) with
@@ -699,7 +700,7 @@ def read-nullary-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tre
              (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>   // recurse for rest
                (match add-node(t3, Node.NMatchCtor(scrutId, name-id(cnm), ([] : List(Int64)), bodyId, restId)) with | (id, t4) => (id, r1, t4)))))))
 
-/// M2-b-2b-ii-c: read a PAYLOAD ctor-pattern arm `((Ctor x) body)` → NMatchCtor(scrut, patCtorName, binderId, body, rest).
+/// M2-b-2b-ii-c: read a PAYLOAD ctor-pattern arm `((Ctor x) body)` → NMatchCtor(scrut, patCtorName, [binderId], body, rest).
 /// `p` is at the inner `(` of the pattern (the arm's outer `(` already consumed by open-paren in read-match-arms).
 /// Read the ctor NAME + its single binder NAME (an NVar node bound in the body scope), look the ctor's tag via
 /// ctor-tag-of, consume the pattern's `)`, read the body, recurse for the rest, build NMatchCtor. A ctor with NO
