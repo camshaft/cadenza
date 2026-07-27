@@ -1978,10 +1978,16 @@ impl<'a> Printer<'a> {
         // arms. The arm box closes before `in` so `in` returns to the `handle` column.
         if let Struct::List(arms) = self.a.get(arms_occ) {
             let arms = arms.clone();
-            for &arm in &arms {
+            for (i, &arm) in arms.iter().enumerate() {
                 self.doc.hardbreak();
                 self.doc.word("| ");
-                self.print_handle_arm(arm);
+                // A NON-LAST arm whose body is a greedy block form (`match`/`let`/`if`/…) must
+                // parenthesize, else its own `|`-led arms / trailing body run into the next `| op`
+                // handler arm on re-parse (the arm-extent ambiguity: an inner `match`'s arms and the
+                // outer handler's arms are both pipe-prefixed at the same column). The LAST arm needs
+                // no guard — `in` terminates it. Symmetric with `print_match`'s non-last-arm guard.
+                let last = i + 1 == arms.len();
+                self.print_handle_arm(arm, last);
             }
         }
         self.doc.end();
@@ -1999,7 +2005,7 @@ impl<'a> Printer<'a> {
 
     /// One handler arm `(op (p…) state body)` -> `op(p…, state) => body`. The state binder is appended
     /// as the LAST entry of the parenthesized binder list (symmetric with `resume(value, state)`).
-    fn print_handle_arm(&mut self, arm: StructId) {
+    fn print_handle_arm(&mut self, arm: StructId, last: bool) {
         let Struct::List(parts) = self.a.get(arm) else {
             return self.expr(arm, 0);
         };
@@ -2018,7 +2024,11 @@ impl<'a> Printer<'a> {
         }
         self.expr(state, 0); // the state binder, last
         self.doc.word(") => ");
-        self.expr(body, 0);
+        // A non-last arm's greedy block-form body (`match`/`let`/`if`/…) parenthesizes so its arms
+        // don't run into the next `| op` handler arm on re-parse; the last arm's body is terminated
+        // by `in`, so it needs no guard. `PREC_KEYWORD` forces block-form parens without wrapping an
+        // infix body — identical to `print_match`'s non-last-arm treatment.
+        self.expr(body, if last { 0 } else { PREC_KEYWORD });
     }
 
     /// `host E, … in body` — an entrypoint delegation. `args` is `(E …) body`; the effects render as a
@@ -4510,6 +4520,68 @@ mod tests {
         );
         // Idempotent.
         assert_eq!(print(&back.arenas, 80), ml, "not idempotent: {ml}");
+    }
+
+    #[test]
+    fn a_non_last_handler_arm_with_a_greedy_block_body_parenthesizes_so_it_round_trips() {
+        // ARM-EXTENT regression (breaker report): a handler arm whose BODY is a greedy block form
+        // (`match`/`let`/`if`) printed UNGUARDED, so its own `|`-led arms (a match) or trailing body
+        // ran into the NEXT `| op` handler arm on re-parse — the re-reader swallowed the following
+        // handler arm as an extra inner-`match` arm (`corpus_roundtrip` AST-mismatch). `print_match`
+        // already guards a non-last arm's block body with `PREC_KEYWORD`; `print_handle_arm` now does
+        // the same. Each case must re-parse STRUCTURALLY-EQUAL and print idempotently, at every width.
+        let cases = [
+            // A match-bodied FIRST arm, a plain SECOND arm — the reported shape.
+            "(do (effect S (op a (-> Int64 Int64)) (op b (-> Int64 Int64))) \
+             (def (main (: n Int64)) (handle S 0 \
+               ((a (v) st (match v (0 (resume 1 st)) (_ (resume 2 st)))) \
+                (b (w) st (resume w st))) \
+               ((. S a) n))) (export main))",
+            // A let-bodied non-last arm.
+            "(do (effect S (op a (-> Int64 Int64)) (op b (-> Int64 Int64))) \
+             (def (main (: n Int64)) (handle S 0 \
+               ((a (v) st (let ((x 5)) (resume x st))) \
+                (b (w) st (resume w st))) \
+               ((. S a) n))) (export main))",
+            // An if-bodied non-last arm.
+            "(do (effect S (op a (-> Int64 Int64)) (op b (-> Int64 Int64))) \
+             (def (main (: n Int64)) (handle S 0 \
+               ((a (v) st (if (< v 0) (resume 0 st) (resume 1 st))) \
+                (b (w) st (resume w st))) \
+               ((. S a) n))) (export main))",
+        ];
+        for sx in cases {
+            let a = sexpr::read(sx).unwrap_or_else(|e| panic!("oracle {sx:?}: {}", e.0));
+            for &width in &[0usize, 20, 40, 100] {
+                let ml = print(&a, width);
+                let back = parser::read_ml(&ml);
+                assert!(back.ok(), "reparse (w={width}) {ml:?}: {:?}", back.errors);
+                assert!(
+                    a.structurally_eq(&back.arenas),
+                    "non-last block-bodied handler arm not faithful (w={width})\n\
+                     --- ml ---\n{ml}\n--- input ---\n{}\n--- reread ---\n{}",
+                    sexpr::print(&a),
+                    sexpr::print(&back.arenas)
+                );
+                assert_eq!(
+                    print(&back.arenas, width),
+                    ml,
+                    "not idempotent (w={width}): {ml}"
+                );
+            }
+        }
+        // A LAST arm needs no guard — a bare `match`-bodied final arm still prints WITHOUT wrapping
+        // parens (nothing follows it at the arm level; `in` terminates it).
+        let last_arm = "(do (effect S (op note (-> Int64 Int64))) \
+             (def (main (: n Int64)) (handle S 0 \
+               ((note (v) st (match v (0 (resume 1 st)) (_ (resume 2 st))))) \
+               ((. S note) n))) (export main))";
+        let a = sexpr::read(last_arm).unwrap();
+        let ml = print(&a, 100);
+        assert!(
+            ml.contains("=> match v with") && !ml.contains("=> (match"),
+            "a LAST handler arm's match body is NOT wrapped in parens:\n{ml}"
+        );
     }
 
     #[test]

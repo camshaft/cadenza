@@ -3863,6 +3863,68 @@
             (export main)))
   (output (: 4022 Int64)))
 
+(case "a nested handle's INIT expression performs against the OUTER handler before installing"
+  (doc    "The install boundary itself performing: the inner seed (Out.tick) evaluates in the
+           OUTER's scope, its resume value becomes the inner seed, and the outer state advance
+           survives to the trailing (Out.tick) — 100+101=201.")
+  (input (do
+        (effect Out (op tick (-> Unit Int64)))
+        (effect In (op get (-> Unit Int64)))
+        (def (main (: seed Int64))
+          (handle Out seed
+            ((tick (_u) c (resume c (+ c 1))))
+            (+ (handle In (Out.tick)
+                 ((get (_u) s (resume s s)))
+                 (In.get))
+               (Out.tick))))
+        (export main)))
+  (call main (: 100 Int64)) (output (: 201 Int64))
+  (call main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "outer handler state threads AROUND a completed inner handle of a different effect"
+  (doc    "State continuity across an inner lifecycle: outer tick / full inner handle installs+runs+
+           tears down / outer tick — the b−a=1 digit proves exactly ONE increment happened across
+           the inner (a state reset or double-advance flips it).")
+  (input (do
+        (effect Out (op tick (-> Unit Int64)))
+        (effect In (op get (-> Unit Int64)))
+        (def (main (: seed Int64))
+          (handle Out seed
+            ((tick (_u) c (resume c (+ c 1))))
+            (do
+              (def a (Out.tick))
+              (def inner (handle In 5
+                           ((get (_u) s (resume s s)))
+                           (In.get)))
+              (def b (Out.tick))
+              (+ (* a 100) (+ (* inner 10) (- b a))))))
+        (export main)))
+  (call main (: 3 Int64)) (output (: 351 Int64))
+  (call main (: 0 Int64)) (output (: 51 Int64)))
+
+(case "TWO sequential inner handles seed from the outer's ADVANCING state"
+  (doc    "Repeated seeding: each inner's performing INIT reads the outer at a different point
+           (i1=seed, i2=seed+1) and fin−i1=2 proves both advances stuck across two full inner
+           install/teardown cycles.")
+  (input (do
+        (effect Out (op tick (-> Unit Int64)))
+        (effect In (op get (-> Unit Int64)))
+        (def (main (: seed Int64))
+          (handle Out seed
+            ((tick (_u) c (resume c (+ c 1))))
+            (do
+              (def i1 (handle In (Out.tick)
+                        ((get (_u) s (resume s s)))
+                        (In.get)))
+              (def i2 (handle In (Out.tick)
+                        ((get (_u) s (resume s s)))
+                        (In.get)))
+              (def fin (Out.tick))
+              (+ (* i1 100) (+ (* i2 10) (- fin i1))))))
+        (export main)))
+  (call main (: 3 Int64)) (output (: 342 Int64))
+  (call main (: 0 Int64)) (output (: 12 Int64)))
+
 (case "the same function called under two handlers is discharged by each in turn"
   (doc    "Witnesses capabilities-and-effects.md #Handler Resolution Is Dynamic In Extent And Statically
            Determined (the monomorphization property): a single function `ask` = `(+ (Get.get) 1)` is
