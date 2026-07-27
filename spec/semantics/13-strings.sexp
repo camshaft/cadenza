@@ -3863,3 +3863,95 @@
   (output (: 1 Int64))
   (call   main (: "日本語" String))
   (output (: 6 Int64)))
+
+(case "String.slice across a multibyte scalar carries byte-len 2 with scalar-len 1, and degenerate ranges answer Some-empty / None"
+  (doc    "Three boundary faces of the fallible scalar-indexed slice over \"aéb\" (é = ONE scalar, TWO
+           bytes): [1,2) extracts é as a VIEW whose byte-len is 2 while scalar-len is 1 (21) — a slice
+           machinery that computed the view's byte extent from SCALAR indices 1:1 would report 1;
+           [0,0) is a VALID empty slice (Some, byte-len 0 -> 100), not a failure; and the INVERTED
+           range [2,1) is None (7), not a trap and not an empty view.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def s "aéb")
+            (if (= mode 1)
+                (match (String.slice s 1 2)
+                  ((Some v) (+ (* 10 (String.byte-len v)) (String.scalar-len v)))
+                  ((None _u) -1))
+                (if (= mode 2)
+                    (match (String.slice s 0 0)
+                      ((Some v) (+ 100 (String.byte-len v)))
+                      ((None _u) -1))
+                    (match (String.slice s 2 1)
+                      ((Some _v) -2)
+                      ((None _u) 7))))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 21 Int64))
+  (call   main (: 2 Int64)) (output (: 100 Int64))
+  (call   main (: 3 Int64)) (output (: 7 Int64)))
+
+(case "String.slice spanning a rope seam maps a scalar range to the exact byte extent"
+  (doc    "The RANGE-VIEW companion of the every-width String.at rope case: the rope
+           `(String.concat \"aé\" \"b😀c\")` has scalars a,é,b,😀,c with the seam between é and b.
+           Slice [1,4) = \"éb😀\" CROSSES the seam with a multibyte scalar on BOTH sides — its view
+           must span byte extent 2+1+4 = 7 over 3 scalars (73); a slice that resolved the scalar
+           range against only the leaf containing the START (or mapped scalars to bytes 1:1 past the
+           seam) mis-extends. [2,3) sits entirely in the second leaf just past the seam (11); [0,5)
+           is the whole rope, byte-len 9 / scalar-len 5 (95).")
+  (input  (do
+        (def (mk (: a String) (: b String)) (String.concat a b))
+        (def (main (: mode Int64))
+          (do
+            (def s (mk "aé" "b😀c"))
+            (def lo (if (= mode 1) 1 (if (= mode 2) 2 0)))
+            (def hi (if (= mode 1) 4 (if (= mode 2) 3 5)))
+            (match (String.slice s lo hi)
+              ((Some v) (+ (* 10 (String.byte-len v)) (String.scalar-len v)))
+              ((None _u) -1))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 73 Int64))
+  (call   main (: 2 Int64)) (output (: 11 Int64))
+  (call   main (: 3 Int64)) (output (: 95 Int64)))
+
+(case "a slice of a slice composes scalar offsets against the VIEW, not the base string"
+  (doc    "Re-slicing pins offset COMPOSITION: over `(String.concat \"xé\" \"y😀z\")` (scalars x,é,y,😀,z)
+           the outer view [1,4) is \"éy😀\"; the inner slice indexes THAT view. [1,3) of the outer is
+           \"y😀\" — byte-len 5, scalar-len 2 (52); resolving inner indices against the BASE instead
+           gives \"éy\" (32). [2,3) is the emoji alone (41; base-resolved would be \"y\" -> 11). And
+           [1,4) EXCEEDS the outer's 3-scalar extent so it is None (-1) even though the BASE has a
+           scalar at index 4 — a base-resolved bounds check would answer Some.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def s (String.concat "xé" "y😀z"))
+            (def outer (Option.expect (String.slice s 1 4) "outer in bounds"))
+            (def lo (if (= mode 1) 1 (if (= mode 2) 2 1)))
+            (def hi (if (= mode 1) 3 (if (= mode 2) 3 4)))
+            (match (String.slice outer lo hi)
+              ((Some v) (+ (* 10 (String.byte-len v)) (String.scalar-len v)))
+              ((None _u) -1))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 52 Int64))
+  (call   main (: 2 Int64)) (output (: 41 Int64))
+  (call   main (: 3 Int64)) (output (: -1 Int64)))
+
+(case "String.at through a slice VIEW of a rope reads view-relative scalars at every byte width"
+  (doc    "Three view layers compose: rope -> scalar slice -> String.at. Over
+           `(String.concat \"xé\" \"y😀z\")` the view [1,4) is \"éy😀\"; String.at indexes the VIEW, and
+           each returned one-scalar string's OWN byte-len proves which scalar was read: 0 -> é (2),
+           1 -> y (1, the scalar just past the rope seam), 2 -> 😀 (4). Index 3 is None (-1) even
+           though the BASE string has z there — a String.at that resolved the index against the
+           base (or clamped to the leaf holding the view's start) reads z (1) or misses the seam.")
+  (input  (do
+        (def (main (: i Int64))
+          (do
+            (def s (String.concat "xé" "y😀z"))
+            (def v (Option.expect (String.slice s 1 4) "in bounds"))
+            (match (String.at v i)
+              ((Some c) (String.byte-len c))
+              ((None _u) -1))))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 2 Int64))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 4 Int64))
+  (call   main (: 3 Int64)) (output (: -1 Int64)))

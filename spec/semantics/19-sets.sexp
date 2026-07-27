@@ -2600,3 +2600,82 @@
   (call   main (: 2 Int64)) (output (: 11 Int64))
   (call   main (: 1 Int64)) (output (: 0 Int64))
   (call   main (: 6 Int64)) (output (: 0 Int64)))
+
+(case "MULTI-LIMB BigInts built by three arithmetic routes hash to one set element"
+  (doc    "Structural sharing can't answer this: v1 = 2^62·6, v2 = 2^62·2 + 2^62·4 + k, and the contains
+           probe 2^61·12 all build 27670116110564327424 through DIFFERENT limb arithmetic. At k=0 the set
+           dedupes them to ONE element and the third-route probe hits (11) — content hashing over the
+           limb VALUE, not the construction path. k=±1 separates v2 by one unit in the LOW limb of a
+           two-limb value (21): a hash that ignored low-limb bits or an eq that compared only limb
+           COUNTS would still collapse them.")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def v1 (* (BigInt.of 4611686018427387904) (BigInt.of 6)))
+            (def v2 (+ (+ (* (BigInt.of 4611686018427387904) (BigInt.of 2))
+                          (* (BigInt.of 4611686018427387904) (BigInt.of 4)))
+                       (BigInt.of k)))
+            (def s (Set.of (list v1 v2)))
+            (+ (* 10 (Set.len s)) (if (Set.contains s (* (BigInt.of 2305843009213693952) (BigInt.of 12))) 1 0))))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64))
+  (call   main (: 1 Int64)) (output (: 21 Int64))
+  (call   main (: -1 Int64)) (output (: 21 Int64)))
+
+(case "Map.remove and Map.lookup by different-route MULTI-LIMB keys agree with the inserted key"
+  (doc    "The MAP twin of the multi-limb set-dedupe face, sharpened to REMOVE: insert 42 under
+           2^62·6, remove by 2^61·12, look up by 2^62·2 + 2^62·4 — three limb-arithmetic routes to
+           27670116110564327424. mode=1: the remove must find the slot (len 0) and the lookup miss
+           (-1); a remove whose key-eq diverged from champ_hash's canonical view leaves a phantom
+           entry (52 here). mode=2 skips the remove: len 1 + lookup hits through the third route (52).")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def m (Map.insert Map.empty (* (BigInt.of 4611686018427387904) (BigInt.of 6)) 42))
+            (def m2 (if (= mode 1)
+                        (Map.remove m (* (BigInt.of 2305843009213693952) (BigInt.of 12)))
+                        m))
+            (+ (* 10 (Map.len m2))
+               (match (Map.lookup m2 (+ (* (BigInt.of 4611686018427387904) (BigInt.of 2))
+                                        (* (BigInt.of 4611686018427387904) (BigInt.of 4))))
+                 ((Some v) v)
+                 ((None _u) -1)))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: -1 Int64))
+  (call   main (: 2 Int64)) (output (: 52 Int64)))
+
+(case "a SET as a set element hashes by content: three build orders, one element"
+  (doc    "Set-of-sets pins that champ_hash/champ_eq over a set ELEMENT are content-based, not
+           layout-based: {1,2,3} built by literal `Set.of`, by an insert chain seeded EMPTY (n,2,1 at
+           n=3), and by a THIRD order for the contains probe (2,1,3) must be ONE element found by ANY
+           spelling — a CHAMP whose internal node shape varies with insertion order would split them
+           under a structural (layout) hash. n=3: len 1 + contains (11); n=4: {1,2,4} is a genuinely
+           different set — len 2, and the {1,2,3} probe still finds the literal (21).")
+  (input  (do
+        (def (main (: n Int64))
+          (do
+            (def i1 (Set.of (list 1 2 3)))
+            (def i2 (Set.insert (Set.insert (Set.insert (Set.of (list)) n) 2) 1))
+            (def s (Set.of (list i1 i2)))
+            (+ (* 10 (Set.len s))
+               (if (Set.contains s (Set.insert (Set.insert (Set.of (list 2)) 1) 3)) 1 0))))
+        (export main)))
+  (call   main (: 3 Int64)) (output (: 11 Int64))
+  (call   main (: 4 Int64)) (output (: 21 Int64)))
+
+(case "Map.to-list over Rational keys enumerates ascending by key value with the integer form last"
+  (doc    "The MAP twin of the rational set-enumeration pin: entries inserted in the order 2/3 -> 1,
+           1/n -> 2, 1/2 -> 3; `Map.to-list` must enumerate by KEY VALUE, so the projected values read
+           out in key-ascending order. n=3: keys 1/3 < 1/2 < 2/3 give 231 — a (numerator, denominator)
+           lexicographic order would give 321, and INSERTION order 123. n=1: `(Rational.of 1 1)`
+           integer-normalizes to 1, which sorts LAST despite numerator 1 (312) — the lex-killer row.")
+  (input  (do
+        (def (main (: n Int64))
+          (do
+            (def m (Map.insert (Map.insert (Map.insert Map.empty (Rational.of 2 3) 1) (Rational.of 1 n) 2) (Rational.of 1 2) 3))
+            (def xs (Map.to-list m))
+            (def (vat (: i Int64)) (. (Option.expect (List.at xs i) "in bounds") 1))
+            (+ (* 100 (vat 0)) (+ (* 10 (vat 1)) (vat 2)))))
+        (export main)))
+  (call   main (: 3 Int64)) (output (: 231 Int64))
+  (call   main (: 1 Int64)) (output (: 312 Int64)))

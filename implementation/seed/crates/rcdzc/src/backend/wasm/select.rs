@@ -12745,11 +12745,20 @@ fn try_emit_scalar_br_table(
         out.push(m.konst(min));
         out.push(m.sub());
     }
+    // The arm bodies' scratch floor. On the i64 path it rises PAST the reserved i64 idx slot so an arm
+    // body's transient scratch never reuses that slot at a DIFFERENT width — a wasm local's type is fixed
+    // function-wide, so an i64 dispatch-index slot and an i32 arm temp (e.g. a `String.to-bytes` Bytes
+    // handle inlined into every arm) must occupy DISJOINT slots even though the idx is dead before any arm
+    // body runs. Reusing `base` for both declared one local at two widths → "expected i32, found i64"
+    // (the width-disjoint-slot family; cf. the heap-match/checked-arith fix). A ≤32-bit scrutinee needs no
+    // idx slot (its shifted value stays on the stack), so arm bodies keep `base`.
+    let mut arm_base = base;
     if !m.slot32 {
         // i64 scrutinee: guard against the wrap-aliasing (idx as u64 >= span → default), then narrow.
         let idx_slot = base;
-        if idx_slot + 1 > *high {
-            *high = idx_slot + 1;
+        arm_base = base + 1;
+        if arm_base > *high {
+            *high = arm_base;
         }
         scratch_ty.insert(idx_slot, ValType::I64);
         out.push(Lir::LocalTee(idx_slot)); // keep idx, leave a copy on the stack
@@ -12787,7 +12796,7 @@ fn try_emit_scalar_br_table(
             result_it,
             block_ty,
             slots,
-            base,
+            arm_base,
             high,
             scratch_ty,
             layout,
@@ -12804,7 +12813,7 @@ fn try_emit_scalar_br_table(
         result_it,
         block_ty,
         slots,
-        base,
+        arm_base,
         high,
         scratch_ty,
         layout,

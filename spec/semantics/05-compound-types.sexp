@@ -16655,3 +16655,46 @@
               (match (deq (list) (list n 2)) ((tuple f2 b2) (+ (* ((. List len) f2) 10) ((. List len) b2)))))
             (export main)))
   (call main (: 5 Int64)) (output (: 10 Int64)))
+
+(case "Map.swap keyed by a runtime Rational canonicalizes: a normalized-equal key replaces, a distinct one adds"
+  (doc    "The value-yielding insert through the CANONICALIZING key path: the map holds 1/2 -> 10 and the
+           swap key is the RUNTIME `(Rational.of n 4)`. At n=2 the key normalizes to the SAME 1/2 node, so
+           swap REPLACES — prior `(Some 10)`, len still 1, lookup gives the new 20 (1120 encoded as
+           1000·prior + 100·len + lookup). At n=1 the key is the distinct 1/4 — prior `(None unit)`, the
+           entry is ADDED (len 2) and 1/2 keeps its 10 (210). A swap whose key hash/eq skipped the
+           canonical form would add a phantom second entry for 2/4 (encoding 220 at n=2).")
+  (input  (do
+        (def (main (: n Int64))
+          (do
+            (def m (Map.insert Map.empty (Rational.of 1 2) 10))
+            (def r (Map.swap m (Rational.of n 4) 20))
+            (def prior (match (. r 0) ((Some v) (if (= v 10) 1 -9)) ((None _u) 0)))
+            (def m2 (. r 1))
+            (+ (* 1000 prior)
+               (+ (* 100 (Map.len m2))
+                  (match (Map.lookup m2 (Rational.of 1 2)) ((Some v) v) ((None _u) -1))))))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 1120 Int64))
+  (call   main (: 1 Int64)) (output (: 210 Int64)))
+
+(case "Map.take keyed by a runtime Rational removes the arithmetic-built canonical twin"
+  (doc    "The value-yielding REMOVE through the canonicalizing key path, CROSS-ROUTE: the entry's key
+           was built by ARITHMETIC (`(+ 1/4 1/4)` -> 1/2) and the take key by the CONSTRUCTOR
+           (`(Rational.of n 4)`). At n=2 (2/4 ≡ 1/2) the take finds and removes it — took `(Some 10)`,
+           len 0, lookup misses (1000·1 + 100·0 + -1 = 999). At n=1 (1/4, absent) — took `(None unit)`,
+           the map is UNCHANGED (removal is total): len 1 and 1/2 still readable (110). Pairs with the
+           Map.swap canonical-key case: swap/take are the two value-yielding forms, and both must
+           agree with insert/lookup on what a key IS.")
+  (input  (do
+        (def (main (: n Int64))
+          (do
+            (def m (Map.insert Map.empty (+ (Rational.of 1 4) (Rational.of 1 4)) 10))
+            (def r (Map.take m (Rational.of n 4)))
+            (def took (match (. r 0) ((Some v) (if (= v 10) 1 -9)) ((None _u) 0)))
+            (def m2 (. r 1))
+            (+ (* 1000 took)
+               (+ (* 100 (Map.len m2))
+                  (match (Map.lookup m2 (Rational.of 1 2)) ((Some v) v) ((None _u) -1))))))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 999 Int64))
+  (call   main (: 1 Int64)) (output (: 110 Int64)))

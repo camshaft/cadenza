@@ -68,7 +68,12 @@ pass	MAX PROFIT tracks the running minimum and best spread in one forward pass
 pass	MERGE INTERVALS coalesces overlapping spans, touching endpoints join, containment absorbs
 pass	MISSING NUMBER agrees between the arithmetic-sum gap and the XOR cancellation
 pass	MOVE-ZEROS stably shifts zeros to the tail, preserving non-zero order and total length
+pass	MULTI-LIMB BigInts built by three arithmetic routes hash to one set element
 pass	MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave
+pass	Map.remove and Map.lookup by different-route MULTI-LIMB keys agree with the inserted key
+pass	Map.swap keyed by a runtime Rational canonicalizes: a normalized-equal key replaces, a distinct one adds
+pass	Map.take keyed by a runtime Rational removes the arithmetic-built canonical twin
+pass	Map.to-list over Rational keys enumerates ascending by key value with the integer form last
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	ONE-EDIT-APART checks strings for exactly one substitution or one insertion by length case
 pass	OVERLAPPING quote patterns dispatch first-match-wins on the ambiguous scrutinee
@@ -89,7 +94,10 @@ pass	Set.intersection unifies an arithmetic-produced rational with its construct
 pass	Set.of over Rational elements dedupes a normalized-equal literal and to-list enumerates ascending
 pass	Set.to-list over Rational elements enumerates ascending by value, not by numerator/denominator pair
 pass	Set.to-list over symbols enumerates in content-byte order regardless of insertion order
+pass	String.at through a slice VIEW of a rope reads view-relative scalars at every byte width
 pass	String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts
+pass	String.slice across a multibyte scalar carries byte-len 2 with scalar-len 1, and degenerate ranges answer Some-empty / None
+pass	String.slice spanning a rope seam maps a scalar range to the exact byte extent
 pass	THREE stacked guards on one constructor classify a heap payload into bands in order
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow
@@ -774,6 +782,7 @@ pass	a Result-valued `?` under an Option boundary is a type error
 pass	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
 pass	a SELF-RECURSIVE named def passed as a value is applied twice through the parameter
 pass	a SET as a Map key hits by ORDER-INDEPENDENT inner-set content
+pass	a SET as a set element hashes by content: three build orders, one element
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STRING-result effect op resumes with a string that folds through a concat
@@ -2313,6 +2322,7 @@ pass	a record-returning closure alongside a parameterized plain export — the c
 pass	a record-returning closure alongside a parameterized plain export — the plain
 pass	a recursion carrying a Bytes parameter does a fallible read in its base arm
 pass	a recursion carrying a List parameter does a fallible read in its base arm
+pass	a recursive CONSTANT-FOLD pass rewrites int-add subtrees bottom-up and counts folds
 pass	a recursive HOF infers a callback whose RESULT is a sum matched in the body
 pass	a recursive NEWTYPE traversal recurses on its projected recursive field
 pass	a recursive NEWTYPE-wrapped linked list folds to a scalar
@@ -2855,6 +2865,7 @@ pass	a single-variant open sum with an open-tail arm dispatches its named varian
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
 pass	a single-variant-sum binding pattern nests inside another
 pass	a slice crosses the seam of a runtime-assembled byte rope
+pass	a slice of a slice composes scalar offsets against the VIEW, not the base string
 pass	a slice spanning a concatenation sees the logical bytes
 pass	a slice whose end is beyond the string length yields None
 pass	a slice whose end precedes its start yields None
@@ -5085,3 +5096,4 @@ pass	a do-def referenced twice WITHIN one resume operand compiles (the within-sl
 pass	an abortive perform in a body tail referencing a do-local binding stays in scope
 pass	an abortive perform in a STRICT OPERAND referencing a let-local binding stays in scope
 pass	a mutually-recursive fold matching a rebuilt list with a payload binder builds and computes
+pass	a recursive BigInt fn whose bound result feeds a mod compiles and computes (FINDING)
