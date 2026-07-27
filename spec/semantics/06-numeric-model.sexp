@@ -7623,3 +7623,26 @@
         (export main)))
   (call main (: 0 Int64)) (output (: -9223372036854775808 Int64))
   (call main (: -1 Int64)) (trap "unreachable"))
+
+;; A RECURSIVE fn over a mixed BigInt/Int64 signature, whose recursive-call RESULT is locally
+;; re-bound with `(def hh (f …))` inside a `(do …)` and then fed into further BigInt ops, MUST
+;; type + compile. Regression: this used to decline with a bogus CDZ0201 "member access requires
+;; a record, found Type" AT the recursive call site — `collect_callees` did not descend the do-def
+;; value-RHS, so the fn's only self-call (inside the `def`) was missed, `is_recursive` returned
+;; false, and the call was β-reduced instead of typed by def-scheme → the heap-scalar BigInt result
+;; was mis-typed as kind `Type`. (Sibling spellings: result-used-twice hung the compiler >100s;
+;; let-form gave a bogus CDZ0301 Int64-vs-BigInt.) Fixed by descending the do-def RHS in
+;; collect_callees. (breaker/corpus-bugfix routed → v-inference c0dd01b9e.) The pre-existing modpow
+;; pins here are Int64-only, which is why the recursive-BigInt idiom never exercised this path.
+(case "a recursive BigInt fn whose bound result feeds a mod compiles and computes (FINDING)"
+  (input (do
+        (def (f (: base BigInt) (: e Int64) (: md BigInt))
+          (if (= e 0)
+              base
+              (do
+                (def hh (f base (/ e 2) md))
+                (% hh md))))
+        (def (main (: e Int64))
+          (Int64.of (f (BigInt.of 7) e (BigInt.of 100))))
+        (export main)))
+  (call main (: 8 Int64)) (output (: 7 Int64)))

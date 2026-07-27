@@ -3184,3 +3184,49 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 11 Int64))
   (call   main (: 5 Int64)) (output (: 0 Int64)))
+
+(case "a recursive CONSTANT-FOLD pass rewrites int-add subtrees bottom-up and counts folds"
+  (doc    "A whole COMPILER PASS in miniature over runtime Ast values: a bottom-up recursive rewrite that
+           folds `(+ <int> <int>)` subtrees to their sums and THREADS A FOLD COUNT through a
+           mutually-recursive list walk (fold / fold-list, tuple-carried accumulator). mode 1 folds two
+           nested add-sites under distinct heads (count 2); mode 2 has no foldable site (count 0).
+           Historically rust-blocked by the E0382 recursive-fold finding (fixed f4ae338d1) — this is the
+           independent breaker witness that exercises the fixed shape through Ast payloads.")
+  (input (do
+        (def (fold node)
+          (match node
+            ((Ast.List xs)
+              (match (fold-list xs (list) 0)
+                ((tuple xs2 k)
+                  (match xs2
+                    ((list (Ast.Name op) (Ast.Int a) (Ast.Int b))
+                      (if (= op "+")
+                          (tuple (Ast.Int (+ a b)) (+ k 1))
+                          (tuple (Ast.List xs2) k)))
+                    (_ (tuple (Ast.List xs2) k))))))
+            (other (tuple other 0))))
+        (def (fold-list (: xs (List Ast)) (: acc (List Ast)) (: k Int64))
+          (match xs
+            ((list) (tuple acc k))
+            ((list h .. t)
+              (match (fold h)
+                ((tuple h2 k2) (fold-list t (List.push acc h2) (+ k k2)))))))
+        (def (main (: mode Int64))
+          (do
+            (def t (if (= mode 1)
+                       (Ast.List (list (Ast.Name "f")
+                         (Ast.List (list (Ast.Name "+") (Ast.Int 2) (Ast.Int 3)))
+                         (Ast.List (list (Ast.Name "g")
+                           (Ast.List (list (Ast.Name "+") (Ast.Int 4) (Ast.Int 5)))))))
+                       (Ast.List (list (Ast.Name "f") (Ast.Int 7)))))
+            (match (fold t)
+              ((tuple t2 k)
+                (+ (* k 10)
+                   (if (= t2 (if (= mode 1)
+                                 (Ast.List (list (Ast.Name "f") (Ast.Int 5)
+                                   (Ast.List (list (Ast.Name "g") (Ast.Int 9)))))
+                                 (Ast.List (list (Ast.Name "f") (Ast.Int 7)))))
+                       1 0))))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 21 Int64))
+  (call main (: 2 Int64)) (output (: 1 Int64)))
