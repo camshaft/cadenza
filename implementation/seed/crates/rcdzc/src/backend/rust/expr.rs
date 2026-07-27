@@ -3153,7 +3153,10 @@ fn emit_const_int(db: &mut Db, id: StructId, v: &IntValue) -> Result<String, Rej
 /// wrapper is compile-time-only and `lower` erases it, so the magnitude emits as a `Big`). A bare
 /// `Ty::Int` is NOT (it emits a fixed-width int literal). Used by the `BigIntBinOp`/`BigIntCmp` guards to
 /// admit a BigInt-magnitude quantity while still declining a constant that reaches the op typed plain
-/// `Int`. Mirrors the wasm backend's `Ty::Qty { inner, .. } if matches!(*inner, Ty::BigInt)`.
+/// `Int`. STRIPS nominals at BOTH levels — the outer type (an erased newtype over `BigInt` still emits a
+/// `Big`, cf. `add3eca3a`) and the `Qty` magnitude (`Qty` over a newtype-wrapped `BigInt`) — so it is
+/// STRICTLY WIDER than the wasm backend's bare `Ty::Qty { inner, .. } if matches!(*inner, Ty::BigInt)`,
+/// which does not peel nominals. Keep that in mind for a rust-vs-wasm BigInt-handling comparison.
 fn is_bigint_valued(ty: &Ty) -> bool {
     match ty.strip_nominal() {
         Ty::BigInt => true,
@@ -3786,6 +3789,19 @@ fn emit_list_match_impl(
     // re-emitting a possibly-large expression per length test.) The binder is fresh per match nesting.
     let scrut = emit(db, scrutinee, env, ctx)?;
     let lv = format!("__lm{}", scrutinee.0);
+    // Register `(scrutinee, lv)` so every arm read of the scrutinee — the guard's element-discriminant
+    // probe and each element/rest binder (`emit_scrutinee` → this local) — reads the ONE bound `let lv`,
+    // NOT a re-emit of the scrutinee expression. Critical when the scrutinee is a non-Copy PROJECTION (a
+    // tuple field `(__msN).0` that is a `Vec`, from a recursive fold that rebuilds a list): `let lv =
+    // (__msN).0` MOVES the Vec out, so a re-emitted `(__msN).0` in a guard/body is a borrow-of-moved-value
+    // (rustc E0382) — the mutually-recursive-fold-over-a-rebuilt-list no-build (breaker, 2026-07-25; wasm
+    // has no ownership so it computed). Routing reads through `lv` (element reads `.clone()` off it, the
+    // rebuild arm moves it as its last use) keeps every read valid. This is the list-match twin of the
+    // `MatchSum` materialize-once registration. `scrut` above is emitted with the ORIGINAL ctx so the
+    // binding RHS still projects the parent; only the arm reads consult the local.
+    let mut arm_ctx = ctx.clone();
+    arm_ctx.scrut_locals.push((scrutinee, lv.clone()));
+    let ctx = &arm_ctx;
     // The match's result integer type — a bare-literal arm body is grounded to it (as in `emit_match_impl`).
     let result_it = arm_result_it(db, arms);
     let mut chain = String::new();
@@ -5013,6 +5029,16 @@ fn emit_sum_payload(
             if let crate::core::PathStep::Elem(i) = step {
                 expr = format!("({expr}).{i}");
             }
+        }
+        // CLONE a non-Copy field read (a `Vec`/`String`/sum/nested-tuple field): reading it by value MOVES
+        // it out of the tuple/record, so a binder used in more than one position — e.g. a rebuilt-list field
+        // `xs2` that is BOTH a list-match scrutinee AND re-referenced in a catch-all `(Ast.List xs2)` — is a
+        // use-after-move (rustc E0382; the mutually-recursive-fold-over-a-rebuilt-list no-build, breaker
+        // 2026-07-25). The scrutinee tuple is bound once (`let __msN = …`) and cloning leaves it intact for a
+        // sibling field read (`(__msN).1`). A Copy field (the common scalar case) reads in place — no clone,
+        // byte-identical to before. Mirrors the boxed / list-element clone-on-read discipline above.
+        if needs_clone_on_read(db, id) {
+            expr = format!("({expr}).clone()");
         }
         return Ok(expr);
     }

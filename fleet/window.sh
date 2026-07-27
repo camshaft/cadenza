@@ -54,7 +54,9 @@ VNOTE=""
 # stall). So the kickoff runs `/loop <interval> <TICK>` with this explicit tick recipe, guaranteeing
 # the loop both SCHEDULES the recurring cron AND runs the role body each fire.
 TICK="Run one tick of your role ($ROLE)$VNOTE: (1) 'cargo xtask fleet heartbeat $AGENT' (stop cleanly \
-if a stop-file exists); (2) drain your inbox $FLEET/inbox/$AGENT/ oldest-first — act on each message, \
+if a stop-file exists); (2) drain your inbox by listing it with 'cargo xtask fleet inbox $AGENT' (the \
+RESOLVER — it prints the canonical HUB inbox path; NEVER ls a worktree-relative '.claude/fleet/inbox/...' \
+glob, which silently matches an empty shadow dir and stalls you), oldest-first — act on each message, \
 then move it to processed/; (3) sync your base with 'cargo xtask fleet sync' (the safe base-sync: \
 resets onto trunk + replays only your not-yet-upstream commits by patch-id, so it never orphans a \
 queued merge-request's --ref like a bare 'git reset --hard trunk' would), then do ONE well-scoped unit \

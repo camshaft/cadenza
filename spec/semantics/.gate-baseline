@@ -94,6 +94,7 @@ pass	TRIAL-DIVISION primality steps odd candidates to the square bound and repor
 pass	TWO closures capture DIFFERENT generations of one shadowed name and each sees its own
 pass	TWO closures capture the SAME heap map and the map outlives both applications
 pass	TWO distinct nonzero BigInt literal probes dispatch in one recursive fn
+pass	TWO match inits in one let SEQUENCE - the second scrutinizes the first's binding
 pass	TWO sequential inner handles seed from the outer's ADVANCING state
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	WAVE reorder alternates <= and >= by index parity through a carried-element walk
@@ -108,6 +109,7 @@ pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other
 pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
 pass	a FLETCHER-16 checksum walks a concat-built byte rope across its seams
 pass	a Fletcher-16 over a seam-spanning slice VIEW equals the checksum of its logical bytes
+pass	a HANDLE as a NON-FINAL multi-binding let init completes before the sibling binding
 pass	a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit
 pass	a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string
 pass	a LET shadow of a do-def heap binding closes its scope and the do-def survives
@@ -116,10 +118,12 @@ pass	a LIST shrinker drops elements greedily and converges to a minimal failing 
 pass	a LONGEST-COMMON-PREFIX walks two strings in scalar lockstep to the first mismatch
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
 pass	a MAP keyed by perform results in the handle body crosses the exit and looks up by those keys
+pass	a MATCH as a NON-FINAL multi-binding let init selects the binding value per call
 pass	a MEDIAN-OF-3 filter smooths interior spikes while endpoints pass through unchanged
 pass	a MIXED-endian frame packs big and little fields side by side and round-trips both
 pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
 pass	a Map.remove on a derived generation unshares the path without touching the ancestor
+pass	a NON-LAST handler arm whose body is a MATCH round-trips through the ML printer
 pass	a NaN selected through a runtime if-join stays self-equal and unordered downstream
 pass	a PALINDROME two-pointer walk closes from both ends of a runtime rope
 pass	a PARSE-INT walks scalars, decodes digits by comparison, and handles a leading minus
@@ -312,6 +316,7 @@ pass	a map INVERSION flips keys and values, last-writer-wins on duplicate values
 pass	a map threaded through MUTUAL recursion is read in both functions at alternating depths
 pass	a map threaded through recursion is read at every depth and once more at the base
 pass	a match guard reads a HEAP payload's length and the arm body reuses the same binder
+pass	a match init binds a per-arm HEAP list and the sibling init consumes it
 pass	a max-FOLD over a list containing a computed NaN keeps the ordered maximum
 pass	a memoizing fold caches computed results in a Map and counts its hits
 pass	a middle curry STAGE is reused — one s1 residual yields an s2 applied twice
@@ -1339,6 +1344,7 @@ pass	a record MATCH pattern with a LITERAL field sub-pattern dispatches on the f
 pass	a record field built by a RUNTIME BRANCH holds a user-sum, projected then matched
 pass	a record key with a float-bearing TUPLE field keys by content
 pass	a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive
+pass	a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them
 pass	a recursive combinator applies a captured closure a RUNTIME number of times
 pass	a recursive fold SUMS a list of same-unit quantities threading a Qty accumulator
 pass	a recursive fold over a runtime Peano spine recovers its depth
@@ -1401,9 +1407,11 @@ pass	a tag DISPATCHES ON CHUNK TEXT to weave different operator spines around ru
 pass	a tag function INTROSPECTS its chunk and hole counts and returns both
 pass	a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack
 pass	a third-generation overwrite path-copies away from both ancestors and all three read true
+pass	a tuple key mixing int, rope, and float hashes and matches by all three leaf kinds
 pass	a tuple key whose element is itself a float-bearing tuple keys by content
 pass	a tuple key with a RUNTIME Rational leaf hits and misses by canonical content
 pass	a tuple key with an ARITH-built BigInt leaf hits and misses by content
+pass	a tuple mixing an int, a runtime ROPE, and a FLOAT compares whole by per-kind leaf walks
 pass	a tuple of two branch-built Options matches all four Some/None quadrants jointly
 pass	a tuple with a Qty leaf as a map key hits by magnitude-and-unit content
 pass	a tuple with a Symbol leaf as a SET element dedups and membership-checks by content
@@ -1526,6 +1534,7 @@ pass	multi-limb BigInts equal in the LOW limb compare by the HIGH limb
 pass	outer handler state threads AROUND a completed inner handle of a different effect
 pass	print/read round-trips a tree carrying every leaf kind in one canonical form
 pass	runtime-packed nibbles MATCH back out through bits patterns - the pack-unpack identity
+pass	same-variant sums order by PAYLOAD when the discriminant ties
 pass	symbols interned from GENERATED strings dedup by content in a symbol set
 pass	the RUNTIME division identity a=(a/b)*b+(a%b) holds across all four sign quadrants
 pass	the runtime narrow-width add in range does not trap (the control)

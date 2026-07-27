@@ -567,3 +567,40 @@
   (call main (: 2 Int64) (: 1 Int64)) (output (: 40 Int64))
   (call main (: 0 Int64) (: 1 Int64)) (output (: 40 Int64))
   (call main (: 2 Int64) (: 9 Int64)) (output (: -1 Int64)))
+
+(case "a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them"
+  (doc    "The alpha-rename pass shape: mutually recursive ren/ren-list REBUILD the tree while
+           COUNTING rewrites (count·10 + whole-tree structural eq vs the hand-built expectation —
+           shape preservation AND leaf rewrites both witnessed; no-match control). Uses a BINDER +
+           string-compare rather than a Name-literal probe — the string-payload literal probe is
+           the rust not-yet; binder+= is the portable spelling.")
+  (input (do
+        (def (ren node)
+          (match node
+            ((Ast.Name nm)
+              (if (= nm "x") (tuple (Ast.Name "y") 1) (tuple (Ast.Name nm) 0)))
+            ((Ast.List xs) (ren-list xs (list) 0))
+            (other (tuple other 0))))
+        (def (ren-list (: xs (List Ast)) (: acc (List Ast)) (: k Int64))
+          (match xs
+            ((list) (tuple (Ast.List acc) k))
+            ((list h .. t)
+              (match (ren h)
+                ((tuple h2 k2) (ren-list t (List.push acc h2) (+ k k2)))))))
+        (def (main (: mode Int64))
+          (do
+            (def t (if (= mode 1)
+                       (Ast.List (list (Ast.Name "f") (Ast.Name "x")
+                         (Ast.List (list (Ast.Name "g") (Ast.Name "x")))))
+                       (Ast.List (list (Ast.Name "f") (Ast.Name "z")))))
+            (match (ren t)
+              ((tuple t2 k)
+                (+ (* k 10)
+                   (if (= t2 (if (= mode 1)
+                                 (Ast.List (list (Ast.Name "f") (Ast.Name "y")
+                                   (Ast.List (list (Ast.Name "g") (Ast.Name "y")))))
+                                 (Ast.List (list (Ast.Name "f") (Ast.Name "z")))))
+                       1 0))))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 21 Int64))
+  (call main (: 2 Int64)) (output (: 1 Int64)))

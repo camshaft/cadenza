@@ -4121,7 +4121,7 @@ fn rearm_action(rearm_age: Option<u64>, hb_age: Option<u64>) -> RearmAction {
 /// a never-looped mint ends up with a real recurring loop, not a degraded one. Paths resolve against
 /// the hub-anchored fleet state + the agent's own worktree, exactly like the launcher.
 fn watchdog_tick_prompt(fleet: &Fleet, a: &Agent) -> String {
-    let inbox = fleet.root.join("inbox").join(&a.name);
+    let _ = fleet; // hub paths are resolved by the `fleet inbox` resolver the prompt names, not embedded.
     let role_body = format!("{}/fleet/loops/{}.md", a.worktree, a.role);
     let vnote = if a.vertical.is_empty() {
         String::new()
@@ -4134,14 +4134,16 @@ fn watchdog_tick_prompt(fleet: &Fleet, a: &Agent) -> String {
     };
     format!(
         "Run one tick of your role ({role}){vnote}: (1) cargo xtask fleet heartbeat {name} (stop \
-         cleanly if a stop-file exists); (2) drain your inbox {inbox}/ oldest-first, acting on each \
-         message then moving it to processed/; (3) sync (git fetch && rebase trunk) and do ONE \
-         well-scoped unit of work per {role_body}, gating it green before sending pr-sync a \
-         merge-request. Coordinate with peers only via 'cargo xtask fleet send'; if you need a human \
-         decision, send the concierge an 'ask' and keep working — never wait for a reply.",
+         cleanly if a stop-file exists); (2) drain your inbox by listing it with `cargo xtask fleet \
+         inbox {name}` (the RESOLVER — it prints the canonical HUB inbox path; NEVER ls a \
+         worktree-relative `.claude/fleet/inbox/...` glob, which silently matches an empty shadow dir \
+         and stalls you), oldest-first, acting on each message then moving it to processed/; (3) sync \
+         (git fetch && rebase trunk) and do ONE well-scoped unit of work per {role_body}, gating it \
+         green before sending pr-sync a merge-request. Coordinate with peers only via 'cargo xtask \
+         fleet send'; if you need a human decision, send the concierge an 'ask' and keep working — \
+         never wait for a reply.",
         role = a.role,
         name = a.name,
-        inbox = inbox.display(),
     )
 }
 
@@ -7771,7 +7773,12 @@ mod tests {
         let p = watchdog_tick_prompt(&fleet, &a);
         assert!(p.contains("cargo xtask fleet heartbeat fix-float-compare"));
         assert!(p.contains("drain your inbox"));
-        assert!(p.contains("inbox/fix-float-compare/"));
+        // Step-2 must name the RESOLVER (`fleet inbox <name>`), NOT a bare inbox path — handing a path
+        // invites a worktree-relative glob that hits an empty shadow dir and silently stalls the drain
+        // (the v-syntax report). And it must carry the anti-glob warning so the agent can't regress to it.
+        assert!(p.contains("cargo xtask fleet inbox fix-float-compare"));
+        assert!(p.contains("NEVER ls a worktree-relative"));
+        assert!(!p.contains("inbox/fix-float-compare/"));
         assert!(p.contains("/wt/fix-float-compare/fleet/loops/fix.md"));
         assert!(p.contains("never wait for a reply"));
         // A role with no vertical must NOT emit the vertical clause.

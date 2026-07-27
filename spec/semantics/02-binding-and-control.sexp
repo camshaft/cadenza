@@ -538,6 +538,62 @@
   (call main (: 1 Int64)) (output (: 1 Int64))
   (call main (: 0 Int64)) (output (: 0 Int64)))
 
+(case "a MATCH as a NON-FINAL multi-binding let init selects the binding value per call"
+  (doc    "No landed case puts a match in a NON-FINAL init of a multi-binding let: the match
+           selects the first binding's value, the second binding evaluates after, both read in the
+           body.")
+  (input (do
+        (def (main (: n Int64))
+          (let ((a (match n (0 10) (_ 20)))
+                (b 5))
+            (+ a b)))
+        (export main)))
+  (call main (: 0 Int64)) (output (: 15 Int64))
+  (call main (: 3 Int64)) (output (: 25 Int64)))
+
+(case "a HANDLE as a NON-FINAL multi-binding let init completes before the sibling binding"
+  (doc    "The effects twin: a FULL handle (performing init seed, one perform, teardown) runs as
+           the FIRST binding, the sibling scalar binds after — the handler's install/discharge/exit
+           is bounded by one init slot (a scope leak past the binding breaks the sibling).")
+  (input (do
+        (effect C (op t (-> Unit Int64)))
+        (def (main (: n Int64))
+          (let ((a (handle C (+ 100 n) ((t (_u) s (resume s s))) (C.t)))
+                (b 5))
+            (+ a b)))
+        (export main)))
+  (call main (: 2 Int64)) (output (: 107 Int64))
+  (call main (: 0 Int64)) (output (: 105 Int64)))
+
+(case "TWO match inits in one let SEQUENCE - the second scrutinizes the first's binding"
+  (doc    "Sequential init dependency through two match lowerings in binding position (a = match n,
+           b = match a) — a parallel-binding lowering or an init reorder breaks b.")
+  (input (do
+        (def (main (: n Int64))
+          (let ((a (match n (0 10) (_ 20)))
+                (b (match a (10 1) (_ 2))))
+            (+ a b)))
+        (export main)))
+  (call main (: 0 Int64)) (output (: 11 Int64))
+  (call main (: 3 Int64)) (output (: 22 Int64)))
+
+(case "a match init binds a per-arm HEAP list and the sibling init consumes it"
+  (doc    "Heap flow between sequential inits: a match init binds a PER-ARM heap list (different
+           lengths per arm), the sibling init folds it, the body reads BOTH — three use-sites across
+           the binding sequence; the len digit catches an arm mix-up beyond the sum.")
+  (input (do
+        (def (sum-l (: l (List Int64)) (: acc Int64))
+          (match l
+            ((list) acc)
+            ((list h .. t) (sum-l t (+ acc h)))))
+        (def (main (: n Int64))
+          (let ((xs (match n (0 (list 1 2 3)) (_ (list 9))))
+                (s (sum-l xs 0)))
+            (+ (* s 10) (List.len xs))))
+        (export main)))
+  (call main (: 0 Int64)) (output (: 63 Int64))
+  (call main (: 5 Int64)) (output (: 91 Int64)))
+
 (case "unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)"
   (doc    "The soundness BOUNDARY of the unsigned interval refinement (value-facts GAP-A): an unsigned
            value is always ≥ 0, so a comparison against the domain's lower edge is a tautology the
