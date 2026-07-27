@@ -7549,3 +7549,77 @@
            generation that does not yet cover unary negation declines (reject-don't-miscompile).")
   (input  (let ((s "hi")) (- s)))
   (error  CDZ0201))
+
+(case "a multiply crossing the single-limb boundary lands exactly and divides back"
+  (doc    "A multiply whose product CROSSES the single-limb boundary (2^62 · k for k=4,7 > 2^64) then
+           divides back down: exact round-trip `(/ (* v k) k) = v` pins that the carry out of the low limb
+           is neither dropped nor double-counted. The +5 offset keeps the low limb non-zero so a
+           carry-only bug can't cancel.")
+  (input (do
+        (def (main (: k Int64))
+          (do
+            (def v (+ (* (BigInt.of 4611686018427387904) (BigInt.of 1)) (BigInt.of 5)))
+            (def r (* v (BigInt.of k)))
+            (if (= (/ r (BigInt.of k)) v) 1 0)))
+        (export main)))
+  (call main (: 4 Int64)) (output (: 1 Int64))
+  (call main (: 7 Int64)) (output (: 1 Int64)))
+
+(case "a multi-limb modulo keeps the truncating dividend-sign convention across the limb boundary"
+  (doc    "Modulo across the limb boundary keeps the TRUNCATING dividend-sign convention: v = 4·2^62 + 20
+           (two limbs) has v % 7 = 1, and (-v) % 7 = -1 (dividend's sign, NOT the +6 a flooring or
+           euclidean mod would give). Multi-limb division is where a reimplementation is most likely to
+           switch conventions accidentally.")
+  (input (do
+        (def (main (: sgn Int64))
+          (do
+            (def v (+ (* (BigInt.of 4611686018427387904) (BigInt.of 4)) (BigInt.of 20)))
+            (def d (* v (BigInt.of sgn)))
+            (Int64.of (% d (BigInt.of 7)))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 1 Int64))
+  (call main (: -1 Int64)) (output (: -1 Int64)))
+
+(case "a Euclid gcd over MULTI-LIMB BigInts converges with limb-level mod steps"
+  (doc    "Euclid's gcd driven ENTIRELY by multi-limb mod steps: a = 2^62·12m, b = 2^31·18. At m=1,
+           gcd = 2^31·6 (recomputed: common factor 2^31·6 exactly) -> 1; at m=3 the extra factor 3
+           multiplies into a's contribution and the gcd GROWS past the pinned value -> 0. A mod that
+           loses precision across limbs converges to the wrong divisor.")
+  (input (do
+        (def (gcd (: a BigInt) (: b BigInt))
+          (if (= b (BigInt.of 0)) a (gcd b (% a b))))
+        (def (main (: m Int64))
+          (do
+            (def a (* (BigInt.of 4611686018427387904) (BigInt.of (* 12 m))))
+            (def b (* (BigInt.of 2147483648) (BigInt.of 18)))
+            (if (= (gcd a b) (* (BigInt.of 2147483648) (BigInt.of 6))) 1 0)))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 1 Int64))
+  (call main (: 3 Int64)) (output (: 0 Int64)))
+
+(case "a runtime BigInt narrowed to Int64 at the EXACT maximum fits and one past traps"
+  (doc    "`Int64.of` on a runtime BigInt at the EXACT signed-64 maximum: 2·2^62 - 1 + k narrows cleanly at
+           k=0 (9223372036854775807) and TRAPS one past (k=1). The boundary is built from limb arithmetic,
+           not a literal, so constant folding can't pre-answer the range check.")
+  (input (do
+        (def (main (: k Int64))
+          (do
+            (def v (+ (- (* (BigInt.of 4611686018427387904) (BigInt.of 2)) (BigInt.of 1)) (BigInt.of k)))
+            (Int64.of v)))
+        (export main)))
+  (call main (: 0 Int64)) (output (: 9223372036854775807 Int64))
+  (call main (: 1 Int64)) (trap "unreachable"))
+
+(case "a runtime BigInt narrowed to Int64 at the EXACT minimum fits and one below traps"
+  (doc    "The MINIMUM twin of the narrow-edge case: -2·2^62 + k narrows exactly at k=0
+           (-9223372036854775808) and TRAPS one below (k=-1). Asymmetric two's-complement range —
+           a range check written over the POSITIVE magnitude (|v| <= max) wrongly rejects the exact
+           minimum; this row catches it.")
+  (input (do
+        (def (main (: k Int64))
+          (do
+            (def v (+ (* (BigInt.of 4611686018427387904) (BigInt.of -2)) (BigInt.of k)))
+            (Int64.of v)))
+        (export main)))
+  (call main (: 0 Int64)) (output (: -9223372036854775808 Int64))
+  (call main (: -1 Int64)) (trap "unreachable"))

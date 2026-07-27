@@ -21517,6 +21517,33 @@ mod match_engine {
     }
 
     #[test]
+    fn a_recursive_fn_self_calling_in_a_do_def_rhs_is_detected_as_recursive_not_deep_beta_reduced()
+    {
+        // A recursive fn whose ONLY self-call sits in a do-local VALUE def's RHS — `(def hh (f …))` inside a
+        // `(do …)` — must be detected as RECURSIVE by `is_recursive` so the caller types it by its def-scheme,
+        // NOT by β-reducing REDUCE_DEPTH_LIMIT levels deep (which mis-types a heap-scalar BigInt recursive
+        // result as kind `Type` → bogus CDZ0201 "member access requires a record, found Type" at the call
+        // site; the result-used-twice spelling drove that descent to a >100s HANG). Root: `collect_callees`
+        // did not descend into a do-def's value-RHS (the `def` form resolves to a declaration, treated as a
+        // leaf), so the self-call edge was missed. Fixed by descending via `do_value_def_value`. This is a
+        // BigInt-result program (heap-scalar — the shape that triggered it; scalar-Int64 β-reduces fine), so
+        // the run-host needs the bigint runtime; the bug was a COMPILE-time decline, so the guard is that the
+        // module VALIDATES (before the fix `component` panicked on the CDZ0201; the hang spelling never
+        // returned). `(f 3 4 5)` with e:4→2→1→0 returns base=3.
+        let bytes = component(
+            "(module m \
+               (def (f (: base BigInt) (: e Int64) (: md BigInt)) \
+                 (if (= e 0) base (do (def hh (f base (/ e 2) md)) (% hh md)))) \
+               (def (main) (f (BigInt.of 3) 4 (BigInt.of 5))) (export main))",
+        );
+        assert!(
+            wasmparser::validate(&bytes).is_ok(),
+            "a recursive fn self-calling in a do-def RHS must type by its scheme (valid wasm), not mis-type via deep β-reduce: {:?}",
+            wasmparser::validate(&bytes).err()
+        );
+    }
+
+    #[test]
     fn a_constant_bigint_newtype_passed_as_a_recursive_call_arg_emits_a_handle_not_a_raw_i64() {
         // FACE-B of the nonzero-BigInt-recursive miscompile (an INVALID-MODULE bug, so the guard is that the
         // emitted bytes VALIDATE): `(type W (Mk BigInt))` is a single-variant single-payload NEWTYPE, so it

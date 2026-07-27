@@ -732,3 +732,37 @@
            literal form.")
   (input  (= #"" (Symbol.of "")))
   (output (: true Bool)))
+
+(case "a MULTIBYTE symbol map key is found by its runtime-CONCAT-interned twin"
+  (doc    "A MULTIBYTE symbol as a map key, probed by a runtime-CONCAT-interned twin: `#\"日本\"` (a reader
+           literal) must be the SAME interned symbol as `(Symbol.of (String.concat \"日\" \"本\"))` — the
+           runtime intern path over multibyte content bytes. mode=1 finds 42; mode=2 concats \"日x\" and
+           misses (-1). An intern table that keyed on a truncated or unit-miscounted byte view splits the
+           literal from its runtime twin.")
+  (input (do
+        (def (main (: mode Int64))
+          (do
+            (def m (Map.insert Map.empty #"日本" 42))
+            (def probe (Symbol.of (String.concat "日" (if (= mode 1) "本" "x"))))
+            (match (Map.lookup m probe)
+              ((Some v) v)
+              ((None _u) -1))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 42 Int64))
+  (call main (: 2 Int64)) (output (: -1 Int64)))
+
+(case "multibyte symbols order by UNSIGNED content bytes - a CJK scalar sorts after z"
+  (doc    "Symbol ordering over MULTIBYTE content: a CJK scalar's UTF-8 bytes (0xE6…) compare UNSIGNED,
+           so `#\"日\"` sorts after `z` (0x7A) — a signed-i8 byte compare would flip it (0xE6 as -26 < z).
+           mode=1: z < 日 -> 10; mode=2: 日 = 日 (same interned symbol via the concat path) -> 1.")
+  (input (do
+        (def (mk (: s String)) (Symbol.of (String.concat s "")))
+        (def (main (: mode Int64))
+          (do
+            (def a (mk (if (= mode 1) "z" "日")))
+            (def b (mk "日"))
+            (+ (* (if (< a b) 1 0) 10)
+               (if (= a b) 1 0))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 10 Int64))
+  (call main (: 2 Int64)) (output (: 1 Int64)))

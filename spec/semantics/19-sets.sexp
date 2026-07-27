@@ -2531,3 +2531,72 @@
   (output (: 2 Int64))
   (call   main (: 2.5 Float64))
   (output (: 1 Int64)))
+
+(case "Set.of over Rational elements dedupes a normalized-equal literal and to-list enumerates ascending"
+  (doc    "The RATIONAL sibling of the Float64 to-list case: 19-sets had no Rational element face at all.
+           `(Set.of (list 3/2 1/2 n/4))` at n=2 dedupes the normalized-equal 2/4 against 1/2 (len 2) and
+           `Set.to-list` enumerates ascending by value — encoded per element as `(Rational.truncate (* r 2))`
+           so 1/2 -> 1 and 3/2 -> 3 (213). n=1 keeps 1/4 distinct (301); n=6 normalizes 6/4 -> 3/2 (213
+           again). A set path that hashed the as-written num/den pair would count three elements.")
+  (input  (do
+        (def (main (: n Int64))
+          (do
+            (def xs (Set.to-list (Set.of (list (Rational.of 3 2) (Rational.of 1 2) (Rational.of n 4)))))
+            (def a (match (List.at xs 0) ((Some r) (Rational.truncate (* r (Rational.of 2 1)))) ((None _u) -99)))
+            (def b (match (List.at xs 1) ((Some r) (Rational.truncate (* r (Rational.of 2 1)))) ((None _u) -99)))
+            (+ (* 100 (List.len xs)) (+ (* 10 a) b))))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 213 Int64))
+  (call   main (: 1 Int64)) (output (: 301 Int64))
+  (call   main (: 6 Int64)) (output (: 213 Int64)))
+
+(case "a negative-denominator Rational sign-normalizes on the set-element path and dedupes its positive-denominator twin"
+  (doc    "The SIGN axis of Rational canonicalization on the set-element path (06-numeric pins it on the
+           ARITHMETIC path only): `(Rational.of 1 (- 0 n))` builds a runtime NEGATIVE-denominator rational
+           that must sign-normalize (1/-2 -> -1/2) and dedupe against its positive-denominator twin -1/2
+           (n=2: len 2 -> 21). n=4 stays distinct as -1/4 (31); n=1 integer-normalizes 1/-1 -> -1 (31).
+           The contains probe uses `-2/4`, stacking magnitude- on sign-normalization.")
+  (input  (do
+        (def (main (: n Int64))
+          (do
+            (def s (Set.of (list (Rational.of 1 (- 0 n)) (Rational.of -1 2) (Rational.of 1 2))))
+            (+ (* 10 (Set.len s)) (if (Set.contains s (Rational.of -2 4)) 1 0))))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 21 Int64))
+  (call   main (: 4 Int64)) (output (: 31 Int64))
+  (call   main (: 1 Int64)) (output (: 31 Int64)))
+
+(case "Set.to-list over Rational elements enumerates ascending by value, not by numerator/denominator pair"
+  (doc    "Pins WHICH order `Set.to-list` enumerates rationals in: by VALUE, not by (numerator, denominator)
+           lexicographic — the two genuinely diverge on {2/3, 1/3, 1/2}: value-ascending is 1/3 < 1/2 < 2/3
+           (digits 2,3,4 via trunc(6r) -> 234) while lex would be 1/2 < 1/3 < 2/3 (324). The n=1 row is the
+           lex-killer: 1/1 integer-normalizes to 1 and sorts LAST despite numerator 1 (346).")
+  (input  (do
+        (def (main (: n Int64))
+          (do
+            (def xs (Set.to-list (Set.of (list (Rational.of 2 3) (Rational.of 1 n) (Rational.of 1 2)))))
+            (def (six (: i Int64))
+              (match (List.at xs i) ((Some r) (Rational.truncate (* r (Rational.of 6 1)))) ((None _u) -9)))
+            (+ (* 100 (six 0)) (+ (* 10 (six 1)) (six 2)))))
+        (export main)))
+  (call   main (: 3 Int64)) (output (: 234 Int64))
+  (call   main (: 5 Int64)) (output (: 134 Int64))
+  (call   main (: 1 Int64)) (output (: 346 Int64)))
+
+(case "Set.intersection unifies an arithmetic-produced rational with its constructor-built normalized twin"
+  (doc    "Set.intersection across CONSTRUCTION paths: set `a` holds 1/2 produced by ARITHMETIC
+           (`(+ 1/4 1/4)`, canonicalized in the add op); set `b` holds 1/2 built by the CONSTRUCTOR
+           (`(Rational.of 2 4)`, canonicalized at construction). A lazily- or inconsistently-normalizing
+           implementation splits exactly here and reports an empty intersection. n=2: len 1 + contains 1/2
+           -> 11; the n=1 (1/4) and n=6 (3/2) rows are disjoint controls -> 0.")
+  (input  (do
+        (def (main (: n Int64))
+          (do
+            (def a (Set.of (list (+ (Rational.of 1 4) (Rational.of 1 4)) (Rational.of 5 3))))
+            (def b (Set.of (list (Rational.of n 4) (Rational.of 7 3))))
+            (def i (Set.intersection a b))
+            (+ (* 10 (Set.len i)) (if (Set.contains i (Rational.of 1 2)) 1 0))))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 11 Int64))
+  (call   main (: 1 Int64)) (output (: 0 Int64))
+  (call   main (: 6 Int64)) (output (: 0 Int64)))

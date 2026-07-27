@@ -20,6 +20,15 @@ AGENT="${1:?usage: window.sh <agent-name>}"
 # and ../.. climbs the two levels (fleet → .claude → <hub>) up to the hub.
 HUB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# Silence cargo's global-registry auto-clean GC for every `cargo xtask …` this window runs. The whole
+# fleet shares one ~/.cargo registry, so cargo's periodic GC tries to delete peer-owned cache files
+# this uid can't remove and prints a bare `Caused by: Permission denied (os error 13)` — NON-fatal
+# (the xtask still runs, `fleet sync` still advances trunk) but a context-less `Caused by:` that a
+# peer flagged as something that could mask a REAL error. Disabling the GC removes the noise at the
+# source; nothing in the fleet relies on the shared cache being pruned. Exported so it reaches the
+# recurring `cargo xtask …` calls the loop makes, not just the one below.
+export CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never
+
 # Resolve the agent's config from the registry. The hub is BARE (no Cargo workspace), so run the
 # xtask from any worktree that has one — the pr-sync worktree always exists and holds trunk.
 XTASK_WT="$HUB/.claude/worktrees/pr-sync"

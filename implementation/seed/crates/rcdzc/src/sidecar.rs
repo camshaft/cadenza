@@ -823,7 +823,8 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
 fn func_layout_text(db: &mut Db) -> String {
     // Force monomorphization so the reachable set is complete + stable regardless of what a query-only run
     // would otherwise lower (mirrors `Instantiations`); then lay out the boundary to get the func-index
-    // order. A layout decline (a program with no export) yields the empty result — the query is total.
+    // order. Both layouts declining (no export AND no `@test`, see the fallback below) yields the empty
+    // result — the query is total.
     crate::layout::force_monomorphize(db);
     // Root on `(export …)` when the program has any (a normal library/export build); otherwise fall back to
     // the `@test`-rooted layout (`compute_tests`), which lays out the SAME func-index set `cdz test` emits.

@@ -85,6 +85,9 @@ pass	STRING COMPRESSION emits char-count pairs but keeps the original unless str
 pass	STRING ROTATION check searches the needle inside the doubled haystack at equal length
 pass	SUBSET-SUM COUNT folds each element into a fresh ways-table so no element is reused
 pass	SYMMETRIC difference built two ways from primitives agrees and dedups the overlap
+pass	Set.intersection unifies an arithmetic-produced rational with its constructor-built normalized twin
+pass	Set.of over Rational elements dedupes a normalized-equal literal and to-list enumerates ascending
+pass	Set.to-list over Rational elements enumerates ascending by value, not by numerator/denominator pair
 pass	Set.to-list over symbols enumerates in content-byte order regardless of insertion order
 pass	String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts
 pass	THREE stacked guards on one constructor classify a heap payload into bands in order
@@ -107,6 +110,7 @@ pass	a BST built by comparison-driven inserts reads back sorted via in-order tra
 pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
 pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
+pass	a Euclid gcd over MULTI-LIMB BigInts converges with limb-level mod steps
 pass	a FLETCHER-16 checksum walks a concat-built byte rope across its seams
 pass	a Fletcher-16 over a seam-spanning slice VIEW equals the checksum of its logical bytes
 pass	a HANDLE as a NON-FINAL multi-binding let init completes before the sibling binding
@@ -672,6 +676,7 @@ pass	a MULTI-shot arm whose FIRST resume value is chosen by an if on the state
 pass	a MULTI-shot arm whose each resume CONSUMES a captured heap list dups it per resume
 pass	a MULTI-shot handler arm folds a two-hole body by re-reducing per resume
 todo	a MULTIBYTE and an EMPTY runtime String entry arg measure their UTF-8 byte lengths
+pass	a MULTIBYTE symbol map key is found by its runtime-CONCAT-interned twin
 pass	a MULTIPLY on an unusual signed width computes in range at the declared width
 pass	a MULTIPLY overflowing an unusual signed width is rejected CDZ0304
 pass	a MUTUALLY-recursive effectful group is specialized under a state handler
@@ -1908,6 +1913,7 @@ pass	a multi-export compound-result shared call is a repeatable (borrow<t>) call
 pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-export shared call is a repeatable (borrow<t>) callback
 pass	a multi-field record with one param-named key survives the call
+pass	a multi-limb modulo keeps the truncating dividend-sign convention across the limb boundary
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload nested same-sum match falls through when the nested variant differs
@@ -1928,6 +1934,7 @@ pass	a multi-way string-head dispatch resolves an operator name to its operation
 pass	a multibyte-UTF-8 Ast.Str round-trips through encode and decode
 pass	a multibyte-UTF-8 Ast.Str round-trips through print and read
 pass	a multibyte-scalar char orders by scalar value, not UTF-8 byte length
+pass	a multiply crossing the single-limb boundary lands exactly and divides back
 pass	a mutual AST walker re-extracts a node's payload in a sibling operand while a mutual call consumes it
 pass	a mutual walk where BOTH partners perform threads one shared counter across the cycle
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
@@ -2006,6 +2013,7 @@ pass	a negative unsigned integer width is rejected
 pass	a negative width is not honored as a narrow type
 pass	a negative zero in a record field is distinct from positive zero
 pass	a negative zero nested in a tuple is distinct from positive zero
+pass	a negative-denominator Rational sign-normalizes on the set-element path and dedupes its positive-denominator twin
 pass	a negative-power SI prefix converts over Float
 pass	a negative-power SI prefix is an exact rational scale
 pass	a nested @!param is a misplaced module directive (CDZ0602), not a module parameter
@@ -2461,6 +2469,8 @@ pass	a runtime BigInt divide over negative operands truncates toward zero
 pass	a runtime BigInt in an Option payload crosses the host boundary
 pass	a runtime BigInt intermediate that overflows Int64 does not trap
 pass	a runtime BigInt is found as a Set element by value
+pass	a runtime BigInt narrowed to Int64 at the EXACT maximum fits and one past traps
+pass	a runtime BigInt narrowed to Int64 at the EXACT minimum fits and one below traps
 pass	a runtime BigInt operation does not silently promote a fixed-width operand
 pass	a runtime BigInt ordering compares by the arbitrary-precision value
 pass	a runtime BigInt remainder takes the dividend's sign
@@ -4079,6 +4089,7 @@ pass	multi-export compound result — the second closure's tuple
 pass	multi-export compound result — three capturing closures share one call
 pass	multi-export record result — canonical field order
 pass	multi-export record result — the second closure, with a negative leaf
+pass	multibyte symbols order by UNSIGNED content bytes - a CJK scalar sorts after z
 pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
@@ -5073,3 +5084,4 @@ pass	a SCALAR do-def resumed in both slots stays in scope (scalar twin of the du
 pass	a do-def referenced twice WITHIN one resume operand compiles (the within-slot control)
 pass	an abortive perform in a body tail referencing a do-local binding stays in scope
 pass	an abortive perform in a STRICT OPERAND referencing a let-local binding stays in scope
+pass	a mutually-recursive fold matching a rebuilt list with a payload binder builds and computes
