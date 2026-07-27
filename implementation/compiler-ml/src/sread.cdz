@@ -610,7 +610,9 @@ def read-do-ctors(s: String, k: Int64, declName: Int64, tag: Int64, root: Int64,
              // + seeds each payload binder from its per-field argType. Slice-1b: parse ALL payload TYPE ATOMS from
              // `c2` (the first atom after the ctor name) to the ctor's `)` into a List(Int64) (read-payload-argtypes)
              // — was a SINGLE atom (multi-field `(Pair Int64 Int64)` truncated to `[Int64]`, losing field 1+). Each
-             // field: INT type → encode-param-type (≥2); BOOL → encode-bool-type (1, infer decodes TBool); any other
+             // field: INT type → encode-param-type (≥2); BOOL → encode-bool-type (1, the reserved sentinel — infer
+             // currently DECLINES it to TErr, Bool-payload value round-trip not-yet-wired; recorded so it's a 1-line
+             // re-enable); any other
              // scalar / nested → -1 (UNSUPPORTED sentinel, infer TErr's the binder → use declines; NOT 0, which means
              // Int64-placeholder). Do NOT record a def-body (a ctor is not an inlinable def). Skip past the payload's
              // matching `)` and recurse tag+1.

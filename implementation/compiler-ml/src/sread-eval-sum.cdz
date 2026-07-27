@@ -391,12 +391,13 @@ def ss-terr-scrutinee-taints-ctor-match() =
     | Option.Some(_) => trap("a TErr scrutinee (ill-typed (+ true 5)) must taint the match → decline, not be masked by the arms")
     | Option.None(_) => unit
 
-// ---- BOOL payload binder: TYPED as Bool (ground-payload complete) ----
+// ---- BOOL payload binder: DECLINES (value round-trip not-yet-wired) ----
 // ii-c2b-2 Bool sentinel: a Bool payload `(BB Bool)` records the ct argType Bool sentinel (encode-bool-type=1);
-// infer seeds the pattern binder as Typed.TBool. So a Bool binder used AS a Bool (`(if b …)`) now RUNS, while
-// used as an int (`(+ b 1)`) still DECLINES (a TBool operand to arithmetic is a type error — the soundness that
-// the -1→TErr sentinel used to provide by declining ALL uses; now Bool uses run + int-misuses decline). This
-// completes the GROUND-payload story: int widths (Int<N>/UInt<N>) + Bool. Nested/compound payloads → -1 → decline.
+// infer currently seeds the pattern binder as Typed.TErr, so a Bool binder DECLINES cleanly whether used AS a Bool
+// (`(if b …)`) OR as an int (`(+ b 1)`). Typing it TBool made the compiled `(if b …)` over an i64-repped payload
+// TRAP `wasm unreachable` (b128 gate) — the Bool-payload VALUE round-trip (construct→store→extract→use-as-cond) is
+// not-yet-wired, so declining is the sound interim; re-enabling to TBool is a 1-line change once wired. Ground-
+// payload story: int widths (Int<N>/UInt<N>) COMPLETE; Bool DECLINES. Nested/compound payloads → -1 → decline.
 
 @test
 def ss-bool-payload-binder-declines-not-yet-wired() =

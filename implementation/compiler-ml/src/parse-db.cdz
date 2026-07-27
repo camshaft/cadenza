@@ -112,8 +112,9 @@ type Node =
 type Tree =
   | Arena(Map(Int64, Node), Int64, Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Int64), Map(Int64, Tuple(Int64, Int64, List(Int64))))
                                    // The 12th table `ct` (M2-b-2b-ii) is the CTOR-TAG table: `Map(ctorNameId,
-                                   // (declName, tag))` (M2-b TySum: the value is a `(declName, tag)` tuple so a
-                                   // ctor use also types `TSum(declName)`, not just its tag)
+                                   // (declName, tag, argTypes))` (M2-b TySum: the value is a `(declName, tag,
+                                   // List(Int64))` tuple — declName so a ctor use also types `TSum(declName)` not
+                                   // just its tag, + argTypes the per-payload-field encoded type LIST, slice-1a/1b)
                                    // for a USER SUM-TYPE constructor (both nullary + payload) recorded by
                                    // read-do-ctors. lower reads it to turn a payload-ctor CALL `(Some 5)` =
                                    // NApp(Some, arg) into `CCtor(tag, args)` (distinguishing it from an over-applied
@@ -428,7 +429,9 @@ def ctor-decl-of(tree: Tree, ctorName: Int64) = match tree with
 /// M2-b-2b-ii-c2b payload-argType accessor (SINGLE-FIELD fast path, v-inference t443 refinement): the ENCODED
 /// declared type of a ctor's FIRST payload (0 = none/Int64-placeholder — a nullary ctor or an as-yet-unparsed
 /// payload), or `None` (not a recorded ctor). infer seeds a single payload binder from this (decode via
-/// pt-signed/pt-width) instead of the hardcoded Int64, so a non-Int payload (a Bool binder) types correctly.
+/// pt-signed/pt-width) instead of the hardcoded Int64, so a narrow INT payload (an Int8/Int32 binder) types at its
+/// declared width. A Bool payload (sentinel 1) and an unsupported payload (-1) both DECLINE to TErr for now (the
+/// Bool value round-trip is not-yet-wired) — not "type correctly".
 /// Now that the 3rd ct slot is a LIST (slice-1a), this returns the HEAD-or-0: `[]`→0 (nullary/none), `[enc]`→enc,
 /// `[e0, e1…]`→e0 (first field). This preserves EVERY existing single-field caller unchanged — a multi-field
 /// consumer uses `ctor-argtypes-of` (the full list) instead.
@@ -455,13 +458,13 @@ def ctor-argtypes-of(tree: Tree, ctorName: Int64) = match tree with
 /// value's rep: an enum-disc-decl TSum IS its bare tag (read directly); a boxed-decl TSum is a store handle.
 /// Distinguishes nullary from payload per-ctor via `def-body-of`: a nullary ctor records a def-body (its NLit
 /// tag, read-do-ctors) — Some; a payload ctor records only a ct entry — None. Scans the ct-table for the decl's
-/// ctors (keyed by ctorName → (declName, tag)), counting matches + requiring each nullary.
+/// ctors (keyed by ctorName → (declName, tag, argTypes)), counting matches + requiring each nullary.
 def decl-is-enum-disc(tree: Tree, declName: Int64) = match tree with
   | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => decl-enum-disc-go(tree, Map.to-list(ct), declName, 0, 0, 0)
 
 /// Fold the ct-entry list for `decl-is-enum-disc` by INDEX `i`: `nullary` counts the decl's NULLARY ctors,
 /// `payload` its PAYLOAD ctors. Enum-disc iff (payload == 0) AND (nullary >= 2). A payload ctor of the decl
-/// makes the rep boxed (any payload → not enum-disc). Index recursion over the (ctorName, (declName, tag))
+/// makes the rep boxed (any payload → not enum-disc). Index recursion over the (ctorName, (declName, tag, argTypes))
 /// entries (no list-tail — the arena has no generic list-tail; `List.at(entries, i)` walks positionally).
 def decl-enum-disc-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64, List(Int64)))), declName: Int64, i: Int64, nullary: Int64, payload: Int64) =
   (if (i == List.len(entries)) then (if (payload == 0) then (nullary >= 2) else false)
@@ -481,8 +484,10 @@ def encode-param-type(signed: Bool, width: Int64) = (width * 2) + (if signed the
 /// ii-c2b-2 ctor-argType Bool sentinel: encode-param-type only spans int types (width*2+sign → 2..129); value
 /// 1 (width=0, signed bit) is UNUSED + non-colliding, so it's the reserved BOOL encoding for a ctor's payload
 /// argType (v-inference's steer). 0 = none/Int64-placeholder, -1 = unsupported (non-int-non-bool), 1 = Bool,
-/// ≥2 = an int type. infer decodes 1 → Typed.TBool. (This is the ct-argType space ONLY — the param-type table
-/// never stores a Bool, so no collision with encode-param-type's consumers there.)
+/// ≥2 = an int type. infer currently decodes 1 → Typed.TErr (the Bool sentinel DECLINES — the Bool-payload value
+/// round-trip is not-yet-wired; the sentinel is recorded so re-enabling to TBool is a 1-line change once wired).
+/// (This is the ct-argType space ONLY — the param-type table never stores a Bool, so no collision with
+/// encode-param-type's consumers there.)
 def encode-bool-type() = 1
 
 /// Is an encoded ct-argType the Bool sentinel (value 1)?
