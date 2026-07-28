@@ -1951,6 +1951,16 @@ pub fn reduce_handle(
     // it resolves to a lambda. (Rewrites only the LEADING chain, not every non-final def: a def AFTER a
     // non-def item is reached by re-threading the `do` tail, which normalizes it in turn.)
     let body = lift_do_local_value_defs(db, body);
+    // CAPTURE-AVOIDING HYGIENE (body side). Alpha-rename the handle body's LOCAL value binders (`let` pairs,
+    // `do`-local `(def NAME v)`) to fresh `#`-names before the fold threads a resume VALUE into the perform
+    // position inside this body. Without it, a body-local `(let ((x 7)) (+ x (E.get)))` (or its `do`-def
+    // twin) CAPTURES a spliced-in free `x` carried from the arm — the arm's `(resume x s)` reads the OUTER
+    // global x=100, but landing inside the body's `x=7` scope rebinds it (F2 → 14 not 107). `freshen_local_
+    // binders` SHARES every free-name subtree (returns the node untouched when no local binder is inside), so
+    // an enclosing-param / global reference the body legitimately reads keeps its pinned resolution — only
+    // local binders and their in-scope references are rewritten. (breaker's silent-miscompile finding,
+    // corpus-bugfix 2026-07-28.)
+    let body = freshen_local_binders(db, body);
     // ABORTIVE (E4) NON-TAIL HOIST. An abort in a strict OPERAND under a conditional — `(+ 100 (if c
     // (Bail.bail 7) 50))` — is not directly foldable (the abort must escape the `+`). But an abort
     // ABANDONS the enclosing computation, so distributing the surrounding strict op INTO both `if` branches
@@ -2137,6 +2147,13 @@ pub fn reduce_handle(
             crate::eval::beta_reduce(db, arm.body, &subst_k)
         } else {
             let substituted = crate::eval::beta_reduce(db, arm.body, &subst);
+            // CAPTURE-AVOIDING HYGIENE. Freshen the substituted arm body's LOCAL value binders before the
+            // resume rewrite splices the continuation `C` (the handle body, carrying OUTER free names) into
+            // its tail. Without this, an arm-local `(do (def x 5) (resume (+ x s) s))` CAPTURES `C`'s free `x`
+            // (F1 → 10 not 105). Done AFTER `beta_reduce` (so the arm's op-param/state binder references are
+            // already substituted away — freshening rebuilds the tree, which would otherwise orphan those
+            // node-identity-keyed refs). (breaker's silent-miscompile finding, corpus-bugfix 2026-07-28.)
+            let substituted = freshen_local_binders(db, substituted);
             // Rewrite every `(resume v s)` → `C[v]` (the pure delimited continuation applied to the resume
             // value). The arm body's free names keep their pinned resolution through `beta_reduce`; `C`'s
             // free names resolve against the handle scope (the structural splice copy re-parents them). The
@@ -4811,6 +4828,167 @@ fn lift_do_local_value_defs(db: &mut Db, body: StructId) -> StructId {
     db.push_list(vec![let_head, binds, cont_do])
 }
 
+/// Capture-avoiding HYGIENE for the handler fold. Alpha-rename every LOCAL VALUE binder in `root` — a
+/// `let`-binding pair name, and a `do`-local `(def NAME value)` name — to a FRESH `#`-prefixed name unique to
+/// its binder node, rewriting the in-scope references that resolve to it. Run on the handle body AND each arm
+/// body BEFORE the fold composes them (`splice_context`/`beta_reduce` splice the arm body, the continuation
+/// `C = handle_body[perform := □]`, and resume VALUES across scope boundaries by STRUCTURALLY COPYING name
+/// atoms that then RE-RESOLVE against the destination scope). Without freshening, a free name in the spliced
+/// material is CAPTURED by a same-named local binder in the destination. F1 — the arm body `(do (def x 5)
+/// (resume (+ x s) s))`: `C = (+ x [])` (its `x` the OUTER/global x=100) is spliced for the resume, landing
+/// inside the arm's `(do (def x 5) …)` so `C`'s `x` binds to 5 (=10, not 105). F2 — the performer `(do (def
+/// x 7) (+ x (E.get)))` and arm `(resume x s)`: the resume VALUE `x` (the global) is spliced at the perform
+/// hole INSIDE `(do (def x 7) …)` so it binds to 7 (=14, not 107).
+/// Freshening the local binders in both bodies makes such a collision impossible (a `#x…` binder shares its
+/// name with nothing), so a spliced free name keeps its intended (outer) resolution. Silent-miscompile fix
+/// (breaker, routed corpus-bugfix 2026-07-28; the effects twin of the eval-splice capture family — same
+/// FRESH-NAMES-per-splice template as the metaprogramming quote/splice hygiene). A FUNCTION def `(def (f p…)
+/// body)` (sig a list) is left untouched — it resolves to a lambda, not a value binder this fold splices
+/// across. LAMBDA params / match-arm binders are NOT renamed here (the fold does not splice foreign material
+/// under them in a capturing way — the arg substitution is by binder-node identity, immune to name); only the
+/// `let`/`do`-def value binders that a `do`/`let` scope exposes to a spliced continuation need it.
+fn freshen_local_binders(db: &mut Db, root: StructId) -> StructId {
+    freshen_walk(db, root, &mut HashMap::default()).unwrap_or(root)
+}
+
+/// Recursive worker for [`freshen_local_binders`]. `renames` maps a binder-NODE occurrence (the one a
+/// reference's `resolved_of` reaches) to its fresh name string, threaded down so in-scope references rewrite.
+/// Returns `Some(new)` ONLY when a rename actually applied within this subtree, else `None` — the caller then
+/// SHARES the original node untouched. Sharing is load-bearing: a free-name reference (an enclosing param /
+/// global the handle body legitimately reads) keeps its RESOLVE-PINNED occurrence; rebuilding it with
+/// `push_list`/`copy_pure` would re-resolve it against the not-yet-reparented tree → spurious CDZ0101 unbound.
+/// So this pass touches ONLY the paths that carry a local binder or a reference to one, leaving every free
+/// name shared and correctly resolved.
+fn freshen_walk(
+    db: &mut Db,
+    node: StructId,
+    renames: &mut HashMap<StructId, String>,
+) -> Option<StructId> {
+    // A `let` — rename each binding-pair's binder to a fresh name, scoping the rename over the inits (later
+    // bindings + the body see earlier binders) and the body. Rebuild only if anything changed.
+    if let Some(tail) = db.ast.as_form(node, "let").map(<[_]>::to_vec)
+        && tail.len() == 2
+        && let Struct::List(pairs) = db.ast.get(tail[0]).clone()
+    {
+        let mut changed = false;
+        let mut new_pairs = Vec::with_capacity(pairs.len());
+        for pair in pairs {
+            if let Struct::List(kv) = db.ast.get(pair).clone()
+                && kv.len() == 2
+                && let Some(name) = db.ast.as_name(kv[0]).map(str::to_string)
+            {
+                // Init is in the scope BEFORE this binder (freshen it under the current renames), then
+                // register the fresh name so the body + later inits resolving to this binder rewrite. A
+                // `let` reference resolves (`resolve_name`) to `Ref { value: <init occ> }` — the INIT
+                // occurrence, NOT the binder-name occurrence — so key `renames` on the ORIGINAL init `kv[1]`.
+                let new_init = freshen_walk(db, kv[1], renames).unwrap_or(kv[1]);
+                let fresh = format!("#{name}{}", kv[0].0);
+                renames.insert(kv[1], fresh.clone());
+                let fresh_binder = db.push_atom(Leaf::Name(fresh));
+                new_pairs.push(db.push_list(vec![fresh_binder, new_init]));
+                changed = true; // a binder was always renamed
+            } else if let Some(np) = freshen_walk(db, pair, renames) {
+                new_pairs.push(np);
+                changed = true;
+            } else {
+                new_pairs.push(pair);
+            }
+        }
+        let new_body = freshen_walk(db, tail[1], renames);
+        if !changed && new_body.is_none() {
+            return None;
+        }
+        let let_head = db.push_name("let");
+        let binds = db.push_list(new_pairs);
+        return Some(db.push_list(vec![let_head, binds, new_body.unwrap_or(tail[1])]));
+    }
+    // A `do` — a `(def NAME value)` item binds NAME LOCAL to the rest of the `do`. Freshen each such def's
+    // name, scoping over the following items; a non-def item is walked under the running renames.
+    if let Some(items) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
+        let mut changed = false;
+        let mut new_items = vec![db.push_name("do")];
+        for item in items {
+            if let Some(dtail) = db.ast.as_form(item, "def").map(<[_]>::to_vec)
+                && dtail.len() == 2
+                && let Some(name) = db.ast.as_name(dtail[0]).map(str::to_string)
+            {
+                // A do-local `(def NAME V)` reference resolves (`do_def_binds`) to `Ref { value: V }` — the
+                // VALUE occurrence — so key `renames` on the ORIGINAL value `dtail[1]`, not the name.
+                let new_val = freshen_walk(db, dtail[1], renames).unwrap_or(dtail[1]);
+                let fresh = format!("#{name}{}", dtail[0].0);
+                renames.insert(dtail[1], fresh.clone());
+                let fresh_binder = db.push_atom(Leaf::Name(fresh));
+                let def_head = db.push_name("def");
+                new_items.push(db.push_list(vec![def_head, fresh_binder, new_val]));
+                changed = true;
+            } else if let Some(ni) = freshen_walk(db, item, renames) {
+                new_items.push(ni);
+                changed = true;
+            } else {
+                new_items.push(item);
+            }
+        }
+        return changed.then(|| db.push_list(new_items));
+    }
+    // A NAME reference that resolves to a renamed binder → its fresh name. `resolved_of` follows the scope
+    // walk to the binder occurrence; if we renamed that occurrence, rewrite this reference.
+    if db.ast.as_name(node).is_some()
+        && !is_binder_occ_local(db, node)
+        && let Resolved::Ref { value } = resolved_of(db, node)
+        && let Some(fresh) = renames.get(&value).cloned()
+    {
+        return Some(db.push_atom(Leaf::Name(fresh)));
+    }
+    // Otherwise: recurse into children, rebuilding ONLY if some child changed (else SHARE `node` so a free
+    // name keeps its pinned resolution).
+    match db.ast.get(node).clone() {
+        Struct::List(children) => {
+            let mut changed = false;
+            let mut rebuilt = Vec::with_capacity(children.len());
+            for c in children {
+                match freshen_walk(db, c, renames) {
+                    Some(nc) => {
+                        rebuilt.push(nc);
+                        changed = true;
+                    }
+                    None => rebuilt.push(c),
+                }
+            }
+            changed.then(|| db.push_list(rebuilt))
+        }
+        Struct::Atom(_) => None,
+    }
+}
+
+/// Whether `node` is itself a binder-position name in a `let`/`do`-def (handled by the freshen pass's binder
+/// rewrite, so its reference branch must NOT also fire). A thin wrapper over the arena shape check.
+fn is_binder_occ_local(db: &Db, node: StructId) -> bool {
+    let Some(parent) = db.parent_of(node) else {
+        return false;
+    };
+    // `(def NAME value)` — NAME is the binder (second child, first tail element).
+    if let Some(dtail) = db.ast.as_form(parent, "def")
+        && dtail.first() == Some(&node)
+        && dtail.len() == 2
+    {
+        return true;
+    }
+    // A `let` binding pair `(NAME init)` whose parent pair's grandparent is a `let` bindings list.
+    if let Struct::List(kv) = db.ast.get(parent)
+        && kv.first() == Some(&node)
+        && kv.len() == 2
+        && let Some(grand) = db.parent_of(parent)
+        && let Some(great) = db.parent_of(grand)
+        && db
+            .ast
+            .as_form(great, "let")
+            .is_some_and(|lt| lt.first() == Some(&grand))
+    {
+        return true;
+    }
+    false
+}
+
 /// A do-item's `(let (binds) lbody)` shape — either the item IS a `let`, or it is a cross-fn effectful
 /// helper CALL that INLINES to a `let`-headed body. Returns `(binds-list-occ, lbody-occ)` (both from a
 /// FRESH deep copy of the reduced body, so the lift re-parents them cleanly). `None` if the item neither is
@@ -6719,6 +6897,145 @@ fn subtree_performs_uncached(db: &mut Db, node: StructId, ctx: &HandlerCtx) -> b
         Struct::List(children) => children.iter().any(|&c| subtree_performs(db, c, ctx)),
         Struct::Atom(_) => false,
     }
+}
+
+/// Whether the REDUCED handle body `node` (the `Some` result of [`reduce_handle`], already grafted under the
+/// handle site) still carries a discharged-op perform that LEAKED past the fold — a perform lexically inside
+/// a LIVE lambda whose lowering ACTUALLY surfaces the misleading `NO_HOME_STANDALONE_DECLINE`. The fold could
+/// not route it because the closure ESCAPED its reach (stored in a collection, extracted via `List.at` +
+/// `match ((Some f) …)`, applied through the slot; `subtree_performs` treats a lambda VALUE as pure since a
+/// closure body performs only when APPLIED, and the fold cannot trace the application back through the slot).
+/// That lambda lifts to a STANDALONE function lowered with NO handle frame — losing the perform's lexical
+/// ancestry — so its perform reaches `lower`'s standalone arm and would report "performed with no enclosing
+/// handler here" even though this handle LEXICALLY encloses it. Called at the LOWERING entry to turn that
+/// into the honest `HANDLER_NOT_REDUCIBLE_DECLINE` todo (breaker's diagnostic-quality finding, routed by
+/// corpus-bugfix 2026-07-28).
+///
+/// The LEAF DISCRIMINATOR lowers the candidate perform (`core_of`) and fires ONLY when its core is exactly the
+/// `NO_HOME_STANDALONE_DECLINE` poison — so a perform that lowers to something else (a partial application of
+/// the enclosing closure declines EARLIER, at the application site, with the more-specific "partial
+/// application of a runtime closure" message; a host-delegated perform lowers to a `HostCall`) is left with
+/// its own, better outcome. DECLINE-ONLY: it can only replace one honest reject's MESSAGE with another,
+/// never admit a program. `arms` supplies the discharged op-identity set; an empty set (a malformed handle)
+/// never leaks by this measure (its own reject path handles it).
+pub fn reduced_body_leaks_escaped_perform(db: &mut Db, node: StructId, arms: &[HandleArm]) -> bool {
+    let discharged: Vec<(u32, u32)> = arms
+        .iter()
+        .filter_map(|a| crate::eval::effect_op_of(db, a.op).map(|(d, i)| (d.0, i)))
+        .collect();
+    if discharged.is_empty() {
+        return false;
+    }
+    // YIELD to a more-specific co-occurring decline. When the reduced body PARTIALLY applies a runtime
+    // closure (a curried closure called under its arity), lowering reports the precise "partial application
+    // of a runtime closure" decline at that application site — a BETTER message than the generic
+    // not-yet-reducible this guard would emit. A performing closure that is BOTH escaped AND partially
+    // applied (the `Box.C`-wrapped 2-arg closure applied to one arg) should surface THAT message, so don't
+    // fire here; the partial-application path owns the shape. (An escaped closure that is FULLY applied — the
+    // collection case — has no such sharper decline, so the guard fires and fixes the misleading no-home.)
+    if reduced_body_partially_applies_a_closure(db, node) {
+        return false;
+    }
+    leaks_no_home_perform_in_lambda(db, node, &discharged, false)
+}
+
+/// Whether the reduced handle body applies a runtime closure UNDER its arity (a curried closure called with
+/// fewer args than its arrow-peel count) — the shape `lower` declines as "partial application of a runtime
+/// closure". A syntactic scan for an application `(f args…)` whose head resolves to a value of curried arrow
+/// type with arity > the arg count. Used to let that more-specific decline win over the escaped-closure
+/// no-home remap (see [`reduced_body_leaks_escaped_perform`]).
+fn reduced_body_partially_applies_a_closure(db: &mut Db, node: StructId) -> bool {
+    if let Resolved::Apply { head, args } = resolved_of(db, node) {
+        let mut ty = crate::infer::type_of(db, head);
+        let mut arity = 0usize;
+        while let crate::ty::Ty::Fn(_, r) = ty {
+            arity += 1;
+            ty = *r;
+        }
+        if arity > 0 && args.len() < arity {
+            return true;
+        }
+    }
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| reduced_body_partially_applies_a_closure(db, c)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Recursive worker for [`reduced_body_leaks_escaped_perform`]. `in_lambda` flips true once we descend under
+/// a lambda; a discharged-op perform found there fires ONLY if its own `core_of` is the misleading
+/// `NO_HOME_STANDALONE_DECLINE` (the actual outcome, not a structural guess). Stops at a NESTED handle: a
+/// perform inside a handle discharging its op is RE-HOMED there (the escaping-k self-reinstall emits a
+/// reified continuation `(fn (#kv) (handle-internal … (+ #kv (E.op))))` — a correct fold, not a leak); an
+/// ungranted one is caught when that inner handle is itself reduced. Skips a DEAD `let` binding's init
+/// (unreferenced downstream → lowering drops it, so its vestigial lambda never lifts — the directly-applied
+/// `(let ((f (fn … (E.op)))) (f 3))` folds to `(let ((f …)) (* 3 2))`, `f` now dead).
+fn leaks_no_home_perform_in_lambda(
+    db: &mut Db,
+    node: StructId,
+    discharged: &[(u32, u32)],
+    in_lambda: bool,
+) -> bool {
+    // A nested handle re-homes the ops it discharges — do not descend (see the doc note).
+    if matches!(resolved_of(db, node), Resolved::Handle { .. })
+        || db.ast.head_name(node) == Some(HANDLE_INTERNAL)
+    {
+        return false;
+    }
+    if in_lambda
+        && let Resolved::Apply { head, .. } = resolved_of(db, node)
+        && let Some((decl, idx)) = crate::eval::effect_op_of(db, head)
+        && discharged.contains(&(decl.0, idx))
+        && matches!(
+            crate::lower::core_of(db, node),
+            crate::core::Core::Poison(ref r) if r.message == crate::diag::NO_HOME_STANDALONE_DECLINE
+        )
+    {
+        return true;
+    }
+    // A DEAD let-binding's init is dropped by lowering — skip it (see the doc note).
+    if let Resolved::Let { bindings, body } = resolved_of(db, node) {
+        for (i, &(name_occ, init)) in bindings.iter().enumerate() {
+            let referenced = binder_name_referenced(db, name_occ, body)
+                || bindings
+                    .iter()
+                    .skip(i + 1)
+                    .any(|&(_, later_init)| binder_name_referenced(db, name_occ, later_init));
+            if referenced && leaks_no_home_perform_in_lambda(db, init, discharged, in_lambda) {
+                return true;
+            }
+        }
+        return leaks_no_home_perform_in_lambda(db, body, discharged, in_lambda);
+    }
+    let next_in_lambda = in_lambda || matches!(resolved_of(db, node), Resolved::Lambda { .. });
+    match db.ast.get(node).clone() {
+        Struct::List(children) => children
+            .iter()
+            .any(|&c| leaks_no_home_perform_in_lambda(db, c, discharged, next_in_lambda)),
+        Struct::Atom(_) => false,
+    }
+}
+
+/// Whether the name bound by `name_occ` (a `let`-binder name atom) appears as a reference anywhere in
+/// `scope` — a syntactic name-match walk (sufficient for the dead-binding skip: a shadowing inner binder only
+/// ADDS occurrences, so a false "referenced" is conservative — it keeps the leak scan from skipping a live
+/// init, never makes it fire spuriously).
+fn binder_name_referenced(db: &mut Db, name_occ: StructId, scope: StructId) -> bool {
+    let Some(name) = db.ast.as_name(name_occ).map(|s| s.to_string()) else {
+        return false;
+    };
+    fn walk(db: &Db, node: StructId, name: &str) -> bool {
+        if db.ast.as_name(node) == Some(name) {
+            return true;
+        }
+        match db.ast.get(node).clone() {
+            Struct::List(children) => children.iter().any(|&c| walk(db, c, name)),
+            Struct::Atom(_) => false,
+        }
+    }
+    walk(db, scope, &name)
 }
 
 /// The number of SYNTACTIC discharged-perform occurrences in `node` — a `(op …)` application whose head is

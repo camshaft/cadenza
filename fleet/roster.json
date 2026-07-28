@@ -42,6 +42,7 @@
     { "name": "v-choreography", "role": "vertical", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "v-discrete-event-sim", "role": "vertical", "vertical": "discrete-event-simulation", "area": "compiler-ml", "model": "opus", "effort": "high", "interval": "30m" },
     { "name": "tracker", "role": "tracker", "model": "opus", "effort": "high", "interval": "15m" },
-    { "name": "v-music", "role": "vertical", "vertical": "music", "area": "music", "model": "opus", "effort": "high", "interval": "10m" }
+    { "name": "v-music", "role": "vertical", "vertical": "music", "area": "music", "model": "opus", "effort": "high", "interval": "10m" },
+    { "name": "v-value-facts", "role": "vertical", "vertical": "value-facts", "area": "rcdzc", "model": "opus", "effort": "high", "interval": "30m" }
   ]
 }

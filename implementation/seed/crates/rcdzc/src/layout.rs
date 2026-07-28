@@ -386,14 +386,16 @@ pub fn compute_tests(db: &mut Db) -> Result<Layout, Reject> {
 /// lifted closures close over just this bucket's bodies (`finish_layout`), so each view emits only the
 /// functions its own tests reach — exactly what a per-file `cdz test <file>` compile lays out today.
 pub fn compute_tests_for(db: &mut Db, defs: &[usize]) -> Result<Layout, Reject> {
-    let test_defs = defs.to_vec();
-    if test_defs.is_empty() {
+    if defs.is_empty() {
         return Err(Reject::decline(
             "no `@test` definition: nothing to run (mark a nullary def with `@test`)",
         ));
     }
+    // Iterate the caller's slice BY REF — the def indices are `Copy`, and `defs` is a caller-owned slice
+    // (never aliasing `db`), so it coexists with the `&mut db` reborrows in the loop body; no clone needed.
+    // (`compute_tests` passes `&db.test_defs()`, a temporary that lives for this call.)
     let mut exports: Vec<ExportPlan> = Vec::new();
-    for def in test_defs {
+    for &def in defs {
         let name = db.defs[def].name.clone();
         let body = match db.defs[def].body {
             Some(b) => b,
@@ -410,6 +412,138 @@ pub fn compute_tests_for(db: &mut Db, defs: &[usize]) -> Result<Layout, Reject> 
         let params = export_params(db, def, &name)?;
         let result = type_of(db, body);
         trace!(target: "rcdzc::layout", %name, def, params = params.len(), result = %result.render_name(), "test export plan");
+        exports.push(ExportPlan {
+            name,
+            def,
+            body,
+            params,
+            result,
+        });
+    }
+    finish_layout(db, exports)
+}
+
+/// OPTION C (shared-closure component) — partition a test build's reachable emitted defs into the two sets
+/// the component split needs: `own` (defs belonging to the `own_file` — a file's own `@test` bodies + its
+/// file-local helpers) and `shared` (defs belonging to ANOTHER file — the imported closure a `@test` reaches
+/// through `run-src`/etc., which Option C emits ONCE as its own component rather than re-embedding per file).
+/// A def's file is `db.file_of(def.sig_occ)`; a def in NO file (`None` — prelude / synthesized / the linked
+/// `(do …)` root) is treated as SHARED (it is not the test file's own source, and belongs in the one shared
+/// component every test view imports). Returns `(own, shared)` as `defs` indices, preserving `layout.order`
+/// (emission order) within each. Pure over the reachable set — the analysis increment (a); the provider/
+/// consumer EMIT increments (b)/(c) consume this. `own_file` is the file index a test bucket belongs to
+/// (`db.file_of` of any of its `@test` sig-occurrences), the same file identity `EmitTestsPerFile` buckets by.
+pub fn partition_reachable_for_file(
+    db: &Db,
+    layout: &Layout,
+    own_file: usize,
+) -> (Vec<usize>, Vec<usize>) {
+    let mut own = Vec::new();
+    let mut shared = Vec::new();
+    for &def in &layout.order {
+        let sig = db.defs[def].sig_occ;
+        if db.file_of(sig) == Some(own_file) {
+            own.push(def);
+        } else {
+            shared.push(def);
+        }
+    }
+    (own, shared)
+}
+
+/// OPTION C increment (b)(i) — the CROSS-COMPONENT INTERFACE export set: the `shared` defs that an `own`
+/// def CALLS (a `Core::Call` edge from own → shared). This is what the shared-closure component must EXPORT
+/// as interface funcs (and each per-file @test component IMPORTS) — NOT the whole `shared` set: a shared def
+/// called only WITHIN the closure (shared→shared) stays emitted inside the provider, never crossing the peer
+/// boundary; only a shared def on a cross-file call edge needs an interface func. Computed off the partition
+/// ([`partition_reachable_for_file`]): walk each `own` def's body for its `Core::Call` callees
+/// (`collect_call_callees`), keep those in `shared`. Returns the cross-edge shared-def indices in
+/// `layout.order` (emission) order, deduplicated.
+///
+/// A cross-edge whose callee's signature has NO cross-component boundary rep (a higher-order def — a bare
+/// function-typed param/result, which `host::extern_abi_val_type` returns `None` for) is the KNOWN CONSTRAINT
+/// the provider emit (b) must DECLINE cleanly (a `todo`, not a miscompile) — reported there, not here; this
+/// analysis just names the edge set.
+pub fn cross_component_edges(db: &mut Db, layout: &Layout, own_file: usize) -> Vec<usize> {
+    let (own, shared) = partition_reachable_for_file(db, layout, own_file);
+    let shared_set: crate::fxhash::FxHashSet<usize> = shared.iter().copied().collect();
+    let mut edges: Vec<usize> = Vec::new();
+    for &owner in &own {
+        if let Some(body) = db.defs[owner].body {
+            let mut callees = Vec::new();
+            collect_call_callees(db, body, &mut callees);
+            for c in callees {
+                if shared_set.contains(&c) && !edges.contains(&c) {
+                    edges.push(c);
+                }
+            }
+        }
+    }
+    // Return in emission (`layout.order`) order for determinism, not discovery order.
+    layout
+        .order
+        .iter()
+        .copied()
+        .filter(|d| edges.contains(d))
+        .collect()
+}
+
+/// OPTION C increment (b)(ii) — build the SHARED-CLOSURE PROVIDER layout: a `Layout` whose EXPORTS are the
+/// cross-component edge defs ([`cross_component_edges`] — the `shared` defs each per-file `@test` component
+/// calls). Each edge def becomes an exported interface func (an [`ExportPlan`], its params/result solved the
+/// same way [`compute`]/[`compute_tests_for`] do); [`finish_layout`] then closes reachability so the edges'
+/// OWN intra-closure callees are emitted INSIDE the provider (not re-exported). This is the layout the
+/// provider emit (`db.component_name` set) consumes to emit the shared closure ONCE as its own component.
+/// A build with no cross-edge (a single-file program, or @tests that call nothing shared) declines "no
+/// shared closure" — there is nothing to hoist. The per-edge ABI-representability check (a higher-order edge
+/// has no cross-component boundary rep) is the EMIT layer's (target-neutral layout does not know the wasm
+/// extern ABI); this just names the export set + closes its reachable body.
+/// The SOURCE name a (possibly transformed) def crosses a component boundary under — the base before any
+/// internal transform suffix. The compiler renames a transformed def by APPENDING a `$`/`#`-marked suffix
+/// to its source base (`{base}$acc` for the linear-non-tail-recursion accumulator rewrite, accum.rs; `{base}
+/// #monoN` for a monomorphized specialization, lower.rs); a def may carry both (`f$acc#mono3`). Those markers
+/// are invalid in a component extern name (ASCII kebab only), and the boundary contract wants the STABLE
+/// source name anyway, so the boundary name is everything before the FIRST `$` or `#`. Shared by the Option-C
+/// provider EXPORT (b) and consumer IMPORT (c) so both name the same interface func. A def with no transform
+/// suffix returns its whole name unchanged.
+pub fn source_boundary_name(emitted_name: &str) -> &str {
+    match emitted_name.find(['$', '#']) {
+        Some(i) => &emitted_name[..i],
+        None => emitted_name,
+    }
+}
+
+pub fn compute_shared_closure_provider(
+    db: &mut Db,
+    test_layout: &Layout,
+    own_file: usize,
+) -> Result<Layout, Reject> {
+    let edges = cross_component_edges(db, test_layout, own_file);
+    if edges.is_empty() {
+        return Err(Reject::decline(
+            "no shared closure: the @tests call no imported (cross-file) definition",
+        ));
+    }
+    let mut exports: Vec<ExportPlan> = Vec::new();
+    for def in edges {
+        // The boundary export name is the def's SOURCE name — NOT its emitted name, which for a
+        // TRANSFORMED def carries an internal suffix (`f$acc` from the linear-non-tail-recursion accumulator
+        // rewrite, `f#monoN` from monomorphization) that contains `$`/`#` — invalid in a component extern
+        // name (ASCII kebab only), so it would be rejected by `invalid_kebab_export_name`. The suffix is
+        // ALWAYS appended (`{base}$acc` / `{base}#monoN`), so the source base is everything before the FIRST
+        // `$` or `#`. The CONSUMER side (increment c) must derive the import name the SAME way, so both
+        // agree on the interface func name — this is the shared provider↔consumer boundary-name convention.
+        let name = source_boundary_name(&db.defs[def].name).to_string();
+        let body = match db.defs[def].body {
+            Some(b) => b,
+            None => {
+                return Err(Reject::decline(format!(
+                    "shared-closure export `{name}` has no body"
+                )));
+            }
+        };
+        let params = export_params(db, def, &name)?;
+        let result = type_of(db, body);
         exports.push(ExportPlan {
             name,
             def,

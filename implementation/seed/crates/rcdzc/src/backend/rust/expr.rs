@@ -227,6 +227,46 @@ fn key_ty_has_wrappable_float(ty: &Ty) -> bool {
     }
 }
 
+/// Whether `ty` is a COMPOUND (tuple/record/list/sum) that CONTAINS a float leaf at any depth — the shape
+/// whose `Set.to-list`/`Map.to-list` must DECLINE. Per `03-equality-and-observation.sexp:626 §319` a
+/// compound containing a float leaf has NO blessed total order, so its ordered enumeration is not defined
+/// (matching wasm — v-wasm-opt's `float_ok` is a BARE-ROOT-only privilege that does not propagate into a
+/// compound's components). A BARE `Ty::Float` is NOT this — it enumerates by canonical byte (to_bits) order
+/// (19-sets.sexp:1494), so this returns FALSE for a bare float. CONSTRUCTION + lookup of a float-carrying
+/// compound key/element STILL work (the `__CdzF` wrapper gives rust's `BTree*` a total order for
+/// insert/contains/remove — breaker pin 211 keeps the champ hash/eq surface); ONLY the ordered TO-LIST
+/// enumeration declines, so this guard lives at `SetToList`/`MapToList`, NOT at the key-admissibility gate
+/// (`ty_is_ord_key`).
+fn is_float_carrying_compound(ty: &Ty) -> bool {
+    match ty.strip_nominal() {
+        // A BARE float enumerates by canonical bytes — NOT a float-carrying compound.
+        Ty::Float(_) => false,
+        Ty::Tuple(_) | Ty::Record(_) | Ty::List(_) | Ty::Sum { .. } => {
+            key_ty_has_wrappable_float_deep(ty)
+        }
+        _ => false,
+    }
+}
+
+/// Whether a float leaf appears anywhere in `ty`'s component tree (tuple/record/list/sum, any depth) —
+/// the DEEP companion of [`key_ty_has_wrappable_float`] that also descends `List`/`Sum` (the #34 faces
+/// include a float-leaf list + nested tuple, not just direct tuple/record fields).
+fn key_ty_has_wrappable_float_deep(ty: &Ty) -> bool {
+    match ty.strip_nominal() {
+        Ty::Float(_) => true,
+        Ty::Tuple(elems) => elems.iter().any(key_ty_has_wrappable_float_deep),
+        Ty::Record(fields) => fields.values().any(key_ty_has_wrappable_float_deep),
+        Ty::List(elem) => key_ty_has_wrappable_float_deep(elem),
+        Ty::Map(k, v) => key_ty_has_wrappable_float_deep(k) || key_ty_has_wrappable_float_deep(v),
+        // A SUM's payloads: a float in any variant's payload makes the sum float-carrying. (Recursion is
+        // bounded by the finite type tree here; a recursive sum's payload type is the nominal, whose
+        // strip_nominal is the sum — but its ARGS are what carry a float, walked via the payload types the
+        // caller passes. For the #34 faces (non-recursive float-leaf compounds) this direct walk suffices;
+        // a recursive-sum float leaf is a later face if it arises.)
+        _ => false,
+    }
+}
+
 fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
     match key_ty {
         Ty::Float(ft) if ft.ground_width() == 32 => format!("__CdzF32::new({expr})"),
@@ -1760,6 +1800,16 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // `Map.to-list` → a `List (Tuple k v)` in CANONICAL KEY order — a `BTreeMap` iterates sorted, so a
         // plain `.iter()` gives that order; clone each key/value into an owned `(K, V)` tuple → `Vec<(K,V)>`.
         Core::MapToList { map, .. } => {
+            // A float-CARRYING COMPOUND KEY has no blessed total order (03:626 §319) → the ordered
+            // key-enumeration DECLINES, matching wasm. A BARE float key still enumerates (canonical bytes).
+            // Map construction/lookup over such a key still work (the guard is HERE, at to-list, not insert).
+            if let Ty::Map(ref k, _) = type_of(db, map)
+                && is_float_carrying_compound(k)
+            {
+                return Err(Reject::decline(
+                    "Map.to-list over a float-carrying compound key declines: a compound containing a float leaf has no blessed total order (matching wasm; the map itself + lookup/remove still work, only the ordered enumeration is undefined)",
+                ));
+            }
             let m = emit(db, map, env, ctx)?;
             // A float-KEYED map iterates `CdzF64` keys; the `List (Tuple Float64 V)` key element is a bare
             // `f64`, so UNWRAP the key via `.get()`. The value is unaffected (a float VALUE stays `f64`).
@@ -1897,6 +1947,16 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // UNWRAP each via `.get()` (the wrapper→f64 read). The iteration order is the wrapper's `Ord` (by
         // canonical bits), matching the runtime's canonical-byte order for a float `Set.to-list`.
         Core::SetToList { set, .. } => {
+            // A float-CARRYING COMPOUND element has no blessed total order (03:626 §319) → the ordered
+            // enumeration DECLINES, matching wasm. A BARE float element still enumerates (canonical bytes).
+            // Construction/lookup of such a set still work (the guard is HERE, at to-list, not at SetOf).
+            if let Ty::Set(ref e) = type_of(db, set)
+                && is_float_carrying_compound(e)
+            {
+                return Err(Reject::decline(
+                    "Set.to-list over a float-carrying compound element declines: a compound containing a float leaf has no blessed total order (matching wasm; the set itself + contains/remove still work, only the ordered enumeration is undefined)",
+                ));
+            }
             let s = emit(db, set, env, ctx)?;
             let elem_is_float = matches!(
                 type_of(db, set),

@@ -781,10 +781,15 @@ def seed-ctor-binders-go(tcol: Map(Int64, Typed), argTypes: List(Int64), binderI
    else (match List.at(binderIds, i) with
           | Option.None(_) => tcol
           | Option.Some(bid) =>
-              (let ty = (match List.at(argTypes, i) with
+              // WILDCARD `_`: a -1 sentinel binder types NOTHING (no NVar node to seed) — skip the insert but STILL
+              // advance i (the slot index tracks the FIELD position, so a `_` in field 0 must not shift field 1's
+              // argType read). Mirrors resolve's node-at(-1)=None skip + eval's consume-slot-skip-insert.
+              (if (bid == (0 - 1))
+               then seed-ctor-binders-go(tcol, argTypes, binderIds, i + 1)
+               else (let ty = (match List.at(argTypes, i) with
                           | Option.Some(enc) => decode-argtype-enc(enc)
                           | Option.None(_) => t-int64()) in
-               seed-ctor-binders-go(Map.insert(tcol, bid, ty), argTypes, binderIds, i + 1))))
+               seed-ctor-binders-go(Map.insert(tcol, bid, ty), argTypes, binderIds, i + 1)))))
 
 def seed-ctor-binders(tcol: Map(Int64, Typed), tree: Tree, patCtorName: Int64, binderIds: List(Int64)) =
   (match ctor-argtypes-of(tree, patCtorName) with

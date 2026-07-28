@@ -79,3 +79,11 @@ Pinned down the exact mechanism/design after reading read-app-or-bin + resolve/l
   NON-recursive defs (they still inline fine once name-resolved); self/mutual RECURSION additionally needs the
   non-inlining call form. Sequence: (1) NApp-carries-name + resolve/lower name→bodyId → forward refs run; then
   (2) non-inlining recursive call form → recursion runs. Each gated. DEDICATED clean-trunk tick(s); big change.
+
+## UPDATE 2026-07-22: forward-refs DONE; recursion (Slice B) has a concrete execution-ready plan
+Step (1) NApp-carries-name + forward/backward/main-anywhere LANDED-or-pending (MR dc204e163). Step (2) —
+true runtime recursion — is now planned arm-by-arm in
+`vcml-design-sliceB-runtime-recursion-non-inlining-call-form.md`: add a Core `CCall(name, args)` node emitted
+ONLY for `call-is-recursive` calls (non-recursive keeps inlining), a `lower-def-env` (name→(params,bodyCore)),
+an eval-core CCall arm threading a `defs` env, and flip infer/resolve's recursion-decline arms. Interpreter
+first (run-ml green), emit second (B'). START only on a clean base once dc204e163 lands.

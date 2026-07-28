@@ -1,0 +1,3 @@
+import { run-src-typed } from "sread-eval"
+def main() = run-src-typed("42")
+export { main }

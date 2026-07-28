@@ -1196,6 +1196,45 @@ fn a_bare_float_set_or_map_key_uses_the_cdz_f64_total_order_wrapper() {
 }
 
 #[test]
+fn float_carrying_compound_to_list_declines_but_construction_still_works() {
+    // breaker #34 (corpus-bugfix routed, v-wasm-opt 42b2a02b0 twin): a float-CARRYING COMPOUND
+    // Set/Map.to-list must DECLINE — a compound containing a float leaf has NO blessed total order
+    // (03-equality-and-observation.sexp:626 §319), so its ordered enumeration is undefined (matching wasm).
+    // ORDER-only + to-list-only: a BARE float still enumerates (canonical bytes, 19-sets:1494), and the
+    // set/map CONSTRUCTION + lookup over a float-tuple key STILL work (breaker pin 211 — the __CdzF wrapper
+    // gives rust's BTree* a total order for insert/contains/lookup; only to-list's ordered enumeration
+    // declines). Guard lives at SetToList/MapToList, NOT ty_is_ord_key (which gates construction).
+    // (1) float-tuple Set.to-list DECLINES.
+    assert!(
+        try_compile_rust("(module m (def (run) (List.len (Set.to-list (Set.of (list (tuple 1.5 1) (tuple 2.5 2)))))) (export run))").is_err(),
+        "Set.to-list over a float-leaf tuple element must decline"
+    );
+    // (2) float-tuple Map.to-list DECLINES.
+    assert!(
+        try_compile_rust("(module m (def (run) (List.len (Map.to-list (Map.insert (Map.empty) (tuple 2.5 3) 42)))) (export run))").is_err(),
+        "Map.to-list over a float-leaf tuple key must decline"
+    );
+    // (3) a BARE float Set.to-list still ENUMERATES (bare-root float order is blessed by canonical bytes).
+    assert!(
+        try_compile_rust(
+            "(module m (def (run) (List.len (Set.to-list (Set.of (list 1.5 2.5))))) (export run))"
+        )
+        .is_ok(),
+        "a BARE float Set.to-list must still enumerate (bare-root canonical-byte order)"
+    );
+    // (4) a float-tuple Map CONSTRUCTION + lookup still WORKS (pin 211 — only to-list declines).
+    let lookup = compile_rust(
+        "(module m (def (run) (match (Map.lookup (Map.insert (Map.empty) (tuple 2.5 3) 42) (tuple 2.5 3)) ((Some v) v) ((None _) -1))) (export run))",
+    );
+    if let Some(out) = rustc_run(&lookup, "run()") {
+        assert_eq!(
+            out, "42",
+            "float-tuple-key Map insert+lookup by content still works (42)"
+        );
+    }
+}
+
+#[test]
 fn a_tuple_with_a_float_leaf_keys_a_map_by_content_end_to_end() {
     // REGRESSION (v-runtime differential): a `(Tuple Float64 Int64)` Map key looks up BY CONTENT — insert
     // under `(2.5, 3)`, look up `(2.5, 3)` → hits (42). Was a rust decline (wrapper not threaded through the

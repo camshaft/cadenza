@@ -1,97 +1,62 @@
-# DESIGN (v-compiler-ml, self): forward-ref + recursion — make NApp carry the NAME, resolve the body LATE
 
-Scoped 2026-07-21 (base 7b078cf9c, param4-wiring MR pending). The single biggest remaining gap in the ML
-compiler's function subset. Execute-ready spec so it lands the moment trunk clears (it's a cross-cutting refactor
-that MUST start from a clean base — cannot be a stacked slice).
+## IMPLEMENTATION FINDINGS (2026-07-21, trunk 61469f6c4, run-ml unblocked via release-cdz) — reader done+reverted, guard is the crux
+PROTOTYPED the reader change (strategy A) and cdz-check-verified it, then REVERTED (a half-done NApp refactor
+miscompiles; kept branch clean). Confirmed findings for the next session:
 
-## The gap (confirmed by probe)
-```
-self-recursion:   (do (def (fac n) (if (< n 2) 1 (* n (fac (- n 1))))) (def (main) (fac 5)) (export main))   ml=declined  ref=120
-forward-ref:      (do (def (a x) (b x)) (def (b x) (+ x 1)) (def (main) (a 5)) (export main))                 ml=declined  ref=6
-mutual-recursion: (do (def (ev n) (if (< n 1) 1 (od (- n 1)))) (def (od n) …) (def (main) (ev 4)) …)          ml=declined  ref=1
-```
-BACKWARD refs already work (se-helper-calls-earlier-helper, se-helper-chain-nested-calls) — a call to an
-EARLIER-read def resolves fine. Only forward/self/mutual fail.
+1. READER CHANGE (works, ~10 lines, cdz-check-clean): read-app-or-bin's discriminator becomes NAME-BASED, not
+   def-body-of. Since keywords (if/let/do/:/and/or/not) are already filtered upstream, a `sym` reaching
+   read-app-or-bin is either an OPERATOR (op-code-of ≠ -1 → read-bin-form) or a NAME (op-code-of == -1 → a CALL).
+   So: `(if (op-code-of(sym) == (0-1)) then <nullary-or-param-call with name-id(sym)> else read-bin-form)`. The
+   call-readers (read-nullary-call/read-param-call/read-2nd-arg) take `calleeName` (was `bodyId`) and emit
+   NApp(name-id, argId). read-4th-arg takes the built NApp `id`, unaffected. This DROPS the read-time
+   def-body-of + the read-time param-of gate (a call to a 0-param `mk` now emits NApp too; over-app handled
+   downstream). cdz check clean.
 
-## Root cause (sread.cdz:169)
-`read-app-or-bin` resolves `def-body-of(name-id(sym))` at READ TIME to get the callee's bodyId, and emits
-`NApp(calleeBodyId, argId)` — calleeId IS the body node-id. A forward/self/mutual call references a def whose
-body node hasn't been added to the arena yet → `def-body-of` returns None → falls through to `read-bin-form` →
-op-code -1 → infer TErr → declines. (Self-recursion fails identically: `fac`'s body is mid-read when its own
-recursive call is encountered, so `fac` isn't in the def-table yet.)
+2. CONSUMER INDIRECTION (Task #2): resolve/infer/lower NApp arms use calleeId as (a) a body NODE-id
+   (resolve-node/infer-node/lower-node(tree, calleeId)) AND (b) table keys (param-of etc.). KEY SIMPLIFIER
+   CONFIRMED: params/args are recorded under BOTH nameId AND bodyId (read-do-def), so param-of(tree, calleeName)
+   works DIRECTLY with the name — NO change to the param/arg lookups. ONLY the body-traversal calls
+   (infer-node/lower-node/resolve-node on calleeId) need `def-body-of(calleeName)→bodyId` first. ~1 def-body-of
+   per NApp arm (3 files).
 
-## Fix: NApp carries the callee NAME-ID, not the body-id; resolve the body in a LATER pass
-Change the NApp node to store `name-id(sym)` (always known at read time — it's just the symbol) instead of the
-callee's bodyId. Then a NEW binding pass (or resolve-db, which already runs after the whole tree is built) maps
-name → bodyId via `def-body-of` AFTER all defs are recorded. Every downstream consumer that currently treats
-calleeId as a body node-id must instead go name → bodyId first.
+3. THE CRUX = RECURSION CYCLE GUARD (Task #3, the hard part): infer runs BEFORE lower (resolve→infer→lower) and
+   BOTH recurse into the callee body (infer-node(calleeId) at infer-db:~102, lower-node(calleeId) at
+   lower-db:114/119). So a self/mutual recursive call HANGS at INFER first (infinite inline). Today recursion
+   cleanly declines (def-body-of misses at read → NBin -1 → TErr); the reader change REMOVES that accidental
+   guard, so WITHOUT a real guard, recursion regresses decline→HANG (worse — must not ship). The guard needs
+   per-descent state (a visiting-set or depth counter) threaded through infer-node AND lower-node — but each has
+   ~14 call sites + helper fns (infer-param2/3/4, inner-body-with-param3/4) that also recurse → ~40 edits total.
+   OPTIONS (pick next session, verify with release-cdz run-ml, ~1min/probe, NOT iterative):
+   (a) DEPTH COUNTER: add `depth: Int64` param to infer-node/lower-node; NApp arm increments on the callee
+       descent; decline when depth > bound (e.g. 64). Simplest logic, but touches all ~40 call sites (mechanical:
+       thread `depth` unchanged everywhere except +1 at the NApp callee-descent).
+   (b) STATIC CYCLE PRE-CHECK: a self-contained helper `reaches(tree, fromBodyName, targetName, fuel)` that
+       walks a def-body's NApp callees looking for targetName within fuel; NApp arm declines if the callee
+       reaches back to itself. NO threading through the main walk (only a new helper called at the NApp arm).
+       LEAN (b) — lower churn, contained, and it makes recursion a clean COMPILE-decline (matches today's
+       behavior) rather than a depth-bounded one. Downside: duplicates a bounded traversal.
 
-### Site inventory (measured this tick)
-- **24** `Node.NApp(` construction sites (mostly reader + tests).
-- calleeId consumers by file: resolve-db **8**, infer-db **24**, lower-db **17**, eval-db **10**, sread **11**
-  (mostly the call-readers + @tests). emit-db 0 (it consumes lower's Core, no NApp). ≈59 consumer sites.
-- param/arg lookups (`param-of`/param2-of/param3-of/param4-of, arg2-of..arg4-of) are ALREADY keyed by bodyId
-  (recorded under BOTH nameId and bodyId in read-do-def) — so once a consumer has resolved name→bodyId it can
-  reuse every existing keyed-by-bodyId lookup UNCHANGED. This is the key simplifier: the param/arg tables need
-  no re-keying; only the NApp.calleeId indirection changes.
+4. VERIFY (release-cdz, `./target/release/cdz run-ml`, ~32-90s each): forward `(a x)→(b x)`, `(b x)→(+x1)`,
+   `(main)→(a 5)` = 6 RUNS; `fac`/`ev-od` DECLINE (run under `timeout 120` to confirm NOT a hang); a backward-ref
+   (se-helper-calls-earlier-helper) still = its value; then full compiler-ml suite via `cargo xtask check`.
+   ADD run-src @tests in sread-eval-fns: forward-ref=6, recursion-declines.
 
-### Recommended shape (least churn)
-1. Reader emits `NApp(nameId, argId)` (nameId = name-id(sym)); STOP calling def-body-of at read time — accept ANY
-   symbol that isn't a keyword/op (forward refs included). An unknown name still declines, but LATE (resolve),
-   not at read.
-2. Add a resolve helper `callee-body(tree, nameId) = def-body-of(tree, nameId)` used by resolve/infer/lower/eval
-   wherever they currently use calleeId directly as a body node-id. One-line indirection per consumer.
-3. resolve-db already walks the whole tree post-build — its NApp arm resolves the call's body scope via
-   name→bodyId, and the body itself is resolved once (memoized by the Db column, so self/mutual recursion does
-   NOT infinitely recurse — the body's Core is built once and CVar/CLet reference it; eval ties the knot via the
-   memoized column, exactly as rcdzc does).
-4. eval/emit: a recursive call is a CVar/CApp to the memoized body — verify the Db `run-of-db` memoization
-   already breaks the cycle (it should: lower fills-once per node; eval reads the filled column). If eval needs
-   an explicit fixpoint for self-calls, that's the one genuinely new bit — spec it as a CFix or rely on the
-   name→body late-binding in the eval environment.
+STATUS: reader-change validated + reverted (branch clean). Next session: re-apply reader change + consumer
+indirection + guard option (b), gate with release-cdz. ~40-edit change if (a); ~15-edit if (b). Budget a full
+focused tick — do NOT start at the tail of a long session (hang-prone).
 
-### Gate
-run-src @tests: fac(5)=120, forward-ref a→b=6, mutual ev/od, PLUS all existing backward-ref tests still green +
-the whole conformance-db differential. This unlocks a HUGE corpus slice (nearly every non-trivial corpus program
-is recursive). Verify each against rcdzc.
-
-## ⚠ CRITICAL REFINEMENT (2026-07-21, base 0708bfd38): the lowerer INLINES — recursion needs a CYCLE GUARD, not just late name-resolution
-Confirmed by reading lower-db + eval-db + the Core type: the Core IR has NO call/fix node. It is
-`CNum | CVar | CBin | CLet | CIf` only, and the NApp arm LOWERS A CALL BY INLINING the callee body's Core
-(`lower-node(tree, calleeId, …)` splices the body at the call site; a param call wraps it in CLet(param, arg,
-bodyCore)). eval carries just `env: Map(binderId, Int64)` — zero call machinery. Consequences:
-
-- **Forward-ref (non-recursive) works with inlining** — the callee body NODE exists in the arena after the full
-  parse, so lowering can inline it regardless of definition order. Forward-ref needs ONLY: (a) the reader emit an
-  NApp whose callee is resolvable LATE (carry name-id, since the bodyId doesn't exist at read time for a forward
-  call), and (b) resolve/infer/lower map name→bodyId via def-body-of (whole do-block already recorded by
-  lower-time). The param/arg tables are ALREADY keyed by BOTH nameId and bodyId (read-do-def records under both),
-  so a name-keyed lookup needs no new table.
-- **Recursion CANNOT be inlined** — a self/mutual call would expand Core INFINITELY at lower-time → the compiler
-  HANGS. Today recursion cleanly DECLINES (def-body-of misses at read time → NBin -1 → TErr). So naively enabling
-  forward-ref (late name-resolution + inline) would REGRESS recursion from clean-decline to compiler-hang. That
-  is strictly worse and must not ship.
-- **THEREFORE the forward-ref slice MUST include a lower-time CYCLE GUARD**: thread a "currently-inlining" set of
-  bodyIds through lower-node; when an NApp targets a callee already on the inline stack, DECLINE (Option.None → no
-  Core), preserving the clean-decline for true recursion. Only then is it sound to inline forward calls. Real
-  recursion (a fac that actually recurses at RUNTIME) needs a genuine non-inlining call form (add Core.CApp +
-  Core.CFix or a name→body env in eval + emit a wasm call) — a SEPARATE, larger runtime/emit slice, NOT this one.
-
-### Revised landing plan (supersedes the 2-slice sketch above)
-- **Slice A — forward-ref, non-recursive (near-term win):** reader NApp-carries-name (≈24 sites) +
-  resolve/infer/lower name→bodyId indirection (≈32 calleeId derefs, each gains one def-body-of) + lower-time
-  cycle guard that DECLINES a recursive/mutually-recursive call (so they stay clean-decline, not hang). Gate:
-  forward a→b=6 RUNS; fac/ev-od still DECLINE (not hang); all backward-ref + existing tests green. Unlocks
-  definition-order independence across the corpus.
-- **Slice B — true recursion (later, bigger):** add a non-inlining call form to Core (CApp/CFix), teach eval a
-  name→body binding + emit a real wasm call/loop. Flips fac/ev-od from decline to value. Runtime+emit change.
-
-Measured site counts (base 0708bfd38): NApp construction 24; calleeId derefs — resolve-db 8, infer-db 24 (funcs
-carry calleeId as a param), lower-db 17, eval-db 10 (mostly @test builders). The infer/eval counts are inflated
-by helper-fn signatures + test NApp-builders; the real semantic derefs are ~1 NApp arm per file.
-
-### Why not now
-MR 7b078cf9c (param4-wiring) is queued at pr-sync; sync REFUSES to rebase (would orphan the --ref), and this
-refactor touches 5 files across the whole pipeline — it must start from a synced clean trunk, as a single large
-well-gated slice (or 2: reader+resolve first behind a still-declines fallback, then infer/lower/eval flips the
-cases green). Pick up with `cargo xtask fleet sync --force` once the param4 MR lands.
+## ✅ SLICE A IMPLEMENTED + SENT (2026-07-21, ref 2b7d333cc)
+Done exactly per the plan (strategy A + static-cycle-guard option b). Files: sread (reader: op-code-of
+discriminator, NApp carries name-id, call-readers take calleeName), parse-db (call-is-recursive bounded static
+check, fuel=4000, + export), resolve-db/infer-db/lower-db (NApp arms: def-body-of(name)→bodyId for the body
+descent + call-is-recursive guard → decline; param/arg lookups unchanged since keyed by both name+bodyId),
+sread-eval-fns (+4 @tests). VERIFIED vs rcdzc via RELEASE run-ml: forward=6 RUNS, self/mutual DECLINE (32s, not
+hang), backward/nullary/2-arg preserved. cdz check clean.
+KEY LEARNINGS: (1) the guard IS needed — infer+lower BOTH inline the callee body, so recursion hangs at infer
+without call-is-recursive. (2) consumer indirection was SMALL because params/args are keyed by BOTH name and
+bodyId (read-do-def) — only the 3 body-descent calls needed def-body-of. (3) RELEASE cdz for run-ml (debug
+driver-compile hangs >2min; release ~32s).
+⏭️ SLICE B (true runtime recursion): the current guard makes recursion DECLINE (calls inline, no Core call form).
+To make `fac` actually RUN, add a non-inlining Core call form (CApp + CFix or a name→body env in eval) + emit a
+real wasm call/loop — a runtime+emit change, separate slice. Until then recursion is a clean decline (correct,
+matches pre-existing behavior, just not-yet-supported).

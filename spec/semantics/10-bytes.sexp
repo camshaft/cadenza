@@ -1691,3 +1691,24 @@
   (call main (: 2 Int64)) (output (: 97 Int64))
   (call main (: 3 Int64)) (output (: 99 Int64))
   (call main (: 4 Int64)) (output (: 100 Int64)))
+
+(case "a recursive drop-byte walk rebinding its Bytes param to a slice-concat converges"
+  (doc    "The BYTES twin of the string-shrinker invalid-module finding (and its clean control): the
+           helper drops byte i via `Bytes.slice[0,i) ++ Bytes.slice[i+1, len-i-1)`, and the recursive
+           walk REBINDS its param to the helper's result with the exit test reading `Bytes.len` of the
+           rebound value — the exact shape that emits an invalid module for String (scalar-len on the
+           rebound rope), clean here because Bytes.len is a stored length. Greedy walk from [1,2,3,4,5]
+           drops indices 0,1,2 then exits (len 2, the bytes [2,4]). Pins the working side of the seam
+           so the String fix can be verified against an unchanged Bytes baseline.")
+  (input  (do
+        (def (d (: b Bytes) (: i Int64))
+          (Bytes.concat (Option.expect (Bytes.slice b 0 i) "lo")
+                        (Option.expect (Bytes.slice b (+ i 1) (- (- (Bytes.len b) i) 1)) "hi")))
+        (def (walk (: b Bytes) (: i Int64))
+          (if (>= i (Bytes.len b))
+              b
+              (walk (d b i) (+ i 1))))
+        (def (main (: mode Int64))
+          (Bytes.len (walk (Bytes.of (list 1 2 3 4 5)) 0)))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
