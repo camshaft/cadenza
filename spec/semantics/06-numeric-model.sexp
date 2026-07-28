@@ -7646,3 +7646,43 @@
           (Int64.of (f (BigInt.of 7) e (BigInt.of 100))))
         (export main)))
   (call main (: 8 Int64)) (output (: 7 Int64)))
+
+(case "recursive repeated-squaring modpow over BigInt computes a Mersenne-modulus power"
+  (doc    "The capstone of the recursive-BigInt-bound-result arc (collect_callees not descending do-def
+           RHS — the HANG spelling of the finding): full repeated-squaring modpow, whose body do-def-binds
+           the recursive result TWICE-USED (`(* hh hh)`) plus a second derived binding, both fed onward.
+           Oracle recomputed: 7^100 mod (2^61 - 1) = 969801349263044856 (the modulus built by limb
+           arithmetic as 2·2^60 - 1); 7^8 = 5764801 (below the modulus, exercises the odd/even split);
+           e=0 answers 1 via the `(% 1N md)` base. Companions: the corpus-bugfix pin gates the
+           single-use CDZ0201 spelling; this pins the squared-use spelling that previously diverged.")
+  (input  (do
+        (def (mpow (: base BigInt) (: e Int64) (: md BigInt))
+          (if (= e 0)
+              (% (BigInt.of 1) md)
+              (do
+                (def hh (mpow base (/ e 2) md))
+                (def sq (% (* hh hh) md))
+                (if (= (% e 2) 1) (% (* sq base) md) sq))))
+        (def (main (: e Int64))
+          (Int64.of (mpow (BigInt.of 7) e (- (* (BigInt.of 1152921504606846976) (BigInt.of 2)) (BigInt.of 1)))))
+        (export main)))
+  (call   main (: 100 Int64)) (output (: 969801349263044856 Int64))
+  (call   main (: 8 Int64)) (output (: 5764801 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "runtime UInt64 division and remainder above the Int64 boundary compute unsigned"
+  (doc    "A GENUINE runtime UInt64 above 2^63 (x=3037000500 squares to 2^63 + 145474192, top bit
+           set — built by arithmetic, no annotation trick, nothing folds): `(% (* x x) 997)` = 907 and
+           `(/ (* x x) 4)` = 2305843009250062500, both the UNSIGNED answers — signed rem/div give -90
+           and a negative quotient. The x=5 control (25 % 997) guards the small range. Pins that the
+           UInt64 runtime arithmetic family dispatches rem_u/div_u; the boundary witness for the open
+           bin-u64-binding finding (whose binding-side twin computes these signed today).")
+  (input  (do
+        (def (main (: x UInt64))
+          (do
+            (def sq (* x x))
+            (+ (* 10000 (Int64.wrap (% sq (: 997 UInt64))))
+               (Int64.wrap (% (/ sq (: 4 UInt64)) (: 1000 UInt64))))))
+        (export main)))
+  (call   main (: 3037000500 UInt64)) (output (: 9070500 Int64))
+  (call   main (: 5 UInt64)) (output (: 250006 Int64)))

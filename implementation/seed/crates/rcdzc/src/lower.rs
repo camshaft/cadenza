@@ -24896,6 +24896,35 @@ fn lower_conversion(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> C
                     operand: args[0],
                 };
             }
+            // Even when the SOURCE TYPE does not statically fit (a genuine narrowing like `Int64.of` of a
+            // `UInt64`, or `UInt64.of` of an `Int64`), the conversion is TOTAL when the operand's PROVABLE
+            // VALUE RANGE lies within the target's `[min, max]` — the same interval/value-facts lattice the
+            // guard-elision checks consult. `(Int64.of (% n 1000))` over `n : UInt64` is total because
+            // `(% n 1000) ∈ [0, 999]` fits `Int64` regardless of `n`'s wide unsigned type; no source value
+            // can be out of range, so no trap can fire and `of` == `wrap` (a value in the target range is
+            // unchanged by the target-width reinterpret, exactly `value_range_within`'s truncation-elision
+            // rationale). SOUND precisely because totality is PROVEN per-value here, not merely per-type. A
+            // target with no finite upper bound (unsigned-64) fits any provably-NONNEG operand (its max
+            // `2^64-1` is the representable ceiling). Checked AFTER the static-type fit (that path is
+            // cheaper and subsumes the always-total widenings); a value whose range is unknown or exceeds
+            // the target still declines below to the not-yet-built checked-narrowing emit.
+            if matches!(op, Prim::CheckedOf)
+                && let Some((Some(tlo), thi)) =
+                    resolved_int_bounds(crate::ty::IntTy::fixed(signed, width))
+            {
+                let fits = match thi {
+                    Some(thi) => value_range_within(db, args[0], tlo, thi),
+                    // Unsigned-64 target (no finite i64 max): any provably-nonneg value fits `[0, 2^64-1]`.
+                    None => tlo <= 0 && value_provably_nonneg(db, args[0]),
+                };
+                if fits {
+                    trace!(target: "rcdzc::lower", op = intrinsic_name(op), signed, width, "runtime T.of is value-range-provably total → emit as a Wrap convert");
+                    return Core::Convert {
+                        op: Prim::Wrap,
+                        operand: args[0],
+                    };
+                }
+            }
             // A NON-total `T.of` on a RUNTIME operand needs a range-check-then-trap emitted at select — not
             // yet built, so decline rather than emit a truncating `Convert` (that would be `wrap`'s
             // semantics — a MISCOMPILE for `of`, silently keeping the low bits where `of` must trap). The

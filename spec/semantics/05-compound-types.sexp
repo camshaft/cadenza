@@ -16698,3 +16698,54 @@
         (export main)))
   (call   main (: 2 Int64)) (output (: 999 Int64))
   (call   main (: 1 Int64)) (output (: 110 Int64)))
+
+(case "List.update at the 32-boundary changes one slot and leaves both neighbors shared"
+  (doc    "The UPDATE face of the RRB leaf/trie boundary (List.at 31/32 and push-crossing-32 are pinned;
+           update at the seam was not): a 33-element runtime-built list is updated at k and read back at
+           k AND both neighbors — structural sharing must replace exactly one slot without smearing the
+           adjacent ones across the leaf/trie split. k=31 (last leaf slot: 999 with neighbors 30/32 ->
+           9993032), k=32 (first spilled slot: neighbors 31/none -> 9993177), k=0 (head control ->
+           9998801). An update that rewrote whole leaves or mis-indexed the spilled tail flips a
+           neighbor digit.")
+  (input  (do
+        (def (build (: i Int64) (: acc (List Int64)))
+          (if (= i 33) acc (build (+ i 1) (List.push acc i))))
+        (def (main (: k Int64))
+          (do
+            (def xs (build 0 (list)))
+            (def ys (List.update xs k 999))
+            (def (at (: zs (List Int64)) (: i Int64)) (Option.expect (List.at zs i) "in"))
+            (+ (* 10000 (at ys k))
+               (+ (* 100 (if (> k 0) (at ys (- k 1)) 88))
+                  (if (< (+ k 1) 33) (at ys (+ k 1)) 77)))))
+        (export main)))
+  (call   main (: 31 Int64)) (output (: 9993032 Int64))
+  (call   main (: 32 Int64)) (output (: 9993177 Int64))
+  (call   main (: 0 Int64)) (output (: 9998801 Int64)))
+
+(case "List.update through a concat-built RELAXED node changes one slot with exact neighbors"
+  (doc    "The concat pins check whole-list equality; this UPDATES through the relaxed-radix structure a
+           5+35 `List.concat` builds (the odd left size forces a relaxed join whose slot search cannot
+           use plain radix math) and reads the slot plus BOTH neighbors. k=31 and k=32 straddle the
+           32-boundary INSIDE the concat result (9993032 / 9993133); k=35 sits past it (9993436). An
+           update that navigated the relaxed node by plain radix indexing lands in the wrong slot —
+           the off-by-left-size failure reads 999 at a neighbor digit instead.")
+  (input  (do
+        (def (build (: i Int64) (: n Int64) (: acc (List Int64)))
+          (if (= i n) acc (build (+ i 1) n (List.push acc i))))
+        (def (bfrom (: i Int64) (: n Int64) (: acc (List Int64)))
+          (if (= i n) acc (bfrom (+ i 1) n (List.push acc i))))
+        (def (main (: k Int64))
+          (do
+            (def a (build 0 5 (list)))
+            (def b (bfrom 5 40 (list)))
+            (def xs (List.concat a b))
+            (def ys (List.update xs k 999))
+            (def (at (: zs (List Int64)) (: i Int64)) (Option.expect (List.at zs i) "in"))
+            (+ (* 10000 (at ys k))
+               (+ (* 100 (at ys (- k 1)))
+                  (at ys (+ k 1))))))
+        (export main)))
+  (call   main (: 31 Int64)) (output (: 9993032 Int64))
+  (call   main (: 32 Int64)) (output (: 9993133 Int64))
+  (call   main (: 35 Int64)) (output (: 9993436 Int64)))
