@@ -4864,6 +4864,21 @@ fn freshen_walk(
     node: StructId,
     renames: &mut HashMap<StructId, String>,
 ) -> Option<StructId> {
+    // A NESTED `handle` / `handle-internal` is OPAQUE to this pass — SHARE it whole (return None). Its arm
+    // bodies + body are the INNER handle's own concern, freshened when IT reduces (`reduce_handle` recurses).
+    // Descending would rename the inner arm's `(def x …)` and force a REBUILD of this outer subtree, which
+    // orphans a FN-LOCAL reference the outer body legitimately reads (the fn-local `(def x 1000)` sits OUTSIDE
+    // this handle body; its `x` ref is a shared pinned atom whose resolution breaks once its parent is rebuilt
+    // → spurious CDZ0101 unbound — the nested×arm-local×fn-local-body-x regression, corpus-bugfix 2026-07-28).
+    // Sharing the whole nested handle keeps the outer body's fn-local refs intact; the inner handle freshens
+    // its OWN binders in its own fold. (A rename registered by an ENCLOSING `let`/`do` scope does not reach
+    // inside a shared nested handle — but the inner handle's body references to THIS scope's binders are rare
+    // and, when present, are the inner fold's to resolve against the reparented outer result.)
+    if matches!(resolved_of(db, node), Resolved::Handle { .. })
+        || db.ast.head_name(node) == Some(HANDLE_INTERNAL)
+    {
+        return None;
+    }
     // A `let` — rename each binding-pair's binder to a fresh name, scoping the rename over the inits (later
     // bindings + the body see earlier binders) and the body. Rebuild only if anything changed.
     if let Some(tail) = db.ast.as_form(node, "let").map(<[_]>::to_vec)

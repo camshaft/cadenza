@@ -21772,6 +21772,135 @@ mod match_engine {
     }
 
     #[test]
+    fn a_do_def_shadowing_a_param_rebinds_the_name_it_does_not_unbind_it() {
+        // A do-local VALUE def that SHADOWS an enclosing PARAM — `(def (f (: v Int64)) (do (def v (* v 2)) v))`
+        // — must rebind `v` (the do-def's RHS reads the outer param, the trailing `v` reads the do-def), NOT
+        // report a spurious CDZ0101 "unbound name v". ROOT: `is_binder_occurrence` did not recognize a do-def's
+        // NAME slot as a binder, so INLINING `f` β-substituted the argument for the do-def's name atom `v`;
+        // the COPIED do-block then no longer DECLARED `v` (`do_local_binds` found no declaring form) and the
+        // trailing reference fell through to unbound. This is the def-over-PARAM shadow — inconsistent with
+        // let-over-param and def-over-def, which already worked. Also the ROOT of a nested-handler
+        // false-unbound regression (v-effects' hygiene lifts a fn-local into a synth PARAM, then the arm-local
+        // `(def x …)` hit this exact unbind). Oracle: `f(5) = 10`, `f(0) = 0`. `main` inlines `(f 5)` → 10.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (f (: v Int64)) (do (def v (* v 2)) v)) \
+                       (def (main) (f 5)) (export main))"
+                ),
+                "main"
+            ),
+            10
+        );
+        // The non-self-referencing shadow row (breaker's matrix): the RHS reads the param via a helper local,
+        // the trailing `v` must still be the rebound do-def, not unbound. `w=5, v=10`, return `v` → 10.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (f (: v Int64)) (do (def w v) (def v (* w 2)) v)) \
+                       (def (main) (f 5)) (export main))"
+                ),
+                "main"
+            ),
+            10
+        );
+        // SOUNDNESS FACE (breaker #37, corpus-bugfix note): a do-def shadowing a fn-wrapping LET was SILENTLY
+        // DROPPED — the same binder-copy corruption, but under a `let` the vanished do-def left the trailing
+        // `v` resolving to the surviving LET binding `k` instead (returned 5-for-10, no error). `v=k=5`, do-def
+        // `v=10`, return the do-def → 10. (Fn-WRAPPING is the trigger: a bare-main let-shadow always worked.)
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (f (: k Int64)) (let ((v k)) (do (def v (* v 2)) v))) \
+                       (def (main) (f 5)) (export main))"
+                ),
+                "main"
+            ),
+            10
+        );
+        // SOUNDNESS FACE (trap-elision, the worst): with a TRAPPING init `(def v (/ 1 0))`, the dropped do-def
+        // took its side-effect with it — the whole binding was dead-code-eliminated and `f` returned `k` with
+        // NO trap. Now the do-def survives, so the constant divide-by-zero is REACHED and declined at compile
+        // (CDZ0304 `constant / traps`), not silently elided. Guards that the fix restores the effect, not just
+        // the value.
+        let trap_err = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (f (: k Int64)) (let ((v k)) (do (def v (/ 1 0)) v))) \
+               (def (main) (f 5)) (export main))",
+        )))
+        .expect_err(
+            "a reached constant divide-by-zero in a surviving do-def must be declined, not elided",
+        );
+        assert!(
+            trap_err.message.contains("divide by zero") || trap_err.message.contains("/ traps"),
+            "expected a constant divide-by-zero decline once the do-def is no longer dropped, got: {}",
+            trap_err.message
+        );
+        // ADJACENT FACE (audit): the shadowing do-def value is CAPTURED by an inner do-local FUNCTION whose
+        // body reads it — the copied inner `g` must see the copied do-def `v` (10), not the orphaned param.
+        // `v = 5*2 = 10`, `(g 100) = 100 + 10` → 110. Guards that the binder-copy fix holds when the rebound
+        // name flows through a nested closure, not just a direct trailing reference.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (f (: v Int64)) \
+                       (do (def v (* v 2)) (do (def (g (: x Int64)) (+ x v)) (g 100)))) \
+                       (def (main) (f 5)) (export main))"
+                ),
+                "main"
+            ),
+            110
+        );
+        // ADJACENT FACE (audit): TWO sequential do-defs both shadowing the param — each must rebind against
+        // the PREVIOUS binding (in-order do scope), not fall back to the param. `v=5*2=10`, `v=10+1=11` → 11.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (f (: v Int64)) (do (def v (* v 2)) (def v (+ v 1)) v)) \
+                       (def (main) (f 5)) (export main))"
+                ),
+                "main"
+            ),
+            11
+        );
+    }
+
+    #[test]
+    fn a_nullary_generic_producer_argument_declines_with_a_nullary_specific_message() {
+        // A NULLARY generic producer `(empty) : ∀a. GIter a` fed into a generic recursive consumer
+        // `(count (empty))` can't be monomorphized — nothing determines its element type. The CDZ0201 decline
+        // must name the NULLARY-PRODUCER shape and its actionable workaround (annotate THAT argument), not the
+        // generic three-shape message whose "annotate a nested argument / use a single concrete element type"
+        // advice doesn't apply to a producer that takes no argument. (Diagnostic quality; the tie itself is a
+        // separate tracked gap.)
+        let err = compile_component(&crate::codec::encode(&parse(
+            "(module m (type GIter (Nil) (Cons a (GIter a))) \
+               (def (empty) (GIter.Nil)) \
+               (def (count it) (match it ((GIter.Nil) 0) ((GIter.Cons h rest) (+ 1 (count rest))))) \
+               (def (main) (count (empty))) (export main))",
+        )))
+        .expect_err("a nullary generic producer with no element source must decline");
+        assert_eq!(err.code.as_deref(), Some("CDZ0201"), "got: {}", err.message);
+        assert!(
+            err.message.contains("nullary generic producer"),
+            "expected the nullary-producer-specific message, got: {}",
+            err.message
+        );
+        // ANNOTATING the producer-call argument's result grounds the element → the program COMPILES (the
+        // workaround the message names). Guard the compile succeeds (the module builds); the runtime `count`
+        // over a heap GIter needs the value-heap runtime this unit-test linker lacks, so validate the emit.
+        let bytes = component(
+            "(module m (type GIter (Nil) (Cons a (GIter a))) \
+               (def (empty) (GIter.Nil)) \
+               (def (count it) (match it ((GIter.Nil) 0) ((GIter.Cons h rest) (+ 1 (count rest))))) \
+               (def (main) (count (: (empty) (GIter Int64)))) (export main))",
+        );
+        assert!(
+            wasmparser::validate(&bytes).is_ok(),
+            "annotating the nullary producer's result element must compile to valid wasm"
+        );
+    }
+
+    #[test]
     fn a_constant_bigint_newtype_passed_as_a_recursive_call_arg_emits_a_handle_not_a_raw_i64() {
         // FACE-B of the nonzero-BigInt-recursive miscompile (an INVALID-MODULE bug, so the guard is that the
         // emitted bytes VALIDATE): `(type W (Mk BigInt))` is a single-variant single-payload NEWTYPE, so it
@@ -58825,10 +58954,10 @@ mod stage1 {
             run_returns_with(&bytes, "main", &[])
         };
         // NESTED-HANDLER SAFETY (breaker's right-nested 1033 face): a two-effect right-nested handler with a
-        // binder-name collision must NOT MISCOMPILE — it either computes the right value or DECLINES cleanly
-        // (a "not yet reducible" todo when the nested composition is not reducible enough to exercise the
-        // rename). Whichever way, NEVER a wrong value. `compile_scratch` returns Ok(bytes) if it folds, Err
-        // otherwise; either is acceptable here, and if it folds, the value must be correct (no capture).
+        // MODULE-level `x` colliding with arm-local `(def x …)` must NOT MISCOMPILE — it either computes the
+        // right value or DECLINES cleanly (an UNCODED "not yet reducible" todo when the nested composition is
+        // not reducible enough to exercise the rename). Whichever way, NEVER a wrong value and NEVER a coded
+        // rejection. `compile_component` returns Ok(bytes) if it folds, Err(reject) otherwise.
         let nested = "(module m (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
             (def x 1000) \
             (def (main) (handle A 0 ((a (u) s (do (def x 3) (resume (+ x s) s)))) \
@@ -58845,9 +58974,33 @@ mod stage1 {
                     "nested handler with binder collisions must compute 1033, never a captured value"
                 );
             }
-            Err(_) => { /* declines cleanly (todo) — acceptable: nested reduction not yet built, never a miscompile */
-            }
+            // An UNCODED decline (not-yet-reducible todo) is acceptable; a CODED rejection (e.g. a CDZ0401
+            // handler-routing / CDZ0101 unbound / typecheck regression) is NOT — assert the decline is
+            // uncoded so a real regression cannot false-green as a "clean decline" (PR#879 Copilot nit).
+            Err(reject) => assert!(
+                reject.code.is_none(),
+                "nested collision must decline UNCODED (todo), not a coded rejection: {:?} {}",
+                reject.code,
+                reject.message
+            ),
         }
+        // NESTED × ARM-LOCAL × FN-LOCAL body-x (breaker's regression face, corpus-bugfix 2026-07-28): the
+        // colliding `x` is defined FN-LOCALLY (`(do (def x 1000) (handle …))`), NOT module-level. The body
+        // freshen must STOP at the nested inner `handle` (opaque) — descending would rename the inner arm's
+        // `(def x)` and REBUILD the outer body subtree, orphaning the fn-local `x` reference → CDZ0101
+        // false-unbound (this exact regression: pre-hygiene it MISCOMPILED to 43, my first cut then
+        // FALSE-REJECTED, now it folds to 1033). Must compile AND compute 1000+10+20 = 1033 with no capture.
+        let fnlocal_nested = "(module m (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
+            (def (main) (do (def x 1000) \
+              (handle A 1 ((a (u) s (do (def x 10) (resume (+ x s) s)))) \
+                (handle B 2 ((b (u) s (do (def x 20) (resume (+ x s) s)))) \
+                  (+ x (+ (A.a unit) (B.b unit))))))) \
+            (export main))";
+        assert_eq!(
+            run(fnlocal_nested),
+            1033,
+            "nested×arm-local×fn-local-body-x must fold to 1033 (no capture, no false-unbound)"
+        );
         // F1: the arm-local `(def x 5)` must NOT capture the handle BODY's `x` (the global 100) when `C =
         // (+ x □)` is spliced into the arm's `(do (def x 5) …)` for the resume. Pre-fix → 10 (=5+5).
         let f1 = "(module m (effect E (op get (-> Unit Int64))) \

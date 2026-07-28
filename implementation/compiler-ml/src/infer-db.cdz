@@ -775,15 +775,18 @@ def ctor-payload-binder-type(tree: Tree, patCtorName: Int64) =
 /// `((Pair x y) …)` over `(type P (Pair Int64 Bool))` types x:Int64, y:TErr(Bool-declines). A binder with NO matching
 /// argType entry (list shorter than binders, shouldn't happen for a well-formed ctor) → Int64 default. Tail-recursive
 /// fold over the index `i`. For a single-binder [id] this seeds exactly binderIds[0]←argTypes[0] = the pre-fold head
-/// behavior (backward-compatible). A -1 field → TErr binder → any use declines, same discipline as the single-field Bool.
+/// behavior (backward-compatible). An argType-ENCODING -1 (a field in `argTypes`, decode-argtype-enc(-1)=TErr) → a
+/// TErr binder → any use declines, same discipline as the single-field Bool. (Distinct from the binderId WILDCARD -1 below.)
 def seed-ctor-binders-go(tcol: Map(Int64, Typed), argTypes: List(Int64), binderIds: List(Int64), i: Int64) =
   (if (i == List.len(binderIds)) then tcol
    else (match List.at(binderIds, i) with
           | Option.None(_) => tcol
           | Option.Some(bid) =>
-              // WILDCARD `_`: a -1 sentinel binder types NOTHING (no NVar node to seed) — skip the insert but STILL
-              // advance i (the slot index tracks the FIELD position, so a `_` in field 0 must not shift field 1's
-              // argType read). Mirrors resolve's node-at(-1)=None skip + eval's consume-slot-skip-insert.
+              // WILDCARD `_`: a binderId WILDCARD sentinel (bid == -1, distinct from the argType-encoding -1 that
+              // decodes to TErr above — this -1 is a `binderIds` element, not an `argTypes` field) types NOTHING (no
+              // NVar node to seed) — skip the insert but STILL advance i (the slot index tracks the FIELD position, so
+              // a `_` in field 0 must not shift field 1's argType read). Mirrors resolve's node-at(-1)=None skip + eval's
+              // consume-slot-skip-insert.
               (if (bid == (0 - 1))
                then seed-ctor-binders-go(tcol, argTypes, binderIds, i + 1)
                else (let ty = (match List.at(argTypes, i) with

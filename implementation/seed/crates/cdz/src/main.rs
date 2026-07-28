@@ -3905,6 +3905,69 @@ fn passthrough_status(program: &std::path::Path, args: &[String], tool: &str) ->
 /// Exits non-zero if ANY test fails (or if a file's compile declines / no `@test` is present) — the CI
 /// shape. FILE may be a DIRECTORY: every source file under it (recursively, `.cdz`/`.ml`/`.sexp`) is run
 /// and the pass/fail totals are aggregated, so `cdz test <dir>` runs a whole package's suite in one call.
+///
+/// PRECOMPILE (shared-arena lower-once, `EmitTestsPerFile`): compile the WHOLE set of target files in ONE
+/// `rcdzc::compile` that lowers the shared import-closure once and emits one `@test` component PER FILE,
+/// returning a `file-link-name → component-bytes` map. `run_test_file` then LOOKS UP its file's component
+/// instead of re-lowering the closure per file (the ~381s self-host cost). Each file's component is
+/// byte-identical to its standalone `EmitTests` compile (rcdzc's own test proves it), so this is a pure
+/// speedup — same pass/fail, same located errors. BEST-EFFORT: on ANY hiccup (the union compile declines,
+/// a file's component is absent, or the file wasn't in the union) `run_test_file` FALLS BACK to its exact
+/// per-file `EmitTests` compile, so behavior is never worse than before. Returns an empty map (⇒ every file
+/// falls back) when the target is a single file (no closure to share) or the union compile produced nothing.
+fn precompile_tests_per_file(files: &[String]) -> std::collections::HashMap<String, Vec<u8>> {
+    use std::collections::HashMap;
+    // A single file has no cross-file closure to amortize — the per-file path is already one compile. Skip
+    // the union machinery (its only effect would be to rename the sole component); let it fall back.
+    if files.len() < 2 {
+        return HashMap::new();
+    }
+    // Gather the UNION of every target file's import closure, deduped by link name. Each file's closure is
+    // followed (so an imported sibling resolves), and the union is what one `EmitTestsPerFile` compile links.
+    // A file that fails to load is simply omitted from the union (it falls back to its own compile, which
+    // will report the load error located). Track a stable order for a deterministic entry marker.
+    let mut asts: HashMap<String, rcdzc::Artifact> = HashMap::new();
+    let mut first_name: Option<String> = None;
+    for f in files {
+        let Ok(closure) = load_import_closure_with(f, &|_| None) else {
+            continue;
+        };
+        for cf in &closure {
+            first_name.get_or_insert_with(|| cf.name.clone());
+            asts.entry(cf.name.clone()).or_insert_with(|| {
+                rcdzc::Artifact::new(
+                    rcdzc::Artifact::KIND_AST,
+                    cf.name.clone(),
+                    cadenza_syntax::codec::encode(&cf.arenas),
+                )
+            });
+        }
+    }
+    let Some(entry) = first_name else {
+        return HashMap::new(); // nothing loaded — every file falls back
+    };
+    let mut inputs: Vec<rcdzc::Artifact> = asts.into_values().collect();
+    inputs.push(rcdzc::Artifact::new(
+        rcdzc::sidecar::KIND_SIDECAR,
+        "drive",
+        rcdzc::sidecar::encode(&[rcdzc::Request::EmitTestsPerFile]),
+    ));
+    // EmitTestsPerFile needs an entry marker to drive linking; it names ONE file but does NOT restrict which
+    // files' @tests emit (it buckets ALL linked test defs by file). Any closure file works as the entry.
+    inputs.push(compiler_cli::entry_artifact(&entry));
+    let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+    // Collect every per-file `component` artifact by its file-link name. If the union compile DECLINED (e.g.
+    // an ill-typed @test in one file faults the whole build), there may be no components — return whatever
+    // came back (possibly empty); each file then falls back to its own compile, which re-surfaces the fault
+    // located. We do NOT report errors here (the per-file fallback owns located reporting), so a union-only
+    // hiccup never double-reports or blocks a file that would compile fine standalone.
+    out.artifacts
+        .iter()
+        .filter(|a| a.kind == "component")
+        .map(|a| (a.name.clone(), a.bytes.clone()))
+        .collect()
+}
+
 fn run_test(args: &TestArgs) -> ExitCode {
     // Resolve WHICH files to run. Cases:
     //  - NO arg → search UP from the current directory for the nearest `Project.cdz` (like `cargo test`
@@ -4050,6 +4113,12 @@ fn run_test(args: &TestArgs) -> ExitCode {
     let store = args.store.clone().unwrap_or_else(default_store);
     let multi = files.len() > 1;
 
+    // Shared-arena lower-once: compile all target files in ONE EmitTestsPerFile pass (lowers the shared
+    // closure once, emits one component per file). `run_test_file` looks its component up by name instead of
+    // re-lowering the whole closure per file. Best-effort — an empty map (single file, or a union hiccup)
+    // just means every file falls back to its own per-file compile, byte-identical to before.
+    let precompiled = precompile_tests_per_file(&files);
+
     let mut total_pass = 0usize;
     let mut total_fail = 0usize;
     let mut any_error = false; // a file whose compile DECLINED (distinct from a test that failed)
@@ -4068,6 +4137,7 @@ fn run_test(args: &TestArgs) -> ExitCode {
             &store,
             args.trials,
             args.seed,
+            &precompiled,
         ) {
             Ok((p, f)) => {
                 total_pass += p;
@@ -4143,6 +4213,7 @@ fn run_test_file(
     store: &std::path::Path,
     trials: u64,
     seed: u64,
+    precompiled: &std::collections::HashMap<String, Vec<u8>>,
 ) -> Result<(usize, usize), ()> {
     // Follow the entry file's IMPORT CLOSURE so a test in a module that imports a sibling (e.g. a pass
     // that reuses another module's type) resolves + runs — `cdz test FILE` sees the SAME linked program
@@ -4262,30 +4333,36 @@ fn run_test_file(
         return Ok((0, 0));
     }
 
-    // Compile the test component: every closure file's `ast` + an `EmitTests` sidecar request. `EmitTests`
-    // lays the boundary out from the `@test` defs (`layout::compute_tests`), not the `(export …)` clauses.
-    // For a package, the `entry` marker names which file's imports drive linking; a single file needs none
-    // (identical to before). `compute_tests` still exports ALL linked `@test`s — the entry-file filter above
-    // decides which we RUN, but a library test kept in the component is harmless (unreached, uncalled).
-    let mut inputs = ast_arts;
-    inputs.push(rcdzc::Artifact::new(
-        rcdzc::sidecar::KIND_SIDECAR,
-        "drive",
-        rcdzc::sidecar::encode(&[rcdzc::Request::EmitTests]),
-    ));
-    if is_package {
-        inputs.push(compiler_cli::entry_artifact(&closure[0].name));
-    }
-    let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
-    let Some(component) = out.artifact("component") else {
-        // The test compile declined — report its errors (a parameterized `@test`, an ill-typed test body,
-        // an invalid-kebab `@test` name, …). We HOLD the closure files (source + spans), so render each
-        // fault at its `file:line:col` (the located reporter), not the bare `cdz: error …` — an anchored
-        // decline (e.g. CDZ0201 on a bad `@test` name) then points at the name occurrence like `cdz check`.
-        report_errors_located(&out, &closure);
-        return Err(());
+    // The test component. FAST PATH: if the shared-arena `EmitTestsPerFile` precompile produced this file's
+    // component (keyed by the entry's link name), REUSE it — it is byte-identical to the per-file `EmitTests`
+    // compile below (rcdzc's own test proves it), so we skip re-lowering the whole closure. SLOW PATH (miss —
+    // single-file run, a union hiccup, or the file wasn't in the union): compile this file alone with an
+    // `EmitTests` request, exactly as before. `EmitTests` lays the boundary out from the `@test` defs
+    // (`layout::compute_tests`); a package's `entry` marker names which file's imports drive linking. A
+    // per-file DECLINE is reported located here (the fallback owns error reporting — the precompile does not).
+    let component: Vec<u8> = if let Some(bytes) = precompiled.get(&closure[0].name) {
+        bytes.clone()
+    } else {
+        let mut inputs = ast_arts;
+        inputs.push(rcdzc::Artifact::new(
+            rcdzc::sidecar::KIND_SIDECAR,
+            "drive",
+            rcdzc::sidecar::encode(&[rcdzc::Request::EmitTests]),
+        ));
+        if is_package {
+            inputs.push(compiler_cli::entry_artifact(&closure[0].name));
+        }
+        let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
+        let Some(component) = out.artifact("component") else {
+            // The test compile declined — report its errors (a parameterized `@test`, an ill-typed test body,
+            // an invalid-kebab `@test` name, …). We HOLD the closure files (source + spans), so render each
+            // fault at its `file:line:col` (the located reporter), not the bare `cdz: error …` — an anchored
+            // decline (e.g. CDZ0201 on a bad `@test` name) then points at the name occurrence like `cdz check`.
+            report_errors_located(&out, &closure);
+            return Err(());
+        };
+        component.to_vec()
     };
-    let component = component.to_vec();
 
     // DEBUG (CDZ_DUMP_TEST_WASM): write the emitted test component to that path, for a WAT-diff of the
     // instantiation-set-dependent emit (bug#4). Throwaway.

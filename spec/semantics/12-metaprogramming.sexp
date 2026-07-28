@@ -3310,3 +3310,49 @@
         (def (main (: k Int64)) (+ (Int64.of (eval adder)) k))
         (export main)))
   (error  CDZ0101))
+
+;; The read primitive SKIPS ; line-comments in program text (concierge-ruled (a); self-hosting-surface
+;; :63 'a reader converts the text of a PROGRAM' + front-end-reader consistency + round-trip). Was a
+;; silent mis-parse (tokenized ; as a Name → wrong AST). Fixed by v-metaprogramming ee58991cb
+;; (skip_ws skips ;-to-EOL; ;-in-string preserved). breaker-routed.
+(case "the read primitive skips a line comment inside program text"
+  (input  (do
+        (def (main (: mode Int64))
+          (+ (* 10 (if (= (read "(+ 1 ; a comment\n 2)") (quote (+ 1 2))) 1 0))
+             (if (= (read "; leading\n(f 3)") (quote (f 3))) 1 0)))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64)))
+
+;; A malformed read (unterminated / trailing content) is a CODED REJECT, not a not-yet-reducible
+;; decline — malformedness is a PERMANENT fact about the input (concierge rider ruling; the reject-not-
+;; decline discipline for permanent facts, 27-des:5120 class reversed). Fixed by v-metaprogramming
+;; ee58991cb: malformed read → CDZ0201 'not a well-formed s-expression'. breaker-routed.
+(case "a malformed read is a coded reject, not a not-yet-reducible decline"
+  (input  (do
+        (def (main) (if (= (read "(+ 1") (quote (+ 1 2))) 1 0))
+        (export main)))
+  (error  CDZ0201))
+
+;; A runtime-selected Ast payload inside a rebuilt Ast, compared (=) against a const-read result, MUST
+;; build + compute. Regression: reify_read_ast typed the Ast.Int payload Ty::int64() while the payload
+;; is boxed-BigInt post-flip, so a read-Ast carried a raw-i64 rep vs the declared boxed-BigInt — the =
+;; composition (rebuilt-Ast vs const-read) forced the equality lowering to reconcile mismatched reps →
+;; wasm invalid-module + rust E0308. Fixed by v-metaprogramming 191e65164 (retype to Ty::BigInt,
+;; matching decode_ast_value). breaker-routed (#36). (The read-Int-as-map-key consumer face is kept
+;; HELD separately — still todo on rust.)
+(case "a runtime-selected Name payload inside a rebuilt Ast compares against a read result"
+  (input  (do
+        (def (main (: mode Int64))
+          (match (read "(defn add 1)")
+            ((Ast.List parts)
+              (match parts
+                ((list (Ast.Name _kw) rest .. more)
+                  (if (= (Ast.List (List.prepend (List.prepend more rest)
+                                                 (Ast.Name (if (= mode 1) "defx" "defy"))))
+                         (read "(defx add 1)"))
+                      1 0))
+                (_ -2)))
+            (_ -3)))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 0 Int64)))

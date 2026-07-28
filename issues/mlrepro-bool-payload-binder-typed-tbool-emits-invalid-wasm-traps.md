@@ -102,3 +102,17 @@ CO-DIAGNOSIS 2026-07-28 (v-compiler-ml, direct-Core): b128 = rcdzc EMIT-AT-SCALE
   closure (a slot/width/scale interaction — the width-disjoint-slot family). 100% rcdzc-emit-at-scale = v-wasm-opt lane.
   NO compiler-ml change fixes it (infer TBool + lower type-erase are correct; decode(1)→TErr stays only until the emit
   is ready — flip to TBool is a 1-liner once rcdzc handles the Bool-payload-CIf at closure scale). Routed to v-wasm-opt.
+
+---
+RE-LOCALIZED 2026-07-28 (boundary-Int64 probe, OVERTURNS the emit hypothesis): b128 is a SOURCE INFER GAP, NOT
+rcdzc emit-at-scale. v-wasm-opt's backtrace showed the None-route signature (compiled run-src returns None, outer-
+unreachable) = SAME as multifield; probe-first (their call) found: with decode(1)→TBool, infer types the Bool match
+NODE TErr (999) INTERPRETED (single-file cdz test = interpreter) → lower None → run None. Since it declines in the
+INTERPRETER, it's infer logic, NOT emit-at-scale. The earlier "native rcdzc Bool-payload clean + direct-Core CIf-over-
+Bool →7" signals were REAL but MISLEADING (they proved the emit + raw Core are fine — but infer never produces that
+Core for the real source because it declines the match to TErr first). LANE: v-compiler-ml (mine), NOT v-wasm-opt.
+SUSPECTED SITE: infer NMatchCtor arm types match = join(bodyType, restType); body (if b 1 0) — NIf/if-type correctly
+accept a TBool cond, so the body SHOULD be TIntW. Suspect the binder-USE typing: seed-ctor-binders seeds TBool at the
+binder NODE-id, but the NVar `b` USE reads via resolve→var-type, which may not surface the seeded TBool (seed-at-node
+vs read-at-use mismatch, TBool-specific). NEXT: trace var-type/seed for a TBool binder + fix (analog of the arg-N fix).
+This is the REAL Bool slice — a compiler-ml infer source fix, no rcdzc change. Probe: refs/scratch/v-compiler-ml/b128-probe.
