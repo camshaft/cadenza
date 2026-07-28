@@ -157,6 +157,38 @@ fn a_recursive_fold_matching_a_rebuilt_list_with_a_payload_binder_builds_and_com
 }
 
 #[test]
+fn a_set_or_map_over_bytes_declines_no_blessed_order() {
+    // Concierge ruling (landed pin 03-equality-and-observation.sexp §"runtime Bytes ordering declines
+    // uniformly"): the spec blesses a total order ONLY for Int/Float/Symbol/String — Bytes has none. So a
+    // Set<Bytes> / Map<Bytes,_> (which need an Ord element/key) must DECLINE on rust, matching wasm, NOT
+    // silently order via BTreeSet<Vec<u8>>'s derived lexicographic Ord (a byte order the language never
+    // defined). ORDER-only: Bytes EQUALITY stays blessed (a Bytes value round-trips + compares equal fine).
+    let set_bytes = "(module m \
+        (def (run) (List.len (Set.to-list (Set.of (list (Bytes.of (list 1 2))))))) \
+        (export run))";
+    assert!(
+        try_compile_rust(set_bytes).is_err(),
+        "a Set over Bytes must decline (no blessed Bytes order), not emit a BTreeSet<Vec<u8>>"
+    );
+    let map_bytes = "(module m \
+        (def (run) (Map.size (Map.insert (Map.empty) (Bytes.of (list 1 2)) 7))) \
+        (export run))";
+    assert!(
+        try_compile_rust(map_bytes).is_err(),
+        "a Map keyed by Bytes must decline (no blessed Bytes order)"
+    );
+    // Bytes EQUALITY is untouched — a Bytes value still builds + round-trips (it derives Eq, just not Ord).
+    let bytes_eq = "(module m \
+        (def (run) (if (= (Bytes.of (list 1 2)) (Bytes.of (list 1 2))) 1 0)) \
+        (export run))";
+    assert!(
+        try_compile_rust(bytes_eq).is_ok(),
+        "Bytes EQUALITY stays blessed — only ORDER declines:\n{:?}",
+        try_compile_rust(bytes_eq).err()
+    );
+}
+
+#[test]
 fn a_nullary_export_emits_a_pub_fn_returning_a_constant() {
     let src = "(module m (def (main) 42) (export main))";
     let rs = compile_rust(src);

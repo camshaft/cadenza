@@ -237,13 +237,13 @@ pass	FULL CONTRACT: @requires + @ensures on ONE def fire INDEPENDENTLY — a pre
 pass	Float32 tuple-key components key at binary32 width (distinctness, lookup, signed zero)
 pass	Float64.of-int is exact at 2^53 and rounds a just-past-2^53 odd integer to nearest-even
 pass	List.update at BOTH extremes of a 2000-element list lands and preserves the original
-pass	Map.remove by a slice-view key drops the flat-keyed entry
-pass	Map.take by a slice-view key yields the flat-keyed value
+todo	Map.remove by a slice-view key drops the flat-keyed entry
+todo	Map.take by a slice-view key yields the flat-keyed value
 pass	Map.to-list over runtime STRING keys enumerates in content byte order (first is byte-smallest)
 pass	Record.with grows a LIST field by pushing onto the projected old value
 pass	Set.contains dispatches on an Option element at a runtime payload
-pass	Set.intersection and Set.difference match a view against a flat element across operands
-pass	Set.union dedups a slice-view element against a flat twin ACROSS the operand boundary
+todo	Set.intersection and Set.difference match a view against a flat element across operands
+todo	Set.union dedups a slice-view element against a flat twin ACROSS the operand boundary
 pass	String ordering drives an insort over runtime ROPES, verified by content
 pass	String.from-bytes decodes a 400-byte 200-seam rope end to end
 pass	String.from-bytes of a runtime slice decodes the WINDOW only
@@ -287,7 +287,7 @@ pass	a Set.of over Result elements separates Ok from Err with EQUAL payloads
 pass	a String ENTRY arg rides a rope into an effect-op argument and the arm reads its bytes
 pass	a String.slice view returned from a helper OUTLIVES the helper's local parent
 pass	a TUPLE op argument with a HEAP leaf destructures inside the arm
-pass	a TUPLE-wrapped runtime slice as a Map key hits by content through the compound descent
+todo	a TUPLE-wrapped runtime slice as a Map key hits by content through the compound descent
 pass	a Type.eq width dispatcher answers per WRITTEN type at two call sites in one body
 pass	a VARIABLE catch-all arm binds the whole runtime scrutinee as a Bytes value
 pass	a VIOLATED @ensures traps when the def arrives through a runtime branch
@@ -1080,9 +1080,9 @@ pass	a composed call over a record-transforming function with an arithmetic fiel
 pass	a composed proof chains the equational, λ, and logical rule families into one derivation
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
-pass	a compound map key containing a Bytes rope is found by its flat-twin key
+todo	a compound map key containing a Bytes rope is found by its flat-twin key
 pass	a compound map key containing a rope is found by its flat-twin key
-pass	a compound map key whose Bytes element is a rope is found by its flat twin
+todo	a compound map key whose Bytes element is a rope is found by its flat twin
 pass	a compound map key whose LIST element is a rope is found by its flat-twin key
 pass	a computed Float32 map key is found by its literal twin
 pass	a computed float map key is found by its literal twin
@@ -1402,7 +1402,7 @@ pass	a slice of a runtime-start SLICE composes both offsets
 pass	a slice reads correctly after its parent binding's last direct use
 pass	a slice returned from a helper OUTLIVES the helper's local parent
 pass	a slice window spanning MANY seams of a built rope reads the logical bytes
-pass	a slice-view SET element dedups against its flat twin in a Set.of batch build
+todo	a slice-view SET element dedups against its flat twin in a Set.of batch build
 pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
 pass	a success `?` unwraps a RUNTIME Ok payload under a Result boundary
 pass	a success `?` unwraps a RUNTIME payload (static ctor, per-call value)
@@ -2463,8 +2463,8 @@ pass	a runtime BigInt three-way compare reports Equal at a BEYOND-Int64 magnitud
 pass	a runtime BigInt three-way compare reports equality as Equal
 pass	a runtime Bytes rope in a SUM payload compares equal to its flat twin
 pass	a runtime Bytes rope in a record field compares equal to its flat twin
-pass	a runtime Bytes rope is found as a Set element by its flat twin
-pass	a runtime Bytes rope map key is looked up by its flat twin
+todo	a runtime Bytes rope is found as a Set element by its flat twin
+todo	a runtime Bytes rope map key is looked up by its flat twin
 pass	a runtime Bytes rope nested in a tuple compares equal to its flat twin
 pass	a runtime Bytes.of value is equality-comparable (the runtime-Bytes control)
 pass	a runtime FLOAT width nested in a compound annotation is rejected
@@ -5044,11 +5044,11 @@ pass	a user sum whose variant name collides with a built-in renders that head QU
 pass	List.len over a list with a TRAPPING element construction preserves the trap (does not fold it away)
 pass	List.len over a trap-free pure-data list still folds to the length
 pass	value-eq CONTROL: a runtime slice compares equal to a flat Bytes of the same content
-pass	a runtime slice PROBING a Map keyed by flat Bytes must hit by content
-pass	a runtime slice STORED as a Map key must be found by a flat Bytes probe
-pass	a runtime slice probes a Set of flat Bytes by content
-pass	CONTROL: a CONST-start slice as a Map-lookup key hits on wasm
-pass	a BORROWED runtime Bytes rope map key is compacted at the key site and found by its flat twin
+todo	a runtime slice PROBING a Map keyed by flat Bytes must hit by content
+todo	a runtime slice STORED as a Map key must be found by a flat Bytes probe
+todo	a runtime slice probes a Set of flat Bytes by content
+todo	CONTROL: a CONST-start slice as a Map-lookup key hits on wasm
+todo	a BORROWED runtime Bytes rope map key is compacted at the key site and found by its flat twin
 pass	unsigned branch refinement stays value-correct at the domain edges (0-lower-bound tautologies)
 pass	a flow refinement folds a compare over a no-overflow arith operand, but the trap survives when overflow is possible
 pass	an INCLUSIVE ordering refinement folds at the boundary but must not over-refine one past it

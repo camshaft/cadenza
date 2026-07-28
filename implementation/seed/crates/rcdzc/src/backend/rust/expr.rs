@@ -1648,7 +1648,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 && !types::ty_is_ord_key(db, &kt)
             {
                 return Err(Reject::decline(
-                    "a Map with a non-Ord (float-carrying) key has no BTreeMap rep on the Rust backend",
+                    "a Map with a non-Ord key (a float-carrying key, or a Bytes key whose order the spec does not bless) has no BTreeMap rep on the Rust backend",
                 ));
             }
             let mut lines = String::new();
@@ -1711,7 +1711,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let kt = type_of(db, key);
             if !types::ty_is_ord_key(db, &kt) {
                 return Err(Reject::decline(
-                    "a Map with a non-Ord (float-carrying) key has no BTreeMap rep on the Rust backend",
+                    "a Map with a non-Ord key (a float-carrying key, or a Bytes key whose order the spec does not bless) has no BTreeMap rep on the Rust backend",
                 ));
             }
             // The base map's element types are fixed by THIS `.insert(k, v)` — flag it so an empty
@@ -1793,7 +1793,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 && !types::ty_is_ord_key(db, et)
             {
                 return Err(Reject::decline(
-                    "a Set with a non-Ord (float-carrying) element has no BTreeSet rep on the Rust backend",
+                    "a Set with a non-Ord element (a float-carrying element, or a Bytes element whose order the spec does not bless) has no BTreeSet rep on the Rust backend",
                 ));
             }
             let mut lines = String::new();
@@ -1859,7 +1859,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let et = type_of(db, elem);
             if !types::ty_is_ord_key(db, &et) {
                 return Err(Reject::decline(
-                    "a Set with a non-Ord (float-carrying) element has no BTreeSet rep on the Rust backend",
+                    "a Set with a non-Ord element (a float-carrying element, or a Bytes element whose order the spec does not bless) has no BTreeSet rep on the Rust backend",
                 ));
             }
             // The base set's element type is fixed by THIS `.insert(e)` — flag it so an empty `Set.of (list)`
