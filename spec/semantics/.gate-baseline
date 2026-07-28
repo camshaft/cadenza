@@ -5166,3 +5166,6 @@ pass	a constant-folded u64 bin binding with the top bit set compares unsigned
 pass	handler-arm bindings and perform-site bindings stay in their own scopes across the fold
 pass	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)
 pass	Set.to-list over float-leaf tuple elements declines — a float-containing compound offers no total order (§319, 03:626 companion)
+pass	the read primitive skips a line comment inside program text
+pass	a malformed read is a coded reject, not a not-yet-reducible decline
+pass	a runtime-selected Name payload inside a rebuilt Ast compares against a read result

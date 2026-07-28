@@ -754,6 +754,22 @@ fn is_binder_occurrence(db: &Db, id: StructId) -> bool {
     if is_param_list(db, pair, id) {
         return true;
     }
+    // A do-local (or top-level) VALUE `def` NAME — `(def NAME rhs)`, where `id` is the bare-name atom at
+    // the def's FIRST tail position. It NAMES a binding (scoped to the following forms of its enclosing
+    // `do`), so like a `let`/match binder it is copied STRUCTURALLY, never substituted. Without this,
+    // inlining a lambda whose body contains a do-def shadowing a same-named PARAM
+    // (`(def (f (: v Int64)) (do (def v (* v 2)) v))`) β-substitutes the argument for the do-def's name
+    // slot — the COPIED do-block then no longer DECLARES `v` (`do_local_binds` finds no declaring form),
+    // so the trailing reference reports a spurious CDZ0101 unbound (the def-over-param shadow bug; a
+    // do-def shadowing a param unbinds the name for all later refs). A `let`-over-param and def-over-def
+    // shadow already work; this makes def-over-param consistent. (The fn-def NAME in a signature list
+    // `(NAME p…)` is a List head, not this atom slot, and its params are covered by `is_param_list`.)
+    if let Some(def_tail) = db.ast.as_form(pair, "def")
+        && def_tail.first() == Some(&id)
+        && matches!(db.ast.get(id), crate::ast::Struct::Atom(_))
+    {
+        return true;
+    }
     // `id` must be the pattern/name slot — the pair's/arm's/binder's first child.
     let crate::ast::Struct::List(pair_children) = db.ast.get(pair) else {
         return false;

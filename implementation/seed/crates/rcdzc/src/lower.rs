@@ -11969,6 +11969,24 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                                 Resolved::Ref { .. } | Resolved::Param { .. }
                             )
                     });
+                // Whether any ARGUMENT to this call is itself a call to a NULLARY generic producer (a def
+                // taking ZERO params — `(empty)`), which has no argument to determine its result element and
+                // so leaves the consumer's type var unbindable. Distinct from the arg-bearing producer/
+                // transformer shapes: the actionable fix is annotating THAT argument, not a nested one.
+                let arg_is_nullary_producer_call = args.iter().any(|&a| {
+                    // An argument shaped `(name)` — a single-element application (a call with no args) whose
+                    // head names a def taking ZERO parameters (`(def (empty) (GIter.Nil))`). A nullary def
+                    // has no lambda wrapper, so match it by NAME (`def_by_name`) rather than `callee_def_index`
+                    // (which resolves through a `Lambda` body a nullary def doesn't have).
+                    match db.ast.get(a) {
+                        crate::ast::Struct::List(items) if items.len() == 1 => items
+                            .first()
+                            .and_then(|&h| db.ast.as_name(h))
+                            .and_then(|n| db.def_by_name(n))
+                            .is_some_and(|d| db.defs[d].params.is_empty()),
+                        _ => false,
+                    }
+                });
                 let message = if const_arg_is_forwarded_param {
                     "an argument to a `const` parameter must be compile-time-known, but here it is a runtime \
                      parameter forwarded from an enclosing function — that function is lowered on its own \
@@ -11980,6 +11998,23 @@ fn emit_call_or_specialize(db: &mut Db, head: StructId, callee: usize, args: &[S
                         .to_string()
                 } else if callee_has_const {
                     "an argument to a `const` parameter must be compile-time-known — it depends on runtime data"
+                        .to_string()
+                } else if arg_is_nullary_producer_call {
+                    // One of this call's ARGUMENTS is itself a call to a NULLARY generic producer — `(empty) :
+                    // ∀a. Iter a`, `(GIter.Nil)`-valued — that takes NO argument, so its result element var is
+                    // determined ONLY by the context that consumes it. Here it flows into a generic recursive
+                    // consumer (`count (empty)`) whose scheme can't pin the element either → this decline. The
+                    // general message below names three shapes and advises annotating an argument / using a
+                    // single concrete element type — but the load-bearing gap is the nullary producer arg with
+                    // no element source. The workaround is to annotate THAT argument with a concrete element
+                    // type (`(: (empty) (GIter Int64))` — VERIFIED it then runs), so name it specifically
+                    // rather than sending the author to the general arg-based fixes.
+                    "an argument to this generic function is a nullary generic producer (e.g. `(empty) : \
+                     ∀a. Iter a`) whose result element type nothing here determines — it takes no argument to \
+                     infer the element from, and neither this call nor its context pins it, so the monomorphizer \
+                     has no concrete element type to bind. Annotate that argument with a concrete element type \
+                     (e.g. `(: (empty) (Iter Int64))`), or give the producer a parameter / concrete return type \
+                     that fixes its element"
                         .to_string()
                 } else {
                     // The recursive-generic case: a type variable in the callee's scheme is not tied to any

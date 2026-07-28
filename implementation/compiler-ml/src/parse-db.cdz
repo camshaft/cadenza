@@ -65,10 +65,11 @@ type Node =
                                   // reader→resolve→infer→lower NMatch pipeline on the simplest shape.
   | NMatchCtor(Int64, Int64, List(Int64), Int64, Int64)  // M2-b-2b-ii-c PAYLOAD ctor-pattern arm: NMatchCtor(scrutId,
                                   // patCtorName, binderIds, bodyId, restId) for `(match scrut ((Ctor x y…) body) REST…)`.
-                                  // binderIds is a LIST (compound-payload slice: one id per payload field, positionally;
-                                  // a single-binder pattern is [id], a nullary/no-binder pattern is []). The reader still
-                                  // only PRODUCES [id] or [] today (multi-binder still declines pre-behavior-slice); this
-                                  // schema carries the list so the multi-binder behavior slice needs no further schema change.
+                                  // binderIds is a LIST (compound-payload: one id per payload field, positionally;
+                                  // a single-binder pattern is [id], a nullary/no-binder pattern is [], a compound is
+                                  // [id0, id1, …], and a `_`-wildcard field is the -1 no-binder SENTINEL at that slot
+                                  // (ignore-field: counts for arity, binds nothing). The reader PRODUCES all of these
+                                  // (multi-binder + wildcard behavior slices LANDED); the schema carries the full list.
                                   // scrutId = the scrutinee node; patCtorName = the pattern ctor's NAME-id — the
                                   // SINGLE source of truth (ii-c2b-2, per v-inference): ONE ct-table lookup yields
                                   // BOTH the ctor's DECL (infer's ctor-decl-of → cross-type reject: scrutinee
@@ -77,9 +78,11 @@ type Node =
                                   // CMatchSum discriminant). Carrying name-id and deriving both means they cannot
                                   // drift. binderId = the NVar node the payload binds to (`x`), bound in the body
                                   // scope; bodyId = the matched-arm body; restId = the next arm (a chain, like NMatch).
-                                  // LOWERS to CMatchSum(scrut, tag, [binder], body, rest): eval reads the sum
-                                  // handle's store-tag; if == tag, binds payload[0] to binder + evals body, else
-                                  // rest. Single-payload-field first; multi-field is a follow-up.
+                                  // LOWERS to CMatchSum(scrut, tag, binderIds, body, rest): eval reads the sum
+                                  // handle's store-tag; if == tag, binds payload[i] to binderIds[i] for each field
+                                  // (skipping -1 wildcard slots, consuming the slot either way) + evals body, else
+                                  // rest. Multi-scalar-field (Int<N>/UInt<N>) + wildcard fields all round-trip; a
+                                  // Bool field declines soundly (its VALUE round-trip's rcdzc emit is not-yet-landed).
 
 /// The arena: nodes keyed by NodeId, the next fresh id, a DEF-TABLE (`Map(nameId, bodyNodeId)`), AND a
 /// PARAM-TABLE (`Map(nameId, paramNodeId)`) — the module's `(def (name) body)` / `(def (name p) body)` forms,

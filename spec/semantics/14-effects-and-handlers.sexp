@@ -5744,11 +5744,12 @@
 ;; standalone lift → no-home arm; now remapped to the honest not-yet-reducible decline. breaker-routed.
 (case "an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)"
   (input (do
+        (effect Ask (op ask (-> Int64 Int64)))
         (def (main)
           (handle Ask 5
-            ((ask (n) s (resume (* n 2) s))
-             (match (List.at (list (fn (x) (Ask.ask x))) 0)
-               ((Some f) (f 3))
-               ((None) 0)))))
+            ((ask (n) s (resume (* n 2) s)))
+            (match (List.at (list (fn (x) (Ask.ask x))) 0)
+              ((Some f) (f 3))
+              ((None) 0))))
         (export main)))
   (declines))
