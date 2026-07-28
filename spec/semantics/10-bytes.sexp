@@ -1628,7 +1628,7 @@
            split mid-é), a SLICE window over that rope, and UTF-8 validation of the window. mode 1:
            window [0,3) = \"aé\" — the decode must stitch é across the seam (scalar-len 2). mode 2:
            window [0,4) ends after 😀's LEAD byte — a structurally-torn window, from-bytes None (-1).
-           mode 3: window [3,4) is exactly the emoji's four bytes — Some, one scalar (1). A decoder
+           mode 3: window [3,7) is exactly the emoji's four bytes — Some, one scalar (1). A decoder
            that validated per-leaf (or clamped the window to the seam) flips mode 1 or mode 3.")
   (input  (do
         (def (main (: mode Int64))
@@ -1668,3 +1668,26 @@
         (export main)))
   (call   main (: 3 UInt8)) (output (: 1120 Int64))
   (call   main (: 4 UInt8)) (output (: 210 Int64)))
+;; A `String.to-bytes` result over a RUNTIME rope, bound once and read across FOUR OR MORE branch
+;; arms, MUST compile to a VALID module on every backend. Regression: at ≥4 arms the nested if-chain
+;; lowers to a `br_table`, and the i64 dispatch index used to land in the same scratch slot (`base`)
+;; that the arm bodies reuse for `String.to-bytes`'s inlined i32 Bytes handle — one local, two widths
+;; → the module was WRITTEN but failed wasm validation (`func N failed to validate: expected i32,
+;; found i64`); 3 arms stayed a linear if-chain (no br_table, no collision). Fixed by floating the
+;; arm scratch to base+1 so the br_table index keeps its own slot. (breaker/corpus-bugfix routed →
+;; v-wasm-opt 4f9658803.) The 4 modes exercise len / at-0 / at-2 / at-3 of the shared handle.
+(case "String.to-bytes of a runtime rope reused across four branch arms compiles to a VALID module"
+  (input (do
+        (def (main (: mode Int64))
+          (do
+            (def s (String.concat "ab" (if (< mode 100) "cd" "zz")))
+            (def bs (String.to-bytes s))
+            (if (= mode 1) (Bytes.len bs)
+                (if (= mode 2) (match (Bytes.at bs 0) ((Some b) b) ((None _u) -1))
+                    (if (= mode 3) (match (Bytes.at bs 2) ((Some b) b) ((None _u) -1))
+                        (match (Bytes.at bs 3) ((Some b) b) ((None _u) -1)))))))
+        (export main)))
+  (call main (: 1 Int64)) (output (: 4 Int64))
+  (call main (: 2 Int64)) (output (: 97 Int64))
+  (call main (: 3 Int64)) (output (: 99 Int64))
+  (call main (: 4 Int64)) (output (: 100 Int64)))

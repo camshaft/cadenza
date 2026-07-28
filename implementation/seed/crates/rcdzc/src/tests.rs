@@ -19979,6 +19979,51 @@ mod recursion {
     }
 
     #[test]
+    fn a_str_slice_floats_each_bound_operand_above_the_prior_high_water() {
+        // ⚠ INVALID WASM regression (routed corpus-bugfix/breaker 2026-07-28, sibling of the br_table fix
+        // `4f9658803` — same "expected i32, found i64" validator signature, DIFFERENT seam): the `String.
+        // slice` emit reserved scratch `base..base+6` then emitted its `start`/`end` bound operands at a
+        // FIXED `base + 7`. When `start` is a checked-arith (`(+ i 1)`, whose i64 `$r` transient claims a
+        // scratch slot) and `end` is `String.scalar-len` (whose owned-reclaim tees the i32 string handle
+        // into a scratch slot), BOTH operands reset their floor to `base + 7` → the later one reused a slot
+        // the earlier already typed at a DIFFERENT width. One wasm local, two widths → module invalid.
+        // Fixed by floating each operand's floor to `*high` (like `emit_loop_iteration` / checked-arith's B
+        // operand). Repro is a recursive scalar-aware string SHRINKER (the exact property-testing idiom):
+        // `walk` rebinds its String param to `d`'s concat-of-two-slices; the recursion exit reads
+        // `String.scalar-len` of the rebound param — both ingredients required (breaker matrix m4/m11).
+        // Greedy drop-scalar walk from "aébcd" → "éc", byte-len 3 (rust's oracle).
+        let src = "(module m \
+             (def (d (: s String) (: i Int64)) \
+               (String.concat (Option.expect (String.slice s 0 i) \"lo\") \
+                              (Option.expect (String.slice s (+ i 1) (String.scalar-len s)) \"hi\"))) \
+             (def (walk (: s String) (: i Int64)) \
+               (if (>= i (String.scalar-len s)) s (walk (d s i) (+ i 1)))) \
+             (def (main (: mode Int64)) (String.byte-len (walk \"aébcd\" 0))) \
+             (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a recursive string-slice-concat shrinker compiles");
+        wasmparser::validate(&bytes).expect(
+            "String.slice bound operands must occupy scratch slots disjoint from each other's width",
+        );
+        // Store-guarded run: confirm VALID (from_binary) + the shrinker converges to byte-len 3.
+        if let Some(runtime) = super::find_runtime_wasm() {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec!["0".to_string()],
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => {
+                    assert_eq!(s, "3", "drop-scalar walk of aébcd → éc, byte-len 3")
+                }
+                cdz_run::Outcome::Trap(t) => panic!("shrinker run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_heap_match_composed_with_checked_arith_uses_disjoint_scratch_slots() {
         // ⚠ INVALID WASM regression: a recursive body composing a heap-`match` result (an inlined
         // `byte-at` → `Bytes.at` MatchSum materializing an i32 Option handle in a scratch slot) with
@@ -34069,6 +34114,65 @@ mod match_engine {
                 "bin pattern decodes: {body}"
             );
         }
+    }
+
+    /// A CONSTANT-FOLDED `(bin (u64 m))` binding with the top bit set decodes m UNSIGNED — the const-eval
+    /// twin of the runtime `(bin (u64 n))` signed-binding miscompile. The const decoder (`bin_match_decode`
+    /// → `decode_bin_field`) used to store the segment as an `i64`, so a top-bit-set u64 (bytes
+    /// `[128,0,…,0,9]` = 2^63+9) folded to its WRAPPED NEGATIVE: `(> m 5u64)` folded to 0 (the negative <
+    /// 5), `(% m 1000u64)` errored a bogus CDZ0304 "overflows", and two such matches in one fn hit a bogus
+    /// CDZ0302. Widening `BinDecoded::Int` to an arbitrary-precision `IntValue` (decoding an unsigned
+    /// segment via `from_u128`) keeps the folded value faithful. Oracles: (> m 5) → 1, (% m 1000) → 817
+    /// (2^63+9 mod 1000, unsigned), and a dual-match compiles + folds.
+    #[test]
+    fn a_constant_folded_u64_bin_binding_with_the_top_bit_set_is_unsigned() {
+        // F1: the top-bit-set u64 is > 5 (unsigned), so this folds to 1 — NOT 0 (the signed-negative read).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) \
+                       (match (Bytes.of (list 128 0 0 0 0 0 0 9)) \
+                         ((bin (u64 m)) (if (> m (: 5 UInt64)) 1 0)) \
+                         (_ -2))) \
+                     (export main))"
+                ),
+                "main"
+            ),
+            1,
+            "F1: a const top-bit-set u64 bin binding compares UNSIGNED (> 5 → 1), not signed-negative (→ 0)"
+        );
+        // F2: (% (2^63+9) 1000) = 817 unsigned — must fold, not reject CDZ0304 "overflows".
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) \
+                       (match (Bytes.of (list 128 0 0 0 0 0 0 9)) \
+                         ((bin (u64 m)) (Int64.of (% m (: 1000 UInt64)))) \
+                         (_ -2))) \
+                     (export main))"
+                ),
+                "main"
+            ),
+            817,
+            "F2: a const top-bit-set u64 (% 1000) folds unsigned to 817, not a bogus CDZ0304 overflow"
+        );
+        // F3: TWO const 8-byte u64 matches in one fn — the folded 2^63+9 must not re-materialize at a
+        // signed width (a bogus CDZ0302). Both fold; sum their unsigned (% 1000) = 817 + 817 = 1634.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) \
+                       (+ (match (Bytes.of (list 128 0 0 0 0 0 0 9)) \
+                            ((bin (u64 m)) (Int64.of (% m (: 1000 UInt64)))) (_ -2)) \
+                          (match (Bytes.of (list 128 0 0 0 0 0 0 9)) \
+                            ((bin (u64 m)) (Int64.of (% m (: 1000 UInt64)))) (_ -2)))) \
+                     (export main))"
+                ),
+                "main"
+            ),
+            1634,
+            "F3: two const 8-byte u64 matches in one fn both fold (no re-materialize-at-signed-width CDZ0302)"
+        );
     }
 
     #[test]

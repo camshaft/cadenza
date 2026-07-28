@@ -8556,11 +8556,22 @@ fn emit(
             ] {
                 scratch_ty.insert(s, ValType::I64);
             }
+            // Each operand's TRANSIENT scratch floats ABOVE the running high-water, not at a fixed
+            // `base + 7`. A wasm local's type is fixed function-wide, so if `start` (e.g. a checked-arith
+            // `(+ i 1)`, i64 `$r`) and `end` (e.g. `String.scalar-len`, whose owned-reclaim tees the i32
+            // string handle into a scratch slot) both reset their floor to `base + 7`, the LATER operand
+            // reuses a slot the earlier one already typed at a DIFFERENT width → "expected i32, found i64",
+            // module invalid (the recursive-param-rebound-sliceconcat class; sibling of the br_table fix,
+            // width-disjoint-slot family). Advancing each operand's floor to `*high` hands it fresh,
+            // never-typed slots. The operands are each stored into their fixed slot immediately, so the
+            // transient scratch is dead after each store — floating the floor costs nothing but disjointness.
             emit(db, string, slots, base + 7, high, scratch_ty, layout, out)?; // [str]
             out.push(Lir::LocalSet(str_slot));
-            emit(db, start, slots, base + 7, high, scratch_ty, layout, out)?; // [start:i64]
+            let start_base = (base + 7).max(*high);
+            emit(db, start, slots, start_base, high, scratch_ty, layout, out)?; // [start:i64]
             out.push(Lir::LocalSet(start_slot));
-            emit(db, end, slots, base + 7, high, scratch_ty, layout, out)?; // [end:i64]
+            let end_base = (base + 7).max(*high);
+            emit(db, end, slots, end_base, high, scratch_ty, layout, out)?; // [end:i64]
             out.push(Lir::LocalSet(end_slot));
             // byte-count (i64), read repeatedly below.
             out.push(Lir::LocalGet(str_slot));

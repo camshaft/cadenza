@@ -6412,3 +6412,44 @@
               (export f)))
   (call   f (: -3 Int64))
   (output (: 0 Int64)))
+
+(case "a recursive walker applies two different capture closures per element"
+  (doc    "Higher-order iteration: a TOP-LEVEL recursive walker `each` takes the closure as a PARAM
+           and applies it per element through the recursion (the recursive-fn-as-VALUE spelling
+           declines; recursion at the def level with a closure param is the supported idiom this
+           pins). TWO different k-capturing closures over one list: k=2 -> sum(v·2)=12 and
+           sum(v+2)=12 (1212); k=0 separates them -> 0 and 6 (6). The closure crosses the recursive
+           call boundary each step — an env lost or re-bound mid-recursion breaks the sum.")
+  (input  (do
+        (def (each (: xs (List Int64)) (: f (-> Int64 Int64)) (: acc Int64))
+          (match xs
+            ((list) acc)
+            ((list h .. t) (each t f (+ acc (f h))))))
+        (def (main (: k Int64))
+          (do
+            (def xs (List.push (List.push (List.push (list) 1) 2) 3))
+            (+ (* 100 (each xs (fn ((: v Int64)) (* v k)) 0))
+               (each xs (fn ((: v Int64)) (+ v k)) 0))))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 1212 Int64))
+  (call   main (: 0 Int64)) (output (: 6 Int64)))
+
+(case "compose builds closures capturing TWO function values in one env, both orders"
+  (doc    "The two-fn-capture face (the :1397 pin stores ONE fn handle in a closure cell): `compose`
+           returns `(fn (x) (f (g x)))` whose env holds BOTH parameter closures, one of which itself
+           captures the runtime k. Both orders applied: (add-k ∘ dbl)(5) = 13 and (dbl ∘ add-k)(5) = 16
+           at k=3 (1316); k=0 collapses both to 10 (1010) separating capture from composition. An env
+           that stored one handle and re-derived the other (or swapped the slots) flips the digits.")
+  (input  (do
+        (def (compose (: f (-> Int64 Int64)) (: g (-> Int64 Int64)))
+          (fn ((: x Int64)) (f (g x))))
+        (def (main (: k Int64))
+          (do
+            (def add-k (fn ((: x Int64)) (+ x k)))
+            (def dbl (fn ((: x Int64)) (* x 2)))
+            (def fg (compose add-k dbl))
+            (def gf (compose dbl add-k))
+            (+ (* 100 (fg 5)) (gf 5))))
+        (export main)))
+  (call   main (: 3 Int64)) (output (: 1316 Int64))
+  (call   main (: 0 Int64)) (output (: 1010 Int64)))

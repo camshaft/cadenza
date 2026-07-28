@@ -628,3 +628,27 @@
            discipline). Grades on CDZ0301 — the operand mismatch — not the suppressed `?` cascade.")
   (input  (do (def (main) (let ((x (try (+ 1 2.0)))) (Some x))) (export main)))
   (error  CDZ0301))
+
+(case "a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands"
+  (doc    "The BRICK 3b shape as a graded TODO (the decline is documented at :15/:99/:149 but had no
+           gate-scored case): `(try (find m q))` — the operand's VARIANT is decided at run time by the
+           lookup, inside a STORED closure applied twice, under the closure's own Option boundary.
+           Expected once the runtime-disc emit lands: f(1) unwraps 10 (+k), f(9) short-circuits the
+           CLOSURE to None — 1499 at k=5, 999 at k=0. TODAY it declines ('lowers only a constant
+           operand yet') consistently on all three targets; this todo flips to PASS with the
+           Core::MatchSum block-br emit and then also pins the closure-boundary + double-application
+           composition in one case.")
+  (input  (do
+        (def (find (: m (Map Int64 Int64)) (: k Int64)) (Map.lookup m k))
+        (def (main (: k Int64))
+          (do
+            (def m (Map.insert (Map.insert Map.empty 1 10) 2 20))
+            (def f (fn ((: q Int64))
+              (do
+                (def v (try (find m q)))
+                (Some (+ v k)))))
+            (+ (* 100 (match (f 1) ((Some v) v) ((None _u) -1)))
+               (match (f 9) ((Some v) v) ((None _u) -1)))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 1499 Int64))
+  (call   main (: 0 Int64)) (output (: 999 Int64)))

@@ -889,3 +889,63 @@
   (trap   "integer overflow")
   (call   main (: 5 UInt64))
   (output (: 5000000000 UInt64)))
+
+(case "a run-sim task's suspension count is DATA-DRIVEN by a list of sleep durations"
+  (doc    "The :755 fast-forward pin threads the clock through two STATICALLY-WRITTEN sleeps; here the
+           sleeps come from a LIST walked recursively — `sleep-all [2, k]` — so the NUMBER of
+           suspensions the clock threads through is decided by data, and each perform sits under a
+           recursive call frame (the handler must re-enter across recursion, not just straight-line
+           code). Final now/1e9 = 5 at k=3, 2 at k=0 (a zero-duration sleep still suspends and
+           resumes, contributing nothing). A tail-resumptive fold that only handled lexically-visible
+           performs (or lost the clock across the recursive frames) computes the k=3 row wrong.")
+  (input  (do
+        (type Duration (Duration UInt64))
+        (type Instant  (Instant  UInt64))
+        (def (secs (: n UInt64)) (Duration.Duration (* n 1000000000)))
+        (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+        (def (dur-ns  (: d Duration)) (match d ((Duration.Duration n) n)))
+        (def (at (: t Instant) (: d Duration)) (Instant.Instant (+ (inst-ns t) (dur-ns d))))
+        (effect Sim (op sleep (-> Duration Unit)) (op now (-> Unit Instant)))
+        (def (sleep-all (: ds (List Int64)))
+          (match ds
+            ((list) unit)
+            ((list h .. t) (do (Sim.sleep (secs (UInt64.wrap h))) (sleep-all t)))))
+        (def (main (: k Int64))
+          (handle Sim (Instant.Instant 0)
+            ( (now   (u) s (resume s s))
+              (sleep (d) s (resume unit (at s d))) )
+            (do
+              (sleep-all (List.push (List.push (list) 2) k))
+              (Int64.wrap (/ (inst-ns (Sim.now)) (: 1000000000 UInt64))))))
+        (export main)))
+  (call   main (: 3 Int64)) (output (: 5 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "a rope label rides a pqueue entry through insort to its time-ordered slot"
+  (doc    "The event-queue pins carry scalar/continuation payloads; this entry's SECOND field is a
+           runtime ROPE (`(String.concat \"a\" \"x\")`) riding the insort — the heap label must
+           travel WITH its time through the recursive insert's prepend spine and read back from the
+           sorted position: k=5 sorts first (\"axbc\" → 41), k=25 middles (\"baxc\" → 42), k=99
+           lasts (\"bcax\" → 43). A tuple-copy during insort that dropped or re-leafed the rope (or
+           paired labels with the wrong times through the prepend recursion) changes the concat.")
+  (input  (do
+        (def (insort (: q (List (Tuple Int64 String))) (: e (Tuple Int64 String)))
+          (match q
+            ((list) (list e))
+            ((list h .. t)
+              (if (<= (. e 0) (. h 0))
+                  (List.prepend q e)
+                  (List.prepend (insort t e) h)))))
+        (def (labels (: q (List (Tuple Int64 String))) (: acc String))
+          (match q
+            ((list) acc)
+            ((list h .. t) (labels t (String.concat acc (. h 1))))))
+        (def (main (: k Int64))
+          (do
+            (def q (insort (insort (insort (list) (tuple 30 "c")) (tuple k (String.concat "a" "x"))) (tuple 20 "b")))
+            (def s (labels q ""))
+            (+ (* 10 (String.byte-len s)) (if (= s "axbc") 1 (if (= s "baxc") 2 (if (= s "bcax") 3 0))))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 41 Int64))
+  (call   main (: 25 Int64)) (output (: 42 Int64))
+  (call   main (: 99 Int64)) (output (: 43 Int64)))

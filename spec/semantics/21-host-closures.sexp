@@ -4966,3 +4966,82 @@
             (def (main) (force (mk)))
             (export main)))
   (output (: 42 Int64)))
+
+(case "closures built one per iteration each capture their OWN loop value"
+  (doc    "N distinct closures from ONE recursive build (vs the pinned one-closure-applied-N-times
+           at :600): each iteration pushes `(fn (y) (+ (* 10 i) y))` capturing THAT iteration's i.
+           Applying slot j must see i=j — y=1 reads 1/11/21 (231), y=5 reads 5/15/25 (675), y=0
+           isolates the captures (120). A capture-by-frame (all closures sharing the final i=3) reads
+           31/31/31 (per-slot 31·111 pattern); a capture of the LAST value reads 21/21/21.")
+  (input  (do
+        (def (build (: i Int64) (: acc (List (-> Int64 Int64))))
+          (if (= i 3) acc (build (+ i 1) (List.push acc (fn ((: y Int64)) (+ (* 10 i) y))))))
+        (def (main (: y Int64))
+          (do
+            (def fs (build 0 (list)))
+            (def (app (: j Int64)) (match (List.at fs j) ((Some f) (f y)) ((None _u) -1)))
+            (+ (* 100 (app 0)) (+ (* 10 (app 1)) (app 2)))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 231 Int64))
+  (call   main (: 5 Int64)) (output (: 675 Int64))
+  (call   main (: 0 Int64)) (output (: 120 Int64)))
+
+(case "closures capture successive SNAPSHOTS of a growing heap list"
+  (doc    "The heap-snapshot companion of the per-iteration scalar capture: each build iteration
+           captures the list AS IT WAS (persistence through capture) before pushing — f0 sees len 0,
+           f1 len 1, f2 len 2, applied AFTER the build completes (y=0 -> 012 = 12, y=7 -> 789). A
+           capture holding a shared reference to the final list reads 3/3/3 (333+y·111); one
+           snapshotting AFTER the push reads 1/2/3. The persistent-list copy-on-write is what makes
+           the by-value capture cheap — this pins that the closure env actually gets the snapshot.")
+  (input  (do
+        (def (build (: i Int64) (: xs (List Int64)) (: acc (List (-> Int64 Int64))))
+          (if (= i 3) acc
+              (build (+ i 1) (List.push xs i)
+                     (List.push acc (fn ((: y Int64)) (+ (List.len xs) y))))))
+        (def (main (: y Int64))
+          (do
+            (def fs (build 0 (list) (list)))
+            (def (app (: j Int64)) (match (List.at fs j) ((Some f) (f y)) ((None _u) -1)))
+            (+ (* 100 (app 0)) (+ (* 10 (app 1)) (app 2)))))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 12 Int64))
+  (call   main (: 7 Int64)) (output (: 789 Int64)))
+
+(case "closures stored as MAP VALUES dispatch by key with distinct captures"
+  (doc    "The dispatch-table shape — closures as CHAMP map VALUES (the collection pins cover
+           closures RETURNING collections; storing them IN one crosses the CHAMP value slot +
+           Option projection before the call): {1 -> double, 2 -> add-100}, looked up and applied —
+           y=5 reads 10 and 105 (10105), y=0 isolates the bodies (100). Each closure must come back
+           out of the map with ITS OWN code and env — a value slot that unified same-signature
+           closures (or dropped the env on the way in) answers with the wrong arm.")
+  (input  (do
+        (def (main (: y Int64))
+          (do
+            (def m (Map.insert (Map.insert Map.empty 1 (fn ((: v Int64)) (* v 2)))
+                               2 (fn ((: v Int64)) (+ v 100))))
+            (def (app (: k Int64)) (match (Map.lookup m k) ((Some f) (f y)) ((None _u) -1)))
+            (+ (* 1000 (app 1)) (app 2))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 10105 Int64))
+  (call   main (: 0 Int64)) (output (: 100 Int64)))
+
+(case "a closure returned from a match arm carries the arm's HEAP payload binding"
+  (doc    "The payload-binder capture face: the closure is built INSIDE a `(Some s)` arm, capturing the
+           extracted rope payload, and OUTLIVES the match — its env must carry the heap value out of
+           the arm's scope (mode 1: len \"abcde\" + y -> 65 encoded over two applications; mode 0 the
+           None arm's closure negates -> -10). The payload lives only as long as the arm unless the
+           env takes ownership — a by-reference capture of the scrutinee's payload slot reads freed
+           or wrong bytes after the match ends (the #20-UAF family's closure face, now from the
+           PATTERN side).")
+  (input  (do
+        (def (mk (: mode Int64))
+          (match (if (> mode 0) (Some (String.concat "ab" "cde")) (None unit))
+            ((Some s) (fn ((: y Int64)) (+ (String.byte-len s) y)))
+            ((None _u) (fn ((: y Int64)) (- 0 y)))))
+        (def (main (: mode Int64))
+          (do
+            (def f (mk mode))
+            (+ (* 10 (f 1)) (f 0))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 65 Int64))
+  (call   main (: 0 Int64)) (output (: -10 Int64)))

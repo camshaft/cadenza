@@ -7770,7 +7770,7 @@ fn lower_match_bin(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId
                     }
                     match (core_of(db, seg.slot), dec) {
                         (Core::ConstInt(lit), BinDecoded::Int(got)) => {
-                            if !lit.eq_value(&IntValue::from_i64(*got)) {
+                            if !lit.eq_value(got) {
                                 all_literals_match = false;
                                 break;
                             }
@@ -23704,7 +23704,14 @@ fn bin_const_scrutinee(db: &mut Db, scrutinee: StructId) -> Option<Vec<u8>> {
 /// value) or a byte RANGE `[start, end)` into the scrutinee (a `Bytes` segment). Used both to decide a
 /// match (literal probes + whole-scrutinee close) and to bind a segment binder (`decode_bin_field`).
 enum BinDecoded {
-    Int(i64),
+    /// A decoded integer segment's value, as an ARBITRARY-PRECISION `IntValue` — NOT an `i64`. A `u64`
+    /// segment with the top bit set (a genuine `UInt64 > Int64.max`, e.g. bytes `[128,0,…,0,1]` = 2^63+1)
+    /// has no `i64`, so an `i64` decode would store it as its WRAPPED NEGATIVE, and the const-fold path
+    /// (`decode_bin_field` → `Core::ConstInt`, and the literal-probe compare) would fold the wrong
+    /// (negative) value — the const-eval twin of the runtime `(bin (u64 n))` signed-binding miscompile
+    /// (infer.rs `Resolved::BinField`). Carrying the full `IntValue` keeps the decode faithful for every
+    /// width/sign; a size operand that needs a machine count still reads `.to_i64()` (a size is small).
+    Int(IntValue),
     ByteRange(usize, usize),
     /// A `utf8` segment's decoded string — the byte range validated as strict UTF-8 (its match already
     /// required well-formedness, so this is a real `String`). Kept alongside the range so a binder can
@@ -23739,7 +23746,9 @@ fn bin_decode_dependent_size(
             .take(seg_index)
             .position(|s| db.ast.as_name(s.slot) == Some(name))
             .and_then(|idx| match out.get(idx) {
-                Some(BinDecoded::Int(v)) => Some(*v),
+                // A size is a byte count — small by construction; read it as a machine `i64` (a value
+                // beyond i64 is not a plausible size → `to_i64` → None → non-match).
+                Some(BinDecoded::Int(v)) => v.to_i64(),
                 _ => None,
             })?
     } else {
@@ -23783,9 +23792,16 @@ fn bin_match_decode(
                 // Sign-extend a signed segment from its top bit; zero-extend an unsigned one.
                 let bits = (w as u32) * 8;
                 let decoded = if *signed && bits < 64 && (val >> (bits - 1)) & 1 == 1 {
-                    (val | !((1u64 << bits) - 1)) as i64
+                    // A signed narrow segment with its top bit set → sign-extend to a negative value.
+                    IntValue::from_i64((val | !((1u64 << bits) - 1)) as i64)
+                } else if *signed {
+                    // A signed segment with the top bit clear (or width 64: `val` already carries the
+                    // two's-complement i64) → the value as a signed `i64`.
+                    IntValue::from_i64(val as i64)
                 } else {
-                    val as i64
+                    // An UNSIGNED segment → the raw magnitude, UNSIGNED. `from_u128` keeps a top-bit-set
+                    // u64 (up to 2^64-1) as its true positive value rather than a wrapped negative `i64`.
+                    IntValue::from_u128(val as u128)
                 };
                 out.push(BinDecoded::Int(decoded));
                 off += w;
@@ -23805,7 +23821,9 @@ fn bin_match_decode(
                 let field = (acc >> shift) & ((1u64 << k) - 1);
                 acc &= (1u64 << shift) - 1;
                 nbits -= k;
-                out.push(BinDecoded::Int(field as i64));
+                // A bit-field is `k ≤ 64` bits, always NON-NEGATIVE (an unsigned sub-byte value) → its
+                // magnitude, unsigned. `from_u128` keeps a top-bit-set 64-bit field positive.
+                out.push(BinDecoded::Int(IntValue::from_u128(field as u128)));
             }
             SegKind::Bytes { size: None } => {
                 debug_assert_eq!(
@@ -23900,7 +23918,7 @@ fn decode_bin_field(
         ));
     };
     match decoded.get(seg_index) {
-        Some(BinDecoded::Int(n)) => Core::ConstInt(IntValue::from_i64(*n)),
+        Some(BinDecoded::Int(n)) => Core::ConstInt(n.clone()),
         // A `utf8` segment binds the decoded, already-validated string as a `Core::ConstStr` (typed
         // `Ty::String`) — the same rep a string literal lowers to, so it rides the constant path.
         Some(BinDecoded::Str(s)) => Core::ConstStr(s.clone()),

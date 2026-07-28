@@ -1179,3 +1179,20 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 6 Int64)))
+
+(case "OPEN-sum values as SET elements hash by tag and payload"
+  (doc    "The map-VALUE pin round-trips an open sum through a CHAMP slot without hashing it; a SET
+           element must HASH it — tag AND payload: {A 10, B 7, A k} dedupes at k=10 (len 2 + contains
+           A 10 → 21) and holds three at k=3 (31). A hash over only the payload collides A 10 with a
+           hypothetical B 10; over only the tag it collapses A 10 / A 3 — either flips a row. The
+           open-tail row var is instantiated but unused here: the hash must work on the CLOSED
+           prefix representation the constructors produce.")
+  (input  (do
+        (type Ev (A Int64) (B Int64) .. r)
+        (def (main (: k Int64))
+          (do
+            (def s (Set.of (list (Ev.A 10) (Ev.B 7) (Ev.A k))))
+            (+ (* 10 (Set.len s)) (if (Set.contains s (Ev.A 10)) 1 0))))
+        (export main)))
+  (call   main (: 10 Int64)) (output (: 21 Int64))
+  (call   main (: 3 Int64)) (output (: 31 Int64)))
