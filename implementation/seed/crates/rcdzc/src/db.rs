@@ -312,6 +312,11 @@ impl FileScopeTable {
         self.files[idx].contains(id).then_some(idx)
     }
 
+    /// The `link` path of file index `fi` (see [`Db::file_path`]).
+    fn file_path(&self, fi: usize) -> Option<&str> {
+        self.files.get(fi).map(|f| f.path.as_str())
+    }
+
     /// Resolve an exported name to the VALUE def it names, WITHIN the file that declares the
     /// `(export …)` clause — the file-scoped analogue of the flat `def_of_name` used by
     /// `scan_top_level`. `name_occ` is the exported NAME atom (which file's demux range it falls in
@@ -3592,6 +3597,14 @@ impl Db {
     /// same file identity the resolver uses for per-file name visibility.
     pub(crate) fn file_of(&self, id: StructId) -> Option<usize> {
         self.file_scope.as_ref()?.file_of(id)
+    }
+
+    /// The `link` PATH of file index `fi` (the module's source path, e.g. `foo/bar.cdz`) — what the
+    /// `EmitTestsPerFile` build names each per-file test component artifact by, so `cdz test` can demux the
+    /// N components back to their files. `None` for a single-file (unlinked) compile or an out-of-range
+    /// index. Reads the same `FileSpan` table `file_of` indexes into.
+    pub(crate) fn file_path(&self, fi: usize) -> Option<&str> {
+        self.file_scope.as_ref()?.file_path(fi)
     }
 
     /// How many top-level defs across the WHOLE package share the value name `name` — the ambiguity

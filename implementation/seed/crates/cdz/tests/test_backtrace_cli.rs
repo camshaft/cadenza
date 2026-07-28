@@ -29,6 +29,10 @@ fn run_test(file: &str, env: &[(&str, &str)]) -> String {
     let exe = env!("CARGO_BIN_EXE_cdz");
     let mut cmd = Command::new(exe);
     cmd.args(["test", file]);
+    // HERMETIC: clear CDZ_WASM_BACKTRACE from the INHERITED parent env first, so a value set in the outer
+    // environment can't leak into a case that expects it unset (the "default omits frames" / off-values
+    // assertions would spuriously fail otherwise). Each case then applies only its OWN override below.
+    cmd.env_remove("CDZ_WASM_BACKTRACE");
     for (k, v) in env {
         cmd.env(k, v);
     }

@@ -675,8 +675,8 @@ def read-match-arms(s: String, i: Int64, scrutId: Int64, tree: Tree) =
                (let q3 = close-paren(s, q2) in
                 (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>  // recurse for the rest
                   (match add-node(t3, Node.NMatch(scrutId, patId, bodyId, restId)) with | (id, t4) => (id, r1, t4))))))
-           // ii-c2b-2: otherwise a NULLARY ctor-NAME pattern `(Green body)` → NMatchCtor with NO binder (sentinel
-           // -1). lower routes it via decl-is-enum-disc: enum-disc decl → CMatchEnum (bare-tag compare), mixed
+           // ii-c2b-2: otherwise a NULLARY ctor-NAME pattern `(Green body)` → NMatchCtor with an EMPTY binder
+           // LIST `[]` (a nullary ctor carries no payload). lower routes it via decl-is-enum-disc: enum-disc decl → CMatchEnum (bare-tag compare), mixed
            // decl → CMatchSum (boxed store-tag). A ctor name compares the scrutinee's TAG — the M2-a tag-compare,
            // now TYPE-gated (scrut must be TSum of the ctor's decl) so a raw-int-over-TSum correctly declines.
            else read-nullary-ctor-pattern-arm(s, p, scrutId, tree))))))))
