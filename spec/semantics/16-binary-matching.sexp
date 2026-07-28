@@ -1734,3 +1734,103 @@
               (export main)))
   (call   main (: -2 Int16))
   (output (: 254 Int64)))
+
+(case "a u16 bin field straddles a byte-rope seam through a runtime-start slice"
+  (doc    "The bin-pattern consumer of the seam-crossing window: the rope [1,18] ++ [52,5] holds a
+           big-endian u16 whose TWO BYTES LIVE IN DIFFERENT LEAVES once the runtime-start slice picks
+           window [k, k+2). k=1: the field stitches 18,52 across the seam -> 0x1234 = 4660 — a per-leaf
+           field read (or a seam-clamped window) truncates or zero-fills. k=0 ([1,18] -> 274) and k=2
+           ([52,5] -> 13317) are the single-leaf controls on either side.")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def b (Bytes.concat (Bytes.of (list 1 18)) (Bytes.of (list 52 5))))
+            (def w (Option.expect (Bytes.slice b k 2) "in"))
+            (match w
+              ((bin (u16 x)) x)
+              (_ -1))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 4660 Int64))
+  (call   main (: 0 Int64)) (output (: 274 Int64))
+  (call   main (: 2 Int64)) (output (: 13317 Int64)))
+
+(case "a dependent-size framing loop walks frames that straddle every rope seam"
+  (doc    "The framing-LOOP composition of the dependent-size crown jewel over a ROPE: frames
+           [2|10,20] [1|30] [3|40,41,x] laid out as `[2,10] ++ [20,1,30,3] ++ [40,41,x]` so EVERY
+           frame's length-prefix and body land in different leaves. The recursive
+           `(bin (u8 n) (bytes body n) (bytes rest))` walk must re-base `rest` across seams and the
+           dependent read must stitch bodies through them: 3 frames, body sum 183 at x=42 (3183) and
+           191 at x=50 (3191 — the runtime tail byte defeats folding). A framing loop that clamped a
+           frame at a leaf boundary or re-read from the parent's origin drops a frame or double-counts.")
+  (input  (do
+        (def (frames (: b Bytes) (: cnt Int64) (: acc Int64))
+          (match b
+            ((bin (u8 n) (bytes body n) (bytes rest))
+              (frames rest (+ cnt 1) (+ acc (bsum body 0 0))))
+            (_ (+ (* 1000 cnt) acc))))
+        (def (bsum (: b Bytes) (: i Int64) (: acc Int64))
+          (match (Bytes.at b i)
+            ((Some v) (bsum b (+ i 1) (+ acc v)))
+            ((None _u) acc)))
+        (def (main (: x UInt8))
+          (do
+            (def b (Bytes.concat (Bytes.concat (Bytes.of (list 2 10)) (Bytes.of (list 20 1 30 3))) (Bytes.of (list 40 41 x))))
+            (frames b 0 0)))
+        (export main)))
+  (call   main (: 42 UInt8)) (output (: 3183 Int64))
+  (call   main (: 50 UInt8)) (output (: 3191 Int64)))
+
+(case "a u16 bin field reads correctly at every runtime slice offset, odd or even"
+  (doc    "The ALIGNMENT face of the runtime-start slice family (:987 dispatches on a u8 tag; this reads
+           a MULTI-BYTE field): over [0,1,18,52,86], the window `(Bytes.slice b k 2)` puts the big-endian
+           u16 at a runtime offset with either parity — k=1 (odd) -> 0x0112 = 274, k=2 (even) -> 0x1234
+           = 4660, k=3 (odd) -> 0x3456 = 13398. A lowering that assumed an aligned base for multi-byte
+           loads (or fetched the field with an even-address shortcut) flips the odd-offset rows.")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def b (Bytes.of (list 0 1 18 52 86)))
+            (def w (Option.expect (Bytes.slice b k 2) "in"))
+            (match w ((bin (u16 x)) x) (_ -1))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 274 Int64))
+  (call   main (: 2 Int64)) (output (: 4660 Int64))
+  (call   main (: 3 Int64)) (output (: 13398 Int64)))
+
+(case "a u32 bin binding with the top bit set does unsigned arithmetic"
+  (doc    "The 32-bit UNSIGNED-arithmetic face (and the clean control of the open u64 signed-division
+           finding): `(bin (u32 n))` over [x,0,0,1] at x=128 binds 0x80000001 = 2147483649 — above
+           Int32.max but comfortably inside Int64 — and `(% n 1000)` computes 649 unsigned; x=255
+           binds 0xFF000001 = 4278190081 (81). A u32 binding that sign-extended its 32nd bit into the
+           carrier would answer -647/-919. x=0 control (1).")
+  (input  (do
+        (def (main (: x UInt8))
+          (do
+            (def b (Bytes.of (list x 0 0 1)))
+            (match b
+              ((bin (u32 n)) (Int64.of (% n 1000)))
+              (_ -1))))
+        (export main)))
+  (call   main (: 128 UInt8)) (output (: 649 Int64))
+  (call   main (: 255 UInt8)) (output (: 81 Int64))
+  (call   main (: 0 UInt8)) (output (: 1 Int64)))
+
+(case "a runtime bin match decodes a FINAL constant-size utf8 segment"
+  (doc    "The RUNTIME companion of the constant-scrutinee utf8 segment pins (:356/:368): `(bin (utf8 s 2))`
+           over a runtime-built two-byte value must decode strict UTF-8 (x=105 -> \"hi\", 2 scalars) and
+           treat ill-formed bytes as a NON-MATCH falling to the catch-all (x=255 -> -1), exactly as the
+           const path does. TODAY the runtime lowering declines EVERY utf8 segment — even this final
+           constant-size one, which needs no dynamic cursor (the decline message names bit-fields and
+           non-final unsized bytes; utf8 routes there too) — consistently on wasm AND both rust targets,
+           so this pins the gap as TODO alongside the :1365 non-final dependent-size pin, flipping to
+           PASS when the utf8 runtime read lands. The two rows are the decode + totality faces in one.")
+  (input  (do
+        (def (main (: x UInt8))
+          (do
+            (def b (Bytes.of (list 104 x)))
+            (match b
+              ((bin (utf8 s 2)) (String.scalar-len s))
+              (_ -1))))
+        (export main)))
+  (call   main (: 105 UInt8)) (output (: 2 Int64))
+  (call   main (: 255 UInt8)) (output (: -1 Int64)))

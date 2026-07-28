@@ -1600,3 +1600,48 @@
             (export main)))
   (call   main (: 200 Int64))
   (output (: 400 Int64)))
+
+(case "a Bytes slice of a slice composes offsets against the VIEW and bounds against its length"
+  (doc    "The BYTES twin of the string slice-of-slice pin (Bytes.slice takes start+LENGTH, not
+           start+end): outer = `(Bytes.slice b 1 4)` over [10,20,30,40,50,60] is the 4-byte view
+           [20,30,40,50]; the inner `(Bytes.slice outer k 2)` at k=1 reads [30,40] — view-relative
+           (3040); resolving against the BASE gives [20,30] (2030). At k=3 the inner needs view
+           bytes 3..5 but the view has 4 — None (7), even though the BASE has bytes there; a
+           base-resolved bounds check answers Some [40,50]. k=2 in-bounds tail [40,50] (4050).")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def b (Bytes.of (list 10 20 30 40 50 60)))
+            (def outer (Option.expect (Bytes.slice b 1 4) "in"))
+            (match (Bytes.slice outer k 2)
+              ((Some v) (+ (* 100 (match (Bytes.at v 0) ((Some x) x) ((None _u) -1)))
+                           (match (Bytes.at v 1) ((Some x) x) ((None _u) -1))))
+              ((None _u) 7))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 3040 Int64))
+  (call   main (: 2 Int64)) (output (: 4050 Int64))
+  (call   main (: 3 Int64)) (output (: 7 Int64)))
+
+(case "String.from-bytes over a rope-backed slice accepts aligned windows and rejects a mid-scalar cut"
+  (doc    "Composes three byte-layer features the existing pins cover only pairwise: a Bytes ROPE whose
+           seam falls INSIDE a 2-byte scalar ([97,195] ++ [169,240,159,152,128] — the bytes of \"aé😀\"
+           split mid-é), a SLICE window over that rope, and UTF-8 validation of the window. mode 1:
+           window [0,3) = \"aé\" — the decode must stitch é across the seam (scalar-len 2). mode 2:
+           window [0,4) ends after 😀's LEAD byte — a structurally-torn window, from-bytes None (-1).
+           mode 3: window [3,4) is exactly the emoji's four bytes — Some, one scalar (1). A decoder
+           that validated per-leaf (or clamped the window to the seam) flips mode 1 or mode 3.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def b (Bytes.concat (Bytes.of (list 97 195)) (Bytes.of (list 169 240 159 152 128))))
+            (def lo (if (= mode 3) 3 0))
+            (def ln (if (= mode 1) 3 4))
+            (match (Bytes.slice b lo ln)
+              ((Some w) (match (String.from-bytes w)
+                          ((Some s) (String.scalar-len s))
+                          ((None _u) -1)))
+              ((None _u) -2))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 2 Int64))
+  (call   main (: 2 Int64)) (output (: -1 Int64))
+  (call   main (: 3 Int64)) (output (: 1 Int64)))

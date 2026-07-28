@@ -64,6 +64,8 @@ pass	LONGEST COMMON SUBSEQUENCE rolls match-diagonal against carry-forward maxim
 pass	LONGEST INCREASING SUBSEQUENCE fills a per-index table from strictly-smaller predecessors
 pass	LONGEST RUN tracks the current and best streak, first run winning ties
 pass	LOOK-AND-SAY iterates run-length description over its own prior output
+pass	List.update at the 32-boundary changes one slot and leaves both neighbors shared
+pass	List.update through a concat-built RELAXED node changes one slot with exact neighbors
 pass	MAX PROFIT tracks the running minimum and best spread in one forward pass
 pass	MERGE INTERVALS coalesces overlapping spans, touching endpoints join, containment absorbs
 pass	MISSING NUMBER agrees between the arithmetic-sum gap and the XOR cancellation
@@ -95,9 +97,11 @@ pass	Set.of over Rational elements dedupes a normalized-equal literal and to-lis
 pass	Set.to-list over Rational elements enumerates ascending by value, not by numerator/denominator pair
 pass	Set.to-list over symbols enumerates in content-byte order regardless of insertion order
 pass	String.at through a slice VIEW of a rope reads view-relative scalars at every byte width
+pass	String.from-bytes over a rope-backed slice accepts aligned windows and rejects a mid-scalar cut
 pass	String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts
 pass	String.slice across a multibyte scalar carries byte-len 2 with scalar-len 1, and degenerate ranges answer Some-empty / None
 pass	String.slice spanning a rope seam maps a scalar range to the exact byte extent
+pass	Symbol.of over a slice VIEW interns exactly the window, flat or rope-backed
 pass	THREE stacked guards on one constructor classify a heap payload into bands in order
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow
@@ -115,6 +119,7 @@ pass	a @ensures relating the RESULT to a PARAMETER enforces the relation at exit
 pass	a @requires predicate over a HEAP collection is enforced at entry and value-transparent when satisfied
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
+pass	a Bytes slice of a slice composes offsets against the VIEW and bounds against its length
 pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
 pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
@@ -1232,6 +1237,7 @@ pass	a dense zero-based jump-table match routes an out-of-range scrutinee to the
 pass	a dependent size of zero binds an empty body and leaves the rest untouched
 pass	a dependent size one past the remaining bytes overruns and falls through
 pass	a dependent utf8 bin segment whose length exceeds the remaining bytes is a non-match
+pass	a dependent-size framing loop walks frames that straddle every rope seam
 pass	a dependent-size segment binding exactly the remaining bytes leaves an empty rest
 pass	a dependent-size segment binds exactly the number of bytes an earlier segment named
 pass	a dependent-size segment that overruns the remaining bytes falls through
@@ -2383,6 +2389,7 @@ pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a redundant relational check inside its own truthy branch is known-true and its dead branch is eliminated
 pass	a runtime BigInt narrowed to Int64 at the EXACT maximum fits and one past traps
 pass	a runtime BigInt narrowed to Int64 at the EXACT minimum fits and one below traps
+todo	a runtime bin match decodes a FINAL constant-size utf8 segment
 pass	alternating prepend and push keep both list ends straight
 pass	an @invariant newtype constructed INSIDE a handler arm establishes per resume
 pass	an ANAGRAM check builds per-string scalar frequency maps and compares them by map equality
@@ -3107,6 +3114,9 @@ pass	a variant pattern over a Bool scrutinee is a type error
 pass	an ill-typed ctor-match scrutinee taints the whole match, not masked by well-typed arms
 pass	an ill-typed inner-match scrutinee taints the outer match
 pass	a cross-type constructor pattern NESTED in a matching outer payload is rejected
+pass	a u16 bin field reads correctly at every runtime slice offset, odd or even
+pass	a u16 bin field straddles a byte-rope seam through a runtime-start slice
+pass	a u32 bin binding with the top bit set does unsigned arithmetic
 pass	a variant pattern over a scalar scrutinee is a type error
 pass	a variant with a wrong-type payload as a direct match scrutinee is a type error
 pass	a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit
@@ -4209,6 +4219,7 @@ pass	record reshaping is subset comparison as explicit projection
 pass	recursive factorial with a match base case
 pass	recursive fibonacci over a RUNTIME argument computes the predecessors correctly
 pass	recursive fibonacci with literal match base cases
+pass	recursive repeated-squaring modpow over BigInt computes a Mersenne-modulus power
 pass	recursive-sum equality discriminates a difference at the DEEPEST node
 pass	recursive-sum equality is decided by RUNTIME parameters, both regimes in one export
 pass	recursive-sum equality over FLOAT payloads compares by canonical float bytes along the walk
@@ -4302,6 +4313,7 @@ pass	scan threads its accumulator left-to-right (an order-sensitive folder)
 pass	scan's kth emitted accumulator is the running fold of the first k elements
 pass	self-operand division is NOT folded to one — it still traps at zero
 pass	remainder by negative one annihilates to zero at every input including the minimum
+pass	runtime UInt64 division and remainder above the Int64 boundary compute unsigned
 pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
 pass	sequenced memoize helpers with a local let thread the Map-state out-state (the memo-spine shape)
 pass	set algebra descends into FLOAT-leaf tuple elements

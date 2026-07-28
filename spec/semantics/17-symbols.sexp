@@ -766,3 +766,24 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 10 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64)))
+
+(case "Symbol.of over a slice VIEW interns exactly the window, flat or rope-backed"
+  (doc    "The INTERN consumer of the slice-view family: `Symbol.of` must read only the view's
+           window, not the backing string. Slicing \"xkeyz\" [1,4) — flat (mode 1) or through the rope
+           `(String.concat \"xk\" \"eyz\")` whose seam falls INSIDE the window (mode 2) — interns the
+           same symbol as the literal `#\"key\"` (1). An intern that hashed the backing bytes (or a
+           seam-truncated read) misses. mode 3 slices [0,3) = \"xke\" — a different window over the
+           SAME base — and must NOT equal `#\"key\"` (0).")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def v (if (= mode 2)
+                       (Option.expect (String.slice (String.concat "xk" "eyz") 1 4) "in")
+                       (if (= mode 3)
+                           (Option.expect (String.slice "xkeyz" 0 3) "in")
+                           (Option.expect (String.slice "xkeyz" 1 4) "in"))))
+            (if (= (Symbol.of v) #"key") 1 0)))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 1 Int64))
+  (call   main (: 3 Int64)) (output (: 0 Int64)))

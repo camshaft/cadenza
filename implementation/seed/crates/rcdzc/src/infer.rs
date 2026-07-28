@@ -251,9 +251,27 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         Resolved::BinField {
             segs, seg_index, ..
         } => match segs.get(seg_index).map(|s| &s.kind) {
-            Some(crate::resolved::SegKind::Int { .. } | crate::resolved::SegKind::Bits { .. }) => {
-                Ty::int()
+            // A fixed-width integer segment decodes to a GENERAL integer (deferred width → grounds `Int64`),
+            // the established binding semantics — EXCEPT when the segment's value range does not FIT `Int64`,
+            // in which case it MUST carry its concrete `(signed, width)` type. The sole such width is `u64`:
+            // its range `[0, 2^64-1]` exceeds `Int64`, so a top-bit-set value (a genuine `UInt64 > Int64.max`)
+            // is NOT representable as a signed `Int64`. Collapsing a `u64` binder to `Ty::int()` silently
+            // makes it behave as a signed `Int64`, so downstream `%`/`/` pick `rem_s`/`div_s` and `Int64.of`'s
+            // range-check trusts the sign — the value arithmetics/narrows as its WRAPPED NEGATIVE (a SILENT
+            // wrong value on BOTH backends). Every other width (`u8`/`u16`/`u32` — all-nonneg, so signed and
+            // unsigned ops agree — and `i8`..`i64`, whose signed decode is already correct) fits `Int64` and
+            // stays the general-integer decode, so a wider signed CONSUMER (`(_ -9)` catch-all, `Int64` return
+            // slot) keeps working. `width` is in BYTES; the concrete type carries it in BITS. (A `bits` field
+            // is sub-byte, carries no explicit signedness → stays deferred.)
+            Some(crate::resolved::SegKind::Int { width, signed }) => {
+                let it = crate::ty::IntTy::fixed(*signed, (*width as u32) * 8);
+                if it.fits_within(crate::ty::IntTy::i64()) {
+                    Ty::int()
+                } else {
+                    Ty::Int(it)
+                }
             }
+            Some(crate::resolved::SegKind::Bits { .. }) => Ty::int(),
             Some(crate::resolved::SegKind::Bytes { .. }) => Ty::Bytes,
             // A `utf8` segment decodes its bytes to a well-formed `String` (a non-match on ill-formed).
             Some(crate::resolved::SegKind::Utf8 { .. }) => Ty::String,
