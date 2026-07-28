@@ -2474,6 +2474,13 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
     // crons systematically dying. A persistently non-zero `reissued` across sweeps is the tell that the
     // self-reschedule is failing (the root the watchdog only papers over) — worth an operator/tooling fix.
     let mut reissued = 0usize;
+    // Which agents' crons we re-issued `/loop` for this sweep (the dead-cron subset). The aggregate
+    // `reissued` count tells you cron-death happened but not TO WHOM — so a "the same few agents' crons
+    // keep dying" hypothesis (a real cron-stickiness bug) is indistinguishable in the log from a healthy
+    // rotation of different agents each aging out once. Recording the NAMES makes recurrence greppable
+    // (`grep reissued_agents watchdog.log | …`), which is exactly the signal that separates a genuine
+    // per-agent stickiness bug from the watchdog doing its job on scattered one-off stalls.
+    let mut reissued_agents: Vec<String> = Vec::new();
     let mut checked = 0usize;
     let mut drain_stalls = 0usize;
     let mut drain_stall_escalations = 0usize;
@@ -2919,6 +2926,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 ),
                 RearmAction::ReissueLoop => {
                     reissued += 1;
+                    reissued_agents.push(a.name.clone());
                     println!(
                         "  ++ re-armed '{}' (idle {age}s > {stale_after}s; prior nudge didn't stick → re-issued `/loop {}` to ARM a cron)",
                         a.name, a.interval
@@ -3161,6 +3169,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 leases_reaped,
                 stranded_agents,
                 dead_letters_reaped,
+                reissued_agents,
             },
         );
         if let Some(line) = summary {
@@ -3223,6 +3232,12 @@ struct WatchdogCounts {
     /// dead-letters.log, then moved to the stopped agent's `processed/`). An action count like `reaped`,
     /// logged so a reap run is a greppable record — 0 on the default report-only sweep.
     dead_letters_reaped: usize,
+    /// NAMES of the agents whose `/loop` cron we re-issued this sweep (the dead-cron subset, `|` == the
+    /// `reissued` count). Aggregate counts can't answer "is it the SAME few agents' crons dying every
+    /// sweep?" (a real per-agent stickiness bug) vs a healthy rotation of different agents — recording
+    /// the identities makes that recurrence greppable. Appended as a trailing `reissued_agents=a,b,c`
+    /// field ONLY when non-empty, so a clean or nudge-only sweep's line is byte-for-byte unchanged.
+    reissued_agents: Vec<String>,
 }
 
 /// `checked` is the sweep's DENOMINATOR (active windowed agents examined) — pure CONTEXT, deliberately
@@ -3251,8 +3266,16 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
     {
         return None;
     }
+    // The dead-cron identities ride as a TRAILING field, emitted only when non-empty — so every
+    // pre-existing line shape (clean, nudge-only, lease-reap, …) is byte-for-byte unchanged and existing
+    // greps/parsers don't break; a reader only sees `reissued_agents=` on a sweep that actually re-issued.
+    let reissued_agents = if c.reissued_agents.is_empty() {
+        String::new()
+    } else {
+        format!("\treissued_agents={}", c.reissued_agents.join(","))
+    };
     Some(format!(
-        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}",
+        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}{reissued_agents}",
         c.rearmed,
         c.reissued,
         c.reaped,
@@ -8560,6 +8583,10 @@ mod tests {
                     leases_reaped: 4,
                     stranded_agents: 6,
                     dead_letters_reaped: 7,
+                    // Empty here → the trailing `reissued_agents=` field is OMITTED, so this exact-byte
+                    // assertion (every historical line shape) is unchanged. The populated case is pinned
+                    // by `watchdog_log_line_appends_reissued_agent_names_only_when_present` below.
+                    reissued_agents: Vec::new(),
                 }
             ),
             Some(
@@ -8705,6 +8732,46 @@ mod tests {
                 }
             )
             .is_some()
+        );
+    }
+
+    #[test]
+    fn watchdog_log_line_appends_reissued_agent_names_only_when_present() {
+        // Populated → a trailing `reissued_agents=a,b` field is appended (comma-joined, in sweep order),
+        // AFTER `dead_letters_reaped`, so a reader can grep which crons died this sweep.
+        let line = watchdog_log_line(
+            1700000000,
+            42,
+            &WatchdogCounts {
+                rearmed: 2,
+                reissued: 2,
+                reissued_agents: vec!["v-music".to_string(), "tracker".to_string()],
+                ..Default::default()
+            },
+        )
+        .expect("reissued>0 is notable");
+        assert!(
+            line.ends_with("\treissued_agents=v-music,tracker"),
+            "reissued names ride as the trailing field: {line:?}"
+        );
+        assert!(
+            line.contains("\treissued=2\t"),
+            "count still present: {line:?}"
+        );
+        // Empty → the trailing field is fully OMITTED (no dangling `reissued_agents=`), so every historical
+        // line shape stays byte-identical and existing greps/parsers don't see a new empty field.
+        let plain = watchdog_log_line(
+            1700000000,
+            42,
+            &WatchdogCounts {
+                rearmed: 1,
+                ..Default::default()
+            },
+        )
+        .expect("rearmed>0 is notable");
+        assert!(
+            !plain.contains("reissued_agents="),
+            "empty names must omit the field entirely: {plain:?}"
         );
     }
 

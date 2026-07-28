@@ -32,9 +32,10 @@ fn compiler_ml_src() -> Option<std::path::PathBuf> {
     }
 }
 
-/// Run `cdz func-layout FILE` and parse the emitted-def rows (skipping the `defs-begin` marker) into a
-/// `name -> (func_index, content_hash)` map. Panics on a non-zero exit or a malformed row (the command
-/// already shape-checks, so this is belt-and-suspenders). A def NAME is unique within one layout.
+/// Run `cdz func-layout FILE` and parse the emitted-def rows into a `name -> (func_index, content_hash)`
+/// map. Panics on a non-zero exit, a missing/malformed `defs-begin` marker, a malformed row, or a DUPLICATE
+/// def name (the witness compares defs by name, so a name must be unique within one layout — a dup would
+/// silently overwrite and compare the wrong def).
 fn layout_of(file: &std::path::Path) -> HashMap<String, (String, String)> {
     let exe = env!("CARGO_BIN_EXE_cdz");
     let out = Command::new(exe)
@@ -47,16 +48,35 @@ fn layout_of(file: &std::path::Path) -> HashMap<String, (String, String)> {
         String::from_utf8_lossy(&out.stderr)
     );
     let text = String::from_utf8_lossy(&out.stdout);
+    // VALIDATE the marker rather than blindly skipping line 0: if the CLI output format ever changes (no
+    // marker, or a row where the marker should be), silently treating line 0 as the marker would parse a real
+    // def row as "the marker" and drop it — a misleading witness. Assert line 0 IS `defs-begin<TAB>N<TAB>-`.
+    let mut lines = text.lines();
+    let first = lines.next().unwrap_or("");
+    let marker: Vec<&str> = first.split('\t').collect();
+    assert!(
+        marker.len() == 3 && marker[0] == "defs-begin" && marker[1].parse::<u32>().is_ok(),
+        "first line must be the `defs-begin<TAB><import-base><TAB>-` marker, got {first:?}\nfull:\n{text}"
+    );
     let mut map = HashMap::new();
-    for (n, line) in text.lines().enumerate() {
-        if n == 0 || line.is_empty() {
-            continue; // the defs-begin marker / blank
+    for line in lines {
+        if line.is_empty() {
+            continue;
         }
         let cols: Vec<&str> = line.split('\t').collect();
         assert_eq!(cols.len(), 3, "row is idx<TAB>hash<TAB>name: {line:?}");
-        map.insert(
+        // FAIL-FAST on a duplicate name: the witness compares defs by name across two files, so a name that
+        // appears twice in ONE layout would silently overwrite (last-wins) and compare the WRONG def's
+        // hash/index — a misleading green/red. A def name is expected unique within one layout; assert it.
+        let prev = map.insert(
             cols[2].to_string(),
             (cols[0].to_string(), cols[1].to_string()),
+        );
+        assert!(
+            prev.is_none(),
+            "duplicate def name {:?} in {file:?}'s layout — the witness assumes names are unique within a \
+             layout (a dup would silently overwrite and compare the wrong def)",
+            cols[2]
         );
     }
     map
