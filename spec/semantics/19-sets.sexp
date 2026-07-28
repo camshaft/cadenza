@@ -2750,7 +2750,7 @@
            map keyed by the flat literal, probed by the ROPE and the VIEW; ONE set built from the
            rope, probed by the view and the flat literal — four digits, every cross-rep pair through
            champ_hash/eq in a single program (1111). Adds a miss row (mode 1 probes with rope
-           \"kez\"): 0111 → 111. If ANY rep's hash normalized differently (rope leaf-wise, view
+           \"kez\"): 0100 → 100. If ANY rep's hash normalized differently (rope leaf-wise, view
            parent-wise, flat direct), one digit drops — the transitivity of content identity across
            all three reps is exactly what a per-rep hash cache would break.")
   (input  (do
@@ -2767,3 +2767,18 @@
         (export main)))
   (call   main (: 0 Int64)) (output (: 1111 Int64))
   (call   main (: 1 Int64)) (output (: 100 Int64)))
+
+;; Set.to-list over FLOAT-LEAF TUPLE elements DECLINES — a compound containing a float leaf offers no
+;; blessed total order (§319; the float-axis companion of 03-equality:626's bare `< float-tuple`
+;; decline, and the Set<Bytes> unordered ruling). Regression (breaker #34, 5 faces): wasm silently
+;; returned an EMPTY list (Set.len 3, to-list []) while rust ENUMERATED (both wrong) — the compound
+;; orderable-descriptor propagated float_ok into the compound arms. Fixed uniform-decline: v-wasm-opt
+;; 42b2a02b0 (recurse compound arms float_ok=false) + v-rust-backend to-list-only guard (construction/
+;; contains/remove still work — pin-211 honored). Concierge RULED (a) uniform decline. bare-float sets
+;; + int-leaf tuples still enumerate (unregressed).
+(case "Set.to-list over float-leaf tuple elements declines — a float-containing compound offers no total order (§319, 03:626 companion)"
+  (input  (do
+        (def (main)
+          (List.len (Set.to-list (Set.of (list (tuple 1.5 1) (tuple 2.5 2) (tuple -1.0 3))))))
+        (export main)))
+  (declines))

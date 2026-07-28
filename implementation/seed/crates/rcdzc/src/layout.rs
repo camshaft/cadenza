@@ -467,14 +467,18 @@ pub fn partition_reachable_for_file(
 pub fn cross_component_edges(db: &mut Db, layout: &Layout, own_file: usize) -> Vec<usize> {
     let (own, shared) = partition_reachable_for_file(db, layout, own_file);
     let shared_set: crate::fxhash::FxHashSet<usize> = shared.iter().copied().collect();
-    let mut edges: Vec<usize> = Vec::new();
+    // Membership SET (not a Vec with `.contains` — O(1) dedup + O(1) final filter, vs the O(N²) the
+    // nested own×callees scan + the layout.order re-scan would be; PR#877). Determinism is preserved
+    // because the RETURNED order iterates `layout.order` (source-fixed) filtered by set membership — the
+    // set only decides WHICH edges, never their ORDER (the reproducible-derivation contract below).
+    let mut edges: crate::fxhash::FxHashSet<usize> = crate::fxhash::FxHashSet::default();
     for &owner in &own {
         if let Some(body) = db.defs[owner].body {
             let mut callees = Vec::new();
             collect_call_callees(db, body, &mut callees);
             for c in callees {
-                if shared_set.contains(&c) && !edges.contains(&c) {
-                    edges.push(c);
+                if shared_set.contains(&c) {
+                    edges.insert(c);
                 }
             }
         }
@@ -555,11 +559,71 @@ pub fn compute_shared_closure_provider(
     finish_layout(db, exports)
 }
 
+/// OPTION C increment (c) — the CONSUMER (per-file `@test`) layout: like [`compute_tests_for`] but with the
+/// cross-component edges as a BOUNDARY (excluded from `order`, recorded as extern imports). Each per-file
+/// `@test` component EXCLUDES the shared cross-edge defs (they live in the shared-closure PROVIDER component,
+/// [`compute_shared_closure_provider`]) and routes its `Core::Call`s into them as extern imports. Returns the
+/// layout + the cross-edge defs that were actually HIT (reached from this file's `@test` bodies) — the
+/// caller builds `extern_order` from them, in CANONICAL cross-edge order (the SAME order the provider
+/// exports, so the consumer's import index matches the provider's export index — the v-wasm-opt
+/// index-agreement invariant). `test_defs` is this file's `@test` bucket; `all_cross_edges` is the whole
+/// closure's cross-edge set ([`cross_component_edges`] over ALL `@tests`, the provider's export set). A file
+/// whose tests hit no cross-edge yields an empty hit set (it needs no closure import — a self-contained file).
+pub fn compute_tests_consumer(
+    db: &mut Db,
+    test_defs: &[usize],
+    all_cross_edges: &std::collections::HashSet<usize>,
+) -> Result<(Layout, std::collections::HashSet<usize>), Reject> {
+    if test_defs.is_empty() {
+        return Err(Reject::decline(
+            "no `@test` definition: nothing to run (mark a nullary def with `@test`)",
+        ));
+    }
+    let mut exports: Vec<ExportPlan> = Vec::new();
+    for &def in test_defs {
+        let name = db.defs[def].name.clone();
+        let body = match db.defs[def].body {
+            Some(b) => b,
+            None => {
+                return Err(Reject::decline(format!("`@test` `{name}` has no body")));
+            }
+        };
+        let params = export_params(db, def, &name)?;
+        let result = type_of(db, body);
+        exports.push(ExportPlan {
+            name,
+            def,
+            body,
+            params,
+            result,
+        });
+    }
+    finish_layout_bounded(db, exports, all_cross_edges)
+}
+
 /// Close the reachable set + lifted closures over a resolved list of `exports`, and build the [`Layout`]
 /// — the shared tail of [`compute`] (the program's `(export …)` clauses) and [`compute_tests`] (the
 /// `@test` defs). Everything here is agnostic to WHERE the exports came from: reachability follows
 /// `Core::Call` edges, lifted closures follow `Core::Closure` edges, both seeded from the export bodies.
 fn finish_layout(db: &mut Db, exports: Vec<ExportPlan>) -> Result<Layout, Reject> {
+    finish_layout_bounded(db, exports, &std::collections::HashSet::new()).map(|(l, _)| l)
+}
+
+/// [`finish_layout`] with a `boundary` set of def indices that the `Core::Call`-reachability worklist treats
+/// as LEAVES: a callee in `boundary` is NOT added to `order` (so its body is never walked → its exclusive
+/// callees + closures never enter the emission set) and is instead recorded into the returned `boundary_hits`
+/// set. This is the OPTION-C CONSUMER primitive (increment c): the cross-edge shared defs are the boundary —
+/// each per-file `@test` component EXCLUDES them (they live in the shared-closure provider component) and
+/// routes its `Core::Call`s into them as extern imports. The lifted-closure + functype passes then operate on
+/// the already-pruned `order`, so no closure/functype of a boundary-only def enters either. `finish_layout`
+/// passes an EMPTY boundary → byte-identical to before (no hit, nothing pruned). Returns `(layout,
+/// boundary_hits)` — the caller turns `boundary_hits` into the consumer's `extern_order`.
+fn finish_layout_bounded(
+    db: &mut Db,
+    exports: Vec<ExportPlan>,
+    boundary: &std::collections::HashSet<usize>,
+) -> Result<(Layout, std::collections::HashSet<usize>), Reject> {
+    let mut boundary_hits: std::collections::HashSet<usize> = std::collections::HashSet::new();
     // Emission order: exported definitions first (declaration order, deduplicated), then every
     // definition REACHABLE from them through a runtime `Core::Call` — a recursive callee, or a callee
     // that a recursive function reaches. A worklist closes the reachable set: for each def in `order`,
@@ -598,26 +662,42 @@ fn finish_layout(db: &mut Db, exports: Vec<ExportPlan>) -> Result<Layout, Reject
     // `filter-step`→`drive` specialization) is appended to `order` but its callee is never discovered →
     // a `Core::Call` to an un-laid-out function index → INVALID WASM ("function index out of bounds").
     let mut call_i = 0;
-    let close_call_worklist = |db: &mut Db,
-                               order: &mut Vec<usize>,
-                               in_order: &mut std::collections::HashSet<usize>,
-                               call_i: &mut usize| {
-        while *call_i < order.len() {
-            let def = order[*call_i];
-            if let Some(body) = db.defs[def].body {
-                let mut callees = Vec::new();
-                collect_call_callees(db, body, &mut callees);
-                for c in callees {
-                    if in_order.insert(c) {
-                        trace!(target: "rcdzc::layout", def = c, "reachable via a runtime call — added to emission order");
-                        order.push(c);
+    let close_call_worklist =
+        |db: &mut Db,
+         order: &mut Vec<usize>,
+         in_order: &mut std::collections::HashSet<usize>,
+         call_i: &mut usize,
+         boundary_hits: &mut std::collections::HashSet<usize>| {
+            while *call_i < order.len() {
+                let def = order[*call_i];
+                if let Some(body) = db.defs[def].body {
+                    let mut callees = Vec::new();
+                    collect_call_callees(db, body, &mut callees);
+                    for c in callees {
+                        // A BOUNDARY callee (an Option-C cross-edge) is an EXTERN IMPORT, not an emitted def:
+                        // record it + do NOT add it to `order` (so its body is never walked → its exclusive
+                        // callees/closures never enter this consumer's emission set). Empty boundary → the
+                        // condition never fires → byte-identical to the ordinary layout.
+                        if boundary.contains(&c) {
+                            boundary_hits.insert(c);
+                            continue;
+                        }
+                        if in_order.insert(c) {
+                            trace!(target: "rcdzc::layout", def = c, "reachable via a runtime call — added to emission order");
+                            order.push(c);
+                        }
                     }
                 }
+                *call_i += 1;
             }
-            *call_i += 1;
-        }
-    };
-    close_call_worklist(db, &mut order, &mut in_order, &mut call_i);
+        };
+    close_call_worklist(
+        db,
+        &mut order,
+        &mut in_order,
+        &mut call_i,
+        &mut boundary_hits,
+    );
 
     // LAMBDA-LIFTED closures: lowering the def bodies above (via `collect_call_callees` → `core_of`)
     // registers each surviving `(fn …)` into `db.lifted` (a `Core::Closure` naming its table slot). But
@@ -650,6 +730,12 @@ fn finish_layout(db: &mut Db, exports: Vec<ExportPlan>) -> Result<Layout, Reject
         let mut callees = Vec::new();
         collect_call_callees(db, body, &mut callees);
         for c in callees {
+            // A boundary (cross-edge) callee reached via a lifted body is likewise an extern import, not
+            // an emitted def — record + skip (see the `close_call_worklist` note).
+            if boundary.contains(&c) {
+                boundary_hits.insert(c);
+                continue;
+            }
             if in_order.insert(c) {
                 trace!(target: "rcdzc::layout", def = c, "reachable via a lifted closure body — added to emission order");
                 order.push(c);
@@ -662,7 +748,13 @@ fn finish_layout(db: &mut Db, exports: Vec<ExportPlan>) -> Result<Layout, Reject
         // `while work` loop) since `collect_closure_codes` runs on the growing `order` too. This is the
         // joint fixpoint of the call-reachability and lifted-closure worklists — a nested recursive
         // const-closure driver (filter-step under drive) needs both to converge or a spec dangles.
-        close_call_worklist(db, &mut order, &mut in_order, &mut call_i);
+        close_call_worklist(
+            db,
+            &mut order,
+            &mut in_order,
+            &mut call_i,
+            &mut boundary_hits,
+        );
         // Seed closure codes from any defs just added to `order` (a spec's body may build closures whose
         // lifted bodies must be reached); push newly-seen codes onto the lifted worklist so this loop
         // converges to the joint fixpoint.
@@ -759,7 +851,7 @@ fn finish_layout(db: &mut Db, exports: Vec<ExportPlan>) -> Result<Layout, Reject
         }
     }
 
-    Ok(base_layout.with_closure_call_types(sigs))
+    Ok((base_layout.with_closure_call_types(sigs), boundary_hits))
 }
 
 /// The full param valtypes of a lifted lambda's functype — the leading i32 ENV cell, then each source
