@@ -116,3 +116,69 @@ accept a TBool cond, so the body SHOULD be TIntW. Suspect the binder-USE typing:
 binder NODE-id, but the NVar `b` USE reads via resolve→var-type, which may not surface the seeded TBool (seed-at-node
 vs read-at-use mismatch, TBool-specific). NEXT: trace var-type/seed for a TBool binder + fix (analog of the arg-N fix).
 This is the REAL Bool slice — a compiler-ml infer source fix, no rcdzc change. Probe: refs/scratch/v-compiler-ml/b128-probe.
+
+---
+DEFINITIVE 2026-07-28 (v-inference read both infer columns): b128 IS the TBool-payload EXTRACT emit — v-wasm-opt's
+lane after all. My earlier "source infer gap" re-localization was WRONG: the "NIf then-branch absent from tcol" I
+probed was a DIAGNOSTIC ARTIFACT — def-arrow-type (infer-db.cdz:335-337) infers the full body column tb then returns
+TFn from Map.lookup(tb,bodyId), DISCARDING tb; my probe read the whole-program infer-into-db column, so a def-BODY-
+INTERIOR node (the NIf then) routed through that discard → absent. infer-node DOES type then/else (the lowering
+column via lower-one-def:426 is correct; lower-node CIf-wraps them). infer + lower CLEAN. So b128 = rcdzc emit of the
+TBool-payload store→extract→use-as-cond (extract hands the CIf an i64 the TBool-cond emit can't consume). RE-ROUTED to
+v-wasm-opt (their original lane; matches their native-clean + SEQUEL/RETRACTED reads). Repro: refs/scratch/v-compiler-ml/
+b128-repro (045d24a3a). Fix is rcdzc-emit; v-compiler-ml flips decode(1)→TBool + co-verifies once the emit lands.
+
+---
+SETTLED 2026-07-28 (lower-of-db + Int-control probe, INTERPRETED): b128 = a Bool-specific SOURCE LOWER DECLINE, NOT
+emit. Decisive split: lower-of-db (run-src's actual lower path via run-of-db) on the Bool-payload match → None (999);
+on the Int-payload match (same shape) → Some (1). INTERPRETED, single-file. So run-src returns None because lower
+genuinely declines the Bool match (= v-wasm-opt's outer-None neutralize evidence: run-src ran-to-completion-returning-
+None, no uncatchable trap). Reproduces interpreted → NOT emit/rcdzc. LANE: v-compiler-ml (mine). v-wasm-opt stood down.
+v-inference's "infer+lower clean" was true for the ARM in isolation but lower-of-db's ACTUAL column declines. NEXT:
+narrow WHICH child of the Bool match lower-node declines (suspect: the body NIf whose cond is the TBool binder — a
+TBool-cond lower path the Int equivalent doesn't exercise). Repro: refs/scratch/v-compiler-ml/b128-lowerprobe (e933f3c73).
+
+---
+RE-CONFIRMED 2026-07-28 (CONTROLLED compiled experiment, decode(1)→TBool flip, `cdz test`=rcdzc→wasm):
+Two @tests, ONE toggle (decode-argtype-enc(1): TErr→TBool), same match shape, single-file compiled:
+  • zz-lp-int-control  (type QQ (Q Int64), match (Q 5) ((Q x) (+ x 1)))      → PASS  (never hits enc==1)
+  • zz-lp-bool-under-tbool (type BoxB (BB Bool), match (BB true) ((BB b) (if b 1 0))) → FAIL: wasm `unreachable`
+This OVERTURNS last tick's "source lower decline" read: that None was the DELIBERATE decode(1)→TErr masking the
+emit trap (lower declines TErr cond honestly). With TBool seeded, infer+lower hand-trace CLEAN (b:TBool → cond
+TBool → if-type TIntW → match TIntW → lower-ok type-erased CVar → Some) — yet the COMPILED run TRAPS. Logic is
+sound; the compiled path miscompiles. So b128 = rcdzc EMIT of the TBool-payload store→extract→use-as-cond
+(extract hands the CIf an i64 the TBool-cond emit can't consume → unreachable). Matches b128's ORIGINAL
+wasm-unreachable signature + the b149 compiled-reject. LANE: v-wasm-opt (rcdzc emit). v-compiler-ml side is
+ready: flip decode(1)→TBool is a 1-liner (currently TErr on trunk, declines soundly) once the emit lands; I
+co-verify compiled on land. Probe saved /tmp/zz-lp-b128-tbool.cdz. Int-control isolates the toggle → NOT a
+generic self-host-compile break, Bool-payload-specific.
+
+---
+DECISIVE 2026-07-28 (v-inference's 3-lookup probe, run compiled with decode(1)→TBool, reverted): reading
+db-typed-col (the SAME column lower-of-db uses) for the Bool program (BB Bool)/((BB b)(if b 1 0)):
+  L1 tcol[binderId]      = TBool   PASS
+  L2 tcol[b-use NVar id] = TBool   PASS
+  L3 tcol[body NIf id]   = TRAPS wasm-unreachable (not a clean tag)
+Per v-inference's own decision rule (if L1 or L2 is TErr/absent → their infer-seed lane; if all Some but lower
+still declines → emit): L1+L2 are TBool as predicted ⟹ seed-ctor-binders fires, var-type reads it, if-type has a
+TBool cond, infer-into-db COMPLETES + populates the column. The infer-seed / binder-wiring lane is POSITIVELY
+EXCLUDED BY DATA (not just hand-trace). The trap is ONLY on the NIf-body compiled path = the b128 TBool-payload
+store→extract→use-as-cond EMIT (extract hands the CIf an i64 the TBool-cond emit can't consume → unreachable).
+def-arrow-type tb-discard confirmed irrelevant (root = peeled main body, structural infer, no arrow-type query).
+LANE: v-wasm-opt (rcdzc emit), v-inference stood down, agrees. v-compiler-ml side ready: decode(1)→TBool is a
+1-liner once the emit lands; I co-verify compiled. This SUPERSEDES prior back-and-forth — it's the datum that
+splits infer-vs-emit with a positive exclusion, not another hand-trace. Probe form: 3 discrete @tests, ty-tag over
+Typed, node-at peel root→NMatchCtor→binderIds[0]/bodyId→NIf.cond.
+
+---
+HANDOFF 2026-07-28: v-wasm-opt ACCEPTED the lane (compiled lower-node TBool-cond emit — NOT source decline,
+NOT extract value-miscompute; consistent w/ hand-trace-clean + int-control + outer-None + native-clean). Their
+precise target: rcdzc's emit of lower-node's OWN code for the TBool-cond path (what lower-node does differently
+for a TBool binder used in a CIf cond vs a TIntW binder) miscompiles at self-host scale → compiled lower-node
+takes a wrong None/trap branch. Delivered self-contained repro: scratch ref refs/scratch/v-compiler-ml/b128-emit-
+repro @ e6d296c3b (shared common git dir) — bakes in decode(1)→TBool flip + implementation/compiler-ml/src/
+zz-b128-repro.cdz (2 @tests: zz-b-int-control-passes PASS, zz-b-bool-traps-under-tbool FAIL wasm-unreachable).
+Repro cmd: CDZ_WASM_BACKTRACE=1 cargo run -q -p cdz -- test .../zz-b128-repro.cdz (long timeout, ~5min cliff).
+v-wasm-opt disasms the func-index. Non-urgent (declines soundly on trunk); queued behind higher-pri. v-compiler-ml
+side: decode(1)→TBool is a 1-liner once emit lands + I co-verify compiled. B128 now fully in v-wasm-opt's hands
+with a turnkey repro — no further v-compiler-ml action until their emit lands.

@@ -503,6 +503,45 @@ pub fn emit(
             }
         });
     }
+    // OPTION C (consumer emit): a per-file `@test` CONSUMER layout (`compute_tests_consumer`) records the
+    // cross-edge shared-closure defs it imports in `layout.cross_edge_import` (`def → its position in
+    // `extern_order``) with the `extern_order` entries themselves `(closure-iface, source_boundary_name(def))`
+    // in provider-export order. Those cross-edges are PEER ops exactly like a bound effect's escaping ops — so
+    // materialize an `ExternImport` for each, in `extern_order` position order, with the boundary ABI drawn
+    // from the def's OWN signature (params via `export_params`, result via `type_of`) so the consumer's import
+    // functype MATCHES the provider's export functype (ABI-agreement, the functype twin of the index-agreement
+    // `cross_edge_import` already fixes). This joins the SAME extern-emit paths a peer-bound consumer takes
+    // (`core_module_with_extern` / `core_module_with_extern_runtime` + the peer envelope), so no new assembly
+    // shape is needed. EMPTY for every non-consumer layout (`cross_edge_import` is empty), so this loop adds
+    // nothing and the emit stays byte-identical to before.
+    if !layout.cross_edge_import.is_empty() {
+        // Order the cross-edges by their `extern_order` position so the built `ExternImport` set indexes
+        // exactly as `cross_edge_import` (and the provider's export order) says — the import at position `p`
+        // IS the op `extern_order[p]`, which a `Lir::CallExternImport(p)` resolves to.
+        let mut by_pos: Vec<(usize, usize)> = layout
+            .cross_edge_import
+            .iter()
+            .map(|(&d, &p)| (p, d))
+            .collect();
+        by_pos.sort_unstable();
+        for (pos, def) in by_pos {
+            let (iface, op) = layout.extern_order[pos].clone();
+            let body = def_body(db, def)?;
+            let result_ty = crate::infer::type_of(db, body);
+            let params = crate::layout::export_params(db, def, &op)?;
+            extern_imports.push(host::ExternImport {
+                interface: iface,
+                op,
+                // A compound param/result crosses as its opaque `u32` runtime handle (X5); a scalar by value;
+                // `Unit` is elided — exactly the provider's boundary ABI for the same def.
+                params: params
+                    .iter()
+                    .filter_map(|(_, ty)| host::extern_abi_val_type(ty))
+                    .collect(),
+                result: host::extern_abi_val_type(&result_ty),
+            });
+        }
+    }
     // An extern import composed with a HOST effect is not yet emitted (a consumer that both binds a peer
     // AND delegates a host effect — a further fusion). An extern + the value-heap RUNTIME (a consumer that
     // receives a compound `value` handle from a peer and inspects it) IS emitted (X5, `assemble_extern_runtime`).

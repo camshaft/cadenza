@@ -5334,6 +5334,19 @@ fn emit_tail(
             emit_call_args(
                 db, callee, &args, slots, base, high, scratch_ty, layout, out,
             )?;
+            // OPTION C: a CROSS-EDGE callee in TAIL position — it's an imported peer func, and there is no
+            // `return_call` to an import (`ReturnCall` targets a local func index only). Emit the extern call
+            // as an ORDINARY `CallExternImport` and let its result fall through as the function's result (the
+            // wasm fn returns the top-of-stack value; no explicit Return op is emitted for a non-tail call
+            // either). This forgoes the tail-call frame reuse for a cross-edge tail call — correct, just not
+            // TCO'd; a cross-edge in tail position (a @test whose result IS a shared-closure call) is rare and
+            // the closure's own recursion is TCO'd inside the provider. Empty map → never fires (non-consumer
+            // byte-identical). Mirrors the peer-bound HostCall extern path (also a plain CallExternImport).
+            if let Some(&pos) = layout.cross_edge_import.get(&callee) {
+                trace!(target: "rcdzc::select", callee, pos, args = args.len(), "emit cross-edge extern call (tail, non-TCO)");
+                out.push(Lir::CallExternImport(pos));
+                return Ok(());
+            }
             match layout.abs(callee) {
                 Some(idx) => {
                     trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit TAIL call (return_call)");
@@ -10101,6 +10114,18 @@ fn emit(
             emit_call_args(
                 db, callee, &args, slots, base, high, scratch_ty, layout, out,
             )?;
+            // OPTION C (consumer emit): a CROSS-EDGE callee is NOT a local emitted func — it lives in the
+            // shared-closure PROVIDER component, imported through the peer interface. Emit a
+            // `CallExternImport` to its import position (the same slot the provider exports it at — the
+            // index-agreement `compute_tests_consumer` guarantees) instead of a local `Call`. The map is
+            // EMPTY for every non-consumer layout, so this branch never fires there (byte-identical). The
+            // args were already pushed above (identical to a local call — a cross-edge is an ordinary call
+            // in the Core; only the target differs). Mirrors the peer-bound `Core::HostCall` extern path.
+            if let Some(&pos) = layout.cross_edge_import.get(&callee) {
+                trace!(target: "rcdzc::select", callee, pos, args = args.len(), "emit cross-edge extern call");
+                out.push(Lir::CallExternImport(pos));
+                return Ok(());
+            }
             match layout.abs(callee) {
                 Some(idx) => {
                     trace!(target: "rcdzc::select", callee, idx, args = args.len(), "emit runtime call");

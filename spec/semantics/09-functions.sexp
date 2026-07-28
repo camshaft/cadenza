@@ -6453,3 +6453,31 @@
         (export main)))
   (call   main (: 3 Int64)) (output (: 1316 Int64))
   (call   main (: 0 Int64)) (output (: 1010 Int64)))
+
+;; A do-def shadowing a function PARAMETER is a well-defined shadow (the def rebinds the name for
+;; later refs). Regression (breaker #37): the resolver recorded the shadow def's binding at the wrong
+;; scope level, so a def-over-param UNBOUND the name (false CDZ0101 'unbound name v') for all later
+;; references. Fixed by v-inference 6566bff81 (binder-copy scope-level fix). def-over-def (:1267) +
+;; def-over-match-binder already worked; this is the param-shadow companion.
+(case "a do-def shadowing a function parameter is a well-defined shadow"
+  (input  (do
+        (def (f (: v Int64)) (do (def v (* v 2)) v))
+        (def (main (: k Int64)) (f k))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+;; A do-def shadowing a LET binding (inside a fn) rebinds and its init EVALUATES. Regression (breaker
+;; #37, soundness): a def-over-let-in-fn was silently DROPPED — the shadow def was dead-code-eliminated
+;; wholesale, so the value stayed the let's AND a trapping init (def v (/ 1 0)) did NOT trap. Same
+;; wrong-scope-level root as the param face; fixed by the same v-inference 6566bff81 — now rebinds
+;; (10) and a trapping init surfaces CDZ0304 at compile.
+(case "a do-def shadowing a LET binding rebinds and its init evaluates"
+  (input  (do
+        (def (f (: k Int64))
+          (let ((v k))
+            (do (def v (* v 2)) v)))
+        (def (main (: k Int64)) (f k))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))

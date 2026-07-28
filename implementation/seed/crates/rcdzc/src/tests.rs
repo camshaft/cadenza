@@ -21862,6 +21862,21 @@ mod match_engine {
             ),
             11
         );
+        // ADJACENT FACE (audit): a do-def shadowing a MATCH-ARM PAYLOAD binder (not a param/let) — `(Some v)`
+        // binds `v`, then `(do (def v (* v 2)) v)` shadows it. The do-def NAME must stay a binder through the
+        // β-inline (same fix), so the arm body rebinds `v` rather than corrupting it. Builds a heap Opt value
+        // (needs the value-heap runtime this linker lacks), so guard the EMIT validates — the resolve/β-copy
+        // path is what the fix touches; a valid module proves the arm-local do-def resolved (a corrupted binder
+        // would decline CDZ0101 before emit). `(Some 5)` → arm binds v=5, do-def v=10.
+        assert!(
+            wasmparser::validate(&component(
+                "(module m (type Opt (None) (Some a)) \
+                   (def (f (: o (Opt Int64))) (match o ((Some v) (do (def v (* v 2)) v)) ((None) 0))) \
+                   (def (main) (f (Some 5))) (export main))"
+            ))
+            .is_ok(),
+            "a do-def shadowing a match-arm payload binder must resolve (valid module), not corrupt the binder"
+        );
     }
 
     #[test]
@@ -21897,6 +21912,21 @@ mod match_engine {
         assert!(
             wasmparser::validate(&bytes).is_ok(),
             "annotating the nullary producer's result element must compile to valid wasm"
+        );
+        // FALSE-POSITIVE GUARD: an ordinary NULLARY def returning a SCALAR (`(zero)` → 0) passed to a
+        // monomorphic consumer is NOT a generic-producer gap — it monomorphizes fine and must COMPILE, never
+        // trip the nullary-generic decline. Guards the `arg_is_nullary_producer_call` predicate from firing on
+        // any zero-arg call (it must only re-word the message on a genuine recursive-generic `type_specialize`
+        // failure, which this case never reaches). `(inc (zero))` → 1.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (zero) 0) (def (inc (: n Int64)) (+ n 1)) \
+                       (def (main) (inc (zero))) (export main))"
+                ),
+                "main"
+            ),
+            1
         );
     }
 
@@ -73160,7 +73190,7 @@ mod sidecar_driven {
                     (export shared-helper))";
         let app = "(do (import \"lib\" (shared-helper)) \
                     (@ test (def (t-app) (if (= (shared-helper 5) 5) unit (trap \"x\")))))";
-        let (order_names, hit_names): (Vec<String>, Vec<String>) =
+        let (order_names, mapped_names, extern_ops): (Vec<String>, Vec<String>, Vec<String>) =
             crate::host::run_with_compiler_stack(|| {
                 let files: Vec<(String, crate::ast::Arenas)> = vec![
                     ("lib".to_string(), parse(lib)),
@@ -73175,21 +73205,36 @@ mod sidecar_driven {
                 let own_file = db
                     .file_of(db.defs[test_def].sig_occ)
                     .expect("test def in a file");
-                // The whole closure's cross-edge set (the provider export set) = the boundary.
-                let cross: std::collections::HashSet<usize> =
-                    crate::layout::cross_component_edges(&mut db, &test_layout, own_file)
-                        .into_iter()
-                        .collect();
+                // The provider's canonical export edge order (= cross_component_edges' layout.order order).
+                let provider_edges =
+                    crate::layout::cross_component_edges(&mut db, &test_layout, own_file);
                 let tds = db.test_defs();
-                let (consumer, hits) = crate::layout::compute_tests_consumer(&mut db, &tds, &cross)
-                    .expect("consumer lays out");
+                let consumer = crate::layout::compute_tests_consumer(
+                    &mut db,
+                    &tds,
+                    &provider_edges,
+                    "cadenza:closure/api",
+                )
+                .expect("consumer lays out");
+                // Which cross-edge defs are mapped as extern imports, + their extern_order op names.
+                let mapped: Vec<String> = consumer
+                    .cross_edge_import
+                    .keys()
+                    .map(|&d| db.defs[d].name.clone())
+                    .collect();
+                let extern_ops: Vec<String> = consumer
+                    .extern_order
+                    .iter()
+                    .map(|(_, op)| op.clone())
+                    .collect();
                 (
                     consumer
                         .order
                         .iter()
                         .map(|&d| db.defs[d].name.clone())
                         .collect(),
-                    hits.iter().map(|&d| db.defs[d].name.clone()).collect(),
+                    mapped,
+                    extern_ops,
                 )
             });
         // The cross-edge shared-helper is EXCLUDED from the consumer's emitted `order`…
@@ -73197,16 +73242,183 @@ mod sidecar_driven {
             !order_names.iter().any(|n| n.starts_with("shared-helper")),
             "the consumer must NOT emit the cross-edge shared-helper: order={order_names:?}"
         );
-        // …but IS recorded as a boundary hit (→ an extern import)…
+        // …is in the cross_edge_import map (→ select emits a CallExternImport for it)…
         assert!(
-            hit_names.iter().any(|n| n.starts_with("shared-helper")),
-            "the consumer must HIT shared-helper as an extern import: hits={hit_names:?}"
+            mapped_names.iter().any(|n| n.starts_with("shared-helper")),
+            "the cross-edge shared-helper is mapped as an extern import: mapped={mapped_names:?}"
+        );
+        // …and its extern_order op name is the SOURCE name (kebab), not the $acc transform name.
+        assert!(
+            extern_ops.iter().any(|op| op == "shared-helper"),
+            "the extern import op is the source boundary name shared-helper (not $acc): extern_ops={extern_ops:?}"
         );
         // …and the @test def itself IS still emitted.
         assert!(
             order_names.iter().any(|n| n.starts_with("t-app")),
             "the consumer still emits its own @test def: order={order_names:?}"
         );
+    }
+
+    #[test]
+    fn option_c_consumer_component_emits_a_valid_component_importing_the_cross_edge() {
+        // OPTION C increment (c)(ii-c): the CONSUMER layout, run through `backend::emit`, produces a VALID
+        // wasm component that IMPORTS the shared cross-edge as a peer interface func (`extern_imports` built
+        // from `layout.cross_edge_import` in `mod::emit`) — the emit end-to-end that FIRES the select
+        // `CallExternImport` branch. Same 2-file fixture: app's @test calls lib's recursive shared-helper, so
+        // the consumer emits its own @test def calling shared-helper as an IMPORT, not a local func. The
+        // component must validate (its import's functype must match what the provider EXPORTS — the ABI-
+        // agreement twin of the index-agreement the consumer's `cross_edge_import` already fixes).
+        use crate::testkit::parse;
+        let lib = "(do (def (shared-helper (: n Int64)) (if (= n 0) 0 (+ 1 (shared-helper (- n 1))))) \
+                    (export shared-helper))";
+        let app = "(do (import \"lib\" (shared-helper)) \
+                    (@ test (def (t-app) (if (= (shared-helper 5) 5) unit (trap \"x\")))))";
+        let consumer_bytes: Vec<u8> = crate::host::run_with_compiler_stack(|| {
+            let files: Vec<(String, crate::ast::Arenas)> = vec![
+                ("lib".to_string(), parse(lib)),
+                ("app".to_string(), parse(app)),
+            ];
+            let linked = crate::link::link(&files, "app").expect("package links");
+            let mut db = crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+            let test_layout =
+                crate::layout::compute_tests(&mut db).expect("the @test build lays out");
+            let test_def = *db.test_defs().first().expect("one @test");
+            let own_file = db
+                .file_of(db.defs[test_def].sig_occ)
+                .expect("the @test def is in a file");
+            let provider_edges =
+                crate::layout::cross_component_edges(&mut db, &test_layout, own_file);
+            let tds = db.test_defs();
+            let consumer = crate::layout::compute_tests_consumer(
+                &mut db,
+                &tds,
+                &provider_edges,
+                "cadenza:closure/api",
+            )
+            .expect("the consumer lays out");
+            crate::backend::emit(crate::backend::Target::Wasm, &mut db, &consumer, None, None)
+                .expect("the consumer emits")
+        });
+        let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        v.validate_all(&consumer_bytes)
+            .expect("the Option-C consumer component validates");
+    }
+
+    #[test]
+    fn option_c_two_cross_edges_agree_provider_export_and_consumer_import_index() {
+        // OPTION C increment (c)(ii-d): the MULTI-cross-edge witness — the one that catches a SHIFTED-INDEX
+        // invalid module (v-wasm-opt FINDING #22 family: consumer import index ≠ provider export order). A
+        // single cross-edge can't expose an ordering bug (index 0 == 0 trivially); TWO independent shared
+        // defs can. Fixture: `lib` exports two recursive helpers `alpha`/`beta`; `app`'s @test calls BOTH, so
+        // there are two cross-edges. We assert (1) the PROVIDER exports them in `cross_component_edges` order,
+        // (2) the CONSUMER maps each cross-edge def to EXACTLY its provider-export position (import idx ==
+        // export idx per def — the index-agreement invariant), and (3) BOTH the provider and consumer
+        // components VALIDATE. The two helpers have DIFFERENT ARITIES (alpha unary, beta binary) so a SWAPPED
+        // import index (alpha's call resolving to beta's slot) would fail component validation on the functype
+        // mismatch — the witness catches a shifted index at the EMIT level, not only the layout-map assertion.
+        use crate::testkit::parse;
+        let lib = "(do \
+                    (def (alpha (: n Int64)) (if (= n 0) 0 (+ 2 (alpha (- n 1))))) \
+                    (def (beta (: a Int64) (: b Int64)) (if (= a 0) b (+ 3 (beta (- a 1) b)))) \
+                    (export alpha) (export beta))";
+        let app = "(do (import \"lib\" (alpha beta)) \
+                    (@ test (def (t-two) (if (= (+ (alpha 3) (beta 3 1)) 16) unit (trap \"x\")))))";
+        struct Out {
+            provider_export_order: Vec<String>,
+            consumer_import_at: Vec<(String, usize)>,
+            provider_bytes: Vec<u8>,
+            consumer_bytes: Vec<u8>,
+        }
+        let out: Out = crate::host::run_with_compiler_stack(|| {
+            let files: Vec<(String, crate::ast::Arenas)> = vec![
+                ("lib".to_string(), parse(lib)),
+                ("app".to_string(), parse(app)),
+            ];
+            let linked = crate::link::link(&files, "app").expect("package links");
+            let mut db = crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+            let test_layout =
+                crate::layout::compute_tests(&mut db).expect("the @test build lays out");
+            let test_def = *db.test_defs().first().expect("one @test");
+            let own_file = db
+                .file_of(db.defs[test_def].sig_occ)
+                .expect("the @test def is in a file");
+            // The canonical cross-edge order = the provider's EXPORT order (both from `cross_component_edges`).
+            let provider_edges =
+                crate::layout::cross_component_edges(&mut db, &test_layout, own_file);
+            let provider_export_order: Vec<String> = provider_edges
+                .iter()
+                .map(|&d| crate::layout::source_boundary_name(&db.defs[d].name).to_string())
+                .collect();
+            // The consumer layout — each cross-edge def → its extern import position.
+            let tds = db.test_defs();
+            let consumer = crate::layout::compute_tests_consumer(
+                &mut db,
+                &tds,
+                &provider_edges,
+                "cadenza:closure/api",
+            )
+            .expect("the consumer lays out");
+            // For each cross-edge def, its (source-name, consumer import position).
+            let mut consumer_import_at: Vec<(String, usize)> = consumer
+                .cross_edge_import
+                .iter()
+                .map(|(&d, &pos)| {
+                    (
+                        crate::layout::source_boundary_name(&db.defs[d].name).to_string(),
+                        pos,
+                    )
+                })
+                .collect();
+            consumer_import_at.sort_by_key(|(_, pos)| *pos);
+            let consumer_bytes =
+                crate::backend::emit(crate::backend::Target::Wasm, &mut db, &consumer, None, None)
+                    .expect("the consumer emits");
+            let provider_layout =
+                crate::layout::compute_shared_closure_provider(&mut db, &test_layout, own_file)
+                    .expect("the shared-closure provider lays out");
+            db.component_name = Some("cadenza:closure/api".to_string());
+            let provider_bytes = crate::backend::emit(
+                crate::backend::Target::Wasm,
+                &mut db,
+                &provider_layout,
+                None,
+                None,
+            )
+            .expect("the provider emits");
+            Out {
+                provider_export_order,
+                consumer_import_at,
+                provider_bytes,
+                consumer_bytes,
+            }
+        });
+        // Two cross-edges → two exports, two imports.
+        assert_eq!(
+            out.provider_export_order.len(),
+            2,
+            "the @test calls two shared defs → two cross-edges: {:?}",
+            out.provider_export_order
+        );
+        // INDEX-AGREEMENT: the consumer's import position for each cross-edge == its provider export index.
+        // (Both derived from `cross_component_edges`; a re-derivation that reordered would break this.)
+        let import_names_in_order: Vec<String> = out
+            .consumer_import_at
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
+        assert_eq!(
+            import_names_in_order, out.provider_export_order,
+            "consumer import index order must MATCH provider export order (the FINDING #22 \
+             shifted-index invariant): imports={import_names_in_order:?} exports={:?}",
+            out.provider_export_order
+        );
+        // Both components must VALIDATE — a mismatched import functype/index fails component validation.
+        let mut vp = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        vp.validate_all(&out.provider_bytes)
+            .expect("the two-export provider component validates");
+        let mut vc = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        vc.validate_all(&out.consumer_bytes)
+            .expect("the two-import consumer component validates");
     }
 
     #[test]

@@ -5169,3 +5169,6 @@ pass	Set.to-list over float-leaf tuple elements declines — a float-containing 
 pass	the read primitive skips a line comment inside program text
 pass	a malformed read is a coded reject, not a not-yet-reducible decline
 pass	a runtime-selected Name payload inside a rebuilt Ast compares against a read result
+pass	a do-def shadowing a function parameter is a well-defined shadow
+pass	a do-def shadowing a LET binding rebinds and its init evaluates
+pass	nested handlers with colliding arm-local bindings each keep their own scope (no compounding leak)
