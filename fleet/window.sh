@@ -51,9 +51,10 @@ fi
 cd "$WORKTREE"
 
 # The kickoff. Role bodies + contract are read from the agent's OWN worktree tracked `fleet/` (git-
-# synced with the code it works on). Runtime state (inbox, queue) is hub-anchored under .claude/fleet.
+# synced with the code it works on). Runtime state (inbox, queue) is hub-anchored under .claude/fleet,
+# but the kickoff never hands the agent that raw path — it points at the `cargo xtask fleet inbox`
+# resolver instead, so an agent can't glob a worktree-relative shadow dir and silently stall.
 SRC="$WORKTREE/fleet"
-FLEET="$HUB/.claude/fleet"
 VNOTE=""
 [ -n "${VERTICAL:-}" ] && VNOTE=" Your vertical is '$VERTICAL' in subsystem '${AREA:-rcdzc}'."
 # The recurring TICK prompt — passed as the PROMPT ARGUMENT to `/loop`. It MUST be non-empty:
@@ -76,9 +77,11 @@ and keep working — never wait for a reply."
 KICKOFF="You are the fleet agent named '$AGENT' (role: $ROLE), running UNATTENDED.$VNOTE \
 FIRST read $SRC/AGENTS-fleet.md (the fleet contract — inbox protocol, the single-writer/no-CAS land \
 model, and the rule that you never wait on the human). THEN read $SRC/loops/$ROLE.md (your role). \
-Your worktree is $WORKTREE and your inbox is $FLEET/inbox/$AGENT/. Then start your recurring loop by \
-running EXACTLY this — the interval AND a non-empty tick prompt ('/loop $INTERVAL' with no prompt is a \
-no-op that schedules nothing): /loop $INTERVAL $TICK"
+Your worktree is $WORKTREE. LIST your inbox with 'cargo xtask fleet inbox $AGENT' (the RESOLVER — it \
+prints the canonical HUB inbox path; NEVER ls a worktree-relative '.claude/fleet/inbox/...' glob, which \
+silently matches an empty shadow dir and stalls you). Then start your recurring loop by running EXACTLY \
+this — the interval AND a non-empty tick prompt ('/loop $INTERVAL' with no prompt is a no-op that \
+schedules nothing): /loop $INTERVAL $TICK"
 
 # ── How this session handles APPROVALS ──────────────────────────────────────────────────────────
 # A fleet agent loops UNATTENDED, so a tool-permission prompt would stall its window exactly like an

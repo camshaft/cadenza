@@ -237,6 +237,7 @@ fn compile_with_opt_inner(
     let mut queries = Vec::new();
     let mut emit_targets: Vec<Target> = targets.to_vec();
     let mut emit_tests = false;
+    let mut emit_tests_per_file = false;
     for req in &requests {
         match req {
             sidecar::Request::Query(q) => queries.push(q.clone()),
@@ -244,6 +245,13 @@ fn compile_with_opt_inner(
             sidecar::Request::EmitTests => {
                 emit_tests = true;
                 emit_targets.push(Target::Wasm);
+            }
+            // `EmitTestsPerFile` lowers the linked closure ONCE and emits one `@test` component PER FILE
+            // (the shared-arena lower-once path). It is handled on its OWN branch below (it produces N
+            // artifacts from N layout-views, not the single-layout emit loop), so it does NOT push a
+            // `Target` here — it only sets the flag. Like `EmitTests` it is a Wasm test build.
+            sidecar::Request::EmitTestsPerFile => {
+                emit_tests_per_file = true;
             }
         }
     }
@@ -312,7 +320,10 @@ fn compile_with_opt_inner(
     // A test build lays out the boundary from the `@test` NULLARY defs (`compute_tests`) IN PLACE OF the
     // program's `(export …)` clauses; an ordinary build uses `compute`. Everything downstream (faults,
     // reachability, emit) is identical — only the export SOURCE differs.
-    let layout = match if emit_tests {
+    // `emit_tests_per_file` gates + faults over the WHOLE `@test` set (like `emit_tests`) — this `layout`
+    // validates the closure lays out and drives fault-gating; the per-file branch below re-lays each file's
+    // bucket as a cheap layout-view over the SAME lowered Core (no re-lower).
+    let layout = match if emit_tests || emit_tests_per_file {
         layout::compute_tests(&mut db)
     } else {
         layout::compute(&mut db)
@@ -391,10 +402,63 @@ fn compile_with_opt_inner(
             None
         };
 
+    let mut artifacts = query_artifacts;
+
+    // `EmitTestsPerFile`: the shared-arena lower-once `cdz test <dir>` path. The closure was linked +
+    // lowered ONCE (this `db`); now emit one wasm test component PER FILE — bucket `db.test_defs()` by
+    // `file_of(sig_occ)`, and for each non-empty bucket lay out a `compute_tests_for` VIEW rooted at that
+    // file's tests (a cheap re-layout over the SAME Core — no re-lower, no relocation) and emit it as a
+    // `component` artifact NAMED by the file's `link` path. `cdz test` calls this ONCE and demuxes the N
+    // components by name — replacing N per-file compiles that each re-lowered the whole closure.
+    // Behavior-identical: each file's view is the same layout its own `EmitTests` compile produced, and a
+    // per-file emit decline is reported node-anchored (the caller demuxes to `file:line:col`). Runs on its
+    // OWN branch (it produces N artifacts from N views) — the flag pushed NO `Target`, so the normal emit
+    // loop below stays empty for a pure `EmitTestsPerFile` request.
+    if emit_tests_per_file {
+        use std::collections::BTreeMap;
+        // Bucket test defs by file index (BTreeMap → deterministic ascending file order). A test whose
+        // `sig_occ` maps to no file (single-file compile, or a synthesized test) buckets under `None`.
+        let mut by_file: BTreeMap<Option<usize>, Vec<usize>> = BTreeMap::new();
+        for def in db.test_defs() {
+            let sig = db.defs[def].sig_occ;
+            by_file.entry(db.file_of(sig)).or_default().push(def);
+        }
+        for (fi, defs) in &by_file {
+            // The artifact name = the file's `link` path (so `cdz test` demuxes by name); a `None` bucket
+            // (single-file / unfiled) falls back to the program name, matching a plain `EmitTests`.
+            let name = fi
+                .and_then(|i| db.file_path(i))
+                .map(str::to_string)
+                .unwrap_or_else(|| program_name(&db));
+            match layout::compute_tests_for(&mut db, defs) {
+                Ok(view) => match backend::emit(
+                    Target::Wasm,
+                    &mut db,
+                    &view,
+                    span_data.as_ref(),
+                    external_debug_info.as_deref(),
+                ) {
+                    Ok(bytes) => {
+                        artifacts.push(Artifact::new(Target::Wasm.artifact_kind(), &name, bytes))
+                    }
+                    Err(mut r) => {
+                        trace!(target: "rcdzc::compile", file = %name, reason = %r.message, "per-file test emit declined");
+                        sanitize_origin(&db, &mut r);
+                        diagnostics.push(Diagnostic::from_reject(&r));
+                    }
+                },
+                Err(mut r) => {
+                    trace!(target: "rcdzc::compile", file = %name, reason = %r.message, "per-file test layout declined");
+                    sanitize_origin(&db, &mut r);
+                    diagnostics.push(Diagnostic::from_reject(&r));
+                }
+            }
+        }
+    }
+
     // Clean: ask each requested target's backend to fill its artifact. The query artifacts (facts
     // read above) lead, then each emitted backend artifact — all one kinded-artifact list, selected by
     // kind (`build-tool-interface.md`).
-    let mut artifacts = query_artifacts;
     for &target in &emit_targets {
         match backend::emit(
             target,

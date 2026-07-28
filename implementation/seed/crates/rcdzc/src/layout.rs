@@ -374,7 +374,19 @@ pub fn compute(db: &mut Db) -> Result<Layout, Reject> {
 /// export rides the identical machinery. The normal `(export …)` path is untouched — a test build is a
 /// distinct sidecar request (`Request::EmitTests`), never the default.
 pub fn compute_tests(db: &mut Db) -> Result<Layout, Reject> {
-    let test_defs = db.test_defs();
+    compute_tests_for(db, &db.test_defs())
+}
+
+/// The subset variant of [`compute_tests`]: lay out the boundary from a GIVEN list of `@test` def
+/// indices (in place of ALL `db.test_defs()`), so one linked closure can be lowered ONCE and emitted as N
+/// per-file test components — each a layout-view rooted at that file's `@test` bucket, sharing the arena's
+/// Core (no re-lower, no relocation). The `EmitTestsPerFile` request buckets `db.test_defs()` by
+/// `linkage.file_of(sig_occ)` and calls this once per file. `defs` MUST be a subset of `db.test_defs()`
+/// (each a nullary/property `@test`); an empty list declines like the all-tests case. The reachable set +
+/// lifted closures close over just this bucket's bodies (`finish_layout`), so each view emits only the
+/// functions its own tests reach — exactly what a per-file `cdz test <file>` compile lays out today.
+pub fn compute_tests_for(db: &mut Db, defs: &[usize]) -> Result<Layout, Reject> {
+    let test_defs = defs.to_vec();
     if test_defs.is_empty() {
         return Err(Reject::decline(
             "no `@test` definition: nothing to run (mark a nullary def with `@test`)",

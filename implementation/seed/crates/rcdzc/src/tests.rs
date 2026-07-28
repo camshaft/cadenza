@@ -19902,9 +19902,9 @@ mod recursion {
         // ⚠ INVALID WASM regression (routed corpus-bugfix/breaker 2026-07-27): a dense integer `if`-chain
         // over an i64 scrutinee lowers to a `br_table` (fires at ≥4 arms), which materializes the shifted
         // dispatch index `scrutinee - min` into a scratch slot for the wrap-aliasing bounds guard. That
-        // i64 idx slot was claimed at `base` — the SAME slot the arm bodies' scratch reuses. A `String.
-        // to-bytes` of a RUNTIME rope, bound once and read across the arms, inlines its i32 Bytes handle
-        // into that slot per arm — so ONE wasm local was `local.set` at BOTH i64 (idx) and i32 (handle)
+        // i64 idx slot was claimed at `base` — the SAME slot the arm bodies' scratch reuses. A
+        // `String.to-bytes` of a RUNTIME rope, bound once and read across the arms, inlines its i32 Bytes
+        // handle into that slot per arm — so ONE wasm local was `local.set` at BOTH i64 (idx) and i32 (handle)
         // width. A local's type is fixed function-wide → "type mismatch: expected i32, found i64", module
         // invalid (compile succeeds, every run fails to compile the component). Only 4+ arms trip it (3
         // stays a linear `if`-chain with no br_table / no idx slot); a const-foldable rope folds away and
@@ -19927,12 +19927,13 @@ mod recursion {
             "the i64 dispatch-index slot must be disjoint from the i32 Bytes-handle arm scratch",
         );
         // Store-guarded run: confirm the module is VALID (from_binary) and every arm computes correctly.
-        if super::find_runtime_wasm().is_some() {
+        // Resolve the runtime ONCE (avoid re-reading/re-hashing the file per iteration).
+        if let Some(runtime) = super::find_runtime_wasm() {
             for (mode, want) in [(1i64, "4"), (2, "97"), (3, "99"), (4, "100")] {
                 let opts = cdz_run::RunOpts {
                     export: Some("main".to_string()),
                     args: vec![mode.to_string()],
-                    runtime: super::find_runtime_wasm(),
+                    runtime: Some(runtime.clone()),
                     runtime_cache_dir: None,
                     host_responses: Vec::new(),
                 };
@@ -72368,6 +72369,89 @@ mod sidecar_driven {
         assert!(
             out.artifacts.iter().any(|a| a.kind == "component"),
             "the test build produces a component artifact"
+        );
+    }
+
+    #[test]
+    fn emit_tests_per_file_emits_one_component_per_file_byte_identical_to_a_per_file_build() {
+        // STAGE 1 of the shared-arena lower-once workstream (concierge-greenlit): `EmitTestsPerFile` lowers
+        // a linked closure ONCE and emits one `@test` wasm component PER FILE, each artifact NAMED by the
+        // file's `link` path — replacing N per-file `cdz test` compiles that each re-lower the whole closure.
+        // BEHAVIOR-IDENTICAL guarantee: each file's component is BYTE-IDENTICAL to what a standalone
+        // `EmitTests` compile of that file alone produces (same tests, same layout-view over the same Core).
+        use crate::abi::Artifact;
+        let file_a = "(do (def (fa) 1) (@ test (def (ta) (if (= (fa) 1) unit (trap \"a\")))))";
+        let file_b = "(do (def (fb) 2) (@ test (def (tb) (if (= (fb) 2) unit (trap \"b\")))))";
+        // Per-file build: each file ALONE through `EmitTests` (the standalone oracle).
+        let per_file = |src: &str| -> Vec<u8> {
+            let out = compile(&inputs(src, &[Request::EmitTests]), &[]);
+            out.artifacts
+                .iter()
+                .find(|a| a.kind == "component")
+                .map(|a| a.bytes.clone())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "standalone EmitTests emits a component: {:?}",
+                        out.diagnostics
+                    )
+                })
+        };
+        let oracle_a = per_file(file_a);
+        let oracle_b = per_file(file_b);
+        // Shared build: BOTH files linked into one arena + `EmitTestsPerFile` → 2 file-tagged components.
+        let out = crate::host::run_with_compiler_stack(|| {
+            crate::compile::compile(
+                &[
+                    Artifact::new(
+                        Artifact::KIND_AST,
+                        "file_a",
+                        crate::codec::encode(&parse(file_a)),
+                    ),
+                    Artifact::new(
+                        Artifact::KIND_AST,
+                        "file_b",
+                        crate::codec::encode(&parse(file_b)),
+                    ),
+                    // A multi-file package needs an `entry` marker (as `cdz test` supplies); it names the
+                    // linkage-driving file but does NOT restrict which files' @tests emit — EmitTestsPerFile
+                    // buckets ALL linked test defs by file.
+                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"file_a".to_vec()),
+                    Artifact::new(
+                        sidecar::KIND_SIDECAR,
+                        "drive",
+                        sidecar::encode(&[Request::EmitTestsPerFile]),
+                    ),
+                ],
+                &[],
+            )
+        });
+        assert!(
+            !out.has_error(),
+            "EmitTestsPerFile compiles: {:?}",
+            out.diagnostics
+        );
+        let components: Vec<_> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == "component")
+            .collect();
+        assert_eq!(components.len(), 2, "one component per file with a @test");
+        let comp_a = components
+            .iter()
+            .find(|a| a.name == "file_a")
+            .expect("a component named file_a");
+        let comp_b = components
+            .iter()
+            .find(|a| a.name == "file_b")
+            .expect("a component named file_b");
+        // The load-bearing claim: per-file view over the shared arena == the standalone per-file compile.
+        assert_eq!(
+            comp_a.bytes, oracle_a,
+            "file_a's shared-arena view is byte-identical to its standalone EmitTests"
+        );
+        assert_eq!(
+            comp_b.bytes, oracle_b,
+            "file_b's shared-arena view is byte-identical to its standalone EmitTests"
         );
     }
 

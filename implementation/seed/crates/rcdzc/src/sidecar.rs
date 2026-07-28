@@ -127,6 +127,17 @@ pub enum Request {
     /// backend; the ordinary `(export …)` compile is untouched, so a normal build never carries a test's
     /// report-effect import.
     EmitTests,
+    /// Materialize N PER-FILE unit-test components in ONE compile — the `cdz test <dir>` compile-reuse
+    /// path. Like [`EmitTests`], but instead of ONE component over ALL linked `@test` defs, it lowers the
+    /// linked closure ONCE and emits one component PER FILE: `db.test_defs()` is bucketed by
+    /// `linkage.file_of(sig_occ)`, and each non-empty bucket becomes a layout-view (`compute_tests_for`)
+    /// rooted at that file's tests, emitted as a `component` artifact NAMED by the file (its `link` path).
+    /// This replaces N per-file `cdz test` compiles (each re-lowering the whole ~1360-def closure) with ONE
+    /// shared-arena lowering + N cheap layout-views — behavior-identical (same tests, same per-file layout,
+    /// same node-anchored diagnostics), just without the redundant re-lowering. A SINGLE-file (unlinked)
+    /// compile has one bucket and behaves like `EmitTests` with a file-named artifact. See
+    /// `DESIGN-shared-backend-space.md` (the shared-arena lower-once workstream, concierge-greenlit Stage 1).
+    EmitTestsPerFile,
     /// Read a fact column.
     Query(Query),
 }
@@ -324,6 +335,10 @@ mod tag {
     /// with the boundary laid out from the program's `@test` NULLARY defs (`layout::compute_tests`)
     /// instead of its `(export …)` clauses. What a `cdz test` build requests.
     pub const EMIT_TESTS: u8 = 0x05;
+    /// Emit N PER-FILE unit-test components in one compile (`Request::EmitTestsPerFile`) — the shared-arena
+    /// lower-once `cdz test <dir>` path: lower the linked closure once, emit one `component` per file's
+    /// `@test` bucket, each artifact NAMED by its file.
+    pub const EMIT_TESTS_PER_FILE: u8 = 0x06;
     pub const QUERY_TYPE_OF: u8 = 0x10;
     pub const QUERY_USES_OF: u8 = 0x11;
     pub const QUERY_TYPE_AT: u8 = 0x12;
@@ -364,6 +379,7 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::EMIT_WASM_DEBUG => Some(Request::Emit(crate::backend::Target::WasmDebug)),
         tag::EMIT_DWARF => Some(Request::Emit(crate::backend::Target::Dwarf)),
         tag::EMIT_TESTS => Some(Request::EmitTests),
+        tag::EMIT_TESTS_PER_FILE => Some(Request::EmitTestsPerFile),
         tag::EMIT_RUST => Some(Request::Emit(crate::backend::Target::Rust)),
         tag::EMIT_RUST_ASYNC => Some(Request::Emit(crate::backend::Target::RustAsync)),
         tag::QUERY_TYPE_OF => Some(Request::Query(Query::TypeOf {
@@ -417,6 +433,7 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
         Request::Emit(crate::backend::Target::WasmDebug) => out.push(tag::EMIT_WASM_DEBUG),
         Request::Emit(crate::backend::Target::Dwarf) => out.push(tag::EMIT_DWARF),
         Request::EmitTests => out.push(tag::EMIT_TESTS),
+        Request::EmitTestsPerFile => out.push(tag::EMIT_TESTS_PER_FILE),
         Request::Emit(crate::backend::Target::Rust) => out.push(tag::EMIT_RUST),
         Request::Emit(crate::backend::Target::RustAsync) => out.push(tag::EMIT_RUST_ASYNC),
         Request::Query(Query::TypeOf { name }) => {
@@ -2278,12 +2295,14 @@ mod tests {
             Request::Query(Query::Symbols),
             Request::Query(Query::ParamManifest),
             Request::Query(Query::FuncLayout),
+            Request::EmitTestsPerFile,
         ];
         // Exhaustiveness guard: adding a Request/Query variant fails to compile until listed above AND here.
         for r in &each {
             match r {
                 Request::Emit(_)
                 | Request::EmitTests
+                | Request::EmitTestsPerFile
                 | Request::Query(
                     Query::TypeOf { .. }
                     | Query::UsesOf { .. }
