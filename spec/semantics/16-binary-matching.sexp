@@ -1834,3 +1834,67 @@
         (export main)))
   (call   main (: 105 UInt8)) (output (: 2 Int64))
   (call   main (: 255 UInt8)) (output (: -1 Int64)))
+
+(case "le multi-byte fields read little-endian at runtime offsets, unsigned and signed"
+  (doc    "The le pin (:159) round-trips one const u16; this reads le fields from RUNTIME slice offsets
+           over [0,1,2,3,4,254,255]: `(u32 n le)` at k=1 assembles [1,2,3,4] least-significant-first ->
+           0x04030201 = 67305985; at k=3, [3,4,254,255] -> 0xFFFE0403 = 4294837251 (the high bytes land
+           in the TOP of the word — a byte-reversal that only swapped a u16 lane, or a be fallback,
+           flips these); k=5 reads [254,255] through SIGNED `(i16 n le)` -> 0xFFFE = -2 (le byte
+           assembly THEN two's-complement, order matters).")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def b (Bytes.of (list 0 1 2 3 4 254 255)))
+            (if (< k 5)
+                (match (Option.expect (Bytes.slice b k 4) "in")
+                  ((bin (u32 n le)) (Int64.of n))
+                  (_ -1))
+                (match (Option.expect (Bytes.slice b 5 2) "in")
+                  ((bin (i16 n le)) n)
+                  (_ -1)))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 67305985 Int64))
+  (call   main (: 3 Int64)) (output (: 4294837251 Int64))
+  (call   main (: 5 Int64)) (output (: -2 Int64)))
+
+(case "a runtime bin ENCODE lays out le and signed fields byte-exactly"
+  (doc    "The ENCODE twin of the le decode pins — expression-position `(bin (u32 x le) (i16 -2))` over a
+           RUNTIME x (nothing folds): x=0x04030201 emits le bytes [1,2,3,4] then the signed -2 as
+           big-endian [255,254] — six bytes, spot-read by Bytes.at (len 6, at0=1, at3=4, at4=255 ->
+           610655). x=1 puts the value in the FIRST byte only ([1,0,0,0] -> 610255); x=4294967295 is
+           all-ones (3175755). A construction that emitted be (or dropped the sign bytes) flips every row.")
+  (input  (do
+        (def (main (: x Int64))
+          (do
+            (def b (bin (u32 (UInt32.wrap x) le) (i16 (Int16.wrap (- 0 2)))))
+            (+ (* 100000 (Bytes.len b))
+               (+ (* 10000 (match (Bytes.at b 0) ((Some v) v) ((None _u) 99)))
+                  (+ (* 100 (match (Bytes.at b 3) ((Some v) v) ((None _u) 99)))
+                     (match (Bytes.at b 4) ((Some v) v) ((None _u) 99)))))))
+        (export main)))
+  (call   main (: 67305985 Int64)) (output (: 610655 Int64))
+  (call   main (: 1 Int64)) (output (: 610255 Int64))
+  (call   main (: 4294967295 Int64)) (output (: 3175755 Int64)))
+
+(case "a dependent-size body re-matches under a second bin pattern"
+  (doc    "TWO-LEVEL decode — the shape every framed protocol needs: the outer runtime match
+           `(bin (u8 tag) (u8 n) (bytes body n) (bytes rest))` binds a 2-byte body, and the INNER
+           `(match body ((bin (u16 v)) …))` decodes that bound sub-window as its own scrutinee.
+           Over [x,2,18,52,9]: tag=x, v=0x1234=4660, rest=[9] -> 10000x + 4661 (74661 at x=7, 4661
+           at x=0). Pins that a `(bytes body n)` binder is a first-class Bytes value a second bin
+           pattern can re-anchor on — an inner decode that read from the OUTER frame's origin (or a
+           body binder carrying stale offsets) reads tag/len bytes as the u16 (0x0702 = 1794).")
+  (input  (do
+        (def (main (: x UInt8))
+          (do
+            (def b (Bytes.of (list x 2 18 52 9)))
+            (match b
+              ((bin (u8 tag) (u8 n) (bytes body n) (bytes rest))
+                (match body
+                  ((bin (u16 v)) (+ (* 10000 tag) (+ v (Bytes.len rest))))
+                  (_ -2)))
+              (_ -1))))
+        (export main)))
+  (call   main (: 7 UInt8)) (output (: 74661 Int64))
+  (call   main (: 0 UInt8)) (output (: 4661 Int64)))

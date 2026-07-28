@@ -2341,3 +2341,20 @@
   (output (: true Bool))
   (call   main (: 100 Int64))
   (output (: false Bool)))
+
+(case "list ordering recurses into string elements by content across mixed reps"
+  (doc    "List `<` is blessed lexicographic-by-element (the Int pins); this recurses the element
+           compare into STRING content with MIXED reps: a = [view \"key\", \"b\"] vs b = [rope, \"c\"].
+           mode 1: the rope is \"key\" — the FIRST elements are equal ACROSS reps (view vs rope), so
+           the tiebreak falls to \"b\" < \"c\" and a < b (1). mode 0: the rope is \"kex\" < \"key\",
+           so b sorts first and a < b is FALSE (0) — the first-element compare must consult content,
+           not rep identity; an eq-by-rep walk would fall through to the tiebreak and wrongly answer 1.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def a (list (Option.expect (String.slice "xkeyz" 1 4) "in") "b"))
+            (def b (list (String.concat "ke" (if (> mode 0) "y" "x")) "c"))
+            (if (< a b) 1 0)))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
