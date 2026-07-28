@@ -3294,3 +3294,19 @@
             (Int64.of (eval (Option.expect (List.at asts 1) "present")))))
         (export main)))
   (error  CDZ0101))
+
+(case "eval of a NAME bound to a quote is rejected — the binding hides the construction"
+  (doc    "The BINDING entry path to the no-runtime-AST-interpreter line (nested-eval, spliced-Ast
+           and collection-selection are pinned above): `(def adder (quote (+ 20 22)))` then
+           `(eval adder)` — the eval's argument is a NAME REFERENCE, not the compile-time-visible
+           `(quote …)` construction itself, so the reconstructor refuses (CDZ0101) even though the
+           binding is initialized by a quote in the SAME unit. The same holds for an IMPORTED
+           Ast binding (checked while building this pin). Fourth entry path, same spec line: eval
+           sees through NO indirection — not another eval, not a splice, not a collection slot,
+           not a let/def binding. A future eval that chased the binding to its quote would flip
+           this to 42 and needs a deliberate ruling first.")
+  (input  (do
+        (def adder (quote (+ 20 22)))
+        (def (main (: k Int64)) (+ (Int64.of (eval adder)) k))
+        (export main)))
+  (error  CDZ0101))

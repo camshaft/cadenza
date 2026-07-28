@@ -136,7 +136,7 @@ pub enum Request {
     /// shared-arena lowering + N cheap layout-views — behavior-identical (same tests, same per-file layout,
     /// same node-anchored diagnostics), just without the redundant re-lowering. A SINGLE-file (unlinked)
     /// compile has one bucket and behaves like `EmitTests` with a file-named artifact. See
-    /// `DESIGN-shared-backend-space.md` (the shared-arena lower-once workstream, concierge-greenlit Stage 1).
+    /// `DESIGN-shared-backend-space.md` (the shared-arena lower-once design).
     EmitTestsPerFile,
     /// Read a fact column.
     Query(Query),

@@ -1097,6 +1097,7 @@ pass	a component's manifest is the union of two entrypoints' distinct rows
 pass	a compose combinator captures TWO function values and applies them in declared order
 pass	a composed call over a record-transforming function with an arithmetic field compiles
 pass	a composed proof chains the equational, λ, and logical rule families into one derivation
+pass	a compound Ast SUBTREE rides a template hole into the expansion intact
 pass	a compound element projected from a let-bound runtime tuple is matched
 pass	a compound if condition is a type error, not an unbound name
 pass	a compound map key containing a Bytes rope is found by its flat-twin key
@@ -1233,6 +1234,8 @@ pass	a deeply nested literal in a tuple let-binder is refutable and rejected
 pass	a deeply-nested generic-sum value type-checks and matches its outermost variant
 pass	a deeply-nested match on an inline if-of-ctors scrutinee compiles bounded (fuse_match_into_if clone cap)
 pass	a def parameter may be a record pattern that destructures by field
+pass	a def BODY that itself binds `ret` in an inner let composes soundly with @ensures — lexical shadowing, not a collision
+pass	a def BODY that binds `ret` in an inner let still has its @ensures checked against the ACTUAL result — traps on violation
 pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-fraction pragma fixes a type but adds no conversion — no-promotion still holds
 pass	a default-fraction pragma grounds a bare DECIMAL literal to its exact fraction
@@ -1643,6 +1646,7 @@ pass	a handler whose STATE is a sum destructures it in the arm
 pass	a hash-prefixed atom quotes to an Ast.Name carrying the hash in its text
 pass	a hash-prefixed name is distinct from the bare name without the hash
 pass	a header of packed nibbles and a length-prefixed body round-trips
+pass	a heap Map crosses the module boundary whole and the importer's extension stays local
 pass	a heap arg threaded UNCHANGED to a self-recursive call while a sibling arg consumes it is retained
 pass	a heap capture persists across two applications of a curried closure
 pass	a heap list conditionally escaping into a Some in one branch is still usable after the join
@@ -1914,6 +1918,7 @@ pass	a mixed-ownership inlined-match operand leaves the source map intact across
 pass	a mixed-scale Int comparison truncates each operand to the reference (lossy, can compare equal)
 pass	a mixed-scale narrow-width Int quantity combine that overflows the inner width traps
 pass	a module declaration binds its name in the enclosing scope
+pass	a module factory's escaping closure carries a private HEAP value in its env
 pass	a module function calls a sibling export by name
 pass	a mixed-match tail loop whose Option payload is a heap String finds and reads the element
 pass	a module function is recursive
@@ -2199,6 +2204,7 @@ pass	a peer-bound operation takes a String argument (it crosses as a runtime han
 pass	a perform BETWEEN two sibling recursive calls threads the intervening state
 pass	a perform SHORT-CIRCUITED out of an or's right operand is NOT executed (empty host-calls)
 pass	a perform composes as the SOURCE of a pipeline
+pass	a perform crosses TWO module boundaries to the entry's handler through a re-export chain
 pass	a perform in a match-arm guard is discharged by the enclosing handle
 pass	a perform in a taken if-branch threads its state to the continuation after the if
 pass	a perform in a taken match-arm threads its state to the continuation after the match
@@ -2352,6 +2358,7 @@ pass	a recursive def named a target-language keyword runs
 pass	a recursive def with a match base case computes over its argument
 pass	a recursive do-local function nested in an inlined helper recurses
 pass	a recursive do-local function survives two inlinings of its helper
+pass	a recursive drop-byte walk rebinding its Bytes param to a slice-concat converges
 pass	a recursive effectful walk BUILDS a list as its return value, one fresh element per step
 pass	a recursive effectful walk accumulates into a STRING-state handler
 pass	a recursive effectful walk under a state-threading handler compiles without leaking an internal name
@@ -2971,6 +2978,7 @@ pass	a symbol-literal pattern in a String sum payload is a type error
 pass	a symbol-literal pattern nested in a variant payload matches by content
 pass	a symbol-literal pattern over a multi-byte symbol matches by content
 pass	a symbol-literal pattern over a string scrutinee is a type error
+pass	a tag function recurses over its HOLES list and folds their sum
 pass	a tag-length-value record round-trips through construct then match
 pass	a tagged template expands via its binding-dispatched tag function
 pass	a tagged template nested in another's hole composes — the inner's result reaches the outer tag
@@ -2980,6 +2988,7 @@ pass	a syntactically loop-invariant perform advances per iteration — effectful
 pass	a tagged template whose tag is not a function is rejected
 pass	a tagged template whose tag is unbound is a scope error
 pass	a tagged template whose tag returns a non-Ast is a type error at the spliced site
+pass	a tagged template's TAG resolves through an import and expands at the importer's site
 pass	a tagged template's hole is threaded to the tag function and read
 pass	a tagged template's spliced result folds through the ordinary path
 pass	a tagged-template tag returning a finite Ast.Float expands normally (expander control)
@@ -3562,6 +3571,7 @@ pass	an unannotated closure with distinct-typed params is inferred through a gen
 pass	an unannotated generic branching sum fold infers its parameter's instantiation from the arms
 pass	an unannotated generic recursive tree consumer whose result is independent of the payload infers
 pass	an unannotated generic sum ACCUMULATOR infers its parameter from the values folded into it
+pass	an unannotated helper re-exported through a chain instantiates at TWO types from the entry
 pass	an unannotated predicate closure is inferred through a recursive counting HOF
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unannotated two-argument closure is inferred through a generic recursive HOF
@@ -3935,6 +3945,7 @@ pass	eval does not forge a private constructor NESTED in a compound
 pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
 pass	eval materializes a heap LIST from a spliced quasiquote
+pass	eval of a NAME bound to a quote is rejected — the binding hides the construction
 pass	eval of a bare Ast.Name for an unbound name is the ordinary unbound-name error
 pass	eval of a bare quoted integer executes it to the integer value
 pass	eval of a fully-concrete imported constructor is legal from outside
@@ -4193,6 +4204,7 @@ pass	one module's export clause does not affect a same-named member of another m
 pass	one of several same-signature closure exports is made and called by the host
 pass	one of two DIFFERENT-signature closure exports is made and called
 pass	one performing closure applied twice observes the handler state stepping between calls
+pass	one string content hashes identically from flat, rope, and view reps in one program
 pass	one type parameter used at several depths in one multi-payload variant
 pass	or evaluates the right operand when the left is false
 pass	or performs the right operand's effect when the left is false
@@ -5147,3 +5159,5 @@ pass	an abortive perform in a STRICT OPERAND referencing a let-local binding sta
 pass	a mutually-recursive fold matching a rebuilt list with a payload binder builds and computes
 pass	a recursive BigInt fn whose bound result feeds a mod compiles and computes (FINDING)
 pass	String.to-bytes of a runtime rope reused across four branch arms compiles to a VALID module
+pass	a u64 bin binding with the top bit set does unsigned arithmetic
+pass	a top-bit u64 binding widens to BigInt unsigned

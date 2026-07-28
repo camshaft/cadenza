@@ -2381,6 +2381,27 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     // instead present the rewritten node as the child, which that check would reject. (A
                     // perform's own binders were already substituted by the fold; only free names need this.)
                     db.reparent(rewritten, Some(id), db.child_ix_of(id) as u32);
+                    // ESCAPED-CLOSURE LEAK GUARD (diagnostic quality). The rewritten body may STILL carry a
+                    // discharged-op perform lexically inside a LIVE lambda — the fold could not route it
+                    // because the closure ESCAPED its reach (stored in a collection, extracted via `List.at`
+                    // + `match ((Some f) …)`, applied through the slot; `subtree_performs` treats a lambda
+                    // VALUE as pure, since a closure body performs only when APPLIED, and the fold cannot
+                    // trace the application back through the collection slot). That lambda lifts to a
+                    // STANDALONE function lowered with NO handle frame, so its perform reaches the
+                    // standalone-perform arm below and would surface the MISLEADING `NO_HOME_STANDALONE_DECLINE`
+                    // ("performed with no enclosing handler here") — even though this handle LEXICALLY
+                    // encloses it. Decline with the honest `HANDLER_NOT_REDUCIBLE_DECLINE` todo instead of
+                    // lowering a body that lies about the home (breaker's diagnostic-quality finding, routed
+                    // by corpus-bugfix 2026-07-28; same discipline as the guard-perform decline — a
+                    // not-yet-routed path must say "not yet reducible", NEVER a false "no home"). SAFE
+                    // reject, honest MESSAGE. Checked AFTER `reparent` so the walk's `resolved_of` sees the
+                    // grafted lexical chain (a pre-graft walk would cache free names as unbound → spurious
+                    // CDZ0101), and only at the OUTER lowering fold (never an intermediate recursive one).
+                    if crate::effects::reduced_body_leaks_escaped_perform(db, rewritten, &arms) {
+                        return Core::Poison(Reject::decline(
+                            crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE,
+                        ));
+                    }
                     core_of(db, rewritten)
                 }
                 None => {
@@ -25053,9 +25074,22 @@ fn is_orderable_compound(db: &mut Db, ty: &crate::ty::Ty) -> bool {
 /// float Set.to-list / Map.to-list key. So:
 ///  - `float_ok = false` (the `<` / `Core::ValueCmp` numeric path): a float leaf is NOT orderable — decline,
 ///    matching the IEEE partial-order carve-out.
-///  - `float_ok = true` (the Set/Map `shape_of` to-list-enumeration path): a float leaf IS orderable by its
-///    canonical bytes, so a float element/key admits the deterministic enumeration order (collections-and-
-///    text.md #Set Iteration Is Deterministic). Bytes/Char/Set/Map stay non-orderable in BOTH modes.
+///  - `float_ok = true` (the Set/Map `shape_of` to-list-enumeration path): a BARE-ROOT float leaf IS
+///    orderable by its canonical bytes, so a float element/key admits the deterministic enumeration order
+///    (collections-and-text.md #Set Iteration Is Deterministic). Bytes/Char/Set/Map stay non-orderable in
+///    BOTH modes.
+///
+/// 🔑 `float_ok` applies to a BARE-ROOT float ONLY — it does NOT propagate into a COMPOUND's components. A
+/// float leaf INSIDE a tuple/list/record/sum makes the compound un-orderable per 03:626 / §319 (a compound
+/// is ordered EXACTLY WHEN every component offers a TOTAL order, and a float offers only the IEEE partial
+/// order — the canonical-byte order is the enumeration convenience for a bare float, not a blessed total
+/// order a compound's lexicographic walk can compose). The runtime enforces exactly this asymmetry:
+/// `compare_scalar_leaf`'s bare `Shape::Float` orders by `to_bits`, but the compound work-stack walk
+/// (`value_cmp_shaped`) returns `None` for a `Shape::Float` leaf mid-walk. So admitting a float-in-compound
+/// here built a descriptor the runtime's compound sort then declined → `op_set_to_list` yielded an EMPTY
+/// list (SILENT DATA LOSS) instead of a clean compile-time decline. Recursing the compound arms with
+/// `float_ok = false` makes `Set/Map.to-list` over a float-containing compound DECLINE (uniform with `<`
+/// and both backends), matching 03:626 — a bare float set still enumerates (the root keeps `float_ok`).
 fn orderable_leaf_or_compound(
     db: &mut Db,
     ty: &crate::ty::Ty,
@@ -25068,18 +25102,21 @@ fn orderable_leaf_or_compound(
         Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Symbol | Ty::BigInt | Ty::Rational => {
             true
         }
-        // A float is orderable ONLY by canonical bytes (to-list), never by numeric `<` — see `float_ok`.
+        // A float is orderable ONLY by canonical bytes as a BARE ROOT (to-list), never by numeric `<` and
+        // never INSIDE a compound — see `float_ok` + the doc above.
         Ty::Float(_) => float_ok,
         // Non-orderable leaves in EITHER mode — Bytes/Char/Set/Map (no blessed order at all).
         Ty::Bytes | Ty::Char | Ty::Set(_) | Ty::Map(..) => false,
+        // COMPOUND arms recurse with `float_ok = false`: a float component makes the compound un-orderable
+        // (03:626 / §319), regardless of the caller's bare-root float mode.
         Ty::Tuple(elems) => elems
             .iter()
-            .all(|e| orderable_leaf_or_compound(db, e, float_ok, seen)),
-        Ty::List(elem) => orderable_leaf_or_compound(db, elem, float_ok, seen),
+            .all(|e| orderable_leaf_or_compound(db, e, false, seen)),
+        Ty::List(elem) => orderable_leaf_or_compound(db, elem, false, seen),
         Ty::Record(fields) => {
             let vals: Vec<Ty> = fields.values().cloned().collect();
             vals.iter()
-                .all(|v| orderable_leaf_or_compound(db, v, float_ok, seen))
+                .all(|v| orderable_leaf_or_compound(db, v, false, seen))
         }
         // A sum — orderable iff every variant's payload type is. Recursive sum broken by `seen`. Mirrors
         // `ty_heap_walkable`'s Sum arm: walk each variant's ctor, resolve its payload at this instantiation.
@@ -25101,7 +25138,9 @@ fn orderable_leaf_or_compound(
                     if let Some(ctor) = ctor
                         && let Some(payload_ty) =
                             crate::infer::payload_ty_at_instantiation(db, ctor, ty)
-                        && !orderable_leaf_or_compound(db, &payload_ty, float_ok, seen)
+                        // `false`: a float payload INSIDE a sum makes it un-orderable (compound carve-out,
+                        // 03:626) — same as the tuple/list/record arms above.
+                        && !orderable_leaf_or_compound(db, &payload_ty, false, seen)
                     {
                         ok = false;
                         break;

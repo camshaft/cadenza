@@ -1,0 +1,135 @@
+//! X5b run-side witness — a variable-length `List` HANDLE crosses a peer-interface edge and is dereferenced
+//! correctly through the ONE shared value-heap runtime instance, end-to-end via the `cdz` binary.
+//!
+//! Context: cross-component peer linking (`cdz run --peer`) composes consumer + peers over one wasmtime store
+//! and one shared runtime instance, so a heap `value` handle one component produces is meaningful to another
+//! (they index the same heap). rcdzc's `u6_*` library test already proves this for a fixed-arity TUPLE handle.
+//! This pins the specific case Option C (shared-closure-as-imported-component) rides on: a VARIABLE-LENGTH
+//! `List`/rope handle (CHAMP/RRB), returned by a provider op and consumed across the peer edge. `cdz-run`'s
+//! doc noted the peer path as "scalar peer ops today; a value-handle op RIDES this shared instance"
+//! (lib.rs:450) — this witness confirms the handle-crossing works on the run side, so X5b needs no run-side
+//! work and Option C's cross-component call edges can carry List handles.
+//!
+//! Drives the built `cdz`: `compile` the provider (with a published interface name) + the consumer, then
+//! `run --peer`. Needs the content-addressed runtime store (the value-heap runtime the components import);
+//! if that can't be resolved in this checkout, the run is SKIPPED (not failed) — the same discretion the
+//! run-dependent suites use.
+
+use std::process::Command;
+
+fn cdz() -> &'static str {
+    env!("CARGO_BIN_EXE_cdz")
+}
+
+/// A unique temp dir for one test.
+fn temp_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("cdz-x5b-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    dir
+}
+
+/// Compile `src` to a component in `dir`; returns the produced `.wasm` path (named after the exported def,
+/// not the source file). `component_name` (if any) publishes the provider's interface. Panics on failure.
+fn compile(
+    dir: &std::path::Path,
+    name: &str,
+    src: &str,
+    component_name: Option<&str>,
+) -> std::path::PathBuf {
+    let path = dir.join(format!("{name}.sexp"));
+    std::fs::write(&path, src).unwrap();
+    let mut args = vec![
+        "compile".to_string(),
+        path.to_str().unwrap().to_string(),
+        "-o".to_string(),
+        dir.to_str().unwrap().to_string(),
+    ];
+    if let Some(cn) = component_name {
+        args.push("--component-name".to_string());
+        args.push(cn.to_string());
+    }
+    let out = Command::new(cdz())
+        .args(&args)
+        .output()
+        .expect("spawn cdz compile");
+    assert!(
+        out.status.success(),
+        "compile {name} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The emitted component is named after the exported entry; find the one .wasm produced by THIS compile.
+    // (Both provider and consumer export a single def, so the newest .wasm in the dir is this one.)
+    let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) == Some("wasm") {
+            let m = e.metadata().unwrap().modified().unwrap();
+            if newest.as_ref().is_none_or(|(t, _)| m >= *t) {
+                newest = Some((m, p));
+            }
+        }
+    }
+    newest.expect("a .wasm component was produced").1
+}
+
+#[test]
+fn a_list_handle_crosses_a_peer_edge_and_reads_the_right_length() {
+    // PROVIDER: `mklist n` builds a runtime List `[n, n+1, n+2]` and publishes it as `cadenza:closure/api` —
+    // the shape a shared-closure component (Option C) exports. CONSUMER: imports that interface as a
+    // peer-bound effect, calls `mklist n` across the edge, and reads `List.len` of the returned handle.
+    let dir = temp_dir("listlen");
+    let provider = compile(
+        &dir,
+        "mklist",
+        "(do (def (mklist (: n Int64)) (list n (+ n 1) (+ n 2))) (export mklist))",
+        Some("cadenza:closure/api"),
+    );
+    let consumer = compile(
+        &dir,
+        "main",
+        "(do (effect C (op mklist (-> Int64 (List Int64)))) (bind C \"cadenza:closure/api\") \
+             (def (main (: n Int64)) (host (C) (List.len (C.mklist n)))) (export main))",
+        None,
+    );
+
+    let out = Command::new(cdz())
+        .args([
+            "run",
+            consumer.to_str().unwrap(),
+            "--peer",
+            &format!("cadenza:closure/api={}", provider.to_str().unwrap()),
+            "--arg",
+            "5",
+        ])
+        .output()
+        .expect("spawn cdz run --peer");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    // SKIP (don't fail) if the value-heap runtime store can't be resolved in this checkout — the run needs
+    // the content-addressed runtime the components import, which isn't present in every environment. A
+    // resolution failure surfaces as a run error naming the runtime; treat that as "can't witness here".
+    let combined = format!("{stdout}{stderr}");
+    if combined.contains("runtime")
+        && (combined.contains("not found") || combined.contains("no such"))
+    {
+        eprintln!(
+            "[x5b] value-heap runtime store not resolvable; skipping the run witness:\n{combined}"
+        );
+        return;
+    }
+
+    assert!(
+        out.status.success(),
+        "cdz run --peer should succeed (a List handle crosses the shared runtime): {stderr}"
+    );
+    // main(5) = List.len([5,6,7]) = 3. If the List HANDLE failed to cross the peer edge (or indexed a
+    // different heap), this would trap or print a wrong length — the X5b failure mode.
+    assert_eq!(
+        stdout.trim(),
+        "3",
+        "the List handle crossed the peer edge and List.len read the right length through the shared \
+         runtime; got stdout={stdout:?} stderr={stderr:?}"
+    );
+}

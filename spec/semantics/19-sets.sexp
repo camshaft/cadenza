@@ -2744,3 +2744,26 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+(case "one string content hashes identically from flat, rope, and view reps in one program"
+  (doc    "The TRIPLE-rep completeness witness the pairwise pins imply but never run together: ONE
+           map keyed by the flat literal, probed by the ROPE and the VIEW; ONE set built from the
+           rope, probed by the view and the flat literal — four digits, every cross-rep pair through
+           champ_hash/eq in a single program (1111). Adds a miss row (mode 1 probes with rope
+           \"kez\"): 0111 → 111. If ANY rep's hash normalized differently (rope leaf-wise, view
+           parent-wise, flat direct), one digit drops — the transitivity of content identity across
+           all three reps is exactly what a per-rep hash cache would break.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def m (Map.insert Map.empty "key" 42))
+            (def rope (String.concat "ke" (if (= mode 1) "z" "y")))
+            (def view (Option.expect (String.slice "xkeyz" 1 4) "in"))
+            (def s (Set.of (list rope)))
+            (+ (* 1000 (match (Map.lookup m rope) ((Some v) 1) ((None _u) 0)))
+               (+ (* 100 (match (Map.lookup m view) ((Some v) 1) ((None _u) 0)))
+                  (+ (* 10 (if (Set.contains s view) 1 0))
+                     (if (Set.contains s "key") 1 0))))))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 1111 Int64))
+  (call   main (: 1 Int64)) (output (: 100 Int64)))

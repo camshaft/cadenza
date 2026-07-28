@@ -347,6 +347,41 @@ def ss-multifield-payload-ctor-runtime-boxed() =
     | Option.Some(v) => (if v == 7 then unit else trap("runtime-boxed (P 3 4) via (if n>0) → ((P x y) (+ x y)) must round-trip both fields → 7"))
     | Option.None(_) => trap("a runtime-boxed 2-field payload multi-binder match must RUN → 7 (compiled gate verifies the store/extract)")
 
+@test
+def ss-wildcard-binder-ignores-field-const() =
+  // WILDCARD slice: (match (P 3 4) ((P _ y) y) (_ 0)) — field-0 `_` IGNORES payload[0]=3, binds y←payload[1]=4 → 4.
+  // Proves `_` in field 0 does NOT shift field-1's read (y must be 4, the SECOND field, not 3). CONST (interpreter).
+  match run-src(
+      "(do (type Pair (P Int64 Int64)) (def (main) (match (P 3 4) ((P _ y) y) (_ 0))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 4 then unit else trap("((P _ y) y): `_` ignores field 0, y binds field 1 = 4 (got 3 = _ wrongly shifted the slot)"))
+    | Option.None(_) => trap("a wildcard-binder pattern ((P _ y) y) must RUN (bind-elision), not decline")
+
+@test
+def ss-wildcard-both-fields-no-collision() =
+  // TWO wildcards (match (P 3 4) ((P _ _) 9) (_ 0)) → 9. Pins the sentinel-per-position representation: two `_`
+  // never collide (no shared name-id(_) key — each is an independent -1 slot); body is the constant 9.
+  match run-src(
+      "(do (type Pair (P Int64 Int64)) (def (main) (match (P 3 4) ((P _ _) 9) (_ 0))) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 9 then unit else trap("((P _ _) 9): both fields ignored → 9 (two `_` must not collide)"))
+    | Option.None(_) => trap("a two-wildcard pattern ((P _ _) 9) must RUN, not decline/collide")
+
+@test
+def ss-wildcard-binder-runtime-boxed() =
+  // 🪤 THE COMPILED-GATE WITNESS (v-inference mandate): a RUNTIME + BOXED wildcard round-trip that CANNOT fold.
+  // MIRRORS the proven-green ss-multifield-payload-ctor-runtime-boxed shape EXACTLY (same type Pair, same
+  // (if (> n 0)(P 3 4)(P 10 20)) same-variant runtime scrutinee, same (_ 0) catch-all, same go(1) wrapper) —
+  // changing ONLY the arm binder x→_ in field 0. So this isolates the `_`-wildcard feature from any other match
+  // shape (a mixed sibling / a 2nd real ctor-arm — those are separate surfaces). n=1 → (> 1 0) true → (P 3 4) →
+  // ((P _ y) y): `_` ignores payload[0]=3, y binds payload[1]=4 → 4 (NOT 3 — proving `_` in field 0 CONSUMES slot
+  // 0 without shifting y's read). Non-foldable (runtime branch, both arms box). Compiled gate verifies slot-advance.
+  match run-src(
+      "(do (type Pair (P Int64 Int64)) (def (go n) (match (if (> n 0) (P 3 4) (P 10 20)) ((P _ y) y) (_ 0))) (def (main) (go 1)) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 4 then unit else trap("runtime-boxed ((P _ y) y) via go(1): `_` ignores field 0, y binds field 1 = 4 (got 3 = slot not advanced)"))
+    | Option.None(_) => trap("a runtime-boxed wildcard-binder match must RUN → 4 (compiled gate verifies slot-advance)")
+
 // ---- NESTED single-field payloads round-trip: a payload whose value is ITSELF a sum handle ----
 // (Some (Some 5)) — the outer ctor's payload IS the inner ctor's store handle. Constructing nests one handle
 // inside another's cell; deconstructing reads the outer payload back as the inner handle, then reads THAT.
