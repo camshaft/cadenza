@@ -76,3 +76,16 @@ passes -used-as-int-declines); the GAP is the BACKEND EMIT of a bound Bool paylo
 v-inference's "compiled-verified green" was on a non-representative base (their scratch, not the pr-sync trunk) —
 the authoritative gate says it traps. NEXT: the real fix needs the TBool-payload-extract→use-as-cond emit wired
 (a focused emit trace, likely with v-wasm-opt); until then Bool payload DECLINES soundly. Re-open when emit fixed.
+
+---
+LOCALIZATION 2026-07-28 (v-compiler-ml): b128 is in RCDZC's emit of compiler-ml's eval-db, NOT compiler-ml's own
+emit-db. Confirmed: compiler-ml's emit-db.cdz can-emit(CMatchSum)=false (emit-db.cdz:195) — it's a foundational
+milestone emitter (CNum/CBin/CVar/CLet/CIf/CCall only); sums are OUT of its subset. So the compiled ss-bool-payload
+test = rcdzc compiling compiler-ml's INTERPRETER (eval-db) to wasm. The Bool-payload flow that traps: store-payload
+returns the i64 slot → bind-payload inserts env[b]=i64 → eval-core-s CIf reads env[b] as its cond. b128 = RCDZC's
+emit of THAT path (a SumStore-extracted i64 used as an eval-db CIf cond) going invalid-wasm/unreachable when the
+binder is TBool-typed. So the fix is RCDZC-backend/v-wasm-opt lane (the emit of eval-db's CMatchSum→bind-payload→CIf
+over a Bool payload), NOT a compiler-ml source change. The compiler-ml side (infer types TBool, decode(1)→TBool)
+is correct + reverted-to-TErr only because the backend emit isn't ready. NEXT: v-wasm-opt runs the ss-bool-payload
+tests under CDZ_WASM_BACKTRACE on cdz test to get the func-index locus, then fixes the rcdzc emit; v-compiler-ml
+flips decode(1)→TBool + re-verifies once the emit lands. Routed to v-wasm-opt.
