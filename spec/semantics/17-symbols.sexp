@@ -787,3 +787,44 @@
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 1 Int64))
   (call   main (: 3 Int64)) (output (: 0 Int64)))
+
+(case "a Symbol interned from a rope-slice view keys maps and removes set elements"
+  (doc    "Composes the view intern (Symbol.of over a rope-backed slice, seam inside the window) with
+           the CHAMP surfaces: mode 1 looks up {#\"key\" -> 42} with the view-interned symbol (42);
+           mode 2 removes it from {#\"key\", #\"other\"} (len 1). Symbols are the FULLY-INTERNED key
+           kind — if the view intern produced a content-twin-but-distinct id, symbol eq (id compare)
+           would miss BOTH surfaces at once, unlike String/Bytes keys where only the hash path is at
+           risk. mode 3 is the wrong-window control: `Symbol.of` of [0,3) = \"xke\" misses (-1).")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def sv (Symbol.of (Option.expect (String.slice (String.concat "xk" "eyz") 1 4) "in")))
+            (if (= mode 1)
+                (match (Map.lookup (Map.insert Map.empty #"key" 42) sv) ((Some x) x) ((None _u) -1))
+                (if (= mode 2)
+                    (Set.len (Set.remove (Set.of (list #"key" #"other")) sv))
+                    (match (Map.lookup (Map.insert Map.empty #"key" 42)
+                                       (Symbol.of (Option.expect (String.slice "xkeyz" 0 3) "in")))
+                      ((Some x) x) ((None _u) -1))))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 42 Int64))
+  (call   main (: 2 Int64)) (output (: 1 Int64))
+  (call   main (: 3 Int64)) (output (: -1 Int64)))
+
+(case "a view-interned Symbol participates in Set.to-list content order"
+  (doc    "Composes the view-intern face with the orderable-descriptor sort: the symbol interned from
+           `slice(concat(...), 1, 3)` joins {#\"b\", #\"c\"} and `Set.to-list` must place it by CONTENT
+           bytes — mode 1 interns \"aa\" which sorts FIRST (e0 = #\"aa\": 11); mode 0 interns \"az\",
+           before \"b\" but not \"aa\" (1). A sort keyed on intern-table ids (allocation order) instead
+           of content puts the LAST-interned view symbol last and flips mode 1.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def sv (Symbol.of (Option.expect (String.slice (String.concat "xa" (if (> mode 0) "az" "zz")) 1 3) "in")))
+            (def xs (Set.to-list (Set.of (list #"b" sv #"c"))))
+            (def (at (: i Int64)) (Option.expect (List.at xs i) "in"))
+            (+ (* 10 (if (= (at 0) #"aa") 1 0))
+               (if (= (at 2) #"c") 1 0))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 11 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))

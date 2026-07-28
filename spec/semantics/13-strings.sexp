@@ -3955,3 +3955,23 @@
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 4 Int64))
   (call   main (: 3 Int64)) (output (: -1 Int64)))
+
+(case "a slice VIEW and a rope compare by content across the two non-flat reps"
+  (doc    "The eq/order pins compare rope-vs-FLAT; this crosses the two NON-FLAT reps directly — a
+           borrowed [off,len] VIEW (`slice(\"xkeyz\",1,4)` = \"key\") against a concat ROPE, with all
+           three relations read in one pass (100·eq + 10·(view<rope) + (rope<view)). mode 2: rope is
+           \"key\" — equal (100). mode 1: \"kex\" sorts BEFORE the view (1). mode 0: \"kez\" sorts
+           AFTER (10). A compare that walked the view's PARENT bytes (x-prefixed) or the rope's node
+           structure gives eq=0 at mode 2 or flips an order digit.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def view (Option.expect (String.slice "xkeyz" 1 4) "in"))
+            (def rope (String.concat "ke" (if (> mode 1) "y" (if (> mode 0) "x" "z"))))
+            (+ (* 100 (if (= view rope) 1 0))
+               (+ (* 10 (if (< view rope) 1 0))
+                  (if (< rope view) 1 0)))))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 100 Int64))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64)))

@@ -2679,3 +2679,68 @@
         (export main)))
   (call   main (: 3 Int64)) (output (: 231 Int64))
   (call   main (: 1 Int64)) (output (: 312 Int64)))
+
+(case "a String slice VIEW keys a map by content in both directions, rope-backed included"
+  (doc    "The STRING face of the slice-view-as-CHAMP-key family (the Bytes faces :2361/:2374 pin the
+           borrowed-view compaction from the key_needs_compaction finding): mode 1 PROBES {\"key\"->42}
+           with the view `slice(\"xkeyz\",1,4)`; mode 2 STORES the view as the key and probes with the
+           flat literal; mode 3 stores a view of the ROPE `concat(\"xk\",\"eyz\")` — seam inside the
+           window — and probes flat. All 42. mode 4 probes with the WRONG window [0,3) = \"xke\" (-1).
+           A key path that hashed the view node (offset/parent) or skipped compaction on the STRING
+           branch misses where Bytes hits.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def v (Option.expect (String.slice "xkeyz" 1 4) "in"))
+            (def rv (Option.expect (String.slice (String.concat "xk" "eyz") 1 4) "in"))
+            (if (= mode 1)
+                (match (Map.lookup (Map.insert Map.empty "key" 42) v) ((Some x) x) ((None _u) -1))
+                (if (= mode 2)
+                    (match (Map.lookup (Map.insert Map.empty v 42) "key") ((Some x) x) ((None _u) -1))
+                    (if (= mode 3)
+                        (match (Map.lookup (Map.insert Map.empty rv 42) "key") ((Some x) x) ((None _u) -1))
+                        (match (Map.lookup (Map.insert Map.empty "key" 42) (Option.expect (String.slice "xkeyz" 0 3) "in")) ((Some x) x) ((None _u) -1)))))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 42 Int64))
+  (call   main (: 2 Int64)) (output (: 42 Int64))
+  (call   main (: 3 Int64)) (output (: 42 Int64))
+  (call   main (: 4 Int64)) (output (: -1 Int64)))
+
+(case "Set.to-list over STRING elements orders by content with a rope participating"
+  (doc    "The STRING sibling of the Float64/compound to-list pins (and the ruled-decline Bytes face):
+           string elements DO have a blessed order (content-lexicographic, 13-strings:53), so a set of
+           {\"b\", rope, \"c\"} must enumerate ascending with the RUNTIME rope compared by content —
+           mode 1 builds \"aa\" (concat \"a\"+\"a\") which sorts FIRST (e0 = \"aa\": 11); mode 0
+           builds \"az\" which still sorts before \"b\" but is not \"aa\" (1). A sort that compared
+           rope nodes structurally (or leaf-first) instead of by content misorders mode 0.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def r (String.concat "a" (if (> mode 0) "a" "z")))
+            (def xs (Set.to-list (Set.of (list "b" r "c"))))
+            (def (at (: i Int64)) (Option.expect (List.at xs i) "in"))
+            (+ (* 10 (if (= (at 0) "aa") 1 0))
+               (if (= (at 2) "c") 1 0))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 11 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "tuple set elements order by string content across reps then the scalar tiebreak"
+  (doc    "The TUPLE leg of the mixed-rep content-order family (list leg banked alongside; the tuple
+           orderable arm came with the compound-element sort fixes): {(view \"key\", 1), (rope, 2)} —
+           mode 1 the rope is \"key\": first fields CONTENT-EQUAL across view/rope reps, so the sort
+           falls to the Int tiebreak and (\"key\",1) enumerates first (second field 1). mode 0 the rope
+           is \"kex\" < \"key\": (\"kex\",2) sorts first (2). A tuple compare that ranked the string
+           field by rep identity never reaches the tiebreak and flips mode 1.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def a (tuple (Option.expect (String.slice "xkeyz" 1 4) "in") 1))
+            (def b (tuple (String.concat "ke" (if (> mode 0) "y" "x")) 2))
+            (def xs (Set.to-list (Set.of (list a b))))
+            (match (List.at xs 0)
+              ((Some t) (. t 1))
+              ((None _u) -1))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))

@@ -1645,3 +1645,26 @@
   (call   main (: 1 Int64)) (output (: 2 Int64))
   (call   main (: 2 Int64)) (output (: -1 Int64))
   (call   main (: 3 Int64)) (output (: 1 Int64)))
+
+(case "Map.swap keyed by a runtime Bytes ROPE replaces the flat-keyed entry"
+  (doc    "The BYTES leg of the value-yielding canonical-key pair (the Rational legs pin the
+           normalize-at-construction rep; Bytes ropes are the canonicalize-at-EQ rep): the map holds
+           flat [1,2,3] -> 10 and the swap key is the RUNTIME rope `[1,2] ++ [x]`. x=3: the rope
+           content-equals the flat key, so swap REPLACES — prior `(Some 10)`, len 1, flat lookup reads
+           the new 20 (1120). x=4: `[1,2,4]` is a new key — prior `(None unit)`, ADDED (len 2), flat
+           keeps 10 (210). A swap that hashed the rope's leaf structure instead of its content adds a
+           phantom entry at x=3 (220).")
+  (input  (do
+        (def (main (: x UInt8))
+          (do
+            (def m (Map.insert Map.empty (Bytes.of (list 1 2 3)) 10))
+            (def k (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list x))))
+            (def r (Map.swap m k 20))
+            (def prior (match (. r 0) ((Some v) (if (= v 10) 1 -9)) ((None _u) 0)))
+            (def m2 (. r 1))
+            (+ (* 1000 prior)
+               (+ (* 100 (Map.len m2))
+                  (match (Map.lookup m2 (Bytes.of (list 1 2 3))) ((Some v) v) ((None _u) -1))))))
+        (export main)))
+  (call   main (: 3 UInt8)) (output (: 1120 Int64))
+  (call   main (: 4 UInt8)) (output (: 210 Int64)))

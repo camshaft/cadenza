@@ -16469,6 +16469,44 @@ fn lower_arith(db: &mut Db, id: StructId, op: Prim, args: &[StructId]) -> Core {
             {
                 return folded;
             }
+            // A CONSTANT `+`/`-`/`*`/`/`/`%` whose SOLVED type is WIDER than i64 (an unsigned 64-bit
+            // type, whose max `2^64-1` is not i64-representable) where BOTH operands fit i64 but the exact
+            // RESULT overflows i64 while still fitting the solved width — `(+ (: Int64.max UInt64) 2)` =
+            // 2^63+1, a valid UInt64. `fold_arith`'s i64 `checked_add` would trap on the i64-overflowing
+            // result → a SPURIOUS "overflows Int64" CDZ0304, even though the value is in range for UInt64.
+            // (The ≥2^63-OPERAND wide-fold path above handles the case where an OPERAND lacks an i64; this
+            // is its twin for a SMALL-OPERAND, WIDE-RESULT op — mirroring the shift/bitwise wide-result fix
+            // just above.) Compute the result EXACTLY over `IntValue` (no i64 truncation) and range-check
+            // against the solved width: fold if it fits, else the same OPERATION-overflow CDZ0304 the i64
+            // path emits. Fires ONLY for a solved type that does NOT fit i64 (u64) — every narrower/signed
+            // type keeps the i64 path unchanged (identical result when it fits, correct CDZ0304 when it
+            // genuinely overflows the type), so this is behavior-preserving for the common case. A `/`/`%`
+            // by zero (`divmod` → `None`) falls through to `fold_arith`'s divide-by-zero CDZ0304.
+            if let crate::ty::Ty::Int(it) = peel_qty_inner_ty(crate::infer::type_of(db, id))
+                && !it.fits_within(crate::ty::IntTy::i64())
+            {
+                let wide = match op {
+                    Prim::Add => Some(a.add(&b)),
+                    Prim::Sub => Some(a.sub(&b)),
+                    Prim::Mul => Some(a.mul(&b)),
+                    Prim::Div => a.divmod(&b).map(|(q, _)| q),
+                    Prim::Rem => a.divmod(&b).map(|(_, r)| r),
+                    _ => None, // shift/bitwise handled above; anything else falls to the i64 path
+                };
+                if let Some(r) = wide {
+                    return if r.fits_width(it.ground_signed(), it.ground_width()) {
+                        trace!(target: "rcdzc::fold", node = id.0, op = intrinsic_name(op), "wide-result constant arithmetic folded exactly over IntValue (result overflows i64 but fits the solved u64 width)");
+                        Core::ConstInt(r)
+                    } else {
+                        trace!(target: "rcdzc::fold", node = id.0, op = intrinsic_name(op), "wide constant arithmetic result overflows the solved width → CDZ0304");
+                        Core::Poison(Reject::coded(
+                            Code::ConstTrap,
+                            "this constant arithmetic operation overflows its integer type (a \
+                             compile-provable overflow traps)",
+                        ))
+                    };
+                }
+            }
             // Fold over i64, THEN range-check the result against the op's SOLVED width. `fold_arith`
             // evaluates at the Stage i64 width, so a NARROW overflow whose true result still fits i64
             // (`255 + 1 = 256` over UInt8, `100 * 2 = 200` over Int8) folds to a valid `ConstInt` and

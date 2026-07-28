@@ -16749,3 +16749,73 @@
   (call   main (: 31 Int64)) (output (: 9993032 Int64))
   (call   main (: 32 Int64)) (output (: 9993133 Int64))
   (call   main (: 35 Int64)) (output (: 9993436 Int64)))
+
+(case "a map nested as a VALUE persists across a two-level update via Map.swap"
+  (doc    "Two-level persistence: outer {1 -> inner{10->100}}; a grown inner (insert 20->200) is swapped
+           in at key 1. mode 1: the ORIGINAL outer still reaches the 1-entry inner (1) — the outer swap
+           must not mutate the shared inner or the old outer's slot. mode 2: the new outer reads the
+           2-entry inner (2). mode 3: the swap's PRIOR value is the OLD inner itself, read out of the
+           returned tuple (len 1) — the value-yielding form hands back the displaced NESTED map intact.
+           An implementation that updated the inner in place (or returned the new value as prior) flips
+           mode 1 or 3 to 2.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def inner (Map.insert Map.empty 10 100))
+            (def outer (Map.insert Map.empty 1 inner))
+            (def inner2 (Map.insert inner 20 200))
+            (def r (Map.swap outer 1 inner2))
+            (def (ilen (: m (Map Int64 (Map Int64 Int64))) (: k Int64))
+              (match (Map.lookup m k) ((Some im) (Map.len im)) ((None _u) -1)))
+            (if (= mode 1) (ilen outer 1)
+                (if (= mode 2) (ilen (. r 1) 1)
+                    (match (. r 0) ((Some om) (Map.len om)) ((None _u) -1))))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 2 Int64))
+  (call   main (: 3 Int64)) (output (: 1 Int64)))
+
+(case "a Set taken out of a map grows independently of the original binding"
+  (doc    "The SET-as-VALUE escape face: {7 -> {1,2}} taken apart by Map.take — the taken set reads
+           len 2 (mode 1), growing it to {1,2,3} reads 3 (mode 2) WITHOUT disturbing either the
+           emptied map (mode 3: len 0) or the ORIGINAL set binding s (mode 4: still 2). The heap set
+           crosses two projections (Option payload, tuple slot) before the insert — a take that
+           returned a still-shared-mutable reference (or an insert that updated in place) bumps
+           mode 4 to 3.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def s (Set.of (list 1 2)))
+            (def m (Map.insert Map.empty 7 s))
+            (def r (Map.take m 7))
+            (def taken (match (. r 0) ((Some ts) ts) ((None _u) (Set.of (list)))))
+            (def grown (Set.insert taken 3))
+            (if (= mode 1) (Set.len taken)
+                (if (= mode 2) (Set.len grown)
+                    (if (= mode 3) (Map.len (. r 1))
+                        (Set.len s))))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 2 Int64))
+  (call   main (: 2 Int64)) (output (: 3 Int64))
+  (call   main (: 3 Int64)) (output (: 0 Int64))
+  (call   main (: 4 Int64)) (output (: 2 Int64)))
+
+(case "a record key with a SET field matches by set content across build orders"
+  (doc    "The record-key family descends into a full sub-CHAMP: the key's `s` field is a SET, so
+           `champ_hash`/`champ_eq` on the record must recurse into a nested CHAMP whose INTERNAL
+           layout differs between the literal build {1,2,3} and the empty-seeded insert chain
+           (n,2,1). At n=3 they are content-equal — the lookup finds 42; a layout-sensitive hash
+           (node-shape or insertion-order) misses. At n=4 the chain builds {1,2,4} — genuinely
+           different, None (-1). Extends the Rational-field record-key pin to the collection-field
+           case.")
+  (input  (do
+        (def (main (: n Int64))
+          (do
+            (def k1 (record (s (Set.of (list 1 2 3)))))
+            (def k2 (record (s (Set.insert (Set.insert (Set.of (list n)) 2) 1))))
+            (match (Map.lookup (Map.insert Map.empty k1 42) k2)
+              ((Some v) v)
+              ((None _u) -1))))
+        (export main)))
+  (call   main (: 3 Int64)) (output (: 42 Int64))
+  (call   main (: 4 Int64)) (output (: -1 Int64)))

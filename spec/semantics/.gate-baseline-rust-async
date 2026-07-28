@@ -73,6 +73,7 @@ pass	MOVE-ZEROS stably shifts zeros to the tail, preserving non-zero order and t
 pass	MULTI-LIMB BigInts built by three arithmetic routes hash to one set element
 pass	MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave
 pass	Map.remove and Map.lookup by different-route MULTI-LIMB keys agree with the inserted key
+todo	Map.swap keyed by a runtime Bytes ROPE replaces the flat-keyed entry
 pass	Map.swap keyed by a runtime Rational canonicalizes: a normalized-equal key replaces, a distinct one adds
 pass	Map.take keyed by a runtime Rational removes the arithmetic-built canonical twin
 pass	Map.to-list over Rational keys enumerates ascending by key value with the integer form last
@@ -95,6 +96,7 @@ pass	SYMMETRIC difference built two ways from primitives agrees and dedups the o
 pass	Set.intersection unifies an arithmetic-produced rational with its constructor-built normalized twin
 pass	Set.of over Rational elements dedupes a normalized-equal literal and to-list enumerates ascending
 pass	Set.to-list over Rational elements enumerates ascending by value, not by numerator/denominator pair
+pass	Set.to-list over STRING elements orders by content with a rope participating
 pass	Set.to-list over symbols enumerates in content-byte order regardless of insertion order
 pass	String.at through a slice VIEW of a rope reads view-relative scalars at every byte width
 pass	String.from-bytes over a rope-backed slice accepts aligned windows and rejects a mid-scalar cut
@@ -783,6 +785,7 @@ pass	a SUM is threaded as a handler's folded state across operations
 pass	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
 pass	a SYMBOL compound = has DISCRIMINATING power (two runtime-selected interned names separate)
 pass	a RECURSIVE sum with a record payload walks an environment chain by depth and tag search
+pass	a Set taken out of a map grows independently of the original binding
 pass	a Set.of over RECURSIVE-sum elements dedups by spine content
 pass	a Set.of over user-sum variants keeps same-payload different-variant elements distinct
 pass	a Sign match missing two of three variants is non-exhaustive
@@ -794,8 +797,10 @@ pass	a String compound export under a non-main name crosses to the host
 pass	a String match with a BOUND default arm equals its (= s literal) if-chain with a bound else
 pass	a String match with disjoint literal arms is order-independent (reordering the arms preserves the result)
 pass	a String param threaded through a self-recursive loop and concatenated each step is retained
+pass	a String slice VIEW keys a map by content in both directions, rope-backed included
 pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
+pass	a Symbol interned from a rope-slice view keys maps and removes set elements
 pass	a Symbol nested in a TUPLE map key keys by content through the compound descent
 pass	a THREE-deep member-access chain reads a RUNTIME leaf through nested records
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
@@ -1277,6 +1282,7 @@ pass	a file-top default-fraction pragma grounds a bare literal to its exact frac
 pass	a file-top default-integer pragma fixes a bare literal's type
 pass	a final bytes segment binds the remainder after the sized segments
 pass	a dependent-size body over a runtime-start slice re-bases its size arithmetic per call
+pass	a dependent-size body re-matches under a second bin pattern
 pass	a dependent-size utf8 segment decodes a length-prefixed string
 pass	a fitting Float32 Qty magnitude computes at the narrow inner width
 pass	a fitting Float32 literal in a runtime if branch computes
@@ -1774,6 +1780,7 @@ pass	a map literal with keys of two different types is a type error
 pass	a map match over a map literal with a runtime key selects by value, not a const fold
 pass	a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)
 pass	a map mixing integer and float values is a type error
+pass	a map nested as a VALUE persists across a two-level update via Map.swap
 pass	a map operation applies to a map passed as a function parameter
 pass	a map pattern as a list-arm element binds its value binder
 pass	a map pattern binds the rest of the map after the named key
@@ -2246,6 +2253,7 @@ pass	a record field with no value expression is rejected, not a crash
 pass	a record is constructed and a field is read
 pass	a record map key with a Rational field matches by the field's normalized form
 pass	a proper fraction truncates to zero from both signs and an exact integer to itself
+pass	a record key with a SET field matches by set content across build orders
 pass	a record match arm + a wildcard alternative selects by shape
 pass	a record match field may be a LITERAL that probes the field by equality
 pass	a record match pattern binds fields by name — partial and out of order
@@ -2477,6 +2485,7 @@ pass	a NESTED runtime bin match re-parses a bin-decoded payload
 pass	a guarded bin-match arm over a CONSTANT scrutinee folds the guard and selects the arm
 pass	a guarded bin-match arm over a CONSTANT scrutinee whose guard fails falls to the next arm
 pass	a guarded bin-match arm reads its decoded binder and falls through when the guard fails
+pass	a runtime bin ENCODE lays out le and signed fields byte-exactly
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
 pass	a runtime bin match reads an int segment after a byte-aligned bit-field run
 pass	a runtime bin pattern decodes a fixed-width segment from a runtime scrutinee
@@ -2791,6 +2800,7 @@ pass	a single-variant newtype over a COMPOUND escapes the bare compound under it
 pass	a single-variant open sum with an open-tail arm dispatches its named variant
 pass	a single-variant-sum binding pattern destructures a multi-payload constructor positionally
 pass	a single-variant-sum binding pattern nests inside another
+pass	a slice VIEW and a rope compare by content across the two non-flat reps
 pass	a slice crosses the seam of a runtime-assembled byte rope
 pass	a slice of a slice composes scalar offsets against the VIEW, not the base string
 pass	a slice spanning a concatenation sees the logical bytes
@@ -3072,6 +3082,7 @@ pass	a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distin
 pass	a variant-payload binder shadow is scoped to its arm, not the whole def
 pass	a variant-payload binder shadowing a param in a called def binds the payload
 pass	a velocity multiplied by a time recovers the distance dimension
+pass	a view-interned Symbol participates in Set.to-list content order
 pass	a well-formed annotation still checks and accepts a matching type (the control)
 pass	a whole rational carries a denominator of one
 pass	a wide fixed-size integer width is reserved, not yet a valid type
@@ -3913,6 +3924,7 @@ pass	intersection with the empty set is the empty set
 pass	jointly-total guards over one variant are still non-exhaustive (guards are opaque to the checker)
 pass	keyed lookups at different keys are not shared
 pass	large-set algebra over a multi-level CHAMP trie computes correct union/intersection/difference
+pass	le multi-byte fields read little-endian at runtime offsets, unsigned and signed
 pass	le-ax of a ground add that OVERFLOWS Int64 traps during evaluation — it cannot wrap to forge a false bound
 pass	left shift
 pass	less-than at the integer extremes is signed, not unsigned
@@ -3920,6 +3932,7 @@ pass	less-than compares negative operands by signed order
 pass	less-than-or-equal
 pass	less-than-or-equal of an integer and a float is rejected
 pass	list concatenation is associative by content
+pass	list ordering recurses into string elements by content across mixed reps
 pass	lists are equal by elements in order
 pass	literal payload refinement works in a non-head element position
 pass	literal refinement on two elements of one list pattern
@@ -5109,3 +5122,4 @@ pass	an abortive perform in a body tail referencing a do-local binding stays in 
 pass	an abortive perform in a STRICT OPERAND referencing a let-local binding stays in scope
 pass	a mutually-recursive fold matching a rebuilt list with a payload binder builds and computes
 pass	a recursive BigInt fn whose bound result feeds a mod compiles and computes (FINDING)
+pass	tuple set elements order by string content across reps then the scalar tiebreak
