@@ -204,6 +204,32 @@ impl Layout {
         }
     }
 
+    /// A copy of this layout with every `cross_edge_import` position SHIFTED UP by `delta` — the count of
+    /// extern imports laid down AHEAD of the cross-edge block. `compute_tests_consumer` computes the cross-edge
+    /// positions 0-based (the consumer layout carries no other extern imports at layout time). But the backend
+    /// emit may prepend OTHER extern imports before the cross-edge block — specifically a PEER-BOUND escaping
+    /// EFFECT (`db.effect_bindings`) is moved into `extern_imports` FIRST, so the cross-edges land at
+    /// `delta..delta+M` in the final `extern_order`, not `0..M`. A `Lir::CallExternImport(pos)` resolves against
+    /// that final order, so `cross_edge_import` must name the FINAL position. The backend applies this shift by
+    /// the peer-extern count once `extern_imports` is assembled (`delta = 0` → no-op, byte-identical to a
+    /// consumer with no coexisting peer-bound effect). Without it, a consumer that BOTH imports the shared
+    /// closure AND binds a peer effect emits every cross-edge call off by `delta` → wrong import / invalid
+    /// module (the index-agreement invariant, extended to a mixed extern-import set).
+    pub fn with_cross_edge_import_shift(&self, delta: usize) -> Layout {
+        if delta == 0 {
+            return self.clone();
+        }
+        let cross_edge_import = self
+            .cross_edge_import
+            .iter()
+            .map(|(&d, &p)| (d, p + delta))
+            .collect();
+        Layout {
+            cross_edge_import,
+            ..self.clone()
+        }
+    }
+
     /// A copy of this layout with `host_needs_memory` set — the backend sets it from
     /// `host::set_needs_memory` so the core module imports `mem` for a runtime String host-arg even with no
     /// const-string data segment (see the field doc).
@@ -592,13 +618,18 @@ pub fn compute_shared_closure_provider(
 /// OPTION C increment (c) — the CONSUMER (per-file `@test`) layout: like [`compute_tests_for`] but with the
 /// cross-component edges as a BOUNDARY (excluded from `order`, recorded as extern imports). Each per-file
 /// `@test` component EXCLUDES the shared cross-edge defs (they live in the shared-closure PROVIDER component,
-/// [`compute_shared_closure_provider`]) and routes its `Core::Call`s into them as extern imports. Returns the
-/// layout + the cross-edge defs that were actually HIT (reached from this file's `@test` bodies) — the
-/// caller builds `extern_order` from them, in CANONICAL cross-edge order (the SAME order the provider
-/// exports, so the consumer's import index matches the provider's export index — the v-wasm-opt
-/// index-agreement invariant). `test_defs` is this file's `@test` bucket; `all_cross_edges` is the whole
-/// closure's cross-edge set ([`cross_component_edges`] over ALL `@tests`, the provider's export set). A file
-/// whose tests hit no cross-edge yields an empty hit set (it needs no closure import — a self-contained file).
+/// [`compute_shared_closure_provider`]) and routes its `Core::Call`s into them as extern imports. Returns a
+/// [`Layout`] whose `extern_order` lists EVERY provider edge (as `(closure_iface, source_boundary_name(def))`,
+/// in the PROVIDER's export order = `provider_edges` order) and whose `cross_edge_import` maps each cross-edge
+/// `def → its position in that order` — so a `Core::Call` to a cross-edge callee emits a
+/// `Lir::CallExternImport` of the matching provider-export index (the v-wasm-opt index-agreement invariant:
+/// consumer import index == provider export index). It builds that mapping ITSELF (via
+/// [`Layout::with_cross_edge_imports`]); the positions are 0-based here (this layout carries no other extern
+/// imports), and the backend shifts them by any peer-extern count it prepends
+/// ([`Layout::with_cross_edge_import_shift`]). `test_defs` is this file's `@test` bucket; `provider_edges` is
+/// the whole closure's cross-edge set ([`cross_component_edges`] over ALL `@tests`, in provider-export order)
+/// — the consumer imports the WHOLE provider interface (a file hitting only a subset still indexes at the
+/// right provider-export position; unused imports are harmless).
 pub fn compute_tests_consumer(
     db: &mut Db,
     test_defs: &[usize],

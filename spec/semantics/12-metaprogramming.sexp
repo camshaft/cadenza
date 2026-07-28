@@ -3356,3 +3356,74 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 0 Int64)))
+
+(case "eval does not execute the result of read — even over a constant string"
+  (doc    "The FIFTH entry path to the no-runtime-AST-interpreter line (nested-eval, spliced-Ast,
+           collection-selection, and bound-name are pinned): `(eval (read \"(+ 20 22)\"))` rejects
+           CDZ0101 even though the string is CONSTANT and `read` itself folds (print∘read and
+           read-equality both compute in the pins above). eval's visible set is exactly `(quote …)`
+           / literal `Ast.*` — a READ application is not in it, so text does not become executable
+           by way of read. The gate this pins: read-then-eval is the classic injection shape
+           (text → AST → execute); making it work would need a deliberate ruling, not a fold
+           side-effect.")
+  (input  (do
+        (def (main (: k Int64))
+          (+ (Int64.of (eval (read "(+ 20 22)"))) k))
+        (export main)))
+  (error  CDZ0101))
+
+(case "a read result destructures through nested Ast patterns — the analyze path computes"
+  (doc    "The WORKING consumption of read (its eval is the pinned reject; MATCH is the legitimate
+           tooling path): the parsed `(defn add (a b) (+ a b))` destructures through two levels of
+           Ast.List patterns — keyword name compared as a STRING (`Ast.Name` payloads are String),
+           the param list and body list measured (2/3), all in one arm (231). text → AST → ANALYZE
+           is what a linter/codemod does; a reify that boxed nested lists opaquely (or a Name
+           payload that compared by identity instead of content) breaks the arm and falls to -2.")
+  (input  (do
+        (def (main (: k Int64))
+          (match (read "(defn add (a b) (+ a b))")
+            ((Ast.List parts)
+              (match parts
+                ((list (Ast.Name kw) (Ast.Name fname) (Ast.List params) (Ast.List body))
+                  (+ (* 100 (List.len params))
+                     (+ (* 10 (List.len body))
+                        (if (= kw "defn") 1 0))))
+                (_ -2)))
+            (_ -3)))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 231 Int64)))
+
+(case "quote-built and guest-built Asts compare across const/runtime payload boundaries"
+  (doc    "The WORKING side of the read-reify rep finding: a `(quote (f 42))` Ast and a fully
+           guest-built `(Ast.List ...)` with a RUNTIME `(Ast.Int (BigInt.of k))` payload compare
+           correctly (hit at k=42, miss at 7 — 10/00 encoded as 2 rows), and the same holds for
+           guest-built vs guest-built. Pins that quote's reify and Ast.* construction share ONE rep
+           the mixed-payload equality bridges — the READ-reify divergence is the filed bug; this
+           guards the reps that already agree from a fix that unified in the wrong direction.")
+  (input  (do
+        (def (main (: k Int64))
+          (+ (* 10 (if (= (quote (f 42)) (Ast.List (list (Ast.Name "f") (Ast.Int (BigInt.of k))))) 1 0))
+             (if (= (Ast.List (list (Ast.Name "g") (Ast.Int (BigInt.of k))))
+                    (Ast.List (list (Ast.Name "g") (Ast.Int 42))))
+                 1 0)))
+        (export main)))
+  (call   main (: 42 Int64)) (output (: 11 Int64))
+  (call   main (: 7 Int64)) (output (: 0 Int64)))
+
+(case "Ast values key a map across quote and Ast.* construction routes"
+  (doc    "The rep-agreement matrix's WORKING half on the CHAMP surface (read-built keys are the
+           filed invalid-module face): an `Ast.List`-BUILT key is found by its built twin (mode 1)
+           AND by the `(quote (f 1))` spelling (mode 2) — both 42, so quote's reify and Ast.*
+           construction share one hashable rep on the key path exactly as they do under `=`.
+           Together with the eval-splice pins this fixes the WHOLE quote/Ast.* rep contract;
+           the read-reify fix must join THIS rep (a miss here post-fix means it unified the
+           wrong way).")
+  (input  (do
+        (def (main (: mode Int64))
+          (match (Map.lookup (Map.insert Map.empty (Ast.List (list (Ast.Name "f") (Ast.Int 1))) 42)
+                             (if (= mode 1) (Ast.List (list (Ast.Name "f") (Ast.Int 1)))
+                                 (quote (f 1))))
+            ((Some v) v) ((None _u) -1)))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 42 Int64))
+  (call   main (: 2 Int64)) (output (: 42 Int64)))

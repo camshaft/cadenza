@@ -514,10 +514,16 @@ pub fn emit(
     // (`core_module_with_extern` / `core_module_with_extern_runtime` + the peer envelope), so no new assembly
     // shape is needed. EMPTY for every non-consumer layout (`cross_edge_import` is empty), so this loop adds
     // nothing and the emit stays byte-identical to before.
+    // The count of extern imports ALREADY laid down (a peer-bound escaping effect, above) — the cross-edge
+    // block appends AFTER these, so each cross-edge's FINAL `extern_order` position is `cross_edge_delta + its
+    // layout-time 0-based position`. `compute_tests_consumer` computed the map 0-based; the shift below
+    // reconciles it to the final order (0 when no coexisting peer effect → no-op).
+    let cross_edge_delta = extern_imports.len();
     if !layout.cross_edge_import.is_empty() {
         // Order the cross-edges by their `extern_order` position so the built `ExternImport` set indexes
         // exactly as `cross_edge_import` (and the provider's export order) says — the import at position `p`
-        // IS the op `extern_order[p]`, which a `Lir::CallExternImport(p)` resolves to.
+        // (after the `cross_edge_delta` shift below) IS the op `extern_order[p]`, which a
+        // `Lir::CallExternImport(p)` resolves to.
         let mut by_pos: Vec<(usize, usize)> = layout
             .cross_edge_import
             .iter()
@@ -595,7 +601,12 @@ pub fn emit(
         // A String-param host op needs the shared `mem` even with no CONST string arg (the runtime-string
         // `_mem` copy loop writes into it) — so the core module imports `mem` on `set_needs_memory` too.
         .with_host_needs_memory(host::set_needs_memory(&host_imports))
-        .with_extern_order(extern_order);
+        .with_extern_order(extern_order)
+        // Reconcile the cross-edge import positions (computed 0-based at layout time) to their FINAL
+        // `extern_order` positions: a peer-bound escaping effect occupies `0..cross_edge_delta` ahead of the
+        // cross-edge block, so each cross-edge shifts up by that count. `0` (the common consumer, no coexisting
+        // peer effect) → no-op, byte-identical.
+        .with_cross_edge_import_shift(cross_edge_delta);
     let layout = &layout;
 
     // Select each reachable definition's body, in emission order, WITH its parameters — so a

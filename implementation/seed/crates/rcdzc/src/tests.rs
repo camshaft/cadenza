@@ -73284,6 +73284,122 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn option_c_cross_edge_import_shift_offsets_positions_for_a_coexisting_peer_extern() {
+        // PR#882 CORRECTNESS fix: `compute_tests_consumer` computes `cross_edge_import` positions 0-based (the
+        // consumer layout carries no other extern imports at layout time). But the backend emit prepends a
+        // PEER-BOUND escaping effect's extern imports FIRST (`db.effect_bindings`), so the cross-edge block
+        // lands at `delta..delta+M` in the final `extern_order`, not `0..M` — and a `Lir::CallExternImport(pos)`
+        // resolves against that FINAL order. `with_cross_edge_import_shift(delta)` reconciles the map to the
+        // final positions. Without it, a consumer that BOTH imports the shared closure AND binds a peer effect
+        // emits every cross-edge call off by `delta` → wrong import / invalid module. Here: build a 2-cross-edge
+        // consumer layout (positions {0,1}), shift by delta=2 (as if 2 peer-effect externs preceded), assert the
+        // map is now {2,3} and extern_order is untouched (the ORDER list is rebuilt by the backend from the full
+        // extern_imports vector; the shift only moves the def→final-pos map select reads).
+        use crate::testkit::parse;
+        let lib = "(do \
+                    (def (alpha (: n Int64)) (if (= n 0) 0 (+ 2 (alpha (- n 1))))) \
+                    (def (beta (: n Int64)) (if (= n 0) 1 (+ 3 (beta (- n 1))))) \
+                    (export alpha) (export beta))";
+        let app = "(do (import \"lib\" (alpha beta)) \
+                    (@ test (def (t-two) (if (= (+ (alpha 3) (beta 3)) 16) unit (trap \"x\")))))";
+        let (base_positions, shifted_positions, extern_len_before, extern_len_after): (
+            Vec<usize>,
+            Vec<usize>,
+            usize,
+            usize,
+        ) = crate::host::run_with_compiler_stack(|| {
+            let files: Vec<(String, crate::ast::Arenas)> = vec![
+                ("lib".to_string(), parse(lib)),
+                ("app".to_string(), parse(app)),
+            ];
+            let linked = crate::link::link(&files, "app").expect("package links");
+            let mut db = crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+            let test_layout = crate::layout::compute_tests(&mut db).expect("@test build lays out");
+            let test_def = *db.test_defs().first().expect("one @test");
+            let own_file = db
+                .file_of(db.defs[test_def].sig_occ)
+                .expect("test def in a file");
+            let provider_edges =
+                crate::layout::cross_component_edges(&mut db, &test_layout, own_file);
+            let tds = db.test_defs();
+            let consumer = crate::layout::compute_tests_consumer(
+                &mut db,
+                &tds,
+                &provider_edges,
+                "cadenza:closure/api",
+            )
+            .expect("consumer lays out");
+            let mut base: Vec<usize> = consumer.cross_edge_import.values().copied().collect();
+            base.sort_unstable();
+            let shifted_layout = consumer.with_cross_edge_import_shift(2);
+            let mut shifted: Vec<usize> =
+                shifted_layout.cross_edge_import.values().copied().collect();
+            shifted.sort_unstable();
+            (
+                base,
+                shifted,
+                consumer.extern_order.len(),
+                shifted_layout.extern_order.len(),
+            )
+        });
+        assert_eq!(
+            base_positions,
+            vec![0, 1],
+            "the consumer computes cross-edge positions 0-based at layout time"
+        );
+        assert_eq!(
+            shifted_positions,
+            vec![2, 3],
+            "shift(2) offsets every cross-edge position by the peer-extern count (delta)"
+        );
+        assert_eq!(
+            extern_len_before, extern_len_after,
+            "the shift moves only the def→final-pos map, never extern_order (the backend rebuilds order)"
+        );
+    }
+
+    #[test]
+    fn option_c_cross_edge_import_shift_zero_is_a_noop() {
+        // The common consumer (no coexisting peer-bound effect) shifts by delta=0 → byte-identical map, so the
+        // fix never perturbs the ordinary consumer emit. A trivial but load-bearing guard: delta=0 must be a
+        // no-op or every existing consumer emit would regress.
+        use crate::testkit::parse;
+        let lib = "(do (def (shared-helper (: n Int64)) (if (= n 0) 0 (+ 1 (shared-helper (- n 1))))) \
+                    (export shared-helper))";
+        let app = "(do (import \"lib\" (shared-helper)) \
+                    (@ test (def (t-app) (if (= (shared-helper 5) 5) unit (trap \"x\")))))";
+        let same: bool = crate::host::run_with_compiler_stack(|| {
+            let files: Vec<(String, crate::ast::Arenas)> = vec![
+                ("lib".to_string(), parse(lib)),
+                ("app".to_string(), parse(app)),
+            ];
+            let linked = crate::link::link(&files, "app").expect("package links");
+            let mut db = crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+            let test_layout = crate::layout::compute_tests(&mut db).expect("@test build lays out");
+            let test_def = *db.test_defs().first().expect("one @test");
+            let own_file = db
+                .file_of(db.defs[test_def].sig_occ)
+                .expect("test def in a file");
+            let provider_edges =
+                crate::layout::cross_component_edges(&mut db, &test_layout, own_file);
+            let tds = db.test_defs();
+            let consumer = crate::layout::compute_tests_consumer(
+                &mut db,
+                &tds,
+                &provider_edges,
+                "cadenza:closure/api",
+            )
+            .expect("consumer lays out");
+            let shifted = consumer.with_cross_edge_import_shift(0);
+            consumer.cross_edge_import == shifted.cross_edge_import
+        });
+        assert!(
+            same,
+            "shift(0) must be a no-op on the cross_edge_import map"
+        );
+    }
+
+    #[test]
     fn option_c_shared_closure_provider_emits_a_valid_component() {
         // OPTION C increment (b)(iii): the shared-closure provider layout, run through the PROVIDER emit
         // (db.component_name set), emits a VALID wasm component exporting the cross-edge interface. The
