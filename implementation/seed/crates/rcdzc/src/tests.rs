@@ -20346,19 +20346,21 @@ mod match_engine {
         let bytes = component(
             "(module m (def (main (: v Int64)) (Qty.of ((Int 40).wrap v) (Unit.base #\"meter\"))) (export main))",
         );
+        let valid = wasmparser::validate(&bytes);
         assert!(
-            wasmparser::validate(&bytes).is_ok(),
+            valid.is_ok(),
             "mid-width Qty return must be valid wasm: {:?}",
-            wasmparser::validate(&bytes).err()
+            valid.err()
         );
         // A NARROW inner (≤ 32, an i32 slot) still crosses valid — the extend correctly fires there.
         let narrow = component(
             "(module m (def (main (: v Int64)) (Qty.of ((Int 16).wrap v) (Unit.base #\"meter\"))) (export main))",
         );
+        let narrow_valid = wasmparser::validate(&narrow);
         assert!(
-            wasmparser::validate(&narrow).is_ok(),
+            narrow_valid.is_ok(),
             "narrow Qty return stays valid: {:?}",
-            wasmparser::validate(&narrow).err()
+            narrow_valid.err()
         );
     }
 
@@ -21673,10 +21675,11 @@ mod match_engine {
                  (if (= e 0) base (do (def hh (f base (/ e 2) md)) (% hh md)))) \
                (def (main) (f (BigInt.of 3) 4 (BigInt.of 5))) (export main))",
         );
+        let valid = wasmparser::validate(&bytes);
         assert!(
-            wasmparser::validate(&bytes).is_ok(),
+            valid.is_ok(),
             "a recursive fn self-calling in a do-def RHS must type by its scheme (valid wasm), not mis-type via deep β-reduce: {:?}",
-            wasmparser::validate(&bytes).err()
+            valid.err()
         );
     }
 
@@ -21695,10 +21698,11 @@ mod match_engine {
                (def (walk (: n Int64) (: w W)) (match w ((Mk v) (if (>= n 0) (walk (- n 1) w) v)))) \
                (def (main) (walk 0 (Mk 7))) (export main))",
         );
+        let valid = wasmparser::validate(&bytes);
         assert!(
-            wasmparser::validate(&bytes).is_ok(),
+            valid.is_ok(),
             "a constant BigInt-newtype passed as a recursive call arg must emit a boxed handle (valid wasm): {:?}",
-            wasmparser::validate(&bytes).err()
+            valid.err()
         );
     }
 

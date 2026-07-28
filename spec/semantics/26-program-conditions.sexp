@@ -3242,3 +3242,33 @@
   (output (: 42 Int64))
   (call   main (: -1 Int64))
   (trap   "unreachable"))
+
+(case "a def BODY that itself binds `ret` in an inner let composes soundly with @ensures — lexical shadowing, not a collision"
+  (doc    "`verify_enforce` rewrites `@ensures` to `(let ((ret BODY)) (if Q ret (trap …)))` — it introduces an
+           OUTER binder literally named `ret` (RESULT_BINDER). This pins that a user body which ITSELF binds a
+           variable named `ret` in an INNER `let` composes soundly: the injected `(let ((ret …)) …)` wraps the
+           whole body, so the body's own inner `(let ((ret (- x 100))) (+ ret 5))` is lexically NESTED and its
+           `ret` shadows locally, while the postcondition's `ret` (in `(>= ret 0)`) binds to the OUTER
+           injected let (the def's actual result). Distinct from the `2022` case, which rejects a PARAMETER
+           named `ret`; here `ret` is an inner LOCAL, which is legal and must not be confused with the result
+           binder. `(f 200)` → inner `ret = 100`, body result `105`, which satisfies `(>= ret 0)` at the outer
+           binder → value-transparent, returns `105`. A future change to how verify_enforce chooses/handles its
+           result binder that failed to respect lexical nesting would break this — the pin guards that seam.")
+  (input  (do
+            (@ (ensures (>= ret 0)) (def (f (: x Int64)) (let ((ret (- x 100))) (+ ret 5))))
+            (def (main) (f 200))
+            (export main)))
+  (output (: 105 Int64)))
+
+(case "a def BODY that binds `ret` in an inner let still has its @ensures checked against the ACTUAL result — traps on violation"
+  (doc    "The trap half of the inner-`ret`-shadow composition above. The postcondition `(>= ret 0)` must be
+           checked against the def's ACTUAL result (the value the outer injected `(let ((ret BODY)) …)` binds),
+           NOT against the body's inner `ret` local. `(f 200)` → inner local `ret = 100`, but the body result is
+           `(- ret 1000)` = `-900`, which the OUTER `ret` binds; `(>= -900 0)` is false, so the `if` takes the
+           trap arm → `unreachable`. Confirms the enforcement reads the result binder, and the inner shadow does
+           not leak a satisfying value into the postcondition check.")
+  (input  (do
+            (@ (ensures (>= ret 0)) (def (f (: x Int64)) (let ((ret (- x 100))) (- ret 1000))))
+            (def (main) (f 200))
+            (export main)))
+  (trap   "unreachable"))

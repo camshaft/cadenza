@@ -13,7 +13,7 @@
 /// there is one ground type — so this column is the DB-shaped monomorphic specialization. It widens to call
 /// the HM engine when the language grows function types.)
 
-import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, encode-bool-type, pt-width, pt-signed, ctor-tag-of, ctor-decl-of, ctor-argtype-of, record-ctor-tag-typed } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, empty-tree, add-node, record-def, record-param, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of, param-type-of, record-param-type, encode-param-type, encode-bool-type, pt-width, pt-signed, ctor-tag-of, ctor-decl-of, ctor-argtype-of, ctor-argtypes-of, record-ctor-tag-typed } from "parse-db"
 import { fits-width } from "int-width"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ty-deferred-int, ground-default } from "ty"
@@ -177,9 +177,15 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
                                                      Map.insert(tb, id, Typed.TSum(declName)))
                       | Option.None(_) => Map.insert(tcol, id, Typed.TSum(declName)))
                else (let ta = infer-node(tree, argId, rcol, tcol) in   // PAYLOAD ctor use `(Some 5)` → TSum(declName)
-                      (match Map.lookup(ta, argId) with
-                        | Option.Some(_) => Map.insert(ta, id, Typed.TSum(declName))
-                        | Option.None(_) => Map.insert(ta, id, Typed.TErr))))
+                      // MULTI-FIELD: type each higher payload arg too (arg2/3/4) — a 2-field ctor `(P 3 4)` has
+                      // arg2 that MUST get a type fact, else lower-node(arg2) declines (no core) → the whole
+                      // CCtor construction declines → run returns None. Mirrors lower-rec-args' arg2/3/4 gather.
+                      (let ta2 = infer-rec-arg-opt(tree, arg2-of(tree, id), rcol, ta) in
+                       (let ta3 = infer-rec-arg-opt(tree, arg3-of(tree, id), rcol, ta2) in
+                        (let ta4 = infer-rec-arg-opt(tree, arg4-of(tree, id), rcol, ta3) in
+                         (match Map.lookup(ta4, argId) with
+                           | Option.Some(_) => Map.insert(ta4, id, Typed.TSum(declName))
+                           | Option.None(_) => Map.insert(ta4, id, Typed.TErr)))))))
           | Option.None(_) =>
         (if (call-is-recursive(tree, calleeId)) then infer-recursive-call(tree, id, argId, rcol, tcol)
          else (match def-body-of(tree, calleeId) with
@@ -746,32 +752,44 @@ def type-eq(a: Typed, b: Typed) = ty-eq(typed-to-ty(a), typed-to-ty(b))
 ///    non-int payload's binder defaulted to Int64 and a Bool payload silently type-checked `(+ b 1)` as int.
 ///  - Some(0) (nullary ctor / no payload — record-ctor-tag's shorthand) or None (unrecorded / a nullary pattern's
 ///    -1 binder) → Int64 default (harmless: a nullary pattern has no payload binder to use).
+/// Decode ONE encoded ct-argType to the payload binder's Typed. The single source of truth for enc→Typed, shared by
+/// the single-field `ctor-payload-binder-type` (head) + the multi-field `seed-ctor-binders` fold. Cases:
+///  0 → t-int64 (no recorded type / Int64-placeholder); 1 → Bool sentinel → TErr FOR NOW (Bool-payload VALUE round-trip
+///  not-yet-wired: typing the binder TBool made a compiled `(if b …)` over an i64-repped payload trap `wasm unreachable`
+///  at b128 — declines cleanly until the round-trip lands, then this ONE line re-enables to TBool); -1 → unsupported
+///  (non-int-non-bool / nested the reader couldn't encode) → TErr (any use declines); ≥2 → TIntW(signed, width).
+def decode-argtype-enc(enc: Int64) =
+  (if (enc == 0) then t-int64()
+   else (if (enc == 1) then Typed.TErr
+         else (if (enc == (0 - 1)) then Typed.TErr
+               else Typed.TIntW(pt-signed(enc), pt-width(enc)))))
+
 def ctor-payload-binder-type(tree: Tree, patCtorName: Int64) =
   (match ctor-argtype-of(tree, patCtorName) with
-    | Option.Some(enc) => (if (enc == 0) then t-int64()
-                           // ii-c2b-2 Bool payload: the sentinel (1) is RESERVED + recorded by the reader, but the
-                           // Bool-payload VALUE path is NOT yet wired — typing the binder TBool made `(if b …)` over
-                           // a Bool payload COMPILE to invalid wasm (b128 gate: ss-bool-payload-binder trapped
-                           // `wasm unreachable` — the store/extract hands an i64 the TBool `if` emit can't consume).
-                           // So a Bool payload binder DECLINES (TErr) for now, exactly like the unsupported -1 case,
-                           // until the Bool value round-trip (construct→store→extract→use) is wired as its own slice.
-                           // The sentinel + reader recording stay (harmless: the ct records argType 1) so that slice
-                           // is a one-line re-enable here. mlrepro filed for the compiled Bool-binder trap.
-                           else (if (enc == 1) then Typed.TErr                      // Bool payload NOT-yet-wired → decline
-                                 else (if (enc == (0 - 1)) then Typed.TErr          // unsupported → TErr (declines)
-                                       else Typed.TIntW(pt-signed(enc), pt-width(enc)))))  // int type
+    | Option.Some(enc) => decode-argtype-enc(enc)
     | Option.None(_) => t-int64())
 
-/// Seed the payload binder types for a ctor-pattern arm into the type column. binderIds is the pattern's positional
-/// binder list (schema slice): [] (nullary — nothing to seed), [id] (single binder — seed `id` from the ctor's
-/// payload argType, EXACTLY the pre-list single-binder behavior), or [id0,id1,…] (compound — the multi-binder BEHAVIOR
-/// slice will seed binder[i] ← the i-th field type via ctor-argtypes-of; this schema-only version seeds the HEAD like
-/// today and leaves any extra binders unseeded, since the reader does not yet PRODUCE a multi-binder list — a
-/// behavior-preserving no-op for every pattern the reader emits). Tail-recursive over the list is deferred to that slice.
+/// Seed the payload binder types for a ctor-pattern arm into the type column, POSITIONALLY per field. binderIds is the
+/// pattern's binder list: [] (nullary — nothing to seed), [id] (single binder), or [id0,id1,…] (compound). Each
+/// binderIds[i] is typed from the ctor's i-th recorded payload argType (ctor-argtypes-of) via decode-argtype-enc — so
+/// `((Pair x y) …)` over `(type P (Pair Int64 Bool))` types x:Int64, y:TErr(Bool-declines). A binder with NO matching
+/// argType entry (list shorter than binders, shouldn't happen for a well-formed ctor) → Int64 default. Tail-recursive
+/// fold over the index `i`. For a single-binder [id] this seeds exactly binderIds[0]←argTypes[0] = the pre-fold head
+/// behavior (backward-compatible). A -1 field → TErr binder → any use declines, same discipline as the single-field Bool.
+def seed-ctor-binders-go(tcol: Map(Int64, Typed), argTypes: List(Int64), binderIds: List(Int64), i: Int64) =
+  (if (i == List.len(binderIds)) then tcol
+   else (match List.at(binderIds, i) with
+          | Option.None(_) => tcol
+          | Option.Some(bid) =>
+              (let ty = (match List.at(argTypes, i) with
+                          | Option.Some(enc) => decode-argtype-enc(enc)
+                          | Option.None(_) => t-int64()) in
+               seed-ctor-binders-go(Map.insert(tcol, bid, ty), argTypes, binderIds, i + 1))))
+
 def seed-ctor-binders(tcol: Map(Int64, Typed), tree: Tree, patCtorName: Int64, binderIds: List(Int64)) =
-  (match List.at(binderIds, 0) with
-    | Option.None(_) => tcol                                                    // nullary pattern → nothing to bind
-    | Option.Some(b0) => Map.insert(tcol, b0, ctor-payload-binder-type(tree, patCtorName)))
+  (match ctor-argtypes-of(tree, patCtorName) with
+    | Option.Some(argTypes) => seed-ctor-binders-go(tcol, argTypes, binderIds, 0)
+    | Option.None(_) => tcol)
 
 def ctor-pattern-cross-type(tree: Tree, tcol: Map(Int64, Typed), scrutId: Int64, patCtorName: Int64) =
   (match Map.lookup(tcol, scrutId) with

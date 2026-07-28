@@ -2330,18 +2330,29 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // runtime widen.)
         Core::BigIntOfI64 { value } => {
             let v = emit(db, value, env, ctx)?;
-            // `BigInt.of` is `∀a. (Int a) -> BigInt`, so the operand may be UNSIGNED. `Big::from_i64((v) as
-            // i64)` REINTERPRETS a `u64 >= 2^63` as NEGATIVE — a silent VALUE miscompile (Copilot PR#464).
-            // Widen BY VALUE through `i128`: every fixed-width int (signed or unsigned, ≤64 bits) fits an
-            // `i128` LOSSLESSLY and keeps its true sign (`u64::MAX as i128` = +18446744073709551615, not -1).
-            // `Big` has no public `from_i128`/`from_u64`, but it has the canonical byte path:
-            // `i128_to_sign_magnitude_bytes_into` writes `[sign][LE magnitude]` (≤17 bytes for any i128),
-            // and `from_sign_magnitude_bytes` rebuilds the `Big`. This is correct for BOTH a signed negative
-            // and a large unsigned — one uniform path, no signedness branch needed. (`__buf`/`__n` are
-            // block-local so nesting is fine; the buffer is 17 = 1 sign + 16 magnitude bytes.)
+            // `BigInt.of` is `∀a. (Int a) -> BigInt`, so the operand may be UNSIGNED. Widen BY VALUE through
+            // `i128`: every fixed-width int (signed or unsigned, ≤64 bits) fits an `i128` LOSSLESSLY and keeps
+            // its true sign (`u64::MAX as i128` = +18446744073709551615, not -1). `Big` has no public
+            // `from_i128`/`from_u64`, but `i128_to_sign_magnitude_bytes_into` writes `[sign][LE magnitude]`
+            // (≤17 bytes) and `from_sign_magnitude_bytes` rebuilds the `Big`. Correct for BOTH a signed
+            // negative and a large unsigned — one uniform path.
+            // 🔑 the operand MUST be widened `as <its own rust int type> as i128` — NOT a bare `(v) as i128`.
+            // A genuine `UInt64` operand whose emit carries an i64 REP (e.g. a `(bin (u64 n))` binder, whose
+            // BinIntRead assembles bits into an i64) would SIGN-EXTEND under `(i64-expr) as i128` — the top
+            // half of u64 flips negative (`2^63+9` → -9223372036854775799, `% 1000` = -799 not 817). Casting
+            // to the operand's solved rust type FIRST (`(v) as u64 as i128` for a UInt64 operand) widens
+            // UNSIGNED. For an Int64 operand it is `as i64` (a no-op, elided). This is the `BigInt.of` twin of
+            // the BinIntRead cast; both target the same u64-carried-as-i64 sign-extension. (corpus-bugfix
+            // finding #4, wasm oracle 817; rust/rust-async sign-extended to -799.)
+            let opt = types::rust_type(&Ty::Int(int_ty_of(db, value))).unwrap_or_else(|| "i64".to_string());
+            let widened = if opt == "i64" {
+                format!("({v}) as i128")
+            } else {
+                format!("({v}) as {opt} as i128")
+            };
             Ok(format!(
                 "{{ let mut __buf = [0u8; 17]; \
-                 let __n = cdz_num::Big::i128_to_sign_magnitude_bytes_into(({v}) as i128, &mut __buf) \
+                 let __n = cdz_num::Big::i128_to_sign_magnitude_bytes_into({widened}, &mut __buf) \
                  .expect(\"i128 fits 17 bytes\"); \
                  cdz_num::Big::from_sign_magnitude_bytes(&__buf[..__n]) }}"
             ))
@@ -2646,7 +2657,21 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 let sh = (8 - w) * 8;
                 body.push_str(&format!("__acc = (__acc << {sh}) >> {sh}; "));
             }
-            body.push_str("__acc }");
+            // `__acc` holds the segment's BIT PATTERN in an i64 (the byte-assembly + signed narrow-width
+            // sign-extension above). The BINDER's solved type, however, is the segment's own int type — and
+            // a `(u64 n)` segment binds a genuine `UInt64` (`Ty::Int` unsigned-64; the v-core-opt typing fix
+            // `7ff56255f`). Its Rust type is `u64`, not `i64`, so returning the raw `i64 __acc` mismatches
+            // every downstream use (`% n`, `Int64.of n`) — rust E0308 (wasm has no static type to clash).
+            // CAST the assembled bits to the binder's Rust int type: `0x8000_0000_0000_0001 as u64` =
+            // 2^63+1 (the true unsigned value), so `% 1000` runs unsigned → 809, and `Int64.of` narrows a
+            // genuine `u64`. A narrower/signed segment already solves to `Int64`, so its cast is `as i64` —
+            // a no-op elided here (keeps the common case byte-identical + dodges the `unnecessary_cast` lint).
+            let rt = types::rust_type(&Ty::Int(int_ty_of(db, id))).unwrap_or_else(|| "i64".to_string());
+            if rt == "i64" {
+                body.push_str("__acc }");
+            } else {
+                body.push_str(&format!("(__acc as {rt}) }}"));
+            }
             Ok(body)
         }
         // Read the FINAL `(bytes rest)` segment — the tail of the `Vec<u8>` scrutinee from `byte_offset +

@@ -700,45 +700,54 @@ def read-nullary-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tre
              (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>   // recurse for rest
                (match add-node(t3, Node.NMatchCtor(scrutId, name-id(cnm), ([] : List(Int64)), bodyId, restId)) with | (id, t4) => (id, r1, t4)))))))
 
-/// M2-b-2b-ii-c: read a PAYLOAD ctor-pattern arm `((Ctor x) body)` → NMatchCtor(scrut, patCtorName, [binderId], body, rest).
+/// Read the payload BINDER atoms of a ctor-pattern `(Ctor x y …)` from index `k` (the first binder atom, after the
+/// ctor name) up to the pattern's closing `)`, building an NVar node per binder and returning `(binderIds, indexPastLast,
+/// tree')`. binderIds is the positional NVar-node-id List (empty if the pattern closes immediately = no binder). Each
+/// binder name → an NVar node (bound in the body scope by resolve's bind-ctor-binders). Tail-recursive over the index;
+/// stops at `)` (or a nested `(` / end — malformed, treated as stop). Flat (≤2 nesting — the paren-cascade trap).
+def read-ctor-pattern-binders(s: String, k: Int64, acc: List(Int64), tree: Tree) =
+  (let q = skip-space(s, k) in
+   (if ((char-at(s, q) == ")") or (char-at(s, q) == "(") or (char-at(s, q) == ""))
+    then (acc, q, tree)                                             // pattern closes (or malformed) → done
+    else (match scan-atom(s, q, "") with | (bnm, k1) =>             // one binder name
+           (match add-node(tree, Node.NVar(name-id(bnm))) with | (bid, t1) =>
+             read-ctor-pattern-binders(s, k1, List.push(acc, bid), t1)))))
+
+/// M2-b-2b-ii-c: read a PAYLOAD ctor-pattern arm `((Ctor x y …) body)` → NMatchCtor(scrut, patCtorName, binderIds, body, rest).
 /// `p` is at the inner `(` of the pattern (the arm's outer `(` already consumed by open-paren in read-match-arms).
-/// Read the ctor NAME + its single binder NAME (an NVar node bound in the body scope), look the ctor's tag via
-/// ctor-tag-of, consume the pattern's `)`, read the body, recurse for the rest, build NMatchCtor. A ctor with NO
-/// binder or an unknown ctor → decline. A decline MUST skip the WHOLE arm (pattern + body + the arm's close `)`)
-/// so the remaining arms + the enclosing `(match …)` still parse — `skip-to-close(s, p, 1)` starts at the arm's
-/// inner `(` with the arm's already-open `(` counted as depth 1, so it lands just past the arm's closing `)`. We
-/// then recurse for the remaining arms (positions the reader past the whole arm sequence) and return the poison
-/// `unsupported` node so the match declines cleanly (never a fabricated match). Single-payload-field first.
+/// Read the ctor NAME, then LOOP all binder NAMEs into a positional NVar List (each bound in the body scope), look the
+/// ctor's tag via ctor-tag-of, consume the pattern's `)`, read the body, recurse for the rest, build NMatchCtor. A ctor
+/// with NO binder (`((Ctor) body)`, empty binder list) or an unknown ctor → decline. A decline MUST skip the WHOLE arm
+/// (pattern + body + the arm's close `)`) so the remaining arms + the enclosing `(match …)` still parse —
+/// `skip-to-close(s, p, 1)` starts at the arm's inner `(` with the arm's already-open `(` counted as depth 1, so it
+/// lands just past the arm's closing `)`. Multi-field: `(Pair x y)` binds [x,y]; infer seeds binder[i]←argTypes[i]
+/// (seed-ctor-binders), lower→CMatchSum multi-slot (lower-binder-list), eval binds payload[i]→binderIds[i].
 def read-ctor-pattern-arm(s: String, p: Int64, scrutId: Int64, tree: Tree) =
-  (let pi = open-paren(s, p) in                                     // open the pattern `(Ctor x)`
+  (let pi = open-paren(s, p) in                                     // open the pattern `(Ctor x y …)`
    (match scan-atom(s, skip-space(s, pi), "") with | (cnm, c1) =>   // the ctor NAME
      (match ctor-tag-of(tree, name-id(cnm)) with
        | Option.None(_) =>                                          // unknown ctor → decline, skip the WHOLE arm
            (match unsupported(tree) with | (id, t0) =>
              (match read-match-arms(s, skip-to-close(s, p, 1), scrutId, t0) with | (_rest, r1, t1) => (id, r1, t1)))
        | Option.Some(_ctorTag) =>                                   // known ctor (tag re-derived at lower via ctor-tag-of)
-           (match scan-atom(s, skip-space(s, c1), "") with | (bnm, b1) =>   // the payload BINDER name `x`
-             // DECLINE (skip the whole arm) when the pattern is NOT a single-binder `(Ctor x)`:
-             //  (a) NO binder `((Ctor) body)` — bnm == "" (scan-atom hit the `)`); PR#835 no-binder rule.
-             //  (b) MULTI-BINDER `((Ctor x y …) body)` — after the first binder at `b1` the pattern does NOT close
-             //      (another atom follows before `)`). The single-binder build below binds exactly ONE NVar then
-             //      expects the pattern's `)`; a 2nd binder would be silently MISREAD as the arm body (real body +
-             //      following arms then mis-parsed as bogus arms — confirmed). Multi-binder patterns need the
-             //      NMatchCtor binder-LIST slice (co-designed w/ v-inference: binderIds List, seed binder[i]←argTypes[i]);
-             //      until that lands, decline HONESTLY rather than misread. `skip-to-close(s, p, 1)` skips the whole arm.
-             (if ((bnm == "") or (if (char-at(s, skip-space(s, b1)) == ")") then false else true))
-              then (match unsupported(tree) with | (id, t0) =>
+           (match read-ctor-pattern-binders(s, c1, [], tree) with | (binderIds, bEnd, tb) =>   // LOOP the binders → NVar list
+             // DECLINE (skip whole arm) unless the binder count EXACTLY matches the ctor's field arity:
+             //  - 0 binders `((Ctor) body)` — PR#835 no-binder rule (a payload ctor pattern must bind ≥1).
+             //  - count != arity — ARITY MISMATCH (v-inference ruling): a ctor pattern must bind ALL fields (or none).
+             //    A PARTIAL bind `((P x) …)` over a 2-field P silently drops payload[1..] — a readability/soundness trap
+             //    (can't tell "bind first, ignore rest" from a typo omitting y; rcdzc rejects payload-arity mismatch).
+             //    Intentional field-ignore is a later `_`-wildcard-binder slice. arity = |ctor-argtypes-of|.
+             (let arity = (match ctor-argtypes-of(tree, name-id(cnm)) with | Option.Some(ats) => List.len(ats) | Option.None(_) => 0) in
+              (if ((List.len(binderIds) == 0) or (if (List.len(binderIds) == arity) then false else true))
+              then (match unsupported(tb) with | (id, t0) =>
                      (match read-match-arms(s, skip-to-close(s, p, 1), scrutId, t0) with | (_rest, r1, t1) => (id, r1, t1)))
-              else (match add-node(tree, Node.NVar(name-id(bnm))) with | (binderId, t1) =>   // the binder node (bound in body)
-                     (let pc = close-paren(s, b1) in                 // close the pattern `(Ctor x)`
-                      (match read-form(s, pc, t1) with | (bodyId, q2, t2) =>    // the arm body
-                        (let q3 = close-paren(s, q2) in              // close the arm `((Ctor x) body)`
-                         (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>   // recurse for rest
-                           // NMatchCtor carries the pattern ctor's NAME-id (single source of truth): lower re-derives
-                           // the tag via ctor-tag-of, infer re-derives the decl via ctor-decl-of — they cannot drift.
-                           // binderIds is a LIST (schema slice): a single-binder pattern records [binderId]. The
-                           // multi-binder behavior slice will loop the binders into this list at this same site.
-                           (match add-node(t3, Node.NMatchCtor(scrutId, name-id(cnm), List.push([], binderId), bodyId, restId)) with | (id, t4) => (id, r1, t4))))))))))))
+              else (let pc = close-paren(s, bEnd) in                // close the pattern `(Ctor x y …)`
+                    (match read-form(s, pc, tb) with | (bodyId, q2, t2) =>    // the arm body
+                      (let q3 = close-paren(s, q2) in               // close the arm `((Ctor x y …) body)`
+                       (match read-match-arms(s, q3, scrutId, t2) with | (restId, r1, t3) =>   // recurse for rest
+                         // NMatchCtor carries the pattern ctor's NAME-id (single source of truth): lower re-derives
+                         // the tag via ctor-tag-of, infer re-derives the decl via ctor-decl-of — they cannot drift.
+                         (match add-node(t3, Node.NMatchCtor(scrutId, name-id(cnm), binderIds, bodyId, restId)) with | (id, t4) => (id, r1, t4))))))))))))
 
 /// M2-a nullary CTOR-PATTERNS in match: a match-arm pattern is an integer LITERAL (`(0 body)`) OR a nullary
 /// CONSTRUCTOR name (`(Red body)`). A nullary ctor is a nullary def `Ck → NLit(tag)` (recorded by read-do-type),
@@ -1565,18 +1574,28 @@ def sr-multi-field-ctor-unsupported-field-is-neg1-slice1b() =
       | Option.None(_) => trap("Two is a recorded ctor")))
 
 @test
-def sr-ctor-pattern-multibinder-declines-cleanly() =
-  // A MULTI-binder payload pattern `((Pair x y) (+ x y))` must DECLINE (skip the whole arm), NOT silently misread.
-  // Pre-fix the single-binder reader bound only `x`, then read the 2nd binder `y` AS the arm body (body = NVar y)
-  // and mis-parsed the real body `(+ x y)` + following arms as bogus extra arms — a silent corruption. The sharp
-  // witness (like PR#835): a def FOLLOWING the match must still parse intact — under the misread the reader
-  // over/under-consumes and `helper` is lost. Multi-binder support is the NMatchCtor binder-LIST slice (deferred,
-  // co-designed w/ v-inference); until then decline honestly. `helper` = NLit 42 proves the reader positioned right.
+def sr-ctor-pattern-multibinder-reads-binder-list() =
+  // BEHAVIOR slice: a MULTI-binder payload pattern `((Pair x y) (+ x y))` now READS to NMatchCtor with a 2-element
+  // binder LIST [x,y] and body = the real `(+ x y)` NBin (was: declined pre-behavior-slice; was: misread y-as-body
+  // pre-e4e49dc72). Pins both the binder-count (2) AND that the body is the NBin (not a swallowed 2nd binder).
+  (match read-source("(do (type P (Pair Int64 Int64)) (def (main c) (match c ((Pair x y) (+ x y)) (_ 9))) (export main))") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NMatchCtor(_, _, binderIds, bodyId, _)) =>
+          (if (List.len(binderIds) == 2) then
+             (if is-bin-op(tree, bodyId, 43) then unit                // body is `(+ x y)` (op 43) — real body, not binder y
+              else trap("multi-binder arm body is the `(+ x y)` NBin, not a swallowed 2nd binder"))
+           else trap("`(Pair x y)` reads a 2-element binder list [x,y]"))
+      | _ => trap("a multi-binder payload ctor-pattern arm reads to NMatchCtor (behavior slice)")))
+
+@test
+def sr-ctor-pattern-multibinder-following-def-intact() =
+  // The PR#835-style sharp witness, still asserted for the READ path: a def FOLLOWING a multi-binder-pattern match
+  // parses intact (reader consumed the whole arm correctly — no over/under-consume from the binder loop).
   (match read-source("(do (type P (Pair Int64 Int64)) (def (main c) (match c ((Pair x y) (+ x y)) (_ 9))) (def (helper) 42) (export main))") with | (_root, tree) =>
     (match def-body-of(tree, name-id("helper")) with
       | Option.Some(b) => (match node-at(tree, b) with
-          | Option.Some(Node.NLit(42)) => unit                        // following def intact → reader declined + positioned correctly
-          | _ => trap("the def FOLLOWING a multi-binder-pattern match must parse intact (helper = NLit 42) — multi-binder must DECLINE, not misread"))
+          | Option.Some(Node.NLit(42)) => unit                        // following def intact → reader positioned correctly past the arm
+          | _ => trap("the def FOLLOWING a multi-binder-pattern match must parse intact (helper = NLit 42)"))
       | Option.None(_) => trap("the following `helper` def must be recorded (reader not corrupted by the multi-binder arm)")))
 
 @test
@@ -1590,5 +1609,18 @@ def sr-ctor-pattern-single-binder-still-reads-nmatchctor() =
             | Option.Some(Node.NLit(9)) => unit
             | _ => trap("single-binder arm's REST reaches the wildcard body NLit 9"))
       | _ => trap("a single-binder payload ctor-pattern arm still reads to NMatchCtor (arity check didn't over-decline)")))
+
+@test
+def sr-ctor-pattern-arity-mismatch-declines() =
+  // v-inference ruling: a ctor pattern binding FEWER binders than the ctor's field arity DECLINES (arity mismatch).
+  // `((P x) …)` over a 2-field `(P Int64 Int64)` binds only 1 of 2 → decline (skip whole arm), NOT a partial bind that
+  // silently drops payload[1]. Sharp witness (PR#835-style): the FOLLOWING `helper` def stays intact (NLit 42) — the
+  // reader declined + positioned past the arm correctly. A 2-binder `(P x y)` (matching arity) still reads (other test).
+  (match read-source("(do (type P (Pair Int64 Int64)) (def (main c) (match c ((Pair x) x) (_ 9))) (def (helper) 42) (export main))") with | (_root, tree) =>
+    (match def-body-of(tree, name-id("helper")) with
+      | Option.Some(b) => (match node-at(tree, b) with
+          | Option.Some(Node.NLit(42)) => unit                        // following def intact → arity-mismatch declined cleanly
+          | _ => trap("the def FOLLOWING an arity-mismatch ctor pattern must parse intact (helper = NLit 42)"))
+      | Option.None(_) => trap("the following `helper` def must be recorded (reader declined the arity-mismatch arm cleanly)")))
 
 export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id }

@@ -170,12 +170,19 @@ fn a_set_or_map_over_bytes_declines_no_blessed_order() {
         try_compile_rust(set_bytes).is_err(),
         "a Set over Bytes must decline (no blessed Bytes order), not emit a BTreeSet<Vec<u8>>"
     );
+    // Use `Map.len` (NOT the retired `Map.size` → CDZ0603 rename rejection, which would make this decline
+    // pass for the WRONG reason even if Bytes ordering were accidentally permitted — github-liaison PR#871).
+    // Assert the decline is ATTRIBUTABLE to the non-Ord Bytes key, not some unrelated reject.
     let map_bytes = "(module m \
-        (def (run) (Map.size (Map.insert (Map.empty) (Bytes.of (list 1 2)) 7))) \
+        (def (run) (Map.len (Map.insert (Map.empty) (Bytes.of (list 1 2)) 7))) \
         (export run))";
+    let map_err = try_compile_rust(map_bytes)
+        .expect_err("a Map keyed by Bytes must decline (no blessed Bytes order)");
     assert!(
-        try_compile_rust(map_bytes).is_err(),
-        "a Map keyed by Bytes must decline (no blessed Bytes order)"
+        map_err
+            .iter()
+            .any(|m| m.contains("non-Ord key") && m.contains("Bytes")),
+        "the Map<Bytes> decline must be attributable to the non-Ord Bytes key, got: {map_err:?}"
     );
     // Bytes EQUALITY is untouched — a Bytes value still builds + round-trips (it derives Eq, just not Ord).
     let bytes_eq = "(module m \
@@ -186,6 +193,56 @@ fn a_set_or_map_over_bytes_declines_no_blessed_order() {
         "Bytes EQUALITY stays blessed — only ORDER declines:\n{:?}",
         try_compile_rust(bytes_eq).err()
     );
+}
+
+#[test]
+fn bigint_of_a_genuine_uint64_widens_unsigned_not_sign_extended() {
+    // REGRESSION (corpus-bugfix finding #4, wasm oracle 817): `(BigInt.of n)` on a genuine UInt64 whose
+    // TOP BIT is set must widen UNSIGNED, not sign-extend the i64 carrier. BigIntOfI64 emitted a bare
+    // `(v) as i128`, which reinterprets a `u64 >= 2^63` as NEGATIVE (2^63+9 → -9223372036854775799,
+    // % 1000 = -799) — a SILENT wrong-SIGN miscompile for the whole upper half of u64 (the 8-byte-id/hash
+    // escape-hatch path). FIX: cast to the operand's own rust int type first (`(v) as u64 as i128`), so an
+    // unsigned operand widens unsigned. Here a direct UInt64 param solves UInt64, exercising the fix.
+    // 2^63 + 9 = 9223372036854775817; % 1000 = 817 (unsigned), NOT -799 (sign-extended).
+    let src = "(module m \
+        (def (run (: n UInt64)) (Int64.of (% (BigInt.of n) (BigInt.of 1000)))) \
+        (export run))";
+    let rs = compile_rust(src);
+    if let Some(out) = rustc_run(&rs, "run(9223372036854775817)") {
+        assert_eq!(
+            out, "817",
+            "BigInt.of a top-bit-set UInt64 must widen unsigned (817), not sign-extend (-799):\n{rs}"
+        );
+    }
+}
+
+#[test]
+fn a_u64_bin_binding_reads_unsigned_and_builds() {
+    // REGRESSION (corpus-bugfix u64-binding family, wasm oracle 809/905): a `(bin (u64 n))` segment binds
+    // a genuine UInt64 (v-core-opt typing 7ff56255f). Core::BinIntRead assembles the bytes into an i64
+    // carrier; returning that raw i64 made downstream `% n` / `Int64.of n` (which expect u64) MISMATCH →
+    // rust E0308 build-fail (wasm has no static type to clash, computes 809). FIX: BinIntRead casts the
+    // assembled bits to the binder's solved rust int type (`__acc as u64`). Bytes [x,0,0,0,0,0,0,1]:
+    // x=128 → 2^63+1, % 1000 = 809 (unsigned); x=64 (top bit clear) → 905 (control, always agreed).
+    let src = "(do \
+        (def (run (: x UInt8)) \
+          (do \
+            (def b (Bytes.of (list x 0 0 0 0 0 0 1))) \
+            (match b \
+              ((bin (u64 n)) (Int64.of (% n 1000))) \
+              (_ -1)))) \
+        (export run))";
+    // It must EMIT (the pre-fix bug was a hard E0308 build-fail on the emitted source).
+    let rs = compile_rust(src);
+    if let Some(out) = rustc_run(&rs, "run(128)") {
+        assert_eq!(
+            out, "809",
+            "a top-bit-set u64 bin binding reads UNSIGNED (809), not signed (-807):\n{rs}"
+        );
+    }
+    if let Some(out) = rustc_run(&rs, "run(64)") {
+        assert_eq!(out, "905", "the top-bit-clear control agrees:\n{rs}");
+    }
 }
 
 #[test]
