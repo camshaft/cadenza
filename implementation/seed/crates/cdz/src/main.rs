@@ -5318,6 +5318,21 @@ fn run_one_trial(
     run_one_trial_with_pool(component, runtime, kebab, store, arg_vals, &[]).0
 }
 
+/// Whether to include the full wasm BACKTRACE (the `<wasm function N>` frames wasmtime captures on a trap)
+/// in a trapping test's FAIL message, rather than trimming to the reason's first line. Off by default (a
+/// one-line counterexample stays legible); enabled by setting `CDZ_WASM_BACKTRACE` to any non-empty value
+/// other than `0`/`false`. A debug lever for localizing a COMPILED trap — the frame indices are the only
+/// locus for a self-host trap, where the usual isolate-the-case repro doesn't reproduce it.
+fn wasm_backtrace_enabled() -> bool {
+    match std::env::var("CDZ_WASM_BACKTRACE") {
+        Ok(v) => {
+            let v = v.trim();
+            !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
+        }
+        Err(_) => false,
+    }
+}
+
 /// The well-known GENERATOR effect operation a property test performs to pull one random `Int64` from the
 /// runner's driver: `Test.gen-int : Unit -> Int64` (the "well-known `Test` effect extends" convention — the
 /// same `Test` effect that carries `fail`). `cdz test` answers a `Test.gen-int` performance with the next int
@@ -5372,11 +5387,25 @@ fn run_one_trial_with_pool(
                 // Int64 generator whose unguarded `+` overflows on two large samples is NOT a real violation).
                 cdz_run::Outcome::Trap(reason) => {
                     TrialOutcome::Fail(observed_failure_message(&observed).or_else(|| {
-                        // Trim to the FIRST line — a wasmtime trap renders as `wasm trap: integer overflow`
-                        // followed by a multi-line backtrace; the first line is the actionable reason and
-                        // keeps the one-line counterexample report legible.
-                        let first = reason.lines().next().unwrap_or("").trim();
-                        (!first.is_empty()).then(|| format!("body trapped: {first}"))
+                        // A wasmtime trap renders as `wasm trap: <reason>` followed by a multi-line wasm
+                        // BACKTRACE (`0: 0x… - <wasm function N>` frames). By default trim to the FIRST line
+                        // — the actionable reason — so the one-line counterexample report stays legible.
+                        // With `CDZ_WASM_BACKTRACE` set, keep the WHOLE reason (frames included): a compiled
+                        // trap (esp. self-host, where the isolated-repro trick fails) is hard to localize
+                        // without the `<wasm function N>` frame indices, and there is no other way to see them
+                        // in `cdz test` (v-wasm-opt's diagnostic-quality gap — the backtrace IS captured, it
+                        // was just being discarded here).
+                        let trimmed = reason.trim();
+                        (!trimmed.is_empty()).then(|| {
+                            if wasm_backtrace_enabled() {
+                                format!("body trapped: {trimmed}")
+                            } else {
+                                format!(
+                                    "body trapped: {}",
+                                    reason.lines().next().unwrap_or("").trim()
+                                )
+                            }
+                        })
                     }))
                 }
             };
