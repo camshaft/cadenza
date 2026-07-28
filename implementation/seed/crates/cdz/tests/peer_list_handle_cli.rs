@@ -51,8 +51,11 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-/// Compile `src` to a component in `dir`; returns the produced `.wasm` path (named after the exported def,
-/// not the source file). `component_name` (if any) publishes the provider's interface. Panics on failure.
+/// Compile `src` to a component in `dir`; returns the produced `.wasm` path. `cdz compile -o <dir>` names the
+/// output after the EXPORTED def, and each source here writes its file + exports a single def under the SAME
+/// `name` (so `name.sexp` → `name.wasm`) — so the output path is `dir/<name>.wasm` DETERMINISTICALLY (no
+/// mtime scan, which would flake on coarse mtime / a stray wasm). `component_name` (if any) publishes the
+/// provider's interface. Panics on failure.
 fn compile(
     dir: &std::path::Path,
     name: &str,
@@ -80,19 +83,17 @@ fn compile(
         "compile {name} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // The emitted component is named after the exported entry; find the one .wasm produced by THIS compile.
-    // (Both provider and consumer export a single def, so the newest .wasm in the dir is this one.)
-    let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
-    for e in std::fs::read_dir(dir).unwrap().flatten() {
-        let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) == Some("wasm") {
-            let m = e.metadata().unwrap().modified().unwrap();
-            if newest.as_ref().is_none_or(|(t, _)| m >= *t) {
-                newest = Some((m, p));
-            }
-        }
-    }
-    newest.expect("a .wasm component was produced").1
+    // The emitted component is named after the exported entry, which here == `name` (each source exports a
+    // single def of that name). So the path is deterministic — no dir scan / mtime pick.
+    let wasm = dir.join(format!("{name}.wasm"));
+    assert!(
+        wasm.is_file(),
+        "expected `cdz compile -o` to emit `{name}.wasm` (named after the exported def); dir contents: {:?}",
+        std::fs::read_dir(dir)
+            .map(|rd| rd.flatten().map(|e| e.file_name()).collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
+    wasm
 }
 
 #[test]

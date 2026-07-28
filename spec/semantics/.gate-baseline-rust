@@ -5163,3 +5163,5 @@ pass	a u64 bin binding with the top bit set does unsigned arithmetic
 pass	a top-bit u64 binding widens to BigInt unsigned
 pass	a recursive drop-scalar walk over a rope converges (string-shrinker shape)
 pass	a constant-folded u64 bin binding with the top bit set compares unsigned
+pass	handler-arm bindings and perform-site bindings stay in their own scopes across the fold
+pass	an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)

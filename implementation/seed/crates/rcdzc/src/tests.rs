@@ -58824,6 +58824,30 @@ mod stage1 {
             let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compiles");
             run_returns_with(&bytes, "main", &[])
         };
+        // NESTED-HANDLER SAFETY (breaker's right-nested 1033 face): a two-effect right-nested handler with a
+        // binder-name collision must NOT MISCOMPILE — it either computes the right value or DECLINES cleanly
+        // (a "not yet reducible" todo when the nested composition is not reducible enough to exercise the
+        // rename). Whichever way, NEVER a wrong value. `compile_scratch` returns Ok(bytes) if it folds, Err
+        // otherwise; either is acceptable here, and if it folds, the value must be correct (no capture).
+        let nested = "(module m (effect A (op a (-> Unit Int64))) (effect B (op b (-> Unit Int64))) \
+            (def x 1000) \
+            (def (main) (handle A 0 ((a (u) s (do (def x 3) (resume (+ x s) s)))) \
+              (handle B 0 ((b (u) s (do (def x 30) (resume (+ x s) s)))) \
+                (+ x (+ (A.a unit) (B.b unit)))))) \
+            (export main))";
+        match compile_component(&crate::codec::encode(&parse(nested))) {
+            Ok(bytes) => {
+                // If it folds, the arm-local `(def x 3)`/`(def x 30)` must NOT capture the body's x=1000:
+                // correct value is 1000 + 3 + 30 = 1033. A captured value (e.g. 3/30 leaking) would be wrong.
+                let v: i64 = run_returns_with(&bytes, "main", &[]);
+                assert_eq!(
+                    v, 1033,
+                    "nested handler with binder collisions must compute 1033, never a captured value"
+                );
+            }
+            Err(_) => { /* declines cleanly (todo) — acceptable: nested reduction not yet built, never a miscompile */
+            }
+        }
         // F1: the arm-local `(def x 5)` must NOT capture the handle BODY's `x` (the global 100) when `C =
         // (+ x □)` is spliced into the arm's `(do (def x 5) …)` for the resume. Pre-fix → 10 (=5+5).
         let f1 = "(module m (effect E (op get (-> Unit Int64))) \

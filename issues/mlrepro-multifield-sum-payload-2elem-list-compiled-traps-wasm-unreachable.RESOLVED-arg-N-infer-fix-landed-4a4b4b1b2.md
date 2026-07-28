@@ -61,3 +61,9 @@ case makes ONE bind-payload call + no recursion; 2 binders is the first to RECUR
 v-compiler-ml + v-rust-backend/v-wasm-opt pairing (my logic is correct per interpreter; the compiled backtrace decides
 if it's my eval-db recursion shape or an rcdzc emit gap). My multi-binder slice (3cd92ae34) stays OUT of trunk until
 the compiled 2-field deconstruct round-trips; reject-bounce was correct. Re-send once green compiled.
+
+---
+RESOLVED 2026-07-28: root cause was NOT a lower-layer emit bug — it was a SOURCE-LOGIC infer gap (payload-ctor arm
+typed only arg1, never arg2/3/4), localized via the boundary-Int64 probe chain. Fixed by 4a4b4b1b2 (infer: type ALL
+payload-ctor args), landed in the multifield arc. ss-multifield-payload-ctor-{const-both-binders,runtime-boxed} are
+GREEN on trunk. The "rust oracle→7 / interp Some(7)" that suggested wasm-emit was a const-fold/different-path confound.

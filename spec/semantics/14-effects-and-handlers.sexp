@@ -5711,3 +5711,44 @@
         (export main)))
   (call   main (: 3 Int64)) (output (: 13030 Int64))
   (call   main (: 0 Int64)) (output (: 10000 Int64)))
+
+;; A tail-resumptive handler fold MUST keep an arm's local (def x ...) and a perform-site/handle-body
+;; (def x ...) in their own scopes. Regression: reduce_handle spliced the arm body at the perform site
+;; WITHOUT alpha-renaming, so an arm-local x captured a same-named free x both directions — silent
+;; wrong value (F1 arm→body: 10 for 105; F2 body→arm: 14 for 107; both backends, shared reduce_handle).
+;; Fixed by v-effects 515d6b57d (alpha-rename the local value binders — let pairs + do-local defs — of
+;; both the handle body and the substituted arm body to fresh #-names). op-param + state binders were
+;; already hygienic; only arm-internal locals needed the rename. breaker-routed (FINDING #33).
+(case "handler-arm bindings and perform-site bindings stay in their own scopes across the fold"
+  (input  (do
+        (effect E (op get (-> Unit Int64)))
+        (def (main (: mode Int64))
+          (do
+            (def x 100)
+            (if (= mode 1)
+                (handle E 0
+                  ((get (u) s (do (def x 5) (resume (+ x s) s))))
+                  (+ x (E.get)))
+                (handle E 0
+                  ((get (u) s (resume x s)))
+                  (do (def x 7) (+ x (E.get)))))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 105 Int64))
+  (call   main (: 2 Int64)) (output (: 107 Int64)))
+
+;; A handled effect performed via a closure EXTRACTED from a collection (list + List.at + match, applied
+;; lexically under the handle) DECLINES with the HONEST 'not yet reducible by the tail-resumptive fold'
+;; message — NOT the misleading 'performed with no enclosing handler here' (there IS one). Reject-don't-
+;; miscompile-with-honest-message discipline (27-des:5120 class). Fixed by v-effects 1747c764a: the fold
+;; couldn't trace the app through the collection slot (subtree_performs treated the lambda as pure) →
+;; standalone lift → no-home arm; now remapped to the honest not-yet-reducible decline. breaker-routed.
+(case "an effect performed via a collection-extracted closure declines honestly (not-yet-reducible, not a false no-handler claim)"
+  (input (do
+        (def (main)
+          (handle Ask 5
+            ((ask (n) s (resume (* n 2) s))
+             (match (List.at (list (fn (x) (Ask.ask x))) 0)
+               ((Some f) (f 3))
+               ((None) 0)))))
+        (export main)))
+  (declines))
