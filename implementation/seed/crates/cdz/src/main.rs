@@ -3922,6 +3922,25 @@ fn precompile_tests_per_file(files: &[String]) -> std::collections::HashMap<Stri
     if files.len() < 2 {
         return HashMap::new();
     }
+    // CORRECTNESS GATE (PR#881): a closure file's link name is its dir-BLIND STEM (`program_name` =
+    // file_stem). The union below dedups by that stem AND `run_test_file` looks its component up by the same
+    // stem — so two DIFFERENT-directory target files with the SAME stem (e.g. two `t.cdz`, or a `lib.cdz` in
+    // each of two subdirs) would collapse to one AST and a lookup could fetch the WRONG dir's component,
+    // MISATTRIBUTING pass/fail (the best-effort fallback only fires on an ABSENT component, not a
+    // present-but-wrong one). So only take the shared-precompile fast path when every target file shares ONE
+    // parent directory — then a shared stem means genuinely the same file, and the stem key is unambiguous.
+    // Otherwise return empty ⇒ every file falls back to its own per-file compile (correct, just not amortized).
+    // `cdz test <dir>` (recursive) is the multi-dir case this guards; a flat single-dir suite keeps the win.
+    let parent_of = |p: &str| {
+        std::path::Path::new(p)
+            .parent()
+            .map(|d| d.to_path_buf())
+            .unwrap_or_default()
+    };
+    let first_dir = parent_of(&files[0]);
+    if files.iter().any(|f| parent_of(f) != first_dir) {
+        return HashMap::new();
+    }
     // Gather the UNION of every target file's import closure, deduped by link name. Each file's closure is
     // followed (so an imported sibling resolves), and the union is what one `EmitTestsPerFile` compile links.
     // A file that fails to load is simply omitted from the union (it falls back to its own compile, which

@@ -187,3 +187,44 @@ The peer-call pattern to mirror is at select.rs:10881 (`Core::HostCall` bound to
 - **v-rust-backend (me):** (a) partition, (b) provider emit, (c) consumer cross-component call edges.
 - **v-cdz-tooling:** (d) run_test multi-component instantiate/link (closure as peer); the interface-shape
   contract between provider export ↔ consumer import.
+
+## (c)(iii) / (d) recon — the `EmitTestsComposed` driver (contract LOCKED w/ v-cdz-tooling 2026-07-28)
+
+The (c)(ii) consumer-emit arc (ii-a..ii-d) is COMPLETE + queued (MR `52aad2bd3`): the LAYOUT + SELECT +
+per-consumer EMIT all work and validate. What remains on the rcdzc side is the COMPILE DRIVER that produces
+the provider + N consumers in ONE compile — a new sidecar request `EmitTestsComposed` (tag `0x07`, after
+`EMIT_TESTS_PER_FILE=0x06`). NOT a flag on `EmitTestsPerFile`: the output shape differs (adds the provider;
+consumers here are cross-edge-EXCLUDING vs EmitTestsPerFile's self-contained per-file components).
+
+**Output artifact contract (locked with v-cdz-tooling for their (d) run_with_peers link):** one
+`rcdzc::compile` over the dir's union closure returns:
+- `kind="component-provider"` : the shared-closure provider bytes (`compute_shared_closure_provider`,
+  `db.component_name = <iface>`, exports the cross-edges by `source_boundary_name`). DISTINCT KIND so
+  v-cdz-tooling partitions unambiguously (no name-shape heuristic).
+- `kind="component-name"` : a sidecar whose bytes ARE the fixed iface string (e.g. `cadenza:closure/api`).
+  v-cdz reads it to build `Peer{interface: <string>}` directly (no export-type introspection). SAME string
+  = the provider's `component_name` AND every consumer's import iface (ii-d validates index-agreement).
+- `kind="component"` × N : the consumer bytes, each NAMED by the file's link path (v-cdz's existing
+  `EmitTestsPerFile` name-demux is unchanged), each IMPORTING that iface.
+
+**🔑 THE UNION-CROSS-EDGE SUBTLETY (the one real design point for the driver):** `cross_component_edges`
+and `compute_shared_closure_provider` currently take a SINGLE `own_file`. A composed dir build has N files,
+each with its own cross-edge set; the ONE provider must export the UNION of cross-edges across ALL files (a
+def is a cross-edge if ANY file calls it across the file boundary), and EACH consumer imports the WHOLE
+provider interface in the SAME canonical order (a file hitting only a subset still indexes at the provider's
+export position — the index-agreement invariant `compute_tests_consumer` already honors via `provider_edges`).
+So the driver must:
+  1. bucket `db.test_defs()` by `linkage.file_of(sig_occ)` (as `EmitTestsPerFile` does).
+  2. compute the UNION cross-edge set = ∪ over files of `cross_component_edges(db, test_layout, file_i)`,
+     de-duped, in canonical `layout.order` order (NOT per-file — the provider is shared). This likely needs a
+     small `cross_component_edges_union(db, test_layout, &[file])` helper (or fold the per-file results and
+     re-sort by `order` position) — the ONE new layout primitive the driver needs.
+  3. provider = a `compute_shared_closure_provider`-style layout over that UNION edge set (generalize it to
+     take an explicit edge set instead of deriving from one `own_file`).
+  4. per file: `compute_tests_consumer(db, file_bucket, &union_edges, iface)` → emit `component` (name=link).
+  5. emit provider (`component-provider`) + the `component-name` sidecar.
+
+**Sequencing:** BUILD once `52aad2bd3` lands (single-MR cadence; large multi-file — don't stack on the
+queued MR). v-cdz-tooling's rewire `5da05cab6` (in-flight) is the (d) skeleton (union-compile + name-demux +
+per-test run loop); (d) = swap "run consumer standalone" for "run_with_peers(consumer, [provider_peer])".
+Ping v-cdz-tooling with the exact artifact kinds/names when `EmitTestsComposed` emits so their demux matches.

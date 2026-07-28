@@ -2086,10 +2086,22 @@ fn do_local_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option
     if ix == 0 {
         return None; // `from` is the `do` head itself, not a do-form (defensive)
     }
-    let k = ix - 1;
-    if forms.get(k) != Some(&from) {
-        return None; // `from` is not a direct do-form (defensive; a genuine child always matches)
-    }
+    let k = if forms.get(ix - 1) == Some(&from) {
+        // Fast path: `from`'s LIVE `child_ix` (ix-1 in the headless tail) still matches its position in this
+        // `do`'s forms — its parent is genuinely this `do`.
+        ix - 1
+    } else {
+        // `from`'s live `child_ix` does NOT land on `from` within `forms` — its recorded child-index reads
+        // against a DIFFERENT (re-parented) parent than the `form` we are scoping in. This happens when the
+        // effects fold RE-PARENTS a `do`-item subtree (a `(def frame (bin …))` lifted under a fresh `let`)
+        // while a reference deep inside it (a `(bin …)` build operand's `a`) still ascends here via a
+        // load-time scope-skip pointer whose `from` is that re-parented item: `child_ix_of(from)` then yields
+        // its NEW position, so the fast-path window `ix-1` would exclude the do-def that actually precedes it
+        // and the reference reads UNBOUND (the F2 bin-build-operand-under-handler false CDZ0101). Recover the
+        // TRUE window by finding `from`'s position in THIS `do`'s forms by IDENTITY; if `from` is genuinely
+        // not a direct form of this `do`, it is absent → `None` (the original defensive meaning is preserved).
+        forms.iter().position(|f| *f == from)?
+    };
     // The forms declaring `name`, as ascending `(position, form)` pairs. `do_forms_declaring` gives them
     // in O(1) for a LOAD-TIME do-block (the per-block declaration index, `Db::do_binder_index`) — so a
     // reference to a name the block never declares (a prelude/outer name — `+`, `unit`, a member access's
@@ -4316,6 +4328,29 @@ fn resolve_if(db: &Db, id: StructId) -> Resolved {
                     id,
                     vec!["(trap \"TODO\")".to_string()],
                 )),
+            );
+        }
+        // ML-SYNTAX-IN-THE-S-EXPR-SURFACE. A user who knows the ML surface writes `(if b then 1 else 0)`,
+        // reaching for the `then`/`else` KEYWORDS — but this s-expr surface's `if` is three POSITIONAL forms
+        // `(if <cond> <then> <else>)` with no keywords. The stray `then`/`else` land as bare operands, so the
+        // form reads as 5 operands and hits the generic "if takes exactly 3 operands" arity reject — which
+        // names the arity, not the real mistake (used ML if-syntax). Detect the signature (5 operands with
+        // the 2nd and 4th being the bare symbols `then` and `else`) and name the actual confusion + the
+        // correct shape, so the author fixes the syntax rather than puzzling over "3 operands". Flagged by
+        // v-compiler-ml (a trap that cost them several ticks root-causing). Keyed on the exact `then`/`else`
+        // atom positions, so an ordinary too-many-operand `if` keeps its generic arity reject + delete fix.
+        if tail.len() == 5
+            && db.ast.as_name(tail[1]) == Some("then")
+            && db.ast.as_name(tail[3]) == Some("else")
+        {
+            return Resolved::Poison(
+                Reject::coded(
+                    Code::Malformed,
+                    "this `if` uses the ML `then`/`else` keywords, but the s-expr surface's `if` is three \
+                     positional forms with no keywords: `(if <cond> <then> <else>)` — write `(if <cond> \
+                     <then-value> <else-value>)`, dropping `then` and `else`",
+                )
+                .at(id),
             );
         }
         return Resolved::Poison(fixed_arity_reject(

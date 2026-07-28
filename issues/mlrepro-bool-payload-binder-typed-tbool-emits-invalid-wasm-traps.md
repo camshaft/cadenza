@@ -182,3 +182,44 @@ Repro cmd: CDZ_WASM_BACKTRACE=1 cargo run -q -p cdz -- test .../zz-b128-repro.cd
 v-wasm-opt disasms the func-index. Non-urgent (declines soundly on trunk); queued behind higher-pri. v-compiler-ml
 side: decode(1)→TBool is a 1-liner once emit lands + I co-verify compiled. B128 now fully in v-wasm-opt's hands
 with a turnkey repro — no further v-compiler-ml action until their emit lands.
+
+---
+🔴 ROOT CAUSE 2026-07-28 — b128 IS A WITNESS BUG, NOT A COMPILER BUG. Downgrading/closing.
+The witness `(do … (match (BB true) ((BB b) (if b then 1 else 0)) …))` is MALFORMED: the reader surface has NO
+`then`/`else` keywords. read-if-form (sread.cdz:630) reads exactly THREE positional forms `(if cond then-expr
+else-expr)`. So `(if b then 1 else 0)` parses as cond=b, then-expr=`then` (a BARE UNBOUND SYMBOL → TErr),
+else-expr=`1`, and `else 0` is trailing garbage. The body NIf types TErr because its THEN-BRANCH is the unbound
+word `then` — NOTHING to do with the Bool payload, the SumStore i64 carrier, TBool-cond emit, or extract. That
+TErr is the entire reason lower-of-db returns None (v-wasm-opt's disasm was exactly right: clean None returned, no
+internal trap — the "wasm unreachable" was the probe's OWN tail assert firing on 999).
+PROOF (compiled, both PASS): (a) correct syntax `(if b 1 0)` under decode(1)→TBool → lower-of-db Some;
+(b) malformed `(if b then 1 else 0)` under the same flip → None. (c) 3-lookup: then-lit ≠ deferred-int (it's the
+unbound `then`), else-lit = deferred-int, body NIf = TErr. All consistent with the malformed parse.
+This is line 464's `ss-bool-payload-binder-declines-not-yet-wired` — the ONLY program string in the whole suite
+using then/else keywords; every other `(if …)` uses the 3-form. The test was GREEN FOR THE WRONG REASON (unbound
+`then`, not the Bool binder) and its "b128 invalid wasm / wasm unreachable" comment was FALSE.
+LANE: neither v-wasm-opt (emit) nor v-inference (infer-seed) — it was a test-authoring error in v-compiler-ml's
+own witness. v-wasm-opt STOPPED before disasming e6d296c3b (which baked in the malformed witness). FIX (this tick):
+corrected line 464 to `(if b 1 0)` + rewrote the false comment. OPEN QUESTION (separate, real): should the reader
+DIAGNOSE `then`/`else` as suspicious bare atoms in an `if` (a user coming from the ML surface will hit this)? →
+route to v-diagnostics as a low-pri diagnostic-gap. Bool-payload VALUE wiring (decode→TBool) is now UNBLOCKED on
+the compiler side (isolated probe shows correct-syntax lowers Some under TBool); the flip can proceed once the
+COMPILED run value is gate-verified (local run-src hits the CDZ0999 cliff; let pr-sync's dir-gate be the oracle).
+6-flip LESSON: a decline/None finding must FIRST validate the witness parses to the intended AST (round-trip the
+program string) before routing the None to infer/lower/emit. Every lane-flip here traced to trusting a malformed
+witness. SUPERSEDES all prior "emit"/"source"/"infer-excluded" entries above.
+
+---
+✅ CLOSED-CONFIRMED 2026-07-28: NO residual b128 — the Bool-payload VALUE path works end-to-end for a WELL-FORMED
+witness. v-wasm-opt asked to confirm the corrected witness before assuming any b128 remains; done via a direct-Core
+eval probe (bypasses db-lower/db-infer → compiles single-file, no CDZ0999 cliff):
+  eval-core(CMatchSum(CCtor(0,[CNum 1]), 0, [101], CIf(CVar 101, CNum 1, CNum 0), CNum 9)) → 1  ✅ (BB true path)
+  eval-core(CMatchSum(CCtor(0,[CNum 0]), 0, [101], CIf(CVar 101, CNum 1, CNum 0), CNum 9)) → 0  ✅ (BB false path)
+Representational fact: Bool is i64 0/1 in Core (lower-db.cdz:119 NBoolLit→cnum64; eval CIf: nonzero→then). So a
+Bool payload is stored/bound/used-as-cond IDENTICALLY to an Int payload feeding a CIf — which already runs GREEN.
+No width/truthiness mismatch, no store/extract issue. Combined with last tick's proof (well-formed (if b 1 0)
+LOWERS to Some under decode(1)→TBool), the whole path is sound. ⟹ decode-argtype-enc(1)→TBool is SAFE to flip and
+should RUN (not just lower) — the flip is a genuine feature-enable now, blocked only by base-pin (my witness-fix MR
+397b42935 queued; can't stack a behavior change). NEXT (after witness-fix lands + sync clears): flip decode(1)→TBool
++ update ss-bool-payload-binder-declines-not-yet-wired to ASSERT RUN=1 (was decline) + keep the (+ b 1) arith-decline
+soundness guard + gate on pr-sync's COMPILED dir-gate. v-wasm-opt fully cleared (no emit change ever needed).

@@ -455,13 +455,16 @@ def ss-terr-scrutinee-taints-ctor-match() =
 
 @test
 def ss-bool-payload-binder-declines-not-yet-wired() =
-  // (BB true) matched ((BB b) (if b then 1 else 0)) — b is a Bool payload. The Bool-payload VALUE path is NOT yet
-  // wired: typing the binder TBool made this COMPILE to invalid wasm (b128 gate: `wasm unreachable` trap — the
-  // store/extract hands an i64 the TBool `if` emit can't consume). So a Bool payload binder DECLINES (ctor-payload-
-  // binder-type enc==1 → TErr, like the unsupported -1 case) → the match is TErr → run-src None. SOUND (a clean
-  // decline, never a trap or a wrong value). Re-enable to RUN when the Bool value round-trip is wired (mlrepro filed).
+  // (BB true) matched ((BB b) (if b 1 0)) — b is a Bool payload used as an `if` cond. NOTE reader syntax is the
+  // 3-form `(if cond then-expr else-expr)` — there are NO `then`/`else` keywords (that's the ML surface, not the
+  // reader). The Bool-payload VALUE path is a DELIBERATE decline for now: ctor-payload-binder-type enc==1 → TErr
+  // (decode-argtype-enc), so b's binder is TErr → the `if` cond is TErr → if-type yields TErr → the match is TErr →
+  // lower declines → run-src None. SOUND (a clean decline, never a trap or a wrong value). An isolated probe showed
+  // that with decode(1)→TBool the SAME correct-syntax program LOWERS to Some (the earlier "b128 invalid wasm" was a
+  // MALFORMED-witness artifact: the old string `(if b then 1 else 0)` parsed `then` as an unbound symbol → TErr,
+  // not a real emit bug). Re-enable to RUN once the Bool value round-trip is confirmed green on the COMPILED gate.
   match run-src(
-      "(do (type BoxB (BB Bool)) (def (main) (match (BB true) ((BB b) (if b then 1 else 0)) (_ 9))) (export main))"
+      "(do (type BoxB (BB Bool)) (def (main) (match (BB true) ((BB b) (if b 1 0)) (_ 9))) (export main))"
     ) with
     | Option.Some(_) => trap("a Bool payload binder is NOT yet wired — must DECLINE (TErr), not run/trap")
     | Option.None(_) => unit

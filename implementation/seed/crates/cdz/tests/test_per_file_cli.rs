@@ -86,3 +86,41 @@ fn a_single_file_run_matches_that_file_within_the_directory_run() {
         "single-file a.cdz reports the same as within the dir run:\n{single}"
     );
 }
+
+#[test]
+fn same_stem_files_in_different_subdirs_do_not_cross_contaminate() {
+    // PR#881 regression: a closure file's link name is its dir-BLIND stem, and the shared precompile keys the
+    // union + lookup by that stem. Two same-stem files in DIFFERENT subdirs (`d1/t.cdz`, `d2/t.cdz`) must NOT
+    // collapse — else a lookup fetches the WRONG dir's component and MISATTRIBUTES pass/fail. The fix gates the
+    // shared precompile on a single parent dir; a multi-dir tree falls back per-file. Assert each file runs
+    // its OWN test: d1/t passes (t_one), d2/t fails via its OWN trap (t_two) — not a wrong-component error.
+    let root = std::env::temp_dir().join(format!("cdz-collide-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("d1")).unwrap();
+    std::fs::create_dir_all(root.join("d2")).unwrap();
+    std::fs::write(
+        root.join("d1/t.cdz"),
+        "@test\ndef t_one() =\n  if 1 == 1 then unit else trap(\"d1\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("d2/t.cdz"),
+        "@test\ndef t_two() =\n  trap(\"d2 fails on its own\")\n",
+    )
+    .unwrap();
+    let (_ok, out) = run_test(&root);
+    assert!(
+        out.contains("PASS t_one"),
+        "d1/t runs its own passing test:\n{out}"
+    );
+    assert!(
+        out.contains("FAIL t_two"),
+        "d2/t runs its OWN failing test (not a wrong-component lookup):\n{out}"
+    );
+    // The tell of the bug was a "component exports no function `t-two`" error (fetched d1's component). Its
+    // ABSENCE confirms d2 ran its own component.
+    assert!(
+        !out.contains("exports no function"),
+        "no wrong-component reuse (the stem-collision failure mode):\n{out}"
+    );
+}

@@ -1848,6 +1848,29 @@ pub fn reduce_handle(
         .and_then(|a| crate::eval::effect_op_of(db, a.op))
         .map(|(d, _)| d.0)?;
     let state_ty = state_ty_of_arms(db, init, arms);
+    // WIDTH-CONSISTENCY GUARD (F1, corpus-bugfix/breaker 2026-07-28). The state slot's fixed int width must
+    // match the op's declared RESULT width for any arm whose resume VALUE reads the state (a bare `(resume s
+    // …)`, whose value types `Any` = "the state"). A `(next (u) s (resume s (+ s x)))` arm with a UInt8 `x`
+    // infers the state as UInt8 (i32) via the next-state `(+ s x)`, but the op result is Int64 (i64) — so the
+    // resume value (the state) is emitted as i32 where the op result demands i64. Alone latent; threaded
+    // across ≥2 performs (the state re-splices as the next perform's input) it emits an INVALID wasm module
+    // ("expected i64, found i32"; rust widens and runs — a backend divergence). DECLINE cleanly (a "not yet
+    // reducible" todo) rather than emit invalid wasm — the safe floor; a widening-coercion fold is a later
+    // increment. Fires ONLY on a FIXED-width int state whose width differs from a FIXED-width int op result,
+    // for an arm that resumes the state directly (value types `Any`/Int and next-state is state-derived);
+    // a matching-width state, a non-int state/result, or an undetermined side is untouched.
+    if let Some(crate::ty::Ty::Int(st)) = &state_ty {
+        for arm in arms {
+            if tail_resume_value_of(db, arm.body).is_some()
+                && let Some(crate::ty::Ty::Int(rt)) = op_result_type(db, arm.op)
+                && let (crate::ty::Width::Fixed(sw), crate::ty::Width::Fixed(rw)) =
+                    (st.width, rt.width)
+                && sw != rw
+            {
+                return None;
+            }
+        }
+    }
     let slot = StateSlot { decl, state_ty };
     let ctx = HandlerCtx::new(db, map, vec![slot.clone()]);
     // DES multi-task reach: expose a DEFERRED resume that is stored in a compound and applied through a
@@ -3773,7 +3796,22 @@ fn resume_result_type_ok(db: &mut Db, arm: &HandleArm) -> bool {
         return true;
     };
     let value_ty = crate::infer::type_of(db, value);
-    value_ty.agrees_with(&result)
+    if !value_ty.agrees_with(&result) {
+        return false;
+    }
+    // WIDTH GUARD: `agrees_with` treats two fixed-width ints of DIFFERENT widths as compatible (UInt8
+    // "agrees with" Int64), but the fold substitutes the resume value into the op's RESULT position with NO
+    // coercion. A CONCRETELY-typed narrow resume value (`(resume x s)` with x:UInt8, op result Int64) would
+    // emit an i32 where i64 is expected → invalid wasm; DECLINE cleanly instead (the safe floor; a coercion
+    // fold is a later increment). The STATE-typed resume value (`(resume s …)`, value types `Any`) is caught
+    // by the state-slot width guard in `reduce_handle` (this catches the value-is-a-narrow-EXPRESSION twin).
+    if let (crate::ty::Ty::Int(v), crate::ty::Ty::Int(r)) = (&value_ty, &result)
+        && let (crate::ty::Width::Fixed(vw), crate::ty::Width::Fixed(rw)) = (v.width, r.width)
+        && vw != rw
+    {
+        return false;
+    }
+    true
 }
 
 /// The VALUE of a tail `(resume value next-state)` in the arm body, or `None` if the body is not a tail
