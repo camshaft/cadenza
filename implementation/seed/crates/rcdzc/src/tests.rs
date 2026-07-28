@@ -72996,6 +72996,67 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn option_c_consumer_layout_excludes_the_cross_edge_from_its_emission_set() {
+        // OPTION C increment (c) layout-side: compute_tests_consumer lays out a per-file @test component that
+        // EXCLUDES the cross-edge shared defs from `order` (they live in the provider component) + reports
+        // them as `boundary_hits` (→ the consumer's extern imports). Same 2-file fixture: app's @test calls
+        // lib's recursive shared-helper; the consumer layout must NOT emit shared-helper (it's a cross-edge)
+        // but MUST hit it (record it for the extern import), while still emitting app's own @test def.
+        use crate::testkit::parse;
+        let lib = "(do (def (shared-helper (: n Int64)) (if (= n 0) 0 (+ 1 (shared-helper (- n 1))))) \
+                    (export shared-helper))";
+        let app = "(do (import \"lib\" (shared-helper)) \
+                    (@ test (def (t-app) (if (= (shared-helper 5) 5) unit (trap \"x\")))))";
+        let (order_names, hit_names): (Vec<String>, Vec<String>) =
+            crate::host::run_with_compiler_stack(|| {
+                let files: Vec<(String, crate::ast::Arenas)> = vec![
+                    ("lib".to_string(), parse(lib)),
+                    ("app".to_string(), parse(app)),
+                ];
+                let linked = crate::link::link(&files, "app").expect("package links");
+                let mut db =
+                    crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+                let test_layout =
+                    crate::layout::compute_tests(&mut db).expect("@test build lays out");
+                let test_def = *db.test_defs().first().expect("one @test");
+                let own_file = db
+                    .file_of(db.defs[test_def].sig_occ)
+                    .expect("test def in a file");
+                // The whole closure's cross-edge set (the provider export set) = the boundary.
+                let cross: std::collections::HashSet<usize> =
+                    crate::layout::cross_component_edges(&mut db, &test_layout, own_file)
+                        .into_iter()
+                        .collect();
+                let tds = db.test_defs();
+                let (consumer, hits) = crate::layout::compute_tests_consumer(&mut db, &tds, &cross)
+                    .expect("consumer lays out");
+                (
+                    consumer
+                        .order
+                        .iter()
+                        .map(|&d| db.defs[d].name.clone())
+                        .collect(),
+                    hits.iter().map(|&d| db.defs[d].name.clone()).collect(),
+                )
+            });
+        // The cross-edge shared-helper is EXCLUDED from the consumer's emitted `order`…
+        assert!(
+            !order_names.iter().any(|n| n.starts_with("shared-helper")),
+            "the consumer must NOT emit the cross-edge shared-helper: order={order_names:?}"
+        );
+        // …but IS recorded as a boundary hit (→ an extern import)…
+        assert!(
+            hit_names.iter().any(|n| n.starts_with("shared-helper")),
+            "the consumer must HIT shared-helper as an extern import: hits={hit_names:?}"
+        );
+        // …and the @test def itself IS still emitted.
+        assert!(
+            order_names.iter().any(|n| n.starts_with("t-app")),
+            "the consumer still emits its own @test def: order={order_names:?}"
+        );
+    }
+
+    #[test]
     fn emit_tests_declines_a_non_scalar_property_param() {
         // A property-test parameter must be a boundary-representable scalar (the runner generates + passes
         // it). A param with no such type — an unannotated one inference cannot fix to a scalar — declines

@@ -89,3 +89,16 @@ over a Bool payload), NOT a compiler-ml source change. The compiler-ml side (inf
 is correct + reverted-to-TErr only because the backend emit isn't ready. NEXT: v-wasm-opt runs the ss-bool-payload
 tests under CDZ_WASM_BACKTRACE on cdz test to get the func-index locus, then fixes the rcdzc emit; v-compiler-ml
 flips decode(1)→TBool + re-verifies once the emit lands. Routed to v-wasm-opt.
+
+---
+CO-DIAGNOSIS 2026-07-28 (v-compiler-ml, direct-Core): b128 = rcdzc EMIT-AT-SCALE, definitively (both candidates split).
+- PROBE (direct-Core, compiles locally, →7 clean): CMatchSum(CCtor(1,[1]),tag1,[100],CIf(CVar100,7,0),rest) — a boxed
+  Bool payload (i64 1) bound + used as a CIf cond. EMITS VALID WASM at 1-def scale. So the raw type-erased Core shape
+  is NOT the trap.
+- lower TYPE-ERASES (lower-db.cdz:101): TBool arm = TIntW arm (lower-ok); CVar(binder) is a bare id, no type/width
+  ("Bool is an Int 0/1, Core minimal+uniform"). So the real (BB (> n 2)) source lowers to the IDENTICAL CMatchSum→
+  CVar→CIf as my probe — no Bool-tagged node. Candidate (2) [TBool-lower-shape] RULED OUT.
+⟹ b128 = candidate (1): rcdzc emits that same shape FINE at 1-def scale but TRAPS inside the full ~1360-def self-host
+  closure (a slot/width/scale interaction — the width-disjoint-slot family). 100% rcdzc-emit-at-scale = v-wasm-opt lane.
+  NO compiler-ml change fixes it (infer TBool + lower type-erase are correct; decode(1)→TErr stays only until the emit
+  is ready — flip to TBool is a 1-liner once rcdzc handles the Bool-payload-CIf at closure scale). Routed to v-wasm-opt.
