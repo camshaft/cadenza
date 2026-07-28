@@ -5753,3 +5753,25 @@
               ((None) 0))))
         (export main)))
   (declines))
+
+;; TWO NESTED handlers, each arm a do-def-local x, the body reading the enclosing FN-LOCAL x through a
+;; right-nested (+ x (+ (A.geta) (B.getb))) — each binding MUST keep its own scope (no compounding
+;; leak). Regression arc: pre-hygiene this MISCOMPILED to 43 (the body's x read through the inlined
+;; arms); v-effects' first hygiene fix (515d6b57d) then made it a FALSE-UNBOUND (CDZ0101) because the
+;; freshen pass renamed the nested inner arm and orphaned the body's fn-local x; fixed by treating a
+;; nested handle as OPAQUE in the freshen walk (v-effects 77ffe55b0) — now computes 1033 (1000+11+22).
+;; The deep companion of the single-handle arm-hygiene pin. breaker #33-nested.
+(case "nested handlers with colliding arm-local bindings each keep their own scope (no compounding leak)"
+  (input  (do
+        (effect A (op geta (-> Unit Int64)))
+        (effect B (op getb (-> Unit Int64)))
+        (def (main (: mode Int64))
+          (do
+            (def x 1000)
+            (handle A 1
+              ((geta (u) s (do (def x 10) (resume (+ x s) s))))
+              (handle B 2
+                ((getb (u) s (do (def x 20) (resume (+ x s) s))))
+                (+ x (+ (A.geta) (B.getb)))))))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 1033 Int64)))

@@ -131,6 +131,16 @@ pub struct Layout {
     /// `closure_call_type_index`. Empty for a program whose every applied closure has a built lifted body
     /// (byte-identical to before). Each entry is `(param valtypes INCLUDING the leading i32 env, ret)`.
     pub closure_call_types: Vec<(Vec<crate::backend::wasm::lir::ValType>, Ty)>,
+    /// OPTION C (consumer emit): `def index → its position in `extern_order`` for each CROSS-EDGE the
+    /// consumer imports from the shared-closure provider component. A `Core::Call` whose callee is in this
+    /// map is NOT a local emitted func (it was excluded from `order` by [`compute_tests_consumer`]) — select
+    /// emits a `Lir::CallExternImport(pos)` to the imported interface func instead of a `Lir::Call`. EMPTY
+    /// for every non-consumer layout (`compute`/`compute_tests`/`compute_shared_closure_provider`), so the
+    /// select branch never fires there — byte-identical to before. The `extern_order` entries these positions
+    /// index into are `(closure-interface, source_boundary_name(def))`, in CANONICAL `order`-derived
+    /// cross-edge order so the consumer's import index MATCHES the provider's export index (the
+    /// index-agreement invariant that keeps the composed module valid).
+    pub cross_edge_import: std::collections::HashMap<usize, usize>,
 }
 
 impl Layout {
@@ -171,6 +181,26 @@ impl Layout {
             host_needs_memory: false,
             extern_order: Vec::new(),
             closure_call_types: Vec::new(),
+            cross_edge_import: std::collections::HashMap::new(),
+        }
+    }
+
+    /// A copy of this layout with the Option-C cross-edge import map + the extern_order entries it indexes
+    /// set — the consumer layout ([`compute_tests_consumer`]) records each cross-edge def's `(closure-iface,
+    /// source_boundary_name(def))` extern-import (in canonical `order` cross-edge order) + the `def → its
+    /// extern_order position` map select reads. The `interface` is the shared-closure provider's published
+    /// interface name (the provider↔consumer contract). Extends (does not replace) any existing extern_order.
+    pub fn with_cross_edge_imports(
+        &self,
+        extern_order_additions: Vec<(String, String)>,
+        cross_edge_import: std::collections::HashMap<usize, usize>,
+    ) -> Layout {
+        let mut extern_order = self.extern_order.clone();
+        extern_order.extend(extern_order_additions);
+        Layout {
+            extern_order,
+            cross_edge_import,
+            ..self.clone()
         }
     }
 
@@ -572,8 +602,9 @@ pub fn compute_shared_closure_provider(
 pub fn compute_tests_consumer(
     db: &mut Db,
     test_defs: &[usize],
-    all_cross_edges: &std::collections::HashSet<usize>,
-) -> Result<(Layout, std::collections::HashSet<usize>), Reject> {
+    provider_edges: &[usize],
+    closure_iface: &str,
+) -> Result<Layout, Reject> {
     if test_defs.is_empty() {
         return Err(Reject::decline(
             "no `@test` definition: nothing to run (mark a nullary def with `@test`)",
@@ -598,7 +629,28 @@ pub fn compute_tests_consumer(
             result,
         });
     }
-    finish_layout_bounded(db, exports, all_cross_edges)
+    // The boundary = the WHOLE provider edge set (this file may HIT only some, but the boundary must exclude
+    // ALL of them so nothing from the shared closure is re-emitted here).
+    let boundary: std::collections::HashSet<usize> = provider_edges.iter().copied().collect();
+    let (layout, boundary_hits) = finish_layout_bounded(db, exports, &boundary)?;
+    // 🔑 INDEX-AGREEMENT: the consumer's import position for a cross-edge is its position in the PROVIDER's
+    // EXPORT order (`provider_edges`, the SAME sequence `compute_shared_closure_provider` exports — both from
+    // `cross_component_edges`'s `layout.order` order). So `extern_order` lists ALL provider edges (not just
+    // this file's hits) in provider order, and each cross-edge def maps to its provider export index. A file
+    // that hits only a subset still indexes into the full provider interface at the RIGHT position — the
+    // consumer import index == the provider export index, keeping the composed module valid (v-wasm-opt's
+    // index-agreement invariant). `boundary_hits` is a subset of `provider_edges`; we emit imports for the
+    // WHOLE provider interface (a component imports the full interface; unused funcs are harmless).
+    let _ = boundary_hits; // hits are a subset of provider_edges; we map the full provider interface.
+    let mut additions: Vec<(String, String)> = Vec::new();
+    let mut import_map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let base = layout.extern_order.len();
+    for (i, &def) in provider_edges.iter().enumerate() {
+        let op = source_boundary_name(&db.defs[def].name).to_string();
+        additions.push((closure_iface.to_string(), op));
+        import_map.insert(def, base + i);
+    }
+    Ok(layout.with_cross_edge_imports(additions, import_map))
 }
 
 /// Close the reachable set + lifted closures over a resolved list of `exports`, and build the [`Layout`]
@@ -1625,7 +1677,7 @@ pub fn def_params(db: &mut Db, def: usize) -> Vec<(StructId, Ty)> {
 /// machine representation) DECLINES asking for an annotation — the backend must not invent a width the
 /// program did not write (`numeric-model.md` no implicit width; the operator's "ambiguous params
 /// require annotations").
-fn export_params(db: &mut Db, def: usize, name: &str) -> Result<Vec<(StructId, Ty)>, Reject> {
+pub fn export_params(db: &mut Db, def: usize, name: &str) -> Result<Vec<(StructId, Ty)>, Reject> {
     let sig_params = db.defs[def].params.clone();
     let mut out = Vec::new();
     for p in sig_params {
