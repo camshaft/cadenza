@@ -204,8 +204,21 @@ consumers here are cross-edge-EXCLUDING vs EmitTestsPerFile's self-contained per
 - `kind="component-name"` : a sidecar whose bytes ARE the fixed iface string (e.g. `cadenza:closure/api`).
   v-cdz reads it to build `Peer{interface: <string>}` directly (no export-type introspection). SAME string
   = the provider's `component_name` AND every consumer's import iface (ii-d validates index-agreement).
-- `kind="component"` × N : the consumer bytes, each NAMED by the file's link path (v-cdz's existing
+- `kind="component"` × N : the consumer bytes, each NAMED by `db.file_path(fi)` (v-cdz's existing
   `EmitTestsPerFile` name-demux is unchanged), each IMPORTING that iface.
+
+**🔑 SINGLE-DIR GUARD (correction 2026-07-28, v-cdz-tooling — supersedes the earlier "link path is collision-
+safe" note).** `db.file_path(fi)` returns `FileSpan.path` = "the `<path>` an `(import …)` names it by" — the
+IMPORT NAME, which for compiler-ml stem-imports (`import { run-src } from "sread-eval"`) is the dir-BLIND
+STEM, NOT a filesystem path. It is LOAD-BEARING for import resolution (`link()` matches `import "sread-eval"`
+to the artifact named `sread-eval`), so it CANNOT be dir-qualified without breaking linking. ⇒ `cdz test
+<tree>` recursing a MULTI-DIR tree with two same-stem files (two `lib.cdz`) collides: both artifacts named
+`lib`, the union dedups them, the demux reuses the wrong component → PASS/FAIL misattribution (pr881). This
+is fundamental to stem-named linking, not a keying slip. **`EmitTestsComposed` MUST carry the SAME single-dir
+guard v-cdz-tooling applies in run_test (`5e78bcbe7`):** produce the composed (provider + N consumers) output
+ONLY when all target files share one directory (stem then == unique file); otherwise DECLINE/emit-nothing so
+the caller falls back to the per-file `EmitTests` path. Multi-dir support would need a namespace-prefixed
+link-name scheme that still resolves imports (a bigger, separate design — deferred).
 
 **🔑 THE UNION-CROSS-EDGE SUBTLETY (the one real design point for the driver):** `cross_component_edges`
 and `compute_shared_closure_provider` currently take a SINGLE `own_file`. A composed dir build has N files,

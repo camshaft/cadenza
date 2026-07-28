@@ -2594,9 +2594,20 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 last_commit_age_secs(&fleet.repo, TRUNK),
                 stale_after,
             );
+        // Fourth exoneration (pr-sync only): an IN-FLIGHT merge gate. Trunk-advance only fires AFTER a
+        // batch lands, but a single perf-cliff gate cycle (~60min) outlasts the loop interval, so across
+        // that whole mid-gate window trunk is flat, the depth fluctuates (no clean drop), and the gate
+        // bakes in a detached subprocess (pane idle on both captures) — all three prior exonerations miss
+        // and pr-sync gets flagged every sweep (concierge: 3 straight false positives). A live `priority`
+        // check-lease is unforgeable proof the gate is running now; check it only when a stall is already
+        // suspected + only for pr-sync (same cost discipline as trunk_exonerates), reusing the lease scan
+        // that reaps dead/TTL-stale leases first, so a leaked lease can't grant a false exoneration.
+        let gate_exonerates = suspected_stall
+            && a.name == "pr-sync"
+            && gate_in_flight_exonerates(&a.name, live_priority_leases(fleet));
         let drain_stall = drain_stall_confirmed(
             suspected_stall,
-            working_on_recheck || queue_draining || trunk_exonerates,
+            working_on_recheck || queue_draining || trunk_exonerates || gate_exonerates,
         );
         if drain_stall {
             drain_stalls += 1;
@@ -3609,6 +3620,18 @@ fn reap_check_leases(repo: &Path, now: u64) -> usize {
     reap_check_leases_in(&dir, now)
 }
 
+/// Count of LIVE `priority` check-leases (pr-sync's in-flight merge gate) held right now, reaping any
+/// dead-PID / TTL-stale leases first so a LEAKED priority lease can't be mistaken for a running gate.
+/// Used by the drain-stall heuristic to exonerate pr-sync while it's mid-gate (see
+/// `gate_in_flight_exonerates`). Fails SAFE: an unresolvable lease dir → 0 → no exoneration → the
+/// heuristic falls back to its other signals rather than silently suppressing a real stall.
+fn live_priority_leases(fleet: &Fleet) -> usize {
+    let Some(dir) = check_lease_dir(&fleet.repo) else {
+        return 0;
+    };
+    scan_check_leases(&dir, now_unix()).0
+}
+
 /// Reap leaked leases in an already-resolved lease `dir`, returning the count — the reap core split out
 /// from `reap_check_leases`'s hub/git dir-resolution so it's unit-testable against a plain temp dir.
 fn reap_check_leases_in(dir: &Path, now: u64) -> usize {
@@ -3819,6 +3842,24 @@ fn queue_is_draining(prev_depth: Option<usize>, current_depth: usize) -> bool {
 /// supplies the commit age it already computed.
 fn trunk_advance_exonerates(name: &str, trunk_commit_age: Option<u64>, stale_after: u64) -> bool {
     name == "pr-sync" && trunk_commit_age.is_some_and(|age| age <= stale_after)
+}
+
+/// Does an in-flight merge GATE exonerate a suspected drain-stall? ONLY for pr-sync. pr-sync is the
+/// single writer: while it bakes ONE batch to green it CANNOT consume new merge-request mail (it gates a
+/// batch to completion before draining the next), so unconsumed-actionable mail whose oldest is past a
+/// loop cycle with a fresh heartbeat is EXPECTED throughout any gate that outlasts the loop interval, not
+/// a stall. The compiler-ml perf-cliff makes a single gate cycle routinely ~60min, longer than the 30m
+/// loop, so the heuristic misfired every sweep across a live batch (concierge: 3 consecutive false
+/// positives, each a hand-verified clear). This is the SAME "live worktree proc = not wedged"
+/// discriminator concierge/tracker apply by hand: pr-sync's gate holds a live `priority` check-lease
+/// (`{pid}-priority.lease`, dropped on exit, reaped when its holder pid dies or the TTL lapses), so a
+/// live priority lease is unforgeable proof the gate is running RIGHT NOW. Complements
+/// `trunk_advance_exonerates`, which fires only AFTER a batch lands and is bounded by the stale window:
+/// this covers the mid-gate interval BEFORE any commit exists. Non-pr-sync agents never hold a priority
+/// lease, so they're never exonerated this way. Pure; the caller supplies the already-reaped live
+/// priority-lease count it computed.
+fn gate_in_flight_exonerates(name: &str, live_priority_leases: usize) -> bool {
+    name == "pr-sync" && live_priority_leases > 0
 }
 
 /// What to do about a windowed agent that has NEVER stamped a heartbeat, given how long ago we first
@@ -9330,6 +9371,26 @@ mod tests {
         // vertical must still flag.
         assert!(!trunk_advance_exonerates("v-runtime", Some(1), 600));
         assert!(!trunk_advance_exonerates("reviewer", Some(1), 600));
+    }
+
+    #[test]
+    fn gate_in_flight_exonerates_only_pr_sync_and_only_with_a_live_priority_lease() {
+        // pr-sync holding a live priority lease is mid-gate (single writer baking a batch; it can't
+        // consume new MR mail until the gate finishes) → exonerated even before any trunk commit exists.
+        assert!(gate_in_flight_exonerates("pr-sync", 1));
+        assert!(
+            gate_in_flight_exonerates("pr-sync", 2),
+            "more than one still counts"
+        );
+        // No live priority lease → the gate isn't running → NOT exonerated (a genuinely idle pr-sync with
+        // unconsumed mail and no gate in flight is a real stall to surface). Note the caller passes the
+        // count AFTER reaping dead/TTL-stale leases, so a leaked lease is already 0 here.
+        assert!(!gate_in_flight_exonerates("pr-sync", 0));
+        // Never exonerate a NON-pr-sync agent this way — only pr-sync's gate holds a priority lease, and
+        // only pr-sync is the can't-drain-while-gating single writer. A vertical idle with unconsumed
+        // mail must still flag even if (somehow) a priority lease is live.
+        assert!(!gate_in_flight_exonerates("v-runtime", 1));
+        assert!(!gate_in_flight_exonerates("reviewer", 3));
     }
 
     #[test]

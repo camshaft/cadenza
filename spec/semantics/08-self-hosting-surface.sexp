@@ -29,3 +29,70 @@
   (input (= (read (print (quote (f 1 2.5 "s" x (g -3 0)))))
             (quote (f 1 2.5 "s" x (g -3 0)))))
   (output (: true Bool)))
+
+(case "print/read round-trips escape-laden, multibyte, and empty string leaves"
+  (doc    "The adversarial-CONTENT face of the round-trip law (the all-leaf-kinds pin covers the leaf
+           ALPHABET; this stresses what lives INSIDE a string leaf): an embedded double-quote and a
+           backslash (the printer must re-escape exactly what the reader unescapes), a MULTIBYTE
+           é😀 leaf (byte-faithful, no re-encode), and a NEGATIVE float beside an EMPTY string (the
+           \"\"-vs-dropped-token boundary) — three round-trips true plus an inequality control
+           (1110). A printer that emitted raw quotes, normalized unicode, or dropped an empty
+           string's quotes breaks its digit.")
+  (input  (do
+        (def (main (: k Int64))
+          (+ (* 1000 (if (= (read (print (quote (f "a\"b" "c\\d")))) (quote (f "a\"b" "c\\d"))) 1 0))
+             (+ (* 100 (if (= (read (print (quote (g "é😀")))) (quote (g "é😀"))) 1 0))
+                (+ (* 10 (if (= (read (print (quote (h -2.5 "")))) (quote (h -2.5 ""))) 1 0))
+                   (if (= (read (print (quote (f "a\"b")))) (quote (f "other"))) 1 0)))))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 1110 Int64)))
+
+(case "print/read round-trips a 12-deep nest and a 25-wide list"
+  (doc    "The SHAPE-stress face of the round-trip law (08's pins are shallow): a 12-level
+           single-spine nest exercises the reader's recursion discipline (every close-paren run at
+           the end must pop exactly one frame) and a 25-sibling list exercises the token loop with
+           multi-digit ints whose boundaries the printer must separate (a printer eliding a space
+           between siblings fuses 1 2 into 12 and the re-read is a DIFFERENT valid AST — equality,
+           not readability, is what catches it). Both true (11). Runtime-built Ast print/read remain
+           const-only declines (documented while probing; the recursion-built deep tree declines
+           cleanly).")
+  (input  (do
+        (def (main (: mode Int64))
+          (+ (* 10 (if (= (read (print (quote (f (f (f (f (f (f (f (f (f (f (f (f 7)))))))))))))))
+                          (quote (f (f (f (f (f (f (f (f (f (f (f (f 7))))))))))))))
+                       1 0))
+             (if (= (read (print (quote (g 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25))))
+                    (quote (g 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25)))
+                 1 0)))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64)))
+
+(case "read normalizes numeric token spellings to canonical float values"
+  (doc    "Number-token equivalence at the read boundary: \"2.50\" reads to the SAME float as the
+           canonical 2.5 spelling, \"-0.5\" keeps its sign, and the EXPONENT form \"1e3\" reads
+           equal to 1000.0 — three spellings, one value each (111·10 + false-control 0 → 1110; the
+           control reads \"2.5\" against 2.25 and must MISS). A reader that compared float tokens
+           textually (or parsed the exponent as a name) breaks a digit; equality is over the read
+           VALUE, so canonical-byte float equality is what unifies the spellings.")
+  (input  (do
+        (def (main (: _mode Int64))
+          (+ (* 10 (+ (* 100 (if (= (read "(f 2.50)") (quote (f 2.5))) 1 0))
+                      (+ (* 10 (if (= (read "(f -0.5)") (quote (f -0.5))) 1 0))
+                         (if (= (read "(f 1e3)") (quote (f 1000.0))) 1 0))))
+             (if (= (read "(f 2.5)") (quote (f 2.25))) 1 0)))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 1110 Int64)))
+
+(case "read of malformed text is a coded reject, not a wrong value"
+  (doc    "The unreadable-input face of the reader law (08's pins are happy-path): `read` of an
+           UNBALANCED \"(+ 1\" must never yield a partial AST. TODAY it is refused through the
+           DECLINE channel ('read of text that is not a well-formed s-expression over the Ast
+           subset') — scored todo; the message is a PERMANENT-sounding malformedness fact, so when
+           the #35-comments fix touches lower_read this should become a CODED reject (this pin
+           flips from todo to the error verdict then). Empty input and trailing content share the
+           same refusal (checked; one uniform message).")
+  (input  (do
+        (def (main (: mode Int64))
+          (if (= (read "(+ 1") (quote (+ 1))) 1 0))
+        (export main)))
+  (error  CDZ0101))
