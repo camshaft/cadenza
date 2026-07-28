@@ -10402,6 +10402,54 @@ fn a_do_local_def_flowing_into_a_perform_argument_under_a_handle_compiles() {
 }
 
 #[test]
+fn a_bin_build_operand_referencing_a_do_def_under_a_handle_binds_it_not_unbound() {
+    use crate::testkit::parse;
+    // F2 (breaker, corpus-bugfix routed 2026-07-28): a `(bin (u8 (UInt8.wrap a)))` BUILD operand that
+    // references a handle-body do-local `(def a …)` declined CDZ0101 "unbound a" — while the IDENTICAL program
+    // with a tuple/record/list/Set operand bound it fine. ROOT: the handler fold RE-PARENTS the do-def's frame
+    // subtree (lifting the leading do-defs under a fresh `let`), but the bin operand's `a` is a LOAD-TIME node
+    // that ascends via its precomputed scope-skip pointer whose `from` is the re-parented frame-def; its LIVE
+    // `child_ix_of` then reads the NEW parent, so `do_local_binds`'s window `ix-1` excluded the preceding
+    // do-def and the reference read unbound. FIX: when `from`'s live child-index does not land on `from` within
+    // this `do`'s forms (a re-parent), recover the TRUE window by finding `from`'s position by IDENTITY.
+    // `a = Src.next` seeded 10, wrapped into a 1-byte bin, `Bytes.at 0` → 10.
+    let repro = "(do \
+        (effect Src (op next (-> Unit UInt8))) \
+        (def (main (: x UInt8)) \
+          (handle Src 10 ((next (u) s (resume s (+ s x)))) \
+            (do (def a (Src.next)) (def frame (bin (u8 (UInt8.wrap a)))) \
+                (match (Bytes.at frame 0) ((Some v) v) ((None _u) -1))))) \
+        (export main))";
+    // The FIX is a resolve/scope change: the guard is that the program COMPILES (before the fix it declined
+    // CDZ0101 unbound `a` at the bin operand) and emits a VALID module. (A run needs the value-heap runtime
+    // this unit-test linker lacks for the bin/Bytes heap ops — the corpus pin gates the runtime value ×3.)
+    let bytes = compile_component(&crate::codec::encode(&parse(repro))).expect(
+        "a bin build operand referencing a handle-body do-def must bind it (no CDZ0101 unbound)",
+    );
+    assert!(
+        wasmparser::validate(&bytes).is_ok(),
+        "the bin-operand-over-a-do-def program must emit a valid module: {:?}",
+        wasmparser::validate(&bytes).err()
+    );
+    // CONTROL — the perform-free twin (breaker's minimized witness): a NON-performing do-def `(def a (+ x 1))`
+    // under the same handle, fed to the same bin, must ALSO compile (the trigger is do-def×bin×handle-fold, not
+    // performing-ness — the fold runs regardless, and the re-parent staleness is what broke the bin operand).
+    let perf_free = "(do \
+        (effect Src (op next (-> Unit UInt8))) \
+        (def (main (: x UInt8)) \
+          (handle Src 10 ((next (u) s (resume s (+ s x)))) \
+            (do (def a (+ x 1)) (def frame (bin (u8 (UInt8.wrap a)))) \
+                (match (Bytes.at frame 0) ((Some v) v) ((None _u) -1))))) \
+        (export main))";
+    let pf = compile_component(&crate::codec::encode(&parse(perf_free)))
+        .expect("a perform-free do-def fed to a bin operand under a handle must bind too");
+    assert!(
+        wasmparser::validate(&pf).is_ok(),
+        "the perform-free twin must also emit a valid module"
+    );
+}
+
+#[test]
 fn a_do_sequenced_outer_perform_under_an_inner_handle_threads_its_state_advance() {
     use crate::testkit::parse;
     // REPRO: `(A.bump)` is do-discarded under an inner `B` handle; `(A.get)` must read the advanced state.
@@ -29367,6 +29415,57 @@ mod match_engine {
             "a lone-cond if keeps the generic arity message, no fix: {} fix={:?}",
             lone.message,
             lone.fix
+        );
+    }
+
+    #[test]
+    fn an_if_with_ml_then_else_keywords_names_the_syntax_not_the_arity() {
+        // A user who knows the ML surface writes `(if b then 1 else 0)`, reaching for the `then`/`else`
+        // KEYWORDS — but this s-expr surface's `if` is three POSITIONAL forms with no keywords. The stray
+        // `then`/`else` land as bare operands (5-operand `if`), which would otherwise hit the generic
+        // "if takes exactly 3 operands" arity reject that names the count, not the real mistake. It now
+        // names the ML-keyword confusion + the correct shape. Flagged by v-compiler-ml (a reader trap that
+        // cost them several ticks). The unbound `then`/`else` symbols must NOT surface as the primary fault.
+        let ds = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: b Bool)) (if b then 1 else 0)) (export f))",
+        )));
+        let d = ds
+            .iter()
+            .find(|d| d.code.as_deref() == Some("CDZ0201") && d.message.contains("`then`/`else`"))
+            .expect("an ML-keyword if names the syntax confusion");
+        assert!(
+            d.message.contains("positional") && d.message.contains("(if <cond> <then> <else>)"),
+            "names the positional s-expr shape: {}",
+            d.message
+        );
+        // The confusing "unbound name `then`" / `else` must NOT be the surfaced fault (the syntax hint
+        // supersedes it — the stray keywords are a consequence of the syntax mistake, not independent).
+        assert!(
+            !ds.iter().any(|d| d.message.contains("unbound name `then`")
+                || d.message.contains("unbound name `else`")),
+            "the unbound then/else symbols are not surfaced as the primary fault: {:?}",
+            ds.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // The corrected positional form compiles.
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(
+                "(module m (def (f (: b Bool)) (if b 1 0)) (export f))"
+            )))
+            .is_ok(),
+            "the corrected positional if compiles"
+        );
+        // NO false positive: an ordinary too-many-operand `if` (not the then/else signature) keeps the
+        // generic arity message + its surplus-delete fix.
+        let surplus = crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (f (: b Bool)) (if b 1 0 9)) (export f))",
+        )))
+        .into_iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0201"))
+        .expect("a 4-operand if rejects");
+        assert!(
+            surplus.message.contains("takes exactly 3 operands"),
+            "an ordinary surplus if keeps the generic arity message: {}",
+            surplus.message
         );
     }
 
@@ -58967,6 +59066,55 @@ mod stage1 {
             "a direct perform under the handle must still fold clean: {:?}",
             msg(direct)
         );
+    }
+
+    #[test]
+    fn a_width_mismatched_handler_state_declines_cleanly_never_invalid_wasm() {
+        // F1 (corpus-bugfix/breaker 2026-07-28): a handler whose STATE slot infers to a narrow int (UInt8)
+        // while the op RESULT is Int64 must NOT emit an invalid wasm module. `(next (u) s (resume s (+ s x)))`
+        // with x:UInt8 infers the state as UInt8 (via the next-state `(+ s x)`), but the resume value (the
+        // state) flows into the Int64 op result; threaded across TWO do-def performs the emit placed an i32
+        // where i64 was expected → INVALID module ("expected i64, found i32"; rust widened and ran = backend
+        // divergence). `reduce_handle`'s width-consistency guard now DECLINES cleanly (uncoded "not yet
+        // reducible" todo) rather than emit invalid wasm — the safe floor (a widening-coercion fold is later).
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (effect Src (op next (-> Unit Int64))) \
+                     (def (main (: x UInt8)) (handle Src 10 ((next (u) s (resume s (+ s x)))) \
+                       (do (def a (Src.next)) (def b (Src.next)) (+ a b)))) \
+                     (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        // No INVALID-MODULE / codegen error: either it declines (uncoded todo) or it folds — never a coded
+        // reject and never an emit failure. Assert no error-severity diagnostic carries a wasm-validation
+        // failure, and that the honest reducibility decline (if present) is UNCODED.
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        assert!(
+            !errors.iter().any(|d| d.message.contains("invalid")
+                || d.message.contains("type mismatch")
+                || d.message.contains("failed to compile")),
+            "must not emit an invalid wasm module: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // NO REGRESSION: a MATCHING-width state (Int64 seed + Int64 x, op result Int64) still folds + runs.
+        let ok = "(module m (effect Src (op next (-> Unit Int64))) \
+            (def (main (: x Int64)) (handle Src 10 ((next (u) s (resume s (+ s x)))) \
+              (do (def a (Src.next)) (def b (Src.next)) (+ a b)))) \
+            (export main))";
+        use wasmtime::component::Val;
+        let bytes = compile_component(&crate::codec::encode(&parse(ok)))
+            .expect("a matching-width (Int64) handler state must still fold");
+        let v: i64 = run_returns_with(&bytes, "main", &[Val::S64(5)]);
+        assert_eq!(v, 25, "Int64 state two-perf fold: 10 + 15 = 25");
     }
 
     #[test]

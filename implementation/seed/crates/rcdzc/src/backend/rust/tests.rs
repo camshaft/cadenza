@@ -4234,6 +4234,45 @@ fn a_bottom_up_fold_tuple_of_recursive_results_never_miscompiles_declines_or_com
 }
 
 #[test]
+fn rustc_roundtrip_two_field_sum_payload_binds_both_fields() {
+    // REGRESSION GUARD — a 2-field ctor `(P Int64 Int64)` matched `((P x y) (+ x y))` must bind BOTH payload
+    // fields and compute `x + y`, on the Rust backend, for a constant ctor AND a runtime-boxed one.
+    //
+    // HISTORY (queue TRACKING-multifield-sum-payload-2elem): this class TRAPPED on the COMPILED self-host
+    // wasm path while running green on the interpreter — which LOOKED like a wasm-emit value-miscompile
+    // (and rust round-tripping to 7 SUGGESTED that). It was NOT: the root was v-compiler-ml's INFER gap —
+    // the payload-ctor arm typed only arg1, never arg2, so arg2 had no type-column entry → lower declined →
+    // run-src returned `Option.None` → the test's None-arm `unreachable` fired (the same class as b128,
+    // also an infer gap caught probe-first). RESOLVED + LANDED b146 (v-compiler-ml's multi-binder + arity +
+    // arg-N-infer stack); ss-multifield-payload-ctor-{const-both-binders,runtime-boxed,bare-constructs} are
+    // GREEN on the compiled path. NO rcdzc/wasm-emit change was needed. So multifield round-trips 7 on BOTH
+    // backends today — this rust test is a permanent guard on the `emit_sum_payload` bind-both path (the
+    // [[value-facts-slice5-variant-tags-nested-match-elision-seam]] family), NOT a wasm-emit isolator.
+    // Both the CONSTANT ctor `(P 3 4)` and the runtime-BOXED twin `(if (> n 0) (P 3 4) (P 10 20))` → 7.
+    let module = compile_rust(
+        "(module m (type PP (P Int64 Int64)) \
+           (def (add-pair (: p PP)) (match p ((P x y) (+ x y)))) \
+           (def (run) (add-pair (P 3 4))) \
+           (def (run-boxed (: n Int64)) (add-pair (if (> n 0) (P 3 4) (P 10 20)))) \
+           (export run) (export run-boxed))",
+    );
+    if let Some(out) = rustc_run(&module, "run()") {
+        assert_eq!(
+            out, "7",
+            "the Rust backend MUST bind BOTH fields of a 2-field sum payload (constant ctor) → 7 \
+             (a wrong value would be a regression of the emit_sum_payload bind-both path)"
+        );
+    }
+    // The runtime-boxed twin: n>0 selects (P 3 4) → 7 (the other arm is (P 10 20) → 30, never taken here).
+    if let Some(out) = rustc_run(&module, "run_boxed(1)") {
+        assert_eq!(
+            out, "7",
+            "the Rust backend binds both fields of a RUNTIME-boxed 2-field sum payload → 7 (n>0 arm)"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_match_a_runtime_tuple_from_an_if() {
     // A top-level `(tuple a b)` pattern over a RUNTIME tuple scrutinee — a tuple built by an `if` (or a
     // branchy fn), NOT a constant `Core::Tuple` and NOT a bound `__pay` (a top-level tuple match mints no

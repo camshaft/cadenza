@@ -674,8 +674,15 @@ fn finish_layout_bounded(
     db: &mut Db,
     exports: Vec<ExportPlan>,
     boundary: &std::collections::HashSet<usize>,
-) -> Result<(Layout, std::collections::HashSet<usize>), Reject> {
-    let mut boundary_hits: std::collections::HashSet<usize> = std::collections::HashSet::new();
+) -> Result<(Layout, std::collections::BTreeSet<usize>), Reject> {
+    // `boundary_hits` is a BTreeSet (not a HashSet) so its iteration order is DETERMINISTIC (ascending def
+    // index) — a caller that turns hits into the consumer's extern-import order must not derive it from a
+    // nondeterministic hash order, or two derivations of the same source could assign different import
+    // indices (an index-mismatch invalid-module risk; the v-wasm-opt index-agreement invariant). Today's
+    // caller (`compute_tests_consumer`) derives import order from the ordered `provider_edges` slice and
+    // discards `boundary_hits`, so this is a latent-footgun fix, not a live bug — but the ordered type keeps
+    // any future hits-driven caller reproducible by construction (PR#880 Copilot nit).
+    let mut boundary_hits: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     // Emission order: exported definitions first (declaration order, deduplicated), then every
     // definition REACHABLE from them through a runtime `Core::Call` — a recursive callee, or a callee
     // that a recursive function reaches. A worklist closes the reachable set: for each def in `order`,
@@ -719,7 +726,7 @@ fn finish_layout_bounded(
          order: &mut Vec<usize>,
          in_order: &mut std::collections::HashSet<usize>,
          call_i: &mut usize,
-         boundary_hits: &mut std::collections::HashSet<usize>| {
+         boundary_hits: &mut std::collections::BTreeSet<usize>| {
             while *call_i < order.len() {
                 let def = order[*call_i];
                 if let Some(body) = db.defs[def].body {
@@ -728,9 +735,10 @@ fn finish_layout_bounded(
                     for c in callees {
                         // A BOUNDARY callee (an Option-C cross-edge) is an EXTERN IMPORT, not an emitted def:
                         // record it + do NOT add it to `order` (so its body is never walked → its exclusive
-                        // callees/closures never enter this consumer's emission set). Empty boundary → the
-                        // condition never fires → byte-identical to the ordinary layout.
-                        if boundary.contains(&c) {
+                        // callees/closures never enter this consumer's emission set). The `is_empty` guard
+                        // short-circuits the per-callee hash lookup on the ORDINARY (`finish_layout`,
+                        // empty-boundary) path → byte-identical AND no added work there (PR#880 Copilot nit).
+                        if !boundary.is_empty() && boundary.contains(&c) {
                             boundary_hits.insert(c);
                             continue;
                         }
@@ -783,8 +791,9 @@ fn finish_layout_bounded(
         collect_call_callees(db, body, &mut callees);
         for c in callees {
             // A boundary (cross-edge) callee reached via a lifted body is likewise an extern import, not
-            // an emitted def — record + skip (see the `close_call_worklist` note).
-            if boundary.contains(&c) {
+            // an emitted def — record + skip (see the `close_call_worklist` note; `is_empty` guards the
+            // per-callee lookup on the empty-boundary path).
+            if !boundary.is_empty() && boundary.contains(&c) {
                 boundary_hits.insert(c);
                 continue;
             }
