@@ -1898,3 +1898,81 @@
         (export main)))
   (call   main (: 7 UInt8)) (output (: 74661 Int64))
   (call   main (: 0 UInt8)) (output (: 4661 Int64)))
+
+(case "an i64 le field at the sign boundary decodes negative from its high LAST byte"
+  (doc    "Composes le byte order + signedness + full width: [9,0,...,x] read `(i64 n le)` puts x in
+           the MOST-significant position, so x=128 lands the sign bit from the LAST byte —
+           n = -(2^63)+9 and the truncating `% 1000` answers -799 (dividend sign). x=0 reads +9 (9).
+           A decoder that sign-extended from the FIRST byte (be habit under an le flag) or assembled
+           le then dropped the sign reads +...809 % 1000 = 809 or +9 at x=128.")
+  (input  (do
+        (def (main (: x UInt8))
+          (match (Bytes.of (list 9 0 0 0 0 0 0 x))
+            ((bin (i64 n le)) (% n 1000))
+            (_ -2)))
+        (export main)))
+  (call   main (: 128 UInt8)) (output (: -799 Int64))
+  (call   main (: 0 UInt8)) (output (: 9 Int64)))
+
+(case "an i64 bin binding with the sign bit set is negative in both const and runtime folds"
+  (doc    "The SIGNED-segment perimeter of the u64 const-eval finding: `(bin (i64 n))` over
+           [128,0,...,9] IS negative by design (two's-complement -9223372036854775799), and the
+           CONST fold and RUNTIME path must agree — 10·const + runtime: x=128 gives 11 (both
+           negative), x=0 gives 10 (const still negative, the runtime zero-lead value positive).
+           Guards the u64 fix from overcorrecting: an unsigned-everywhere sweep that hit the i64
+           arm flips the const digit to 0.")
+  (input  (do
+        (def (main (: x UInt8))
+          (+ (* 10 (match (Bytes.of (list 128 0 0 0 0 0 0 9))
+                     ((bin (i64 n)) (if (< n 0) 1 0))
+                     (_ -2)))
+             (match (Bytes.of (list x 0 0 0 0 0 0 9))
+               ((bin (i64 n)) (if (< n 0) 1 0))
+               (_ -2))))
+        (export main)))
+  (call   main (: 128 UInt8)) (output (: 11 Int64))
+  (call   main (: 0 UInt8)) (output (: 10 Int64)))
+
+(case "const u32 and u16 bin bindings with their top bits set fold unsigned"
+  (doc    "The WIDTH perimeter of the u64 const-eval finding: constant-folded `(bin (u32 m))` over
+           [128,0,0,1] computes `(> m 5)` = 1 and `((m % 1000) % 10)` = 9 (0x80000001 = 2147483649,
+           unsigned), and `(bin (u16 m))` over [128,1] compares 1 — encoded 191. The sub-64 widths
+           fit the i64 carrier with headroom, so they fold correctly TODAY; this pins them so the
+           pending u64-const fix (and any carrier rework) keeps them right. The runtime u32 twin is
+           pinned separately; this is the CONST-fold face.")
+  (input  (do
+        (def (main (: x UInt8))
+          (+ (* 100 (match (Bytes.of (list 128 0 0 1))
+                      ((bin (u32 m)) (if (> m (: 5 UInt32)) 1 0))
+                      (_ -2)))
+             (+ (* 10 (match (Bytes.of (list 128 0 0 1))
+                        ((bin (u32 m)) (Int64.of (% (% m (: 1000 UInt32)) 10)))
+                        (_ -2)))
+                (match (Bytes.of (list 128 1))
+                  ((bin (u16 m)) (if (> m (: 5 UInt16)) 1 0))
+                  (_ -2)))))
+        (export main)))
+  (call   main (: 0 UInt8)) (output (: 191 Int64)))
+
+(case "a top-bit u64 binding re-encodes to its exact source bytes"
+  (doc    "The ENCODE round-trip of the u64-binding family: `(bin (u64 n))` re-encoding the binding
+           read from [x,0,...,9] must reproduce the SOURCE bytes exactly — whole-value equality
+           against the original AND a spot-read of byte 0 through a second decode (11 at x=128, the
+           top-bit face; 11 at x=0). An encode that pushed the binding through a signed carrier
+           conversion (the widening-divergence hazard) or truncated the high byte flips a digit.
+           Two clean rejects recorded alongside: Float64.of-int and Float64.of both CDZ0301 a UInt64
+           operand — no silent u64→float route exists to mis-convert.")
+  (input  (do
+        (def (main (: x UInt8))
+          (do
+            (def src (Bytes.of (list x 0 0 0 0 0 0 9)))
+            (match src
+              ((bin (u64 n))
+                (match (bin (u64 n))
+                  ((bin (u8 b0) (bytes _rest))
+                    (+ (* 10 (if (= (bin (u64 n)) src) 1 0)) (if (= b0 x) 1 0)))
+                  (_ -2)))
+              (_ -3))))
+        (export main)))
+  (call   main (: 128 UInt8)) (output (: 11 Int64))
+  (call   main (: 0 UInt8)) (output (: 11 Int64)))

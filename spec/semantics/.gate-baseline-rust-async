@@ -79,6 +79,7 @@ pass	Map.take keyed by a runtime Rational removes the arithmetic-built canonical
 pass	Map.to-list over Rational keys enumerates ascending by key value with the integer form last
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	ONE-EDIT-APART checks strings for exactly one substitution or one insertion by length case
+pass	OPEN-sum values as SET elements hash by tag and payload
 pass	OVERLAPPING quote patterns dispatch first-match-wins on the ambiguous scrutinee
 pass	PAINT FENCE threads same/diff state tracks where no three consecutive posts match
 pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-inverts
@@ -88,6 +89,7 @@ pass	RANGE-SUM answers interval queries from a prefix table and agrees with a di
 pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
 pass	Record.merge carries HEAP-list fields from both operands into the merged layout
 pass	Record.with REPLACES one heap-list field while the sibling and the ORIGINAL stay live
+pass	Record.with on a map-extracted record leaves the stored original untouched
 pass	STACKED @requires and @ensures both enforce at runtime on one def with a heap precondition
 pass	STRING COMPRESSION emits char-count pairs but keeps the original unless strictly shorter
 pass	STRING ROTATION check searches the needle inside the doubled haystack at equal length
@@ -670,6 +672,7 @@ pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 todo	a Float64-inner Qty host result crosses as its float magnitude
 pass	a LET-bound outer perform under an inner handle threads its state advance
+pass	a LIST of closures rides one perform and the arm picks by state per call
 pass	a do-discarded OUTER perform under an inner handle threads its state advance across the level
 pass	a List entry argument is marshalled as a vec!
 pass	a List-returning closure alongside a plain export — the closure
@@ -1010,11 +1013,13 @@ pass	a closure capturing two values is made and called by the host
 pass	a closure capturing values of DIFFERENT types (Float64 + Int64)
 pass	a closure carried in a USER-declared sum's payload is extracted and applied
 pass	a closure carried in a sum payload is extracted by a match and applied
+pass	a closure crosses the perform boundary as an operation ARGUMENT and applies in the arm
 pass	a closure driving control flow off a captured boolean
 pass	a closure export alongside a plain scalar export — the closure runs
 pass	a closure export alongside a plain scalar export — the plain export runs
 pass	a closure exported to the host is called by the host
 pass	a closure factory's returned capturing closure is applied at the call site
+pass	a closure returned from a match arm carries the arm's HEAP payload binding
 pass	a closure returned from a recursive function is applied through a recursive HOF
 pass	a closure returning Bytes crosses to the host as list<u8>
 pass	a closure returning Unit is declined — Unit has no machine representation
@@ -2332,6 +2337,7 @@ pass	a recursive walk consulting a node's own and its child's String key compute
 pass	a recursive walk over the built-in Ast recurses into its List payload via a rest pattern
 pass	a recursive walk threads THREE nested handlers' states at once
 pass	a recursive walk threads TWO effects at once — a fresh-index counter and a running total
+pass	a recursive walker applies two different capture closures per element
 pass	a recursive-generic filter threading a predicate closure composes at two element types
 pass	a recursive-generic flatten over a nested generic iterator composes at two element types
 pass	a recursive-generic flatten over a nested generic iterator monomorphizes and runs at one element type
@@ -2354,6 +2360,8 @@ pass	a recursively-built linked list renders its full runtime spine
 pass	a reduce-shaped wrapper seeding a second generic helper at two element types declines pending the transitive tie
 pass	a redundant full-width mask on an unsigned runtime value is elided
 pass	a redundant relational check inside its own truthy branch is known-true and its dead branch is eliminated
+pass	a rope label rides a pqueue entry through insort to its time-ordered slot
+pass	a run-sim task's suspension count is DATA-DRIVEN by a list of sleep durations
 pass	alternating prepend and push keep both list ends straight
 pass	an @invariant newtype constructed INSIDE a handler arm establishes per resume
 pass	an ANAGRAM check builds per-string scalar frequency maps and compares them by map equality
@@ -2653,6 +2661,7 @@ pass	a runtime velocity multiplied by a time cancels back to the base dimension
 pass	a runtime wider integer is truncated into a byte by wrap
 pass	a runtime width NESTED in a compound annotation is rejected
 pass	a runtime wrapper sum whose payload is a variant is matched by a nested constructor pattern
+todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 pass	a runtime-assembled tree round-trips equal to its quoted twin
 pass	a runtime-branched tuple returned from a callee is projected in the caller
 pass	a runtime-built generic user sum escapes with its parametric type frame
@@ -2923,6 +2932,7 @@ pass	a three-parameter closure is applied at full arity through a recursive HOF
 pass	a three-payload constructor fully curried builds the variant
 pass	a three-payload constructor partially applied in a runtime tuple completes via eta-closure
 pass	a too-short list refutes a leading-rest arm and falls through
+pass	a top-bit u64 binding re-encodes to its exact source bytes
 pass	a top-level module is named by a top-level def's body
 pass	a top-level sum value definition may reference a sum value defined later
 pass	a top-level tuple pattern matches a tuple produced by a runtime conditional
@@ -3342,6 +3352,8 @@ pass	an escaping closure whose body is a match hits the literal arm
 pass	an escaping closure whose body is a match hits the wildcard arm
 pass	an escaping continuation that itself RE-PERFORMS the handled effect re-enters its handler at apply
 pass	an escaping tuple evaluates its trapping element
+pass	an eval match binder shadowing a HEAP-typed outer name leaves the heap value intact
+pass	an eval splice consumes a value extracted from a CHAMP map at run time
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit Bytes annotation on a runtime bin result compares the same
 pass	an explicit annotation overrides the default-fraction pragma
@@ -3366,6 +3378,8 @@ pass	an exported closure with an annotation-mismatched body is rejected, not emi
 pass	an exported entry with a String parameter is called with a string argument
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an i16 segment round-trips at its two's-complement minimum
+pass	an i64 bin binding with the sign bit set is negative in both const and runtime folds
+pass	an i64 le field at the sign boundary decodes negative from its high LAST byte
 pass	an identity closure composes at a single Int element type (not only String)
 pass	an identity closure composes over a COMPOUND (tuple) element at one element type
 pass	an identity closure composes through TWO chained recursive-generic maps at one element type
@@ -3475,6 +3489,7 @@ pass	an underscore export name crosses under a normalized extern name
 pass	an underscore-letter identifier binds and resolves
 pass	an underscore-prefixed function parameter binds its argument
 pass	an underscore-prefixed token is an identifier, not an integer
+pass	an ungranted effect hidden in a COLLECTION-stored closure is still rejected
 pass	an ungranted effect hidden in a closure passed to a HOF is still rejected
 pass	an unimported sibling definition is not in scope
 pass	an unknown member name is rejected with a did-you-mean (CDZ0201)
@@ -3596,6 +3611,9 @@ pass	checked multiplication reports the Int64.min * -1 overflow as None (the che
 pass	checked multiplication yields Some when it fits
 pass	checked subtraction yields None on underflow instead of trapping
 pass	checked subtraction yields Some of the difference when it fits
+pass	closures built one per iteration each capture their OWN loop value
+pass	closures capture successive SNAPSHOTS of a growing heap list
+pass	closures stored as MAP VALUES dispatch by key with distinct captures
 pass	combining a named rate with a length is a dimensional error
 pass	compacting a byte sequence built at run time preserves its bytes
 pass	compacting a runtime CONCAT ROPE materializes it, preserving the value and staying usable
@@ -3625,6 +3643,7 @@ pass	comparing two same-unit Float-inner quantities at RUNTIME rides the scalar 
 pass	comparing two same-unit scalar-Int quantities at RUNTIME rides the scalar integer compare
 pass	comparing two units of one dimension converts before comparing
 pass	comparison on an unusual signed width orders by the sign-extended declared value (negative < zero)
+pass	compose builds closures capturing TWO function values in one env, both orders
 pass	compound equality over a MIXED Float32/Float64 tuple: a differing f64 leaf makes it unequal
 pass	compound equality over a MIXED Float32/Float64 tuple: each leaf canonicalized at its own width
 pass	compound equality over a Rational leaf respects normalization (1/2 = 2/4)
@@ -3666,6 +3685,7 @@ pass	conjunction elimination keeps BOTH operand hypotheses, not just the project
 pass	conjunction is true exactly when both operands are true
 pass	conjunction of two theorems sharing a hypothesis concatenates without dedup
 pass	conjunction shields a trapping right operand when the left is false
+pass	const u32 and u16 bin bindings with their top bits set fold unsigned
 pass	constructing a bit-field from a value wider than its width is rejected
 pass	constructing a byte sequence with a negative value is a type error
 pass	constructing a byte sequence with a value out of range is a type error
@@ -3796,8 +3816,10 @@ pass	equality over a runtime float in a SUM payload compares by the float leaf
 pass	eval does not execute the result of a nested eval — no runtime AST interpreter
 pass	eval does not forge a private constructor NESTED in a compound
 pass	cross-unit Qty host results reject at the guest-side add
+pass	eval does not execute an Ast selected from a collection at run time
 pass	eval does not see through a splice whose operand is itself an Ast value
 pass	eval is optional for macros and interactive use
+pass	eval materializes a heap LIST from a spliced quasiquote
 pass	eval of a bare Ast.Name for an unbound name is the ordinary unbound-name error
 pass	eval of a bare quoted integer executes it to the integer value
 pass	eval of a fully-concrete imported constructor is legal from outside
@@ -4046,6 +4068,7 @@ pass	one generic sum instantiated at two different types in one program
 pass	one module's export clause does not affect a same-named member of another module
 pass	one of several same-signature closure exports is made and called by the host
 pass	one of two DIFFERENT-signature closure exports is made and called
+pass	one performing closure applied twice observes the handler state stepping between calls
 pass	one type parameter used at several depths in one multi-payload variant
 pass	or evaluates the right operand when the left is false
 pass	or short-circuits at run time: a true left operand skips the trapping right operand
@@ -5123,3 +5146,4 @@ pass	an abortive perform in a STRICT OPERAND referencing a let-local binding sta
 pass	a mutually-recursive fold matching a rebuilt list with a payload binder builds and computes
 pass	a recursive BigInt fn whose bound result feeds a mod compiles and computes (FINDING)
 pass	tuple set elements order by string content across reps then the scalar tiebreak
+pass	String.to-bytes of a runtime rope reused across four branch arms compiles to a VALID module

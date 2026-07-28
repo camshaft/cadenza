@@ -633,3 +633,24 @@
             ((tuple _r k) (+ (* k 100) n))))
         (export main)))
   (call main (: 2 Int64)) (output (: 102 Int64)))
+
+(case "Record.with on a map-extracted record leaves the stored original untouched"
+  (doc    "Structural edit through a collection extraction: the record comes OUT of a map (lookup +
+           expect), `Record.with` replaces its x, and the edited copy is re-inserted into a NEW map —
+           three observables: the ORIGINAL map still reads x=10 (persistence through the with), the
+           new map reads the edited x=k, and the edited record's untouched y rides along (encoded
+           1000·10 + 10·k + 20: 10090 at k=7, 10020 at k=0). A with that edited the extracted record
+           in place (sharing the map's slot) corrupts the first digit block.")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def m (Map.insert Map.empty 1 (record (x 10) (y 20))))
+            (def r (Option.expect (Map.lookup m 1) "present"))
+            (def r2 (Record.with r x k))
+            (def m2 (Map.insert m 1 r2))
+            (+ (* 1000 (. (Option.expect (Map.lookup m 1) "p") x))
+               (+ (* 10 (. (Option.expect (Map.lookup m2 1) "p") x))
+                  (. r2 y)))))
+        (export main)))
+  (call   main (: 7 Int64)) (output (: 10090 Int64))
+  (call   main (: 0 Int64)) (output (: 10020 Int64)))

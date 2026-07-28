@@ -5646,3 +5646,68 @@
                 (get-a (St.get unit))))
             (export main)))
   (output (: 1 Int64)))
+
+(case "one performing closure applied twice observes the handler state stepping between calls"
+  (doc    "An effectful closure defined and applied (twice) directly under its handler: the SAME closure
+           value performs `Tick.tick` at both applications, and the handler arm resumes with `(+ v st)`
+           while stepping its state by the runtime k — so the two calls through ONE closure see
+           DIFFERENT states: f(1)=1+100, then f(2)=2+100+k → 213 at k=10, 203 at k=0. Pins that a
+           closure's perform re-enters the CURRENT handler state per application (not a state captured
+           at closure creation). The HOF spelling of this — the closure passed to a recursive walker
+           applied under the CALLER's handle — rejects by the documented per-callee-param homing
+           analysis (:531/:549's soundness twin); this inline spelling is the supported one.")
+  (input  (do
+        (effect Tick (op tick (-> Int64 Int64)))
+        (def (main (: k Int64))
+          (handle Tick 100
+            ((tick (v) st (resume (+ v st) (+ st k))))
+            (do
+              (def f (fn ((: v Int64)) (Tick.tick v)))
+              (+ (f 1) (f 2)))))
+        (export main)))
+  (call   main (: 10 Int64)) (output (: 213 Int64))
+  (call   main (: 0 Int64)) (output (: 203 Int64)))
+
+(case "a closure crosses the perform boundary as an operation ARGUMENT and applies in the arm"
+  (doc    "The op's first parameter IS a function — `app : (-> (-> Int64 Int64) Int64 Int64)` — so the
+           closure VALUE rides the perform into the handler arm (the :285-family arm applies a
+           lexically-visible closure; here it arrives as the operation's PAYLOAD). Two performs hand
+           TWO different closures through the same op while the state steps: app(double,1) at st=10 →
+           double(11) = 22; app(add-7,1) at st=10+k → 18+k. 2223 at k=5, 2218 at k=0. An op-argument
+           marshalling that unified fn payloads by signature (or re-homed the closure to the arm's
+           frame losing its identity) answers with the wrong body. Note: an op RESULT typed as a fn
+           curried-flattens per arrow right-associativity — `(-> A (-> B C))` reads as a 2-param op,
+           so the result-side face is inexpressible today (clean CDZ0201 documents it).")
+  (input  (do
+        (effect App (op app (-> (-> Int64 Int64) Int64 Int64)))
+        (def (main (: k Int64))
+          (handle App 10
+            ((app (f v) st (resume (f (+ v st)) (+ st k))))
+            (+ (* 100 (App.app (fn ((: x Int64)) (* x 2)) 1))
+               (App.app (fn ((: x Int64)) (+ x 7)) 1))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 2223 Int64))
+  (call   main (: 0 Int64)) (output (: 2218 Int64)))
+
+(case "a LIST of closures rides one perform and the arm picks by state per call"
+  (doc    "Effects × collections × fn-values composed: the op payload is a whole `(List (-> Int64
+           Int64))`, and the arm indexes it BY THE HANDLER STATE — call 1 (st=0) applies fs[0] =
+           (+ x k) at 10 → 10+k, steps the state; call 2 (st=1) applies fs[1] = (* x k) → 10k
+           (13030 at k=3; k=0 collapses to 10000 and separates the arms). The heap list of fn
+           handles crosses the perform ONCE and is indexed TWICE under different states — a payload
+           marshalling that flattened the list to its first element, or re-resolved handles by
+           signature, collapses the two calls.")
+  (input  (do
+        (effect Pick (op pick (-> (List (-> Int64 Int64)) Int64)))
+        (def (main (: k Int64))
+          (handle Pick 0
+            ((pick (fs) st
+               (match (List.at fs st)
+                 ((Some f) (resume (f 10) (+ st 1)))
+                 ((None _u) (resume -1 st)))))
+            (do
+              (def fs (List.push (List.push (list) (fn ((: x Int64)) (+ x k))) (fn ((: x Int64)) (* x k))))
+              (+ (* 1000 (Pick.pick fs)) (Pick.pick fs)))))
+        (export main)))
+  (call   main (: 3 Int64)) (output (: 13030 Int64))
+  (call   main (: 0 Int64)) (output (: 10000 Int64)))

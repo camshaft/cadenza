@@ -416,3 +416,21 @@
             (export main)))
   (output (: 3 Int64))
   (host-calls (call note.note (: "built" String))))
+
+(case "an ungranted effect hidden in a COLLECTION-stored closure is still rejected"
+  (doc    "The collection route of the closure-smuggling family (:148 pins the HOF-param route): the
+           performing closure is stored in a LIST, extracted by `List.at` through an Option match, and
+           applied — the effect is reached through a collection slot + projection rather than a direct
+           param, and the grant check must find it there too (CDZ0401). A reachability analysis that
+           tracked fn values only through call arguments (not through collection stores/loads) would
+           let a list smuggle an ungranted effect past the boundary.")
+  (input  (do
+        (effect Net (op fetch (-> Int64 Int64)))
+        (def (main (: k Int64))
+          (do
+            (def fs (list (fn ((: x Int64)) (Net.fetch x))))
+            (match (List.at fs 0)
+              ((Some f) (f k))
+              ((None _u) -1))))
+        (export main)))
+  (error  CDZ0401))

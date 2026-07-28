@@ -7551,7 +7551,7 @@
   (error  CDZ0201))
 
 (case "a multiply crossing the single-limb boundary lands exactly and divides back"
-  (doc    "A multiply whose product CROSSES the single-limb boundary (2^62 · k for k=4,7 > 2^64) then
+  (doc    "A multiply whose product CROSSES the single-limb boundary (2^62 · k for k=4 reaches 2^64, k=7 exceeds it) then
            divides back down: exact round-trip `(/ (* v k) k) = v` pins that the carry out of the low limb
            is neither dropped nor double-counted. The +5 offset keeps the low limb non-zero so a
            carry-only bug can't cancel.")

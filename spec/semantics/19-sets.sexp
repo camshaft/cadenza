@@ -2692,7 +2692,7 @@
         (def (main (: mode Int64))
           (do
             (def v (Option.expect (String.slice "xkeyz" 1 4) "in"))
-            (def rv (Option.expect (String.slice (String.concat "xk" "eyz") 1 4) "in"))
+            (def rv (Option.expect (String.slice (String.concat "xk" (if (> mode 1000) "zzz" "eyz")) 1 4) "in"))
             (if (= mode 1)
                 (match (Map.lookup (Map.insert Map.empty "key" 42) v) ((Some x) x) ((None _u) -1))
                 (if (= mode 2)

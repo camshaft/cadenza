@@ -3230,3 +3230,67 @@
         (export main)))
   (call main (: 1 Int64)) (output (: 21 Int64))
   (call main (: 2 Int64)) (output (: 1 Int64)))
+
+(case "an eval splice consumes a value extracted from a CHAMP map at run time"
+  (doc    "The splice pins feed literals and locals; this operand comes OUT of a Map — `(Map.lookup m k)`
+           through Option.expect — before `(unquote v)` splices it into the quoted `(+ _ 5)` and eval
+           computes (15 at k=1, 25 at k=2). Pins that the quote/eval machinery accepts a heap-collection-
+           EXTRACTED runtime value as a splice operand — a splice path that only recognized
+           literal/binder operands (or re-evaluated the lookup inside the quote's phase) misfires.")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def m (Map.insert (Map.insert Map.empty 1 10) 2 20))
+            (def v (Option.expect (Map.lookup m k) "present"))
+            (Int64.of (eval (quasiquote (+ (unquote v) 5))))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 15 Int64))
+  (call   main (: 2 Int64)) (output (: 25 Int64)))
+
+(case "eval materializes a heap LIST from a spliced quasiquote"
+  (doc    "The eval pins return scalars; this eval's result is a COLLECTION — `(list 1 (unquote k) 3)`
+           crosses the Ast→value boundary as a heap list the caller measures and indexes (len 3,
+           slot 1 = the spliced k: 307 at k=7, 300 at k=0). An eval that boxed the list as an Ast
+           node (or materialized only the spliced leaf) fails the len or the projection.")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def xs (eval (quasiquote (list 1 (unquote k) 3))))
+            (+ (* 100 (List.len xs))
+               (match (List.at xs 1) ((Some v) v) ((None _u) -1)))))
+        (export main)))
+  (call   main (: 7 Int64)) (output (: 307 Int64))
+  (call   main (: 0 Int64)) (output (: 300 Int64)))
+
+(case "an eval match binder shadowing a HEAP-typed outer name leaves the heap value intact"
+  (doc    "The hygiene-collision pins cover scalar-over-scalar shadows; here the evaled match binds `m`
+           — a SCALAR 5 — while the OUTER `m` is a heap Map. The quote's arm computes with its own m
+           (5+2 = 7 → 700) and the outer map must survive the collision un-clobbered (lookup reads k:
+           703 at k=3, 700 at k=0). A hygiene table that resolved the collision by SLOT rather than by
+           scope would either read the map handle as a scalar in the arm (garbage arithmetic) or write
+           the scalar 5 over the map handle (corrupting the later lookup).")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def m (Map.insert Map.empty 1 k))
+            (def r (eval (quasiquote (match 5 (m (+ m 2)) (_ 0)))))
+            (+ (* 100 (Int64.of r))
+               (match (Map.lookup m 1) ((Some v) v) ((None _u) -1)))))
+        (export main)))
+  (call   main (: 3 Int64)) (output (: 703 Int64))
+  (call   main (: 0 Int64)) (output (: 700 Int64)))
+
+(case "eval does not execute an Ast selected from a collection at run time"
+  (doc    "The COLLECTION entry path to the no-runtime-AST-interpreter line (nested-eval and
+           spliced-Ast-operand are pinned above; this reaches it via `List.at`): the quasiquotes
+           build fine as Ast VALUES in a list, but `(eval (Option.expect (List.at asts 1) ...))`
+           hands eval a runtime SELECTION — not a compile-time-visible `(quote …)`/`Ast.*`
+           construction — so it rejects CDZ0101. A coded reject: an eval that silently ran the
+           selected node (un-analyzed AST) would flip this to 12 and trip the gate.")
+  (input  (do
+        (def (main)
+          (do
+            (def asts (list (quasiquote (+ 1 2)) (quasiquote (* 3 4))))
+            (Int64.of (eval (Option.expect (List.at asts 1) "present")))))
+        (export main)))
+  (error  CDZ0101))
