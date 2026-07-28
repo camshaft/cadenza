@@ -7686,3 +7686,57 @@
         (export main)))
   (call   main (: 3037000500 UInt64)) (output (: 9070500 Int64))
   (call   main (: 5 UInt64)) (output (: 250006 Int64)))
+
+;; A (bin (u64 n)) binding with the TOP BIT set does UNSIGNED arithmetic. Regression: the runtime
+;; binder was typed deferred-signed Int64 (collect + the rust BinIntRead emit both carried the u64 as
+;; a raw i64), so % picked rem_s and Int64.of trusted the sign → 2^63+1 %1000 gave -807 (wasm) and a
+;; rust E0308 build-fail once the binder solved genuine UInt64. Fixed across the family: v-core-opt
+;; 7ff56255f (bind genuine UInt64 + widen the runtime T.of totality gate) + v-rust-backend BinIntRead
+;; cast to the binder's own rust int type (batch #146). Now 809/905 on all three backends.
+(case "a u64 bin binding with the top bit set does unsigned arithmetic"
+  (input  (do
+        (def (main (: x UInt8))
+          (do
+            (def b (Bytes.of (list x 0 0 0 0 0 0 1)))
+            (match b
+              ((bin (u64 n)) (Int64.of (% n 1000)))
+              (_ -1))))
+        (export main)))
+  (call   main (: 128 UInt8)) (output (: 809 Int64))
+  (call   main (: 64 UInt8)) (output (: 905 Int64)))
+
+;; Widening a top-bit-set u64 binding to BigInt widens UNSIGNED. Regression: the rust backend's
+;; Core::BigIntOfI64 emitted `(v) as i128` which SIGN-EXTENDS an i64-repped u64, so (BigInt.of n) for
+;; n = 2^63+9 gave -9223372036854775799 (%1000 = -799) on rust while wasm widened unsigned (817).
+;; Fixed by v-rust-backend: cast `(v) as u64 as i128` (the BigInt.of twin of the BinIntRead cast,
+;; batch #146). Now 817 on all three backends; the escape-hatch path (widen an 8-byte id to BigInt).
+(case "a top-bit u64 binding widens to BigInt unsigned"
+  (input  (do
+        (def (main (: x UInt8))
+          (match (Bytes.of (list x 0 0 0 0 0 0 9))
+            ((bin (u64 n)) (Int64.of (% (BigInt.of n) (BigInt.of 1000))))
+            (_ -2)))
+        (export main)))
+  (call   main (: 128 UInt8)) (output (: 817 Int64))
+  (call   main (: 0 UInt8)) (output (: 9 Int64)))
+
+;; A CONSTANT-FOLDED (bin (u64 n)) binding with the top bit set compares UNSIGNED. Regression: the
+;; const-fold twin of the runtime u64-bin bug — bin_match_decode decoded a u64 int segment as
+;; `val as i64` (top-bit-set → NEGATIVE i64; BinDecoded::Int typed i64, lossy for wide u64) and
+;; decode_bin_field re-wrapped via IntValue::from_i64, so const (> m 5u64) folded to 0 (the negative
+;; compares low), const % gave a bogus CDZ0304, dual-match gave CDZ0302. Fixed by v-core-opt 140bcfc3d
+;; (widen BinDecoded::Int(i64)→Int(IntValue), decode unsigned segments via from_u128 — mirrors the
+;; runtime fix 7ff56255f on the const side). u64-width-specific (u32/u16 have i64 headroom).
+(case "a constant-folded u64 bin binding with the top bit set compares unsigned"
+  (input  (do
+        (def (main (: mode Int64))
+          (if (= mode 1)
+              (match (Bytes.of (list 128 0 0 0 0 0 0 9))
+                ((bin (u64 m)) (if (> m (: 5 UInt64)) 1 0))
+                (_ -2))
+              (match (Bytes.of (list (UInt8.wrap (* mode 64)) 0 0 0 0 0 0 9))
+                ((bin (u64 m)) (if (> m (: 5 UInt64)) 1 0))
+                (_ -2))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 2 Int64)) (output (: 1 Int64)))

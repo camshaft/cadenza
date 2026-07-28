@@ -710,8 +710,13 @@ def read-ctor-pattern-binders(s: String, k: Int64, acc: List(Int64), tree: Tree)
    (if ((char-at(s, q) == ")") or (char-at(s, q) == "(") or (char-at(s, q) == ""))
     then (acc, q, tree)                                             // pattern closes (or malformed) → done
     else (match scan-atom(s, q, "") with | (bnm, k1) =>             // one binder name
-           (match add-node(tree, Node.NVar(name-id(bnm))) with | (bid, t1) =>
-             read-ctor-pattern-binders(s, k1, List.push(acc, bid), t1)))))
+           // WILDCARD `_`: a `_` binder position means IGNORE this field — emit the -1 no-binder SENTINEL (NO NVar
+           // node), NOT a real binder. It still COUNTS for arity (List.push keeps the slot), but resolve/infer skip
+           // -1 and eval consumes-the-slot-without-inserting. N wildcards never collide (no shared name-id(_) key).
+           (if (bnm == "_")
+            then read-ctor-pattern-binders(s, k1, List.push(acc, 0 - 1), tree)
+            else (match add-node(tree, Node.NVar(name-id(bnm))) with | (bid, t1) =>
+                   read-ctor-pattern-binders(s, k1, List.push(acc, bid), t1))))))
 
 /// M2-b-2b-ii-c: read a PAYLOAD ctor-pattern arm `((Ctor x y …) body)` → NMatchCtor(scrut, patCtorName, binderIds, body, rest).
 /// `p` is at the inner `(` of the pattern (the arm's outer `(` already consumed by open-paren in read-match-arms).
@@ -1586,6 +1591,27 @@ def sr-ctor-pattern-multibinder-reads-binder-list() =
               else trap("multi-binder arm body is the `(+ x y)` NBin, not a swallowed 2nd binder"))
            else trap("`(Pair x y)` reads a 2-element binder list [x,y]"))
       | _ => trap("a multi-binder payload ctor-pattern arm reads to NMatchCtor (behavior slice)")))
+
+@test
+def sr-ctor-pattern-wildcard-binder-reads-sentinel() =
+  // WILDCARD slice: `((Pair _ y) y)` reads a 2-element binder list where field-0 is the -1 no-binder SENTINEL
+  // (a `_` binds nothing) and field-1 is a real NVar for `y`. Pins: (1) `_` still COUNTS for arity (len==2, so the
+  // arity guard admits it over 2-field Pair), (2) the `_` slot is -1 (no NVar node), (3) `y` is a real binder id.
+  (match read-source("(do (type P (Pair Int64 Int64)) (def (main c) (match c ((Pair _ y) y) (_ 9))) (export main))") with | (root, tree) =>
+    (match node-at(tree, root) with
+      | Option.Some(Node.NMatchCtor(_, _, binderIds, _, _)) =>
+          (if (List.len(binderIds) == 2) then
+             (match List.at(binderIds, 0) with
+               | Option.Some(b0) => (if (b0 == (0 - 1)) then
+                   (match List.at(binderIds, 1) with
+                     | Option.Some(b1) => (match node-at(tree, b1) with
+                         | Option.Some(Node.NVar(_)) => unit          // field-1 `y` is a real NVar binder
+                         | _ => trap("`((Pair _ y) …)` field-1 must be a real NVar binder for y"))
+                     | Option.None(_) => trap("binderIds must have a field-1 entry"))
+                 else trap("`((Pair _ y) …)` field-0 must be the -1 wildcard sentinel, not a real binder"))
+               | Option.None(_) => trap("binderIds must have a field-0 entry"))
+           else trap("`(Pair _ y)` reads a 2-element binder list [-1, y] (`_` counts for arity)"))
+      | _ => trap("a wildcard-binder payload ctor-pattern arm reads to NMatchCtor")))
 
 @test
 def sr-ctor-pattern-multibinder-following-def-intact() =

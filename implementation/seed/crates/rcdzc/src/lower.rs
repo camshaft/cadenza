@@ -2381,6 +2381,27 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     // instead present the rewritten node as the child, which that check would reject. (A
                     // perform's own binders were already substituted by the fold; only free names need this.)
                     db.reparent(rewritten, Some(id), db.child_ix_of(id) as u32);
+                    // ESCAPED-CLOSURE LEAK GUARD (diagnostic quality). The rewritten body may STILL carry a
+                    // discharged-op perform lexically inside a LIVE lambda — the fold could not route it
+                    // because the closure ESCAPED its reach (stored in a collection, extracted via `List.at`
+                    // + `match ((Some f) …)`, applied through the slot; `subtree_performs` treats a lambda
+                    // VALUE as pure, since a closure body performs only when APPLIED, and the fold cannot
+                    // trace the application back through the collection slot). That lambda lifts to a
+                    // STANDALONE function lowered with NO handle frame, so its perform reaches the
+                    // standalone-perform arm below and would surface the MISLEADING `NO_HOME_STANDALONE_DECLINE`
+                    // ("performed with no enclosing handler here") — even though this handle LEXICALLY
+                    // encloses it. Decline with the honest `HANDLER_NOT_REDUCIBLE_DECLINE` todo instead of
+                    // lowering a body that lies about the home (breaker's diagnostic-quality finding, routed
+                    // by corpus-bugfix 2026-07-28; same discipline as the guard-perform decline — a
+                    // not-yet-routed path must say "not yet reducible", NEVER a false "no home"). SAFE
+                    // reject, honest MESSAGE. Checked AFTER `reparent` so the walk's `resolved_of` sees the
+                    // grafted lexical chain (a pre-graft walk would cache free names as unbound → spurious
+                    // CDZ0101), and only at the OUTER lowering fold (never an intermediate recursive one).
+                    if crate::effects::reduced_body_leaks_escaped_perform(db, rewritten, &arms) {
+                        return Core::Poison(Reject::decline(
+                            crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE,
+                        ));
+                    }
                     core_of(db, rewritten)
                 }
                 None => {
@@ -2841,12 +2862,23 @@ fn lower_read(db: &mut Db, str_val: StructId) -> Core {
     // Exactly one node must consume the whole input (trailing content is ill-formed).
     match parsed {
         Some(node) if r.at_end() => reify_read_ast(db, &node, &disc),
-        Some(_) => Core::Poison(Reject::decline(
-            "read of text with trailing content after the first s-expression",
-        )),
-        None => Core::Poison(Reject::decline(
-            "read of text that is not a well-formed s-expression over the Ast subset",
-        )),
+        // Malformedness is a PERMANENT fact (not reducible-later), so a bad read is a CODED REJECT, not a
+        // decline/todo: trailing content after the first s-expression, or text that is not a well-formed
+        // s-expression over the Ast subset (unbalanced parens, a stray `)`, an empty/EOF input).
+        Some(_) => Core::Poison(
+            Reject::coded(
+                Code::Malformed,
+                "read of text with trailing content after the first s-expression",
+            )
+            .at(str_val),
+        ),
+        None => Core::Poison(
+            Reject::coded(
+                Code::Malformed,
+                "read of text that is not a well-formed s-expression over the Ast subset",
+            )
+            .at(str_val),
+        ),
     }
 }
 
@@ -2867,10 +2899,17 @@ enum SNode {
 fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
     match node {
         SNode::Int(n) => {
+            // `Ast.Int`'s payload is `BigInt` (a quoted/read AST stores integers non-lossily), so a
+            // read-produced integer node is typed `BigInt` — NOT `Int64`. Typing it `Int64` here made a
+            // `read` result carry a raw-i64 payload rep while the sum's declared payload is a boxed BigInt;
+            // the mismatch only surfaces when the read Ast meets another Ast in `=`/reify (a rebuilt list),
+            // where the equality lowering commits to two different reps → wasm invalid-module / rust E0308.
+            // (The `IntValue` is already arbitrary-precision; only the static type widens — matching the
+            // `decode_ast_value` retype and the reify grounding.)
             let payload = synth_core(
                 db,
                 Core::ConstInt(IntValue::from_i64(*n)),
-                crate::ty::Ty::int64(),
+                crate::ty::Ty::BigInt,
             );
             Core::SumNew {
                 disc: disc.int,
@@ -2955,9 +2994,24 @@ impl<'a> SexprReader<'a> {
             pos: 0,
         }
     }
+    /// Skip inter-token whitespace AND `;` line-comments (run to end-of-line). The front-end reader skips
+    /// `;`-to-EOL in ALL corpus program text, so `read` — parsing the text of a PROGRAM
+    /// (`self-hosting-surface.md`) — must too; otherwise `(read "(+ 1 ; c\n 2)")` tokenizes `;` as a bare
+    /// `Name` and yields a 5-element list, silently the WRONG value. A `;` inside a `"…"` string is never
+    /// seen here (the string body is consumed by `read_string`), so only genuine inter-token comments skip.
     fn skip_ws(&mut self) {
-        while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_whitespace() {
-            self.pos += 1;
+        loop {
+            while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_whitespace() {
+                self.pos += 1;
+            }
+            if self.pos < self.bytes.len() && self.bytes[self.pos] == b';' {
+                // A line-comment: consume to the next newline (or end of input).
+                while self.pos < self.bytes.len() && self.bytes[self.pos] != b'\n' {
+                    self.pos += 1;
+                }
+                continue; // loop to skip the newline + any following ws/comment
+            }
+            break;
         }
     }
     fn at_end(&mut self) -> bool {
@@ -2994,11 +3048,12 @@ impl<'a> SexprReader<'a> {
         if self.bytes[self.pos] == b'"' {
             return self.read_string().map(SNode::Str);
         }
-        // A bare token: run to the next whitespace or paren.
+        // A bare token: run to the next whitespace, paren, or `;` (comment start — the front-end reader
+        // treats `;` as a comment delimiter everywhere, so a token never contains one).
         let start = self.pos;
         while self.pos < self.bytes.len() {
             let b = self.bytes[self.pos];
-            if b.is_ascii_whitespace() || b == b'(' || b == b')' {
+            if b.is_ascii_whitespace() || b == b'(' || b == b')' || b == b';' {
                 break;
             }
             self.pos += 1;
@@ -25053,9 +25108,22 @@ fn is_orderable_compound(db: &mut Db, ty: &crate::ty::Ty) -> bool {
 /// float Set.to-list / Map.to-list key. So:
 ///  - `float_ok = false` (the `<` / `Core::ValueCmp` numeric path): a float leaf is NOT orderable — decline,
 ///    matching the IEEE partial-order carve-out.
-///  - `float_ok = true` (the Set/Map `shape_of` to-list-enumeration path): a float leaf IS orderable by its
-///    canonical bytes, so a float element/key admits the deterministic enumeration order (collections-and-
-///    text.md #Set Iteration Is Deterministic). Bytes/Char/Set/Map stay non-orderable in BOTH modes.
+///  - `float_ok = true` (the Set/Map `shape_of` to-list-enumeration path): a BARE-ROOT float leaf IS
+///    orderable by its canonical bytes, so a float element/key admits the deterministic enumeration order
+///    (collections-and-text.md #Set Iteration Is Deterministic). Bytes/Char/Set/Map stay non-orderable in
+///    BOTH modes.
+///
+/// 🔑 `float_ok` applies to a BARE-ROOT float ONLY — it does NOT propagate into a COMPOUND's components. A
+/// float leaf INSIDE a tuple/list/record/sum makes the compound un-orderable per 03:626 / §319 (a compound
+/// is ordered EXACTLY WHEN every component offers a TOTAL order, and a float offers only the IEEE partial
+/// order — the canonical-byte order is the enumeration convenience for a bare float, not a blessed total
+/// order a compound's lexicographic walk can compose). The runtime enforces exactly this asymmetry:
+/// `compare_scalar_leaf`'s bare `Shape::Float` orders by `to_bits`, but the compound work-stack walk
+/// (`value_cmp_shaped`) returns `None` for a `Shape::Float` leaf mid-walk. So admitting a float-in-compound
+/// here built a descriptor the runtime's compound sort then declined → `op_set_to_list` yielded an EMPTY
+/// list (SILENT DATA LOSS) instead of a clean compile-time decline. Recursing the compound arms with
+/// `float_ok = false` makes `Set/Map.to-list` over a float-containing compound DECLINE (uniform with `<`
+/// and both backends), matching 03:626 — a bare float set still enumerates (the root keeps `float_ok`).
 fn orderable_leaf_or_compound(
     db: &mut Db,
     ty: &crate::ty::Ty,
@@ -25068,18 +25136,21 @@ fn orderable_leaf_or_compound(
         Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Symbol | Ty::BigInt | Ty::Rational => {
             true
         }
-        // A float is orderable ONLY by canonical bytes (to-list), never by numeric `<` — see `float_ok`.
+        // A float is orderable ONLY by canonical bytes as a BARE ROOT (to-list), never by numeric `<` and
+        // never INSIDE a compound — see `float_ok` + the doc above.
         Ty::Float(_) => float_ok,
         // Non-orderable leaves in EITHER mode — Bytes/Char/Set/Map (no blessed order at all).
         Ty::Bytes | Ty::Char | Ty::Set(_) | Ty::Map(..) => false,
+        // COMPOUND arms recurse with `float_ok = false`: a float component makes the compound un-orderable
+        // (03:626 / §319), regardless of the caller's bare-root float mode.
         Ty::Tuple(elems) => elems
             .iter()
-            .all(|e| orderable_leaf_or_compound(db, e, float_ok, seen)),
-        Ty::List(elem) => orderable_leaf_or_compound(db, elem, float_ok, seen),
+            .all(|e| orderable_leaf_or_compound(db, e, false, seen)),
+        Ty::List(elem) => orderable_leaf_or_compound(db, elem, false, seen),
         Ty::Record(fields) => {
             let vals: Vec<Ty> = fields.values().cloned().collect();
             vals.iter()
-                .all(|v| orderable_leaf_or_compound(db, v, float_ok, seen))
+                .all(|v| orderable_leaf_or_compound(db, v, false, seen))
         }
         // A sum — orderable iff every variant's payload type is. Recursive sum broken by `seen`. Mirrors
         // `ty_heap_walkable`'s Sum arm: walk each variant's ctor, resolve its payload at this instantiation.
@@ -25101,7 +25172,9 @@ fn orderable_leaf_or_compound(
                     if let Some(ctor) = ctor
                         && let Some(payload_ty) =
                             crate::infer::payload_ty_at_instantiation(db, ctor, ty)
-                        && !orderable_leaf_or_compound(db, &payload_ty, float_ok, seen)
+                        // `false`: a float payload INSIDE a sum makes it un-orderable (compound carve-out,
+                        // 03:626) — same as the tuple/list/record arms above.
+                        && !orderable_leaf_or_compound(db, &payload_ty, false, seen)
                     {
                         ok = false;
                         break;

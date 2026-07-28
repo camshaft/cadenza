@@ -19979,11 +19979,54 @@ mod recursion {
     }
 
     #[test]
+    fn set_to_list_over_a_float_containing_compound_declines_not_silently_empties() {
+        // ⚠ SILENT-DATA-LOSS regression (routed corpus-bugfix/breaker 2026-07-28): `Set.to-list` over a
+        // FLOAT-LEAF TUPLE element ran to an EMPTY list on wasm (Set.len correct but to-list []), silently
+        // dropping every element — worse than a decline (a fold over the enumeration processes NOTHING).
+        // Root: `orderable_leaf_or_compound` propagated its `float_ok` (the bare-float-root to-list mode)
+        // INTO the compound arms, so a float-in-tuple passed the Set/Map shape descriptor guard — but the
+        // runtime's compound `value_cmp_shaped` returns None for a Float leaf mid-walk (a bare float orders
+        // by to_bits; a float INSIDE a compound does not), so `op_set_to_list`'s sort yielded []. Per 03:626
+        // / §319 a float-containing compound has NO total order → the CORRECT answer is a uniform DECLINE
+        // (same as `<`, same as the Set<Bytes> ruling). Fixed by recursing the compound arms with
+        // `float_ok = false`, so `Set.to-list` over a float-containing compound DECLINES at compile time.
+        // (breaker #34: 5 faces — tuple/record/list/nested/map-key — one shared fix.)
+        let compiles = |src: &str| compile_component(&crate::codec::encode(&parse(src))).is_ok();
+        // The float-leaf tuple + a sibling face (Map key) must DECLINE (compile fails cleanly).
+        assert!(
+            !compiles(
+                "(module m (def (main) (Set.to-list (Set.of (list (tuple 1.5 1) (tuple 2.5 2) (tuple -1.0 3))))) (export main))"
+            ),
+            "Set.to-list over a float-leaf tuple must DECLINE (float compound has no order, 03:626), not silently []"
+        );
+        assert!(
+            !compiles(
+                "(module m (def (main) (Map.to-list (Map.insert (Map.empty) (tuple 1.5 1) 9))) (export main))"
+            ),
+            "Map.to-list with a float-leaf tuple KEY must DECLINE"
+        );
+        // CONTROL — a BARE float set STILL enumerates (float root orders by canonical bytes, unregressed).
+        assert!(
+            compiles(
+                "(module m (def (main) (List.len (Set.to-list (Set.of (list 1.5 2.5 3.5))))) (export main))"
+            ),
+            "a bare-float Set.to-list must STILL enumerate (float root canonical-byte order, not regressed)"
+        );
+        // CONTROL — an INT-leaf tuple set STILL enumerates (the compound arm didn't over-decline).
+        assert!(
+            compiles(
+                "(module m (def (main) (List.len (Set.to-list (Set.of (list (tuple 1 1) (tuple 2 2)))))) (export main))"
+            ),
+            "an int-leaf tuple Set.to-list must STILL enumerate (only FLOAT leaves make a compound unorderable)"
+        );
+    }
+
+    #[test]
     fn a_str_slice_floats_each_bound_operand_above_the_prior_high_water() {
         // ⚠ INVALID WASM regression (routed corpus-bugfix/breaker 2026-07-28, sibling of the br_table fix
-        // `4f9658803` — same "expected i32, found i64" validator signature, DIFFERENT seam): the `String.
-        // slice` emit reserved scratch `base..base+6` then emitted its `start`/`end` bound operands at a
-        // FIXED `base + 7`. When `start` is a checked-arith (`(+ i 1)`, whose i64 `$r` transient claims a
+        // `4f9658803` — same "expected i32, found i64" validator signature, DIFFERENT seam): the
+        // `String.slice` emit reserved scratch `base..base+6` then emitted its `start`/`end` bound operands
+        // at a FIXED `base + 7`. When `start` is a checked-arith (`(+ i 1)`, whose i64 `$r` transient claims a
         // scratch slot) and `end` is `String.scalar-len` (whose owned-reclaim tees the i32 string handle
         // into a scratch slot), BOTH operands reset their floor to `base + 7` → the later one reused a slot
         // the earlier already typed at a DIFFERENT width. One wasm local, two widths → module invalid.
@@ -58695,6 +58738,154 @@ mod stage1 {
     }
 
     #[test]
+    fn a_collection_extracted_performing_closure_declines_honestly_not_no_enclosing_handler() {
+        // A handled effect performed via a closure EXTRACTED from a collection — the closure is stored in a
+        // `(list …)`, projected with `List.at`, unwrapped through `(match … ((Some f) (f …)))`, and applied
+        // — all LEXICALLY under the `handle` that discharges the op. The tail-resumptive fold cannot route
+        // the perform: `subtree_performs` treats a lambda VALUE as pure (a closure body performs only when
+        // APPLIED), and the fold cannot trace the application back through the collection slot, so the
+        // performing lambda escapes to standalone lifting. Pre-fix its perform reached `lower`'s standalone
+        // arm and surfaced the FACTUALLY-WRONG `NO_HOME_STANDALONE_DECLINE` ("performed with no enclosing
+        // handler here") — even though the handle plainly ENCLOSES it (the escaped lambda lifts by its
+        // ORIGINAL AST node into a synthesized standalone subtree whose parent chain no longer reaches the
+        // handle, so a post-lift ancestry check cannot recover the enclosure — the detection must run at the
+        // REDUCED-body level, before lifting). At the lowering entry (`lower`'s `Handle` arm),
+        // `reduced_body_leaks_escaped_perform` scans the reduced body for a discharged-op perform inside a
+        // LIVE lambda whose own `core_of` is the misleading no-home poison, and remaps it to the honest
+        // `HANDLER_NOT_REDUCIBLE_DECLINE` todo (breaker's diagnostic-quality finding, routed by corpus-bugfix
+        // 2026-07-28; same discipline as the guard-perform decline — a not-yet-routed path must say "not yet
+        // reducible", NEVER a false "no home"). SAFE reject, honest MESSAGE. The scan yields to a
+        // more-specific co-occurring "partial application of a runtime closure" decline (see
+        // `a_partial_application_of_a_performing_closure_under_a_handler_declines_cleanly`).
+        let msg = |src: &str| {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        };
+        let collection = "(do (effect Ask (op ask (-> Int64 Int64))) \
+                   (def (main) (handle Ask 5 ((ask (n) s (resume (* n 2) s))) \
+                     (match (List.at (list (fn (x) (Ask.ask x))) 0) \
+                       ((Some f) (f 3)) (None 0)))) (export main))";
+        let ms = msg(collection);
+        assert!(
+            !ms.iter()
+                .any(|m| *m == crate::diag::NO_HOME_STANDALONE_DECLINE),
+            "a collection-extracted perform UNDER a handle must NOT report 'no enclosing handler' — the \
+             handle encloses it: {ms:?}"
+        );
+        assert!(
+            ms.iter()
+                .any(|m| *m == crate::diag::HANDLER_NOT_REDUCIBLE_DECLINE),
+            "expected the honest not-yet-reducible decline for the collection-extracted closure: {ms:?}"
+        );
+        // NO REGRESSION: a directly-applied performing let-bound closure still FOLDS clean. The application
+        // `(f 3)` inlines and routes, leaving the `f` binding DEAD (unreferenced) — lowering drops it, so the
+        // vestigial lambda never reaches standalone lowering. The leak guard skips a dead binding's init.
+        let via_local = "(do (effect Ask (op ask (-> Int64 Int64))) \
+                   (def (main) (handle Ask 5 ((ask (n) s (resume (* n 2) s))) \
+                     (let ((f (fn (x) (Ask.ask x)))) (f 3)))) (export main))";
+        assert!(
+            msg(via_local).is_empty(),
+            "a directly-applied let-bound performing closure under a handle must still fold: {:?}",
+            msg(via_local)
+        );
+        // NO REGRESSION: a plain perform directly in the handle body still folds (→ 10).
+        let direct = "(do (effect Ask (op ask (-> Int64 Int64))) \
+                   (def (main) (handle Ask 5 ((ask (n) s (resume (* n 2) s))) \
+                     (Ask.ask 5))) (export main))";
+        assert!(
+            msg(direct).is_empty(),
+            "a direct perform under the handle must still fold clean: {:?}",
+            msg(direct)
+        );
+    }
+
+    #[test]
+    fn a_handler_arm_inline_fold_is_hygienic_no_binder_capture_at_the_perform_site() {
+        // SILENT-MISCOMPILE FIX (breaker, routed corpus-bugfix 2026-07-28): the tail-resumptive handler fold
+        // inlines the arm body at the perform site and splices the continuation `C` (the handle body) around
+        // the resume value — copying name atoms that RE-RESOLVE in the destination scope. Without hygiene, a
+        // local `(def x …)` on one side CAPTURES a same-named free name from the other, silently computing a
+        // wrong value (the worst class). `reduce_handle` now alpha-renames the LOCAL value binders (`let`
+        // pairs, `do`-local `(def NAME v)`) of BOTH the handle body and the substituted arm body to fresh
+        // `#`-names (`freshen_local_binders`, sharing every free-name subtree so enclosing-param references
+        // keep resolving), making capture impossible. The effects twin of the eval-splice hygiene family.
+        let run = |src: &str| -> i64 {
+            let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compiles");
+            run_returns_with(&bytes, "main", &[])
+        };
+        // F1: the arm-local `(def x 5)` must NOT capture the handle BODY's `x` (the global 100) when `C =
+        // (+ x □)` is spliced into the arm's `(do (def x 5) …)` for the resume. Pre-fix → 10 (=5+5).
+        let f1 = "(module m (effect E (op get (-> Unit Int64))) \
+            (def x 100) \
+            (def (main) (handle E 0 ((get (u) s (do (def x 5) (resume (+ x s) s)))) (+ x (E.get unit)))) \
+            (export main))";
+        assert_eq!(
+            run(f1),
+            105,
+            "arm-local (def x 5) must not leak into the body's x=100"
+        );
+        // F2: the arm's `(resume x s)` reads the handler's enclosing `x` (the global 100), NOT the
+        // performer's `(def x 7)` it is spliced beside. Pre-fix → 14 (=7+7).
+        let f2 = "(module m (effect E (op get (-> Unit Int64))) \
+            (def x 100) \
+            (def (main) (handle E 0 ((get (u) s (resume x s))) (do (def x 7) (+ x (E.get unit))))) \
+            (export main))";
+        assert_eq!(
+            run(f2),
+            107,
+            "the perform-site (def x 7) must not capture the arm's global x=100"
+        );
+        // NO REGRESSION: a NON-colliding arm-local binder still folds correctly — arm-local `y`, body `x`.
+        let distinct = "(module m (effect E (op get (-> Unit Int64))) \
+            (def x 100) \
+            (def (main) (handle E 0 ((get (u) s (do (def y 5) (resume (+ y s) s)))) (+ x (E.get unit)))) \
+            (export main))";
+        assert_eq!(
+            run(distinct),
+            105,
+            "a non-colliding arm-local binder folds as before"
+        );
+        // NO REGRESSION: a state-threading multi-perform handler still computes correctly (seed 0, each get
+        // resumes s and advances s+1): (+ (E.get)=0 (E.get)=1) = 1, no capture involved.
+        let threading = "(module m (effect E (op get (-> Unit Int64))) \
+            (def (main) (handle E 0 ((get (u) s (resume s (+ s 1)))) (+ (E.get unit) (E.get unit)))) \
+            (export main))";
+        assert_eq!(
+            run(threading),
+            1,
+            "ordinary state threading unaffected by the hygiene pass"
+        );
+        // PERIMETER (breaker's clean-binder pin): the op-PARAM binder and the STATE binder were ALREADY
+        // hygienic — the fold substitutes them by binder-NODE identity (`subst`), immune to name — so a
+        // collision on THOSE kinds must still compute correctly (my arm-body freshening runs AFTER that
+        // substitution and touches only arm-internal do-def/let locals). Op-param `v` colliding with body
+        // `v=1000`: arm `(get (v) s (resume (+ v v) s))` where body performs `(E.get)` and `v=1000`; the
+        // op-arg (unit→bound elsewhere) and the body `v` stay distinct → the body `(+ v (E.get))` with v=1000
+        // and the arm resuming `(+ v_op …)` must not cross. Keep it simple: verify a param-named-`s`/state-`s`
+        // shape computes the threading answer, and a body-var named like the state does not capture.
+        let state_named = "(module m (effect E (op get (-> Unit Int64))) \
+            (def s 1000) \
+            (def (main) (handle E 0 ((get (u) s (resume s (+ s 1)))) (+ s (E.get unit)))) \
+            (export main))";
+        assert_eq!(
+            run(state_named),
+            1000,
+            "a body var named like the arm STATE binder must not be captured (1000 + 0)"
+        );
+    }
+
+    #[test]
     fn a_perform_in_a_match_guard_declines_honestly_not_no_enclosing_handler() {
         // A perform inside a match-arm GUARD condition, under a `handle` that discharges it, is a position
         // the effect-routing/distribution walks do NOT descend (they route the scrutinee + arm bodies, not
@@ -72515,11 +72706,12 @@ mod sidecar_driven {
 
     #[test]
     fn emit_tests_per_file_emits_one_component_per_file_byte_identical_to_a_per_file_build() {
-        // STAGE 1 of the shared-arena lower-once workstream (concierge-greenlit): `EmitTestsPerFile` lowers
-        // a linked closure ONCE and emits one `@test` wasm component PER FILE, each artifact NAMED by the
-        // file's `link` path — replacing N per-file `cdz test` compiles that each re-lower the whole closure.
-        // BEHAVIOR-IDENTICAL guarantee: each file's component is BYTE-IDENTICAL to what a standalone
-        // `EmitTests` compile of that file alone produces (same tests, same layout-view over the same Core).
+        // `EmitTestsPerFile` lowers a linked closure ONCE and emits one `@test` wasm component PER FILE,
+        // each artifact NAMED by the file's `link` path — instead of a separate per-file compile that
+        // re-lowers the whole closure. The behavior CONTRACT this pins: each file's component is
+        // BYTE-IDENTICAL to what a standalone `EmitTests` compile of that file alone produces (same tests,
+        // same layout-view over the same Core) — so a caller can swap N per-file compiles for ONE
+        // EmitTestsPerFile + demux-by-name with no observable change.
         use crate::abi::Artifact;
         let file_a = "(do (def (fa) 1) (@ test (def (ta) (if (= (fa) 1) unit (trap \"a\")))))";
         let file_b = "(do (def (fb) 2) (@ test (def (tb) (if (= (fb) 2) unit (trap \"b\")))))";
@@ -72594,6 +72786,189 @@ mod sidecar_driven {
             comp_b.bytes, oracle_b,
             "file_b's shared-arena view is byte-identical to its standalone EmitTests"
         );
+    }
+
+    #[test]
+    fn option_c_partition_splits_own_test_defs_from_the_shared_imported_closure() {
+        // OPTION C increment (a): `layout::partition_reachable_for_file` splits a test build's reachable
+        // defs into `own` (the test file's own @test bodies + file-local helpers) vs `shared` (defs from an
+        // IMPORTED file — the closure Option C emits ONCE as its own component). Build a 2-file package: `lib`
+        // exports `shared_helper`; `app` imports it and a @test calls it. The @test-reachable set spans both
+        // files; the partition must put `app`'s test in `own` and `lib`'s helper in `shared`.
+        use crate::testkit::parse;
+        // `shared-helper` is RECURSIVE so it stays a standalone emitted def (a small non-recursive fn would
+        // INLINE into the caller, leaving no `shared` row) — mirroring the FuncLayout tests' `sumto`.
+        let lib = "(do (def (shared-helper (: n Int64)) (if (= n 0) 0 (+ 1 (shared-helper (- n 1))))) \
+                    (export shared-helper))";
+        let app = "(do (import \"lib\" (shared-helper)) \
+                    (@ test (def (t-app) (if (= (shared-helper 5) 5) unit (trap \"x\")))))";
+        // Compute + partition INSIDE the compiler-stack closure (Layout holds `Rc`, not `Send`, so it can't
+        // cross the thread boundary) — return only the `Send` result: (own, shared, order len, cross-edges).
+        let (own_names, shared_names, order_len, edge_names): (
+            Vec<String>,
+            Vec<String>,
+            usize,
+            Vec<String>,
+        ) = crate::host::run_with_compiler_stack(|| {
+            let files: Vec<(String, crate::ast::Arenas)> = vec![
+                ("lib".to_string(), parse(lib)),
+                ("app".to_string(), parse(app)),
+            ];
+            let linked = crate::link::link(&files, "app").expect("package links");
+            let mut db = crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+            let layout = crate::layout::compute_tests(&mut db).expect("the @test build lays out");
+            // The @test file is `app` — its file index off the @test def's sig-occ (as EmitTestsPerFile).
+            let test_def = *db.test_defs().first().expect("one @test");
+            let own_file = db
+                .file_of(db.defs[test_def].sig_occ)
+                .expect("the @test def is in a file");
+            let (own, shared) = crate::layout::partition_reachable_for_file(&db, &layout, own_file);
+            // The cross-component interface set = shared defs an `own` def CALLS (own→shared edges).
+            let edges = crate::layout::cross_component_edges(&mut db, &layout, own_file);
+            (
+                own.iter().map(|&d| db.defs[d].name.clone()).collect(),
+                shared.iter().map(|&d| db.defs[d].name.clone()).collect(),
+                layout.order.len(),
+                edges.iter().map(|&d| db.defs[d].name.clone()).collect(),
+            )
+        });
+        // The @test body is in `own`; the imported helper is in `shared` (it's `lib`'s, not `app`'s).
+        assert!(
+            own_names.iter().any(|n| n.starts_with("t-app")),
+            "the @test body is in `own`: own={own_names:?}"
+        );
+        assert!(
+            shared_names.iter().any(|n| n.starts_with("shared-helper")),
+            "the imported helper is in `shared`: shared={shared_names:?}"
+        );
+        // Total over the reachable set (disjoint by construction — each def goes to exactly one side).
+        assert_eq!(
+            own_names.len() + shared_names.len(),
+            order_len,
+            "partition is total over the reachable set"
+        );
+        // The CROSS-COMPONENT INTERFACE set = shared defs an `own` def CALLS. `t-app` calls `shared-helper`,
+        // so `shared-helper` is a cross-edge (the interface func the @test component imports). Every edge is
+        // a SHARED def (never an own def — a cross-edge crosses the file boundary by definition).
+        assert!(
+            edge_names.iter().any(|n| n.starts_with("shared-helper")),
+            "the called imported helper is a cross-component edge: edges={edge_names:?}"
+        );
+        for e in &edge_names {
+            assert!(
+                shared_names.iter().any(|s| s == e),
+                "every cross-edge is a shared def, not own: edge `{e}` not in shared={shared_names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn option_c_provider_layout_exports_the_cross_edge_and_closes_its_body() {
+        // OPTION C increment (b)(ii): `layout::compute_shared_closure_provider` builds the SHARED-CLOSURE
+        // provider layout — its EXPORTS are the cross-component edges (the shared defs the @tests call), and
+        // `finish_layout` closes reachability so an edge's own intra-closure callees are emitted INSIDE the
+        // provider. Same 2-file fixture: `app`'s @test calls `lib`'s recursive `shared-helper`, so the
+        // provider layout must EXPORT `shared-helper` (the one cross-edge) and its `order` must include it.
+        use crate::testkit::parse;
+        let lib = "(do (def (shared-helper (: n Int64)) (if (= n 0) 0 (+ 1 (shared-helper (- n 1))))) \
+                    (export shared-helper))";
+        let app = "(do (import \"lib\" (shared-helper)) \
+                    (@ test (def (t-app) (if (= (shared-helper 5) 5) unit (trap \"x\")))))";
+        let (export_names, order_has_helper): (Vec<String>, bool) =
+            crate::host::run_with_compiler_stack(|| {
+                let files: Vec<(String, crate::ast::Arenas)> = vec![
+                    ("lib".to_string(), parse(lib)),
+                    ("app".to_string(), parse(app)),
+                ];
+                let linked = crate::link::link(&files, "app").expect("package links");
+                let mut db =
+                    crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+                let test_layout =
+                    crate::layout::compute_tests(&mut db).expect("the @test build lays out");
+                let test_def = *db.test_defs().first().expect("one @test");
+                let own_file = db
+                    .file_of(db.defs[test_def].sig_occ)
+                    .expect("the @test def is in a file");
+                let provider =
+                    crate::layout::compute_shared_closure_provider(&mut db, &test_layout, own_file)
+                        .expect("the shared-closure provider lays out");
+                (
+                    provider.exports.iter().map(|e| e.name.clone()).collect(),
+                    provider
+                        .order
+                        .iter()
+                        .any(|&d| db.defs[d].name.starts_with("shared-helper")),
+                )
+            });
+        assert!(
+            export_names.iter().any(|n| n.starts_with("shared-helper")),
+            "the provider EXPORTS the cross-edge shared-helper: exports={export_names:?}"
+        );
+        assert!(
+            order_has_helper,
+            "the provider's reachable order includes shared-helper's body"
+        );
+    }
+
+    #[test]
+    fn source_boundary_name_strips_the_transform_suffix() {
+        // The shared provider↔consumer boundary-name contract: a transformed def's emitted name carries a
+        // `$acc` (accumulator rewrite) or `#monoN` (monomorphization) suffix — invalid in a component extern
+        // name and not the stable source name. `source_boundary_name` returns the base before the first
+        // `$`/`#`; a plain name is unchanged. Both Option-C provider EXPORT and consumer IMPORT use it.
+        use crate::layout::source_boundary_name;
+        assert_eq!(source_boundary_name("shared-helper"), "shared-helper");
+        assert_eq!(source_boundary_name("shared-helper$acc"), "shared-helper");
+        assert_eq!(source_boundary_name("fac#mono7"), "fac");
+        assert_eq!(
+            source_boundary_name("f$acc#mono3"),
+            "f",
+            "strips at the FIRST marker (both suffixes)"
+        );
+        assert_eq!(source_boundary_name(""), "");
+    }
+
+    #[test]
+    fn option_c_shared_closure_provider_emits_a_valid_component() {
+        // OPTION C increment (b)(iii): the shared-closure provider layout, run through the PROVIDER emit
+        // (db.component_name set), emits a VALID wasm component exporting the cross-edge interface. The
+        // recursive cross-edge `shared-helper` emits internally as `shared-helper$acc` (accumulator rewrite),
+        // but the provider names the boundary by the SOURCE name (layout::source_boundary_name strips the
+        // `$acc`/`#mono` suffix), so the extern name is valid kebab `shared-helper` — no `$`.
+        use crate::testkit::parse;
+        let lib = "(do (def (shared-helper (: n Int64)) (if (= n 0) 0 (+ 1 (shared-helper (- n 1))))) \
+                    (export shared-helper))";
+        let app = "(do (import \"lib\" (shared-helper)) \
+                    (@ test (def (t-app) (if (= (shared-helper 5) 5) unit (trap \"x\")))))";
+        let provider_bytes: Vec<u8> = crate::host::run_with_compiler_stack(|| {
+            let files: Vec<(String, crate::ast::Arenas)> = vec![
+                ("lib".to_string(), parse(lib)),
+                ("app".to_string(), parse(app)),
+            ];
+            let linked = crate::link::link(&files, "app").expect("package links");
+            let mut db = crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+            let test_layout =
+                crate::layout::compute_tests(&mut db).expect("the @test build lays out");
+            let test_def = *db.test_defs().first().expect("one @test");
+            let own_file = db
+                .file_of(db.defs[test_def].sig_occ)
+                .expect("the @test def is in a file");
+            let provider_layout =
+                crate::layout::compute_shared_closure_provider(&mut db, &test_layout, own_file)
+                    .expect("the shared-closure provider lays out");
+            db.component_name = Some("cadenza:closure/api".to_string());
+            crate::backend::emit(
+                crate::backend::Target::Wasm,
+                &mut db,
+                &provider_layout,
+                None,
+                None,
+            )
+            .expect("the shared-closure provider emits")
+        });
+        let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        v.validate_all(&provider_bytes)
+            .expect("the shared-closure provider component validates");
     }
 
     #[test]
@@ -84058,6 +84433,44 @@ mod cross_component_oracle {
                 panic!("provider compiles: {:?}", out.diagnostics);
             })
             .to_vec()
+    }
+
+    #[test]
+    fn a_list_returning_provider_op_and_its_consumer_both_emit_valid_components() {
+        // Option C increment 0 — the EMIT half of the X5b handle-crossing witness. A shared closure's defs
+        // return heap values (List/rope), so Option C rides a value-HANDLE crossing a PEER-INTERFACE edge —
+        // the frontier `cdz-run` scopes as "scalar peer ops today" (lib.rs:450). Existing peer tests cross a
+        // scalar (X4a) or a fixed-arity TUPLE handle (U6); a VARIABLE-LENGTH List/rope handle over a peer
+        // edge was untested. This pins the EMIT side: a PROVIDER whose exported op returns a `(List Int64)` +
+        // a CONSUMER binding an effect of that op-type to the provider interface BOTH emit VALID components.
+        // (The RUN-side assert — the List handle actually crosses + reads right through the shared runtime
+        // instance — is v-cdz-tooling's via run_with_peers; this gives them a valid emitted pair to run.)
+        use crate::testkit::parse;
+        let provider = compile_provider(
+            "(do (def (mklist (: n Int64)) (list n (+ n 1) (+ n 2))) (export mklist))",
+            "cadenza:closure/api",
+        );
+        {
+            let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+            v.validate_all(&provider)
+                .expect("a List-returning provider op emits a valid component");
+        }
+        let consumer_src = "(do \
+            (effect C (op mklist (-> Int64 (List Int64)))) \
+            (bind C \"cadenza:closure/api\") \
+            (def (main (: n Int64)) (host (C) (List.len (C.mklist n)))) \
+            (export main))";
+        let consumer =
+            crate::compile::compile_component(&crate::codec::encode(&parse(consumer_src)))
+                .unwrap_or_else(|d| {
+                    panic!(
+                        "a List-consuming peer consumer compiles: {} [{:?}]",
+                        d.message, d.code
+                    )
+                });
+        let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+        v.validate_all(&consumer)
+            .expect("a consumer of a List-returning peer op emits a valid component");
     }
 
     #[test]

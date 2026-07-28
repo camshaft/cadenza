@@ -55,7 +55,10 @@ fn layout_of(file: &std::path::Path) -> HashMap<String, (String, String)> {
     let first = lines.next().unwrap_or("");
     let marker: Vec<&str> = first.split('\t').collect();
     assert!(
-        marker.len() == 3 && marker[0] == "defs-begin" && marker[1].parse::<u32>().is_ok(),
+        marker.len() == 3
+            && marker[0] == "defs-begin"
+            && marker[1].parse::<u32>().is_ok()
+            && marker[2] == "-",
         "first line must be the `defs-begin<TAB><import-base><TAB>-` marker, got {first:?}\nfull:\n{text}"
     );
     let mut map = HashMap::new();

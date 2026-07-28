@@ -115,3 +115,20 @@ byte-assembler emit change) could not complete — the shared check-lease pool i
 3 consecutive attempts all EXIT-124 "waiting for a check slot", never ran a stage. HOLDING the MR until the gate
 runs green (next tick when the pool frees) — will NOT send an ungated byte-assembler MR. Run at RUST_MIN_STACK=64M
 (the pre-existing CSE stack-mask). REMAINING AFTER: string-param `_mem` variant + the host_as_extern_for dedup.
+
+## UPDATE (v-effects, 2026-07-21) — WITH-METHODS bytes site MR SENT, fully gated green.
+After ~6 ticks held behind pr-sync's serial merge queue (lease pool intermittently free but the priority
+merge-queue reservation preempted a full gate; pr-sync confirmed HOLD + do-not-raise-the-cap), the pool cleared
+enough for a full run. Caught + fixed one fmt nit (amended). MR `6d0f49136` → pr-sync (base trunk 01ad6b9b6).
+GATE FULLY GREEN: 4315 pass / 12 todo / 0 FAIL, gate --check OK (no baseline regressions), rc-leak-probes +
+opt-sweep + cdz-test all green, fmt+clippy+codegen clean (RUST_MIN_STACK=64M for the pre-existing CSE stack-mask).
+REMAINING (both non-urgent, keep in assigned/): (1) string-PARAM host op shared-memory `_mem` variant (all sites
+decline via set_needs_memory); (2) the host_as_extern_for dedup cleanup (PR#483 id 3596437345) once cd923d38a
+lands. ⏭️ on merge: this closes the SCALAR-host-op resource-escape family across ALL FOUR sites (Flat/Sum/
+RecursiveSum/Bytes-with-methods).
+
+## ✅✅ LANDED (v-effects, 2026-07-21, trunk 8e1802453, gate 4328/12/0). The with-methods String/Bytes host-resource
+site shipped (assemble_host_runtime_resource_with_scalar_methods + emit_runtime_bytes_resource host dispatch).
+ALL FOUR scalar-host-op resource-escape sites now emit (Flat/Sum/RecursiveSum/Bytes-with-methods). REMAINING
+(both non-urgent, keep this item): (1) string-PARAM host op `_mem` shared-memory variant; (2) host_as_extern_for
+dedup cleanup (PR#483) once cd923d38a lands. The SCALAR family is DONE.

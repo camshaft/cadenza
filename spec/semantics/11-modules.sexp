@@ -1616,3 +1616,105 @@
             (def (main) (half))
             (export main)))
   (output (: 1 Int64)))
+
+(case "a heap Map crosses the module boundary whole and the importer's extension stays local"
+  (doc    "The accessor pin reads THROUGH the module (:1097); here the exported `base` returns the
+           module's private Map ITSELF and the IMPORTER extends it — `Map.insert m 3 k` — while the
+           module's own `probe` must keep seeing the UNCHANGED original (persistence across the
+           component boundary): len 3 (300) + probe(3)=0 on the module side (0) + the importer's
+           lookup reads its own k (307 at k=7, 300 at k=0). A boundary crossing that handed the
+           importer a shared-mutable handle (or re-materialized the map per probe call from the
+           extended value) flips the middle digit.")
+  (input (do
+        (import "table" (base probe))
+        (def (main (: k Int64))
+          (do
+            (def m (base))
+            (def m2 (Map.insert m 3 k))
+            (+ (* 100 (Map.len m2))
+               (+ (* 10 (probe 3))
+                  (match (Map.lookup m2 3) ((Some v) v) ((None _u) -1))))))
+        (export main)))
+  (module "table"
+    (do
+      (def tbl (Map.insert (Map.insert Map.empty 1 10) 2 20))
+      (def (base) tbl)
+      (def (probe (: k Int64))
+        (match (Map.lookup tbl k) ((Some v) v) ((None _u) 0)))
+      (export base probe)))
+  (call main (: 7 Int64)) (output (: 307 Int64))
+  (call main (: 0 Int64)) (output (: 300 Int64)))
+
+(case "a module factory's escaping closure carries a private HEAP value in its env"
+  (doc    "The heap-env variant of the closure-factory pins (private-FN capture and the performing
+           factory are pinned above): `mk`'s returned closure captures the module-private MAP handle
+           plus the caller's base — the env slot crossing the boundary holds a CHAMP handle, not
+           private code or a scalar. Applied twice by the importer (f(5)=115, f(1)=111 → 1261 at k=5;
+           1211 at k=0 — base rides, map read repeats). An env crossing that flattened the map to its
+           looked-up scalar at factory time would still answer the happy path — the k=0 row's REPEATED
+           read through the SAME env slot is what a snapshot-at-mk misses if the private table were
+           later distinguishable; the pin's value is fixing the env-slot REP for heap captures across
+           the component boundary.")
+  (input (do
+        (import "counter" (mk))
+        (def (main (: k Int64))
+          (do
+            (def f (mk 10))
+            (+ (* 10 (f k)) (f 1))))
+        (export main)))
+  (module "counter"
+    (do
+      (def secret (Map.insert Map.empty 1 100))
+      (def (mk (: base Int64))
+        (fn ((: x Int64))
+          (+ base (+ x (match (Map.lookup secret 1) ((Some v) v) ((None _u) 0))))))
+      (export mk)))
+  (call main (: 5 Int64)) (output (: 1261 Int64))
+  (call main (: 0 Int64)) (output (: 1211 Int64)))
+
+(case "a perform crosses TWO module boundaries to the entry's handler through a re-export chain"
+  (doc    "Composes the cross-module effect pin (:1495, one boundary) with the transitive re-export
+           chain (:1543, plain fns): `base` declares Log and performs it in `work`; `mid` re-exports
+           BOTH the effect and the helper without touching them; the ENTRY installs the handler. The
+           perform homes across entry <- mid <- base — two boundaries, the middle one a pure
+           pass-through that must forward the effect's identity (a mid that re-declared or re-keyed
+           Log would orphan base's performs). work(k) = note(k) + note(k+1) with the arm ×10 and
+           state stepping: k=3 → 30+40 = 70; k=0 → 0+10 = 10.")
+  (module "base"
+    (do
+      (effect Log (op note (-> Int64 Int64)))
+      (def (work (: n Int64)) (+ (Log.note n) (Log.note (+ n 1))))
+      (export Log)
+      (export work)))
+  (module "mid" (do (import "base" (Log work)) (export Log) (export work)))
+  (input  (do
+        (import "mid" (Log work))
+        (def (main (: k Int64))
+          (handle Log 0
+            ((note (v) s (resume (* v 10) (+ s 1))))
+            (work k)))
+        (export main)))
+  (call   main (: 3 Int64)) (output (: 70 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64)))
+
+(case "an unannotated helper re-exported through a chain instantiates at TWO types from the entry"
+  (doc    "The generic composition of the re-export chain: base's `dup` has NO annotations (`(tuple x
+           x)`), mid re-exports it untouched, and the ENTRY instantiates it at Int64 AND String from
+           its own call sites — specialization resolution must chase the binding through two hops and
+           still specialize per ENTRY-side type (the one-boundary two-type pin is :1116-area; the
+           chain adds the pass-through middle that must not pin the type). p=(k,k) summed ×100 +
+           byte-len of q's \"ab\" slot: 602 at k=3, 2 at k=0. A resolution that froze dup at its
+           FIRST instantiation fails the second call's type-check or answers with the wrong rep.")
+  (input  (do
+        (import "mid" (dup))
+        (def (main (: k Int64))
+          (do
+            (def p (dup k))
+            (def q (dup "ab"))
+            (+ (* 100 (+ (. p 0) (. p 1)))
+               (String.byte-len (. q 0)))))
+        (export main)))
+  (module "base" (do (def (dup x) (tuple x x)) (export dup)))
+  (module "mid" (do (import "base" (dup)) (export dup)))
+  (call   main (: 3 Int64)) (output (: 602 Int64))
+  (call   main (: 0 Int64)) (output (: 2 Int64)))

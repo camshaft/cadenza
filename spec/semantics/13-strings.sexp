@@ -3975,3 +3975,25 @@
   (call   main (: 2 Int64)) (output (: 100 Int64))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64)))
+
+;; A recursive fn rebinding its String param to a helper concat-of-two-slices MUST compile to a VALID
+;; module. Regression: at the recursion whose exit reads a String-length runtime call of the REBOUND
+;; param AND the helper slices by its own Int64 index, Core::StrSlice emitted its start/end bound
+;; operands at a FIXED base+7 scratch floor → the i64 checked-arith start slot and the i32
+;; scalar-len-reclaim end tee collided (one wasm local, two widths → invalid module, func validate
+;; 'expected i32 found i64'). Fixed by v-wasm-opt 597e0ff7d (float each operand floor to
+;; (base+7).max(*high), the disjoint-slot discipline). Sibling of the to-bytes br_table fix 4f9658803,
+;; different seam. String-shrinker shape (what a property-testing user writes). breaker-routed.
+(case "a recursive drop-scalar walk over a rope converges (string-shrinker shape)"
+  (input  (do
+        (def (d (: s String) (: i Int64))
+          (String.concat (Option.expect (String.slice s 0 i) "lo")
+                         (Option.expect (String.slice s (+ i 1) (String.scalar-len s)) "hi")))
+        (def (walk (: s String) (: i Int64))
+          (if (>= i (String.scalar-len s))
+              s
+              (walk (d s i) (+ i 1))))
+        (def (main (: mode Int64))
+          (String.byte-len (walk "aébcd" 0)))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 3 Int64)))

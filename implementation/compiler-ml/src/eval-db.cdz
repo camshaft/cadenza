@@ -68,9 +68,14 @@ def bind-payload(store: SumStore, h: Int64, binders: List(Int64), i: Int64, env:
   else (match List.at(binders, i) with
     | Option.None(_) => env
     | Option.Some(b) =>
-        (match store-payload(store, h, i) with
-          | Option.None(_) => env
-          | Option.Some(v) => bind-payload(store, h, binders, i + 1, Map.insert(env, b, v))))
+        // WILDCARD `_`: a -1 sentinel binder means IGNORE this field — CONSUME the store slot (index i still
+        // tracks the FIELD position, so a `_` in field 0 must NOT shift field 1's store-payload(h,1) read) but
+        // insert NOTHING (no name-id(_) key → N wildcards never collide). Continue to i+1 either way.
+        (if (b == (0 - 1))
+         then bind-payload(store, h, binders, i + 1, env)          // skip-insert, advance slot
+         else (match store-payload(store, h, i) with
+                | Option.None(_) => env
+                | Option.Some(v) => bind-payload(store, h, binders, i + 1, Map.insert(env, b, v)))))
 
 /// apply-def-by-name (slice-B3 / HO-3, DRY): dispatch a def by NAME — the shared body of CCall and CFnRefVar.
 /// Look the name up in the def-env; eval the args in the CURRENT (caller) env; bind them positionally into a

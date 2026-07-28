@@ -483,3 +483,82 @@
   (call main (: 5 Int64) (: 2 Int64)) (output (: 15 BigInt))
   (call main (: 0 Int64) (: 1 Int64)) (output (: 3 BigInt))
   (call main (: 0 Int64) (: 2 Int64)) (output (: 0 BigInt)))
+
+(case "a tag function recurses over its HOLES list and folds their sum"
+  (doc    "The recursive-tag pins recurse over CHUNK text; this tag recurses over the HOLES —
+           `sum-holes` walks the `(List Ast)` of three `Ast.Int` holes with a rest-pattern, summing
+           payloads into one `(Ast.Int 18)` (BigInt payload, narrowed at the consumer: 18 + k → 18
+           at k=0, 118 at k=100). Pins the holes list as a first-class recursion subject at expansion
+           time — a hole plumbing that delivered only the first hole (or reversed the list without
+           consequence here but dropped one) folds to the wrong constant.")
+  (input  (do
+        (def (sum-holes hs)
+          (match hs
+            ((list) (Ast.Int 0))
+            ((list (Ast.Int n) .. t)
+              (match (sum-holes t)
+                ((Ast.Int m) (Ast.Int (+ n m)))
+                (_ (Ast.Int -999))))
+            (_ (Ast.Int -998))))
+        (def (tag chunks holes) (sum-holes holes))
+        (def (main (: k Int64))
+          (match (tagged-template tag (chunks "" "" "" "") (holes (Ast.Int 5) (Ast.Int 6) (Ast.Int 7)))
+            ((Ast.Int n) (+ (Int64.of n) k))
+            (_ -1)))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 18 Int64))
+  (call   main (: 100 Int64)) (output (: 118 Int64)))
+
+(case "a compound Ast SUBTREE rides a template hole into the expansion intact"
+  (doc    "The hole pins splice Ast.Int LEAVES; this hole is a whole `(Ast.List (* 3 4))` SUBTREE the
+           tag wraps as `(+ <hole> 10)` — the consumer match destructures BOTH layers and reads the
+           inner list's arity, its leaf payloads, and the outer constant: 100·len(inner) + 3 + 4 + 10
+           + k = 317 at k=0, 417 at k=100. A splice that flattened the subtree into the outer list
+           (arity 5) or re-boxed the inner leaves changes the digits.")
+  (input  (do
+        (def (tag chunks holes)
+          (match holes
+            ((list h) (Ast.List (list (Ast.Name "+") h (Ast.Int 10))))
+            (_ (Ast.Int -1))))
+        (def (main (: k Int64))
+          (match (tagged-template tag (chunks "" "") (holes (Ast.List (list (Ast.Name "*") (Ast.Int 3) (Ast.Int 4)))))
+            ((Ast.List parts)
+              (match parts
+                ((list (Ast.Name op) (Ast.List inner) (Ast.Int c))
+                  (match inner
+                    ((list (Ast.Name op2) (Ast.Int a) (Ast.Int b))
+                      (+ (* 100 (List.len inner)) (+ (Int64.of a) (+ (Int64.of b) (+ (Int64.of c) k)))))
+                    (_ -4)))
+                (_ -2)))
+            (_ -3)))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 317 Int64))
+  (call   main (: 100 Int64)) (output (: 417 Int64)))
+
+(case "a tagged template's TAG resolves through an import and expands at the importer's site"
+  (doc    "Metaprogramming × modules: the tag function `wrap` lives in a MODULE and the importer's
+           `tagged-template` names it through the import — expansion (a COMPILE-TIME step) must
+           resolve the tag binding across the module boundary and run it against the importer's
+           chunks/holes (the module-local tag pins never cross a boundary). The expansion
+           `(f <hole>)` is destructured at the consumer: hole payload 7 + k (7 at k=0, 107 at
+           k=100). A template expander that resolved tags only in the current compilation unit
+           reports the unbound-tag scope error instead.")
+  (input  (do
+        (import "tags" (wrap))
+        (def (main (: k Int64))
+          (match (tagged-template wrap (chunks "" "") (holes (Ast.Int 7)))
+            ((Ast.List parts)
+              (match parts
+                ((list (Ast.Name f) (Ast.Int n)) (+ (Int64.of n) k))
+                (_ -2)))
+            (_ -3)))
+        (export main)))
+  (module "tags"
+    (do
+      (def (wrap chunks holes)
+        (match holes
+          ((list h) (Ast.List (list (Ast.Name "f") h)))
+          (_ (Ast.Int -1))))
+      (export wrap)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 100 Int64)) (output (: 107 Int64)))
