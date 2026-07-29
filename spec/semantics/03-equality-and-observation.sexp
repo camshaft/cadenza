@@ -2532,3 +2532,112 @@
                (match (Map.lookup m (tuple Float64.nan 2)) ((Some v) 1) ((None _u) 0)))))
         (export main)))
   (call   main (: 0.0 Float64)) (output (: 10 Int64)))
+
+; --- The compound-order walk: RECURSIVE descent (sum-in-sum), HEAP payloads (rope-in-sum), and the
+; record's canonical field order — the perimeter of the two open cross-target sum-order findings
+; (#42 rust builtin-Option flip, #43 wasm all-nullary), pinned on the shapes BOTH backends get right
+; so those fixes cannot regress the working walk. All runtime-fed (no folds).
+
+(case "a sum nested as another sum's payload orders by the inner discriminant when outers tie"
+  (doc    "The RECURSIVE-descent face of the sum order (the Ord2 pin above is one level): OB wraps IB; two OW values tie on the outer discriminant, so the walk must descend into the payload and compare the INNER sum's discriminant (IW=0 < IE=1 → the IE-carrying value is GREATER → 30). A walk that stopped at the outer tag would call them Equal; eq (0) confirms compare's verdict is not equality-blind.")
+  (input  (do
+            (type IB (IW Int64) (IE))
+            (type OB (OW IB) (OE))
+            (def (mki (: k Int64)) (if (= k 1) (IB.IE unit) (IB.IW k)))
+            (def (mk (: k Int64)) (if (= k 0) (OB.OE unit) (OB.OW (mki k))))
+            (def (main (: a Int64) (: b Int64))
+              (+ (* 10 (match (compare (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                 (if (= (mk a) (mk b)) 1 0)))
+            (export main)))
+  (call   main (: 1 Int64) (: 5 Int64))
+  (output (: 30 Int64)))
+
+(case "a sum nested as another sum's payload orders by the deep scalar payload when both levels tie"
+  (doc    "Both discriminant levels tie (OW(IW _) vs OW(IW _)) so the DEEP scalar decides: 3 < 5 → Less (10). Pins that the recursive walk reaches a depth-2 payload scalar after two tag ties.")
+  (input  (do
+            (type IB (IW Int64) (IE))
+            (type OB (OW IB) (OE))
+            (def (mki (: k Int64)) (if (= k 1) (IB.IE unit) (IB.IW k)))
+            (def (mk (: k Int64)) (if (= k 0) (OB.OE unit) (OB.OW (mki k))))
+            (def (main (: a Int64) (: b Int64))
+              (+ (* 10 (match (compare (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                 (if (= (mk a) (mk b)) 1 0)))
+            (export main)))
+  (call   main (: 3 Int64) (: 5 Int64))
+  (output (: 10 Int64)))
+
+(case "the outer discriminant is decisive over any inner content for nested sums"
+  (doc    "OE (disc 1) vs OW(IE) (disc 0): the outer discriminants differ so the inner content must never be read — OE > OW whatever the payload (30). The decisive-tag face of the nested walk; with the two tie faces above it pins tag-first at EVERY level.")
+  (input  (do
+            (type IB (IW Int64) (IE))
+            (type OB (OW IB) (OE))
+            (def (mki (: k Int64)) (if (= k 1) (IB.IE unit) (IB.IW k)))
+            (def (mk (: k Int64)) (if (= k 0) (OB.OE unit) (OB.OW (mki k))))
+            (def (main (: a Int64) (: b Int64))
+              (+ (* 10 (match (compare (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                 (if (= (mk a) (mk b)) 1 0)))
+            (export main)))
+  (call   main (: 0 Int64) (: 1 Int64))
+  (output (: 30 Int64)))
+
+(case "a sum with a rope String payload orders by content when variants tie"
+  (doc    "The HEAP-payload face of the sum order: two T-variant values tie on the discriminant and carry ROPE Strings (runtime String.concat) — the payload compare must content-canonicalize mid-sum (a chunk-shape/pointer compare would order by allocation, not content). T\"ab\" < T\"ac\" → Less (10).")
+  (input  (do
+            (type SP (T String) (U))
+            (def (mk (: k Int64)) (if (= k 0) (SP.U unit) (SP.T (String.concat "a" (if (= k 1) "b" "c")))))
+            (def (main (: a Int64) (: b Int64))
+              (+ (* 10 (match (compare (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                 (if (= (mk a) (mk b)) 1 0)))
+            (export main)))
+  (call   main (: 1 Int64) (: 2 Int64))
+  (output (: 10 Int64)))
+
+(case "a sum with a rope String payload orders by discriminant before any content"
+  (doc    "Discriminant-first with a heap payload present: T (disc 0) < U (disc 1) regardless of the rope content (10) — the payload is never read when tags differ.")
+  (input  (do
+            (type SP (T String) (U))
+            (def (mk (: k Int64)) (if (= k 0) (SP.U unit) (SP.T (String.concat "a" (if (= k 1) "b" "c")))))
+            (def (main (: a Int64) (: b Int64))
+              (+ (* 10 (match (compare (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                 (if (= (mk a) (mk b)) 1 0)))
+            (export main)))
+  (call   main (: 1 Int64) (: 0 Int64))
+  (output (: 10 Int64)))
+
+(case "a sum with a rope String payload compares Equal exactly when = is true"
+  (doc    "The agreement face (core-semantics.md #331): compare says Equal on two rope-vs-flat-equal T values exactly where = says true (21). A compare that keyed on chunk shape would say unequal while = (content) says equal — the divergence this pins against.")
+  (input  (do
+            (type SP (T String) (U))
+            (def (mk (: k Int64)) (if (= k 0) (SP.U unit) (SP.T (String.concat "a" (if (= k 1) "b" "c")))))
+            (def (main (: a Int64) (: b Int64))
+              (+ (* 10 (match (compare (mk a) (mk b)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                 (if (= (mk a) (mk b)) 1 0)))
+            (export main)))
+  (call   main (: 1 Int64) (: 1 Int64))
+  (output (: 21 Int64)))
+
+(case "record ordering compares in canonical sorted field order, not written order"
+  (doc    "The RECORD face of the compound order (core-semantics.md:341 — 'the same canonical order its equality and canonical byte form use'): fields written (zebra, apple) compare in SORTED order, so apple decides FIRST — (z1,a9) vs (z2,a0) is Greater (3) by apple 9>0, though written-order zebra 1<2 would say Less. Runtime k blocks the fold.")
+  (input  (do
+            (def (mk (: z Int64) (: a Int64)) (record (zebra z) (apple a)))
+            (def (main (: k Int64))
+              (match (compare (mk 1 9) (mk (+ 2 k) 0))
+                ((Ordering.Less _u) 1)
+                ((Ordering.Equal _u) 2)
+                ((Ordering.Greater _u) 3)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))
+
+(case "record ordering falls to the later canonical field when the earlier ties"
+  (doc    "The tie face: apple 5 = 5, so zebra (canonically SECOND) decides — 1 < 4 → Less (1). With the decisive face above it pins both directions of the sorted-field walk.")
+  (input  (do
+            (def (mk (: z Int64) (: a Int64)) (record (zebra z) (apple a)))
+            (def (main (: k Int64))
+              (match (compare (mk 1 5) (mk (+ 4 k) 5))
+                ((Ordering.Less _u) 1)
+                ((Ordering.Equal _u) 2)
+                ((Ordering.Greater _u) 3)))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
