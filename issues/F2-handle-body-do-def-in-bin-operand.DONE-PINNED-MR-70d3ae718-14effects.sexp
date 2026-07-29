@@ -40,3 +40,13 @@
               (match (Bytes.at frame 0) ((Some v) v) ((None _u) -1)))))
         (export main)))
   (call   main (: 5 UInt8)) (output (: 10 Int64)))
+
+;; ============================================================================
+;; PINNED 2026-07-28 (corpus-bugfix, MR 70d3ae718) into 14-effects, all 3 baselines,
+;; 0 regressed. NUANCE: the original witness arm above `(resume s (+ s x))` with a
+;; UInt8 fn-param x is NOT fold-reducible on trunk ("this handler is not yet
+;; reducible by the tail-resumptive fold" — a SEPARATE mixed-width-arm limit,
+;; independent of the F2 bin-operand fix). Re-pinned with a reducible arm
+;; `(resume s s)` (Src.next returns the seed 10) so the case exercises exactly the
+;; F2 do-def/bin-operand scope seam. Perform-free twin `(+ 5 1)` -> 6. Both green
+;; wasm+rust+rust-async. Distinct (+ s x)-arm fold seam flagged to v-inference + breaker.

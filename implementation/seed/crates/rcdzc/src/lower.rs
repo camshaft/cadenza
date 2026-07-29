@@ -13758,9 +13758,15 @@ impl ShapeTableBuilder {
             Ty::Bytes => self.push(ShapeNode::Bytes),
             Ty::Unit => self.push(ShapeNode::Unit),
             Ty::Tuple(elems) => {
-                if elems.is_empty() {
-                    return Some(self.push(ShapeNode::Unit));
-                }
+                // TYPE-DIRECTED render (concierge ruling B, 2026-07-28): Unit and `(Tuple)` are DISTINCT
+                // types (05-compound:6938 — a variant's explicit empty-tuple payload keeps its `(tuple)`
+                // form, distinct from a nullary `unit`). So an EMPTY `Ty::Tuple` must emit a `Tuple[0]`
+                // shape (rendered `(tuple)` by the runtime `value-encode` walker), NOT collapse to
+                // `ShapeNode::Unit` (which would render `unit` — the wrong type surface for a `(Tuple)`-typed
+                // value, and inconsistent with the const path + the rust `cdz_render_expr` path, both of
+                // which already render `(tuple)`). Pairs LOCKSTEP with the runtime walker's `Shape::Tuple`
+                // empty arm (cdz-runtime `value-encode`): descriptor carrying `Tuple[0]` + walker rendering
+                // `(tuple)` together fix the heap-path `unit` mis-render; NEITHER alone changes it.
                 let mut idxs = Vec::with_capacity(elems.len());
                 for e in elems.iter() {
                     idxs.push(self.shape_of(db, e)?);

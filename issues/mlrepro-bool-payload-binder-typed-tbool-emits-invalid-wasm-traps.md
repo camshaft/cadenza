@@ -223,3 +223,13 @@ should RUN (not just lower) — the flip is a genuine feature-enable now, blocke
 397b42935 queued; can't stack a behavior change). NEXT (after witness-fix lands + sync clears): flip decode(1)→TBool
 + update ss-bool-payload-binder-declines-not-yet-wired to ASSERT RUN=1 (was decline) + keep the (+ b 1) arith-decline
 soundness guard + gate on pr-sync's COMPILED dir-gate. v-wasm-opt fully cleared (no emit change ever needed).
+
+---
+🎉 FEATURE WIRED + FINDING CLOSED 2026-07-28: decode-argtype-enc(1) TErr→TBool LANDED-PENDING (MR baad7dddb queued).
+Witness fix landed prior batch (trunk a4da5beb7/f85b2c320). Now the actual Bool-payload VALUE path is enabled:
+(BB true)/((BB b)(if b 1 0))→1 runs; arith (+ b 1) still soundly declines (arith-result-type maps TBool→None via
+typed-to-ty-defer). Witness ss-bool-payload-binder-declines-not-yet-wired → ss-bool-payload-binder-runs-as-cond
+(asserts RUN=1); arith-decline soundness guard kept. Verified compiled: direct-Core eval (Bool payload →1/0) +
+lower-of-db (cond lowers under TBool, arith does NOT lower). run-src full path gated by pr-sync dir-gate (CDZ0999
+cliff blocks single-file). b128 was NEVER an emit or infer bug — a malformed test witness (reader has no then/else
+keywords). v-wasm-opt + v-inference both stood down + notified. FINDING CLOSED once baad7dddb lands green.
