@@ -6481,3 +6481,21 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 10 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "an unannotated generic instantiates at a FUNCTION type and a scalar in one body"
+  (doc    "The fn-type instantiation of a value generic: `dup x = (tuple x x)` is used at
+           `(-> Int64 Int64)` (duplicating a CLOSURE — both tuple slots hold the same fn handle,
+           each applied independently) AND at Int64, in one body. (p.0)(k) + (p.1)(3) + q.0 =
+           2k·100 + 6 + k → 1011 at k=5, 6 at k=0. A specialization that boxed fn-typed x as a
+           scalar (or shared one instantiation across the two types) breaks an application or the
+           scalar read.")
+  (input  (do
+        (def (dup x) (tuple x x))
+        (def (main (: k Int64))
+          (do
+            (def p (dup (fn ((: y Int64)) (* y 2))))
+            (def q (dup k))
+            (+ (* 100 ((. p 0) k)) (+ ((. p 1) 3) (. q 0)))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 1011 Int64))
+  (call   main (: 0 Int64)) (output (: 6 Int64)))

@@ -8201,7 +8201,7 @@ fn check_application(
                             "`{}` is an abstract type here (its constructors are not exported to this \
                              file), so it cannot be a map/set key — key insertion, lookup, and membership \
                              observe its representation through a built-in comparison; compare it through \
-                             a function the module that declares it exports",
+                             a function exported by the module that declares it",
                             abstract_ty.render_name()
                         ),
                     )
@@ -8604,7 +8604,7 @@ fn check_application(
                     format!(
                         "`{}` is an abstract type here (its constructors are not exported to this \
                          file), so its representation cannot be observed through a built-in comparison \
-                         — compare it through a function the module that declares it exports",
+                         — compare it through a function exported by the module that declares it",
                         ty.render_name()
                     ),
                 )

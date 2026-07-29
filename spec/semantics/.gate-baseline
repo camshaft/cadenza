@@ -1351,6 +1351,7 @@ pass	a fitting recursive annotated result computes at the narrow width
 pass	a float divide by zero takes the DIVIDEND's sign into the infinity
 pass	a float literal compared against a Float32 param computes at the narrow width
 pass	a full-width UInt64 comparison over a HIGH-BIT operand is unsigned
+pass	a generic user sum holds a CLOSURE payload at one instantiation and a scalar at another
 pass	a handler STATE that is a recursive sum GROWS one constructor per operation
 pass	a handler arm computes its NEXT-STATE with a recursive pure helper
 pass	a handler arm computes its RESUME VALUE with a deeply RECURSIVE pure helper
@@ -3583,6 +3584,7 @@ pass	an unannotated closure typed Int8 from context overflows a constant like an
 pass	an unannotated closure with an unused parameter in a payload takes the declared parameter type
 pass	an unannotated closure with distinct-typed params is inferred through a generic recursive HOF
 pass	an unannotated generic branching sum fold infers its parameter's instantiation from the arms
+pass	an unannotated generic instantiates at a FUNCTION type and a scalar in one body
 pass	an unannotated generic recursive tree consumer whose result is independent of the payload infers
 pass	an unannotated generic sum ACCUMULATOR infers its parameter from the values folded into it
 pass	an unannotated helper re-exported through a chain instantiates at TWO types from the entry
@@ -4029,6 +4031,7 @@ pass	four same-signature closure exports share one resource
 pass	function arguments are evaluated left to right
 pass	functions are single-arity and curried
 pass	generated FLOAT values are totally ordered (a trichotomy property over two generated floats)
+pass	generic user-sum values dedupe as set elements and key a map by rope-payload content
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
 pass	greater-than of an integer and a float is rejected
@@ -5224,3 +5227,6 @@ pass	a @param slice window at an interior cut reads the non-straddling bytes
 pass	a @param slice window whose length exceeds the remaining bytes yields None
 pass	Qty arithmetic INLINE in a handler resume VALUE slot keeps the state binder's Qty type (#44 fix)
 pass	a Map keyed by a COMPOUND containing an abstract type is rejected (opacity — the key path compares the abstract leaf)
+pass	Set.to-list over Option elements enumerates Some-first per the declared order
+pass	a built-in comparison on a COMPOUND containing an abstract type is rejected (opacity walks the compound)
+pass	a Set/Map lookup over an abstract-element collection reached via a param is rejected (read-side opacity)

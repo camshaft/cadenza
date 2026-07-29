@@ -73912,6 +73912,95 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn emit_tests_consumer_only_emits_consumers_and_iface_but_no_provider() {
+        // OPTION C provider-cache follow-on: `Request::EmitTestsConsumerOnly` emits the N per-file CONSUMER
+        // components + the `component-name` iface sidecar, but SKIPS the `component-provider` emit (the caller
+        // supplies a CACHED provider at run time). Same 3-file fixture as the composed witness; the only
+        // difference from EmitTestsComposed is NO component-provider artifact. This is the single-file-verify
+        // fast path — the consumer layout excludes the cross-edges and doesn't lower the shared closure.
+        let lib = crate::codec::encode(&parse(
+            "(do \
+             (def (alpha (: n Int64)) (if (= n 0) 0 (+ 2 (alpha (- n 1))))) \
+             (def (beta (: n Int64)) (if (= n 0) 1 (+ 3 (beta (- n 1))))) \
+             (export alpha) (export beta))",
+        ));
+        let app_a = crate::codec::encode(&parse(
+            "(do (import \"lib\" (alpha)) (@ test (def (t-a) (if (= (alpha 3) 6) unit (trap \"x\")))))",
+        ));
+        let app_b = crate::codec::encode(&parse(
+            "(do (import \"lib\" (beta)) (@ test (def (t-b) (if (= (beta 3) 10) unit (trap \"x\")))))",
+        ));
+        let out = crate::host::run_with_compiler_stack(|| {
+            crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "lib", lib.clone()),
+                    Artifact::new(Artifact::KIND_AST, "app-a", app_a.clone()),
+                    Artifact::new(Artifact::KIND_AST, "app-b", app_b.clone()),
+                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app-a".to_vec()),
+                    Artifact::new(
+                        sidecar::KIND_SIDECAR,
+                        "drive",
+                        sidecar::encode(&[Request::EmitTestsConsumerOnly]),
+                    ),
+                ],
+                &[],
+            )
+        });
+        assert!(
+            !out.has_error(),
+            "consumer-only emit does not error: {:?}",
+            out.diagnostics
+        );
+        // NO provider is emitted (the caller supplies the cached one) — the whole point vs EmitTestsComposed.
+        let providers = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == "component-provider")
+            .count();
+        assert_eq!(
+            providers,
+            0,
+            "consumer-only must NOT emit a component-provider (the cache supplies it): kinds={:?}",
+            out.artifacts.iter().map(|a| &a.kind).collect::<Vec<_>>()
+        );
+        // The iface sidecar IS emitted (the runner needs it to pair the cached provider).
+        let iface: Vec<&Artifact> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == crate::link::KIND_COMPONENT_NAME)
+            .collect();
+        assert_eq!(
+            iface.len(),
+            1,
+            "the component-name iface sidecar is still emitted"
+        );
+        assert_eq!(
+            String::from_utf8(iface[0].bytes.clone()).unwrap(),
+            "cadenza:closure/api"
+        );
+        // The N consumer components ARE emitted, named by file link path, and validate as components that
+        // IMPORT the closure iface (the same consumers EmitTestsComposed emits — only the provider is skipped).
+        let consumer_names: Vec<&str> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == crate::backend::Target::Wasm.artifact_kind())
+            .map(|a| a.name.as_str())
+            .collect();
+        assert!(
+            consumer_names.contains(&"app-a") && consumer_names.contains(&"app-b"),
+            "one consumer per @test file (by link name): {consumer_names:?}"
+        );
+        for a in &out.artifacts {
+            if a.kind == crate::backend::Target::Wasm.artifact_kind() {
+                let mut v =
+                    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+                v.validate_all(&a.bytes)
+                    .unwrap_or_else(|e| panic!("consumer `{}` validates: {e}", a.name));
+            }
+        }
+    }
+
+    #[test]
     fn emit_tests_composed_declines_a_same_stem_multi_dir_collision() {
         // STEM-COLLISION guard (pr881/pr888): `db.file_path` is the file's LINK path, and a runner demuxes the
         // N consumer components by the file's STEM (basename) — dir-blind, load-bearing for import resolution.
