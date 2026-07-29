@@ -4038,10 +4038,19 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
                 .filter(|h| !h.is_empty())
                 .or_else(|| closure_hash.clone());
             if let Some(key) = key {
-                // Best-effort persist — a write failure just means the next run re-emits (no correctness
-                // impact), so a full cache dir / read-only FS silently degrades to "no cache".
+                // Best-effort ATOMIC persist. Write to a pid-stamped temp in the SAME dir, then rename onto
+                // the content-addressed key — a rename is atomic on POSIX, so a reader (incl. a CONCURRENT
+                // `cdz test`) never sees a partial file at the key, and a crash mid-write leaves only the temp
+                // (never a truncated file at the key that a later run would HIT as corrupt). A write/rename
+                // FAILURE (full/RO FS) just means the next run re-emits — no correctness impact ("no cache").
                 let _ = std::fs::create_dir_all(dir);
-                let _ = std::fs::write(dir.join(format!("{key}.provider.wasm")), bytes);
+                let final_path = dir.join(format!("{key}.provider.wasm"));
+                let tmp = dir.join(format!(".{key}.provider.wasm.{}.tmp", std::process::id()));
+                if std::fs::write(&tmp, bytes).is_ok()
+                    && std::fs::rename(&tmp, &final_path).is_err()
+                {
+                    let _ = std::fs::remove_file(&tmp); // rename failed — don't leave the temp behind
+                }
             }
         }
         (out, provider)
@@ -4073,10 +4082,11 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
 }
 
 /// The directory the shared-closure PROVIDER components are cached in, content-addressed by the closure hash
-/// — `$CDZ_PROVIDER_CACHE` if set, else `<runtime-store>/providers` (the store is already the per-checkout
-/// content-addressed artifact dir). `None` if no store is resolvable (⇒ no caching, every run re-emits — the
-/// safe degrade). Reusing the store dir keeps the cache co-located with the runtime it pairs with + swept by
-/// the same tooling.
+/// — `$CDZ_PROVIDER_CACHE` if set (and non-empty), else `<default-store>/providers` (the store is already the
+/// per-checkout content-addressed artifact dir). Reusing the store dir keeps the cache co-located with the
+/// runtime it pairs with + swept by the same tooling. Returns `Option` (the call site degrades to "no cache"
+/// on `None`) so a future store-resolution failure can opt out cleanly; today it always resolves to `Some`
+/// (`default_store` is infallible), so caching is always available — a write failure is the actual degrade path.
 fn provider_cache_dir() -> Option<std::path::PathBuf> {
     if let Ok(d) = std::env::var("CDZ_PROVIDER_CACHE") {
         let d = d.trim();
