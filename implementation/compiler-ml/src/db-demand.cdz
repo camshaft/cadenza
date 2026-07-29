@@ -14,7 +14,7 @@
 /// The demo memoizes the TYPES column (a `demand-typed` returning `(db', Typed)`): a real infer producer
 /// would COMPUTE the fact from upstream (resolve + child types); this fills a supplied default, to prove the
 /// check→compute-on-miss→fill→return-updated-db memo loop and that a second demand HITS the memo.
-import { Typed, bin-type, if-type } from "infer-db"
+import { Typed, bin-type, if-type, let-type } from "infer-db"
 
 import { Db, require-typed, fill-typed, db-tree } from "db"
 
@@ -83,11 +83,23 @@ def demand-if(db: Db, id: Int64, c: Int64, t: Int64, e: Int64) =
             | (db3, _te) =>
                 let ty = if-type(db-typed-col(db3), c, t, e) in (fill-typed(db3, id, ty), ty)
 
+/// NLet composite: demand value + body (threading db), combine via let-type (the let's type is the body's,
+/// gated on value+body both well-typed). Like NBin/NIf, its OWN type rule is typed-column-only (no resolve).
+/// NOTE: a let whose BODY references the bound var (`let x=v in x`) needs the NVar producer (resolve-chained,
+/// a later slice) to type that body NVar; a let with a non-var body (`let x=2 in 3`, `let x=2 in (+ 1 1)`)
+/// types fully here. This arm handles the NLet NODE's rule; the NVar dependency is a separate producer.
+def demand-let(db: Db, id: Int64, valId: Int64, bodyId: Int64) =
+  match demand-typed-node(db, valId) with
+    | (db1, _tv) => match demand-typed-node(db1, bodyId) with
+        | (db2, _tb) =>
+            let ty = let-type(db-typed-col(db2), valId, bodyId) in (fill-typed(db2, id, ty), ty)
+
 def demand-typed-node(db: Db, id: Int64) = match require-typed(db, id) with
   | Option.Some(fact) => (db, fact)                                   // memo HIT — no recompute
   | Option.None(_) => match node-at(db-tree(db), id) with
       | Option.Some(Node.NBin(op, l, r)) => demand-bin(db, id, op, l, r)
       | Option.Some(Node.NIf(c, t, e)) => demand-if(db, id, c, t, e)
+      | Option.Some(Node.NLet(_, valId, bodyId)) => demand-let(db, id, valId, bodyId)
       | Option.Some(_) => demand-typed-leaf(db, id)                   // leaf shape → compute-from-source
       | Option.None(_) => let ty = Typed.TErr in (fill-typed(db, id, ty), ty)
 // ---- TESTS: the memoizing-producer loop over explicit-threaded Db columns ---------------------------
@@ -200,5 +212,18 @@ def dd-node-second-demand-hits-memo() =
     | (root, d0) => match demand-typed-node(d0, root) with
       | (db1, _f1) => match demand-typed-node(db1, root) with
         | (db2, _f2) => if typed-filled(db2) == 3 then unit else trap("2nd root demand hits memo — still 3 facts")
+
+def let-db() = match parse-tokens([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TNum(3)]) with
+  | (root, tree) => (root, db-of(tree))
+
+@test
+def dd-node-nlet-nonvar-body-computes-body-type() =
+  // let x = 2 in 3 (non-var body): demand the root NLet → demands value(NLit 2) + body(NLit 3), combines via
+  // let-type = the BODY's type (deferred int, both well-typed). Memoizes root + value + body = 3 facts.
+  match let-db() with
+    | (root, d0) => match demand-typed-node(d0, root) with
+      | (db1, fact) => match fact with
+        | Typed.TIntW(_, _) => (if typed-filled(db1) == 3 then unit else trap("let: root + value + body memoized = 3"))
+        | _ => trap("let x=2 in 3 computes to the body's int type via let-type")
 
 export { demand-typed, demand-typed-leaf, compute-leaf-type, demand-typed-node }

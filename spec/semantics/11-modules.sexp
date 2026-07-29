@@ -1455,7 +1455,7 @@
            insert/lookup (champ_eq / value-eq over the key spine), which observes the abstract type's private
            representation through equality — exactly what type-system.md #An Abstract Type's Representation Is
            Not Observable Across Its Boundary forbids (a MUST). So `(Map.insert Map.empty (mk k) 42)` outside
-           the declaring module is rejected CDZ0202 like `(= (mk) (mk))`, because the rule is about the
+           the declaring module is rejected CDZ0202 like `(= (mk k) (mk k))`, because the rule is about the
            OBSERVATION, not the surface syntax — routing the comparison through a map key does not escape it
            (concierge ruling, ask-17967). Values stay legal to HOLD (as a key's paired value, a payload, …);
            only the key-EQUALITY-observation rejects. A module that wants its abstract type used as a key
@@ -1496,8 +1496,8 @@
   (doc    "The compound extension of the bare direct-`=` reject: `(= (tuple (mk k) 1) (tuple (mk k) 1))`
            with an abstract `Temp` leaf — the built-in structural comparison walks INTO the compound and
            observes the `Temp` representation through equality, so it is rejected CDZ0202 like the bare
-           `(= (mk) (mk))` (v-inference 2f2be099c). The observation reaching the abstract leaf is what the
-           opacity MUST forbids, regardless of the surrounding tuple.")
+           `(= (mk k) (mk k))` (v-inference 2f2be099c). The observation reaching the abstract leaf is what the
+           opacity MUST forbid, regardless of the surrounding tuple.")
   (module "temp"
     (do (type Temp (T Int64)) (def (mk (: c Int64)) (T (* c 10))) (export Temp) (export mk)))
   (input  (do
