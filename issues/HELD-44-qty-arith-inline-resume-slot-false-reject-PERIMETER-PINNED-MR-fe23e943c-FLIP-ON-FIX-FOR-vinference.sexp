@@ -89,3 +89,9 @@
 ;; doubled value; a genuine Int64-seed/String-next-state mismatch STILL rejects CDZ0201 (no soundness
 ;; weakening). ON LAND: gate the inline flip-pin ((resume s (+ s s)) -> 42 at a=21) x3; pin into 14-effects
 ;; beside the do-def/Qty.value working perimeter.
+
+;; WORDING NOTE (v-inference, PR#891 nit 3672335571): when flipping this pin to a value-pin on 520142726
+;; land, phrase the root cause as: "the state binder `s` is inferred at type `Any` inside the resume-slot
+;; (+ s s) -> (+ Any Any) misses the Qty-aware arith arm and defaults to Int64" (backtick the var, explicit
+;; verb). The flip rewrites/deletes the old ACCEPTED note block anyway — bake the clearer wording in, no
+;; separate edit needed.

@@ -6029,6 +6029,16 @@ fn value_cmp_shaped(
                         // (relied on by the render/decode callers) is untouched.
                         let variants = variants.clone();
                         let (da, db) = (sum_disc_shaped(a), sum_disc_shaped(b));
+                        // DECLINE on an out-of-range disc BEFORE ordering (PR#891): `sum_disc_shaped` returns
+                        // `u32::MAX` for a malformed non-int immediate under a Sum shape. The `Equal` arm below
+                        // already declines via `variants.get(da)?`, but the DIFFERING-disc arm returns an
+                        // Ordering directly — so a `u32::MAX` (or otherwise out-of-range) disc would order
+                        // deterministically-but-wrong instead of declining. Validate BOTH discs are real
+                        // variant indices first; either out of range ⇒ malformed ⇒ decline (None), matching
+                        // the render path + the descriptor-walk reject-don't-miscompile contract.
+                        if da as usize >= variants.len() || db as usize >= variants.len() {
+                            return None;
+                        }
                         match da.cmp(&db) {
                             Ordering::Equal => {
                                 let (_, payload_shape) = variants.get(da as usize)?;
