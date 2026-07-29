@@ -2491,8 +2491,19 @@ fn encode_value(
                     }
                     Shape::Tuple(elems) => {
                         if elems.is_empty() {
-                            let l = b.name_leaf("unit");
-                            out.push(b.atom(l));
+                            // An EMPTY `(Tuple)`-typed value renders the HEADED empty tuple `(tuple)`, NOT
+                            // `unit` (Ruling-B: `unit` and `(Tuple)` are DISTINCT types — 05-compound:6938 —
+                            // and a `(Tuple)`-typed value MUST render `(tuple)`, matching the rust
+                            // cdz_render_expr path + the wasm const path). The physical handle is `imm_unit`
+                            // (`op_arr_alloc(0)`) for BOTH a Unit and an empty-tuple value — they share one
+                            // runtime handle, so the render MUST be driven by the SHAPE DESCRIPTOR, not the
+                            // handle: `Shape::Unit` → `unit`, `Shape::Tuple([])` → `(tuple)`. Emit the same
+                            // `tuple` head as the non-empty arm with ZERO children (`list_head_tail` over an
+                            // empty slice yields the bare `(tuple)`). Paired with v-wasm-opt's shape_of change
+                            // to emit `ShapeNode::Tuple([])` (not Unit) for an empty `Ty::Tuple` — BOTH needed.
+                            let head = b.name_leaf("tuple");
+                            let head_s = b.atom(head);
+                            work.push(EncodeWork::List { head_s, nkids: 0 });
                         } else {
                             // TOTALITY: the descriptor declares `elems.len()` fields; verify the actual node
                             // has at least that arity BEFORE any `op_arr_get` (which TRAPS on OOB / an
