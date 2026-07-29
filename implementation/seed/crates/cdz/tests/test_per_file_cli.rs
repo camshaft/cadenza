@@ -170,11 +170,11 @@ fn a_shared_import_closure_runs_via_the_composed_provider_path() {
 
 #[test]
 fn a_property_test_in_a_shared_closure_dir_still_runs_correctly() {
-    // PERF-GUARD regression (pr892): the composed path re-composes (Component::new) PER TRIAL, so a file with
-    // a MULTI-TRIAL test (a property test with scalar params) must NOT use composed — it falls back to the
-    // standalone per-file compile (JIT once, reuse across trials) to avoid a per-trial re-JIT regression. This
-    // pins that a property test living in a shared-closure dir still runs + passes correctly (via fallback);
-    // the perf choice is invisible to behavior — only the result is asserted here.
+    // A MULTI-TRIAL test (property test with a scalar param) in a shared-closure dir. Since the (a) fix
+    // (CompiledComposition JIT'd once + reused per trial, PR#892), the composed path handles multi-trial
+    // tests without a per-trial re-JIT — so this now runs via composed (no forced standalone fall-back). This
+    // pins that such a test runs + passes correctly over all its trials; the run path is invisible to behavior
+    // — only the result is asserted here.
     let dir = std::env::temp_dir().join(format!("cdz-composed-prop-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();

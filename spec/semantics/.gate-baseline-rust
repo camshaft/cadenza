@@ -2931,6 +2931,8 @@ pass	a sum TYPE and its constructors are imported by a wildcard and constructed 
 pass	a sum chosen by a runtime if is matched with valid wasm
 pass	a sum declaring a variant name twice is a type error
 pass	a sum match missing a variant is non-exhaustive even when the scrutinee is the covered one
+pass	a sum nested as another sum's payload orders by the deep scalar payload when both levels tie
+pass	a sum nested as another sum's payload orders by the inner discriminant when outers tie
 pass	a sum type NAMED after a primitive scalar does not collide with the primitive
 pass	a sum type can mix nullary and payload-carrying variants
 pass	a sum type is declared with named variants
@@ -2944,6 +2946,9 @@ pass	a sum variant carrying a String payload matches and reads the string
 pass	a sum variant's list payload split across empty and rest arms is exhaustive and dispatches
 pass	a sum whose variants are named after target-language keywords constructs and matches
 pass	a sum with FOUR type parameters instantiates and matches each at a distinct type
+pass	a sum with a rope String payload compares Equal exactly when = is true
+pass	a sum with a rope String payload orders by content when variants tie
+pass	a sum with a rope String payload orders by discriminant before any content
 pass	a sum-match payload's heap child consumed while the scrutinee is live is retained
 pass	a sum-match recursion that accumulates a built-in list returns a list
 pass	a sum-payload loop invariant consumed per iteration accumulates stably
@@ -4288,6 +4293,8 @@ pass	reading the text a printer produced round-trips to an equal value
 pass	record equality is independent of the order fields are written
 pass	record fields render in canonical (key-sorted) order regardless of source order
 pass	record keys differing only in the float field stay distinct and look up
+pass	record ordering compares in canonical sorted field order, not written order
+pass	record ordering falls to the later canonical field when the earlier ties
 pass	record reshaping is subset comparison as explicit projection
 pass	recursive factorial with a match base case
 pass	recursive fibonacci over a RUNTIME argument computes the predecessors correctly
@@ -5230,3 +5237,4 @@ pass	a Map keyed by a COMPOUND containing an abstract type is rejected (opacity 
 pass	Set.to-list over Option elements enumerates Some-first per the declared order
 pass	a built-in comparison on a COMPOUND containing an abstract type is rejected (opacity walks the compound)
 pass	a Set/Map lookup over an abstract-element collection reached via a param is rejected (read-side opacity)
+pass	the outer discriminant is decisive over any inner content for nested sums

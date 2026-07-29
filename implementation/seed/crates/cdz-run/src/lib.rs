@@ -473,7 +473,8 @@ pub fn run_with_peers_hosted(
     opts: &RunOpts,
     bindings: Vec<HostOpBinding>,
 ) -> Result<Outcome> {
-    run_with_peers_hosted_capturing(consumer_bytes, peers, opts, bindings).map(|(o, _)| o)
+    let compiled = compile_composition(consumer_bytes, peers)?;
+    run_composition_hosted_capturing(&compiled, opts, bindings).map(|(o, _)| o)
 }
 
 /// Like [`run_with_peers`], but returns the ordered OBSERVED host-op list alongside the outcome — the
@@ -488,41 +489,79 @@ pub fn run_with_peers_capturing(
     peers: &[Peer],
     opts: &RunOpts,
 ) -> Result<(Outcome, Vec<String>)> {
-    run_with_peers_hosted_capturing(consumer_bytes, peers, opts, Vec::new())
+    let compiled = compile_composition(consumer_bytes, peers)?;
+    run_composition_capturing(&compiled, opts)
 }
 
-/// The capturing core of [`run_with_peers_hosted`] — returns `(Outcome, observed-host-op-list)`. The two
-/// public forms delegate here: [`run_with_peers`]/[`run_with_peers_hosted`] drop the observed list, and
-/// [`run_with_peers_capturing`] surfaces it. The observed list is built + populated by `bind_host_imports`
-/// exactly as [`run_capturing`] does, so a composed run's observed sequence is identical in shape to a
-/// standalone `run_capturing` one.
-fn run_with_peers_hosted_capturing(
-    consumer_bytes: &[u8],
-    peers: &[Peer],
+/// A JIT-compiled consumer + its peer components, reusable across many runs — the composed analogue of
+/// [`CompiledComponent`]. `Component::new` (the wasmtime JIT) is ~99% of a run's cost, so a caller that runs
+/// the SAME composition repeatedly (e.g. `cdz test` running a PROPERTY test's many trials against one
+/// shared-closure `component-provider` peer) compiles ONCE via [`compile_composition`] then runs each trial
+/// via [`run_composition_capturing`] — instead of re-JITing consumer+peer per trial (the materialize-once
+/// fix; without it a multi-trial composed test pays the dominant JIT per-trial, PR#892).
+pub struct CompiledComposition {
+    consumer: Component,
+    /// Each peer's JIT'd component paired with the interface it exports (needed to bind it into the consumer).
+    peers: Vec<(Component, String)>,
+}
+
+/// JIT-compile a consumer + its peers into a reusable [`CompiledComposition`] — the expensive step done ONCE
+/// for a composition run repeatedly. Equivalent to the compile half of [`run_with_peers_capturing`].
+pub fn compile_composition(consumer_bytes: &[u8], peers: &[Peer]) -> Result<CompiledComposition> {
+    let engine = engine();
+    let consumer = Component::new(&engine, consumer_bytes)
+        .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
+    let peer_components = peers
+        .iter()
+        .map(|p| {
+            Component::new(&engine, &p.bytes)
+                .map(|c| (c, p.interface.clone()))
+                .map_err(|e| anyhow!("invalid peer component `{}`: {e}", p.interface))
+        })
+        .collect::<Result<_>>()?;
+    Ok(CompiledComposition {
+        consumer,
+        peers: peer_components,
+    })
+}
+
+/// Run a pre-compiled [`CompiledComposition`] once, returning `(Outcome, observed-host-op-list)`. Builds a
+/// FRESH store + linker + shared-runtime instance per call (per-run state), reusing the JIT'd consumer/peer
+/// Components — so N trials cost N cheap runs + ONE JIT, not N JITs. No host closures (that is the hosted
+/// form, not needed by `cdz test`).
+pub fn run_composition_capturing(
+    compiled: &CompiledComposition,
+    opts: &RunOpts,
+) -> Result<(Outcome, Vec<String>)> {
+    run_composition_hosted_capturing(compiled, opts, Vec::new())
+}
+
+/// The capturing core, over PRE-COMPILED components — returns `(Outcome, observed-host-op-list)`. The
+/// bytes-taking public forms ([`run_with_peers`]/[`run_with_peers_hosted`]/[`run_with_peers_capturing`])
+/// compile-then-run via this; a caller that reuses a composition across trials calls [`compile_composition`]
+/// once + [`run_composition_capturing`] per trial. The observed list is built + populated by
+/// `bind_host_imports` exactly as [`run_capturing`] does, so a composed run's observed sequence is identical
+/// in shape to a standalone `run_capturing` one.
+fn run_composition_hosted_capturing(
+    compiled: &CompiledComposition,
     opts: &RunOpts,
     bindings: Vec<HostOpBinding>,
 ) -> Result<(Outcome, Vec<String>)> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
-    let consumer = Component::new(&engine, consumer_bytes)
-        .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
+    let consumer = &compiled.consumer;
+    let peer_components: Vec<&Component> = compiled.peers.iter().map(|(c, _)| c).collect();
     let mut store = new_store(&engine);
     let mut linker: Linker<()> = Linker::new(&engine);
 
     // Shape-check the host bindings up-front (clear error, not an opaque trap in the closure).
-    check_host_op_binding_shapes(&engine, &consumer, &bindings)?;
+    check_host_op_binding_shapes(&engine, consumer, &bindings)?;
 
     // The runtime import each component may declare — the consumer and each peer. They all pin the SAME
     // runtime (same content hash → same import name), so ONE runtime instance serves them all. Instantiate
-    // it once here (if anyone needs it), then bind it into every importing component's linker below.
-    let peer_components: Vec<Component> = peers
-        .iter()
-        .map(|p| {
-            Component::new(&engine, &p.bytes)
-                .map_err(|e| anyhow!("invalid peer component `{}`: {e}", p.interface))
-        })
-        .collect::<Result<_>>()?;
-    let consumer_req = find_runtime_req(&engine, &consumer);
+    // it once here (if anyone needs it), then bind it into every importing component's linker below. (Peer
+    // components are already JIT'd in `compiled.peers` — no re-compile here.)
+    let consumer_req = find_runtime_req(&engine, consumer);
     let any_req = consumer_req.clone().or_else(|| {
         peer_components
             .iter()
@@ -553,7 +592,7 @@ fn run_with_peers_hosted_capturing(
     // peer. The extracted interface funcs (`(iface, [(fname, Func)])`) are collected as we go, so a later
     // peer's linker and finally the consumer's linker bind against them.
     let mut peer_ifaces: Vec<(String, Vec<(String, wasmtime::component::Func)>)> = Vec::new();
-    for (peer, peer_component) in peers.iter().zip(peer_components.iter()) {
+    for (peer_component, peer_iface) in compiled.peers.iter().map(|(c, i)| (c, i)) {
         let mut peer_linker: Linker<()> = Linker::new(&engine);
         if let (Some(req), Some((rt_instance, names))) =
             (find_runtime_req(&engine, peer_component), &shared_runtime)
@@ -572,15 +611,15 @@ fn run_with_peers_hosted_capturing(
         bind_peer_ifaces_into(&mut peer_linker, &peer_ifaces)?;
         let peer_instance = peer_linker
             .instantiate(&mut store, peer_component)
-            .map_err(|e| anyhow!("instantiate peer `{}`: {e}", peer.interface))?;
+            .map_err(|e| anyhow!("instantiate peer `{}`: {e}", peer_iface))?;
         let iface_idx = peer_instance
-            .get_export_index(&mut store, None, &peer.interface)
-            .ok_or_else(|| anyhow!("peer does not export the interface `{}`", peer.interface))?;
+            .get_export_index(&mut store, None, peer_iface)
+            .ok_or_else(|| anyhow!("peer does not export the interface `{}`", peer_iface))?;
         // The interface's function names, read off the peer instance's exported interface type.
         let func_names: Vec<String> = peer_component
             .component_type()
             .exports(&engine)
-            .find(|(n, _)| *n == peer.interface)
+            .find(|(n, _)| *n == peer_iface)
             .and_then(|(_, item)| match item {
                 ComponentItem::ComponentInstance(inst) => Some(
                     inst.exports(&engine)
@@ -591,23 +630,18 @@ fn run_with_peers_hosted_capturing(
                 ),
                 _ => None,
             })
-            .ok_or_else(|| {
-                anyhow!(
-                    "peer export `{}` is not an interface instance",
-                    peer.interface
-                )
-            })?;
+            .ok_or_else(|| anyhow!("peer export `{}` is not an interface instance", peer_iface))?;
         let mut funcs = Vec::new();
         for fname in &func_names {
             let fidx = peer_instance
                 .get_export_index(&mut store, Some(&iface_idx), fname)
-                .ok_or_else(|| anyhow!("peer `{}` missing `{fname}`", peer.interface))?;
+                .ok_or_else(|| anyhow!("peer `{}` missing `{fname}`", peer_iface))?;
             let f = peer_instance
                 .get_func(&mut store, fidx)
                 .ok_or_else(|| anyhow!("peer export `{fname}` is not a func"))?;
             funcs.push((fname.clone(), f));
         }
-        peer_ifaces.push((peer.interface.clone(), funcs));
+        peer_ifaces.push((peer_iface.clone(), funcs));
     }
 
     // COMPOSE-TIME SIGNATURE CHECK: a peer's exported interface func must MATCH the arity the consumer's
@@ -617,7 +651,7 @@ fn run_with_peers_hosted_capturing(
     // OPAQUE runtime TRAP deep in the callee. Catch it here with a diagnostic naming the interface, op, and
     // the two arities — the [[rcdzc-kebab-extern-name-gotcha]]-adjacent "a boundary shape mismatches with no
     // clear error" class, at the composition edge rather than the emit edge.
-    check_peer_iface_signatures(&engine, &consumer, peers, &peer_components)?;
+    check_peer_iface_signatures(&engine, consumer, &compiled.peers)?;
 
     // Bind every peer's exported interface into the CONSUMER's linker (the top of the chain imports them).
     bind_peer_ifaces_into(&mut linker, &peer_ifaces)?;
@@ -625,10 +659,10 @@ fn run_with_peers_hosted_capturing(
     // Bind the consumer's HOST-effect imports (if any), skipping the peer interfaces already bound above
     // AND the interfaces we bind explicitly below (a live closure), so neither is double-bound as an
     // auto `opts.host_responses` effect (a double-bind is a linker error).
-    let mut skip: Vec<String> = peers.iter().map(|p| p.interface.clone()).collect();
+    let mut skip: Vec<String> = compiled.peers.iter().map(|(_, i)| i.clone()).collect();
     skip.extend(bindings.iter().map(|b| b.iface.clone()));
     let observed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    bind_host_imports(&engine, &consumer, &mut linker, opts, &observed, &skip)?;
+    bind_host_imports(&engine, consumer, &mut linker, opts, &observed, &skip)?;
 
     // Bind each explicit host-op closure into the consumer, marshalling through the shared runtime's ropes.
     // Requires the shared runtime to exist (String host-op args/results cross as rope handles into it).
@@ -642,7 +676,7 @@ fn run_with_peers_hosted_capturing(
         bind_host_op_bindings(&mut store, &mut linker, rt_instance, bindings)?;
     }
 
-    let outcome = run_export(&engine, &consumer, &mut store, &linker, opts)?;
+    let outcome = run_export(&engine, consumer, &mut store, &linker, opts)?;
     // Take (not clone) the observed list — nothing reads `observed` after this, so move it out (avoids an
     // O(n) copy of the op list). The mutex guard is dropped immediately.
     let calls = std::mem::take(&mut *observed.lock().expect("observed calls mutex"));
@@ -1587,28 +1621,21 @@ fn check_one_iface_binding(
 fn check_peer_iface_signatures(
     engine: &Engine,
     consumer: &Component,
-    peers: &[Peer],
-    peer_components: &[Component],
+    peers: &[(Component, String)],
 ) -> Result<()> {
     // Layer 1: the top consumer against each peer that provides an interface it imports.
     let ctype = consumer.component_type();
-    for (peer, peer_component) in peers.iter().zip(peer_components.iter()) {
-        check_one_iface_binding(
-            engine,
-            &ctype,
-            peer_component,
-            &peer.interface,
-            "the consumer",
-        )?;
+    for (peer_component, iface) in peers {
+        check_one_iface_binding(engine, &ctype, peer_component, iface, "the consumer")?;
     }
     // Layer 2: each peer against every EARLIER peer (the chain — a middle component imports an earlier
     // peer's interface). `run_with_peers` binds earlier peers into a later peer's linker in dependency
     // order, so a peer at index `i` can import any peer at `j < i`.
-    for (i, (peer, peer_component)) in peers.iter().zip(peer_components.iter()).enumerate() {
+    for (i, (peer_component, iface)) in peers.iter().enumerate() {
         let ptype = peer_component.component_type();
-        let who = format!("peer `{}`", peer.interface);
-        for (earlier, earlier_component) in peers[..i].iter().zip(peer_components[..i].iter()) {
-            check_one_iface_binding(engine, &ptype, earlier_component, &earlier.interface, &who)?;
+        let who = format!("peer `{iface}`");
+        for (earlier_component, earlier_iface) in &peers[..i] {
+            check_one_iface_binding(engine, &ptype, earlier_component, earlier_iface, &who)?;
         }
     }
     Ok(())

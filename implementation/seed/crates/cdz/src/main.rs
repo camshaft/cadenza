@@ -4390,22 +4390,15 @@ fn run_test_file(
     // wasn't in the composed set): compile this file alone with an `EmitTests` request, exactly as before
     // (`layout::compute_tests`; a package's `entry` marker drives linking). A per-file DECLINE is reported
     // located here (the fallback owns error reporting — the precompile does not).
-    // PERF GUARD (pr892): the composed path runs each trial via `run_with_peers`, which RE-COMPOSES
-    // (`Component::new`, ~99% of a run's cost) PER CALL — no pre-JIT reuse yet. That's fine for a single-run
-    // test (one call), but a MULTI-TRIAL test (a property test with scalar params, or a `-gen` wrapper) would
-    // pay that ~99% JIT PER TRIAL — turning the per-file emit cost into a per-trial one and swamping the
-    // closure-sharing win. So if THIS file has any multi-trial test, DON'T use composed for it — fall back to
-    // the standalone per-file `EmitTests` compile, which JITs ONCE and reuses across trials. A file of only
-    // single-run `@test`s (the common case) keeps the composed win. (A compiled-instantiated-peers fast-path
-    // reused across trials would lift this — flagged follow-up; until then, this guard prevents a regression.)
-    let has_multi_trial = tests
-        .iter()
-        .any(|t| t.gens.as_ref().is_some_and(|g| !g.is_empty()) || t.gen_ty.is_some());
+    // The composed consumer + shared provider for this file, if the precompile produced them. The composition
+    // is JIT-compiled ONCE below (`compile_composition`) and reused across every trial, so a multi-trial
+    // property test does NOT re-JIT per trial (PR#892 (a) — the earlier `has_multi_trial` fall-back guard is
+    // obsolete now that the composed path reuses the JIT like the standalone path does).
     let composed = match (
         precompiled.components.get(&closure[0].name),
         &precompiled.provider,
     ) {
-        (Some(consumer), Some((provider_bytes, iface))) if !has_multi_trial => {
+        (Some(consumer), Some((provider_bytes, iface))) => {
             Some((consumer.clone(), provider_bytes, iface))
         }
         _ => None,
@@ -4461,20 +4454,25 @@ fn run_test_file(
         }
     };
 
-    // Build the per-trial RUN TARGET. STANDALONE (the common path): JIT-compile the self-contained component
-    // ONCE here + reuse it across every test + trial — `Component::new` (the wasmtime JIT) is the DOMINANT
-    // per-run cost (~8s for the self-host component vs ~0.1s to run it), so compiling once instead of
-    // once-per-`@test` turns an N-test file's N JITs into ONE. COMPOSED (Option-C): the consumer imports its
-    // shared closure from the provider peer, so it's run via `run_with_peers` against the provider — which
-    // takes raw bytes and re-composes per call (no pre-JIT reuse yet; a compiled-reuse peer variant is a
-    // follow-up). Correctness first: the win is the provider emitting the closure ONCE, not per-trial JIT.
+    // Build the per-trial RUN TARGET, JIT-compiling ONCE + reusing across every test + trial — `Component::new`
+    // (the wasmtime JIT) is the DOMINANT per-run cost (~8s for the self-host component vs ~0.1s to run it), so
+    // compiling once instead of once-per-trial is the whole point. STANDALONE (common): the self-contained
+    // component. COMPOSED (Option-C): the consumer + its shared-closure provider peer, JIT'd into ONE
+    // `CompiledComposition` (consumer + peer Components) reused per trial — so a multi-trial property test
+    // does NOT re-JIT the composition per trial (PR#892 materialize-once fix). Both reuse across trials.
     let target = if let Some((consumer, provider_bytes, iface)) = composed {
-        RunTarget::Composed {
-            consumer,
-            provider: cdz_run::Peer {
+        match cdz_run::compile_composition(
+            &consumer,
+            &[cdz_run::Peer {
                 bytes: provider_bytes.clone(),
                 interface: iface.clone(),
-            },
+            }],
+        ) {
+            Ok(c) => RunTarget::Composed(c),
+            Err(e) => {
+                eprintln!("{PROG}: {file}: could not compile the composed test component: {e:#}");
+                return Err(());
+            }
         }
     } else {
         match cdz_run::compile_component(&component) {
@@ -5463,15 +5461,13 @@ struct PropertyFailure {
 
 /// How a file's `@test` component is run per trial. STANDALONE: a self-contained component, JIT-compiled ONCE
 /// and reused across every trial (the common path — `run_capturing_compiled`). COMPOSED (Option-C): a
-/// cross-edge-EXCLUDING consumer that imports its shared closure from the provider peer — run via
-/// `run_with_peers_capturing` (re-composes per call; no pre-JIT reuse yet). Both paths yield the SAME
+/// cross-edge-EXCLUDING consumer + its shared-closure provider peer, JIT-compiled ONCE into a
+/// `CompiledComposition` and reused across every trial (`run_composition_capturing`) — so a multi-trial
+/// property test no longer re-JITs consumer+peer per trial (PR#892). Both paths yield the SAME
 /// `(Outcome, observed-op-list)` shape, so the trial logic (gen-int count, failure message) is identical.
 enum RunTarget {
     Standalone(cdz_run::CompiledComponent),
-    Composed {
-        consumer: Vec<u8>,
-        provider: cdz_run::Peer,
-    },
+    Composed(cdz_run::CompiledComposition),
 }
 
 /// Run the test component IN-PROCESS once, calling `kebab` with `arg_vals` (rendered arg text). PASS = the
@@ -5540,15 +5536,13 @@ fn run_one_trial_with_pool(
         runtime_cache_dir: Some(store.to_path_buf()),
         host_responses,
     };
-    // STANDALONE: the component was JIT-compiled ONCE by the caller + reused across every trial
-    // (`Component::new` is ~99% of a run's cost). COMPOSED (Option-C): link the consumer against the shared
-    // provider peer over one runtime — `run_with_peers_capturing` re-composes per call (no pre-JIT reuse
-    // yet), but returns the SAME `(Outcome, observed)` shape, so the trial logic below is identical.
+    // Both targets were JIT-compiled ONCE by the caller + are reused across every trial (`Component::new` is
+    // ~99% of a run's cost). STANDALONE runs the compiled component; COMPOSED links the compiled consumer
+    // against the compiled provider peer over one runtime. Both return the SAME `(Outcome, observed)` shape,
+    // so the trial logic below is identical.
     let run_result = match target {
         RunTarget::Standalone(compiled) => cdz_run::run_capturing_compiled(compiled, &opts),
-        RunTarget::Composed { consumer, provider } => {
-            cdz_run::run_with_peers_capturing(consumer, std::slice::from_ref(provider), &opts)
-        }
+        RunTarget::Composed(composition) => cdz_run::run_composition_capturing(composition, &opts),
     };
     match run_result {
         Ok((outcome, observed)) => {
