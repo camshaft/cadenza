@@ -3197,6 +3197,35 @@ fn rustc_roundtrip_option_keyed_set_enumerates_some_before_none() {
 }
 
 #[test]
+fn a_compound_key_containing_a_nested_option_declines_cleanly_not_e0308() {
+    // PR#894 finding (1): the `__CdzOpt` Option-key wrapper threads through a BARE Option key/element, but
+    // NOT through an Option nested inside a tuple/record key (that wrapper-threading is a later increment).
+    // Before the fix, a `(Tuple (Option Int64) Int64)` key emitted `BTreeSet<(__CdzOpt<i64>, i64)>` (type
+    // wrapped) with a bare `(Option<i64>, i64)` value (not rebuilt) → rustc E0308 + a missed `__CdzOpt`
+    // injection (the `<(__CdzOpt` marker). Now `ty_is_ord_key` DECLINES a compound key containing a nested
+    // built-in Option → a clean backend decline (fall back), never an uncompilable artifact. A BARE Option
+    // key still works (the other witness); only the nested-in-a-compound case declines.
+    let src = "(module m \
+        (def (mk (: k Int64)) (if (= k 0) (: (None unit) (Option Int64)) (Some k))) \
+        (def (go (: n Int64)) (Set.len (Set.of (list (tuple (mk n) 1) (tuple (mk 0) 2))))) \
+        (export go))";
+    match compile_rust_result(src) {
+        // A clean DECLINE is the expected outcome (the wrapper doesn't thread through the tuple yet).
+        Err(_) => {}
+        // If it ever DOES emit (a future increment threads the wrapper through), it MUST compile + run — never
+        // an E0308. rustc_run asserts the emit compiles; a bad emit fails LOUDLY here, not silently.
+        Ok(_) => {
+            if let Some(out) = rustc_run(&compile_rust(src), "go(3)") {
+                assert_eq!(
+                    out, "2",
+                    "if a compound-Option key ever emits, it must compile + dedup to 2 (never E0308):\n{src}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn rustc_roundtrip_recursive_option_carrying_sum_compare_terminates_via_helper() {
     // PR#890 REGRESSION: emit_sum_cmp_walk (the #42 Option-order compare walk) must route a RECURSIVE
     // Option-carrying sum through a `__cmp_<Ident>` helper fn (seen-guard + call-indirection), NOT expand

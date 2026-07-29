@@ -73882,6 +73882,23 @@ mod sidecar_driven {
         );
         // The provider's name IS the interface (so a runner can pair it with the sidecar).
         assert_eq!(providers[0].name, "cadenza:closure/api");
+        // The closure-hash sidecar IS emitted on the MISS (provider) path — a runner persists the provider
+        // keyed by it (recompute-free) + validates its own fold against it. A non-empty hex u64.
+        let hashes: Vec<&Artifact> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == crate::sidecar::KIND_CLOSURE_HASH)
+            .collect();
+        assert_eq!(
+            hashes.len(),
+            1,
+            "one closure-hash sidecar on the composed (miss) path"
+        );
+        let hstr = String::from_utf8(hashes[0].bytes.clone()).unwrap();
+        assert!(
+            hstr.len() == 16 && hstr.chars().all(|c| c.is_ascii_hexdigit()),
+            "closure-hash is a 16-hex-digit u64: {hstr:?}"
+        );
         // N=2 consumer `component` artifacts, named by the two @test files' link paths.
         let consumer_names: Vec<&str> = out
             .artifacts
@@ -73909,6 +73926,66 @@ mod sidecar_driven {
                     .unwrap_or_else(|e| panic!("composed artifact `{}` validates: {e}", a.name));
             }
         }
+    }
+
+    #[test]
+    fn closure_hash_query_matches_the_composed_miss_path_sidecar() {
+        // OPTION C provider-cache DECISION KEY: `Query::ClosureHash` returns the canonical shared-closure hash
+        // (layout-only, no provider emit) — the value a runner keys a cache HIT on BEFORE emitting. It MUST
+        // equal the `closure-hash` sidecar `EmitTestsComposed` emits on the MISS path (same fold, one
+        // definition) — the drift-guard: the decision key and the persist key agree. Same 3-file fixture.
+        let mk = |lib: &[u8], a: &[u8], b: &[u8], req: Request| {
+            crate::host::run_with_compiler_stack(move || {
+                crate::compile::compile(
+                    &[
+                        Artifact::new(Artifact::KIND_AST, "lib", lib.to_vec()),
+                        Artifact::new(Artifact::KIND_AST, "app-a", a.to_vec()),
+                        Artifact::new(Artifact::KIND_AST, "app-b", b.to_vec()),
+                        Artifact::new(crate::link::KIND_ENTRY, "entry", b"app-a".to_vec()),
+                        Artifact::new(sidecar::KIND_SIDECAR, "drive", sidecar::encode(&[req])),
+                    ],
+                    &[],
+                )
+            })
+        };
+        let lib = crate::codec::encode(&parse(
+            "(do \
+             (def (alpha (: n Int64)) (if (= n 0) 0 (+ 2 (alpha (- n 1))))) \
+             (def (beta (: n Int64)) (if (= n 0) 1 (+ 3 (beta (- n 1))))) \
+             (export alpha) (export beta))",
+        ));
+        let app_a = crate::codec::encode(&parse(
+            "(do (import \"lib\" (alpha)) (@ test (def (t-a) (if (= (alpha 3) 6) unit (trap \"x\")))))",
+        ));
+        let app_b = crate::codec::encode(&parse(
+            "(do (import \"lib\" (beta)) (@ test (def (t-b) (if (= (beta 3) 10) unit (trap \"x\")))))",
+        ));
+        // The QUERY hash (layout-only, no emit).
+        let q = mk(&lib, &app_a, &app_b, Request::Query(Query::ClosureHash));
+        let q_hash = q
+            .artifacts
+            .iter()
+            .find(|a| a.kind == crate::sidecar::KIND_CLOSURE_HASH)
+            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+            .expect("Query::ClosureHash returns a closure-hash artifact");
+        assert!(
+            q_hash.len() == 16 && q_hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "closure-hash is a 16-hex-digit u64: {q_hash:?}"
+        );
+        // The MISS-path sidecar hash (from a full EmitTestsComposed).
+        let e = mk(&lib, &app_a, &app_b, Request::EmitTestsComposed);
+        let e_hash = e
+            .artifacts
+            .iter()
+            .find(|a| a.kind == crate::sidecar::KIND_CLOSURE_HASH)
+            .map(|a| String::from_utf8(a.bytes.clone()).unwrap())
+            .expect("EmitTestsComposed emits a closure-hash sidecar");
+        // The DRIFT-GUARD: the decision-key hash == the persist-key hash (one canonical definition).
+        assert_eq!(
+            q_hash, e_hash,
+            "Query::ClosureHash (decision key) must equal the EmitTestsComposed miss-path closure-hash \
+             sidecar (persist key) — same fold, or the cache would key inconsistently"
+        );
     }
 
     #[test]
@@ -73977,6 +74054,16 @@ mod sidecar_driven {
         assert_eq!(
             String::from_utf8(iface[0].bytes.clone()).unwrap(),
             "cadenza:closure/api"
+        );
+        // NO closure-hash sidecar on the consumer-only path — the caller already HAS the hash (it's how it
+        // decided the cache HIT); the hash is emitted only on the MISS (provider-emitting) path.
+        assert_eq!(
+            out.artifacts
+                .iter()
+                .filter(|a| a.kind == crate::sidecar::KIND_CLOSURE_HASH)
+                .count(),
+            0,
+            "consumer-only must NOT emit a closure-hash (the caller supplied it to decide the hit)"
         );
         // The N consumer components ARE emitted, named by file link path, and validate as components that
         // IMPORT the closure iface (the same consumers EmitTestsComposed emits — only the provider is skipped).

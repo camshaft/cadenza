@@ -252,15 +252,15 @@ pub(super) fn ord_key_type(ty: &Ty) -> Option<String> {
     }
 }
 
-/// Whether `ty` is the `Option` sum at a single-payload instantiation — the sum whose std-`Option` mapping
-/// has the flipped derived Ord that `__CdzOpt` corrects for a key/element position (#42 witness 2). SHALLOW:
-/// keyed on the type NAME + arity (`Option` with one type arg) because `ord_key_type` is `Db`-free (no
-/// variant-list access). This matches the built-in `Option Int64`/`Option Float64`; the value-side wrap
-/// (`wrap_ord_key`, which HAS a `Db`) confirms the built-in via `is_builtin_std_sum` before wrapping, so a
-/// (rare) user `(type Option …)` shadow — which emits its own decl-order enum with correct native Ord —
-/// does NOT get double-wrapped (the wrap arm's Db-aware guard is the authority; this shallow one only spells
-/// the wrapped TYPE, and the two agree because a user Option is not std-mapped so it never reaches here with
-/// a std rep). Nominal is peeled first.
+/// Whether `ty` is an `Option` sum at a single-payload instantiation — the type shape whose std-`Option`
+/// mapping has the flipped derived Ord that `__CdzOpt` corrects for a key/element position (#42 witness 2).
+/// SHALLOW + Db-free (name + arity only): `ord_key_type`/`wrap_ord_key` are `Db`-free, so they can only key
+/// on this NAME-level test. It CANNOT distinguish a user `(type Option …)` shadow from the built-in — so it
+/// is NOT the authority on whether to wrap. The AUTHORITY is the Db-aware admission gate
+/// [`ty_is_ord_key`] / [`is_builtin_option`], which DECLINES a name-`Option` key that is not the built-in
+/// (PR#894): a non-built-in never reaches the wrap path, so by the time this shallow test runs on an admitted
+/// key it IS the built-in. (Correcting the earlier doc, which wrongly claimed `wrap_ord_key` has a `Db` +
+/// re-checks `is_builtin_std_sum` — it does not; the gate is `ty_is_ord_key`.) Nominal is peeled first.
 pub(super) fn is_flip_order_option_key_shallow(ty: &Ty) -> bool {
     matches!(ty.strip_nominal(), Ty::Sum { name, args, .. } if name == "Option" && args.len() == 1)
 }
@@ -362,15 +362,75 @@ pub(super) fn ty_is_ord_key(db: &mut Db, ty: &Ty) -> bool {
     match ty {
         // A bare float keys/elements via the `__CdzF{N}` wrapper — representable and totally ordered.
         Ty::Float(_) => true,
-        // A TUPLE key is ord iff each element is ord-KEY-able (so a float element is OK via the wrapper) —
-        // matching `ord_key_type`'s per-element threading. (`ty_is_ord`'s tuple arm uses the STRICT
-        // `ty_is_ord`, which would reject a float element — hence this key-specific per-element recurse.)
-        Ty::Tuple(elems) => elems.iter().all(|e| ty_is_ord_key(db, e)),
-        // A RECORD key is ord iff each FIELD is ord-key-able (a float field OK via the wrapper) — matching
-        // `ord_key_type`'s per-field threading, the record twin of the tuple arm.
-        Ty::Record(fields) => fields.values().all(|t| ty_is_ord_key(db, t)),
+        // A bare BUILT-IN `Option` key/element keys via the `__CdzOpt` declared-order wrapper (#42 witness 2)
+        // — admitted. 🔑 A USER `(type Option …)` shadow (name `Option`, 1 arg, but a source-node decl) must
+        // NOT reach the wrapper: `ord_key_type`/`wrap_ord_key` are Db-free and key on the NAME-only
+        // `is_flip_order_option_key_shallow`, so they'd wrap it as `__CdzOpt<..>` while its VALUE is the user
+        // enum → rustc mismatch (PR#894). Since the Db-free wrap path can't tell them apart, DECLINE a
+        // name-`Option` sum that is NOT the built-in here (the Db-aware gate) → it's not admitted as an ord
+        // key → not emitted → no mismatch. (A user-Option ord key is vanishingly rare — the prelude owns
+        // `Option` — and declining is sound: correct-wrap-or-honest-decline. A user sum NOT named `Option`
+        // takes the strict `ty_is_ord` path unaffected.)
+        s @ Ty::Sum { name, args, .. } if name == "Option" && args.len() == 1 => {
+            is_builtin_option(db, s)
+        }
+        // A TUPLE key is ord iff each element is ord-KEY-able (a float element is OK via `__CdzF`) — matching
+        // `ord_key_type`'s per-element threading. EXCEPT: a tuple/record key that CONTAINS a built-in Option
+        // ANYWHERE (a direct element OR nested) DECLINES: the `__CdzOpt` wrapper threads through nested
+        // tuples/records only for FLOAT today (`wrap_ord_key`'s Tuple/Record arms gate on the float-only
+        // `key_ty_has_wrappable_float`), NOT Option — so an Option-in-a-compound key emits `__CdzOpt<..>` in
+        // the KEY TYPE (`ord_key_type` recurses into Option) but a bare `Option<..>` VALUE (the wrap arm
+        // skips it) → rustc E0308 + a missed `<(__CdzOpt` struct injection (PR#894). Declining is the
+        // correct-wrap-or-honest-decline bound; a BARE Option key (not under a tuple/record) still wraps fine
+        // via the `is_builtin_option` arm above. Threading `__CdzOpt` through compounds is a later increment.
+        Ty::Tuple(elems) => {
+            !elems.iter().any(|e| ty_contains_builtin_option(db, e))
+                && elems.iter().all(|e| ty_is_ord_key(db, e))
+        }
+        // A RECORD key is ord iff each FIELD is ord-key-able (a float/bare-Option field OK via the wrapper) —
+        // matching `ord_key_type`'s per-field threading; same Option-in-compound decline as the tuple arm.
+        Ty::Record(fields) => {
+            !fields.values().any(|t| ty_contains_builtin_option(db, t))
+                && fields.values().all(|t| ty_is_ord_key(db, t))
+        }
         // Any other shape uses the strict predicate (a float nested in a SUM payload still declines).
         _ => ty_is_ord(db, ty),
+    }
+}
+
+/// Whether `ty` is the BUILT-IN `Option` sum (Db-aware — distinguishes a user `(type Option …)` shadow,
+/// which emits its own decl-order enum and must NOT be `__CdzOpt`-wrapped). Peels a nominal. This is the
+/// authority the key-wrap path needs but `is_flip_order_option_key_shallow` (name-only, Db-free) cannot be.
+pub(super) fn is_builtin_option(db: &mut Db, ty: &Ty) -> bool {
+    if let Ty::Sum { decl, name, args } = ty.strip_nominal()
+        && name == "Option"
+        && args.len() == 1
+    {
+        let decl_occ = *decl;
+        return db
+            .type_decl_by_occ(decl_occ)
+            .map(|d| {
+                let d = d.clone();
+                crate::backend::rust::enums::is_builtin_std_sum(db, &d)
+            })
+            .unwrap_or(false);
+    }
+    false
+}
+
+/// Whether `ty` contains a built-in `Option` ANYWHERE (as the bare type OR under a tuple/record) — the
+/// tuple/record `ty_is_ord_key` arms decline a key CONTAINING one (the `__CdzOpt` wrapper isn't threaded
+/// through compounds yet, PR#894). A bare-Option key is handled by the `is_builtin_option` arm ABOVE this
+/// (admitted+wrapped), so this only fires for an Option UNDER a tuple/record layer.
+fn ty_contains_builtin_option(db: &mut Db, ty: &Ty) -> bool {
+    let s = ty.strip_nominal();
+    if is_builtin_option(db, s) {
+        return true;
+    }
+    match s {
+        Ty::Tuple(elems) => elems.iter().any(|e| ty_contains_builtin_option(db, e)),
+        Ty::Record(fields) => fields.values().any(|t| ty_contains_builtin_option(db, t)),
+        _ => false,
     }
 }
 
