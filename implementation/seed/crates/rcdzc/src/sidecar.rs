@@ -103,6 +103,12 @@ pub const KIND_SYMBOLS: &str = "symbols";
 /// (browser/CAD/notebook) reads to render controls for a program's parameters.
 pub const KIND_PARAM_MANIFEST: &str = "param-manifest";
 
+/// The output artifact kind for the Option-C shared-closure CONTENT-HASH — a `u64` (hex) folding each
+/// cross-edge def's content-hash over the sorted union edge set ([`closure_content_hash`]). Emitted by the
+/// `EmitTestsComposed` (MISS) path alongside the `component-provider`, so a runner persists the provider
+/// keyed by this hash (recompute-free) and validates its own HIT-decision hash against this canonical one.
+pub const KIND_CLOSURE_HASH: &str = "closure-hash";
+
 /// The output artifact kind for a `FuncLayout` query result — the emitted-function layout: each reachable
 /// definition's absolute wasm func-index paired with a content-hash of its AST subtree, in func-index
 /// order, preceded by a `defs-begin` marker row carrying the def-region base (`import_base`). The
@@ -340,6 +346,17 @@ pub enum Query {
     /// empty ONLY when BOTH layouts decline (no export AND no `@test`); an empty-but-laid-out program yields
     /// just the marker line. Deterministic (func-index order).
     FuncLayout,
+    /// The Option-C shared-closure CONTENT-HASH for the `@test` dir — a `u64` (hex) folding each cross-edge
+    /// def's content-hash over the UNION cross-edge set ([`closure_content_hash`] over
+    /// [`crate::layout::cross_component_edges_union`]). The provider-CACHE decision key: a `cdz test <dir>`
+    /// runner reads this to decide a cache HIT (compare to the cached provider's key) BEFORE emitting —
+    /// LAYOUT-ONLY (`compute_tests` + the cross-edge union + the fold), NO provider emit, so it costs the
+    /// ~layout pass (≈ func-layout), NOT the ~1360-def provider lower it lets the runner SKIP on a hit
+    /// (`EmitTestsConsumerOnly` + the cached provider). The SAME canonical hash the `EmitTestsComposed`
+    /// miss-path `closure-hash` sidecar emits — one definition, so the decision key, the persist key, and a
+    /// runner's own validation all agree (drift-guard). TOTAL: a build with no cross-edge (single-file / no
+    /// shared closure) reports the fold over the empty set (a defined, stable "no closure" hash), never errors.
+    ClosureHash,
 }
 
 /// The one-byte request tags. Stable across versions (additive — a new request is a new tag).
@@ -394,6 +411,9 @@ mod tag {
     pub const QUERY_SYMBOLS: u8 = 0x1b;
     pub const QUERY_PARAM_MANIFEST: u8 = 0x1c;
     pub const QUERY_FUNC_LAYOUT: u8 = 0x1d;
+    /// The Option-C shared-closure CONTENT-HASH query (`Query::ClosureHash`) — the provider-cache decision
+    /// key (layout-only, no provider emit).
+    pub const QUERY_CLOSURE_HASH: u8 = 0x1e;
 }
 
 /// Decode a request list from its wire bytes. Total: a truncated or malformed list yields `None` (the
@@ -455,6 +475,7 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::QUERY_SYMBOLS => Some(Request::Query(Query::Symbols)),
         tag::QUERY_PARAM_MANIFEST => Some(Request::Query(Query::ParamManifest)),
         tag::QUERY_FUNC_LAYOUT => Some(Request::Query(Query::FuncLayout)),
+        tag::QUERY_CLOSURE_HASH => Some(Request::Query(Query::ClosureHash)),
         _ => None,
     }
 }
@@ -519,6 +540,7 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
         Request::Query(Query::Symbols) => out.push(tag::QUERY_SYMBOLS),
         Request::Query(Query::ParamManifest) => out.push(tag::QUERY_PARAM_MANIFEST),
         Request::Query(Query::FuncLayout) => out.push(tag::QUERY_FUNC_LAYOUT),
+        Request::Query(Query::ClosureHash) => out.push(tag::QUERY_CLOSURE_HASH),
     }
 }
 
@@ -868,6 +890,14 @@ pub fn run_query(db: &mut Db, query: &Query) -> QueryResult {
                 bytes: text.into_bytes(),
             }
         }
+        Query::ClosureHash => {
+            let hash = closure_hash_text(db);
+            QueryResult {
+                kind: KIND_CLOSURE_HASH,
+                name: "closure-hash".to_string(),
+                bytes: hash.into_bytes(),
+            }
+        }
     }
 }
 
@@ -914,12 +944,42 @@ fn func_layout_text(db: &mut Db) -> String {
     text
 }
 
+/// The Option-C shared-closure CONTENT-HASH for the program's `@test` dir (the [`Query::ClosureHash`] read) —
+/// LAYOUT-ONLY, no provider emit. Force monomorphization, lay out the `@test` boundary (`compute_tests`),
+/// bucket the `@test` defs by file, compute the UNION cross-edge set over the filed buckets
+/// ([`crate::layout::cross_component_edges_union`]), and fold each edge's content-hash into one `u64`
+/// ([`closure_content_hash`]) — the SAME canonical value the `EmitTestsComposed` miss-path `closure-hash`
+/// sidecar emits, so a provider-cache's decision key, persist key, and validation all agree. A build with no
+/// `@test` layout, or no cross-edge (single-file / nothing shared), folds the EMPTY set → a defined stable
+/// "no closure" hash. TOTAL: never errors (an un-layoutable program yields the empty-set hash).
+fn closure_hash_text(db: &mut Db) -> String {
+    use std::collections::BTreeMap;
+    crate::layout::force_monomorphize(db);
+    let layout = match crate::layout::compute_tests(db) {
+        Ok(l) => l,
+        Err(_) => return closure_content_hash(db, &[]),
+    };
+    // Bucket `@test` defs by file (as `EmitTestsComposed` does); the union cross-edge set is over the FILED
+    // buckets (a `None`-file / unfiled test contributes no cross-edge — it has no shared closure to import).
+    let mut files: Vec<usize> = Vec::new();
+    let mut seen: BTreeMap<usize, ()> = BTreeMap::new();
+    for def in db.test_defs() {
+        if let Some(fi) = db.file_of(db.defs[def].sig_occ)
+            && seen.insert(fi, ()).is_none()
+        {
+            files.push(fi);
+        }
+    }
+    let union_edges = crate::layout::cross_component_edges_union(db, &layout, &files);
+    closure_content_hash(db, &union_edges)
+}
+
 /// A stable structural content-hash of definition `def`'s `(def …)` AST subtree — the identity a
 /// compile-reuse cache keys on and the witness diffs. Hashes the def's signature + body subtrees by walking
 /// their arena structure (node shape + leaf bytes) into an [`FxHasher`], so two byte-identical source defs
 /// (even at different global `StructId`s, since link splices files at an offset) hash the SAME. Independent
 /// of the def's global id and of surrounding files — only its own subtree content.
-fn def_content_hash(db: &Db, def: usize) -> u64 {
+pub(crate) fn def_content_hash(db: &Db, def: usize) -> u64 {
     use std::hash::Hasher;
     let mut h = crate::fxhash::FxHasher::default();
     hash_subtree(db, db.defs[def].sig_occ, &mut h);
@@ -927,6 +987,26 @@ fn def_content_hash(db: &Db, def: usize) -> u64 {
         hash_subtree(db, body, &mut h);
     }
     h.finish()
+}
+
+/// The CLOSURE content-hash for a set of shared cross-edge def indices — a single `u64` folding each def's
+/// [`def_content_hash`] over the SORTED-by-hash set, so it is a pure function of WHICH defs (by content),
+/// independent of their arena position or the order they were discovered. This is the Option-C provider-cache
+/// KEY: the shared closure a composed `cdz test <dir>` provider exports is identified by this hash, so a
+/// runner caches the emitted provider component keyed on it and skips re-emitting the closure on a HIT
+/// (`Request::EmitTestsConsumerOnly`). The `EmitTestsComposed` driver emits it as a `closure-hash` sidecar on
+/// the MISS path (recompute-free persist); a runner's own hash (folding the SAME `def_content_hash` — the
+/// FuncLayout col-2 value — over its cross-edge set) must match, so the two sides key identically (a drift-
+/// guard). SORTED so the fold is order-independent; hex-rendered for a stable sidecar byte form.
+pub(crate) fn closure_content_hash(db: &Db, edges: &[usize]) -> String {
+    use std::hash::Hasher;
+    let mut per_def: Vec<u64> = edges.iter().map(|&d| def_content_hash(db, d)).collect();
+    per_def.sort_unstable();
+    let mut h = crate::fxhash::FxHasher::default();
+    for hv in per_def {
+        h.write_u64(hv);
+    }
+    format!("{:016x}", h.finish())
 }
 
 /// Feed the AST subtree rooted at `id` into `h` — the node's structural KIND then, recursively, its
@@ -2340,6 +2420,7 @@ mod tests {
             Request::Query(Query::Symbols),
             Request::Query(Query::ParamManifest),
             Request::Query(Query::FuncLayout),
+            Request::Query(Query::ClosureHash),
             Request::EmitTestsPerFile,
             Request::EmitTestsComposed,
             Request::EmitTestsConsumerOnly,
@@ -2366,7 +2447,8 @@ mod tests {
                     | Query::Instantiations { .. }
                     | Query::Symbols
                     | Query::ParamManifest
-                    | Query::FuncLayout,
+                    | Query::FuncLayout
+                    | Query::ClosureHash,
                 ) => {}
             }
         }

@@ -572,6 +572,18 @@ fn compile_with_opt_inner(
                     // which cached provider to pair).
                     if let Some(bytes) = provider_bytes {
                         artifacts.push(Artifact::new("component-provider", CLOSURE_IFACE, bytes));
+                        // The closure CONTENT-HASH (a `u64` hex over the union edge set) — emitted ONLY on the
+                        // MISS (provider-emitting) path, so a runner persists the provider keyed by this exact
+                        // hash (recompute-free) + validates its own HIT-decision hash against this canonical
+                        // one (a fold of the same `def_content_hash` = FuncLayout col-2 — a drift-guard). Not
+                        // emitted on the consumer-only path (the caller already HAS the hash — it's how it
+                        // decided the HIT). Cheap: `union_edges` is already computed above.
+                        let hash = sidecar::closure_content_hash(&db, &union_edges);
+                        artifacts.push(Artifact::new(
+                            sidecar::KIND_CLOSURE_HASH,
+                            CLOSURE_IFACE,
+                            hash.into_bytes(),
+                        ));
                     }
                     artifacts.push(Artifact::new(
                         link::KIND_COMPONENT_NAME,
