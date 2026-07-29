@@ -1976,3 +1976,86 @@
         (export main)))
   (call   main (: 128 UInt8)) (output (: 11 Int64))
   (call   main (: 0 UInt8)) (output (: 11 Int64)))
+
+; --- The seam-crossing segment-kind matrix: the :1740 seam pin reads ONE kind (big-endian u16).
+; These complete the kinds over the same two-leaf rope + runtime-slice shape: little-endian order,
+; signed extension, 8-byte top-bit width, sub-byte bit splits, and the dependent-size body (with
+; its oversize-count decline). Each stitches THROUGH the physical leaf boundary; per-leaf reads,
+; seam clamps, or narrow carriers diverge on the starred rows.
+
+(case "a little-endian u16 bin field stitches its bytes across a rope seam in le order"
+  (doc    "The LE face of the seam-crossing family (the existing seam pin :1740 is big-endian only): the 2-byte window at k=1 straddles the leaves, and the field must assemble LSB-first from the STITCHED pair — [18,52] le = 52*256+18 = 13330. An impl that stitched physically then swapped, vs placing per-byte in le order, diverges exactly here; k=0/k=2 are the single-leaf controls.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def b (Bytes.concat (Bytes.of (list 1 18)) (Bytes.of (list 52 5))))
+                (def w (Option.expect (Bytes.slice b k 2) "in"))
+                (match w
+                  ((bin (u16 x le)) x)
+                  (_ -1))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 13330 Int64))
+  (call   main (: 0 Int64)) (output (: 4609 Int64))
+  (call   main (: 2 Int64)) (output (: 1332 Int64)))
+
+(case "a signed i16 bin field spanning a rope seam sign-extends from the stitched bytes"
+  (doc    "The SIGN face: the seam window [255,254] reads -2 — sign-extension must run on the full stitched 16 bits, not a leaf's first byte (a per-leaf extend gives a positive splice). k=0 (511) and k=2 (-507) bracket the seam from both sides.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def b (Bytes.concat (Bytes.of (list 1 255)) (Bytes.of (list 254 5))))
+                (def w (Option.expect (Bytes.slice b k 2) "in"))
+                (match w
+                  ((bin (i16 x)) x)
+                  (_ -1))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: -2 Int64))
+  (call   main (: 0 Int64)) (output (: 511 Int64))
+  (call   main (: 2 Int64)) (output (: -507 Int64)))
+
+(case "a u64 bin field with the top bit set reads unsigned across a rope seam"
+  (doc    "The WIDTH+TOP-BIT face: an 8-byte field whose top bit is set crosses the seam (k=1: bytes ff 02..08 -> 18375252745424078600, observed via BigInt.of). An i64-signed carrier or a per-leaf clamp corrupts the high byte; k=2 (top bit clear) is the in-range control.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def b (Bytes.concat (Bytes.of (list 0 255 2 3 4 5 6 7)) (Bytes.of (list 8 9))))
+                (def w (Option.expect (Bytes.slice b k 8) "in"))
+                (match w
+                  ((bin (u64 x)) (BigInt.of x))
+                  (_ (BigInt.of -1)))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 18375252745424078600 BigInt))
+  (call   main (: 2 Int64)) (output (: 144964032628459529 BigInt)))
+
+(case "bit-field segments spanning a rope seam split the stitched 16 bits, not a leaf's"
+  (doc    "The BITS face of the seam family: (bits a 4)(bits b2 12) over a 2-byte window whose 16 bits straddle two leaves — the 4/12 split must run on the stitched pair (k=1: [18,52] -> a=1,b2=564 -> 10564). k=0/k=2 are the single-leaf controls (101298 / 31029).")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def b (Bytes.concat (Bytes.of (list 165 18)) (Bytes.of (list 52 5))))
+                (def w (Option.expect (Bytes.slice b k 2) "in"))
+                (match w
+                  ((bin (bits a 4) (bits b2 12)) (+ (* a 10000) b2))
+                  (_ -1))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 10564 Int64))
+  (call   main (: 0 Int64)) (output (: 101298 Int64))
+  (call   main (: 2 Int64)) (output (: 31029 Int64)))
+
+(case "a dependent-size body straddling a rope seam stitches, and an oversize count fails the match"
+  (doc    "The DEPENDENT-SIZE face: (u8 n)(bytes body n)(bytes rest) from a runtime-sliced start whose n-byte body crosses the seam (k=1: n=3, body [10,20,30] sums 60 -> 60015 with rest [7,8]); at k=0 the count byte is 9 with only 6 remaining, so the match FAILS to the catch-all (-1) — the oversize face doubles as the honest-decline row.")
+  (input  (do
+            (def (bsum (: b Bytes) (: i Int64) (: acc Int64))
+              (match (Bytes.at b i)
+                ((Some v) (bsum b (+ i 1) (+ acc v)))
+                ((None _u) acc)))
+            (def (main (: k Int64))
+              (do
+                (def b (Bytes.concat (Bytes.of (list 9 3 10)) (Bytes.of (list 20 30 7 8))))
+                (def w (Option.expect (Bytes.slice b k (- 7 k)) "in"))
+                (match w
+                  ((bin (u8 n) (bytes body n) (bytes rest)) (+ (* 1000 (bsum body 0 0)) (bsum rest 0 0)))
+                  (_ -1))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 60015 Int64))
+  (call   main (: 0 Int64)) (output (: -1 Int64)))

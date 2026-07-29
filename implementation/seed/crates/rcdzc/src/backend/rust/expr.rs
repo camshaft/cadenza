@@ -4688,9 +4688,13 @@ fn sum_variant_path_of_ty(db: &mut Db, ty: &Ty, disc: u32) -> Result<String, Rej
     // non-representable sum as a discarded intermediate (`(. (tuple (NLit 5) 9) 1)` keeps only the Int64,
     // but still constructs `Node::NLit`), which the signature-level `sum_representable` guard cannot see.
     if !super::enums::sum_representable(db, ty) {
-        return Err(Reject::decline(
-            "a construct/match of a sum with no emitted Rust enum (recursive/unrepresentable)",
-        ));
+        // Name the PRECISE reason (a recursive newtype vs a genuine recursive/unrepresentable sum) so the
+        // decline points whoever picks up the gap at the right fix — `unrepresentable_reason` walks `ty`
+        // (the UNSTRIPPED value type, so a recursive newtype still reads as `Ty::Nominal`) and returns the
+        // newtype phrasing for the `(type Lst (Mk (Option (Tuple Int64 Lst))))` shape.
+        return Err(Reject::decline(super::enums::unrepresentable_reason(
+            db, ty,
+        )));
     }
     let decl = db
         .type_decl_by_occ(decl_occ)
