@@ -153,6 +153,16 @@ pub enum Code {
     /// the type, notes its handle is exported but its constructors are not, and (when the module exports a
     /// function returning the type) points at that function as the way in.
     AbstractCtor,
+    /// A `Record.extend`/`Record.with` whose FIELD-NAME-INTRODUCTION operand (the `#z` slot) is NOT a
+    /// static `#field` label — a BARE identifier `z` (which the reader would otherwise PUN to a static
+    /// label, letting an undeclared name silently become a field) or any runtime-value expression. The row
+    /// op's field name is a compile-time LABEL, never a runtime value (`type-system.md` §A Record Row Is
+    /// Reshaped Only Through An Explicit Operation; `prelude-and-resolution.md` §A Member Key Is A Label,
+    /// Not A Value — the name must be written `#z`). DISTINCT from PresentField/AbsentField (those are a
+    /// valid `#label` that is present/absent); here the operand is not a valid static label at ALL. Scoped
+    /// to the NAME-INTRODUCTION operand of extend/with ONLY — the READ/DROP ops (`.`/pop/without/project)
+    /// legitimately take a bare label and stay valid. (Concierge ruling on breaker's Record.extend pun.)
+    RecordFieldNameNotLabel,
     /// A computation the compiler PROVES would trap (`ConstTrap`'s outcome) was ELIMINATED because its
     /// value is unobserved — an unprojected tuple/record element, an unreferenced `let` binding, an
     /// argument bound to an unused parameter. NOT a rejection: the build succeeds (the dead computation
@@ -356,6 +366,7 @@ impl Code {
             Code::AbsentField => "CDZ0212",
             Code::RedundantArm => "CDZ0213",
             Code::AbstractCtor => "CDZ0214",
+            Code::RecordFieldNameNotLabel => "CDZ0215",
             Code::TryNoBoundary => "CDZ0230",
             Code::EffectNoHome => "CDZ0401",
             Code::HandlerUndeclaredOp => "CDZ0403",

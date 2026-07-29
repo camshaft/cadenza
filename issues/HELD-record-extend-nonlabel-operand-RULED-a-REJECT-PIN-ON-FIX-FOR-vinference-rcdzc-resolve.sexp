@@ -45,3 +45,6 @@
 ;; change), THEN v-inference lands CDZ0215 on top (now gate-clean, no bare-name cases left), THEN I flip the
 ;; bare-name pin below to (error CDZ0215). Placeholder code in the case above updated to CDZ0215.
 ;; ON LAND (CDZ0215 reject, after migration integrates): gate x3 -> (error CDZ0215); pin into 15-rows; baseline x3.
+
+;; MR'd (v-inference, 2026-07-29): combined with CDZ0214 in 364077bf4 (queued; gate CLEAN 5163/0/0 now that
+;; my #label migration landed). ON LAND: gate the (error CDZ0215) bare-name reject x3; pin into 15-rows.

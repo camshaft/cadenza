@@ -510,10 +510,30 @@ fn def_as_resolved(db: &Db, d: usize, name: &str) -> Resolved {
             params: def.params.clone().into(),
             body,
         },
-        None => Resolved::Poison(Reject::coded(
-            Code::Malformed,
-            format!("`{name}` has no body"),
-        )),
+        // An INTERNAL effect-specialization (`base#eff<n>`) with no body is a DANGLING reservation: the
+        // effect specializer reserves the spec def (body `None`) + memoizes its name BEFORE threading the
+        // recursive body, so a self-call can resolve its own name; when the body is UNTHREADABLE (e.g. a
+        // do-def-bound perform in the recursive fn — not yet specializable), `thread` returns `None` and the
+        // reserved def is left bodyless. A reference to it must NOT surface the mangled internal name via a
+        // coded CDZ0201 "`base#eff2` has no body" (a compiler-internal name in a user-facing message,
+        // corpus-bugfix/breaker 2026-07-28). Report an UNCODED "not yet reducible" decline naming the BASE
+        // fn instead — the same honest todo the handle fold gives for an unreducible shape (the specializer's
+        // body-clone increment that would fold it is later). A genuine user-authored bodyless def keeps its
+        // coded CDZ0201 (its name has no `#eff` marker).
+        None => {
+            let poison = if let Some(base) =
+                name.split("#eff").next().filter(|_| name.contains("#eff"))
+            {
+                Reject::decline(format!(
+                    "this handler is not yet reducible by the tail-resumptive fold: the recursive function \
+                     `{base}` performs a discharged operation in a form the effect specializer does not yet \
+                     handle (cross-function or non-tail resume arrives in a later increment)"
+                ))
+            } else {
+                Reject::coded(Code::Malformed, format!("`{name}` has no body"))
+            };
+            Resolved::Poison(poison)
+        }
     }
 }
 

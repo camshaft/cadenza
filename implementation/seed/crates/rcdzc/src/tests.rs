@@ -2267,6 +2267,50 @@ fn record_with_over_a_runtime_record_materializes_the_operand_once_not_per_prese
 }
 
 #[test]
+fn record_extend_with_a_bare_field_name_rejects_cdz0215_but_read_drop_ops_keep_bare_labels() {
+    use crate::testkit::parse;
+    // Concierge ruling (breaker's Record.extend pun): the field-NAME-INTRODUCTION operand of
+    // `Record.extend`/`Record.with` MUST be a static `#field` label — a BARE identifier PUNS an undeclared
+    // name into a new field (soundness-adjacent surprise), so reject it CDZ0215. SCOPE: reject ONLY the
+    // name-introduction operand of extend/with; the READ/DROP ops (`.`/pop/without) legitimately take a bare
+    // label and MUST stay valid (don't over-reject). `read_key` accepts a bare name (shared with read/drop);
+    // the reject is scoped to extend/with's 3-operand arm.
+    let decline = |src: &str| {
+        crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("must decline")
+            .code
+            .unwrap_or_default()
+    };
+    // extend with a BARE name → CDZ0215 (was: punned + compiled).
+    assert_eq!(
+        decline(
+            "(do (def (main) (do (def w (Record.extend (record (x 10)) fname 99)) (. w fname))) (export main))"
+        ),
+        "CDZ0215",
+        "Record.extend with a bare field-name operand rejects CDZ0215"
+    );
+    // `with` bare name too, and a runtime-value field name.
+    assert_eq!(
+        decline(
+            "(do (def (main) (do (def r (record (x 10))) (. (Record.with r x 99) x))) (export main))"
+        ),
+        "CDZ0215",
+        "Record.with with a bare field-name operand rejects CDZ0215"
+    );
+    // SCOPE GUARD: `#label` extend + bare-label READ/DROP ops must ALL still compile (no over-reject).
+    for ok in [
+        "(module m (def (main) (. (Record.extend (record (x 10)) #\"fname\" 99) #\"fname\")) (export main))",
+        "(module m (def (main) (. (record (x 10) (y 20)) x)) (export main))",
+        "(module m (def (main) (. (Record.without (record (x 10) (y 20)) (x)) y)) (export main))",
+    ] {
+        assert!(
+            crate::compile::compile_component(&crate::codec::encode(&parse(ok))).is_ok(),
+            "a #label extend / a bare-label read-or-drop op must stay valid (no over-reject): {ok}"
+        );
+    }
+}
+
+#[test]
 fn record_project_and_without_over_a_runtime_record_build_from_projections_materialize_once() {
     use crate::testkit::parse;
     // FOLLOW-UP to `Record.with` over a runtime record: `Record.project` (keep the named fields) and
@@ -58290,6 +58334,66 @@ mod stage1 {
     }
 
     #[test]
+    fn a_bare_ctor_pattern_over_an_abstract_type_is_rejected_cdz0214_like_the_qualified_spelling() {
+        // SOUNDNESS (breaker/corpus-bugfix 2026-07-29): a module exports a type's HANDLE (`Temp`) + a smart
+        // ctor (`mk`) but WITHHOLDS the variant ctor `T`. Matching the abstract value through `T` outside the
+        // module must be CDZ0214 (withheld-ctor). The QUALIFIED `((Temp.T v))` already rejected (the `(. T A)`
+        // selector's withheld poison); the BARE `((T v))` PUNNED past the gate + READ the private payload — a
+        // one-token bypass of ADT opacity. FIX (lower::pattern_constraints): the bare pattern head now gets
+        // the SAME withheld-ctor gate (`ctor_is_withheld_at`) — a bare name that IS a withheld variant of the
+        // scrutinee decl poisons CDZ0214. Reaches BOTH the direct-match and eval-quasiquote-reconstructed
+        // match (shared lowering). Tested via the 2-file compile harness (`cdz compile` single-file can't
+        // express `(module "lib")`+`(import)`).
+        use crate::abi::Artifact;
+        let lib = crate::codec::encode(&parse(
+            "(do (type Temp (T Int64)) (def (mk (: c Int64)) (Temp.T (* c 10))) (export Temp) (export mk))",
+        ));
+        // Diagnostics for an entry whose `main` body is `body` (which matches the abstract value).
+        let codes_for = |body: &str| -> Vec<String> {
+            let entry = crate::codec::encode(&parse(&format!(
+                "(do (import \"lib\" (Temp mk)) (def (main (: k Int64)) {body}) (export main))"
+            )));
+            let out = crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "lib", lib.clone()),
+                    Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
+                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                ],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .filter_map(|d| d.code.clone())
+                .collect()
+        };
+        // breaker #41 — the single `pattern_constraints` choke-point gate must sweep ALL THREE bare-pattern
+        // routes to the withheld ctor `T` (each previously compiled + read the private payload):
+        // (1) DIRECT bare match.
+        assert!(
+            codes_for("(match (mk k) ((T v) v) (_ -1))").contains(&"CDZ0214".to_string()),
+            "direct bare ctor pattern → CDZ0214"
+        );
+        // (2) EVAL / quasiquote-reconstructed match (metaprogramming route — same shared lowering).
+        assert!(
+            codes_for("(eval (quasiquote (match (unquote (mk k)) ((T v) v) (_ -1))))")
+                .contains(&"CDZ0214".to_string()),
+            "eval-quasiquote bare ctor pattern → CDZ0214"
+        );
+        // (3) GUARD-NESTED: the withheld pattern lives in a guard cond's inner match (guard desugars to its
+        // own lowering, but the inner match re-lowers through `pattern_constraints`).
+        assert!(
+            codes_for("(match (mk k) ((guard w (match w ((T v) (> v 20)) (_ false))) 1) (_ -1))")
+                .contains(&"CDZ0214".to_string()),
+            "guard-nested bare ctor pattern → CDZ0214"
+        );
+        // CONTROL: the QUALIFIED `((Temp.T v))` (always rejected) still CDZ0214 — no regression.
+        assert!(
+            codes_for("(match (mk k) ((Temp.T v) v) (_ -1))").contains(&"CDZ0214".to_string()),
+            "qualified ctor pattern still rejects CDZ0214"
+        );
+    }
+
+    #[test]
     fn a_duplicate_parameter_name_is_rejected_as_nonlinear() {
         // A function's parameter list is a BINDER POSITION, linear like a pattern (core-semantics.md
         // §Patterns Compose: "A pattern MUST bind each name at most once … rather than silently shadowing
@@ -59065,6 +59169,60 @@ mod stage1 {
             msg(direct).is_empty(),
             "a direct perform under the handle must still fold clean: {:?}",
             msg(direct)
+        );
+    }
+
+    #[test]
+    fn a_recursive_fn_perform_the_specializer_cant_thread_declines_without_a_mangled_name() {
+        // corpus-bugfix/breaker 2026-07-28: a do-def-bound perform in a RECURSIVE fn under a handle used to
+        // report CDZ0201 "`check-all#eff2` has no body" — a compiler-INTERNAL effect-specialization name
+        // (`#eff2`) leaked into a user-facing message. ROOT: `specialize_recursive` reserves the spec def
+        // (body `None`) + memoizes its name BEFORE threading the recursive body (so a self-call resolves its
+        // own name); when the body is UNTHREADABLE (`thread` → None), the reserved def is left bodyless, and a
+        // reference to it hit `def_as_resolved`'s "has no body" coded reject. `def_as_resolved` now reports an
+        // UNCODED "not yet reducible" decline naming the BASE fn (`check-all`) for an internal `#eff`-marked
+        // bodyless spec — the honest todo (the specializer's body-clone increment that would fold it → 110 is
+        // later). Satisfies both asks: (1) clean decline, not CDZ0201; (2) names `check-all`, not `#eff2`.
+        let out = crate::compile::compile(
+            &[crate::abi::Artifact::new(
+                crate::abi::Artifact::KIND_AST,
+                "m",
+                crate::codec::encode(&parse(
+                    "(module m (effect Env (op scale (-> Int64 Int64))) \
+                     (def (check-all (: i Int64) (: bad Int64)) \
+                       (if (= i 0) bad (do (def scaled (Env.scale i)) (check-all (- i 1) (+ bad scaled))))) \
+                     (def (main) (handle Env 2 ((scale (v) s (resume (* v s) s))) (check-all 10 0))) \
+                     (export main))",
+                )),
+            )],
+            &[crate::backend::Target::Wasm],
+        );
+        let errors: Vec<&crate::abi::Diagnostic> = out
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::abi::Severity::Error)
+            .collect();
+        // No MANGLED internal specialization name in any user-facing message.
+        assert!(
+            !errors.iter().any(|d| d.message.contains("#eff")),
+            "must not leak a mangled `#eff` specialization name: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // The decline is UNCODED (honest todo), NOT the coded "has no body" CDZ0201, and names the base fn.
+        assert!(
+            errors.iter().all(|d| d.code.is_none()),
+            "the recursive-spec decline must be uncoded (not a coded reject): {:?}",
+            errors
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|d| d.message.contains("check-all") && d.message.contains("not yet reducible")),
+            "expected an honest not-yet-reducible decline naming `check-all`: {:?}",
+            errors.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 
@@ -73362,6 +73520,147 @@ mod sidecar_driven {
                 "per-file edge `{e}` must be in the union {union_names:?}"
             );
         }
+    }
+
+    #[test]
+    fn emit_tests_composed_emits_a_provider_iface_sidecar_and_per_file_consumers() {
+        // OPTION C (c)(iii)c — the END-TO-END composed driver: a `Request::EmitTestsComposed` compile over a
+        // multi-file package emits ONE `component-provider` (the hoisted shared closure), ONE `component-name`
+        // sidecar (its interface string), and N `component` consumers (one per @test file, named by link path,
+        // each importing the provider). 3-file fixture: `lib` exports two recursive helpers; `app-a`'s @test
+        // calls alpha, `app-b`'s calls beta — so the union closure is {alpha, beta} and there are 2 consumers.
+        let lib = crate::codec::encode(&parse(
+            "(do \
+             (def (alpha (: n Int64)) (if (= n 0) 0 (+ 2 (alpha (- n 1))))) \
+             (def (beta (: n Int64)) (if (= n 0) 1 (+ 3 (beta (- n 1))))) \
+             (export alpha) (export beta))",
+        ));
+        let app_a = crate::codec::encode(&parse(
+            "(do (import \"lib\" (alpha)) (@ test (def (t-a) (if (= (alpha 3) 6) unit (trap \"x\")))))",
+        ));
+        let app_b = crate::codec::encode(&parse(
+            "(do (import \"lib\" (beta)) (@ test (def (t-b) (if (= (beta 3) 10) unit (trap \"x\")))))",
+        ));
+        let out = crate::host::run_with_compiler_stack(|| {
+            crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "lib", lib.clone()),
+                    Artifact::new(Artifact::KIND_AST, "app-a", app_a.clone()),
+                    Artifact::new(Artifact::KIND_AST, "app-b", app_b.clone()),
+                    // A multi-file package needs an entry (linkage root); a composed test build roots on the
+                    // `@test` defs, so any member serves — `cdz test <dir>` passes one likewise.
+                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app-a".to_vec()),
+                    Artifact::new(
+                        sidecar::KIND_SIDECAR,
+                        "drive",
+                        sidecar::encode(&[Request::EmitTestsComposed]),
+                    ),
+                ],
+                &[],
+            )
+        });
+        assert!(
+            !out.has_error(),
+            "composed emit does not error: {:?}",
+            out.diagnostics
+        );
+        // Exactly one provider + one interface-name sidecar.
+        let providers: Vec<&Artifact> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == "component-provider")
+            .collect();
+        assert_eq!(
+            providers.len(),
+            1,
+            "one shared-closure provider component: kinds={:?}",
+            out.artifacts.iter().map(|a| &a.kind).collect::<Vec<_>>()
+        );
+        let iface_sidecar: Vec<&Artifact> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == crate::link::KIND_COMPONENT_NAME)
+            .collect();
+        assert_eq!(iface_sidecar.len(), 1, "one component-name iface sidecar");
+        assert_eq!(
+            String::from_utf8(iface_sidecar[0].bytes.clone()).unwrap(),
+            "cadenza:closure/api",
+            "the iface sidecar carries the fixed closure-interface string"
+        );
+        // The provider's name IS the interface (so a runner can pair it with the sidecar).
+        assert_eq!(providers[0].name, "cadenza:closure/api");
+        // N=2 consumer `component` artifacts, named by the two @test files' link paths.
+        let consumer_names: Vec<&str> = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == crate::backend::Target::Wasm.artifact_kind())
+            .map(|a| a.name.as_str())
+            .collect();
+        assert!(
+            consumer_names.contains(&"app-a") && consumer_names.contains(&"app-b"),
+            "one consumer component per @test file (by link name): {consumer_names:?}"
+        );
+        assert_eq!(
+            consumer_names.len(),
+            2,
+            "exactly two consumers (one per @test file): {consumer_names:?}"
+        );
+        // Every emitted component (provider + consumers) validates.
+        for a in &out.artifacts {
+            if a.kind == "component-provider"
+                || a.kind == crate::backend::Target::Wasm.artifact_kind()
+            {
+                let mut v =
+                    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+                v.validate_all(&a.bytes)
+                    .unwrap_or_else(|e| panic!("composed artifact `{}` validates: {e}", a.name));
+            }
+        }
+    }
+
+    #[test]
+    fn emit_tests_composed_declines_a_same_stem_multi_dir_collision() {
+        // The SINGLE-DIR guard (pr881): `db.file_path` is the dir-blind import stem, so two @test files that
+        // resolve to the SAME stem would collide the consumer name-demux. A package whose @tests span files
+        // with a colliding stem DECLINES (a diagnostic), so the caller falls back to the per-file build rather
+        // than emitting two consumers under one name. Here two files both named `t` (same stem) each carry a
+        // @test calling the shared helper → the composed driver must decline, not silently drop one.
+        let lib = crate::codec::encode(&parse(
+            "(do (def (h (: n Int64)) (if (= n 0) 0 (+ 1 (h (- n 1))))) (export h))",
+        ));
+        let t1 = crate::codec::encode(&parse(
+            "(do (import \"lib\" (h)) (@ test (def (a) (if (= (h 2) 2) unit (trap \"x\")))))",
+        ));
+        let t2 = crate::codec::encode(&parse(
+            "(do (import \"lib\" (h)) (@ test (def (b) (if (= (h 3) 3) unit (trap \"x\")))))",
+        ));
+        let out = crate::host::run_with_compiler_stack(|| {
+            crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "lib", lib.clone()),
+                    // Two DISTINCT files that share the import stem `t` (as a multi-dir `a/t` + `b/t` would).
+                    Artifact::new(Artifact::KIND_AST, "t", t1.clone()),
+                    Artifact::new(Artifact::KIND_AST, "t", t2.clone()),
+                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"t".to_vec()),
+                    Artifact::new(
+                        sidecar::KIND_SIDECAR,
+                        "drive",
+                        sidecar::encode(&[Request::EmitTestsComposed]),
+                    ),
+                ],
+                &[],
+            )
+        });
+        // No provider is emitted on the collision path (the guard declines before hoisting).
+        let providers = out
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == "component-provider")
+            .count();
+        assert_eq!(
+            providers, 0,
+            "a same-stem multi-file build must NOT emit a composed provider (single-dir guard declines)"
+        );
     }
 
     #[test]

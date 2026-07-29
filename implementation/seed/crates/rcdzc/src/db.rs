@@ -3530,6 +3530,26 @@ impl Db {
         Some(fs.visible_ctors[file].get(name).copied().ok_or(()))
     }
 
+    /// Whether the variant ctor `ctor_name` is WITHHELD at `at`'s file — the type's HANDLE is visible here
+    /// but this constructor was NOT exported (an abstract / partially-concrete import). True ⇒ a bare
+    /// construct `(A v)` or bare match pattern `((A v))` through `A` must be CDZ0214, exactly as the
+    /// qualified `(. T A)` selector is (`resolve::withheld_ctor_reject`) — else one spelling reads private
+    /// ADT internals (encapsulation SOUNDNESS; the verification kernel's Thm/Term trust). False when
+    /// `ctor_name` IS a visible ctor here (legitimate) — checked against BOTH the bare and qualified surfaces
+    /// (the qualified retains a prelude-named ctor the bare map omits, so `Ast.Int` is not mis-flagged).
+    /// Only meaningful for a linked package. `owner_type` (a file-visible type declaring `ctor_name`) is the
+    /// name to blame in the message; caller already knows the scrutinee type so it usually passes that.
+    pub(crate) fn ctor_is_withheld_at(&self, at: StructId, ctor_name: &str) -> bool {
+        let Some(fs) = self.file_scope.as_ref() else {
+            return false;
+        };
+        let Some(file) = self.visibility_file_of(at) else {
+            return false;
+        };
+        !fs.visible_ctors[file].contains_key(ctor_name)
+            && !fs.visible_ctors_qualified[file].contains_key(ctor_name)
+    }
+
     /// The QUALIFIED-access analogue of [`Db::file_scoped_variant_ctor`] — resolves a variant name
     /// against `at`'s file including a prelude-named ctor (`Ast.Int`) that the BARE map omits. Used by
     /// the CDZ0214 withheld check and `is_abstract_type_at` to judge a `(. T A)` access: `Some(Ok(_))`

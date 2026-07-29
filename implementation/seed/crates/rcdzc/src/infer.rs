@@ -12812,25 +12812,49 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 let is_extend = crate::eval::meta_apply_of(db, head)
                     == Some(crate::resolved::Prim::RecordExtend);
                 collect(db, args[0], out);
-                match (
-                    type_of(db, args[0]),
-                    crate::resolve::read_label(db, args[1]),
-                ) {
-                    (Ty::Record(fields), Some(label)) => {
-                        collect(db, args[2], out);
-                        let present = fields.contains_key(&label);
-                        // The operation-KEY occurrence of the `(. Record extend|with)` head — the node an
-                        // OPERATOR-SWAP fix rewrites (`extend`→`with` or `with`→`extend`). The message
-                        // already NAMES the sibling op to use; the fix makes that one-token swap applyable
-                        // (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix — the
-                        // row-op analogue of `float_sibling_operator`). `None` if the head is not `(. R op)`.
-                        let op_key_occ = db.ast.as_form(head, ".").and_then(|t| t.get(1).copied());
-                        if is_extend && present {
-                            // `extend` REQUIRES an absent field; the field is present → the author means
-                            // `with` (replace). Swap the op: `Record.extend`→`Record.with`, VERIFIED — the
-                            // present field is exactly `with`'s precondition, so the swap clears the fault
-                            // without introducing another (unlike a heuristic near-miss guess).
-                            let mut reject = Reject::coded(
+                // The field-NAME-INTRODUCTION operand `args[1]` MUST be a static `#field` label. `read_label`
+                // (shared with the READ/DROP ops, which legitimately take a bare label) also accepts a BARE
+                // identifier — which PUNS an undeclared name into a new static field (`(Record.extend r fname
+                // v)` silently adds `fname`). For the ADD/UPDATE ops that INTRODUCE a name, that pun is a
+                // soundness-adjacent surprise (an undeclared name becomes a field): the name is a compile-time
+                // LABEL, never a runtime value, and must be written `#z` (concierge ruling on breaker's pun,
+                // type-system.md §A Record Row Is Reshaped Only Through An Explicit Operation). REJECT a
+                // field-name operand that is NOT a `#`-sym / `(meta …)` label — a bare name, or any other
+                // expression. Scoped to extend/with's name operand ONLY; the read/drop ops keep bare labels.
+                let field_name_is_label =
+                    db.ast.as_sym(args[1]).is_some() || db.ast.as_form(args[1], "meta").is_some();
+                if !field_name_is_label {
+                    collect(db, args[2], out); // still descend the value operand for its own faults
+                    out.push(
+                        Reject::coded(
+                            Code::RecordFieldNameNotLabel,
+                            "the field name introduced by `Record.extend`/`Record.with` must be a static \
+                             `#field` label (e.g. `#z`), not a bare identifier or a runtime value — a record \
+                             field name is a compile-time label, not a value",
+                        )
+                        .at(args[1]),
+                    );
+                } else {
+                    match (
+                        type_of(db, args[0]),
+                        crate::resolve::read_label(db, args[1]),
+                    ) {
+                        (Ty::Record(fields), Some(label)) => {
+                            collect(db, args[2], out);
+                            let present = fields.contains_key(&label);
+                            // The operation-KEY occurrence of the `(. Record extend|with)` head — the node an
+                            // OPERATOR-SWAP fix rewrites (`extend`→`with` or `with`→`extend`). The message
+                            // already NAMES the sibling op to use; the fix makes that one-token swap applyable
+                            // (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix — the
+                            // row-op analogue of `float_sibling_operator`). `None` if the head is not `(. R op)`.
+                            let op_key_occ =
+                                db.ast.as_form(head, ".").and_then(|t| t.get(1).copied());
+                            if is_extend && present {
+                                // `extend` REQUIRES an absent field; the field is present → the author means
+                                // `with` (replace). Swap the op: `Record.extend`→`Record.with`, VERIFIED — the
+                                // present field is exactly `with`'s precondition, so the swap clears the fault
+                                // without introducing another (unlike a heuristic near-miss guess).
+                                let mut reject = Reject::coded(
                                 Code::PresentField,
                                 format!(
                                     "record already has field `{}` (use `Record.with` to replace)",
@@ -12838,26 +12862,26 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 ),
                             )
                             .at(args[1]);
-                            if let Some(occ) = op_key_occ {
-                                reject = reject.with_fix(crate::diag::Fix::replace_verified(
-                                    occ,
-                                    "with".to_string(),
-                                    "replace `extend` with `with` to update the existing field",
-                                ));
-                            }
-                            out.push(reject);
-                        } else if !is_extend && !present {
-                            // A did-you-mean over the record's own fields — a mistyped `with` field is
-                            // the closed-set case (like `without`/`project`, M51): `Record.with r (alpa …)`
-                            // for a field `alpha` should point at it. The complementary-op hint
-                            // (`Record.extend` to ADD) stays: the suggestion and the add-hint are distinct
-                            // advice (fix the typo vs. genuinely a new field).
-                            let near = nearest_record_field(db, &fields, &label.name);
-                            let did = near
-                                .as_ref()
-                                .map(|n| format!(" (did you mean `{n}`?)"))
-                                .unwrap_or_default();
-                            let mut reject = Reject::coded(
+                                if let Some(occ) = op_key_occ {
+                                    reject = reject.with_fix(crate::diag::Fix::replace_verified(
+                                        occ,
+                                        "with".to_string(),
+                                        "replace `extend` with `with` to update the existing field",
+                                    ));
+                                }
+                                out.push(reject);
+                            } else if !is_extend && !present {
+                                // A did-you-mean over the record's own fields — a mistyped `with` field is
+                                // the closed-set case (like `without`/`project`, M51): `Record.with r (alpa …)`
+                                // for a field `alpha` should point at it. The complementary-op hint
+                                // (`Record.extend` to ADD) stays: the suggestion and the add-hint are distinct
+                                // advice (fix the typo vs. genuinely a new field).
+                                let near = nearest_record_field(db, &fields, &label.name);
+                                let did = near
+                                    .as_ref()
+                                    .map(|n| format!(" (did you mean `{n}`?)"))
+                                    .unwrap_or_default();
+                                let mut reject = Reject::coded(
                                 Code::AbsentField,
                                 format!(
                                     "record has no field `{}` to update{did} (use `Record.extend` to add)",
@@ -12865,38 +12889,41 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                                 ),
                             )
                             .at(args[1]);
-                            // TWO possible repairs, and which is right depends on intent: (a) the label is a
-                            // TYPO of a real field → rewrite the label (the near-miss case, like `without`/
-                            // `project`, M63); (b) the field genuinely does NOT exist → the author means
-                            // `extend` (ADD it), so swap the op `with`→`extend`. Prefer the label typo-fix
-                            // when a near field exists (the likelier intent — a present-looking field name);
-                            // else offer the operator swap (VERIFIED — an absent field is exactly `extend`'s
-                            // precondition). The `#z` label operand is `args[1]` itself.
-                            let label_node = Some(args[1]);
-                            match (&near, label_node, op_key_occ) {
-                                (Some(near), Some(label_node), _) => {
-                                    reject = reject.with_fix(crate::diag::Fix::replace_heuristic(
-                                        label_node,
-                                        near.clone(),
-                                    ));
+                                // TWO possible repairs, and which is right depends on intent: (a) the label is a
+                                // TYPO of a real field → rewrite the label (the near-miss case, like `without`/
+                                // `project`, M63); (b) the field genuinely does NOT exist → the author means
+                                // `extend` (ADD it), so swap the op `with`→`extend`. Prefer the label typo-fix
+                                // when a near field exists (the likelier intent — a present-looking field name);
+                                // else offer the operator swap (VERIFIED — an absent field is exactly `extend`'s
+                                // precondition). The `#z` label operand is `args[1]` itself.
+                                let label_node = Some(args[1]);
+                                match (&near, label_node, op_key_occ) {
+                                    (Some(near), Some(label_node), _) => {
+                                        reject =
+                                            reject.with_fix(crate::diag::Fix::replace_heuristic(
+                                                label_node,
+                                                near.clone(),
+                                            ));
+                                    }
+                                    (None, _, Some(occ)) => {
+                                        reject =
+                                            reject.with_fix(crate::diag::Fix::replace_verified(
+                                                occ,
+                                                "extend".to_string(),
+                                                "replace `with` with `extend` to add the new field",
+                                            ));
+                                    }
+                                    _ => {}
                                 }
-                                (None, _, Some(occ)) => {
-                                    reject = reject.with_fix(crate::diag::Fix::replace_verified(
-                                        occ,
-                                        "extend".to_string(),
-                                        "replace `with` with `extend` to add the new field",
-                                    ));
-                                }
-                                _ => {}
+                                out.push(reject);
                             }
-                            out.push(reject);
                         }
+                        (_, None) => out.push(Reject::coded(
+                            Code::Malformed,
+                            "the second operand is a `#field` label, e.g. `#z`",
+                        )),
+                        _ => {}
                     }
-                    (_, None) => out.push(Reject::coded(
-                        Code::Malformed,
-                        "the second operand is a `#field` label, e.g. `#z`",
-                    )),
-                    _ => {}
                 }
             } else if matches!(
                 crate::eval::meta_apply_of(db, head),

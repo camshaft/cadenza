@@ -112,3 +112,10 @@
 ;; Prediction confirmed: one resolver choke-point clears all 3 doors. FIX SHA now = 38c12a630 (amended
 ;; from 5059069d4 in the 3-face sweep). Still HELD on the CDZ0215 lockstep + a fresh-store gate.
 ;; ON LAND (38c12a630 on trunk): gate all 3 rows x3 -> (error CDZ0214); pin into 11-modules beside :1470.
+
+;; MR'd (v-inference, 2026-07-29): CDZ0215 + CDZ0214 combined in 364077bf4 (queued; my #label migration
+;; landed so both gate CLEAN, 5163/0/0). IMPORTANT: gating caught + v-inference fixed a CDZ0214 OVER-reject
+;; — bare ((Some v))/((None _)) patterns over a PRELUDE Option cross-module were falsely CDZ0214'd; now
+;; gated on is_abstract_type_at (prelude/concrete types EXCLUDED, only genuinely-abstract withheld ctors
+;; reject). So my 3 CDZ0214 rows (Temp.T withheld) still reject correctly; prelude Option matches stay legal.
+;; ON LAND (364077bf4): gate all 3 CDZ0214 rows (direct/eval/guard) x3 -> (error CDZ0214); pin into 11-modules.

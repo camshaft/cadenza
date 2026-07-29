@@ -317,7 +317,7 @@
   (output (: 7 Int64)))
 
 (case "an open-row function over a Record.with result reads the UPDATED value"
-  (doc    "The update composition: `(Record.with (record (x 1) (y 2)) x a)` replaces x with the runtime
+  (doc    "The update composition: `(Record.with (record (x 1) (y 2)) #\"x\" a)` replaces x with the runtime
            `a`, and the open-row `get-x` reads the update's result — 42, never the stale literal 1. Pins
            that the with-result's row (same fields, new value) flows through a row-variable application
            and the projection reads the POST-update slot.")
@@ -358,7 +358,7 @@
            re-emitted once per preserved field (the backend has no CSE — each Core::Proj re-calls
            emit(operand)), an N-fold redundant eval (perf cliff for a pure operand). The fix let-binds the
            runtime operand ONCE (self-keyed Core::Let) so every projection reads a shared LocalRef. Here
-           `(mk v)` is a 3-field runtime record; `Record.with … a 99` updates `a` and leaves TWO preserved
+           `(mk v)` is a 3-field runtime record; `Record.with … #\"a\" 99` updates `a` and leaves TWO preserved
            fields (`b`, `c`), so the operand would re-emit twice without the fix. Reading the preserved `c`
            → v+2 = 12 at v=10 (value correct either way; the pin LOCKS the multi-preserved-field path the
            single-field l6 case does not exercise). Both backends. The effect-count face is SHIELDED by the
@@ -567,7 +567,7 @@
   (call   main (: 7 Int64)) (output (: 30790 Int64)))
 
 (case "Record.with grows a LIST field by pushing onto the projected old value"
-  (doc    "The collection-field update idiom: `(Record.with r items (List.push (. r items) a))` — the
+  (doc    "The collection-field update idiom: `(Record.with r #\"items\" (List.push (. r items) a))` — the
            new field value is BUILT FROM the projection of the old (push onto the existing list), the
            read-modify-write a stateful record accumulates by. The updated record's list has 3 elements
            while the ORIGINAL record's field still has 2 (persistence of the record AND the shared list
@@ -597,7 +597,7 @@
   (call   main (: 7 Int64)) (output (: 207 Int64)))
 
 (case "a nested Record.with rewrites an inner record field through the outer, inline"
-  (doc    "The write-through composite: `(Record.with p0 pos (Record.with (. p0 pos) y d))` — the
+  (doc    "The write-through composite: `(Record.with p0 #\"pos\" (Record.with (. p0 pos) #\"y\" d))` — the
            inner `with` derives a fresh POS record from the projected one, and the outer `with` seats
            it back into a fresh OUTER record. Both levels are functional: p1.pos.y = d (5) while
            p1.pos.x rides through unchanged (1) → 51. The chained-with case above composes on ONE
@@ -645,7 +645,7 @@
   (output (: 453 Int64)))
 
 (case "the pre-update record survives a CONDITIONAL Record.with in a branch join"
-  (doc    "Persistence through a runtime branch: `(if b (Record.with r x 99) r)` — reading BOTH `r` and
+  (doc    "Persistence through a runtime branch: `(if b (Record.with r #\"x\" 99) r)` — reading BOTH `r` and
            the join result after: b=true → r still 10, r2 is 99 (1099); b=false → both 10 (1010). An
            in-place update would clobber `r` on the true path (reading 9999); a join that copied the
            un-updated record into both slots would read 1010 on both.")

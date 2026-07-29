@@ -9279,6 +9279,51 @@ fn pattern_constraints(
             None => head,
         }
     };
+    // WITHHELD-CONSTRUCTOR via the BARE pattern head: a bare `((A v))` pattern head names variant `A` of the
+    // scrutinee's type, but `A`'s constructor was WITHHELD from export to this file (an abstract import). The
+    // remap above just gave the bare head local-variant precedence (so `variant_owner_decl == scrut_decl`
+    // below and the wrong-ctor check passes) — but visibility was never gated on the bare path. The QUALIFIED
+    // `((T.A v))` head is a `(. T A)` member whose fold poisons CDZ0214 (`withheld_ctor_reject`), propagated
+    // below; the bare head resolves inert, so WITHOUT this it reads the private ADT payload — a one-token
+    // bypass of the smart-ctor discipline (encapsulation SOUNDNESS; the verification kernel's Thm/Term trust;
+    // breaker/corpus-bugfix 2026-07-29, direct + eval-quasiquote faces, both reach this shared lowering).
+    // Gate the bare head with the SAME visibility check as the qualified selector: a bare name that IS a
+    // variant of the scrutinee decl AND is withheld here → CDZ0214. (A visible ctor / a non-variant name is
+    // untouched — the ctor / wrong-ctor checks below handle those.)
+    // The bare pattern-head NAME (the `A` in `(A v)`) — `None` for a qualified `(. T A)` head (already gated
+    // by the member fold's withheld poison) or a non-list pattern.
+    let bare_head_name = match db.ast.get(pat) {
+        crate::ast::Struct::List(children) => children.first().and_then(|&h| db.ast.as_name(h)),
+        _ => None,
+    };
+    if let crate::ty::Ty::Sum { decl, .. } | crate::ty::Ty::Nominal { decl, .. } = ty
+        && let Some(name) = bare_head_name
+        && name != "."
+        && db
+            .type_decl_by_occ(*decl)
+            .is_some_and(|t| t.variants.iter().any(|v| v.name == name))
+        // Gate on the SCRUTINEE TYPE being genuinely ABSTRACT here (handle imported, ctors withheld) — the
+        // SAME `is_abstract_type_at` the qualified selector's `withheld_ctor_reject` uses. Without this, a bare
+        // `((Some v))`/`((None _))` over a PRELUDE `Option` scrutinee mis-fires: `Some`/`None` are prelude
+        // ctors NOT in the file-scope `visible_ctors` map (prelude resolves separately), so `ctor_is_withheld_at`
+        // alone wrongly reports them withheld → a false CDZ0214 on every cross-module `Map.lookup`/`Option`
+        // match (the 7 module-boundary gate regressions this fix first produced). A prelude/own/concrete type
+        // is NOT abstract, so this excludes it; only a genuinely handle-only import reaches the withheld check.
+        && db.is_abstract_type_at(pat, *decl)
+        && db.ctor_is_withheld_at(pat, name)
+    {
+        let ty_name = ty.render_name();
+        return Err(Reject::coded(
+            Code::AbstractCtor,
+            format!(
+                "`{ty_name}`'s constructor `{name}` is not exported to this file: the handle is visible \
+                 but `{name}` is withheld, so a value cannot be matched (or constructed) through `{name}` \
+                 here — inspect it through the functions the module that declares the type exports (or \
+                 export the type's constructors to make them public)"
+            ),
+        )
+        .at(pat));
+    }
     // A NOMINAL NEWTYPE scrutinee — the sole constructor `(Mk arg…)` imposes NO discriminant constraint
     // (a newtype has no runtime disc; its one variant always matches), but its payload binders DO
     // destructure. The ctor must belong to THIS newtype's declaration (a `(Other x)` pattern over a

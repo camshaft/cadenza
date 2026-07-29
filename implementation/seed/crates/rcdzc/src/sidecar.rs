@@ -138,6 +138,24 @@ pub enum Request {
     /// compile has one bucket and behaves like `EmitTests` with a file-named artifact. See
     /// `DESIGN-shared-backend-space.md` (the shared-arena lower-once design).
     EmitTestsPerFile,
+    /// OPTION C — materialize a SHARED-CLOSURE PROVIDER component + N per-file CONSUMER components in ONE
+    /// compile (the composed `cdz test <dir>` emit-reuse path). Unlike [`EmitTestsPerFile`] — where each
+    /// per-file component EMBEDS the whole imported closure (so the gate pays O(tests × closure-size) on
+    /// emit+JIT) — this hoists the shared closure into its OWN component ONCE: the UNION of every file's
+    /// cross-component call-edges ([`layout::cross_component_edges_union`]) becomes a provider component
+    /// ([`layout::compute_provider_for_edges`], `db.component_name` set) exporting those edges by their source
+    /// boundary name, and each per-file `@test` bucket becomes a CONSUMER component
+    /// ([`layout::compute_tests_consumer`]) that EXCLUDES the shared defs and IMPORTS them from the provider.
+    /// A downstream runner instantiates the ONE provider as a peer and links each consumer against it over the
+    /// shared runtime (`run_with_peers`). Emits: one `component-provider` artifact (the provider), one
+    /// `component-name` sidecar (the provider's published interface string), and N `component` artifacts (the
+    /// consumers, each named by its file's `link` path — the SAME name-demux as `EmitTestsPerFile`). GUARDED
+    /// to a SINGLE directory: `db.file_path` is the import-STEM (dir-blind, load-bearing for link resolution),
+    /// so a multi-dir tree with same-stem files would collide the demux (pr881) — a build spanning >1 dir, or
+    /// with no cross-edge to hoist, DECLINES so the caller falls back to the per-file `EmitTests`/`EmitTestsPerFile`
+    /// path (behavior-identical, just without the closure-sharing win). See
+    /// `backend/wasm/DESIGN-option-c-shared-closure-component.md`.
+    EmitTestsComposed,
     /// Read a fact column.
     Query(Query),
 }
@@ -339,6 +357,11 @@ mod tag {
     /// lower-once `cdz test <dir>` path: lower the linked closure once, emit one `component` per file's
     /// `@test` bucket, each artifact NAMED by its file.
     pub const EMIT_TESTS_PER_FILE: u8 = 0x06;
+    /// Emit a shared-closure PROVIDER + N per-file CONSUMER components in one compile
+    /// (`Request::EmitTestsComposed`) — the Option-C composed `cdz test <dir>` emit-reuse path: hoist the
+    /// UNION cross-edge closure into one `component-provider` artifact + a `component-name` iface sidecar, and
+    /// emit each file's `@test` bucket as a `component` consumer that imports it.
+    pub const EMIT_TESTS_COMPOSED: u8 = 0x07;
     pub const QUERY_TYPE_OF: u8 = 0x10;
     pub const QUERY_USES_OF: u8 = 0x11;
     pub const QUERY_TYPE_AT: u8 = 0x12;
@@ -380,6 +403,7 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::EMIT_DWARF => Some(Request::Emit(crate::backend::Target::Dwarf)),
         tag::EMIT_TESTS => Some(Request::EmitTests),
         tag::EMIT_TESTS_PER_FILE => Some(Request::EmitTestsPerFile),
+        tag::EMIT_TESTS_COMPOSED => Some(Request::EmitTestsComposed),
         tag::EMIT_RUST => Some(Request::Emit(crate::backend::Target::Rust)),
         tag::EMIT_RUST_ASYNC => Some(Request::Emit(crate::backend::Target::RustAsync)),
         tag::QUERY_TYPE_OF => Some(Request::Query(Query::TypeOf {
@@ -434,6 +458,7 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
         Request::Emit(crate::backend::Target::Dwarf) => out.push(tag::EMIT_DWARF),
         Request::EmitTests => out.push(tag::EMIT_TESTS),
         Request::EmitTestsPerFile => out.push(tag::EMIT_TESTS_PER_FILE),
+        Request::EmitTestsComposed => out.push(tag::EMIT_TESTS_COMPOSED),
         Request::Emit(crate::backend::Target::Rust) => out.push(tag::EMIT_RUST),
         Request::Emit(crate::backend::Target::RustAsync) => out.push(tag::EMIT_RUST_ASYNC),
         Request::Query(Query::TypeOf { name }) => {
@@ -2296,6 +2321,7 @@ mod tests {
             Request::Query(Query::ParamManifest),
             Request::Query(Query::FuncLayout),
             Request::EmitTestsPerFile,
+            Request::EmitTestsComposed,
         ];
         // Exhaustiveness guard: adding a Request/Query variant fails to compile until listed above AND here.
         for r in &each {
@@ -2303,6 +2329,7 @@ mod tests {
                 Request::Emit(_)
                 | Request::EmitTests
                 | Request::EmitTestsPerFile
+                | Request::EmitTestsComposed
                 | Request::Query(
                     Query::TypeOf { .. }
                     | Query::UsesOf { .. }
