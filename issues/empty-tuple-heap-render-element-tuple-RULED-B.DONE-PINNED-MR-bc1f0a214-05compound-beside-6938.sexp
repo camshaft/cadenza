@@ -32,8 +32,14 @@
 ;; RULED 2026-07-28 (concierge, ask 000000016957): (tuple) in element position IS UNIT everywhere.
 ;; WASM CANONICAL, RUST is the bug. Spec is monotone: core-semantics:187 MUST + 01-literals:322 landed
 ;; ((= unit ()) true) + 15-rows Tuple.split-at-0 renders the empty prefix as `unit` typed Unit, LANDED +
-;; baselined pass BOTH backends (the decisive element-position precedent). My 05-compound:9234 counter-
-;; cite was a MISREAD (it's map-in-tuple binders — no typed-(tuple)-distinct-from-unit pin exists).
+;; baselined pass BOTH backends (the decisive element-position precedent). [[SUPERSEDED + CORRECTED
+;; 2026-07-29, PR#885 comment 3670236863]] — THIS whole "WASM CANONICAL" block is the FIRST (retracted)
+;; reading; see the "RULING REVERSED -> B" annotation lower in this file for the final truth. Also the
+;; line that follows was WRONG: a typed-(tuple)-distinct-from-unit pin DOES exist — 05-compound:9232-9239
+;; ("a variant with an explicit EMPTY-TUPLE payload keeps its tuple form, distinct from a nullary unit":
+;; (A (Tuple)) -> (A (tuple)), "unit and (tuple) are distinct types, comparing them is CDZ0203", landed
+;; a8d743bb0). The "9234 misread / no such pin exists" claim below was stale prose from the pre-Ruling-B
+;; framing; that pin is exactly what Ruling-B rests on. (Kept for provenance; do NOT read as current.)
 ;;
 ;; REFINED MEASUREMENT (corpus-bugfix, trunk f85b2c320) — the divergence is NOT uniform:
 ;;   (a) COMPUTED empty tuple (Tuple.split-at (tuple 1 2) 0) -> (tuple unit ...): BOTH backends render

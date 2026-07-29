@@ -77,3 +77,38 @@
       (export Temp)
       (export mk)))
   (call   main (: 5 Int64)) (error CDZ0214))
+
+;; THIRD FACE (breaker #41 third route, CONFIRMED corpus-bugfix trunk 2cb5af98f both backends): a bare
+;; match on the withheld ctor NESTED INSIDE A GUARD condition also bypasses. (match (mk k) ((guard w
+;; (match w ((T v) (> v 20)) (_ false))) 1) (_ -1)) -> COMPILES, reads private payload (value 1 at k=5,
+;; since 50>20; wasm+rust). Same bare-pattern resolver presumably, but guard desugaring is its own lowering
+;; -> distinct regression row. breaker: 3 doors total (direct, eval, guard-nested); ONE resolver choke-point
+;; gate should clear all three, but the fix verification must SWEEP all three. ON FIX: gate all 3 rows x3
+;; -> (error CDZ0214); pin all into 11-modules.
+
+(case "a guard-nested BARE pattern on a withheld constructor is also rejected (encapsulation soundness, guard-desugar route)"
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64)) (match (mk k) ((guard w (match w ((T v) (> v 20)) (_ false))) 1) (_ -1)))
+        (export main)))
+  (module "temp"
+    (do
+      (type Temp (T Int64))
+      (def (mk (: c Int64)) (T (* c 10)))
+      (export Temp)
+      (export mk)))
+  (call   main (: 5 Int64)) (error CDZ0214))
+
+;; FIX BUILT (v-inference, 2026-07-29): commit 5059069d4 — gated at lower::pattern_constraints (the SHARED
+;; match lowering), so BOTH the direct ((T v)) AND eval-quasiquote faces close in ONE place (verified via
+;; 2-file harness: bare AND qualified both -> CDZ0214; rcdzc lib 2372/0). Shared-lowering choke-point should
+;; ALSO close the guard-nested 3rd face (guard desugars to a nested match through the same lowering) — VERIFY
+;; that row on land. HELD: v-inference's local full-gate times out under batch load; STACKS on CDZ0215.
+;; SEQUENCE: my #label migration (queued) + this fix + CDZ0215 land stacked. ON LAND (5059069d4 on trunk):
+;; gate all 3 rows (direct + eval + guard-nested) x3 -> (error CDZ0214); pin into 11-modules beside :1470.
+
+;; 3-FACE VERIFIED (v-inference, 2026-07-29): the single lower::pattern_constraints gate closes ALL 3
+;; faces — direct ((T v)) + eval-quasiquote + guard-nested — all -> CDZ0214 (2-file harness, rcdzc 2372/0).
+;; Prediction confirmed: one resolver choke-point clears all 3 doors. FIX SHA now = 38c12a630 (amended
+;; from 5059069d4 in the 3-face sweep). Still HELD on the CDZ0215 lockstep + a fresh-store gate.
+;; ON LAND (38c12a630 on trunk): gate all 3 rows x3 -> (error CDZ0214); pin into 11-modules beside :1470.

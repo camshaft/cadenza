@@ -5185,3 +5185,4 @@ pass	nested handlers with colliding arm-local bindings each keep their own scope
 pass	a performing do-def feeding a bin-construction operand under a handler stays bound (F2)
 pass	a perform-free do-def feeding a bin-construction operand under a handler stays bound (F2)
 pass	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
+pass	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)

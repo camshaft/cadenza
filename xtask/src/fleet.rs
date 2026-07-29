@@ -2588,12 +2588,15 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         // writes trunk), and the RE-ARM path already trusts exactly this signal — so mirror it into the
         // stall verdict too. Only spend the `git log` when a stall is already suspected (never per idle
         // pane), and only for pr-sync.
-        let trunk_exonerates = suspected_stall
-            && trunk_advance_exonerates(
-                &a.name,
-                last_commit_age_secs(&fleet.repo, TRUNK),
-                stale_after,
-            );
+        // Compute the trunk commit age ONCE (only when a stall is suspected, only for pr-sync — the git
+        // call is never spent per idle pane) and share it across the two trunk-based exonerations below.
+        let trunk_commit_age = if suspected_stall && a.name == "pr-sync" {
+            last_commit_age_secs(&fleet.repo, TRUNK)
+        } else {
+            None
+        };
+        let trunk_exonerates =
+            suspected_stall && trunk_advance_exonerates(&a.name, trunk_commit_age, stale_after);
         // Fourth exoneration (pr-sync only): an IN-FLIGHT merge gate. Trunk-advance only fires AFTER a
         // batch lands, but a single perf-cliff gate cycle (~60min) outlasts the loop interval, so across
         // that whole mid-gate window trunk is flat, the depth fluctuates (no clean drop), and the gate
@@ -2605,9 +2608,25 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
         let gate_exonerates = suspected_stall
             && a.name == "pr-sync"
             && gate_in_flight_exonerates(&a.name, live_priority_leases(fleet));
+        // Fifth exoneration (pr-sync only): a RECENT trunk advance covering the between-batches COMPOSE
+        // window. After a land, pr-sync composes + re-gates the NEXT batch before draining new mail, and
+        // that window holds no lease yet — so `gate_exonerates` misses it, and `trunk_exonerates` is
+        // bounded by pr-sync's tight ~20min stale window (interval 10m). A purpose-built fixed 15min
+        // window on the same commit age closes it: a just-landed pr-sync is composing, not wedged
+        // (concierge: observed ~8min post-land). Reuses the already-computed `trunk_commit_age`.
+        let recent_trunk_exonerates = suspected_stall
+            && recent_trunk_advance_exonerates(
+                &a.name,
+                trunk_commit_age,
+                PR_SYNC_RECENT_TRUNK_SECS,
+            );
         let drain_stall = drain_stall_confirmed(
             suspected_stall,
-            working_on_recheck || queue_draining || trunk_exonerates || gate_exonerates,
+            working_on_recheck
+                || queue_draining
+                || trunk_exonerates
+                || gate_exonerates
+                || recent_trunk_exonerates,
         );
         if drain_stall {
             drain_stalls += 1;
@@ -3860,6 +3879,30 @@ fn trunk_advance_exonerates(name: &str, trunk_commit_age: Option<u64>, stale_aft
 /// priority-lease count it computed.
 fn gate_in_flight_exonerates(name: &str, live_priority_leases: usize) -> bool {
     name == "pr-sync" && live_priority_leases > 0
+}
+
+/// Fixed "trunk advanced recently" window (seconds) for the pr-sync COMPOSE-window exoneration. Sized to
+/// span the post-land / pre-next-gate gap: pr-sync lands a batch, then composes + re-gates the next one
+/// before it drains new mail, and that compose window holds NO check-lease yet (so
+/// `gate_in_flight_exonerates` can't cover it). 15min comfortably spans a compose+re-gate; a genuinely
+/// wedged pr-sync has trunk flat far longer than this, so the window stays a tight wedge signal.
+const PR_SYNC_RECENT_TRUNK_SECS: u64 = 15 * 60;
+
+/// Does a RECENT trunk advance exonerate a suspected pr-sync drain-stall in the between-batches COMPOSE
+/// window? ONLY for pr-sync. Distinct from `trunk_advance_exonerates`, which is bounded by the agent's
+/// per-agent STALE window — pr-sync's interval is 10m, so that window is only ~20min, and worse it tracks
+/// the stale threshold rather than the compose gap. This uses a FIXED, purpose-built window: a pr-sync
+/// that just landed a batch (fresh trunk commit) is by definition not stalled — it's composing the next
+/// batch, which is legitimately lease-free, so the mid-gate lease exoneration doesn't fire and the
+/// unconsumed-mail heuristic would otherwise flag it (concierge: observed ~8min post-land). A trunk
+/// commit newer than `PR_SYNC_RECENT_TRUNK_SECS` is unforgeable proof pr-sync is alive and working (only
+/// pr-sync writes trunk). Pure; the caller supplies the commit age it already computed.
+fn recent_trunk_advance_exonerates(
+    name: &str,
+    trunk_commit_age: Option<u64>,
+    recent_window: u64,
+) -> bool {
+    name == "pr-sync" && trunk_commit_age.is_some_and(|age| age <= recent_window)
 }
 
 /// What to do about a windowed agent that has NEVER stamped a heartbeat, given how long ago we first
@@ -9391,6 +9434,23 @@ mod tests {
         // mail must still flag even if (somehow) a priority lease is live.
         assert!(!gate_in_flight_exonerates("v-runtime", 1));
         assert!(!gate_in_flight_exonerates("reviewer", 3));
+    }
+
+    #[test]
+    fn recent_trunk_advance_exonerates_pr_sync_compose_window_on_a_fixed_generous_window() {
+        // pr-sync that landed recently (age <= window) is composing the next batch, not stalled → exonerated,
+        // covering the lease-free between-batches window the mid-gate lease check can't. Boundary inclusive.
+        assert!(recent_trunk_advance_exonerates("pr-sync", Some(480), 900)); // ~8min post-land (the observed case)
+        assert!(
+            recent_trunk_advance_exonerates("pr-sync", Some(900), 900),
+            "== window is inclusive"
+        );
+        // Trunk flat longer than the window → a genuinely wedged pr-sync → NOT exonerated.
+        assert!(!recent_trunk_advance_exonerates("pr-sync", Some(901), 900));
+        // No commit age resolvable → can't claim liveness → not exonerated.
+        assert!(!recent_trunk_advance_exonerates("pr-sync", None, 900));
+        // Non-pr-sync never exonerated this way (only pr-sync writes trunk).
+        assert!(!recent_trunk_advance_exonerates("v-runtime", Some(1), 900));
     }
 
     #[test]
