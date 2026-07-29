@@ -2358,3 +2358,142 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+; --- #42 Option-sum declared-order (Some<None) compare witnesses (v-rust-backend 7392dc3b8) ------
+(case "three-way compare orders (Some 3) below None per the declared discriminant order"
+  (input  (do
+            (def (mk (: k Int64)) (if (= k 0) (: (None unit) (Option Int64)) (Some k)))
+            (def (main (: a Int64) (: b Int64))
+              (match (compare (mk a) (mk b))
+                ((Ordering.Less _u) 1)
+                ((Ordering.Equal _u) 2)
+                ((Ordering.Greater _u) 3)))
+            (export main)))
+  (call   main (: 3 Int64) (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "the boolean ordering operator places (Some 3) below None like the three-way compare"
+  (input  (do
+            (def (mk (: k Int64)) (if (= k 0) (: (None unit) (Option Int64)) (Some k)))
+            (def (main (: a Int64) (: b Int64))
+              (if (< (mk a) (mk b)) 1 0))
+            (export main)))
+  (call   main (: 3 Int64) (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "Result ordering agrees across targets — Ok below Err on the shared declaration order"
+  (input  (do
+            (def (mk (: k Int64)) (if (= k 0) (: (Result.Err "e") (Result Int64 String)) (Result.Ok k)))
+            (def (main (: a Int64) (: b Int64))
+              (if (< (mk a) (mk b)) 1 0))
+            (export main)))
+  (call   main (: 3 Int64) (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "a tuple containing an Option leaf orders by the declared Some-below-None"
+  (input  (do
+            (def (mk (: k Int64)) (tuple 7 (if (= k 0) (: (None unit) (Option Int64)) (Some k))))
+            (def (main (: a Int64) (: b Int64))
+              (match (compare (mk a) (mk b))
+                ((Ordering.Less _u) 1)
+                ((Ordering.Equal _u) 2)
+                ((Ordering.Greater _u) 3)))
+            (export main)))
+  (call   main (: 3 Int64) (: 0 Int64))
+  (output (: 1 Int64)))
+
+(case "a list of Options orders its elements by the declared Some-below-None"
+  (input  (do
+            (def (mk (: k Int64)) (list (if (= k 0) (: (None unit) (Option Int64)) (Some k))))
+            (def (main (: a Int64) (: b Int64))
+              (if (< (mk a) (mk b)) 1 0))
+            (export main)))
+  (call   main (: 3 Int64) (: 0 Int64))
+  (output (: 1 Int64)))
+
+; --- #43 all-nullary-sum discriminant order + render (v-wasm-opt cf0c05ae8 + v-runtime f9f8717c) ------
+(case "an all-nullary user sum orders by discriminant — Lo below Hi"
+  (input  (do
+            (type Tri (Lo) (Mid) (Hi))
+            (def (mk (: k Int64)) (if (< k 0) (Tri.Lo unit) (if (= k 0) (Tri.Mid unit) (Tri.Hi unit))))
+            (def (main (: a Int64) (: b Int64))
+              (+ (* 100 (if (< (mk a) (mk b)) 1 0))
+                 (+ (* 10 (if (= (mk a) (mk b)) 1 0))
+                    (match (compare (mk a) (mk b))
+                      ((Ordering.Less _u) 1)
+                      ((Ordering.Equal _u) 2)
+                      ((Ordering.Greater _u) 3)))))
+            (export main)))
+  (call   main (: -7 Int64) (: 9 Int64))
+  (output (: 101 Int64)))
+
+(case "the Sign sum orders Neg below Pos per its declaration"
+  (input  (do
+            (def (mk (: k Int64)) (if (< k 0) (Sign.Neg unit) (if (= k 0) (Sign.Zero unit) (Sign.Pos unit))))
+            (def (main (: a Int64) (: b Int64))
+              (+ (* 100 (if (< (mk a) (mk b)) 1 0))
+                 (+ (* 10 (if (= (mk a) (mk b)) 1 0))
+                    (match (compare (mk a) (mk b))
+                      ((Ordering.Less _u) 1)
+                      ((Ordering.Equal _u) 2)
+                      ((Ordering.Greater _u) 3)))))
+            (export main)))
+  (call   main (: -7 Int64) (: 9 Int64))
+  (output (: 101 Int64)))
+
+(case "Ordering values order Less below Equal below Greater"
+  (input  (do
+            (def (mk (: k Int64)) (compare k 0))
+            (def (main (: a Int64) (: b Int64))
+              (+ (* 10 (if (< (mk a) (mk b)) 1 0))
+                 (if (< (mk b) (mk a)) 1 0)))
+            (export main)))
+  (call   main (: -7 Int64) (: 9 Int64))
+  (output (: 10 Int64)))
+
+(case "Set.to-list over an all-nullary sum enumerates in discriminant order"
+  (input  (do
+            (type Tri (Lo) (Mid) (Hi))
+            (def (mk (: k Int64)) (if (< k 0) (Tri.Lo unit) (if (= k 0) (Tri.Mid unit) (Tri.Hi unit))))
+            (def (main (: k Int64))
+              (do
+                (def s (Set.of (list (Tri.Hi unit) (mk k) (Tri.Lo unit))))
+                (+ (* 10 (Set.len s))
+                   (match (List.at (Set.to-list s) 0)
+                     ((Option.Some v) (match v ((Tri.Lo _u) 1) ((Tri.Mid _u) 2) ((Tri.Hi _u) 3)))
+                     ((Option.None _u) -1)))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 31 Int64)))
+
+(case "nullary variants of a payload-carrying sum order by discriminant"
+  (input  (do
+            (type Mix (P Int64) (N1) (N2))
+            (def (mk (: k Int64)) (if (< k 0) (Mix.N1 unit) (if (= k 0) (Mix.N2 unit) (Mix.P k))))
+            (def (main (: a Int64) (: b Int64))
+              (+ (* 10 (match (compare (mk a) (mk b))
+                         ((Ordering.Less _u) 1)
+                         ((Ordering.Equal _u) 2)
+                         ((Ordering.Greater _u) 3)))
+                 (if (= (mk a) (mk b)) 1 0)))
+            (export main)))
+  (call   main (: -1 Int64) (: 0 Int64))
+  (output (: 10 Int64)))
+
+(case "runtime Bools order false below true with compare and equality agreeing"
+  (input  (do
+            (def (main (: a Int64) (: b Int64))
+              (do
+                (def x (= a 1))
+                (def y (= b 1))
+                (+ (* 100 (if (< x y) 1 0))
+                   (+ (* 10 (match (compare x y) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                      (if (= x y) 1 0)))))
+            (export main)))
+  (call   main (: 0 Int64) (: 1 Int64))
+  (output (: 110 Int64)))
+
+(case "a nested all-nullary sum renders the correct variant across the boundary (render half, v-runtime f9f8717c)"
+  (input  (do (type Tri (Lo) (Mid) (Hi)) (def (main) (tuple (Tri.Hi unit) 5)) (export main)))
+  (call main) (output (: (tuple (Hi unit) 5) (Tuple Tri Int64))))
+

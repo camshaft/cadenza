@@ -3906,21 +3906,30 @@ fn passthrough_status(program: &std::path::Path, args: &[String], tool: &str) ->
 /// shape. FILE may be a DIRECTORY: every source file under it (recursively, `.cdz`/`.ml`/`.sexp`) is run
 /// and the pass/fail totals are aggregated, so `cdz test <dir>` runs a whole package's suite in one call.
 ///
-/// PRECOMPILE (shared-arena lower-once, `EmitTestsPerFile`): compile the WHOLE set of target files in ONE
-/// `rcdzc::compile` that lowers the shared import-closure once and emits one `@test` component PER FILE,
-/// returning a `file-link-name → component-bytes` map. `run_test_file` then LOOKS UP its file's component
-/// instead of re-lowering the closure per file (the ~381s self-host cost). Each file's component is
-/// byte-identical to its standalone `EmitTests` compile (rcdzc's own test proves it), so this is a pure
-/// speedup — same pass/fail, same located errors. BEST-EFFORT: on ANY hiccup (the union compile declines,
-/// a file's component is absent, or the file wasn't in the union) `run_test_file` FALLS BACK to its exact
-/// per-file `EmitTests` compile, so behavior is never worse than before. Returns an empty map (⇒ every file
-/// falls back) when the target is a single file (no closure to share) or the union compile produced nothing.
-fn precompile_tests_per_file(files: &[String]) -> std::collections::HashMap<String, Vec<u8>> {
+/// The precompiled test components for a `cdz test <dir>` run, from ONE shared-arena `EmitTestsComposed`
+/// compile: each file's `@test` CONSUMER component (keyed by file-link name), plus the ONE shared-closure
+/// PROVIDER component every consumer imports + its interface name. `run_test_file` looks up its consumer and
+/// runs it linked against the provider peer (`run_with_peers`) over one shared runtime — so the shared
+/// closure is LOWERED and EMITTED once (a provider component) instead of re-embedded in every file's
+/// component (the >98% per-file emit/JIT cost). BEST-EFFORT: on any hiccup (compile declines, provider or a
+/// file's consumer absent, single file, multi-dir stem-collision) `run_test_file` FALLS BACK to its exact
+/// per-file `EmitTests` compile — behavior is never worse than before.
+#[derive(Default)]
+struct Precompiled {
+    /// file-link-name → that file's `@test` CONSUMER component bytes.
+    components: std::collections::HashMap<String, Vec<u8>>,
+    /// The shared-closure PROVIDER peer: (component bytes, published interface name). `None` ⇒ no composed
+    /// provider available (single file, decline, or missing artifact) → consumers (if any) can't be linked,
+    /// so run_test_file falls back per-file.
+    provider: Option<(Vec<u8>, String)>,
+}
+
+fn precompile_tests_per_file(files: &[String]) -> Precompiled {
     use std::collections::HashMap;
     // A single file has no cross-file closure to amortize — the per-file path is already one compile. Skip
-    // the union machinery (its only effect would be to rename the sole component); let it fall back.
+    // the composed machinery; let it fall back.
     if files.len() < 2 {
-        return HashMap::new();
+        return Precompiled::default();
     }
     // CORRECTNESS GATE (PR#881): a closure file's link name is its dir-BLIND STEM (`program_name` =
     // file_stem). The union below dedups by that stem AND `run_test_file` looks its component up by the same
@@ -3939,7 +3948,7 @@ fn precompile_tests_per_file(files: &[String]) -> std::collections::HashMap<Stri
     };
     let first_dir = parent_of(&files[0]);
     if files.iter().any(|f| parent_of(f) != first_dir) {
-        return HashMap::new();
+        return Precompiled::default();
     }
     // Gather the UNION of every target file's import closure, deduped by link name. Each file's closure is
     // followed (so an imported sibling resolves), and the union is what one `EmitTestsPerFile` compile links.
@@ -3963,28 +3972,50 @@ fn precompile_tests_per_file(files: &[String]) -> std::collections::HashMap<Stri
         }
     }
     let Some(entry) = first_name else {
-        return HashMap::new(); // nothing loaded — every file falls back
+        return Precompiled::default(); // nothing loaded — every file falls back
     };
     let mut inputs: Vec<rcdzc::Artifact> = asts.into_values().collect();
     inputs.push(rcdzc::Artifact::new(
         rcdzc::sidecar::KIND_SIDECAR,
         "drive",
-        rcdzc::sidecar::encode(&[rcdzc::Request::EmitTestsPerFile]),
+        rcdzc::sidecar::encode(&[rcdzc::Request::EmitTestsComposed]),
     ));
-    // EmitTestsPerFile needs an entry marker to drive linking; it names ONE file but does NOT restrict which
-    // files' @tests emit (it buckets ALL linked test defs by file). Any closure file works as the entry.
+    // A multi-file package needs an entry marker to drive linking; it names ONE file but does NOT restrict
+    // which files' @tests emit (all linked test defs are bucketed by file). Any closure file works as entry.
     inputs.push(compiler_cli::entry_artifact(&entry));
     let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
-    // Collect every per-file `component` artifact by its file-link name. If the union compile DECLINED (e.g.
-    // an ill-typed @test in one file faults the whole build), there may be no components — return whatever
-    // came back (possibly empty); each file then falls back to its own compile, which re-surfaces the fault
-    // located. We do NOT report errors here (the per-file fallback owns located reporting), so a union-only
-    // hiccup never double-reports or blocks a file that would compile fine standalone.
-    out.artifacts
+    // Demux the Option-C composed artifact set (see the 3-kind contract): ONE `component-provider` (the
+    // shared-closure component every consumer imports — emitted ONCE, collapsing the whole-closure re-embed
+    // that dominated per-file emit), a `component-name` sidecar carrying its interface string, and N
+    // `component` consumers named by file-link. If the composed compile DECLINED (e.g. an ill-typed @test
+    // faults the build, or the emit-side single-dir/stem guard fired), there may be no provider/components —
+    // return whatever came back; each file then falls back to its own per-file `EmitTests` compile, which
+    // re-surfaces any fault located. We do NOT report errors here (the per-file fallback owns that), so a
+    // composed-only hiccup never double-reports or blocks a file that would compile fine standalone.
+    let provider = out
+        .artifacts
+        .iter()
+        .find(|a| a.kind == "component-provider")
+        .map(|p| p.bytes.clone());
+    let iface = out
+        .artifacts
+        .iter()
+        .find(|a| a.kind == "component-name")
+        .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
+    let components = out
+        .artifacts
         .iter()
         .filter(|a| a.kind == "component")
         .map(|a| (a.name.clone(), a.bytes.clone()))
-        .collect()
+        .collect();
+    Precompiled {
+        components,
+        // Pair the provider with its interface name only when BOTH are present — a consumer can only be
+        // linked against a peer we can name. If either is missing the components run standalone (or, for a
+        // cross-edge-excluding consumer with no provider, its @test would fail to link → the per-file
+        // fallback re-emits it self-contained), so `provider = None` is the safe degrade.
+        provider: provider.zip(iface),
+    }
 }
 
 fn run_test(args: &TestArgs) -> ExitCode {
@@ -4232,7 +4263,7 @@ fn run_test_file(
     store: &std::path::Path,
     trials: u64,
     seed: u64,
-    precompiled: &std::collections::HashMap<String, Vec<u8>>,
+    precompiled: &Precompiled,
 ) -> Result<(usize, usize), ()> {
     // Follow the entry file's IMPORT CLOSURE so a test in a module that imports a sibling (e.g. a pass
     // that reuses another module's type) resolves + runs — `cdz test FILE` sees the SAME linked program
@@ -4352,15 +4383,24 @@ fn run_test_file(
         return Ok((0, 0));
     }
 
-    // The test component. FAST PATH: if the shared-arena `EmitTestsPerFile` precompile produced this file's
-    // component (keyed by the entry's link name), REUSE it — it is byte-identical to the per-file `EmitTests`
-    // compile below (rcdzc's own test proves it), so we skip re-lowering the whole closure. SLOW PATH (miss —
-    // single-file run, a union hiccup, or the file wasn't in the union): compile this file alone with an
-    // `EmitTests` request, exactly as before. `EmitTests` lays the boundary out from the `@test` defs
-    // (`layout::compute_tests`); a package's `entry` marker names which file's imports drive linking. A
-    // per-file DECLINE is reported located here (the fallback owns error reporting — the precompile does not).
-    let component: Vec<u8> = if let Some(bytes) = precompiled.get(&closure[0].name) {
-        bytes.clone()
+    // The test component. FAST PATH (Option-C composed): if the shared-arena precompile produced this file's
+    // CONSUMER component (keyed by its link name) AND a shared-closure PROVIDER peer, use them — the consumer
+    // imports the closure from the provider, so the whole closure was emitted ONCE (in the provider) instead
+    // of re-embedded here. SLOW PATH (miss — single file, decline, multi-dir stem-collision, or the file
+    // wasn't in the composed set): compile this file alone with an `EmitTests` request, exactly as before
+    // (`layout::compute_tests`; a package's `entry` marker drives linking). A per-file DECLINE is reported
+    // located here (the fallback owns error reporting — the precompile does not).
+    let composed = match (
+        precompiled.components.get(&closure[0].name),
+        &precompiled.provider,
+    ) {
+        (Some(consumer), Some((provider_bytes, iface))) => {
+            Some((consumer.clone(), provider_bytes, iface))
+        }
+        _ => None,
+    };
+    let component: Vec<u8> = if let Some((consumer, _, _)) = &composed {
+        consumer.clone()
     } else {
         let mut inputs = ast_arts;
         inputs.push(rcdzc::Artifact::new(
@@ -4410,17 +4450,28 @@ fn run_test_file(
         }
     };
 
-    // JIT-COMPILE the test component ONCE, here, and reuse it across every test + trial below. `Component::new`
-    // (the wasmtime JIT) is the DOMINANT per-run cost — measured ~8s for the self-host test component vs ~0.1s
-    // to actually run it — so compiling it once instead of once-per-`@test` turns an N-test file's N JITs into
-    // ONE (~25× on the 34-test sread-eval, the gate's slowest file). Every trial still builds a fresh
-    // linker/store/host-binding set (per-run state), only the compiled artifact is shared. A malformed
-    // component (shouldn't happen — we just emitted it) surfaces here once, not per test.
-    let compiled = match cdz_run::compile_component(&component) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{PROG}: {file}: could not compile the test component: {e:#}");
-            return Err(());
+    // Build the per-trial RUN TARGET. STANDALONE (the common path): JIT-compile the self-contained component
+    // ONCE here + reuse it across every test + trial — `Component::new` (the wasmtime JIT) is the DOMINANT
+    // per-run cost (~8s for the self-host component vs ~0.1s to run it), so compiling once instead of
+    // once-per-`@test` turns an N-test file's N JITs into ONE. COMPOSED (Option-C): the consumer imports its
+    // shared closure from the provider peer, so it's run via `run_with_peers` against the provider — which
+    // takes raw bytes and re-composes per call (no pre-JIT reuse yet; a compiled-reuse peer variant is a
+    // follow-up). Correctness first: the win is the provider emitting the closure ONCE, not per-trial JIT.
+    let target = if let Some((consumer, provider_bytes, iface)) = composed {
+        RunTarget::Composed {
+            consumer,
+            provider: cdz_run::Peer {
+                bytes: provider_bytes.clone(),
+                interface: iface.clone(),
+            },
+        }
+    } else {
+        match cdz_run::compile_component(&component) {
+            Ok(c) => RunTarget::Standalone(c),
+            Err(e) => {
+                eprintln!("{PROG}: {file}: could not compile the test component: {e:#}");
+                return Err(());
+            }
         }
     };
 
@@ -4442,7 +4493,7 @@ fn run_test_file(
     {
         let kebab = cadenza_syntax::extern_name::kebab_extern_name(name);
         let run_one = |arg_vals: &[String]| -> TrialOutcome {
-            run_one_trial(&compiled, runtime.as_deref(), &kebab, store, arg_vals)
+            run_one_trial(&target, runtime.as_deref(), &kebab, store, arg_vals)
         };
         match gens {
             // A parameter whose type is not a generatable scalar — cannot property-test it. Report + fail.
@@ -4479,8 +4530,7 @@ fn run_test_file(
                 let full_gt = gen_ty.as_ref().unwrap();
                 let span = (hi - lo + 1) as usize;
                 let run_pool = |pool: &[i64]| -> TrialOutcome {
-                    run_one_trial_with_pool(&compiled, runtime.as_deref(), &kebab, store, &[], pool)
-                        .0
+                    run_one_trial_with_pool(&target, runtime.as_deref(), &kebab, store, &[], pool).0
                 };
                 // The `-gen` wrapper for a single-variant `Sum` newtype draws a variant SELECTOR first
                 // (`sel = gen % k`, here k=1 → any int selects the sole variant), THEN the `IntRange` payload
@@ -4535,7 +4585,7 @@ fn run_test_file(
             // counting the `Test.gen-int` calls the guest made.
             Some(gens) if gens.is_empty() => {
                 match run_gen_driven(
-                    &compiled,
+                    &target,
                     runtime.as_deref(),
                     &kebab,
                     store,
@@ -5400,18 +5450,31 @@ struct PropertyFailure {
     message: Option<String>,
 }
 
+/// How a file's `@test` component is run per trial. STANDALONE: a self-contained component, JIT-compiled ONCE
+/// and reused across every trial (the common path — `run_capturing_compiled`). COMPOSED (Option-C): a
+/// cross-edge-EXCLUDING consumer that imports its shared closure from the provider peer — run via
+/// `run_with_peers_capturing` (re-composes per call; no pre-JIT reuse yet). Both paths yield the SAME
+/// `(Outcome, observed-op-list)` shape, so the trial logic (gen-int count, failure message) is identical.
+enum RunTarget {
+    Standalone(cdz_run::CompiledComponent),
+    Composed {
+        consumer: Vec<u8>,
+        provider: cdz_run::Peer,
+    },
+}
+
 /// Run the test component IN-PROCESS once, calling `kebab` with `arg_vals` (rendered arg text). PASS = the
 /// export returned; FAIL carries the failure message the test reported (via its `Test`/report host effect)
 /// if any. `runtime` is the value-heap runtime bytes the component was resolved against (or `None` for a
 /// scalar/const test component that imports no runtime).
 fn run_one_trial(
-    component: &cdz_run::CompiledComponent,
+    target: &RunTarget,
     runtime: Option<&[u8]>,
     kebab: &str,
     store: &std::path::Path,
     arg_vals: &[String],
 ) -> TrialOutcome {
-    run_one_trial_with_pool(component, runtime, kebab, store, arg_vals, &[]).0
+    run_one_trial_with_pool(target, runtime, kebab, store, arg_vals, &[]).0
 }
 
 /// Whether to include the full wasm BACKTRACE (the `<wasm function N>` frames wasmtime captures on a trap)
@@ -5443,7 +5506,7 @@ const GEN_OP_LABEL: &str = "test.gen-int";
 /// list `run_capturing` returns) — the signal that distinguishes a PROPERTY test (pulls ≥1 generated int)
 /// from a plain unit test (pulls none). An unconsumed pool response is harmless (ignored).
 fn run_one_trial_with_pool(
-    component: &cdz_run::CompiledComponent,
+    target: &RunTarget,
     runtime: Option<&[u8]>,
     kebab: &str,
     store: &std::path::Path,
@@ -5466,9 +5529,17 @@ fn run_one_trial_with_pool(
         runtime_cache_dir: Some(store.to_path_buf()),
         host_responses,
     };
-    // The component is JIT-compiled ONCE by the caller (`run_test_file`) and reused across every test +
-    // trial — `Component::new` is ~99% of a run's cost, so re-JITing per trial would dominate the suite.
-    match cdz_run::run_capturing_compiled(component, &opts) {
+    // STANDALONE: the component was JIT-compiled ONCE by the caller + reused across every trial
+    // (`Component::new` is ~99% of a run's cost). COMPOSED (Option-C): link the consumer against the shared
+    // provider peer over one runtime — `run_with_peers_capturing` re-composes per call (no pre-JIT reuse
+    // yet), but returns the SAME `(Outcome, observed)` shape, so the trial logic below is identical.
+    let run_result = match target {
+        RunTarget::Standalone(compiled) => cdz_run::run_capturing_compiled(compiled, &opts),
+        RunTarget::Composed { consumer, provider } => {
+            cdz_run::run_with_peers_capturing(consumer, std::slice::from_ref(provider), &opts)
+        }
+    };
+    match run_result {
         Ok((outcome, observed)) => {
             let gens = count_gen_calls(&observed);
             let trial = match outcome {
@@ -5625,7 +5696,7 @@ const GEN_POOL_SIZE: usize = 64;
 /// unconsumed pool). If it consumed ≥1, it is a property test: run `trials` trials each with a FRESH
 /// seeded pool (`seed + trial`, reproducible), failing on the first trapping trial with the SHRUNK pool.
 fn run_gen_driven(
-    component: &cdz_run::CompiledComponent,
+    target: &RunTarget,
     runtime: Option<&[u8]>,
     kebab: &str,
     store: &std::path::Path,
@@ -5634,7 +5705,7 @@ fn run_gen_driven(
     gen_ty: Option<&rcdzc::proptest_gen::GenTy>,
 ) -> GenDrivenOutcome {
     let run_pool = |pool: &[i64]| -> (TrialOutcome, usize) {
-        run_one_trial_with_pool(component, runtime, kebab, store, &[], pool)
+        run_one_trial_with_pool(target, runtime, kebab, store, &[], pool)
     };
     // First trial (trial 0) doubles as the PLAIN-vs-property probe.
     let pool0 = gen_pool(seed, GEN_POOL_SIZE);

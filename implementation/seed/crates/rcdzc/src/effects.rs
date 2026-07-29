@@ -3874,6 +3874,46 @@ pub fn handle_arm_param_ty(db: &mut Db, binder: StructId) -> Option<crate::ty::T
     }
 }
 
+/// The STATE binder's type for a handler arm — the companion of [`handle_arm_param_ty`] for the arm's
+/// element-2 state binder (which is NOT in the params list, so `handle_arm_param_ty` returns `None` for
+/// it and it would otherwise fall through to `Ty::Any`). The state's type is fixed by the handle's SEED:
+/// a handler folds a state whose type the `init` seed establishes, so a body reference to `s` reads a
+/// value of the SEED's type (`capabilities-and-effects.md` §A Handler Threads State). Without this, `s`
+/// types `Any` inside an INLINE arm-body expression — a bare `(resume s s)` passed (`Any` agrees with
+/// the seed vacuously), but `(+ s s)` defaulted `s:Any` to a generic Int64, missing the Qty-aware arith
+/// arm → a spurious CDZ0201 next-state/seed mismatch on a well-typed Qty-stateful handler. Navigates
+/// `binder(=parts[2]) → arm → arms-list → handle-internal → init(=parts[1])` and types the seed. Returns
+/// `None` for an UNDETERMINED seed (`Any`/`Var` — a recursive handler mid-solve), preserving the prior
+/// `Any` fallthrough so no not-yet-solved state is falsely pinned.
+pub fn handle_arm_state_ty(db: &mut Db, binder: StructId) -> Option<crate::ty::Ty> {
+    // `binder` must be the arm's element-2 state binder: its DIRECT parent is the arm `(op (params…)
+    // state body)`, and `binder == parts[2]`.
+    let arm = db.parent_of(binder)?;
+    if !crate::resolve::is_handle_arm(db, arm) {
+        return None;
+    }
+    let Struct::List(parts) = db.ast.get(arm).clone() else {
+        return None;
+    };
+    if parts.get(2).copied() != Some(binder) {
+        return None;
+    }
+    // The handle: arm → arms-list → handle-internal `(handle-internal INIT ARMS BODY)`. `as_form` strips
+    // the head, so its tail is `[INIT, ARMS, BODY]` — INIT is element 0 (element 1 is the arms-list, per
+    // `is_handle_arm`'s use of the same accessor).
+    let arms_list = db.parent_of(arm)?;
+    let handle = db.parent_of(arms_list)?;
+    let init = db
+        .ast
+        .as_form(handle, HANDLE_INTERNAL)
+        .and_then(|t| t.first().copied())?;
+    let seed_ty = crate::infer::type_of(db, init);
+    if matches!(seed_ty, crate::ty::Ty::Any | crate::ty::Ty::Var(_)) {
+        return None;
+    }
+    Some(seed_ty)
+}
+
 fn tail_resume_next_state_of(db: &mut Db, node: StructId) -> Option<StructId> {
     match resolved_of(db, node) {
         Resolved::Resume { next_state, .. } => Some(next_state),

@@ -1449,6 +1449,29 @@
             (export main)))
   (error  CDZ0202))
 
+(case "an abstract-typed value used as a CHAMP map key is rejected (opacity — the key path invokes the forbidden structural comparison)"
+  (doc    "The INDIRECT route to the same observation the direct-`=` case above rejects: a CHAMP `Map`/`Set`
+           keyed by an abstract-typed value invokes a built-in STRUCTURAL comparison on that key at
+           insert/lookup (champ_eq / value-eq over the key spine), which observes the abstract type's private
+           representation through equality — exactly what type-system.md #An Abstract Type's Representation Is
+           Not Observable Across Its Boundary forbids (a MUST). So `(Map.insert Map.empty (mk k) 42)` outside
+           the declaring module is rejected CDZ0202 like `(= (mk) (mk))`, because the rule is about the
+           OBSERVATION, not the surface syntax — routing the comparison through a map key does not escape it
+           (concierge ruling, ask-17967). Values stay legal to HOLD (as a key's paired value, a payload, …);
+           only the key-EQUALITY-observation rejects. A module that wants its abstract type used as a key
+           publishes a comparison operation, the ML discipline.")
+  (module "temp"
+    (do
+      (type Temp (T Int64))
+      (def (mk (: c Int64)) (T (* c 10)))
+      (export Temp)
+      (export mk)))
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64)) (match (Map.lookup (Map.insert Map.empty (mk k) 42) (mk k)) ((Some v) v) ((None _u) -1)))
+        (export main)))
+  (call   main (: 5 Int64)) (error CDZ0202))
+
 (case "eval of a fully-concrete imported constructor is legal from outside"
   (doc    "`(eval (quote (P.Mk 7)))` where lib2 exports `(. P *)` — the CONCRETE complement of the
            no-forge pins above: a fully-exported ctor is reachable through eval's call-site
@@ -1483,6 +1506,63 @@
     (do (type C (A Int64)) (def (mk) (C.A 5)) (export C) (export mk)))
   (input  (do (import "lib" (C mk)) (def (main) (match (mk) ((C.A n) n))) (export main)))
   (error  CDZ0214))
+
+; --- BARE-pattern / eval / guard-nested withheld-ctor rejects (soundness; v-inference 38c12a630) ------
+(case "a BARE pattern on a withheld constructor is rejected like the qualified spelling (encapsulation soundness)"
+  (doc    "The BARE-pattern twin of the qualified-reject pin above: matching a withheld constructor `T`
+           through the UNQUALIFIED pattern `((T v) …)` MUST reject CDZ0214 exactly as the qualified
+           `((Temp.T v) …)` does. Before the fix (v-inference 38c12a630) the bare-pattern resolver looked up
+           the ctor in the scrutinee TYPE's variant set WITHOUT the per-name visibility gate the qualified
+           selector applies, so `(match (mk k) ((T v) v) …)` COMPILED and read the private smart-ctor payload
+           (50) — an encapsulation SOUNDNESS hole the ADT/smart-constructor discipline (and the verification
+           kernel's Thm/Term opacity) relies on. The fix gates the bare pattern head at the shared match
+           lowering (`lower::pattern_constraints`), so it rejects like the qualified form.")
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64)) (match (mk k) ((T v) v) (_ -1)))
+        (export main)))
+  (module "temp"
+    (do
+      (type Temp (T Int64))
+      (def (mk (: c Int64)) (T (* c 10)))
+      (export Temp)
+      (export mk)))
+  (call   main (: 5 Int64)) (error CDZ0214))
+
+(case "an eval-reconstructed BARE pattern on a withheld constructor is also rejected (encapsulation soundness, metaprogramming route)"
+  (doc    "The metaprogramming route to the same hole: a bare withheld-ctor pattern reconstructed through
+           `(eval (quasiquote (match … ((T v) v) …)))` MUST also reject CDZ0214 — the eval path shares the
+           match lowering, so the `lower::pattern_constraints` visibility gate closes it too. Guards against
+           a quasiquote splice smuggling in the bare pattern that the direct resolver now rejects.")
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64)) (eval (quasiquote (match (unquote (mk k)) ((T v) v) (_ -1)))))
+        (export main)))
+  (module "temp"
+    (do
+      (type Temp (T Int64))
+      (def (mk (: c Int64)) (T (* c 10)))
+      (export Temp)
+      (export mk)))
+  (call   main (: 5 Int64)) (error CDZ0214))
+
+(case "a guard-nested BARE pattern on a withheld constructor is also rejected (encapsulation soundness, guard-desugar route)"
+  (doc    "The guard-desugar route: a bare withheld-ctor pattern nested inside a guard condition
+           `((guard w (match w ((T v) (> v 20)) …)) …)` MUST also reject CDZ0214. A guard desugars to a
+           nested match through the same lowering, so the shared `lower::pattern_constraints` gate covers it
+           — one resolver choke-point closes all three routes (direct, eval, guard-nested).")
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64)) (match (mk k) ((guard w (match w ((T v) (> v 20)) (_ false))) 1) (_ -1)))
+        (export main)))
+  (module "temp"
+    (do
+      (type Temp (T Int64))
+      (def (mk (: c Int64)) (T (* c 10)))
+      (export Temp)
+      (export mk)))
+  (call   main (: 5 Int64)) (error CDZ0214))
+
 
 ; --- TRANSITIVE re-export across a module chain (entry <- mid <- base) --------------------------------
 ; A module may RE-EXPORT a binding it imported from another module: `mid` imports `f` from `base` and lists

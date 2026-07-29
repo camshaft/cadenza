@@ -389,6 +389,30 @@
   (host-responses (respond Param.a (: 10 Int64)) (respond Param.b (: 20 Int64)))
   (output (: 30 Int64)))
 
+(case "two @params seeding nested handlers in the WRONG order is caught by an asymmetric row"
+  (doc    "The asymmetric companion to the symmetric 10/20 row above: because `+` is commutative, a
+           10/20 host row cannot distinguish the correct wiring (outer=a, inner=b) from a swapped one
+           (outer=b, inner=a) — both give 30. The asymmetric 5/2 row SEPARATES them: correct wiring
+           reads a=5 (outer CA) + b=2 (inner CB) = 7, while a swapped seeding (or seeding both levels
+           from one accessor) would give 4 or 10. Pins the failure mode the symmetric row's doc claims
+           but cannot itself catch.")
+  (input  (do
+        (pragma param (param (: widget slider)) (: a Int64))
+        (pragma param (param (: widget slider)) (: b Int64))
+        (effect CA (op geta (-> Unit Int64)))
+        (effect CB (op getb (-> Unit Int64)))
+        (def (main)
+          (host (Param)
+            (handle CA (Param.a)
+              ((geta (u) s (resume s s)))
+              (handle CB (Param.b)
+                ((getb (u) s (resume s s)))
+                (+ (CA.geta) (CB.getb))))))
+        (export main)))
+  (call   main)
+  (host-responses (respond Param.a (: 5 Int64)) (respond Param.b (: 2 Int64)))
+  (output (: 7 Int64)))
+
 (case "a @param positions a slice window over a guest-built byte rope"
   (doc    "Host value × the window family: `(Bytes.slice b (Param.cut) 2)` — the host-supplied cut
            positions a 2-byte window over the guest's rope [1,2]++[3,4,5], read back via Bytes.at
@@ -410,3 +434,43 @@
   (call   main)
   (host-responses (respond Param.cut (: 1 Int64)))
   (output (: 23 Int64)))
+
+(case "a @param slice window at an interior cut reads the non-straddling bytes"
+  (doc    "The companion rows to the seam-straddling slice case above (which pins cut=1 -> [2,3] -> 23):
+           an INTERIOR cut past the seam reads a window wholly in the second rope segment — cut=3 -> the
+           2-byte window [4,5] -> 45. Pins the doc's second claimed row (only cut=1 was previously tested),
+           so the slice-over-rope window is exercised off the seam as well as on it.")
+  (input  (do
+        (pragma param (param (: widget slider)) (: cut Int64))
+        (def (main)
+          (host (Param)
+            (do
+              (def b (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4 5))))
+              (match (Bytes.slice b (Param.cut) 2)
+                ((Some w) (+ (* 10 (match (Bytes.at w 0) ((Some v) v) ((None _u) -1)))
+                             (match (Bytes.at w 1) ((Some v) v) ((None _u) -1))))
+                ((None _u) -2)))))
+        (export main)))
+  (call   main)
+  (host-responses (respond Param.cut (: 3 Int64)))
+  (output (: 45 Int64)))
+
+(case "a @param slice window whose length exceeds the remaining bytes yields None"
+  (doc    "The doc's third claimed row: a cut leaving fewer than the window length yields None. cut=4 over
+           the 5-byte rope leaves only 1 byte ([5]) for a 2-byte window -> Bytes.slice returns None -> the
+           match's None arm -> -2. Pins the out-of-range boundary the seam/interior rows do not, completing
+           the three rows the slice case's doc describes.")
+  (input  (do
+        (pragma param (param (: widget slider)) (: cut Int64))
+        (def (main)
+          (host (Param)
+            (do
+              (def b (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4 5))))
+              (match (Bytes.slice b (Param.cut) 2)
+                ((Some w) (+ (* 10 (match (Bytes.at w 0) ((Some v) v) ((None _u) -1)))
+                             (match (Bytes.at w 1) ((Some v) v) ((None _u) -1))))
+                ((None _u) -2)))))
+        (export main)))
+  (call   main)
+  (host-responses (respond Param.cut (: 4 Int64)))
+  (output (: -2 Int64)))

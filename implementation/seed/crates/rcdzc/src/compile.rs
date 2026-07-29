@@ -498,16 +498,26 @@ fn compile_with_opt_inner(
                 fi.and_then(|i| db.file_path(i).map(|p| (i, p.to_string(), defs)))
             })
             .collect();
-        let mut names_seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        // SINGLE-DIR / STEM-COLLISION GUARD (pr881, pr888). `db.file_path` is the file's LINK path — a bare
+        // import STEM in the flat case (`sread-eval`), or a directory-qualified path in a tree. A downstream
+        // runner demuxes the N consumer components by the file's STEM (its basename — the import name a `cdz
+        // test` run keys on), which is DIR-BLIND and load-bearing for import resolution (it cannot be
+        // dir-qualified). So the real collision is two files whose STEMS match (`a/t.cdz` + `b/t.cdz` → both
+        // `t`), NOT two equal full paths (always unique per file — the prior full-path dedup ~never fired, the
+        // dead-guard pr888 flagged). Key the collision on the STEM (the final path component): decline if any
+        // two files share a stem, so the composed emit never mis-demuxes; the caller falls back to the per-file
+        // build. A `None`-file bucket (a synthesized/unfiled test) has no path either → also declines.
+        let stem_of = |p: &str| p.rsplit(['/', '\\']).next().unwrap_or(p).to_string();
+        let mut stems_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let stem_collision = named_files
             .iter()
-            .any(|(_, n, _)| !names_seen.insert(n.as_str()));
+            .any(|(_, n, _)| !stems_seen.insert(stem_of(n)));
         let all_filed = named_files.len() == by_file.len();
         if !all_filed || stem_collision {
             diagnostics.push(Diagnostic::from_reject(&Reject::decline(
-                "composed test emit needs every `@test` in a distinctly-named (single-directory) file: a \
-                 file with no link path, or two files sharing an import stem across directories, would \
-                 collide the per-file component demux — falling back to the per-file test build",
+                "composed test emit needs every `@test` in a file with a DISTINCT import stem: a file with \
+                 no link path, or two files sharing a stem (e.g. `a/t.cdz` + `b/t.cdz` across directories), \
+                 would collide the per-file component demux — falling back to the per-file test build",
             )));
         } else {
             // The UNION cross-edge set across ALL files = the shared closure the ONE provider exports. Computed

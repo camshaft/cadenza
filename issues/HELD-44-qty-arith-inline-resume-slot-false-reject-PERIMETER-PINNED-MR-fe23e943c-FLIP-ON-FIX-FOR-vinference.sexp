@@ -82,3 +82,10 @@
 ;; + do-def + plain-fn (+ q q) all work (s gets Qty there); only the inline arm-body arith loses it.
 ;; Ergonomics not soundness. FIX: bind the state binder's seed type before typing the inline next-state.
 ;; Dedicated-tick, sequenced AFTER CDZ0202 (68e580932) lands. Flip-pin HELD; on fix gate inline → 42 + pin.
+
+;; FIX MR'd (v-inference, 2026-07-29): 520142726 (base trunk 33128eb38, queued). Root = the state binder
+;; typed Any (element-2 binder skipped by handle_arm_param_ty); fix types it from the seed via
+;; handle_arm_state_ty. Gate 5171/23/0 clean, 0 flips. Verified: inline arith now compiles+runs to the
+;; doubled value; a genuine Int64-seed/String-next-state mismatch STILL rejects CDZ0201 (no soundness
+;; weakening). ON LAND: gate the inline flip-pin ((resume s (+ s s)) -> 42 at a=21) x3; pin into 14-effects
+;; beside the do-def/Qty.value working perimeter.

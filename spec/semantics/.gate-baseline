@@ -5193,3 +5193,26 @@ pass	a performing do-def feeding a bin-construction operand under a handler stay
 pass	a perform-free do-def feeding a bin-construction operand under a handler stays bound (F2)
 pass	two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)
 pass	a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)
+pass	a BARE pattern on a withheld constructor is rejected like the qualified spelling (encapsulation soundness)
+pass	an eval-reconstructed BARE pattern on a withheld constructor is also rejected (encapsulation soundness, metaprogramming route)
+pass	a guard-nested BARE pattern on a withheld constructor is also rejected (encapsulation soundness, guard-desugar route)
+pass	extending a record with a non-#label (bare identifier) field-name operand is rejected
+pass	a do-def-bound perform inside a recursive fn called under a handle declines cleanly (specializer floor, not a mangled-name CDZ0201)
+pass	Qty arithmetic on the handler state binder via an arm-local def threads and runs
+pass	a Qty handler state advances via Qty.value / re-wrap in the next-state slot
+pass	three-way compare orders (Some 3) below None per the declared discriminant order
+pass	the boolean ordering operator places (Some 3) below None like the three-way compare
+pass	Result ordering agrees across targets — Ok below Err on the shared declaration order
+pass	a tuple containing an Option leaf orders by the declared Some-below-None
+pass	a list of Options orders its elements by the declared Some-below-None
+pass	an all-nullary user sum orders by discriminant — Lo below Hi
+pass	the Sign sum orders Neg below Pos per its declaration
+pass	Ordering values order Less below Equal below Greater
+pass	Set.to-list over an all-nullary sum enumerates in discriminant order
+pass	nullary variants of a payload-carrying sum order by discriminant
+pass	runtime Bools order false below true with compare and equality agreeing
+pass	a nested all-nullary sum renders the correct variant across the boundary (render half, v-runtime f9f8717c)
+pass	an abstract-typed value used as a CHAMP map key is rejected (opacity — the key path invokes the forbidden structural comparison)
+pass	two @params seeding nested handlers in the WRONG order is caught by an asymmetric row
+pass	a @param slice window at an interior cut reads the non-straddling bytes
+pass	a @param slice window whose length exceeds the remaining bytes yields None

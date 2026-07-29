@@ -680,6 +680,20 @@
   (input  (Record.extend (record (a 1)) (b 2)))
   (error  CDZ0201))
 
+(case "extending a record with a non-#label (bare identifier) field-name operand is rejected"
+  (doc    "The field-name operand of `Record.extend`/`Record.with` is a `#field` LABEL (a static label, NOT
+           a runtime value — this case above, 'extending a record adds a new field'). A BARE identifier in
+           that position — `(Record.extend (record (x 10)) fname k)`, where `fname` is neither a `#label` nor
+           a declared binding — used to be silently PUNNED into a field literally named `fname` (the
+           reinterpret-instead-of-reject footgun: a user passing a computed Symbol expecting dynamic field
+           naming got a field named after their variable). The fix (v-inference, CDZ0215
+           `RecordFieldNameNotLabel`) REJECTS a non-`#label` name-introduction operand with a coded
+           diagnostic naming the static-label rule. Scoped to the name-INTRODUCTION operand of extend/with;
+           the read/drop ops `(. r x)`/`pop`/`without`/`project` legitimately take a bare label and stay
+           valid.")
+  (input  (do (def (main (: k Int64)) (let ((wide (Record.extend (record (x 10)) fname k))) (. wide fname))) (export main)))
+  (call   main (: 7 Int64)) (error CDZ0215))
+
 (case "popping a field yields its value and the remaining record"
   (doc    "Witnesses type-system.md #A Record Is Reduced By Dropping A Named Set Of Its Fields and #A Field
            Is Added To Or Replaced In A Record By A Derived Operation: `Record.pop` takes a field OFF a
