@@ -2082,24 +2082,30 @@ fn do_local_binds(db: &Db, form: StructId, from: StructId, name: &str) -> Option
     // later ones). `from` is a direct child of the `do`, so its position among ALL children is the O(1)
     // `child_ix`; `forms` is the tail AFTER the `do` head at child index 0, so `from`'s index in `forms`
     // is `child_ix - 1` (a headed form, unlike a `let`'s headless bindings-list).
+    // `from`'s index in `forms` (the headless tail after the `do` head). The fast path uses the O(1)
+    // recorded `child_ix` (`ix - 1`, since `forms` drops the head at child index 0); the fallback recovers
+    // it by IDENTITY. `child_ix_of` is `unwrap_or(0)`, so it returns 0 for the genuine do HEAD AND for any
+    // node with NO recorded child-index (an unrecorded / re-parented node) — the two are indistinguishable
+    // by `ix` alone. So a bare `if ix == 0 { return None }` guard would WRONGLY short-circuit a re-parented
+    // `from` whose recorded index is absent (→0) BEFORE the identity fallback runs, reappearing the F2
+    // false-unbound for that sub-case (PR#883 Copilot). Instead: try the fast path only when `ix >= 1` AND
+    // it actually lands on `from`; otherwise ALWAYS fall to the identity scan, which is authoritative — it
+    // returns the true position for a re-parented `from` (ix stale/absent) and `None` iff `from` is genuinely
+    // not a direct form of this `do` (including the real head, which is not in `forms`). This preserves the
+    // defensive meaning (head / non-form → None) without conflating it with the re-parent case.
     let ix = db.child_ix_of(from);
-    if ix == 0 {
-        return None; // `from` is the `do` head itself, not a do-form (defensive)
-    }
-    let k = if forms.get(ix - 1) == Some(&from) {
-        // Fast path: `from`'s LIVE `child_ix` (ix-1 in the headless tail) still matches its position in this
-        // `do`'s forms — its parent is genuinely this `do`.
+    let k = if ix >= 1 && forms.get(ix - 1) == Some(&from) {
+        // Fast path: `from`'s LIVE `child_ix` still matches its position in this `do`'s forms — its parent is
+        // genuinely this `do`, unchanged since load.
         ix - 1
     } else {
-        // `from`'s live `child_ix` does NOT land on `from` within `forms` — its recorded child-index reads
-        // against a DIFFERENT (re-parented) parent than the `form` we are scoping in. This happens when the
-        // effects fold RE-PARENTS a `do`-item subtree (a `(def frame (bin …))` lifted under a fresh `let`)
-        // while a reference deep inside it (a `(bin …)` build operand's `a`) still ascends here via a
-        // load-time scope-skip pointer whose `from` is that re-parented item: `child_ix_of(from)` then yields
-        // its NEW position, so the fast-path window `ix-1` would exclude the do-def that actually precedes it
-        // and the reference reads UNBOUND (the F2 bin-build-operand-under-handler false CDZ0101). Recover the
-        // TRUE window by finding `from`'s position in THIS `do`'s forms by IDENTITY; if `from` is genuinely
-        // not a direct form of this `do`, it is absent → `None` (the original defensive meaning is preserved).
+        // Either `from` was RE-PARENTED (its recorded `child_ix` is stale — reads a different parent — or
+        // absent → 0), or `from` is the do head / not a form here. The effects fold re-parents a `do`-item
+        // subtree (a `(def frame (bin …))` lifted under a fresh `let`) while a reference deep inside it (a
+        // `(bin …)` build operand's `a`) still ascends here via a load-time scope-skip pointer whose `from`
+        // is that re-parented item → the fast-path window would exclude the preceding do-def and the
+        // reference reads UNBOUND (the F2 false CDZ0101). Recover the TRUE window by IDENTITY; a `from` that
+        // is genuinely the head / not a direct form of this `do` is absent → `None` (defensive meaning kept).
         forms.iter().position(|f| *f == from)?
     };
     // The forms declaring `name`, as ascending `(position, form)` pairs. `do_forms_declaring` gives them

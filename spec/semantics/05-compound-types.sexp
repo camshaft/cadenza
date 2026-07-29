@@ -9245,6 +9245,23 @@
   (call   main)
   (output (: (A (tuple)) V)))
 
+(case "an empty-tuple element on the HEAP path renders its (Tuple)-typed (tuple), not unit (type-directed, RULED-B ask-17874)"
+  (doc    "The heap/runtime-encode companion of the distinct-type pin above: rendering is TYPE-DIRECTED, so
+           an element whose STATIC type is `(Tuple)` renders `(tuple)` on EVERY path — the compile-time
+           const path, the rust path, AND the heap/runtime value-encode path — NOT `unit`. Here `v0` is a
+           let-bound `(tuple 21.04)` referenced twice, so the outer tuple is HEAP-stored and its sibling
+           empty `(tuple)` flows through the runtime value-encode walker. That walker (and `shape_of`) used
+           to collapse an empty `Ty::Tuple` to a `Unit` shape → the element mis-rendered `unit`, disagreeing
+           with the const/rust paths for ONE static type. Fixed lockstep (v-wasm-opt `shape_of` emits
+           `ShapeNode::Tuple([])`; v-runtime value-encode renders the empty headed `(tuple)`). Per the
+           concierge ruling (ask-17874): `unit == ()` is ONE value, but `Unit` and `(Tuple)` are DISTINCT
+           TYPES (see the case above, 6938), so a `(Tuple)`-typed value renders `(tuple)` — no
+           collapse-to-unit and no `Ty::Tuple([])→Unit` in infer. `15-rows:814` bare-root `(tuple)` and this
+           heap element are the same rule: type-directed `(tuple)`.")
+  (input  (do (def (main) (let ((v0 (tuple 21.04))) (tuple v0 (tuple (tuple v0 (tuple)))))) (export main)))
+  (call   main)
+  (output (: (tuple (tuple 21.04) (tuple (tuple (tuple 21.04) (tuple)))) (Tuple (Tuple Float64) (Tuple (Tuple (Tuple Float64) Tuple))))))
+
 ; --- A UNIT element in a HEAP-STORED compound occupies its slot with the inline-unit sentinel ----------
 ; A `Unit` has no machine slot (`valtype_of(Unit) = None`), so the VALUE emits nothing — but a heap slot
 ; (a multi-payload sum variant, a tuple/record element, a collection key/value/element, a closure capture)

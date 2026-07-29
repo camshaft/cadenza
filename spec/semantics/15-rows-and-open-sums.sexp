@@ -94,7 +94,7 @@
         (def (main (: n Int64))
           (do
             (def r (record (xs (list 1 2)) (ys (list 7 n))))
-            (def r2 (Record.with r xs (list 9)))
+            (def r2 (Record.with r #"xs" (list 9)))
             (+ (* (sum-l (. r2 xs) 0) 100)
                (+ (* (sum-l (. r2 ys) 0) 10)
                   (sum-l (. r xs) 0)))))
@@ -324,7 +324,7 @@
   (input  (do
             (def (get-x r) (. r x))
             (def (main (: a Int64))
-              (get-x (Record.with (record (x 1) (y 2)) x a)))
+              (get-x (Record.with (record (x 1) (y 2)) #"x" a)))
             (export main)))
   (call   main (: 42 Int64))
   (output (: 42 Int64)))
@@ -343,7 +343,7 @@
            record. project/without/merge/pop over a runtime record are a separate follow-up.")
   (input  (do
             (def (bump (: outer (Record (: pos (Record (: x Int64) (: y Int64))) (: vel (Record (: x Int64) (: y Int64))))) (: d Int64))
-              (Record.with outer pos (Record.with (. outer pos) y (+ (. (. outer pos) y) d))))
+              (Record.with outer #"pos" (Record.with (. outer pos) #"y" (+ (. (. outer pos) y) d))))
             (def (main (: d Int64))
               (do
                 (def p0 (record (pos (record (x 1) (y 2))) (vel (record (x 30) (y 40)))))
@@ -366,7 +366,7 @@
            structurally by rcdzc's emit-once lib test, so no runtime perform-count row is needed.")
   (input  (do
             (def (mk (: n Int64)) (record (a n) (b (+ n 1)) (c (+ n 2))))
-            (def (main (: v Int64)) (. (Record.with (mk v) a 99) c))
+            (def (main (: v Int64)) (. (Record.with (mk v) #"a" 99) c))
             (export main)))
   (call   main (: 10 Int64)) (output (: 12 Int64)))
 
@@ -575,7 +575,7 @@
   (input  (do
             (def (main (: a Int64))
               (let ((r (record (items (list 1 2)) (tag 7))))
-                (let ((r2 (Record.with r items (List.push (. r items) a))))
+                (let ((r2 (Record.with r #"items" (List.push (. r items) a))))
                   (+ (* 10 (List.len (. r2 items))) (List.len (. r items))))))
             (export main)))
   (call   main (: 3 Int64))
@@ -609,7 +609,7 @@
             (def (main (: d Int64))
               (do
                 (def p0 (record (pos (record (x 1) (y 2))) (vel (record (x 30) (y 40)))))
-                (def p1 (Record.with p0 pos (Record.with (. p0 pos) y d)))
+                (def p1 (Record.with p0 #"pos" (Record.with (. p0 pos) #"y" d)))
                 (+ (* (. (. p1 pos) y) 10) (. (. p1 pos) x))))
             (export main)))
   (call   main (: 5 Int64)) (output (: 51 Int64)))
@@ -633,12 +633,12 @@
 
 (case "chained Record.with at TWO DIFFERENT fields holds both updates"
   (doc    "The cross-field chain (the one-field chain above pins last-write-wins): `(Record.with
-           (Record.with r x a) y b)` updates x and y with runtime values while z rides through untouched
+           (Record.with r #\"x\" a) #\"y\" b)` updates x and y with runtime values while z rides through untouched
            — 100a + 10b + 3 = 453. A chain that rebuilt from the ORIGINAL record on the second with
            (rather than the first with's result) would lose the x update.")
   (input  (do
             (def (main (: a Int64) (: b Int64))
-              (let ((r (Record.with (Record.with (record (x 1) (y 2) (z 3)) x a) y b)))
+              (let ((r (Record.with (Record.with (record (x 1) (y 2) (z 3)) #"x" a) #"y" b)))
                 (+ (* 100 (. r x)) (+ (* 10 (. r y)) (. r z)))))
             (export main)))
   (call   main (: 4 Int64) (: 5 Int64))
@@ -652,7 +652,7 @@
   (input  (do
             (def (main (: b Bool))
               (let ((r (record (x 10) (y 20))))
-                (let ((r2 (if b (Record.with r x 99) r)))
+                (let ((r2 (if b (Record.with r #"x" 99) r)))
                   (+ (* 100 (. r x)) (. r2 x)))))
             (export main)))
   (call   main (: true Bool))

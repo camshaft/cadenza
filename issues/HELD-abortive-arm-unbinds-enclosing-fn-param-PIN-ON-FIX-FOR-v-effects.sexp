@@ -34,3 +34,7 @@
             (+ (Sim.step) (+ (Sim.step) (Sim.step)))))
         (export main)))
   (declines))
+
+;; SHA UPDATE (2026-07-28, note 17908): the abortive-arm fix MR is now 94581e5f1 (was abe6d7087 —
+;; fleet churn re-shaed it). Still QUEUED. The recursive-fn do-def-perform specializer floor fix is
+;; sequenced AFTER this lands (shared specializer/reduce_handle seam). Both flip to EXPECT-(declines).

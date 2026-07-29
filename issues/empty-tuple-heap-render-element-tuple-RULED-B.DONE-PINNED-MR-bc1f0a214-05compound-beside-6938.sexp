@@ -74,3 +74,48 @@
 ;;   = wasm const-path 2-line (v-wasm-opt) + harness-render fix + rust mirror if any (v-rust-backend) +
 ;;   MY 814 re-pin (-> (: unit Unit) x3 baselines) + MY new empty-tuple-element pin. I own both corpus
 ;;   edits and sequence the batch so the gate never reds. Do NOT land any half.
+
+;; ============================================================================
+;; RULING REVERSED -> B (concierge, 2026-07-28, answer 000000017874). The earlier "wasm-canonical /
+;; collapse-to-unit" framing is RETRACTED. Correct rule = TYPE-DIRECTED RENDER:
+;;   • VALUE identity stands: unit == () (05-compound:8121). ONE shared empty value.
+;;   • But Unit and (Tuple) are DISTINCT TYPES (05-compound:6938 LANDED both backends: "(V.A (tuple))
+;;     carries a (tuple) value of TYPE (Tuple), distinct from Unit; comparing them is CDZ0203; renders
+;;     (A (tuple)) rather than collapsing an empty tuple to unit"). Render is TYPE-DIRECTED.
+;;   • => a value statically typed (Tuple) MUST render (tuple) on ALL paths; a Unit-typed value renders
+;;     unit on all paths. NO Ty::Tuple([])->Unit collapse in infer (spec-illegal, breaks 5 pins). NO
+;;     15-rows:814 flip (stays (: (tuple) (Tuple))). Option A REJECTED.
+;;
+;; INVERTED FINDING (corpus-bugfix re-measured trunk 51c0a2983 — the empty element's static type is
+;; (Tuple), NOT Unit, in both b and c):
+;;   (b) DUAL-REF (let ((v0 (tuple 21.04))) (tuple v0 (tuple (tuple v0 (tuple))))):
+;;         wasm -> ...unit)  = BUG (heap/shape_of lower.rs:13760 collapses the (Tuple)-typed element to
+;;                             a Unit shape, mis-rendering unit for a (Tuple)-typed value)
+;;         rust -> ...(tuple)) = CORRECT (type-directed)   <-- rust is RIGHT, wasm is the bug. (INVERTED
+;;                             from my original pin which had it backwards.)
+;;   (c) LITERAL (tuple 1 (tuple)): BOTH render (tuple) = CORRECT under B. No bug. (No wasm literal gap
+;;       after all — the earlier "wasm self-inconsistent" read was measuring against the wrong canonical.)
+;; => SOLE real bug = wasm heap/runtime-encode path collapsing a (Tuple)-typed value to unit. OWNER =
+;;    v-wasm-opt (shape_of / value-encode, lower.rs:13760 — must NOT collapse empty Ty::Tuple to Unit
+;;    SHAPE for a value whose static type is (Tuple)). rust needs NO change. 814 UNTOUCHED.
+;; ON LAND (v-wasm-opt heap-render fix): gate x3 -> (tuple) (type-directed); pin case (b) into 05-compound
+;;   or 15-rows beside 6938; baseline x3. The pin's EXPECTED is the (Tuple)-typed (tuple) render, NOT unit.
+
+(case "an empty tuple in element position keeps its (Tuple)-typed (tuple) render on all paths (RULED-B type-directed, ask-17874; 6938 distinct-type)"
+  (input  (do (def (main) (let ((v0 (tuple 21.04))) (tuple v0 (tuple (tuple v0 (tuple)))))) (export main)))
+  (call main) (output (: (tuple (tuple 21.04) (tuple (tuple (tuple 21.04) (tuple)))) (Tuple (Tuple Float64) (Tuple (Tuple (Tuple Float64) (Tuple)))))))
+
+;; ============================================================================
+;; RENDER-PATH AUDIT (v-wasm-opt, 2026-07-28, confirms the B re-scope) — the bug is the WASM HEAP path
+;; ONLY, and it is TWO-LANE lockstep (neither half alone fixes it, proven empirically):
+;;   • RUST gate driver (cdz_render_expr, cdz-rust-render/src/lib.rs:606-611) -> (tuple). ALREADY correct.
+;;   • WASM CONST path (const_value_ast/type_ast, lower.rs:14479/14845) -> (tuple)/(Tuple). ALREADY correct.
+;;   • WASM HEAP path -> unit. THE ONLY non-compliant path. Fix = BOTH:
+;;       (1) COMPILER (v-wasm-opt): shape_of (lower.rs:13761) emits ShapeNode::Unit for empty Ty::Tuple;
+;;           must emit ShapeNode::Tuple([]) so the wire descriptor carries Tuple[0].
+;;       (2) RUNTIME (v-runtime): value-encode Shape::Tuple(elems) arm (cdz-runtime/src/lib.rs:2492-2495)
+;;           renders unit when elems.is_empty(); must render (tuple) (empty headed list).
+;; => NO 814 flip, NO everywhere-element pin, NO rust change. B preserves 814 as (: (tuple) (Tuple)).
+;;    This pin (dual-ref heap-path (Tuple)-typed element -> (tuple)) is a REGRESSION WITNESS that lands
+;;    GREEN once BOTH halves (v-wasm-opt shape_of + v-runtime value-encode) land LOCKSTEP.
+;;    v-wasm-opt routes (2) to v-runtime + gates (1); I gate this witness x3 -> (tuple) on their batch.

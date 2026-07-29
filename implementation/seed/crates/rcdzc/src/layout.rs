@@ -548,6 +548,35 @@ pub fn cross_component_edges(db: &mut Db, layout: &Layout, own_file: usize) -> V
         .collect()
 }
 
+/// OPTION C increment (c)(iii) — the UNION cross-component edge set across MANY files, for a COMPOSED
+/// `cdz test <dir>` build (the `EmitTestsComposed` driver). A single [`cross_component_edges`] is per-file
+/// (`own_file`); a composed build has ONE shared-closure provider that must export the UNION of every file's
+/// cross-edges (a def is a provider export if ANY target file calls it across the file boundary), and EACH
+/// per-file consumer imports the WHOLE provider interface in this canonical order (a file hitting only a subset
+/// still indexes at the right provider-export position — the index-agreement invariant [`compute_tests_consumer`]
+/// honors). Folds each file's [`cross_component_edges`] into one set, returned in `layout.order` (emission)
+/// order for determinism (same reproducible-derivation contract: the set decides WHICH edges, `layout.order`
+/// decides their ORDER). A test-LOCAL def can never enter the union: it lives in its own file's partition
+/// (`own`), never in another file's `shared`, so it is never a cross-edge in ANY file (verified against the
+/// self-host `sread-eval-*` files, which all `import { run-src } from "sread-eval"` — one shared lib, no
+/// file imports another test file). Empty `files` → empty (no shared closure to hoist).
+pub fn cross_component_edges_union(db: &mut Db, layout: &Layout, files: &[usize]) -> Vec<usize> {
+    let mut edges: crate::fxhash::FxHashSet<usize> = crate::fxhash::FxHashSet::default();
+    for &own_file in files {
+        for e in cross_component_edges(db, layout, own_file) {
+            edges.insert(e);
+        }
+    }
+    // Return in emission (`layout.order`) order — the SAME canonical order each per-file
+    // `cross_component_edges` uses, so the provider export order and every consumer's import order agree.
+    layout
+        .order
+        .iter()
+        .copied()
+        .filter(|d| edges.contains(d))
+        .collect()
+}
+
 /// OPTION C increment (b)(ii) — build the SHARED-CLOSURE PROVIDER layout: a `Layout` whose EXPORTS are the
 /// cross-component edge defs ([`cross_component_edges`] — the `shared` defs each per-file `@test` component
 /// calls). Each edge def becomes an exported interface func (an [`ExportPlan`], its params/result solved the
@@ -579,13 +608,27 @@ pub fn compute_shared_closure_provider(
     own_file: usize,
 ) -> Result<Layout, Reject> {
     let edges = cross_component_edges(db, test_layout, own_file);
+    compute_provider_for_edges(db, &edges)
+}
+
+/// OPTION C increment (c)(iii)b — build the shared-closure PROVIDER layout from an EXPLICIT cross-edge set,
+/// the generalization [`compute_shared_closure_provider`] (single-file) delegates to. A COMPOSED `cdz test
+/// <dir>` build ([`EmitTestsComposed`]) passes the UNION cross-edge set ([`cross_component_edges_union`] over
+/// all files) so the ONE provider exports every file's cross-edges; the single-file path passes one file's
+/// [`cross_component_edges`]. Each edge def becomes an exported interface func (an [`ExportPlan`], boundary
+/// name = [`source_boundary_name`] so a transformed `f$acc`/`f#monoN` exports as the kebab source name);
+/// [`finish_layout`] closes reachability so the edges' own intra-closure callees emit INSIDE the provider.
+/// `edges` MUST be in the canonical `layout.order`-derived order both `cross_component_edges`(_union) return,
+/// so the provider's export order matches every consumer's import order (the index-agreement invariant). An
+/// EMPTY edge set declines "no shared closure" — there is nothing to hoist.
+pub fn compute_provider_for_edges(db: &mut Db, edges: &[usize]) -> Result<Layout, Reject> {
     if edges.is_empty() {
         return Err(Reject::decline(
             "no shared closure: the @tests call no imported (cross-file) definition",
         ));
     }
     let mut exports: Vec<ExportPlan> = Vec::new();
-    for def in edges {
+    for &def in edges {
         // The boundary export name is the def's SOURCE name — NOT its emitted name, which for a
         // TRANSFORMED def carries an internal suffix (`f$acc` from the linear-non-tail-recursion accumulator
         // rewrite, `f#monoN` from monomorphization) that contains `$`/`#` — invalid in a component extern

@@ -454,27 +454,36 @@ def ss-terr-scrutinee-taints-ctor-match() =
 // payload story: int widths (Int<N>/UInt<N>) COMPLETE; Bool DECLINES. Nested/compound payloads → -1 → decline.
 
 @test
-def ss-bool-payload-binder-declines-not-yet-wired() =
-  // (BB true) matched ((BB b) (if b 1 0)) — b is a Bool payload used as an `if` cond. NOTE reader syntax is the
-  // 3-form `(if cond then-expr else-expr)` — there are NO `then`/`else` keywords (that's the ML surface, not the
-  // reader). The Bool-payload VALUE path is a DELIBERATE decline for now: ctor-payload-binder-type enc==1 → TErr
-  // (decode-argtype-enc), so b's binder is TErr → the `if` cond is TErr → if-type yields TErr → the match is TErr →
-  // lower declines → run-src None. SOUND (a clean decline, never a trap or a wrong value). An isolated probe showed
-  // that with decode(1)→TBool the SAME correct-syntax program LOWERS to Some (the earlier "b128 invalid wasm" was a
-  // MALFORMED-witness artifact: the old string `(if b then 1 else 0)` parsed `then` as an unbound symbol → TErr,
-  // not a real emit bug). Re-enable to RUN once the Bool value round-trip is confirmed green on the COMPILED gate.
+def ss-bool-payload-binder-runs-as-cond() =
+  // (BB true) matched ((BB b) (if b 1 0)) — b is a Bool payload used as an `if` cond. The Bool-payload VALUE path
+  // is WIRED: ctor-payload-binder-type enc==1 → TBool (decode-argtype-enc), so b:TBool → the `if` cond is TBool →
+  // if-type yields TIntW → lower-ok → runs. Bool is i64 0/1 in Core, so (BB true)'s payload = 1, bound to b, used
+  // as the CIf cond → nonzero → then-branch → 1. (Reader `if` is the 3-form `(if cond then-expr else-expr)` — NO
+  // then/else keywords; the former "b128 wasm-unreachable" was the MALFORMED witness `(if b then 1 else 0)` parsing
+  // `then` as an unbound symbol → TErr, never an emit bug.)
   match run-src(
       "(do (type BoxB (BB Bool)) (def (main) (match (BB true) ((BB b) (if b 1 0)) (_ 9))) (export main))"
     ) with
-    | Option.Some(_) => trap("a Bool payload binder is NOT yet wired — must DECLINE (TErr), not run/trap")
-    | Option.None(_) => unit
+    | Option.Some(v) => (if v == 1 then unit else trap("(BB true) payload b=true → (if b 1 0) → 1"))
+    | Option.None(_) => trap("a Bool payload binder used as a cond must RUN (b:TBool → if cond → 1), not decline")
+
+@test
+def ss-bool-payload-binder-runtime-boxed-multivariant() =
+  // STRONGER witness (v-inference's runtime-boxed bar): a NON-const Bool payload `(BB (> n 0))` in a MULTI-variant
+  // decl `(BB Bool) (BI Int64)` — so no const-fold erasure, real runtime store/dispatch. go(5): (> 5 0)=true →
+  // (BB true) → ((BB b) (if b 1 0)) → 1. Guards the Bool value path on the runtime path, not just a const literal.
+  match run-src(
+      "(do (type BoxB (BB Bool) (BI Int64)) (def (go n) (match (BB (> n 0)) ((BB b) (if b 1 0)) ((BI x) x) (_ 9))) (def (main) (go 5)) (export main))"
+    ) with
+    | Option.Some(v) => (if v == 1 then unit else trap("runtime-boxed (BB (> 5 0))=true → (if b 1 0) → 1"))
+    | Option.None(_) => trap("runtime-boxed Bool payload cond must RUN → 1, not decline")
 
 @test
 def ss-bool-payload-binder-used-as-int-declines() =
-  // THE SOUNDNESS GUARD: a Bool payload binder used ARITHMETICALLY `(+ b 1)` must DECLINE. b's binder is TErr
-  // (Bool payload not-yet-wired → ctor-payload-binder-type enc==1 → TErr), so `(+ b 1)` has a TErr operand → TErr →
-  // decline. (Even when the Bool value path IS wired to TBool later, this still declines: arith on a Bool is a type
-  // error.) Either way a Bool payload is NEVER silently treated as an int (the tick-415 int-misread trap stays shut).
+  // THE SOUNDNESS GUARD: a Bool payload binder used ARITHMETICALLY `(+ b 1)` must DECLINE. b's binder is now TBool
+  // (Bool value path wired → ctor-payload-binder-type enc==1 → TBool), and arith is INTEGER-ONLY: arith-result-type
+  // maps a TBool operand → None (typed-to-ty-defer), so `(+ b 1)` → TErr → decline. A Bool payload is NEVER silently
+  // treated as an int (the tick-415 int-misread trap stays shut) — the Bool value path enables `(if b …)`, not arith.
   match run-src(
       "(do (type BoxB (BB Bool)) (def (main) (match (BB true) ((BB b) (+ b 1)) (_ 9))) (export main))"
     ) with
