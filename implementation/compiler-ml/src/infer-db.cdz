@@ -1548,4 +1548,4 @@ def id-nmatchctor-terr-scrutinee-taints-match-pr849() =
                 | Option.Some(Typed.TErr) => unit                              // TErr scrutinee taints the match
                 | _ => trap("a TErr scrutinee must taint the whole NMatchCtor → TErr, not be masked by well-typed arms (PR#849)")))))))))
 
-export { Typed.*, infer-node, infer-tree, type-at, ground-deferred, well-typed, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type, bin-type, if-type, let-type }
+export { Typed.*, infer-node, infer-tree, type-at, ground-deferred, well-typed, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type, bin-type, if-type, let-type, var-type }
