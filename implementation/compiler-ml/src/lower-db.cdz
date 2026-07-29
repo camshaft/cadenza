@@ -441,29 +441,22 @@ def build-def-env(tree: Tree, entries: List(Tuple(Int64, Int64)), acc: Map(Int64
     | [e, .. rest] =>
         (match e with
           | (nameId, bodyId) =>
-              // p3: include ONLY a DIRECTLY self-recursive def (fac). A merely MUTUALLY-recursive def (ev/od)
-              // is call-is-recursive (transitive) but NOT call-is-self-recursive → stays OUT of the def-env, so
-              // its cross-call CCall leaf hits a def-env miss and eval DECLINES cleanly (mutual runtime recursion
-              // is out of Slice-B scope — it must decline, not trap). Non-recursive defs stay inlined as before.
-              // Self-recursive defs (fac) for CCall dispatch (Slice-B). HIGHER-ORDER (HO-3): ALSO add NON-recursive
-              // defs so a def used as a fn-VALUE (`inc` in `(apply inc 41)`) is reachable via the CFnRefVar/CFnRef
-              // name dispatch. Normal calls are UNAFFECTED — they still INLINE via the main lower; the def-env is
-              // consulted ONLY by CCall + the HO fn-value dispatch, never by the inline path. A def whose standalone
-              // body fails to lower (lower-one-def None) is skipped (a fn-value call to it declines). NOTE: the
-              // tick-30 concern (a non-rec def whose body has an inline call malforms when lowered standalone) is
-              // real; guarded here by lower-one-def's own decline + the HO milestone shapes (apply/inc/twice) having
-              // clean bodies. ⚠ EXCLUDE a MUTUALLY-recursive def (call-is-recursive TRUE but call-is-self-recursive
-              // FALSE — e.g. ev/od): mutual runtime recursion is OUT of Slice-B scope and MUST DECLINE cleanly (the
-              // se-mutual-recursion-declines-not-hangs invariant, PR#785). Adding it to the def-env would let its
-              // cross-call CCall/name-dispatch actually RUN (ev 4 → 1) — a behavior change that breaks the pinned
-              // decline. So include a def iff it is SELF-recursive (fac, for CCall) OR NON-recursive (for the HO
-              // fn-value name dispatch); a merely-mutually-recursive def stays OUT → its cross-call misses the
-              // def-env and eval declines, exactly as before HO-3.
-              (if (call-is-recursive(tree, nameId) and (if call-is-self-recursive(tree, nameId) then false else true))
-               then build-def-env(tree, rest, acc)                       // mutually-recursive → OUT (must decline)
-               else (match lower-one-def(tree, nameId, bodyId) with
+              // Include EVERY def in the def-env: self-recursive (fac, for CCall dispatch), MUTUALLY-recursive
+              // (ev/od — see below), AND non-recursive (HO-3: a def used as a fn-VALUE like `inc` in
+              // `(apply inc 41)` is reached via CFnRefVar/CFnRef name dispatch). Normal calls are UNAFFECTED —
+              // they still INLINE via the main lower; the def-env is consulted ONLY by CCall + the HO fn-value
+              // dispatch, never by the inline path. A def whose standalone body fails to lower (lower-one-def
+              // None) is skipped (a call to it declines). The tick-30 concern (a non-rec def whose body has an
+              // inline call malforms when lowered standalone) is guarded by lower-one-def's own decline.
+              // MUTUAL RECURSION (ev↔od) now RUNS: a mutual call is call-is-recursive (transitive) so it lowers
+              // to a CCall LEAF (lower-recursive-call, no inline → no lower-time hang), and eval's apply-def-by-name
+              // dispatches it BY NAME at runtime, terminating on the program's base-case CIf guard — exactly as
+              // self-recursive fac already does. Previously mutual defs were EXCLUDED here (their cross-call missed
+              // the def-env → declined) as an out-of-Slice-B scope boundary; that boundary is now lifted, so
+              // se-mutual-recursion-runs replaces the old declines-not-hangs pin (ev 4 → 1).
+              (match lower-one-def(tree, nameId, bodyId) with
                  | Option.Some(entry) => build-def-env(tree, rest, Map.insert(acc, nameId, entry))
-                 | Option.None(_) => build-def-env(tree, rest, acc)))))
+                 | Option.None(_) => build-def-env(tree, rest, acc))))
 
 /// slice-B1b: the DEF-ENV for a whole tree — every def-table name → (paramBinderIds, bodyCore), each body
 /// lowered once and standalone. `eval-core-d` reads this to run a `CCall(name, args)`. Reaches the def-table

@@ -2862,6 +2862,48 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             }
             let l = emit(db, lhs, env, ctx)?;
             let r = emit(db, rhs, env, ctx)?;
+            // SOUNDNESS (breaker/corpus-bugfix #42): the operands map to Rust reps whose DERIVED `Ord` is the
+            // blessed lexicographic order — EXCEPT a built-in `Option`, which maps to std `Option` whose
+            // derived order is `None < Some`, the REVERSE of Cadenza's declared `Some(disc0) < None(disc1)`.
+            // So when the operand type contains a flip-order Option, the native `l < r`/`l.cmp(&r)` gives the
+            // WRONG total order (and the flip propagates to a nested Option leaf). Route such a compare through
+            // `emit_value_cmp_walk`, which orders every Option position `Some`-before-`None` (Cadenza) while
+            // delegating Option-free subtrees to the native `.cmp()`. An Option-FREE operand keeps the native
+            // path below — byte-identical to before (the common case). `Result` maps to std `Result` whose
+            // `Ok < Err` already matches Cadenza, so it is NOT a flip and stays native.
+            let opnd_ty = type_of(db, lhs);
+            if ty_uses_flip_order_option(db, &opnd_ty) {
+                let mut helpers = Vec::new();
+                let walk = emit_value_cmp_walk(db, &opnd_ty, "__cl", "__cr", &mut helpers)?;
+                let hs = helpers.join(" ");
+                return if is_compare {
+                    // The three-way `Ordering` the walk already produces IS the compare result — but the
+                    // NODE's result type is Cadenza `Ordering`, whose emitted ctors are `Ordering::{Less,
+                    // Equal,Greater}` (sums.rs disc 0/1/2). The walk yields a `core::cmp::Ordering`; map it to
+                    // the emitted `Ordering` ctor via a match (the same 3 ctors the nested-if path uses).
+                    let ord_ty = type_of(db, id);
+                    let less = sum_variant_path_of_ty(db, &ord_ty, 0)?;
+                    let equal = sum_variant_path_of_ty(db, &ord_ty, 1)?;
+                    let greater = sum_variant_path_of_ty(db, &ord_ty, 2)?;
+                    Ok(format!(
+                        "{{ {hs} let __cl = {l}; let __cr = {r}; match {walk} {{ core::cmp::Ordering::Less => {less}, core::cmp::Ordering::Greater => {greater}, core::cmp::Ordering::Equal => {equal}, }} }}"
+                    ))
+                } else {
+                    // A relational op (Lt/Le/Gt/Ge) → compare the walk's Ordering against the boolean the op
+                    // names (the same mapping compare_sym encodes, but over the corrected Ordering).
+                    let (test, negate) = match op {
+                        Prim::Lt => ("core::cmp::Ordering::Less", false),
+                        Prim::Gt => ("core::cmp::Ordering::Greater", false),
+                        Prim::Ge => ("core::cmp::Ordering::Less", true),
+                        Prim::Le => ("core::cmp::Ordering::Greater", true),
+                        _ => return Err(Reject::decline("ValueCmp carries a non-compare prim")),
+                    };
+                    let eqop = if negate { "!=" } else { "==" };
+                    Ok(format!(
+                        "{{ {hs} let __cl = {l}; let __cr = {r}; ({walk} {eqop} {test}) }}"
+                    ))
+                };
+            }
             if is_compare {
                 // The compare node's result type is `Ordering`; build its ctor paths and the nested-if.
                 // BIND l/r to locals first — each operand is referenced TWICE (`< ` and `> `), and a
@@ -3214,6 +3256,248 @@ fn join_and(parts: Vec<String>) -> String {
         1 => parts.into_iter().next().unwrap(),
         _ => format!("({})", parts.join(" && ")),
     }
+}
+
+/// Whether `ty` contains (at any depth) a built-in `Option` whose Rust std-`Option` DERIVED ORDER
+/// DISAGREES with the Cadenza declared variant order — the soundness trap `emit_value_cmp_walk` exists to
+/// fix. Cadenza declares `Some` (disc 0) `< None` (disc 1), but Rust's `std::option::Option` derives
+/// `None < Some` — the REVERSE. So a native `l < r` / `l.cmp(&r)` on an `Option`-typed (or Option-containing)
+/// value gives the WRONG total order (`compare (Some 3) None` → std `Greater`, Cadenza `Less`). `Result`
+/// maps to std `Result` whose `Ok < Err` MATCHES Cadenza's declared `Ok < Err`, so it needs no correction;
+/// only `Option` flips. A NON-flip type (no std-Option anywhere) keeps the native compare (byte-identical to
+/// before — the overwhelmingly common case). A USER `(type Option …)` emits its own decl-order enum (correct
+/// native Ord), so it is NOT a flip — `is_builtin_std_sum` distinguishes it. (breaker/corpus-bugfix #42.)
+fn ty_uses_flip_order_option(db: &mut Db, ty: &Ty) -> bool {
+    ty_uses_flip_order_option_seen(db, ty, &mut Vec::new())
+}
+
+fn ty_uses_flip_order_option_seen(
+    db: &mut Db,
+    ty: &Ty,
+    seen: &mut Vec<crate::ast::StructId>,
+) -> bool {
+    match ty.strip_nominal() {
+        Ty::Tuple(elems) => {
+            let elems = elems.clone();
+            elems
+                .iter()
+                .any(|e| ty_uses_flip_order_option_seen(db, e, seen))
+        }
+        Ty::Record(fields) => {
+            let tys: Vec<Ty> = fields.values().cloned().collect();
+            tys.iter()
+                .any(|t| ty_uses_flip_order_option_seen(db, t, seen))
+        }
+        Ty::List(elem) => {
+            let elem = (**elem).clone();
+            ty_uses_flip_order_option_seen(db, &elem, seen)
+        }
+        Ty::Qty { inner, .. } => {
+            let inner = (**inner).clone();
+            ty_uses_flip_order_option_seen(db, &inner, seen)
+        }
+        s @ Ty::Sum { decl, .. } => {
+            let decl_occ = *decl;
+            // The std-mapped `Option` builtin is the ONLY flip. Check via the emit's own recognizer.
+            let is_flip_option = db
+                .type_decl_by_occ(decl_occ)
+                .map(|d| {
+                    let d = d.clone();
+                    super::enums::is_builtin_std_sum(db, &d) && d.name == "Option"
+                })
+                .unwrap_or(false);
+            if is_flip_option {
+                return true;
+            }
+            // RECURSION GUARD: a self-referential sum (e.g. `Ast` carrying `List Ast`) would otherwise loop
+            // forever through its payloads. Skip a decl already on the descent path — if it were flip-order
+            // it'd have returned true at its first (Option) visit; re-entering it adds no new Option.
+            if seen.contains(&decl_occ) {
+                return false;
+            }
+            seen.push(decl_occ);
+            // Otherwise recurse into the variant payloads — a user sum / Result may CARRY an Option leaf.
+            let s = s.clone();
+            let vcount = db
+                .type_decl_by_occ(decl_occ)
+                .map(|d| d.variants.len())
+                .unwrap_or(0);
+            let found = (0..vcount as u32).any(|disc| {
+                variant_payload_ty(db, &s, disc)
+                    .map(|p| ty_uses_flip_order_option_seen(db, &p, seen))
+                    .unwrap_or(false)
+            });
+            seen.pop();
+            found
+        }
+        _ => false,
+    }
+}
+
+/// Emit a Rust `core::cmp::Ordering` expression comparing `l`/`r` (both of type `ty`) in the CADENZA
+/// DECLARED total order — the correction for the std-`Option` order flip ([`ty_uses_flip_order_option`]).
+/// Used by `Core::ValueCmp` ONLY when `ty` contains a flip-order `Option`; an Option-free type keeps the
+/// native `l < r` / `l.cmp(&r)` (byte-identical). The walk is lexicographic (matching core-semantics
+/// §Compound Ordering Is Lexicographic + the wasm value-cmp walk), delegating an Option-FREE subtree to the
+/// native `.cmp()` (correct there — only Option's derived Ord disagrees) and handling an `Option` position
+/// by an EXPLICIT `Some`-before-`None` match so the order is `Some(_) < None` (Cadenza), overriding std's
+/// `None < Some`. `helpers` collects generated recursive `fn`s (a self-referential Option-carrying sum),
+/// mirroring `emit_value_eq_walk`.
+fn emit_value_cmp_walk(
+    db: &mut Db,
+    ty: &Ty,
+    l: &str,
+    r: &str,
+    helpers: &mut Vec<String>,
+) -> Result<String, Reject> {
+    emit_value_cmp_walk_seen(db, ty, l, r, &mut Vec::new(), helpers)
+}
+
+fn emit_value_cmp_walk_seen(
+    db: &mut Db,
+    ty: &Ty,
+    l: &str,
+    r: &str,
+    seen: &mut Vec<crate::ast::StructId>,
+    helpers: &mut Vec<String>,
+) -> Result<String, Reject> {
+    // An Option-FREE subtree compares correctly under the native derived `Ord` — emit `l.cmp(&r)` and stop
+    // walking (smaller emit, and it is the ONLY spelling for a Map/Set/other leaf the walk does not descend).
+    // The ref-`&` handles a non-Copy compound; a Copy scalar coerces fine. This is what keeps a compare with
+    // NO Option byte-identical to the pre-fix native path (the walk only diverges at an actual Option).
+    if !ty_uses_flip_order_option(db, ty) {
+        return Ok(format!("{l}.cmp(&{r})"));
+    }
+    match ty.strip_nominal().clone() {
+        // A TUPLE — lexicographic: compare field 0, and only on `Equal` fall through to the next (`.then_with`).
+        Ty::Tuple(elems) => {
+            let mut acc: Option<String> = None;
+            for (i, e) in elems.iter().enumerate() {
+                let part = emit_value_cmp_walk_seen(
+                    db,
+                    e,
+                    &format!("{l}.{i}"),
+                    &format!("{r}.{i}"),
+                    seen,
+                    helpers,
+                )?;
+                acc = Some(match acc {
+                    None => part,
+                    Some(prev) => format!("{prev}.then_with(|| {part})"),
+                });
+            }
+            Ok(acc.unwrap_or_else(|| "core::cmp::Ordering::Equal".to_string()))
+        }
+        // A RECORD — a tuple in sorted-key order; same lexicographic chain over `.i`.
+        Ty::Record(fields) => {
+            let tys: Vec<Ty> = fields.values().cloned().collect();
+            let mut acc: Option<String> = None;
+            for (i, e) in tys.iter().enumerate() {
+                let part = emit_value_cmp_walk_seen(
+                    db,
+                    e,
+                    &format!("{l}.{i}"),
+                    &format!("{r}.{i}"),
+                    seen,
+                    helpers,
+                )?;
+                acc = Some(match acc {
+                    None => part,
+                    Some(prev) => format!("{prev}.then_with(|| {part})"),
+                });
+            }
+            Ok(acc.unwrap_or_else(|| "core::cmp::Ordering::Equal".to_string()))
+        }
+        // A LIST — `Vec<T>` compared element-wise lexicographically, then by length (the derived `Vec` Ord
+        // shape): zip + find the first non-Equal element compare, else compare lengths. Built over bound refs.
+        Ty::List(elem) => {
+            let elem_cmp = emit_value_cmp_walk_seen(db, &elem, "__le", "__re", seen, helpers)?;
+            Ok(format!(
+                "{l}.iter().zip({r}.iter()).map(|(__le, __re)| {elem_cmp}).find(|__o| *__o != core::cmp::Ordering::Equal).unwrap_or_else(|| {l}.len().cmp(&{r}.len()))"
+            ))
+        }
+        Ty::Qty { inner, .. } => emit_value_cmp_walk_seen(db, &inner, l, r, seen, helpers),
+        // A SUM. The Option case (the flip) is ordered `Some`-before-`None` (Cadenza) by the declared-ordinal
+        // match; any other sum carrying an Option leaf compares by declared discriminant then payload — the
+        // correct Cadenza order, computed WITHOUT trusting std's derived Ord.
+        Ty::Sum { .. } => emit_sum_cmp_walk(db, &ty.strip_nominal().clone(), l, r, seen, helpers),
+        // Unreachable: an Option-free shape (scalar/float/…) took the native `.cmp()` early-return above, and
+        // only Tuple/Record/List/Qty/Sum can CONTAIN an Option. Decline defensively rather than miscompile.
+        _ => Err(Reject::decline(
+            "value-cmp walk reached an unexpected Option-containing shape",
+        )),
+    }
+}
+
+/// The sum arm of [`emit_value_cmp_walk_seen`]: compare two sum values in CADENZA DECLARED variant order
+/// (discriminant ascending by declaration, then payload lexicographically) via a generated `match (l, r)`.
+/// This is what overrides std `Option`'s `None < Some`: the arms are emitted in DECLARATION order (`Some`
+/// disc 0 first, `None` disc 1), and a lower-disc-vs-higher-disc pair yields `Less`/`Greater` by declared
+/// position — NOT by std's derived discriminant. Routed through a helper `fn __cmp_<Ident>` for a recursive
+/// sum (like `emit_value_eq_walk`'s `__eq_` helper) so it terminates.
+fn emit_sum_cmp_walk(
+    db: &mut Db,
+    ty: &Ty,
+    l: &str,
+    r: &str,
+    seen: &mut Vec<crate::ast::StructId>,
+    helpers: &mut Vec<String>,
+) -> Result<String, Reject> {
+    let decl_occ = match ty.strip_nominal() {
+        Ty::Sum { decl, .. } => *decl,
+        _ => return Err(Reject::decline("value-cmp: not a sum type")),
+    };
+    let variant_count = db
+        .type_decl_by_occ(decl_occ)
+        .map(|t| t.variants.len())
+        .ok_or_else(|| Reject::decline("value-cmp: no variant count"))?;
+    // Build one match arm per ORDERED variant PAIR is O(V²); instead compare the discriminant-ORDINAL first
+    // (declared position), and only on an equal-discriminant pair compare payloads. Emit: a `match (l, r)`
+    // whose SAME-variant arms compare payloads and whose fallthrough compares declared ordinals.
+    // Encode each variant's declared ordinal via a small `fn`-free `match` that maps a ref to its position.
+    let mut ord_arms = Vec::with_capacity(variant_count);
+    let mut same_arms = Vec::with_capacity(variant_count + 1);
+    for disc in 0..variant_count as u32 {
+        let path = sum_variant_path_of_ty(db, ty, disc)?;
+        // ordinal map arm: `Enum::V { .. } => <disc>` (works for nullary + payload variants via `{ .. }`… but
+        // a tuple-variant needs `(..)`). Use a binding-free pattern that matches either: `Enum::V { .. }` is
+        // invalid for a tuple variant, so match with `_`-payload via the path + `(..)`/nothing. Simplest: a
+        // per-variant arm that ignores payload — `path(..)` for a payload variant, `path` for nullary.
+        let has_payload = variant_payload_ty(db, ty, disc).is_some();
+        let ord_pat = if has_payload {
+            format!("{path}(..)")
+        } else {
+            path.clone()
+        };
+        ord_arms.push(format!("{ord_pat} => {disc}u32,"));
+        // same-variant payload compare arm.
+        match variant_payload_ty(db, ty, disc) {
+            None => same_arms.push(format!("({path}, {path}) => core::cmp::Ordering::Equal,")),
+            Some(payload_ty) => {
+                let deref = if super::enums::variant_is_recursive(db, ty, disc) {
+                    "**"
+                } else {
+                    "*"
+                };
+                let lp = format!("({deref}__lp)");
+                let rp = format!("({deref}__rp)");
+                let cmp = emit_value_cmp_walk_seen(db, &payload_ty, &lp, &rp, seen, helpers)?;
+                same_arms.push(format!("({path}(__lp), {path}(__rp)) => {cmp},"));
+            }
+        }
+    }
+    // The ordinal helper (inline closures over each side) + the same-variant match with a fallthrough that
+    // compares declared ordinals. `__ord` maps a ref to its DECLARED position; the final arm compares them.
+    let enum_ty = super::types::rust_type(ty)
+        .ok_or_else(|| Reject::decline("value-cmp: no rust type for the sum"))?;
+    let ord_fn = format!(
+        "|__v: &{enum_ty}| -> u32 {{ match __v {{ {} }} }}",
+        ord_arms.join(" ")
+    );
+    Ok(format!(
+        "{{ let __ord = {ord_fn}; match (&{l}, &{r}) {{ {} _ => __ord(&{l}).cmp(&__ord(&{r})), }} }}",
+        same_arms.join(" ")
+    ))
 }
 
 /// Whether a runtime `(= a b)` over type `ty` can emit a native Rust `==` — the operand type maps to a

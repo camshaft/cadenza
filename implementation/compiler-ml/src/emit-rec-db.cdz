@@ -22,7 +22,9 @@ import { functype-bytes, type-section-multi, func-section-multi, code-section-mu
 
 /// Is `c` in the emit subset GIVEN a def-index map? Like emit-db's `can-emit` but a `CCall` is ALLOWED when its
 /// callee is in `defidx` (an emitted recursive def) — so a recursive program (fac) can emit; a CCall to a name
-/// NOT in the map (a merely-mutually-recursive def, excluded by the self-only def-env) still declines. Scalar Bool.
+/// NOT in the map (an unknown/undefined callee) declines. NOTE: mutually-recursive defs (ev/od) are now IN the
+/// def-env (build-def-env includes them), so they get funcidxs (defenv-funcidx-map maps ALL entries before any
+/// body emits, so cross-calls resolve) and a mutual module emits — no longer a decline. Scalar Bool.
 def can-emit-d(c: Core, defidx: Map(Int64, Int64)) = match c with
   | Core.CNum(_, _, _) => true
   | Core.CVar(_) => true

@@ -62,3 +62,10 @@
 ;; CDZ0215/CDZ0214 lockstep lands (avoid a 4th held reject on an un-gate-able store); NOT forgotten, queued.
 ;; ON LAND: v-inference hands me the gate-derived migration list (migration-first if any surface) + routes
 ;; the reject; then gate my graded (error CDZ0202) key case x3 + pin into 19-sets/03-equality.
+
+;; BUILT + MR'd (v-inference, 2026-07-29): 68e580932 (queued). FLIP-SET is EMPTY — gate 5164/0/0 clean, NO
+;; corpus case keys a Map/Set by an abstract value (my grep-scan was right; the compiler's visibility+type
+;; analysis confirms). So it lands STANDALONE — no migration, no lockstep. Abstract-type soundness arc now
+;; COMPLETE across all 3 routes: CDZ0214 (ctor pattern) + CDZ0215 (field-label) + CDZ0202 (collection key).
+;; ON LAND (68e580932): gate my graded (error CDZ0202) key case x3; pin into 19-sets or 03-equality beside
+;; the direct-eq CDZ0202 pin; baseline x3.

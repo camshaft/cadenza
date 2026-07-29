@@ -5853,3 +5853,50 @@
             (+ (Sim.step) (+ (Sim.step) (Sim.step)))))
         (export main)))
   (declines))
+
+(case "handler op-param and state binders stay hygienic when colliding with perform-site names"
+  (doc    "The CLEAN half of the arm-inline hygiene finding (arm-internal do-def/let locals leak;
+           these two binder kinds do NOT): the arm's op PARAM `v` shadows a body-side v=1000
+           (arm v = the operand 3, resume 3+50; body v intact → 1053) and the STATE binder `s`
+           shadows a body-side s=1000 (arm s = the seed 50; body s intact → 1050). The fold
+           evidently renames op params and the state binder — pinning that so the arm-LOCAL fix
+           extends the SAME treatment rather than regressing these.")
+  (input  (do
+        (effect E (op get (-> Int64 Int64)))
+        (def (main (: mode Int64))
+          (if (= mode 1)
+              (do
+                (def v 1000)
+                (handle E 50
+                  ((get (v) s (resume (+ v s) s)))
+                  (+ v (E.get 3))))
+              (do
+                (def s 1000)
+                (handle E 50
+                  ((get (u) s (resume s s)))
+                  (+ s (E.get 7))))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 1053 Int64))
+  (call   main (: 2 Int64)) (output (: 1050 Int64)))
+
+(case "a performing closure duplicated through a generic tuple applies twice with stepping state"
+  (doc    "Effects × the generic DATA position: the performing closure rides `dup` (an unannotated
+           generic) into a tuple, and BOTH projections apply under the handler — the homing analysis
+           must track the perform through the generic construction + projection (the collection-slot
+           spelling is the pinned decline; the GENERIC-TUPLE slot computes because dup inlines/
+           monomorphizes into the handler scope). Two applications see stepping state: 100 then
+           100+k → 210 at k=10, 200 at k=0. A homing that lost the closure through the generic slot
+           would false-reject; a projection that shared ONE application's frame would double-count
+           the first state.")
+  (input  (do
+        (effect E (op get (-> Unit Int64)))
+        (def (dup x) (tuple x x))
+        (def (main (: k Int64))
+          (handle E 100
+            ((get (u) s (resume s (+ s k))))
+            (do
+              (def p (dup (fn ((: _y Int64)) (E.get))))
+              (+ ((. p 0) 1) ((. p 1) 2)))))
+        (export main)))
+  (call   main (: 10 Int64)) (output (: 210 Int64))
+  (call   main (: 0 Int64)) (output (: 200 Int64)))

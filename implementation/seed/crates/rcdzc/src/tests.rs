@@ -6496,6 +6496,56 @@ fn set_to_list_of_an_empty_set_folds_to_the_empty_list() {
     }
 }
 
+/// ⚠ SOUNDNESS regression (breaker #43, routed 2026-07-29): ordering an ALL-NULLARY sum (every variant
+/// payload-free — a user `(type Tri (Lo)(Mid)(Hi))`, `Sign`, `Ordering` itself) mis-lowered on wasm. An
+/// all-nullary sum is an ENUM-DISC: a BARE i32 discriminant with NO heap box. But `<`/`>`/`compare` routed
+/// it to `Core::ValueCmp` (the runtime `value-cmp` heap walk, since an all-nullary `Ty::Sum` passes
+/// `is_orderable_compound`), and `value-cmp`'s `op_sum_disc` expects a BOXED sum node — fed a bare immediate
+/// i32 it read discriminant 0 for both operands → `compare` returned Equal for DISTINCT variants and `<`
+/// was false both ways, while `=` (correctly enum-disc-routed to `i32.eq`) said false. compare contradicted
+/// `=` (§331) and the sum didn't order by discriminant (§Compound Ordering). Fix: `<`/`>`/`compare` on an
+/// enum-disc operand route to a scalar `Core::Compare` i32 TAG compare (the sum's runtime value IS its
+/// discriminant), the same representation `=` already used. This Core-level witness pins the ROUTE (no
+/// runtime needed): an enum-disc `<` lowers to `Core::Compare`, NOT `Core::ValueCmp`; a PAYLOAD-carrying
+/// sum's ordering still boxes → `Core::ValueCmp` (the fix's perimeter — must not disturb the boxed walk).
+#[test]
+fn an_all_nullary_sum_orders_by_i32_discriminant_not_the_value_cmp_heap_walk() {
+    use crate::core::Core;
+    use crate::db::Db;
+    use crate::lower::core_of;
+    // Lower the body of `cmp` (a `<` over two all-nullary-sum values built from params) and inspect the Core.
+    let lower_body = |src: &str, def: &str| -> Core {
+        let mut db = Db::load(crate::testkit::parse(src));
+        let d = db.def_by_name(def).unwrap_or_else(|| panic!("def {def}"));
+        let m_body = db.defs[d].body.expect("body");
+        core_of(&mut db, m_body)
+    };
+    // An ALL-NULLARY sum `<`: `(< x y)` where x,y : Tri (all variants payload-free). Must be a scalar i32
+    // tag `Core::Compare`, NOT a `Core::ValueCmp` heap walk (which misreads the bare disc → the #43 bug).
+    let all_nullary = "(module m (type Tri (Lo) (Mid) (Hi)) \
+        (def (lt (: x Tri) (: y Tri)) (< x y)) \
+        (def (main) 0) (export main))";
+    match lower_body(all_nullary, "lt") {
+        Core::Compare { .. } => {} // ✔ i32 tag compare — orders by discriminant
+        Core::ValueCmp { .. } => panic!(
+            "an all-nullary sum `<` must lower to a scalar i32 tag Core::Compare, NOT Core::ValueCmp \
+             (the heap walk misreads a bare enum-disc → #43 Equal-for-distinct-variants soundness bug)"
+        ),
+        other => panic!("an all-nullary sum `<` must be a Core::Compare, got {other:?}"),
+    }
+    // CONTROL — a PAYLOAD-carrying sum's `<` still boxes, so it MUST take the ValueCmp heap walk (the fix's
+    // perimeter: only a wholly-nullary sum is a bare disc; a sum with any payload variant is heap-boxed).
+    let payload_sum = "(module m (type Mix (P Int64) (N1) (N2)) \
+        (def (lt (: x Mix) (: y Mix)) (< x y)) \
+        (def (main) 0) (export main))";
+    match lower_body(payload_sum, "lt") {
+        Core::ValueCmp { .. } => {} // ✔ boxed sum → the descriptor-guided heap walk (unchanged)
+        other => panic!(
+            "a PAYLOAD-carrying sum `<` must still lower to Core::ValueCmp (boxed heap walk), got {other:?}"
+        ),
+    }
+}
+
 /// SROA escape-gate (operator directive, tick ~353): `sroa_tuple_scrutinee_candidate` must FIRE on a
 /// `match` whose scrutinee is a fresh runtime tuple AND every arm is a tuple-destructure (the alloc-eliding
 /// candidate v-patterns' dispatch consumes), and DECLINE (fail-closed) whenever the tuple escapes — a
@@ -58390,6 +58440,48 @@ mod stage1 {
         assert!(
             codes_for("(match (mk k) ((Temp.T v) v) (_ -1))").contains(&"CDZ0214".to_string()),
             "qualified ctor pattern still rejects CDZ0214"
+        );
+    }
+
+    #[test]
+    fn an_abstract_typed_map_set_key_is_rejected_cdz0202_but_a_concrete_key_stays_legal() {
+        // SOUNDNESS (breaker/corpus-bugfix, concierge-ruled 2026-07-29): a CHAMP Map/Set keyed by an
+        // ABSTRACT-typed value (imported handle, ctor `T` withheld) observes the module's PRIVATE
+        // representation through champ_eq at insert/lookup — the SAME type-system.md:180 MUST violation as a
+        // direct `(=)`, an indirect route. Must reject CDZ0202. FIX (infer::check_application): the
+        // collection-construction prims (SetOf/SetInsert/MapNew/MapInsert) reject when the RESULT key type is
+        // abstract-at-this-site (`is_abstract_type_at`). Values stay legal to HOLD (payloads); a concrete/
+        // prelude key stays legal (only a genuinely abstract imported key rejects).
+        use crate::abi::Artifact;
+        let lib = crate::codec::encode(&parse(
+            "(do (type Temp (T Int64)) (def (mk (: c Int64)) (Temp.T c)) (export Temp) (export mk))",
+        ));
+        let codes_for = |body: &str| -> Vec<String> {
+            let entry = crate::codec::encode(&parse(&format!(
+                "(do (import \"lib\" (Temp mk)) (def (main (: k Int64)) {body}) (export main))"
+            )));
+            let out = crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "lib", lib.clone()),
+                    Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
+                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                ],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .filter_map(|d| d.code.clone())
+                .collect()
+        };
+        // An abstract-typed value as a Set KEY (via Set.of) → CDZ0202 (was: compiled + observed the private rep).
+        assert!(
+            codes_for("(Set.size (Set.of (list (mk k))))").contains(&"CDZ0202".to_string()),
+            "an abstract-typed Set key must reject CDZ0202"
+        );
+        // CONTROL: a CONCRETE (Int64) key stays legal — the gate must not over-reject a non-abstract key.
+        assert!(
+            !codes_for("(Set.size (Set.of (list k)))").contains(&"CDZ0202".to_string()),
+            "a concrete Int64 Set key stays legal (no CDZ0202)"
         );
     }
 

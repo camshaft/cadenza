@@ -2610,10 +2610,13 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             && gate_in_flight_exonerates(&a.name, live_priority_leases(fleet));
         // Fifth exoneration (pr-sync only): a RECENT trunk advance covering the between-batches COMPOSE
         // window. After a land, pr-sync composes + re-gates the NEXT batch before draining new mail, and
-        // that window holds no lease yet — so `gate_exonerates` misses it, and `trunk_exonerates` is
-        // bounded by pr-sync's tight ~20min stale window (interval 10m). A purpose-built fixed 15min
-        // window on the same commit age closes it: a just-landed pr-sync is composing, not wedged
-        // (concierge: observed ~8min post-land). Reuses the already-computed `trunk_commit_age`.
+        // that window holds no lease yet — so `gate_exonerates` misses it. `trunk_exonerates` covers a
+        // recent land too, but ONLY within the per-agent stale window (1200s/20min at pr-sync's 10m
+        // interval + default grace); a compose+re-gate that OUTLASTS that window (trunk age climbs past
+        // 1200s while pr-sync is still lease-free) falls through it. This uses a purpose-built window that
+        // deliberately EXCEEDS the stale window (`PR_SYNC_RECENT_TRUNK_SECS`, 30min) so it adds real
+        // coverage beyond `trunk_exonerates` rather than being subsumed by it (PR#887: a window SMALLER
+        // than the stale window is a no-op at defaults). Reuses the already-computed `trunk_commit_age`.
         let recent_trunk_exonerates = suspected_stall
             && recent_trunk_advance_exonerates(
                 &a.name,
@@ -3884,9 +3887,14 @@ fn gate_in_flight_exonerates(name: &str, live_priority_leases: usize) -> bool {
 /// Fixed "trunk advanced recently" window (seconds) for the pr-sync COMPOSE-window exoneration. Sized to
 /// span the post-land / pre-next-gate gap: pr-sync lands a batch, then composes + re-gates the next one
 /// before it drains new mail, and that compose window holds NO check-lease yet (so
-/// `gate_in_flight_exonerates` can't cover it). 15min comfortably spans a compose+re-gate; a genuinely
-/// wedged pr-sync has trunk flat far longer than this, so the window stays a tight wedge signal.
-const PR_SYNC_RECENT_TRUNK_SECS: u64 = 15 * 60;
+/// `gate_in_flight_exonerates` can't cover it). It MUST EXCEED pr-sync's default stale window
+/// (`stale_window_secs(600, 2, 600)` = 1200s = 20min at interval 10m) or it adds NO coverage:
+/// `trunk_advance_exonerates` already exonerates any commit age within the stale window, so a window
+/// SMALLER than 1200s is fully subsumed by it (PR#887 Copilot caught the original 15min = 900s doing
+/// exactly nothing at defaults). 30min gives a real 10-minute margin BEYOND the stale threshold — enough
+/// to span a compose+re-gate that outlasts staleness — while a genuinely wedged pr-sync (no lease AND no
+/// commit for over 30min) still flags.
+const PR_SYNC_RECENT_TRUNK_SECS: u64 = 30 * 60;
 
 /// Does a RECENT trunk advance exonerate a suspected pr-sync drain-stall in the between-batches COMPOSE
 /// window? ONLY for pr-sync. Distinct from `trunk_advance_exonerates`, which is bounded by the agent's
@@ -9440,17 +9448,34 @@ mod tests {
     fn recent_trunk_advance_exonerates_pr_sync_compose_window_on_a_fixed_generous_window() {
         // pr-sync that landed recently (age <= window) is composing the next batch, not stalled → exonerated,
         // covering the lease-free between-batches window the mid-gate lease check can't. Boundary inclusive.
-        assert!(recent_trunk_advance_exonerates("pr-sync", Some(480), 900)); // ~8min post-land (the observed case)
+        assert!(recent_trunk_advance_exonerates("pr-sync", Some(480), 1800));
         assert!(
-            recent_trunk_advance_exonerates("pr-sync", Some(900), 900),
+            recent_trunk_advance_exonerates("pr-sync", Some(1800), 1800),
             "== window is inclusive"
         );
         // Trunk flat longer than the window → a genuinely wedged pr-sync → NOT exonerated.
-        assert!(!recent_trunk_advance_exonerates("pr-sync", Some(901), 900));
+        assert!(!recent_trunk_advance_exonerates(
+            "pr-sync",
+            Some(1801),
+            1800
+        ));
         // No commit age resolvable → can't claim liveness → not exonerated.
-        assert!(!recent_trunk_advance_exonerates("pr-sync", None, 900));
+        assert!(!recent_trunk_advance_exonerates("pr-sync", None, 1800));
         // Non-pr-sync never exonerated this way (only pr-sync writes trunk).
-        assert!(!recent_trunk_advance_exonerates("v-runtime", Some(1), 900));
+        assert!(!recent_trunk_advance_exonerates("v-runtime", Some(1), 1800));
+        // THE POINT of this window (PR#887): it must EXCEED the per-agent stale window `trunk_advance_
+        // exonerates` uses, or it adds no coverage. Pin the coverage GAP it uniquely fills — a commit
+        // age that is PAST the stale window (so trunk_advance_exonerates has stopped firing) but still
+        // within this larger window is exonerated ONLY here. With the shipped constant (1800s) vs the
+        // default stale window (1200s), an age of 1500s is exactly that gap.
+        assert!(
+            !trunk_advance_exonerates("pr-sync", Some(1500), 1200),
+            "past the stale window, the stale-window exoneration no longer fires"
+        );
+        assert!(
+            recent_trunk_advance_exonerates("pr-sync", Some(1500), PR_SYNC_RECENT_TRUNK_SECS),
+            "but the larger compose window still exonerates it — the coverage this adds"
+        );
     }
 
     #[test]

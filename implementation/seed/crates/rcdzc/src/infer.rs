@@ -8131,6 +8131,53 @@ fn check_application(
     if crate::eval::prim_of(db, head) == Some(crate::resolved::Prim::AstLift) && args.len() == 1 {
         return;
     }
+    // ABSTRACT-TYPED MAP/SET KEY — CDZ0202. A CHAMP Map/Set keyed by a value of an ABSTRACT type (imported
+    // handle, ctors withheld) observes the equality of the module's PRIVATE representation at insert/lookup
+    // (`champ_eq`/value-eq over the key spine) — the SAME `type-system.md §An Abstract Type's Representation
+    // Is Not Observable Across Its Boundary` violation as a direct `(=)`, an INDIRECT route (breaker,
+    // concierge-ruled). Values stay legal to HOLD (payloads); only the key-EQUALITY-observation rejects.
+    // Gate the collection-CONSTRUCTION prims (you cannot obtain an abstract-keyed collection without building
+    // one): read the RESULT type's key/elem — `Ty::Map(k, _)` / `Ty::Set(k)` — and reject if `k` is abstract
+    // AT THIS SITE. Reuses the direct-eq predicate shape (`nominal_or_sum_decl` + `is_abstract_type_at`);
+    // gating on `is_abstract_type_at` (NOT bare visibility) excludes a prelude/concrete/own key (an Int64 /
+    // prelude-Option key never flags) — only a genuinely handle-only imported key type. A comparison FUNCTION
+    // the module exports stays the sanctioned route.
+    //= spec/capabilities/type-system.md#an-abstract-type-s-representation-is-not-observable-across-its-boundary
+    //# A built-in structural comparison whose operand is a value of an abstract type — a type whose handle a module made visible without making its constructors visible ([modules-and-namespaces.md](modules-and-namespaces.md) §A Type's Handle And Its Constructors Are Independently Visible) — MUST be rejected outside the declaring module, so that the abstract type's representation is not observed through equality and a module that wants its abstract type compared publishes a comparison operation rather than exposing its structure.
+    if matches!(
+        crate::eval::meta_apply_of(db, head),
+        Some(
+            crate::resolved::Prim::SetOf
+                | crate::resolved::Prim::SetInsert
+                | crate::resolved::Prim::MapNew
+                | crate::resolved::Prim::MapInsert
+        )
+    ) {
+        let key_ty = match type_of(db, app) {
+            Ty::Map(k, _) => Some((*k).clone()),
+            Ty::Set(k) => Some((*k).clone()),
+            _ => None,
+        };
+        if let Some(k) = key_ty
+            && nominal_or_sum_decl(&k).is_some_and(|decl| db.is_abstract_type_at(app, decl))
+        {
+            trace!(target: "rcdzc::infer", head = head.0, "fault: abstract-typed map/set key (CDZ0202)");
+            out.push(
+                Reject::coded(
+                    Code::NominalMismatch,
+                    format!(
+                        "`{}` is an abstract type here (its constructors are not exported to this file), \
+                         so it cannot be a map/set key — key insertion and lookup observe its \
+                         representation through a built-in comparison; compare it through a function the \
+                         module that declares it exports",
+                        k.render_name()
+                    ),
+                )
+                .at(head),
+            );
+            return;
+        }
+    }
     // `(trap MESSAGE)` — the abort primitive `trap : ∀a. String → a`. Its message MUST be a String; a
     // non-String message (`(trap 5)`, `(trap true)`) is a type error. But `trap`'s RESULT is the polymorphic
     // `a` (it inhabits any type), so the generic scheme-unify grounds the operand parameter to `String` and

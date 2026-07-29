@@ -19209,6 +19209,21 @@ fn lower_compare(db: &mut Db, id: StructId, lhs: StructId, rhs: StructId) -> Cor
             let operands = [lhs, rhs];
             let kind = if is_scalar(db, lhs) && is_scalar(db, rhs) {
                 Some(CmpKind::Scalar)
+            } else if node_ty_is_enum_disc(db, lhs) {
+                // ENUM-DISCRIMINANT three-way compare (breaker #43): an ALL-NULLARY sum is a bare i32
+                // discriminant (no heap box), ordered by that discriminant (core-semantics §Compound
+                // Ordering: "a sum orders first by the discriminant"). Route to `CmpKind::Scalar` so the
+                // three-way desugars to `if (a<b) Less else if (a>b) Greater else Equal` over `Core::Compare`
+                // i32 TAG compares — the SAME path the `<`/`>` enum-disc arm now takes (§331: compare AGREES
+                // with the boolean ops). MUST precede the `is_orderable_compound → ValueCmp` arm below: an
+                // all-nullary `Ty::Sum` is orderable, but routing it to the runtime `value-cmp` heap walk
+                // MISCOMPILES — `value-cmp`'s `op_sum_disc` expects a boxed sum node, gets a bare immediate
+                // i32, reads disc 0 for both → Equal for distinct variants (the #43 bug: compare=Equal while
+                // `=`=false). The type checker unified both operands, so the single-side check covers both.
+                // A payload-carrying sum's nullary variants box (shared heap rep) → the `ValueCmp` arm.
+                //= spec/capabilities/core-semantics.md#a-total-order-is-observed-through-a-three-way-comparison
+                //# The boolean ordering operators MUST agree with the three-way comparison, so that a type has one total order surfaced two ways that cannot disagree.
+                Some(CmpKind::Scalar)
             } else if operand_is_string_or_symbol(db, lhs) && operand_is_string_or_symbol(db, rhs) {
                 Some(CmpKind::Str)
             } else if bigint_operand(db, &operands) {
@@ -19737,6 +19752,31 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                     lhs: args[0],
                     rhs: args[1],
                 }
+            } else if matches!(op, Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge)
+                && node_ty_is_enum_disc(db, args[0])
+            {
+                // ENUM-DISCRIMINANT ORDERING (breaker #43): an ALL-NULLARY sum (every variant payload-free —
+                // a user `(type Tri (Lo)(Mid)(Hi))`, `Sign`, `Ordering` itself) is represented as a BARE i32
+                // discriminant with NO heap box (`db.is_enum_disc`). Its blessed order is by discriminant
+                // (core-semantics §Compound Ordering Is Lexicographic: "a sum MUST be ordered first by the
+                // discriminant"), and since the runtime value IS that discriminant i32, the order is a plain
+                // `i32` compare of the two tags — the SAME `Core::Compare` the `=` enum-disc arm uses, just
+                // with the ordering `op`. This MUST precede the `is_orderable_compound → ValueCmp` arm below:
+                // an all-nullary `Ty::Sum` passes `is_orderable_compound`, but routing it to the runtime
+                // `value-cmp` heap walk is a MISCOMPILE — `value-cmp` calls `op_sum_disc` expecting a BOXED
+                // sum node, but an enum-disc operand is a bare immediate i32, so it reads disc 0 for both →
+                // Equal for distinct variants + `<` false both ways (the #43 soundness bug: compare
+                // contradicts `=`, violating §331). A payload-carrying sum's nullary variants still box (they
+                // share the sum's heap rep), so they correctly take the `ValueCmp` arm below — only a
+                // wholly-nullary sum is a bare disc. `operand_int_ty` widths the compare as i32.
+                //= spec/capabilities/core-semantics.md#compound-ordering-is-lexicographic
+                //# A sum MUST be ordered first by the discriminant as encoded in its canonical byte form, and then, for two values of the same variant, lexicographically by payload, so that the order agrees with the canonical byte form equality already requires.
+                trace!(target: "rcdzc::lower", op = intrinsic_name(op), "enum-discriminant ordering → i32 tag compare (all-nullary sum orders by discriminant)");
+                Core::Compare {
+                    op,
+                    lhs: args[0],
+                    rhs: args[1],
+                }
             } else if matches!(op, Prim::Lt | Prim::Le | Prim::Gt | Prim::Ge) && {
                 let opnd_ty = crate::infer::type_of(db, args[0]);
                 is_orderable_compound(db, &opnd_ty)
@@ -19747,6 +19787,8 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 // unified both operands, so the single-side orderability check covers both. A float/bytes/set/
                 // map leaf makes the compound UN-orderable (`is_orderable_compound` false) → the decline below,
                 // matching the spec's carve-outs (§319 float partial; no blessed Bytes/Set/Map order).
+                // NOTE an ALL-NULLARY (enum-disc) sum was already handled by the `node_ty_is_enum_disc` arm
+                // above (a bare i32 tag compare) — only a BOXED sum (payload-carrying) reaches here.
                 //= spec/capabilities/core-semantics.md#compound-ordering-is-lexicographic
                 //# A tuple or record MUST be ordered by comparing its components in the same canonical order its equality and canonical byte form use, taking the first component that differs as decisive and comparing equal only when every component compares equal.
                 //= spec/capabilities/core-semantics.md#compound-ordering-is-lexicographic
