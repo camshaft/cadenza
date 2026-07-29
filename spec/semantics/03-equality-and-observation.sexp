@@ -2497,3 +2497,19 @@
   (input  (do (type Tri (Lo) (Mid) (Hi)) (def (main) (tuple (Tri.Hi unit) 5)) (export main)))
   (call main) (output (: (tuple (Hi unit) 5) (Tuple Tri Int64))))
 
+
+(case "a tuple key with a computed-NaN leaf is found by the canonical NaN probe"
+  (doc    "Composes the tuple-NaN equality pin (:176) with the CHAMP key path (the bare-NaN map key
+           is 19-sets :1815): the key's float leaf is a COMPUTED `(/ x x)` NaN inside a tuple, and
+           the probe spells it `Float64.nan` — champ_hash/eq must descend into the tuple and unify
+           the two NaN spellings through the canonical byte form (hit → 10); the second-slot control
+           (nan, 2) misses (0). A tuple hash that used the raw computed bit pattern (a different
+           qNaN payload than the canonical constant) splits the spellings only in the COMPOUND case.")
+  (input  (do
+        (def (main (: x Float64))
+          (do
+            (def m (Map.insert Map.empty (tuple (/ x x) 1) 42))
+            (+ (* 10 (match (Map.lookup m (tuple Float64.nan 1)) ((Some v) 1) ((None _u) 0)))
+               (match (Map.lookup m (tuple Float64.nan 2)) ((Some v) 1) ((None _u) 0)))))
+        (export main)))
+  (call   main (: 0.0 Float64)) (output (: 10 Int64)))

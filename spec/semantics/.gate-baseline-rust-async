@@ -78,6 +78,7 @@ pass	Map.remove and Map.lookup by different-route MULTI-LIMB keys agree with the
 todo	Map.swap keyed by a runtime Bytes ROPE replaces the flat-keyed entry
 pass	Map.swap keyed by a runtime Rational canonicalizes: a normalized-equal key replaces, a distinct one adds
 pass	Map.take keyed by a runtime Rational removes the arithmetic-built canonical twin
+pass	Map.to-list orders by SYMBOL keys while float values — NaN included — ride along
 pass	Map.to-list over Rational keys enumerates ascending by key value with the integer form last
 pass	McCarthy 91 — a self-call nested INSIDE the argument of another self-call
 pass	ONE-EDIT-APART checks strings for exactly one substitution or one insertion by length case
@@ -3000,6 +3001,7 @@ pass	a tuple guard reads a ctor payload binder inside a tuple element
 pass	a tuple guard reads a nested tuple's inner binders
 pass	a syntactically loop-invariant perform advances per iteration — effectful is not hoistable
 pass	a tuple is constructed with positional elements
+pass	a tuple key with a computed-NaN leaf is found by the canonical NaN probe
 pass	a tuple of a bool and a sum is exhaustive when every bool×variant combination is covered
 pass	a tuple of bools is exhaustive when every combination is covered
 pass	a tuple of calls to a sibling function on recursive-sum values matches with constructor patterns
@@ -3916,6 +3918,7 @@ pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
 pass	halving the minimum subnormal flushes to zero while a double-min stays subnormal
 pass	handler op-param and state binders stay hygienic when colliding with perform-site names
+pass	hash-only set ops keep working on float-leaf tuples that have no blessed order
 pass	heap string elements of a hoisted list if select by branch
 pass	heap-valued handler state above an inner abort keeps threading
 pass	hexadecimal, binary, and decimal spellings of one value are equal
@@ -5216,3 +5219,5 @@ pass	an abstract-typed value used as a CHAMP map key is rejected (opacity — th
 todo	two @params seeding nested handlers in the WRONG order is caught by an asymmetric row
 todo	a @param slice window at an interior cut reads the non-straddling bytes
 todo	a @param slice window whose length exceeds the remaining bytes yields None
+pass	Qty arithmetic INLINE in a handler resume VALUE slot keeps the state binder's Qty type (#44 fix)
+pass	a Map keyed by a COMPOUND containing an abstract type is rejected (opacity — the key path compares the abstract leaf)

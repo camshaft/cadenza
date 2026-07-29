@@ -16,7 +16,9 @@
 /// check→compute-on-miss→fill→return-updated-db memo loop and that a second demand HITS the memo.
 import { Typed } from "infer-db"
 
-import { Db, require-typed, fill-typed } from "db"
+import { Db, require-typed, fill-typed, db-tree } from "db"
+
+import { Tree, Node, node-at } from "parse-db"
 
 /// Demand the type fact at `id`, threading the Db explicitly. Returns `(db', fact)`:
 ///   - FILLED slot → `(db, memoized-fact)` — the Db is UNCHANGED (no recompute, no re-fill).
@@ -28,6 +30,29 @@ def demand-typed(db: Db, id: Int64, deflt: Typed) = match require-typed(db, id) 
   | Option.None(_) => (fill-typed(db, id, deflt), deflt)
 
 // MISS — fill (memoize) + thread out
+
+/// P1c REAL producer (leaf slice): a demand that COMPUTES the type from the source node instead of taking a
+/// supplied default — the step past the demo `demand-typed`. For the LEAF node shapes (no child demands
+/// needed), it reads the node off the Db's tree and applies infer-db's OWN leaf rules (reused, not reinvented):
+///   NLit      → deferred int `TIntW(true, 0)` (item-3 HM: a bare literal's width is unconstrained until it
+///               grounds against a sibling / defaults to Int64 at the root — matches infer-db's t-int-deferred).
+///   NBoolLit  → `TBool`.
+///   NAnnLit(_, sflag, w) → the ANNOTATED `TIntW(signed, w)` (sread already fits-width-checked the value).
+///   anything else (a non-leaf / unknown node) → not computed here → `TErr` (a composite producer demands its
+///               children first; this leaf producer declines a shape it doesn't own, never guesses).
+/// Same MEMO loop as `demand-typed`: FILLED slot → memo hit (db unchanged); ABSENT → compute + fill + thread.
+/// This proves REAL memoized inference (computed-from-source), the essential item-4 step beyond the default demo.
+def compute-leaf-type(tree: Tree, id: Int64) = match node-at(tree, id) with
+  | Option.Some(Node.NLit(_)) => Typed.TIntW(true, 0)
+  | Option.Some(Node.NBoolLit(_)) => Typed.TBool
+  | Option.Some(Node.NAnnLit(_, sflag, w)) => Typed.TIntW((if sflag == 1 then true else false), w)
+  | Option.Some(_) => Typed.TErr
+  | Option.None(_) => Typed.TErr
+
+def demand-typed-leaf(db: Db, id: Int64) = match require-typed(db, id) with
+  | Option.Some(fact) => (db, fact)                                   // memo HIT — no recompute
+  | Option.None(_) =>                                                 // MISS — compute from source, fill, thread
+      (let ty = compute-leaf-type(db-tree(db), id) in (fill-typed(db, id, ty), ty))
 // ---- TESTS: the memoizing-producer loop over explicit-threaded Db columns ---------------------------
 import { Tok, parse-tokens } from "parse-db"
 
@@ -74,4 +99,35 @@ def dd-hit-does-not-recompute-poison() =
       | Typed.TErr => unit
       | _ => trap("memo HIT returns the filled TErr, not the new default")
 
-export { demand-typed }
+// ---- TESTS: the REAL leaf producer (computes from source, not a supplied default) -------------------
+
+def bool-db() = match parse-tokens([Tok.TBoolTok(1)]) with
+  | (_, tree) => db-of(tree)
+
+@test
+def dd-leaf-computes-nlit-deferred-from-source() =
+  // demand-typed-leaf reads the NLit node (Tok.TNum 5 → NLit at id 0) and COMPUTES its type from source:
+  // a bare literal is the DEFERRED int TIntW(true, 0) (item-3 HM), NOT a supplied default. Memo fills to 1.
+  match demand-typed-leaf(sample-db(), 0) with
+    | (db1, fact) => match fact with
+      | Typed.TIntW(s, w) => (if (s and (w == 0)) then
+          (if typed-filled(db1) == 1 then unit else trap("leaf demand fills the memo (1)"))
+        else trap("NLit computes to deferred TIntW(true, 0)"))
+      | _ => trap("NLit computes to a TIntW (deferred)")
+
+@test
+def dd-leaf-computes-nboollit-tbool-from-source() =
+  // a bool-literal node (TBoolTok 1 → NBoolLit) COMPUTES to TBool from source.
+  match demand-typed-leaf(bool-db(), 0) with
+    | (_db, fact) => match fact with
+      | Typed.TBool => unit
+      | _ => trap("NBoolLit computes to TBool")
+
+@test
+def dd-leaf-second-demand-hits-memo() =
+  // the real producer memoizes exactly like the demo: 2nd demand HITS (column stays 1, no recompute).
+  match demand-typed-leaf(sample-db(), 0) with
+    | (db1, _f1) => match demand-typed-leaf(db1, 0) with
+      | (db2, _f2) => if typed-filled(db2) == 1 then unit else trap("2nd leaf demand hits memo — still 1 fact")
+
+export { demand-typed, demand-typed-leaf, compute-leaf-type }

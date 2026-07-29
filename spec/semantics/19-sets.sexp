@@ -2782,3 +2782,40 @@
           (List.len (Set.to-list (Set.of (list (tuple 1.5 1) (tuple 2.5 2) (tuple -1.0 3))))))
         (export main)))
   (declines))
+
+(case "Map.to-list orders by SYMBOL keys while float values — NaN included — ride along"
+  (doc    "The values-need-no-order guard for the float-in-compound enumeration seam: the map's KEYS
+           are symbols (blessed order) and its VALUES are floats, one a computed NaN — to-list must
+           order by the keys and carry the float values untouched (len 2, #\"a\" first → 21; the
+           NaN value reads back as the canonical NaN: `(= v v)` is TRUE under canonical-byte equality
+           → 211). An enumeration that consulted the VALUE type for orderability (or hashed the
+           entry as a whole) would decline or empty a map whose values happen to be floats — only
+           the KEY needs an order.")
+  (input  (do
+        (def (main (: x Float64))
+          (do
+            (def m (Map.insert (Map.insert Map.empty #"b" 2.5) #"a" (/ x x)))
+            (def xs (Map.to-list m))
+            (+ (* 100 (List.len xs))
+               (+ (* 10 (match (List.at xs 0) ((Some e) (if (= (. e 0) #"a") 1 0)) ((None _u) -1)))
+                  (match (List.at xs 0) ((Some e) (if (= (. e 1) (. e 1)) 1 0)) ((None _u) -1))))))
+        (export main)))
+  (call   main (: 0.0 Float64)) (output (: 211 Int64)))
+
+(case "hash-only set ops keep working on float-leaf tuples that have no blessed order"
+  (doc    "The ORDER/HASH split guard for the float-compound enumeration ruling: contains, remove and
+           len need only champ_hash/eq — NO total order — so a set of float-leaf tuples must keep
+           supporting them even while to-list declines (float compounds have no blessed order,
+           03:626). len 2 + contains by the CANONICAL NaN spelling of a computed-NaN element + remove
+           of the other element → 211. A fix that declined float-tuples at set-CONSTRUCTION (or
+           routed contains through the orderable descriptor) would break membership where only
+           ENUMERATION is unordered.")
+  (input  (do
+        (def (main (: x Float64))
+          (do
+            (def s (Set.of (list (tuple 1.5 1) (tuple (/ x x) 2))))
+            (+ (* 100 (Set.len s))
+               (+ (* 10 (if (Set.contains s (tuple Float64.nan 2)) 1 0))
+                  (Set.len (Set.remove s (tuple 1.5 1)))))))
+        (export main)))
+  (call   main (: 0.0 Float64)) (output (: 211 Int64)))

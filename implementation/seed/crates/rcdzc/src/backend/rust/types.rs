@@ -236,8 +236,33 @@ pub(super) fn ord_key_type(ty: &Ty) -> Option<String> {
                 format!("({})", parts.join(", "))
             })
         }
+        // A built-in `Option`-KEY maps to the declared-order wrapper `__CdzOpt<inner_ord_key>` — NOT the bare
+        // std `Option<T>`, whose derived Ord (`None < Some`) is the REVERSE of Cadenza's `Some < None` (#42
+        // witness 2). The inner payload uses its own `ord_key_type` (so `Option Float64` → `__CdzOpt<__CdzF64>`
+        // — the wrapper composes). A NON-Option sum, or an Option over a payload with no ord-key mapping,
+        // falls through to `rust_type`/decline as before. `is_flip_order_option_key` recognizes the built-in
+        // Option (not a user `(type Option …)`, which emits its own decl-order enum with correct native Ord).
+        Ty::Sum { args, .. } if is_flip_order_option_key_shallow(ty) => {
+            // `Option a` has exactly one type arg = the `Some` payload.
+            let inner = args.first()?;
+            let inner_key = ord_key_type(inner)?;
+            Some(format!("__CdzOpt<{inner_key}>"))
+        }
         _ => rust_type(ty),
     }
+}
+
+/// Whether `ty` is the `Option` sum at a single-payload instantiation — the sum whose std-`Option` mapping
+/// has the flipped derived Ord that `__CdzOpt` corrects for a key/element position (#42 witness 2). SHALLOW:
+/// keyed on the type NAME + arity (`Option` with one type arg) because `ord_key_type` is `Db`-free (no
+/// variant-list access). This matches the built-in `Option Int64`/`Option Float64`; the value-side wrap
+/// (`wrap_ord_key`, which HAS a `Db`) confirms the built-in via `is_builtin_std_sum` before wrapping, so a
+/// (rare) user `(type Option …)` shadow — which emits its own decl-order enum with correct native Ord —
+/// does NOT get double-wrapped (the wrap arm's Db-aware guard is the authority; this shallow one only spells
+/// the wrapped TYPE, and the two agree because a user Option is not std-mapped so it never reaches here with
+/// a std rep). Nominal is peeled first.
+pub(super) fn is_flip_order_option_key_shallow(ty: &Ty) -> bool {
+    matches!(ty.strip_nominal(), Ty::Sum { name, args, .. } if name == "Option" && args.len() == 1)
 }
 
 /// GROUND the still-unsolved type VARIABLES in `ty` to the default `Int64`, recursively — the type-level

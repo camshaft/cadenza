@@ -167,3 +167,37 @@ fn a_shared_import_closure_runs_via_the_composed_provider_path() {
         "the consumer linked against the provider cleanly (no cross-component link error):\n{out}"
     );
 }
+
+#[test]
+fn a_property_test_in_a_shared_closure_dir_still_runs_correctly() {
+    // PERF-GUARD regression (pr892): the composed path re-composes (Component::new) PER TRIAL, so a file with
+    // a MULTI-TRIAL test (a property test with scalar params) must NOT use composed — it falls back to the
+    // standalone per-file compile (JIT once, reuse across trials) to avoid a per-trial re-JIT regression. This
+    // pins that a property test living in a shared-closure dir still runs + passes correctly (via fallback);
+    // the perf choice is invisible to behavior — only the result is asserted here.
+    let dir = std::env::temp_dir().join(format!("cdz-composed-prop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("shared.cdz"),
+        "def sumto(n: Int64) =\n  if n == 0 then 0 else n + sumto(n - 1)\nexport { sumto }\n",
+    )
+    .unwrap();
+    // A PROPERTY test (scalar param `k`) that imports the shared closure: `sumto(0) == 0` holds for every k,
+    // so it PASSES over all trials. Its presence forces this file off the composed path onto standalone.
+    std::fs::write(
+        dir.join("tp.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_prop(k: Int64) =\n  if sumto(0) == 0 then unit else trap(\"prop\")\n",
+    )
+    .unwrap();
+    let (ok, out) = run_test(&dir);
+    assert!(
+        ok && out.contains("PASS t_prop"),
+        "a property test in a shared-closure dir runs + passes (via the standalone fallback, no per-trial \
+         re-JIT):\n{out}"
+    );
+    assert!(
+        !out.contains("could not run test") && !out.contains("exports no function"),
+        "no link/run error — the fallback compiled the file standalone cleanly:\n{out}"
+    );
+}

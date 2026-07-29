@@ -5959,3 +5959,22 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 15 Int64)))
+
+(case "Qty arithmetic INLINE in a handler resume VALUE slot keeps the state binder's Qty type (#44 fix)"
+  (doc    "The inline resume-slot companion to the arm-local-def perimeter above: `(resume (+ s s) s)`
+           resumes with the doubled state VALUE directly, matching `(do (def t (+ s s)) (resume t s))` — so
+           `main` reads `Qty.value` of `2·21 = 42`. This inline form used to FALSE-REJECT CDZ0201: the state
+           binder `s` was inferred at type `Any` inside the resume-slot `(+ s s)`, so `(+ Any Any)` missed
+           the Qty-aware arith arm and defaulted to Int64, then the slot check reported Int64 vs the
+           `(Qty Int64 meter)` state type. The fix (v-inference, 520142726) types the state binder from the
+           seed via `handle_arm_state_ty`, so the inline arith sees `s : (Qty Int64 meter)` and threads
+           correctly. A genuine seed/next-state type mismatch still rejects CDZ0201 — no soundness weakening.")
+  (input  (do
+            (effect Acc (op step (-> Unit (Qty Int64 (Unit.base #"meter")))))
+            (def (main (: a Int64))
+              (handle Acc (Qty.of a (Unit.base #"meter"))
+                ((step (_u) s (resume (+ s s) s)))
+                (Qty.value (Acc.step))))
+            (export main)))
+  (call   main (: 21 Int64))
+  (output (: 42 Int64)))

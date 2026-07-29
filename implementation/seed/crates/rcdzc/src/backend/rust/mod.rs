@@ -600,6 +600,12 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     if uses("__CdzF64") {
         prelude.push_str(CDZ_F64_DECL);
     }
+    // The declared-order Option key/element wrapper (#42 witness 2): a `BTreeSet<__CdzOpt<..>>` type param
+    // (`<__CdzOpt`) or its ctor (`__CdzOpt::new(`) — same collision-free marker gating as the float wrappers
+    // (the `__`-reserved name never appears in a user ident's emission).
+    if uses("__CdzOpt") {
+        prelude.push_str(CDZ_OPT_DECL);
+    }
     if !prelude.is_empty() {
         out.insert_str(insert_at, &prelude);
     }
@@ -668,6 +674,40 @@ impl PartialEq for __CdzF32 { fn eq(&self, other: &Self) -> bool { self.0 == oth
 impl Eq for __CdzF32 {}
 impl PartialOrd for __CdzF32 { fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) } }
 impl Ord for __CdzF32 { fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.cmp(&other.0) } }
+";
+
+/// A DECLARED-ORDER `Option` wrapper for use as a `BTreeSet` element / `BTreeMap` key — the ordered
+/// position where std `Option<T>`'s DERIVED `Ord` is WRONG for Cadenza. Cadenza declares `Some` (disc 0)
+/// `< None` (disc 1) (`prelude sums.rs:80`, core-semantics §Compound Ordering Is Lexicographic), but std
+/// `Option` derives `None < Some` — the REVERSE. A `BTreeSet<Option<T>>` would therefore enumerate in the
+/// WRONG order (`Set.to-list` head `None` on rust vs `Some 1` on wasm — breaker/corpus-bugfix #42 witness
+/// 2). `__CdzOpt<T>` wraps `std::option::Option<T>` and gives it a HAND-WRITTEN `Ord` that puts `Some`
+/// before `None` (and orders two `Some`s by payload) — the declared order, matching wasm + the runtime's
+/// canonical enumeration. `T: Ord` (the payload's own order); `.get()` reads the inner `Option` back for the
+/// value-side (the `to-list` element is a bare `Option<T>`). Generic (one decl serves every payload type),
+/// unlike the width-specific float wrappers. `__`-reserved name + emitted ONLY when used (gated on the
+/// `__CdzOpt` markers), `#[allow(dead_code)]` for the unused-in-a-non-Option-keyed-program case.
+const CDZ_OPT_DECL: &str = "\
+#[derive(Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+struct __CdzOpt<T: Ord>(std::option::Option<T>);
+#[allow(dead_code)]
+impl<T: Ord> __CdzOpt<T> {
+    fn new(v: std::option::Option<T>) -> Self { __CdzOpt(v) }
+    fn get(self) -> std::option::Option<T> { self.0 }
+}
+impl<T: Ord> PartialOrd for __CdzOpt<T> { fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) } }
+impl<T: Ord> Ord for __CdzOpt<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Cadenza declared order: Some (disc 0) < None (disc 1); two Somes by payload.
+        match (&self.0, &other.0) {
+            (Some(a), Some(b)) => a.cmp(b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    }
+}
 ";
 
 /// Emit one exported definition as a `pub fn` — its verbatim boundary name, solved parameter types,
