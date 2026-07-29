@@ -3997,3 +3997,45 @@
           (String.byte-len (walk "aébcd" 0)))
         (export main)))
   (call   main (: 0 Int64)) (output (: 3 Int64)))
+
+(case "a NON-TAIL recursion rebinding its rope arg to a slice-concat accumulates after each return"
+  (doc    "The non-tail frame of the fixed recursive-rebind seam (the shrinker capstone recurses in
+           TAIL position; here `(+ (byte-len s) (recurse (d s i) ...))` uses the result AFTER the
+           call, so each frame holds its rope ACROSS the recursive call while the callee rebinds a
+           derived one): byte-lens 6+5+4 of the successively-dropped \"aébcd\"→\"ébcd\"→\"écd\"
+           accumulate to 15 (the é keeps every intermediate multibyte). A frame layout that reused
+           the floated bound slot across the non-tail call (or freed the held rope early) corrupts an
+           addend. Perimeter guard for 597e0ff7d's high-water fix on the OTHER recursion shape.")
+  (input  (do
+        (def (d (: s String) (: i Int64))
+          (String.concat (Option.expect (String.slice s 0 i) "lo")
+                         (Option.expect (String.slice s (+ i 1) (String.scalar-len s)) "hi")))
+        (def (sum-lens (: s String) (: i Int64))
+          (if (>= i (String.scalar-len s))
+              0
+              (+ (String.byte-len s) (sum-lens (d s i) (+ i 1)))))
+        (def (main (: mode Int64))
+          (sum-lens "aébcd" 0))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 15 Int64)))
+
+(case "TWO loop-carried ropes each rebind to derived strings every recursion step"
+  (doc    "Doubles the floated-bound pressure of the fixed recursive-rebind seam: BOTH params are
+           ropes rebound per step — `a` to its scalar tail (slice view), `b` to a concat of ITS tail
+           — and the accumulator multiplies their byte-lens before the tail call (4·2 + 3·2 + 1·2 =
+           16, hand-traced; the é keeps a's byte-len ≠ scalar-len). Two derived-rope slots plus two
+           slice bounds live in one recursive frame — a high-water float that tracked only ONE
+           pending bound (or crossed the slots) miscomputes an addend or emits the old invalid
+           module. Second perimeter guard for 597e0ff7d.")
+  (input  (do
+        (def (tail1 (: s String))
+          (Option.expect (String.slice s 1 (String.scalar-len s)) "t"))
+        (def (zip-lens (: a String) (: b String) (: acc Int64))
+          (if (= (String.scalar-len a) 0)
+              acc
+              (zip-lens (tail1 a) (String.concat (tail1 b) "x")
+                        (+ acc (* (String.byte-len a) (String.byte-len b))))))
+        (def (main (: mode Int64))
+          (zip-lens "aéb" "cd" 0))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 16 Int64)))

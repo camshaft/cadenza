@@ -116,6 +116,7 @@ pass	TRIAL-DIVISION primality steps odd candidates to the square bound and repor
 pass	TWO closures capture DIFFERENT generations of one shadowed name and each sees its own
 pass	TWO closures capture the SAME heap map and the map outlives both applications
 pass	TWO distinct nonzero BigInt literal probes dispatch in one recursive fn
+pass	TWO loop-carried ropes each rebind to derived strings every recursion step
 pass	TWO match inits in one let SEQUENCE - the second scrutinizes the first's binding
 pass	TWO sequential inner handles seed from the outer's ADVANCING state
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
@@ -726,6 +727,7 @@ pass	a NESTED sum-in-sum map key discriminates by the inner variant
 pass	a NESTED tuple-of-tuples let pattern destructures a call's runtime result to all four leaves
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
+pass	a NON-TAIL recursion rebinding its rope arg to a slice-concat accumulates after each return
 pass	a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-hole context
 pass	a NaN float leaf in a tuple Map key is found by a differently-computed NaN
 pass	a NaN map key is found by a differently-produced NaN
@@ -2811,6 +2813,7 @@ pass	a scalar element is projected DIRECTLY from a named function's runtime tupl
 pass	a scalar element is projected directly from a fn-return tuple with runtime content
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
+pass	a scalar-aware string shrinker converges to the 1-minimal failing string
 pass	a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller
 pass	a scaled-unit PARAMETER annotation keeps its scale across the type round-trip (mixed-scale combine)
 pass	a schema decode's Err result is handled as data on its own branch
