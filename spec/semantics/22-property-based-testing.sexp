@@ -876,3 +876,32 @@
   (call   main (: 12345 Int64)) (output (: 1 Int64))
   (call   main (: 777 Int64)) (output (: 1 Int64))
   (call   main (: -7 Int64)) (output (: 1 Int64)))
+
+(case "a scalar-aware string shrinker converges to the 1-minimal failing string"
+  (doc    "The STRING sibling of the list-shrinker pin (:782) and the original program behind the
+           recursive-slice invalid-module fix (597e0ff7d): greedy drop-one-SCALAR with
+           restart-on-failure over `fails = scalar-len >= 3`. From the rope \"aébc\" it drops `a`
+           (\"ébc\" still fails → restart) and then every single-drop of \"ébc\" passes — the
+           1-minimal failing string, whose multibyte é makes scalar-len 3 ≠ byte-len 4 (304). The
+           never-fails control returns the ok marker (202). Composes the shrinker recursion, the
+           drop-scalar slice-concat helper, and a scalar-len exit on the loop-carried rope — the
+           exact shape that emitted an invalid module before the slice-bound high-water fix.")
+  (input  (do
+        (def (drop-sc (: s String) (: i Int64))
+          (String.concat (Option.expect (String.slice s 0 i) "lo")
+                         (Option.expect (String.slice s (+ i 1) (String.scalar-len s)) "hi")))
+        (def (fails (: s String)) (>= (String.scalar-len s) 3))
+        (def (try-drops (: s String) (: i Int64))
+          (if (>= i (String.scalar-len s))
+              s
+              (do
+                (def cand (drop-sc s i))
+                (if (fails cand) (try-drops cand 0) (try-drops s (+ i 1))))))
+        (def (main (: mode Int64))
+          (do
+            (def start (if (= mode 1) (String.concat "aé" "bc") "xy"))
+            (def r (if (fails start) (try-drops start 0) "ok"))
+            (+ (* 100 (String.scalar-len r)) (String.byte-len r))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 304 Int64))
+  (call   main (: 0 Int64)) (output (: 202 Int64)))
