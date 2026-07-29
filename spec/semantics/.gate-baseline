@@ -1268,6 +1268,7 @@ pass	a dependent size of zero binds an empty body and leaves the rest untouched
 pass	a dependent size one past the remaining bytes overruns and falls through
 pass	a dependent utf8 bin segment whose length exceeds the remaining bytes is a non-match
 pass	a dependent-size body re-matches under a second bin pattern
+pass	a dependent-size body straddling a rope seam stitches, and an oversize count fails the match
 pass	a dependent-size framing loop walks frames that straddle every rope seam
 pass	a dependent-size segment binding exactly the remaining bytes leaves an empty rest
 pass	a dependent-size segment binds exactly the number of bytes an earlier segment named
@@ -1813,6 +1814,7 @@ pass	a literal segment matches a magic-number header by equality
 pass	a literal subterm in a quote pattern matches by equality
 pass	a literal-refined recursive-sum arm folds under a statically-known discriminant
 pass	a literal-refined variant arm does not satisfy exhaustiveness
+pass	a little-endian u16 bin field stitches its bytes across a rope seam in le order
 pass	a lookup at a runtime key finds the present value, else None
 pass	a loop whose bound is an invariant computation runs correctly (the bound is hoisted)
 pass	a loop-invariant computed in both the condition and the body is shared, computing correctly
@@ -2876,6 +2878,7 @@ pass	a short-circuit connective threads a branch perform to the continuation
 pass	a shorter string that is a prefix of a longer one compares Less
 pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings
 pass	a signed dependent size that reads negative falls through, not a backward read
+pass	a signed i16 bin field spanning a rope seam sign-extends from the stitched bytes
 pass	a signed i8 segment encodes as two's complement
 pass	a signed narrow if-branch opposite a bare literal computes at the narrow width
 pass	a signed narrow match binder returns the bound value
@@ -3156,6 +3159,7 @@ pass	a u16 segment round-trips at its maximum value
 pass	a u32 bin binding with the top bit set does unsigned arithmetic
 pass	a u32 segment encodes four big-endian bytes
 pass	a u32 segment round-trips at its maximum value
+pass	a u64 bin field with the top bit set reads unsigned across a rope seam
 pass	a u64 pattern segment reads eight big-endian bytes back into an integer
 pass	a u64 segment encodes eight big-endian bytes
 pass	a unary constructor applied to a runtime value is returned as a program result
@@ -3259,6 +3263,7 @@ pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an Ast.Int stores an integer wider than Int64 without loss
+pass	bit-field segments spanning a rope seam split the stitched 16 bits, not a leaf's
 pass	dropping a list pushed FROM a survivor must not free the shared spine
 pass	dropping a map derived by persistent insert must not free nodes shared with the survivor
 pass	dropping a rope built OVER a survivor must not free the shared child node

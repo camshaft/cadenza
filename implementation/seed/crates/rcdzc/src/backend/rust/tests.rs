@@ -6664,3 +6664,35 @@ fn an_empty_list_tuple_field_with_an_unsolved_element_grounds_and_builds() {
         );
     }
 }
+
+#[test]
+fn a_recursive_newtype_declines_naming_the_box_indirection_gap_not_a_generic_missing_enum() {
+    // A recursive NEWTYPE `(type Lst (Mk (Option (Tuple Int64 Lst))))` ERASES at the type level (its inner
+    // is a finite `Ty::Nominal{inner: Option (Int64, Ty::Sum{Lst})}` with a μ back-edge leaf), but the RUST
+    // backend has no place to hang the recursion: an erased newtype emits no enum, so a `(Mk …)`
+    // construct / `(match l ((Mk o) …))` names a variant path of a type with no emitted Rust representation.
+    // wasm runs it (a nominal erases to a heap handle; no named type needed). The backend must DECLINE
+    // cleanly (not emit an uncompilable crate naming `Lst`), and the decline must name the PRECISE reason —
+    // the missing Box-indirected NOMINAL emission — not the generic "sum with no emitted enum", so whoever
+    // picks up the un-erasure feature (or a future me) is pointed at the right fix rather than hunting for a
+    // missing enum. Pins the diagnostic wording produced by `enums::unrepresentable_reason` at the
+    // construct/match decline site.
+    let src = "(module m \
+      (type Lst (Mk (Option (Tuple Int64 Lst)))) \
+      (def (sm (: l Lst)) (match l \
+        ((Mk o) (match o ((Some p) (+ (. p 0) (sm (. p 1)))) ((None) 0))))) \
+      (def (main) (sm (Mk (Some (tuple 10 (Mk (Some (tuple 20 (Mk (None)))))))))) \
+      (export main))";
+    match compile_rust_result(src) {
+        Ok(rs) => panic!("recursive newtype should DECLINE on rust, emitted:\n{rs}"),
+        Err(diags) => {
+            assert!(
+                diags
+                    .iter()
+                    .any(|d| d
+                        .contains("recursive newtype with no Box-indirected Rust representation")),
+                "decline must name the recursive-newtype Box-indirection gap precisely, got: {diags:?}"
+            )
+        }
+    }
+}

@@ -18,7 +18,9 @@ import { Typed, bin-type, if-type, let-type, var-type, def-arrow-type } from "in
 
 import { Db, require-typed, fill-typed, db-tree } from "db"
 
-import { db-typed-col, db-resolved-col } from "db-infer"
+import { db-typed-col, db-resolved-col, typed-of-db } from "db-infer"
+
+import { ground-deferred } from "infer-db"
 
 import { Resolved } from "resolve-db"
 
@@ -100,12 +102,14 @@ def demand-let(db: Db, id: Int64, valId: Int64, bodyId: Int64) =
 
 /// NVar producer (CROSS-COLUMN: resolve → type): a var's type is the type of the VALUE its binder binds. Reads
 /// the RESOLVED column (must be filled first — see demand-typed-root) for the var's resolution:
-///   RBound(binder) → var-type(tree, binder, typed-col): reads the binder's already-memoized value/param type
-///                    off the column. Do NOT re-demand the binder NODE — for a let-bound var the binder IS the
-///                    enclosing NLet, whose demand-let fills the VALUE's type BEFORE demanding the body (the var),
-///                    so tcol[valId] is present when the var is demanded; and a param binder's type was seeded by
-///                    its NApp arm. Re-demanding the NLet binder would recurse NLet→body(var)→binder(NLet)→…
-///                    = an infinite cycle (call-stack-exhausted). var-type reads the column, no re-demand needed.
+///   RBound(binder) → var-type(tree, binder, typed-col): reads the binder's already-memoized value type off the
+///                    column. Do NOT re-demand the binder NODE — for a let-bound var the binder IS the enclosing
+///                    NLet, whose demand-let fills the VALUE's type BEFORE demanding the body (the var), so
+///                    tcol[valId] is present when the var is demanded. Re-demanding the NLet binder would recurse
+///                    NLet→body(var)→binder(NLet)→… = an infinite cycle (call-stack-exhausted). var-type reads
+///                    the column, no re-demand. (A PARAM binder — where var-type reads tcol[binder] directly —
+///                    is NOT yet reachable here: params come via NApp, and this module has no NApp producer yet
+///                    (NApp hits the catch-all → TErr). Param-body demand is a follow-up alongside an NApp arm.)
 ///   RDef(defName)  → def-arrow-type (a bare def-name used as a value → its TFn arrow) — HIGHER-ORDER.
 ///   RPoison / absent → TErr (unbound name declines).
 /// Chains resolve→type exactly as rcdzc's type_of demands resolved_of. Reuses infer-db's var-type/def-arrow-type.
@@ -283,5 +287,43 @@ def dd-root-unbound-var-declines() =
       | (_db, fact) => match fact with
         | Typed.TErr => unit
         | _ => trap("an unbound var declines (TErr) via the resolve-poison path")
+
+// ---- DIFFERENTIAL: the demand producers agree with the whole-tree walk (typed-of-db) on the root type -----
+// The essential item-4 correctness claim: for the covered node subset (leaf/NBin/NIf/NLet/NVar), the DEMAND-
+// DRIVEN memoized producer computes the SAME root type as infer-into-db's whole-tree infer-node walk. This
+// pins that the memo model is a FAITHFUL alternative to the eager walk (rcdzc's type_of ≡ the batch infer),
+// not a divergent reimplementation. Compares GROUNDED types (both sides ground the deferred-int sentinel).
+
+/// A coarse structural tag for a grounded Typed — enough to assert two producers agree on the root type shape.
+def typed-tag(t: Typed) = match t with
+  | Typed.TIntW(_, _) => 1
+  | Typed.TBool => 2
+  | Typed.TErr => 3
+  | Typed.TFn(_, _) => 4
+  | Typed.TSum(_) => 5
+
+/// demand-typed-root's grounded root type vs typed-of-db's — agree iff same tag. Programs from the covered subset.
+def agree(db: Db, root: Int64) = match demand-typed-root(db, root) with
+  | (_d1, demandFact) => match typed-of-db(db, root, root) with
+      | (_d2, Option.Some(walkFact)) => (typed-tag(ground-deferred(demandFact)) == typed-tag(walkFact))
+      | (_d2, Option.None(_)) => false
+
+@test
+def dd-diff-arith-agrees-with-walk() =
+  // (+ 2 3): demand producer root type == whole-tree walk root type (both int).
+  match parse-tokens([Tok.TNum(2), Tok.TOp(43), Tok.TNum(3)]) with
+    | (root, tree) => (if agree(db-of(tree), root) then unit else trap("(+ 2 3): demand ≡ walk root type"))
+
+@test
+def dd-diff-comparison-agrees-with-walk() =
+  // (1 < 2): both TBool.
+  match parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) with
+    | (root, tree) => (if agree(db-of(tree), root) then unit else trap("(1 < 2): demand ≡ walk root type"))
+
+@test
+def dd-diff-let-var-agrees-with-walk() =
+  // let x = 2 in x: the cross-column (resolve→type) case — demand ≡ walk (both int).
+  match parse-tokens([Tok.TLet, Tok.TName(1), Tok.TEq, Tok.TNum(2), Tok.TIn, Tok.TName(1)]) with
+    | (root, tree) => (if agree(db-of(tree), root) then unit else trap("let x=2 in x: demand ≡ walk root type"))
 
 export { demand-typed, demand-typed-leaf, compute-leaf-type, demand-typed-node, demand-var, demand-typed-root }
