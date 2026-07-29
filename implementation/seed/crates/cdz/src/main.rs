@@ -3974,29 +3974,83 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
     let Some(entry) = first_name else {
         return Precompiled::default(); // nothing loaded — every file falls back
     };
-    let mut inputs: Vec<rcdzc::Artifact> = asts.into_values().collect();
-    inputs.push(rcdzc::Artifact::new(
-        rcdzc::sidecar::KIND_SIDECAR,
-        "drive",
-        rcdzc::sidecar::encode(&[rcdzc::Request::EmitTestsComposed]),
-    ));
-    // A multi-file package needs an entry marker to drive linking; it names ONE file but does NOT restrict
-    // which files' @tests emit (all linked test defs are bucketed by file). Any closure file works as entry.
-    inputs.push(compiler_cli::entry_artifact(&entry));
-    let out = rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]));
-    // Demux the Option-C composed artifact set (see the 3-kind contract): ONE `component-provider` (the
-    // shared-closure component every consumer imports — emitted ONCE, collapsing the whole-closure re-embed
-    // that dominated per-file emit), a `component-name` sidecar carrying its interface string, and N
-    // `component` consumers named by file-link. If the composed compile DECLINED (e.g. an ill-typed @test
-    // faults the build, or the emit-side single-dir/stem guard fired), there may be no provider/components —
-    // return whatever came back; each file then falls back to its own per-file `EmitTests` compile, which
-    // re-surfaces any fault located. We do NOT report errors here (the per-file fallback owns that), so a
-    // composed-only hiccup never double-reports or blocks a file that would compile fine standalone.
-    let provider = out
-        .artifacts
-        .iter()
-        .find(|a| a.kind == "component-provider")
-        .map(|p| p.bytes.clone());
+    // The closure AST inputs (every closure file's `ast`) + the package entry marker — shared by the
+    // hash-query and the emit below. Any closure file works as the entry marker: it drives linking but does
+    // NOT restrict which files' @tests emit (all linked test defs are bucketed by file).
+    let ast_inputs: Vec<rcdzc::Artifact> = asts.into_values().collect();
+    let entry_marker = compiler_cli::entry_artifact(&entry);
+    let drive = |req: rcdzc::Request| -> rcdzc::CompileOutput {
+        let mut inputs = ast_inputs.clone();
+        inputs.push(rcdzc::Artifact::new(
+            rcdzc::sidecar::KIND_SIDECAR,
+            "drive",
+            rcdzc::sidecar::encode(&[req]),
+        ));
+        inputs.push(entry_marker.clone());
+        rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
+    };
+
+    // CROSS-INVOCATION PROVIDER CACHE (single-file-local-verify win): a `Query::ClosureHash` (layout only, no
+    // provider emit — ~9s) gives the canonical closure key; if we've persisted the shared-closure provider for
+    // that key, REUSE it and emit ONLY the per-file consumers (`EmitTestsConsumerOnly`, skipping the ~381s
+    // provider lower). On a miss, `EmitTestsComposed` emits the provider (+ the same closure-hash sidecar to
+    // persist by) and the consumers. So a `cdz test` after ANY run that built this closure's provider skips
+    // the provider emit. The KEY is v-rust-backend's canonical `closure_content_hash` (query, miss-sidecar,
+    // and this cache all agree — no run-side replication of the cross-edge union). An unresolvable hash → treat
+    // as a miss (emit the provider), always correct.
+    let cache_dir = provider_cache_dir();
+    let closure_hash = drive(rcdzc::Request::Query(rcdzc::sidecar::Query::ClosureHash))
+        .artifact(rcdzc::sidecar::KIND_CLOSURE_HASH)
+        .map(|b| String::from_utf8_lossy(b).trim().to_string())
+        .filter(|h| !h.is_empty());
+    let cached_provider = closure_hash
+        .as_ref()
+        .and_then(|h| {
+            cache_dir
+                .as_ref()
+                .map(|d| d.join(format!("{h}.provider.wasm")))
+        })
+        .filter(|p| p.is_file())
+        .and_then(|p| std::fs::read(&p).ok())
+        // VALIDATE the cached bytes are a well-formed component BEFORE trusting the hit path: a truncated /
+        // corrupt / stale-format cache file must NOT break `cdz test` (it would surface later as an opaque
+        // per-file "invalid peer component" compile error). If it doesn't compile, discard it → treat as a
+        // MISS (re-emit + re-persist), which self-heals the bad entry. Cheap vs the emit it may avoid.
+        .filter(|bytes| cdz_run::compile_component(bytes).is_ok());
+
+    let (out, provider) = if let Some(bytes) = cached_provider {
+        // HIT: emit only the consumers (no provider lower), reuse the validated cached provider peer.
+        (drive(rcdzc::Request::EmitTestsConsumerOnly), Some(bytes))
+    } else {
+        // MISS: emit the provider + consumers; persist the provider by its (emitted) closure-hash so the next
+        // run hits. Prefer the emitted `closure-hash` sidecar as the persist key (canonical, recompute-free);
+        // fall back to the query hash we already computed.
+        let out = drive(rcdzc::Request::EmitTestsComposed);
+        let provider = out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == "component-provider")
+            .map(|p| p.bytes.clone());
+        if let (Some(bytes), Some(dir)) = (&provider, &cache_dir) {
+            let key = out
+                .artifact(rcdzc::sidecar::KIND_CLOSURE_HASH)
+                .map(|b| String::from_utf8_lossy(b).trim().to_string())
+                .filter(|h| !h.is_empty())
+                .or_else(|| closure_hash.clone());
+            if let Some(key) = key {
+                // Best-effort persist — a write failure just means the next run re-emits (no correctness
+                // impact), so a full cache dir / read-only FS silently degrades to "no cache".
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join(format!("{key}.provider.wasm")), bytes);
+            }
+        }
+        (out, provider)
+    };
+
+    // Demux the artifact set: the `component-name` sidecar carries the provider's interface string, and the N
+    // `component` artifacts are the per-file consumers (named by file-link). If the compile DECLINED (ill-typed
+    // @test, or the emit-side single-dir/stem guard) there may be no provider/components — each file then falls
+    // back to its own per-file `EmitTests` compile (which re-surfaces any fault located; we do NOT report here).
     let iface = out
         .artifacts
         .iter()
@@ -4010,12 +4064,27 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
         .collect();
     Precompiled {
         components,
-        // Pair the provider with its interface name only when BOTH are present — a consumer can only be
-        // linked against a peer we can name. If either is missing the components run standalone (or, for a
-        // cross-edge-excluding consumer with no provider, its @test would fail to link → the per-file
-        // fallback re-emits it self-contained), so `provider = None` is the safe degrade.
+        // Pair the provider with its interface name only when BOTH are present — a consumer can only be linked
+        // against a peer we can name. If either is missing the components fall back per-file (a
+        // cross-edge-excluding consumer with no provider can't run standalone → the per-file fallback re-emits
+        // it self-contained), so `provider = None` is the safe degrade.
         provider: provider.zip(iface),
     }
+}
+
+/// The directory the shared-closure PROVIDER components are cached in, content-addressed by the closure hash
+/// — `$CDZ_PROVIDER_CACHE` if set, else `<runtime-store>/providers` (the store is already the per-checkout
+/// content-addressed artifact dir). `None` if no store is resolvable (⇒ no caching, every run re-emits — the
+/// safe degrade). Reusing the store dir keeps the cache co-located with the runtime it pairs with + swept by
+/// the same tooling.
+fn provider_cache_dir() -> Option<std::path::PathBuf> {
+    if let Ok(d) = std::env::var("CDZ_PROVIDER_CACHE") {
+        let d = d.trim();
+        if !d.is_empty() {
+            return Some(std::path::PathBuf::from(d));
+        }
+    }
+    Some(default_store().join("providers"))
 }
 
 fn run_test(args: &TestArgs) -> ExitCode {
