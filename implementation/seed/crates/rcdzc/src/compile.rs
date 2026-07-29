@@ -238,6 +238,7 @@ fn compile_with_opt_inner(
     let mut emit_targets: Vec<Target> = targets.to_vec();
     let mut emit_tests = false;
     let mut emit_tests_per_file = false;
+    let mut emit_tests_composed = false;
     for req in &requests {
         match req {
             sidecar::Request::Query(q) => queries.push(q.clone()),
@@ -252,6 +253,13 @@ fn compile_with_opt_inner(
             // `Target` here — it only sets the flag. Like `EmitTests` it is a Wasm test build.
             sidecar::Request::EmitTestsPerFile => {
                 emit_tests_per_file = true;
+            }
+            // `EmitTestsComposed` (Option C) hoists the shared closure into its OWN provider component +
+            // emits N consumer components importing it — the emit-reuse path. Like `EmitTestsPerFile` it
+            // produces multiple artifacts from a shared lowering on its OWN branch below (a provider + N
+            // consumers + a `component-name` sidecar), so it only sets the flag, pushing no `Target`.
+            sidecar::Request::EmitTestsComposed => {
+                emit_tests_composed = true;
             }
         }
     }
@@ -323,7 +331,7 @@ fn compile_with_opt_inner(
     // `emit_tests_per_file` gates + faults over the WHOLE `@test` set (like `emit_tests`) — this `layout`
     // validates the closure lays out and drives fault-gating; the per-file branch below re-lays each file's
     // bucket as a cheap layout-view over the SAME lowered Core (no re-lower).
-    let layout = match if emit_tests || emit_tests_per_file {
+    let layout = match if emit_tests || emit_tests_per_file || emit_tests_composed {
         layout::compute_tests(&mut db)
     } else {
         layout::compute(&mut db)
@@ -449,6 +457,115 @@ fn compile_with_opt_inner(
                 },
                 Err(mut r) => {
                     trace!(target: "rcdzc::compile", file = %name, reason = %r.message, "per-file test layout declined");
+                    sanitize_origin(&db, &mut r);
+                    diagnostics.push(Diagnostic::from_reject(&r));
+                }
+            }
+        }
+    }
+
+    // `EmitTestsComposed` (Option C): hoist the shared import-closure into ONE provider component + emit N
+    // per-file CONSUMER components that import it — the emit-reuse path that collapses the O(tests ×
+    // closure-size) embed cost `EmitTestsPerFile` still pays. Produces: one `component-provider` artifact (the
+    // shared closure, `db.component_name` set to the closure interface), one `component-name` sidecar (that
+    // interface string, so a downstream runner builds `Peer{interface}` without introspecting the component),
+    // and N `component` artifacts (the consumers, NAMED by `db.file_path` — the SAME name-demux as
+    // `EmitTestsPerFile`). Runs on its OWN branch (multiple artifacts from the shared lowering), so the normal
+    // emit loop below stays empty for a pure `EmitTestsComposed` request.
+    if emit_tests_composed {
+        use std::collections::BTreeMap;
+        // The closure's published interface — the fixed provider↔consumer contract name (both the provider's
+        // `component_name` and every consumer's import interface; the index-agreement witness validates the
+        // export/import order under it). A runner reads the `component-name` sidecar to bind `Peer{interface}`.
+        const CLOSURE_IFACE: &str = "cadenza:closure/api";
+        // Bucket the `@test` defs by file (BTreeMap → deterministic ascending file order), exactly as
+        // `EmitTestsPerFile`. A test with no file (`None`) — a single-file / synthesized test — has no shared
+        // closure to import, so a `None`-only build has no cross-edge and DECLINES below (falls back).
+        let mut by_file: BTreeMap<Option<usize>, Vec<usize>> = BTreeMap::new();
+        for def in db.test_defs() {
+            let sig = db.defs[def].sig_occ;
+            by_file.entry(db.file_of(sig)).or_default().push(def);
+        }
+        // Resolve each file bucket to its artifact NAME (`db.file_path` = the import-stem) up front. SINGLE-DIR
+        // / no-stem-collision GUARD: `db.file_path` is the dir-blind import stem (load-bearing for link
+        // resolution — it CANNOT be dir-qualified), so a multi-dir tree with two same-stem files would collide
+        // the consumer name-demux (pr881). If any two buckets share a name — or a bucket has no file path — the
+        // composed emit is unsound; DECLINE so the caller falls back to the per-file `EmitTests` path
+        // (behavior-identical, just without the closure-sharing win). The named files, in bucket order:
+        let named_files: Vec<(usize, String, &Vec<usize>)> = by_file
+            .iter()
+            .filter_map(|(fi, defs)| {
+                fi.and_then(|i| db.file_path(i).map(|p| (i, p.to_string(), defs)))
+            })
+            .collect();
+        let mut names_seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let stem_collision = named_files
+            .iter()
+            .any(|(_, n, _)| !names_seen.insert(n.as_str()));
+        let all_filed = named_files.len() == by_file.len();
+        if !all_filed || stem_collision {
+            diagnostics.push(Diagnostic::from_reject(&Reject::decline(
+                "composed test emit needs every `@test` in a distinctly-named (single-directory) file: a \
+                 file with no link path, or two files sharing an import stem across directories, would \
+                 collide the per-file component demux — falling back to the per-file test build",
+            )));
+        } else {
+            // The UNION cross-edge set across ALL files = the shared closure the ONE provider exports. Computed
+            // off the whole-`@test` `layout` (validated above), in canonical `layout.order` order so the
+            // provider's export order matches every consumer's import order (the index-agreement invariant).
+            let file_indices: Vec<usize> = named_files.iter().map(|(i, _, _)| *i).collect();
+            let union_edges = layout::cross_component_edges_union(&mut db, &layout, &file_indices);
+            // Emit the PROVIDER first (its interface = `CLOSURE_IFACE`, exports the union edges). A build with
+            // no cross-edge (the `@tests` call nothing shared) declines here → fall back. `component_name` is
+            // set only for the provider emit and restored after, so the consumer emits below stay non-provider.
+            let saved_component_name = db.component_name.take();
+            db.component_name = Some(CLOSURE_IFACE.to_string());
+            let provider_result = layout::compute_provider_for_edges(&mut db, &union_edges)
+                .and_then(|pl| backend::emit(Target::Wasm, &mut db, &pl, span_data.as_ref(), None));
+            db.component_name = saved_component_name;
+            match provider_result {
+                Ok(provider_bytes) => {
+                    // The provider component + the interface-name sidecar the runner binds `Peer{interface}` to.
+                    artifacts.push(Artifact::new(
+                        "component-provider",
+                        CLOSURE_IFACE,
+                        provider_bytes,
+                    ));
+                    artifacts.push(Artifact::new(
+                        link::KIND_COMPONENT_NAME,
+                        CLOSURE_IFACE,
+                        CLOSURE_IFACE.as_bytes().to_vec(),
+                    ));
+                    // Each file's CONSUMER: excludes the union cross-edges from its emission set + imports them
+                    // from the provider (named by `db.file_path`, the same demux `EmitTestsPerFile` uses).
+                    for (_, name, defs) in &named_files {
+                        match layout::compute_tests_consumer(
+                            &mut db,
+                            defs,
+                            &union_edges,
+                            CLOSURE_IFACE,
+                        )
+                        .and_then(|cl| {
+                            backend::emit(Target::Wasm, &mut db, &cl, span_data.as_ref(), None)
+                                .map(|b| (cl, b))
+                        }) {
+                            Ok((_, bytes)) => artifacts.push(Artifact::new(
+                                Target::Wasm.artifact_kind(),
+                                name,
+                                bytes,
+                            )),
+                            Err(mut r) => {
+                                trace!(target: "rcdzc::compile", file = %name, reason = %r.message, "composed consumer emit declined");
+                                sanitize_origin(&db, &mut r);
+                                diagnostics.push(Diagnostic::from_reject(&r));
+                            }
+                        }
+                    }
+                }
+                Err(mut r) => {
+                    // No shared closure to hoist (no cross-edge), or the provider does not lay out/emit —
+                    // decline so the caller falls back to the per-file path.
+                    trace!(target: "rcdzc::compile", reason = %r.message, "composed provider emit declined — fall back to per-file");
                     sanitize_origin(&db, &mut r);
                     diagnostics.push(Diagnostic::from_reject(&r));
                 }

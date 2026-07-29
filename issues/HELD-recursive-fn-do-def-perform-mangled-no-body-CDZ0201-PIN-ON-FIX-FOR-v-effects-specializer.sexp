@@ -54,3 +54,12 @@
 ;; SEQUENCING: v-effects builds this AFTER their abortive-arm MR 94581e5f1 lands (same specializer/
 ;; reduce_handle seam). So HELD chains: 94581e5f1 (abortive) -> then the specializer floor fix -> then me.
 ;; ON LAND (v-effects floor fix): gate x3 -> (declines); pin into 14-effects; baseline x3.
+
+;; FIX MR'd (v-effects, 2026-07-29): 0d2afb083 (queued). A bodyless #eff-marked spec def now declines
+;; UNCODED naming the base fn ("this handler is not yet reducible ... the recursive function check-all
+;; performs a discharged operation in a form the effect specializer does not yet handle"), NOT CDZ0201
+;; 'check-all#eff2 has no body'. Both asks met: (1) clean decline not CDZ0201; (2) names check-all not #eff2.
+;; Does NOT compute 110 yet (body-clone specialization later) -> keep pin (declines), flip to 110/0 then.
+;; v-effects heads-up: their local wasm gate couldn't run (runtime c1344126 missing, lease-throttled) —
+;; verified rust+rust-async green + roundtrip 5186/0; pr-sync gates wasm authoritatively. I `cargo xtask
+;; build` first before gating (populate runtime). ON LAND (0d2afb083): gate x3 -> (declines); pin into 14-effects.

@@ -228,7 +228,8 @@ provider interface in the SAME canonical order (a file hitting only a subset sti
 export position — the index-agreement invariant `compute_tests_consumer` already honors via `provider_edges`).
 So the driver must:
   1. bucket `db.test_defs()` by `linkage.file_of(sig_occ)` (as `EmitTestsPerFile` does).
-  2. ✅ DONE — compute the UNION cross-edge set via `cross_component_edges_union(db, test_layout, &[file])`
+  2. ✅ DONE — compute the UNION cross-edge set via `cross_component_edges_union(db, test_layout, &files)`
+     (ALL bucketed files, not one — the driver passes the whole filed-bucket set; see compile.rs)
      (layout.rs; folds each file's `cross_component_edges` into one set, returned in canonical `layout.order`
      order). Witness `option_c_cross_component_edges_union_covers_every_files_cross_edge` (2 files calling
      different helpers → union = both). The ONE new layout primitive the driver needs — landed ahead of the
@@ -237,10 +238,19 @@ So the driver must:
      `compute_shared_closure_provider` now delegates to, taking an explicit edge set instead of one
      `own_file`). Witness `option_c_composed_provider_from_union_edges_exports_every_files_cross_edge` (union
      over 2 files → provider exports BOTH cross-edges + emits a valid component).
-  4. per file: `compute_tests_consumer(db, file_bucket, &union_edges, iface)` → emit `component` (name=link).
-  5. emit provider (`component-provider`) + the `component-name` sidecar.
+  4. ✅ DONE — per file: `compute_tests_consumer(db, file_bucket, &union_edges, iface)` → emit `component`
+     (name = `db.file_path`).
+  5. ✅ DONE — emit provider (`component-provider`, name = the iface) + the `component-name` sidecar.
 
-**Sequencing:** BUILD once `52aad2bd3` lands (single-MR cadence; large multi-file — don't stack on the
-queued MR). v-cdz-tooling's rewire `5da05cab6` (in-flight) is the (d) skeleton (union-compile + name-demux +
-per-test run loop); (d) = swap "run consumer standalone" for "run_with_peers(consumer, [provider_peer])".
-Ping v-cdz-tooling with the exact artifact kinds/names when `EmitTestsComposed` emits so their demux matches.
+**✅ DONE — the `EmitTestsComposed` driver (compile.rs) — sidecar tag `0x07`.** All five steps wired: bucket
+`db.test_defs()` by file → single-dir/no-stem-collision guard (declines to per-file fallback if a bucket has
+no link path or two buckets share a stem — pr881) → `cross_component_edges_union` over the filed buckets →
+`compute_provider_for_edges` (with `db.component_name = "cadenza:closure/api"`, restored after) → per-file
+`compute_tests_consumer` → emit `{component-provider, component-name sidecar, N × component}`. Witnesses:
+`emit_tests_composed_emits_a_provider_iface_sidecar_and_per_file_consumers` (3-file pkg → 1 provider + 1
+sidecar + 2 consumers, all validate) + `emit_tests_composed_declines_a_same_stem_multi_dir_collision` (guard).
+The closure iface is the fixed `cadenza:closure/api` (provider `component_name` == every consumer's import
+iface == the sidecar string). ⏭️ **(d) is v-cdz-tooling's:** their `run_test` reads the `component-name`
+sidecar → `Peer{interface}`, instantiates the ONE `component-provider`, and runs each `component` consumer via
+`run_with_peers(consumer, [provider_peer])` (extending their landed `5da05cab6` skeleton — swap the standalone
+run for the peer-linked run). Ping them with these exact artifact kinds/names when the driver MR lands.
