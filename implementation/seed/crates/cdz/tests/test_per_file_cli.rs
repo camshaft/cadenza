@@ -201,3 +201,73 @@ fn a_property_test_in_a_shared_closure_dir_still_runs_correctly() {
         "no link/run error — the fallback compiled the file standalone cleanly:\n{out}"
     );
 }
+
+#[test]
+fn the_provider_cache_persists_reuses_and_self_heals() {
+    // Cross-invocation provider-cache (single-file-local-verify win): the FIRST `cdz test <dir>` over a
+    // shared-closure dir is a cache MISS → emits + PERSISTS the shared-closure provider component (keyed by
+    // the canonical closure hash) under CDZ_PROVIDER_CACHE; a SUBSEQUENT run is a HIT → reuses the cached
+    // provider (skipping the provider emit). A CORRUPT cache entry must SELF-HEAL (re-emit), never break the
+    // run. Uses an isolated CDZ_PROVIDER_CACHE so it doesn't touch the shared default store/providers.
+    let dir = std::env::temp_dir().join(format!("cdz-pcache-src-{}", std::process::id()));
+    let cache = std::env::temp_dir().join(format!("cdz-pcache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("shared.cdz"),
+        "def sumto(n: Int64) =\n  if n == 0 then 0 else n + sumto(n - 1)\nexport { sumto }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ta.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_c() =\n  if sumto(5) == 15 then unit else trap(\"ta\")\n",
+    )
+    .unwrap();
+
+    let run = || -> (bool, String) {
+        let out = Command::new(cdz())
+            .args(["test", dir.to_str().unwrap()])
+            .env("CDZ_PROVIDER_CACHE", &cache)
+            .output()
+            .expect("spawn cdz test");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        )
+    };
+    // A helper: the sole persisted provider file, if any.
+    let cached_provider = || -> Option<std::path::PathBuf> {
+        std::fs::read_dir(&cache).ok()?.flatten().find_map(|e| {
+            let p = e.path();
+            (p.extension().and_then(|x| x.to_str()) == Some("wasm")).then_some(p)
+        })
+    };
+
+    // RUN 1 — MISS: runs correctly + PERSISTS a provider.
+    let (ok1, out1) = run();
+    assert!(
+        ok1 && out1.contains("PASS t_c"),
+        "run 1 (miss) passes:\n{out1}"
+    );
+    let provider = cached_provider().expect("run 1 (miss) persisted a provider .wasm to the cache");
+
+    // RUN 2 — HIT: still correct, reusing the cached provider (same file, not re-emitted differently).
+    let (ok2, out2) = run();
+    assert!(
+        ok2 && out2.contains("PASS t_c"),
+        "run 2 (hit) passes:\n{out2}"
+    );
+
+    // CORRUPT the cached provider → RUN 3 must SELF-HEAL (validation rejects it → miss → re-emit), NOT error.
+    std::fs::write(&provider, b"GARBAGE").unwrap();
+    let (ok3, out3) = run();
+    assert!(
+        ok3 && out3.contains("PASS t_c"),
+        "run 3 (corrupt cache) self-heals + passes (not an 'invalid peer component' error):\n{out3}"
+    );
+    assert!(
+        !out3.contains("invalid peer component") && !out3.contains("could not compile"),
+        "a corrupt cache entry must not surface as a compile error:\n{out3}"
+    );
+}
