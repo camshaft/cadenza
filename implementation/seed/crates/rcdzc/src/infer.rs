@@ -8148,35 +8148,67 @@ fn check_application(
     if matches!(
         crate::eval::meta_apply_of(db, head),
         Some(
+            // CONSTRUCTION — the key type is the RESULT's key (you build an abstract-keyed collection).
             crate::resolved::Prim::SetOf
                 | crate::resolved::Prim::SetInsert
                 | crate::resolved::Prim::MapNew
                 | crate::resolved::Prim::MapInsert
+                // LOOKUP / MEMBERSHIP / SET-ALGEBRA — the collection arrives as an ARGUMENT (a param, an
+                // import, a returned collection), so a construction gate alone is bypassed; these prims
+                // STILL compare/hash the stored keys structurally (`champ_eq`) at lookup/membership/union,
+                // observing the abstract key rep the same way. The key type is read off the OPERAND's
+                // `Ty::Set(k)`/`Ty::Map(k,_)`, so collect from every argument below.
+                | crate::resolved::Prim::SetContains
+                | crate::resolved::Prim::SetRemove
+                | crate::resolved::Prim::SetUnion
+                | crate::resolved::Prim::SetIntersection
+                | crate::resolved::Prim::SetDifference
+                | crate::resolved::Prim::MapLookup
+                | crate::resolved::Prim::MapRemove
+                | crate::resolved::Prim::MapSwap
+                | crate::resolved::Prim::MapTake
         )
     ) {
-        let key_ty = match type_of(db, app) {
-            Ty::Map(k, _) => Some((*k).clone()),
-            Ty::Set(k) => Some((*k).clone()),
-            _ => None,
+        // The key type can appear as the RESULT's key (construction prims yield the collection) OR as an
+        // ARGUMENT's key (lookup/membership/algebra prims take the collection). Collect candidate key
+        // types from both and reject if ANY contains an abstract type at this site. A `Ty::Set(k)`/
+        // `Ty::Map(k,_)` in either position contributes its key.
+        let key_of = |t: &Ty| -> Option<Ty> {
+            match t {
+                Ty::Map(k, _) => Some((**k).clone()),
+                Ty::Set(k) => Some((**k).clone()),
+                _ => None,
+            }
         };
-        if let Some(k) = key_ty
-            && let Some(abstract_ty) = key_ty_contains_abstract_at(db, app, &k)
-        {
-            trace!(target: "rcdzc::infer", head = head.0, "fault: abstract-typed map/set key (CDZ0202)");
-            out.push(
-                Reject::coded(
-                    Code::NominalMismatch,
-                    format!(
-                        "`{}` is an abstract type here (its constructors are not exported to this file), \
-                         so it cannot be a map/set key — key insertion and lookup observe its \
-                         representation through a built-in comparison; compare it through a function the \
-                         module that declares it exports",
-                        abstract_ty.render_name()
-                    ),
-                )
-                .at(head),
-            );
-            return;
+        let mut key_tys: Vec<Ty> = Vec::new();
+        let result_ty = type_of(db, app);
+        if let Some(k) = key_of(&result_ty) {
+            key_tys.push(k);
+        }
+        for &a in args.iter() {
+            let at = type_of(db, a);
+            if let Some(k) = key_of(&at) {
+                key_tys.push(k);
+            }
+        }
+        for k in &key_tys {
+            if let Some(abstract_ty) = key_ty_contains_abstract_at(db, app, k) {
+                trace!(target: "rcdzc::infer", head = head.0, "fault: abstract-typed map/set key (CDZ0202)");
+                out.push(
+                    Reject::coded(
+                        Code::NominalMismatch,
+                        format!(
+                            "`{}` is an abstract type here (its constructors are not exported to this \
+                             file), so it cannot be a map/set key — key insertion, lookup, and membership \
+                             observe its representation through a built-in comparison; compare it through \
+                             a function the module that declares it exports",
+                            abstract_ty.render_name()
+                        ),
+                    )
+                    .at(head),
+                );
+                return;
+            }
         }
     }
     // `(trap MESSAGE)` — the abort primitive `trap : ∀a. String → a`. Its message MUST be a String; a
@@ -8557,15 +8589,14 @@ fn check_application(
         // a concrete importer) the type is not abstract, so ordinary comparison is unaffected.
         //= spec/capabilities/type-system.md#an-abstract-type-s-representation-is-not-observable-across-its-boundary
         //# A built-in structural comparison whose operand is a value of an abstract type — a type whose handle a module made visible without making its constructors visible ([modules-and-namespaces.md](modules-and-namespaces.md) §A Type's Handle And Its Constructors Are Independently Visible) — MUST be rejected outside the declaring module, so that the abstract type's representation is not observed through equality and a module that wants its abstract type compared publishes a comparison operation rather than exposing its structure.
-        let abstract_operand = |ty: &Ty, node: StructId| {
-            nominal_or_sum_decl(ty).is_some_and(|decl| db.is_abstract_type_at(node, decl))
-        };
-        if abstract_operand(&a, args[0]) || abstract_operand(&b, args[1]) {
-            let ty = if abstract_operand(&a, args[0]) {
-                &a
-            } else {
-                &b
-            };
+        // A built-in comparison observes the WHOLE operand structure, so an abstract type CONTAINED in a
+        // compound operand (`(= (tuple (mk k) 1) …)` with `Temp` abstract-here) is observed by its private
+        // rep exactly as a bare abstract operand is — the compound-operand generalization of the bare check
+        // (PR#890, the direct-eq sibling of the map/set-key gap). Recurse via `key_ty_contains_abstract_at`
+        // (the shared "type contains abstract at site" walk); a concrete/prelude/own constituent never
+        // flags. Returns the first abstract type found (for the message).
+        let abstract_operand = |ty: &Ty, node: StructId| key_ty_contains_abstract_at(db, node, ty);
+        if let Some(ty) = abstract_operand(&a, args[0]).or_else(|| abstract_operand(&b, args[1])) {
             trace!(target: "rcdzc::infer", head = head.0, "fault: built-in comparison on an abstract type value (CDZ0202)");
             out.push(
                 Reject::coded(

@@ -1472,6 +1472,26 @@
         (export main)))
   (call   main (: 5 Int64)) (error CDZ0202))
 
+(case "a Map keyed by a COMPOUND containing an abstract type is rejected (opacity — the key path compares the abstract leaf)"
+  (doc    "The compound extension of the bare-abstract-key case above: a Map/Set key need not BE the
+           abstract value directly — a COMPOUND that CONTAINS one, `(tuple (mk k) 1)` with an abstract
+           `Temp` leaf, still has its key spine compared by champ_eq/value-eq at insert/lookup, which walks
+           into the `Temp` leaf and observes its private representation through equality. So it is rejected
+           CDZ0202 like the bare key (v-inference f23646b30), because the opacity MUST is about the
+           observation reaching the abstract leaf, not the surface key shape. A key with no abstract leaf
+           is unaffected.")
+  (module "temp"
+    (do
+      (type Temp (T Int64))
+      (def (mk (: c Int64)) (T (* c 10)))
+      (export Temp)
+      (export mk)))
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64)) (match (Map.lookup (Map.insert Map.empty (tuple (mk k) 1) 42) (tuple (mk k) 1)) ((Some v) v) ((None _u) -1)))
+        (export main)))
+  (call   main (: 5 Int64)) (error CDZ0202))
+
 (case "eval of a fully-concrete imported constructor is legal from outside"
   (doc    "`(eval (quote (P.Mk 7)))` where lib2 exports `(. P *)` — the CONCRETE complement of the
            no-forge pins above: a fully-exported ctor is reachable through eval's call-site

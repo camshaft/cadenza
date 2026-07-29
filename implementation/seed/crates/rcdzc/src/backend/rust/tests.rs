@@ -3157,6 +3157,87 @@ fn rustc_roundtrip_option_compare_follows_cadenza_some_before_none_not_std() {
 }
 
 #[test]
+fn rustc_roundtrip_option_keyed_set_enumerates_some_before_none() {
+    // SOUNDNESS #42 WITNESS 2: an Option-KEYED set enumerates in Cadenza declared order (Some < None) via the
+    // `__CdzOpt` wrapper, NOT std `Option`'s `None < Some`. A `BTreeSet<Option<T>>` would order by std's
+    // derived Ord (None first) — the cross-target divergence (wasm Set.to-list head = Some, rust = None).
+    // The wrapper gives BTreeSet the declared order. Fixture: a set of {Some 3, None, Some 1}; Set.to-list
+    // head is the SMALLEST = Some 1 (Cadenza), the count is 3. Probe reads the head: Some x → x, None → -99.
+    let m = compile_rust(
+        "(module m \
+           (def (mk (: k Int64)) (if (= k 0) (: (None unit) (Option Int64)) (Some k))) \
+           (def (go (: a Int64)) \
+             (match (List.at (Set.to-list (Set.of (list (mk 3) (mk 0) (mk 1)))) 0) \
+               ((Option.Some p) (match p ((Option.Some x) x) ((Option.None) -1))) \
+               ((Option.None) -99))) \
+         (export go))",
+    );
+    // Head of the ordered enumeration is the SMALLEST element. Cadenza: Some 1 < Some 3 < None → head Some 1
+    // → inner x = 1. std order would put None first → head None → the outer/inner match yields -1/-99.
+    if let Some(out) = rustc_run(&m, "go(0)") {
+        assert_eq!(
+            out, "1",
+            "an Option-keyed Set.to-list must enumerate Some-before-None (head = Some 1, Cadenza order), \
+             NOT None-first (std Option order):\n{m}"
+        );
+    }
+    // The set also dedups + counts correctly (3 distinct elements: Some 3, None, Some 1).
+    let len = compile_rust(
+        "(module m \
+           (def (mk (: k Int64)) (if (= k 0) (: (None unit) (Option Int64)) (Some k))) \
+           (def (go (: a Int64)) (Set.len (Set.of (list (mk 3) (mk 0) (mk 1) (mk 3))))) \
+         (export go))",
+    );
+    if let Some(out) = rustc_run(&len, "go(0)") {
+        assert_eq!(
+            out, "3",
+            "the Option-keyed set dedups (Some 3 twice) → 3 distinct:\n{len}"
+        );
+    }
+}
+
+#[test]
+fn rustc_roundtrip_recursive_option_carrying_sum_compare_terminates_via_helper() {
+    // PR#890 REGRESSION: emit_sum_cmp_walk (the #42 Option-order compare walk) must route a RECURSIVE
+    // Option-carrying sum through a `__cmp_<Ident>` helper fn (seen-guard + call-indirection), NOT expand
+    // inline — an inline expansion recurses UNBOUNDED in codegen (compiler stack overflow / runaway output)
+    // when the sum reappears in its own payload. Fixture: a recursive `Lst` = (Cons (Tuple (Option Int64)
+    // Lst)) | (Nil), compared via `compare` — the payload's `Option Int64` forces the value-cmp walk (not
+    // native .cmp()), and `Lst` recurses through the Cons payload. If codegen doesn't terminate this reds at
+    // COMPILE (the backend or rustc stack-overflows); a green compile + correct answer proves the helper
+    // routing works. compare of two equal single-element lists → Equal (2); a Some-vs-None head → Less (1).
+    let src = "(module m \
+        (type Lst (Cons (Tuple (Option Int64) Lst)) (Nil)) \
+        (def (mk-some (: k Int64)) (Lst.Cons (tuple (Some k) (Lst.Nil)))) \
+        (def (mk-none) (Lst.Cons (tuple (: (None unit) (Option Int64)) (Lst.Nil)))) \
+        (def (go (: k Int64)) \
+          (match (compare (mk-some k) (mk-none)) \
+            ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+        (export go))";
+    match compile_rust_result(src) {
+        // A clean decline (e.g. a shape the walk doesn't render) is acceptable — the point is NO unbounded
+        // codegen. If it emits, it MUST compile + compute the declared-order answer.
+        Err(_) => {}
+        Ok(_) => {
+            let rs = compile_rust(src);
+            // The helper must be present (proves routing, not inline expansion) — a `fn __cmp_` in the output.
+            assert!(
+                rs.contains("fn __cmp_"),
+                "a recursive Option-carrying sum compare must route through a __cmp_ helper (not inline):\n{rs}"
+            );
+            if let Some(out) = rustc_run(&rs, "go(5)") {
+                // Cons (Some 5, Nil) vs Cons (None, Nil): same variant Cons → compare payloads; tuple field 0
+                // is Option → Some 5 < None (Cadenza) → Less (1).
+                assert_eq!(
+                    out, "1",
+                    "recursive Option-carrying sum orders its Option payload Some<None → Less:\n{rs}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_runtime_shift_emits_a_guarded_block() {
     // `<<` guards the count (`>= N` panics) AND round-trips to catch overflow; `>>` guards the count
     // and shifts natively (arithmetic for signed, logical for unsigned — the value type decides).

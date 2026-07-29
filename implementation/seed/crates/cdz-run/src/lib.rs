@@ -643,7 +643,9 @@ fn run_with_peers_hosted_capturing(
     }
 
     let outcome = run_export(&engine, &consumer, &mut store, &linker, opts)?;
-    let calls = observed.lock().expect("observed calls mutex").clone();
+    // Take (not clone) the observed list — nothing reads `observed` after this, so move it out (avoids an
+    // O(n) copy of the op list). The mutex guard is dropped immediately.
+    let calls = std::mem::take(&mut *observed.lock().expect("observed calls mutex"));
     Ok((outcome, calls))
 }
 

@@ -3882,9 +3882,11 @@ pub fn handle_arm_param_ty(db: &mut Db, binder: StructId) -> Option<crate::ty::T
 /// types `Any` inside an INLINE arm-body expression — a bare `(resume s s)` passed (`Any` agrees with
 /// the seed vacuously), but `(+ s s)` defaulted `s:Any` to a generic Int64, missing the Qty-aware arith
 /// arm → a spurious CDZ0201 next-state/seed mismatch on a well-typed Qty-stateful handler. Navigates
-/// `binder(=parts[2]) → arm → arms-list → handle-internal → init(=parts[1])` and types the seed. Returns
-/// `None` for an UNDETERMINED seed (`Any`/`Var` — a recursive handler mid-solve), preserving the prior
-/// `Any` fallthrough so no not-yet-solved state is falsely pinned.
+/// `binder(=arm's element 2) → arm → arms-list → handle-internal → INIT`, where INIT is the FIRST element
+/// of `as_form(handle, HANDLE_INTERNAL)`'s tail (that accessor strips the head, so the `(handle-internal
+/// INIT ARMS BODY)` seed is `.first()`/index 0 of the tail, not index 1 — index 1 is the arms-list), and
+/// types the seed. Returns `None` for an UNDETERMINED seed (`Any`/`Var` — a recursive handler mid-solve),
+/// preserving the prior `Any` fallthrough so no not-yet-solved state is falsely pinned.
 pub fn handle_arm_state_ty(db: &mut Db, binder: StructId) -> Option<crate::ty::Ty> {
     // `binder` must be the arm's element-2 state binder: its DIRECT parent is the arm `(op (params…)
     // state body)`, and `binder == parts[2]`.

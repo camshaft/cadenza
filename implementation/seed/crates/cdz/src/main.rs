@@ -4390,11 +4390,22 @@ fn run_test_file(
     // wasn't in the composed set): compile this file alone with an `EmitTests` request, exactly as before
     // (`layout::compute_tests`; a package's `entry` marker drives linking). A per-file DECLINE is reported
     // located here (the fallback owns error reporting — the precompile does not).
+    // PERF GUARD (pr892): the composed path runs each trial via `run_with_peers`, which RE-COMPOSES
+    // (`Component::new`, ~99% of a run's cost) PER CALL — no pre-JIT reuse yet. That's fine for a single-run
+    // test (one call), but a MULTI-TRIAL test (a property test with scalar params, or a `-gen` wrapper) would
+    // pay that ~99% JIT PER TRIAL — turning the per-file emit cost into a per-trial one and swamping the
+    // closure-sharing win. So if THIS file has any multi-trial test, DON'T use composed for it — fall back to
+    // the standalone per-file `EmitTests` compile, which JITs ONCE and reuses across trials. A file of only
+    // single-run `@test`s (the common case) keeps the composed win. (A compiled-instantiated-peers fast-path
+    // reused across trials would lift this — flagged follow-up; until then, this guard prevents a regression.)
+    let has_multi_trial = tests
+        .iter()
+        .any(|t| t.gens.as_ref().is_some_and(|g| !g.is_empty()) || t.gen_ty.is_some());
     let composed = match (
         precompiled.components.get(&closure[0].name),
         &precompiled.provider,
     ) {
-        (Some(consumer), Some((provider_bytes, iface))) => {
+        (Some(consumer), Some((provider_bytes, iface))) if !has_multi_trial => {
             Some((consumer.clone(), provider_bytes, iface))
         }
         _ => None,

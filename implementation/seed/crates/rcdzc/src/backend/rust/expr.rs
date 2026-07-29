@@ -227,6 +227,21 @@ fn key_ty_has_wrappable_float(ty: &Ty) -> bool {
     }
 }
 
+/// Whether a KEY/element type needs ANY ord-wrapper at a `BTreeSet`/`BTreeMap` position — a wrappable FLOAT
+/// (`__CdzF{N}`) OR a flip-order `Option` (`__CdzOpt`, #42 witness 2). Drives the `wrap_ord_key` Option arm's
+/// inner-payload decision + the read-side unwrap gates. Mirrors `ord_key_type`'s wrapping so the value and
+/// type agree. (Bare Option key, or Option nested — this walks the same Float/Tuple/Record/Option shapes the
+/// wrap descends; a plain Int/String/etc. needs no wrap.)
+fn key_ty_needs_ord_wrap(ty: &Ty) -> bool {
+    match ty.strip_nominal() {
+        Ty::Float(_) => true,
+        s if types::is_flip_order_option_key_shallow(s) => true,
+        Ty::Tuple(elems) => elems.iter().any(key_ty_needs_ord_wrap),
+        Ty::Record(fields) => fields.values().any(key_ty_needs_ord_wrap),
+        _ => false,
+    }
+}
+
 /// Whether `ty` is a COMPOUND (tuple/record/list/sum) that CONTAINS a float leaf at any depth — the shape
 /// whose `Set.to-list`/`Map.to-list` must DECLINE. Per `03-equality-and-observation.sexp:626 §319` a
 /// compound containing a float leaf has NO blessed total order, so its ordered enumeration is not defined
@@ -310,6 +325,22 @@ fn wrap_ord_key(expr: String, key_ty: &Ty) -> String {
                 format!("({})", parts.join(", "))
             };
             format!("{{ let __k = {expr}; {rebuilt} }}")
+        }
+        // An `Option`-KEY at a key/element position wraps into `__CdzOpt::new(<opt>)` — the declared-order
+        // wrapper (Some<None) that overrides std `Option`'s `None<Some` (#42 witness 2). The inner payload is
+        // itself mapped through `wrap_ord_key` when it needs wrapping (e.g. `Option Float64` → the `Some`
+        // payload wraps to `__CdzF64`): `.map(|__ov| <wrapped __ov>)`. A payload needing NO wrap (the common
+        // `Option Int64`/`Option String`) passes the `Option` through unmapped (`__CdzOpt::new(<opt>)`). The
+        // wrapped TYPE `types::ord_key_type` spells (`__CdzOpt<inner_ord_key>`) agrees with this value.
+        Ty::Sum { args, .. } if types::is_flip_order_option_key_shallow(key_ty) => {
+            let inner = &args[0];
+            if key_ty_needs_ord_wrap(inner) {
+                // The payload itself wraps — map the inner Option value: `Some(p)` → `Some(<wrap p>)`.
+                let wrapped_inner = wrap_ord_key("__ov".to_string(), inner);
+                format!("__CdzOpt::new(({expr}).map(|__ov| {wrapped_inner}))")
+            } else {
+                format!("__CdzOpt::new({expr})")
+            }
         }
         _ => expr,
     }
@@ -1817,9 +1848,18 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 type_of(db, map),
                 Ty::Map(ref k, _) if matches!(**k, Ty::Float(_))
             );
+            let key_is_opt = matches!(
+                type_of(db, map),
+                Ty::Map(ref k, _) if types::is_flip_order_option_key_shallow(k)
+            );
             if key_is_float {
                 Ok(format!(
                     "({m}).iter().map(|(__k, __v)| (__k.get(), __v.clone())).collect::<Vec<_>>()"
+                ))
+            } else if key_is_opt {
+                // A `__CdzOpt` key (Clone, not Copy) unwraps via `.clone().get()` → the inner Option (#42).
+                Ok(format!(
+                    "({m}).iter().map(|(__k, __v)| (__k.clone().get(), __v.clone())).collect::<Vec<_>>()"
                 ))
             } else {
                 Ok(format!(
@@ -1958,13 +1998,29 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 ));
             }
             let s = emit(db, set, env, ctx)?;
-            let elem_is_float = matches!(
-                type_of(db, set),
-                Ty::Set(ref e) if matches!(**e, Ty::Float(_))
-            );
+            let elem_ty = match type_of(db, set) {
+                Ty::Set(e) => Some((*e).clone()),
+                _ => None,
+            };
+            let elem_is_float = matches!(elem_ty, Some(Ty::Float(_)));
+            // A `__CdzOpt`-wrapped Option element unwraps via `.get()` (the wrapper→Option read), exactly
+            // like a float `__CdzF` element (#42 witness 2). The iteration order is the wrapper's declared
+            // `Ord` (Some<None), matching the runtime's Set.to-list Option order. Only a BARE Option element
+            // wraps (a nested Option-in-tuple element is a later face; the wrap+unwrap for that would need to
+            // rebuild the tuple element-wise on read, as the float tuple does — deferred to keep this bounded).
+            let elem_is_opt = elem_ty
+                .as_ref()
+                .map(types::is_flip_order_option_key_shallow)
+                .unwrap_or(false);
             if elem_is_float {
+                // `__CdzF` is Copy → `__f.get()` reads the f64 (byte-identical to before).
                 Ok(format!(
                     "({s}).iter().map(|__f| __f.get()).collect::<Vec<_>>()"
+                ))
+            } else if elem_is_opt {
+                // `__CdzOpt` is Clone (not Copy) → clone the ref then `.get()` reads the inner Option.
+                Ok(format!(
+                    "({s}).iter().map(|__f| __f.clone().get()).collect::<Vec<_>>()"
                 ))
             } else {
                 Ok(format!("({s}).iter().cloned().collect::<Vec<_>>()"))
@@ -3443,26 +3499,50 @@ fn emit_sum_cmp_walk(
     seen: &mut Vec<crate::ast::StructId>,
     helpers: &mut Vec<String>,
 ) -> Result<String, Reject> {
-    let decl_occ = match ty.strip_nominal() {
-        Ty::Sum { decl, .. } => *decl,
+    let (decl_occ, args) = match ty.strip_nominal() {
+        Ty::Sum { decl, args, .. } => (*decl, args.clone()),
         _ => return Err(Reject::decline("value-cmp: not a sum type")),
     };
-    let variant_count = db
-        .type_decl_by_occ(decl_occ)
-        .map(|t| t.variants.len())
-        .ok_or_else(|| Reject::decline("value-cmp: no variant count"))?;
-    // Build one match arm per ORDERED variant PAIR is O(V²); instead compare the discriminant-ORDINAL first
-    // (declared position), and only on an equal-discriminant pair compare payloads. Emit: a `match (l, r)`
-    // whose SAME-variant arms compare payloads and whose fallthrough compares declared ordinals.
-    // Encode each variant's declared ordinal via a small `fn`-free `match` that maps a ref to its position.
+    let enum_ty = super::types::rust_type(ty)
+        .ok_or_else(|| Reject::decline("value-cmp: no rust type for the sum"))?;
+    let fn_name = format!("__cmp_{}", super::types::sum_ident(&ty_sum_name(ty)));
+    // RECURSION GUARD (PR#890): a sum whose payload re-enters THIS decl (a recursive Option-carrying sum,
+    // `T = (Node (Tuple (Option Int64) T)) | (Leaf)`) would inline-recurse UNBOUNDED in codegen (a compiler
+    // stack overflow) if expanded inline. Mirror `emit_value_eq_walk`'s `__eq_` routing: on re-entry of a
+    // decl already being expanded, emit a CALL to its helper `fn __cmp_<Ident>` (the recursion base). A
+    // GENERIC instantiation (args non-empty) can't yet spell the helper's generic signature → decline (todo,
+    // not a miscompile — the compare declines cleanly, matching `emit_value_eq_walk`'s generic-recursion
+    // decline). A MONOMORPHIC recursive sum routes through the helper below.
+    if seen.contains(&decl_occ) {
+        if !args.is_empty() {
+            return Err(Reject::decline(
+                "value-cmp over a RECURSIVE GENERIC Option-carrying sum is not yet rendered (needs a generic helper fn)",
+            ));
+        }
+        return Ok(format!("{fn_name}(&{l}, &{r})"));
+    }
+    seen.push(decl_occ);
+    let variant_count = match db.type_decl_by_occ(decl_occ).map(|t| t.variants.len()) {
+        Some(n) => n,
+        None => {
+            seen.pop();
+            return Err(Reject::decline("value-cmp: no variant count"));
+        }
+    };
+    // Build the declared-order compare: compare the discriminant-ORDINAL first (declared position), and on an
+    // equal-variant pair compare payloads. `__ord` maps a ref to its DECLARED position; the same-variant arms
+    // compare payloads; the fallthrough compares ordinals.
     let mut ord_arms = Vec::with_capacity(variant_count);
     let mut same_arms = Vec::with_capacity(variant_count + 1);
+    let mut arm_err: Option<Reject> = None;
     for disc in 0..variant_count as u32 {
-        let path = sum_variant_path_of_ty(db, ty, disc)?;
-        // ordinal map arm: `Enum::V { .. } => <disc>` (works for nullary + payload variants via `{ .. }`… but
-        // a tuple-variant needs `(..)`). Use a binding-free pattern that matches either: `Enum::V { .. }` is
-        // invalid for a tuple variant, so match with `_`-payload via the path + `(..)`/nothing. Simplest: a
-        // per-variant arm that ignores payload — `path(..)` for a payload variant, `path` for nullary.
+        let path = match sum_variant_path_of_ty(db, ty, disc) {
+            Ok(p) => p,
+            Err(e) => {
+                arm_err = Some(e);
+                break;
+            }
+        };
         let has_payload = variant_payload_ty(db, ty, disc).is_some();
         let ord_pat = if has_payload {
             format!("{path}(..)")
@@ -3470,7 +3550,6 @@ fn emit_sum_cmp_walk(
             path.clone()
         };
         ord_arms.push(format!("{ord_pat} => {disc}u32,"));
-        // same-variant payload compare arm.
         match variant_payload_ty(db, ty, disc) {
             None => same_arms.push(format!("({path}, {path}) => core::cmp::Ordering::Equal,")),
             Some(payload_ty) => {
@@ -3481,23 +3560,45 @@ fn emit_sum_cmp_walk(
                 };
                 let lp = format!("({deref}__lp)");
                 let rp = format!("({deref}__rp)");
-                let cmp = emit_value_cmp_walk_seen(db, &payload_ty, &lp, &rp, seen, helpers)?;
-                same_arms.push(format!("({path}(__lp), {path}(__rp)) => {cmp},"));
+                match emit_value_cmp_walk_seen(db, &payload_ty, &lp, &rp, seen, helpers) {
+                    Ok(cmp) => same_arms.push(format!("({path}(__lp), {path}(__rp)) => {cmp},")),
+                    Err(e) => {
+                        arm_err = Some(e);
+                        break;
+                    }
+                }
             }
         }
     }
-    // The ordinal helper (inline closures over each side) + the same-variant match with a fallthrough that
-    // compares declared ordinals. `__ord` maps a ref to its DECLARED position; the final arm compares them.
-    let enum_ty = super::types::rust_type(ty)
-        .ok_or_else(|| Reject::decline("value-cmp: no rust type for the sum"))?;
-    let ord_fn = format!(
-        "|__v: &{enum_ty}| -> u32 {{ match __v {{ {} }} }}",
-        ord_arms.join(" ")
+    seen.pop();
+    if let Some(e) = arm_err {
+        return Err(e);
+    }
+    // Emit the helper `fn __cmp_<Ident>(l, r) -> Ordering` ONCE (call-indirection, so a recursive payload
+    // reaches this decl via a CALL, terminating codegen), then return a call. Mirrors `emit_value_eq_walk`'s
+    // `__eq_<Ident>` helper. `#[allow]` for the generated fn's lints. Guard against a duplicate emit if the
+    // same decl's helper was already pushed (a sibling occurrence in the same walk).
+    let helper = format!(
+        "#[allow(clippy::all)] fn {fn_name}(__cl: &{enum_ty}, __cr: &{enum_ty}) -> core::cmp::Ordering {{ let __ord = |__v: &{enum_ty}| -> u32 {{ match __v {{ {} }} }}; match (__cl, __cr) {{ {} _ => __ord(__cl).cmp(&__ord(__cr)), }} }}",
+        ord_arms.join(" "),
+        same_arms.join(" "),
     );
-    Ok(format!(
-        "{{ let __ord = {ord_fn}; match (&{l}, &{r}) {{ {} _ => __ord(&{l}).cmp(&__ord(&{r})), }} }}",
-        same_arms.join(" ")
-    ))
+    if !helpers
+        .iter()
+        .any(|h| h.contains(&format!("fn {fn_name}(")))
+    {
+        helpers.push(helper);
+    }
+    Ok(format!("{fn_name}(&{l}, &{r})"))
+}
+
+/// The sum's declared NAME (`Option`, `Node`, …) — the identity `sum_ident` mangles into the helper fn name.
+/// Peels a nominal (its cmp helper keys on the erased sum's name).
+fn ty_sum_name(ty: &Ty) -> String {
+    match ty.strip_nominal() {
+        Ty::Sum { name, .. } => name.clone(),
+        _ => "sum".to_string(),
+    }
 }
 
 /// Whether a runtime `(= a b)` over type `ty` can emit a native Rust `==` — the operand type maps to a

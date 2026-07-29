@@ -126,3 +126,9 @@
 ;; 0-regress. ON LAND: pin witness 1 (three-way compare (Some 3)<None) + the </Ordering compare witnesses
 ;; + the Result control into 03-equality/05-compound (rust now matches wasm). Witness 2 (Set/Map Option-key
 ;; enumeration) STAYS HELD for v-rust-backend's next MR (BTreeSet/Map Ord-wrapper) — they ping on ship.
+
+;; WITNESS-2 FIX MR'd (v-rust-backend, 2026-07-29): d946b02af (tip; __CdzOpt Option-key Ord-wrapper
+;; 5980d7b14 + pr890 recursion-guard, on clean trunk d0b7c7423). Gates rust 5107/110/0 + rust-async
+;; 5104/113/0 + wasm 5194/23/0 --check 0-regress. QUEUED, not yet landed. ON LAND: pin witness 2
+;; (Set.to-list over Option keys enumerates Some-first, declared order) into 19-sets/05-compound -> closes
+;; #42 entirely (compare-side pinned MR bf167fd86). Ping expected on land.
