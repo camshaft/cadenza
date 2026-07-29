@@ -156,6 +156,20 @@ pub enum Request {
     /// path (behavior-identical, just without the closure-sharing win). See
     /// `backend/wasm/DESIGN-option-c-shared-closure-component.md`.
     EmitTestsComposed,
+    /// OPTION C follow-on — emit ONLY the per-file CONSUMER components (importing the shared-closure provider
+    /// interface), SKIPPING the provider emit. The provider-CACHE path: a runner that already holds the shared
+    /// closure's provider component (built once, cached across invocations keyed on the closure's cross-edge
+    /// content-hashes) requests this to emit just the cheap consumer(s) for the file(s) under test, then links
+    /// them against the cached provider at run time (`run_with_peers`). Unlike [`EmitTestsComposed`] — which
+    /// emits the provider + consumers together (paying the expensive whole-closure lower+emit every time) —
+    /// this emits NO `component-provider` (the caller supplies the cached one); it emits the N `component`
+    /// consumers (named by `db.file_path`) + the `component-name` iface sidecar (so the runner knows which
+    /// cached provider to pair). The win: v-compiler-ml's SINGLE-FILE `cdz test` no longer re-lowers the
+    /// ~1360-def closure — the consumer layout ([`layout::compute_tests_consumer`]) excludes the cross-edges
+    /// and needs only the file's `@test` defs + the cross-edge SET + the iface, NOT the provider lowering.
+    /// Same single-dir/stem-collision guard + fallback as `EmitTestsComposed`. See
+    /// `backend/wasm/DESIGN-option-c-shared-closure-component.md` (the single-file provider-cache follow-on).
+    EmitTestsConsumerOnly,
     /// Read a fact column.
     Query(Query),
 }
@@ -362,6 +376,10 @@ mod tag {
     /// UNION cross-edge closure into one `component-provider` artifact + a `component-name` iface sidecar, and
     /// emit each file's `@test` bucket as a `component` consumer that imports it.
     pub const EMIT_TESTS_COMPOSED: u8 = 0x07;
+    /// Emit ONLY the per-file consumer components against a CACHED shared-closure provider
+    /// (`Request::EmitTestsConsumerOnly`) — the single-file provider-cache path: skip the provider emit
+    /// (the caller supplies the cached provider at run time), emit the cheap consumer(s) + the iface sidecar.
+    pub const EMIT_TESTS_CONSUMER_ONLY: u8 = 0x08;
     pub const QUERY_TYPE_OF: u8 = 0x10;
     pub const QUERY_USES_OF: u8 = 0x11;
     pub const QUERY_TYPE_AT: u8 = 0x12;
@@ -404,6 +422,7 @@ fn decode_one(r: &mut Reader) -> Option<Request> {
         tag::EMIT_TESTS => Some(Request::EmitTests),
         tag::EMIT_TESTS_PER_FILE => Some(Request::EmitTestsPerFile),
         tag::EMIT_TESTS_COMPOSED => Some(Request::EmitTestsComposed),
+        tag::EMIT_TESTS_CONSUMER_ONLY => Some(Request::EmitTestsConsumerOnly),
         tag::EMIT_RUST => Some(Request::Emit(crate::backend::Target::Rust)),
         tag::EMIT_RUST_ASYNC => Some(Request::Emit(crate::backend::Target::RustAsync)),
         tag::QUERY_TYPE_OF => Some(Request::Query(Query::TypeOf {
@@ -459,6 +478,7 @@ fn encode_one(out: &mut Vec<u8>, req: &Request) {
         Request::EmitTests => out.push(tag::EMIT_TESTS),
         Request::EmitTestsPerFile => out.push(tag::EMIT_TESTS_PER_FILE),
         Request::EmitTestsComposed => out.push(tag::EMIT_TESTS_COMPOSED),
+        Request::EmitTestsConsumerOnly => out.push(tag::EMIT_TESTS_CONSUMER_ONLY),
         Request::Emit(crate::backend::Target::Rust) => out.push(tag::EMIT_RUST),
         Request::Emit(crate::backend::Target::RustAsync) => out.push(tag::EMIT_RUST_ASYNC),
         Request::Query(Query::TypeOf { name }) => {
@@ -2322,6 +2342,7 @@ mod tests {
             Request::Query(Query::FuncLayout),
             Request::EmitTestsPerFile,
             Request::EmitTestsComposed,
+            Request::EmitTestsConsumerOnly,
         ];
         // Exhaustiveness guard: adding a Request/Query variant fails to compile until listed above AND here.
         for r in &each {
@@ -2330,6 +2351,7 @@ mod tests {
                 | Request::EmitTests
                 | Request::EmitTestsPerFile
                 | Request::EmitTestsComposed
+                | Request::EmitTestsConsumerOnly
                 | Request::Query(
                     Query::TypeOf { .. }
                     | Query::UsesOf { .. }

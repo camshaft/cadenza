@@ -16836,3 +16836,42 @@
         (export main)))
   (call   main (: 3 Int64)) (output (: 42 Int64))
   (call   main (: 4 Int64)) (output (: -1 Int64)))
+
+(case "a generic user sum holds a CLOSURE payload at one instantiation and a scalar at another"
+  (doc    "The fn-payload instantiation of a user generic sum (the Box pins instantiate at scalars
+           and nested Boxes): `(Box (-> Int64 Int64))` holds a k-capturing closure extracted by the
+           `(Full f)` pattern and APPLIED (3k·100), beside `(Box Int64)` holding 7 — two monomorphs
+           of one declaration where one payload is a fn HANDLE + env (607 at k=2, 7 at k=0 where the
+           closure face zeroes). A variant layout that boxed fn payloads as scalars (or shared the
+           two monomorphs' payload slots) breaks the application or the scalar read — the sum-payload
+           twin of the generic-tuple fn-slot pin.")
+  (input  (do
+        (type (Box a) (Full a) (Nil unit))
+        (def (main (: k Int64))
+          (do
+            (def b (Full (fn ((: y Int64)) (* y k))))
+            (def c (Full 7))
+            (+ (* 100 (match b ((Full f) (f 3)) ((Nil _u) -1)))
+               (match c ((Full v) v) ((Nil _u) -1)))))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 607 Int64))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
+
+(case "generic user-sum values dedupe as set elements and key a map by rope-payload content"
+  (doc    "Generic sums through CHAMP: `(Box Int64)` elements dedupe by tag+payload ({Full 1, Full k,
+           Nil} is 2 at k=1, 3 at k=5) and a `(Box String)` key whose payload is a RUNTIME ROPE is
+           found by its flat-payload twin (42 both rows) — champ hash/eq descending into a GENERIC
+           variant's payload slot, canonicalizing the rope leaf inside it. A per-monomorph hash
+           salt (or a payload slot hashed as a raw handle) splits the rope key from the flat probe;
+           a tag-blind hash collapses Full/Nil.")
+  (input  (do
+        (type (Box a) (Full a) (Nil unit))
+        (def (main (: k Int64))
+          (do
+            (def s (Set.of (list (Full 1) (Full k) (Nil unit))))
+            (def m (Map.insert Map.empty (Full (String.concat "ke" "y")) 42))
+            (+ (* 100 (Set.len s))
+               (match (Map.lookup m (Full "key")) ((Some v) v) ((None _u) -1)))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 242 Int64))
+  (call   main (: 5 Int64)) (output (: 342 Int64)))

@@ -1492,6 +1492,37 @@
         (export main)))
   (call   main (: 5 Int64)) (error CDZ0202))
 
+(case "a built-in comparison on a COMPOUND containing an abstract type is rejected (opacity walks the compound)"
+  (doc    "The compound extension of the bare direct-`=` reject: `(= (tuple (mk k) 1) (tuple (mk k) 1))`
+           with an abstract `Temp` leaf — the built-in structural comparison walks INTO the compound and
+           observes the `Temp` representation through equality, so it is rejected CDZ0202 like the bare
+           `(= (mk) (mk))` (v-inference 2f2be099c). The observation reaching the abstract leaf is what the
+           opacity MUST forbids, regardless of the surrounding tuple.")
+  (module "temp"
+    (do (type Temp (T Int64)) (def (mk (: c Int64)) (T (* c 10))) (export Temp) (export mk)))
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64)) (if (= (tuple (mk k) 1) (tuple (mk k) 1)) 1 0))
+        (export main)))
+  (call   main (: 5 Int64)) (error CDZ0202))
+
+(case "a Set/Map lookup over an abstract-element collection reached via a param is rejected (read-side opacity)"
+  (doc    "The read-side completion of the opacity sweep: the collection need not be LOCALLY constructed —
+           a `(Set Temp)` reached through a fn PARAM (or import), then `Set.contains`/`Map.lookup`/`Set.union`
+           etc., still compares its abstract elements by the built-in structural comparison at membership/
+           lookup time, so it rejects CDZ0202 (v-inference 23fb89ea4). `(def (has (: s (Set Temp)) (: x Temp))
+           (Set.contains s x))` — the membership probe observes the `Temp` representation. Completes the
+           abstract-observation sweep across all four routes: construction (key), compound-containing key,
+           direct-`=`, and read-side lookup.")
+  (module "temp"
+    (do (type Temp (T Int64)) (def (mk (: c Int64)) (T (* c 10))) (export Temp) (export mk)))
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (has (: s (Set Temp)) (: x Temp)) (Set.contains s x))
+        (def (main (: k Int64)) (if (has (Set.empty) (mk k)) 1 0))
+        (export main)))
+  (call   main (: 5 Int64)) (error CDZ0202))
+
 (case "eval of a fully-concrete imported constructor is legal from outside"
   (doc    "`(eval (quote (P.Mk 7)))` where lib2 exports `(. P *)` — the CONCRETE complement of the
            no-forge pins above: a fully-exported ctor is reachable through eval's call-site

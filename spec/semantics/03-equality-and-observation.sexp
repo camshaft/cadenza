@@ -2411,6 +2411,25 @@
   (call   main (: 3 Int64) (: 0 Int64))
   (output (: 1 Int64)))
 
+(case "Set.to-list over Option elements enumerates Some-first per the declared order"
+  (doc    "The #42 collection-key completion (v-rust-backend __CdzOpt Ord-wrapper, d946b02af): a Set of
+           Option values enumerates its elements in the DECLARED Some-below-None order, not std's flipped
+           None<Some. `Set.of (Some k) (None) (Some 1)` sorts to `(Some 1) (Some k) None`, so the head is a
+           `Some` — the inner read yields `1`. rust Set/Map are BTreeSet/BTreeMap ordering keys by the KEY's
+           derived Ord; the Ord-wrapper makes an Option key use declared Some<None, matching wasm. Completes
+           #42 alongside the compare witnesses above (the compare-side fix ordered <, this orders the
+           collection-key enumeration).")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def s (Set.of (list (Some k) (: (None unit) (Option Int64)) (Some 1))))
+                (match (List.at (Set.to-list s) 0)
+                  ((Option.Some v) (match v ((Option.Some inner) inner) ((Option.None _u) -99)))
+                  ((Option.None _u) -1))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64)))
+
 ; --- #43 all-nullary-sum discriminant order + render (v-wasm-opt cf0c05ae8 + v-runtime f9f8717c) ------
 (case "an all-nullary user sum orders by discriminant — Lo below Hi"
   (input  (do

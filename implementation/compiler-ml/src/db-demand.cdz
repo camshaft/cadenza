@@ -14,9 +14,11 @@
 /// The demo memoizes the TYPES column (a `demand-typed` returning `(db', Typed)`): a real infer producer
 /// would COMPUTE the fact from upstream (resolve + child types); this fills a supplied default, to prove the
 /// check→compute-on-miss→fill→return-updated-db memo loop and that a second demand HITS the memo.
-import { Typed } from "infer-db"
+import { Typed, bin-type, if-type } from "infer-db"
 
 import { Db, require-typed, fill-typed, db-tree } from "db"
+
+import { db-typed-col } from "db-infer"
 
 import { Tree, Node, node-at } from "parse-db"
 
@@ -53,6 +55,41 @@ def demand-typed-leaf(db: Db, id: Int64) = match require-typed(db, id) with
   | Option.Some(fact) => (db, fact)                                   // memo HIT — no recompute
   | Option.None(_) =>                                                 // MISS — compute from source, fill, thread
       (let ty = compute-leaf-type(db-tree(db), id) in (fill-typed(db, id, ty), ty))
+
+/// P1c COMPOSITE producer (recursive slice): a demand that COMPUTES a node's type by first DEMANDING its
+/// children off the SAME threaded Db (each child fills+memoizes its own column slot), then combining the child
+/// facts via infer-db's OWN rules (bin-type / if-type — reused, not reinvented). This is the recursive
+/// backward-demand shape (rcdzc's type_of demanding operand type_of's): a real memoized inference that composes
+/// leaf + composite producers. Shapes handled:
+///   NBin(op, l, r) → demand l, demand r (threading db), then `bin-type(tree, op, db-typed-col, l, r)`.
+///   NIf(c, t, e)   → demand c, t, e (threading db), then `if-type(db-typed-col, c, t, e)`.
+///   leaf (NLit/NBoolLit/NAnnLit/…) → delegate to demand-typed-leaf (compute-from-source, no children).
+/// Same MEMO loop: FILLED slot → memo hit (db unchanged); ABSENT → demand-children + combine + fill + thread.
+/// The children's facts are read from the THREADED db's typed column (db-typed-col) AFTER their demands filled
+/// them — so bin-type/if-type see the freshly-memoized child types. Terminates: children have strictly smaller
+/// node-ids reached once each (the arena is a DAG built bottom-up; a demand on a filled slot is a hit).
+/// NBin composite: demand both operands (threading db), combine via bin-type over the threaded typed column.
+def demand-bin(db: Db, id: Int64, op: Int64, l: Int64, r: Int64) =
+  match demand-typed-node(db, l) with
+    | (db1, _tl) => match demand-typed-node(db1, r) with
+        | (db2, _tr) =>
+            let ty = bin-type(db-tree(db2), op, db-typed-col(db2), l, r) in (fill-typed(db2, id, ty), ty)
+
+/// NIf composite: demand cond/then/else (threading db), combine via if-type over the threaded typed column.
+def demand-if(db: Db, id: Int64, c: Int64, t: Int64, e: Int64) =
+  match demand-typed-node(db, c) with
+    | (db1, _tc) => match demand-typed-node(db1, t) with
+        | (db2, _tt) => match demand-typed-node(db2, e) with
+            | (db3, _te) =>
+                let ty = if-type(db-typed-col(db3), c, t, e) in (fill-typed(db3, id, ty), ty)
+
+def demand-typed-node(db: Db, id: Int64) = match require-typed(db, id) with
+  | Option.Some(fact) => (db, fact)                                   // memo HIT — no recompute
+  | Option.None(_) => match node-at(db-tree(db), id) with
+      | Option.Some(Node.NBin(op, l, r)) => demand-bin(db, id, op, l, r)
+      | Option.Some(Node.NIf(c, t, e)) => demand-if(db, id, c, t, e)
+      | Option.Some(_) => demand-typed-leaf(db, id)                   // leaf shape → compute-from-source
+      | Option.None(_) => let ty = Typed.TErr in (fill-typed(db, id, ty), ty)
 // ---- TESTS: the memoizing-producer loop over explicit-threaded Db columns ---------------------------
 import { Tok, parse-tokens } from "parse-db"
 
@@ -130,4 +167,38 @@ def dd-leaf-second-demand-hits-memo() =
     | (db1, _f1) => match demand-typed-leaf(db1, 0) with
       | (db2, _f2) => if typed-filled(db2) == 1 then unit else trap("2nd leaf demand hits memo — still 1 fact")
 
-export { demand-typed, demand-typed-leaf, compute-leaf-type }
+// ---- TESTS: the COMPOSITE producer (demands children, combines via bin-type/if-type) ---------------
+
+def bin-db() = match parse-tokens([Tok.TNum(2), Tok.TOp(43), Tok.TNum(3)]) with
+  | (root, tree) => (root, db-of(tree))
+def cmp-db() = match parse-tokens([Tok.TNum(1), Tok.TOp(60), Tok.TNum(2)]) with
+  | (root, tree) => (root, db-of(tree))
+
+@test
+def dd-node-nbin-arith-computes-int-and-memoizes-children() =
+  // (+ 2 3): demand the root NBin → demands both NLit children (fills their column slots), combines via
+  // bin-type → an int type. The column memoizes ALL THREE nodes (root + 2 leaves) = 3 facts.
+  match bin-db() with
+    | (root, d0) => match demand-typed-node(d0, root) with
+      | (db1, fact) => match fact with
+        | Typed.TIntW(_, _) => (if typed-filled(db1) == 3 then unit else trap("root + 2 leaves memoized = 3 facts"))
+        | _ => trap("(+ 2 3) computes to an int type via bin-type over demanded children")
+
+@test
+def dd-node-comparison-computes-bool() =
+  // (1 < 2): NBin op 60 (comparison) → bin-type yields TBool over two demanded int leaves.
+  match cmp-db() with
+    | (root, d0) => match demand-typed-node(d0, root) with
+      | (_db, fact) => match fact with
+        | Typed.TBool => unit
+        | _ => trap("(1 < 2) computes to TBool")
+
+@test
+def dd-node-second-demand-hits-memo() =
+  // recompute-free: demanding the root twice keeps the column at 3 (no re-demand of children, no re-fill).
+  match bin-db() with
+    | (root, d0) => match demand-typed-node(d0, root) with
+      | (db1, _f1) => match demand-typed-node(db1, root) with
+        | (db2, _f2) => if typed-filled(db2) == 3 then unit else trap("2nd root demand hits memo — still 3 facts")
+
+export { demand-typed, demand-typed-leaf, compute-leaf-type, demand-typed-node }

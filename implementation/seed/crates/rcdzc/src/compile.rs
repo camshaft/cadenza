@@ -239,6 +239,7 @@ fn compile_with_opt_inner(
     let mut emit_tests = false;
     let mut emit_tests_per_file = false;
     let mut emit_tests_composed = false;
+    let mut emit_tests_consumer_only = false;
     for req in &requests {
         match req {
             sidecar::Request::Query(q) => queries.push(q.clone()),
@@ -260,6 +261,13 @@ fn compile_with_opt_inner(
             // consumers + a `component-name` sidecar), so it only sets the flag, pushing no `Target`.
             sidecar::Request::EmitTestsComposed => {
                 emit_tests_composed = true;
+            }
+            // `EmitTestsConsumerOnly` (the provider-cache path) reuses the composed driver's bucket + guard +
+            // union-edge computation but SKIPS the provider emit — the caller supplies the cached provider at
+            // run time. Shares the `emit_tests_composed` branch below (both need the `@test` layout); a flag
+            // distinguishes whether to emit the provider.
+            sidecar::Request::EmitTestsConsumerOnly => {
+                emit_tests_consumer_only = true;
             }
         }
     }
@@ -331,7 +339,11 @@ fn compile_with_opt_inner(
     // `emit_tests_per_file` gates + faults over the WHOLE `@test` set (like `emit_tests`) — this `layout`
     // validates the closure lays out and drives fault-gating; the per-file branch below re-lays each file's
     // bucket as a cheap layout-view over the SAME lowered Core (no re-lower).
-    let layout = match if emit_tests || emit_tests_per_file || emit_tests_composed {
+    let layout = match if emit_tests
+        || emit_tests_per_file
+        || emit_tests_composed
+        || emit_tests_consumer_only
+    {
         layout::compute_tests(&mut db)
     } else {
         layout::compute(&mut db)
@@ -472,8 +484,12 @@ fn compile_with_opt_inner(
     // and N `component` artifacts (the consumers, NAMED by `db.file_path` — the SAME name-demux as
     // `EmitTestsPerFile`). Runs on its OWN branch (multiple artifacts from the shared lowering), so the normal
     // emit loop below stays empty for a pure `EmitTestsComposed` request.
-    if emit_tests_composed {
+    // `EmitTestsConsumerOnly` (the provider-cache follow-on) shares this driver: same bucket + stem guard +
+    // union-edge set, but emits ONLY the consumers (skips the expensive provider emit — the caller supplies a
+    // CACHED provider at run time). `emit_provider` = false for that request, true for `EmitTestsComposed`.
+    if emit_tests_composed || emit_tests_consumer_only {
         use std::collections::BTreeMap;
+        let emit_provider = emit_tests_composed;
         // The closure's published interface — the fixed provider↔consumer contract name (both the provider's
         // `component_name` and every consumer's import interface; the index-agreement witness validates the
         // export/import order under it). A runner reads the `component-name` sidecar to bind `Peer{interface}`.
@@ -525,22 +541,38 @@ fn compile_with_opt_inner(
             // provider's export order matches every consumer's import order (the index-agreement invariant).
             let file_indices: Vec<usize> = named_files.iter().map(|(i, _, _)| *i).collect();
             let union_edges = layout::cross_component_edges_union(&mut db, &layout, &file_indices);
-            // Emit the PROVIDER first (its interface = `CLOSURE_IFACE`, exports the union edges). A build with
-            // no cross-edge (the `@tests` call nothing shared) declines here → fall back. `component_name` is
-            // set only for the provider emit and restored after, so the consumer emits below stay non-provider.
-            let saved_component_name = db.component_name.take();
-            db.component_name = Some(CLOSURE_IFACE.to_string());
-            let provider_result = layout::compute_provider_for_edges(&mut db, &union_edges)
-                .and_then(|pl| backend::emit(Target::Wasm, &mut db, &pl, span_data.as_ref(), None));
-            db.component_name = saved_component_name;
+            // Build the PROVIDER (interface = `CLOSURE_IFACE`, exports the union edges) UNLESS this is a
+            // consumer-only (cache-hit) request. A build with no cross-edge declines here → fall back. For the
+            // consumer-only path we still VALIDATE the union edge set exists (an empty union → nothing to
+            // import → decline to per-file), but skip the expensive `compute_provider_for_edges` + emit (the
+            // caller supplies the cached provider at run time). `component_name` is set only for the provider
+            // emit and restored after, so the consumer emits stay non-provider.
+            let provider_result: Result<Option<Vec<u8>>, Reject> = if emit_provider {
+                let saved_component_name = db.component_name.take();
+                db.component_name = Some(CLOSURE_IFACE.to_string());
+                let r = layout::compute_provider_for_edges(&mut db, &union_edges)
+                    .and_then(|pl| {
+                        backend::emit(Target::Wasm, &mut db, &pl, span_data.as_ref(), None)
+                    })
+                    .map(Some);
+                db.component_name = saved_component_name;
+                r
+            } else if union_edges.is_empty() {
+                // Consumer-only with no shared closure to import — nothing to hoist/cache → fall back.
+                Err(Reject::decline(
+                    "no shared closure: the @tests call no imported (cross-file) definition",
+                ))
+            } else {
+                Ok(None) // consumer-only: no provider bytes (the caller supplies the cached provider)
+            };
             match provider_result {
                 Ok(provider_bytes) => {
-                    // The provider component + the interface-name sidecar the runner binds `Peer{interface}` to.
-                    artifacts.push(Artifact::new(
-                        "component-provider",
-                        CLOSURE_IFACE,
-                        provider_bytes,
-                    ));
+                    // The provider component (if emitted) + the interface-name sidecar the runner binds
+                    // `Peer{interface}` to (emitted on BOTH paths — the consumer-only path needs it to know
+                    // which cached provider to pair).
+                    if let Some(bytes) = provider_bytes {
+                        artifacts.push(Artifact::new("component-provider", CLOSURE_IFACE, bytes));
+                    }
                     artifacts.push(Artifact::new(
                         link::KIND_COMPONENT_NAME,
                         CLOSURE_IFACE,
