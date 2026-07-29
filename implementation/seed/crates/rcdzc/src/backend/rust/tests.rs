@@ -6696,3 +6696,41 @@ fn a_recursive_newtype_declines_naming_the_box_indirection_gap_not_a_generic_mis
         }
     }
 }
+
+#[test]
+fn a_symbol_literal_payload_probe_inside_a_recursive_fn_matches_by_content() {
+    // A nested Symbol-literal payload probe `(Mk #"go")` inside a self-recursive `walk` — the recursive-fn
+    // dimension of the sum-variant literal-payload cases. A Symbol payload maps to a Rust `String` (a Symbol
+    // IS its text at run time), so the decision-tree LitTest renders as a content compare
+    // `<payload>.as_str() == "go"` rather than declining "non-scalar literal-payload probe". `walk 2 (Mk
+    // #"go")` recurses twice then, at the base, probes the `W` argument's Symbol payload against `#"go"` →
+    // 40. Pins that a String/Symbol literal-payload probe now renders on the rust backend (wasm already ran
+    // it via the byte-leaf compare); a NON-matching symbol falls to the wildcard arm.
+    let m = compile_rust(
+        "(module m \
+           (type W (Mk Symbol)) \
+           (def (walk (: n Int64) (: w W)) \
+             (if (< n 1) (match w ((Mk #\"go\") 40) (_ (- 0 1))) (walk (- n 1) w))) \
+           (def (mk) (walk 2 (Mk #\"go\"))) (export mk))",
+    );
+    // The content compare is emitted (not a decline).
+    assert!(
+        m.contains(".as_str() == \"go\""),
+        "Symbol literal-payload probe renders a content compare:\n{m}"
+    );
+    if let Some(out) = rustc_run(&m, "mk()") {
+        assert_eq!(out, "40", "recurses twice then matches the #\"go\" payload");
+    }
+    // A DISTINCT runtime symbol misses the literal arm and takes the wildcard → -1. The symbol is built
+    // behind a recursive call so it is a genuine runtime value (not a constant fold to the literal arm).
+    let miss = compile_rust(
+        "(module m \
+           (type W (Mk Symbol)) \
+           (def (probe (: w W)) (match w ((Mk #\"go\") 40) (_ (- 0 1)))) \
+           (def (f (: n Int64)) (if (= n 0) (Symbol.of \"stop\") (f (- n 1)))) \
+           (def (mk) (probe (Mk (f 1)))) (export mk))",
+    );
+    if let Some(out) = rustc_run(&miss, "mk()") {
+        assert_eq!(out, "-1", "a non-#\"go\" symbol falls to the wildcard arm");
+    }
+}
