@@ -1411,6 +1411,23 @@ fn op_sum_disc(h: Handle) -> u32 {
     }
     with_node(h, 0, |n| read_disc(&n.raw))
 }
+/// The discriminant of a sum value FOR A DESCRIPTOR-GUIDED WALK (compare + render) — decodes an ALL-NULLARY
+/// sum that was boxed as an Int IMMEDIATE (SOUNDNESS #43). A nullary variant boxes via `box-int` (enum-disc
+/// → OP_BOX_INT); a small disc (0/1/2…) fixnum_fits, so `op_box_int` returns an immediate carrying the disc
+/// as its int value, NOT a heap sum node. `op_sum_disc` returns 0 for ANY immediate (its documented cross-
+/// kind-totality contract, relied on by the render/decode/WIT callers + pinned tests), so the shape-guided
+/// Sum arms (value_cmp_shaped + value-encode) MUST decode the disc from the immediate's value here instead —
+/// else every nullary key/element reads disc 0 (wrong sort order in to-list; wrong variant in render). A
+/// payload-carrying variant is a real heap node → `op_sum_disc` reads its stored disc. Kept SEPARATE from
+/// `op_sum_disc` on purpose: only the descriptor-walk callers know the operand is a sum (so an immediate is
+/// an enum-disc, not a cross-kind int); `op_sum_disc`'s blanket-0 stays correct for its other callers.
+fn sum_disc_shaped(h: Handle) -> u32 {
+    if is_immediate(h) {
+        imm_as_int(h) as u32
+    } else {
+        op_sum_disc(h)
+    }
+}
 fn op_sum_payload(h: Handle) -> Handle {
     if is_immediate(h) {
         return Handle::NULL; // cross-kind totality: a sum is never itself an immediate
@@ -2572,7 +2589,11 @@ fn encode_value(
                         }
                     }
                     Shape::Sum(variants) => {
-                        let disc = op_sum_disc(h) as usize;
+                        // `sum_disc_shaped` (not `op_sum_disc`): an all-nullary sum nested in a compound
+                        // reaches render as an Int IMMEDIATE (box-int of a small disc → imm_int), and
+                        // `op_sum_disc`→0 would render the FIRST variant for EVERY value (SOUNDNESS #43 render
+                        // sibling of witness 4 — a runtime `(tuple (Tri.Hi unit) 5)` else renders `(Tri.Lo …)`).
+                        let disc = sum_disc_shaped(h) as usize;
                         let (head, payload_shape) = variants.get(disc)?;
                         let head_leaf = b.name_leaf(head);
                         let head_s = b.atom(head_leaf);
@@ -5987,8 +6008,19 @@ fn value_cmp_shaped(
                     Shape::Sum(variants) => {
                         // By discriminant first (the variant's index, as the canonical byte form encodes it),
                         // then by payload within the same variant. Different discriminants decide immediately.
+                        //
+                        // DISC of an ALL-NULLARY sum stored as an Int IMMEDIATE (SOUNDNESS #43 witness 4): a
+                        // nullary variant boxes via `box-int` (enum-disc → OP_BOX_INT), and a small disc
+                        // (0/1/2…) fixnum_fits, so `op_box_int` returns an IMMEDIATE int carrying the disc as
+                        // its value — NOT a heap sum node. `op_sum_disc` returns 0 for ANY immediate ("a sum
+                        // is never itself an immediate"), so WITHOUT this every nullary key read disc 0 → all
+                        // Equal → the stable to-list sort kept insertion order → wrong enumeration ({Hi,Mid,Lo}
+                        // heads Mid not Lo). So decode the disc from the immediate's int value here; a
+                        // payload-carrying variant is a real heap node (`op_sum_disc` reads its stored disc,
+                        // unchanged). Localized to the cmp/sort path — `op_sum_disc`'s immediate→0 contract
+                        // (relied on by the render/decode callers) is untouched.
                         let variants = variants.clone();
-                        let (da, db) = (op_sum_disc(a), op_sum_disc(b));
+                        let (da, db) = (sum_disc_shaped(a), sum_disc_shaped(b));
                         match da.cmp(&db) {
                             Ordering::Equal => {
                                 let (_, payload_shape) = variants.get(da as usize)?;
