@@ -5900,3 +5900,62 @@
         (export main)))
   (call   main (: 10 Int64)) (output (: 210 Int64))
   (call   main (: 0 Int64)) (output (: 200 Int64)))
+(case "a do-def-bound perform inside a recursive fn called under a handle declines cleanly (specializer floor, not a mangled-name CDZ0201)"
+  (doc    "SAFE FLOOR (v-effects, 0d2afb083). A recursive function whose body do-def-binds a performed
+           operation — `(do (def scaled (Env.scale i)) (check-all (- i 1) …))` — used to fail CDZ0201
+           `check-all#eff2 has no body`: the effect specializer RESERVED a body:None spec def and memoized
+           the mangled name before threading the body, and on the do-def-bound-perform body the thread
+           returned None (unthreadable) leaving the reserved bodyless def + memo, so the recursive self-call
+           resolved to it and leaked the internal `#eff` name. The fix declines UNCODED naming the base fn
+           ('the recursive function check-all performs a discharged operation in a form the effect
+           specializer does not yet handle') — a clean not-yet-reducible floor, not a mangled CDZ0201.
+           Computing the value (110) needs a later body-clone specialization increment. The inline-
+           expression twin `(check-all (- i 1) (+ bad (Env.scale i)))` already compiles; this is the
+           do-def-bound-perform-in-a-recursive-fn seam, distinct from the straight-line do-def and F1 seams.")
+  (input  (do
+        (effect Env (op scale (-> Int64 Int64)))
+        (def (check-all (: i Int64) (: bad Int64))
+          (if (= i 0)
+              bad
+              (do
+                (def scaled (Env.scale i))
+                (check-all (- i 1) (+ bad scaled)))))
+        (def (main (: k Int64))
+          (handle Env k
+            ((scale (v) s (resume (* v s) s)))
+            (check-all 10 0)))
+        (export main)))
+  (declines))
+
+(case "Qty arithmetic on the handler state binder via an arm-local def threads and runs"
+  (doc    "The working perimeter of the Qty-stateful-handler pattern (v-cad/notebook @param): a handler
+           whose state is a `Qty` (a unit-carrying scalar) advances its state by arithmetic on the state
+           binder `s`. The arm-local-def form — `(do (def t (+ s s)) (resume t s))` — type-checks and runs
+           (`s` keeps its `(Qty Int64 meter)` type through the def, so `(+ s s)` is Qty+Qty). `main` performs
+           once and reads `Qty.value`: `2·21 = 42`. Pins the semantics an INLINE resume-slot `(+ s s)` must
+           match (that inline form currently false-rejects — see the flip-pin held for v-inference).")
+  (input  (do
+            (effect Acc (op step (-> Unit (Qty Int64 (Unit.base #"meter")))))
+            (def (main (: a Int64))
+              (handle Acc (Qty.of a (Unit.base #"meter"))
+                ((step (_u) s (do (def t (+ s s)) (resume t s))))
+                (Qty.value (Acc.step))))
+            (export main)))
+  (call   main (: 21 Int64))
+  (output (: 42 Int64)))
+
+(case "a Qty handler state advances via Qty.value / re-wrap in the next-state slot"
+  (doc    "The value-then-rewrap workaround: the next-state slot advances by unwrapping the Qty to its
+           scalar (`Qty.value s`), computing, and re-wrapping (`Qty.of (* … 2) meter`). Two performs read
+           `Qty.value` of each and sum: seed 5 → first step advances state to 10, the two performed results
+           are 5 and 10 → `Qty.value 5 + Qty.value 10`… (a+2a) reads = 15 at a=5. Pins the re-wrap path as a
+           valid Qty-state advance alongside the arm-local-def form.")
+  (input  (do
+            (effect Acc (op step (-> Unit (Qty Int64 (Unit.base #"meter")))))
+            (def (main (: a Int64))
+              (handle Acc (Qty.of a (Unit.base #"meter"))
+                ((step (_u) s (resume s (Qty.of (* (Qty.value s) 2) (Unit.base #"meter")))))
+                (Qty.value (+ (Acc.step) (Acc.step)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 15 Int64)))

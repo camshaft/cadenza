@@ -124,3 +124,46 @@ fn same_stem_files_in_different_subdirs_do_not_cross_contaminate() {
         "no wrong-component reuse (the stem-collision failure mode):\n{out}"
     );
 }
+
+#[test]
+fn a_shared_import_closure_runs_via_the_composed_provider_path() {
+    // Option-C composed path: when a dir's @test files IMPORT a shared (non-inlined) def, EmitTestsComposed
+    // hoists that closure into ONE provider component + emits each file as a cross-edge-EXCLUDING consumer
+    // importing it; run_test links consumer→provider via run_with_peers over one shared runtime. Assert the
+    // per-file results are correct through that path: a RECURSIVE shared `sumto` (stays standalone → a real
+    // cross-edge, not inlined) is called by two test files — one asserts the right value (PASS), one a wrong
+    // value (FAIL via its own trap). Correct results here mean the shared closure crossed the peer edge fine.
+    let dir = std::env::temp_dir().join(format!("cdz-composed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("shared.cdz"),
+        "def sumto(n: Int64) =\n  if n == 0 then 0 else n + sumto(n - 1)\nexport { sumto }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ta.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_sumto_pass() =\n  if sumto(5) == 15 then unit else trap(\"ta\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tb.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_sumto_fail() =\n  if sumto(3) == 999 then unit else trap(\"tb intentional\")\n",
+    )
+    .unwrap();
+    let (_ok, out) = run_test(&dir);
+    assert!(
+        out.contains("PASS t_sumto_pass"),
+        "ta's test passes through the composed provider (sumto(5)==15):\n{out}"
+    );
+    assert!(
+        out.contains("FAIL t_sumto_fail"),
+        "tb's test fails on its own trap through the composed provider:\n{out}"
+    );
+    // The shared-closure fn crossed the peer edge correctly — NOT a link/exports mismatch (which would show
+    // as "exports no function" or an invalid-module error rather than a clean per-file PASS/FAIL).
+    assert!(
+        !out.contains("exports no function") && !out.contains("could not run test"),
+        "the consumer linked against the provider cleanly (no cross-component link error):\n{out}"
+    );
+}

@@ -683,6 +683,7 @@ fn compute(db: &mut Db, id: StructId) -> Ty {
         // its call site, where the argument's type flows in via the fold) or an unconstrained one.
         Resolved::Param { binder } => param_annot_ty(db, binder)
             .or_else(|| crate::effects::handle_arm_param_ty(db, binder))
+            .or_else(|| crate::effects::handle_arm_state_ty(db, binder))
             .or_else(|| solved_param_ty(db, binder))
             .or_else(|| lambda_param_ty_from_context(db, binder))
             .unwrap_or(Ty::Any),
@@ -8159,7 +8160,7 @@ fn check_application(
             _ => None,
         };
         if let Some(k) = key_ty
-            && nominal_or_sum_decl(&k).is_some_and(|decl| db.is_abstract_type_at(app, decl))
+            && let Some(abstract_ty) = key_ty_contains_abstract_at(db, app, &k)
         {
             trace!(target: "rcdzc::infer", head = head.0, "fault: abstract-typed map/set key (CDZ0202)");
             out.push(
@@ -8170,7 +8171,7 @@ fn check_application(
                          so it cannot be a map/set key — key insertion and lookup observe its \
                          representation through a built-in comparison; compare it through a function the \
                          module that declares it exports",
-                        k.render_name()
+                        abstract_ty.render_name()
                     ),
                 )
                 .at(head),
@@ -11017,6 +11018,44 @@ fn nearest_record_field(
 fn nominal_or_sum_decl(ty: &Ty) -> Option<StructId> {
     match ty {
         Ty::Sum { decl, .. } | Ty::Nominal { decl, .. } => Some(*decl),
+        _ => None,
+    }
+}
+
+/// Whether `ty` — used as a Map/Set KEY at site `at` — CONTAINS an abstract type ANYWHERE in its
+/// structure (the key type ITSELF, or nested inside a tuple element / list element / map key-or-value /
+/// set element / Qty inner / sum-or-nominal type-argument). CHAMP key equality/hashing walks the WHOLE
+/// compound key structurally, so an abstract type nested in a compound key is observed by its private
+/// representation exactly as a bare abstract key is — the same `type-system.md` boundary violation, one
+/// structural level down (PR#890, Copilot; the compound-key generalization of the bare-key CDZ0202).
+/// Returns the FIRST abstract type found (for the message). Uses `nominal_or_sum_decl` +
+/// `is_abstract_type_at(at, …)` — the SAME predicate the top-level check used — at every structural node,
+/// so a concrete/prelude/own constituent never flags (only a genuinely handle-only imported one). A
+/// function-typed constituent (`Ty::Fn`/`Cont`) is NOT walked: a function value is not a comparable key
+/// spine (a Map/Set keyed by a function is its own separate decline), so an abstract type reachable only
+/// through an arrow is not observed by key comparison.
+fn key_ty_contains_abstract_at(db: &Db, at: StructId, ty: &Ty) -> Option<Ty> {
+    // The node ITSELF, if it is an abstract nominal/sum here.
+    if nominal_or_sum_decl(ty).is_some_and(|decl| db.is_abstract_type_at(at, decl)) {
+        return Some(ty.clone());
+    }
+    // Otherwise recurse into the comparable-key structure. A `Ty::Sum`/`Nominal` that was NOT abstract
+    // here still may carry an abstract TYPE-ARGUMENT (`(Box Temp)` — the box is concrete/prelude but its
+    // element is abstract), so walk `args` too.
+    match ty {
+        Ty::Tuple(elems) => elems
+            .iter()
+            .find_map(|e| key_ty_contains_abstract_at(db, at, e)),
+        Ty::List(e) | Ty::Set(e) => key_ty_contains_abstract_at(db, at, e),
+        Ty::Map(k, v) => key_ty_contains_abstract_at(db, at, k)
+            .or_else(|| key_ty_contains_abstract_at(db, at, v)),
+        Ty::Record(fields) => fields
+            .values()
+            .find_map(|f| key_ty_contains_abstract_at(db, at, f)),
+        Ty::Qty { inner, .. } => key_ty_contains_abstract_at(db, at, inner),
+        Ty::Sum { args, .. } | Ty::Nominal { args, .. } => args
+            .iter()
+            .find_map(|a| key_ty_contains_abstract_at(db, at, a)),
         _ => None,
     }
 }

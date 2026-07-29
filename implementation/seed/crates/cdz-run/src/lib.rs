@@ -473,6 +473,35 @@ pub fn run_with_peers_hosted(
     opts: &RunOpts,
     bindings: Vec<HostOpBinding>,
 ) -> Result<Outcome> {
+    run_with_peers_hosted_capturing(consumer_bytes, peers, opts, bindings).map(|(o, _)| o)
+}
+
+/// Like [`run_with_peers`], but returns the ordered OBSERVED host-op list alongside the outcome — the
+/// composed-run analogue of [`run_capturing`]. A caller that composes a consumer against peers AND needs the
+/// observed sequence (e.g. `cdz test` over an Option-C shared-closure `component-provider` peer: it counts
+/// `Test.gen-int` to tell a property test from a unit test, and reads a failing test's assertion message off
+/// the observed list) uses this instead of the `Outcome`-only [`run_with_peers`]. The observed list is the
+/// SAME one the peer path already builds internally; this just surfaces it. No host closures (that is the
+/// hosted+capturing form, not needed by `cdz test`).
+pub fn run_with_peers_capturing(
+    consumer_bytes: &[u8],
+    peers: &[Peer],
+    opts: &RunOpts,
+) -> Result<(Outcome, Vec<String>)> {
+    run_with_peers_hosted_capturing(consumer_bytes, peers, opts, Vec::new())
+}
+
+/// The capturing core of [`run_with_peers_hosted`] — returns `(Outcome, observed-host-op-list)`. The two
+/// public forms delegate here: [`run_with_peers`]/[`run_with_peers_hosted`] drop the observed list, and
+/// [`run_with_peers_capturing`] surfaces it. The observed list is built + populated by `bind_host_imports`
+/// exactly as [`run_capturing`] does, so a composed run's observed sequence is identical in shape to a
+/// standalone `run_capturing` one.
+fn run_with_peers_hosted_capturing(
+    consumer_bytes: &[u8],
+    peers: &[Peer],
+    opts: &RunOpts,
+    bindings: Vec<HostOpBinding>,
+) -> Result<(Outcome, Vec<String>)> {
     use std::sync::{Arc, Mutex};
     let engine = engine();
     let consumer = Component::new(&engine, consumer_bytes)
@@ -613,7 +642,9 @@ pub fn run_with_peers_hosted(
         bind_host_op_bindings(&mut store, &mut linker, rt_instance, bindings)?;
     }
 
-    run_export(&engine, &consumer, &mut store, &linker, opts)
+    let outcome = run_export(&engine, &consumer, &mut store, &linker, opts)?;
+    let calls = observed.lock().expect("observed calls mutex").clone();
+    Ok((outcome, calls))
 }
 
 /// Verify a consumer's imported model op `model_iface`.`op_name` has the `(u32) -> u32` boundary shape

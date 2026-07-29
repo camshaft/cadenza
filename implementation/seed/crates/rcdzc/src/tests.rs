@@ -9556,6 +9556,70 @@ fn a_let_bound_handle_seed_capture_edges_fold_and_run() {
     );
 }
 
+/// A handler seeded with a `(Qty T u)` (quantity) state whose arm resumes with an INLINE-ARITHMETIC
+/// next-state `(resume value (+ s s))` must NOT false-reject CDZ0201. The state binder `s` is the arm's
+/// ELEMENT-2 binder (not in the params list), so `handle_arm_param_ty` returns `None` for it — before the
+/// fix it fell through to `Ty::Any`, and a bare `(resume s s)` slid through (`Any` agrees with the seed
+/// vacuously) but `(+ s s)` defaulted `s:Any` to a generic `Int64`, missing the Qty-aware arith arm →
+/// `next_ty = Int64` mismatched the `(Qty Int64 meter)` seed → a spurious CDZ0201 next-state/seed clash on
+/// a well-typed Qty-stateful handler (breaker #44, corpus-bugfix issue 18102). The fix — `handle_arm_state_ty`,
+/// the state-binder companion of `handle_arm_param_ty`, types the state binder from the handle's SEED — so
+/// `s` types `(Qty Int64 meter)` inside the inline arith, the Qty arm engages, and the next-state matches.
+/// Pins the RUN (a compile-only check would miss a mis-typed fold): `tick` doubles the state to 42 at a=21.
+/// The genuine-mismatch guard (an `Int64` seed resuming with a `String` next-state) is covered by the
+/// unit-level `check_resume_next_state_type` reject below; here we lock that the Qty case is NOT falsely
+/// rejected AND runs to the doubled value.
+#[test]
+fn a_qty_seeded_handler_resuming_with_inline_arith_next_state_folds_and_runs() {
+    use crate::testkit::parse;
+    // The seed is a `(Qty Int64 meter)`; the arm resumes with the DOUBLED state inline `(+ s s)` in BOTH
+    // the value and next-state slots. `Qty.value` recovers the numeric for the export. At a=21 the single
+    // `tick` resumes with `(+ 21 21) = 42`.
+    let src = "(do (effect St (op tick (-> Unit (Qty Int64 (Unit.base #\"meter\"))))) \
+        (def (main (: a Int64)) \
+          (Qty.value (handle St (Qty.of a (Unit.base #\"meter\")) \
+            ((tick (u) s (resume (+ s s) (+ s s)))) (St.tick)))) \
+        (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect(
+        "a Qty-seeded handler resuming with inline arith must type the state binder as its seed (Qty), \
+         not Any→Int64 — no spurious CDZ0201",
+    );
+    let runtime = find_runtime_wasm();
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["21".to_string()],
+        runtime,
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => {
+            assert_eq!(s, "42", "tick resumes with the doubled Qty state")
+        }
+        cdz_run::Outcome::Trap(t) => panic!("linked run trapped: {t}"),
+    }
+}
+
+/// The genuine-mismatch GUARD for [`a_qty_seeded_handler_resuming_with_inline_arith_next_state_folds_and_runs`]:
+/// the state-binder-typing fix must NOT weaken the real CDZ0201 next-state/seed check. An `Int64`-seeded
+/// handler that resumes with a `String` next-state STILL rejects — the fix only supplies the binder's type;
+/// a definite clash between the (now correctly-typed) next-state and the seed still faults.
+#[test]
+fn an_int_seeded_handler_resuming_with_a_string_next_state_still_rejects_cdz0201() {
+    use crate::testkit::parse;
+    let src = "(do (effect St (op tick (-> Unit Int64))) \
+        (def (main (: a Int64)) (handle St a ((tick (u) s (resume s \"x\"))) (St.tick))) \
+        (export main))";
+    let err = compile_component(&crate::codec::encode(&parse(src)))
+        .expect_err("a String next-state under an Int64 seed must still reject CDZ0201");
+    assert_eq!(
+        err.code.as_deref(),
+        Some("CDZ0201"),
+        "a genuine next-state/seed mismatch must still fault CDZ0201, got: {}",
+        err.message
+    );
+}
+
 /// A handler arm that CAPTURES an enclosing fn param, under a MULTI-ARM nested handler, over a recursive
 /// driver performing BOTH effects (the two-nested-states MERGE path). `converse`'s arm `(resume p 0)` closes
 /// over `run-with`'s param `p` — not the arm's own params/state. Before the fix, the synthesized `run#ctx`
@@ -58483,6 +58547,26 @@ mod stage1 {
             !codes_for("(Set.size (Set.of (list k)))").contains(&"CDZ0202".to_string()),
             "a concrete Int64 Set key stays legal (no CDZ0202)"
         );
+        // COMPOUND key CONTAINING an abstract type — PR#890 (Copilot) soundness gap. A `(Tuple Temp Int64)`
+        // / `(List Temp)` key is `Ty::Tuple`/`Ty::List`, NOT a `nominal_or_sum_decl`, so the top-type check
+        // was SKIPPED — but CHAMP key eq/hash walks the WHOLE compound, still observing `Temp`'s abstract
+        // rep, the same indirect route one level down. Must reject CDZ0202.
+        // A TUPLE key `(tuple (mk k) k)` — element 0 is the abstract `Temp`.
+        assert!(
+            codes_for("(Set.size (Set.of (list (tuple (mk k) k))))")
+                .contains(&"CDZ0202".to_string()),
+            "a tuple key CONTAINING an abstract type must reject CDZ0202 (compound key)"
+        );
+        // A LIST key `(list (mk k))` — element type is the abstract `Temp`.
+        assert!(
+            codes_for("(Set.size (Set.of (list (list (mk k)))))").contains(&"CDZ0202".to_string()),
+            "a list key CONTAINING an abstract type must reject CDZ0202 (compound key)"
+        );
+        // CONTROL: a compound key of only CONCRETE types stays legal (no over-reject through the recursion).
+        assert!(
+            !codes_for("(Set.size (Set.of (list (tuple k k))))").contains(&"CDZ0202".to_string()),
+            "a tuple key of concrete Int64s stays legal (no CDZ0202)"
+        );
     }
 
     #[test]
@@ -73712,11 +73796,14 @@ mod sidecar_driven {
 
     #[test]
     fn emit_tests_composed_declines_a_same_stem_multi_dir_collision() {
-        // The SINGLE-DIR guard (pr881): `db.file_path` is the dir-blind import stem, so two @test files that
-        // resolve to the SAME stem would collide the consumer name-demux. A package whose @tests span files
-        // with a colliding stem DECLINES (a diagnostic), so the caller falls back to the per-file build rather
-        // than emitting two consumers under one name. Here two files both named `t` (same stem) each carry a
-        // @test calling the shared helper → the composed driver must decline, not silently drop one.
+        // STEM-COLLISION guard (pr881/pr888): `db.file_path` is the file's LINK path, and a runner demuxes the
+        // N consumer components by the file's STEM (basename) — dir-blind, load-bearing for import resolution.
+        // Two files whose STEMS collide (`a/t.cdz` + `b/t.cdz` across dirs → both stem `t`) would map two
+        // consumers to one name, so the composed driver must DECLINE (fall back to per-file), NOT silently drop
+        // one. pr888 caught the earlier guard as DEAD (it deduped full paths, always unique) + the earlier test
+        // as VACUOUS (two ast artifacts both named `t` were rejected by the LINKER before the guard). This
+        // version feeds DISTINCTLY-NAMED artifacts whose STEMS collide (`a/t`, `b/t`) — the linker accepts the
+        // distinct names, so execution REACHES the guard, which fires on the shared stem `t`.
         let lib = crate::codec::encode(&parse(
             "(do (def (h (: n Int64)) (if (= n 0) 0 (+ 1 (h (- n 1))))) (export h))",
         ));
@@ -73730,10 +73817,11 @@ mod sidecar_driven {
             crate::compile::compile(
                 &[
                     Artifact::new(Artifact::KIND_AST, "lib", lib.clone()),
-                    // Two DISTINCT files that share the import stem `t` (as a multi-dir `a/t` + `b/t` would).
-                    Artifact::new(Artifact::KIND_AST, "t", t1.clone()),
-                    Artifact::new(Artifact::KIND_AST, "t", t2.clone()),
-                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"t".to_vec()),
+                    // Two DISTINCT link names (`a/t`, `b/t`) that share the STEM `t` — the linker accepts the
+                    // distinct names (no dup-name reject), so the stem-collision reaches the composed guard.
+                    Artifact::new(Artifact::KIND_AST, "a/t", t1.clone()),
+                    Artifact::new(Artifact::KIND_AST, "b/t", t2.clone()),
+                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"a/t".to_vec()),
                     Artifact::new(
                         sidecar::KIND_SIDECAR,
                         "drive",
@@ -73743,7 +73831,17 @@ mod sidecar_driven {
                 &[],
             )
         });
-        // No provider is emitted on the collision path (the guard declines before hoisting).
+        // The package must LINK (distinct names) — a link failure would make the assertion vacuous (pr888).
+        assert!(
+            !out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("failed to decode")
+                    || d.message.contains("duplicate")
+                    || d.message.contains("entry")),
+            "the two distinctly-named files must link (else the test is vacuous): {:?}",
+            out.diagnostics
+        );
+        // No provider is emitted on the collision path — the guard declines (stem `t` collides) before hoisting.
         let providers = out
             .artifacts
             .iter()
@@ -73751,7 +73849,16 @@ mod sidecar_driven {
             .count();
         assert_eq!(
             providers, 0,
-            "a same-stem multi-file build must NOT emit a composed provider (single-dir guard declines)"
+            "a same-STEM multi-file build must NOT emit a composed provider (stem-collision guard declines)"
+        );
+        // And the guard's decline diagnostic is present (it REACHED the guard, not a linker reject upstream).
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("DISTINCT import stem")
+                    || d.message.contains("sharing a stem")),
+            "the stem-collision guard's decline must fire (proves the guard is reached, not dead): {:?}",
+            out.diagnostics
         );
     }
 

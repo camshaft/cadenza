@@ -9466,14 +9466,24 @@ mod tests {
         // THE POINT of this window (PR#887): it must EXCEED the per-agent stale window `trunk_advance_
         // exonerates` uses, or it adds no coverage. Pin the coverage GAP it uniquely fills — a commit
         // age that is PAST the stale window (so trunk_advance_exonerates has stopped firing) but still
-        // within this larger window is exonerated ONLY here. With the shipped constant (1800s) vs the
-        // default stale window (1200s), an age of 1500s is exactly that gap.
+        // within this larger window is exonerated ONLY here. Derive the stale window from
+        // `stale_window_secs` at pr-sync's defaults (interval 600, mult 2, cap 600) rather than a literal,
+        // so this pin tracks the real formula if its defaults ever change (PR#890). The invariant under
+        // test is `stale_window < gap_age < PR_SYNC_RECENT_TRUNK_SECS` — assert the ordering holds so a
+        // constant change that violated it would fail LOUDLY here rather than silently stop pinning.
+        let stale_window = stale_window_secs(600, 2, 600);
+        let gap_age = (stale_window + PR_SYNC_RECENT_TRUNK_SECS) / 2; // midway through the coverage gap
         assert!(
-            !trunk_advance_exonerates("pr-sync", Some(1500), 1200),
+            stale_window < gap_age && gap_age < PR_SYNC_RECENT_TRUNK_SECS,
+            "the compose window must exceed the stale window for a coverage gap to exist \
+             (stale={stale_window}, gap_age={gap_age}, compose={PR_SYNC_RECENT_TRUNK_SECS})"
+        );
+        assert!(
+            !trunk_advance_exonerates("pr-sync", Some(gap_age), stale_window),
             "past the stale window, the stale-window exoneration no longer fires"
         );
         assert!(
-            recent_trunk_advance_exonerates("pr-sync", Some(1500), PR_SYNC_RECENT_TRUNK_SECS),
+            recent_trunk_advance_exonerates("pr-sync", Some(gap_age), PR_SYNC_RECENT_TRUNK_SECS),
             "but the larger compose window still exonerates it — the coverage this adds"
         );
     }
