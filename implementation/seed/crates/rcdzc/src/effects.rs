@@ -2123,6 +2123,10 @@ pub fn reduce_handle(
         && let Some(arm) = ctx.arms.get(&(decl, idx)).cloned()
         && !ctx.abortive.contains(&(decl, idx))
         && tail_resume(db, arm.body).is_none()
+        // CONDITIONALLY-RESUMING ARM GUARD (corpus-bugfix/breaker 2026-07-28): decline an arm that resumes in
+        // some branches but aborts (returns a bare value) in others — the reify below would mis-fold it (see
+        // `arm_partially_resumes`). A `cont: Some` escaping-k arm is exempt (reified as a closure, not peeled).
+        && (arm.cont.is_some() || !arm_partially_resumes(db, arm.body))
     {
         // Substitute the arm's params ↦ (pure-copied) perform args and its state binder ↦ the init seed
         // (nothing runs before the perform on a pure spine, so the state seen at the perform is the seed),
@@ -2326,6 +2330,9 @@ pub fn reduce_handle(
         // (DESIGN §4.4: a reified continuation must not span a host call) forbids that, so require the body
         // to be free of any undischarged (foreign/host) perform when the arm resumes more than once.
         && (count_resumes(db, arm.body) == 1 || !body_reaches_foreign_perform(db, body, &ctx))
+        // CONDITIONALLY-RESUMING ARM GUARD (twin of the pure-one-hole block's): decline a partial-resume arm
+        // (`(if cond ABORT (resume …))`) — the refold would rewrite only the resuming branch and mis-splice.
+        && !arm_partially_resumes(db, arm.body)
     {
         let mut subst: HashMap<StructId, StructId> = HashMap::default();
         if arm.params.len() == args.len() {
@@ -6654,6 +6661,44 @@ fn arm_has_resume(db: &mut Db, node: StructId) -> bool {
     match db.ast.get(node).clone() {
         Struct::List(children) => children.iter().any(|&c| arm_has_resume(db, c)),
         Struct::Atom(_) => false,
+    }
+}
+
+/// Whether the arm body CONDITIONALLY resumes — its top-level shape is an `if`/`match` in which SOME branch
+/// (transitively, through nested `if`/`match`/`do`/`let` tails) resumes and SOME branch returns a bare
+/// NON-resuming value (a per-arm conditional abort, `(if cond ABORT-VALUE (resume …))`). Such an arm is
+/// neither cleanly abortive (it HAS a resume) nor uniformly tail-resumptive (a branch aborts), so the E5
+/// pure-one-hole / two-hole reify folds mis-handle it: they rewrite only the resuming branch and leave the
+/// aborting branch a bare value, mis-splicing the continuation and orphaning a synthesized copy of a
+/// seed/param free name → a relocated CDZ0101 at lowering (check passes, emit diverges; corpus-bugfix/breaker
+/// 2026-07-28). Both reify blocks DECLINE when this holds, so the shape reports the honest "not yet reducible"
+/// todo (the conditional-abort/continuation machinery is a later increment) rather than a mis-fold. Only the
+/// TOP-LEVEL conditional shapes are inspected (an `if`/`match` whose branches split resume-vs-abort); a bare
+/// resume, a `do`/`let`-tail resume, or a fully-resuming match are NOT flagged (every branch resumes).
+fn arm_partially_resumes(db: &mut Db, node: StructId) -> bool {
+    // Only meaningful when the arm resumes at all AND cannot be uniformly peeled to a resume — a uniformly
+    // peelable arm (`peel_resume_from_arm_body` Some) resumes in every branch, so it is NOT partial.
+    if !arm_has_resume(db, node) {
+        return false;
+    }
+    // Descend the top-level conditional/sequencing shape; a branch that neither peels to a resume nor is
+    // itself a conditional-with-a-resume is a bare non-resuming value → the arm is partial.
+    fn branch_resumes(db: &mut Db, n: StructId) -> bool {
+        peel_resume_from_arm_body(db, n).is_some() || arm_has_resume(db, n)
+    }
+    match resolved_of(db, node) {
+        Resolved::If { then_, else_, .. } => {
+            // Partial iff the two branches DISAGREE on whether they resume.
+            branch_resumes(db, then_) != branch_resumes(db, else_)
+                || arm_partially_resumes(db, then_)
+                || arm_partially_resumes(db, else_)
+        }
+        Resolved::Match { arms, .. } => {
+            let flags: Vec<bool> = arms.iter().map(|&(_, b)| branch_resumes(db, b)).collect();
+            flags.iter().any(|&f| f) && flags.iter().any(|&f| !f)
+                || arms.iter().any(|&(_, b)| arm_partially_resumes(db, b))
+        }
+        _ => false,
     }
 }
 

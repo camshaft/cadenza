@@ -743,10 +743,11 @@ def type-eq(a: Typed, b: Typed) = ty-eq(typed-to-ty(a), typed-to-ty(b))
 /// Cases on `ctor-argtype-of`:
 ///  - Some(enc), enc ≥ 2 → a reader-encoded INT type → TIntW(pt-signed enc, pt-width enc), so `(Err Int32)`'s
 ///    binder is Int32 (reference-faithful narrow payload).
-///  - Some(1) → the BOOL sentinel (encode-bool-type) → Typed.TErr for now: a `(BB Bool)` binder DECLINES because the
-///    Bool-payload VALUE round-trip (construct→store→extract→use-as-cond) is not-yet-wired — typing it TBool made
-///    the compiled `(if b …)` over an i64-repped payload trap `wasm unreachable` (b128). Re-enable to TBool is a
-///    1-line change here once the value path is wired. Ground-payload story = int widths complete, Bool declines.
+///  - Some(1) → the BOOL sentinel (encode-bool-type) → Typed.TBool: a `(BB Bool)` binder types TBool and the
+///    Bool-payload VALUE round-trip (construct→store→bind→use-as-cond) runs — Bool is i64 0/1 in Core, so the
+///    payload path matches an Int payload feeding a CIf. (The former b128 "wasm unreachable" was a MALFORMED test
+///    witness `(if b then 1 else 0)`, not an emit bug — the reader has no then/else keywords.) Ground-payload story
+///    = int widths + Bool complete; a Bool binder used ARITHMETICALLY still declines (arith is integer-only).
 ///  - Some(-1) → the UNSUPPORTED sentinel (a non-int-non-bool payload — nested sum / compound the reader can't
 ///    encode) → TErr, so ANY use of the binder declines. Fixes v-inference's trap: without a distinct sentinel a
 ///    non-int payload's binder defaulted to Int64 and a Bool payload silently type-checked `(+ b 1)` as int.
@@ -754,13 +755,16 @@ def type-eq(a: Typed, b: Typed) = ty-eq(typed-to-ty(a), typed-to-ty(b))
 ///    -1 binder) → Int64 default (harmless: a nullary pattern has no payload binder to use).
 /// Decode ONE encoded ct-argType to the payload binder's Typed. The single source of truth for enc→Typed, shared by
 /// the single-field `ctor-payload-binder-type` (head) + the multi-field `seed-ctor-binders` fold. Cases:
-///  0 → t-int64 (no recorded type / Int64-placeholder); 1 → Bool sentinel → TErr FOR NOW (Bool-payload VALUE round-trip
-///  not-yet-wired: typing the binder TBool made a compiled `(if b …)` over an i64-repped payload trap `wasm unreachable`
-///  at b128 — declines cleanly until the round-trip lands, then this ONE line re-enables to TBool); -1 → unsupported
+///  0 → t-int64 (no recorded type / Int64-placeholder); 1 → Bool sentinel → TBool (Bool-payload VALUE round-trip is
+///  WIRED: a `(BB Bool)` binder types TBool, so `(if b …)` over the payload runs; Bool is i64 0/1 in Core so the
+///  store→bind→cond path is identical to an Int payload feeding a CIf. The former "b128" decline was a MALFORMED
+///  test witness `(if b then 1 else 0)` — the reader has no then/else keywords, so `then` was an unbound symbol →
+///  TErr, NOT an emit bug; corrected to `(if b 1 0)` and this enc→TBool. Arith on a Bool STILL declines — arith-
+///  result-type maps TBool→None (typed-to-ty-defer), so `(+ b 1)` is TErr, never a laundered int); -1 → unsupported
 ///  (non-int-non-bool / nested the reader couldn't encode) → TErr (any use declines); ≥2 → TIntW(signed, width).
 def decode-argtype-enc(enc: Int64) =
   (if (enc == 0) then t-int64()
-   else (if (enc == 1) then Typed.TErr
+   else (if (enc == 1) then Typed.TBool
          else (if (enc == (0 - 1)) then Typed.TErr
                else Typed.TIntW(pt-signed(enc), pt-width(enc)))))
 
@@ -1455,17 +1459,17 @@ def id-fn-param-call-arity-mismatch-is-terr() =
              | _ => trap("arity mismatch is TErr"))))))))
 
 @test
-def id-payload-binder-type-bool-sentinel-declines-not-yet-wired() =
+def id-payload-binder-type-bool-sentinel-decodes-tbool() =
   // ii-c2b-2 payload-binder decode (ctor-payload-binder-type): a ct-argType of encode-bool-type()=1 (the reserved
-  // Bool sentinel) decodes to Typed.TErr FOR NOW — the Bool-payload VALUE path is not yet wired (typing it TBool
-  // made `(if b …)` over a Bool payload compile to invalid wasm: b128 gate `wasm unreachable` trap). So a Bool
-  // payload binder DECLINES (like the unsupported -1), which is SOUND (never a trap/wrong value). The sentinel +
-  // reader recording stay; re-enable to TBool here when the Bool value round-trip (construct→store→extract→use) is
-  // wired as its own slice. Pins that enc==1 currently → TErr (a decline), NOT TBool (which traps at runtime).
+  // Bool sentinel) decodes to Typed.TBool — the Bool-payload VALUE path is WIRED (Bool is i64 0/1 in Core, so a
+  // `(BB Bool)` payload used as an `if` cond runs, identical to an Int payload feeding a CIf). The former "b128
+  // wasm-unreachable" was a MALFORMED test witness `(if b then 1 else 0)` (the reader has no then/else keywords),
+  // not an emit bug. Arith on a Bool STILL declines (arith-result-type maps TBool→None), so a Bool payload is never
+  // silently treated as an int. Pins enc==1 → TBool.
   (let tree = record-ctor-tag-typed(empty-tree(), 840, 800, 0, encode-bool-type()) in
     (match ctor-payload-binder-type(tree, 840) with
-      | Typed.TErr => unit
-      | _ => trap("a Bool-sentinel (1) ct-argType decodes to TErr (Bool payload not-yet-wired → declines, not the trapping TBool)")))
+      | Typed.TBool => unit
+      | _ => trap("a Bool-sentinel (1) ct-argType decodes to TBool (Bool payload value path wired)")))
 
 @test
 def id-payload-binder-type-unsupported-sentinel-decodes-terr() =

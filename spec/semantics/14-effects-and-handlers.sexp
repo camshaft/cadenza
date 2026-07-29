@@ -5775,3 +5775,61 @@
                 (+ x (+ (A.geta) (B.getb)))))))
         (export main)))
   (call   main (: 0 Int64)) (output (: 1033 Int64)))
+
+(case "a performing do-def feeding a bin-construction operand under a handler stays bound (F2)"
+  (doc    "The bin ENCODER was the sole construction-operand position that resolved its operand against
+           a scope snapshot taken BEFORE the handler fold rewrote the do-defs (tuple/record/list/Set.of
+           all re-resolve after) — so a do-def bound INSIDE the handle body (here `a` from a performed
+           `Src.next`) read Unbound at the `bin` operand and the case died CDZ0101 `unbound name a`. Fixed
+           by re-resolving the bin operand after the capture-avoiding freshen (v-inference, F2, a4da5beb7).
+           The reducible arm resumes the seed unchanged, so `a = Src.next = 10`, `frame = bin(u8 10)`,
+           `Bytes.at 0 = 10`. Witnesses the handler-body do-def × bin-operand seam.")
+  (input  (do
+        (effect Src (op next (-> Unit Int64)))
+        (def (main)
+          (handle Src 10
+            ((next (u) s (resume s s)))
+            (do
+              (def a (Src.next))
+              (def frame (bin (u8 (UInt8.wrap a))))
+              (match (Bytes.at frame 0) ((Some v) v) ((None _u) -1)))))
+        (export main)))
+  (call   main) (output (: 10 Int64)))
+
+(case "a perform-free do-def feeding a bin-construction operand under a handler stays bound (F2)"
+  (doc    "The perform-irrelevant twin of the F2 seam: performing-ness was never the trigger — ANY do-def
+           bound in a handle body and consumed by a `bin` operand hit the pre-freshen scope snapshot. Here
+           `a = (+ 5 1) = 6` with no perform in the def, yet the identical CDZ0101 unbound fired pre-fix.
+           `frame = bin(u8 6)`, `Bytes.at 0 = 6`. Pins the discriminator: it is the bin operand under the
+           handler-fold rewrite, not the effect.")
+  (input  (do
+        (effect Src (op next (-> Unit Int64)))
+        (def (main)
+          (handle Src 10
+            ((next (u) s (resume s s)))
+            (do
+              (def a (+ 5 1))
+              (def frame (bin (u8 (UInt8.wrap a))))
+              (match (Bytes.at frame 0) ((Some v) v) ((None _u) -1)))))
+        (export main)))
+  (call   main) (output (: 6 Int64)))
+
+(case "two do-def-bound performs whose sum mixes handler-state width with a narrow param declines cleanly (not-yet-reducible, not an invalid module)"
+  (doc    "SAFE FLOOR (v-effects, F1, 5cf911aeb). Two do-defs each bound to a performed `Src.next` are
+           summed under a handler whose arm threads `(+ s x)` — mixing the i64 handler state `s` with the
+           narrow UInt8 param `x`. The fold used to emit an INVALID wasm module (`func[0]`, expected i64
+           found i32) while rust computed 25; the invalid module was the bug. reduce_handle now DECLINES
+           cleanly (codeless `not yet reducible`) rather than emit a malformed artifact — declines-rather-
+           than-miscompiles. Computing 25/20 needs a later widening-coercion fold that widens the narrow
+           operand to the i64 state carrier; when that lands this flips to a value pin.")
+  (input  (do
+        (effect Src (op next (-> Unit Int64)))
+        (def (main (: x UInt8))
+          (handle Src 10
+            ((next (u) s (resume s (+ s x))))
+            (do
+              (def a (Src.next))
+              (def b (Src.next))
+              (+ a b))))
+        (export main)))
+  (declines))

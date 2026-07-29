@@ -3272,3 +3272,23 @@
             (def (main) (f 200))
             (export main)))
   (trap   "unreachable"))
+
+(case "@invariant ESTABLISH divert reaches a CALL-ARGUMENT construction site — a violating value traps before the callee runs (design §10.2, (D))"
+  (doc    "A fourth indirect-construction face for the establish divert (companion to the lambda-body /
+           reconstruct-after-update / list-element trio above): the construction `(Pct.P v)` sits directly in
+           ARGUMENT position of a call `(use (Pct.P v))`. `Pct = P Int64` has `@invariant(0 <= self <= 100)`.
+           The divert (`lower_sum_new` routing every `(Pct.P v)` through the synthesized checked constructor)
+           must fire at the call-argument construction site, so a violating value TRAPS at construction BEFORE
+           the callee `use` is entered — never passing an invalid `Pct` across the call boundary. `run(70)`:
+           establish (0..100) holds → `use` receives a valid Pct and computes `70 + 1 = 71`. `run(150)`: the
+           `(Pct.P 150)` establish (<=100) fails at the construction site in argument position → trap there,
+           and `use` is never reached. Guards that the site-based rewrite visitor does not skip an argument
+           position (a place a body-only walk could miss), keeping the establish obligation sound at the call
+           boundary.")
+  (input  (do
+            (@ (invariant (and (>= self 0) (<= self 100))) (type Pct (P Int64)))
+            (def (use (: p Pct)) (match p (((. Pct P) n) (+ n 1))))
+            (def (run (: v Int64)) (use (Pct.P v)))
+            (export run)))
+  (call run (: 70 Int64)) (output (: 71 Int64))
+  (call run (: 150 Int64)) (trap "unreachable"))

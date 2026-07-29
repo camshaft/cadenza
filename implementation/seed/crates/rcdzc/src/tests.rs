@@ -59069,6 +59069,58 @@ mod stage1 {
     }
 
     #[test]
+    fn a_conditionally_resuming_arm_declines_cleanly_never_false_unbound() {
+        // corpus-bugfix/breaker 2026-07-28: a handler arm that CONDITIONALLY resumes — `(if cond ABORT-VALUE
+        // (resume …))`, one branch resumes, the other returns a bare value (a per-arm conditional abort) —
+        // over a MULTI-perform body whose seed references the enclosing fn's PARAM used to false-reject
+        // CDZ0101 "unbound name k". It is neither classified abortive (it HAS a resume) nor uniformly tail-
+        // resumptive; the E5 reify folds rewrote only the resuming branch, mis-spliced the continuation, and
+        // orphaned a synthesized copy of the seed's `k` → a RELOCATED CDZ0101 at LOWERING (check passed, emit
+        // diverged; rust unaffected). `reduce_handle` now DECLINES cleanly (uncoded "not yet reducible" todo,
+        // via `arm_partially_resumes`) rather than mis-fold — the safe floor (the conditional-abort/captured-
+        // continuation fold is a later increment). MUST NOT report CDZ0101 (the handle plainly binds `k`).
+        let msg = |src: &str| {
+            let out = crate::compile::compile(
+                &[crate::abi::Artifact::new(
+                    crate::abi::Artifact::KIND_AST,
+                    "m",
+                    crate::codec::encode(&parse(src)),
+                )],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .filter(|d| d.severity == crate::abi::Severity::Error)
+                .map(|d| format!("{:?}:{}", d.code, d.message))
+                .collect::<Vec<_>>()
+        };
+        let cond_abort = "(module m (effect Sim (op step (-> Unit Int64))) \
+            (def (main (: k Int64)) (handle Sim (tuple 0 k) \
+              ((step (u) st (if (>= (. st 0) (. st 1)) -999 (resume (. st 0) (tuple (+ (. st 0) 1) (. st 1)))))) \
+              (+ (Sim.step) (+ (Sim.step) (Sim.step))))) (export main))";
+        let ms = msg(cond_abort);
+        assert!(
+            !ms.iter()
+                .any(|m| m.contains("CDZ0101") || m.contains("unbound")),
+            "a conditionally-resuming arm must NOT false-reject unbound (the handle binds k): {ms:?}"
+        );
+        assert!(
+            !ms.iter()
+                .any(|m| m.contains("invalid") || m.contains("type mismatch")),
+            "must not emit an invalid module: {ms:?}"
+        );
+        // NO REGRESSION: a FULLY-resuming match arm (BOTH branches resume) must still FOLD + run — the guard
+        // fires only when branches DISAGREE on resuming, not on a uniform per-branch resume.
+        let both_resume = "(module m (effect Ask (op get (-> Int64 Int64))) \
+            (def (main) (handle Ask 0 ((get (v) s (if (>= v 0) (resume v s) (resume (- 0 v) s)))) \
+              (+ (Ask.get 5) (Ask.get -7)))) (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(both_resume)))
+            .expect("a fully-resuming if arm (both branches resume) must still fold");
+        let v: i64 = run_returns_with(&bytes, "main", &[]);
+        assert_eq!(v, 12, "both-resume arm: |5| + |-7| = 12");
+    }
+
+    #[test]
     fn a_width_mismatched_handler_state_declines_cleanly_never_invalid_wasm() {
         // F1 (corpus-bugfix/breaker 2026-07-28): a handler whose STATE slot infers to a narrow int (UInt8)
         // while the op RESULT is Int64 must NOT emit an invalid wasm module. `(next (u) s (resume s (+ s x)))`
@@ -59092,7 +59144,9 @@ mod stage1 {
         );
         // No INVALID-MODULE / codegen error: either it declines (uncoded todo) or it folds — never a coded
         // reject and never an emit failure. Assert no error-severity diagnostic carries a wasm-validation
-        // failure, and that the honest reducibility decline (if present) is UNCODED.
+        // failure, AND that every error (if any) is UNCODED — the honest "not yet reducible" decline, never a
+        // coded CDZ0xxx reject (PR#883 Copilot: the negative-substring check alone would pass on an unrelated
+        // coded error, missing the "never a coded reject" half of the contract).
         let errors: Vec<&crate::abi::Diagnostic> = out
             .diagnostics
             .iter()
@@ -59104,6 +59158,14 @@ mod stage1 {
                 || d.message.contains("failed to compile")),
             "must not emit an invalid wasm module: {:?}",
             errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            errors.iter().all(|d| d.code.is_none()),
+            "any error must be an UNCODED decline (not a coded reject): {:?}",
+            errors
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
         );
         // NO REGRESSION: a MATCHING-width state (Int64 seed + Int64 x, op result Int64) still folds + runs.
         let ok = "(module m (effect Src (op next (-> Unit Int64))) \
@@ -73215,6 +73277,160 @@ mod sidecar_driven {
                 "every cross-edge is a shared def, not own: edge `{e}` not in shared={shared_names:?}"
             );
         }
+    }
+
+    #[test]
+    fn option_c_cross_component_edges_union_covers_every_files_cross_edge() {
+        // OPTION C increment (c)(iii): `cross_component_edges_union` folds the per-file cross-edge sets across
+        // MANY files into ONE canonical set — the shared-closure PROVIDER's export set for a composed `cdz test
+        // <dir>` build (`EmitTestsComposed`). Fixture: `lib` exports two recursive helpers alpha/beta; two
+        // SEPARATE @test files each call a DIFFERENT one (`appA` → alpha, `appB` → beta). Per-file cross-edges
+        // are each a SUBSET (appA={alpha}, appB={beta}); the UNION over both files = {alpha, beta}, in
+        // `layout.order` order (the canonical order the provider exports + every consumer imports). This is the
+        // union primitive the composed provider needs (one provider for the whole dir, not per-file).
+        use crate::testkit::parse;
+        let lib = "(do \
+                    (def (alpha (: n Int64)) (if (= n 0) 0 (+ 2 (alpha (- n 1))))) \
+                    (def (beta (: n Int64)) (if (= n 0) 1 (+ 3 (beta (- n 1))))) \
+                    (export alpha) (export beta))";
+        let app_a = "(do (import \"lib\" (alpha)) \
+                    (@ test (def (t-a) (if (= (alpha 3) 6) unit (trap \"x\")))))";
+        let app_b = "(do (import \"lib\" (beta)) \
+                    (@ test (def (t-b) (if (= (beta 3) 10) unit (trap \"x\")))))";
+        let (per_file_a, per_file_b, union_names): (Vec<String>, Vec<String>, Vec<String>) =
+            crate::host::run_with_compiler_stack(|| {
+                let files: Vec<(String, crate::ast::Arenas)> = vec![
+                    ("lib".to_string(), parse(lib)),
+                    ("app-a".to_string(), parse(app_a)),
+                    ("app-b".to_string(), parse(app_b)),
+                ];
+                let linked = crate::link::link(&files, "app-a").expect("package links");
+                let mut db =
+                    crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+                let layout = crate::layout::compute_tests(&mut db).expect("@test build lays out");
+                // The two @test files' indices — bucket test_defs by file (as EmitTestsComposed will).
+                let mut files_seen: Vec<usize> = db
+                    .test_defs()
+                    .iter()
+                    .filter_map(|&t| db.file_of(db.defs[t].sig_occ))
+                    .collect();
+                files_seen.sort_unstable();
+                files_seen.dedup();
+                assert_eq!(files_seen.len(), 2, "two @test files (app-a, app-b)");
+                let a = crate::layout::cross_component_edges(&mut db, &layout, files_seen[0]);
+                let b = crate::layout::cross_component_edges(&mut db, &layout, files_seen[1]);
+                let u = crate::layout::cross_component_edges_union(&mut db, &layout, &files_seen);
+                (
+                    a.iter().map(|&d| db.defs[d].name.clone()).collect(),
+                    b.iter().map(|&d| db.defs[d].name.clone()).collect(),
+                    u.iter().map(|&d| db.defs[d].name.clone()).collect(),
+                )
+            });
+        // Each file's per-file cross-edge set is a SINGLE helper (a proper subset of the union).
+        assert_eq!(
+            per_file_a.len(),
+            1,
+            "app-a calls exactly one helper: {per_file_a:?}"
+        );
+        assert_eq!(
+            per_file_b.len(),
+            1,
+            "app-b calls exactly one helper: {per_file_b:?}"
+        );
+        assert_ne!(
+            per_file_a, per_file_b,
+            "the two files call DIFFERENT helpers (else the union wouldn't be exercised)"
+        );
+        // The UNION covers BOTH — alpha and beta.
+        assert!(
+            union_names.iter().any(|n| n.starts_with("alpha")),
+            "union covers app-a's edge alpha: union={union_names:?}"
+        );
+        assert!(
+            union_names.iter().any(|n| n.starts_with("beta")),
+            "union covers app-b's edge beta: union={union_names:?}"
+        );
+        assert_eq!(
+            union_names.len(),
+            2,
+            "union is exactly {{alpha, beta}}: {union_names:?}"
+        );
+        // Each per-file edge is a member of the union (subset containment).
+        for e in per_file_a.iter().chain(per_file_b.iter()) {
+            assert!(
+                union_names.iter().any(|u| u == e),
+                "per-file edge `{e}` must be in the union {union_names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn option_c_composed_provider_from_union_edges_exports_every_files_cross_edge() {
+        // OPTION C increment (c)(iii)b: `compute_provider_for_edges` builds the ONE shared-closure provider
+        // for a composed `cdz test <dir>` build from the UNION cross-edge set (not one file's) — so the
+        // provider EXPORTS every file's cross-edges. Same 3-file fixture as the union test: `lib` exports
+        // alpha/beta; `app-a`'s @test calls alpha, `app-b`'s calls beta. The composed provider (over the
+        // union {alpha, beta}) must export BOTH — where a single-file `compute_shared_closure_provider` (one
+        // own_file) would export only that file's one edge. Also emits a valid component (provider path).
+        use crate::testkit::parse;
+        let lib = "(do \
+                    (def (alpha (: n Int64)) (if (= n 0) 0 (+ 2 (alpha (- n 1))))) \
+                    (def (beta (: n Int64)) (if (= n 0) 1 (+ 3 (beta (- n 1))))) \
+                    (export alpha) (export beta))";
+        let app_a = "(do (import \"lib\" (alpha)) \
+                    (@ test (def (t-a) (if (= (alpha 3) 6) unit (trap \"x\")))))";
+        let app_b = "(do (import \"lib\" (beta)) \
+                    (@ test (def (t-b) (if (= (beta 3) 10) unit (trap \"x\")))))";
+        let (export_names, component_valid): (Vec<String>, bool) =
+            crate::host::run_with_compiler_stack(|| {
+                let files: Vec<(String, crate::ast::Arenas)> = vec![
+                    ("lib".to_string(), parse(lib)),
+                    ("app-a".to_string(), parse(app_a)),
+                    ("app-b".to_string(), parse(app_b)),
+                ];
+                let linked = crate::link::link(&files, "app-a").expect("package links");
+                let mut db =
+                    crate::db::Db::load_linked(linked.arenas.clone(), Some(linked.linkage()));
+                let layout = crate::layout::compute_tests(&mut db).expect("@test build lays out");
+                let mut files_seen: Vec<usize> = db
+                    .test_defs()
+                    .iter()
+                    .filter_map(|&t| db.file_of(db.defs[t].sig_occ))
+                    .collect();
+                files_seen.sort_unstable();
+                files_seen.dedup();
+                let union =
+                    crate::layout::cross_component_edges_union(&mut db, &layout, &files_seen);
+                let provider = crate::layout::compute_provider_for_edges(&mut db, &union)
+                    .expect("composed provider lays out over the union edge set");
+                let names: Vec<String> = provider.exports.iter().map(|e| e.name.clone()).collect();
+                db.component_name = Some("cadenza:closure/api".to_string());
+                let bytes = crate::backend::emit(
+                    crate::backend::Target::Wasm,
+                    &mut db,
+                    &provider,
+                    None,
+                    None,
+                )
+                .expect("composed provider emits");
+                let mut v =
+                    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
+                let valid = v.validate_all(&bytes).is_ok();
+                (names, valid)
+            });
+        // The composed provider exports BOTH cross-edges (a single-file provider would export only one).
+        assert!(
+            export_names.iter().any(|n| n == "alpha"),
+            "composed provider exports alpha: {export_names:?}"
+        );
+        assert!(
+            export_names.iter().any(|n| n == "beta"),
+            "composed provider exports beta: {export_names:?}"
+        );
+        assert!(
+            component_valid,
+            "the composed provider emits a valid component"
+        );
     }
 
     #[test]

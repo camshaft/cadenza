@@ -433,8 +433,8 @@ def ctor-decl-of(tree: Tree, ctorName: Int64) = match tree with
 /// declared type of a ctor's FIRST payload (0 = none/Int64-placeholder — a nullary ctor or an as-yet-unparsed
 /// payload), or `None` (not a recorded ctor). infer seeds a single payload binder from this (decode via
 /// pt-signed/pt-width) instead of the hardcoded Int64, so a narrow INT payload (an Int8/Int32 binder) types at its
-/// declared width. A Bool payload (sentinel 1) and an unsupported payload (-1) both DECLINE to TErr for now (the
-/// Bool value round-trip is not-yet-wired) — not "type correctly".
+/// declared width. A Bool payload (sentinel 1) now decodes to TBool (the Bool value round-trip is WIRED — a
+/// `(BB Bool)` binder types TBool, arith on it still declines); an unsupported payload (-1) DECLINES to TErr.
 /// Now that the 3rd ct slot is a LIST (slice-1a), this returns the HEAD-or-0: `[]`→0 (nullary/none), `[enc]`→enc,
 /// `[e0, e1…]`→e0 (first field). This preserves EVERY existing single-field caller unchanged — a multi-field
 /// consumer uses `ctor-argtypes-of` (the full list) instead.
@@ -487,8 +487,8 @@ def encode-param-type(signed: Bool, width: Int64) = (width * 2) + (if signed the
 /// ii-c2b-2 ctor-argType Bool sentinel: encode-param-type only spans int types (width*2+sign → 2..129); value
 /// 1 (width=0, signed bit) is UNUSED + non-colliding, so it's the reserved BOOL encoding for a ctor's payload
 /// argType (v-inference's steer). 0 = none/Int64-placeholder, -1 = unsupported (non-int-non-bool), 1 = Bool,
-/// ≥2 = an int type. infer currently decodes 1 → Typed.TErr (the Bool sentinel DECLINES — the Bool-payload value
-/// round-trip is not-yet-wired; the sentinel is recorded so re-enabling to TBool is a 1-line change once wired).
+/// ≥2 = an int type. infer decodes 1 → Typed.TBool (the Bool value round-trip is WIRED — a `(BB Bool)` binder
+/// types TBool and runs as an `if` cond; Bool is i64 0/1 in Core; arith on it still declines).
 /// (This is the ct-argType space ONLY — the param-type table never stores a Bool, so no collision with
 /// encode-param-type's consumers there.)
 def encode-bool-type() = 1

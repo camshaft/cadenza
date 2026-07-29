@@ -233,3 +233,17 @@ typed-to-ty-defer). Witness ss-bool-payload-binder-declines-not-yet-wired → ss
 lower-of-db (cond lowers under TBool, arith does NOT lower). run-src full path gated by pr-sync dir-gate (CDZ0999
 cliff blocks single-file). b128 was NEVER an emit or infer bug — a malformed test witness (reader has no then/else
 keywords). v-wasm-opt + v-inference both stood down + notified. FINDING CLOSED once baad7dddb lands green.
+
+---
+🔧 REJECT + FIX 2026-07-28: my Bool-flip MR 6ca0b29b5 red the compiled gate — but the trap was a MISSED WITNESS, not
+an emit re-trigger. I updated only sread-eval-sum.cdz's witness; a SECOND Bool-sentinel witness in infer-db.cdz
+(id-payload-binder-type-bool-sentinel-declines-not-yet-wired, line 1462) still asserted decode(1)==TErr → under the
+flip it hit its own | _ => trap() = the "wasm unreachable" pr-sync saw. It's a PURE decode-unit assertion (calls
+ctor-payload-binder-type, checks ==TErr — no match/emit). FIXED in e7496a755 (renamed →-decodes-tbool asserts TBool)
++ 2 parse-db doc-comments. Verified GREEN single-file: infer-db.cdz 67/0 incl arith-decline soundness. KEY TECHNICAL
+POINT vs the reject's b128-emit concern: emit-db can-emit returns FALSE for CMatchSum + CCtor (emit-db.cdz:193,195),
+so a sum-payload match is NOT wasm-emitted — it runs via the eval-db INTERPRETER (the oracle). There is NO TBool-
+payload extract-emit path to trap; the b128 emit concern presumes a path can-emit gates out. Superseded to e7496a755;
+asked pr-sync for the FULL fail list if it reds again (converge, not ping-pong). 🎓 LESSON: a value-feature flip has
+MULTIPLE witnesses across files — grep ALL of them (decode/sentinel/payload) before submitting, not just the obvious
+one. I had TWO Bool-sentinel decode assertions (sread-eval-sum + infer-db) and updated one.

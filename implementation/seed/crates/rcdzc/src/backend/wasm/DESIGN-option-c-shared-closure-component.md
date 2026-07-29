@@ -228,12 +228,15 @@ provider interface in the SAME canonical order (a file hitting only a subset sti
 export position — the index-agreement invariant `compute_tests_consumer` already honors via `provider_edges`).
 So the driver must:
   1. bucket `db.test_defs()` by `linkage.file_of(sig_occ)` (as `EmitTestsPerFile` does).
-  2. compute the UNION cross-edge set = ∪ over files of `cross_component_edges(db, test_layout, file_i)`,
-     de-duped, in canonical `layout.order` order (NOT per-file — the provider is shared). This likely needs a
-     small `cross_component_edges_union(db, test_layout, &[file])` helper (or fold the per-file results and
-     re-sort by `order` position) — the ONE new layout primitive the driver needs.
-  3. provider = a `compute_shared_closure_provider`-style layout over that UNION edge set (generalize it to
-     take an explicit edge set instead of deriving from one `own_file`).
+  2. ✅ DONE — compute the UNION cross-edge set via `cross_component_edges_union(db, test_layout, &[file])`
+     (layout.rs; folds each file's `cross_component_edges` into one set, returned in canonical `layout.order`
+     order). Witness `option_c_cross_component_edges_union_covers_every_files_cross_edge` (2 files calling
+     different helpers → union = both). The ONE new layout primitive the driver needs — landed ahead of the
+     driver so the compile.rs step only wires existing pieces.
+  3. ✅ DONE — provider = `compute_provider_for_edges(db, &union_edges)` (layout.rs; the generalization
+     `compute_shared_closure_provider` now delegates to, taking an explicit edge set instead of one
+     `own_file`). Witness `option_c_composed_provider_from_union_edges_exports_every_files_cross_edge` (union
+     over 2 files → provider exports BOTH cross-edges + emits a valid component).
   4. per file: `compute_tests_consumer(db, file_bucket, &union_edges, iface)` → emit `component` (name=link).
   5. emit provider (`component-provider`) + the `component-name` sidecar.
 
