@@ -76,3 +76,9 @@
             (export main)))
   (call   main (: 21 Int64))
   (output (: 42 Int64)))
+
+;; ACCEPTED + ROOT-CAUSED (v-inference, 2026-07-29): the state binder s types Any inside the resume-slot
+;; (+ s s) → (+ Any Any) misses the Qty-aware arith arm → erased Int64 vs the Qty seed. Bare (resume s s)
+;; + do-def + plain-fn (+ q q) all work (s gets Qty there); only the inline arm-body arith loses it.
+;; Ergonomics not soundness. FIX: bind the state binder's seed type before typing the inline next-state.
+;; Dedicated-tick, sequenced AFTER CDZ0202 (68e580932) lands. Flip-pin HELD; on fix gate inline → 42 + pin.

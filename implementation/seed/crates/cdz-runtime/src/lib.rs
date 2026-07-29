@@ -1423,7 +1423,15 @@ fn op_sum_disc(h: Handle) -> u32 {
 /// an enum-disc, not a cross-kind int); `op_sum_disc`'s blanket-0 stays correct for its other callers.
 fn sum_disc_shaped(h: Handle) -> u32 {
     if is_immediate(h) {
-        imm_as_int(h) as u32
+        // A nullary-sum enum-disc is boxed via `box-int`, so the immediate is INT-tagged; `imm_as_int` is
+        // only valid for an int-tagged immediate (a unit/bool immediate would arithmetic-shift to a garbage
+        // disc). GUARD on the int tag (PR#889 Copilot, defensive): a non-int immediate under a Sum shape is a
+        // MALFORMED descriptor/value pairing — return `u32::MAX` (out of any `variants` range) so the caller's
+        // `variants.get(disc)?` DECLINES cleanly (the descriptor-walk contract) rather than garbage-decoding.
+        match imm_kind(h) {
+            ImmKind::Int => imm_as_int(h) as u32,
+            _ => u32::MAX,
+        }
     } else {
         op_sum_disc(h)
     }
