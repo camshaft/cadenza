@@ -13759,7 +13759,7 @@ impl ShapeTableBuilder {
             Ty::Unit => self.push(ShapeNode::Unit),
             Ty::Tuple(elems) => {
                 // TYPE-DIRECTED render (concierge ruling B, 2026-07-28): Unit and `(Tuple)` are DISTINCT
-                // types (05-compound:6938 — a variant's explicit empty-tuple payload keeps its `(tuple)`
+                // types (05-compound:9232-9239 — a variant's explicit empty-tuple payload keeps its `(tuple)`
                 // form, distinct from a nullary `unit`). So an EMPTY `Ty::Tuple` must emit a `Tuple[0]`
                 // shape (rendered `(tuple)` by the runtime `value-encode` walker), NOT collapse to
                 // `ShapeNode::Unit` (which would render `unit` — the wrong type surface for a `(Tuple)`-typed

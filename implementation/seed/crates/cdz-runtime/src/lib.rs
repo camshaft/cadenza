@@ -2492,7 +2492,7 @@ fn encode_value(
                     Shape::Tuple(elems) => {
                         if elems.is_empty() {
                             // An EMPTY `(Tuple)`-typed value renders the HEADED empty tuple `(tuple)`, NOT
-                            // `unit` (Ruling-B: `unit` and `(Tuple)` are DISTINCT types — 05-compound:6938 —
+                            // `unit` (Ruling-B: `unit` and `(Tuple)` are DISTINCT types — 05-compound:9232-9239 —
                             // and a `(Tuple)`-typed value MUST render `(tuple)`, matching the rust
                             // cdz_render_expr path + the wasm const path). The physical handle is `imm_unit`
                             // (`op_arr_alloc(0)`) for BOTH a Unit and an empty-tuple value — they share one

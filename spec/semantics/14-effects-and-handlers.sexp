@@ -5833,3 +5833,23 @@
               (+ a b))))
         (export main)))
   (declines))
+
+(case "a conditionally-resuming (abortive-or-resume) arm reading the enclosing fn's param declines cleanly (not-yet-reducible, not a false unbound)"
+  (doc    "SAFE FLOOR (v-effects, 94581e5f1). A handler arm that CONDITIONALLY resumes — `(if cond -999
+           (resume ...))`, one branch aborts with a value, the other resumes — reading the enclosing fn's
+           param `k` through the handler seed `(tuple 0 k)`. The E5 reify folds used to mis-handle this
+           partially-resuming arm (rewrote only the resuming branch, orphaning a synthesized copy of the
+           seed's `k`), relocating a CDZ0101 `unbound name k` at lowering — check passed, emit diverged.
+           A new `arm_partially_resumes` gate now makes both reify blocks DECLINE cleanly (codeless
+           not-yet-reducible) when the branches disagree on resume-vs-abort, rather than emit through the
+           broken fold. Computing the -999/3 value needs a later increment that lowers a conditionally-
+           resuming arm; the floor is decline-rather-than-miscompile. Distinct from the straight-line
+           do-def and F1 mixed-width seams — this is the abort/resume-branch-disagreement path.")
+  (input  (do
+        (effect Sim (op step (-> Unit Int64)))
+        (def (main (: k Int64))
+          (handle Sim (tuple 0 k)
+            ((step (u) st (if (>= (. st 0) (. st 1)) -999 (resume (. st 0) (tuple (+ (. st 0) 1) (. st 1))))))
+            (+ (Sim.step) (+ (Sim.step) (Sim.step)))))
+        (export main)))
+  (declines))
