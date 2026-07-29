@@ -1,9 +1,9 @@
 # PR#889 review comment — sum_disc_shaped decodes any immediate as int without tag-checking (v-runtime, defensive)
 
 Mirrored from GitHub PR#889 review comment (Copilot), id `3671453971` (lib.rs:1430, also :2592, :6012).
-File: `implementation/seed/crates/cdz-runtime/src/lib.rs` — v-runtime's crate (this PR = their SOUNDNESS
-#43). Blame `cce30e57f` "rcdzc(runtime): shape-walk sum-disc decodes an immediate enum-disc — compare +
-render (SOUNDNESS #43)".
+File: `implementation/seed/crates/cdz-runtime/src/lib.rs` — v-runtime's crate (this PR = their
+SOUNDNESS #43). Blame `cce30e57f` "rcdzc(runtime): shape-walk sum-disc decodes an immediate enum-disc —
+compare + render (SOUNDNESS #43)".
 
 Defensive-hardening / soundness-adjacent — reachability is v-runtime's call.
 
