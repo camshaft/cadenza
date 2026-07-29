@@ -240,7 +240,12 @@ fn the_provider_cache_persists_reuses_and_self_heals() {
     let cached_provider = || -> Option<std::path::PathBuf> {
         std::fs::read_dir(&cache).ok()?.flatten().find_map(|e| {
             let p = e.path();
-            (p.extension().and_then(|x| x.to_str()) == Some("wasm")).then_some(p)
+            // Match the PRODUCTION cache filename suffix (`<hash>.provider.wasm`), not just any `.wasm` — a
+            // stray/multi-entry `.wasm` in the dir must not be mistaken for the provider we persisted.
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".provider.wasm"))
+                .then_some(p)
         })
     };
 
