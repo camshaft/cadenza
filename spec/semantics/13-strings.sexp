@@ -4039,3 +4039,30 @@
           (zip-lens "aéb" "cd" 0))
         (export main)))
   (call   main (: 0 Int64)) (output (: 16 Int64)))
+
+; --- The overflow-safe fallible-index guard, String face (companion of the 10-bytes family):
+; huge and i32-wrap indices must decline to None on the FULL-width check, never wrap into range.
+
+(case "String.at and String.slice with near-i64::MAX indices decline to None, not wrap"
+  (doc    "The String siblings of the 10-bytes overflow-safe bounds family (Bytes.at/Bytes.slice pin the wrapping-add and i32-truncation hazards; 13-strings had NO huge-index coverage): String.at at i64::MAX and String.slice at (2^62, 2^62+1) over a runtime 11-scalar rope both decline to None (0/0 → 0). A wrapping-i64 start+len or a signed-<= check takes the in-range path and returns a wrong Some.")
+  (input  (do
+            (def (main (: i Int64) (: st Int64) (: en Int64))
+              (do
+                (def s (String.concat "héllo" " wörld"))
+                (+ (* 100 (match (String.at s i) ((Option.Some _c) 1) ((Option.None _u) 0)))
+                   (match (String.slice s st en) ((Option.Some _v) 1) ((Option.None _u) 0)))))
+            (export main)))
+  (call   main (: 9223372036854775807 Int64) (: 4611686018427387904 Int64) (: 4611686018427387905 Int64))
+  (output (: 0 Int64)))
+
+(case "String.at with an index at 2^32+2 declines to None, not an i32-wrapped read"
+  (doc    "The i32-TRUNCATION face: 2^32+2 wraps to index 2 — IN-BOUNDS for the 11-scalar string — so a lowering that narrowed the index to i32 before the bounds check returns a wrong Some scalar; the full-width check declines all three reads to None (0).")
+  (input  (do
+            (def (main (: i Int64) (: st Int64) (: en Int64))
+              (do
+                (def s (String.concat "héllo" " wörld"))
+                (+ (* 100 (match (String.at s i) ((Option.Some _c) 1) ((Option.None _u) 0)))
+                   (match (String.slice s st en) ((Option.Some _v) 1) ((Option.None _u) 0)))))
+            (export main)))
+  (call   main (: 4294967298 Int64) (: 4294967297 Int64) (: 4294967299 Int64))
+  (output (: 0 Int64)))

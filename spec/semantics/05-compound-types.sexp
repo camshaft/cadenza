@@ -16875,3 +16875,29 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 242 Int64))
   (call   main (: 5 Int64)) (output (: 342 Int64)))
+
+; --- The overflow-safe fallible-index guard, List face (completes the Bytes/String family):
+
+(case "List.at with near-i64::MAX and i32-wrap indices declines to None, not a wrapped read"
+  (doc    "The List sibling completing the fallible-index overflow-guard family (Bytes 10-bytes, String above): i=i64::MAX and j=2^32+2 (i32-truncates to in-bounds 2 — a wrapping impl reads element 30 and yields -70+... instead of -101) over a runtime List.concat 4-list both decline to None (-101).")
+  (input  (do
+            (def (main (: i Int64) (: j Int64))
+              (do
+                (def xs (List.concat (list 10 20) (list 30 40)))
+                (+ (* 100 (match (List.at xs i) ((Option.Some v) v) ((Option.None _u) -1)))
+                   (match (List.at xs j) ((Option.Some v) v) ((Option.None _u) -1)))))
+            (export main)))
+  (call   main (: 9223372036854775807 Int64) (: 4294967298 Int64))
+  (output (: -101 Int64)))
+
+(case "List.at in-bounds control alongside the huge-index guard reads the right elements"
+  (doc    "The working-side control: the same compiled body at (1,3) reads 20 and 40 → 2040, proving the guard rejects only the out-of-range shapes.")
+  (input  (do
+            (def (main (: i Int64) (: j Int64))
+              (do
+                (def xs (List.concat (list 10 20) (list 30 40)))
+                (+ (* 100 (match (List.at xs i) ((Option.Some v) v) ((Option.None _u) -1)))
+                   (match (List.at xs j) ((Option.Some v) v) ((Option.None _u) -1)))))
+            (export main)))
+  (call   main (: 1 Int64) (: 3 Int64))
+  (output (: 2040 Int64)))

@@ -5047,8 +5047,31 @@ fn emit_sum_cont(
                 crate::core::Probe::Bool(b) => {
                     ((if *b { "true" } else { "false" }).to_string(), subject)
                 }
-                crate::core::Probe::Str(_)
-                | crate::core::Probe::Char(_)
+                crate::core::Probe::Str(s) => {
+                    // A STRING/SYMBOL sub-value probes by CONTENT equality. A Symbol payload inside a sum
+                    // variant (`(type W (Mk Symbol))`, `(match w ((Mk #"go") …))`) reaches the decision tree
+                    // here (unlike a top-level String scrutinee, which declines earlier at `is_scalar`): the
+                    // `subject` read via `emit_sum_payload` is a Rust `String` (both `Ty::Symbol` and
+                    // `Ty::String` map to `String`, and a Symbol IS its text at run time), so a content probe
+                    // is `<subject>.as_str() == "<lit>"` — `.as_str()` auto-derefs a `String`/`&String`, and
+                    // `str == str` is the byte-content compare the wasm decision-tree gives. Only String/Symbol
+                    // render; any other sub-value at a `Str` probe (defensive — the lowering only emits `Str`
+                    // for a String/Symbol leaf) declines as before.
+                    let sub = lookup_sum_path_type(ctx, path)
+                        .unwrap_or_else(|| ty_at_sum_path(db, scrutinee, path));
+                    if matches!(sub.strip_nominal(), Ty::Symbol | Ty::String) {
+                        let then_ = emit_sum_cont(db, scrutinee, then_, result_it, env, ctx)?;
+                        let els = emit_sum_cont(db, scrutinee, els, result_it, env, ctx)?;
+                        return Ok(format!(
+                            "if ({subject}).as_str() == {} {{ {then_} }} else {{ {els} }}",
+                            rust_string_literal(s)
+                        ));
+                    }
+                    return Err(Reject::decline(
+                        "a non-scalar literal-payload probe is not rendered by the Rust backend",
+                    ));
+                }
+                crate::core::Probe::Char(_)
                 | crate::core::Probe::ListLen { .. }
                 | crate::core::Probe::MapHasKeys { .. }
                 | crate::core::Probe::Wild => {

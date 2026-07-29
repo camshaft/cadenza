@@ -66,6 +66,8 @@ pass	LONGEST COMMON SUBSEQUENCE rolls match-diagonal against carry-forward maxim
 pass	LONGEST INCREASING SUBSEQUENCE fills a per-index table from strictly-smaller predecessors
 pass	LONGEST RUN tracks the current and best streak, first run winning ties
 pass	LOOK-AND-SAY iterates run-length description over its own prior output
+pass	List.at in-bounds control alongside the huge-index guard reads the right elements
+pass	List.at with near-i64::MAX and i32-wrap indices declines to None, not a wrapped read
 pass	List.update at the 32-boundary changes one slot and leaves both neighbors shared
 pass	List.update through a concat-built RELAXED node changes one slot with exact neighbors
 pass	MAX PROFIT tracks the running minimum and best spread in one forward pass
@@ -103,7 +105,9 @@ pass	Set.of over Rational elements dedupes a normalized-equal literal and to-lis
 pass	Set.to-list over Rational elements enumerates ascending by value, not by numerator/denominator pair
 pass	Set.to-list over STRING elements orders by content with a rope participating
 pass	Set.to-list over symbols enumerates in content-byte order regardless of insertion order
+pass	String.at and String.slice with near-i64::MAX indices decline to None, not wrap
 pass	String.at through a slice VIEW of a rope reads view-relative scalars at every byte width
+pass	String.at with an index at 2^32+2 declines to None, not an i32-wrapped read
 pass	String.from-bytes over a rope-backed slice accepts aligned windows and rejects a mid-scalar cut
 pass	String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts
 pass	String.slice across a multibyte scalar carries byte-len 2 with scalar-len 1, and degenerate ranges answer Some-empty / None
@@ -1388,7 +1392,7 @@ pass	a recursive walk over a runtime-SHAPED tree dispatches per call
 pass	a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
 pass	a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite
-todo	a NONZERO BigInt literal probe in a recursive quasiquote-pattern simp matches its own constructor
+pass	a NONZERO BigInt literal probe in a recursive quasiquote-pattern simp matches its own constructor
 pass	a rope accumulates across perform/resume boundaries and content-checks at the exit
 pass	a runtime multibyte rope matches a MULTIBYTE string-literal arm by content
 pass	a runtime-built BigInt sum-payload literal probe matches its constructor
@@ -2086,7 +2090,7 @@ pass	a nested runtime tuple built behind a recursive call escapes to the host
 pass	a nested runtime tuple is returned as a result
 pass	a nested sum match missing an inner variant is non-exhaustive
 pass	a nested symbol-literal payload falls through on a non-matching symbol
-todo	a Symbol-payload literal probe inside a RECURSIVE fn matches (recursive-specialization control)
+pass	a Symbol-payload literal probe inside a RECURSIVE fn matches (recursive-specialization control)
 pass	a nested tuple list element is bound over a runtime list and folded across the rest
 pass	a nested tuple-in-tuple float key MISSES a Map key with a different deep float leaf
 pass	a nested tuple-in-tuple float key is a Map key found by a separately-built equal key
@@ -4925,7 +4929,7 @@ todo	a program uses a response-returning delegated host function's return value
 pass	a rational built from a RUNTIME zero denominator traps rather than being a value
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
-todo	a recursive evaluator destructures a built Ast by quote patterns and recurses
+pass	a recursive evaluator destructures a built Ast by quote patterns and recurses
 todo	a run's result is a deterministic function of a host call's recorded response
 pass	a runtime structural = on a sum with List and Float payloads walks it (value-eq-shaped over a Sum)
 todo	an @param of a Bool type generates a Bool-typed accessor

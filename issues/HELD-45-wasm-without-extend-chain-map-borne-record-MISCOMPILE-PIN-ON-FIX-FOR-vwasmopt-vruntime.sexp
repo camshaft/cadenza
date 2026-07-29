@@ -89,3 +89,24 @@
 ;; reds the wasm gate NOW (trap + silent 5). Lands GREEN once wasm materializes the intermediate. The 2
 ;; witnesses expect 8 (rust-matching); the controls stay green. ON FIX: gate x3 -> 8; pin into 20-structural
 ;; or 15-rows beside the row-op pins; baseline x3.
+
+;; BOUNDARY DATUM (breaker, 2026-07-29, trunk 8f6f82404): the without→extend chain on a NESTED-map-borne
+;; record (double lookup: (Map.lookup (Map.lookup outer 1) 2) -> r) COMPUTES (8, 3/3 green) while the
+;; SINGLE-lookup form still traps/silent-5. Consistent with the aliasing diagnosis: a record-valued CHAMP
+;; leaf hands out its BOXED BASE (aliased, wrong), a map-valued leaf hands out a FRESH HANDLE (materialized,
+;; correct). So the single-lookup record-valued leaf is the exact trigger. BANKING the nested case as a
+;; boundary/perimeter pin (below) — it promotes WITH the held witnesses so the wasm fix can't regress the
+;; working depth. It's green all 3 backends NOW, so on land it pins as a value (8) alongside the 2 fixed
+;; witnesses + the list-borne/fresh controls.
+
+(case "the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)"
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def inner (Map.insert Map.empty 2 (record (name "widget") (qty k))))
+                (def outer (Map.insert Map.empty 1 inner))
+                (def r (Option.expect (Map.lookup (Option.expect (Map.lookup outer 1) "o") 2) "i"))
+                (. (Record.extend (Record.without r (qty)) #"qty" (+ (. r qty) 5)) qty)))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 8 Int64)))
