@@ -837,3 +837,42 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 1 Int64)))
+
+(case "a set over a NULLARY-SUM key enumerates canonically — permutation-invariant AND discriminant-ordered"
+  (doc    "Witnesses §Permutation Invariance Is A Property on a set whose element is a NULLARY SUM (a bare
+           enum constructor), the tagged-union analogue of the Int64-keyed set-convergence case above. Two
+           facts must hold for `Set.to-list` over such keys, and this pins BOTH: (1) permutation invariance —
+           the same three levels inserted in a DIFFERENT order enumerate to the SAME list; (2) canonical
+           discriminant order — the enumeration is sorted by the constructor's discriminant (Lo<Mid<Hi), not
+           insertion order. Fact (2) is load-bearing and non-obvious: a nullary sum boxes via box-int, and a
+           small discriminant is a fixnum IMMEDIATE, so the descriptor-guided value-compare that orders the
+           set's to-list must decode the discriminant FROM the immediate — reading it as 0 for every key
+           (the immediate-totality default) would collapse all keys to Equal and a stable sort would silently
+           preserve insertion order (core-semantics.md #Sum Values Compare By Discriminant Then Payload). The
+           three levels are SELECTED at run time from the seed (a masked `% 3` over successive LCG draws), so
+           the set construction + the ordered enumeration are real instructions, never a compile-time fold.
+           `sorted` walks the enumerated list asserting each discriminant is >= the previous; `main` returns 1
+           iff the two insertion orders agree AND the enumeration is discriminant-sorted.")
+  (input  (do
+            (type Level (Lo) (Mid) (Hi))
+            (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+            (def (lvl (: s Int64))
+              (let ((m (% (& s 255) 3)))
+                (if (= m 0) (Lo) (if (= m 1) (Mid) (Hi)))))
+            (def (di (: v Level)) (match v ((Lo) 0) ((Mid) 1) ((Hi) 2)))
+            (def (sorted (: xs (List Level)) (: prev Int64))
+              (match xs
+                ((list) true)
+                ((list h .. t) (if (< (di h) prev) false (sorted t (di h))))))
+            (def (main (: seed Int64))
+              (let ((a (lvl (next seed))))
+                (let ((b (lvl (next (next seed)))))
+                  (let ((c (lvl (next (next (next seed))))))
+                    (if (= (Set.to-list (Set.of (list a b c)))
+                           (Set.to-list (Set.of (list c a b))))
+                        (if (sorted (Set.to-list (Set.of (list a b c))) 0) 1 0)
+                        0)))))
+            (export main)))
+  (call   main (: 12345 Int64)) (output (: 1 Int64))
+  (call   main (: 777 Int64)) (output (: 1 Int64))
+  (call   main (: -7 Int64)) (output (: 1 Int64)))

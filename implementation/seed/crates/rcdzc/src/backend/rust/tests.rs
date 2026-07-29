@@ -745,6 +745,33 @@ fn rustc_roundtrip_list_builds_and_runs() {
 }
 
 #[test]
+fn rustc_roundtrip_all_nullary_sum_orders_by_discriminant() {
+    // breaker #43 cross-backend guard: the shared-lowering fix routes an ALL-NULLARY sum's `<`/`compare`
+    // to a scalar `Core::Compare` (i32/enum tag) instead of the `Core::ValueCmp` heap walk. The finding is
+    // wasm-only (rust was already correct via ValueCmp), so this test PROTECTS the rust path from the
+    // reroute: rust emits an all-nullary sum as a derived-`Ord` enum, and `Core::Compare`'s `(l < r)` on
+    // two such enum values compiles + gives DECLARATION order (Lo < Mid < Hi). Compile+run through rustc:
+    // `mk(-7)=Lo`, `mk(9)=Hi`; `Lo < Hi` is true (1), and `compare(Lo,Hi)` is Less (arm 1). Expect 11.
+    let module = compile_rust(
+        "(module m (type Tri (Lo) (Mid) (Hi)) \
+           (def (mk (: k Int64)) (if (< k 0) (Tri.Lo unit) (if (= k 0) (Tri.Mid unit) (Tri.Hi unit)))) \
+           (def (main (: a Int64) (: b Int64)) \
+             (+ (* 10 (if (< (mk a) (mk b)) 1 0)) \
+                (match (compare (mk a) (mk b)) \
+                  ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))) \
+           (export main))",
+    );
+    let driver = "fn main() { println!(\"{}\", prog::main(-7, 9)); }";
+    if let Some(out) = rustc_run_driver(&module, driver) {
+        assert_eq!(
+            out, "11",
+            "rust all-nullary sum ordering: Lo < Hi (1) + compare=Less (1) = 11 — the reroute to \
+             Core::Compare must give declaration order on rust's derived-Ord enum, not break it"
+        );
+    }
+}
+
+#[test]
 fn runtime_list_ops_emit_native_vec_operations() {
     // `List.len` → `.len() as i64`; measured over a runtime-built list (a constant list's length folds).
     let len = compile_rust(
@@ -3060,6 +3087,72 @@ fn rustc_roundtrip_signed_compare() {
     }
     if let Some(out) = rustc_run(&rs, "lt(5, 3)") {
         assert_eq!(out, "false");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_option_compare_follows_cadenza_some_before_none_not_std() {
+    // SOUNDNESS (breaker/corpus-bugfix #42): Cadenza declares `Some` (disc 0) `< None` (disc 1) — but Rust's
+    // std `Option`, which the backend maps Cadenza `Option` to, derives the REVERSE order `None < Some`. A
+    // native `l < r` / `l.cmp(&r)` therefore gave the WRONG total order (`compare (Some 3) None` → std
+    // Greater, Cadenza Less). `ValueCmp` now routes an Option-containing operand through the type-directed
+    // walk (Some-before-None), so compare/`<` match the declared order + the wasm backend (which is correct).
+    // Ordering ctor→Int probe: Less→1, Equal→2, Greater→3.
+    // A RUNTIME Option (built by an `if`, so it lowers to a value-cmp, not a const fold), matching the corpus
+    // witness. `mk 0` = None, `mk k` = Some k. compare (mk 3) (mk 0) = compare (Some 3) None → Less (1).
+    let cmp = compile_rust(
+        "(module m \
+           (def (mk (: k Int64)) (if (= k 0) (: (None unit) (Option Int64)) (Some k))) \
+           (def (go (: a Int64) (: b Int64)) \
+             (match (compare (mk a) (mk b)) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+         (export go))",
+    );
+    if let Some(out) = rustc_run(&cmp, "go(3, 0)") {
+        assert_eq!(
+            out, "1",
+            "compare (Some 3) None must be Less (Cadenza Some<None), NOT Greater (std None<Some):\n{cmp}"
+        );
+    }
+    // Two Somes still order by payload (Some 1 < Some 2 → Less); None is the greatest (Some k < None).
+    if let Some(out) = rustc_run(&cmp, "go(1, 2)") {
+        assert_eq!(out, "1", "(Some 1) < (Some 2) by payload → Less:\n{cmp}");
+    }
+    if let Some(out) = rustc_run(&cmp, "go(0, 5)") {
+        assert_eq!(
+            out, "3",
+            "None > (Some 5) → Greater (None is the max):\n{cmp}"
+        );
+    }
+    // NESTED: an Option as a tuple leaf — the flip must be corrected at the leaf, not just top-level.
+    // (tuple 0 (Some 3)) vs (tuple 0 None): field 0 equal, so decided by the Option leaf → Some<None → Less.
+    let nested = compile_rust(
+        "(module m \
+           (def (mk (: k Int64)) (if (= k 0) (: (None unit) (Option Int64)) (Some k))) \
+           (def (go (: n Int64)) \
+             (match (compare (tuple n (mk n)) (tuple n (mk 0))) \
+               ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+         (export go))",
+    );
+    if let Some(out) = rustc_run(&nested, "go(3)") {
+        assert_eq!(
+            out, "1",
+            "a nested Option leaf orders Some<None too (tuple .1 decides):\n{nested}"
+        );
+    }
+    // CONTROL — `Result` maps to std `Result` whose `Ok < Err` MATCHES Cadenza; it must stay correct (the fix
+    // must not disturb it — Result is not a flip). compare (Ok n) (Err n) → Ok<Err → Less.
+    let res = compile_rust(
+        "(module m \
+           (def (mk (: k Int64)) (if (= k 0) (: (Err unit) (Result Int64 Unit)) (Ok k))) \
+           (def (go (: a Int64) (: b Int64)) \
+             (match (compare (mk a) (mk b)) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+         (export go))",
+    );
+    if let Some(out) = rustc_run(&res, "go(1, 0)") {
+        assert_eq!(
+            out, "1",
+            "Result Ok<Err control stays correct (Ok 1 < Err):\n{res}"
+        );
     }
 }
 

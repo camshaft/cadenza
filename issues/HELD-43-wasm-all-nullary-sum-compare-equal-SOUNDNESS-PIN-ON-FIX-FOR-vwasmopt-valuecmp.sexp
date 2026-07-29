@@ -141,3 +141,42 @@
 ;;    v-wasm-opt QUEUES it. Witness 4 routed to v-runtime. PLAN: pin the 5 green witnesses on cf0c05ae8
 ;;    landing; HOLD witness 4 for the v-runtime value_cmp_shaped imm-disc fix, then complete the pin (all 6).
 ;; cf0c05ae8 QUEUED to pr-sync (v-wasm-opt, 2026-07-29) — pr-sync re-gates authoritatively + lands; on land pin 5 green (1/2/3 + 2 controls), witness 4 HELD for v-runtime. v-wasm-opt pings on land.
+
+;; PARTIAL FIX LANDED (cce30e57f on trunk fc2b91731, runtime bumped f9f8717c). Re-gated wasm WITH runtime:
+;; 3 pass / 3 FAIL (was 2/4 pre-fix). STILL FAILING (compare still Equal / order 0): user all-nullary Tri,
+;; Sign builtin, Ordering values. So cce30e57f (shape-walk sum-disc decodes an immediate enum-disc) covered
+;; SOME of the immediate-enum-disc compare path but NOT all — breaker: builtin sums (Sign/Ordering, maybe a
+;; different rep/decode site) + the CHAMP Set.to-list canonical-order walk still fail. KEEP HELD; fix is
+;; PARTIAL. Need v-wasm-opt/v-runtime to extend: (1) builtin-sum immediate-disc compare, (2) Set/CHAMP
+;; enumeration order for all-nullary keys (the v-runtime value_cmp_shaped imm-disc arm). Pin lands when all
+;; 6 witnesses + 2 controls go green.
+
+;; CORRECTION (breaker, 2026-07-29): cce30e57f did NOT move the wasm COMPARE behavior — ALL compare
+;; witnesses (user Tri, Sign, Ordering, + Set.to-list) still fail; the only wasm passes are the 2 CONTROLS.
+;; cce30e57f may be the rust-side render/decode half or groundwork. #43 remains FULLY OPEN on wasm compare.
+;; (corpus-bugfix HELD-43 file gates 3p/3f — my 3 fails = user/Sign/Ordering compare; the count differs
+;; from breaker's 2p/4f only by case-set composition; conclusion identical: pin stays HELD, #43 open.)
+;; Already nudged v-wasm-opt for the full compare path (builtin + user immediate-enum-disc) + Set-enum
+;; (v-runtime). No routing change.
+
+;; CLARIFIED (v-wasm-opt, 2026-07-29) + VERIFIED (corpus-bugfix): the 3 still-failing compare witnesses
+;; (Tri/Sign/Ordering) are NOT a builtin-sum remainder — they are fixed by cf0c05ae8, which is STILL QUEUED
+;; (NOT on trunk). Verified: cf0c05ae8 is NOT an ancestor of trunk fc2b91731 (0 hits for its lower.rs fix);
+;; only v-runtime's runtime half cce30e57f landed. The </compare route is a lower.rs COMPILER change (enum-
+;; disc -> i32-tag Core::Compare), absent from trunk, so the runtime half alone can't fix compare. Sign/
+;; Ordering ARE covered by cf0c05ae8 (node_ty_is_enum_disc, db.rs:2793 = any >=2-variant all-nullary incl
+;; builtins) — NOT a different rep. So the split holds: cf0c05ae8 (queued) fixes witnesses 1/2/3 + controls;
+;; cce30e57f (landed) is witness 4 (Set enum enumeration). ALL 6 green once cf0c05ae8 ALSO lands. My earlier
+;; "builtin-sum remainder" nudge was a peer-reads-unlanded-fix misread; WITHDRAWN. Keep HELD; v-wasm-opt
+;; pings when cf0c05ae8 hits trunk, then re-run all 6 (expect 6/6).
+
+;; RUNTIME HALF LANDED (v-runtime, trunk fc2b91731, hash f9f8717c): value_cmp_shaped + value-encode Sum
+;; arms both decode an immediate enum-disc. VERIFIED witness 4 (Set.to-list enum enumeration) now PASSES
+;; (31) on wasm. Also fixed the RENDER sibling (a nested all-nullary sum rendered the wrong variant).
+;; ADDED a render witness (below) — pins the render half the 6 compare witnesses don't cover; VERIFIED
+;; green all 3 backends NOW. LANDING PLAN: fold this render witness into the #43 pin; land the whole #43
+;; set when v-wasm-opt's cf0c05ae8 (compare half, witnesses 1/2/3 + controls) ALSO lands → all green.
+
+(case "a nested all-nullary sum renders the correct variant across the boundary (render half, v-runtime f9f8717c)"
+  (input  (do (type Tri (Lo) (Mid) (Hi)) (def (main) (tuple (Tri.Hi unit) 5)) (export main)))
+  (call main) (output (: (tuple (Hi unit) 5) (Tuple Tri Int64))))

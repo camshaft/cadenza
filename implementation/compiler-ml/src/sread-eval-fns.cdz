@@ -334,12 +334,15 @@ def se-threearg-self-recursion-runs-pr785() =
     | Option.None(_) => trap("3-arg self-recursion must RUN (PR#785 — arg3/arg4 self-call detection)")
 
 @test
-def se-mutual-recursion-declines-not-hangs() =
-  // MUTUAL RECURSION (ev↔od) must also DECLINE cleanly, not hang — the cycle guard follows the transitive call
-  // chain (ev's body calls od, od's calls ev) and declines. Pins the mutual-cycle case of the guard.
+def se-mutual-recursion-runs() =
+  // MUTUAL RECURSION (ev↔od) now RUNS: both defs are in the def-env (build-def-env no longer excludes a
+  // mutually-recursive def), a mutual call lowers to a CCall LEAF (no inline → no lower-time hang), and eval's
+  // apply-def-by-name dispatches BY NAME at runtime, terminating on the base-case CIf guard. ev(4): 4→od(3)→
+  // ev(2)→od(1)→ev(0)→1. Was `se-mutual-recursion-declines-not-hangs` (the pre-Slice-B decline boundary), now
+  // lifted — mutual recursion is a first-class runtime cycle, exactly like self-recursive fac.
   match run-src("(do (def (ev n) (if (< n 1) 1 (od (- n 1)))) (def (od n) (if (< n 1) 0 (ev (- n 1)))) (def (main) (ev 4)) (export main))") with
-    | Option.None(_) => unit
-    | Option.Some(_) => trap("mutual recursion declines cleanly (no hang)")
+    | Option.Some(v) => (if v == 1 then unit else trap("mutual ev(4) → 1"))
+    | Option.None(_) => trap("mutual recursion must RUN (ev↔od via def-env name dispatch), not decline")
 
 @test
 def se-backward-ref-still-runs() =

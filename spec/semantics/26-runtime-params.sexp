@@ -344,3 +344,69 @@
   (call   main)
   (host-responses (respond Param.k (: 2 Int64)))
   (output (: 42 Int64)))
+
+(case "a @param value SEEDS an in-program handler's state"
+  (doc    "The host→handler-state composition: the host-supplied `seed` param initializes `handle Ctr
+           (Param.seed)` — a host-delegated read flowing into the seed position of an IN-PROGRAM
+           handler, whose arms then thread it (next reads 10,11,12 → 33 with the host responding 10;
+           7,8,9 → 24 at 7). The param pins cover map keys, closures and fold counts; the handler-SEED
+           position is the remaining consumer — a seed evaluation that ran before the host delegation
+           was wired (or re-performed the param per arm) breaks the sum.")
+  (input  (do
+        (pragma param (param (: widget slider)) (: seed Int64))
+        (effect Ctr (op next (-> Unit Int64)))
+        (def (main)
+          (host (Param)
+            (handle Ctr (Param.seed)
+              ((next (u) s (resume s (+ s 1))))
+              (+ (Ctr.next) (+ (Ctr.next) (Ctr.next))))))
+        (export main)))
+  (call   main)
+  (host-responses (respond Param.seed (: 10 Int64)))
+  (output (: 33 Int64)))
+
+(case "two @params seed two NESTED handlers independently"
+  (doc    "The multi-param × nested-handle composition: host values a and b each seed their OWN
+           handler level — outer `handle CA (Param.a)`, inner `handle CB (Param.b)` — and the body
+           draws one value from each (a + b = 30 with hosts 10/20; the asymmetric 5/2 row separates
+           the seeds → 7). A seed wiring that read the params in the wrong order (or seeded both
+           levels from one accessor) collapses the sum symmetrically and only the asymmetric row
+           catches it.")
+  (input  (do
+        (pragma param (param (: widget slider)) (: a Int64))
+        (pragma param (param (: widget slider)) (: b Int64))
+        (effect CA (op geta (-> Unit Int64)))
+        (effect CB (op getb (-> Unit Int64)))
+        (def (main)
+          (host (Param)
+            (handle CA (Param.a)
+              ((geta (u) s (resume s s)))
+              (handle CB (Param.b)
+                ((getb (u) s (resume s s)))
+                (+ (CA.geta) (CB.getb))))))
+        (export main)))
+  (call   main)
+  (host-responses (respond Param.a (: 10 Int64)) (respond Param.b (: 20 Int64)))
+  (output (: 30 Int64)))
+
+(case "a @param positions a slice window over a guest-built byte rope"
+  (doc    "Host value × the window family: `(Bytes.slice b (Param.cut) 2)` — the host-supplied cut
+           positions a 2-byte window over the guest's rope [1,2]++[3,4,5], read back via Bytes.at
+           (host 1 → window [2,3] straddles the SEAM → 23; host 3 → [4,5] → 45; host 4 → only 1
+           byte remains → None → -2). The param pins feed arithmetic/keys/counts; a slice BOUND is
+           the remaining scalar consumer, and the seam-straddling row composes it with the rope
+           window machinery.")
+  (input  (do
+        (pragma param (param (: widget slider)) (: cut Int64))
+        (def (main)
+          (host (Param)
+            (do
+              (def b (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list 3 4 5))))
+              (match (Bytes.slice b (Param.cut) 2)
+                ((Some w) (+ (* 10 (match (Bytes.at w 0) ((Some v) v) ((None _u) -1)))
+                             (match (Bytes.at w 1) ((Some v) v) ((None _u) -1))))
+                ((None _u) -2)))))
+        (export main)))
+  (call   main)
+  (host-responses (respond Param.cut (: 1 Int64)))
+  (output (: 23 Int64)))

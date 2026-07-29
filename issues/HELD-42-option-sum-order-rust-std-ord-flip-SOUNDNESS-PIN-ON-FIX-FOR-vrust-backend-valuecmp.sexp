@@ -120,3 +120,9 @@
 ;; types.rs ord_key_type) whose Ord uses declared Some<None, OR emit Option as a decl-order enum. Bounded
 ;; follow-up in v-rust-backend's lane, built after the compare fix + driver land. PLAN: pin witness 1 (+ the
 ;; relational/compare witnesses) on 21ebe76e2 landing; HOLD witness 2 for the Set/Map-key Ord-wrapper.
+
+;; COMPARE-SIDE SENT (v-rust-backend, 2026-07-29): MR 7392dc3b8 (queued, on clean trunk c2ebd33da after
+;; the Option-C driver landed). Gates rust 5083/104/0 + rust-async 5080/107/0 + wasm 5164/23/0 --check
+;; 0-regress. ON LAND: pin witness 1 (three-way compare (Some 3)<None) + the </Ordering compare witnesses
+;; + the Result control into 03-equality/05-compound (rust now matches wasm). Witness 2 (Set/Map Option-key
+;; enumeration) STAYS HELD for v-rust-backend's next MR (BTreeSet/Map Ord-wrapper) — they ping on ship.

@@ -2359,3 +2359,26 @@
                   (free-in 0 (subst 1 (Term.Var 0) term)))))
             (export main)))
   (output (: true Bool)))
+
+(case "a BARE (unqualified) constructor pattern over an abstract proof type outside the kernel is also a withheld-constructor rejection"
+  (doc    "The bare-pattern twin of the qualified-pattern case above. Unforgeability must not depend on pattern
+           SYNTAX: an importer cannot destructure an abstract `Proof` value whether it writes the qualified
+           `(Proof.Axiom n)` or the BARE `(Axiom n)` — both resolve to the same withheld constructors and both
+           are rejected CDZ0214. `hol` exports the handle `Proof` + rule `ax` but not `Proof`'s constructors, so
+           `(match (ax 3) ((Axiom n) …) ((Step m) …))` in the importer is a withheld-constructor rejection. This
+           guards the bare-ctor-pattern path specifically: a pattern-lowering change that resolved a bare
+           constructor pattern WITHOUT re-checking the withheld gate would silently reopen the forge hole for
+           unqualified patterns while the qualified case above stayed green. Pins the property is
+           syntax-independent across all backends (the rust-side unit coverage of this path is complemented here
+           at the executable-semantics layer).")
+  (module "hol"
+    (do
+      (type Proof (Axiom Int64) (Step Int64))
+      (def (ax (: n Int64)) (Proof.Axiom n))
+      (export Proof)
+      (export ax)))
+  (input  (do
+            (import "hol" (Proof ax))
+            (def (main) (match (ax 3) ((Axiom n) n) ((Step m) m)))
+            (export main)))
+  (error  CDZ0214))

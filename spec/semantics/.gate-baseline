@@ -122,6 +122,8 @@ pass	WAVE reorder alternates <= and >= by index parity through a carried-element
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
 pass	a @ensures postcondition over a HEAP result checks at exit and returns the live collection
 pass	a @ensures relating the RESULT to a PARAMETER enforces the relation at exit
+pass	a @param positions a slice window over a guest-built byte rope
+pass	a @param value SEEDS an in-program handler's state
 pass	a @requires predicate over a HEAP collection is enforced at entry and value-transparent when satisfied
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
@@ -1961,6 +1963,7 @@ pass	a multi-payload variant with an EMPTY-Map first payload compiles + deconstr
 pass	a multi-segment bin concatenates mixed-width signed and unsigned segments in order
 pass	a multi-step kernel derivation composes several primitive rules into one theorem
 pass	a multi-variant abstract proof type's constructor match outside the kernel is a withheld-constructor rejection
+pass	a BARE (unqualified) constructor pattern over an abstract proof type outside the kernel is also a withheld-constructor rejection
 pass	a multi-variant constructor nested in a tuple let-binder is refutable and rejected
 pass	a multi-variant-sum binding pattern is refutable and rejected
 pass	a multi-way string-head dispatch resolves an operator name to its operation
@@ -2217,6 +2220,7 @@ pass	a performed operation is the scrutinee of a match that dispatches on its re
 pass	a performed operation whose result is a sum is matched on its variant
 pass	a performed sum carrying a TUPLE payload is matched and the arm reads MULTIPLE payload elements
 pass	a performing argument to a multiply-using performing callee is not duplicated
+pass	a performing closure duplicated through a generic tuple applies twice with stepping state
 pass	a performing closure homed TRANSITIVELY through a pass-through function is not falsely rejected
 pass	a performing closure passed to a function that applies it UNDER a handler is homed at the apply site
 pass	a performing match SCRUTINEE threads its state into a performing arm body
@@ -2849,6 +2853,7 @@ pass	a set of tuples deduplicates by the whole tuple and its membership is compo
 pass	a set of two NaN floats dedups to one (canonical quiet-NaN)
 pass	a set of two identical positive floats dedups to one
 pass	a set of user-sum elements tests membership by variant
+pass	a set over a NULLARY-SUM key enumerates canonically — permutation-invariant AND discriminant-ordered
 pass	a set threaded as a recursive accumulator dedups during accumulation
 pass	a set type whose element position holds a value is rejected
 pass	a set with elements of two different types is a type error
@@ -4026,6 +4031,7 @@ pass	greater-than on an unusual signed width orders a positive above the negativ
 pass	greater-than-or-equal
 pass	greater-than-or-equal of an integer and a float is rejected
 pass	halving the minimum subnormal flushes to zero while a double-min stays subnormal
+pass	handler op-param and state binders stay hygienic when colliding with perform-site names
 pass	heap string elements of a hoisted list if select by branch
 pass	heap-valued handler state above an inner abort keeps threading
 pass	hexadecimal, binary, and decimal spellings of one value are equal
@@ -4787,6 +4793,7 @@ pass	tuples are deconstructed by pattern matching
 pass	two @param sites generate two accessors under one Param effect
 pass	two @param sites with the same name are rejected as a duplicate effect operation
 pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
+pass	two @params seed two NESTED handlers independently
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two BigInts differing only PAST BIT 64 stay distinct as set elements
 pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region
