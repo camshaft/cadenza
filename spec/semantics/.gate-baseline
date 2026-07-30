@@ -776,6 +776,7 @@ pass	a PLAIN @requires relating TWO parameters (< a b) TRAPS when violated — t
 pass	a PLAIN @requires relating TWO parameters (< a b) is enforced — BOTH params stay in scope in the predicate
 pass	a Qty payload with a GENERIC inner type rejects a bare use with no type argument
 pass	a Qty payload's INNER type stays a real type parameter — the unit-arg skip does not over-skip
+pass	a Qty-typed export carries its unit frame across the module boundary into caller algebra
 pass	a Qty-typed variant payload keeps its type non-generic and matches back
 pass	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 pass	a RADIX literal carries the N type suffix
@@ -1896,6 +1897,7 @@ pass	a map literal with keys of two different types is a type error
 pass	a map match over a map literal with a runtime key selects by value, not a const fold
 pass	a map match pattern with a malformed rest names the shape, not an unbound binder (CDZ0201)
 pass	a map mixing integer and float values is a type error
+pass	a map of meter quantities rejects a second-dimension value insert
 pass	a map operation applies to a map passed as a function parameter
 pass	a map pattern as a list-arm element binds its value binder
 pass	a map pattern binds the rest of the map after the named key
@@ -2103,6 +2105,7 @@ pass	a negative width is not honored as a narrow type
 pass	a negative zero in a record field is distinct from positive zero
 pass	a negative zero nested in a tuple is distinct from positive zero
 pass	a negative-denominator Rational sign-normalizes on the set-element path and dedupes its positive-denominator twin
+pass	a negative-exponent unit cancels its base through a multiply to dimensionless
 pass	a negative-power SI prefix converts over Float
 pass	a negative-power SI prefix is an exact rational scale
 pass	a nested @!param is a misplaced module directive (CDZ0602), not a module parameter
@@ -2158,6 +2161,7 @@ pass	a nested tuple-in-tuple float key is a Map key found by a separately-built 
 pass	a nested tuple pattern of the wrong arity is a type error
 pass	a nested tuple-arity mismatch in equality is a type error
 pass	a nested tuple-pattern parameter destructures a runtime tuple
+pass	a nested unit power multiplies exponents — (m^2)^2 is the same dimension as m^4
 pass	a nested unquote Bool pattern does not match a non-boolean operand
 pass	a nested unquote pattern binds an Ast.Name operand's identifier
 pass	a nested unquote pattern matches a Bool sub-AST by shape
@@ -2324,6 +2328,7 @@ pass	a quantity annotation at an in-range narrow width grounds and accepts
 pass	a quantity annotation range-checks the inner width — an out-of-range magnitude is rejected
 pass	a quantity annotation rejects a negative magnitude at an unsigned inner width
 pass	a quantity built from an extracted unit is dimensionally checked
+pass	a quantity captured in a closure env adds against per-call quantities
 pass	a quantity is constructed from a numeric value and a unit
 pass	a quantity over a BigInt magnitude compares by its exact value
 pass	a quantity over a BigInt magnitude runs unbounded arithmetic on the erased handles
@@ -2879,6 +2884,7 @@ pass	a scientific-notation float literal denotes the scaled value
 pass	a scientific-notation literal annotated Rational scales the numerator
 pass	a scrutinee of two to the sixty-fourth-adjacent magnitude misses a zero-based jump table
 pass	a second same-signature closure export shares the one call method
+pass	a seconds quantity is rejected by a meter-typed import at the call site
 pass	a self-applying term is declined at the reduction budget, not hung on
 pass	a self-comparison less-equal still traps on a zero divisor but folds true for a nonzero one
 pass	a self-comparison of a trapping operand still traps (less-than)
@@ -3223,6 +3229,7 @@ pass	a unary constructor is a single-arity function
 pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a unary variant applied to a wrong-type payload is a type error
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
+pass	a unit raised to the ZEROTH power is the dimensionless identity Unit.one
 pass	a user Name variant does not capture the Ast sum's Name variant
 pass	a user function may be named quote — its signature is a binding form, not a quote
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
@@ -5331,3 +5338,4 @@ pass	the same without-extend chain on a LIST-borne record computes
 pass	single row ops on a map-borne record compute — without alone and extend alone
 pass	the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)
 pass	a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value
+pass	unit arithmetic on a map-extracted quantity re-enters the map typed

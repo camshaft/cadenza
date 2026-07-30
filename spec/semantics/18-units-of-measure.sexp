@@ -3109,3 +3109,154 @@
                      (QCons (Qty.of 5 (Unit.base #"meter")) (QNil)))))
             (export main)))
   (call   main (: 3 Int64)) (output (: 8 Int64)))
+
+; --- Qty through program structure (module exports, CHAMP values, closure envs, extract/compute/
+; reinsert) with the dimension checks holding at each boundary; the #44 workaround perimeter
+; (arm-local def + value/re-wrap — the inline resume-slot spelling is the held finding); and the
+; free-abelian-group exponent laws. ---
+
+(case "a Qty-typed export carries its unit frame across the module boundary into caller algebra"
+  (doc    "Units × modules: `double-len : (Qty Int64 meter) -> ...` is exported, and the IMPORTER's
+           algebra composes its result with a fresh meter quantity — the unit frame in the export
+           SIGNATURE must survive the import so the caller-side `+` type-checks as same-unit
+           (2k+1 → 11 at k=5, 1 at k=0). An import that erased the signature to bare Int64 would
+           let a seconds operand through the caller's add (dimension-safety hole); one that
+           re-keyed the unit fails the same-unit check falsely.")
+  (input  (do
+        (import "geo" (double-len))
+        (def (main (: k Int64))
+          (Qty.value (+ (double-len (Qty.of k (Unit.base #"meter")))
+                        (Qty.of 1 (Unit.base #"meter")))))
+        (export main)))
+  (module "geo"
+    (do
+      (def (double-len (: d (Qty Int64 (Unit.base #"meter"))))
+        (+ d d))
+      (export double-len)))
+  (call   main (: 5 Int64)) (output (: 11 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "a seconds quantity is rejected by a meter-typed import at the call site"
+  (doc    "The dimension-reject twin of the Qty-export pin: the importer hands
+           `(Qty Int64 second)` to the meter-typed `double-len` — rejected CDZ0501 AT THE CALL
+           SITE, proving the unit frame crossed the boundary with teeth (an import that erased
+           the signature would accept and double the seconds silently). The cross-module
+           dimension check is what makes Qty-typed libraries safe to publish.")
+  (input  (do
+        (import "geo" (double-len))
+        (def (main (: k Int64))
+          (Qty.value (double-len (Qty.of k (Unit.base #"second")))))
+        (export main)))
+  (module "geo"
+    (do
+      (def (double-len (: d (Qty Int64 (Unit.base #"meter"))))
+        (+ d d))
+      (export double-len)))
+  (error  CDZ0501))
+
+(case "a map of meter quantities rejects a second-dimension value insert"
+  (doc    "The dimension-safety face of the Qty collection cycle: `(Map Int64 (Qty Int64 meter))`
+           refuses a `(Qty Int64 second)` value insert — CDZ0201 naming BOTH Qty types (the unit is
+           part of the VALUE type, so cross-dimension pollution is a compile reject, not a runtime
+           surprise; there is no runtime unit tag to catch it later). The compute-cycle pin above
+           shows same-unit arithmetic flowing through the map; this pins the boundary that makes
+           that flow safe.")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def m (Map.insert Map.empty 1 (Qty.of 30 (Unit.base #"meter"))))
+            (def m2 (Map.insert m 2 (Qty.of k (Unit.base #"second"))))
+            (Map.len m2)))
+        (export main)))
+  (error  CDZ0201))
+
+(case "a quantity captured in a closure env adds against per-call quantities"
+  (doc    "Units × captures: the factory's `(Qty Int64 meter)` param rides the returned closure's
+           ENV (the erased magnitude in a capture cell, the unit in the closure's TYPE frame) and
+           each application adds a fresh same-unit quantity (100+k then 100+1 → 1151 at k=5, 1101
+           at k=0). A capture that stored the Qty as a boxed compound (rep mismatch with the erased
+           scalar) or an env type that dropped the unit (letting a seconds arg unify later) breaks
+           the add or the safety. The closure consumer completes the Qty surface: collections,
+           arithmetic, keys, params, and now envs.")
+  (input  (do
+        (def (mk (: base (Qty Int64 (Unit.base #"meter"))))
+          (fn ((: n Int64)) (Qty.value (+ base (Qty.of n (Unit.base #"meter"))))))
+        (def (main (: k Int64))
+          (do
+            (def f (mk (Qty.of 100 (Unit.base #"meter"))))
+            (+ (* 10 (f k)) (f 1))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 1151 Int64))
+  (call   main (: 0 Int64)) (output (: 1101 Int64)))
+
+(case "unit arithmetic on a map-extracted quantity re-enters the map typed"
+  (doc    "The extract-compute-reinsert cycle for UNIT-typed values (the 18-units collection pins
+           are identity/dedupe): a `(Qty Int64 meter)` comes OUT of a map, ADDS a fresh same-unit
+           quantity (the static unit check crossing the Option/lookup boundary), and the SUM
+           re-enters under a new key — read back via Qty.value (350+2 → 352 at k=5, 302 at k=0).
+           A lookup that erased the value to a BARE Int64 (losing the unit frame) would let a
+           dimension-mixing bug through the later add; the typed round-trip pins that the frame
+           survives the collection.")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def m (Map.insert Map.empty 1 (Qty.of 30 (Unit.base #"meter"))))
+            (def d (Option.expect (Map.lookup m 1) "p"))
+            (def m2 (Map.insert m 2 (+ d (Qty.of k (Unit.base #"meter")))))
+            (+ (* 10 (Qty.value (Option.expect (Map.lookup m2 2) "p")))
+               (Map.len m2))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 352 Int64))
+  (call   main (: 0 Int64)) (output (: 302 Int64)))
+
+; FINDING #44 (breaker): a Qty+Qty arithmetic expression INLINE in a handler's resume slot
+; (either the VALUE slot or the NEXT-STATE slot) is falsely typed as the ERASED inner scalar
+; (Int64) and rejected — while the semantically identical expression bound via an arm-local
+; `def` first type-checks AND runs correctly. False reject + workaround inconsistency.
+;
+;   (handle Acc (Qty.of a meter)
+;     ((step (_u) s (resume s (+ s s))))          ; REJECTS: "next-state of type Int64 but state
+;                                                 ;  type is (Qty Int64 meter)" — but s IS the Qty
+;     ...)
+;   ((step (_u) s (resume (+ s s) s)))            ; REJECTS: "resumes with a value of type Int64
+;                                                 ;  but the operation's result type is (Qty ...)"
+;   ((step (_u) s (do (def t (+ s s)) (resume t s))))  ; ACCEPTS and runs → 42 at a=21
+;
+; The state binder `s` seeded with a Qty seems to lose its Qty type exactly when consumed by an
+; arithmetic op INSIDE the resume-slot expression — the checker types (+ s s) at the erased inner
+; scalar (Int64) and then the slot check compares Int64 vs (Qty ...). Control: (+ q q) over a Qty
+; in a PLAIN fn types fine; (resume s s) pass-through is fine; Qty.value/re-wrap in the slot is fine.
+; Lane guess: v-inference (handler-arm slot typing runs before/without the Qty layer's op typing?)
+; or the effects fold's arm typing. Probed on trunk fc2b91731.
+;
+; Witness 1 — the accepted arm-local form runs (pins the SEMANTICS the inline form must match):
+(case "a nested unit power multiplies exponents — (m^2)^2 is the same dimension as m^4"
+  (doc    "The free-abelian-group laws beyond product/quotient cancellation: NESTED power must MULTIPLY exponents ((Unit.^ (Unit.^ m 2) 2) = m^4 — adding or concatenating gives m^2/m^6 and the same-dimension divide rejects); verified by a dimensionless divide (5).")
+  (input  (do
+            (def m2 (Unit.^ (Unit.base #"meter") 2))
+            (def m4 (Unit.^ m2 2))
+            (def (main (: a Int64))
+              (Qty.value (/ (Qty.of a m4) (Qty.of 2 (Unit.^ (Unit.base #"meter") 4)))))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 5 Int64)))
+
+(case "a unit raised to the ZEROTH power is the dimensionless identity Unit.one"
+  (doc    "u^0 must BE Unit.one — the zero-exponent entry drops from the canonical map (a map keeping meter->0 fails the same-dimension + with a Unit.one quantity).")
+  (input  (do
+            (def m0 (Unit.^ (Unit.base #"meter") 0))
+            (def (main (: a Int64))
+              (+ (Qty.value (Qty.of a m0)) (Qty.value (+ (Qty.of a m0) (Qty.of 1 Unit.one)))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 9 Int64)))
+
+(case "a negative-exponent unit cancels its base through a multiply to dimensionless"
+  (doc    "A negative exponent as a def-bound first-class unit VALUE (hz = s^-1) cancelling through a runtime multiply to dimensionless — the existing neg-exp case is inline and Float-inner; this is def-bound with an Int64 inner.")
+  (input  (do
+            (def hz (Unit.^ (Unit.base #"second") -1))
+            (def (main (: a Int64))
+              (Qty.value (* (Qty.of a hz) (Qty.of 3 (Unit.base #"second")))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 21 Int64)))
