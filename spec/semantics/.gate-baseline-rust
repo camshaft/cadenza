@@ -1705,6 +1705,7 @@ pass	a leading-element list rest pattern in a let binder is refutable and reject
 pass	a leading-rest arm matches an exactly-minimum list with an empty rest
 pass	a left shift by a floating-point count does not silently promote
 pass	a left shift by the bit width or more traps rather than wrapping
+pass	a left shift of a float by a float count rejects on the value operand
 pass	a left shift overflowing a SECOND unusual width (Int 12) is also rejected CDZ0304
 pass	a left shift overflowing an unusual signed width is rejected CDZ0304
 pass	a left shift that overflows Int64 traps like multiplication
@@ -3664,6 +3665,7 @@ pass	bit-field segments pack sub-byte values into one byte
 pass	bit-field segments spanning a rope seam split the stitched 16 bits, not a leaf's
 pass	bitwise AND masks bits
 pass	bitwise AND of an integer and a float does not silently promote
+pass	bitwise AND of two floats rejects — a float is not a bit pattern even without a mix
 pass	bitwise AND with negative one is the operand (identity)
 pass	bitwise AND with zero is zero (annihilator)
 pass	bitwise OR combines bits
@@ -4129,6 +4131,7 @@ pass	modulo by -1 is zero even at the minimum integer
 pass	modulo by zero traps
 pass	modulo gives the remainder
 pass	modulo of an integer and a float does not silently promote
+pass	modulo of two floats rejects — the operator is integer-only, not merely promotion-free
 pass	multi-argument application is curried application
 pass	multi-export Set-result closures — the singleton one
 pass	multi-export Set-result closures — three sharing one call
@@ -4287,6 +4290,7 @@ pass	raising a COMPUTED (derived) quantity to a power squares its magnitude and 
 pass	raising a quantity to a compile-time power composes the unit and the magnitude
 pass	raising a runtime computed quantity to a power squares the runtime magnitude
 pass	re-inserting a LIST row into a map replaces that row and leaves the original map's row intact
+pass	re-interning a symbol's recovered string yields an equal symbol, and the string content-matches
 pass	re-wrapping the intermediate with Qty.of makes a two-step conversion well-formed
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	read classifies a lone punctuation token as an Ast.Name and it round-trips

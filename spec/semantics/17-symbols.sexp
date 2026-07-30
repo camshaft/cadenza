@@ -828,3 +828,20 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 11 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+; --- The re-intern identity loop over a runtime rope. ---
+
+(case "re-interning a symbol's recovered string yields an equal symbol, and the string content-matches"
+  (doc    "Closes the re-intern LOOP on a runtime rope (the :548 round-trip observes byte-len only; the const idempotence pin :61 never crosses to-string): (= (Symbol.of (Symbol.to-string sym)) sym) — the full of→to-string→of chain lands on an EQUAL symbol. A to-string that copied with drift, or an intern keyed on rope chunk shape rather than content, breaks the loop while both existing pins stay green.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def s (String.concat "sym-" (if (= k 1) "a" "b")))
+                (def sym (Symbol.of s))
+                (def back (Symbol.to-string sym))
+                (+ (* 100 (if (= back s) 1 0))
+                   (+ (* 10 (if (= (Symbol.of back) sym) 1 0))
+                      (String.byte-len back)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 115 Int64)))

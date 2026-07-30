@@ -7740,3 +7740,22 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 1 Int64))
   (call   main (: 2 Int64)) (output (: 1 Int64)))
+
+; --- The integer-only operators on ALL-float operands: the no-promotion pins all use a MIXED
+; pair, so they cannot catch a change that blesses float %/&/<< outright. These pin the
+; integer-operand requirement itself; / stays the float-defined control.
+
+(case "modulo of two floats rejects — the operator is integer-only, not merely promotion-free"
+  (doc    "The ALL-float face of the integer-only operators (every no-promotion pin above uses a MIXED Int64/Float64 pair, so a change blessing fmod-style float modulo would slip past them — no mix exists to trigger the no-promotion reject). (% 5.0 2.0) rejects CDZ0301 on the integer-operand requirement itself.")
+  (input  (% 5.0 2.0))
+  (error  CDZ0301))
+
+(case "bitwise AND of two floats rejects — a float is not a bit pattern even without a mix"
+  (doc    "The bitwise sibling: (& 1.0 2.0) has no type MIX, so only the integer-only rule rejects it — a float has no meaningful bits to AND whatever the other operand is.")
+  (input  (& 1.0 2.0))
+  (error  CDZ0301))
+
+(case "a left shift of a float by a float count rejects on the value operand"
+  (doc    "The shift sibling: (<< 1.0 2.0) — both operands float, rejected on the VALUE operand's integer requirement. Control: (/ 5.0 2.0) compiles (division IS defined on floats), so these three pin exactly the integer-only set.")
+  (input  (<< 1.0 2.0))
+  (error  CDZ0301))
