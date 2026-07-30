@@ -74,6 +74,46 @@ NOT change `infer::newtype_underlying`. It has to be a **Rust-backend-local** de
 > un-erased ON THE RUST BACKEND ONLY: it emits a real Box-indirected nominal type and its
 > construct/match/projection go through that type, while wasm keeps erasing it.
 
+## ⛔ BLOCKER (2026-07-30, second prototype): the erasure is in SHARED LOWERING, cited to a spec MUST
+
+The "rust-backend-local un-erasure" premise above is **WRONG** — re-examining the construct/match
+path proved the newtype tag is erased in **shared lowering** (`lower.rs`), NOT in the backend:
+
+- A `(Mk n)` destructure lowers its `Payload` step away via `erase_nominal_steps` (lower.rs:388): the
+  step "is a runtime no-op (the box is erased), so it emits no `sum-payload` — DROP it from the path
+  the backend walks. … an empty path reads the scrutinee value directly (`(Mk n)` binds `n` to the
+  whole erased value)." The construct side likewise lowers `(Mk (Some …))` to just the inner
+  `(Some …)` — no `Core::SumNew` for the `Mk` tag.
+- This is cited to a spec **MUST**:
+  `type-system.md#a-nominal-value-is-convertible-to-its-underlying-structural-value` — "stripping a
+  nominal's name tag … MUST be a compile-time reinterpretation and not a copy or conversion", and
+  "the stripped structural value MUST be the same value the nominal already is at runtime."
+
+So by the time ANY backend sees the core, the `Mk` construct/match/payload have already vanished.
+The B1 prototype confirmed this: with the type un-erased, construct emitted the bare inner
+`sm(Option::Some(…))` (not `sm(Lst::Mk(Box::new(…)))`) and match read `Option::Some(pay)` against an
+`Lst`-typed scrutinee → E0308. The backend has no `Mk` node left to route through a box.
+
+**Consequence — there is NO clean backend-local fix.** Two real options, each with a cost:
+
+1. **Rust backend RE-SYNTHESIZES the box at the nominal boundary.** Every `SumPayload` (empty path
+   over a recursive nominal) wraps a deref, every value of recursive-nominal type at a
+   construct/return/arg boundary wraps `Lst::Mk(Box::new(..))`, and the type flows so rust and the
+   erased core agree. This is invasive (touches the shared `SumPayload`/`SumNew`/projection emit with
+   nominal-awareness the lowering deliberately removed) and fights the "backend needs no nominal
+   awareness" design of `erase_nominal_steps`. High risk of wasm drift and subtle boundary bugs.
+2. **Accept the rust decline as a permanent floor.** A recursive newtype is a rare shape (two corpus
+   cases); the diagnostic already names the gap precisely (`fc4eb13a1`). Rust stays a strict subset
+   here; wasm remains the backend for recursive-newtype programs. Zero risk, zero code.
+
+The earlier increment plan (B1→B4, "one coherent slice") is **not viable as written** — it assumed
+the backend still had the `Mk` node. Do NOT implement it.
+
+**DECISION NEEDED (concierge ask sent):** is a recursive newtype worth option-1's invasive
+re-synthesis (fighting a spec-MUST erasure the whole nominal model is built on), or is option-2 (keep
+the clean decline as the floor) the right call? Leaning **option-2**: the erasure is load-bearing and
+spec-mandated, the shape is rare, and the decline is already honest — option-1's risk/reward is poor.
+
 ## B1 PROTOTYPE FINDINGS (2026-07-30, validated then reverted)
 
 A throwaway prototype of the detector + `rust_type` naming + `emit_one_enum` un-skip +
