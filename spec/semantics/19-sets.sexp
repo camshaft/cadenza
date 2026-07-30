@@ -2887,3 +2887,19 @@
         (export main)))
   (call   main (: 0.0 Float32)) (output (: 1 Int64))
   (call   main (: 2.0 Float32)) (output (: 2 Int64)))
+
+; --- The drained-empty canonical rep. ---
+
+(case "a DRAINED set compares equal to the literal empty set — removal restores the canonical empty rep"
+  (doc    "The 1000-drain pin checks LEN only; this pins the drained set VALUE-equal to the literal empty (a root keeping an empty-node skeleton after removal differs structurally from the canonical empty singleton — node-shape hash/eq splits them). Both empties enumerate to 0.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def es (Set.of (list)))
+                (def s1 (Set.remove (Set.of (list k)) k))
+                (+ (* 100 (List.len (Set.to-list es)))
+                   (+ (* 10 (List.len (Set.to-list s1)))
+                      (if (= es s1) 1 0)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64)))

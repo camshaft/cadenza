@@ -4147,3 +4147,21 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 7 Int64)))
+
+; --- Ordering through a long multi-chunk common prefix. ---
+
+(case "string ordering walks a 400-byte MULTI-CHUNK common prefix to the deciding final byte"
+  (doc    "The :940 ordering pin compares 5-byte single-chunk strings; the deep-rope pins cover EQ only. This orders through a 400-byte 200-chunk common prefix with the deciding byte LAST — the walk crosses ~200 seams in lockstep on BOTH operands before the difference (a seam-skipping or chunk-count-comparing walk decides early/wrong). < and compare agree; eq control.")
+  (input  (do
+            (def (rep (: s String) (: n Int64)) (if (< n 1) s (rep (String.concat s "ab") (- n 1))))
+            (def (main (: k Int64))
+              (do
+                (def base (rep "" 200))
+                (def s1 (String.concat base (if (= k 1) "x" "q")))
+                (def s2 (String.concat base "y"))
+                (+ (* 100 (if (< s1 s2) 1 0))
+                   (+ (* 10 (match (compare s1 s2) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                      (if (= s1 s2) 1 0)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 110 Int64)))
