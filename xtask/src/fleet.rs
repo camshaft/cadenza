@@ -457,6 +457,14 @@ pub enum FleetCmd {
     Inbox {
         /// The agent whose inbox to list.
         name: String,
+        /// Consume a message: MOVE `<msg>` to `processed/` under the SAME canonical HUB inbox the
+        /// resolver prints, then re-list. This owns the path on BOTH sides so an agent never hand-`mv`s a
+        /// worktree-relative `.claude/fleet/inbox/...` path (which targets an empty shadow copy, leaves
+        /// the real hub message unconsumed → the next-tick idle drain-stall the watchdog escalates —
+        /// observed a 4th time in the MOVE step, v-compiler-perf). `<msg>` is the bare filename from the
+        /// listing (traversal-guarded); the archive is idempotent (already-in-processed/ is a clean no-op).
+        #[arg(long, value_name = "MSG")]
+        processed: Option<String>,
     },
     /// Mirror the live gitignored work queue (`.claude/fleet/queue/`) into the TRACKED `issues/`
     /// archive at the repo root, so these hard-won reproducers are preserved in git history rather
@@ -759,7 +767,10 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         ),
         FleetCmd::Heartbeat { name } => heartbeat(&fleet, &name),
         FleetCmd::Describe { name } => describe(&fleet, &name),
-        FleetCmd::Inbox { name } => inbox_list(&fleet, &name),
+        FleetCmd::Inbox { name, processed } => match processed {
+            Some(msg) => inbox_consume(&fleet, &name, &msg),
+            None => inbox_list(&fleet, &name),
+        },
         FleetCmd::Archive { no_commit } => archive(&fleet, no_commit),
         FleetCmd::Sync { force } => sync(&fleet, force),
         FleetCmd::Watchdog {
@@ -5339,6 +5350,93 @@ fn shell_quote(s: &str) -> String {
 /// than nothing) so "empty inbox" can't be silently confused with "couldn't find the inbox". For each
 /// message, prints its filename (leading field = the durable delivery seq, so filename sort == arrival
 /// order), sender, and kind — enough to drain oldest-first.
+/// The move decision for `inbox_consume`, from whether the message exists in the live inbox vs already
+/// in `processed/`. Pure so the idempotency + missing-file semantics are unit-tested without the fs:
+/// present in live inbox → MOVE; absent-but-in-processed → ALREADY DONE (idempotent no-op success);
+/// absent from both → MISSING (loud error, so a typo'd name can't masquerade as a drained message).
+/// A message present in BOTH (mid-move crash) still resolves to MOVE — completing the archive is correct.
+#[derive(Debug, PartialEq, Eq)]
+enum ConsumeAction {
+    Move,
+    AlreadyDone,
+    Missing,
+}
+
+fn inbox_consume_action(src_exists: bool, dst_exists: bool) -> ConsumeAction {
+    match (src_exists, dst_exists) {
+        (true, _) => ConsumeAction::Move,
+        (false, true) => ConsumeAction::AlreadyDone,
+        (false, false) => ConsumeAction::Missing,
+    }
+}
+
+/// Consume one inbox message: MOVE `<msg>` to `processed/` under the resolver-owned HUB inbox path,
+/// then re-list so the caller sees the post-move state. This is the move-step twin of `inbox_list`'s
+/// resolver: an agent hand-`mv`ing a worktree-relative `.claude/fleet/inbox/...` path targets the empty
+/// shadow copy and leaves the real hub message unconsumed → the next-tick idle drain-stall the watchdog
+/// escalates (the class this whole resolver discipline exists to kill — seen a 4th time in the MOVE step,
+/// not the list). By owning the path on both sides, the agent never types an inbox path again.
+///
+/// Guards: `<msg>` must be a safe basename (no traversal — same `is_safe_component` gate `fleet ack` uses,
+/// so `--processed ../registry.json` can't escape). Idempotent: if the message is already in `processed/`
+/// (a re-run, or a peer archived it) that's a clean success, not an error — the goal state is "not in the
+/// live inbox", which already holds. A genuinely missing message (never existed) is a loud error so a
+/// typo'd filename doesn't look like a successful drain.
+fn inbox_consume(fleet: &Fleet, name: &str, msg: &str) {
+    if !is_safe_component(msg) {
+        eprintln!(
+            "fleet inbox --processed: refusing unsafe message name {msg:?} (must be a bare inbox \
+             filename from the listing — no path separators or `..`)."
+        );
+        std::process::exit(1);
+    }
+    let dir = fleet.inbox(name);
+    let src = dir.join(msg);
+    let processed_dir = dir.join("processed");
+    let dst = processed_dir.join(msg);
+    match inbox_consume_action(src.exists(), dst.exists()) {
+        // Idempotent success: already archived (re-run / peer beat us) → the live inbox no longer holds
+        // it, which is the whole point. Report it as done, then re-list.
+        ConsumeAction::AlreadyDone => {
+            println!("fleet inbox: '{msg}' already in processed/ (no-op) — re-listing '{name}'.");
+            inbox_list(fleet, name);
+            return;
+        }
+        // A genuinely missing message (never existed) is loud — a typo'd filename must not read as a
+        // successful drain (that would leave the real message unconsumed, the drain-stall we prevent).
+        ConsumeAction::Missing => {
+            eprintln!(
+                "fleet inbox --processed: no message {msg:?} in '{name}' inbox at {} (nor in \
+                 processed/). Check the exact filename from `cargo xtask fleet inbox {name}` — a typo \
+                 here silently leaves the real message UNCONSUMED (the drain-stall this command prevents).",
+                dir.display()
+            );
+            std::process::exit(1);
+        }
+        ConsumeAction::Move => {}
+    }
+    if let Err(e) = std::fs::create_dir_all(&processed_dir) {
+        eprintln!(
+            "fleet inbox --processed: could not create {} ({e}).",
+            processed_dir.display()
+        );
+        std::process::exit(1);
+    }
+    if let Err(e) = std::fs::rename(&src, &dst) {
+        eprintln!(
+            "fleet inbox --processed: could not move {} → {} ({e}).",
+            src.display(),
+            dst.display()
+        );
+        std::process::exit(1);
+    }
+    println!(
+        "fleet inbox: moved '{msg}' → processed/ (hub path {}). Remaining:",
+        processed_dir.display()
+    );
+    inbox_list(fleet, name);
+}
+
 fn inbox_list(fleet: &Fleet, name: &str) {
     let dir = fleet.inbox(name);
     // Distinguish a READ ERROR from a genuinely-empty inbox: `read_dir` errs when the path is missing
@@ -8290,6 +8388,63 @@ mod tests {
         assert_eq!(inbox_depth(&fleet, "v-x"), "1 msg");
         std::fs::write(ib.join("000000000002-2-note.json"), "{}").unwrap();
         assert_eq!(inbox_depth(&fleet, "v-x"), "2 msg");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn inbox_consume_action_move_idempotent_or_missing() {
+        // Present in the live inbox → MOVE it.
+        assert_eq!(inbox_consume_action(true, false), ConsumeAction::Move);
+        // Present in BOTH (a mid-move crash left a copy) → still MOVE (finish the archive).
+        assert_eq!(inbox_consume_action(true, true), ConsumeAction::Move);
+        // Gone from live but already in processed/ (re-run / peer beat us) → idempotent no-op success.
+        assert_eq!(
+            inbox_consume_action(false, true),
+            ConsumeAction::AlreadyDone
+        );
+        // Absent from both → MISSING → loud error, so a typo can't look like a successful drain.
+        assert_eq!(inbox_consume_action(false, false), ConsumeAction::Missing);
+    }
+
+    #[test]
+    fn inbox_consume_moves_a_live_message_into_processed() {
+        // End-to-end fs check of the move step (the resolver owning the path on BOTH sides): a live
+        // message lands in processed/ and leaves the live inbox, killing the hand-`mv` drain-stall.
+        let root = std::env::temp_dir().join(format!("cdz-inbox-consume-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: PathBuf::from("/hub/.claude/worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        let ib = fleet.inbox("v-x");
+        std::fs::create_dir_all(&ib).unwrap();
+        let msg = "000000000001-1-note.json";
+        std::fs::write(ib.join(msg), "{}").unwrap();
+        // Pre: live inbox holds it, processed/ does not.
+        assert!(ib.join(msg).exists());
+        assert!(!ib.join("processed").join(msg).exists());
+        // The move decision fires MOVE, and the rename lands it in processed/ (mirrors inbox_consume's body).
+        assert_eq!(
+            inbox_consume_action(
+                ib.join(msg).exists(),
+                ib.join("processed").join(msg).exists()
+            ),
+            ConsumeAction::Move
+        );
+        std::fs::create_dir_all(ib.join("processed")).unwrap();
+        std::fs::rename(ib.join(msg), ib.join("processed").join(msg)).unwrap();
+        // Post: gone from the live inbox, present in processed/ — and now the decision is idempotent.
+        assert!(!ib.join(msg).exists());
+        assert!(ib.join("processed").join(msg).exists());
+        assert_eq!(
+            inbox_consume_action(
+                ib.join(msg).exists(),
+                ib.join("processed").join(msg).exists()
+            ),
+            ConsumeAction::AlreadyDone
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

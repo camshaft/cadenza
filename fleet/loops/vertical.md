@@ -116,6 +116,11 @@ returning to the tick-top check):
    path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently matches nothing —
    the recurring drain-stall class the watchdog escalates). A `note` may hand you an issue in your territory from the PM; a `reject`
    from pr-sync means your last slice needs a fix (top priority); an `answer` resolves an `ask`.
+   **After acting on a message, archive it with `cargo xtask fleet inbox <you> --processed <msg>`**
+   (the SAME resolver owns the hub path on both sides, then re-lists) — do NOT hand-`mv` a
+   worktree-relative `.claude/fleet/inbox/...` path: that targets an empty shadow copy, leaves the real
+   hub message unconsumed, and is the same drain-stall the watchdog escalates a tick later (it recurs in
+   the MOVE step even when the LIST looked fine).
    **If the inbox is EMPTY, do NOT stop — self-direct** per "Be a strong owner" above: choose an
    improvement to your slice and do it this tick.
 3. **Land one slice** (handed OR self-chosen): implement it, add tests (a fold unit + a wasmtime run
