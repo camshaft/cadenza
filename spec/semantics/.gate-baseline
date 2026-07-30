@@ -108,6 +108,7 @@ pass	SUBSET-SUM COUNT folds each element into a fresh ways-table so no element i
 pass	SYMMETRIC difference built two ways from primitives agrees and dedups the overlap
 pass	Set.intersection unifies an arithmetic-produced rational with its constructor-built normalized twin
 pass	Set.of over Rational elements dedupes a normalized-equal literal and to-list enumerates ascending
+pass	Set.to-list over Float32 elements enumerates by canonical byte order at f32 width
 pass	Set.to-list over Rational elements enumerates ascending by value, not by numerator/denominator pair
 pass	Set.to-list over STRING elements orders by content with a rope participating
 pass	Set.to-list over symbols enumerates in content-byte order regardless of insertion order
@@ -819,6 +820,7 @@ pass	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outs
 pass	a SELF-RECURSIVE named def passed as a value is applied twice through the parameter
 pass	a SET as a Map key hits by ORDER-INDEPENDENT inner-set content
 pass	a SET as a set element hashes by content: three build orders, one element
+pass	a SET of SETS dedups elements by set CONTENT — insertion-order twins collapse
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
 pass	a STALLED counter makes all Set.of perform results collide to a singleton
@@ -4525,6 +4527,7 @@ pass	self-operand division is NOT folded to one — it still traps at zero
 pass	self-operand subtraction and xor are zero, and-or are the operand, on a runtime value
 pass	sequenced memoize helpers with a local let thread the Map-state out-state (the memo-spine shape)
 pass	set algebra descends into FLOAT-leaf tuple elements
+pass	set algebra unifies a rope String element with its flat twin across operands
 pass	set equality is independent of the order elements are written
 pass	set union is associative on generated inputs (the order merges are grouped does not matter)
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
