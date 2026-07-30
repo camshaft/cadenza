@@ -74,12 +74,58 @@ NOT change `infer::newtype_underlying`. It has to be a **Rust-backend-local** de
 > un-erased ON THE RUST BACKEND ONLY: it emits a real Box-indirected nominal type and its
 > construct/match/projection go through that type, while wasm keeps erasing it.
 
-## Proposed increments (each independently gate-able)
+## B1 PROTOTYPE FINDINGS (2026-07-30, validated then reverted)
 
-**Detector (shared helper, no behavior change).** A `nominal_is_recursive(db, decl)` predicate:
-`inner` (from `newtype_inner`, or re-derived) transitively reaches `decl` via the sum-reference
-graph — reuse `reaches_decl`/`mentions_decl` already in enums.rs. This is the single gate every
-increment below keys on. Land it with a unit test first (pure addition).
+A throwaway prototype of the detector + `rust_type` naming + `emit_one_enum` un-skip +
+`sum_representable` flip was built and probed against the `Lst` corpus case, then reverted (the tree
+stays clean until the full slice lands). What it PROVED:
+
+- **The type emission is exactly right.** With the detector wired, the backend emits
+  `pub enum Lst { Mk(::std::boxed::Box<Option<(i64, Lst)>>) }` — the intended Box-indirected
+  one-variant enum, derives and all. So B1's `rust_type`-names-the-nominal +
+  `emit_one_enum`-emits-the-boxed-enum is sound and small.
+  - `rust_type` detects it **db-FREE**: `mentions_decl(inner, *decl)` (made `pub(super)`) walks
+    `inner` for the self-reference, so the `Ty::Nominal` arm stays a pure `Ty`→`String` map. Add the
+    recursive arm BEFORE the erase-through arm.
+  - `emit_one_enum`: change the newtype skip to
+    `if db.newtype_inner.contains_key(&decl.occ) && !nominal_is_recursive(db, decl.occ)` — a recursive
+    newtype falls through to the ordinary enum emission, where `variant_payloads_mention` already
+    drives the `::std::boxed::Box<…>` boxing of the recursive `Mk` payload.
+  - `sum_representable`'s `Ty::Nominal` arm must stop declining a recursive newtype: when
+    `mentions_decl(inner, decl)`, return `nominal_is_recursive(db, decl) && args…representable` and
+    do NOT recurse into `inner` (the μ back-edge loops; the box makes it finite, as for a sum).
+
+- **B2/B3 is the real remaining work — construct + match still ERASE the newtype.** With B1 alone
+  the case now fails to COMPILE (E0308) instead of declining, because the construct/match sites still
+  treat `Lst` as erased:
+  - construct emits `sm(Option::Some(( … )))` — the bare inner `Option<(i64, Lst)>`, NOT
+    `sm(Lst::Mk(::std::boxed::Box::new(Option::Some(…))))`. It must wrap the `Mk` ctor + box.
+  - match emits `match __ms { Option::Some(__pay) => … }` against an `Lst`-typed scrutinee — it must
+    first unwrap `Lst::Mk(__pay)` and deref the box, THEN match the inner `Option`.
+  These sites currently consult `newtype_inner` to SKIP the `Mk` tag (the erasure). For a recursive
+  newtype they must NOT skip — they must go through the same `SumNew`(box)/`SumPayload`(deref) path a
+  recursive sum uses. That is the crux of B2/B3 and why B1 cannot land alone (it would regress the
+  clean decline into an uncompilable emit).
+
+- **CONCLUSION: land B1+B2+B3 as ONE coherent slice**, not B1 alone. The slice = detector +
+  `rust_type` arm + `emit_one_enum` un-skip + `sum_representable` flip + the construct/match
+  un-erasure for a recursive newtype (route through the sum box/deref instead of the erasure skip).
+  Then the 2-case×2-baseline `todo`→`pass` flip. The construct/match un-erasure is the part that
+  needs care: find where `SumNew`/`SumPayload`/the projection consult `newtype_inner` and gate the
+  skip on `!nominal_is_recursive`.
+
+## Proposed increments (land as ONE slice — see B1 findings above)
+
+The prototype showed B1 cannot land alone (it regresses the clean decline into an E0308 emit). The
+four faces below are ONE merge-request; each bullet is a hunk of it, not a separate landing.
+
+**Detector (shared helper).** A `nominal_is_recursive(db, decl_occ)` predicate = `decl_occ` is in
+`db.newtype_inner` (an erasable newtype) AND its sole variant's payload reaches the decl
+(`variant_payloads_mention(db, &variants[0], decl)` → `reaches_decl`, already in enums.rs). Place it
+`pub(super)` next to `variant_is_recursive`. Confirmed exact: a scalar newtype (`(type UserId (Mk
+Int64))`) has no reach so stays erased; a multi-variant recursive SUM is not in `newtype_inner` so is
+untouched (its enum path already boxes); a mutual-recursion newtype cycle is caught by `reaches_decl`.
+It is dead code until the emission hunks below use it — so it lands WITH them, not before.
 
 **B1 — type emission.** In `types::rust_type`, add a `Ty::Nominal` arm BEFORE the erase-through
 (types.rs:112): when `nominal_is_recursive`, render the nominal's own sanitized name (a real Rust
