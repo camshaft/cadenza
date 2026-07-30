@@ -1192,6 +1192,8 @@ pass	a constant-failure `?` short-circuit ELIDES an earlier trapping let-init wh
 pass	a constant-index String.at result compares equal to a literal by content
 pass	a constant-index String.at result compares unequal to a different literal
 pass	a constant-returning closure threads through a recursive-generic HOF
+pass	a constant-try helper folds and its result feeds a handler arm's resume
+todo	a constant-try helper that fails feeds the None arm's fallback into resume
 pass	a constructed Ast.Bool leaf drives an evaluated conditional
 pass	a constructor CHOSEN by matching one sum is applied to build another
 pass	a constructor STORED in a tuple is extracted and applied as a first-class closure
@@ -1661,6 +1663,7 @@ pass	a handle seeded from a runtime caller argument advances from that seed
 pass	a handler arm forwarding an effect its enclosing scope does not hold is rejected
 pass	a handler arm forwards an effect its enclosing scope DOES hold and runs
 pass	a handler arm interposes on another intra-program effect and forwards
+pass	a handler arm resumes with a CLOSURE (in a tuple) capturing the op param and state
 pass	a handler arm that resumes NON-tail folds a perform in a match arm body by handler distribution
 pass	a handler arm that resumes NON-tail folds a perform in a short-circuit connective right operand
 pass	a handler arm that resumes NON-tail folds a perform in an if branch by handler distribution
@@ -2824,6 +2827,7 @@ pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
 pass	a runtime-magnitude quotient divides the erased magnitudes
 pass	a runtime-magnitude same-unit difference subtracts the erased magnitudes
 pass	a runtime-magnitude same-unit sum adds the erased magnitudes
+todo	a runtime-operand try as a list element declines pending brick 3b
 pass	a runtime-parameter start and length are bounds-checked at run time, yielding Some or None
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 pass	a runtime-selected branch with a runtime-divisor div-by-zero traps only when taken
@@ -3302,8 +3306,10 @@ pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	an EMPTY splice mid-list closes the gap, a singleton fills it, and two splices around a literal both land
 pass	an UNANNOTATED generic compose instantiates at a scalar arrow AND a String arrow in one program
+pass	an interposing handler TRANSFORMS the host response before resuming (offset adapter)
 pass	bit-field segments spanning a rope seam split the stitched 16 bits, not a leaf's
 pass	bitwise AND of two floats rejects — a float is not a bit pattern even without a mix
+pass	constant-succeeding tries as LIST-literal elements unwrap in place and the list builds
 pass	dropping a list pushed FROM a survivor must not free the shared spine
 pass	dropping a map derived by persistent insert must not free nodes shared with the survivor
 pass	dropping a rope built OVER a survivor must not free the shared child node
