@@ -85,9 +85,10 @@ path proved the newtype tag is erased in **shared lowering** (`lower.rs`), NOT i
   whole erased value)." The construct side likewise lowers `(Mk (Some …))` to just the inner
   `(Some …)` — no `Core::SumNew` for the `Mk` tag.
 - This is cited to a spec **MUST**:
-  `type-system.md#a-nominal-value-is-convertible-to-its-underlying-structural-value` — "stripping a
-  nominal's name tag … MUST be a compile-time reinterpretation and not a copy or conversion", and
-  "the stripped structural value MUST be the same value the nominal already is at runtime."
+  `spec/capabilities/type-system.md#a-nominal-value-is-convertible-to-its-underlying-structural-value`
+  — "stripping a nominal's name tag … MUST be a compile-time reinterpretation and not a copy or
+  conversion", and "the stripped structural value MUST be the same value the nominal already is at
+  runtime." (Same full path lower.rs:384/386's duvet citation uses.)
 
 So by the time ANY backend sees the core, the `Mk` construct/match/payload have already vanished.
 The B1 prototype confirmed this: with the type un-erased, construct emitted the bare inner
