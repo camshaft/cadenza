@@ -1379,3 +1379,70 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 907 Int64)))
+
+; --- Open sums through program structure: a three-module concrete chain and a generic tuple
+; slot; Record.extend widening a map-extracted record into a new map. ---
+
+(case "an open-sum type crosses THREE modules concretely and matches at every stop"
+  (doc    "Open-tail sum × the module chain: `types` declares the OPEN `(A Int64) (B Int64) .. r`
+           and exports it CONCRETELY (`(export (. Ev *))` — the bare handle alone would be abstract,
+           CDZ0214 on construction); `base` imports it and matches with an open-tail arm; `mid`
+           re-exports the classifier; the ENTRY imports BOTH the type (to construct) and the
+           chained classifier (to consume) — A routes ·10, B routes bare (50 at k=5, 7 at k=0).
+           The open row's tail var survives two type-import hops and a re-export.")
+  (input  (do
+        (import "types" (Ev))
+        (import "mid" (classify))
+        (def (main (: k Int64))
+          (classify (if (> k 0) (Ev.A k) (Ev.B 7))))
+        (export main)))
+  (module "types" (do (type Ev (A Int64) (B Int64) .. r) (export Ev) (export (. Ev *))))
+  (module "base"
+    (do
+      (import "types" (Ev))
+      (def (classify v)
+        (match v ((A n) (* n 10)) ((B n) n) (_ -1)))
+      (export classify)))
+  (module "mid" (do (import "base" (classify)) (export classify)))
+  (call   main (: 5 Int64)) (output (: 50 Int64))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
+
+(case "an open-sum value rides a generic tuple and matches from both slots"
+  (doc    "Open-tail sums × the generic container family: `(Ev.A k)` — a value of the OPEN type
+           `(A Int64) (B Int64) .. r` — duplicates through the unannotated `dup`, and BOTH tuple
+           projections match it (slot 0 by the named arm ·10, slot 1 by a fuller arm set ·2 →
+           12k: 60 at k=5, 0 at k=0). The generic instantiates at an open-row type — a
+           monomorphizer that closed the row at instantiation (dropping the tail var) would
+           reject the open-tail `_` arm; one that boxed the tagged value as a scalar breaks a
+           projection.")
+  (input  (do
+        (type Ev (A Int64) (B Int64) .. r)
+        (def (dup x) (tuple x x))
+        (def (main (: k Int64))
+          (do
+            (def p (dup (Ev.A k)))
+            (+ (* 10 (match (. p 0) ((A n) n) (_ -1)))
+               (match (. p 1) ((A n) (* n 2)) ((B n) n) (_ -3)))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 60 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "Record.extend widens a map-extracted record and the wide row enters a new map"
+  (doc    "The EXTEND (widening) leg completing the row-op extraction family: the record comes out
+           of `{1 -> (x 10)}`, `(Record.extend r #\"y\" k)` ADDS the y field (row widened), the
+           wide record keys a NEW map, and the ORIGINAL map's narrow record is untouched
+           (100·y-from-wide + x-from-original: 510 at k=5, 10 at k=0). An extend that wrote the new
+           field over the shared narrow layout (or re-typed the original's slot) breaks a read —
+           with the without-leg pin this closes the widen/narrow round-trip through collections.")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def m (Map.insert Map.empty 1 (record (x 10))))
+            (def r (Option.expect (Map.lookup m 1) "p"))
+            (def wide (Record.extend r #"y" k))
+            (def m2 (Map.insert Map.empty 1 wide))
+            (+ (* 100 (. (Option.expect (Map.lookup m2 1) "p") y))
+               (. (Option.expect (Map.lookup m 1) "p") x))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 510 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64)))
