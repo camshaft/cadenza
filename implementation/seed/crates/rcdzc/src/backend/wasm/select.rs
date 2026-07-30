@@ -10058,7 +10058,7 @@ fn emit(
             // folds and is never kept (H2c) — so every heap binding here is an owned allocation whose
             // reference is released once its scope ends, or transferred out if it escapes. (A scalar
             // binding owns no heap cell → no drop.)
-            let mut heap_bindings: Vec<(StructId, u32)> = Vec::new();
+            let mut heap_bindings: Vec<(StructId, u32, StructId)> = Vec::new();
             for (binder, value) in &bindings {
                 let ty = type_of(db, *binder);
                 // The binding's machine value type — read off its solved type (the value's type). A
@@ -10109,7 +10109,7 @@ fn emit(
                 )?;
                 out.push(Lir::LocalSet(slot));
                 if is_heap_type(&ty) {
-                    heap_bindings.push((*binder, slot));
+                    heap_bindings.push((*binder, slot, *value));
                 }
                 // DEBUG (D3 locals): a SCALAR binding with a source name lives in this slot for its whole
                 // scope — record it so a `DW_TAG_variable` DIE lets a debugger `print` the local. (A heap
@@ -10147,11 +10147,33 @@ fn emit(
             // multi-consume binding is never double-freed. `dup_sites` is cloned out of `out` so the drop's
             // `out.push` can borrow `out` mutably in the same loop.
             let dup_sites = out.dup_sites.clone();
-            for &(binder, slot) in &heap_bindings {
-                if !binding_escapes_dup_aware(db, body, binder, false, Some(&dup_sites)) {
-                    out.push(Lir::LocalGet(slot));
-                    out.push(Lir::CallImport(OP_DROP));
+            for &(binder, slot, value) in &heap_bindings {
+                if binding_escapes_dup_aware(db, body, binder, false, Some(&dup_sites)) {
+                    continue;
                 }
+                // BORROWED-OPERAND materialize (breaker #45 witness-2 UAF): a self-keyed materialize
+                // binding `(record, record)` (the row-op operand `materialize_row_op_operand` emits) whose
+                // bound VALUE is a BORROW — a `Core::SumPayload` from a `(Slot.Filled r)` match arm, a
+                // `Param`, or a kept `LocalRef` — is NOT owned here; the scrutinee/owner reclaims it. Dropping
+                // it (`local.get slot; drop`) frees a handle the owner still references → the shared record is
+                // freed while a live borrow (a re-projection `(. r qty)` off the still-live `Some`/scrutinee)
+                // reads it → UAF (silent wrong value / oob trap). The general "every kept heap binding is an
+                // owned allocation" assumption (H2c) holds for a genuine `let`-bound producer, but a row-op
+                // materialize binds its OPERAND, which may be a borrow. Gate the drop on ownership: only a
+                // genuinely OWNED value (a constructor / call / producer result — the W1 owned-map-lookup
+                // path, which STILL drops + relies on the field-dup) is reclaimed here; a borrowed operand is
+                // materialized-once for the eval-once benefit but left for its owner to reclaim. Non-self-keyed
+                // bindings are unaffected (a normal `let` binds a fresh value, always Owned or escaping).
+                if binder == value
+                    && !matches!(
+                        heap_operand_ownership(db, value),
+                        Ok(HandleOwnership::Owned)
+                    )
+                {
+                    continue;
+                }
+                out.push(Lir::LocalGet(slot));
+                out.push(Lir::CallImport(OP_DROP));
             }
             Ok(())
         }

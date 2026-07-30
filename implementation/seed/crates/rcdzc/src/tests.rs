@@ -19642,6 +19642,57 @@ mod recursion {
     }
 
     #[test]
+    fn a_row_op_over_a_borrowed_sum_payload_record_does_not_drop_the_borrowed_operand() {
+        // ⚠ USE-AFTER-FREE regression (breaker #45 WITNESS-2, the sum-payload-rewrap face — DISTINCT from
+        // witness 1's owned-map-lookup operand): a row op over a record `r` bound by a `(Slot.Filled r)`
+        // MATCH ARM — where `r` is a `Core::SumPayload` BORROW of the scrutinee — had its materialize-`Let`
+        // spuriously DROP `r` (an unconditional `kept_bindings` mark → escape-gated Let-drop, which assumed
+        // every kept heap binding is owned). Dropping the borrow freed the record the still-live scrutinee/
+        // `Some` shell shares, so a later re-projection `(. r qty)` read freed memory → silent wrong value
+        // (`5` = the field lost, k dropped) or an oob trap. Fixed by gating the row-op materialize-Let's
+        // operand drop on ownership: a BORROWED operand (`heap_operand_ownership != Owned` — SumPayload /
+        // match-arm binder / Param / kept-LocalRef) is materialized-once but NOT dropped (its owner reclaims
+        // it); only a genuinely OWNED operand (witness 1's `Option.expect(Map.lookup)` producer result) is
+        // reclaimed by the Let (+ the field-dup). `bump-qty` over a `Slot.Filled` from a Map, then re-project
+        // qty: k=3 + d=5 = 8 (rust's oracle; wasm returned 5 pre-fix).
+        let bytes = compile_component(&crate::codec::encode(&parse(
+            "(module m \
+               (type Slot (Filled (Record (name String) (qty Int64))) (Empty)) \
+               (def (bump-qty (: s Slot) (: d Int64)) \
+                 (match s \
+                   ((Slot.Filled r) (Slot.Filled (Record.extend (Record.without r (qty)) #\"qty\" (+ (. r qty) d)))) \
+                   ((Slot.Empty _u) (Slot.Empty unit)))) \
+               (def (main (: k Int64)) \
+                 (do \
+                   (def inv (Map.insert Map.empty 1 (Slot.Filled (record (name (String.concat \"wid\" \"get\")) (qty k))))) \
+                   (def v (bump-qty (Option.expect (Map.lookup inv 1) \"slot\") 5)) \
+                   (match v ((Slot.Filled r) (. r qty)) ((Slot.Empty _u) -1)))) \
+               (export main))",
+        )))
+        .expect("a row-op over a borrowed sum-payload record compiles");
+        wasmparser::validate(&bytes)
+            .expect("the sum-payload-rewrap row-op chain emits a valid module");
+        if let Some(runtime) = super::find_runtime_wasm() {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec!["3".to_string()],
+                runtime: Some(runtime),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(
+                    s, "8",
+                    "the sum-payload-rewrap row-op must compute 8 (k=3 + 5) — not the pre-fix silent 5"
+                ),
+                cdz_run::Outcome::Trap(t) => {
+                    panic!("sum-payload rewrap trapped (the #45-W2 UAF): {t}")
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_recursive_sum_runs() {
         // sum-to(3) = 3+2+1+0 = 6. The self-call `(sum-to (+ n -1))` is a `Core::Call`; the base case
         // `(= n 0) → 0` pins the return type to Int64 (absorption), so it emits as a real function.
