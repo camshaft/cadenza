@@ -788,6 +788,7 @@ pass	a RUNTIME-dependent hole threads through the tag application per call
 pass	a Rational accumulator threaded through recursion sums exactly
 pass	a Rational fanned into a compound then re-read survives (Perceus retain over a BigInt/Rational leaf)
 pass	a Rational is usable as a map key, matched by its exact value
+pass	a Rational leaf in a tuple orders by exact value with canonical-form ties falling through
 pass	a Rational map from a Rational sum key and a Rational.of-over-arithmetic key has both entries
 pass	a Rational set deduplicates by exact value regardless of how each was written
 pass	a Rational set from a Rational sum and a Rational.of over integer arithmetic has both elements
@@ -818,6 +819,7 @@ pass	a Set.of over user-sum variants keeps same-payload different-variant elemen
 pass	a Sign match missing two of three variants is non-exhaustive
 pass	a Some carrying a bare None type-checks under a whole-expression annotation
 pass	a Some carrying an inner-annotated None matches its arm (the control)
+pass	a Symbol leaf in a tuple orders content-lexicographically and decisively before later fields
 pass	a Symbol map key looks up by content and an overwrite does not grow the map
 pass	a String built by folding String.concat over a runtime list of chunks has the right content and length
 pass	a String compound export under a non-main name crosses to the host
@@ -1958,6 +1960,7 @@ pass	a multi-export compound-result shared call is a repeatable (borrow<t>) call
 pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-export shared call is a repeatable (borrow<t>) callback
 pass	a multi-field record with one param-named key survives the call
+pass	a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall to the next field
 pass	a multi-limb modulo keeps the truncating dividend-sign convention across the limb boundary
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-payload destructure binds the head and recurses on the tail
