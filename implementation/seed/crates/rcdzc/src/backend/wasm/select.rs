@@ -19712,6 +19712,18 @@ mod tests {
             .count();
         // Golden pinned from the current (pre-refactor) emit: 0 retain-dups, 3 drops (one per push-result
         // temporary). The traversal-share refactor MUST reproduce both exactly.
+        //
+        // ⚠ WHAT drops==3 ENCODES (reviewer FYI on 241d7789c): the 3 drops are the 3 `List.push` RESULT
+        // temporaries. The 3 `xi` let-bindings themselves are NOT dropped (push BORROWS xi; the fresh
+        // `(list n)` is never reclaimed) — a bounded 3-cell LEAK, the known borrowed-through-scope
+        // let/param-drop KNOWN-GAP (the general Perceus param-drop pass isn't built yet; owned by
+        // v-memory-safety). This golden CONSTANT-encodes that gap. So a FUTURE leak-fix that legitimately
+        // reclaims the `xi` lets would move drops 3→6 — that is a leak IMPROVEMENT, NOT a traversal-share
+        // regression. If this fires with drops==6 (not the fold's concern — the fold is pure traversal-share
+        // and won't touch reclamation), re-baseline to 6 rather than treating it as a site-set drift.
+        // (0 retain-dups is value-CORRECT here regardless: the RRB vector is PERSISTENT, so `List.push`
+        // returns a fresh vector and the later `List.len xi` reads the intact original — persistence, not
+        // rc, carries correctness, so no retain is needed. The dup count is the traversal-share invariant.)
         assert_eq!(
             dups, 0,
             "traversal-share refactor changed the retain-dup count (was 0); site-set drift = soundness risk: {:?}",
