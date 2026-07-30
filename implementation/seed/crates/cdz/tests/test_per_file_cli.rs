@@ -276,3 +276,96 @@ fn the_provider_cache_persists_reuses_and_self_heals() {
         "a corrupt cache entry must not surface as a compile error:\n{out3}"
     );
 }
+
+#[test]
+fn a_single_file_with_imports_reuses_a_warmed_provider_cache() {
+    // The single-file-local-verify win (v-compiler-ml's need): `cdz test <one-file>` where that file IMPORTS a
+    // shared closure must REUSE a warmed provider cache — skipping the (expensive) shared-closure lower — the
+    // same consumer-only HIT the dir path takes. Regression guard: the composed path once blanket-skipped on
+    // `files.len() < 2`, so a single-file run NEVER touched the cache (it always re-embedded the whole closure).
+    // Now the skip is keyed on the closure UNION (`asts.len() < 2`) — a single SELF-CONTAINED file still skips,
+    // but a single file WITH imports takes the cache path. Assert: (1) warming via a run persists a provider;
+    // (2) a SINGLE-FILE run of the importing file, with the SAME cache, still passes (it's a HIT — the shared
+    // `sumto` crossed the peer edge from the cached provider, not re-embedded). A self-contained single file is
+    // covered separately by `a_single_file_run_matches_that_file_within_the_directory_run` (must stay standalone).
+    let dir = std::env::temp_dir().join(format!("cdz-1file-hit-src-{}", std::process::id()));
+    let cache = std::env::temp_dir().join(format!("cdz-1file-hit-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A RECURSIVE shared closure (stays standalone → a real cross-edge, not inlined).
+    std::fs::write(
+        dir.join("shared.cdz"),
+        "def sumto(n: Int64) =\n  if n == 0 then 0 else n + sumto(n - 1)\nexport { sumto }\n",
+    )
+    .unwrap();
+    // TWO importing @test files so the WARM run (the dir) takes the composed+persist path.
+    std::fs::write(
+        dir.join("ta.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_ha() =\n  if sumto(5) == 15 then unit else trap(\"ta\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tb.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_hb() =\n  if sumto(4) == 10 then unit else trap(\"tb\")\n",
+    )
+    .unwrap();
+
+    let cached_provider = || -> Option<std::path::PathBuf> {
+        std::fs::read_dir(&cache).ok()?.flatten().find_map(|e| {
+            let p = e.path();
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".provider.wasm"))
+                .then_some(p)
+        })
+    };
+
+    // WARM: a dir run (>=2 files) persists the shared-closure provider. `CDZ_PROVIDER_CACHE_TRACE` makes the
+    // cache decision OBSERVABLE on stderr, so we can PROVE the single-file run below is a genuine HIT (reusing
+    // the cached provider) and not the standalone fallback — the exact regression this test guards.
+    let warm = Command::new(cdz())
+        .args(["test", dir.to_str().unwrap()])
+        .env("CDZ_PROVIDER_CACHE", &cache)
+        .env("CDZ_PROVIDER_CACHE_TRACE", "1")
+        .output()
+        .expect("spawn cdz test (warm)");
+    let warm_out = String::from_utf8_lossy(&warm.stdout);
+    let warm_err = String::from_utf8_lossy(&warm.stderr);
+    assert!(
+        warm.status.success() && warm_out.contains("PASS t_ha") && warm_out.contains("PASS t_hb"),
+        "warm dir run passes:\n{warm_out}\n{warm_err}"
+    );
+    assert!(
+        warm_err.contains("[provider-cache] miss persisted"),
+        "the warm run was a MISS that PERSISTED the provider (trace):\n{warm_err}"
+    );
+    cached_provider().expect("the warm run persisted a provider .wasm to the cache");
+
+    // HIT via a SINGLE-FILE run of the importing file: must pass AND take the cache path (trace = `hit`) — the
+    // regression this guards is the single-file path NEVER reaching the cache (it always re-embedded). We assert
+    // both the correct result (the shared `sumto` crossed the peer edge from the cached provider) and the HIT
+    // marker (proving the closure was NOT re-lowered) — a link/exports mismatch would show instead.
+    let single = Command::new(cdz())
+        .args(["test", dir.join("ta.cdz").to_str().unwrap()])
+        .env("CDZ_PROVIDER_CACHE", &cache)
+        .env("CDZ_PROVIDER_CACHE_TRACE", "1")
+        .output()
+        .expect("spawn cdz test (single-file hit)");
+    let single_out = String::from_utf8_lossy(&single.stdout);
+    let single_err = String::from_utf8_lossy(&single.stderr);
+    assert!(
+        single.status.success() && single_out.contains("PASS t_ha"),
+        "a single-file run of the importing file passes via the warmed cache:\n{single_out}\n{single_err}"
+    );
+    assert!(
+        single_err.contains("[provider-cache] hit"),
+        "the single-file run was a cache HIT (reused the warmed provider, did NOT re-lower the closure):\n{single_err}"
+    );
+    assert!(
+        !single_out.contains("exports no function")
+            && !single_out.contains("could not run test")
+            && !single_out.contains("invalid peer component"),
+        "the single-file run linked cleanly against the cached provider (no cross-component error):\n{single_out}"
+    );
+}

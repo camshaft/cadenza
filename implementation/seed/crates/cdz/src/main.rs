@@ -3926,11 +3926,18 @@ struct Precompiled {
 
 fn precompile_tests_per_file(files: &[String]) -> Precompiled {
     use std::collections::HashMap;
-    // A single file has no cross-file closure to amortize — the per-file path is already one compile. Skip
-    // the composed machinery; let it fall back.
-    if files.len() < 2 {
+    if files.is_empty() {
         return Precompiled::default();
     }
+    // NOTE (was `files.len() < 2`): the composed path serves TWO wins, and a single target file benefits from
+    // ONE of them. (i) BATCH amortization — lower the shared closure once across N files in this invocation —
+    // is genuinely N/A for one file. (ii) The CROSS-INVOCATION PROVIDER CACHE — persist the shared-closure
+    // provider so a LATER `cdz test <that file>` is a consumer-only HIT that skips the ~381s closure lower — is
+    // exactly the single-file-local-verify win, and it applies whenever ONE file imports a big shared closure
+    // (v-compiler-ml verifying a witness against the ~1360-def self-host closure). So we no longer blanket-skip
+    // on a single file; the real "nothing to do here" test is whether the closure UNION has a cross-file member
+    // — checked below (`asts.len() < 2`) AFTER we gather it, since a lone SELF-CONTAINED file (no imports) has
+    // no provider to hoist or cache and must stay on its byte-identical per-file compile.
     // CORRECTNESS GATE (PR#881): a closure file's link name is its dir-BLIND STEM (`program_name` =
     // file_stem). The union below dedups by that stem AND `run_test_file` looks its component up by the same
     // stem — so two DIFFERENT-directory target files with the SAME stem (e.g. two `t.cdz`, or a `lib.cdz` in
@@ -3974,6 +3981,13 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
     let Some(entry) = first_name else {
         return Precompiled::default(); // nothing loaded — every file falls back
     };
+    // No cross-file closure to hoist: the union is a single self-contained file (its own AST, no imported
+    // siblings). There is no provider to emit/cache and no per-file emit to amortize — the standalone
+    // `EmitTests` path is already one compile and byte-identical, so skip the composed machinery entirely.
+    // (A single file WITH imports has `asts.len() >= 2` and proceeds — that's the cross-invocation cache win.)
+    if asts.len() < 2 {
+        return Precompiled::default();
+    }
     // The closure AST inputs (every closure file's `ast`) + the package entry marker — shared by the
     // hash-query and the emit below. Any closure file works as the entry marker: it drives linking but does
     // NOT restrict which files' @tests emit (all linked test defs are bucketed by file).
@@ -4018,8 +4032,24 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
         // MISS (re-emit + re-persist), which self-heals the bad entry. Cheap vs the emit it may avoid.
         .filter(|bytes| cdz_run::compile_component(bytes).is_ok());
 
+    // OBSERVABILITY (`CDZ_PROVIDER_CACHE_TRACE` = any non-empty value): emit ONE line to stderr recording the
+    // cache decision + closure key, so a caller can VERIFY a run warmed/hit the cache (v-compiler-ml asked
+    // exactly this) and a test can distinguish a HIT from the standalone fallback. Off by default → zero output
+    // on the normal path; peer of `CDZ_WASM_BACKTRACE` / `CDZ_DUMP_TEST_WASM`.
+    let trace = |ev: &str| {
+        if std::env::var("CDZ_PROVIDER_CACHE_TRACE").is_ok_and(|v| !v.trim().is_empty()) {
+            let key = closure_hash.as_deref().unwrap_or("<no-hash>");
+            let dir = cache_dir
+                .as_ref()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|| "<no-cache-dir>".into());
+            eprintln!("[provider-cache] {ev} key={key} dir={dir}");
+        }
+    };
+
     let (out, provider) = if let Some(bytes) = cached_provider {
         // HIT: emit only the consumers (no provider lower), reuse the validated cached provider peer.
+        trace("hit");
         (drive(rcdzc::Request::EmitTestsConsumerOnly), Some(bytes))
     } else {
         // MISS: emit the provider + consumers; persist the provider by its (emitted) closure-hash so the next
@@ -4049,6 +4079,7 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
                 if std::fs::write(&tmp, bytes).is_err() {
                     // Write failed (full/RO FS) — the temp may be partial; don't leak it (pr903).
                     let _ = std::fs::remove_file(&tmp);
+                    trace("miss no-persist(write-failed)");
                 } else if std::fs::rename(&tmp, &final_path).is_err() {
                     // Rename failed. On POSIX this is rare (a real FS error). On WINDOWS `rename` fails when
                     // the dest EXISTS — which is exactly the self-heal case (a corrupt {key} present), where
@@ -4057,9 +4088,18 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
                     let _ = std::fs::remove_file(&final_path);
                     if std::fs::rename(&tmp, &final_path).is_err() {
                         let _ = std::fs::remove_file(&tmp);
+                        trace("miss no-persist(rename-failed)");
+                    } else {
+                        trace("miss persisted");
                     }
+                } else {
+                    trace("miss persisted");
                 }
+            } else {
+                trace("miss no-persist(no-key)");
             }
+        } else {
+            trace("miss no-persist(no-provider)");
         }
         (out, provider)
     };
