@@ -16907,7 +16907,7 @@
 ; mixed-type record with a mid-layout row op. ---
 
 (case "the EMPTY string keys a map — hit by an empty-concat rope, distinct from a 1-char sibling"
-  (doc    "The degenerate canonical form as a KEY (zero-byte hash): the empty-CONCAT rope (\"\" ++ \"\") must hash/eq-hit the flat \"\" entry — an empty rope with a seam node vs the flat empty rep is the maximal content-vs-shape gap. The 1-char sibling stays distinct (len 2).")
+  (doc    "The degenerate canonical form as a KEY (zero-byte hash): the empty-CONCAT rope (\"\" ++ \"\") must hash/eq-hit the flat \"\" entry — an empty rope with a seam node vs the flat empty rep is the maximal content-vs-shape gap. The 1-char sibling stays distinct, so the map keeps both keys → Map.len 2.")
   (input  (do
             (def (main (: k Int64))
               (do

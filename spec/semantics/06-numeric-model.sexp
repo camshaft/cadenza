@@ -7759,3 +7759,69 @@
   (doc    "The shift sibling: (<< 1.0 2.0) — both operands float, rejected on the VALUE operand's integer requirement. Control: (/ 5.0 2.0) compiles (division IS defined on floats), so these three pin exactly the integer-only set.")
   (input  (<< 1.0 2.0))
   (error  CDZ0301))
+
+; --- Numeric-algorithm batch: multi-limb BigInt gcd, the f32 mantissa-absorption edge, recursive
+; Rational division (continued fractions), and binary-search isqrt at the checked ceiling. ---
+
+(case "Euclid's GCD runs over MULTI-LIMB BigInts — the remainder loop carries full precision"
+  (doc    "The Int64 Euclid exists and Rational's INTERNAL gcd-normalize is pinned; this is the USER-level gcd over MULTI-LIMB BigInts — every % remainder is a fresh 2^64-scale heap value, the (= b 0N-equivalent) exit is a heap-eq per frame, and the result narrows through BigInt / then checked Int64.of.")
+  (input  (do
+            (def (gcd (: a BigInt) (: b BigInt))
+              (if (= b (BigInt.of 0)) a (gcd b (% a b))))
+            (def (main (: x Int64) (: y Int64))
+              (do
+                (def b64 (* (BigInt.of 4294967296) (BigInt.of 4294967296)))
+                (def big-a (* b64 (BigInt.of x)))
+                (def big-b (* b64 (BigInt.of y)))
+                (Int64.of (/ (gcd big-a big-b) b64))))
+            (export main)))
+  (call   main (: 12 Int64) (: 18 Int64))
+  (output (: 6 Int64)))
+
+(case "Float32 arithmetic runs at 24-bit mantissa precision — 2^24+1 absorbs, 2^24+2 is exact"
+  (doc    "The f32 family covers width-overflow rejects and match arms; this runs f32 ARITHMETIC at its precision limit: (+ 2^24 1) rounds back to 2^24 (nearest-even absorption at the mantissa boundary) while (+ 2^24 2) is exactly representable — the minimal witness the add itself runs at binary32.")
+  (input  (do
+            (def (main (: a Float32) (: b Float32))
+              (+ (* 100 (if (= (: (+ a b) Float32) a) 1 0))
+                 (if (= (: (+ a (: 2.0 Float32)) Float32) a) 1 0)))
+            (export main)))
+  (call   main (: 16777216.0 Float32) (: 1.0 Float32))
+  (output (: 100 Int64)))
+
+(case "a CONTINUED FRACTION evaluates bottom-up through recursive Rational division (a + 1/rest)"
+  (doc    "Rational DIVISION composed recursively ([1;2,2] = 1 + 1/(2 + 1/2)): each level divides 1 by a COMPOUND rational built one level deeper (the :1390 reciprocal pin divides two literals once); non-tail recursion carries Rationals through frames; numerator-vs-zero exit; 7/5 digit-encoded.")
+  (input  (do
+            (def (cf (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i)
+                ((Option.Some a)
+                  (do
+                    (def rest (cf xs (+ i 1)))
+                    (if (= (Rational.numerator rest) (Rational.numerator (Rational.of-int 0)))
+                        (Rational.of-int a)
+                        (+ (Rational.of-int a) (/ (Rational.of-int 1) rest)))))
+                ((Option.None _u) (Rational.of-int 0))))
+            (def (main (: k Int64))
+              (do
+                (def r (cf (list 1 k 2) 0))
+                (+ (* 100 (Int64.of (Rational.numerator r)))
+                   (Int64.of (Rational.denominator r)))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 705 Int64)))
+
+(case "a binary-search isqrt with an overflow-safe hi bound computes at i64::MAX"
+  (doc    "The Newton isqrt probes small operands; this runs at the CHECKED-ARITH ceiling: n=i64::MAX with hi capped at isqrt(MAX)=3037000499 keeps mid*mid exactly inside checked range, so the search completes WITHOUT the overflow trap — a hi one larger would trap at the first midpoint square.")
+  (input  (do
+            (def (isqrt-go (: n Int64) (: lo Int64) (: hi Int64))
+              (if (> lo hi) hi
+                  (do
+                    (def mid (/ (+ lo hi) 2))
+                    (if (<= (* mid mid) n)
+                        (isqrt-go n (+ mid 1) hi)
+                        (isqrt-go n lo (- mid 1))))))
+            (def (isqrt (: n Int64)) (isqrt-go n 0 3037000499))
+            (def (main (: n Int64)) (isqrt n))
+            (export main)))
+  (call   main (: 16 Int64)) (output (: 4 Int64))
+  (call   main (: 15 Int64)) (output (: 3 Int64))
+  (call   main (: 9223372036854775807 Int64)) (output (: 3037000499 Int64)))
