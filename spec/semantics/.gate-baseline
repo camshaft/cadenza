@@ -28,6 +28,7 @@ pass	@requires is enforced when the guarded def is applied through a first-class
 pass	@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)
 pass	@requires over a HEAP argument reads the list's content at body entry
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
+pass	ACKERMANN evaluates — a recursive call in the ARGUMENT of a recursive call (not primitive-recursive)
 pass	Ast values key a map across quote and Ast.* construction routes
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -1365,6 +1366,7 @@ pass	a fitting payload projected through Option.expect computes
 pass	a fitting recursive annotated result computes at the narrow width
 pass	a float divide by zero takes the DIVIDEND's sign into the infinity
 pass	a float literal compared against a Float32 param computes at the narrow width
+pass	a full MERGE SORT (alternating split + ordered merge) sorts a runtime list, duplicates kept
 pass	a full-width UInt64 comparison over a HIGH-BIT operand is unsigned
 pass	a generic user sum holds a CLOSURE payload at one instantiation and a scalar at another
 pass	a handler STATE that is a recursive sum GROWS one constructor per operation
