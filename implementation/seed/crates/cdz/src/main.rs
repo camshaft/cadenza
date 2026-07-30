@@ -4046,10 +4046,18 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
                 let _ = std::fs::create_dir_all(dir);
                 let final_path = dir.join(format!("{key}.provider.wasm"));
                 let tmp = dir.join(format!(".{key}.provider.wasm.{}.tmp", std::process::id()));
-                if std::fs::write(&tmp, bytes).is_ok()
-                    && std::fs::rename(&tmp, &final_path).is_err()
-                {
-                    let _ = std::fs::remove_file(&tmp); // rename failed — don't leave the temp behind
+                if std::fs::write(&tmp, bytes).is_err() {
+                    // Write failed (full/RO FS) — the temp may be partial; don't leak it (pr903).
+                    let _ = std::fs::remove_file(&tmp);
+                } else if std::fs::rename(&tmp, &final_path).is_err() {
+                    // Rename failed. On POSIX this is rare (a real FS error). On WINDOWS `rename` fails when
+                    // the dest EXISTS — which is exactly the self-heal case (a corrupt {key} present), where
+                    // the corrupt file must NOT survive. So best-effort remove the dest + retry the rename
+                    // once; if that also fails, drop the temp (no partial/leak left behind) — pr903.
+                    let _ = std::fs::remove_file(&final_path);
+                    if std::fs::rename(&tmp, &final_path).is_err() {
+                        let _ = std::fs::remove_file(&tmp);
+                    }
                 }
             }
         }
