@@ -1210,3 +1210,72 @@
         (export main)))
   (call   main (: 10 Int64)) (output (: 21 Int64))
   (call   main (: 3 Int64)) (output (: 31 Int64)))
+
+; --- CLOSURE fields through the row-op family: a fn value (handle + env cell) rides merge's
+; union layout, pop's value-yielding removal, row-polymorphic access at two widths, and extend's
+; slot growth. A row op that copied fn slots by scalar width, or re-sorted fields without moving
+; the env pointer, calls the wrong target or reads a sibling field as the env.
+
+(case "Record.merge carries a CLOSURE field into the union layout and it applies"
+  (doc    "The fn-field face of merge (the heap-field merge pin carries LISTS): the left record's
+           `f` holds a k-capturing closure; merge unions it with a scalar record and the MERGED
+           record's `f` applies (3+k → ×10) beside the merged `b` (87 at k=5, 37 at k=0). The union
+           layout must place the fn handle + its env cell correctly among re-sorted fields — a merge
+           that copied the fn slot by scalar width (or re-ordered fields without moving the env
+           pointer) calls the wrong target or reads b as the env.")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def m (Record.merge (record (f (fn ((: y Int64)) (+ y k)))) (record (b 7))))
+            (+ (* 10 ((. m f) 3)) (. m b))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 87 Int64))
+  (call   main (: 0 Int64)) (output (: 37 Int64)))
+
+(case "Record.pop hands back a CLOSURE field as the popped value and it applies"
+  (doc    "The fn-field face of the value-yielding removal: `(Record.pop r f)` returns
+           `(tuple <popped-closure> <rest>)` — the popped slot IS the k-capturing fn, applied
+           directly from the tuple projection (3k·10), while the rest-record's `b` survives the
+           field removal (157 at k=5; k=0 zeroes the closure face → 7). A pop that returned the
+           fn slot by scalar copy (dropping the env) or rebuilt the rest-record over the fn's
+           slot corrupts one side. Completes the row-op × fn-field row: with/merge/project apply
+           closures through records; pop EXTRACTS one.")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def r (record (f (fn ((: y Int64)) (* y k))) (b 7)))
+            (def p (Record.pop r f))
+            (+ (* 10 ((. p 0) 3)) (. (. p 1) b))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 157 Int64))
+  (call   main (: 0 Int64)) (output (: 7 Int64)))
+
+(case "a row-polymorphic accessor applies a FN field across two record widths"
+  (doc    "Rows × fn values: `call-f r = ((. r f) 10)` reads a CLOSURE out of a record field through
+           row polymorphism and applies it — once on the exact record (a k-capturing closure, 10+k)
+           and once on a WIDER record with an extra field (a doubling closure, 20): 1520 at k=5,
+           1020 at k=0. The row-poly pins project scalars/lists; a FN field composes the row access
+           with call_indirect — a field offset computed against the narrow layout reads the wrong
+           slot on the wide record and calls garbage (or the extra field).")
+  (input  (do
+        (def (call-f r) ((. r f) 10))
+        (def (main (: k Int64))
+          (+ (* 100 (call-f (record (f (fn ((: y Int64)) (+ y k))))))
+             (call-f (record (f (fn ((: y Int64)) (* y 2))) (extra 99)))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 1520 Int64))
+  (call   main (: 0 Int64)) (output (: 1020 Int64)))
+
+(case "Record.extend ADDS a closure field beside two existing ones and all three apply"
+  (doc    "The extend face of the fn-field row-op family (merge/pop/row-poly-access are the siblings): the vtable-style record GROWS by one fn slot, and the re-sorted 3-field layout must keep each fn handle paired with ITS env cell — a k-capturing add beside two capture-free fns, all three applied positionally (907 at k=3; any slot/env mix-up diverges).")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def ops (record (add (fn ((: x Int64)) (+ x k))) (dbl (fn ((: x Int64)) (* x 2)))))
+                (def r2 (Record.extend ops #"neg" (fn ((: x Int64)) (- 0 x))))
+                (+ (* 100 ((. r2 add) 5))
+                   (+ (* 10 ((. r2 dbl) 5))
+                      ((. r2 neg) (- 0 7))))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 907 Int64)))
