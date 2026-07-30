@@ -2819,3 +2819,53 @@
                   (Set.len (Set.remove s (tuple 1.5 1)))))))
         (export main)))
   (call   main (: 0.0 Float64)) (output (: 211 Int64)))
+
+; --- Set batch: the set-of-sets content hash, rope-vs-flat elements across algebra operands,
+; and the Float32 canonical-byte enumeration order. ---
+
+(case "a SET of SETS dedups elements by set CONTENT — insertion-order twins collapse"
+  (doc    "The CHAMP-hash-of-a-CHAMP face: {1,k} and {k,1} built in OPPOSITE insertion orders must hash identically for the outer dedup to collapse them — a hash over internal trie layout instead of canonical content splits the twins; the {2,1} membership probe (a third insertion order) must hit.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def s1 (Set.of (list 1 k)))
+                (def s2 (Set.of (list k 1)))
+                (def s3 (Set.of (list 9)))
+                (def nested (Set.of (list s1 s2 s3)))
+                (+ (* 10 (Set.len nested))
+                   (if (Set.contains nested (Set.of (list 2 1))) 1 0))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 21 Int64)))
+
+(case "set algebra unifies a rope String element with its flat twin across operands"
+  (doc    "The 92 set-algebra pins are all scalar/tuple elements; here a ROPE String element in one operand meets its FLAT twin in the other — the cross-operand membership must content-canonicalize (a chunk-shape hash treats rope-apple and flat-apple as distinct: union 4/inter 0/diff 2 = 402 instead of 311). All three ops in one case; runtime branch defeats the fold.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def a (Set.of (list (String.concat "ap" "ple") "banana")))
+                (def b (Set.of (list "apple" (String.concat "che" (if (= k 1) "rry" "z")))))
+                (+ (* 100 (Set.len (Set.union a b)))
+                   (+ (* 10 (Set.len (Set.intersection a b)))
+                      (Set.len (Set.difference a b))))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 311 Int64)))
+
+(case "Set.to-list over Float32 elements enumerates by canonical byte order at f32 width"
+  (doc    "The Float32 sibling of the Float64 to-list order pin (:1494): f32 elements enumerate by
+           their 4-byte canonical form as unsigned bits — a NEGATIVE (sign bit high) sorts AFTER
+           every positive, so {-1.0, 0.5, 2.5} leads with 0.5 (1 at x=-1.0), while a small positive
+           x=0.25 sorts first (2). An orderable arm that compared f32 by NUMERIC < (or promoted to
+           f64 bits before comparing) flips the negative row — the width-specific byte order is the
+           pin.")
+  (input  (do
+        (def (main (: x Float32))
+          (do
+            (def xs (Set.to-list (Set.of (list x (: 0.5 Float32) (: 2.5 Float32)))))
+            (match (List.at xs 0)
+              ((Some v) (if (= v (: 0.5 Float32)) 1 (if (= v x) 2 0)))
+              ((None _u) -1))))
+        (export main)))
+  (call   main (: -1.0 Float32)) (output (: 1 Int64))
+  (call   main (: 0.25 Float32)) (output (: 2 Int64)))
