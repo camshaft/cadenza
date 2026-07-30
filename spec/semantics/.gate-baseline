@@ -150,7 +150,9 @@ pass	a @requires predicate over a HEAP collection is enforced at entry and value
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a Bytes ROPE handler state GROWS by bin-append per perform and each resume reads the prior length
+pass	a Bytes slice VIEW and a rope compare equal by content in both directions
 pass	a Bytes slice of a slice composes offsets against the VIEW and bounds against its length
+pass	a Bytes-compact key and a flat rebuild both hit a rope-keyed map entry; a proper-prefix slice misses
 pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
 pass	a CONTINUED FRACTION evaluates bottom-up through recursive Rational division (a + 1/rest)
@@ -933,6 +935,7 @@ pass	a bin pattern over a String scrutinee is a type error
 pass	a big-endian runtime construction read back through an le pattern crosses the byte order
 pass	a bin pattern over a runtime non-Bytes scrutinee is a type error
 pass	a bin pattern over an Int64 scrutinee is a type error
+pass	a bin-decoded frame body drives per-byte performs through a recursive walk
 pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
@@ -3318,6 +3321,7 @@ pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	an EMPTY splice mid-list closes the gap, a singleton fills it, and two splices around a literal both land
 pass	an UNANNOTATED generic compose instantiates at a scalar arrow AND a String arrow in one program
 pass	an interposing handler TRANSFORMS the host response before resuming (offset adapter)
+pass	bin-encode segment ORDER holds for runtime-swapped operand values
 pass	bit-field segments spanning a rope seam split the stitched 16 bits, not a leaf's
 pass	bitwise AND of two floats rejects — a float is not a bit pattern even without a mix
 pass	constant-succeeding tries as LIST-literal elements unwrap in place and the list builds

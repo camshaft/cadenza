@@ -2059,3 +2059,48 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 60015 Int64))
   (call   main (: 0 Int64)) (output (: -1 Int64)))
+
+; --- bin construction/decode order + the frame-body perform walk. ---
+
+(case "bin-encode segment ORDER holds for runtime-swapped operand values"
+  (doc    "The bin-construction twin of the splice-order pin: two runtime-selected UInt8 values
+           (swapping by k) encode into `(bin (u8 a) (u8 b))` and the byte positions prove segment
+           fidelity (1020 at k=1, 2010 at k=2 — the spot-reads distinguish position from value).
+           A segment emitter that ordered by operand evaluation completion (or shared one wrap's
+           result across both slots) crosses the bytes. With the splice pin this closes the
+           ordered-operand discipline across both construction meta-levels (Ast splice + byte
+           encode).")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def a (UInt8.wrap (if (= k 1) 10 20)))
+            (def b (UInt8.wrap (if (= k 1) 20 10)))
+            (def f (bin (u8 a) (u8 b)))
+            (+ (* 100 (match (Bytes.at f 0) ((Some v) v) ((None _u) -1)))
+               (match (Bytes.at f 1) ((Some v) v) ((None _u) -1)))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 1020 Int64))
+  (call   main (: 2 Int64)) (output (: 2010 Int64)))
+
+(case "a bin-decoded frame body drives per-byte performs through a recursive walk"
+  (doc    "Binary matching × effects: the dependent-size `(bytes body n)` binder feeds a RECURSIVE
+           walk whose every step PERFORMS — the frame parser emitting events. Each `ev` scales its
+           byte by the stepped state (v·(s+1)): body [x,20] → x·1 + 20·2 = x+40 (50 at x=10, 40 at
+           x=0). The bin binder must stay a live Bytes value across N perform/resume suspensions
+           of the walk — a body binder holding a frame-relative view invalidated by the handler
+           round-trip (or a walk whose accumulator re-read a stale state) breaks the sum.")
+  (input  (do
+        (effect Emit (op ev (-> Int64 Int64)))
+        (def (walk (: b Bytes) (: i Int64) (: acc Int64))
+          (match (Bytes.at b i)
+            ((Some v) (walk b (+ i 1) (+ acc (Emit.ev v))))
+            ((None _u) acc)))
+        (def (main (: x UInt8))
+          (handle Emit 0
+            ((ev (v) s (resume (* v (+ s 1)) (+ s 1))))
+            (match (Bytes.of (list 2 x 20 99))
+              ((bin (u8 n) (bytes body n) (bytes _rest)) (walk body 0 0))
+              (_ -1))))
+        (export main)))
+  (call   main (: 10 UInt8)) (output (: 50 Int64))
+  (call   main (: 0 UInt8)) (output (: 40 Int64)))
