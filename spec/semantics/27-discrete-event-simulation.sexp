@@ -970,3 +970,30 @@
             (export main)))
   (call   main (: 50 Int64))
   (output (: 200 Int64)))
+
+; --- Record event payloads through the pqueue insort. ---
+
+(case "record event payloads ride pqueue insort and read both fields from the head"
+  (doc    "The record-payload face of the event queue (scalar/rope/continuation payloads are
+           pinned): each entry pairs a time with a TWO-FIELD record, the runtime k decides which
+           entry heads the queue, and BOTH fields read from the popped head's record (19 at k=5
+           — the k-entry wins with id 1/pri 9; 31 at k=99 — the 30-entry wins with id 3/pri 1).
+           An insort that copied the record payload shallowly against the tuple spine (or swapped
+           payloads between entries during the prepend recursion) crosses the id/pri pairs.")
+  (input  (do
+        (def (insort (: q (List (Tuple Int64 (Record (id Int64) (pri Int64))))) (: e (Tuple Int64 (Record (id Int64) (pri Int64)))))
+          (match q
+            ((list) (list e))
+            ((list h .. t)
+              (if (<= (. e 0) (. h 0))
+                  (List.prepend q e)
+                  (List.prepend (insort t e) h)))))
+        (def (main (: k Int64))
+          (do
+            (def q (insort (insort (list) (tuple 30 (record (id 3) (pri 1)))) (tuple k (record (id 1) (pri 9)))))
+            (match q
+              ((list h .. _t) (+ (* 10 (. (. h 1) id)) (. (. h 1) pri)))
+              (_ -1))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 19 Int64))
+  (call   main (: 99 Int64)) (output (: 31 Int64)))

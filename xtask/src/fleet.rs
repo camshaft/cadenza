@@ -5351,20 +5351,27 @@ fn shell_quote(s: &str) -> String {
 /// message, prints its filename (leading field = the durable delivery seq, so filename sort == arrival
 /// order), sender, and kind — enough to drain oldest-first.
 /// The move decision for `inbox_consume`, from whether the message exists in the live inbox vs already
-/// in `processed/`. Pure so the idempotency + missing-file semantics are unit-tested without the fs:
-/// present in live inbox → MOVE; absent-but-in-processed → ALREADY DONE (idempotent no-op success);
-/// absent from both → MISSING (loud error, so a typo'd name can't masquerade as a drained message).
-/// A message present in BOTH (mid-move crash) still resolves to MOVE — completing the archive is correct.
+/// in `processed/`. Pure so the idempotency + crash-safety + missing-file semantics are unit-tested
+/// without the fs:
+/// - live-only (`true,false`) → MOVE (`rename` src→dst is safe: dst is absent).
+/// - live AND already-archived (`true,true`) → CLEAR STRAY: a mid-move crash / re-run / double-delivery
+///   left a live copy beside the archived one. The `processed/` copy is AUTHORITATIVE — `rename`ing over
+///   it would OVERWRITE on POSIX and FAIL on Windows (PR#929 Copilot, same rename-over-existing class as
+///   PR#903), undermining the crash-safe intent. So remove the stray live src instead of renaming.
+/// - archived-only (`false,true`) → ALREADY DONE (idempotent no-op success).
+/// - neither (`false,false`) → MISSING (loud error, so a typo'd name can't masquerade as a drain).
 #[derive(Debug, PartialEq, Eq)]
 enum ConsumeAction {
     Move,
+    ClearStray,
     AlreadyDone,
     Missing,
 }
 
 fn inbox_consume_action(src_exists: bool, dst_exists: bool) -> ConsumeAction {
     match (src_exists, dst_exists) {
-        (true, _) => ConsumeAction::Move,
+        (true, false) => ConsumeAction::Move,
+        (true, true) => ConsumeAction::ClearStray,
         (false, true) => ConsumeAction::AlreadyDone,
         (false, false) => ConsumeAction::Missing,
     }
@@ -5412,6 +5419,25 @@ fn inbox_consume(fleet: &Fleet, name: &str, msg: &str) {
                 dir.display()
             );
             std::process::exit(1);
+        }
+        // A stray live copy beside an already-archived one (mid-move crash / re-run / double-delivery).
+        // The processed/ copy is AUTHORITATIVE — do NOT rename over it (POSIX would overwrite the archive,
+        // Windows would fail; PR#929). Just remove the stray live src so the live inbox no longer holds it.
+        ConsumeAction::ClearStray => {
+            if let Err(e) = std::fs::remove_file(&src) {
+                eprintln!(
+                    "fleet inbox --processed: '{msg}' is already archived, but could not remove the \
+                     stray live copy {} ({e}).",
+                    src.display()
+                );
+                std::process::exit(1);
+            }
+            println!(
+                "fleet inbox: '{msg}' was already in processed/ — removed a stray live copy (kept the \
+                 archived one) — re-listing '{name}'."
+            );
+            inbox_list(fleet, name);
+            return;
         }
         ConsumeAction::Move => {}
     }
@@ -8395,8 +8421,10 @@ mod tests {
     fn inbox_consume_action_move_idempotent_or_missing() {
         // Present in the live inbox → MOVE it.
         assert_eq!(inbox_consume_action(true, false), ConsumeAction::Move);
-        // Present in BOTH (a mid-move crash left a copy) → still MOVE (finish the archive).
-        assert_eq!(inbox_consume_action(true, true), ConsumeAction::Move);
+        // Present in BOTH (mid-move crash / re-run / double-delivery) → CLEAR the stray live copy; do NOT
+        // rename over the authoritative archived one (POSIX overwrite / Windows fail — PR#929). This is
+        // the crash-safety fix: (true,true) must not be Move.
+        assert_eq!(inbox_consume_action(true, true), ConsumeAction::ClearStray);
         // Gone from live but already in processed/ (re-run / peer beat us) → idempotent no-op success.
         assert_eq!(
             inbox_consume_action(false, true),
@@ -8444,6 +8472,23 @@ mod tests {
                 ib.join("processed").join(msg).exists()
             ),
             ConsumeAction::AlreadyDone
+        );
+        // Crash-safety (PR#929): a STRAY live copy reappears beside the archived one (re-delivery / a
+        // crashed prior move). The decision is CLEAR STRAY — remove the live copy, keep the archived one,
+        // never rename over it. Verify removing the stray leaves the archive intact.
+        std::fs::write(ib.join(msg), "{}").unwrap();
+        assert_eq!(
+            inbox_consume_action(
+                ib.join(msg).exists(),
+                ib.join("processed").join(msg).exists()
+            ),
+            ConsumeAction::ClearStray
+        );
+        std::fs::remove_file(ib.join(msg)).unwrap(); // what the ClearStray arm does
+        assert!(!ib.join(msg).exists(), "stray live copy removed");
+        assert!(
+            ib.join("processed").join(msg).exists(),
+            "authoritative archived copy preserved (not overwritten)"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

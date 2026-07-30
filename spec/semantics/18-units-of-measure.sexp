@@ -3227,9 +3227,10 @@
 ; scalar (Int64) and then the slot check compares Int64 vs (Qty ...). Control: (+ q q) over a Qty
 ; in a PLAIN fn types fine; (resume s s) pass-through is fine; Qty.value/re-wrap in the slot is fine.
 ; Lane guess: v-inference (handler-arm slot typing runs before/without the Qty layer's op typing?)
-; or the effects fold's arm typing. Probed on trunk fc2b91731.
+; or the effects fold's arm typing. Probed on trunk fc2b91731. (Finding #44 is now CLOSED and its
+; witnesses live in 14-effects; this note is retained here only as Qty-layer provenance.)
 ;
-; Witness 1 — the accepted arm-local form runs (pins the SEMANTICS the inline form must match):
+; --- The free-abelian exponent laws (drain AA) -------------------------------------------------
 (case "a nested unit power multiplies exponents — (m^2)^2 is the same dimension as m^4"
   (doc    "The free-abelian-group laws beyond product/quotient cancellation: NESTED power must MULTIPLY exponents ((Unit.^ (Unit.^ m 2) 2) = m^4 — adding or concatenating gives m^2/m^6 and the same-dimension divide rejects); verified by a dimensionless divide (5).")
   (input  (do
