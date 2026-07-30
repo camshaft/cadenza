@@ -5978,3 +5978,97 @@
             (export main)))
   (call   main (: 21 Int64))
   (output (: 42 Int64)))
+
+; --- Effects micro-family: positional op-arg binding, per-slot ctor-element ordering, the SET
+; constructor's dedup-of-results, stateful nested-handler isolation, and a growing Bytes-rope
+; state. Each is the ASYMMETRIC/stateful sibling of an existing symmetric/stateless pin.
+
+(case "a 3-arg effect op binds its operands POSITIONALLY — an argument-order swap is caught"
+  (doc    "The positional sibling of the commutative add3 pin: the arm encodes 100x+10y+z so ANY operand permutation diverges (add3's a+b+c passes under a swap); runtime a in the second perform + stepping state.")
+  (input  (do
+            (effect Calc (op mix (-> Int64 Int64 Int64 Int64)))
+            (def (main (: a Int64))
+              (handle Calc 1000
+                ((mix (x y z) s (resume (+ (* 100 x) (+ (* 10 y) (+ z s))) (+ s 1))))
+                (+ (Calc.mix 1 2 3) (Calc.mix a 5 6))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 2580 Int64)))
+
+(case "performs as list-literal elements land at their POSITIONS in perform order"
+  (doc    "The per-slot sibling of the sum-read list-ctor pin: xs[0] and xs[2] read INDIVIDUALLY (positional weights) + a post-build tick proves state continuity — ticks k,k+1,k+2 land at slots 0,1,2; a right-to-left fill or shared temp diverges. The handler stays live AROUND the reads.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main (: k Int64))
+              (handle Ctr k
+                ((tick (_u) s (resume s (+ s 1))))
+                (do
+                  (def xs (list (Ctr.tick) (Ctr.tick) (Ctr.tick)))
+                  (+ (* 100 (match (List.at xs 0) ((Option.Some v) v) ((Option.None _u) -1)))
+                     (+ (* 10 (match (List.at xs 2) ((Option.Some v) v) ((Option.None _u) -1)))
+                        (Ctr.tick))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 578 Int64)))
+
+(case "performs as Set.of elements build the set with stepping state and dedup applies to the RESULTS"
+  (doc    "SET completes the compound-constructor perform-threading family (tuple/list/record/map) and adds what none have: the ctor DEDUPS its element results — CHAMP hash on resumed values. Stepping arm (+2): 3 distinct {k,k+2,k+4}, len 3 + membership.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main (: k Int64))
+              (handle Ctr k
+                ((tick (_u) s (resume s (+ s 2))))
+                (do
+                  (def s (Set.of (list (Ctr.tick) (Ctr.tick) (Ctr.tick))))
+                  (+ (* 100 (Set.len s))
+                     (+ (* 10 (if (Set.contains s k) 1 0))
+                        (if (Set.contains s (+ k 4)) 1 0))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 311 Int64)))
+
+(case "a STALLED counter makes all Set.of perform results collide to a singleton"
+  (doc    "The collide face: (resume s s) stalls the state so all three performs return k — the set must collapse to a singleton (a builder assuming distinct element slots miscounts).")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main (: k Int64))
+              (handle Ctr k
+                ((tick (_u) s (resume s s)))
+                (do
+                  (def s (Set.of (list (Ctr.tick) (Ctr.tick) (Ctr.tick))))
+                  (+ (* 10 (Set.len s))
+                     (if (Set.contains s k) 1 0)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 11 Int64)))
+
+(case "nested SAME-effect handlers isolate STATE — inner performs never advance the outer counter"
+  (doc    "The STATEFUL sibling of the stateless region-partition pin: outer +1 / inner +2 strides, reads BEFORE/INSIDE/AFTER the inner region. The after-read is load-bearing: outer resumes at its own single advance (101), not advanced by inner performs (103/105) nor reset by inner teardown (100). Runtime inner seed.")
+  (input  (do
+            (effect E (op get (-> Unit Int64)))
+            (def (main (: k Int64))
+              (handle E 100
+                ((get (_u) s (resume s (+ s 1))))
+                (+ (E.get)
+                   (+ (handle E (* k 10)
+                        ((get (_u) s (resume s (+ s 2))))
+                        (+ (E.get) (E.get)))
+                      (E.get)))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 303 Int64)))
+
+(case "a Bytes ROPE handler state GROWS by bin-append per perform and each resume reads the prior length"
+  (doc    "BYTES joins the handler-state type family (scalar/tuple/record/Map/Set): the wire-accumulator idiom — each put APPENDS (bin (u8 v)) via Bytes.concat (deeper rope per perform), resume value = PRIOR length (1,2,3 -> 123). The state rope must survive perform round-trips with its seam structure intact.")
+  (input  (do
+            (effect Acc (op put (-> UInt8 Int64)))
+            (def (main (: a Int64) (: b Int64))
+              (handle Acc (Bytes.of (list 9))
+                ((put (v) s (resume (Bytes.len s) (Bytes.concat s (bin (u8 v))))))
+                (do
+                  (def l1 (Acc.put (UInt8.wrap a)))
+                  (def l2 (Acc.put (UInt8.wrap b)))
+                  (+ (* 100 l1) (+ (* 10 l2) (Acc.put 3))))))
+            (export main)))
+  (call   main (: 1 Int64) (: 2 Int64))
+  (output (: 123 Int64)))

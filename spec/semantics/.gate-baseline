@@ -129,6 +129,7 @@ pass	TWO sequential inner handles seed from the outer's ADVANCING state
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	WAVE reorder alternates <= and >= by index parity through a carried-element walk
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
+pass	a 3-arg effect op binds its operands POSITIONALLY — an argument-order swap is caught
 pass	a @ensures postcondition over a HEAP result checks at exit and returns the live collection
 pass	a @ensures relating the RESULT to a PARAMETER enforces the relation at exit
 pass	a @param positions a slice window over a guest-built byte rope
@@ -136,6 +137,7 @@ pass	a @param value SEEDS an in-program handler's state
 pass	a @requires predicate over a HEAP collection is enforced at entry and value-transparent when satisfied
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
+pass	a Bytes ROPE handler state GROWS by bin-append per perform and each resume reads the prior length
 pass	a Bytes slice of a slice composes offsets against the VIEW and bounds against its length
 pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
@@ -810,6 +812,7 @@ pass	a SET as a Map key hits by ORDER-INDEPENDENT inner-set content
 pass	a SET as a set element hashes by content: three build orders, one element
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a SOLE RECORD closure ARG crosses the direct-call boundary
+pass	a STALLED counter makes all Set.of perform results collide to a singleton
 pass	a STRING-result effect op resumes with a string that folds through a concat
 pass	a SUM compound = has DISCRIMINATING power (a runtime-selected constructor separates two tagged values)
 pass	a SUM constructor payload that is a compound built from performs threads and destructures
@@ -4233,6 +4236,7 @@ pass	negative zero is distinct in the canonical value form
 pass	negative zero is not equal to positive zero
 pass	negative zero round-trips through the codec by byte identity
 pass	negative zero stays distinct from zero through the hoisted float compare
+pass	nested SAME-effect handlers isolate STATE — inner performs never advance the outer counter
 pass	nested patterns deconstruct recursively
 pass	nested patterns with literals
 pass	nested quasiquote embeds a FLOAT via the inner unquote
@@ -4278,6 +4282,8 @@ pass	pattern matching over AST distinguishes forms
 pass	performing a string-parameter operation with a non-string argument is a type error
 pass	performing an operation with a wrong-type argument for a compound parameter is a type error
 pass	performing an operation with an argument of the wrong type is a type error
+pass	performs as Set.of elements build the set with stepping state and dedup applies to the RESULTS
+pass	performs as list-literal elements land at their POSITIONS in perform order
 pass	performs in match-arm bodies fire ONLY for the selected arm — counter witnesses the count
 pass	performs in the ELEMENTS of a tuple / list CONSTRUCTOR thread left-to-right
 pass	performs in the FIELD VALUES of a RECORD constructor thread in written order
