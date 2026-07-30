@@ -114,10 +114,12 @@ pass	Set.to-list over symbols enumerates in content-byte order regardless of ins
 pass	String.at and String.slice with near-i64::MAX indices decline to None, not wrap
 pass	String.at through a slice VIEW of a rope reads view-relative scalars at every byte width
 pass	String.at with an index at 2^32+2 declines to None, not an i32-wrapped read
+pass	String.byte-len of a runtime rope agrees with Bytes.len of its to-bytes image
 pass	String.from-bytes over a rope-backed slice accepts aligned windows and rejects a mid-scalar cut
 pass	String.from-bytes rejects a slice that splits a multibyte scalar and accepts aligned cuts
 pass	String.slice across a multibyte scalar carries byte-len 2 with scalar-len 1, and degenerate ranges answer Some-empty / None
 pass	String.slice spanning a rope seam maps a scalar range to the exact byte extent
+pass	String.to-bytes of a rope round-trips through from-bytes equal, and a mid-scalar cut declines
 pass	Symbol.of over a slice VIEW interns exactly the window, flat or rope-backed
 pass	THREE stacked guards on one constructor classify a heap payload into bands in order
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
@@ -828,6 +830,7 @@ pass	a String param threaded through a self-recursive loop and concatenated each
 pass	a String slice VIEW keys a map by content in both directions, rope-backed included
 pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
+pass	a String-to-String op transforms a rope arg in the arm and its RESULT feeds the next perform
 pass	a Symbol interned from a rope-slice view keys maps and removes set elements
 pass	a Symbol leaf in a tuple orders content-lexicographically and decisively before later fields
 pass	a Symbol nested in a TUPLE map key keys by content through the compound descent
@@ -2766,8 +2769,10 @@ pass	a scalar element is projected DIRECTLY from a named function's runtime tupl
 pass	a scalar element is projected directly from a fn-return tuple with runtime content
 pass	a scalar element is projected directly from a function's runtime tuple result
 pass	a scalar element is projected from a let-bound runtime tuple
+pass	a scalar walk over a rope spanning ALL FOUR UTF-8 widths counts the wide scalars
 pass	a scalar-aware string shrinker converges to the 1-minimal failing string
 pass	a scalar-payload sum looked up from a map, returned via a ctor, is matched in the caller
+pass	a scalar-wise string reversal is an involution over a multibyte rope and reverses scalars, not bytes
 pass	a scaled-unit PARAMETER annotation keeps its scale across the type round-trip (mixed-scale combine)
 pass	a schema decode's Err result is handled as data on its own branch
 pass	a schema decode's Ok result is matched to recover the decoded payload
