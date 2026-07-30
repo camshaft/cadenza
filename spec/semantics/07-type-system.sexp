@@ -1852,3 +1852,26 @@
             (def (main) (match (Box (record (v 42) (tag 7))) ((Box r) (. r tag))))
             (export main)))
   (output (: 7 Int64)))
+
+; --- A chained generic instantiated at a MAP type. ---
+
+(case "a chained generic instantiates at a MAP type and both tuple slots share the CHAMP"
+  (doc    "The heap-collection instantiation of the chained generic (the landed pin instantiates at
+           Int64 + String): `dup` duplicates a MAP through two module hops — both tuple slots hold
+           the SAME CHAMP handle, one read by lookup (k·10) and one by len (+1 → 51 at k=5, 1 at
+           k=0). A specialization that deep-copied the map per slot still answers right here (the
+           values agree) — what this pins is the TYPE-level instantiation at (Map Int64 Int64)
+           resolving through the chain; a resolution that monomorphized only at scalar types
+           rejects the call.")
+  (input  (do
+        (import "mid" (dup))
+        (def (main (: k Int64))
+          (do
+            (def p (dup (Map.insert Map.empty 1 k)))
+            (+ (* 10 (match (Map.lookup (. p 0) 1) ((Some v) v) ((None _u) -1)))
+               (Map.len (. p 1)))))
+        (export main)))
+  (module "base" (do (def (dup x) (tuple x x)) (export dup)))
+  (module "mid" (do (import "base" (dup)) (export dup)))
+  (call   main (: 5 Int64)) (output (: 51 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
