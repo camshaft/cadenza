@@ -294,18 +294,24 @@ def dd-root-unbound-var-declines() =
 // pins that the memo model is a FAITHFUL alternative to the eager walk (rcdzc's type_of ≡ the batch infer),
 // not a divergent reimplementation. Compares GROUNDED types (both sides ground the deferred-int sentinel).
 
-/// A coarse structural tag for a grounded Typed — enough to assert two producers agree on the root type shape.
-def typed-tag(t: Typed) = match t with
-  | Typed.TIntW(_, _) => 1
-  | Typed.TBool => 2
-  | Typed.TErr => 3
-  | Typed.TFn(_, _) => 4
-  | Typed.TSum(_) => 5
+/// EXACT structural equality on two grounded Typed — compares the FULL fact, not a collapsed tag: TIntW matches
+/// on BOTH sign AND width (so TIntW(true,64) ≠ TIntW(false,32)), TSum on its decl-id (so TSum(A) ≠ TSum(B)), the
+/// nullary TBool/TErr by kind. (PR#902: a coarse tag that mapped every TIntW→1 / every TSum→5 could let the
+/// demand-vs-walk differential PASS on a width/sign/sum-identity DISAGREEMENT — this closes that hole.) TFn is
+/// compared shallowly by kind (no covered-subset program produces a fn root here; a full TFn structural compare
+/// is unneeded until an NApp/fn-value producer lands).
+def typed-exact-eq(a: Typed, b: Typed) = match a with
+  | Typed.TIntW(sa, wa) => (match b with | Typed.TIntW(sb, wb) => ((if sa then sb else (if sb then false else true)) and (wa == wb)) | _ => false)
+  | Typed.TBool => (match b with | Typed.TBool => true | _ => false)
+  | Typed.TErr => (match b with | Typed.TErr => true | _ => false)
+  | Typed.TSum(da) => (match b with | Typed.TSum(db2) => (da == db2) | _ => false)
+  | Typed.TFn(_, _) => (match b with | Typed.TFn(_, _) => true | _ => false)
 
-/// demand-typed-root's grounded root type vs typed-of-db's — agree iff same tag. Programs from the covered subset.
+/// demand-typed-root's grounded root type vs typed-of-db's — agree iff EXACTLY equal (full width/sign/sum, not a
+/// collapsed tag). Programs from the covered subset.
 def agree(db: Db, root: Int64) = match demand-typed-root(db, root) with
   | (_d1, demandFact) => match typed-of-db(db, root, root) with
-      | (_d2, Option.Some(walkFact)) => (typed-tag(ground-deferred(demandFact)) == typed-tag(walkFact))
+      | (_d2, Option.Some(walkFact)) => typed-exact-eq(ground-deferred(demandFact), walkFact)
       | (_d2, Option.None(_)) => false
 
 @test
