@@ -474,3 +474,25 @@
   (call   main)
   (host-responses (respond Param.cut (: 4 Int64)))
   (output (: -2 Int64)))
+
+; --- Response-consumption ORDER: one accessor performed twice, and two accessors interleaved. ---
+
+(case "one @param accessor performed TWICE consumes two host responses in order"
+  (input  (do
+            (pragma param (param (: widget slider)) (: step Int64))
+            (def (main)
+              (host (Param) (- (Param.step) (Param.step))))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.step (: 50 Int64)) (respond Param.step (: 8 Int64)))
+  (output (: 42 Int64)))
+(case "two @param accessors INTERLEAVED (a b a) consume per-op response queues in perform order"
+  (input  (do
+            (pragma param (param (: widget slider)) (: a Int64))
+            (pragma param (param (: widget slider)) (: b Int64))
+            (def (main)
+              (host (Param) (+ (* 100 (Param.a)) (+ (* 10 (Param.b)) (Param.a)))))
+            (export main)))
+  (call   main)
+  (host-responses (respond Param.a (: 7 Int64)) (respond Param.b (: 5 Int64)) (respond Param.a (: 3 Int64)))
+  (output (: 753 Int64)))

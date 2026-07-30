@@ -672,6 +672,7 @@ pass	a Char-payload sum value escapes across the boundary in its canonical form
 pass	a DEFERRED resume-thunk escaping to another function re-installs the handler at apply, over a re-performing do-continuation
 pass	a DOUBLY-nested Tuple ARG (three levels deep) crosses the direct-call boundary
 pass	a DOUBLY-nested projected list, consumed then read, is unchanged (child retain through a proj chain)
+pass	a DRAINED set compares equal to the literal empty set — removal restores the canonical empty rep
 pass	a Duration constructor `secs` scales a UInt64 count to nanoseconds
 pass	a Duration constructor scaling a count past the UInt64 nanosecond range traps rather than wrapping
 pass	a FILTER-COUNT fold over a list of records tallies by a field predicate
@@ -4326,6 +4327,7 @@ pass	nested quasiquote: a level-2 deferred unquote is INDEPENDENT of the enclosi
 pass	nested quasiquote: an inner unquote at level 2 is deferred, not spliced (exact structure)
 pass	nested-Option equality observes the OUTER variant and matches identical nesting
 pass	nullary constructor patterns are uniform with unary
+pass	one @param accessor performed TWICE consumes two host responses in order
 pass	one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers
 pass	one encode-decode cycle is byte-stable
 pass	one entrypoint's host authority is not reachable by another that does not delegate it
@@ -4631,6 +4633,7 @@ pass	string indexing returns Some of the character
 pass	string inequality
 pass	string length
 pass	string length counts scalar values after normalization
+pass	string ordering walks a 400-byte MULTI-CHUNK common prefix to the deciding final byte
 pass	string slicing yields Some of the substring
 pass	string to bytes (UTF-8)
 pass	string to bytes encodes multi-byte characters
@@ -4922,6 +4925,7 @@ pass	tuple elements consume and read a shared binding in both orders
 pass	tuple keys differing only in the FLOAT component stay distinct and look up
 pass	tuple set elements order by string content across reps then the scalar tiebreak
 pass	tuples are deconstructed by pattern matching
+pass	two @param accessors INTERLEAVED (a b a) consume per-op response queues in perform order
 pass	two @param sites generate two accessors under one Param effect
 pass	two @param sites with the same name are rejected as a duplicate effect operation
 pass	truncating a rational whose integer part exceeds Int64 traps rather than wrapping
