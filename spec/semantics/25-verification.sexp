@@ -2386,7 +2386,7 @@
 ; --- Abstract theorems as collection values. ---
 
 (case "abstract theorems stored in a MAP stay unforgeable and usable — lookup returns a real Thm"
-  (doc    "The theorem-DATABASE idiom (the Thm pins bind directly or via import chains — never STORE in a collection): kernel-minted Thms as CHAMP values, looked up and consumed by kernel accessors. The abstract handle survives the collection round-trip with opacity intact — the importer indexes Thms but still cannot deconstruct them except through kernel fns.")
+  (doc    "The theorem-DATABASE idiom (the other Thm pins bind directly or via import chains; this one is the first to STORE Thms in a collection): kernel-minted Thms as CHAMP values, looked up and consumed by kernel accessors. The abstract handle survives the collection round-trip with opacity intact — the importer indexes Thms but still cannot deconstruct them except through kernel fns.")
   (module "kern"
     (do
       (type Term (Var Int64) (Eq Term Term))
