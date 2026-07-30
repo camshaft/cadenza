@@ -3203,6 +3203,7 @@ pass	a zero-bit integer width is rejected
 pass	a zero-leading list rest pattern binds the whole list in a def parameter
 pass	a zero-length slice is the empty byte sequence
 pass	abstract theorems stored in a MAP stay unforgeable and usable — lookup returns a real Thm
+pass	abstract-type values live in an importer's map and round-trip through module ops
 pass	accessing through an empty-side split-at is usable, like the equivalent literal
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	adding a cubed length to a squared length is a dimension mismatch
@@ -3656,6 +3657,7 @@ pass	b4c(conjunctive): two stacked @requires give a 2-hyp proof; licenses requir
 pass	an overwrite-churn runtime map holds one entry with the last value winning
 pass	b4c(proven): @requires(<= x 100)/@ensures(<= ret MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[ret:=body] as goal
 pass	b4c(unprovable): @ensures(<= ret MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)
+pass	bare patterns on a CONCRETELY-exported type stay legal for importers
 pass	bin-encode segment ORDER holds for runtime-swapped operand values
 pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
@@ -3826,6 +3828,8 @@ pass	decoding a runtime ROPE Bytes as UTF-8 flattens before validating (well-for
 pass	decoding a runtime ROPE Bytes that is ill-formed yields none
 pass	chained Record.with updates on one field compose with the last write winning
 pass	chained and nested do-def shadows over a param each read the prior binding
+pass	compare on a sum whose payload is BYTES declines — an unorderable leaf poisons the sum walk
+pass	compare on a sum whose payload is a FLOAT declines — the IEEE partial order never enters the walk
 pass	decoding a surrogate code point encoded as UTF-8 yields none
 pass	decoding a truncated multi-byte sequence yields none
 pass	decoding an EMPTY byte sequence yields Some of the empty string
@@ -3900,6 +3904,7 @@ pass	equality across incompatible dimensions is a compile-time error
 pass	equality across types is rejected regardless of operand order
 pass	equality against zero answers by value in both operand orders
 pass	equality applied to one operand is rejected, not a crash
+pass	equality of ABSTRACT-type values is rejected — opacity covers comparability
 pass	equality of a record with a subset of another's fields is a type error
 pass	equality of a runtime boolean against the false literal negates it
 pass	equality of a runtime boolean against the true literal is the boolean
@@ -3908,6 +3913,7 @@ pass	equality of an integer and a float is rejected, not silently promoted
 pass	equality of an integer and a string is a type error
 pass	equality of two records with different field sets is a type error
 pass	equality of two tuples of different arity is a type error
+pass	equality on a TUPLE containing a closure declines — the fn leaf poisons the compound walk
 pass	equality on an unusual signed width holds for two equal sign-extended values
 pass	equality over a Rational carried in a SUM payload respects normalization
 pass	equality over a compound mixing a float and a Bytes leaf walks both

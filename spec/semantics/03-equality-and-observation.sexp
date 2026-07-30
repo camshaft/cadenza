@@ -2706,3 +2706,42 @@
             (export main)))
   (call   main (: 30 Int64))
   (output (: 112 Int64)))
+
+; --- Unorderable/incomparable leaves inside compounds: Bytes/Float sum payloads decline compare;
+; a closure leaf declines equality (no reference-eq fallback). ---
+
+(case "compare on a sum whose payload is BYTES declines — an unorderable leaf poisons the sum walk"
+  (doc    "The decline family covers TUPLE positions; a Bytes leaf in a SUM PAYLOAD enters the walk through the discriminant-then-payload path — same-variant compare must refuse (the compiler refuses uniformly at check time), never fall back to a byte-form order.")
+  (input  (do
+            (type BP (T Bytes) (U))
+            (def (main (: k Int64))
+              (do
+                (def a (BP.T (Bytes.of (list 1 (UInt8.wrap k)))))
+                (def b (BP.T (Bytes.of (list 1 3))))
+                (match (compare a b) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3))))
+            (export main)))
+  (declines))
+
+(case "compare on a sum whose payload is a FLOAT declines — the IEEE partial order never enters the walk"
+  (doc    "The float sibling: a Float64 payload makes the sum un-orderable per the §319 carve-out; same-variant compare declines rather than smuggling the IEEE partial order (or the canonical byte order) into the sum walk.")
+  (input  (do
+            (type FP (T Float64) (U))
+            (def (main (: k Int64))
+              (do
+                (def a (FP.T (if (= k 1) 1.5 2.5)))
+                (def b (FP.T 2.0))
+                (match (compare a b) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3))))
+            (export main)))
+  (declines))
+
+(case "equality on a TUPLE containing a closure declines — the fn leaf poisons the compound walk"
+  (doc    "Direct fn = is CDZ0203; a fn INSIDE a compound must not fall back to handle/reference eq — (= (tuple 1 f) (tuple 1 f)) holds the SAME f both sides, so a reference-eq walk would return TRUE, silently blessing identity semantics the spec forbids. Pinned as the honest decline; must NEVER flip to pass-with-1.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def f (fn ((: x Int64)) (+ x k)))
+                (def t1 (tuple 1 f))
+                (def t2 (tuple 1 f))
+                (if (= t1 t2) 1 0)))
+            (export main)))
+  (declines))

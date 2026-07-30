@@ -1756,7 +1756,7 @@
   (call   main (: 4 Int64)) (output (: 0 Int64)))
 
 (case "a Bytes-compact key and a flat rebuild both hit a rope-keyed map entry; a proper-prefix slice misses"
-  (doc    "compact's DERIVED value as a key against its parent-rope entry (the compact pins are value-eq only): compact re-boxes storage into an independent allocation — a hash keyed on storage identity/chunk layout misses the content-equal twin. compact(rope) hits (100), a flat rebuild hits (10), a 2-byte compact-slice PREFIX misses (0). rust rows todo with the Bytes-CHAMP-key family.")
+  (doc    "compact's DERIVED value as a key against its parent-rope entry (the compact pins are value-eq only): compact re-boxes storage into an independent allocation — a hash keyed on storage identity/chunk layout misses the content-equal twin. compact(rope) hits (100), a flat rebuild hits (10), a 2-byte compact-slice PREFIX misses (0). The rust-target rows are TODO, tracked with the Bytes-CHAMP-key family.")
   (input  (do
             (def (main (: k Int64))
               (do

@@ -1901,3 +1901,79 @@
         (export main)))
   (call   main (: 3 Int64))
   (output (: 133 Int64)))
+
+; --- Abstract-type opacity through collections and comparability; the concrete-export perimeter. ---
+
+(case "abstract-type values live in an importer's map and round-trip through module ops"
+  (doc    "The abstract-data-type discipline × collections: `Temp` is exported as a BARE handle
+           (constructors withheld) — the importer can hold its values (here as MAP VALUES, through
+           insert/lookup/Option) and pass them back to the module's `celsius`, but never construct
+           or match them (the smart-constructor invariant — mk scales ·10 — is un-forgeable). The
+           opaque value crosses CHAMP storage and the Option projection with its rep intact (25 at
+           k=25, 0 at k=0). A map that required matching its value type (or an import that lost the
+           nominal frame) breaks the hold-don't-open contract.")
+  (input  (do
+        (import "temp" (Temp mk celsius))
+        (def (main (: k Int64))
+          (do
+            (def m (Map.insert Map.empty 1 (mk k)))
+            (match (Map.lookup m 1)
+              ((Some t) (celsius t))
+              ((None _u) -1))))
+        (export main)))
+  (module "temp"
+    (do
+      (type Temp (T Int64))
+      (def (mk (: c Int64)) (T (* c 10)))
+      (def (celsius (: t Temp)) (match t ((T v) (/ v 10))))
+      (export Temp)
+      (export mk)
+      (export celsius)))
+  (call   main (: 25 Int64)) (output (: 25 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "equality of ABSTRACT-type values is rejected — opacity covers comparability"
+  (doc    "The eq face of the abstract-type discipline: an importer holding two bare-handle `Temp`
+           values may NOT `=` them — rejected CDZ0202 (equality needs the type's content visible;
+           an abstract handle withholds it, since content-eq would leak the smart constructor's
+           internals bit-by-bit through equality probes). The importer compares only what the
+           module exposes (an exported eq/accessor). Completes the hold-don't-open contract:
+           construction CDZ0214, matching CDZ0214 (gate pending for bare), equality CDZ0202,
+           holding/passing legal (the map pin).")
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64))
+          (+ (* 10 (if (= (mk k) (mk k)) 1 0))
+             (if (= (mk k) (mk (+ k 1))) 1 0)))
+        (export main)))
+  (module "temp"
+    (do
+      (type Temp (T Int64))
+      (def (mk (: c Int64)) (T (* c 10)))
+      (export Temp)
+      (export mk)))
+  (error  CDZ0202))
+
+(case "bare patterns on a CONCRETELY-exported type stay legal for importers"
+  (doc    "The working perimeter of the bare-pattern withheld-ctor gate (the abstract-type bypass is
+           the held soundness finding): `Shape` exports its constructors CONCRETELY (`(. Shape *)`),
+           so the importer's BARE `((Circle r) ...)` match is fully legal — as is the module's own
+           internal bare match in `area` (150 + 16 → 166 at k=5; 46 at k=0 — 0·3=0·10 + 16... recompute:
+           k=0: Circle 0 → 0 → 0·10=0 + 16 = 16). Boxes the gate fix: it must key on per-name
+           VISIBILITY (withheld vs exported), not on bare-vs-qualified spelling — over-gating bare
+           patterns on concrete types would break every ordinary importer match.")
+  (input  (do
+        (import "shapes" (Shape area))
+        (def (main (: k Int64))
+          (+ (* 10 (match (Shape.Circle k) ((Circle r) (* r 3)) ((Square s) (* s s)) (_ -1)))
+             (area (Shape.Square 4))))
+        (export main)))
+  (module "shapes"
+    (do
+      (type Shape (Circle Int64) (Square Int64))
+      (def (area (: s Shape)) (match s ((Circle r) (* r 3)) ((Square s2) (* s2 s2))))
+      (export Shape)
+      (export (. Shape *))
+      (export area)))
+  (call   main (: 5 Int64)) (output (: 166 Int64))
+  (call   main (: 0 Int64)) (output (: 16 Int64)))
