@@ -1124,11 +1124,21 @@ fn collect_row_op_field_dups(db: &mut Db, id: StructId, dup_sites: &mut HashSet<
         if let Core::Record { fields } = core_of(db, body) {
             for &field in fields.values() {
                 // A field read back from the operand is a `Core::Proj{operand: binder}`. Mark it only when
-                // the projected value is a HEAP HANDLE (`get_op` None) — a scalar field copies out and must
-                // NOT be dup'd (rc++ on a non-handle corrupts). The proj must root at THIS binder.
+                // the projected value is a genuine HEAP HANDLE — a scalar field copies out (`get_op` Some,
+                // `get-int`/`get-bool`/…) and must NOT be dup'd (rc++ on a non-handle corrupts). The proj
+                // must root at THIS binder.
+                //
+                // ⚠ `get_op` returns `Ok(None)` for BOTH a heap handle AND `Ty::Unit` (the inline `IMM_UNIT`
+                // sentinel — PR#914 Copilot): a Unit field-proj is `Drop`'d INLINE by the `Core::Proj`
+                // emitter (never reaches the dup branch), so marking it a dup site imports `dup` with no
+                // matching emit → breaks "import exactly the ops we call" (a spurious import that can perturb
+                // op resolution). So EXCLUDE Unit explicitly — mark only a `get_op`-None field that is NOT
+                // `Ty::Unit` (a real heap-handle field: String/Bytes/List/Map/Set/Sum/nested-record/BigInt/
+                // Rational/Symbol). A Unit field owns no reference, so `r`'s drop can't dangle it anyway.
                 if let Core::Proj { operand, .. } = core_of(db, field)
                     && operand == binder
                     && matches!(get_op(db, field), Ok(None))
+                    && !matches!(type_of(db, field).strip_nominal(), crate::ty::Ty::Unit)
                 {
                     dup_sites.insert(field);
                 }

@@ -16901,3 +16901,96 @@
             (export main)))
   (call   main (: 1 Int64) (: 3 Int64))
   (output (: 2040 Int64)))
+
+; --- CHAMP/compound misc batch: the empty-string key, runtime key collisions, construction-route
+; list equality, heap-value overwrite churn at scale, a runtime Result-of-Result, and the 16-field
+; mixed-type record with a mid-layout row op. ---
+
+(case "the EMPTY string keys a map — hit by an empty-concat rope, distinct from a 1-char sibling"
+  (doc    "The degenerate canonical form as a KEY (zero-byte hash): the empty-CONCAT rope (\"\" ++ \"\") must hash/eq-hit the flat \"\" entry — an empty rope with a seam node vs the flat empty rep is the maximal content-vs-shape gap. The 1-char sibling stays distinct (len 2).")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def m (Map.insert (Map.insert Map.empty "" 10) (String.concat "a" "") 20))
+                (+ (* 100 (Map.len m))
+                   (+ (* 10 (match (Map.lookup m (String.concat "" "")) ((Option.Some v) 1) ((Option.None _u) 0)))
+                      (match (Map.lookup m "a") ((Option.Some v) (- v 18)) ((Option.None _u) -1))))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 212 Int64)))
+
+(case "a list-driven map build resolves a RUNTIME key collision last-wins, and the length tracks the collision"
+  (doc    "The round-trip rebuild feeds DISTINCT keys and the churn pin collides a CONSTANT one; here the collision is decided AT RUNTIME through the entry list — at k=1 all three entries collapse to one key (len 1, last-wins 99); at k=2 the keys are {1,2} with a re-insert (len 2). A build specializing on syntactic key distinctness miscounts.")
+  (input  (do
+            (def (rebuild (: es (List (Tuple Int64 Int64))) (: i Int64) (: acc (Map Int64 Int64)))
+              (match (List.at es i)
+                ((Option.Some (tuple k v)) (rebuild es (+ i 1) (Map.insert acc k v)))
+                ((Option.None _u) acc)))
+            (def (main (: k Int64))
+              (do
+                (def m (rebuild (list (tuple 1 10) (tuple k 20) (tuple 1 99)) 0 Map.empty))
+                (+ (* 100 (Map.len m))
+                   (match (Map.lookup m 1) ((Option.Some v) v) ((Option.None _u) -1)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 299 Int64))
+  (call   main (: 1 Int64)) (output (: 199 Int64)))
+
+(case "lists built by PUSH and by CONCAT compare equal by content, and order stays decisive"
+  (doc    "Construction-ROUTE equality: the RRB rep can differ by route (tail-buffer vs spine merge), so content-eq must normalize across a push-built and a concat-built pair. The k=1 face makes the wrong-order list a PALINDROME [1,1] equal to the target — maximal route difference with matching content.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def a (List.push (List.push (list) 1) k))
+                (def b (List.concat (list 1) (list k)))
+                (def c (List.concat (list k) (list 1)))
+                (+ (* 100 (if (= a b) 1 0))
+                   (+ (* 10 (if (= a c) 1 0))
+                      (if (= (list 1 2) (list 1 2)) 1 0)))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 101 Int64))
+  (call   main (: 1 Int64)) (output (: 111 Int64)))
+
+(case "same-key churn over HEAP (rope String) values drops each stale value and keeps the last"
+  (doc    "The overwrite-churn pin churns SCALARS; here the value is a fresh HEAP rope each of 500 iterations with a second live entry — each overwrite must DROP exactly the stale rope (a leak is 499 dead ropes; a double-drop is a UAF on the kept entry) and the borrowed base map survives the recursive rebinding.")
+  (input  (do
+            (def (churn (: m (Map Int64 String)) (: i Int64) (: n Int64))
+              (if (>= i n) m (churn (Map.insert m 7 (String.concat "v" (if (= (% i 2) 0) "even" "odddd"))) (+ i 1) n)))
+            (def (main (: n Int64))
+              (do
+                (def keep (Map.insert Map.empty 3 (String.concat "ke" "ep")))
+                (def m (churn keep 0 n))
+                (+ (* 100 (Map.len m))
+                   (match (Map.lookup m 7) ((Option.Some v) (String.byte-len v)) ((Option.None _u) -1)))))
+            (export main)))
+  (call   main (: 500 Int64))
+  (output (: 206 Int64)))
+
+(case "a RUNTIME Result-of-Result from chained fallible helpers dispatches all three arms"
+  (doc    "The nested-Result pins are CONST (fold at compile time); this (Result (Result Int64 String) Int64) flows at RUNTIME through validate∘parse chaining — the inner Result rides as the outer's heap payload, both tags decode at run time, and the mixed error types force distinct payload reps per level.")
+  (input  (do
+            (def (parse (: k Int64)) (: (if (> k 0) (Result.Ok k) (Result.Err "neg")) (Result Int64 String)))
+            (def (validate (: k Int64)) (: (if (< k 100) (Result.Ok (parse k)) (Result.Err 999)) (Result (Result Int64 String) Int64)))
+            (def (main (: k Int64))
+              (match (validate k)
+                ((Result.Ok (Result.Ok v)) v)
+                ((Result.Ok (Result.Err _e)) -1)
+                ((Result.Err code) (- 0 code))))
+            (export main)))
+  (call   main (: 5 Int64))   (output (: 5 Int64))
+  (call   main (: -3 Int64))  (output (: -1 Int64))
+  (call   main (: 200 Int64)) (output (: -999 Int64)))
+
+(case "a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without"
+  (doc    "Corpus records top out at ~5 fields; 16 crosses the small-bitmap/inline-layout width and the MIXED types (String/list/rope/scalars/tuple) force a non-uniform slot map. Projections at start/heap-mid/runtime/end + a mid-layout without re-slotting all higher fields — heap fields must move with their handles (a scalar-width memmove splits a heap slot).")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def r (record (f01 "a") (f02 2) (f03 (list 1 2)) (f04 4) (f05 (String.concat "b" "c")) (f06 6) (f07 7) (f08 8) (f09 9) (f10 k) (f11 11) (f12 12) (f13 13) (f14 14) (f15 15) (f16 (tuple 1 2))))
+                (def r2 (Record.without r (f08)))
+                (+ (* 1000 (. r2 f10))
+                   (+ (* 100 (String.byte-len (. r2 f05)))
+                      (+ (* 10 (List.len (. r2 f03)))
+                         (match (. r2 f16) ((tuple a b) (+ a b))))))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7223 Int64)))

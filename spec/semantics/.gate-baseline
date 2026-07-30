@@ -129,6 +129,7 @@ pass	TWO match inits in one let SEQUENCE - the second scrutinizes the first's bi
 pass	TWO sequential inner handles seed from the outer's ADVANCING state
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	WAVE reorder alternates <= and >= by index parity through a carried-element walk
+pass	a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
 pass	a 3-arg effect op binds its operands POSITIONALLY — an argument-order swap is caught
 pass	a @ensures postcondition over a HEAP result checks at exit and returns the live collection
@@ -781,6 +782,7 @@ pass	a RECURSIVE-sum value of runtime depth rides a handler resume
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
 pass	a RUNTIME Ast structural equality compares by value (Ast.Int scalar leaf and Ast.List compound)
+pass	a RUNTIME Result-of-Result from chained fallible helpers dispatches all three arms
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME if-chain selects among four different-length heap lists
 pass	a RUNTIME list of floats compares equal element-wise (the value-eq-shaped walk)
@@ -1813,6 +1815,7 @@ pass	a list-arm constructor element over a runtime-built list
 pass	a list-arm map element whose key is absent falls through
 pass	a list-carrying recursion whose base arm does a fallible indexed read compiles
 pass	a list-concatenating helper threads lists through a call
+pass	a list-driven map build resolves a RUNTIME key collision last-wins, and the length tracks the collision
 pass	a list-payload split missing the empty arm is non-exhaustive
 pass	a list-payload split missing the non-empty arm is non-exhaustive
 pass	a list-scrutinee match arm whose head is an unbound name is rejected in a recursive body (CDZ0101)
@@ -4140,6 +4143,7 @@ pass	let bindings' initializers are evaluated in binding order
 pass	list concatenation is associative by content
 pass	list ordering recurses into string elements by content across mixed reps
 pass	lists are equal by elements in order
+pass	lists built by PUSH and by CONCAT compare equal by content, and order stays decisive
 pass	literal payload refinement works in a non-head element position
 pass	literal refinement on two elements of one list pattern
 pass	looking up an absent key yields None
@@ -4504,6 +4508,7 @@ pass	scaling a quantity by a dimensionless quantity keeps its dimension
 pass	scaling an integer quantity by a bare integer of its own type keeps its dimension
 pass	scan emits the seed plus one accumulator per element (n+1 outputs)
 pass	same-effect shadowing with ADVANCING states — the outer state survives the inner handle and resumes advanced
+pass	same-key churn over HEAP (rope String) values drops each stale value and keeps the last
 pass	scan over an empty iterator emits just the seed
 pass	scan threads its accumulator left-to-right (an order-sensitive folder)
 pass	scan's kth emitted accumulator is the running fold of the first k elements
@@ -4594,6 +4599,7 @@ pass	the AST is a sum type deconstructible by pattern matching
 pass	the Bool generator covers both values across seeds (it is not a constant)
 pass	the CHECKED ground axiom le-ax cannot forge a FALSE order fact (5 <= 3) — the axiom base is consistent
 pass	the DES Duration constructors ms / us / ns each scale to the right nanosecond magnitude
+pass	the EMPTY string keys a map — hit by an empty-concat rope, distinct from a 1-char sibling
 pass	the ETA axiom is minted via new_axiom as a hypothesis-free theorem
 pass	the Float codec round-trips a negative value
 pass	the INFINITY axiom is minted via new_axiom (an infinite type exists)

@@ -6541,7 +6541,7 @@
 ; intermediate) and Ackermann (NESTED recursion — a self-call in a self-call's argument). ---
 
 (case "a full MERGE SORT (alternating split + ordered merge) sorts a runtime list, duplicates kept"
-  (doc    "The divide-and-conquer sort (corpus sorts are single-pass insorts): mutual recursion msort->msplit(alternating flip)->merge(3-way match), a TUPLE-of-lists intermediate crossing the recursion, TWO recursive msort calls per frame (a real recursion tree, not linear), and a digit-encoded FULL-order read. The k=9 face keeps a duplicate — two 9s must both survive the merge.")
+  (doc    "The divide-and-conquer sort (corpus sorts are single-pass insorts): msort calls two helpers — msplit(alternating flip) and merge(3-way match), each independently self-recursive — plus itself, a TUPLE-of-lists intermediate crossing the recursion, TWO recursive msort calls per frame (a real recursion tree, not linear — and NOT a mutual-recursion cycle: the helpers never call back to msort), and a digit-encoded FULL-order read. The k=9 face keeps a duplicate — two 9s must both survive the merge.")
   (input  (do
             (def (msplit (: xs (List Int64)) (: a (List Int64)) (: b (List Int64)) (: flip Int64))
               (match xs
