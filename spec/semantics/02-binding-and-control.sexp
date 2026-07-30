@@ -5482,3 +5482,60 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 120 Int64)))
+
+; --- The do-def shadow WORKING perimeter (banked as box-the-fix pins around the v-inference
+; do-def-shadow-over-param/let unbind fix): the shapes that were CORRECT before and after —
+; shadows over match binders, prior defs, arm-scrutinee composition, and chained/nested
+; re-shadowing each reading the PRIOR binding. ---
+
+(case "a do-def shadows a MATCH BINDER and a prior def correctly"
+  (doc    "The WORKING half of the def-shadow matrix (param and let faces are the filed finding):
+           a do-def over a MATCH BINDER rebinds properly — `(Some v)` arm binds v=k, `(def v (* v 2))`
+           reads the binder and rebinds, trailing v = 2k (10 at k=5) — and the def-over-DEF spelling
+           (:1267) reads the prior binding (15). Pins the two binder kinds the resolver already
+           handles so the param/let fix extends the SAME treatment (a fix that re-scoped ALL shadows
+           uniformly wrong would trip these).")
+  (input  (do
+        (def (f (: k Int64))
+          (match (Some k)
+            ((Some v) (do (def v (* v 2)) v))
+            ((None _u) -1)))
+        (def (main (: k Int64))
+          (+ (* 100 (f k)) (do (def x 5) (def x (+ x 10)) x)))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 1015 Int64))
+  (call   main (: 0 Int64)) (output (: 15 Int64)))
+
+(case "an arm-body shadow of the param composes with the scrutinee's pre-shadow read"
+  (doc    "Shadow × match: the scrutinee `(+ v 1)` reads the PARAM, the irrefutable arm binds w,
+           and the ARM BODY shadows v to 10w — both the shadow and the binder feed the result
+           (11(k+1): 66 at k=5, 11 at k=0). Composes the fixed param-shadow with arm scope: a
+           resolver that let the arm's shadow leak backward into the scrutinee (re-evaluating
+           it as 10w+1) or forward-scoped w wrongly breaks the multiple. Completes the shadow-fix
+           perimeter across binder positions: do-chain, nested-do, capture, and match-arm.")
+  (input  (do
+        (def (f (: v Int64))
+          (match (+ v 1)
+            (w (do (def v (* w 10)) (+ v w)))))
+        (def (main (: k Int64)) (f k))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 66 Int64))
+  (call   main (: 0 Int64)) (output (: 11 Int64)))
+
+(case "chained and nested do-def shadows over a param each read the prior binding"
+  (doc    "The composition perimeter of the def-shadow fix: THREE successive shadows of one param —
+           two sequential in the outer do (each RHS reading the PRIOR binding: v→2v→2v+1) and a
+           third inside a NESTED do (·10) — compute the full chain (110 at k=5, 10 at k=0). A scope
+           fix that rebound only the FIRST shadow (or reset the chain at the nested-do boundary)
+           truncates the pipeline; backward-only sequential visibility must hold at every link.")
+  (input  (do
+        (def (f (: v Int64))
+          (do
+            (def v (* v 2))
+            (def v (+ v 1))
+            (def w (do (def v (* v 10)) v))
+            w))
+        (def (main (: k Int64)) (f k))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 110 Int64))
+  (call   main (: 0 Int64)) (output (: 10 Int64)))

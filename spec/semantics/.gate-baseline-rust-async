@@ -1285,6 +1285,7 @@ pass	a discarded do-statement whose value would overflow is elided, so its trap 
 pass	a distinct-signature per-group call-g is a repeatable (borrow<t>) callback
 pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
+pass	a do-def shadows a MATCH BINDER and a prior def correctly
 pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
 pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
@@ -3371,6 +3372,7 @@ pass	an arm chooses its resume value by an if on the handler state
 pass	an arm re-performing its own effect with no outer handler has no home
 pass	an arm resuming with a re-perform of its OWN effect forwards to an outer handler of that effect
 pass	an arm that binds its resume in a lambda and applies it immediately folds
+pass	an arm-body shadow of the param composes with the scrutinee's pre-shadow read
 pass	an association list is searched by key with a tuple-carrying Option match
 pass	an axiom composes with the inference rules like any other theorem (SYM of ETA)
 pass	an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel
@@ -3823,6 +3825,7 @@ pass	decoding a lone continuation byte yields none
 pass	decoding a runtime ROPE Bytes as UTF-8 flattens before validating (well-formed)
 pass	decoding a runtime ROPE Bytes that is ill-formed yields none
 pass	chained Record.with updates on one field compose with the last write winning
+pass	chained and nested do-def shadows over a param each read the prior binding
 pass	decoding a surrogate code point encoded as UTF-8 yields none
 pass	decoding a truncated multi-byte sequence yields none
 pass	decoding an EMPTY byte sequence yields Some of the empty string

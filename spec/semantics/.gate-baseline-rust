@@ -1319,6 +1319,7 @@ pass	a distinct-signature round-trip applies the Int64->Int64 closure
 pass	a distinct-signature round-trip's Bool closure on a nonzero input
 pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
+pass	a do-def shadows a MATCH BINDER and a prior def correctly
 pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
 pass	a do-sequence of unit-returning performs runs each for effect, then yields the tail value
@@ -3433,6 +3434,7 @@ pass	an arm chooses its resume value by an if on the handler state
 pass	an arm re-performing its own effect with no outer handler has no home
 pass	an arm resuming with a re-perform of its OWN effect forwards to an outer handler of that effect
 pass	an arm that binds its resume in a lambda and applies it immediately folds
+pass	an arm-body shadow of the param composes with the scrutinee's pre-shadow read
 pass	an association list is searched by key with a tuple-carrying Option match
 pass	an axiom composes with the inference rules like any other theorem (SYM of ETA)
 pass	an axiom theorem is unforgeable — new_axiom's Thm cannot be fabricated outside the kernel
@@ -3752,6 +3754,7 @@ pass	capture-avoiding substitution renames a Forall binder to avoid capture (log
 pass	capture-avoiding substitution renames a binder so the substituted term's free variable is not captured
 pass	chained Record.with at TWO DIFFERENT fields holds both updates
 pass	chained `?`s unwrap three List.at reads over a sufficient list
+pass	chained and nested do-def shadows over a param each read the prior binding
 pass	chained and short-circuits through nesting: a false outer-left skips a NESTED trapping operand
 pass	chained guards of the same variant are tried in order
 pass	chaining two Unit.in conversions is a compile-time error — the inner one already unwrapped
