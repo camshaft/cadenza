@@ -10063,11 +10063,18 @@ fn emit(
         Core::Let { bindings, body } => {
             let mut extended = slots.clone();
             let mut floor = base;
-            // Track each HEAP-typed binding as `(binder, slot)`, to `drop` after the body UNLESS it
-            // escapes (Perceus). A kept binding is always a genuine runtime value — a constant tuple
-            // folds and is never kept (H2c) — so every heap binding here is an owned allocation whose
-            // reference is released once its scope ends, or transferred out if it escapes. (A scalar
-            // binding owns no heap cell → no drop.)
+            // Track each HEAP-typed binding as `(binder, slot, value)`, to `drop` after the body UNLESS it
+            // escapes (Perceus). A kept binding is a genuine runtime value — a constant tuple folds and is
+            // never kept (H2c). MOST heap bindings are OWNED allocations (a `let`-bound producer / call /
+            // constructor result): released once their scope ends, or transferred out if they escape. But a
+            // self-keyed row-op materialize binding `(record, record)` (from `materialize_row_op_operand`)
+            // binds its OPERAND, which may be a BORROW — a `Core::SumPayload` from a `(Slot.Filled r)` match
+            // arm, a `Param`, a kept `LocalRef` — owned by the scrutinee/enclosing binder, NOT here. So the
+            // drop below is GATED ON OWNERSHIP (`heap_operand_ownership` at the drop site): an owned binding
+            // is dropped/transferred as usual, but a BORROWED row-op operand must NOT be dropped (its owner
+            // reclaims it — dropping it double-frees a still-live borrow, breaker#45 witness-2 UAF). The
+            // `value` is kept in the tuple so the drop site can consult its ownership. (A scalar binding owns
+            // no heap cell → no drop.)
             let mut heap_bindings: Vec<(StructId, u32, StructId)> = Vec::new();
             for (binder, value) in &bindings {
                 let ty = type_of(db, *binder);

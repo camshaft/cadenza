@@ -532,6 +532,30 @@
   (call   main (: 3 Int64))
   (output (: 8 Int64)))
 
+(case "a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value"
+  (doc    "Finding #45 witness 2 — the borrowed-operand face (wasm fix v-wasm-opt 8f18044a3, v-memory-safety
+           co-verified). The extend-of-without chain runs INSIDE a sum-payload construction via a helper:
+           `bump-qty` matches a `(Slot.Filled r)` (r read out of a Map) and rebuilds `(Slot.Filled (Record.extend
+           (Record.without r (qty)) #\"qty\" (+ (. r qty) d)))`, then main re-projects qty = 3 + 5 = 8. Pre-fix
+           wasm silently returned 5 (the borrowed `r`'s qty field was read AFTER the without dropped it — the
+           new value was lost, k + d collapsed to d); rust/rust-async always computed 8. The SILENT wrong value
+           (not a trap) made this soundness-priority. This closes #45's second face; the first (witness 1, the
+           owned-operand field-dup trap) is the sibling pin above.")
+  (input  (do
+            (type Slot (Filled (Record (name String) (qty Int64))) (Empty))
+            (def (bump-qty (: s Slot) (: d Int64))
+              (match s
+                ((Slot.Filled r) (Slot.Filled (Record.extend (Record.without r (qty)) #"qty" (+ (. r qty) d))))
+                ((Slot.Empty _u) (Slot.Empty unit))))
+            (def (main (: k Int64))
+              (do
+                (def inv (Map.insert Map.empty 1 (Slot.Filled (record (name (String.concat "wid" "get")) (qty k)))))
+                (def v (bump-qty (Option.expect (Map.lookup inv 1) "slot") 5))
+                (match v ((Slot.Filled r) (. r qty)) ((Slot.Empty _u) -1))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 8 Int64)))
+
 (case "merging records that share a field name is rejected"
   (doc    "Witnesses type-system.md #Two Records Are Combined Only When Their Field Sets Are Disjoint (2nd
            sentence): merging two records that share a field name is a compile-time rejection (CDZ0211), so

@@ -567,3 +567,63 @@ fn a_composed_test_whose_heap_runtime_lives_only_in_the_provider_still_resolves_
         "the provider's runtime must be resolved for a runtime-free consumer (the grouping reject):\n{stdout}"
     );
 }
+
+#[test]
+fn an_imported_with_tests_file_runs_its_own_group_not_another_groups_overwrite() {
+    // PR#914 correctness (grouping-era cousin of the PR#881 stem collision): the composed emit produces a
+    // consumer for EVERY closure member that has `@test`s — so a file that is a TARGET of its own group AND an
+    // imported-with-tests MEMBER of another group (e.g. `mid` below: target of group {base}, imported member of
+    // group {base,mid,extra}) gets a `mid` consumer emitted in BOTH groups. Keyed by bare stem, the second
+    // insert would OVERWRITE the first (last-group-wins), so `mid`'s tests could run via the wrong group. The
+    // fix stores a consumer ONLY for files that are TARGETS of that group. Assert every file's OWN tests run +
+    // pass — `mid` (target of {base}) and `hi` (target of {base,mid,extra}, where mid is an imported member).
+    let dir = std::env::temp_dir().join(format!("cdz-pr914-{}", std::process::id()));
+    let cache = std::env::temp_dir().join(format!("cdz-pr914-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Two independent recursive shared libs (stay standalone → real cross-edges).
+    std::fs::write(
+        dir.join("base.cdz"),
+        "def base(n: Int64) =\n  if n == 0 then 0 else n + base(n - 1)\nexport { base }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("extra.cdz"),
+        "def extra(n: Int64) =\n  if n == 0 then 1 else n * extra(n - 1)\nexport { extra }\n",
+    )
+    .unwrap();
+    // `mid`: imports ONLY base (group key {base}), HAS its own @test, AND exports `mid`. So it's both a target
+    // of group {base} and (via `hi`) an imported-with-tests member of group {base,mid,extra}.
+    std::fs::write(
+        dir.join("mid.cdz"),
+        "import { base } from \"base\"\ndef mid(n: Int64) =\n  base(n) + 1\nexport { mid }\n\
+         @test\ndef t_mid() =\n  if base(3) == 6 then unit else trap(\"mid\")\n",
+    )
+    .unwrap();
+    // `hi`: imports base + mid + extra → a DIFFERENT group {base,mid,extra} (distinct provider closure). `mid`
+    // is an imported-with-tests member of THIS group — the cross-group `mid`-consumer that must not overwrite.
+    std::fs::write(
+        dir.join("hi.cdz"),
+        "import { base } from \"base\"\nimport { mid } from \"mid\"\nimport { extra } from \"extra\"\n\
+         @test\ndef t_hi() =\n  if mid(4) + extra(3) == 11 + 6 then unit else trap(\"hi\")\n",
+    )
+    .unwrap();
+
+    let out = Command::new(cdz())
+        .args(["test", dir.to_str().unwrap()])
+        .env("CDZ_PROVIDER_CACHE", &cache)
+        .output()
+        .expect("spawn cdz test");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Both targets pass through their OWN group's provider — mid isn't misattributed to hi's group (or lost).
+    assert!(
+        out.status.success() && stdout.contains("PASS t_mid") && stdout.contains("PASS t_hi"),
+        "an imported-with-tests file runs its own group, not a cross-group overwrite:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("exports no function") && !stdout.contains("could not run test"),
+        "no wrong-group link (the PR#914 consumer-overwrite failure mode):\n{stdout}"
+    );
+}

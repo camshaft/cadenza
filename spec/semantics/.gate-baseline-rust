@@ -5284,3 +5284,4 @@ pass	Record.extend chained onto Record.without of a map-borne record computes, n
 pass	the same without-extend chain on a LIST-borne record computes
 pass	single row ops on a map-borne record compute — without alone and extend alone
 pass	the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)
+pass	a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value
