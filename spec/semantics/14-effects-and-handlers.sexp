@@ -6162,3 +6162,51 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 3 Int64)))
+
+; --- Handler-composition perimeter: per-recursion-level handles, def-bound performs beside a
+; recursive performing loop, and closure-handle slot swapping through tail calls. ---
+
+(case "each recursion level installs its own handle around a def-bound perform"
+  (doc    "The handle-INSIDE-the-recursion contrast to the specializer finding (handle OUTSIDE a
+           recursive fn whose body def-binds a perform is the held CDZ0201): here every level of
+           `nest` installs a FRESH handle seeded with its own n, def-binds the perform, and
+           recurses NON-TAIL under it — each level reads its own seed and the sum n(n+1)/2 comes
+           back through the nested handles (10 at k=4, 0 at k=0). The per-level handle means the
+           perform's home is level-local — no cross-fn specialization needed, which is exactly why
+           this computes while the outer-handle twin doesn't; pins the shape so the specializer fix
+           doesn't disturb it.")
+  (input  (do
+        (effect E (op get (-> Unit Int64)))
+        (def (nest (: n Int64))
+          (if (= n 0)
+              0
+              (handle E n
+                ((get (u) s (resume s s)))
+                (do
+                  (def v (E.get))
+                  (+ v (nest (- n 1)))))))
+        (def (main (: k Int64)) (nest k))
+        (export main)))
+  (call   main (: 4 Int64)) (output (: 10 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "a def-bound perform composes with a recursive performing loop in one handle body"
+  (doc    "The WORKING perimeter of the recursive-specializer gap (a def-bound perform INSIDE the
+           recursive fn is the held finding): the handle body def-binds ONE perform (100k) and then
+           runs the recursive loop whose performs sit in EXPRESSION position (6k) — the two shapes
+           compose in one body (106k → 212 at k=2, 0 at k=0). Pins that the straight-line def-bound
+           fix and the expression-position recursion each keep working while the specializer learns
+           the combined shape — a fix that re-specialized the whole body wrongly breaks one addend.")
+  (input  (do
+        (effect Env (op scale (-> Int64 Int64)))
+        (def (check-all (: i Int64) (: bad Int64))
+          (if (= i 0) bad (check-all (- i 1) (+ bad (Env.scale i)))))
+        (def (main (: k Int64))
+          (handle Env k
+            ((scale (v) s (resume (* v s) s)))
+            (do
+              (def first (Env.scale 100))
+              (+ first (check-all 3 0)))))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 212 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))

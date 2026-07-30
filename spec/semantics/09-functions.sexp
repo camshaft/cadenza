@@ -6581,3 +6581,23 @@
             (export main)))
   (call   main (: 2 Int64) (: 3 Int64)) (output (: 9 Int64))
   (call   main (: 3 Int64) (: 3 Int64)) (output (: 61 Int64)))
+
+; --- Closure handles swapping parameter slots through repeated tail calls. ---
+
+(case "two closure handles swap parameter slots through repeated tail calls"
+  (doc    "The FN-HANDLE member of the tail-call permutation family (scalar, heap-list and 3-cycle
+           are its siblings): `(spin (- n 1) g f)` swaps two closure values per iteration — parity
+           decides which body answers each slot (even k → 12, odd k → 21, k=0 identity → 12). A
+           call_indirect table slot cached per PARAMETER position (rather than per VALUE) answers
+           the same body from both slots after a swap; the parity split catches it.")
+  (input  (do
+        (def (spin (: n Int64) (: f (-> Int64 Int64)) (: g (-> Int64 Int64)))
+          (if (= n 0)
+              (+ (* 10 (f 0)) (g 0))
+              (spin (- n 1) g f)))
+        (def (main (: k Int64))
+          (spin k (fn ((: x Int64)) (+ x 1)) (fn ((: x Int64)) (+ x 2))))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 12 Int64))
+  (call   main (: 3 Int64)) (output (: 21 Int64))
+  (call   main (: 0 Int64)) (output (: 12 Int64)))
