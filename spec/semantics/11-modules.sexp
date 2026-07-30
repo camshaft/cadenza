@@ -1958,8 +1958,8 @@
   (doc    "The working perimeter of the bare-pattern withheld-ctor gate (the abstract-type bypass is
            the held soundness finding): `Shape` exports its constructors CONCRETELY (`(. Shape *)`),
            so the importer's BARE `((Circle r) ...)` match is fully legal — as is the module's own
-           internal bare match in `area` (150 + 16 → 166 at k=5; 46 at k=0 — 0·3=0·10 + 16... recompute:
-           k=0: Circle 0 → 0 → 0·10=0 + 16 = 16). Boxes the gate fix: it must key on per-name
+           internal bare match in `area` (150 + 16 → 166 at k=5; 16 at k=0 — Circle 0 → 0 → 0·10=0 + 16
+           = 16). Boxes the gate fix: it must key on per-name
            VISIBILITY (withheld vs exported), not on bare-vs-qualified spelling — over-gating bare
            patterns on concrete types would break every ordinary importer match.")
   (input  (do

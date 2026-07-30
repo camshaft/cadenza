@@ -6289,3 +6289,49 @@
             (Int64.of (Src.next))))
         (export main)))
   (call   main (: 5 UInt8)) (output (: 10 Int64)))
+
+; --- SET handler state (grow + dedup) and the two-effect recursive loop with independent states. ---
+
+(case "a SET handler state grows per perform and dedupes a repeated event"
+  (doc    "The seen-set idiom as HANDLER STATE (scalar/map/record states are pinned; the set kind
+           completes the collection-state family): each `note` resumes the PRE-insert len then
+           inserts its event — distinct events step 0,1,2 (210 at k=5); a REPEATED event (k=10
+           collides with the second note) dedupes so the third len stays 1 (110). A state threading
+           that re-materialized the set per arm reads 0,0,0; one that inserted before resuming reads
+           1,2,3 — both caught. The dedupe row also pins content-hashing through the threaded state
+           (the same CHAMP the standalone set pins cover, here surviving perform/resume cycles).")
+  (input  (do
+        (effect Seen (op note (-> Int64 Int64)))
+        (def (main (: k Int64))
+          (handle Seen (Set.of (list))
+            ((note (v) st (resume (Set.len st) (Set.insert st v))))
+            (do
+              (def a (Seen.note k))
+              (def b (Seen.note 10))
+              (def c (Seen.note k))
+              (+ (* 100 c) (+ (* 10 b) a)))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 210 Int64))
+  (call   main (: 10 Int64)) (output (: 110 Int64)))
+
+(case "a recursive loop performs to TWO handlers per iteration with independent states"
+  (doc    "The two-effect specialization of the working recursion shape: each iteration performs
+           `A.geta` AND `B.getb` — two different effects homing to two different handler levels —
+           and both states step independently (A: k,k+1,k+2; B: 100,110,120 → 3k+333: 339 at k=2,
+           333 at k=0). A specializer that keyed the recursive fn's effect-clone on ONE effect
+           (dropping the second's homing) or shared the two state threads breaks an arithmetic
+           progression. The multi-effect face of the per-iteration perform family.")
+  (input  (do
+        (effect A (op geta (-> Unit Int64)))
+        (effect B (op getb (-> Unit Int64)))
+        (def (loop (: n Int64) (: acc Int64))
+          (if (= n 0) acc (loop (- n 1) (+ acc (+ (A.geta) (B.getb))))))
+        (def (main (: k Int64))
+          (handle A k
+            ((geta (u) s (resume s (+ s 1))))
+            (handle B 100
+              ((getb (u) s (resume s (+ s 10))))
+              (loop 3 0))))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 339 Int64))
+  (call   main (: 0 Int64)) (output (: 333 Int64)))

@@ -817,6 +817,7 @@ pass	a SELECT-axiom theorem is unforgeable — its Thm cannot be fabricated outs
 pass	a SELF-RECURSIVE named def passed as a value is applied twice through the parameter
 pass	a SET as a Map key hits by ORDER-INDEPENDENT inner-set content
 pass	a SET as a set element hashes by content: three build orders, one element
+pass	a SET handler state grows per perform and dedupes a repeated event
 pass	a SET of SETS dedups elements by set CONTENT — insertion-order twins collapse
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a STALLED counter makes all Set.of perform results collide to a singleton
@@ -2385,6 +2386,7 @@ pass	a recursive generic function is instantiated at two different types
 pass	a recursive generic function threading another generic is itself generic at two types
 pass	a recursive generic with a type-valued parameter monomorphizes per type, erasing the type argument
 pass	a recursive list accumulator grown by push and returned in the base arm stays a list
+pass	a recursive loop performs to TWO handlers per iteration with independent states
 pass	a recursive lower from a sum to Bytes assembles its output in match arms
 pass	a recursive map rebuilding a sum list infers its unannotated callback
 pass	a recursive parameter used only as a call argument infers from the callee's parameter type
@@ -4321,6 +4323,7 @@ pass	multi-limb BigInt map keys stay distinct and look up by full value
 pass	multi-limb BigInt set elements deduplicate by full value
 pass	reading the text a printer produced round-trips to an equal value
 pass	record equality is independent of the order fields are written
+pass	record event payloads ride pqueue insort and read both fields from the head
 pass	record fields render in canonical (key-sorted) order regardless of source order
 pass	record keys differing only in the float field stay distinct and look up
 pass	record ordering compares in canonical sorted field order, not written order

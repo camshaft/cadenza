@@ -5510,7 +5510,7 @@
   (doc    "Shadow × match: the scrutinee `(+ v 1)` reads the PARAM, the irrefutable arm binds w,
            and the ARM BODY shadows v to 10w — both the shadow and the binder feed the result
            (11(k+1): 66 at k=5, 11 at k=0). Composes the fixed param-shadow with arm scope: a
-           resolver that let the arm's shadow leak backward into the scrutinee (re-evaluating
+           resolver that lets the arm's shadow leak backward into the scrutinee (re-evaluating
            it as 10w+1) or forward-scoped w wrongly breaks the multiple. Completes the shadow-fix
            perimeter across binder positions: do-chain, nested-do, capture, and match-arm.")
   (input  (do
