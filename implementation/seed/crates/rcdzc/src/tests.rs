@@ -19585,6 +19585,63 @@ mod recursion {
     }
 
     #[test]
+    fn a_row_op_over_a_map_borne_record_dups_its_borrowed_heap_field_before_the_operand_drop() {
+        // ⚠ USE-AFTER-FREE regression (breaker #45, routed 2026-07-29): `Record.extend` chained onto
+        // `Record.without` of a record READ OUT OF A MAP (a CHAMP value) trapped "out of bounds memory
+        // access" (or silently returned a wrong value one wrap deeper). Root: the runtime row-op builds its
+        // result by copying each kept field via a BORROWING `arr-get` (no rc++) off the operand `r`, then
+        // the materialize-`Let{(r,r)}` DROPS `r` — freeing `r`'s owned CHAMP node, which cascades a drop to
+        // the borrowed heap field (the `name` String) → the freshly-built record holds a DANGLING field. The
+        // binder-later-use dup pass misses it (`r` is recomputed single-use — no later use to trigger a
+        // retain; the free comes from the operand's OWN drop). Fixed by `collect_row_op_field_dups`: mark
+        // each HEAP-handle field `Core::Proj` off a materialize-`Let` row-op operand as a dup site, so the
+        // emit `dup`s the borrowed field (rc++) before the operand drop — it owns an independent reference
+        // that survives. Scoped: only heap fields (a scalar field copies out — a dup on a non-handle would
+        // corrupt), only a materialize-`Let{(k,k)}`-with-`Record`-body (the row-op signature; a fresh/const
+        // record has no operand drop). `main(3)` = `(. (extend (without r qty) qty (+ (. r qty) 5)) qty)` =
+        // 3+5 = 8 (rust's oracle; wasm trapped/returned 5 before). CONTROL: the list-borne chain stays 8.
+        let compile = |src: &str| {
+            compile_component(&crate::codec::encode(&parse(src)))
+                .expect("a row-op-over-map-borne-record chain compiles")
+        };
+        let map_src = "(module m (def (main (: k Int64)) (do \
+            (def inv (Map.insert Map.empty 1 (record (name \"widget\") (qty k)))) \
+            (def r (Option.expect (Map.lookup inv 1) \"slot\")) \
+            (. (Record.extend (Record.without r (qty)) #\"qty\" (+ (. r qty) 5)) qty))) (export main))";
+        let list_src = "(module m (def (main (: k Int64)) (do \
+            (def r0 (record (name \"widget\") (qty k))) \
+            (def inv (List.push (list) r0)) \
+            (def r (Option.expect (List.at inv 0) \"slot\")) \
+            (. (Record.extend (Record.without r (qty)) #\"qty\" (+ (. r qty) 5)) qty))) (export main))";
+        let map_bytes = compile(map_src);
+        let list_bytes = compile(list_src);
+        wasmparser::validate(&map_bytes).expect("map-borne row-op chain emits a valid module");
+        wasmparser::validate(&list_bytes).expect("list-borne row-op chain emits a valid module");
+        // Store-guarded run: the map-borne chain must compute 8 (not trap / not the silent 5), matching the
+        // list-borne control — the UAF is gone because the borrowed `name` field is dup'd before `r` drops.
+        if let Some(runtime) = super::find_runtime_wasm() {
+            for (bytes, label) in [(&map_bytes, "map-borne"), (&list_bytes, "list-borne")] {
+                let opts = cdz_run::RunOpts {
+                    export: Some("main".to_string()),
+                    args: vec!["3".to_string()],
+                    runtime: Some(runtime.clone()),
+                    runtime_cache_dir: None,
+                    host_responses: Vec::new(),
+                };
+                match cdz_run::run(bytes, &opts).expect("run") {
+                    cdz_run::Outcome::Value(s) => {
+                        assert_eq!(
+                            s, "8",
+                            "{label} without→extend chain must compute 8 (k=3 + 5)"
+                        )
+                    }
+                    cdz_run::Outcome::Trap(t) => panic!("{label} chain trapped (the #45 UAF): {t}"),
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_recursive_sum_runs() {
         // sum-to(3) = 3+2+1+0 = 6. The self-call `(sum-to (+ n -1))` is a `Core::Call`; the base case
         // `(= n 0) → 0` pins the return type to Int64 (absorption), so it emits as a real function.

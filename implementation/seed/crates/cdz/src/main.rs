@@ -3914,85 +3914,38 @@ fn passthrough_status(program: &std::path::Path, args: &[String], tool: &str) ->
 /// component (the >98% per-file emit/JIT cost). BEST-EFFORT: on any hiccup (compile declines, provider or a
 /// file's consumer absent, single file, multi-dir stem-collision) `run_test_file` FALLS BACK to its exact
 /// per-file `EmitTests` compile — behavior is never worse than before.
+/// A shared-closure PROVIDER peer: its component bytes + the interface name it exports (the consumer imports
+/// under this exact name). What a consumer is linked against via `run_with_peers`.
+type ProviderPeer = (Vec<u8>, String);
+
 #[derive(Default)]
 struct Precompiled {
-    /// file-link-name → that file's `@test` CONSUMER component bytes.
-    components: std::collections::HashMap<String, Vec<u8>>,
-    /// The shared-closure PROVIDER peer: (component bytes, published interface name). `None` ⇒ no composed
-    /// provider available (single file, decline, or missing artifact) → consumers (if any) can't be linked,
-    /// so run_test_file falls back per-file.
-    provider: Option<(Vec<u8>, String)>,
+    /// file-link-name → (that file's `@test` CONSUMER component bytes, the PROVIDER-GROUP key it links
+    /// against). The group key indexes `providers`. A file absent here fell back (self-contained, decline,
+    /// or its group produced no provider) and `run_test_file` re-emits it standalone.
+    components: std::collections::HashMap<String, (Vec<u8>, String)>,
+    /// provider-group key → the group's [`ProviderPeer`]. ONE entry per GENUINE shared closure (Option-A
+    /// grouping — a `cdz test <dir>` over a HETEROGENEOUS tree emits one provider per closure, NOT one
+    /// whole-compiler union over every file). A consumer links against `providers[its group key]`; a missing
+    /// entry ⇒ that group declined ⇒ its files fall back per-file.
+    providers: std::collections::HashMap<String, ProviderPeer>,
 }
 
-fn precompile_tests_per_file(files: &[String]) -> Precompiled {
-    use std::collections::HashMap;
-    if files.is_empty() {
-        return Precompiled::default();
-    }
-    // NOTE (was `files.len() < 2`): the composed path serves TWO wins, and a single target file benefits from
-    // ONE of them. (i) BATCH amortization — lower the shared closure once across N files in this invocation —
-    // is genuinely N/A for one file. (ii) The CROSS-INVOCATION PROVIDER CACHE — persist the shared-closure
-    // provider so a LATER `cdz test <that file>` is a consumer-only HIT that skips the ~381s closure lower — is
-    // exactly the single-file-local-verify win, and it applies whenever ONE file imports a big shared closure
-    // (v-compiler-ml verifying a witness against the ~1360-def self-host closure). So we no longer blanket-skip
-    // on a single file; the real "nothing to do here" test is whether the closure UNION has a cross-file member
-    // — checked below (`asts.len() < 2`) AFTER we gather it, since a lone SELF-CONTAINED file (no imports) has
-    // no provider to hoist or cache and must stay on its byte-identical per-file compile.
-    // CORRECTNESS GATE (PR#881): a closure file's link name is its dir-BLIND STEM (`program_name` =
-    // file_stem). The union below dedups by that stem AND `run_test_file` looks its component up by the same
-    // stem — so two DIFFERENT-directory target files with the SAME stem (e.g. two `t.cdz`, or a `lib.cdz` in
-    // each of two subdirs) would collapse to one AST and a lookup could fetch the WRONG dir's component,
-    // MISATTRIBUTING pass/fail (the best-effort fallback only fires on an ABSENT component, not a
-    // present-but-wrong one). So only take the shared-precompile fast path when every target file shares ONE
-    // parent directory — then a shared stem means genuinely the same file, and the stem key is unambiguous.
-    // Otherwise return empty ⇒ every file falls back to its own per-file compile (correct, just not amortized).
-    // `cdz test <dir>` (recursive) is the multi-dir case this guards; a flat single-dir suite keeps the win.
-    let parent_of = |p: &str| {
-        std::path::Path::new(p)
-            .parent()
-            .map(|d| d.to_path_buf())
-            .unwrap_or_default()
-    };
-    let first_dir = parent_of(&files[0]);
-    if files.iter().any(|f| parent_of(f) != first_dir) {
-        return Precompiled::default();
-    }
-    // Gather the UNION of every target file's import closure, deduped by link name. Each file's closure is
-    // followed (so an imported sibling resolves), and the union is what one `EmitTestsPerFile` compile links.
-    // A file that fails to load is simply omitted from the union (it falls back to its own compile, which
-    // will report the load error located). Track a stable order for a deterministic entry marker.
-    let mut asts: HashMap<String, rcdzc::Artifact> = HashMap::new();
-    let mut first_name: Option<String> = None;
-    for f in files {
-        let Ok(closure) = load_import_closure_with(f, &|_| None) else {
-            continue;
-        };
-        for cf in &closure {
-            first_name.get_or_insert_with(|| cf.name.clone());
-            asts.entry(cf.name.clone()).or_insert_with(|| {
-                rcdzc::Artifact::new(
-                    rcdzc::Artifact::KIND_AST,
-                    cf.name.clone(),
-                    cadenza_syntax::codec::encode(&cf.arenas),
-                )
-            });
-        }
-    }
-    let Some(entry) = first_name else {
-        return Precompiled::default(); // nothing loaded — every file falls back
-    };
-    // No cross-file closure to hoist: the union is a single self-contained file (its own AST, no imported
-    // siblings). There is no provider to emit/cache and no per-file emit to amortize — the standalone
-    // `EmitTests` path is already one compile and byte-identical, so skip the composed machinery entirely.
-    // (A single file WITH imports has `asts.len() >= 2` and proceeds — that's the cross-invocation cache win.)
-    if asts.len() < 2 {
-        return Precompiled::default();
-    }
-    // The closure AST inputs (every closure file's `ast`) + the package entry marker — shared by the
-    // hash-query and the emit below. Any closure file works as the entry marker: it drives linking but does
-    // NOT restrict which files' @tests emit (all linked test defs are bucketed by file).
-    let ast_inputs: Vec<rcdzc::Artifact> = asts.into_values().collect();
-    let entry_marker = compiler_cli::entry_artifact(&entry);
+/// Compile ONE closure-group's shared provider + its `@test` consumers, with the cross-invocation provider
+/// cache — the per-group unit [`precompile_tests_per_file`] runs after partitioning the target files by
+/// shared closure. `ast_inputs` is the UNION of this group's closure ASTs (the group's target `@test` files +
+/// the shared libs they import, deduped by link name); `entry` is any closure file name (drives linking, does
+/// not restrict which files' @tests emit). Returns the provider peer (bytes + interface name) when the
+/// composed emit produced one, plus the per-file consumer components (named by file-link). Mirrors the
+/// single-union flow it replaces: `Query::ClosureHash` → HIT (`EmitTestsConsumerOnly` + cached provider) /
+/// MISS (`EmitTestsComposed` + atomic-persist). Best-effort throughout — a decline yields `(None, [])` and
+/// every file in the group falls back to its own standalone `EmitTests`.
+fn precompile_group(
+    ast_inputs: Vec<rcdzc::Artifact>,
+    entry: &str,
+    cache_dir: Option<&std::path::Path>,
+) -> (Option<ProviderPeer>, Vec<(String, Vec<u8>)>) {
+    let entry_marker = compiler_cli::entry_artifact(entry);
     let drive = |req: rcdzc::Request| -> rcdzc::CompileOutput {
         let mut inputs = ast_inputs.clone();
         inputs.push(rcdzc::Artifact::new(
@@ -4004,26 +3957,21 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
         rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
     };
 
-    // CROSS-INVOCATION PROVIDER CACHE (single-file-local-verify win): a `Query::ClosureHash` (layout only, no
-    // provider emit — ~9s) gives the canonical closure key; if we've persisted the shared-closure provider for
-    // that key, REUSE it and emit ONLY the per-file consumers (`EmitTestsConsumerOnly`, skipping the ~381s
-    // provider lower). On a miss, `EmitTestsComposed` emits the provider (+ the same closure-hash sidecar to
-    // persist by) and the consumers. So a `cdz test` after ANY run that built this closure's provider skips
-    // the provider emit. The KEY is v-rust-backend's canonical `closure_content_hash` (query, miss-sidecar,
-    // and this cache all agree — no run-side replication of the cross-edge union). An unresolvable hash → treat
-    // as a miss (emit the provider), always correct.
-    let cache_dir = provider_cache_dir();
+    // CROSS-INVOCATION PROVIDER CACHE: a `Query::ClosureHash` (layout only, no provider emit — ~9s) gives this
+    // group's canonical closure key; if we've persisted the shared-closure provider for that key, REUSE it and
+    // emit ONLY the consumers (`EmitTestsConsumerOnly`, skipping the provider lower). On a miss,
+    // `EmitTestsComposed` emits the provider (+ the closure-hash sidecar to persist by) and the consumers. The
+    // KEY is v-rust-backend's canonical `closure_content_hash` (query, miss-sidecar, and this cache all agree).
+    // An unresolvable hash → treat as a miss (emit the provider), always correct. NOTE the hash is over THIS
+    // GROUP's closure only — so grouping shrinks each provider AND scopes each cache entry to one closure (a lib
+    // change busts only the groups whose closure includes it, not the whole dir's cache).
     let closure_hash = drive(rcdzc::Request::Query(rcdzc::sidecar::Query::ClosureHash))
         .artifact(rcdzc::sidecar::KIND_CLOSURE_HASH)
         .map(|b| String::from_utf8_lossy(b).trim().to_string())
         .filter(|h| !h.is_empty());
     let cached_provider = closure_hash
         .as_ref()
-        .and_then(|h| {
-            cache_dir
-                .as_ref()
-                .map(|d| d.join(format!("{h}.provider.wasm")))
-        })
+        .and_then(|h| cache_dir.map(|d| d.join(format!("{h}.provider.wasm"))))
         .filter(|p| p.is_file())
         .and_then(|p| std::fs::read(&p).ok())
         // VALIDATE the cached bytes are a well-formed component BEFORE trusting the hit path: a truncated /
@@ -4032,15 +3980,14 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
         // MISS (re-emit + re-persist), which self-heals the bad entry. Cheap vs the emit it may avoid.
         .filter(|bytes| cdz_run::compile_component(bytes).is_ok());
 
-    // OBSERVABILITY (`CDZ_PROVIDER_CACHE_TRACE` = any non-empty value): emit ONE line to stderr recording the
-    // cache decision + closure key, so a caller can VERIFY a run warmed/hit the cache (v-compiler-ml asked
-    // exactly this) and a test can distinguish a HIT from the standalone fallback. Off by default → zero output
-    // on the normal path; peer of `CDZ_WASM_BACKTRACE` / `CDZ_DUMP_TEST_WASM`.
+    // OBSERVABILITY (`CDZ_PROVIDER_CACHE_TRACE` = any non-empty value): emit ONE line to stderr PER GROUP
+    // recording the cache decision + closure key, so a caller can VERIFY a run warmed/hit the cache (which
+    // group's provider persisted vs was reused) and a test can distinguish a HIT from the standalone fallback.
+    // Off by default → zero output on the normal path; peer of `CDZ_WASM_BACKTRACE` / `CDZ_DUMP_TEST_WASM`.
     let trace = |ev: &str| {
         if std::env::var("CDZ_PROVIDER_CACHE_TRACE").is_ok_and(|v| !v.trim().is_empty()) {
             let key = closure_hash.as_deref().unwrap_or("<no-hash>");
             let dir = cache_dir
-                .as_ref()
                 .map(|d| d.display().to_string())
                 .unwrap_or_else(|| "<no-cache-dir>".into());
             eprintln!("[provider-cache] {ev} key={key} dir={dir}");
@@ -4061,7 +4008,7 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
             .iter()
             .find(|a| a.kind == "component-provider")
             .map(|p| p.bytes.clone());
-        if let (Some(bytes), Some(dir)) = (&provider, &cache_dir) {
+        if let (Some(bytes), Some(dir)) = (&provider, cache_dir) {
             let key = out
                 .artifact(rcdzc::sidecar::KIND_CLOSURE_HASH)
                 .map(|b| String::from_utf8_lossy(b).trim().to_string())
@@ -4104,29 +4051,130 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
         (out, provider)
     };
 
-    // Demux the artifact set: the `component-name` sidecar carries the provider's interface string, and the N
-    // `component` artifacts are the per-file consumers (named by file-link). If the compile DECLINED (ill-typed
-    // @test, or the emit-side single-dir/stem guard) there may be no provider/components — each file then falls
-    // back to its own per-file `EmitTests` compile (which re-surfaces any fault located; we do NOT report here).
+    // Demux: the `component-name` sidecar carries the provider's interface string; the N `component` artifacts
+    // are the per-file consumers (named by file-link). A DECLINE (ill-typed @test, or an un-representable
+    // higher-order cross-edge in THIS group's union) yields no provider/consumers → this group's files fall
+    // back to their own per-file `EmitTests` (which re-surfaces any fault located; we do NOT report here).
     let iface = out
         .artifacts
         .iter()
         .find(|a| a.kind == "component-name")
         .map(|a| String::from_utf8_lossy(&a.bytes).into_owned());
-    let components = out
+    let consumers = out
         .artifacts
         .iter()
         .filter(|a| a.kind == "component")
         .map(|a| (a.name.clone(), a.bytes.clone()))
         .collect();
-    Precompiled {
-        components,
-        // Pair the provider with its interface name only when BOTH are present — a consumer can only be linked
-        // against a peer we can name. If either is missing the components fall back per-file (a
-        // cross-edge-excluding consumer with no provider can't run standalone → the per-file fallback re-emits
-        // it self-contained), so `provider = None` is the safe degrade.
-        provider: provider.zip(iface),
+    // Pair the provider with its interface name only when BOTH are present — a consumer can only be linked
+    // against a peer we can name; else the group's files fall back per-file (safe degrade).
+    (provider.zip(iface), consumers)
+}
+
+fn precompile_tests_per_file(files: &[String]) -> Precompiled {
+    use std::collections::HashMap;
+    if files.is_empty() {
+        return Precompiled::default();
     }
+    // NOTE (was `files.len() < 2`): the composed path serves TWO wins, and a single target file benefits from
+    // ONE of them. (i) BATCH amortization — lower the shared closure once across N files in this invocation —
+    // is genuinely N/A for one file. (ii) The CROSS-INVOCATION PROVIDER CACHE — persist the shared-closure
+    // provider so a LATER `cdz test <that file>` is a consumer-only HIT that skips the ~381s closure lower — is
+    // exactly the single-file-local-verify win, and it applies whenever ONE file imports a big shared closure
+    // (v-compiler-ml verifying a witness against the ~1360-def self-host closure). So we no longer blanket-skip
+    // on a single file; the real "nothing to do here" test is whether the closure UNION has a cross-file member
+    // — checked below (`asts.len() < 2`) AFTER we gather it, since a lone SELF-CONTAINED file (no imports) has
+    // no provider to hoist or cache and must stay on its byte-identical per-file compile.
+    // CORRECTNESS GATE (PR#881): a closure file's link name is its dir-BLIND STEM (`program_name` =
+    // file_stem). The union below dedups by that stem AND `run_test_file` looks its component up by the same
+    // stem — so two DIFFERENT-directory target files with the SAME stem (e.g. two `t.cdz`, or a `lib.cdz` in
+    // each of two subdirs) would collapse to one AST and a lookup could fetch the WRONG dir's component,
+    // MISATTRIBUTING pass/fail (the best-effort fallback only fires on an ABSENT component, not a
+    // present-but-wrong one). So only take the shared-precompile fast path when every target file shares ONE
+    // parent directory — then a shared stem means genuinely the same file, and the stem key is unambiguous.
+    // Otherwise return empty ⇒ every file falls back to its own per-file compile (correct, just not amortized).
+    // `cdz test <dir>` (recursive) is the multi-dir case this guards; a flat single-dir suite keeps the win.
+    let parent_of = |p: &str| {
+        std::path::Path::new(p)
+            .parent()
+            .map(|d| d.to_path_buf())
+            .unwrap_or_default()
+    };
+    let first_dir = parent_of(&files[0]);
+    if files.iter().any(|f| parent_of(f) != first_dir) {
+        return Precompiled::default();
+    }
+    // GROUP the target files by their genuine SHARED CLOSURE, then compose ONE provider per group (Option-A).
+    // WHY NOT one union over all files: a `cdz test <dir>` over a HETEROGENEOUS tree (e.g. compiler-ml/src, 44
+    // files importing ~20 distinct libs: parse-db, db, sread-eval, infer-db, …) would fold every file's
+    // cross-edges into ONE provider ≈ the whole compiler — the heaviest possible emit, and one un-representable
+    // higher-order cross-edge ANYWHERE in that union declines the WHOLE dir to per-file. Grouping by shared
+    // closure keeps each provider SMALL + homogeneous (the 9 `sread-eval-*` files → one sread-eval provider; a
+    // `conformance-db` file → another) and DECLINE-ISOLATED (a decline drops only its group). It also scopes
+    // each cache entry to one closure (a lib change busts only the groups whose closure includes it).
+    //
+    // The GROUP KEY is the file's IMPORTED-closure name-set (its transitive-closure link names MINUS itself) —
+    // computed free from the closure we already load. Keyed by SET EQUALITY, NOT overlap: equality does not
+    // re-collapse on a near-universal base (`db` is in almost every closure, so overlap-grouping would merge
+    // everything back into one union — the exact defect we're fixing), while equality groups genuinely-identical
+    // closures (the homogeneous families the composed path handles). A file with an EMPTY imported set (a
+    // self-contained file, no shared closure to hoist) is dropped from grouping → it falls back to standalone.
+    let cache_dir = provider_cache_dir();
+    // group key (sorted, `\0`-joined imported-closure names) → (union ASTs by link name, an entry name).
+    struct Group {
+        asts: HashMap<String, rcdzc::Artifact>,
+        entry: String,
+    }
+    let mut groups: HashMap<String, Group> = HashMap::new();
+    for f in files {
+        let Ok(closure) = load_import_closure_with(f, &|_| None) else {
+            continue; // a file that fails to load falls back to its own compile (reports the error located)
+        };
+        // The entry (element 0) is the target file; the rest are its imported closure. A file with NO imported
+        // siblings is self-contained — no provider to hoist/cache, no per-file emit to amortize — so it keeps
+        // its byte-identical standalone `EmitTests` path (not grouped).
+        if closure.len() < 2 {
+            continue;
+        }
+        let mut imported: Vec<String> = closure[1..].iter().map(|cf| cf.name.clone()).collect();
+        imported.sort();
+        imported.dedup();
+        let key = imported.join("\0");
+        let group = groups.entry(key).or_insert_with(|| Group {
+            asts: HashMap::new(),
+            entry: closure[0].name.clone(),
+        });
+        for cf in &closure {
+            group.asts.entry(cf.name.clone()).or_insert_with(|| {
+                rcdzc::Artifact::new(
+                    rcdzc::Artifact::KIND_AST,
+                    cf.name.clone(),
+                    cadenza_syntax::codec::encode(&cf.arenas),
+                )
+            });
+        }
+    }
+    if groups.is_empty() {
+        return Precompiled::default(); // nothing to compose — every file falls back
+    }
+
+    // Compose each group independently. A group whose composed emit declines contributes no provider/consumers
+    // (its files fall back per-file); the others still get their shared provider. Each consumer records WHICH
+    // group provider it links against, so `run_test_file` binds it to the right peer.
+    let mut precompiled = Precompiled::default();
+    for (key, group) in groups {
+        let ast_inputs: Vec<rcdzc::Artifact> = group.asts.into_values().collect();
+        let (provider, consumers) =
+            precompile_group(ast_inputs, &group.entry, cache_dir.as_deref());
+        let Some(provider) = provider else {
+            continue; // group declined / no nameable provider → its files fall back standalone
+        };
+        precompiled.providers.insert(key.clone(), provider);
+        for (name, bytes) in consumers {
+            precompiled.components.insert(name, (bytes, key.clone()));
+        }
+    }
+    precompiled
 }
 
 /// The directory the shared-closure PROVIDER components are cached in, content-addressed by the closure hash
@@ -4521,15 +4569,19 @@ fn run_test_file(
     // is JIT-compiled ONCE below (`compile_composition`) and reused across every trial, so a multi-trial
     // property test does NOT re-JIT per trial (PR#892 (a) — the earlier `has_multi_trial` fall-back guard is
     // obsolete now that the composed path reuses the JIT like the standalone path does).
-    let composed = match (
-        precompiled.components.get(&closure[0].name),
-        &precompiled.provider,
-    ) {
-        (Some(consumer), Some((provider_bytes, iface))) => {
-            Some((consumer.clone(), provider_bytes, iface))
-        }
-        _ => None,
-    };
+    // Look up this file's consumer + the GROUP provider it links against (Option-A per-closure grouping — a
+    // consumer records its group key, indexing `providers`). A consumer present but whose group provider is
+    // absent (shouldn't happen — they're inserted together — but degrade safely) falls back per-file.
+    let composed =
+        precompiled
+            .components
+            .get(&closure[0].name)
+            .and_then(|(consumer, group_key)| {
+                precompiled
+                    .providers
+                    .get(group_key)
+                    .map(|(provider_bytes, iface)| (consumer.clone(), provider_bytes, iface))
+            });
     let component: Vec<u8> = if let Some((consumer, _, _)) = &composed {
         consumer.clone()
     } else {
@@ -4573,11 +4625,39 @@ fn run_test_file(
     // BY CONTENT ADDRESS — the same resolution `cdz run` uses. A scalar/const test component imports no
     // runtime, so `required_runtime` returns `None` and we run with no runtime (no store needed). A missing
     // store entry is reported here, once, rather than as a trap inside each test.
-    let runtime = match resolve_test_runtime(&component, store) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("{PROG}: {file}: {e}");
-            return Err(());
+    //
+    // COMPOSED path: the consumer is CROSS-EDGE-EXCLUDING — the heap-using shared closure was hoisted into the
+    // PROVIDER — so a consumer can import NO runtime while its provider peer DOES (e.g. a cad test whose heap
+    // ops all live in the shared closure). `run_composition` composes ONE runtime for whichever of consumer OR
+    // peer declares it (they pin the SAME runtime by content hash), reading the bytes from `opts.runtime`. So
+    // we must resolve the runtime from EITHER component: try the consumer first, then fall back to the
+    // provider. Resolving from only the consumer (as the standalone path does) left `opts.runtime = None` for a
+    // consumer that imports no runtime but whose provider requires it → "requires the value-heap runtime …
+    // but none was provided" for every grouped cad test (the reject). A shared runtime is a single instance, so
+    // either source's identical bytes serve both.
+    let runtime = {
+        let consumer_rt = match resolve_test_runtime(&component, store) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("{PROG}: {file}: {e}");
+                return Err(());
+            }
+        };
+        match (consumer_rt, composed.as_ref()) {
+            // Consumer already pins the runtime — use it (same bytes the provider would resolve to).
+            (Some(rt), _) => Some(rt),
+            // Consumer imports no runtime but a provider peer may: resolve from the provider bytes.
+            (None, Some((_, provider_bytes, _))) => {
+                match resolve_test_runtime(provider_bytes, store) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("{PROG}: {file}: {e}");
+                        return Err(());
+                    }
+                }
+            }
+            // Standalone (or composed with a runtime-free provider): no runtime needed.
+            (None, _) => None,
         }
     };
 

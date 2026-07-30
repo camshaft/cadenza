@@ -2685,3 +2685,24 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 121 Int64)))
+
+; --- Ordering as a first-class value: the lazy comparator chain. ---
+
+(case "a LAZY comparator chain (Ordering + thunk) short-circuits on decisive and falls through on Equal"
+  (doc    "Ordering consumed as a FIRST-CLASS value driving a user combinator (the sort-by-key-then-key idiom): chain o1 k returns o1 unless Equal, then forces thunk k. Decisive-first must NOT invoke k (the wildcard `other` arm re-binds and returns the builtin sum intact); Equal falls to the thunk (String tie → age compare); Equal→Equal ties out. Ordering as fn param AND fn result.")
+  (input  (do
+            (def (chain (: o1 Ordering) (: k (-> Unit Ordering)))
+              (match o1
+                ((Ordering.Equal _u) (k unit))
+                (other other)))
+            (def (cmp-person (: n1 String) (: a1 Int64) (: n2 String) (: a2 Int64))
+              (chain (compare n1 n2) (fn ((: _u Unit)) (compare a1 a2))))
+            (def (ord-code (: o Ordering))
+              (match o ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+            (def (main (: a Int64))
+              (+ (* 100 (ord-code (cmp-person "amy" 30 "bob" a)))
+                 (+ (* 10 (ord-code (cmp-person "bob" 25 "bob" a)))
+                    (ord-code (cmp-person "bob" a "bob" a)))))
+            (export main)))
+  (call   main (: 30 Int64))
+  (output (: 112 Int64)))
