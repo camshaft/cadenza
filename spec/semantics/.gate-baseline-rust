@@ -47,6 +47,8 @@ pass	BigInt.of a UInt64 at u64::MAX is a positive BigInt
 pass	CATALAN numbers grow by convolving the table with itself and agree with the binomial closed form
 pass	CHUNK splits a list into fixed-size sublists with a short final chunk that reflattens intact
 pass	COIN CHANGE builds a min-coins table where greedy fails and unreachable targets report -1
+pass	DIAMOND effect: two middles each perform base's ONE effect; the entry's single handler serves both
+pass	DIAMOND: two middles import one base; the entry composes both and base's abstract type unifies
 pass	DIGITAL ROOT iterates digit sums to a fixed point and agrees with the mod-9 congruence
 pass	DIVISOR SUM pairs each small divisor with its cofactor and classifies perfect numbers
 pass	EDIT DISTANCE rolls a two-row Levenshtein table over string scalars
@@ -1186,6 +1188,8 @@ pass	a constant-index String.at result compares equal to a literal by content
 pass	a constant-index String.at result compares unequal to a different literal
 pass	a constant-returning closure threads through a recursive-generic HOF
 pass	a compound-element float renders the same full expansion as the scalar path
+pass	a constant-try helper folds and its result feeds a handler arm's resume
+todo	a constant-try helper that fails feeds the None arm's fallback into resume
 pass	a constructed Ast.Bool leaf drives an evaluated conditional
 pass	a constructor CHOSEN by matching one sum is applied to build another
 pass	a constructor STORED in a tuple is extracted and applied as a first-class closure
@@ -1649,6 +1653,7 @@ pass	a handler arm for an operation the effect does not declare is rejected
 pass	a handler arm forwarding an effect its enclosing scope does not hold is rejected
 pass	a handler arm forwards an effect its enclosing scope DOES hold and runs
 pass	a handler arm interposes on another intra-program effect and forwards
+pass	a handler arm resumes with a CLOSURE (in a tuple) capturing the op param and state
 pass	a handler arm that resumes NON-tail folds a perform in a match arm body by handler distribution
 pass	a handler arm that resumes NON-tail folds a perform in a short-circuit connective right operand
 pass	a handler arm that resumes NON-tail folds a perform in an if branch by handler distribution
@@ -2488,6 +2493,7 @@ pass	a reflected quantity type rejects a value of a different dimension
 pass	a refutable constructor pattern in a let binder is rejected
 pass	a refutable map value sub-pattern dispatches by the value's constructor
 pass	a reified (sum-of-step-shapes) lazy pull-iterator compiles, runs, and is lazy
+pass	a rename pass DERIVES each new Name from the old payload (concat suffix), quote-verified deep
 pass	a repeated condition inside a branch propagates the known truth value
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
@@ -2500,6 +2506,7 @@ pass	a returned lookup result consumed with a wildcard never inspects the payloa
 pass	a returned runtime string with a multi-byte scalar renders the scalar verbatim
 pass	a returned runtime string with a non-printable scalar renders it verbatim, not a u-escape
 pass	a reverse wrapper seeding a second generic helper with an accumulator at two element types declines pending the transitive tie
+pass	a rewrite iterates to a FIXPOINT detected by structural equality and fully collapses a nest
 pass	a right shift by a floating-point count does not silently promote
 pass	a right shift by the bit width or more traps rather than masking
 pass	a rope in a record field equals its flat-twin field
@@ -2797,6 +2804,7 @@ pass	a runtime-magnitude quantity raised to a power emits the repeated multiply
 pass	a runtime-magnitude quotient divides the erased magnitudes
 pass	a runtime-magnitude same-unit difference subtracts the erased magnitudes
 pass	a runtime-magnitude same-unit sum adds the erased magnitudes
+todo	a runtime-operand try as a list element declines pending brick 3b
 pass	a runtime-parameter start and length are bounds-checked at run time, yielding Some or None
 pass	a runtime-scrutinee match with a bare-binder first arm and a differently-typed second arm is a type error
 pass	a runtime-selected branch with a runtime-divisor div-by-zero traps only when taken
@@ -3236,6 +3244,7 @@ pass	a zero-arm match on an inhabited sum is non-exhaustive
 pass	a zero-bit integer width is rejected
 pass	a zero-leading list rest pattern binds the whole list in a def parameter
 pass	a zero-length slice is the empty byte sequence
+pass	abstract theorems stored in a MAP stay unforgeable and usable — lookup returns a real Thm
 pass	accessing through an empty-side split-at is usable, like the equivalent literal
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	adding a cubed length to a squared length is a dimension mismatch
@@ -3568,6 +3577,7 @@ pass	an integer width above the 64-bit ceiling is rejected
 pass	an integer width from runtime data is rejected, keeping widths non-dependent
 pass	an interleaved insert-remove build leaves exactly the surviving keys
 pass	an internally ill-typed unselected match arm body is a type error
+todo	an interposing handler TRANSFORMS the host response before resuming (offset adapter)
 pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
 pass	an open sum nested as another sum's payload matches with an inner wildcard
@@ -3814,6 +3824,7 @@ pass	conjunction elimination keeps BOTH operand hypotheses, not just the project
 pass	conjunction is true exactly when both operands are true
 pass	conjunction of two theorems sharing a hypothesis concatenates without dedup
 pass	conjunction shields a trapping right operand when the left is false
+pass	constant-succeeding tries as LIST-literal elements unwrap in place and the list builds
 pass	constructing a bit-field from a value wider than its width is rejected
 pass	constructing a byte sequence with a negative value is a type error
 pass	constructing a byte sequence with a value out of range is a type error
@@ -4285,6 +4296,7 @@ pass	print then read of a NEGATIVE Ast.Int round-trips (sign survives the text p
 pass	print then read of a digit-led Ast.Name reclassifies it per the number/identifier boundary
 pass	print then read of a keyword-spelled Ast.Name reclassifies it as the boolean literal
 pass	print then read of a string-spelled Ast.Name reclassifies it as an Ast.Str
+pass	print/read is IDEMPOTENT after one trip and read normalizes whitespace to one canonical tree
 pass	print/read round-trips a 12-deep nest and a 25-wide list
 pass	print/read round-trips escape-laden, multibyte, and empty string leaves
 pass	projecting a field is independent of the order fields are written

@@ -654,3 +654,57 @@
         (export main)))
   (call   main (: 7 Int64)) (output (: 10090 Int64))
   (call   main (: 0 Int64)) (output (: 10020 Int64)))
+
+; --- Fixpoint rewriting and payload-derived renames. ---
+
+(case "a rewrite iterates to a FIXPOINT detected by structural equality and fully collapses a nest"
+  (doc    "The pass-manager idiom over the single-pass walks above: an identity-elimination step iterated by `fix` whose CONVERGENCE TEST is structural = on the recursive sum (heap value-eq in the loop condition — an = that missed a difference stops early leaving a redex; one that never says equal burns fuel and returns a non-Lit). 1·(0+(1·k)) collapses to Lit k.")
+  (input  (do
+            (type Ex (Add (Tuple Ex Ex)) (Mul (Tuple Ex Ex)) (Lit Int64))
+            (def (step (: e Ex))
+              (match e
+                ((Ex.Add (tuple a b))
+                  (match (tuple (step a) (step b))
+                    ((tuple (Ex.Lit x) sb) (if (= x 0) sb (Ex.Add (tuple (Ex.Lit x) sb))))
+                    ((tuple sa sb) (Ex.Add (tuple sa sb)))))
+                ((Ex.Mul (tuple a b))
+                  (match (tuple (step a) (step b))
+                    ((tuple (Ex.Lit x) sb) (if (= x 1) sb (Ex.Mul (tuple (Ex.Lit x) sb))))
+                    ((tuple sa sb) (Ex.Mul (tuple sa sb)))))
+                ((Ex.Lit n) (Ex.Lit n))))
+            (def (fix (: e Ex) (: fuel Int64))
+              (do
+                (def e2 (step e))
+                (if (= fuel 0) e2 (if (= e2 e) e (fix e2 (- fuel 1))))))
+            (def (ev (: e Ex))
+              (match e
+                ((Ex.Add (tuple a b)) (+ (ev a) (ev b)))
+                ((Ex.Mul (tuple a b)) (* (ev a) (ev b)))
+                ((Ex.Lit n) n)))
+            (def (main (: k Int64))
+              (do
+                (def prog (Ex.Mul (tuple (Ex.Lit 1) (Ex.Add (tuple (Ex.Lit 0) (Ex.Mul (tuple (Ex.Lit 1) (Ex.Lit k))))))))
+                (def slim (fix prog 10))
+                (+ (* 100 (ev slim))
+                   (match slim ((Ex.Lit _v) 1) (_ 0)))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 701 Int64)))
+
+(case "a rename pass DERIVES each new Name from the old payload (concat suffix), quote-verified deep"
+  (doc    "The :572 rename swaps in a FIXED name; this DERIVES the new name from the OLD payload ((Ast.Name (String.concat n \"_v2\")) — the suffix-refactor idiom: the Name payload String is read AND a fresh derived String re-wrapped at every depth). Deep face quote-verified; non-Name leaf control.")
+  (input  (do
+            (def (rename node)
+              (match node
+                ((Ast.Name n) (Ast.Name (String.concat n "_v2")))
+                ((Ast.List xs) (Ast.List (ren-all xs (list))))
+                (other other)))
+            (def (ren-all (: xs (List Ast)) (: acc (List Ast)))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (ren-all t (List.push acc (rename h))))))
+            (def (main)
+              (+ (* 10 (if (= (rename (quote (f x (g y)))) (quote (f_v2 x_v2 (g_v2 y_v2)))) 1 0))
+                 (if (= (rename (quote 42)) (quote 42)) 1 0)))
+            (export main)))
+  (output (: 11 Int64)))

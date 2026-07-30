@@ -1849,3 +1849,55 @@
   (module "mid" (do (import "base" (dup)) (export dup)))
   (call   main (: 3 Int64)) (output (: 602 Int64))
   (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+; --- The DIAMOND dependency: type unification + effect identity through both arms. ---
+
+(case "DIAMOND: two middles import one base; the entry composes both and base's abstract type unifies"
+  (doc    "The module chains above are LINEAR (entry<-mid<-base); a DIAMOND has two middles importing ONE base with the entry composing both arms: base's nominal Ctr flows through left.bump and right.dbl and must unify as the SAME type — a per-import-path fresh nominal would reject dbl's argument. read(dbl(bump(mk 5))) = 12.")
+  (module "base"
+    (do
+      (type Ctr (Mk Int64))
+      (def (mk (: n Int64)) (Ctr.Mk n))
+      (def (read (: c Ctr)) (match c ((Ctr.Mk v) v)))
+      (export Ctr) (export mk) (export read)))
+  (module "left"
+    (do (import "base" (Ctr mk read))
+        (def (bump (: c Ctr)) (mk (+ (read c) 1)))
+        (export bump)))
+  (module "right"
+    (do (import "base" (Ctr mk read))
+        (def (dbl (: c Ctr)) (mk (* (read c) 2)))
+        (export dbl)))
+  (input  (do
+        (import "base" (mk read))
+        (import "left" (bump))
+        (import "right" (dbl))
+        (def (main (: n Int64)) (read (dbl (bump (mk n)))))
+        (export main)))
+  (call   main (: 5 Int64))
+  (output (: 12 Int64)))
+(case "DIAMOND effect: two middles each perform base's ONE effect; the entry's single handler serves both"
+  (doc    "The effect face of the diamond: base declares Tick, left and right EACH perform it, and the entry's ONE handler serves both arms with threaded state (3+130=133) — a per-path re-keyed effect identity would orphan one arm's perform; the stepping state proves both route through the same frame in order.")
+  (module "base"
+    (do
+      (effect Tick (op t (-> Int64 Int64)))
+      (export Tick)))
+  (module "left"
+    (do (import "base" (Tick))
+        (def (lwork (: n Int64)) (Tick.t n))
+        (export lwork)))
+  (module "right"
+    (do (import "base" (Tick))
+        (def (rwork (: n Int64)) (Tick.t (* n 10)))
+        (export rwork)))
+  (input  (do
+        (import "base" (Tick))
+        (import "left" (lwork))
+        (import "right" (rwork))
+        (def (main (: k Int64))
+          (handle Tick 0
+            ((t (v) s (resume (+ v s) (+ s 100))))
+            (+ (lwork k) (rwork k))))
+        (export main)))
+  (call   main (: 3 Int64))
+  (output (: 133 Int64)))
