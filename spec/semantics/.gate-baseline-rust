@@ -92,7 +92,10 @@ pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without divisi
 pass	Qty map VALUES unwrap, ADD, and COMPARE in one chain preserving the unit through the collection
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
 pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
+pass	Record.extend ADDS a closure field beside two existing ones and all three apply
 pass	Record.merge carries HEAP-list fields from both operands into the merged layout
+pass	Record.merge carries a CLOSURE field into the union layout and it applies
+pass	Record.pop hands back a CLOSURE field as the popped value and it applies
 pass	Record.with REPLACES one heap-list field while the sibling and the ORIGINAL stay live
 pass	Record.with on a map-extracted record leaves the stored original untouched
 pass	STACKED @requires and @ensures both enforce at runtime on one def with a heap precondition
@@ -2494,6 +2497,7 @@ pass	a round-trip consumer takes the non-applying match arm
 pass	a round-trip consumer that does NOT apply the closure on the taken branch
 pass	a row op over a constant record folds through a multi-use let binding
 pass	a row op over a constant record folds through a single-use let binding
+pass	a row-polymorphic accessor applies a FN field across two record widths
 pass	a run-sim scheduler fast-forwards the clock through two sequential sleeps in one task
 pass	a run-time-index String.at result compares equal to the same character as a literal
 pass	a run-time-index scalar read is present in bounds and absent out of bounds
