@@ -19585,6 +19585,34 @@ mod recursion {
     }
 
     #[test]
+    fn a_row_op_over_a_record_with_a_unit_field_does_not_spuriously_dup_the_unit_projection() {
+        // PR#914 Copilot invariant fix (breaker #45 follow-up): `collect_row_op_field_dups` gated the
+        // heap-field dup on `get_op(field) == Ok(None)` to mean "heap handle" — but `get_op` ALSO returns
+        // `Ok(None)` for `Ty::Unit` (the inline `IMM_UNIT` sentinel, `Drop`'d inline by the `Core::Proj`
+        // emitter, never dup'd). So a Unit field-proj wrongly entered `dup_sites` → `collect_used_ops`
+        // imported `dup` with no matching emit → broke "import exactly the ops we call" (a spurious import).
+        // Fixed by excluding `Ty::Unit` from the gate (a Unit field owns no reference — `r`'s drop can't
+        // dangle it). A row op over a record with a Unit field must emit a VALID module (a spurious dup
+        // import, or a dup on the inline-unit sentinel, would otherwise perturb op resolution / be invalid).
+        let compile = |src: &str| {
+            compile_component(&crate::codec::encode(&parse(src)))
+                .expect("a row op over a record with a Unit field compiles")
+        };
+        // `without` over a map-borne (owned) record that HAS a Unit field: the kept heap field (name via
+        // qty-drop is scalar here, so keep a String) exercises the heap-dup, while the Unit field must be
+        // skipped. Use a record with both a Unit and a String field, drop the qty, keep name+u.
+        let bytes = compile(
+            "(module m (def (main (: k Int64)) (do \
+               (def inv (Map.insert Map.empty 1 (record (name \"w\") (u unit) (qty k)))) \
+               (def r (Option.expect (Map.lookup inv 1) \"s\")) \
+               (String.byte-len (. (Record.without r (qty)) name)))) (export main))",
+        );
+        wasmparser::validate(&bytes).expect(
+            "a row op over a record with a Unit field emits a valid module (Unit proj not dup-marked)",
+        );
+    }
+
+    #[test]
     fn a_row_op_over_a_map_borne_record_dups_its_borrowed_heap_field_before_the_operand_drop() {
         // ⚠ USE-AFTER-FREE regression (breaker #45, routed 2026-07-29): `Record.extend` chained onto
         // `Record.without` of a record READ OUT OF A MAP (a CHAMP value) trapped "out of bounds memory
