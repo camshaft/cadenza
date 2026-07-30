@@ -3457,3 +3457,22 @@
                     (if (= (let ((xs (list 7)) (ys (list 8 9))) `(f ,@xs mid ,@ys)) `(f 7 mid 8 9)) 1 0))))
             (export main)))
   (output (: 111 Int64)))
+
+; --- Runtime-selected splices in a non-commutative form. ---
+
+(case "two runtime-selected splices keep their operand ORDER in a non-commutative form"
+  (doc    "Splice-slot discipline under a NON-commutative operator: two unquotes whose values are
+           runtime-SELECTED (a/b swap by k) splice into `(- ,a ,b)` — the subtraction's sign proves
+           which value landed in which slot (-10 at k=1, +10 otherwise). A splice numbering that
+           bound operands by evaluation order rather than POSITION (or cached one unquote's
+           reconstruction for both) flips or zeroes the sign. The two-splice ordered face of the
+           computed-unquote pins.")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def a (if (= k 1) 10 20))
+            (def b (if (= k 1) 20 10))
+            (Int64.of (eval (quasiquote (- (unquote a) (unquote b)))))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: -10 Int64))
+  (call   main (: 2 Int64)) (output (: 10 Int64)))

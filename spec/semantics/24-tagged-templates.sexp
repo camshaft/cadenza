@@ -597,3 +597,32 @@
             (export main)))
   (call   main (: 3 Int64) (: 7 Int64))
   (output (: 697 BigInt)))
+
+; --- A tag resolving through a re-export chain. ---
+
+(case "a tag function resolves through a re-export CHAIN and expands at the entry's site"
+  (doc    "Composes the imported-tag pin (one boundary) with the transitive re-export chain: the
+           tag lives in `tags`, `mid` re-exports it untouched, and the ENTRY's template names it
+           through two hops — expansion (compile-time) must chase the chain exactly as value
+           resolution does (7/107 with the runtime k at the consumer). A tag resolution that only
+           looked one import deep reports the unbound-tag scope error at the entry.")
+  (input  (do
+        (import "mid" (wrap))
+        (def (main (: k Int64))
+          (match (tagged-template wrap (chunks "" "") (holes (Ast.Int 7)))
+            ((Ast.List parts)
+              (match parts
+                ((list (Ast.Name f) (Ast.Int n)) (+ (Int64.of n) k))
+                (_ -2)))
+            (_ -3)))
+        (export main)))
+  (module "tags"
+    (do
+      (def (wrap chunks holes)
+        (match holes
+          ((list h) (Ast.List (list (Ast.Name "f") h)))
+          (_ (Ast.Int -1))))
+      (export wrap)))
+  (module "mid" (do (import "tags" (wrap)) (export wrap)))
+  (call   main (: 0 Int64)) (output (: 7 Int64))
+  (call   main (: 100 Int64)) (output (: 107 Int64)))

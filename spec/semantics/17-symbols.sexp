@@ -845,3 +845,22 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 115 Int64)))
+
+; --- Symbol.to-string output vs a slice VIEW of matching content. ---
+
+(case "Symbol.to-string output compares equal to a slice VIEW of matching content"
+  (doc    "The symbol→string crossing meets the view rep: `Symbol.to-string` (an interned-content
+           read) against a borrowed slice view — equal in both spellings when the window matches
+           (11 at mode 1, [1,4) = \"key\"), unequal at the shifted window (0 at mode 0, [0,3) =
+           \"xke\"). The to-string result's rep (interned leaf) and the view's rep ([off,len]
+           borrow) are the LAST unpaired string-rep combination — a to-string that returned a
+           non-canonical rep (or an eq that trusted rep identity) breaks the match row.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def v (Option.expect (String.slice "xkeyz" (if (= mode 1) 1 0) (if (= mode 1) 4 3)) "in"))
+            (+ (* 10 (if (= (Symbol.to-string #"key") v) 1 0))
+               (if (= v (Symbol.to-string (Symbol.of "key"))) 1 0))))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 11 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))

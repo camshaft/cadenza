@@ -107,6 +107,7 @@ pass	Record.merge carries a CLOSURE field into the union layout and it applies
 pass	Record.pop hands back a CLOSURE field as the popped value and it applies
 pass	Record.with REPLACES one heap-list field while the sibling and the ORIGINAL stay live
 pass	Record.with on a map-extracted record leaves the stored original untouched
+pass	Record.without strips a field on a map-extracted record and both maps stay typed
 pass	STACKED @requires and @ensures both enforce at runtime on one def with a heap precondition
 pass	STRING COMPRESSION emits char-count pairs but keeps the original unless strictly shorter
 pass	STRING ROTATION check searches the needle inside the doubled haystack at equal length
@@ -128,6 +129,7 @@ pass	String.slice across a multibyte scalar carries byte-len 2 with scalar-len 1
 pass	String.slice spanning a rope seam maps a scalar range to the exact byte extent
 pass	String.to-bytes of a rope round-trips through from-bytes equal, and a mid-scalar cut declines
 pass	Symbol.of over a slice VIEW interns exactly the window, flat or rope-backed
+pass	Symbol.to-string output compares equal to a slice VIEW of matching content
 pass	THREE stacked guards on one constructor classify a heap payload into bands in order
 pass	TO-DIGITS and FROM-DIGITS round-trip a number through its base-10 digit list
 pass	TOP-K keeps the k largest via a bounded descending insort that drops the smallest overflow
@@ -1978,6 +1980,7 @@ pass	a misspelled utf8 segment kind is rejected
 pass	a mixed-ownership inlined-match operand leaves the source map intact across repeated compares
 pass	a mixed-scale Int comparison truncates each operand to the reference (lossy, can compare equal)
 pass	a mixed-scale narrow-width Int quantity combine that overflows the inner width traps
+pass	a mixed-width float tuple with a computed f32 NaN dedupes against the canonical spelling
 pass	a module declaration binds its name in the enclosing scope
 pass	a module factory's escaping closure carries a private HEAP value in its env
 pass	a module function calls a sibling export by name
@@ -3064,6 +3067,7 @@ pass	a symbol-literal pattern nested in a variant payload matches by content
 pass	a symbol-literal pattern over a multi-byte symbol matches by content
 pass	a symbol-literal pattern over a string scrutinee is a type error
 pass	a tag function recurses over its HOLES list and folds their sum
+pass	a tag function resolves through a re-export CHAIN and expands at the entry's site
 pass	a tag that DUPLICATES its single hole splices the same runtime subtree into both slots
 pass	a tag that SWAPS its two holes delivers each runtime subtree to the exchanged slot
 pass	a tag-length-value record round-trips through construct then match
@@ -4988,6 +4992,7 @@ pass	two runtime strings compare equal by their contents
 pass	two runtime sum values compare equal by a heap walk
 pass	two runtime sums with the same payload but different variants compare unequal by a heap walk
 pass	two runtime tuples compare equal by a heap walk
+pass	two runtime-selected splices keep their operand ORDER in a non-commutative form
 pass	two same-signature Bytes-returning closures share one call — first
 pass	two same-signature Bytes-returning closures share one call — second
 pass	two same-signature String-returning closures share one call
