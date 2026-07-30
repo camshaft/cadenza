@@ -1280,6 +1280,7 @@ pass	a deeply-nested match on an inline if-of-ctors scrutinee compiles bounded (
 pass	a def parameter may be a record pattern that destructures by field
 pass	a def BODY that itself binds `ret` in an inner let composes soundly with @ensures — lexical shadowing, not a collision
 pass	a def BODY that binds `ret` in an inner let still has its @ensures checked against the ACTUAL result — traps on violation
+pass	a def-bound perform composes with a recursive performing loop in one handle body
 pass	a def-returning-lambda partial application passes through a HOF parameter
 pass	a default-fraction pragma fixes a type but adds no conversion — no-promotion still holds
 pass	a default-fraction pragma grounds a bare DECIMAL literal to its exact fraction
@@ -4008,6 +4009,7 @@ pass	dropping fields from a record leaves the remaining fields
 pass	division by negative one negates but still overflows at the minimum
 pass	each definition in a module registers a reachable export field
 pass	each literal kind quotes to its own single Ast leaf that escapes and renders
+pass	each recursion level installs its own handle around a def-bound perform
 pass	effect state threads across a successful `?`
 pass	encoding a decoded string round-trips to the same bytes
 pass	encoding and decoding a constructor-built AST round-trips to an equal value
@@ -4907,6 +4909,7 @@ pass	two bare nullary variants reflect the same undetermined type
 pass	two capturing closures stored as runtime tuple elements keep distinct captures
 pass	two capturing closures stored in a LIST are selected at runtime and the capture reads after
 pass	two chars with different scalar values are unequal
+pass	two closure handles swap parameter slots through repeated tail calls
 pass	two closures from one factory capture distinct values
 pass	two constant records with the same fields in different written order are equal
 pass	two constant sums with the same payload but different variants are not equal
