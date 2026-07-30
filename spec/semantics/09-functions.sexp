@@ -6499,3 +6499,40 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 1011 Int64))
   (call   main (: 0 Int64)) (output (: 6 Int64)))
+
+; --- Higher-order shapes: the unannotated generic compose at two arrow types, and the twice-
+; combinator tower (a closure in a closure's env in another's). ---
+
+(case "an UNANNOTATED generic compose instantiates at a scalar arrow AND a String arrow in one program"
+  (doc    "The compose pins above are explicitly type-annotated monomorphic; this is the UNANNOTATED (def (compose f g) …) instantiated at TWO arrow types in one program — Int64→Int64 twice with order-sensitivity intact through the generic (inc∘dbl vs dbl∘inc) AND String→String (shout∘shout, byte-len read). The higher-order generic must monomorphize per instantiation; a single-instantiation specialization mistypes the String site.")
+  (input  (do
+            (def (compose f g) (fn (x) (f (g x))))
+            (def (inc (: x Int64)) (+ x 1))
+            (def (dbl (: x Int64)) (* x 2))
+            (def (shout (: s String)) (String.concat s "!"))
+            (def (main (: k Int64))
+              (do
+                (def inc-then-dbl (compose dbl inc))
+                (def dbl-then-inc (compose inc dbl))
+                (def excite (compose shout shout))
+                (+ (* 1000 (inc-then-dbl k))
+                   (+ (* 10 (dbl-then-inc k))
+                      (String.byte-len (excite "hi"))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 12114 Int64)))
+
+(case "a TWICE combinator stacks — a closure capturing a closure capturing a closure applies through the tower"
+  (doc    "The compose pins hold two INDEPENDENT fns in one env; this TOWER puts a closure IN a closure's env slot IN another's (twice(twice(adder k))): applying add-4k dispatches call_indirect→env-read→call_indirect→env-read→leaf, four leaf applications. An env-slot type confusion or one-level-deep env copy breaks the second twice. Both levels read (13/7 at k=3).")
+  (input  (do
+            (def (adder (: k Int64)) (fn ((: x Int64)) (+ x k)))
+            (def (twice f) (fn ((: x Int64)) (f (f x))))
+            (def (main (: k Int64))
+              (do
+                (def add-k (adder k))
+                (def add-2k (twice add-k))
+                (def add-4k (twice add-2k))
+                (+ (* 100 (add-4k 1)) (add-2k 1))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 1307 Int64)))

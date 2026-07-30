@@ -14,6 +14,28 @@ fn cdz() -> &'static str {
     env!("CARGO_BIN_EXE_cdz")
 }
 
+/// Whether the value-heap runtime STORE is present. CI's bare `test` job runs `cargo test` with NO
+/// `cargo xtask build`, so there is no store — and a composed/heap-value `cdz test` run resolves the
+/// content-addressed runtime BEFORE it can report PASS/FAIL, failing "no runtime of content address …
+/// in the store … build it" + exiting non-zero storeless. Skip such a test when the store is absent;
+/// the store-having `gate` + `@test suites` jobs exercise it fully. Resolve the store dir the SAME way
+/// the runtime resolver does (`CADENZA_STORE` env first, else `<target>/cadenza-store`), so this guard
+/// AGREES with the storeless-rerun mechanism (which sets `CADENZA_STORE` to an empty temp dir).
+/// Mirrors the `store_present()` guard in `run_emitted_cli.rs` / `peer_list_handle_cli.rs`.
+fn store_present() -> bool {
+    if let Ok(dir) = std::env::var("CADENZA_STORE") {
+        return std::path::Path::new(&dir).is_dir()
+            && std::fs::read_dir(&dir)
+                .map(|mut e| e.next().is_some())
+                .unwrap_or(false);
+    }
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_cdz"))
+        .parent()
+        .and_then(|d| d.parent())
+        .map(|t| t.join("cadenza-store").exists())
+        .unwrap_or(false)
+}
+
 /// Write a multi-file package: `a` (1 pass + 1 fail), `b` (1 pass), `lib` (no @test). Returns the dir.
 fn package(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("cdz-perfile-{tag}-{}", std::process::id()));
@@ -367,5 +389,181 @@ fn a_single_file_with_imports_reuses_a_warmed_provider_cache() {
             && !single_out.contains("could not run test")
             && !single_out.contains("invalid peer component"),
         "the single-file run linked cleanly against the cached provider (no cross-component error):\n{single_out}"
+    );
+}
+
+#[test]
+fn a_heterogeneous_dir_composes_one_provider_per_shared_closure() {
+    // Option-A per-closure grouping: a `cdz test <dir>` over a HETEROGENEOUS tree — files importing DIFFERENT
+    // shared closures — must emit ONE provider PER genuine closure, NOT one whole-dir union. Regression guard:
+    // the composed path once folded EVERY file's cross-edges into a single union provider; on a real dir with
+    // ~20 distinct libs that provider ≈ the whole compiler, and one un-representable edge anywhere declined the
+    // WHOLE dir to per-file. Here two independent shared libs (`liba` with `fa`, `libb` with `fb`) each back
+    // their own consumer group. Assert: (1) all files pass through their respective composed providers; (2) the
+    // trace shows TWO distinct `miss persisted` keys (two providers, not one union); (3) two provider files
+    // persisted. This is the exact heterogeneous case the whole-dir union mis-scoped.
+    let dir = std::env::temp_dir().join(format!("cdz-hetero-{}", std::process::id()));
+    let cache = std::env::temp_dir().join(format!("cdz-hetero-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Closure A: recursive `fa` (stays standalone → a real cross-edge). Closure B: recursive `fb`. DISJOINT —
+    // no file imports both, so grouping by imported-closure-set yields TWO groups.
+    std::fs::write(
+        dir.join("liba.cdz"),
+        "def fa(n: Int64) =\n  if n == 0 then 0 else n + fa(n - 1)\nexport { fa }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("libb.cdz"),
+        "def fb(n: Int64) =\n  if n == 0 then 1 else n * fb(n - 1)\nexport { fb }\n",
+    )
+    .unwrap();
+    // Two @test files import liba, two import libb — four consumers across two closure groups.
+    std::fs::write(
+        dir.join("ta1.cdz"),
+        "import { fa } from \"liba\"\n@test\ndef t_a1() =\n  if fa(5) == 15 then unit else trap(\"a1\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ta2.cdz"),
+        "import { fa } from \"liba\"\n@test\ndef t_a2() =\n  if fa(4) == 10 then unit else trap(\"a2\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tb1.cdz"),
+        "import { fb } from \"libb\"\n@test\ndef t_b1() =\n  if fb(4) == 24 then unit else trap(\"b1\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tb2.cdz"),
+        "import { fb } from \"libb\"\n@test\ndef t_b2() =\n  if fb(3) == 6 then unit else trap(\"b2\")\n",
+    )
+    .unwrap();
+
+    let out = Command::new(cdz())
+        .args(["test", dir.to_str().unwrap()])
+        .env("CDZ_PROVIDER_CACHE", &cache)
+        .env("CDZ_PROVIDER_CACHE_TRACE", "1")
+        .output()
+        .expect("spawn cdz test");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // All four tests pass through their respective composed providers.
+    for t in ["PASS t_a1", "PASS t_a2", "PASS t_b1", "PASS t_b2"] {
+        assert!(
+            out.status.success() && stdout.contains(t),
+            "{t} through its group provider:\n{stdout}\n{stderr}"
+        );
+    }
+    assert!(
+        !stdout.contains("exports no function") && !stdout.contains("could not run test"),
+        "each consumer linked cleanly against ITS group's provider (no cross-group misattribution):\n{stdout}"
+    );
+    // TWO providers persisted (one per closure), with TWO DISTINCT keys — not one union. Parse the trace keys.
+    let keys: std::collections::HashSet<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("[provider-cache] miss persisted"))
+        .filter_map(|l| l.split("key=").nth(1))
+        .map(|s| s.split_whitespace().next().unwrap_or(""))
+        .collect();
+    assert!(
+        keys.len() == 2,
+        "exactly TWO distinct provider closures persisted (one per shared lib), not a single whole-dir union:\n{stderr}"
+    );
+    let persisted = std::fs::read_dir(&cache)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| {
+                    e.path()
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.ends_with(".provider.wasm"))
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    assert!(
+        persisted == 2,
+        "two provider .wasm files persisted (one per closure group), got {persisted}"
+    );
+}
+
+#[test]
+fn a_composed_test_whose_heap_runtime_lives_only_in_the_provider_still_resolves_it() {
+    // SKIP (don't fail) storeless: this composed run builds a recursive `Nat` HEAP value, so `cdz test`
+    // resolves the content-addressed value-heap runtime before it can report PASS/FAIL. With no store
+    // (CI's bare `test` job) it exits non-zero "no runtime of content address … build it". The
+    // store-having gate/@test jobs witness the run fully. (Checked up front so the guard can't miss the
+    // resolver's error string.)
+    if !store_present() {
+        eprintln!(
+            "[provider-rt] skipping: no cadenza-store (storeless test job) — a composed heap-value \
+             `cdz test` needs the runtime"
+        );
+        return;
+    }
+
+    // REGRESSION (the closure-grouping reject): a composed test's CONSUMER is cross-edge-EXCLUDING — the
+    // heap-using shared closure was hoisted into the PROVIDER. So a consumer can import NO value-heap runtime
+    // while its provider peer DOES (the shared fn constructs/consumes a heap value; the consumer only holds the
+    // handle across two shared calls). `run_test_file` resolved the runtime from the CONSUMER only, leaving
+    // `opts.runtime = None` for such a consumer → every test FAILED "component requires the value-heap runtime
+    // … but none was provided" (this hit every cad/units.cdz test once grouping made it take the composed path
+    // instead of the old whole-dir-union DECLINE-to-standalone). The fix resolves the runtime from EITHER the
+    // consumer OR the provider (they pin the same runtime by content hash). Fixture: a RECURSIVE sum type built
+    // in the shared lib (recursion keeps it a real cross-edge, not inlined; the sum value is a heap handle that
+    // crosses the peer edge), with the consumer only comparing a scalar returned from a shared accessor — so
+    // the consumer imports no runtime but the provider requires it. Pre-fix this FAILED with the runtime error;
+    // post-fix it PASSES (the provider's runtime is resolved + composed for the shared instance).
+    let dir = std::env::temp_dir().join(format!("cdz-provider-rt-{}", std::process::id()));
+    let cache = std::env::temp_dir().join(format!("cdz-provider-rt-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A recursive Peano-style sum: `mk` builds an N-deep heap value, `count` folds it back to a scalar. Both
+    // recurse (stay standalone → real cross-edges), and the `Nat` handle is the heap value crossing the edge.
+    std::fs::write(
+        dir.join("nlib.cdz"),
+        "type Nat =\n  | Z\n  | S(Nat)\ndef mk(n: Int64) =\n  if n == 0 then Nat.Z else Nat.S(mk(n - 1))\n\
+         def count(x: Nat) =\n  match x with | Nat.Z => 0 | Nat.S(r) => 1 + count(r)\nexport { mk, count }\n",
+    )
+    .unwrap();
+    // Two consumers: each builds a Nat via `mk` (in the provider), holds the handle, folds it via `count` (in
+    // the provider), and compares the resulting SCALAR — so the consumer itself performs no heap op.
+    std::fs::write(
+        dir.join("na.cdz"),
+        "import { mk, count } from \"nlib\"\n@test\ndef t_n1() =\n  let x = mk(3) in if count(x) == 3 then unit else trap(\"n1\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("nb.cdz"),
+        "import { mk, count } from \"nlib\"\n@test\ndef t_n2() =\n  let x = mk(5) in if count(x) == 5 then unit else trap(\"n2\")\n",
+    )
+    .unwrap();
+
+    let out = Command::new(cdz())
+        .args(["test", dir.to_str().unwrap()])
+        .env("CDZ_PROVIDER_CACHE", &cache)
+        .env("CDZ_PROVIDER_CACHE_TRACE", "1")
+        .output()
+        .expect("spawn cdz test");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // The composed path must fire (a provider was persisted) — else this doesn't exercise the reject path.
+    assert!(
+        stderr.contains("[provider-cache] miss persisted"),
+        "the shared Nat closure composed into a provider (else the composed runtime path isn't exercised):\n{stderr}"
+    );
+    // Both tests pass — the provider's value-heap runtime was resolved + composed even though the CONSUMER
+    // imports none. Pre-fix, both FAILED "requires the value-heap runtime … but none was provided".
+    assert!(
+        out.status.success() && stdout.contains("PASS t_n1") && stdout.contains("PASS t_n2"),
+        "a composed test whose runtime lives only in the provider still resolves it:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("but none was provided")
+            && !stdout.contains("requires the value-heap runtime"),
+        "the provider's runtime must be resolved for a runtime-free consumer (the grouping reject):\n{stdout}"
     );
 }

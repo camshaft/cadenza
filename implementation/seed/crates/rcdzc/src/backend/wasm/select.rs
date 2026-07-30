@@ -1089,6 +1089,57 @@ fn collect_shell_reclaim_child_dups(db: &mut Db, id: StructId, dup_sites: &mut H
     }
 }
 
+/// UPFRONT pass companion of the RUNTIME ROW-OP field-copy (breaker #45 UAF): a `Record.without`/`project`/
+/// `extend`/`pop`/`merge` over a RUNTIME record operand `r` lowers (`lower_record_project` etc.) to a
+/// self-keyed materialize `Core::Let{(r,r), Core::Record{ field ↦ (. r field) … }}` — the operand is
+/// evaluated once (the `(r,r)` binding) and each kept field is a `Core::Proj{operand: r, …}` reading it
+/// back. The `Let`'s escape-gated drop reclaims `r` after the record is built. But a HEAP-handle field
+/// (`get_op` None — a String/Bytes/List/Map/Set/Sum/nested-record/BigInt/Rational/Symbol) is copied by a
+/// BORROWING `arr-get` (no rc++), so when `r` is dropped its owned CHAMP/heap node cascades a drop to that
+/// child → the freshly-built record holds a DANGLING field (breaker #45: `(Record.extend (Record.without r
+/// (qty)) …)` over a map-borne record traps oob / silently reads a freed field). The binder-later-use dup
+/// pass (`mark_binder_dups`) does NOT catch it: `r` is often SINGLE-USE (recomputed per row op), so there is
+/// no "later use" to trigger a retain — the free comes from the operand's OWN materialize-`Let` drop,
+/// independent of any later use. So mark each heap-handle field `Core::Proj` off the materialize binder as a
+/// dup site: the emit (`Core::Proj` arm) then `dup`s the `arr-get` result (rc++), so the field owns an
+/// independent reference that survives `r`'s drop — the FINDING#20 borrow-outlives-container-drop remedy,
+/// one level down (the extracted FIELD, not the record). SCOPED precisely: only a self-keyed materialize
+/// `Let{(k,k)}` whose body is a `Core::Record` (the row-op signature — a `lower_runtime_compare`
+/// materialize's body is a nested `if`, not a record), only fields that are `Core::Proj{operand: k}` off
+/// THAT binder, and only when the field is a HEAP HANDLE (`get_op` None). A SCALAR field COPIES out via
+/// `get-int`/`get-bool` (no handle) → NOT marked (a `dup` on a non-handle scalar would corrupt, not leak). A
+/// FRESH/const-record row op folds to a direct `Core::Record` with no materialize-`Let` (no operand drop) →
+/// no self-keyed `Let` here → not marked (the list-borne / fresh-record controls stay green). Mirrors
+/// `collect_shell_reclaim_child_dups`'s structure; run alongside it so the emit's child-`dup` + the `dup`
+/// IMPORT decision (`collect_used_ops`) read the SAME set.
+fn collect_row_op_field_dups(db: &mut Db, id: StructId, dup_sites: &mut HashSet<StructId>) {
+    if let Core::Let { bindings, body } = core_of(db, id)
+        // A self-keyed single binding `(k, k)` — the materialize-once row-op operand signature.
+        && let [(bk, bv)] = bindings.as_slice()
+        && bk == bv
+    {
+        let binder = *bk;
+        // The materialize body must be a `Core::Record` (the row-op result); a `lower_runtime_compare`
+        // materialize wraps a nested `if`, not a record, so it is skipped.
+        if let Core::Record { fields } = core_of(db, body) {
+            for &field in fields.values() {
+                // A field read back from the operand is a `Core::Proj{operand: binder}`. Mark it only when
+                // the projected value is a HEAP HANDLE (`get_op` None) — a scalar field copies out and must
+                // NOT be dup'd (rc++ on a non-handle corrupts). The proj must root at THIS binder.
+                if let Core::Proj { operand, .. } = core_of(db, field)
+                    && operand == binder
+                    && matches!(get_op(db, field), Ok(None))
+                {
+                    dup_sites.insert(field);
+                }
+            }
+        }
+    }
+    for child in core_child_ids(db, id) {
+        collect_row_op_field_dups(db, child, dup_sites);
+    }
+}
+
 /// Perceus RETAIN placement: the set of `Core::LocalRef`/`Core::Param` OCCURRENCES (keyed by their own
 /// node id) whose reference is CONSUMED at that occurrence while the binding has a LATER live use on the
 /// same control-flow path — so the occurrence must be `dup`'d (rc++) before the consuming op runs, or the
@@ -2466,6 +2517,9 @@ pub fn collect_used_ops(
     // Also the wrapper-scrutinee shell-reclaim's consumed-child dups (must match the emit's set so the
     // `dup` import is present iff the emit dups a consumed shell child) — see `collect_shell_reclaim_child_dups`.
     collect_shell_reclaim_child_dups(db, id, &mut sites);
+    // Also the runtime row-op field-copy dups (breaker #45) — same set as the emit's `collect_row_op_field_dups`
+    // so the `dup` import is present iff the emit dups a borrowed heap field before the operand's drop.
+    collect_row_op_field_dups(db, id, &mut sites);
     if !sites.is_empty() {
         out.insert(OP_DUP);
     }
@@ -3745,6 +3799,11 @@ pub fn select_function_of(
         // extraction so the drop does not double-free a moved-out child. Computed here (upfront) so the
         // emit's child-dup + the `dup` import agree. Empty for borrow-only/all-scalar/reusable scrutinees.
         collect_shell_reclaim_child_dups(db, body, &mut code.dup_sites);
+        // The runtime row-op field-copy dups (breaker #45): a heap-handle field projected off a
+        // materialize-`Let` row-op operand must be `dup`'d before the operand's drop, else the built record
+        // holds a dangling field (a borrow outliving the operand's owned-node drop). Computed here (upfront)
+        // so the emit's child-`dup` + the `dup` import agree. Empty for scalar-only / fresh-record row ops.
+        collect_row_op_field_dups(db, body, &mut code.dup_sites);
     }
     // Scratch locals start PAST the parameters (slots `0..n` are the params); a guarded op claims scratch
     // slots from `base` up. `high` tracks the highest scratch slot used, and `scratch_ty` records each
