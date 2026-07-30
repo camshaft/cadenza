@@ -51,7 +51,9 @@ pass	DIGITAL ROOT iterates digit sums to a fixed point and agrees with the mod-9
 pass	DIVISOR SUM pairs each small divisor with its cofactor and classifies perfect numbers
 pass	EDIT DISTANCE rolls a two-row Levenshtein table over string scalars
 pass	EQUILIBRIUM INDEX finds where left and right sums balance using total minus running
+pass	Euclid's GCD runs over MULTI-LIMB BigInts — the remainder loop carries full precision
 pass	FAST-DOUBLING fib recurses on the halved index returning a pair, checked against linear iteration
+pass	Float32 arithmetic runs at 24-bit mantissa precision — 2^24+1 absorbs, 2^24+2 is exact
 pass	GRAY CODE encodes by shift-xor, decodes by xor-folding, and adjacent codes differ by one bit
 pass	HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution
 pass	HORNER polynomial evaluation folds coefficients high-to-low and agrees with a power-sum oracle
@@ -143,6 +145,7 @@ pass	a Bytes ROPE handler state GROWS by bin-append per perform and each resume 
 pass	a Bytes slice of a slice composes offsets against the VIEW and bounds against its length
 pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
+pass	a CONTINUED FRACTION evaluates bottom-up through recursive Rational division (a + 1/rest)
 pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
 pass	a Euclid gcd over MULTI-LIMB BigInts converges with limb-level mod steps
 pass	a FLETCHER-16 checksum walks a concat-built byte rope across its seams
@@ -908,6 +911,7 @@ pass	a binary integer literal
 pass	a binary literal with digit separators
 pass	a binary set operation leaves BOTH its operands unchanged — set-algebra persistence
 pass	a binary-radix literal carries the N suffix and an underscore group
+pass	a binary-search isqrt with an overflow-safe hi bound computes at i64::MAX
 pass	a bind directive naming a value definition rather than an effect is rejected
 pass	a bind directive to a package name with no interface projection is rejected
 pass	a bind directive with a malformed peer interface name is rejected
