@@ -1712,3 +1712,25 @@
           (Bytes.len (walk (Bytes.of (list 1 2 3 4 5)) 0)))
         (export main)))
   (call   main (: 0 Int64)) (output (: 2 Int64)))
+
+; --- Byte-wise reversal over a seamed rope. ---
+
+(case "a byte-wise reversal over a seamed rope is an involution and lands bytes at mirrored offsets"
+  (doc    "10-bytes walks ropes FORWARD everywhere; reversal runs the seam in BOTH directions: per-byte reverse-index read + bin-append rebuild, rev∘rev=b, and mirrored offsets r[0]/r[2] catch an off-by-one at either end.")
+  (input  (do
+            (def (brev (: b Bytes) (: i Int64) (: acc Bytes))
+              (if (< i 0) acc
+                  (match (Bytes.at b i)
+                    ((Option.Some v) (brev b (- i 1) (Bytes.concat acc (bin (u8 (UInt8.wrap v))))))
+                    ((Option.None _u) acc))))
+            (def (rev (: b Bytes)) (brev b (- (Bytes.len b) 1) (Bytes.of (list))))
+            (def (main (: k Int64))
+              (do
+                (def b (Bytes.concat (Bytes.of (list 1 (UInt8.wrap k))) (Bytes.of (list 3))))
+                (def r (rev b))
+                (+ (* 100 (if (= (rev r) b) 1 0))
+                   (+ (* 10 (Option.expect (Bytes.at r 0) "h"))
+                      (Option.expect (Bytes.at r 2) "t")))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 131 Int64)))

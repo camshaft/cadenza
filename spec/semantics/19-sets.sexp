@@ -2843,7 +2843,7 @@
   (input  (do
             (def (main (: k Int64))
               (do
-                (def a (Set.of (list (String.concat "ap" "ple") "banana")))
+                (def a (Set.of (list (String.concat "ap" (if (= k 1) "ple" "x")) "banana")))
                 (def b (Set.of (list "apple" (String.concat "che" (if (= k 1) "rry" "z")))))
                 (+ (* 100 (Set.len (Set.union a b)))
                    (+ (* 10 (Set.len (Set.intersection a b)))

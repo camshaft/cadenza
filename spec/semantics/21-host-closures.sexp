@@ -5045,3 +5045,20 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 65 Int64))
   (call   main (: 0 Int64)) (output (: -10 Int64)))
+
+; --- A closure env carrying TWO collection handles across the host boundary. ---
+
+(case "a host-crossing closure captures a CHAMP map and set and reads both per call"
+  (doc    "The capture family holds scalars/lists/snapshot-lists — never a CHAMP Map (rope value) AND a Set together: the env carries two collection handles across the resource crossing + repeated borrow calls (a drop-on-first-call or env-slot confusion breaks calls 2/3). Faces: map-hit+set-miss (300), map-miss+set-hit (-99), both-miss (-100).")
+  (input  (do
+            (def (main (: seed Int64))
+              (do
+                (def m (Map.insert (Map.insert Map.empty 1 (String.concat "on" "e")) 2 "two"))
+                (def s (Set.of (list seed 20 30)))
+                (fn ((: k Int64))
+                  (+ (* 100 (match (Map.lookup m k) ((Option.Some v) (String.byte-len v)) ((Option.None _u) -1)))
+                     (if (Set.contains s k) 1 0)))))
+            (export main)))
+  (call   main (: 10 Int64) (: 1 Int64))  (output (: 300 Int64))
+  (call   main (: 10 Int64) (: 10 Int64)) (output (: -99 Int64))
+  (call   main (: 10 Int64) (: 5 Int64))  (output (: -100 Int64)))

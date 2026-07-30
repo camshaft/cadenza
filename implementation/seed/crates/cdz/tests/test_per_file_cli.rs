@@ -613,10 +613,29 @@ fn an_imported_with_tests_file_runs_its_own_group_not_another_groups_overwrite()
     let out = Command::new(cdz())
         .args(["test", dir.to_str().unwrap()])
         .env("CDZ_PROVIDER_CACHE", &cache)
+        // PR#918: assert the COMPOSED path actually ran — `cdz test` is best-effort, so if grouping ever
+        // DECLINES it silently falls back to per-file `EmitTests` where t_mid/t_hi still PASS standalone,
+        // leaving this green WITHOUT exercising the grouping path the PR#914 regression lives in (false guard).
+        // The trace lets us require the composed providers were emitted, so a silent fallback FAILS the test.
+        .env("CDZ_PROVIDER_CACHE_TRACE", "1")
         .output()
         .expect("spawn cdz test");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // The COMPOSED path must have run — the two distinct groups ({base} for mid, {base,mid,extra} for hi) each
+    // emit + persist a provider. Require BOTH `miss persisted` keys (2 distinct) so this can't green via the
+    // per-file fallback (which emits NO provider and prints NO trace) — the PR#918 false-guard fix.
+    let keys: std::collections::HashSet<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("[provider-cache] miss persisted"))
+        .filter_map(|l| l.split("key=").nth(1))
+        .map(|s| s.split_whitespace().next().unwrap_or(""))
+        .collect();
+    assert!(
+        keys.len() >= 2,
+        "the composed grouping path ran (≥2 distinct providers persisted, one per group) — NOT a silent \
+         per-file fallback that would green without exercising the cross-group consumer path:\n{stderr}"
+    );
     // Both targets pass through their OWN group's provider — mid isn't misattributed to hi's group (or lost).
     assert!(
         out.status.success() && stdout.contains("PASS t_mid") && stdout.contains("PASS t_hi"),

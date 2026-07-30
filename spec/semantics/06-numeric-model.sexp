@@ -7810,7 +7810,7 @@
   (output (: 705 Int64)))
 
 (case "a binary-search isqrt with an overflow-safe hi bound computes at i64::MAX"
-  (doc    "The Newton isqrt probes small operands; this runs at the CHECKED-ARITH ceiling: n=i64::MAX with hi capped at isqrt(MAX)=3037000499 keeps mid*mid exactly inside checked range, so the search completes WITHOUT the overflow trap — a hi one larger would trap at the first midpoint square.")
+  (doc    "The Newton isqrt probes small operands; this runs at the CHECKED-ARITH ceiling: n=i64::MAX with hi capped at isqrt(MAX)=3037000499 keeps mid*mid exactly inside checked range, so the search completes WITHOUT the overflow trap — a hi one larger would trap at a later midpoint square once mid climbs past isqrt(MAX).")
   (input  (do
             (def (isqrt-go (: n Int64) (: lo Int64) (: hi Int64))
               (if (> lo hi) hi
