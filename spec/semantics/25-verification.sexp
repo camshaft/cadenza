@@ -2382,3 +2382,27 @@
             (def (main) (match (ax 3) ((Axiom n) n) ((Step m) m)))
             (export main)))
   (error  CDZ0214))
+
+; --- Abstract theorems as collection values. ---
+
+(case "abstract theorems stored in a MAP stay unforgeable and usable — lookup returns a real Thm"
+  (doc    "The theorem-DATABASE idiom (the Thm pins bind directly or via import chains — never STORE in a collection): kernel-minted Thms as CHAMP values, looked up and consumed by kernel accessors. The abstract handle survives the collection round-trip with opacity intact — the importer indexes Thms but still cannot deconstruct them except through kernel fns.")
+  (module "kern"
+    (do
+      (type Term (Var Int64) (Eq Term Term))
+      (type Thm (Seq (List Term) Term))
+      (def (refl (: n Int64)) (Thm.Seq (list) (Term.Eq (Term.Var n) (Term.Var n))))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _hyps c) c)))
+      (def (is-refl (: t Term)) (match t ((Term.Eq (Term.Var a) (Term.Var b)) (if (= a b) 1 0)) (_ 0)))
+      (export Term) (export Thm) (export refl) (export concl) (export is-refl)))
+  (input  (do
+            (import "kern" (Term Thm refl concl is-refl))
+            (def (main (: k Int64))
+              (do
+                (def store (Map.insert (Map.insert Map.empty 1 (refl k)) 2 (refl (+ k 1))))
+                (match (Map.lookup store 2)
+                  ((Option.Some th) (is-refl (concl th)))
+                  ((Option.None _u) -1))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64)))

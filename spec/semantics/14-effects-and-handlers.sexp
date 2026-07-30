@@ -6072,3 +6072,93 @@
             (export main)))
   (call   main (: 1 Int64) (: 2 Int64))
   (output (: 123 Int64)))
+
+; --- Effects/try leftovers: the closure-resume factory, the response-transforming adapter
+; interposer (wasm-first; rust todo rides the host-effect family), and the try-composition
+; faces (const folds through arm/ctor positions; runtime operand + failing fold are pending
+; bricks graded todo). ---
+
+(case "a handler arm resumes with a CLOSURE (in a tuple) capturing the op param and state"
+  (doc    "The factory-through-effect idiom (the deferred-resume pins wrap `resume` in a thunk; here the RESUME VALUE is a fresh closure over the arm's OWN binders): the body calls the returned fn AFTER the frame resumed, so base/s must live in the closure env, not the dead arm frame. The direct fn-typed op result curried-flattens, so the closure crosses in (Tuple (-> Int64 Int64) Int64) — also pinning a mixed closure+scalar payload through resume.")
+  (input  (do
+            (effect Mk (op make (-> Int64 (Tuple (-> Int64 Int64) Int64))))
+            (def (main (: k Int64))
+              (handle Mk 10
+                ((make (base) s (resume (tuple (fn ((: x Int64)) (+ x (+ base s))) base) s)))
+                (match (Mk.make k)
+                  ((tuple f b) (+ (f 1) (+ (f 2) b))))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 38 Int64)))
+
+(case "an interposing handler TRANSFORMS the host response before resuming (offset adapter)"
+  (doc    "The ADAPTER sibling of the observe interposer (:866 counts + forwards unchanged): the arm transforms the host response before resuming (+1000 each; 30+40 → 2070 — a dropped transform gives 70, a double-apply 3070).")
+  (input  (do
+            (effect ask (op get (-> Int64 Int64)))
+            (def (main)
+              (host (ask)
+                (handle ask unit
+                  ((get (k) s (resume (+ (ask.get k) 1000) s)))
+                  (+ (ask.get 3) (ask.get 4)))))
+            (export main)))
+  (host-responses (respond ask.get (: 30 Int64)) (respond ask.get (: 40 Int64)))
+  (host-calls (call ask.get) (call ask.get))
+  (output (: 2070 Int64)))
+
+(case "a constant-try helper folds and its result feeds a handler arm's resume"
+  (doc    "try × handler-arm composition (the effect pins keep performs on the spine, try in the body): a CONST succeeding try in a helper folds through and feeds the arm's resume.")
+  (input  (do
+            (effect Ask (op ask (-> Unit Int64)))
+            (def (get)
+              (do
+                (def v (try (Some 7)))
+                (Some (+ v 1))))
+            (def (main (: k Int64))
+              (handle Ask unit
+                ((ask (_u) s (resume (match (get) ((Option.Some v) v) ((Option.None _u) -5)) s)))
+                (+ (Ask.ask unit) (* k 100))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 108 Int64)))
+
+(case "a constant-try helper that fails feeds the None arm's fallback into resume"
+  (doc    "The failing face: the fold does NOT elide the short-circuit — the boundary block/break emit is its own pending brick, so this grades todo until it lands (oracle 95).")
+  (input  (do
+            (effect Ask (op ask (-> Unit Int64)))
+            (def (get)
+              (do
+                (def v (try (: (None unit) (Option Int64))))
+                (Some (+ v 1))))
+            (def (main (: k Int64))
+              (handle Ask unit
+                ((ask (_u) s (resume (match (get) ((Option.Some v) v) ((Option.None _u) -5)) s)))
+                (+ (Ask.ask unit) (* k 100))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 95 Int64)))
+
+(case "constant-succeeding tries as LIST-literal elements unwrap in place and the list builds"
+  (doc    "try as a COLLECTION-constructor element (the parse-all idiom): const-succeeding tries unwrap in place and the list builds.")
+  (input  (do
+            (def (mk)
+              (: (do
+                (def xs (list (try (Some 1)) (try (Some 2))))
+                (Some (List.len xs))) (Option Int64)))
+            (def (main (: k Int64))
+              (+ (* k 0) (match (mk) ((Option.Some v) v) ((Option.None _u) -1))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 2 Int64)))
+
+(case "a runtime-operand try as a list element declines pending brick 3b"
+  (doc    "The runtime face: a runtime operand mid-list hits the documented brick-3b boundary — flips when the runtime-try increment lands (oracle 3 at pick=1).")
+  (input  (do
+            (def (mk (: pick Int64))
+              (: (do
+                (def xs (list (try (Some 1)) (try (if (= pick 1) (Some 2) (: (None unit) (Option Int64)))) (try (Some 3))))
+                (Some (List.len xs))) (Option Int64)))
+            (def (main (: k Int64))
+              (match (mk k) ((Option.Some v) v) ((Option.None _u) -1)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 3 Int64)))

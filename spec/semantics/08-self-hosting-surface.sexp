@@ -96,3 +96,16 @@
           (if (= (read "(+ 1") (quote (+ 1))) 1 0))
         (export main)))
   (error  CDZ0101))
+
+; --- The print/read FIXPOINT laws. ---
+
+(case "print/read is IDEMPOTENT after one trip and read normalizes whitespace to one canonical tree"
+  (doc    "The FIXPOINT laws over the one-trip round-trip pin: read∘print∘read∘print = id on an escape+negative-float tree (a printer that re-escapes or re-spells diverges on trip TWO); print∘read∘print = print (canonical TEXT is a fixpoint — string equality catches spelling drift value-eq cannot); and read of whitespace-laden text lands on the canonical tree.")
+  (input  (do
+            (def (main (: _m Int64))
+              (+ (* 100 (if (= (read (print (read (print (quote (a "x\"y" -0.5)))))) (quote (a "x\"y" -0.5))) 1 0))
+                 (+ (* 10 (if (= (print (quote (f 2.5))) (print (read (print (quote (f 2.5)))))) 1 0))
+                    (if (= (read "( a   ( b )  )") (quote (a (b)))) 1 0))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 111 Int64)))
