@@ -5462,3 +5462,23 @@
   (output (: 102 Int64))
   (call   classify (: 9 Int64))
   (output (: 999 Int64)))
+
+; --- A guard whose condition is a user-fn call on the heap payload. ---
+
+(case "a match guard CALLS a user helper on the variant's heap payload to decide arm selection"
+  (doc    "The guard pins above use INLINE predicates; this guard's condition is a USER-FN CALL on the variant's heap payload ((is-vowel c) — the classifier idiom). On a helper-returned false the fall-through must leave the payload intact for the next arm's re-bind — the :495 borrow discipline through a CALL FRAME. Faces: vowel-hit arm 1, helper-false arm 2, None arm 0.")
+  (input  (do
+            (def (is-vowel (: s String))
+              (if (= s "a") true (if (= s "e") true (if (= s "i") true (if (= s "o") true (= s "u"))))))
+            (def (classify (: s String))
+              (match (String.at s 0)
+                ((guard (Option.Some c) (is-vowel c)) 1)
+                ((Option.Some _c) 2)
+                ((Option.None _u) 0)))
+            (def (main (: k Int64))
+              (+ (* 100 (classify (String.concat "ap" "e")))
+                 (+ (* 10 (classify (String.concat "xy" (if (= k 1) "z" "w"))))
+                    (classify ""))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 120 Int64)))
