@@ -4066,3 +4066,84 @@
             (export main)))
   (call   main (: 4294967298 Int64) (: 4294967297 Int64) (: 4294967299 Int64))
   (output (: 0 Int64)))
+
+; --- String batch: the 4-width scalar walk, scalar-wise reversal, the runtime to-bytes round
+; trip (with the mid-scalar-cut decline), and a String-to-String effect op whose result feeds
+; the next perform. ---
+
+(case "a scalar walk over a rope spanning ALL FOUR UTF-8 widths counts the wide scalars"
+  (doc    "The per-scalar walk crossing a 4-BYTE astral scalar mid-rope (the 1/2/3-byte spectrum walk exists; 4-byte was touched only via to-bytes/slice): the byte-advance must step exactly 4 at U+1D11E — a 3-byte-max stride table or surrogate-style split makes scalar-len/at disagree past it. scalar-len 5 / byte-len 11 / wide-count 3 via each returned scalar's own byte-len.")
+  (input  (do
+            (def (count-wide (: s String) (: i Int64) (: n Int64) (: acc Int64))
+              (if (>= i n) acc
+                  (match (String.at s i)
+                    ((Option.Some c) (count-wide s (+ i 1) n (+ acc (if (> (String.byte-len c) 1) 1 0))))
+                    ((Option.None _u) acc))))
+            (def (main (: k Int64))
+              (do
+                (def s (String.concat "aé日" (if (= k 1) "𝄞b" "cc")))
+                (+ (* 100 (String.scalar-len s))
+                   (+ (* 10 (String.byte-len s))
+                      (count-wide s 0 (String.scalar-len s) 0)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 613 Int64)))
+
+(case "a scalar-wise string reversal is an involution over a multibyte rope and reverses scalars, not bytes"
+  (doc    "REVERSAL is the canonical scalar-vs-byte discriminator (a byte-wise reversal of héllo splits é into an invalid sequence): rev∘rev=id over the accumulator rebuild, exact content vs the literal olléh (the multibyte scalar rides intact), scalar-len preserved. String.at returning 1-scalar STRINGS is what makes concat-accumulate expressible.")
+  (input  (do
+            (def (rev-go (: s String) (: i Int64) (: acc String))
+              (if (< i 0) acc
+                  (match (String.at s i)
+                    ((Option.Some c) (rev-go s (- i 1) (String.concat acc c)))
+                    ((Option.None _u) acc))))
+            (def (rev (: s String)) (rev-go s (- (String.scalar-len s) 1) ""))
+            (def (main (: k Int64))
+              (do
+                (def s (String.concat "hél" (if (= k 1) "lo" "la")))
+                (+ (* 100 (if (= (rev (rev s)) s) 1 0))
+                   (+ (* 10 (if (= (rev s) "olléh") 1 0))
+                      (String.scalar-len (rev s))))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 115 Int64)))
+
+(case "String.to-bytes of a rope round-trips through from-bytes equal, and a mid-scalar cut declines"
+  (doc    "The runtime-rope round-trip (the const byte-len==Bytes.len pin never crosses back): to-bytes → from-bytes → = original, AND slicing the image's first 2 bytes cuts é's scalar in half so from-bytes correctly declines to None — an invalid UTF-8 prefix must not produce a truncated string.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def s (String.concat "hé" (if (= k 1) "llo" "y")))
+                (def b (String.to-bytes s))
+                (def cut (Option.expect (Bytes.slice b 0 2) "lo"))
+                (+ (* 100 (match (String.from-bytes b) ((Option.Some s2) (if (= s s2) 1 0)) ((Option.None _u) -1)))
+                   (match (String.from-bytes cut) ((Option.Some _s) 1) ((Option.None _u) 0)))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 100 Int64)))
+
+(case "String.byte-len of a runtime rope agrees with Bytes.len of its to-bytes image"
+  (doc    "The runtime-rope face of the const agreement pin: byte-len and Bytes.len∘to-bytes must agree on a concat-built value (6 for café+s).")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def s (String.concat "café" (if (= k 1) "s" "")))
+                (if (= (String.byte-len s) (Bytes.len (String.to-bytes s))) (String.byte-len s) -1)))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 6 Int64)))
+
+(case "a String-to-String op transforms a rope arg in the arm and its RESULT feeds the next perform"
+  (doc    "The string-builder-through-effect idiom ((-> String String) op): the arm concats brackets around the rope ARG and the body RE-PERFORMS on the first result (wrap∘wrap = [[abc]], byte-len 7). Two heap values cross the arm boundary each way; the second perform consumes a rope the FIRST arm built.")
+  (input  (do
+            (effect Fmt (op wrap (-> String String)))
+            (def (main (: k Int64))
+              (handle Fmt 0
+                ((wrap (s) c (resume (String.concat "[" (String.concat s "]")) (+ c 1))))
+                (do
+                  (def a (Fmt.wrap (String.concat "ab" (if (= k 1) "c" "d"))))
+                  (def b (Fmt.wrap a))
+                  (String.byte-len b))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 7 Int64)))
