@@ -1473,7 +1473,7 @@
 ; --- Open-row projection over COLLECTION-borne records. ---
 
 (case "an open-row projection reads list-element records in a fold AND a wider record at another site"
-  (doc    "The open-row instantiation pins use DIRECT literal args; this projects records pulled OUT OF A COLLECTION — get-x applied to (List (Record (x)(t))) elements inside a recursive fold (match-bound heap elements, not literals) plus a third 3-field width at a direct site keeping the def polymorphic. A per-def single-layout specialization or literal-only projection misreads.")
+  (doc    "The open-row instantiation pins use DIRECT literal args; this projects records pulled OUT OF A COLLECTION — get-x applied to (List (Record (x Int64) (t Int64))) elements inside a recursive fold (match-bound heap elements, not literals) plus a third 3-field width at a direct site keeping the def polymorphic. A per-def single-layout specialization or literal-only projection misreads.")
   (input  (do
             (def (get-x r) (. r x))
             (def (sum-xs (: rs (List (Record (x Int64) (t Int64)))) (: i Int64) (: acc Int64))
