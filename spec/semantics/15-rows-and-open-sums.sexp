@@ -1469,3 +1469,20 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 1005 Int64))
   (call   main (: 0 Int64)) (output (: 1000 Int64)))
+
+; --- Open-row projection over COLLECTION-borne records. ---
+
+(case "an open-row projection reads list-element records in a fold AND a wider record at another site"
+  (doc    "The open-row instantiation pins use DIRECT literal args; this projects records pulled OUT OF A COLLECTION — get-x applied to (List (Record (x)(t))) elements inside a recursive fold (match-bound heap elements, not literals) plus a third 3-field width at a direct site keeping the def polymorphic. A per-def single-layout specialization or literal-only projection misreads.")
+  (input  (do
+            (def (get-x r) (. r x))
+            (def (sum-xs (: rs (List (Record (x Int64) (t Int64)))) (: i Int64) (: acc Int64))
+              (match (List.at rs i)
+                ((Option.Some r) (sum-xs rs (+ i 1) (+ acc (get-x r))))
+                ((Option.None _u) acc)))
+            (def (main (: n Int64))
+              (+ (sum-xs (list (record (x n) (t 1)) (record (x 20) (t 2))) 0 0)
+                 (get-x (record (x 5) (y 6) (z 7)))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 28 Int64)))

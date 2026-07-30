@@ -905,3 +905,22 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 304 Int64))
   (call   main (: 0 Int64)) (output (: 202 Int64)))
+
+; --- The 2-D coordinate-descent pair shrinker. ---
+
+(case "a PAIR shrinker coordinate-descends each component to a jointly 1-minimal failing pair"
+  (doc    "The shrink pins are 1-D (scalar scan, list greedy-drop, string scalar-aware); this shrinks a 2-D input whose components INTERACT through the predicate (fails iff x*y >= 12): shrinking x re-slackens y, and the fixpoint (2,6) from (10,8) is jointly 1-minimal — (1,6) and (2,5) both pass. Downward decrement-while-fails descent, fuel-bounded both axes.")
+  (input  (do
+            (def (fails (: x Int64) (: y Int64)) (>= (* x y) 12))
+            (def (shrink-x (: x Int64) (: y Int64) (: fuel Int64))
+              (if (= fuel 0) x (if (fails (- x 1) y) (shrink-x (- x 1) y (- fuel 1)) x)))
+            (def (shrink-y (: x Int64) (: y Int64) (: fuel Int64))
+              (if (= fuel 0) y (if (fails x (- y 1)) (shrink-y x (- y 1) (- fuel 1)) y)))
+            (def (main (: sx Int64) (: sy Int64))
+              (do
+                (def mx (shrink-x sx sy 100))
+                (def my (shrink-y mx sy 100))
+                (+ (* 100 mx) my)))
+            (export main)))
+  (call   main (: 10 Int64) (: 8 Int64))
+  (output (: 206 Int64)))

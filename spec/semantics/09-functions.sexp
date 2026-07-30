@@ -6601,3 +6601,76 @@
   (call   main (: 2 Int64)) (output (: 12 Int64))
   (call   main (: 3 Int64)) (output (: 21 Int64))
   (call   main (: 0 Int64)) (output (: 12 Int64)))
+
+; --- Tail-call parameter permutations (scalar swap, 3-cycle rotation, heap-slot swap) and the
+; generation-capture-before-shadow closure. ---
+
+(case "an iterative fibonacci swaps two accumulators through the tail call"
+  (doc    "The ARGUMENT-PERMUTATION hazard of tail recursion (the tree-recursive fib is :2954):
+           `(fib (- n 1) b (+ a b))` passes b INTO a's slot while a still feeds b's new value —
+           a tail-call lowering that assigns parameter slots IN ORDER without temporaries clobbers
+           a before (+ a b) reads it, degenerating the sequence (fib(10) = 55; the correct swap
+           is what makes 55 ≠ a power of b's seed). k=0 reads the initial a (0) untouched.")
+  (input  (do
+        (def (fib (: n Int64) (: a Int64) (: b Int64))
+          (if (= n 0) a (fib (- n 1) b (+ a b))))
+        (def (main (: k Int64)) (fib k 0 1))
+        (export main)))
+  (call   main (: 10 Int64)) (output (: 55 Int64))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+(case "a THREE-cycle argument rotation permutes correctly through repeated tail calls"
+  (doc    "The full-cycle sharpening of the tail-call permutation pins (the 2-swap needs one temp;
+           a 3-CYCLE a←c, b←a, c←b defeats single-temp AND any fixed assignment order — some order
+           always reads a clobbered slot without proper temp discipline): one rotation reads 312,
+           two 231, three restores 123 (= the k=0 identity, the cycle-length-3 witness). Any
+           in-order or single-temp lowering produces a repeated digit; the three distinct
+           permutations plus the fixpoint pin the whole cycle group.")
+  (input  (do
+        (def (rot (: n Int64) (: a Int64) (: b Int64) (: c Int64))
+          (if (= n 0)
+              (+ (* 100 a) (+ (* 10 b) c))
+              (rot (- n 1) c a b)))
+        (def (main (: k Int64))
+          (rot k 1 2 3))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 312 Int64))
+  (call   main (: 2 Int64)) (output (: 231 Int64))
+  (call   main (: 3 Int64)) (output (: 123 Int64))
+  (call   main (: 0 Int64)) (output (: 123 Int64)))
+
+(case "two heap-list accumulators swap slots through every tail call"
+  (doc    "The HEAP-handle variant of the tail-call arg-permutation pin: `(shuffle (- n 1) b
+           (List.push a n))` swaps the two LIST handles per iteration while pushing into the
+           outgoing one — the alternation interleaves pushes across both lists ([99,2]/[3,1]
+           at k=3 → lens 2/2 → 22; k=0 → 1). A slot assignment that wrote b's handle over a's
+           before the push read a (or a Perceus insertion that dropped the swapped-out handle a
+           beat early) corrupts a length. The reference-arg twin of the scalar fib swap.")
+  (input  (do
+        (def (shuffle (: n Int64) (: a (List Int64)) (: b (List Int64)))
+          (if (= n 0)
+              (+ (* 10 (List.len a)) (List.len b))
+              (shuffle (- n 1) b (List.push a n))))
+        (def (main (: k Int64))
+          (shuffle k (list) (list 99)))
+        (export main)))
+  (call   main (: 3 Int64)) (output (: 22 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "a closure captures the param generation BEFORE a shadow and applies after"
+  (doc    "The capture × param-shadow face of the def-shadow fix (the generations pin covers
+           def-over-def): `g` closes over the ORIGINAL param v, THEN the shadow rebinds v to 10v,
+           and both generations are read — (g 1) = k+1 from the env, + the shadowed 10k (56 at
+           k=5, 1 at k=0). A shadow fix that redirected the EXISTING capture cell to the new
+           binding (instead of leaving the env on the old generation) reads 10k+1 and breaks the
+           first addend.")
+  (input  (do
+        (def (f (: v Int64))
+          (do
+            (def g (fn ((: y Int64)) (+ v y)))
+            (def v (* v 10))
+            (+ (g 1) v)))
+        (def (main (: k Int64)) (f k))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 56 Int64))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))

@@ -5377,6 +5377,16 @@ fn inbox_consume_action(src_exists: bool, dst_exists: bool) -> ConsumeAction {
     }
 }
 
+/// Is a `remove_file` error in the ClearStray arm FATAL? ClearStray removes the stray live copy chosen
+/// from an earlier `exists()` probe; a raced drain/re-run between probe and remove can already have
+/// deleted it → `NotFound`, which SATISFIES the goal ("live inbox no longer holds msg"), so it is NOT
+/// fatal (PR#934: exiting on it turns a benign TOCTOU race into a spurious failure, undermining the
+/// idempotent intent). Any OTHER error (permission, IO) is a real failure. Pure so the classification is
+/// unit-tested without provoking a real fs race.
+fn clear_stray_remove_is_fatal(kind: std::io::ErrorKind) -> bool {
+    kind != std::io::ErrorKind::NotFound
+}
+
 /// Consume one inbox message: MOVE `<msg>` to `processed/` under the resolver-owned HUB inbox path,
 /// then re-list so the caller sees the post-move state. This is the move-step twin of `inbox_list`'s
 /// resolver: an agent hand-`mv`ing a worktree-relative `.claude/fleet/inbox/...` path targets the empty
@@ -5424,7 +5434,16 @@ fn inbox_consume(fleet: &Fleet, name: &str, msg: &str) {
         // The processed/ copy is AUTHORITATIVE — do NOT rename over it (POSIX would overwrite the archive,
         // Windows would fail; PR#929). Just remove the stray live src so the live inbox no longer holds it.
         ConsumeAction::ClearStray => {
-            if let Err(e) = std::fs::remove_file(&src) {
+            // ClearStray was chosen from an EARLIER exists() probe; between that probe and this remove, a
+            // raced drain/archive/re-run can already have removed src → NotFound. The GOAL of ClearStray
+            // is "the live inbox no longer holds msg", which NotFound ALREADY satisfies — so treat it as
+            // SUCCESS, not a spurious exit(1) that turns a benign TOCTOU race into a failure (PR#934).
+            // Only a REAL error (perm/IO) is fatal.
+            // NotFound (a raced drain already removed it) satisfies the goal → fall through; only a real
+            // error (perm/IO) is fatal. (Let-chain keeps the benign-NotFound case as a plain fall-through.)
+            if let Err(e) = std::fs::remove_file(&src)
+                && clear_stray_remove_is_fatal(e.kind())
+            {
                 eprintln!(
                     "fleet inbox --processed: '{msg}' is already archived, but could not remove the \
                      stray live copy {} ({e}).",
@@ -5433,7 +5452,7 @@ fn inbox_consume(fleet: &Fleet, name: &str, msg: &str) {
                 std::process::exit(1);
             }
             println!(
-                "fleet inbox: '{msg}' was already in processed/ — removed a stray live copy (kept the \
+                "fleet inbox: '{msg}' was already in processed/ — cleared the stray live copy (kept the \
                  archived one) — re-listing '{name}'."
             );
             inbox_list(fleet, name);
@@ -8432,6 +8451,17 @@ mod tests {
         );
         // Absent from both → MISSING → loud error, so a typo can't look like a successful drain.
         assert_eq!(inbox_consume_action(false, false), ConsumeAction::Missing);
+    }
+
+    #[test]
+    fn clear_stray_remove_notfound_is_success_other_errors_fatal() {
+        use std::io::ErrorKind;
+        // NotFound = a raced drain already removed the stray → the goal ("not in live inbox") holds →
+        // NOT fatal (PR#934: don't turn a benign TOCTOU race into a spurious exit(1)).
+        assert!(!clear_stray_remove_is_fatal(ErrorKind::NotFound));
+        // Any real error (perm/IO) IS fatal — the stray genuinely couldn't be removed.
+        assert!(clear_stray_remove_is_fatal(ErrorKind::PermissionDenied));
+        assert!(clear_stray_remove_is_fatal(ErrorKind::Other));
     }
 
     #[test]

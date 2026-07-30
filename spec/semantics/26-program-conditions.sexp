@@ -3329,3 +3329,20 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 3 Int64))
   (call   main (: 0 Int64)) (trap "unreachable"))
+
+; --- A @requires walking a MAP argument at body entry. ---
+
+(case "@requires over a MAP argument walks the CHAMP at body entry"
+  (doc    "The map-argument face of the precondition (List is pinned at :3210): `first-val` is
+           guarded by `(> (Map.len m) 0)` — the check reads the CHAMP's len at entry, so the
+           populated call computes (42) and the EMPTY-map call traps before the body's lookup could
+           answer its own None (-1 never happens; the trap is the precondition's). Extends
+           verify_enforce's heap-predicate composition from the RRB len read to the CHAMP.")
+  (input  (do
+        (@ (requires (> (Map.len m) 0)) (def (first-val (: m (Map Int64 Int64)))
+          (match (Map.lookup m 1) ((Some v) v) ((None _u) -1))))
+        (def (main (: n Int64))
+          (if (> n 0) (first-val (Map.insert Map.empty 1 n)) (first-val Map.empty)))
+        (export main)))
+  (call   main (: 42 Int64)) (output (: 42 Int64))
+  (call   main (: 0 Int64)) (trap "unreachable"))

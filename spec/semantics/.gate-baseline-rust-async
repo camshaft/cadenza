@@ -30,6 +30,7 @@ pass	@requires and @ensures read a HEAP String param's byte-len — enforce on t
 pass	@requires is enforced when the guarded def is applied through a first-class fn value
 pass	@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)
 pass	@requires over a HEAP argument reads the list's content at body entry
+pass	@requires over a MAP argument walks the CHAMP at body entry
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	ACKERMANN evaluates — a recursive call in the ARGUMENT of a recursive call (not primitive-recursive)
 todo	Ast values key a map across quote and Ast.* construction routes
@@ -759,6 +760,7 @@ pass	a NaN nested in a list compares equal under the canonical byte form
 pass	a NaN nested in a sum payload compares equal under the canonical byte form
 pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
+pass	a PAIR shrinker coordinate-descends each component to a jointly 1-minimal failing pair
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
 pass	a PLAIN @ensures on a NULLARY def (no parameters) enforces — ret binds the body, predicate reads only ret
 pass	a PLAIN @ensures over a HEAP result (List) TRAPS when violated — the postcondition checks the heap value
@@ -849,6 +851,7 @@ pass	a String-to-String op transforms a rope arg in the arm and its RESULT feeds
 pass	a Symbol interned from a rope-slice view keys maps and removes set elements
 pass	a Symbol leaf in a tuple orders content-lexicographically and decisively before later fields
 pass	a Symbol nested in a TUPLE map key keys by content through the compound descent
+pass	a THREE-cycle argument rotation permutes correctly through repeated tail calls
 pass	a THREE-deep member-access chain reads a RUNTIME leaf through nested records
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
 pass	a THREE-parameter op arm binds all three parameters and the state
@@ -1024,6 +1027,7 @@ pass	a capturing unannotated closure in a payload is typed from the declared arr
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
 pass	a chained access through an if-of-records composes and shields the untaken branch's trap
 pass	a chained float ordering is not foldable by transitivity — a NaN middle breaks the chain
+pass	a chained generic instantiates at a MAP type and both tuple slots share the CHAMP
 pass	a char literal list element dispatches a runtime list by its value
 pass	a char literal list element falls through on a non-matching head
 pass	a char literal naming a surrogate is a reader error
@@ -1052,6 +1056,7 @@ pass	a closure captures another closure and applies it
 pass	a closure captures another closure and applies it at RUNTIME
 pass	a closure captures its environment by value at creation, unaffected by a later same-named binding
 pass	a closure captures the binding in scope where it was created
+pass	a closure captures the param generation BEFORE a shadow and applies after
 pass	a closure capturing THREE scalars is made and called
 pass	a closure capturing a value computed under a handler may escape the handle applied directly
 pass	a closure capturing an inner-handled perform result is applied under an OUTER handler of the same effect
@@ -3550,6 +3555,7 @@ pass	an integer width above the 64-bit ceiling is rejected
 pass	an integer width from runtime data is rejected, keeping widths non-dependent
 pass	an internally ill-typed unselected match arm body is a type error
 todo	an interposing handler TRANSFORMS the host response before resuming (offset adapter)
+pass	an iterative fibonacci swaps two accumulators through the tail call
 pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
 pass	an open sum nested as another sum's payload matches with an inner wildcard
@@ -3561,6 +3567,7 @@ pass	an open sum's payload decodes against a schema to a typed result
 pass	an open-row function accepts a runtime MERGE result and reads the carried field
 pass	an open-row function is applied at TWO different record widths in one program
 pass	an open-row function over a Record.with result reads the UPDATED value
+pass	an open-row projection reads list-element records in a fold AND a wider record at another site
 pass	an open-sum type crosses THREE modules concretely and matches at every stop
 pass	an open-sum value bound by an open-tail arm is forwarded to another matcher with its variant intact
 pass	an open-sum value matching no named arm in either matcher reaches the forwarded sentinel
@@ -5352,5 +5359,6 @@ pass	single row ops on a map-borne record compute — without alone and extend a
 pass	the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)
 pass	a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value
 pass	two closure handles swap parameter slots through repeated tail calls
+pass	two heap-list accumulators swap slots through every tail call
 pass	two runtime-selected splices keep their operand ORDER in a non-commutative form
 pass	unit arithmetic on a map-extracted quantity re-enters the map typed

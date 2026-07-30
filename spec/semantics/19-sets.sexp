@@ -2874,7 +2874,7 @@
 
 (case "a mixed-width float tuple with a computed f32 NaN dedupes against the canonical spelling"
   (doc    "Mixed f32/f64 in ONE set element: the tuple pairs a COMPUTED f32 NaN (`(/ y y)` at y=0)
-           with an f64 leaf, deduping against `(tuple Float32.nan 1.5)` — the canonical-byte walk
+           with an f64 leaf, deduping against `(tuple Float32.nan (: 1.5 Float64))` — the canonical-byte walk
            must canonicalize the f32 leaf AT F32 WIDTH inside the compound while the f64 leaf rides
            (len 1 at y=0; y=2 computes 1.0 ≠ NaN → 2). A hash that promoted the f32 leaf to f64
            bits before canonicalizing (or canonicalized only f64 NaNs) splits the spellings. The
