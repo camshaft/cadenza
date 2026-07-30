@@ -1446,3 +1446,26 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 510 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64)))
+
+; --- Record.without on a map-extracted record, both maps staying typed. ---
+
+(case "Record.without strips a field on a map-extracted record and both maps stay typed"
+  (doc    "The WITHOUT leg of the extract-edit-reinsert family (with/pop are pinned): the record
+           comes out of a map, `(Record.without r (y))` drops y (narrowing the row), and the SLIM
+           record enters a NEW map at its narrower type while the ORIGINAL map's record keeps its y
+           (100·x-from-slim + y-from-original: 1005 at k=5, 1000 at k=0). A without that left a
+           stale y slot in the layout (or narrowed the ORIGINAL's type) breaks a read. (Note
+           `without` takes a field-name LIST — `(y)` — the CDZ0201 for a bare name teaches the
+           form.)")
+  (input  (do
+        (def (main (: k Int64))
+          (do
+            (def m (Map.insert Map.empty 1 (record (x 10) (y k))))
+            (def r (Option.expect (Map.lookup m 1) "p"))
+            (def slim (Record.without r (y)))
+            (def m2 (Map.insert Map.empty 1 slim))
+            (+ (* 100 (. (Option.expect (Map.lookup m2 1) "p") x))
+               (. (Option.expect (Map.lookup m 1) "p") y))))
+        (export main)))
+  (call   main (: 5 Int64)) (output (: 1005 Int64))
+  (call   main (: 0 Int64)) (output (: 1000 Int64)))
