@@ -101,6 +101,7 @@ pass	Qty map VALUES unwrap, ADD, and COMPARE in one chain preserving the unit th
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
 pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
 pass	Record.extend ADDS a closure field beside two existing ones and all three apply
+pass	Record.extend widens a map-extracted record and the wide row enters a new map
 pass	Record.merge carries HEAP-list fields from both operands into the merged layout
 pass	Record.merge carries a CLOSURE field into the union layout and it applies
 pass	Record.pop hands back a CLOSURE field as the popped value and it applies
@@ -3609,8 +3610,10 @@ pass	an open sum's payload decodes against a schema to a typed result
 pass	an open-row function accepts a runtime MERGE result and reads the carried field
 pass	an open-row function is applied at TWO different record widths in one program
 pass	an open-row function over a Record.with result reads the UPDATED value
+pass	an open-sum type crosses THREE modules concretely and matches at every stop
 pass	an open-sum value bound by an open-tail arm is forwarded to another matcher with its variant intact
 pass	an open-sum value matching no named arm in either matcher reaches the forwarded sentinel
+pass	an open-sum value rides a generic tuple and matches from both slots
 pass	an operation on mismatched types is rejected at compile time
 pass	an operation with a RECORD parameter binds the compound and the arm reads its fields
 pass	an operation with a TUPLE parameter binds the compound and the arm projects it

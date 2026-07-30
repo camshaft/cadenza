@@ -101,6 +101,7 @@ pass	Qty map VALUES unwrap, ADD, and COMPARE in one chain preserving the unit th
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
 pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
 pass	Record.extend ADDS a closure field beside two existing ones and all three apply
+pass	Record.extend widens a map-extracted record and the wide row enters a new map
 pass	Record.merge carries HEAP-list fields from both operands into the merged layout
 pass	Record.merge carries a CLOSURE field into the union layout and it applies
 pass	Record.pop hands back a CLOSURE field as the popped value and it applies
@@ -3332,6 +3333,8 @@ pass	an EMPTY splice mid-list closes the gap, a singleton fills it, and two spli
 pass	an UNANNOTATED generic compose instantiates at a scalar arrow AND a String arrow in one program
 pass	an arm-body shadow of the param composes with the scrutinee's pre-shadow read
 pass	an interposing handler TRANSFORMS the host response before resuming (offset adapter)
+pass	an open-sum type crosses THREE modules concretely and matches at every stop
+pass	an open-sum value rides a generic tuple and matches from both slots
 pass	bare patterns on a CONCRETELY-exported type stay legal for importers
 pass	bin-encode segment ORDER holds for runtime-swapped operand values
 pass	bit-field segments spanning a rope seam split the stitched 16 bits, not a leaf's
