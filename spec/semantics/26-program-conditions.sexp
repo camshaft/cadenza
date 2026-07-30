@@ -3292,3 +3292,40 @@
             (export run)))
   (call run (: 70 Int64)) (output (: 71 Int64))
   (call run (: 150 Int64)) (trap "unreachable"))
+
+; --- Contracts over HEAP data: the record-payload invariant (with the row-op re-wrap divert)
+; and String byte-len predicates in both contract halves. ---
+
+(case "@invariant ESTABLISH fires through a ROW-OP re-wrap (Record.without + Record.extend rebuild the payload)"
+  (doc    "The establish matrix covers literal/lambda/list-element/update-rewrap construction sites — none rebuilds the payload via ROW OPS: bump strips hi with without, re-adds via extend, re-wraps Rng.R. The divert must catch THIS site even though the payload came from row ops, not a record literal (d=5 -> 13; d=-20 violates -> trap at the re-wrap).")
+  (input  (do
+            (@ (invariant (match self (((. Rng R) r) (< (. r lo) (. r hi))))) (type Rng (R (Record (lo Int64) (hi Int64)))))
+            (def (bump (: v Rng) (: d Int64))
+              (match v (((. Rng R) r)
+                (Rng.R (Record.extend (Record.without r (hi)) #"hi" (+ (. r hi) d))))))
+            (def (mk (: a Int64) (: b Int64) (: d Int64))
+              (match (bump (Rng.R (record (lo a) (hi b))) d) (((. Rng R) r) (- (. r hi) (. r lo)))))
+            (export mk)))
+  (call mk (: 2 Int64) (: 10 Int64) (: 5 Int64)) (output (: 13 Int64))
+  (call mk (: 2 Int64) (: 10 Int64) (: -20 Int64)) (trap "unreachable"))
+
+(case "@invariant over a RECORD-payload newtype establishes on the record's relational fields"
+  (doc    "No establish case has a RECORD payload: (type Rng (R (Record (lo)(hi)))) with the relational field invariant (< lo hi) establishes at construction (2,10 -> 8; 10,2 -> trap).")
+  (input  (do
+            (@ (invariant (match self (((. Rng R) r) (< (. r lo) (. r hi))))) (type Rng (R (Record (lo Int64) (hi Int64)))))
+            (def (mk (: a Int64) (: b Int64))
+              (match (Rng.R (record (lo a) (hi b))) (((. Rng R) r) (- (. r hi) (. r lo)))))
+            (export mk)))
+  (call mk (: 2 Int64) (: 10 Int64)) (output (: 8 Int64))
+  (call mk (: 10 Int64) (: 2 Int64)) (trap "unreachable"))
+
+(case "@requires and @ensures read a HEAP String param's byte-len — enforce on the empty-string violation"
+  (doc    "Every contract predicate reads scalars/tuple-projections/globals — none reads a HEAP param: @requires (> (byte-len s) 0) + the relational @ensures (> (byte-len ret) (byte-len s)) tie result heap-len to param heap-len; the injected checks must BORROW the rope, and the param stays alive precondition->body->postcondition. hi passes (3); empty violates -> trap.")
+  (input  (do
+            (@ (requires (> (String.byte-len s) 0)) (@ (ensures (> (String.byte-len ret) (String.byte-len s)))
+              (def (shout (: s String)) (String.concat s "!"))))
+            (def (main (: k Int64))
+              (String.byte-len (shout (if (= k 1) "hi" ""))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 3 Int64))
+  (call   main (: 0 Int64)) (trap "unreachable"))

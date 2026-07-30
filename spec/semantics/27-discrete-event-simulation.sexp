@@ -949,3 +949,24 @@
   (call   main (: 5 Int64)) (output (: 41 Int64))
   (call   main (: 25 Int64)) (output (: 42 Int64))
   (call   main (: 99 Int64)) (output (: 43 Int64)))
+
+; --- The adjacent-pair timeline window. ---
+
+(case "a pairwise MAX-GAP walk over an Instant timeline subtracts adjacent newtype payloads"
+  (doc    "The DES analyses are forward-accumulate; this is the ADJACENT-PAIR window (timeline analysis): List.at i AND i+1 in one frame, subtract newtype payloads at UInt64, Int64.wrap the gap, max-fold. Max gap is the MIDDLE pair (200) — off-by-one windowing or first/last-only walks diverge.")
+  (input  (do
+            (type Instant (Instant UInt64))
+            (def (inst-ns (: t Instant)) (match t ((Instant.Instant n) n)))
+            (def (gap-max (: ts (List Instant)) (: i Int64) (: best Int64))
+              (match (List.at ts (+ i 1))
+                ((Option.Some nxt)
+                  (do
+                    (def cur (Option.expect (List.at ts i) "cur"))
+                    (def gap (Int64.wrap (- (inst-ns nxt) (inst-ns cur))))
+                    (gap-max ts (+ i 1) (if (> gap best) gap best))))
+                ((Option.None _u) best)))
+            (def (main (: k Int64))
+              (gap-max (list (Instant.Instant 100) (Instant.Instant (UInt64.wrap (+ 150 k))) (Instant.Instant 400) (Instant.Instant 450)) 0 0))
+            (export main)))
+  (call   main (: 50 Int64))
+  (output (: 200 Int64)))

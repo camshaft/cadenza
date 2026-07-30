@@ -17,13 +17,16 @@ pass	@invariant ESTABLISH divert reaches a LET-INIT construction site and a NEST
 pass	@invariant ESTABLISH divert reaches a CALL-ARGUMENT construction site — a violating value traps before the callee runs (design §10.2, (D))
 pass	@invariant ESTABLISH divert reaches a Set ELEMENT and a Map VALUE construction site (heap-collection positions beyond List)
 pass	@invariant ESTABLISH divert reaches indirect construction sites: a lambda body, a reconstruct-after-update, and a list element all establish
+pass	@invariant ESTABLISH fires through a ROW-OP re-wrap (Record.without + Record.extend rebuild the payload)
 pass	@invariant ESTABLISH fires when the constructor is directly a MATCH ARM's selected result (v-patterns divert site)
 pass	@invariant ESTABLISH over a multi-variant sum: each variant's construction auto-establishes — a satisfying value constructs, a violating one traps (design §10.2, (D))
 pass	@invariant ESTABLISH over a nullary variant: a rejected nullary variant traps at construction, an accepted payload variant constructs (design §10.2, (D))
 pass	@invariant ESTABLISH over a single-variant multi-payload newtype: an ordered Range constructs, a misordered one traps (design §10.2, (D))
 pass	@invariant ESTABLISH: a constructor's @requires discharges the type invariant as an implicit @ensures (design §10.2)
 pass	@invariant PRESERVE: an operation returning T discharges the result invariant USING the input invariant as a free gift (design §10.2)
+pass	@invariant over a RECORD-payload newtype establishes on the record's relational fields
 pass	@invariant with an unbound predicate name is REJECTED (CDZ0101 — only `self` + prelude are in scope)
+pass	@requires and @ensures read a HEAP String param's byte-len — enforce on the empty-string violation
 pass	@requires is enforced when the guarded def is applied through a first-class fn value
 pass	@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)
 pass	@requires over a HEAP argument reads the list's content at body entry
@@ -983,6 +986,7 @@ pass	a byte sequence written as a literal renders back to the same literal
 pass	a byte-decode loop advancing by a tuple projection while accumulating sum nodes compiles and runs
 pass	a byte-string literal equals the explicit byte sequence it desugars to
 pass	a byte-string literal with escapes equals its explicit byte sequence
+pass	a byte-wise reversal over a seamed rope is an involution and lands bytes at mirrored offsets
 pass	a bytes value chosen by a runtime if is length-measured with valid wasm
 pass	a call-returned Bool newtype literal-payload arm spills correctly
 pass	a call-returned Int32 newtype literal-payload arm spills at the narrow width
@@ -1670,6 +1674,7 @@ pass	a host delegating the same effect twice is rejected
 pass	a handle seeded from a runtime caller argument advances from that seed
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
+pass	a host-crossing closure captures a CHAMP map and set and reads both per call
 pass	a kernel may deliberately export its rule as a first-class value
 pass	a kernel rule using α-equivalence accepts an α-variant premise a structural equality would reject
 pass	a key-directed pattern matches a RUNTIME map by looking up its keys
@@ -2148,6 +2153,7 @@ pass	a one-shot handler arm folds a body with TWO performs by re-reducing the co
 pass	a one-shot two-hole body folds across a let binding
 pass	a one-shot two-hole body folds with the leading perform in an if condition
 pass	a package entry's exported def wins over a same-named def in a library file
+pass	a pairwise MAX-GAP walk over an Instant timeline subtracts adjacent newtype payloads
 pass	a param-keyed map literal selects its literal-pattern arm by value in both directions
 pass	a param-shadowing let with a param-referencing initializer folds at a constant argument
 pass	a parameter annotation contradicting its use is rejected
