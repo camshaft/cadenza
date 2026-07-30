@@ -234,6 +234,24 @@
   (call main (: 5 Int64)) (output (: 1 Int64))
   (call main (: 6 Int64)) (output (: 0 Int64)))
 
+(case "a scalar Ast.Int built in a helper from a runtime param compares = a constant Ast.Int"
+  (doc    "The minimal SCALAR-top companion of the runtime-woven pin: an `Ast.Int` built by a helper
+           from a runtime `Int64` param (grounded with `BigInt.of`) compares structurally `=` against a
+           constant `Ast.Int`. This memorializes the resolution of the (2026-07-20 re-diagnosed) queue
+           finding `mlrepro-recursive-tagged-template-tag-cannot-fold`, which claimed runtime `=` on an
+           `Ast` value declined 'comparison of a compound value needs a heap walk' on all three backends.
+           It does NOT — the `Ast` sum (an `Ast.List (List Ast)` variant + a `BigInt` `Ast.Int` payload)
+           routes through `Core::ValueEqShaped`: `ty_contains_list` descends the sum to its List variant
+           and `eq_shaped_walkable` admits the `BigInt` leaf, so the descriptor-guided element-wise walk
+           (list-sound AND BigInt/float-leaf-canonical) fires. Hit + miss faces; guards against a future
+           narrowing of the value-eq-shaped leaf/list domain silently re-declining scalar `Ast` equality.")
+  (input (do
+        (def (mk (: n Int64)) (Ast.Int (BigInt.of n)))
+        (def (main (: n Int64)) (if (= (mk n) (Ast.Int (BigInt.of 3))) 1 0))
+        (export main)))
+  (call main (: 3 Int64)) (output (: 1 Int64))
+  (call main (: 4 Int64)) (output (: 0 Int64)))
+
 (case "a THREE-deep constructor-woven Ast destructures through nested patterns to its runtime leaf"
   (doc    "The nested-quote-pattern pin is 2-deep with const leaves; this weaves a 3-deep
            constructor tree carrying a runtime BigInt leaf at the bottom and destructures through
@@ -3427,3 +3445,15 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: 42 Int64))
   (call   main (: 2 Int64)) (output (: 42 Int64)))
+
+; --- Splice POSITION faces: empty-mid gap-close, singleton fill, double-splice index shift. ---
+
+(case "an EMPTY splice mid-list closes the gap, a singleton fills it, and two splices around a literal both land"
+  (doc    "The POSITION faces of ,@ (the existing splice pins are tail-position, non-empty): an EMPTY splice MID-list must close the gap (`(f 1 ,@() 2)` = `(f 1 2)` — an off-by-one keeps a hole or eats the 2); a singleton fills the same slot; and TWO splices around a literal name (`(f ,@xs mid ,@ys)`) exercise the index bookkeeping after the first splice shifts positions. Structural = against directly-written quasiquotes.")
+  (input  (do
+            (def (main)
+              (+ (* 100 (if (= (let ((xs (list))) `(f 1 ,@xs 2)) `(f 1 2)) 1 0))
+                 (+ (* 10 (if (= (let ((xs (list 7))) `(f 1 ,@xs 2)) `(f 1 7 2)) 1 0))
+                    (if (= (let ((xs (list 7)) (ys (list 8 9))) `(f ,@xs mid ,@ys)) `(f 7 mid 8 9)) 1 0))))
+            (export main)))
+  (output (: 111 Int64)))

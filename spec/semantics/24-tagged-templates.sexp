@@ -562,3 +562,38 @@
       (export wrap)))
   (call   main (: 0 Int64)) (output (: 7 Int64))
   (call   main (: 100 Int64)) (output (: 107 Int64)))
+
+; --- Hole CONSUMPTION beyond positional 1:1: duplication (one hole, two slots) and permutation
+; (exchanged delivery) with RUNTIME subtrees in the holes. ---
+
+(case "a tag that DUPLICATES its single hole splices the same runtime subtree into both slots"
+  (doc    "The hole pins thread positionally 1:1; this tag consumes ONE hole TWICE (`(+ h h)`) — the sharing/copy semantics of splicing one runtime subtree into two slots (21 -> 42; a splice that consumed/moved the hole on first use breaks the second).")
+  (input  (do
+            (def (twice chunks holes)
+              (match holes
+                ((list h) (Ast.List (list (Ast.Name "+") h h)))
+                (_ (Ast.Int 0))))
+            (def (main (: a Int64))
+              (match (tagged-template twice (chunks "x" "y") (holes (Ast.Int (BigInt.of a))))
+                ((Ast.List (list (Ast.Name o) (Ast.Int x) (Ast.Int y)))
+                  (if (= o "+") (+ x y) -2N))
+                (_ -1N)))
+            (export main)))
+  (call   main (: 21 Int64))
+  (output (: 42 BigInt)))
+
+(case "a tag that SWAPS its two holes delivers each runtime subtree to the exchanged slot"
+  (doc    "The permutation face: the tag returns (h1 h0), read back asymmetrically (100x - y) so any delivery mix-up diverges ((3,7) -> 697). With the dup case: hole plumbing is a full function of holes, not a positional pass-through.")
+  (input  (do
+            (def (swap chunks holes)
+              (match holes
+                ((list h0 h1) (Ast.List (list h1 h0)))
+                (_ (Ast.Int 0))))
+            (def (main (: a Int64) (: b Int64))
+              (match (tagged-template swap (chunks "x" "y" "z") (holes (Ast.Int (BigInt.of a)) (Ast.Int (BigInt.of b))))
+                ((Ast.List (list (Ast.Int x) (Ast.Int y)))
+                  (- (* (BigInt.of 100) x) y))
+                (_ -1N)))
+            (export main)))
+  (call   main (: 3 Int64) (: 7 Int64))
+  (output (: 697 BigInt)))
