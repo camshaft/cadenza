@@ -30,8 +30,18 @@
   (call   main (: 3 Int64))
   (output (: 8 Int64)))
 
+;; ============================================================================================
+;; PARTIAL LAND (corpus-bugfix, 2026-07-30, trunk a38c353ec incl. #45 fix 2fad5d246): the row-op
+;; UAF fix computes for witness 1 + all 3 controls (now 8/8/65/8 on ALL backends) — PINNED into
+;; 15-rows beside the row-op composition matrix (MR b5a58fdd0, gate 102 pass 0 regressed x3).
+;; BUT WITNESS 2 (the sum-payload-rewrap face, below) STILL RETURNS wasm-5 (k LOST); rust/async 8.
+;; The 2fad5d246 fix did NOT cover the sum-payload-nested chain. Witness 2 REMAINS HELD, wasm-only,
+;; soundness-priority (SILENT wrong value). Owner v-wasm-opt (notified). Re-gate on the follow-up fix;
+;; on land pin witness 2 too (expect 8) beside the 4 landed pins.
+;;
 ; Witness 2 — the SILENT wrong-value face: the chain in a sum payload through a helper — wasm
-; returns 5 (d alone, k lost); expected 8:
+; returns 5 (d alone, k lost); expected 8. STILL BROKEN after 2fad5d246 (re-verified trunk a38c353ec:
+; wasm 5, rust 8, rust-async 8). HELD for v-wasm-opt follow-up:
 (case "a without-extend re-wrap inside a sum payload keeps the map-borne record's old field value"
   (input  (do
             (type Slot (Filled (Record (name String) (qty Int64))) (Empty))

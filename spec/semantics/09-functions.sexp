@@ -6536,3 +6536,48 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 1307 Int64)))
+
+; --- The recursion-shape completions: a divide-and-conquer sort (recursion TREE with a compound
+; intermediate) and Ackermann (NESTED recursion — a self-call in a self-call's argument). ---
+
+(case "a full MERGE SORT (alternating split + ordered merge) sorts a runtime list, duplicates kept"
+  (doc    "The divide-and-conquer sort (corpus sorts are single-pass insorts): mutual recursion msort->msplit(alternating flip)->merge(3-way match), a TUPLE-of-lists intermediate crossing the recursion, TWO recursive msort calls per frame (a real recursion tree, not linear), and a digit-encoded FULL-order read. The k=9 face keeps a duplicate — two 9s must both survive the merge.")
+  (input  (do
+            (def (msplit (: xs (List Int64)) (: a (List Int64)) (: b (List Int64)) (: flip Int64))
+              (match xs
+                ((list) (tuple a b))
+                ((list h .. t) (if (= flip 0) (msplit t (List.push a h) b 1) (msplit t a (List.push b h) 0)))))
+            (def (merge (: a (List Int64)) (: b (List Int64)) (: acc (List Int64)))
+              (match a
+                ((list) (List.concat acc b))
+                ((list ha .. ta)
+                  (match b
+                    ((list) (List.concat acc a))
+                    ((list hb .. tb)
+                      (if (< hb ha) (merge a tb (List.push acc hb)) (merge ta b (List.push acc ha))))))))
+            (def (msort (: xs (List Int64)))
+              (if (< (List.len xs) 2) xs
+                  (match (msplit xs (list) (list) 0)
+                    ((tuple a b) (merge (msort a) (msort b) (list))))))
+            (def (digits (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Option.Some v) (digits xs (+ i 1) (+ (* acc 10) v)))
+                ((Option.None _u) acc)))
+            (def (main (: k Int64))
+              (digits (msort (list 5 k 8 1 9 3 7)) 0 0))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 1235789 Int64))
+  (call   main (: 9 Int64)) (output (: 1357899 Int64)))
+
+(case "ACKERMANN evaluates — a recursive call in the ARGUMENT of a recursive call (not primitive-recursive)"
+  (doc    "The recursion pins cover tail/accumulable-non-tail/mutual/tree — this is NESTED recursion: a self-call in a self-call's ARGUMENT ((ack (- m 1) (ack m (- n 1)))). The inner call fully evaluates mid-argument-list with the outer frame's operands live; the outer call LOOKS accumulable but is not, so a misfiring tail-transform or argument-slot reuse corrupts the tower. ack(3,3)=61 is a deep non-tail evaluation tower.")
+  (input  (do
+            (def (ack (: m Int64) (: n Int64))
+              (if (= m 0) (+ n 1)
+                  (if (= n 0) (ack (- m 1) 1)
+                      (ack (- m 1) (ack m (- n 1))))))
+            (def (main (: m Int64) (: n Int64))
+              (ack m n))
+            (export main)))
+  (call   main (: 2 Int64) (: 3 Int64)) (output (: 9 Int64))
+  (call   main (: 3 Int64) (: 3 Int64)) (output (: 61 Int64)))

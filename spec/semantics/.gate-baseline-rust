@@ -28,6 +28,7 @@ pass	@requires is enforced when the guarded def is applied through a first-class
 pass	@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)
 pass	@requires over a HEAP argument reads the list's content at body entry
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
+pass	ACKERMANN evaluates — a recursive call in the ARGUMENT of a recursive call (not primitive-recursive)
 todo	Ast values key a map across quote and Ast.* construction routes
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
@@ -1500,6 +1501,7 @@ pass	a floating-point literal
 pass	a four-level nested-constructor pattern with a generic user sum in the middle matches
 pass	a fresh-id supply threads state across two sibling recursive calls in one arm
 pass	a fresh-id walk over a THREE-constructor sum threads state across mixed-arity arms
+pass	a full MERGE SORT (alternating split + ordered merge) sorts a runtime list, duplicates kept
 pass	a full-range signed division keeps its MIN over -1 overflow guard and traps
 pass	a full-string String.slice byte-len equals the whole string's byte-len
 pass	a full-string String.slice recovers the whole string's length by both measures

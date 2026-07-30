@@ -129,11 +129,12 @@ def ss-payload-pattern-arms-join-still-runs() =
     | Option.Some(v) => (if v == 9 then unit else trap("matching Int arms join + run → 9"))
     | Option.None(_) => trap("a payload-pattern match with joining Int arms must still run")
 
-// ---- MULTI-FIELD payload ctors are OUT of the wired subset → clean DECLINE (boundary guard) ----
-// ii-b/ii-c wired SINGLE-field payloads only. A multi-field ctor `(P Int64 Int64)` must DECLINE cleanly (None),
-// never fabricate a value (lower's lower-rec-args gathers arg2/3/4 into the CCtor, but the well-typed gate
-// declines the under-typed node first). Locks the boundary the ii-c2b-2 slice builds up FROM — verified by a
-// probe this cycle; a future ctor-typing change must not silently start fabricating multi-field payloads.
+// ---- MULTI-FIELD payload ctors: CONSTRUCT + deconstruct (arg-N infer wired) ----
+// The multi-field payload slice IS wired: infer types ALL payload args (arg2/3/4-of, not just arg1), so a
+// multi-field ctor `(P Int64 Int64)` types + lowers (lower-rec-args gathers arg2/3/4 into the CCtor) + runs —
+// (P 3 4) constructs a store handle, and `((P x y) …)` binds both fields. The tests below pin CONSTRUCT (bare),
+// const-both-binders, runtime-boxed, + the `_`-wildcard binder (a -1-sentinel field types nothing). (This header
+// formerly said multi-field DECLINES — stale pre-arg-N-infer; corrected.)
 
 @test
 def ss-multifield-payload-ctor-bare-constructs() =
@@ -270,13 +271,14 @@ def ss-terr-scrutinee-taints-ctor-match() =
     | Option.Some(_) => trap("a TErr scrutinee (ill-typed (+ true 5)) must taint the match → decline, not be masked by the arms")
     | Option.None(_) => unit
 
-// ---- BOOL payload binder: DECLINES (value round-trip not-yet-wired) ----
-// ii-c2b-2 Bool sentinel: a Bool payload `(BB Bool)` records the ct argType Bool sentinel (encode-bool-type=1);
-// infer currently seeds the pattern binder as Typed.TErr, so a Bool binder DECLINES cleanly whether used AS a Bool
-// (`(if b …)`) OR as an int (`(+ b 1)`). Typing it TBool made the compiled `(if b …)` over an i64-repped payload
-// TRAP `wasm unreachable` (b128 gate) — the Bool-payload VALUE round-trip (construct→store→extract→use-as-cond) is
-// not-yet-wired, so declining is the sound interim; re-enabling to TBool is a 1-line change once wired. Ground-
-// payload story: int widths (Int<N>/UInt<N>) COMPLETE; Bool DECLINES. Nested/compound payloads → -1 → decline.
+// ---- BOOL payload binder: RUNS as a cond (value path wired); arith on it still declines ----
+// ii-c2b-2 Bool sentinel: a Bool payload `(BB Bool)` records the ct argType Bool sentinel (encode-bool-type=1),
+// and infer now seeds the pattern binder as Typed.TBool (decode-argtype-enc(1)→TBool), so a Bool binder used AS a
+// cond `(if b …)` RUNS — Bool is i64 0/1 in Core, so store→bind→cond is identical to an Int payload feeding a CIf.
+// The former "b128 wasm-unreachable" was a MALFORMED test witness `(if b then 1 else 0)` (the reader has no
+// then/else keywords), NOT an emit bug. Arith on a Bool STILL declines (`(+ b 1)`: arith-result-type maps TBool→
+// None), so a Bool payload is never silently an int. Ground-payload: int widths + Bool COMPLETE; nested/compound
+// payloads → -1 → decline (parked).
 
 @test
 def ss-bool-payload-binder-runs-as-cond() =
