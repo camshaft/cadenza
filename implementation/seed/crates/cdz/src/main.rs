@@ -4126,10 +4126,18 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
     // closures (the homogeneous families the composed path handles). A file with an EMPTY imported set (a
     // self-contained file, no shared closure to hoist) is dropped from grouping → it falls back to standalone.
     let cache_dir = provider_cache_dir();
-    // group key (sorted, `\0`-joined imported-closure names) → (union ASTs by link name, an entry name).
+    // group key (sorted, `\0`-joined imported-closure names) → (union ASTs by link name, an entry name, the
+    // TARGET file stems bucketed into this group).
     struct Group {
         asts: HashMap<String, rcdzc::Artifact>,
         entry: String,
+        // The stems of the TARGET `@test` files that fell into THIS group (their `closure[0].name`). A group's
+        // composed emit produces a consumer for EVERY closure member that has `@test`s — but an
+        // imported-with-tests member (e.g. `parse-db`: imported into ~10 groups' closures AND a target of its
+        // OWN group) is a target of only ONE group. We store its consumer ONLY from its own group (below), so a
+        // stem's consumer is never overwritten by a group where it's merely an imported member linked against
+        // the WRONG provider (PR#914 correctness — the grouping-era cousin of the PR#881 stem collision).
+        targets: std::collections::HashSet<String>,
     }
     // For a SINGLE-file run, keep the loaded closure to SHARE with `run_test_file` (it would otherwise re-load
     // + re-parse the same file — PR#907). Only the single-file case: stashing all N of a dir run would raise
@@ -4154,7 +4162,11 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
             let group = groups.entry(key).or_insert_with(|| Group {
                 asts: HashMap::new(),
                 entry: closure[0].name.clone(),
+                targets: std::collections::HashSet::new(),
             });
+            // This file is a TARGET of this group (its @tests are what we run here). Record its stem so we keep
+            // only ITS-group consumer, not a same-stem consumer emitted as an imported member of another group.
+            group.targets.insert(closure[0].name.clone());
             for cf in &closure {
                 group.asts.entry(cf.name.clone()).or_insert_with(|| {
                     rcdzc::Artifact::new(
@@ -4189,6 +4201,7 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
         ..Precompiled::default()
     };
     for (key, group) in groups {
+        let targets = group.targets;
         let ast_inputs: Vec<rcdzc::Artifact> = group.asts.into_values().collect();
         let (provider, consumers) =
             precompile_group(ast_inputs, &group.entry, cache_dir.as_deref());
@@ -4197,7 +4210,15 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
         };
         precompiled.providers.insert(key.clone(), provider);
         for (name, bytes) in consumers {
-            precompiled.components.insert(name, (bytes, key.clone()));
+            // Keep ONLY consumers for files that are TARGETS of this group. The composed emit produces a
+            // consumer for every closure member that has `@test`s, but an imported-with-tests member (e.g.
+            // `parse-db`) is a target of just ONE group; storing its consumer from a group where it's only an
+            // imported member would OVERWRITE (last-group-wins) its own-group consumer → `run_test_file` links
+            // it against the wrong group's provider (PR#914). Filtering by target keeps each stem's consumer
+            // from its own group, keyed to the provider whose closure it was actually emitted against.
+            if targets.contains(&name) {
+                precompiled.components.insert(name, (bytes, key.clone()));
+            }
         }
     }
     precompiled
