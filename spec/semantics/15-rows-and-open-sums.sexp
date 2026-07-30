@@ -456,6 +456,82 @@
   (call   main (: 30 Int64) (: 12 Int64))
   (output (: 42 Int64)))
 
+; --- Row ops over a record read out of a collection (CHAMP-boxed base) — finding #45 ------
+; The composition pins above take their base record from a source literal or a merge result. These
+; pin the row-op family over a base record read OUT OF A MAP (a CHAMP value slot) — the extend-of-
+; without CHAIN in particular. The without-result must MATERIALIZE a fresh record rather than alias
+; the CHAMP-boxed base, or the follow-on extend indexes off the wrong layout: finding #45 was a wasm
+; miscompile (the chain over a map-looked-up record trapped OOB) fixed by materializing the intermediate
+; (collect_row_op_field_dups, trunk 2fad5d246). Each op ALONE on the map-borne record, and the same
+; chain over a list-borne record, always worked — so the trigger was exactly the composed chain over
+; the CHAMP-boxed base. Pinned as regression witnesses beside the row-op composition matrix.
+(case "Record.extend chained onto Record.without of a map-borne record computes, not traps"
+  (doc    "Finding #45 regression witness (breaker; wasm fix v-wasm-opt 2fad5d246, v-memory-safety
+           co-verified). `r` is read out of a Map (a CHAMP value slot); the chain drops `qty` then re-adds
+           it as `(. r qty) + 5` = 8. Pre-fix the wasm row-op emit reused the CHAMP-boxed base pointer for
+           the without-result, so the follow-on extend indexed off the wrong base and trapped 'out of bounds
+           memory access'; rust/rust-async always computed 8. The fix materializes the without intermediate
+           before the extend. The single-op and list-borne faces (below) were the green perimeter.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def inv (Map.insert Map.empty 1 (record (name "widget") (qty k))))
+                (def r (Option.expect (Map.lookup inv 1) "slot"))
+                (. (Record.extend (Record.without r (qty)) #"qty" (+ (. r qty) 5)) qty)))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 8 Int64)))
+
+(case "the same without-extend chain on a LIST-borne record computes"
+  (doc    "Finding #45 control: the identical extend-of-without chain, but the base record is read out of a
+           LIST (List.at) rather than a Map. This face computed 8 on ALL backends even pre-fix — a
+           list-borne record hands out a fresh handle, so the without-result never aliased a boxed base.
+           Pins that the fix's trigger was specifically the CHAMP-boxed (map-valued) base, not row-op
+           composition in general.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def r0 (record (name "widget") (qty k)))
+                (def inv (List.push (list) r0))
+                (def r (Option.expect (List.at inv 0) "slot"))
+                (. (Record.extend (Record.without r (qty)) #"qty" (+ (. r qty) 5)) qty)))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 8 Int64)))
+
+(case "single row ops on a map-borne record compute — without alone and extend alone"
+  (doc    "Finding #45 control: each row op ALONE on the map-borne record — `Record.without r (qty)` then
+           project name (byte-len 6, ×10) plus `Record.extend r #\"extra\" 5` then project extra (5) = 65.
+           Both single ops computed correctly on all backends pre-fix; only the without→extend CHAIN over
+           the CHAMP-boxed base trapped. Pins the single-op perimeter so the fix cannot regress it.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def inv (Map.insert Map.empty 1 (record (name "widget") (qty k))))
+                (def r (Option.expect (Map.lookup inv 1) "slot"))
+                (+ (* 10 (String.byte-len (. (Record.without r (qty)) name)))
+                   (. (Record.extend r #"extra" 5) extra))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 65 Int64)))
+
+(case "the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)"
+  (doc    "Finding #45 boundary: the same chain but `r` is read via a DOUBLE lookup (a map nested in a map).
+           This depth computed 8 on all backends even pre-fix, while the single-lookup form (first witness)
+           trapped — consistent with the aliasing diagnosis: a record-valued CHAMP leaf handed out its boxed
+           base (aliased, wrong), while a map-valued leaf handed out a fresh handle (materialized, correct).
+           Pins the working depth so the wasm fix cannot regress it.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def inner (Map.insert Map.empty 2 (record (name "widget") (qty k))))
+                (def outer (Map.insert Map.empty 1 inner))
+                (def r (Option.expect (Map.lookup (Option.expect (Map.lookup outer 1) "o") 2) "i"))
+                (. (Record.extend (Record.without r (qty)) #"qty" (+ (. r qty) 5)) qty)))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 8 Int64)))
+
 (case "merging records that share a field name is rejected"
   (doc    "Witnesses type-system.md #Two Records Are Combined Only When Their Field Sets Are Disjoint (2nd
            sentence): merging two records that share a field name is a compile-time rejection (CDZ0211), so

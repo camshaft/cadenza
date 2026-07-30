@@ -3929,6 +3929,12 @@ struct Precompiled {
     /// whole-compiler union over every file). A consumer links against `providers[its group key]`; a missing
     /// entry ⇒ that group declined ⇒ its files fall back per-file.
     providers: std::collections::HashMap<String, ProviderPeer>,
+    /// For a SINGLE-file `cdz test <file>` run ONLY: the file's import closure, loaded once and SHARED with
+    /// `run_test_file` so it isn't parsed twice (PR#907 — dropping the `files.len() < 2` blanket-skip meant a
+    /// single file's closure was loaded here for the cache decision AND again in `run_test_file`). `Rc` so the
+    /// share is a refcount bump, not a deep clone of the arenas. `None` for a multi-file run (each file loads
+    /// its own closure once in `run_test_file`, as before — stashing all N would raise peak memory for no gain).
+    single_file_closure: Option<std::rc::Rc<Vec<closure::LoadedFile>>>,
 }
 
 /// Compile ONE closure-group's shared provider + its `@test` consumers, with the cross-invocation provider
@@ -4125,6 +4131,12 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
         asts: HashMap<String, rcdzc::Artifact>,
         entry: String,
     }
+    // For a SINGLE-file run, keep the loaded closure to SHARE with `run_test_file` (it would otherwise re-load
+    // + re-parse the same file — PR#907). Only the single-file case: stashing all N of a dir run would raise
+    // peak memory (holding every file's closure at once) for no gain — a dir file loads its closure once in
+    // `run_test_file` regardless (it never reuses a sibling's).
+    let single = files.len() == 1;
+    let mut single_file_closure: Option<std::rc::Rc<Vec<closure::LoadedFile>>> = None;
     let mut groups: HashMap<String, Group> = HashMap::new();
     for f in files {
         let Ok(closure) = load_import_closure_with(f, &|_| None) else {
@@ -4132,36 +4144,50 @@ fn precompile_tests_per_file(files: &[String]) -> Precompiled {
         };
         // The entry (element 0) is the target file; the rest are its imported closure. A file with NO imported
         // siblings is self-contained — no provider to hoist/cache, no per-file emit to amortize — so it keeps
-        // its byte-identical standalone `EmitTests` path (not grouped).
-        if closure.len() < 2 {
-            continue;
-        }
-        let mut imported: Vec<String> = closure[1..].iter().map(|cf| cf.name.clone()).collect();
-        imported.sort();
-        imported.dedup();
-        let key = imported.join("\0");
-        let group = groups.entry(key).or_insert_with(|| Group {
-            asts: HashMap::new(),
-            entry: closure[0].name.clone(),
-        });
-        for cf in &closure {
-            group.asts.entry(cf.name.clone()).or_insert_with(|| {
-                rcdzc::Artifact::new(
-                    rcdzc::Artifact::KIND_AST,
-                    cf.name.clone(),
-                    cadenza_syntax::codec::encode(&cf.arenas),
-                )
+        // its byte-identical standalone `EmitTests` path (not grouped). We still stash it (single-file case)
+        // so `run_test_file` reuses the parse.
+        if closure.len() >= 2 {
+            let mut imported: Vec<String> = closure[1..].iter().map(|cf| cf.name.clone()).collect();
+            imported.sort();
+            imported.dedup();
+            let key = imported.join("\0");
+            let group = groups.entry(key).or_insert_with(|| Group {
+                asts: HashMap::new(),
+                entry: closure[0].name.clone(),
             });
+            for cf in &closure {
+                group.asts.entry(cf.name.clone()).or_insert_with(|| {
+                    rcdzc::Artifact::new(
+                        rcdzc::Artifact::KIND_AST,
+                        cf.name.clone(),
+                        cadenza_syntax::codec::encode(&cf.arenas),
+                    )
+                });
+            }
+        }
+        // Stash the single-file closure for reuse (after building any group above — the closure is still owned
+        // here; the group only borrowed it). A self-contained single file (`closure.len() < 2`) is stashed too:
+        // it skips grouping but `run_test_file` still reuses the parse.
+        if single {
+            single_file_closure = Some(std::rc::Rc::new(closure));
         }
     }
     if groups.is_empty() {
-        return Precompiled::default(); // nothing to compose — every file falls back
+        // Nothing to compose — but a single-file run still hands its stashed closure to `run_test_file` so the
+        // parse isn't repeated (a self-contained single file, or a single importing file whose group declined).
+        return Precompiled {
+            single_file_closure,
+            ..Precompiled::default()
+        };
     }
 
     // Compose each group independently. A group whose composed emit declines contributes no provider/consumers
     // (its files fall back per-file); the others still get their shared provider. Each consumer records WHICH
     // group provider it links against, so `run_test_file` binds it to the right peer.
-    let mut precompiled = Precompiled::default();
+    let mut precompiled = Precompiled {
+        single_file_closure,
+        ..Precompiled::default()
+    };
     for (key, group) in groups {
         let ast_inputs: Vec<rcdzc::Artifact> = group.asts.into_values().collect();
         let (provider, consumers) =
@@ -4444,11 +4470,23 @@ fn run_test_file(
     // that reuses another module's type) resolves + runs — `cdz test FILE` sees the SAME linked program
     // `cdz check FILE` does. A file that imports nothing loads as a lone file, byte-identical to a
     // standalone single-file test compile; only a file carrying an `(import …)` pulls its siblings in.
-    let closure = match load_import_closure_with(file, &|_| None) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("{PROG}: {e}");
-            return Err(());
+    //
+    // REUSE the closure `precompile_tests_per_file` already loaded for a SINGLE-file run (PR#907 — avoid
+    // re-parsing the same file's whole closure twice). The stash is `Some` only for a single-file `cdz test
+    // <file>` (a dir run loads each file's closure once here, never a sibling's); `Rc` so this is a refcount
+    // bump. A multi-file run (or a defensive `None`) loads fresh, byte-identical to before.
+    let loaded;
+    let closure: &[closure::LoadedFile] = match &precompiled.single_file_closure {
+        Some(rc) => rc.as_slice(),
+        None => {
+            loaded = match load_import_closure_with(file, &|_| None) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("{PROG}: {e}");
+                    return Err(());
+                }
+            };
+            &loaded
         }
     };
     let is_package = !declared_import_paths(&closure[0].arenas).is_empty();
@@ -4600,7 +4638,7 @@ fn run_test_file(
             // an invalid-kebab `@test` name, …). We HOLD the closure files (source + spans), so render each
             // fault at its `file:line:col` (the located reporter), not the bare `cdz: error …` — an anchored
             // decline (e.g. CDZ0201 on a bad `@test` name) then points at the name occurrence like `cdz check`.
-            report_errors_located(&out, &closure);
+            report_errors_located(&out, closure);
             return Err(());
         };
         component.to_vec()
