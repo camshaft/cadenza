@@ -1219,7 +1219,7 @@
 (case "Record.merge carries a CLOSURE field into the union layout and it applies"
   (doc    "The fn-field face of merge (the heap-field merge pin carries LISTS): the left record's
            `f` holds a k-capturing closure; merge unions it with a scalar record and the MERGED
-           record's `f` applies (3+k → ×10) beside the merged `b` (87 at k=5, 37 at k=0). The union
+           record's `f` applies (3+k → ×10), plus the merged `b`=7 → 87 at k=5, 37 at k=0. The union
            layout must place the fn handle + its env cell correctly among re-sorted fields — a merge
            that copied the fn slot by scalar width (or re-ordered fields without moving the env
            pointer) calls the wrong target or reads b as the env.")

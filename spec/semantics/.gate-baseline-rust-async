@@ -1393,6 +1393,7 @@ pass	a runtime-index List.update LOOP rewrites every 100th slot of a 1000-elemen
 pass	a runtime-key swap-then-take chain threads both value-yields and the shrinking map
 pass	a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence
 pass	a runtime-woven Ast compares structurally equal to an equivalent quote
+pass	a scalar Ast.Int built in a helper from a runtime param compares = a constant Ast.Int
 pass	a scalar slice spanning a width TRANSITION carries its multibyte content exactly
 pass	a select between a base map and its derived generation frees the loser but not shared nodes
 pass	a separator JOIN over a runtime parts list handles first-vs-rest and the empty list
@@ -2934,6 +2935,8 @@ pass	a symbol-literal pattern nested in a variant payload matches by content
 pass	a symbol-literal pattern over a multi-byte symbol matches by content
 pass	a symbol-literal pattern over a string scrutinee is a type error
 pass	a tag function recurses over its HOLES list and folds their sum
+pass	a tag that DUPLICATES its single hole splices the same runtime subtree into both slots
+pass	a tag that SWAPS its two holes delivers each runtime subtree to the exchanged slot
 pass	a tag-length-value record round-trips through construct then match
 pass	a tagged template expands via its binding-dispatched tag function
 pass	a tagged template nested in another's hole composes — the inner's result reaches the outer tag
@@ -3193,6 +3196,7 @@ pass	an AST from quasiquoting a runtime value equals the same AST built by quote
 pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an Ast.Int stores an integer wider than Int64 without loss
+pass	an EMPTY splice mid-list closes the gap, a singleton fills it, and two splices around a literal both land
 pass	dropping a list pushed FROM a survivor must not free the shared spine
 pass	dropping a map derived by persistent insert must not free nodes shared with the survivor
 pass	dropping a rope built OVER a survivor must not free the shared child node

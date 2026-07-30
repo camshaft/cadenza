@@ -206,11 +206,11 @@ def se-trailing-junk-declines() =
     | Option.Some(_) => trap("123abc declines, not value 123")
 
 // NOTE: the "a CLEAN int literal still runs" boundary-guard regression (the guard rejects only non-clean
-// endings) is covered by `se-int-literal` above (same `run-src("42")` → 42) — the former `se-plain-int-still-
-// runs` was a byte-identical duplicate compile, removed to cut the suite's run-src compile cost (each run-src
-// @test re-runs the full in-guest compile pipeline — read-source→resolve→infer→lower→eval — at test time;
-// the test FILE is compiled to a component once, so the repeated cost is the in-guest pipeline, not a
-// separate per-@test wasm build. The suite time was head-of-line-blocking the fleet gate).
+// endings) is covered by `se-int-literal` in sread-eval.cdz (this file's engine file, post-split — same
+// `run-src("42")` → 42); the former `se-plain-int-still-runs` was a byte-identical duplicate compile, removed
+// to cut the suite's run-src compile cost (each run-src @test re-runs the full in-guest compile pipeline —
+// read-source→resolve→infer→lower→eval — at test time; the test FILE is compiled to a component once, so the
+// repeated cost is the in-guest pipeline, not a separate per-@test wasm build. Was head-of-line-blocking the gate).
 @test
 def se-typed-int-flag() =
   // an INT-valued program tags isBool=0 (renders as a bare scalar).
