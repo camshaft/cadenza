@@ -777,6 +777,7 @@ pass	a Rational accumulator threaded through recursion sums exactly
 pass	a Rational entry argument is marshalled through Rational::new
 pass	a Rational fanned into a compound then re-read survives (Perceus retain over a BigInt/Rational leaf)
 pass	a Rational is usable as a map key, matched by its exact value
+pass	a Rational leaf in a tuple orders by exact value with canonical-form ties falling through
 pass	a Rational map from a Rational sum key and a Rational.of-over-arithmetic key has both entries
 pass	a Rational set deduplicates by exact value regardless of how each was written
 pass	a Rational set from a Rational sum and a Rational.of over integer arithmetic has both elements
@@ -815,6 +816,7 @@ pass	a String slice VIEW keys a map by content in both directions, rope-backed i
 pass	a String-returning closure alongside a parameterized plain export
 pass	a String-returning closure alongside a parameterized plain export — the plain runs
 pass	a Symbol interned from a rope-slice view keys maps and removes set elements
+pass	a Symbol leaf in a tuple orders content-lexicographically and decisively before later fields
 pass	a Symbol nested in a TUPLE map key keys by content through the compound descent
 pass	a THREE-deep member-access chain reads a RUNTIME leaf through nested records
 pass	a THREE-level nest — Option of Result of a USER sum — matches through all three at runtime
@@ -1902,6 +1904,7 @@ pass	a multi-export compound-result shared call is a repeatable (borrow<t>) call
 pass	a multi-export set of parameterized capturing closures is driven per export
 pass	a multi-export shared call is a repeatable (borrow<t>) callback
 pass	a multi-field record with one param-named key survives the call
+pass	a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall to the next field
 pass	a multi-limb modulo keeps the truncating dividend-sign convention across the limb boundary
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a multi-payload destructure binds the head and recurses on the tail

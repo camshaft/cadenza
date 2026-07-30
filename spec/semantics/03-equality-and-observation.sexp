@@ -2641,3 +2641,47 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 1 Int64)))
+
+; --- The compound-order HEAP-LEAF matrix, remaining rows: Symbol, Rational, BigInt inside tuples
+; (the String/rope row landed with the drain-F perimeter; scalar Int/Bool rows are the original
+; pins). Each leaf kind has its own canonical compare (content-lexicographic / exact cross-multiply
+; with reduction / arbitrary-precision) that must run MID-WALK with ties falling through.
+
+(case "a Symbol leaf in a tuple orders content-lexicographically and decisively before later fields"
+  (doc    "The SYMBOL row of the compound-order heap-leaf matrix (String/rope, Rational, BigInt are the siblings): runtime-interned Symbols inside tuples — sym decisive before the numeric field ((alpha,9)<(beta,0) → 1), sym TIE falling to the number (compare Equal-path → Less at k=5), and an eq control. A walk comparing Symbols by intern handle/allocation order instead of content breaks the first face.")
+  (input  (do
+            (def (mk (: s String) (: n Int64)) (tuple (Symbol.of (String.concat s "")) n))
+            (def (main (: k Int64))
+              (+ (* 100 (if (< (mk "alpha" 9) (mk "beta" 0)) 1 0))
+                 (+ (* 10 (match (compare (mk "beta" 1) (mk "beta" (+ 1 k))) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                    (if (= (mk "alpha" 5) (mk "alpha" 5)) 1 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 121 Int64))
+  (call   main (: 5 Int64)) (output (: 111 Int64)))
+
+(case "a Rational leaf in a tuple orders by exact value with canonical-form ties falling through"
+  (doc    "The RATIONAL row of the heap-leaf matrix: (a) exact cross-multiply decisive mid-walk (1/3 < 3/6); (b) the CANONICAL tie — compare (1/2,5) vs (3/6,5) must see the rationals EQUAL (an unreduced num/den compare orders them) and fall to the tied scalar → Equal; (c) canonical tie via 2/6=1/3 falling to the second field. Runtime a blocks the fold.")
+  (input  (do
+            (def (mk (: n Int64) (: d Int64) (: t Int64)) (tuple (Rational.of n d) t))
+            (def (main (: a Int64))
+              (+ (* 100 (if (< (mk 1 3 9) (mk a 6 0)) 1 0))
+                 (+ (* 10 (match (compare (mk 1 2 5) (mk a 6 5)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                    (if (< (mk 2 6 1) (mk 1 3 2)) 1 0))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 121 Int64)))
+
+(case "a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall to the next field"
+  (doc    "The BIGINT row of the heap-leaf matrix, at MULTI-limb scale: arith-built 2^64-magnitude operands EQUAL in the low limb — a walk comparing only 64 bits calls them equal and falls through wrongly; the high limb must decide ((h3,9)<(h5,0) → 1). compare Equal on identical multi-limb values, then tie → next field.")
+  (input  (do
+            (def (mk (: h Int64) (: t Int64))
+              (do
+                (def b64 (* (BigInt.of 4294967296) (BigInt.of 4294967296)))
+                (tuple (+ (* b64 (BigInt.of h)) (BigInt.of 5)) t)))
+            (def (main (: a Int64))
+              (+ (* 100 (if (< (mk 3 9) (mk a 0)) 1 0))
+                 (+ (* 10 (match (compare (mk 5 1) (mk a 1)) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3)))
+                    (if (< (mk 5 1) (mk 5 2)) 1 0))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 121 Int64)))
