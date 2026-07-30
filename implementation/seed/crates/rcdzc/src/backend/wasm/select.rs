@@ -19713,11 +19713,11 @@ mod tests {
         // Golden pinned from the current (pre-refactor) emit: 0 retain-dups, 3 drops (one per push-result
         // temporary). The traversal-share refactor MUST reproduce both exactly.
         //
-        // ⚠ WHAT drops==3 ENCODES (reviewer FYI on 241d7789c): the 3 drops are the 3 `List.push` RESULT
-        // temporaries. The 3 `xi` let-bindings themselves are NOT dropped (push BORROWS xi; the fresh
-        // `(list n)` is never reclaimed) — a bounded 3-cell LEAK, the known borrowed-through-scope
-        // let/param-drop KNOWN-GAP (the general Perceus param-drop pass isn't built yet; owned by
-        // v-memory-safety). This golden CONSTANT-encodes that gap. So a FUTURE leak-fix that legitimately
+        // ⚠ WHAT drops==3 ENCODES: the 3 drops are the 3 `List.push` RESULT temporaries. The 3 `xi`
+        // let-bindings themselves are NOT dropped (push BORROWS xi; the fresh `(list n)` is never
+        // reclaimed) — a bounded 3-cell LEAK, the known borrowed-through-scope let/param-drop KNOWN-GAP
+        // (the general Perceus param-drop pass is not yet implemented in this backend; a known gap tracked
+        // by v-memory-safety). This golden CONSTANT-encodes that gap. So a FUTURE leak-fix that legitimately
         // reclaims the `xi` lets would move drops 3→6 — that is a leak IMPROVEMENT, NOT a traversal-share
         // regression. If this fires with drops==6 (not the fold's concern — the fold is pure traversal-share
         // and won't touch reclamation), re-baseline to 6 rather than treating it as a site-set drift.
