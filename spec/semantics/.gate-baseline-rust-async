@@ -101,6 +101,7 @@ pass	Qty map VALUES unwrap, ADD, and COMPARE in one chain preserving the unit th
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
 pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
 pass	Record.extend ADDS a closure field beside two existing ones and all three apply
+pass	Record.extend widens a map-extracted record and the wide row enters a new map
 pass	Record.merge carries HEAP-list fields from both operands into the merged layout
 pass	Record.merge carries a CLOSURE field into the union layout and it applies
 pass	Record.pop hands back a CLOSURE field as the popped value and it applies
@@ -729,6 +730,7 @@ pass	a MULTIBYTE symbol map key is found by its runtime-CONCAT-interned twin
 pass	a MULTIPLY on an unusual signed width computes in range at the declared width
 pass	a MULTIPLY overflowing an unusual signed width is rejected CDZ0304
 pass	a MUTUALLY-recursive effectful group is specialized under a state handler
+pass	a MUTUALLY-recursive performing pair threads one handler state through both fns
 pass	a Map accumulator threaded through a non-tail double tree recursion accumulates both subtrees
 pass	a Map.lookup over a map literal with a runtime key finds it by value
 pass	a NARROW-int-field Tuple closure ARG flattens + rebuilds (exercises the i32->i64 extend)
@@ -3344,6 +3346,7 @@ pass	an active-unquoted boolean literal equals the quoted form
 pass	an agreeing Result error type short-circuits through the boundary
 pass	an agreeing arrow annotation on a lambda is accepted and the function applies normally
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
+pass	an all-UInt8 handler (state, op result, arm arithmetic) computes at narrow width
 pass	an all-constant Set.of still folds membership with a constant query (control)
 pass	an all-escapes Ast.Str round-trips through print and read
 pass	an all-nullary enum dispatches its runtime-selected variant and escapes
@@ -3376,6 +3379,7 @@ pass	an arbitrary-precision integer multiplication does not overflow
 pass	an arbitrary-precision literal beyond 64 bits is an exact BigInt
 pass	an argument bound to a used parameter IS observed, so its trap occurs (the anchor)
 pass	an argument bound to an unused parameter is not evaluated, so its trap does not occur
+pass	an argument swap weaves with perform results through a recursive handler body
 pass	an arithmetic operator with a single operand is rejected, not a crash
 pass	an arm chooses its resume value by an if on the handler state
 pass	an arm re-performing its own effect with no outer handler has no home
@@ -3523,6 +3527,7 @@ pass	an inline Unit.define conflicting with a built-in conversion is rejected wh
 pass	an inline-never definition is emitted once and called
 pass	an inline-never definition with a const dictionary still monomorphizes the dictionary
 pass	an inlined multi-use checked-arith argument is shared and computed directly into its slot
+pass	an inner arm resumes with the OUTER handler's result while both states advance
 pass	an inner binding shadows an outer one only within its scope
 pass	an inner handler's INIT state is computed by performing an enclosing effect
 pass	an inner lambda captures an enclosing match-arm binder and is applied
@@ -3550,8 +3555,10 @@ pass	an open sum's payload decodes against a schema to a typed result
 pass	an open-row function accepts a runtime MERGE result and reads the carried field
 pass	an open-row function is applied at TWO different record widths in one program
 pass	an open-row function over a Record.with result reads the UPDATED value
+pass	an open-sum type crosses THREE modules concretely and matches at every stop
 pass	an open-sum value bound by an open-tail arm is forwarded to another matcher with its variant intact
 pass	an open-sum value matching no named arm in either matcher reaches the forwarded sentinel
+pass	an open-sum value rides a generic tuple and matches from both slots
 pass	an operation on mismatched types is rejected at compile time
 pass	an operation with a RECORD parameter binds the compound and the arm reads its fields
 pass	an operation with a TUPLE parameter binds the compound and the arm projects it

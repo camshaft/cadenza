@@ -6210,3 +6210,82 @@
         (export main)))
   (call   main (: 2 Int64)) (output (: 212 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64)))
+
+; --- Effects perimeter remainder: mutual-recursion state threading, argument-swap weaves,
+; an inner arm consuming the outer handler's result, and an all-narrow-width handler. ---
+
+(case "a MUTUALLY-recursive performing pair threads one handler state through both fns"
+  (doc    "The mutual-recursion face of the effect specializer (self-recursion is pinned; the held
+           finding is the def-bound variant): `ev` and `od` alternate, each performing `Cnt.tick`
+           in expression position — the specializer must clone BOTH fns of the group coherently
+           (ev#eff calling od#eff calling ev#eff) and the single state threads through the
+           alternation (4 ticks: 4k+6 → 14 at k=2, 6 at k=0). A specializer that cloned only the
+           entry fn (leaving od calling the UN-specialized ev) loses the homing mid-alternation.")
+  (input  (do
+        (effect Cnt (op tick (-> Unit Int64)))
+        (def (ev (: n Int64)) (if (= n 0) 0 (+ (Cnt.tick) (od (- n 1)))))
+        (def (od (: n Int64)) (if (= n 0) 0 (+ (Cnt.tick) (ev (- n 1)))))
+        (def (main (: k Int64))
+          (handle Cnt k
+            ((tick (u) s (resume s (+ s 1))))
+            (ev 4)))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 14 Int64))
+  (call   main (: 0 Int64)) (output (: 6 Int64)))
+
+(case "an argument swap weaves with perform results through a recursive handler body"
+  (doc    "Permutation × effects: each tail call swaps the accumulators AND folds a fresh perform
+           into the outgoing one — `(weave (- n 1) b (+ a (Src.next)))` interleaves the handler's
+           stepping state (draws k, k+1, k+2) with the arg permutation ((0,2)→(2,3)→(3,6) → 36 at
+           k=2; 12 at k=0). A lowering that sequenced the perform AFTER the slot assignment reads
+           the swapped-in value into the wrong sum; one that re-performed per slot double-draws.
+           The evaluation-order contract at the tail-call boundary under an active handler.")
+  (input  (do
+        (effect Src (op next (-> Unit Int64)))
+        (def (weave (: n Int64) (: a Int64) (: b Int64))
+          (if (= n 0)
+              (+ (* 10 a) b)
+              (weave (- n 1) b (+ a (Src.next)))))
+        (def (main (: k Int64))
+          (handle Src k
+            ((next (u) s (resume s (+ s 1))))
+            (weave 3 0 0)))
+        (export main)))
+  (call   main (: 2 Int64)) (output (: 36 Int64))
+  (call   main (: 0 Int64)) (output (: 12 Int64)))
+
+(case "an inner arm resumes with the OUTER handler's result while both states advance"
+  (doc    "The dataflow-coupled cross-level perform (the :890 interpose pin performs the outer as a
+           DISCARDED observation): `bump`'s arm performs `Log.put c` and resumes with the OUTER
+           handler's RESULT — each bump's value is (inner count + outer accumulator) with BOTH
+           states stepping between events: 100, 102, 104 → 306. A homing that discharged the arm's
+           put against the wrong level (or a resume that captured the outer's state pre-put) shifts
+           an addend; the value chain 100/102/104 encodes the exact interleaving of the two state
+           threads.")
+  (input  (do
+        (effect Log (op put (-> Int64 Int64)))
+        (effect Ctr (op bump (-> Unit Int64)))
+        (def (main (: _mode Int64))
+          (handle Log 100
+            ((put (v) s (resume (+ v s) (+ s 1))))
+            (handle Ctr 0
+              ((bump (u) c (resume (Log.put c) (+ c 1))))
+              (+ (Ctr.bump) (+ (Ctr.bump) (Ctr.bump))))))
+        (export main)))
+  (call   main (: 0 Int64)) (output (: 306 Int64)))
+
+(case "an all-UInt8 handler (state, op result, arm arithmetic) computes at narrow width"
+  (doc    "The width-CONSISTENT perimeter of the handler-state widening seam (the MIXED-width
+           state/result shape is the interim clean decline, flip-pinned upstream): state seeded
+           `(: 10 UInt8)`, op result UInt8, arm arithmetic all-narrow — the fold computes (10)
+           with no widening required. Boxes the coming widening fix from the other side: a fix
+           that widened EVERY handler state to Int64 would break this narrow-consistent shape's
+           typing (the op result must stay UInt8 for the caller's Int64.of).")
+  (input  (do
+        (effect Src (op next (-> Unit UInt8)))
+        (def (main (: x UInt8))
+          (handle Src (: 10 UInt8)
+            ((next (u) s (resume s (+ s x))))
+            (Int64.of (Src.next))))
+        (export main)))
+  (call   main (: 5 UInt8)) (output (: 10 Int64)))
