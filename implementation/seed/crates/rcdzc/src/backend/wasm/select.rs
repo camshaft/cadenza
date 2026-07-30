@@ -19672,6 +19672,58 @@ mod tests {
         );
     }
 
+    // ── CHARACTERIZATION: pin the `collect_dup_sites`/emit output over a MULTI-BINDER body — the golden the
+    // planned `collect_dup_sites` O(binders×body-nodes)→O(N) traversal-share refactor (Option-C, the
+    // sread-eval ~1360-def provider-emit cliff, see the v-compiler-perf finding memo) MUST preserve
+    // BYTE-IDENTICALLY. Three heap `List` lets, each pushed-into then len-read in the same `+` group. NOTE
+    // (empirically pinned): in THIS shape the current compiler emits ZERO retain-`dup`s — the `List.push`
+    // result is tee'd to a fresh slot + immediately len'd+dropped, and the later `List.len xi` reads xi's
+    // ORIGINAL slot, so no consume-then-reuse survives to force a retain (the doc's `(List.len (List.push e
+    // 9))` retain case doesn't fire for a fresh-inline-list binding here). The value of pinning it is that
+    // the O(N) refactor must keep this count at 0 (not spuriously START marking) AND keep the drop-count
+    // stable — a traversal-share bug that changed WHICH binders are visited would perturb both. The positive
+    // dup-emit path is covered end-to-end by the v-memory-safety #45 UAF battery (--ignored 63/0 +
+    // cad/sread-eval oracles), the required co-verify for any change to this pass. ──
+    #[test]
+    fn multi_binder_body_pins_dup_and_drop_counts_for_traversal_share_refactor() {
+        let ast = crate::testkit::parse(
+            "(module m (def (g (: n Int64)) \
+               (let ((x1 (list n))) \
+               (let ((x2 (list n))) \
+               (let ((x3 (list n))) \
+                 (+ (+ (List.len (List.push x1 n)) (List.len x1)) \
+                    (+ (+ (List.len (List.push x2 n)) (List.len x2)) \
+                       (+ (List.len (List.push x3 n)) (List.len x3)))))))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "g");
+        let f = select_function(&mut db, body, &params, &layout).expect("select");
+        let dups = f
+            .code
+            .iter()
+            .filter(|op| **op == Lir::CallImport("dup"))
+            .count();
+        let drops = f
+            .code
+            .iter()
+            .filter(|op| **op == Lir::CallImport("drop"))
+            .count();
+        // Golden pinned from the current (pre-refactor) emit: 0 retain-dups, 3 drops (one per push-result
+        // temporary). The traversal-share refactor MUST reproduce both exactly.
+        assert_eq!(
+            dups, 0,
+            "traversal-share refactor changed the retain-dup count (was 0); site-set drift = soundness risk: {:?}",
+            f.code
+        );
+        assert_eq!(
+            drops, 3,
+            "traversal-share refactor changed the drop count (was 3): {:?}",
+            f.code
+        );
+    }
+
     #[test]
     fn set_to_list_drops_its_baked_descriptor_after_the_borrowing_op() {
         // `Set.to-list` bakes a shape descriptor as an owned `Bytes` (`bytes-alloc`/`bytes-set`) and passes
