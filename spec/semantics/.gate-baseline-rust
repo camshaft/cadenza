@@ -150,7 +150,9 @@ pass	a @requires predicate over a HEAP collection is enforced at entry and value
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a Bytes ROPE handler state GROWS by bin-append per perform and each resume reads the prior length
+pass	a Bytes slice VIEW and a rope compare equal by content in both directions
 pass	a Bytes slice of a slice composes offsets against the VIEW and bounds against its length
+todo	a Bytes-compact key and a flat rebuild both hit a rope-keyed map entry; a proper-prefix slice misses
 pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
 pass	a CONTINUED FRACTION evaluates bottom-up through recursive Rational division (a + 1/rest)
@@ -933,6 +935,7 @@ pass	a bin pattern over a List scrutinee is a type error
 pass	a bin pattern over a String scrutinee is a type error
 pass	a bin pattern over a runtime non-Bytes scrutinee is a type error
 pass	a bin pattern over an Int64 scrutinee is a type error
+pass	a bin-decoded frame body drives per-byte performs through a recursive walk
 pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
 pass	a binary literal with digit separators
@@ -3707,6 +3710,7 @@ pass	b4c(conjunctive) NEG-2 (reverse): precondition covers only {ge x 0} (missin
 pass	b4c(conjunctive): two stacked @requires give a 2-hyp proof; licenses requires BOTH hyps covered by the precondition
 pass	b4c(proven): @requires(<= x 100)/@ensures(<= ret MAXINT) on (f x)=x+1 discharges — P denoted as hyp, Q[ret:=body] as goal
 pass	b4c(unprovable): @ensures(<= ret MAXINT) on unbounded (f x)=x+1 is NOT dischargeable — the proof tier correctly MISSES (CDZ-VERIFY)
+pass	bin-encode segment ORDER holds for runtime-swapped operand values
 pass	binding the same effect to a peer twice is rejected
 pass	bit-field segments pack sub-byte values into one byte
 pass	bit-field segments spanning a rope seam split the stitched 16 bits, not a leaf's

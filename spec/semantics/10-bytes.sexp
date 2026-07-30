@@ -1734,3 +1734,37 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: 131 Int64)))
+
+; --- View-vs-rope equality both directions, and Bytes.compact as a CHAMP key. ---
+
+(case "a Bytes slice VIEW and a rope compare equal by content in both directions"
+  (doc    "The BYTES twin of the string view×rope compare pin: a borrowed [off,len] view
+           (`slice([9,1,2,3,7],1,3)` = [1,2,3]) against a concat rope `[1,2]++[m]` — content
+           equality in BOTH operand orders (11 at m=3; 0 at m=4). Bytes has NO blessed order
+           (ruled), so eq is the only cross-rep relation — a compare that walked the view's
+           parent bytes (9-prefixed) or the rope's node structure breaks a direction; the
+           both-directions read catches an asymmetric fast-path.")
+  (input  (do
+        (def (main (: mode Int64))
+          (do
+            (def view (Option.expect (Bytes.slice (Bytes.of (list 9 1 2 3 7)) 1 3) "in"))
+            (def rope (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list (UInt8.wrap mode)))))
+            (+ (* 10 (if (= view rope) 1 0))
+               (if (= rope view) 1 0))))
+        (export main)))
+  (call   main (: 3 Int64)) (output (: 11 Int64))
+  (call   main (: 4 Int64)) (output (: 0 Int64)))
+
+(case "a Bytes-compact key and a flat rebuild both hit a rope-keyed map entry; a proper-prefix slice misses"
+  (doc    "compact's DERIVED value as a key against its parent-rope entry (the compact pins are value-eq only): compact re-boxes storage into an independent allocation — a hash keyed on storage identity/chunk layout misses the content-equal twin. compact(rope) hits (100), a flat rebuild hits (10), a 2-byte compact-slice PREFIX misses (0). rust rows todo with the Bytes-CHAMP-key family.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def rope (Bytes.concat (Bytes.of (list 10 (UInt8.wrap k))) (Bytes.of (list 30))))
+                (def m (Map.insert Map.empty rope 42))
+                (+ (* 100 (match (Map.lookup m (Bytes.compact rope)) ((Option.Some v) 1) ((Option.None _u) 0)))
+                   (+ (* 10 (match (Map.lookup m (Bytes.of (list 10 (UInt8.wrap k) 30))) ((Option.Some v) 1) ((Option.None _u) 0)))
+                      (match (Map.lookup m (Option.expect (Bytes.slice (Bytes.compact rope) 0 2) "lo")) ((Option.Some v) 1) ((Option.None _u) 0))))))
+            (export main)))
+  (call   main (: 20 Int64))
+  (output (: 110 Int64)))
