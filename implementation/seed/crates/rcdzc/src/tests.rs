@@ -45509,6 +45509,47 @@ mod match_engine {
     }
 
     #[test]
+    fn a_guarded_wildcard_binder_over_a_computed_scrutinee_in_a_nonentry_helper_binds_and_runs() {
+        // FINDING #46 (breaker/corpus-bugfix, VERIFIED both backends): a match GUARD with a NAMED wildcard
+        // binder `(guard w (> w 10))` over a COMPUTED/def-bound scrutinee `(* q 1)` in a NON-entry helper
+        // false-rejected CDZ0101 `unbound w`. ROOT: the guarded-scalar desugar EXTRACTS the guard cond+body
+        // into a bare `(if g body else)`, severing `w` from its `(guard …)` ancestor — so once the arm is
+        // reduced into an orphan `if` (which a computed scrutinee in a non-entry helper triggers), `w`
+        // resolves unbound. CONTROL: the SAME guard over a bare-param scrutinee `(match q …)` compiled fine.
+        // FIX (lower::lower_match guarded-scalar desugar): wrap the extracted test in
+        // `(let ((w scrutinee)) (if g body else))` + `forget_subtree` so `w` re-resolves to the `let` binder
+        // (and outer names the cond reads re-resolve up the live chain). Pins the RUN (a compile-only check
+        // would miss a mis-bound scrutinee): classify(21) = 1 (21>10), classify(5) = 0.
+        let src = "(module m \
+                     (def (classify (: q Int64)) (match (* q 1) ((guard w (> w 10)) 1) (_ 0))) \
+                     (def (main (: k Int64)) (classify k)) (export main))";
+        let bytes = component(src);
+        wasmparser::validate(&bytes).expect(
+            "a guarded wildcard binder over a computed scrutinee must emit valid wasm (not CDZ0101)",
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping finding-46 run");
+            return;
+        };
+        for (arg, want) in [(21i64, "1"), (5, "0")] {
+            let opts = cdz_run::RunOpts {
+                export: Some("main".to_string()),
+                args: vec![arg.to_string()],
+                runtime: Some(runtime.clone()),
+                runtime_cache_dir: None,
+                host_responses: Vec::new(),
+            };
+            match cdz_run::run(&bytes, &opts).expect("run") {
+                cdz_run::Outcome::Value(s) => assert_eq!(
+                    s, want,
+                    "classify({arg}) — the guard binder `w` binds the computed scrutinee"
+                ),
+                cdz_run::Outcome::Trap(t) => panic!("finding-46 run trapped: {t}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_guard_over_a_variant_pattern_gates_on_the_payload_and_falls_through() {
         // A guard over a VARIANT pattern `(guard (Some x) (> x 0))`: the payload binder `x` is in scope for
         // the guard cond (resolve sees through the `(guard …)` wrapper to `(Some x)`), the arm fires only

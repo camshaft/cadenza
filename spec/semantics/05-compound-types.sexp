@@ -16994,3 +16994,42 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 7223 Int64)))
+
+; --- Scale faces: the 5000-deep recursive-sum spine and the 33-variant wide sum. ---
+
+(case "a 5000-deep recursive-sum spine builds, walks, and compares — the eq walk survives depth"
+  (doc    "The Peano pins run at depth <=3; this exercises THREE recursion mechanisms at depth 5000: the non-tail builder (real frames), the tail walker, and the emitted value-eq walk over TWO 5000-spines (equal + off-by-one faces). A stack cliff or depth limit in any one diverges.")
+  (input  (do
+            (type Nat (Z) (S Nat))
+            (def (mk (: n Int64)) (if (= n 0) (Z) (S (mk (- n 1)))))
+            (def (count (: v Nat) (: acc Int64))
+              (match v
+                ((S inner) (count inner (+ acc 1)))
+                ((Z) acc)))
+            (def (main (: a Int64) (: b Int64))
+              (+ (* 100 (/ (count (mk a) 0) 50))
+                 (+ (* 10 (if (= (mk a) (mk b)) 1 0))
+                    (if (= (mk a) (mk (+ b 1))) 1 0))))
+            (export main)))
+  (call   main (: 5000 Int64) (: 5000 Int64))
+  (output (: 10010 Int64)))
+
+(case "a 33-VARIANT sum dispatches across the discriminant range with a payload variant last"
+  (doc    "Corpus sums top out ~6 variants; 33 crosses the 32 boundary (i32-bitmask/5-bit-tag reps saturate; jump-table vs if-chain dispatch switches here). Faces: first/middle/last nullary discriminants, the PAYLOAD variant at index 32, and the wildcard covering the other 29.")
+  (input  (do
+            (type W (V01) (V02) (V03) (V04) (V05) (V06) (V07) (V08) (V09) (V10) (V11) (V12) (V13) (V14) (V15) (V16) (V17) (V18) (V19) (V20) (V21) (V22) (V23) (V24) (V25) (V26) (V27) (V28) (V29) (V30) (V31) (V32) (V33 Int64))
+            (def (pick (: k Int64))
+              (if (= k 1) (W.V01 unit) (if (= k 16) (W.V16 unit) (if (= k 32) (W.V32 unit) (W.V33 k)))))
+            (def (code (: w W))
+              (match w
+                ((W.V01 _u) 1)
+                ((W.V16 _u) 16)
+                ((W.V32 _u) 32)
+                ((W.V33 v) (+ 100 v))
+                (_ 0)))
+            (def (main (: k Int64)) (code (pick k)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 1 Int64))
+  (call   main (: 16 Int64)) (output (: 16 Int64))
+  (call   main (: 32 Int64)) (output (: 32 Int64))
+  (call   main (: 7 Int64)) (output (: 107 Int64)))
