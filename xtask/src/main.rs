@@ -721,10 +721,15 @@ fn ml_test_jobs_from(override_opt: Option<usize>, file_count: usize) -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
-    // Cap the default at 2 (was 4): 4-way concurrency raced the per-file timeout under shared-fleet CPU
-    // contention (pr-sync systemic-timeout report). 2 gives each memory+CPU-heavy compile enough CPU to
-    // finish within the cap while still collapsing the serial sum toward the slowest-file floor.
-    let default = cores.clamp(1, 2);
+    // Cap the default at 4 (restored from a temporary 4→2 downgrade). The 2-cap existed for ONE reason:
+    // on a COLD provider cache every per-file compile re-emitted the whole shared closure (CPU+memory
+    // heavy), so 4-way concurrency raced the per-file timeout under shared-fleet contention (pr-sync
+    // systemic-timeout report). That premise is GONE: `step_cached_per_file` now WARMS the shared-closure
+    // providers ONCE (serial `cdz test --warm-only`) before this pool, so each per-file run is a cheap
+    // consumer-only cache HIT — it no longer does the heavy cold re-emit, so higher concurrency doesn't
+    // race the cap. 4 collapses the serial sum harder toward the slowest-file floor (operator P0, gate
+    // <10min). `CDZ_ML_JOBS` still overrides for a bigger/smaller host, and reverting to 2 is this one line.
+    let default = cores.clamp(1, 4);
     let jobs = override_opt.unwrap_or(default);
     jobs.clamp(1, file_count.max(1))
 }
@@ -6952,17 +6957,18 @@ mod trap_grading_tests {
         // Drives the PURE core with an injected override (`None` = unset/zero/garbage) so the test never
         // touches process-global env — cargo runs #[test]s in parallel, and a sibling test also reads env,
         // so env mutation here would be a data race (the reason `set_var`/`remove_var` are `unsafe`).
-        // Default is conservative (min(cores, 2) — lowered from 4 after the pr-sync systemic-timeout
-        // report: 4-way concurrency raced the per-file cap under fleet load) AND clamped to the file count
-        // so we never spawn idle workers — with 2 files the pool is at most 2 regardless of cores.
+        // Default is min(cores, 4) — RESTORED from a temporary 4→2 downgrade now that the gate warms the
+        // shared-closure providers once before the per-file pool, so each per-file run is a cheap cache
+        // HIT (no cold re-emit) and 4-way concurrency no longer races the per-file cap. Clamped to the
+        // file count so we never spawn idle workers — with 2 files the pool is at most 2 regardless of cores.
         assert_eq!(
             ml_test_jobs_from(None, 1),
             1,
             "default clamped to file count = EXACTLY 1 (not 0 — catches an accidental under-clamp)"
         );
         assert!(
-            ml_test_jobs_from(None, 100) <= 2,
-            "default never exceeds the conservative cap of 2 (throughput under shared-fleet contention)"
+            ml_test_jobs_from(None, 100) <= 4,
+            "default never exceeds the cap of 4 (post-warm the per-file runs are cheap cache HITs)"
         );
         assert!(ml_test_jobs_from(None, 100) >= 1, "always at least one job");
 
