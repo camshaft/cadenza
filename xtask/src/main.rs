@@ -5041,6 +5041,72 @@ impl Log {
         .ok();
         self.file.flush().ok();
 
+        // WARM-ONCE before the parallel sweep (operator P0, gate <10min). The per-file pool below runs
+        // each file as its OWN `cdz test <file>` process for runaway-compile localization; on a COLD
+        // provider cache the concurrent workers that share a closure ALL miss and re-emit the ~1360-def
+        // shared provider in parallel (the N×-redundant-emit race — the 8 `sread-eval-*` files each cold-
+        // emitting the whole closure). One SERIAL `cdz test <suite_dir> --warm-only` emits + persists each
+        // closure group's provider to the shared default-store cache ONCE, then exits without running
+        // tests, so every per-file run below HITS instead of racing the emit. Same cdz binary + cwd as the
+        // workers → same providers dir → they share the warmed cache with no env.
+        //
+        // Best-effort: a warm-only RED means the suite is genuinely parse/check-broken — but the per-file
+        // sweep is the AUTHORITATIVE gate (it localizes the failing file), so a failed/timed-out warm just
+        // forgoes the cache benefit this run rather than failing the gate here. Log the outcome either way.
+        {
+            let warm_started = std::time::Instant::now();
+            writeln!(
+                self.file,
+                "\n──── warm-once: {cdz_bin} test {} --warm-only ────",
+                suite_dir.display()
+            )
+            .ok();
+            self.file.flush().ok();
+            match std::process::Command::new(cdz_bin)
+                .arg("test")
+                .arg(suite_dir)
+                .arg("--warm-only")
+                .current_dir(repo)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map(|child| wait_with_timeout(child, whole_suite_timeout))
+            {
+                Ok(Ok(Some(out))) => {
+                    self.file.write_all(&out.stdout).ok();
+                    self.file.write_all(&out.stderr).ok();
+                    let secs = warm_started.elapsed().as_secs();
+                    if out.status.success() {
+                        writeln!(
+                            self.file,
+                            "  ✓ warm-once OK in {secs}s — per-file sweep will HIT the cache"
+                        )
+                        .ok();
+                    } else {
+                        writeln!(self.file, "  ⚠ warm-once returned non-zero in {secs}s (suite may be broken; the per-file sweep below localizes it) — proceeding uncached").ok();
+                    }
+                }
+                Ok(Ok(None)) => {
+                    writeln!(self.file, "  ⚠ warm-once TIMED OUT at the suite cap — proceeding uncached (per-file sweep is authoritative)").ok();
+                }
+                Ok(Err(e)) => {
+                    writeln!(
+                        self.file,
+                        "  ⚠ warm-once wait error ({e}) — proceeding uncached"
+                    )
+                    .ok();
+                }
+                Err(e) => {
+                    writeln!(
+                        self.file,
+                        "  ⚠ warm-once launch error ({e}) — proceeding uncached"
+                    )
+                    .ok();
+                }
+            }
+            self.file.flush().ok();
+        }
+
         // Run the files CONCURRENTLY (bounded worker pool pulling from a shared cursor), each still
         // under the per-file cap. The suite's wall-clock is a SUM of per-file full-pipeline compiles
         // dominated by one ~480s file, so overlapping them collapses the serial ~45min sum toward that

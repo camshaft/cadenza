@@ -2457,6 +2457,47 @@
             (export main)))
   (call   main (: 7 Int64) (: 0 Int64)) (output (: 2 Int64)))
 
+; --- Finding #46: a guard's bare binder resolves over a COMPUTED scrutinee in a non-entry helper.
+; The guarded-scalar desugar extracts the guard cond+body into a bare `(if <cond> <body> …)`, which
+; severed the named wildcard binder `w` from its `(guard)` ancestor: when the scrutinee is a computed
+; expression (needs a temp) inside a NON-entry fn, the arm reduced to an orphan `if` where `w` could
+; not recover the scrutinee → a spurious CDZ0101 'unbound w' (both targets). The fix wraps the arm in
+; `(let ((w <scrutinee>)) …)` + forget_subtree so `w` binds the let and outer names re-resolve (fixed
+; v-inference 0f79b082f). The sibling of the guarded-sum CDZ0101 at :2357 — same false-unbound class,
+; scalar-guard face. Trigger needs BOTH a non-entry helper AND a non-bare-param scrutinee; the raw-param
+; control below always compiled.
+(case "a guard binder resolves over a COMPUTED scrutinee inside a helper fn"
+  (doc    "Finding #46 regression witness (breaker; fix v-inference 0f79b082f). `classify` is a NON-entry
+           helper matching a COMPUTED scrutinee `(* q 1)` with a bare-binder guard `(guard w (> w 10))`.
+           Was a spurious CDZ0101 'unbound w' on both targets — the guarded-scalar desugar orphaned the
+           `w` binder from its scrutinee when the scrutinee needed a temp in a non-entry frame. Now binds
+           and runs: at q=15 the guard 15>10 holds → 1; at q=5 it fails → 0. The computed-scrutinee /
+           scalar-guard sibling of the guarded-variant CDZ0101 at :2357.")
+  (input  (do
+            (def (classify (: q Int64))
+              (match (* q 1)
+                ((guard w (> w 10)) 1)
+                (_ 0)))
+            (def (main (: x Int64)) (classify x))
+            (export main)))
+  (call   main (: 15 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64)) (output (: 0 Int64)))
+
+(case "a guard binder resolves over a raw param scrutinee inside a helper fn"
+  (doc    "Finding #46 control (green even pre-fix): the same bare-binder guard in the same non-entry
+           helper, but matching the RAW param `q` directly rather than a computed expression. A bare-param
+           scrutinee needs no temp, so the guard binder never orphaned — this face always compiled. Pins
+           that the fix's trigger was specifically the COMPUTED scrutinee, not the guard-in-helper shape.")
+  (input  (do
+            (def (classify (: q Int64))
+              (match q
+                ((guard w (> w 10)) 1)
+                (_ 0)))
+            (def (main (: x Int64)) (classify x))
+            (export main)))
+  (call   main (: 15 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64)) (output (: 0 Int64)))
+
 ; --- A match must cover every value of the scrutinee's type ------------------------------
 ; core-semantics.md #Matching Is Exhaustive Or Rejected: "A match whose patterns do not cover
 ; every value of the scrutinee's type MUST be a compile-time error." A Bool has exactly two
