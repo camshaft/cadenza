@@ -146,6 +146,8 @@ pass	WAVE reorder alternates <= and >= by index parity through a carried-element
 pass	a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
 pass	a 3-arg effect op binds its operands POSITIONALLY — an argument-order swap is caught
+pass	a 33-VARIANT sum dispatches across the discriminant range with a payload variant last
+pass	a 5000-deep recursive-sum spine builds, walks, and compares — the eq walk survives depth
 pass	a @ensures postcondition over a HEAP result checks at exit and returns the live collection
 pass	a @ensures relating the RESULT to a PARAMETER enforces the relation at exit
 todo	a @param positions a slice window over a guest-built byte rope
@@ -160,6 +162,7 @@ todo	a Bytes-compact key and a flat rebuild both hit a rope-keyed map entry; a p
 pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
 pass	a CONTINUED FRACTION evaluates bottom-up through recursive Rational division (a + 1/rest)
+pass	a CONTRACTED fn consumes perform results — @requires fires on a handler-produced value
 pass	a DUTCH-FLAG three-way partition routes below/equal/above and reassembles sorted
 pass	a Euclid gcd over MULTI-LIMB BigInts converges with limb-level mod steps
 pass	a FLETCHER-16 checksum walks a concat-built byte rope across its seams
@@ -4560,6 +4563,7 @@ pass	string slicing yields Some of the substring
 pass	string to bytes (UTF-8)
 pass	string to bytes encodes multi-byte characters
 pass	string to bytes produces the exact UTF-8 byte values, not just the right count
+pass	string-literal arms discriminate a PROPER PREFIX and hit across seam positions
 pass	strings differing only in Unicode normalization are equal
 pass	structural equality holds component-wise
 pass	structural equality on an Ast.List is element-COUNT sensitive

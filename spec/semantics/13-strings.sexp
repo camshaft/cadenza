@@ -4165,3 +4165,22 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 110 Int64)))
+
+; --- Literal-arm prefix discrimination across seam positions. ---
+
+(case "string-literal arms discriminate a PROPER PREFIX and hit across seam positions"
+  (doc    "The literal-arm pins never put a PROPER PREFIX of another arm's literal as its own arm (café/cafe/caf — a length-ignoring or byte-prefix compare conflates the short arm) nor a scrutinee whose rope SEAM falls mid-literal at different positions (caf+é and ca+fé both select the café arm).")
+  (input  (do
+            (def (classify (: s String))
+              (match s
+                ("café" 1)
+                ("cafe" 2)
+                ("caf" 3)
+                (_ 0)))
+            (def (main (: k Int64))
+              (+ (* 100 (classify (String.concat "caf" (if (= k 1) "é" "e"))))
+                 (+ (* 10 (classify (String.concat "ca" "fé")))
+                    (classify (String.concat "caf" "")))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 113 Int64)))

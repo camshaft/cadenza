@@ -1180,11 +1180,57 @@ fn collect_dup_sites(
     binders: &[StructId],
     sites: &mut HashSet<StructId>,
 ) {
+    // Build the shared occurrence oracle ONCE (a single cycle-guarded pass, O(N × binders/64)) so each
+    // binder's walk prunes binder-free subtrees in O(1) instead of the per-binder full re-walk — the
+    // O(binders × body-nodes)→~O(N) traversal-share fix for the sread-eval provider-emit cliff. The
+    // per-binder loop stays (each binder's dup/live_after logic is unchanged), but a subtree the binder
+    // never enters is now skipped at its root rather than fully descended.
+    let index: HashMap<StructId, usize> =
+        binders.iter().enumerate().map(|(i, &b)| (b, i)).collect();
+    let bitsets = build_occurrence_bitsets(db, body, &index);
+    DUP_OCCURRENCE_ORACLE.with(|o| *o.borrow_mut() = Some((index, bitsets)));
     for &binder in binders {
         // The body's result position CONSUMES (the value is returned / escapes), so the top-level call is
         // `consuming: true`; nothing is used after the whole body, so `live_after: false`.
         mark_binder_dups(db, body, binder, true, false, sites);
     }
+    DUP_OCCURRENCE_ORACLE.with(|o| *o.borrow_mut() = None);
+}
+
+/// The active `collect_dup_sites` occurrence oracle: `(binder → bit-index, node → occurrence-bitset)` from
+/// [`build_occurrence_bitsets`].
+type DupOccurrenceOracle = (HashMap<StructId, usize>, HashMap<StructId, Vec<u64>>);
+
+thread_local! {
+    // The SHARED occurrence oracle for the active `collect_dup_sites` run. Set for the duration of one
+    // `collect_dup_sites` call, consulted by `mark_binder_dups_inner` for the O(1) occurrence EARLY-PRUNE
+    // (skip a subtree where the current binder's bit is 0 — that subtree marks NO site for it and returns
+    // "did not occur", identical to the full walk, so the Perceus site-set is preserved). Thread-local
+    // rather than a threaded param because `mark_binder_dups`'s ~40-arm recursion + its capturing closures
+    // would each need the extra argument; select runs single-threaded per function, so this is safe. `None`
+    // outside a `collect_dup_sites` run → no prune (the walk behaves exactly as before).
+    static DUP_OCCURRENCE_ORACLE: std::cell::RefCell<Option<DupOccurrenceOracle>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether `binder` PROVABLY does not occur in the subtree at `id`, per the active occurrence oracle — used
+/// by [`mark_binder_dups_inner`] to prune a binder-free subtree in O(1). Returns `false` (do NOT prune) when
+/// there is no oracle, the node was not memoized (a tainted/cyclic subtree — walk it, don't risk a false
+/// prune), or the binder is not tracked. Only a DEFINITE all-zero bit for the binder prunes.
+fn binder_absent_in_subtree(binder: StructId, id: StructId) -> bool {
+    DUP_OCCURRENCE_ORACLE.with(|o| {
+        let o = o.borrow();
+        let Some((index, bitsets)) = o.as_ref() else {
+            return false;
+        };
+        let Some(&i) = index.get(&binder) else {
+            return false;
+        };
+        let Some(bits) = bitsets.get(&id) else {
+            return false; // not memoized (tainted/cyclic) — don't prune
+        };
+        (bits[i / 64] >> (i % 64)) & 1 == 0
+    })
 }
 
 /// Collect every HEAP-typed binder whose multi-use inside `id` could need a retain: each `Core::Let`
@@ -1472,6 +1518,91 @@ fn binder_occurs(
     binder_occurs_rec(db, id, binder, cache, &mut in_progress).0
 }
 
+/// SHARED OCCURRENCE ORACLE (the O(N) traversal-share substrate for `collect_dup_sites`, replacing the
+/// O(binders × body-nodes) per-binder re-walk — the sread-eval ~1360-def provider-emit cliff). Computes,
+/// in ONE cycle-guarded post-order pass over the body, a `node → {which of the tracked binders occur in
+/// the subtree rooted there}` map, as a fixed-width BITSET keyed by each binder's index in `binders`. A
+/// later occurrence query is then an O(1) bit test instead of a fresh O(N) walk per (node, binder). Mirrors
+/// [`binder_occurs_rec`]'s memo/taint discipline EXACTLY so the bit for binder `i` at node `n` equals
+/// `binder_occurs(n, binders[i])` — a `tainted` (cycle-back-edge) subtree result is NOT cached (a future
+/// entry off-stack could reach an occurrence through the back-edge), only a definite bit is memoized.
+///
+/// The bitset is `Vec<u64>` words ((B+63)/64 per node); B is the tracked-binder count. Build cost is
+/// O(N × B/64) — a ~64× constant win over the O(N × B) per-binder re-walk (the pragmatic operator-target
+/// fix: it only speeds the OCCURRENCE lookups, never changes WHICH dup sites are marked, so the Perceus
+/// site-set is preserved by construction). A binder that is not in `index` (a `Core::LocalRef`/`Param` to
+/// something outside the tracked set) contributes no bit.
+fn build_occurrence_bitsets(
+    db: &mut Db,
+    body: StructId,
+    index: &HashMap<StructId, usize>,
+) -> HashMap<StructId, Vec<u64>> {
+    // Width by the MAX index value + 1, NOT `index.len()`: `index` may collapse a duplicate binder id
+    // (a Let-binder can appear twice in the caller's `binders` — only params are de-duped there), so the
+    // distinct-key count can be smaller than the highest assigned index. Sizing by `len()` would then
+    // under-allocate and the leaf `bits[i/64]` would panic for the high index (observed on the ~1360-def
+    // sread-eval closure).
+    let words = index
+        .values()
+        .copied()
+        .max()
+        .map_or(0, |m| m + 1)
+        .div_ceil(64);
+    let mut memo: HashMap<StructId, Vec<u64>> = HashMap::new();
+    let mut in_progress: HashSet<StructId> = HashSet::new();
+    occurrence_bitset_rec(db, body, index, words, &mut memo, &mut in_progress);
+    memo
+}
+
+/// Returns `(bits, tainted)` for the subtree at `id`. `tainted` iff a cyclic back-edge was hit on this
+/// path (then the result is NOT memoized — same rule as [`binder_occurs_rec`]).
+fn occurrence_bitset_rec(
+    db: &mut Db,
+    id: StructId,
+    index: &HashMap<StructId, usize>,
+    words: usize,
+    memo: &mut HashMap<StructId, Vec<u64>>,
+    in_progress: &mut HashSet<StructId>,
+) -> (Vec<u64>, bool) {
+    if let Some(bits) = memo.get(&id) {
+        return (bits.clone(), false);
+    }
+    if in_progress.contains(&id) {
+        // Cyclic back-edge: no NEW occurrence on this path; taint so the caller does not memoize a
+        // cycle-artifact all-zeros.
+        return (vec![0u64; words], true);
+    }
+    let (bits, tainted) = match core_of(db, id) {
+        Core::LocalRef { binder: b } | Core::Param { binder: b } => {
+            let mut bits = vec![0u64; words];
+            if let Some(&i) = index.get(&b) {
+                bits[i / 64] |= 1u64 << (i % 64);
+            }
+            (bits, false)
+        }
+        _ => {
+            in_progress.insert(id);
+            let mut bits = vec![0u64; words];
+            let mut tainted = false;
+            for c in core_child_ids(db, id) {
+                let (cb, t) = occurrence_bitset_rec(db, c, index, words, memo, in_progress);
+                for (w, cw) in bits.iter_mut().zip(cb.iter()) {
+                    *w |= *cw;
+                }
+                tainted |= t;
+            }
+            in_progress.remove(&id);
+            (bits, tainted)
+        }
+    };
+    // A definite result (no taint on this path) is safe to memoize; a tainted one is withheld exactly as
+    // `binder_occurs_rec` withholds a tainted `false`.
+    if !tainted {
+        memo.insert(id, bits.clone());
+    }
+    (bits, tainted)
+}
+
 /// Returns `(occurs, tainted)` — `tainted` iff the walk hit an `in_progress` back-edge, in which case the
 /// result is NOT cached (see [`binder_occurs`]).
 fn binder_occurs_rec(
@@ -1577,6 +1708,15 @@ fn mark_binder_dups_inner(
     in_proj_operand: bool,
     sites: &mut HashSet<StructId>,
 ) -> bool {
+    // O(1) EARLY-PRUNE (the traversal-share win): if the occurrence oracle proves `binder` does not occur
+    // anywhere in this subtree, it marks NO site here and its occurrence-result is `false` — identical to
+    // what the full descent would compute, but without walking the (binder-free) subtree. Site-set
+    // preserving by construction (a subtree with no `binder` occurrence has no `LocalRef`/`Param` for it to
+    // mark, and every dup-site predicate requires the chain to root at `binder`). Skipped when there is no
+    // oracle or the node wasn't memoized (tainted/cyclic) — then the walk proceeds exactly as before.
+    if binder_absent_in_subtree(binder, id) {
+        return false;
+    }
     // A borrowing child position — recurse borrowing, threading `live_after` unchanged.
     let borrow = |db: &mut Db, c: StructId, la: bool, s: &mut HashSet<StructId>| {
         mark_binder_dups(db, c, binder, false, la, s)
@@ -19670,6 +19810,55 @@ mod tests {
             f.code.contains(&Lir::CallImport("set-contains")),
             "the membership probe must still emit"
         );
+    }
+
+    // ── SUBSTRATE: the shared occurrence oracle (build_occurrence_bitsets) MUST agree bit-for-bit with the
+    // per-binder binder_occurs it replaces, at EVERY node — the O(N) traversal-share fold's correctness rests
+    // on this equivalence (a divergent bit would change WHICH dup sites mark = a Perceus soundness bug). ──
+    #[test]
+    fn occurrence_bitset_oracle_agrees_with_per_binder_binder_occurs() {
+        // A multi-binder body with nested lets, a match, and shared/consumed heap uses — exercises the
+        // union + memo + arm paths of the oracle.
+        let ast = crate::testkit::parse(
+            "(module m (def (g (: n Int64) (: p (List Int64))) \
+               (let ((x1 (list n))) \
+               (let ((x2 (List.push x1 n))) \
+                 (+ (List.len x1) \
+                    (+ (List.len x2) \
+                       (+ (List.len p) (List.len (List.push p n)))))))) \
+               (def (main) 0) (export main))",
+        );
+        let mut db = Db::load(ast);
+        let _layout = layout_of(&mut db);
+        let (params, body) = function_of(&mut db, "g");
+        // Track every retain-candidate binder (the same set collect_dup_sites uses) + the params.
+        let mut binders: Vec<StructId> = Vec::new();
+        collect_retain_candidate_binders(&mut db, body, &mut binders);
+        for (p, _) in &params {
+            if !binders.contains(p) {
+                binders.push(*p);
+            }
+        }
+        assert!(!binders.is_empty(), "the body must have tracked binders");
+        let index: HashMap<StructId, usize> =
+            binders.iter().enumerate().map(|(i, &b)| (b, i)).collect();
+        let bitsets = build_occurrence_bitsets(&mut db, body, &index);
+        // For every node the oracle memoized, every tracked binder's bit must equal binder_occurs(node, b).
+        let nodes: Vec<StructId> = bitsets.keys().copied().collect();
+        for node in nodes {
+            let bits = bitsets.get(&node).unwrap().clone();
+            for (i, &b) in binders.iter().enumerate() {
+                let oracle = (bits[i / 64] >> (i % 64)) & 1 == 1;
+                let mut cache: HashMap<StructId, bool> = HashMap::new();
+                let reference = binder_occurs(&mut db, node, b, &mut cache);
+                assert_eq!(
+                    oracle, reference,
+                    "occurrence bitset disagrees with binder_occurs at node {:?} binder {:?} \
+                     (oracle={}, reference={}) — the traversal-share substrate is unsound",
+                    node, b, oracle, reference
+                );
+            }
+        }
     }
 
     // ── CHARACTERIZATION: pin the `collect_dup_sites`/emit output over a MULTI-BINDER body — the golden the

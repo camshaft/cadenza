@@ -4771,7 +4771,35 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
             else_node = if is_wild {
                 // A guarded wildcard: the guard IS the whole test — `(if guard body <else>)` (already built
                 // as `then_branch`; an UNguarded wildcard before the tail is unreachable but harmless).
-                then_branch
+                // A NAMED wildcard binder `(guard w cond)` binds the WHOLE scrutinee to `w` — the guard cond
+                // + body read `w`. This desugar extracts them into a bare `(if g body <else>)`, severing `w`
+                // from its `(guard …)` ancestor; once the extracted test is REDUCED (a computed scrutinee
+                // folds `w`'s value, copying the subtree into an orphan `if`), a `w` reference can no longer
+                // recover the scrutinee via `guard_cond_binds` → false CDZ0101 `unbound w` (Finding #46).
+                // Bind `w` explicitly with a wrapping `(let ((w scrutinee)) (if g body <else>))` — `w` then
+                // resolves to a real `let` binder that survives the copy. The reused (un-cloned) g+body keep
+                // their intact scope-skip for any OTHER (outer) names they read (`n`, an enclosing param), so
+                // only `w`'s resolution must be refreshed to point at the new `let` (below, before core_of).
+                match db.ast.as_name(inner_pat).map(str::to_string) {
+                    Some(nm) if nm != "_" => {
+                        let let_head = db.push_name("let");
+                        let binder = db.push_name(&nm);
+                        let pair = db.push_list(vec![binder, scrutinee]);
+                        let bindings = db.push_list(vec![pair]);
+                        let wrapped = db.push_list(vec![let_head, bindings, then_branch]);
+                        // The reused guard-cond + body carry a STALE `resolved` column + scope-skip from
+                        // their original `(guard …)` position (where `w` resolved to the scrutinee via
+                        // `guard_cond_binds`, now detached). `forget_subtree` clears that so, under the new
+                        // `(let ((w scrutinee)) …)`, `w` re-resolves to the `let` binder and every OTHER
+                        // name (`n`, an enclosing param the cond reads) re-resolves up the live chain — the
+                        // same re-parent-then-forget discipline the fold paths use. Binding-aware skip
+                        // (`into_subtree`, not `pass_through`) so inner refs land on the `let` in O(1).
+                        crate::resolve::forget_subtree(db, wrapped);
+                        db.extend_scope_skip_into_subtree(wrapped);
+                        wrapped
+                    }
+                    _ => then_branch,
+                }
             } else {
                 let eq_head = db.push_name("=");
                 let eq = db.push_list(vec![eq_head, scrutinee, inner_pat]);

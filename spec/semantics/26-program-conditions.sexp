@@ -3346,3 +3346,19 @@
         (export main)))
   (call   main (: 42 Int64)) (output (: 42 Int64))
   (call   main (: 0 Int64)) (trap "unreachable"))
+
+; --- A contract firing on a perform-produced argument. ---
+
+(case "a CONTRACTED fn consumes perform results — @requires fires on a handler-produced value"
+  (doc    "The INVERSE of the effectful-predicate pins (:2134 — the PREDICATE performs): here the contracted fn's ARGUMENT is a perform result, so @requires checks a value the handler produced mid-expression. Seeding 0 makes the first perform return 0 and the precondition traps ON the perform-produced value; seed 3 threads state 3,4 through both calls (14).")
+  (input  (do
+            (effect Src (op next (-> Unit Int64)))
+            (@ (requires (> n 0)) (@ (ensures (> ret n))
+              (def (dbl (: n Int64)) (* n 2))))
+            (def (main (: k Int64))
+              (handle Src k
+                ((next (_u) s (resume s (+ s 1))))
+                (+ (dbl (Src.next)) (dbl (Src.next)))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 14 Int64))
+  (call   main (: 0 Int64)) (trap "unreachable"))
