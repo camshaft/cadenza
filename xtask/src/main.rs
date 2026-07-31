@@ -694,42 +694,51 @@ enum PerFileVerdict {
 /// How many compiler-ml `cdz test` files to run CONCURRENTLY in the per-file gate sweep. Each job is a
 /// full-pipeline WASM compile (memory-heavy AND CPU-heavy — every run-src `@test` builds the whole
 /// pipeline into its own component), and the gate host is SHARED with the rest of the fleet, so the
-/// default is deliberately conservative — `min(cores, 2)`, not all cores.
+/// default cap depends on whether the shared-closure providers were WARMED first (see below): `min(cores,4)`
+/// when warm succeeded, else the conservative `min(cores,2)`.
 ///
-/// WHY 2, not 4 (pr-sync systemic-timeout report, batch #124+): under real fleet CPU contention, 4-way
-/// concurrency made EACH `cdz test` process too slow to finish within the per-file cap — and raising the
-/// cap (720→1200) just moved the kill to the next-slowest file (sum→conformance-db-cx), proving it's a
-/// THROUGHPUT problem, not a cap or a code hang (every file passes in isolation). Halving concurrency
-/// gives each file ~2× the CPU so it finishes within the cap; the wall-clock is a SUM dominated by the
-/// slowest file, so 2 jobs still collapse the serial ~45min sum toward that floor while leaving CPU
-/// headroom for the rest of the fleet. `CDZ_ML_JOBS` overrides (an operator throughput lever — raise it
-/// on a DEDICATED/idle host); `=0`/garbage falls back to the default; clamped to `[1, file_count]`.
-fn ml_test_jobs(file_count: usize) -> usize {
+/// WHY the cap is COUPLED to the warm outcome (reviewer FYI on the P0 pair): the 4-cap is only safe
+/// BECAUSE `step_cached_per_file` warms the providers once before the pool, so each per-file run is a
+/// cheap consumer-only cache HIT rather than the heavy cold re-emit. But warm-once is best-effort — if it
+/// TIMES OUT under shared-fleet CPU contention (the exact condition the original 4→2 downgrade cited,
+/// pr-sync systemic-timeout report batch #124+), the per-file pool runs against a COLD cache, and at 4-way
+/// that re-exposes the cold-emit-races-the-cap scenario the 2-cap guarded. So key the default cap to the
+/// warm outcome: 4 when warm succeeded (cheap HITs, collapse the sum toward the slowest-file floor —
+/// operator P0 gate <10min), 2 when it did NOT (cold sweep gets ~2× CPU/file to finish within the cap).
+/// `CDZ_ML_JOBS` still overrides either default (an operator throughput lever — raise on a DEDICATED/idle
+/// host); `=0`/garbage falls back to the outcome-based default; clamped to `[1, file_count]`.
+fn ml_test_jobs(file_count: usize, warm_succeeded: bool) -> usize {
     // Split env-reading (impure) from the clamping (pure) so the logic is testable without mutating
     // process-global env — `#[test]`s run in parallel, so touching env in a test races sibling tests.
     let override_opt = std::env::var("CDZ_ML_JOBS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&n| n > 0);
-    ml_test_jobs_from(override_opt, file_count)
+    ml_test_jobs_from(override_opt, file_count, warm_succeeded)
 }
 
 /// Pure core of [`ml_test_jobs`]: given an already-parsed `CDZ_ML_JOBS` override (`None` = unset /
-/// zero / garbage → use the conservative default) and the file count, compute the worker-pool size.
-/// Kept env-free so it is exercised by a race-free unit test.
-fn ml_test_jobs_from(override_opt: Option<usize>, file_count: usize) -> usize {
+/// zero / garbage → use the outcome-based default), the file count, and whether warm-once SUCCEEDED,
+/// compute the worker-pool size. Kept env-free so it is exercised by a race-free unit test.
+fn ml_test_jobs_from(
+    override_opt: Option<usize>,
+    file_count: usize,
+    warm_succeeded: bool,
+) -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
-    // Cap the default at 4 (restored from a temporary 4→2 downgrade). The 2-cap existed for ONE reason:
-    // on a COLD provider cache every per-file compile re-emitted the whole shared closure (CPU+memory
-    // heavy), so 4-way concurrency raced the per-file timeout under shared-fleet contention (pr-sync
-    // systemic-timeout report). That premise is GONE: `step_cached_per_file` now WARMS the shared-closure
-    // providers ONCE (serial `cdz test --warm-only`) before this pool, so each per-file run is a cheap
-    // consumer-only cache HIT — it no longer does the heavy cold re-emit, so higher concurrency doesn't
-    // race the cap. 4 collapses the serial sum harder toward the slowest-file floor (operator P0, gate
-    // <10min). `CDZ_ML_JOBS` still overrides for a bigger/smaller host, and reverting to 2 is this one line.
-    let default = cores.clamp(1, 4);
+    // Cap COUPLED to the warm outcome (reviewer FYI): 4 only when the providers were warmed (each per-file
+    // run is then a cheap cache HIT, so 4-way doesn't race the per-file cap — operator P0 gate <10min); 2
+    // when warm did NOT succeed (a COLD sweep re-does the heavy per-file re-emit, so keep the conservative
+    // cap that gives each file ~2× CPU to finish within the cap — the original 4→2 downgrade's premise
+    // still holds on the cold path). This closes the latent regression where a warm-once TIMEOUT under
+    // fleet contention would otherwise run a cold sweep at 4-way = the exact race the 2-cap guarded.
+    let default = if warm_succeeded {
+        cores.clamp(1, 4)
+    } else {
+        cores.clamp(1, 2)
+    };
     let jobs = override_opt.unwrap_or(default);
     jobs.clamp(1, file_count.max(1))
 }
@@ -5036,15 +5045,6 @@ impl Log {
         }
 
         let per_file = ml_per_file_timeout();
-        let jobs = ml_test_jobs(files.len());
-        writeln!(
-            self.file,
-            "\n==== {name}: {} file(s), {jobs} concurrent job(s), per-file cap {}s ====",
-            files.len(),
-            per_file.as_secs()
-        )
-        .ok();
-        self.file.flush().ok();
 
         // WARM-ONCE before the parallel sweep (operator P0, gate <10min). The per-file pool below runs
         // each file as its OWN `cdz test <file>` process for runaway-compile localization; on a COLD
@@ -5058,6 +5058,9 @@ impl Log {
         // Best-effort: a warm-only RED means the suite is genuinely parse/check-broken — but the per-file
         // sweep is the AUTHORITATIVE gate (it localizes the failing file), so a failed/timed-out warm just
         // forgoes the cache benefit this run rather than failing the gate here. Log the outcome either way.
+        // Capture whether warm SUCCEEDED — the per-file jobs cap is coupled to it (a cold sweep after a
+        // warm timeout stays at the conservative cap so it doesn't race the per-file timeout; see ml_test_jobs).
+        let warm_succeeded;
         {
             let warm_started = std::time::Instant::now();
             writeln!(
@@ -5081,7 +5084,8 @@ impl Log {
                     self.file.write_all(&out.stdout).ok();
                     self.file.write_all(&out.stderr).ok();
                     let secs = warm_started.elapsed().as_secs();
-                    if out.status.success() {
+                    let ok = out.status.success();
+                    if ok {
                         writeln!(
                             self.file,
                             "  ✓ warm-once OK in {secs}s — per-file sweep will HIT the cache"
@@ -5090,9 +5094,13 @@ impl Log {
                     } else {
                         writeln!(self.file, "  ⚠ warm-once returned non-zero in {secs}s (suite may be broken; the per-file sweep below localizes it) — proceeding uncached").ok();
                     }
+                    // Only a clean exit means the providers are warmed; a non-zero exit did NOT populate the
+                    // cache reliably, so treat it as not-warmed → conservative jobs cap.
+                    warm_succeeded = ok;
                 }
                 Ok(Ok(None)) => {
                     writeln!(self.file, "  ⚠ warm-once TIMED OUT at the suite cap — proceeding uncached (per-file sweep is authoritative)").ok();
+                    warm_succeeded = false;
                 }
                 Ok(Err(e)) => {
                     writeln!(
@@ -5100,6 +5108,7 @@ impl Log {
                         "  ⚠ warm-once wait error ({e}) — proceeding uncached"
                     )
                     .ok();
+                    warm_succeeded = false;
                 }
                 Err(e) => {
                     writeln!(
@@ -5107,10 +5116,24 @@ impl Log {
                         "  ⚠ warm-once launch error ({e}) — proceeding uncached"
                     )
                     .ok();
+                    warm_succeeded = false;
                 }
             }
             self.file.flush().ok();
         }
+
+        // Now that the warm outcome is known, size the per-file pool: 4 if warmed (cheap HITs), else the
+        // conservative 2 (a cold sweep must not race the per-file cap at 4-way — reviewer FYI). Log the header.
+        let jobs = ml_test_jobs(files.len(), warm_succeeded);
+        writeln!(
+            self.file,
+            "\n==== {name}: {} file(s), {jobs} concurrent job(s) (warm {}), per-file cap {}s ====",
+            files.len(),
+            if warm_succeeded { "HIT" } else { "COLD" },
+            per_file.as_secs()
+        )
+        .ok();
+        self.file.flush().ok();
 
         // Run the files CONCURRENTLY (bounded worker pool pulling from a shared cursor), each still
         // under the per-file cap. The suite's wall-clock is a SUM of per-file full-pipeline compiles
@@ -6957,29 +6980,48 @@ mod trap_grading_tests {
         // Drives the PURE core with an injected override (`None` = unset/zero/garbage) so the test never
         // touches process-global env — cargo runs #[test]s in parallel, and a sibling test also reads env,
         // so env mutation here would be a data race (the reason `set_var`/`remove_var` are `unsafe`).
-        // Default is min(cores, 4) — RESTORED from a temporary 4→2 downgrade now that the gate warms the
-        // shared-closure providers once before the per-file pool, so each per-file run is a cheap cache
-        // HIT (no cold re-emit) and 4-way concurrency no longer races the per-file cap. Clamped to the
-        // file count so we never spawn idle workers — with 2 files the pool is at most 2 regardless of cores.
+        // Default cap is COUPLED to the warm outcome: min(cores,4) when warm SUCCEEDED (cheap cache HITs,
+        // 4-way doesn't race the per-file cap) vs min(cores,2) when it did NOT (a cold sweep needs ~2×
+        // CPU/file — the original 4→2 downgrade's premise still holds on the cold path; reviewer FYI).
+        // Clamped to the file count so we never spawn idle workers.
         assert_eq!(
-            ml_test_jobs_from(None, 1),
+            ml_test_jobs_from(None, 1, true),
             1,
             "default clamped to file count = EXACTLY 1 (not 0 — catches an accidental under-clamp)"
         );
         assert!(
-            ml_test_jobs_from(None, 100) <= 4,
-            "default never exceeds the cap of 4 (post-warm the per-file runs are cheap cache HITs)"
+            ml_test_jobs_from(None, 100, true) <= 4,
+            "warmed default never exceeds the cap of 4 (post-warm the per-file runs are cheap cache HITs)"
         );
-        assert!(ml_test_jobs_from(None, 100) >= 1, "always at least one job");
+        assert!(
+            ml_test_jobs_from(None, 100, false) <= 2,
+            "COLD default never exceeds the conservative cap of 2 (a cold sweep must not race the per-file cap at 4-way)"
+        );
+        // The coupling is the whole point: on a many-core host, warmed must be able to exceed the cold cap.
+        // (available_parallelism is >=1; on a >=4-core host warmed=4 > cold=2. Guard the invariant directly:
+        // cold is never MORE than warmed for the same inputs.)
+        assert!(
+            ml_test_jobs_from(None, 100, false) <= ml_test_jobs_from(None, 100, true),
+            "cold cap is never higher than the warmed cap"
+        );
+        assert!(
+            ml_test_jobs_from(None, 100, true) >= 1,
+            "always at least one job"
+        );
 
-        // A positive override applies, still clamped to [1, file_count].
+        // A positive override applies REGARDLESS of warm outcome, still clamped to [1, file_count].
         assert_eq!(
-            ml_test_jobs_from(Some(8), 100),
+            ml_test_jobs_from(Some(8), 100, true),
             8,
-            "override applies below the file count"
+            "override applies below the file count (warmed)"
         );
         assert_eq!(
-            ml_test_jobs_from(Some(8), 3),
+            ml_test_jobs_from(Some(8), 100, false),
+            8,
+            "override applies even on the cold path (operator lever overrides the conservative default)"
+        );
+        assert_eq!(
+            ml_test_jobs_from(Some(8), 3, true),
             3,
             "override clamped down to the file count"
         );
@@ -6987,15 +7029,18 @@ mod trap_grading_tests {
         // Zero/garbage parse to `None` at the env boundary → default; the default is itself clamped, so
         // with 1 file it's 1.
         assert_eq!(
-            ml_test_jobs_from(None, 1),
+            ml_test_jobs_from(None, 1, true),
             1,
             "zero/garbage → default, clamped to a single file"
         );
-        assert!(ml_test_jobs_from(None, 10) >= 1, "garbage → default (≥1)");
+        assert!(
+            ml_test_jobs_from(None, 10, true) >= 1,
+            "garbage → default (≥1)"
+        );
 
         // A zero file count never yields a zero (or panicking) job count.
         assert_eq!(
-            ml_test_jobs_from(None, 0),
+            ml_test_jobs_from(None, 0, true),
             1,
             "empty file list still yields at least one worker"
         );
