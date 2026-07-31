@@ -10,6 +10,7 @@ use slack_morphism::prelude::*;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::io::AsyncReadExt;
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
@@ -48,7 +49,7 @@ async fn run_watchdog_once(spec: &watchdog::WatchdogSpec, repo_root: &PathBuf) {
     // in watchdog.log during the cred-freeze window (the daemon process stayed up per systemd, but its
     // fires halted). Kill-on-timeout so a single hung fire costs one cycle, never the daemon's liveness —
     // the operator's Track-A resilience ask (the fleet must auto-recover, not freeze for hours).
-    let child = match tokio::process::Command::new(prog)
+    let mut child = match tokio::process::Command::new(prog)
         .args(&args)
         .current_dir(repo_root)
         .kill_on_drop(true)
@@ -62,20 +63,60 @@ async fn run_watchdog_once(spec: &watchdog::WatchdogSpec, repo_root: &PathBuf) {
             return;
         }
     };
-    match tokio::time::timeout(watchdog::FIRE_TIMEOUT, child.wait_with_output()).await {
-        Ok(Ok(out)) if out.status.success() => tracing::debug!("watchdog tick ok"),
-        Ok(Ok(out)) => tracing::warn!(
-            code = ?out.status.code(),
-            stderr = %String::from_utf8_lossy(&out.stderr),
+
+    // Wait for the fire, draining stdout/stderr CONCURRENTLY (what `wait_with_output` does internally) so a
+    // chatty child can't fill a pipe buffer and wedge — while keeping `child` in hand so a timeout can
+    // kill+reap it explicitly (see the timeout arm). The two pipe reads run alongside `wait()` so none can
+    // deadlock waiting on the others.
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let wait_fut = async {
+        let read_out = async {
+            let mut b = Vec::new();
+            if let Some(s) = stdout.as_mut() {
+                let _ = s.read_to_end(&mut b).await;
+            }
+            b
+        };
+        let read_err = async {
+            let mut b = Vec::new();
+            if let Some(s) = stderr.as_mut() {
+                let _ = s.read_to_end(&mut b).await;
+            }
+            b
+        };
+        let (status, (_out, err)) =
+            tokio::join!(child.wait(), async { tokio::join!(read_out, read_err) });
+        (status, err)
+    };
+
+    match tokio::time::timeout(watchdog::FIRE_TIMEOUT, wait_fut).await {
+        Ok((Ok(status), _err)) if status.success() => tracing::debug!("watchdog tick ok"),
+        Ok((Ok(status), err)) => tracing::warn!(
+            code = ?status.code(),
+            stderr = %String::from_utf8_lossy(&err),
             "watchdog tick returned non-zero"
         ),
-        Ok(Err(e)) => tracing::warn!(error = %e, "watchdog child wait failed"),
-        // Timed out: the child (kill_on_drop) is dropped here → killed. The loop continues so the NEXT
-        // fire runs on schedule; a persistently-hanging watchdog surfaces as a repeated timeout warning.
-        Err(_) => tracing::warn!(
-            timeout_secs = watchdog::FIRE_TIMEOUT.as_secs(),
-            "watchdog fire exceeded its timeout — killed; daemon continues (a hung fire must not stall re-arms)"
-        ),
+        Ok((Err(e), _err)) => tracing::warn!(error = %e, "watchdog child wait failed"),
+        // Timed out. Explicitly `kill().await` — which SIGKILLs AND reaps (waitpid) — under a bounded grace,
+        // rather than relying on `kill_on_drop`, whose reap tokio defers to a best-effort background reaper.
+        // Under a REPEATEDLY-hung watchdog (the case this timeout exists for) the deferred reap would let
+        // zombies/orphans queue up and leak PIDs (PR#949). The loop continues either way so the next fire
+        // runs on schedule; a persistently-hanging watchdog surfaces as a repeated timeout warning.
+        Err(_) => match tokio::time::timeout(watchdog::REAP_GRACE, child.kill()).await {
+            Ok(Ok(())) => tracing::warn!(
+                timeout_secs = watchdog::FIRE_TIMEOUT.as_secs(),
+                "watchdog fire exceeded its timeout — killed + reaped; daemon continues (a hung fire must not stall re-arms)"
+            ),
+            Ok(Err(e)) => tracing::warn!(
+                error = %e,
+                "watchdog fire timed out; explicit kill/reap failed (kill_on_drop will finalize)"
+            ),
+            Err(_) => tracing::warn!(
+                reap_grace_secs = watchdog::REAP_GRACE.as_secs(),
+                "watchdog fire timed out; reap did not complete within grace (kill_on_drop will finalize)"
+            ),
+        },
     }
 }
 
