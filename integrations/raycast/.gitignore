@@ -1,0 +1,7 @@
+# Raycast extension
+node_modules
+raycast-env.d.ts
+dist
+.raycast-swift-build
+.swiftpm
+*.log

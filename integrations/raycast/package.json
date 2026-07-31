@@ -39,6 +39,7 @@
       "required": false,
       "title": "Exact mode",
       "label": "Forced rationals — 1 / 3 is 1/3, not 0",
+      "description": "Forced rationals: 1 / 3 is 1/3, not 0. Uncheck for ordinary Int64/Float literals.",
       "default": true
     }
   ],
@@ -49,5 +50,10 @@
     "build": "ray build -e dist",
     "dev": "ray develop",
     "lint": "ray lint"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.18",
+    "typescript": "^7.0.2"
   }
 }
