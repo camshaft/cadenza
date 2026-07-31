@@ -17033,3 +17033,40 @@
   (call   main (: 16 Int64)) (output (: 16 Int64))
   (call   main (: 32 Int64)) (output (: 32 Int64))
   (call   main (: 7 Int64)) (output (: 107 Int64)))
+
+; --- The config-table read idiom and the api-error dispatch idiom. ---
+
+(case "a String-keyed map of MIXED-field records reads both leaves of a looked-up value (the config idiom)"
+  (doc    "Records appear as map KEYS throughout; a String-keyed map whose VALUES are mixed scalar+heap records, both leaves read off a looked-up value, was unpinned — the config-table idiom, and the READ-side working perimeter of the held without-extend miscompile (plain projections off a map-borne record must stay green through that fix).")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def cfg (Map.insert (Map.insert Map.empty "timeout" (record (v 30) (unit-s "s"))) "retries" (record (v k) (unit-s ""))))
+                (match (Map.lookup cfg "retries")
+                  ((Option.Some r) (+ (* 10 (. r v)) (String.byte-len (. r unit-s))))
+                  ((Option.None _u) -1))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 50 Int64)))
+
+(case "a mixed-payload error SUM in Result.Err dispatches all four arms through nested patterns"
+  (doc    "The api-error idiom: a user sum with MIXED payload kinds (String/Int64/nullary) as Result.Err's payload, dispatched via nested patterns ((Result.Err (IoErr.Denied c))) — Ok, both payload variants, and the nullary Timeout each take their arm; digit-banded results separate every path.")
+  (input  (do
+            (type IoErr (NotFound String) (Denied Int64) (Timeout))
+            (def (fetch (: id Int64))
+              (: (if (= id 1) (Result.Ok "data")
+                     (if (= id 2) (Result.Err (IoErr.NotFound "key2"))
+                         (if (= id 3) (Result.Err (IoErr.Denied 403))
+                             (Result.Err (IoErr.Timeout unit)))))
+                 (Result String IoErr)))
+            (def (main (: id Int64))
+              (match (fetch id)
+                ((Result.Ok s) (String.byte-len s))
+                ((Result.Err (IoErr.NotFound key)) (+ 100 (String.byte-len key)))
+                ((Result.Err (IoErr.Denied c)) (+ 1000 c))
+                ((Result.Err (IoErr.Timeout _u)) -1)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 4 Int64))
+  (call   main (: 2 Int64)) (output (: 104 Int64))
+  (call   main (: 3 Int64)) (output (: 1403 Int64))
+  (call   main (: 9 Int64)) (output (: -1 Int64)))
