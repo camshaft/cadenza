@@ -1768,3 +1768,19 @@
             (export main)))
   (call   main (: 20 Int64))
   (output (: 110 Int64)))
+
+; --- The packet idiom: Bytes fields projected and re-framed. ---
+
+(case "TWO Bytes fields project from a record and re-concat into a frame (the packet idiom)"
+  (doc    "Bytes in a record field exists for EQ only (rope-vs-flat); here TWO Bytes fields — flat header, seamed rope body — PROJECT and re-CONCAT into a frame with position reads across the re-joined seams (hdr+body: [1,2]+[10,k,30] -> len 5, [1]=2, [3]=k).")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def pkt (record (hdr (Bytes.of (list 1 2))) (body (Bytes.concat (Bytes.of (list 10 (UInt8.wrap k))) (Bytes.of (list 30))))))
+                (def total (Bytes.concat (. pkt hdr) (. pkt body)))
+                (+ (* 100 (Bytes.len total))
+                   (+ (* 10 (Option.expect (Bytes.at total 1) "b1"))
+                      (Option.expect (Bytes.at total 3) "b3")))))
+            (export main)))
+  (call   main (: 20 Int64))
+  (output (: 540 Int64)))
