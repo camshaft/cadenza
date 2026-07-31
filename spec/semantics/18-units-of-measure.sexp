@@ -3275,3 +3275,14 @@
             (export main)))
   (call   main (: 4 Int64))
   (output (: 25 Int64)))
+
+; --- The input-position derived-unit annotation (type_ref infix witness). ---
+
+(case "a derived-unit type annotation in INPUT position round-trips and the param computes"
+  (doc    "The corpus witness for the type_ref infix fix (bd6a1bafd): a (Qty Int64 (Unit.^ meter 2)) PARAM annotation — before the fix this printed ML the type parser choked on ('expected ,' at the exponent; only OUTPUT-position annotations existed in corpus so the ml_surface path never saw one). Exercises print->re-parse AND the annotated param computing (16 at k=4).")
+  (input  (do
+            (def (f (: q (Qty Int64 (Unit.^ (Unit.base #"meter") 2)))) (Qty.value q))
+            (def (main (: k Int64)) (f (Qty.of (* k k) (Unit.^ (Unit.base #"meter") 2))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 16 Int64)))
