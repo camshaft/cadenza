@@ -142,6 +142,7 @@ pass	TWO loop-carried ropes each rebind to derived strings every recursion step
 pass	TWO match inits in one let SEQUENCE - the second scrutinizes the first's binding
 pass	TWO sequential inner handles seed from the outer's ADVANCING state
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
+pass	Type.of over a PERFORM result reflects the op's declared result type
 pass	WAVE reorder alternates <= and >= by index parity through a carried-element walk
 pass	a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
@@ -704,6 +705,7 @@ pass	a Float32-overflowing magnitude literal under a Float32 Qty inner type is r
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a GENUINELY-RUNTIME Rational map/set key is found by a normalized-equal key
+pass	a GUARD over a QUOTE pattern compares two bound subtrees — the x=x algebraic rewrite
 pass	a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index
 pass	a HOF callback matching a tuple argument computes through the nested reduction
 pass	a HOF callback matching its sum argument reaches the nullary arm
@@ -1672,6 +1674,7 @@ pass	a heap arg threaded UNCHANGED to a self-recursive call while a sibling arg 
 pass	a heap capture persists across two applications of a curried closure
 pass	a heap list conditionally escaping into a Some in one branch is still usable after the join
 pass	a heap list consumed in only one if-branch stays live for a use after the if
+pass	a helper RETURNS a derived-dimension (m squared) quantity and same-dimension results add
 pass	a helper called TWICE threads its first write so the second call HITS the memoized value
 pass	a helper decodes bytes to a string and consumes the fallible result
 pass	a helper projects a record parameter constrained by its argument

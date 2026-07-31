@@ -3261,3 +3261,17 @@
             (export main)))
   (call   main (: 7 Int64))
   (output (: 21 Int64)))
+
+
+; --- A derived-dimension quantity flowing through a call boundary. ---
+
+(case "a helper RETURNS a derived-dimension (m squared) quantity and same-dimension results add"
+  (doc    "The derived-dimension flow face (the value-form pins render m2/m3 in OUTPUT annotations only): a helper's INFERRED return type carries (Unit.^ meter 2) and two results add as same-dimension m2 — the composed-dimension frame flows through a call boundary. (Spelled with a def-bound unit + inferred return: a derived unit in an INPUT-position type annotation trips an ML-printer re-parse gap, reported to v-syntax.)")
+  (input  (do
+            (def m2 (Unit.^ (Unit.base #"meter") 2))
+            (def (area (: v Int64)) (Qty.of (* v v) m2))
+            (def (main (: k Int64))
+              (Qty.value (+ (area k) (area 3))))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 25 Int64)))

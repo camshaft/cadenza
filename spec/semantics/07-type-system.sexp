@@ -1875,3 +1875,17 @@
   (module "mid" (do (import "base" (dup)) (export dup)))
   (call   main (: 5 Int64)) (output (: 51 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+; --- Type.of over a perform. ---
+
+(case "Type.of over a PERFORM result reflects the op's declared result type"
+  (doc    "The Type.of operand family covers literals/params/constructions/generic sums — never a PERFORM: the reflected type is the op's DECLARED result type ((List Int64)), resolved statically through the handler frame, Type.eq-verified against a same-type construction.")
+  (input  (do
+            (effect E (op get (-> Unit (List Int64))))
+            (def (main (: k Int64))
+              (handle E k
+                ((get (_u) s (resume (list s (+ s 1)) s)))
+                (if (Type.eq (Type.of (E.get)) (Type.of (list 1 2))) 1 0)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 1 Int64)))
