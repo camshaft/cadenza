@@ -6358,7 +6358,7 @@
   (output (: 101 Int64)))
 
 (case "a BIGINT handler state multiplies per perform and each resume reads the prior product"
-  (doc    "BIGINT joins the handler-state type family with state AND op-result both heap-numeric: the product grows per perform and each resume returns the PRIOR product (a=1, b=7, c=70 at k=7), and ALL THREE resume results are read via a digit encode (a*10000 + b*100 + c = 10770) so every resume is observed, each narrowed through checked Int64.of.")
+  (doc    "BIGINT joins the handler-state type family with state AND op-result both heap-numeric: the product grows per perform and each resume returns the PRIOR product (a=1, b=7, c=70 at k=7), and ALL THREE resume results are read via a digit encode (a*10000 + b*100 + c = 10770) so every resume is observed, the combined encode narrowed ONCE through checked Int64.of.")
   (input  (do
             (effect Acc (op grow (-> Int64 BigInt)))
             (def (main (: k Int64))
