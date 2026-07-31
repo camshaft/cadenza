@@ -154,6 +154,7 @@ todo	a @param positions a slice window over a guest-built byte rope
 todo	a @param value SEEDS an in-program handler's state
 pass	a @requires predicate over a HEAP collection is enforced at entry and value-transparent when satisfied
 pass	a BASE-N conversion round-trips one value through three runtime radices
+pass	a BIGINT handler state multiplies per perform and each resume reads the prior product
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
 pass	a Bytes ROPE handler state GROWS by bin-append per perform and each resume reads the prior length
 pass	a Bytes slice VIEW and a rope compare equal by content in both directions
@@ -785,6 +786,7 @@ pass	a Qty-typed export carries its unit frame across the module boundary into c
 pass	a Qty-typed variant payload keeps its type non-generic and matches back
 pass	a RADIX literal carries the N type suffix
 pass	a RATIONAL compound = has DISCRIMINATING power (1/2 ≠ 1/3, but 0/2 = 0/3)
+pass	a RATIONAL handler state accumulates unit fractions exactly and resumes read the prior sum
 pass	a RATIONAL leaf in a compound compares by CANONICAL form (2n/4 = n/2 inside a tuple)
 pass	a RECORD field built from a runtime param boxes its Map handle correctly (function[27] record-path twin)
 pass	a RECORD used as a map key hashes and matches by its field SET, independent of written order
@@ -836,6 +838,7 @@ pass	a SUM is threaded as a handler's folded state across operations
 pass	a SYM tactic reduces a goal to a subgoal plus a kernel justification (backward proof)
 pass	a SYMBOL compound = has DISCRIMINATING power (two runtime-selected interned names separate)
 pass	a RECURSIVE sum with a record payload walks an environment chain by depth and tag search
+pass	a SYMBOL-returning effect op interns through the handler and results compare by content
 pass	a Set taken out of a map grows independently of the original binding
 pass	a Set.of over RECURSIVE-sum elements dedups by spine content
 pass	a Set.of over user-sum variants keeps same-payload different-variant elements distinct
