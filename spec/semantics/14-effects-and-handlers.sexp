@@ -6393,3 +6393,20 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 11256 Int64)))
+
+; --- A heap-field record op argument with state accumulation. ---
+
+(case "a record op argument with a HEAP field crosses the perform and its scalar field accumulates state"
+  (doc    "The :4626 record-op-arg pin is all-scalar + stateless; this record carries a ROPE field beside the scalar through the perform AND the arm accumulates the scalar into STATE across two performs — the op-arg boxing keeps the heap handle beside the scalar while the state cell threads independently.")
+  (input  (do
+            (effect Db (op put (-> (Record (name String) (qty Int64)) Int64)))
+            (def (main (: k Int64))
+              (handle Db 0
+                ((put (r) s (resume (+ s (. r qty)) (+ s (. r qty)))))
+                (do
+                  (def a (Db.put (record (name (String.concat "wid" "get")) (qty k))))
+                  (def b (Db.put (record (name "bolt") (qty 10))))
+                  (+ (* 100 a) b))))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 515 Int64)))

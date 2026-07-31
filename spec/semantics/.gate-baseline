@@ -1033,6 +1033,7 @@ pass	a called function's body resolves its free names lexically, not in the call
 pass	a callee whose body LET-BINDS a handle seeded by its param, called with the caller's runtime arg, keeps that arg bound
 pass	a camelCase round-trip resolves through kebab boundary-name normalization
 pass	a camelCase same-signature multi-export normalizes each make-<name>
+pass	a canonical-order set drain EMITS each element through an effect and the state digit-encodes the order
 pass	a capture-free de Bruijn beta-reduction over a nameless term sum reduces correctly
 pass	a captured list survives a structural rebuild of the same source between capture and application
 pass	a captured pre-shadow value survives the re-binding
@@ -1333,6 +1334,7 @@ pass	a dependent-size segment binds exactly the number of bytes an earlier segme
 pass	a dependent-size segment that overruns the remaining bytes falls through
 pass	a depth-3 erased-and-boxed nested-sum match reads every level's discriminant at the right offset
 pass	a derived dimension composes across a def boundary through annotated Qty parameters
+pass	a derived-unit type annotation in INPUT position round-trips and the param computes
 pass	a destructuring let over a runtime value binds its parts
 pass	a destructuring record let over a runtime value binds its fields
 pass	a dictionary consumer called at two dictionaries is monomorphized per dictionary
@@ -1413,6 +1415,7 @@ pass	a float literal compared against a Float32 param computes at the narrow wid
 pass	a full MERGE SORT (alternating split + ordered merge) sorts a runtime list, duplicates kept
 pass	a full-width UInt64 comparison over a HIGH-BIT operand is unsigned
 pass	a generic user sum holds a CLOSURE payload at one instantiation and a scalar at another
+pass	a guard runs a NESTED MATCH on the quote-bound subtree — value-dependent rewriting
 pass	a handler STATE that is a recursive sum GROWS one constructor per operation
 pass	a handler arm computes its NEXT-STATE with a recursive pure helper
 pass	a handler arm computes its RESUME VALUE with a deeply RECURSIVE pure helper
@@ -2416,6 +2419,7 @@ pass	a record match field may be a LITERAL that probes the field by equality
 pass	a record match pattern binds fields by name — partial and out of order
 pass	a record match pattern destructures a record scrutinee by field
 pass	a record missing a field the annotation names is rejected
+pass	a record op argument with a HEAP field crosses the perform and its scalar field accumulates state
 pass	a record scrutinee is bound whole by a match binder
 pass	a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)
 pass	a quantity in a recursive sum payload folds through construction and match

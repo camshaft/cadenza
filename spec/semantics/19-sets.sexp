@@ -2903,3 +2903,24 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 1 Int64)))
+
+; --- Canonical order observed through an effect sink. ---
+
+(case "a canonical-order set drain EMITS each element through an effect and the state digit-encodes the order"
+  (doc    "The canonical enumeration order OBSERVED through an effect sink (the to-list pins read by index): each element performs emit in walk order and the state digit-encodes 0->1->12->123 — any reorder/dup/skip diverges; a second op reads the total back.")
+  (input  (do
+            (effect Sink (op emit (-> Int64 Unit)) (op total (-> Unit Int64)))
+            (def (drain (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i)
+                ((Option.Some v) (do (Sink.emit v) (drain xs (+ i 1))))
+                ((Option.None _u) unit)))
+            (def (main (: k Int64))
+              (handle Sink 0
+                ((emit (v) s (resume unit (+ (* s 10) v)))
+                 (total (_u) s (resume s s)))
+                (do
+                  (drain (Set.to-list (Set.of (list 3 k 1))) 0)
+                  (Sink.total))))
+            (export main)))
+  (call   main (: 2 Int64))
+  (output (: 123 Int64)))

@@ -723,3 +723,18 @@
                  (if (= (simp (quote (+ a b))) (quote (+ a b))) 1 0)))
             (export main)))
   (output (: 11 Int64)))
+
+; --- A guard destructuring its quote-bound subtree (nested match + splice-back). ---
+
+(case "a guard runs a NESTED MATCH on the quote-bound subtree — value-dependent rewriting"
+  (doc    "Deeper than the subtree-eq guard: the guard DESTRUCTURES the bound subtree with a whole nested match ((match x ((Ast.Int n) (< n limit)) …)) gating the arm, and the arm SPLICES x back into a new template. lit-5 rewrites (payload under limit); lit-50 falls through. Ast.Int payload is BigInt, so the compare widens via BigInt.of.")
+  (input  (do
+            (def (rewrite node (: limit Int64))
+              (match node
+                ((guard `(lit ,x) (match x ((Ast.Int n) (< n (BigInt.of limit))) (_ false))) `(small ,x))
+                (other other)))
+            (def (main)
+              (+ (* 10 (if (= (rewrite (quote (lit 5)) 10) (quote (small 5))) 1 0))
+                 (if (= (rewrite (quote (lit 50)) 10) (quote (lit 50))) 1 0)))
+            (export main)))
+  (output (: 11 Int64)))
