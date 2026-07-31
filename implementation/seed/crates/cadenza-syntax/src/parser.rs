@@ -3491,14 +3491,16 @@ impl<'a> Parser<'a> {
         // `(A)` is just `A` (a grouping) — the same surface `(a, b)` a tuple VALUE/pattern uses, but on
         // the RHS of a `:` the reader knows it denotes a type. Handled directly so no value ctor
         // (`("tuple" …)`) is ever emitted in type position (which resolved to a value → CDZ0203).
-        let left = if self.at(Kind::LParen) {
-            self.type_paren(start)
-        } else if self.at(Kind::LBrace) {
-            self.type_brace_record(start)
-        } else {
-            let head = self.prefix();
-            self.type_postfix(head, start)
-        };
+        let left = self.type_operand();
+        // A DERIVED-UNIT type annotation composes unit factors with the infix operators `^`/`*`/`/`
+        // (`Qty(Int64, meter / second ^ 2)`) — the surface the printer emits for the arena heads
+        // `Unit.^`/`Unit.*`/`Unit./` (via `infix_glyph`). The value grammar reads these (in a quantity
+        // literal / general expr), but type position had NO infix layer beyond `->`, so a derived-unit
+        // annotation printed a form that failed re-parse (`expected ,` at the exponent — breaker's
+        // report). Fold them here, tighter than the `->` below, matching the value side's bare-glyph
+        // heads + `infix_prec` so the ML print→parse cycle round-trips. `->` stays the loosest type
+        // constructor (folded after).
+        let left = self.type_unit_infix(left, 0, start);
         if self.at(Kind::Arrow) {
             self.bump(); // `->`
             let arrow = self.name("->", start);
@@ -3508,6 +3510,68 @@ impl<'a> Parser<'a> {
         } else {
             left
         }
+    }
+
+    /// A single TYPE OPERAND — the atom the `->` arrow and the unit-composition infix operators
+    /// (`^`/`*`/`/`) compose over: a parenthesized/tuple type, a brace record type, or a `prefix` head
+    /// extended by [`Self::type_postfix`] (member chain + `(…)` application). Factored out of
+    /// [`Self::type_ref`] so [`Self::type_unit_infix`] can parse each operand the same way — WITHOUT
+    /// re-consuming a `forall` (only legal at the head of a type) or an `->`.
+    fn type_operand(&mut self) -> StructId {
+        let start = self.cur_span();
+        if self.at(Kind::LParen) {
+            self.type_paren(start)
+        } else if self.at(Kind::LBrace) {
+            self.type_brace_record(start)
+        } else {
+            let head = self.prefix();
+            self.type_postfix(head, start)
+        }
+    }
+
+    /// Fold the unit-composition infix operators `^`/`*`/`/` in TYPE position into bare-glyph-headed
+    /// nodes (`(^ base 2)`, `(/ m s)`), a Pratt climb sharing the value grammar's [`infix_prec`] so a
+    /// derived-unit annotation round-trips through the ML print→parse cycle. `*`/`/` are the
+    /// multiplicative tier (11) and left-associative; `^` is tier 7 (looser than `*`/`/`, matching the
+    /// glyph's general-expression binding), so the printer parenthesizes `s ^ 2` under a `/` and this
+    /// re-reads that parenthesized operand via [`Self::type_operand`] (→ [`Self::type_paren`] grouping).
+    /// These operators are meaningless in a non-unit type, so folding them here adds no ambiguity: a
+    /// type that previously reached one of them errored (`expected ,`/`)`), so nothing that parsed
+    /// before changes. Bare-glyph heads (not `Unit.*`/`Unit.^`) match what the value side emits and what
+    /// the printer round-trips (`has_canonicalizing_head` holds the `Unit.^` INPUT to idempotence-only).
+    /// The `spine` depth guard mirrors the value infix loop (a long flat `m/s/s/…` chain deepens the
+    /// arena on its left, which a recursive consumer would overflow — so bound it to a clean diagnostic).
+    fn type_unit_infix(&mut self, mut left: StructId, min_prec: u8, start: Span) -> StructId {
+        let mut spine: u32 = 0;
+        loop {
+            let op_name = match self.kind() {
+                Kind::Caret => "^",
+                Kind::Star => "*",
+                Kind::Slash => "/",
+                _ => break,
+            };
+            let prec = infix_prec(op_name).expect("unit infix op has a precedence");
+            if prec < min_prec {
+                break;
+            }
+            let op_span = self.cur_span();
+            self.bump(); // operator
+            let head = self.name(op_name, op_span);
+            let rhs_start = self.cur_span();
+            let right = self.type_operand();
+            // Left-associative: the right operand binds one tighter, so a same-tier run (`a * b * c`)
+            // groups left, and `^` (tier 7) captured on the right of `/` (tier 11) stays isolated.
+            let right = self.type_unit_infix(right, prec + 1, rhs_start);
+            let span = start.merge(self.prev_span());
+            left = self.list(vec![head, left, right], span);
+            spine += 1;
+            if !self.depth_exceeded && self.depth + spine >= crate::sexpr::MAX_NESTING_DEPTH {
+                self.error("expression nests too deeply to parse");
+                self.depth_exceeded = true;
+                break;
+            }
+        }
+        left
     }
 
     /// The TYPE-position mirror of [`Self::postfix`]: a member/`.` chain plus `(…)` APPLICATION, but each
@@ -4712,6 +4776,48 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("def f(r: Record(p: forall a. a)) = r")),
             r#"(def (f (: r (Record (: p (forall (a) a))))) r)"#
+        );
+    }
+
+    #[test]
+    fn derived_unit_infix_operators_parse_in_type_annotation_position() {
+        use crate::sexpr;
+        // ARM-EXTENT sibling (breaker report): a DERIVED-UNIT type annotation composes unit factors with
+        // the infix operators `^`/`*`/`/` — the surface the printer emits for `Unit.^`/`Unit.*`/`Unit./`
+        // (via `infix_glyph`). Type position had NO infix layer beyond `->`, so `Qty(Int64, meter ^ 2)`
+        // failed re-parse (`expected ,` at the exponent). Now the type grammar folds them into bare-glyph
+        // heads, sharing the value grammar's `infix_prec` so the ML print→parse cycle round-trips.
+        // A single `^` exponent — breaker's minimal case (`(Unit.^ (Unit.base #meter) 2)` prints `meter ^ 2`).
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(x: Qty(Int64, meter ^ 2)) = x")),
+            r#"(def (f (: x (Qty Int64 (^ meter 2)))) x)"#
+        );
+        // A product `*` and a rate `/`.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(x: Qty(Int64, meter * second)) = x")),
+            r#"(def (f (: x (Qty Int64 (* meter second)))) x)"#
+        );
+        // `/`/`*` are left-associative and share the multiplicative tier (`a / b / c` → `((a/b)/c)`).
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(x: Qty(Int64, gram / meter / second)) = x")),
+            r#"(def (f (: x (Qty Int64 (/ (/ gram meter) second)))) x)"#
+        );
+        // `^` (tier 7) is LOOSER than `/`/`*` (tier 11) — matching the general-expression glyph binding —
+        // so an UNPARENTHESIZED `meter / second ^ 2` groups as `(meter / second) ^ 2`, and the printer
+        // parenthesizes the physical `meter / (second ^ 2)` reading (verified round-trip in the corpus
+        // test, which holds `Unit.^` inputs to idempotence since the surface drops the `Unit.` qualifier).
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(x: Qty(Int64, meter / second ^ 2)) = x")),
+            r#"(def (f (: x (Qty Int64 (^ (/ meter second) 2)))) x)"#
+        );
+        assert_eq!(
+            sexpr::print(&parse_ok("def f(x: Qty(Int64, meter / (second ^ 2))) = x")),
+            r#"(def (f (: x (Qty Int64 (/ meter (^ second 2))))) x)"#
+        );
+        // A derived-unit annotation in RESULT position (`-> Qty(…)`) parses the same way.
+        assert_eq!(
+            sexpr::print(&parse_ok("def f() -> Qty(Int64, meter / second ^ 2) = x")),
+            r#"(def (f) (: x (Qty Int64 (^ (/ meter second) 2))))"#
         );
     }
 
