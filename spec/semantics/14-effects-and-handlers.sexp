@@ -6358,7 +6358,7 @@
   (output (: 101 Int64)))
 
 (case "a BIGINT handler state multiplies per perform and each resume reads the prior product"
-  (doc    "BIGINT joins the handler-state type family with state AND op-result both heap-numeric: the product grows 1->7->70->700 per perform, each resume returns the PRIOR product, and the read narrows via BigInt divide + checked Int64.of.")
+  (doc    "BIGINT joins the handler-state type family with state AND op-result both heap-numeric: the product grows per perform and each resume returns the PRIOR product (a=1, b=7, c=70 at k=7), and ALL THREE resume results are read via a digit encode (a*10000 + b*100 + c = 10770) so every resume is observed, each narrowed through checked Int64.of.")
   (input  (do
             (effect Acc (op grow (-> Int64 BigInt)))
             (def (main (: k Int64))
@@ -6368,13 +6368,13 @@
                   (def a (Acc.grow k))
                   (def b (Acc.grow 10))
                   (def c (Acc.grow 10))
-                  (Int64.of (/ c (* a (BigInt.of 10)))))))
+                  (Int64.of (+ (* a (BigInt.of 10000)) (+ (* b (BigInt.of 100)) c))))))
             (export main)))
   (call   main (: 7 Int64))
-  (output (: 7 Int64)))
+  (output (: 10770 Int64)))
 
 (case "a RATIONAL handler state accumulates unit fractions exactly and resumes read the prior sum"
-  (doc    "RATIONAL completes the heap-numeric state pair: 1/2+1/3 accumulates with gcd-normalization per perform round-trip (canonical 5/6 — an unnormalized 15/18 breaks the digit encode); resume returns the PRIOR sum; the runtime arg defeats folding.")
+  (doc    "RATIONAL completes the heap-numeric state pair: 1/2+1/3 accumulates with gcd-normalization per perform round-trip (canonical 5/6 — an unnormalized 15/18 breaks the digit encode). Each resume returns the PRIOR sum — r0=0/1, r1=1/2, r2=5/6 at k=1 — and ALL THREE are read via a num/den digit encode (r0n r0d r1n r1d r2n r2d = 0 1 1 2 5 6 -> 11256) so every resume result is observed; the runtime arg defeats folding.")
   (input  (do
             (effect Avg (op sample (-> Int64 Rational)))
             (def (main (: k Int64))
@@ -6384,8 +6384,12 @@
                   (def r0 (Avg.sample 2))
                   (def r1 (Avg.sample 3))
                   (def r2 (Avg.sample (* k 6)))
-                  (+ (* 100 (Int64.of (Rational.numerator r2)))
-                     (Int64.of (Rational.denominator r2))))))
+                  (+ (* 100000 (Int64.of (Rational.numerator r0)))
+                     (+ (* 10000 (Int64.of (Rational.denominator r0)))
+                        (+ (* 1000 (Int64.of (Rational.numerator r1)))
+                           (+ (* 100 (Int64.of (Rational.denominator r1)))
+                              (+ (* 10 (Int64.of (Rational.numerator r2)))
+                                 (Int64.of (Rational.denominator r2))))))))))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: 506 Int64)))
+  (output (: 11256 Int64)))
