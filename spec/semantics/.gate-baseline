@@ -5370,3 +5370,5 @@ pass	single row ops on a map-borne record compute — without alone and extend a
 pass	the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)
 pass	a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value
 pass	unit arithmetic on a map-extracted quantity re-enters the map typed
+pass	a guard binder resolves over a COMPUTED scrutinee inside a helper fn
+pass	a guard binder resolves over a raw param scrutinee inside a helper fn

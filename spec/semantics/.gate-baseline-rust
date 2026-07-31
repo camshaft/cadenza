@@ -5370,3 +5370,5 @@ pass	two closure handles swap parameter slots through repeated tail calls
 pass	two heap-list accumulators swap slots through every tail call
 pass	two runtime-selected splices keep their operand ORDER in a non-commutative form
 pass	unit arithmetic on a map-extracted quantity re-enters the map typed
+pass	a guard binder resolves over a COMPUTED scrutinee inside a helper fn
+pass	a guard binder resolves over a raw param scrutinee inside a helper fn
