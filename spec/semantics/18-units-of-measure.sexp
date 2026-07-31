@@ -3279,10 +3279,10 @@
 ; --- The input-position derived-unit annotation (type_ref infix witness). ---
 
 (case "a derived-unit type annotation in INPUT position round-trips and the param computes"
-  (doc    "The corpus witness for the type_ref infix fix (bd6a1bafd): a (Qty Int64 (Unit.^ meter 2)) PARAM annotation — before the fix this printed ML the type parser choked on ('expected ,' at the exponent; only OUTPUT-position annotations existed in corpus so the ml_surface path never saw one). Exercises print->re-parse AND the annotated param computing (16 at k=4).")
+  (doc    "The corpus witness for the type_ref infix fix (bd6a1bafd): a (Qty Int64 (Unit./ meter (Unit.^ second 2))) PARAM annotation — a meter/second^2 acceleration unit that combines BOTH infix operators, pinning the /-vs-^ precedence (^ binds tighter, so it parses as meter/(second^2), not (meter/second)^2). Before the fix the ML type parser choked on the infix exponent ('expected ,'; only OUTPUT-position annotations existed in corpus so the ml_surface path never saw one). Exercises print->re-parse of the combined derived unit AND the annotated param computing (16 at k=4; Qty.value reads the scalar, so the unit shape does not change the value).")
   (input  (do
-            (def (f (: q (Qty Int64 (Unit.^ (Unit.base #"meter") 2)))) (Qty.value q))
-            (def (main (: k Int64)) (f (Qty.of (* k k) (Unit.^ (Unit.base #"meter") 2))))
+            (def (f (: q (Qty Int64 (Unit./ (Unit.base #"meter") (Unit.^ (Unit.base #"second") 2))))) (Qty.value q))
+            (def (main (: k Int64)) (f (Qty.of (* k k) (Unit./ (Unit.base #"meter") (Unit.^ (Unit.base #"second") 2)))))
             (export main)))
   (call   main (: 4 Int64))
   (output (: 16 Int64)))

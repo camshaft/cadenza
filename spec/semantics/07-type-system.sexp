@@ -1879,7 +1879,7 @@
 ; --- Type.of over a perform. ---
 
 (case "Type.of over a PERFORM result reflects the op's declared result type"
-  (doc    "The Type.of operand family covers literals/params/constructions/generic sums, and — as this case adds — a PERFORM result: the reflected type is the op's DECLARED result type ((List Int64)), resolved statically through the handler frame, Type.eq-verified against a same-type construction.")
+  (doc    "The Type.of operand family covers literals, params, constructions, generic sums, and PERFORM results: for a perform the reflected type is the op's DECLARED result type ((List Int64)), resolved statically through the handler frame, Type.eq-verified against a same-type construction.")
   (input  (do
             (effect E (op get (-> Unit (List Int64))))
             (def (main (: k Int64))
