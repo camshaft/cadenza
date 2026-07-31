@@ -1188,13 +1188,41 @@ fn collect_dup_sites(
     let index: HashMap<StructId, usize> =
         binders.iter().enumerate().map(|(i, &b)| (b, i)).collect();
     let bitsets = build_occurrence_bitsets(db, body, &index);
-    DUP_OCCURRENCE_ORACLE.with(|o| *o.borrow_mut() = Some((index, bitsets)));
+    // Install the oracle under an RAII guard that RESTORES THE PREVIOUS value on scope-exit — including a
+    // PANIC unwind (a `mark_binder_dups` assertion firing is a routine test-harness outcome). A bare
+    // set-then-`= None` would, on an unwind between the two, leave the thread-local `Some(stale)`, and a
+    // later `collect_dup_sites` on the SAME THREAD would read the stale oracle → a false "binder absent"
+    // early-prune → a DROPPED dup site → a latent leak/UAF (the process-global-state-contamination class,
+    // cf. `process-global-atomic-metric-counter-contaminated-by-parallel-test-harness`). Restoring the
+    // PREVIOUS value (not unconditionally `None`) is also nesting-safe. (Copilot PR#942 id 3687515459.)
+    let _oracle_guard = OracleGuard::install((index, bitsets));
     for &binder in binders {
         // The body's result position CONSUMES (the value is returned / escapes), so the top-level call is
         // `consuming: true`; nothing is used after the whole body, so `live_after: false`.
         mark_binder_dups(db, body, binder, true, false, sites);
     }
-    DUP_OCCURRENCE_ORACLE.with(|o| *o.borrow_mut() = None);
+    // `_oracle_guard` drops here (or on unwind), restoring the prior oracle value.
+}
+
+/// RAII guard for [`DUP_OCCURRENCE_ORACLE`]: swaps in a new oracle on `install`, restores the PREVIOUS
+/// value on `Drop` (normal return OR panic unwind), so a panicking `mark_binder_dups` can never leave a
+/// stale oracle to contaminate the next same-thread `collect_dup_sites`. Restoring the previous value
+/// (rather than `None`) keeps it nesting-safe.
+struct OracleGuard {
+    prev: Option<DupOccurrenceOracle>,
+}
+
+impl OracleGuard {
+    fn install(oracle: DupOccurrenceOracle) -> Self {
+        let prev = DUP_OCCURRENCE_ORACLE.with(|o| o.borrow_mut().replace(oracle));
+        OracleGuard { prev }
+    }
+}
+
+impl Drop for OracleGuard {
+    fn drop(&mut self) {
+        DUP_OCCURRENCE_ORACLE.with(|o| *o.borrow_mut() = self.prev.take());
+    }
 }
 
 /// The active `collect_dup_sites` occurrence oracle: `(binder → bit-index, node → occurrence-bitset)` from
@@ -19809,6 +19837,35 @@ mod tests {
         assert!(
             f.code.contains(&Lir::CallImport("set-contains")),
             "the membership probe must still emit"
+        );
+    }
+
+    // ── PANIC-SAFETY: a panic during a collect_dup_sites run must NOT leave DUP_OCCURRENCE_ORACLE = Some
+    // (a stale oracle would contaminate the next same-thread collect_dup_sites → a false early-prune → a
+    // dropped dup site → latent leak/UAF; Copilot PR#942). The OracleGuard's Drop restores the prior value
+    // on unwind. ──
+    #[test]
+    fn a_panic_during_collect_dup_sites_restores_the_oracle() {
+        // Oracle starts clear.
+        assert!(
+            DUP_OCCURRENCE_ORACLE.with(|o| o.borrow().is_none()),
+            "precondition: oracle clear before the run"
+        );
+        // Install a guard then panic while it is live — Drop must restore the prior (None).
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let index: HashMap<StructId, usize> = HashMap::new();
+            let _g = OracleGuard::install((index, HashMap::new()));
+            assert!(
+                DUP_OCCURRENCE_ORACLE.with(|o| o.borrow().is_some()),
+                "oracle is Some while the guard is live"
+            );
+            panic!("simulate a mark_binder_dups assertion firing mid-run");
+        }));
+        assert!(r.is_err(), "the closure must have panicked");
+        assert!(
+            DUP_OCCURRENCE_ORACLE.with(|o| o.borrow().is_none()),
+            "the OracleGuard's Drop must restore the oracle to None on unwind — else a stale oracle \
+             contaminates the next same-thread collect_dup_sites (Copilot PR#942)"
         );
     }
 
