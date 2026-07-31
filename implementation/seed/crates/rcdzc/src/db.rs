@@ -1909,6 +1909,16 @@ pub struct Db {
     /// identity `lower`/`layout` (`def_index_by_body`) already use. Empty for a program with none.
     pub(crate) inline_never: crate::fxhash::FxHashSet<StructId>,
 
+    /// EMIT-ONCE per-callee decision MEMO (operator-directed "emit_shared" column): caches the PER-CALLEE part
+    /// of `lower::should_emit_once_by_cost` — `true` iff the callee is a large-enough, monomorphic, non-`const`,
+    /// high-fan-out def (body-size ≥ INLINE_COST_THRESHOLD · scheme monomorphic · no const-param · call-site-count
+    /// ≥ INLINE_MIN_CALLERS). Keyed by `callee` def index. The heuristic previously RECOMPUTED all of this on the
+    /// hot lower path at EVERY call site (a `bounded_node_count` walk + scheme resolve + call-site-count each
+    /// time); this memoizes it once per callee. The PER-ARGS runtime-binding SOUNDNESS gate stays per-call-site
+    /// (it depends on the actual args, not the callee, so it is NOT memoized here). A general query-DB memo column
+    /// (the operator's "column not ad-hoc cache" steer), consistent with the other memo columns.
+    pub(crate) emit_shared: crate::fxhash::FxHashMap<usize, bool>,
+
     /// The BODY occurrences of definitions marked `inline-always`. Today a NO-OP (the default already
     /// always-inlines), recorded so the forthcoming cost heuristic (deferred) can treat it as the override
     /// "ignore the cost model, always fold". Populated by `strip_inline_policy` alongside `inline_never`.
@@ -2688,6 +2698,7 @@ impl Db {
             seed_transitive: crate::fxhash::FxHashSet::default(),
             reduction_root: None,
             call_sites_by_callee: None,
+            emit_shared: crate::fxhash::FxHashMap::default(),
             resolved: Column::new(),
             #[cfg(test)]
             resolved_of_calls: 0,

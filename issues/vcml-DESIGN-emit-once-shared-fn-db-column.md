@@ -69,3 +69,21 @@ A new column generalizing `inline_never` from a static annotation set to a deman
 - SLICE-2: wire emit to consult emit_plan_of == EmitOnce → route through the EXISTING emit-once path (emit_call_or_specialize, the same inline_never uses) instead of β-inline. Reuse inline_never's machinery.
 - SLICE-3: co-measure — ping v-compiler-perf (node-collapse/compile-N, baseline 194K collect-nodes/17-@test) + v-wasm-opt (emit-size/quality). Tune THRESH. item-4 differential (run-value + emitted-module behavior byte-identical) each slice.
 - ⚠ this is rcdzc RUST (db.rs/eval.rs/backend), NOT cml lower-db.cdz. Gates via rcdzc's cargo test + the corpus (fast rust-side unit test for slice-1, not the cml emit cliff).
+
+## ⚠ REFRAME (2026-07-31, found while building slice-1): the emit-once HEURISTIC ALREADY EXISTS in rcdzc.
+`should_emit_once_by_cost(db, callee, args)` [lower.rs:11805], WIRED at lower.rs:1190, already decides emit-once by:
+body-size ≥ INLINE_COST_THRESHOLD(40) · monomorphic (scheme.ty_vars empty) · non-const-param · runtime-binding arg
+gate (per-call-site SOUNDNESS) · callee_call_site_count ≥ INLINE_MIN_CALLERS(2) [infer.rs, call-site index built once].
+Routes emit-once through emit_call_or_specialize (SAME path @inline-never uses). So the MECHANISM + POLICY exist +
+are tested/landed. GAP vs operator's ask: it's recomputed PER-CALL-SITE on the hot lower path, NOT memoized as a column.
+⟹ REVISED design: emit_shared = a MEMO COLUMN caching should_emit_once_by_cost's PER-CALLEE part (fan-out+size+mono —
+the expensive recomputed bit), keyed by callee. The per-ARGS runtime-binding gate stays per-call-site (not per-callee
+memoizable). NOT a new parallel policy (my draft emit_plan_of omitted the runtime-binding SOUNDNESS gate = would've
+been unsound — reverted). Operator's "eliminate emitted functions" = TUNE INLINE_COST_THRESHOLD↓/MIN_CALLERS (my
+add-node/arena ranking feeds this) + co-measure w/ v-wasm-opt. REVISED slices: (1) emit_shared memo column that
+should_emit_once_by_cost consults (removes per-call-site recompute); (2) threshold-tune + measure (emit-fn count,
+compile-N, wasm-size) w/ v-cperf + v-wasm-opt; item-4 differential (behavior byte-identical). Reverted draft; awaiting
+concierge/operator on: proceed w/ memo-column+tuning, or widen emit_shared beyond the heuristic's current subset.
+🎓 LESSON: I nearly shipped a PARALLEL policy duplicating (and mis-implementing, omitting the soundness gate) an
+existing landed heuristic — ALWAYS grep for an existing mechanism (should_emit_once/inline/cost) before building a
+"new" compiler policy. rcdzc had it; the real task is memoization + tuning, not invention.

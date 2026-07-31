@@ -11803,17 +11803,43 @@ const INLINE_MIN_CALLERS: usize = 2;
 /// at ≥ `INLINE_MIN_CALLERS` sites — large and duplicated. `@inline-never`/`@inline-always` are handled by
 /// the caller BEFORE this (they are explicit overrides), so this only governs the UNANNOTATED default.
 fn should_emit_once_by_cost(db: &mut Db, callee: usize, args: &[StructId]) -> bool {
-    // CHEAPEST GATE FIRST (this runs on the hot lower path for every unmarked call): a SMALL body is the
-    // common case and always inlines — bail before any resolve/scheme work. `bounded_node_count` saturates
-    // at the threshold, so this is O(threshold), not O(body).
+    // PER-CALLEE eligibility (body-size + monomorphic + non-const + fan-out) is MEMOIZED in `db.emit_shared`
+    // (keyed by callee), computed once by `emit_once_callee_eligible` — this used to be recomputed on the hot
+    // lower path at EVERY call site (a bounded_node_count walk + scheme resolve + call-site-count each time).
+    if !emit_once_callee_eligible(db, callee) {
+        return false;
+    }
+    // PER-ARGS SOUNDNESS GATE (NOT memoizable per-callee — depends on the actual args): at least one argument
+    // must capture a runtime binding, so the result can never be compile-time-demanded (see the doc-comment
+    // invariant). A fully-closed call is left to inline/fold.
+    args.iter().any(|&a| arg_captures_runtime_binding(db, a))
+}
+
+/// The PER-CALLEE half of `should_emit_once_by_cost`, MEMOIZED in `db.emit_shared` (the operator-directed
+/// emit-once column, keyed by callee def index): `true` iff the callee is a large-body, monomorphic, non-`const`,
+/// high-fan-out def. Independent of the call site's args, so it is computed ONCE per callee and cached (the hot
+/// lower path then does a map lookup + the per-args soundness gate, instead of re-walking the body / re-resolving
+/// the scheme / re-counting call-sites at every site). Byte-identical to the pre-memo per-callee gates.
+fn emit_once_callee_eligible(db: &mut Db, callee: usize) -> bool {
+    if let Some(&v) = db.emit_shared.get(&callee) {
+        return v;
+    }
+    let eligible = emit_once_callee_eligible_uncached(db, callee);
+    db.emit_shared.insert(callee, eligible);
+    eligible
+}
+
+fn emit_once_callee_eligible_uncached(db: &mut Db, callee: usize) -> bool {
+    // CHEAPEST GATE FIRST: a SMALL body is the common case and always inlines — bail before any resolve/scheme
+    // work. `bounded_node_count` saturates at the threshold, so this is O(threshold), not O(body).
     let Some(body) = db.defs[callee].body else {
         return false;
     };
     if bounded_node_count(db, body, INLINE_COST_THRESHOLD) < INLINE_COST_THRESHOLD {
         return false;
     }
-    // A monomorphic, non-`const` scheme only — a generic / `const`-param callee is a specialization the
-    // shared path already handles (and MUST inline/specialize, not be diverted by cost).
+    // A monomorphic, non-`const` scheme only — a generic / `const`-param callee is a specialization the shared
+    // path already handles (and MUST inline/specialize, not be diverted by cost).
     let Some(scheme) = crate::infer::def_scheme(db, callee) else {
         return false; // undetermined signature — cannot emit a standalone function anyway
     };
@@ -11828,13 +11854,8 @@ fn should_emit_once_by_cost(db: &mut Db, callee: usize, args: &[StructId]) -> bo
     if has_const_param {
         return false;
     }
-    // SOUNDNESS GATE: at least one argument must capture a runtime binding, so the result can never be
-    // compile-time-demanded (see the doc-comment invariant). A fully-closed call is left to inline/fold.
-    if !args.iter().any(|&a| arg_captures_runtime_binding(db, a)) {
-        return false;
-    }
-    // COST GATE: called at ≥ INLINE_MIN_CALLERS sites (the whole-program call-site index, built once +
-    // cached) — the duplication emit-once avoids is only real at ≥2 sites.
+    // COST GATE: called at ≥ INLINE_MIN_CALLERS sites (the whole-program call-site index, built once + cached) —
+    // the duplication emit-once avoids is only real at ≥2 sites.
     crate::infer::callee_call_site_count(db, callee) >= INLINE_MIN_CALLERS
 }
 
