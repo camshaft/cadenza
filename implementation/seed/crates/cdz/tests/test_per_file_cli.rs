@@ -646,3 +646,78 @@ fn an_imported_with_tests_file_runs_its_own_group_not_another_groups_overwrite()
         "no wrong-group link (the PR#914 consumer-overwrite failure mode):\n{stdout}"
     );
 }
+
+#[test]
+fn warm_only_populates_the_cache_so_a_later_per_file_sweep_hits() {
+    // `cdz test --warm-only <dir>` warms each closure group's provider into the cache + EXITS without running
+    // tests, so a SUBSEQUENT per-file sweep (each file its own process — the gate's runaway-localization mode)
+    // HITS instead of every file cold-emitting the shared closure in parallel (the N×-redundant-emit race:
+    // without a warm, N concurrent single-file runs of files sharing ONE closure each MISS + re-emit it). This
+    // is the operator's gate-wall-clock lever: warm-once-then-sweep collapses N cliff emits to 1.
+    let dir = std::env::temp_dir().join(format!("cdz-warm-{}", std::process::id()));
+    let cache = std::env::temp_dir().join(format!("cdz-warm-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A recursive shared closure (stays standalone → a real cross-edge) imported by three @test files.
+    std::fs::write(
+        dir.join("shared.cdz"),
+        "def sumto(n: Int64) =\n  if n == 0 then 0 else n + sumto(n - 1)\nexport { sumto }\n",
+    )
+    .unwrap();
+    for (f, k) in [("ta", 5), ("tb", 4), ("tc", 3)] {
+        let want = (0..=k).sum::<i64>();
+        std::fs::write(
+            dir.join(format!("{f}.cdz")),
+            format!(
+                "import {{ sumto }} from \"shared\"\n@test\ndef t_{f}() =\n  if sumto({k}) == {want} then unit else trap(\"{f}\")\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    // WARM-ONLY: emits the provider once (a single `miss persisted`), runs NO tests (no PASS lines), exits 0.
+    let warm = Command::new(cdz())
+        .args(["test", "--warm-only", dir.to_str().unwrap()])
+        .env("CDZ_PROVIDER_CACHE", &cache)
+        .env("CDZ_PROVIDER_CACHE_TRACE", "1")
+        .output()
+        .expect("spawn cdz test --warm-only");
+    let warm_out = String::from_utf8_lossy(&warm.stdout);
+    let warm_err = String::from_utf8_lossy(&warm.stderr);
+    assert!(
+        warm.status.success(),
+        "warm-only exits 0:\n{warm_out}\n{warm_err}"
+    );
+    assert!(
+        warm_out.contains("warmed") && !warm_out.contains("PASS "),
+        "warm-only warms the cache WITHOUT running tests (no PASS lines):\n{warm_out}"
+    );
+    assert!(
+        warm_err.matches("[provider-cache] miss persisted").count() == 1,
+        "warm-only emits the shared provider exactly ONCE:\n{warm_err}"
+    );
+
+    // THEN a per-file sweep (each file its own process, as the gate runs them) — every file HITS the warm.
+    let run = |f: &str| -> (bool, String) {
+        let out = Command::new(cdz())
+            .args(["test", dir.join(f).to_str().unwrap()])
+            .env("CDZ_PROVIDER_CACHE", &cache)
+            .env("CDZ_PROVIDER_CACHE_TRACE", "1")
+            .output()
+            .expect("spawn cdz test <file>");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
+    for (f, t) in [("ta.cdz", "t_ta"), ("tb.cdz", "t_tb"), ("tc.cdz", "t_tc")] {
+        let (ok, err) = run(f);
+        let _ = t;
+        assert!(ok, "per-file run of {f} passes after warm:\n{err}");
+        assert!(
+            err.contains("[provider-cache] hit") && !err.contains("miss persisted"),
+            "after --warm-only, the per-file run of {f} HITS the cache (no re-emit):\n{err}"
+        );
+    }
+}
