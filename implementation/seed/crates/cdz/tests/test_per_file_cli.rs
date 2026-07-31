@@ -699,7 +699,10 @@ fn warm_only_populates_the_cache_so_a_later_per_file_sweep_hits() {
     );
 
     // THEN a per-file sweep (each file its own process, as the gate runs them) — every file HITS the warm.
-    let run = |f: &str| -> (bool, String) {
+    // Return (exit-ok, STDOUT, stderr): stdout carries `PASS {t}` (so we prove the test actually RAN — a
+    // single-file `cdz test` exits 0 with 0 tests found, so exit-OK alone is a weak guard, PR#941), stderr
+    // carries the `[provider-cache]` trace (so we prove it HIT the warm, not re-emitted).
+    let run = |f: &str| -> (bool, String, String) {
         let out = Command::new(cdz())
             .args(["test", dir.join(f).to_str().unwrap()])
             .env("CDZ_PROVIDER_CACHE", &cache)
@@ -708,13 +711,17 @@ fn warm_only_populates_the_cache_so_a_later_per_file_sweep_hits() {
             .expect("spawn cdz test <file>");
         (
             out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
             String::from_utf8_lossy(&out.stderr).to_string(),
         )
     };
     for (f, t) in [("ta.cdz", "t_ta"), ("tb.cdz", "t_tb"), ("tc.cdz", "t_tc")] {
-        let (ok, err) = run(f);
-        let _ = t;
-        assert!(ok, "per-file run of {f} passes after warm:\n{err}");
+        let (ok, stdout, err) = run(f);
+        // The named test actually RAN + passed — not a vacuous exit-0 with 0 tests found (PR#941).
+        assert!(
+            ok && stdout.contains(&format!("PASS {t}")),
+            "per-file run of {f} actually ran + passed `{t}` after warm:\n{stdout}\n{err}"
+        );
         assert!(
             err.contains("[provider-cache] hit") && !err.contains("miss persisted"),
             "after --warm-only, the per-file run of {f} HITS the cache (no re-emit):\n{err}"
