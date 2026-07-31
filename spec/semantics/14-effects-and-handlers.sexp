@@ -6335,3 +6335,57 @@
         (export main)))
   (call   main (: 2 Int64)) (output (: 339 Int64))
   (call   main (: 0 Int64)) (output (: 333 Int64)))
+
+; --- The heap-valued handler-state/op-result completions: Symbol results, BigInt state+result,
+; Rational state with per-step normalization. ---
+
+(case "a SYMBOL-returning effect op interns through the handler and results compare by content"
+  (doc    "SYMBOL joins the op-result type family (the interner-service idiom): a (-> String Symbol) op whose arm interns via Symbol.of; results flow back through resume and a rope-arg intern equals a flat-arg intern by content, with the results also ORDERING content-lexicographically.")
+  (input  (do
+            (effect Reg (op intern (-> String Symbol)))
+            (def (main (: k Int64))
+              (handle Reg 0
+                ((intern (s) c (resume (Symbol.of s) (+ c 1))))
+                (do
+                  (def s1 (Reg.intern (String.concat "sym" "A")))
+                  (def s2 (Reg.intern "symA"))
+                  (def s3 (Reg.intern (if (= k 1) "symB" "symA")))
+                  (+ (* 100 (if (= s1 s2) 1 0))
+                     (+ (* 10 (if (= s1 s3) 1 0))
+                        (if (< s1 s3) 1 0))))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 101 Int64)))
+
+(case "a BIGINT handler state multiplies per perform and each resume reads the prior product"
+  (doc    "BIGINT joins the handler-state type family with state AND op-result both heap-numeric: the product grows 1->7->70->700 per perform, each resume returns the PRIOR product, and the read narrows via BigInt divide + checked Int64.of.")
+  (input  (do
+            (effect Acc (op grow (-> Int64 BigInt)))
+            (def (main (: k Int64))
+              (handle Acc (BigInt.of 1)
+                ((grow (m) s (resume s (* s (BigInt.of m)))))
+                (do
+                  (def a (Acc.grow k))
+                  (def b (Acc.grow 10))
+                  (def c (Acc.grow 10))
+                  (Int64.of (/ c (* a (BigInt.of 10)))))))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case "a RATIONAL handler state accumulates unit fractions exactly and resumes read the prior sum"
+  (doc    "RATIONAL completes the heap-numeric state pair: 1/2+1/3 accumulates with gcd-normalization per perform round-trip (canonical 5/6 — an unnormalized 15/18 breaks the digit encode); resume returns the PRIOR sum; the runtime arg defeats folding.")
+  (input  (do
+            (effect Avg (op sample (-> Int64 Rational)))
+            (def (main (: k Int64))
+              (handle Avg (Rational.of 0 1)
+                ((sample (v) s (resume s (+ s (Rational.of 1 v)))))
+                (do
+                  (def r0 (Avg.sample 2))
+                  (def r1 (Avg.sample 3))
+                  (def r2 (Avg.sample (* k 6)))
+                  (+ (* 100 (Int64.of (Rational.numerator r2)))
+                     (Int64.of (Rational.denominator r2))))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 506 Int64)))
