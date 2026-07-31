@@ -708,3 +708,18 @@
                  (if (= (rename (quote 42)) (quote 42)) 1 0)))
             (export main)))
   (output (: 11 Int64)))
+
+; --- Guards over quote patterns (subtree-equality rewrites). ---
+
+(case "a GUARD over a QUOTE pattern compares two bound subtrees — the x=x algebraic rewrite"
+  (doc    "Quote patterns and guards composed (the algebraic-rewrite idiom needs both): the guard compares TWO quote-bound subtrees by Ast value-equality — x+x rewrites to 2*x, x+y falls through untouched. Both directions quote-verified.")
+  (input  (do
+            (def (simp node)
+              (match node
+                ((guard `(+ ,x ,y) (= x y)) (Ast.List (list (Ast.Name "*") (Ast.Int 2) x)))
+                (other other)))
+            (def (main)
+              (+ (* 10 (if (= (simp (quote (+ z z))) (quote (* 2 z))) 1 0))
+                 (if (= (simp (quote (+ a b))) (quote (+ a b))) 1 0)))
+            (export main)))
+  (output (: 11 Int64)))
