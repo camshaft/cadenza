@@ -11775,12 +11775,42 @@ fn lower_recursive_call_or_decline(
 /// duplication is unambiguously wasteful. The precise value awaits real code-size data from the
 /// self-hosted compiler (Addendum 4: "tune it THEN"); this floor is high enough that it is inert on
 /// ordinary small helpers and only trips on the clear wins.
-const INLINE_COST_THRESHOLD: u32 = 40;
+const INLINE_COST_THRESHOLD_DEFAULT: u32 = 40;
 
 /// The minimum number of call sites at/above which the cost heuristic prefers emit-once. A def called
 /// ONCE gains nothing from a shared function (one inline = one copy either way, and inlining folds
 /// better), so the heuristic only fires at ≥2 sites where the duplication it avoids is real.
-const INLINE_MIN_CALLERS: usize = 2;
+const INLINE_MIN_CALLERS_DEFAULT: usize = 2;
+
+/// The effective body-size floor for emit-once. Normally `INLINE_COST_THRESHOLD_DEFAULT` (40); the
+/// `CDZ_INLINE_COST_THRESHOLD` env override exists ONLY for the emit-once set-widening CO-MEASURE slice —
+/// lowering it flips MORE large-ish helpers to emit-once (fewer duplicated inline copies → smaller emit,
+/// the operator's emit-fn-elimination goal), so v-compiler-perf / v-wasm-opt can sweep the
+/// size/node-collapse curve across candidate values in one session (a process per value) instead of a
+/// land+measure round-trip per guess. UNSET → the default → byte-identical codegen; slice-3 commits the
+/// empirically-chosen floor as the new default and this knob is retired. Read once and cached (env is
+/// read-only config, fixed for the process), so it never touches the memoized hot path.
+fn inline_cost_threshold() -> u32 {
+    static CACHE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("CDZ_INLINE_COST_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(INLINE_COST_THRESHOLD_DEFAULT)
+    })
+}
+
+/// The effective call-site floor for emit-once — see [`inline_cost_threshold`]. `CDZ_INLINE_MIN_CALLERS`
+/// overrides it for the same set-widening co-measure sweep; UNSET → 2 → byte-identical.
+fn inline_min_callers() -> usize {
+    static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("CDZ_INLINE_MIN_CALLERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(INLINE_MIN_CALLERS_DEFAULT)
+    })
+}
 
 /// The COST-HEURISTIC decision (Addendum 4): should this non-recursive call to named top-level def
 /// `callee` be EMITTED ONCE and called, rather than β-reduced (inlined) at this site? The unannotated
@@ -11799,8 +11829,9 @@ const INLINE_MIN_CALLERS: usize = 2;
 ///   `Core::Call` strands nothing. (A fully-closed call, by contrast, MIGHT be const-demanded, so it is
 ///   left to inline/fold.)
 ///
-/// COST (the actual tradeoff): the callee body is at/above `INLINE_COST_THRESHOLD` nodes AND it is called
-/// at ≥ `INLINE_MIN_CALLERS` sites — large and duplicated. `@inline-never`/`@inline-always` are handled by
+/// COST (the actual tradeoff): the callee body is at/above the effective cost threshold (`inline_cost_threshold`,
+/// default 40) nodes AND it is called at ≥ the effective min-callers floor (`inline_min_callers`, default 2)
+/// sites — large and duplicated. `@inline-never`/`@inline-always` are handled by
 /// the caller BEFORE this (they are explicit overrides), so this only governs the UNANNOTATED default.
 fn should_emit_once_by_cost(db: &mut Db, callee: usize, args: &[StructId]) -> bool {
     // PER-CALLEE eligibility (body-size + monomorphic + non-const + fan-out) is MEMOIZED in `db.emit_shared`
@@ -11835,7 +11866,8 @@ fn emit_once_callee_eligible_uncached(db: &mut Db, callee: usize) -> bool {
     let Some(body) = db.defs[callee].body else {
         return false;
     };
-    if bounded_node_count(db, body, INLINE_COST_THRESHOLD) < INLINE_COST_THRESHOLD {
+    let cost_threshold = inline_cost_threshold();
+    if bounded_node_count(db, body, cost_threshold) < cost_threshold {
         return false;
     }
     // A monomorphic, non-`const` scheme only — a generic / `const`-param callee is a specialization the shared
@@ -11856,7 +11888,7 @@ fn emit_once_callee_eligible_uncached(db: &mut Db, callee: usize) -> bool {
     }
     // COST GATE: called at ≥ INLINE_MIN_CALLERS sites (the whole-program call-site index, built once + cached) —
     // the duplication emit-once avoids is only real at ≥2 sites.
-    crate::infer::callee_call_site_count(db, callee) >= INLINE_MIN_CALLERS
+    crate::infer::callee_call_site_count(db, callee) >= inline_min_callers()
 }
 
 /// Emit a call to a NAMED top-level def `callee` as a `Core::Call` — SPECIALIZING it (monomorphizing a
