@@ -41,21 +41,41 @@ pub async fn watchdog_loop(repo_root: PathBuf) {
 
 async fn run_watchdog_once(spec: &watchdog::WatchdogSpec, repo_root: &PathBuf) {
     let (prog, args) = spec.command();
-    match tokio::process::Command::new(prog)
+    // BOUND the fire with a timeout. A bare `.output().await` has NO deadline, so ONE hung
+    // `cargo xtask fleet watchdog` child (e.g. a cargo/git/tmux call wedging, or a shared-registry lock)
+    // blocks this await forever → the `watchdog_loop` never comes back around → the whole daemon SILENTLY
+    // stops re-arming for as long as that child hangs. That is exactly what produced the ~12h watchdog gap
+    // in watchdog.log during the cred-freeze window (the daemon process stayed up per systemd, but its
+    // fires halted). Kill-on-timeout so a single hung fire costs one cycle, never the daemon's liveness —
+    // the operator's Track-A resilience ask (the fleet must auto-recover, not freeze for hours).
+    let child = match tokio::process::Command::new(prog)
         .args(&args)
         .current_dir(repo_root)
-        .output()
-        .await
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
     {
-        Ok(out) if out.status.success() => {
-            tracing::debug!("watchdog tick ok");
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to spawn watchdog");
+            return;
         }
-        Ok(out) => tracing::warn!(
+    };
+    match tokio::time::timeout(watchdog::FIRE_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(out)) if out.status.success() => tracing::debug!("watchdog tick ok"),
+        Ok(Ok(out)) => tracing::warn!(
             code = ?out.status.code(),
             stderr = %String::from_utf8_lossy(&out.stderr),
             "watchdog tick returned non-zero"
         ),
-        Err(e) => tracing::warn!(error = %e, "failed to spawn watchdog"),
+        Ok(Err(e)) => tracing::warn!(error = %e, "watchdog child wait failed"),
+        // Timed out: the child (kill_on_drop) is dropped here → killed. The loop continues so the NEXT
+        // fire runs on schedule; a persistently-hanging watchdog surfaces as a repeated timeout warning.
+        Err(_) => tracing::warn!(
+            timeout_secs = watchdog::FIRE_TIMEOUT.as_secs(),
+            "watchdog fire exceeded its timeout — killed; daemon continues (a hung fire must not stall re-arms)"
+        ),
     }
 }
 

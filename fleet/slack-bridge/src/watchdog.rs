@@ -19,6 +19,15 @@ use std::time::Duration;
 /// How often the daemon fires the watchdog: every ~4 minutes.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(240);
 
+/// Hard deadline for a SINGLE `cargo xtask fleet watchdog` fire. A bare await on the child has no
+/// deadline, so one hung fire (a wedged cargo/git/tmux call, a shared-registry lock) would block the
+/// daemon's fire loop indefinitely and silently halt ALL re-arms — the ~12h watchdog gap observed in
+/// watchdog.log during the cred-freeze window. 180s is comfortably longer than a healthy fire (a sweep is
+/// seconds of git/tmux/fs work — it does NOT compile) yet safely SHORTER than the 240s interval, so a
+/// killed fire still leaves headroom before the next one is due. The runner kills the child on elapse and
+/// continues, so a hung fire costs one cycle, never the daemon's liveness.
+pub const FIRE_TIMEOUT: Duration = Duration::from_secs(180);
+
 /// A fully-specified watchdog invocation. Kept as data (program + args) so it's trivially unit-testable and
 /// the transport just feeds it to `std::process::Command`. This is `cargo xtask fleet watchdog …` — we
 /// shell out rather than call fleet.rs in-process so the watchdog tool stays the single source of truth
@@ -98,6 +107,23 @@ mod tests {
         }
         .command();
         assert_eq!(args, ["xtask", "fleet", "watchdog", "--stale-mult", "3"]);
+    }
+
+    #[test]
+    fn fire_timeout_is_bounded_below_the_interval() {
+        // The safety invariant: a single hung fire is killed BEFORE the next one is due, so the daemon's
+        // fire cadence is never stalled by one wedged child (the ~12h watchdog-gap bug). Must be strictly
+        // less than the interval, and positive.
+        assert!(
+            FIRE_TIMEOUT < DEFAULT_INTERVAL,
+            "a fire must time out before the next is due ({:?} !< {:?})",
+            FIRE_TIMEOUT,
+            DEFAULT_INTERVAL
+        );
+        assert!(
+            FIRE_TIMEOUT > Duration::from_secs(0),
+            "timeout must be positive"
+        );
     }
 
     #[test]
