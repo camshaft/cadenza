@@ -28,6 +28,14 @@ pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(240);
 /// continues, so a hung fire costs one cycle, never the daemon's liveness.
 pub const FIRE_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// Grace for reaping a timed-out fire. On timeout the runner explicitly `kill().await`s the child so the
+/// reap (`waitpid`) is timely — `kill_on_drop(true)` alone only SIGNALS the kill and defers the reap to
+/// tokio's background orphan reaper (best-effort), so a repeatedly-hung watchdog could accumulate zombies
+/// / leak PIDs (PR#949). The explicit kill+reap is itself bounded by this grace so a wedged reap can't
+/// stall the fire loop. SIGKILL reaps near-instantly; a few seconds is ample, and FIRE_TIMEOUT + this
+/// stays comfortably under the interval (see the headroom test).
+pub const REAP_GRACE: Duration = Duration::from_secs(10);
+
 /// A fully-specified watchdog invocation. Kept as data (program + args) so it's trivially unit-testable and
 /// the transport just feeds it to `std::process::Command`. This is `cargo xtask fleet watchdog …` — we
 /// shell out rather than call fleet.rs in-process so the watchdog tool stays the single source of truth
@@ -123,6 +131,24 @@ mod tests {
         assert!(
             FIRE_TIMEOUT > Duration::from_secs(0),
             "timeout must be positive"
+        );
+    }
+
+    #[test]
+    fn fire_timeout_plus_reap_grace_stays_under_the_interval() {
+        // The timeout arm does an explicit kill+reap bounded by REAP_GRACE (PR#949). Its worst case runs
+        // AFTER the fire timeout, so the total time a wedged fire can hold the loop is FIRE_TIMEOUT +
+        // REAP_GRACE — that must still be under the interval or a hung fire could push the next one late.
+        assert!(
+            REAP_GRACE > Duration::from_secs(0),
+            "grace must be positive"
+        );
+        assert!(
+            FIRE_TIMEOUT + REAP_GRACE < DEFAULT_INTERVAL,
+            "fire timeout + reap grace must stay under the interval ({:?} + {:?} !< {:?})",
+            FIRE_TIMEOUT,
+            REAP_GRACE,
+            DEFAULT_INTERVAL
         );
     }
 
