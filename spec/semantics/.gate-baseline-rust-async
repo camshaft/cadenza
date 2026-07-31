@@ -163,6 +163,8 @@ pass	a Bytes slice VIEW and a rope compare equal by content in both directions
 pass	a Bytes slice of a slice composes offsets against the VIEW and bounds against its length
 todo	a Bytes-compact key and a flat rebuild both hit a rope-keyed map entry; a proper-prefix slice misses
 pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
+pass	a CLASSIFY-and-BUILD fold maps ints to letter pieces and the built rope equals the literal
+pass	a CONCRETELY-exported error sum flows back through two call layers and dispatches at the entry
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
 pass	a CONTINUED FRACTION evaluates bottom-up through recursive Rational division (a + 1/rest)
 pass	a CONTRACTED fn consumes perform results — @requires fires on a handler-produced value
@@ -3198,6 +3200,7 @@ pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
 pass	a variadic Ast form is folded via a tail-splice rest-binder over its operands
 pass	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
+pass	a user SUM leaf inside a tuple key discriminates hits by variant AND payload
 pass	a variant carrying a Char payload constructs, matches, and binds it
 pass	a variant carrying a RECORD payload constructs and matches
 pass	a variant carrying a Rational payload constructs and matches

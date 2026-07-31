@@ -1977,3 +1977,37 @@
       (export area)))
   (call   main (: 5 Int64)) (output (: 166 Int64))
   (call   main (: 0 Int64)) (output (: 16 Int64)))
+
+; --- The cross-module api-error flow (concrete export spelling). ---
+
+(case "a CONCRETELY-exported error sum flows back through two call layers and dispatches at the entry"
+  (doc    "The cross-module face of the api-error idiom: the sum is declared in a base module with the CONCRETE (export (. IoErr *)) spelling (a bare-handle export withholds the constructors — CDZ0214 — per the opacity rules), the Result flows through a middle module's fetch, and the entry dispatches all four arms through nested patterns.")
+  (module "errs"
+    (do
+      (type IoErr (NotFound String) (Denied Int64) (Timeout))
+      (export (. IoErr *))))
+  (module "store"
+    (do
+      (import "errs" (IoErr))
+      (def (fetch (: id Int64))
+        (: (if (= id 1) (Result.Ok "data")
+               (if (= id 2) (Result.Err (IoErr.NotFound "key2"))
+                   (if (= id 3) (Result.Err (IoErr.Denied 403))
+                       (Result.Err (IoErr.Timeout unit)))))
+           (Result String IoErr)))
+      (export fetch)))
+  (input  (do
+        (import "errs" (IoErr))
+        (import "store" (fetch))
+        (def (code (: id Int64))
+          (match (fetch id)
+            ((Result.Ok s) (String.byte-len s))
+            ((Result.Err (IoErr.NotFound key)) (+ 100 (String.byte-len key)))
+            ((Result.Err (IoErr.Denied c)) (+ 1000 c))
+            ((Result.Err (IoErr.Timeout _u)) -1)))
+        (def (main (: id Int64)) (code id))
+        (export main)))
+  (call   main (: 1 Int64)) (output (: 4 Int64))
+  (call   main (: 2 Int64)) (output (: 104 Int64))
+  (call   main (: 3 Int64)) (output (: 1403 Int64))
+  (call   main (: 9 Int64)) (output (: -1 Int64)))

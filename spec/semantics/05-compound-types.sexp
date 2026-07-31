@@ -17070,3 +17070,19 @@
   (call   main (: 2 Int64)) (output (: 104 Int64))
   (call   main (: 3 Int64)) (output (: 1403 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64)))
+
+; --- A sum leaf inside a tuple CHAMP key. ---
+
+(case "a user SUM leaf inside a tuple key discriminates hits by variant AND payload"
+  (doc    "Sum values key maps DIRECTLY; a sum leaf INSIDE a tuple key makes the champ hash/eq descend tuple->sum->payload: (Active,1) hits by nullary variant, (Banned 403,1) hits with a probe payload ARITH-BUILT at runtime, (Idle,1) misses on the discriminant alone.")
+  (input  (do
+            (type Status (Active) (Idle) (Banned Int64))
+            (def (main (: k Int64))
+              (do
+                (def m (Map.insert (Map.insert Map.empty (tuple (Status.Active unit) 1) 10) (tuple (Status.Banned 403) 1) 20))
+                (+ (* 100 (match (Map.lookup m (tuple (Status.Active unit) 1)) ((Option.Some v) v) ((Option.None _u) -1)))
+                   (+ (* 10 (match (Map.lookup m (tuple (Status.Banned (+ 400 (* k 3))) 1)) ((Option.Some v) (/ v 2)) ((Option.None _u) -1)))
+                      (match (Map.lookup m (tuple (Status.Idle unit) 1)) ((Option.Some v) v) ((Option.None _u) -1))))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 1099 Int64)))
