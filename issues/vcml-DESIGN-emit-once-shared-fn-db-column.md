@@ -87,3 +87,24 @@ concierge/operator on: proceed w/ memo-column+tuning, or widen emit_shared beyon
 🎓 LESSON: I nearly shipped a PARALLEL policy duplicating (and mis-implementing, omitting the soundness gate) an
 existing landed heuristic — ALWAYS grep for an existing mechanism (should_emit_once/inline/cost) before building a
 "new" compiler policy. rcdzc had it; the real task is memoization + tuning, not invention.
+
+## SLICE STATUS + SLICE-3 FLOOR-SELECTION RULE (2026-07-31)
+- SLICE-1 LANDED trunk bf12bddd1 (batch #79): emit_shared per-callee memo column. Byte-identical decision; v-cperf
+  confirmed collect-nodes/emit UNCHANGED by construction (the recompute-removal is a scale-invisible micro-win).
+- SLICE-2 LANDED trunk c24540b68 (batch #80): the two thresholds made env-overridable measurement knobs —
+  CDZ_INLINE_COST_THRESHOLD (default 40) + CDZ_INLINE_MIN_CALLERS (default 2), read-once via OnceLock, UNSET →
+  byte-identical. Sweep invocation (v-cperf/v-wasm-opt own the compute; NOT run locally — floods host, starves pr-sync):
+  `env CDZ_INLINE_COST_THRESHOLD=<v> CDZ_INLINE_MIN_CALLERS=<v> target/release/cdz test implementation/compiler-ml/src --warm-only`.
+- SLICE-3 = pick the empirical floor, commit it as the new DEFAULT const value (INLINE_COST_THRESHOLD_DEFAULT /
+  INLINE_MIN_CALLERS_DEFAULT), retire the env knobs (the accessors collapse back to consts), item-4 db-demand
+  differential (behavior byte-identical vs the env-swept run at the chosen values).
+  ⇒ FLOOR-SELECTION RULE (decides the pick mechanically from the sweep grid, no arbitrary choice):
+    Pick the (COST, MIN) cell that MINIMIZES provider bytes (operator's primary emit-fn-elimination axis) SUBJECT TO:
+    (i) v-wasm-opt's cross-fn-fold-loss metric is ~flat vs the default cell (only flip helpers whose bodies weren't
+        benefiting from call-site specialization — else the size win is paid back in lost intra-caller opt); AND
+    (ii) emit wall-time / collect-node count do NOT regress materially vs default (a compile-time guardrail); AND
+    (iii) the opt-sweep 0-div behavior-neutral check holds at that cell (table stakes).
+    Tie-break toward the LESS aggressive (higher) threshold (conservative default = the operator's always-inline-ish
+    stance during the port; only take a lower floor when the size win is unambiguous AND quality-flat).
+    If NO cell beats the default on size-without-quality-cost → KEEP 40/2 (slice-3 = "measured, default confirmed";
+    the knobs still land value as the tuning affordance). Report the chosen cell + the grid to concierge → operator.

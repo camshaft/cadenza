@@ -163,6 +163,8 @@ pass	a Bytes slice VIEW and a rope compare equal by content in both directions
 pass	a Bytes slice of a slice composes offsets against the VIEW and bounds against its length
 todo	a Bytes-compact key and a flat rebuild both hit a rope-keyed map entry; a proper-prefix slice misses
 pass	a CAESAR cipher shifts alphabet positions modulo 26, involutes at ROT13, passes non-letters
+pass	a CLASSIFY-and-BUILD fold maps ints to letter pieces and the built rope equals the literal
+pass	a CONCRETELY-exported error sum flows back through two call layers and dispatches at the entry
 pass	a CONSECUTIVE dedup collapses runs but keeps recurrences separated by other values
 pass	a CONTINUED FRACTION evaluates bottom-up through recursive Rational division (a + 1/rest)
 pass	a CONTRACTED fn consumes perform results — @requires fires on a handler-produced value
@@ -3231,6 +3233,7 @@ pass	a unary variant applied to a wrong-type payload is a type error
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a unit raised to the ZEROTH power is the dimensionless identity Unit.one
 pass	a user Name variant does not capture the Ast sum's Name variant
+pass	a user SUM leaf inside a tuple key discriminates hits by variant AND payload
 pass	a user function may be named quote — its signature is a binding form, not a quote
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition

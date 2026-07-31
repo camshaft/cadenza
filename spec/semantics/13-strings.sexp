@@ -4184,3 +4184,24 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 113 Int64)))
+
+; --- The classify-and-build fold. ---
+
+(case "a CLASSIFY-and-BUILD fold maps ints to letter pieces and the built rope equals the literal"
+  (doc    "The render-report idiom: each element classifies through a branch chain and the CLASS piece appends (15 divides by both 3 and 5 and must take the FIRST branch — the branch-order face; the runtime k*7 lands the default); the accumulated rope compares = to the literal.")
+  (input  (do
+            (def (join-ints (: xs (List Int64)) (: i Int64) (: acc String))
+              (match (List.at xs i)
+                ((Option.Some v)
+                  (do
+                    (def piece (if (= (% v 3) 0) "F" (if (= (% v 5) 0) "B" "n")))
+                    (join-ints xs (+ i 1) (String.concat acc piece))))
+                ((Option.None _u) acc)))
+            (def (main (: k Int64))
+              (do
+                (def s (join-ints (list 3 5 (* k 7) 15 1) 0 ""))
+                (+ (* 100 (String.byte-len s))
+                   (if (= s "FBnFn") 1 0))))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 501 Int64)))
