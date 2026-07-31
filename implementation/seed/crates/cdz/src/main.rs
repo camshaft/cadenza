@@ -4388,8 +4388,26 @@ fn run_test(args: &TestArgs) -> ExitCode {
     // Shared-arena lower-once: compile all target files in ONE EmitTestsPerFile pass (lowers the shared
     // closure once, emits one component per file). `run_test_file` looks its component up by name instead of
     // re-lowering the whole closure per file. Best-effort — an empty map (single file, or a union hiccup)
-    // just means every file falls back to its own per-file compile, byte-identical to before.
+    // just means every file falls back to its own per-file compile, byte-identical to before. This ALSO
+    // persists each closure group's provider to the cross-invocation cache — which is exactly the warm a
+    // subsequent per-file sweep reuses.
     let precompiled = precompile_tests_per_file(&files);
+
+    // `--warm-only`: we've now emitted + persisted every closure group's provider to the cache (that's what
+    // `precompile_tests_per_file` does on a miss). Stop here WITHOUT running the tests — a caller that will
+    // then sweep the suite per-file (each file its own process) now HITS the warmed cache instead of every
+    // file cold-emitting the shared closure in parallel. Report what warmed so the caller (and a human) can
+    // see the warm happened; a group whose emit DECLINED simply isn't in `providers` (its files will fall back
+    // to a standalone per-file compile in the sweep, exactly as without the cache — no worse than today).
+    if args.warm_only {
+        let groups = precompiled.providers.len();
+        println!(
+            "warmed {groups} shared-closure provider(s) into the cache ({} target file(s) across the suite) \
+             — a per-file `cdz test` sweep will now reuse them",
+            files.len()
+        );
+        return ExitCode::SUCCESS;
+    }
 
     let mut total_pass = 0usize;
     let mut total_fail = 0usize;
@@ -5078,6 +5096,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 store: store.clone(),
                 trials,
                 seed,
+                warm_only: false, // watch RUNS the tests on each change, never a warm-only pass
             }),
             WatchCmd::Build => run_build(&BuildArgs {
                 dir: Some(dir_str.clone()),
@@ -6590,6 +6609,15 @@ struct TestArgs {
     /// failure prints the seed to replay with `--seed`). Default 0 (deterministic run-to-run).
     #[arg(long, default_value_t = 0)]
     seed: u64,
+    /// WARM the shared-closure provider cache for the resolved suite, then EXIT WITHOUT running any tests.
+    /// Emits + persists each closure GROUP's provider once (serially), so a SUBSEQUENT per-file `cdz test`
+    /// sweep — e.g. the gate running each file as its own process for runaway-compile localization — HITS the
+    /// cache instead of every file cold-emitting the shared closure in parallel (the N×-redundant-emit race:
+    /// the 8 `sread-eval-*` files each re-emitting the ~1360-def provider). Warm-once-then-sweep collapses that
+    /// to a single provider emit per closure. The `@test` check-gate still runs (a warm over a parse-broken
+    /// suite fails RED, same as a normal run). Exit 0 iff the check passed and the providers were warmed.
+    #[arg(long)]
+    warm_only: bool,
 }
 
 // ── cdz watch ──────────────────────────────────────────────────────────────────────────────────
