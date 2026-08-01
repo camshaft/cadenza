@@ -529,12 +529,17 @@ def cylinder-box-is-diameter-by-height() =
 
 @test
 def difference-is-bounded-by-the-base() =
-  // subtracting a tool doesn't grow the base → the difference's box is the base's box.
-  let one = 1 / 1 in
-  let base = Solid.Cube(v3(one, one, one)) in
-  let d = Solid.Difference(base, Solid.Sphere(1 / 2)) in
-  if v3-eq(aabbr-size(bounding-box(d)), aabbr-size(bounding-box(base))) then unit
-  else trap("difference box = base box")
+  // subtracting a tool doesn't grow the base → the difference's box is the base's box, NOT the tool's. The base
+  // and tool are DIFFERENTLY sized so this discriminates the arm from a `bounding-box(tool)` regression: a big
+  // 4×4×4 cube (box size 4³) minus a small Sphere(1/2) (box size 1³) → the difference's box is the cube's 4³,
+  // and is explicitly NOT the tool's 1³ (which a swapped arm would return).
+  let base = Solid.Cube(v3(4 / 1, 4 / 1, 4 / 1)) in
+  let tool = Solid.Sphere(1 / 2) in
+  let d = Solid.Difference(base, tool) in
+  if v3-eq(aabbr-size(bounding-box(d)), aabbr-size(bounding-box(base)))
+     and (v3-eq(aabbr-size(bounding-box(d)), aabbr-size(bounding-box(tool))) == false)
+  then unit
+  else trap("difference box = base box (4³), not the tool box (1³)")
 
 @test
 def scale-multiplies-the-box() =
@@ -1113,6 +1118,22 @@ def rotate-bounds-of-an-offset-child-uses-the-corner-distance-not-the-half-exten
   if v3-eq(aabbr-size(bounding-box(rot)), v3(26 / 1, 26 / 1, 26 / 1))
   then unit
   else trap("rotate of an offset [9,11]×[-1,1]×[-1,1] cube must bound to [-13,13]^3 (size 26) via the L1 corner radius 13, not the half-extent sum 3")
+
+@test
+def rotate-bounds-take-the-max-abs-corner-including-the-negative-side() =
+  // COMPLEMENT of the +x offset pin above: `aabbr-rotate-radius` must take `rmax(|lo|, |hi|)` per axis, i.e.
+  // the farthest-from-origin corner on EITHER side. The +x test leaves `hi` as the larger-|coord| corner, so a
+  // regression that dropped the `lo` term (used only `rabs(hi)`) would still pass it. Translate the cube to
+  // NEGATIVE x so `lo` is the far corner: a 2×2×2 cube at x∈[-11,-9] → per-axis max|coord| = max(11,9)=11 (x),
+  // 1 (y), 1 (z) → R = 11+1+1 = 13 → box [-13,13]^3, size 26. A `rabs(hi)`-only bug would read |hi.x|=9 → R=11
+  // → size 22, under-bounding the shape (the corner at (-11,±1,±1), distance ~11.09, escapes ±11). Pins the
+  // lo-side term of the per-axis max.
+  let cube = Solid.Cube(v3(2 / 1, 2 / 1, 2 / 1)) in
+  let shifted = Solid.Translate(v3(rzero() - (10 / 1), rzero(), rzero()), cube) in
+  let rot = Solid.Rotate(v3(rzero(), rzero(), 30 / 1), shifted) in
+  if v3-eq(aabbr-size(bounding-box(rot)), v3(26 / 1, 26 / 1, 26 / 1))
+  then unit
+  else trap("rotate of a NEGATIVE-offset cube (x∈[-11,-9]) must bound to [-13,13]^3 (size 26) via max(|lo|,|hi|)=11, not |hi|=9")
 
 @test
 def rotate-and-mirror-of-empty-simplify-to-empty() =
