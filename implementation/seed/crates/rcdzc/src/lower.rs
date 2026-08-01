@@ -5199,6 +5199,14 @@ fn ast_subtree_size_capped(db: &mut Db, id: StructId, cap: usize) -> usize {
 }
 
 fn clone_subtree_db(db: &mut Db, id: StructId) -> StructId {
+    clone_subtree_db_within(db, id, id)
+}
+
+/// [`clone_subtree_db`] threading the CLONE ROOT (the subtree being copied) so a pinned `SumPayload`
+/// binder can tell whether its scrutinee is INSIDE the clone (a payload binder of a match being copied —
+/// must re-resolve against the copy) or OUTSIDE it (an ENCLOSING match's binder the copied subtree merely
+/// captures — must be shared, like any other capture). `root` stays fixed across the recursion.
+fn clone_subtree_db_within(db: &mut Db, id: StructId, root: StructId) -> StructId {
     match db.ast.get(id).clone() {
         crate::ast::Struct::Atom(lid) => match db.ast.leaf(lid).clone() {
             crate::ast::Leaf::Name(_) => {
@@ -5208,17 +5216,25 @@ fn clone_subtree_db(db: &mut Db, id: StructId) -> StructId {
                 // substituted binding is invisible → a spurious CDZ0101 unbound (the `run (mk k) k` case,
                 // where the scrutinee reduces to an `if` so `fuse_match_into_if` clones the arm body `(f
                 // arg)` with `arg`=`k`, `k` being `main`'s param bound by β-substitution). Mirrors
-                // `beta_reduce`'s pinned-name capture-share (eval.rs ~574): share a pinned name UNLESS it is a
-                // `SumPayload` — a payload BINDER of the ORIGINAL match must still copy + re-resolve against
-                // THIS branch's scrutinee (the whole point of the clone), so only a non-payload pinned
-                // capture (a `Ref`/`Member` to an enclosing binder) is shared.
-                if db.resolved_subtrees.contains(&id)
-                    && !matches!(
+                // `beta_reduce`'s pinned-name capture-share (eval.rs ~610): share a pinned name UNLESS it is a
+                // `SumPayload` whose SCRUTINEE IS WITHIN THIS CLONE — a payload binder of the match being
+                // copied must re-resolve against THIS branch's scrutinee (the whole point of the clone). A
+                // `SumPayload` whose scrutinee is OUTSIDE the clone reads an ENCLOSING match (e.g. an outer
+                // `(match cs ((list c .. t) … <cloned arm reads c>)`)) — that `c` is a genuine capture and
+                // must be SHARED, exactly like a non-payload pinned name; copying it fresh re-resolves it
+                // lexically against the orphaned clone → spurious CDZ0101 (the rest-pattern-binder-in-an-
+                // inlined-callee bug — β-inlining a callee that matches its arg clones the arm carrying the
+                // enclosing `c`). The `is_within(scrutinee, root)` test is the exact `beta_reduce` analogue
+                // (its `is_within(scrutinee, reduction_root)` guard).
+                if db.resolved_subtrees.contains(&id) {
+                    let copy_payload = matches!(
                         crate::resolve::resolved_of(db, id),
-                        crate::resolved::Resolved::SumPayload { .. }
-                    )
-                {
-                    return id;
+                        crate::resolved::Resolved::SumPayload { scrutinee, .. }
+                            if db.is_within(scrutinee, root)
+                    );
+                    if !copy_payload {
+                        return id;
+                    }
                 }
                 let crate::ast::Leaf::Name(n) = db.ast.leaf(lid).clone() else {
                     unreachable!()
@@ -5229,7 +5245,10 @@ fn clone_subtree_db(db: &mut Db, id: StructId) -> StructId {
             _ => id,
         },
         crate::ast::Struct::List(children) => {
-            let copied: Vec<StructId> = children.iter().map(|&c| clone_subtree_db(db, c)).collect();
+            let copied: Vec<StructId> = children
+                .iter()
+                .map(|&c| clone_subtree_db_within(db, c, root))
+                .collect();
             db.push_list(copied)
         }
     }

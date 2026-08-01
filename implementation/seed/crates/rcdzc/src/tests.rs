@@ -45550,6 +45550,58 @@ mod match_engine {
     }
 
     #[test]
+    fn a_rest_pattern_binder_read_by_an_inlined_callee_that_matches_its_arg_resolves() {
+        // CORRECTNESS (concierge/corpus-bugfix, de-sentinel sweep, operator-escalated as a real inliner
+        // miscompile-class bug): a rest-pattern HEAD binder `c` from `(list c .. t)`, referenced inside a
+        // nested-match scrutinee that is the ARGUMENT to a callee which MATCHES its parameter and gets
+        // INLINED, false-rejected CDZ0101 `unbound c`. ROOT: inlining the callee (here `omin`, which does
+        // `(match b …)` on its arg) clones the arm carrying the nested match via `clone_subtree_db`; that
+        // helper COPIED any pinned `SumPayload` binder fresh — but `c` reads the ENCLOSING `(match cs …)`
+        // scrutinee, NOT the match being cloned, so the fresh copy re-resolved lexically against the
+        // orphaned clone → unbound. FIX (clone_subtree_db_within): share a pinned `SumPayload` whose
+        // scrutinee is OUTSIDE the clone root (a genuine capture), copy only one WITHIN it (a payload binder
+        // of the match being cloned) — the exact `beta_reduce` `is_within(scrutinee, reduction_root)`
+        // analogue. Pins the RUN (was CDZ0101): the coin-DP shape returns -1 for the given inputs.
+        let src = "(module m \
+          (def (at0 (: xs (List (Option Int64))) (: i Int64)) (Option.expect (List.at xs i) \"x\")) \
+          (def (omin (: a (Option Int64)) (: b (Option Int64))) \
+            (match a ((None _u) b) ((Some av) (match b ((None _u) a) ((Some bv) (if (< av bv) a b)))))) \
+          (def (f (: cs (List Int64)) (: dp (List (Option Int64))) (: i Int64) (: best (Option Int64))) \
+            (match cs ((list) best) \
+              ((list c .. t) \
+                (f t dp i \
+                  (if (<= c i) \
+                      (omin best (match (at0 dp (- i c)) ((None _u) (None unit)) ((Some v) (Some (+ v 1))))) \
+                      best))))) \
+          (def (main) (match (f (list 5 10) (list (Some 0)) 1 (None unit)) ((None _u) -1) ((Some r) r))) \
+          (export main))";
+        let bytes = component(src);
+        wasmparser::validate(&bytes).expect(
+            "a rest-pattern binder read by an inlined match-arg callee must resolve (not CDZ0101)",
+        );
+        let Some(runtime) = super::find_runtime_wasm() else {
+            eprintln!("runtime wasm not found; skipping rest-binder-inline run");
+            return;
+        };
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: Vec::new(),
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: Vec::new(),
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => {
+                assert_eq!(
+                    s, "-1",
+                    "the coin-DP shape runs (rest binder `c` resolves through the inline)"
+                )
+            }
+            cdz_run::Outcome::Trap(t) => panic!("rest-binder-inline run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_guard_over_a_variant_pattern_gates_on_the_payload_and_falls_through() {
         // A guard over a VARIANT pattern `(guard (Some x) (> x 0))`: the payload binder `x` is in scope for
         // the guard cond (resolve sees through the `(guard …)` wrapper to `(Some x)`), the arm fires only
