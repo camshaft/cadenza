@@ -13,6 +13,7 @@
 //! concierge-ruled Option A) to run `apply` against, and wiring `apply` into the kernel's fold loop.
 //! The in-process Rust [`crate::reducer::Reducer`] trait remains the interim reducer path meanwhile.
 
+use crate::hash::Hash;
 use crate::kv::Kv;
 
 // Generate host bindings from the reducer world. `bindgen!` reads the WIT package and produces the
@@ -89,6 +90,11 @@ pub struct ComponentReducer {
     // carries the `kv` host import) into a fresh Store, then call the guest's `fold.apply`.
     component: wasmtime::component::Component,
     linker: wasmtime::component::Linker<ReducerHost>,
+    // The value-heap runtime this reducer imports, if any (§21b). Detected at construction; a runtime
+    // reducer's runtime component must be composed into the linker before `apply` can instantiate it.
+    // `None` = a runtime-free reducer (the interim Rust guest). The linker-compose of the resolved
+    // runtime bytes is the next slice; construction records the requirement so `apply` knows.
+    runtime_req: Option<RuntimeReq>,
 }
 
 /// Errors constructing or running a component reducer. Kept small; grows as the fold path lands.
@@ -103,6 +109,89 @@ pub enum ComponentError {
     /// The guest trapped during `fold.apply` (a totality-contract violation — §16c gap A: the driver
     /// treats this as a fold failure, distinct from a clean empty-effect return).
     Trap(String),
+    /// A required runtime component couldn't be resolved from the blob store (missing by hash).
+    RuntimeUnresolved(String),
+}
+
+/// The value-heap runtime a reducer component declares it needs (operator §21b component-dependency
+/// linking). Per component-abi.md (contract v3), a Cadenza program imports the runtime as the
+/// well-known interface `cadenza:runtime/heap@0.0.0+<hash>` — the fixed interface plus the runtime's
+/// content address as semver build-metadata. The kernel reads the hash back to fetch the exact runtime
+/// from CAS and compose it (mirrors cdz-run's RuntimeReq). A reducer with no such import (e.g. the
+/// interim Rust wit-bindgen guest, which has no Cadenza runtime) yields `None` — nothing to compose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeReq {
+    /// The verbatim import name the component declares — the linker MUST bind under exactly this.
+    pub import_name: String,
+    /// The runtime's content address (from the `+<hash>` build-metadata), for CAS lookup.
+    pub hash: Hash,
+}
+
+/// The well-known value-heap runtime interface prefix (component-abi.md v3); the full import name is
+/// `<this>@<semver>+<hash>`. Same interface id cdz-run pins as `RUNTIME_IFACE`.
+const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
+
+/// Inspect a component's imports for the value-heap runtime dependency (§21b). Returns the [`RuntimeReq`]
+/// if the component declares one, `None` if it imports no runtime (a runtime-free reducer). Errors only
+/// if a runtime import is present but its `+<hash>` build-metadata is missing/malformed (a corrupt
+/// import name).
+fn required_runtime(
+    component: &wasmtime::component::Component,
+    engine: &wasmtime::Engine,
+) -> Result<Option<RuntimeReq>, ComponentError> {
+    for (name, _item) in component.component_type().imports(engine) {
+        // Match the well-known interface prefix; the full name is `cadenza:runtime/heap@<ver>+<hash>`.
+        if name.starts_with(RUNTIME_IFACE) {
+            let hash_hex = name.rsplit_once('+').map(|(_, h)| h).ok_or_else(|| {
+                ComponentError::InvalidComponent(format!(
+                    "runtime import {name:?} lacks the +<hash> content-address build-metadata"
+                ))
+            })?;
+            let hash = parse_hash_hex(hash_hex).ok_or_else(|| {
+                ComponentError::InvalidComponent(format!(
+                    "runtime import {name:?} has a malformed content-address hash {hash_hex:?}"
+                ))
+            })?;
+            return Ok(Some(RuntimeReq {
+                import_name: name.to_string(),
+                hash,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// Fetch the runtime component's bytes from a blob store by its content address (§21b). `Err` if the
+/// runtime the component requires isn't present in CAS (the kernel can't run a reducer whose runtime
+/// dependency it can't resolve — surface it, don't run a half-linked component).
+fn resolve_runtime_bytes(
+    req: &RuntimeReq,
+    blobs: &dyn crate::blob::BlobStore,
+) -> Result<Vec<u8>, ComponentError> {
+    match blobs.get(&req.hash) {
+        Ok(Some(bytes)) => Ok(bytes),
+        Ok(None) => Err(ComponentError::RuntimeUnresolved(format!(
+            "required runtime {} not in the blob store",
+            req.hash
+        ))),
+        Err(e) => Err(ComponentError::RuntimeUnresolved(format!(
+            "blob store error resolving runtime {}: {e}",
+            req.hash
+        ))),
+    }
+}
+
+/// Parse 64 lowercase-hex chars into a [`Hash`] (the `+<hash>` runtime build-metadata). `None` on any
+/// non-hex / wrong-length input.
+fn parse_hash_hex(hex: &str) -> Option<Hash> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    for (i, b) in bytes.iter_mut().enumerate() {
+        *b = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(Hash::from_bytes(bytes))
 }
 
 impl ComponentReducer {
@@ -123,16 +212,41 @@ impl ComponentReducer {
             |h: &mut ReducerHost| h,
         )
         .map_err(|e| ComponentError::Link(e.to_string()))?;
+        // Detect the value-heap runtime dependency, if the component declares one (§21b). Composing the
+        // resolved runtime into the linker is the next slice; here we record the requirement so a caller
+        // can resolve its bytes from CAS (`resolve_runtime` / `resolve_runtime_bytes`) and `apply` knows
+        // whether a runtime must be composed before instantiation.
+        let runtime_req = required_runtime(&component, &engine)?;
         Ok(ComponentReducer {
             engine,
             component,
             linker,
+            runtime_req,
         })
     }
 
     /// The engine (exposed for tests / advanced host composition).
     pub fn engine(&self) -> &wasmtime::Engine {
         &self.engine
+    }
+
+    /// The value-heap runtime this reducer imports, if any (§21b). `None` = runtime-free (the interim
+    /// Rust guest). A caller composes it by fetching the bytes from CAS (see [`ComponentReducer::resolve_runtime`]).
+    pub fn runtime_req(&self) -> Option<&RuntimeReq> {
+        self.runtime_req.as_ref()
+    }
+
+    /// Resolve this reducer's required-runtime bytes from a blob store (§21b), or `Ok(None)` if it's
+    /// runtime-free. `Err(RuntimeUnresolved)` if it needs a runtime the store doesn't hold. (The
+    /// linker-compose of these bytes — binding them under `runtime_req.import_name` — is the next slice.)
+    pub fn resolve_runtime(
+        &self,
+        blobs: &dyn crate::blob::BlobStore,
+    ) -> Result<Option<Vec<u8>>, ComponentError> {
+        match &self.runtime_req {
+            Some(req) => resolve_runtime_bytes(req, blobs).map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Fold ONE event through the wasm guest (§19b): instantiate the component against a fresh
@@ -214,6 +328,15 @@ mod tests {
         };
         // Engine is live (sanity that construction produced a usable host).
         let _ = reducer.engine();
+        // Runtime-free reducer: no runtime requirement detected, and resolve_runtime → Ok(None)
+        // regardless of the blob store (§21b — nothing to compose).
+        assert!(reducer.runtime_req().is_none());
+        assert_eq!(
+            reducer
+                .resolve_runtime(&crate::blob::MemBlobStore::new())
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -223,6 +346,51 @@ mod tests {
             Err(ComponentError::InvalidComponent(_)) => {}
             Err(other) => panic!("expected InvalidComponent, got {other:?}"),
             Ok(_) => panic!("garbage bytes must not build a component"),
+        }
+    }
+
+    #[test]
+    fn parse_hash_hex_round_trips_and_rejects_bad_input() {
+        let h = Hash::of(b"the runtime");
+        assert_eq!(parse_hash_hex(&h.to_hex()), Some(h));
+        assert_eq!(parse_hash_hex("tooshort"), None);
+        assert_eq!(parse_hash_hex(&"z".repeat(64)), None); // right length, non-hex
+    }
+
+    #[test]
+    fn runtime_free_component_requires_no_runtime() {
+        // The interim Rust guest (and this empty component) import no Cadenza runtime → None (§21b:
+        // nothing to compose). Runtime-import DETECTION on a real runtime-importing component is
+        // exercised once a real Cadenza reducer fixture exists (next slices).
+        let engine = wasmtime::Engine::default();
+        let bytes = wat::parse_str("(component)").expect("empty component");
+        let component = wasmtime::component::Component::new(&engine, &bytes).unwrap();
+        assert_eq!(required_runtime(&component, &engine).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_runtime_bytes_fetches_from_cas_or_errs_when_absent() {
+        use crate::blob::{BlobStore, MemBlobStore};
+        let mut blobs = MemBlobStore::new();
+        let runtime_bytes = b"pretend value-heap runtime component";
+        let hash = blobs.put(runtime_bytes).unwrap();
+        let req = RuntimeReq {
+            import_name: format!("cadenza:runtime/heap@0.0.0+{}", hash.to_hex()),
+            hash,
+        };
+        // Present in CAS → fetched.
+        assert_eq!(
+            resolve_runtime_bytes(&req, &blobs).unwrap(),
+            runtime_bytes.to_vec()
+        );
+        // Absent → RuntimeUnresolved (don't run a reducer whose runtime dep we can't resolve).
+        let missing = RuntimeReq {
+            import_name: "cadenza:runtime/heap@0.0.0+…".into(),
+            hash: Hash::of(b"a runtime never stored"),
+        };
+        match resolve_runtime_bytes(&missing, &blobs) {
+            Err(ComponentError::RuntimeUnresolved(_)) => {}
+            other => panic!("expected RuntimeUnresolved, got {other:?}"),
         }
     }
 }
