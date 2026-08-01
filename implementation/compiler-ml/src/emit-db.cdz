@@ -52,7 +52,7 @@ def sleb-go(n: Int64, fuel: Int64) =
     let sign-bit = low / 64 in       // bit 6 of the 7-bit group (0 or 1)
     // done when: rest==0 and sign bit clear (non-neg fits), OR rest==-1 and sign bit set (neg fits).
     let done = (if rest == 0 then sign-bit == 0
-                else (if rest == (0 - 1) then sign-bit == 1 else false)) in
+                else (if rest == -1 then sign-bit == 1 else false)) in
     (if done then b1(low)
      else Bytes.concat(b1(low + 128), sleb-go(rest, fuel - 1)))
 
@@ -202,7 +202,7 @@ def can-emit(c: Core) = match c with
 /// heap value crosses the recursion.
 def index-of(xs: List(Int64), x: Int64) = index-of-go(xs, x, 0)
 def index-of-go(xs: List(Int64), x: Int64, i: Int64) = match xs with
-  | [] => 0 - 1
+  | [] => -1
   | [h, .. t] => (if h == x then i else index-of-go(t, x, i + 1))
 
 /// Collect every `CLet` binder node-id in `c`, in PRE-ORDER — this list's positions ARE the wasm local
@@ -273,7 +273,7 @@ def emit-call-args(args: List(Core), i: Int64, binders: List(Int64), defidx: Map
 /// slice-B'(Bp3): a def-name's wasm function index from the def-index map, or -1 (missing — unreached under
 /// can-emit's gate). A plain Map.lookup with an Int64 default.
 def lookup-idx(defidx: Map(Int64, Int64), name: Int64) =
-  (match Map.lookup(defidx, name) with | Option.Some(ix) => ix | Option.None(_) => 0 - 1)
+  (match Map.lookup(defidx, name) with | Option.Some(ix) => ix | Option.None(_) => -1)
 
 /// Wrap emitted instructions into a function body: the LOCALS vector then the instructions then `0b` end.
 /// `nlocals` i64 locals declare as ONE group `<uleb nlocals> 7e` (all locals are i64); `nlocals == 0` is the
@@ -471,7 +471,7 @@ def emit-src-bytes(s: String) = match emit-src(s) with
 /// W1 verifies the emitted bytes STRUCTURALLY in-Cadenza (no host wasmtime yet — that gate is W4).
 
 /// Byte `i` of `b`, or -1 if out of range (so a test can assert a fixed offset totally).
-def byte-of(b: Bytes, i: Int64) = match Bytes.at(b, i) with | Option.Some(x) => x | Option.None(_) => 0 - 1
+def byte-of(b: Bytes, i: Int64) = match Bytes.at(b, i) with | Option.Some(x) => x | Option.None(_) => -1
 
 /// Does `b` contain the byte `x` anywhere? (a test helper for opcode-presence checks). Fuel = the buffer
 /// length, walked by index.
@@ -524,8 +524,8 @@ def em-sleb-small-nonneg-is-one-byte() =
 @test
 def em-sleb-negative-one-is-hex7f() =
   // -1 slebs to a single byte 0x7f (7 one-bits; sign bit set, rest == -1 → stop).
-  (if (byte-of(sleb(0 - 1), 0) == 127) then
-    (if (Bytes.len(sleb(0 - 1)) == 1) then unit else trap("sleb -1 is one byte")) else trap("sleb -1 == 0x7f"))
+  (if (byte-of(sleb(-1), 0) == 127) then
+    (if (Bytes.len(sleb(-1)) == 1) then unit else trap("sleb -1 is one byte")) else trap("sleb -1 == 0x7f"))
 
 @test
 def em-code-section-tag-and-body-ends-with-const-and-end() =
@@ -634,13 +634,13 @@ def em-narrow-in-let-overflow-declines() =
 /// if it declined to emit. A test helper so the op-mapping check stays flat (no deep nested matches).
 def emitted-op-byte(op: Int64) = match emit-module(Core.CBin(op, true, 64, cnum64(1), cnum64(1))) with
   | Option.Some(m) => byte-of(m, Bytes.len(m) - 2)
-  | Option.None(_) => 0 - 1
+  | Option.None(_) => -1
 
 /// The RELATIONAL opcode of an emitted `CBin cmp 1 1` module — for a comparison the tail is `<cmp> ad 0b`,
 /// so the opcode is 3 bytes before the end (the 0xad extend + 0x0b end follow it). -1 if it declined.
 def cmp-byte(op: Int64) = match emit-module(Core.CBin(op, true, 64, cnum64(1), cnum64(1))) with
   | Option.Some(m) => byte-of(m, Bytes.len(m) - 3)
-  | Option.None(_) => 0 - 1
+  | Option.None(_) => -1
 
 @test
 def em-cbin-op-mapping() =

@@ -20,23 +20,42 @@
 ;   - `licenses` — the compiler's trusted match predicate: a discharged `Thm` licenses an elision iff its
 ;     conclusion IS the obligation AND its hypotheses are covered by the node's stated precondition.
 ;
-; Head-symbol encoding (a `Const`-headed `Comb` application): add=0, le=1, ge=2, sub=3, mul=4, gt=5,
-; neq=6, lt=7, conj=8, covers=9, unreach=10.
+; Head-symbol encoding: each arithmetic/logical head is a NULLARY VARIANT of the closed `HeadOp` sum
+; (Add/Le/Ge/Sub/Mul/Gt/Neq/Lt/Conj/Covers/Unreach), applied via a `Term.Head`-wrapped `Comb`. This is
+; the idiomatic strongly-typed encoding of a CLOSED operator set — NOT a magic-integer `Const` tag with
+; an out-of-band comment legend (the C-with-magic-ints anti-pattern the operator's 2026-08-01 fleet-wide
+; directive kills). `op-eq` matches the sum exhaustively, so a new head is a compile-checked addition.
 
 (do
-  (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+  (type HeadOp (Add) (Le) (Ge) (Sub) (Mul) (Gt) (Neq) (Lt) (Conj) (Covers) (Unreach))
+  (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
   (type Thm (Seq (List Term) Term))
+
+  ; equality on the closed operator set — an exhaustive sum match, not an Int64 compare
+  (def (op-eq (: a HeadOp) (: b HeadOp))
+    (match a
+      ((HeadOp.Add)     (match b ((HeadOp.Add) true) (_ false)))
+      ((HeadOp.Le)      (match b ((HeadOp.Le) true) (_ false)))
+      ((HeadOp.Ge)      (match b ((HeadOp.Ge) true) (_ false)))
+      ((HeadOp.Sub)     (match b ((HeadOp.Sub) true) (_ false)))
+      ((HeadOp.Mul)     (match b ((HeadOp.Mul) true) (_ false)))
+      ((HeadOp.Gt)      (match b ((HeadOp.Gt) true) (_ false)))
+      ((HeadOp.Neq)     (match b ((HeadOp.Neq) true) (_ false)))
+      ((HeadOp.Lt)      (match b ((HeadOp.Lt) true) (_ false)))
+      ((HeadOp.Conj)    (match b ((HeadOp.Conj) true) (_ false)))
+      ((HeadOp.Covers)  (match b ((HeadOp.Covers) true) (_ false)))
+      ((HeadOp.Unreach) (match b ((HeadOp.Unreach) true) (_ false)))))
 
   (def (term-eq (: a Term) (: b Term))
     (match a
       ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
       ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
-      ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+      ((Term.Head o)   (match b ((Term.Head p) (op-eq o p)) (_ false)))
       ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
 
-  ; arithmetic head-symbols as Const-headed applications
-  (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
-  (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+  ; arithmetic head-symbols as HeadOp-headed applications
+  (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Add) a) b))
+  (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Le) a) b))
   (def (maxint) (Term.Num 9223372036854775807))
 
   (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
@@ -49,7 +68,7 @@
   (def (eval-ground (: t Term))
     (match t
       ((Term.Num n) (Option.Some n))
-      ((Term.Comb (Term.Comb (Term.Const 0) a) b)
+      ((Term.Comb (Term.Comb (Term.Head HeadOp.Add) a) b)
         (match (eval-ground a)
           ((Option.Some av) (match (eval-ground b)
                               ((Option.Some bv) (Option.Some (+ av bv)))
@@ -70,16 +89,16 @@
   ; RULE: monotonicity of + on the right — from G |- (le x c) derive G |- (le (add x k) (add c k))
   (def (mono-add-r (: th Thm) (: k Term))
     (match (concl th)
-      ((Term.Comb (Term.Comb (Term.Const 1) x) c)
+      ((Term.Comb (Term.Comb (Term.Head HeadOp.Le) x) c)
         (Option.Some (Thm.Seq (hyps th) (le (add x k) (add c k)))))
       (_ (Option.None))))
 
   ; RULE: transitivity of <= — from G |- (le a b) and D |- (le b c) derive G++D |- (le a c)
   (def (trans-le (: t1 Thm) (: t2 Thm))
     (match (concl t1)
-      ((Term.Comb (Term.Comb (Term.Const 1) a) b)
+      ((Term.Comb (Term.Comb (Term.Head HeadOp.Le) a) b)
         (match (concl t2)
-          ((Term.Comb (Term.Comb (Term.Const 1) b2) c)
+          ((Term.Comb (Term.Comb (Term.Head HeadOp.Le) b2) c)
             (if (term-eq b b2)
               (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (le a c)))
               (Option.None)))
@@ -100,5 +119,6 @@
     (and (term-eq (concl thm) obligation) (hyps-subset (hyps thm) pre)))
 
   (export (. Term *))
+  (export (. HeadOp *))
   (export Thm)
-  (export term-eq add le maxint concl hyps assume eval-ground le-ax mono-add-r trans-le licenses))
+  (export op-eq term-eq add le maxint concl hyps assume eval-ground le-ax mono-add-r trans-le licenses))

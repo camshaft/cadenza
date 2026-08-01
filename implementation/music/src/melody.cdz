@@ -40,6 +40,13 @@ def range(notes: List(Int64)) = match notes with
   | [h, .. t] => max-note-go(h, t) - min-note-go(h, t)
 
 // ---- contour: step vs leap, and direction ------------------------------------------------------------
+/// The net melodic direction as a proper 3-way STATE (not a signed-int sign code): the line rises, falls, or
+/// stays level from its first note to its last.
+type Direction =
+  | Rising
+  | Falling
+  | Level
+
 /// Count how many step intervals are LEAPS (absolute size strictly greater than `max-step`, conventionally
 /// 2 semitones = a whole tone: anything bigger than a second is a leap). Recursive over the step list.
 def leap-count-go(steps-list: List(Int64), max-step: Int64, acc: Int64) = match steps-list with
@@ -53,12 +60,13 @@ def leap-count(notes: List(Int64)) = leap-count-go(steps(notes), 2, 0)
 /// every motion is a step of a second or smaller.
 def is-conjunct(notes: List(Int64)) = leap-count(notes) == 0
 
-/// The NET direction of a melody: the sign of (last note - first note): +1 rising, -1 falling, 0 level.
-/// Empty / single-note melodies are level (0).
+/// The NET direction of a melody (a typed `Direction`, not a sign code): comparing the last note to the
+/// first — `Rising` if it ends higher, `Falling` if lower, `Level` if equal. Empty / single-note melodies
+/// are `Level`.
 def net-direction(notes: List(Int64)) = match notes with
-  | [] => 0
+  | [] => Direction.Level
   | [h, .. t] => let last = last-note(h, t) in
-  if last > h then 1 else if last < h then 0 - 1 else 0
+  if last > h then Direction.Rising else if last < h then Direction.Falling else Direction.Level
 
 /// The last note of a non-empty melody (head + tail form). Recursive, annotated.
 def last-note(h: Int64, t: List(Int64)) = match t with
@@ -109,14 +117,16 @@ def a-scale-is-conjunct-and-an-arpeggio-is-not() =
 
 @test
 def net-direction-is-the-sign-of-first-to-last() =
-  // rising [60,59,64] nets +1 (60→64); falling [67,68,60] nets -1; level [60,64,60] nets 0.
-  if net-direction([60, 59, 64]) == 1 then
-    if net-direction([67, 68, 60]) == 0 - 1 then
-      if net-direction([60, 64, 60]) == 0 then unit else trap("level")
-    else
-      trap("falling")
-  else
-    trap("rising")
+  // rising [60,59,64] (60→64); falling [67,68,60] (67→60); level [60,64,60] (60→60).
+  match net-direction([60, 59, 64]) with
+    | Direction.Rising => (match net-direction([67, 68, 60]) with
+      | Direction.Falling => (match net-direction([60, 64, 60]) with
+        | Direction.Level => unit
+        | _ => trap("level")
+      )
+      | _ => trap("falling")
+    )
+    | _ => trap("rising")
 
 @test
 def a-chromatic-run-is-conjunct() =
@@ -127,4 +137,4 @@ def a-chromatic-run-is-conjunct() =
   else
     trap("a chromatic run is stepwise")
 
-export { iabs, steps, range, leap-count, is-conjunct, net-direction }
+export { Direction.*, iabs, steps, range, leap-count, is-conjunct, net-direction }

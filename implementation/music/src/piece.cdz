@@ -83,10 +83,10 @@ def the-progression-schedules-with-no-stuck-keys() =
 @test
 def the-bass-carries-the-progression-roots() =
   // The bass line (channel 1) plays C, G, A, F roots (60, 67, 69, 65) in order — the harmonic skeleton.
-  if bass-note-at(progression, 0) == 60 then
-    if bass-note-at(progression, bar) == 67 then
-      if bass-note-at(progression, bar * 2) == 69 then
-        if bass-note-at(progression, bar * 3) == 65 then unit else trap("F")
+  if bass-note-at-or-trap(progression, 0) == 60 then
+    if bass-note-at-or-trap(progression, bar) == 67 then
+      if bass-note-at-or-trap(progression, bar * 2) == 69 then
+        if bass-note-at-or-trap(progression, bar * 3) == 65 then unit else trap("F")
       else
         trap("A")
     else
@@ -99,12 +99,19 @@ def the-bass-carries-the-progression-roots() =
 /// destructure (a nested match on the imported boxed `Pitch` traps at runtime; issue-9927 family).
 def note-num(n: Note) = note(note-pitch(n))
 
-/// The note number of the CHANNEL-1 (bass) note starting at tick `t` (recursive search, annotated).
+/// The note number of the CHANNEL-1 (bass) note starting at tick `t` as `Some(num)`, or `None` if no bass
+/// note starts there (recursive search, annotated). Typed absence — no sentinel note number flows in-band.
 def bass-note-at(notes: List(Note), t: Int64) = match notes with
-  | [] => 0 - 1
+  | [] => Option.None(unit)
   | [h, .. rest] => if note-chan(h) == 1 then
-    if note-start(h) == t then note-num(h) else bass-note-at(rest, t)
+    if note-start(h) == t then Option.Some(note-num(h)) else bass-note-at(rest, t)
   else
     bass-note-at(rest, t)
+
+/// Test helper: the bass note number at tick `t`, trapping if none is found (the tests below assert a bass
+/// note IS present at each bar downbeat, so absence is a real failure, not an in-band value).
+def bass-note-at-or-trap(notes: List(Note), t: Int64) = match bass-note-at(notes, t) with
+  | Option.Some(num) => num
+  | Option.None(_) => trap("no bass note starts at the queried tick")
 
 export { progression, accompaniment-bar, bass-bar, chord-c, chord-g, chord-am, chord-f }

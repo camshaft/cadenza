@@ -169,14 +169,14 @@ def v2add(a: Vec2(Rational), b: Vec2(Rational)) =
 /// bounds the curve, over-approximating safely) gives a sound enclosing box. (Bug fix: the prior version
 /// abs'd a Rel delta directly, UNDER-approximating a relative path — two `LineToRel(10,0)` reach x=20, not 10.)
 def path-half-extent(p: Path(Rational)) =
-  match p with | Path.Segs(xs) => path-extent-go(xs, (0 : Int64), Vec2.V2(rzero(), rzero()), Vec2.V2(rzero(), rzero()))
+  match p with | Path.Segs(xs) => path-extent-go(xs, Vec2.V2(rzero(), rzero()), Vec2.V2(rzero(), rzero()))
 /// Fold: `cur` = the running cursor (absolute), `acc` = the max-abs extent so far. Each segment advances the
-/// cursor (`path-seg-cursor`) and folds its resolved reach (`path-seg-reach`) into the extent.
-def path-extent-go(xs: List(PathSeg(Rational)), i: Int64, cur: Vec2(Rational), acc: Vec2(Rational)) =
-  if i == List.len(xs) then acc
-  else (match List.at(xs, i) with
-    | Option.Some(s) => path-extent-go(xs, i + (1 : Int64), path-seg-cursor(s, cur), v2max(acc, path-seg-reach(s, cur)))
-    | Option.None => acc)
+/// cursor (`path-seg-cursor`) and folds its resolved reach (`path-seg-reach`) into the extent. Structural
+/// recursion over the segment list (head/tail), not an index loop — the empty list is the base case.
+def path-extent-go(xs: List(PathSeg(Rational)), cur: Vec2(Rational), acc: Vec2(Rational)) =
+  match xs with
+    | [] => acc
+    | [s, .. t] => path-extent-go(t, path-seg-cursor(s, cur), v2max(acc, path-seg-reach(s, cur)))
 
 /// The cursor AFTER a segment (absolute): an Abs segment sets it to the point; a Rel segment adds the delta.
 /// (A cubic's cursor advances to its END point, Abs or cursor+delta.)
@@ -1021,12 +1021,13 @@ def lower-pathseg(s: PathSeg(Rational)) = match s with
   | PathSeg.CubicToRel(e, c0, c1) => PathSegR.CubicToRel(lower-vec2(e), lower-vec2(c0), lower-vec2(c1))
 /// Lower a path — recursively lower each segment into a fresh list (`List` has no map).
 def lower-path(p: Path(Rational)) =
-  match p with | Path.Segs(xs) => PathR.Segs(lower-path-go(xs, (0 : Int64), []))
-def lower-path-go(xs: List(PathSeg(Rational)), i: Int64, acc: List(PathSegR)) =
-  if i == List.len(xs) then acc
-  else (match List.at(xs, i) with
-    | Option.Some(s) => lower-path-go(xs, i + (1 : Int64), List.push(acc, lower-pathseg(s)))
-    | Option.None => acc)
+  match p with | Path.Segs(xs) => PathR.Segs(lower-path-go(xs, []))
+/// Lower each segment — structural recursion over the input (head/tail), accumulating the lowered segments in
+/// order into `acc` (the fleet-standard `[h, .. t]`-destructure + `List.push` fold; no index counter).
+def lower-path-go(xs: List(PathSeg(Rational)), acc: List(PathSegR)) =
+  match xs with
+    | [] => acc
+    | [s, .. t] => lower-path-go(t, List.push(acc, lower-pathseg(s)))
 def lower-profile(p: Profile(Rational)) = match p with
   | Profile.Rect(r) => ProfileR.Rect(lower-vec2(r))
   | Profile.Circle(r) => ProfileR.Circle(r)

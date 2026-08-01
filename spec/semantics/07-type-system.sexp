@@ -1944,3 +1944,11 @@
   (doc    "The helper variant of the multi-export face: (export helper) resolves, the LATER (export no-such-def) must still be checked — the self-hosted reader stopped reading after any valid export (gap-A residual). rcdzc rejects CDZ0101.")
   (input  (do (def (helper) 1) (def (main) 42) (export helper) (export no-such-def)))
   (error  CDZ0101))
+
+(case "an unbound PAYLOAD type in a never-constructed type declaration is still rejected"
+  (doc    "The decl-validation walk on an UNUSED type — the direct sibling of the two width-validation gaps in KNOWN_ML_DIFFS (exactly this class): a validator that only checks constructed types runs to 42. rcdzc rejects CDZ0101. The self-hosted front-end had exactly this gap (ran 42) until the Option-C narrow slice (38e7cdca8: uppercase non-builtin undeclared non-nested payload declines; type-vars/declared/forward-refs still accept); pinned so the registry doesn't regress.")
+  (input  (do
+            (type Unused (Mk NoSuchPayload))
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0101))

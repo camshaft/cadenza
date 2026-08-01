@@ -516,10 +516,20 @@ fn read_string(r: &mut Reader) -> Result<String, DecodeError> {
     String::from_utf8(bytes.to_vec()).map_err(|_| DecodeError::BadText)
 }
 
-/// Read a single-scalar field (a `Char` / `BadEscape` body) — a UTF-8 string that must hold exactly at
-/// least one scalar. Empty-but-valid-UTF-8 is [`DecodeError::BadText`] (the encoder always writes one).
+/// Read a single-scalar field (a `Char` / `BadEscape` body) — a UTF-8 string that must hold EXACTLY
+/// one scalar. The encoder writes exactly one (`c.encode_utf8`), so anything else is corruption:
+/// [`DecodeError::BadText`] for zero scalars (empty) OR more than one. Rejecting a multi-scalar body
+/// (rather than taking the first and dropping the tail) keeps decode INJECTIVE — otherwise `"a"` and
+/// `"ab"` would both decode to `Char('a')`, and two byte strings decoding to the same value breaks the
+/// codec's one-canonical-byte-form bijection (the same discipline as refusing overlong varints /
+/// non-tree structures: reject anything a valid encoder never emits).
 fn read_scalar(r: &mut Reader) -> Result<char, DecodeError> {
-    read_string(r)?.chars().next().ok_or(DecodeError::BadText)
+    let s = read_string(r)?;
+    let mut chars = s.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Ok(c),       // exactly one scalar
+        _ => Err(DecodeError::BadText), // zero, or more than one
+    }
 }
 
 fn read_bool(r: &mut Reader) -> Result<bool, DecodeError> {
@@ -796,6 +806,30 @@ mod tests {
             b.push(KIND_STR);
             leb128::write_u64(&mut b, 1); // body len = 1
             b.push(0xff); // 0xff is never valid UTF-8
+            assert_eq!(decode_detailed(&b), Err(DecodeError::BadText));
+        }
+
+        // BAD_TEXT: a single-scalar field (Char) whose body is VALID UTF-8 but holds MORE THAN one
+        // scalar ("ab"). The encoder writes exactly one scalar, so a multi-scalar body is corruption —
+        // and accepting it (taking the first, dropping "b") would make "a" and "ab" both decode to
+        // Char('a'), breaking the one-canonical-byte-form bijection. Also the empty (zero-scalar) case.
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 1); // leaf_count = 1
+            b.push(KIND_CHAR);
+            leb128::write_u64(&mut b, 2); // body len = 2
+            b.extend_from_slice(b"ab"); // two scalars — must reject, not truncate to 'a'
+            assert_eq!(
+                decode_detailed(&b),
+                Err(DecodeError::BadText),
+                "a multi-scalar char body is corruption, not a silently-truncated 'a'"
+            );
+        }
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 1); // leaf_count = 1
+            b.push(KIND_CHAR);
+            leb128::write_u64(&mut b, 0); // body len = 0 — zero scalars
             assert_eq!(decode_detailed(&b), Err(DecodeError::BadText));
         }
     }

@@ -7586,30 +7586,41 @@
            (the self-referential build every DP pass shares; a dp that reads past the filled prefix
            or off-by-ones the seed row breaks every later entry). The (25 10 1)@30 face is WHY the
            table exists: GREEDY takes 25+1·5 = 6 coins, the DP finds 10+10+10 = 3 — a greedy
-           implementation masquerading as DP fails exactly here. Unreachable targets keep the
-           sentinel through every relax and report -1 ((5 10)@3); the zero target is the SEED ROW
-           alone (0 — the build loop never runs). Faces: 3 / 6 (the canonical 63¢) / -1 / 0.")
+           implementation masquerading as DP fails exactly here. Unreachability is TYPED, not a
+           magic-large sentinel: each dp entry is an `(Option Int64)` — `(None unit)` for an
+           unreachable amount, `(Some k)` for k coins — and the relax option-mins over it, so an
+           unreachable target stays `(None unit)` through every pass ((5 10)@3), projected to the
+           observable -1 only at the boundary (the harness output is a scalar). The zero target is
+           the SEED ROW alone ((Some 0) — the build loop never runs). Faces: 3 / 6 (the canonical
+           63¢) / -1 / 0.")
   (input  (do
-            (def (at0 (: xs (List Int64)) (: i Int64))
+            (def (at0 (: xs (List (Option Int64))) (: i Int64))
               (Option.expect (List.at xs i) "in-bounds"))
-            (def (min2 (: a Int64) (: b Int64)) (if (< a b) a b))
-            (def (try-coins (: cs (List Int64)) (: dp (List Int64)) (: i Int64) (: best Int64))
+            (def (omin (: a (Option Int64)) (: b (Option Int64)))
+              (match a
+                ((None _u) b)
+                ((Some av) (match b ((None _u) a) ((Some bv) (if (< av bv) a b))))))
+            (def (try-coins (: cs (List Int64)) (: dp (List (Option Int64))) (: i Int64) (: best (Option Int64)))
               (match cs
                 ((list) best)
                 ((list c .. t)
                   (try-coins t dp i
                     (if (<= c i)
-                        (min2 best (+ (at0 dp (- i c)) 1))
+                        (let ((prev (at0 dp (- i c))))
+                          (omin best (match prev
+                                       ((None _u)  (None unit))
+                                       ((Some v)   (Some (+ v 1))))))
                         best)))))
-            (def (build (: cs (List Int64)) (: i Int64) (: t Int64) (: dp (List Int64)))
+            (def (build (: cs (List Int64)) (: i Int64) (: t Int64) (: dp (List (Option Int64))))
               (if (> i t)
                   dp
-                  (build cs (+ i 1) t (List.push dp (try-coins cs dp i 1000000)))))
+                  (build cs (+ i 1) t (List.push dp (try-coins cs dp i (None unit))))))
             (def (coins (: cs (List Int64)) (: t Int64))
               (do
-                (def dp (build cs 1 t (list 0)))
-                (def r (at0 dp t))
-                (if (> r 999999) -1 r)))
+                (def dp (build cs 1 t (list (Some 0))))
+                (match (at0 dp t)
+                  ((None _u) -1)
+                  ((Some r)  r))))
             (def (main (: mode Int64))
               (if (= mode 1) (coins (list 25 10 1) 30)
               (if (= mode 2) (coins (list 1 5 10 25) 63)
@@ -17345,3 +17356,20 @@
             (def (main (: a Int64)) (if (= (drained a) Map.empty) 1 0))
             (export main)))
   (call   main (: 10 Int64)) (output (: 1 Int64)))
+
+(case "remove-then-REINSERT of a key with a new value equals the directly-built map"
+  (doc    "Edit-history face of remove-path canonicalization: {1↦a, 2↦20}, remove key 1, reinsert 1↦99 —
+           must equal the map built directly with 1↦99 (tens digit 1, ∀a) and must equal the ORIGINAL only
+           when a=99 (ones digit: a=10→0, a=99→1). A reinsert that resurrected the removed slot's old
+           structure (or a remove that left a tombstone the reinsert filled differently than fresh insert)
+           breaks the first leg.")
+  (input  (do
+            (def (m (: a Int64)) (Map.insert (Map.insert Map.empty 1 a) 2 20))
+            (def (m2 (: a Int64)) (Map.insert (Map.remove (m a) 1) 1 99))
+            (def (direct) (Map.insert (Map.insert Map.empty 1 99) 2 20))
+            (def (main (: a Int64))
+              (+ (* 10 (if (= (m2 a) (direct)) 1 0))
+                 (if (= (m2 a) (m a)) 1 0)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 10 Int64))
+  (call   main (: 99 Int64)) (output (: 11 Int64)))

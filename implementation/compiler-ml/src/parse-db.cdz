@@ -208,7 +208,7 @@ def subtree-calls-name(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
 
 /// Helper: an NApp arg is -1 (nullary, no arg) or a node-id to scan.
 def subtree-calls-name-arg(tree: Tree, argId: Int64, target: Int64, fuel: Int64) =
-  (if (argId == (0 - 1)) then (false, fuel) else subtree-calls-name(tree, argId, target, fuel))
+  (if (argId == -1) then (false, fuel) else subtree-calls-name(tree, argId, target, fuel))
 
 /// Helper: scan an OPTIONAL higher-arg slot (arg2/arg3/arg4-of → `Option(Int64)`) for a transitive call to
 /// `target`. Absent slot → pass fuel through (false). The arg3/arg4 slots were originally missed (PR#785).
@@ -284,7 +284,7 @@ def subtree-calls-self(tree: Tree, id: Int64, target: Int64, fuel: Int64) =
 
 /// Helper: an NApp arg is -1 (nullary) or a node-id to scan for a DIRECT self-call.
 def subtree-calls-self-arg(tree: Tree, argId: Int64, target: Int64, fuel: Int64) =
-  (if (argId == (0 - 1)) then (false, fuel) else subtree-calls-self(tree, argId, target, fuel))
+  (if (argId == -1) then (false, fuel) else subtree-calls-self(tree, argId, target, fuel))
 
 /// Helper: scan an OPTIONAL higher-arg slot (arg2/arg3/arg4-of, which return `Option(Int64)`) for a DIRECT
 /// self-call. Absent slot → pass the fuel through unchanged (false). Mirrors infer/lower's optional-arg walk.
@@ -531,7 +531,7 @@ def tok-at(ts: List(Tok), i: Int64) = match List.at(ts, i) with
   | Option.None(_) => Tok.TEnd
 
 /// The op code of a token if it is `TOp op` (else -1).
-def op-code(t: Tok) = match t with | Tok.TOp(op) => op | _ => 0 - 1
+def op-code(t: Tok) = match t with | Tok.TOp(op) => op | _ => -1
 
 /// parse-factor: an Int literal, a boolean literal, a variable reference, or a parenthesized expression. A
 /// paren nests the FULL grammar (`parse-any`, so `(let x = 1 in x)` parses). Returns `(nodeId, nextIndex, tree')`.
@@ -954,8 +954,8 @@ def pd-nullary-app-node() =
   // a NULLARY call `(mk)` → NApp(bodyId, -1): callee = the def-body node it names, arg = -1 (no argument).
   // Build a body `42` (NLit), then the NApp referencing it. is-app pins the (callee, arg) shape.
   (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
-    (match add-node(t1, Node.NApp(bodyId, 0 - 1)) with | (appId, t2) =>
-      (if is-app(t2, appId, bodyId, 0 - 1) then unit else trap("NApp(bodyId, -1) is a nullary application node"))))
+    (match add-node(t1, Node.NApp(bodyId, -1)) with | (appId, t2) =>
+      (if is-app(t2, appId, bodyId, -1) then unit else trap("NApp(bodyId, -1) is a nullary application node"))))
 
 @test
 def pd-app-with-arg-node() =
@@ -1115,7 +1115,7 @@ def pd-self-call-in-arg3-detected-pr785() =
   // (so the def is included in the def-env and self-recursion RUNS, not declines). Build `f` (name 900) whose body
   // is `(g a1 a2 (f))` — a call to g (name 901) with the self-call NApp(900,-1) in arg3. subtree-calls-self
   // originally capped at arg2 → this was MISSED. call-is-self-recursive(tree, 900) MUST be true. Pins the arg3 scan.
-  (match add-node(empty-tree(), Node.NApp(900, 0 - 1)) with | (selfCall, t1) =>     // the self-call `(f)` in arg3
+  (match add-node(empty-tree(), Node.NApp(900, -1)) with | (selfCall, t1) =>     // the self-call `(f)` in arg3
     (match add-node(t1, Node.NLit(1)) with | (a1, t2) =>                            // arg1 (a plain literal)
       (match add-node(t2, Node.NLit(2)) with | (a2, t3) =>                          // arg2 (a plain literal)
         (match add-node(t3, Node.NApp(901, a1)) with | (body, t4) =>                // body = `(g a1 …)`, argId=a1
@@ -1131,7 +1131,7 @@ def pd-transitive-call-in-arg4-detected-pr785() =
   // back to the target nested in a 4th ARG must be detected. Build `f` (900) whose body is `(g a1 a2 a3 (f))` — a
   // 4-arg call to g with the recursive call NApp(900,-1) in arg4. call-is-recursive(tree, 900) MUST be true (else
   // the cycle-guard would try to INLINE the cycle → inline-hang risk). Pins the arg4 scan of the transitive walker.
-  (match add-node(empty-tree(), Node.NApp(900, 0 - 1)) with | (recCall, t1) =>      // the recursive call `(f)` in arg4
+  (match add-node(empty-tree(), Node.NApp(900, -1)) with | (recCall, t1) =>      // the recursive call `(f)` in arg4
     (match add-node(t1, Node.NLit(1)) with | (a1, t2) =>
       (match add-node(t2, Node.NLit(2)) with | (a2, t3) =>
         (match add-node(t3, Node.NLit(3)) with | (a3, t4) =>
