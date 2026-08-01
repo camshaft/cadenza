@@ -45632,6 +45632,59 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nested_match_binder_inside_a_fused_arm_re_resolves_both_backends() {
+        // PR#1030 (doc-vs-code reconcile): pins that the narrow `fused_scrut == Some(scrutinee)` copy-test in
+        // clone_subtree_db_for_fused correctly handle a NESTED match binder INSIDE the cloned arm (whose
+        // scrutinee sits within the clone but is NOT the outer fused scrutinee)? Outer fusion fires on
+        // `(match (if c (Some n) (None)) …)`; the Some-arm carries its OWN inner match `(match (g v) …)`
+        // whose binder `w` reads `(g v)` — within the cloned arm, ≠ the outer fused scrutinee.
+        use crate::testkit::parse;
+        let src = "(module m \
+          (def (g (: v Int64)) (if (< v 5) (Ok v) (Err (- 0 1)))) \
+          (def (f (: c Bool) (: n Int64)) \
+            (match (if c (Some n) (None)) \
+              ((Some v) (match (g v) ((Ok w) (+ w 100)) ((Err e) e))) \
+              ((None) 0))) \
+          (def (main) (f true 3)) \
+          (export main))";
+        let mut dbw = crate::db::Db::load(parse(src));
+        let layw = crate::layout::compute(&mut dbw).expect("layout");
+        crate::backend::emit(crate::backend::Target::Wasm, &mut dbw, &layw, None, None)
+            .expect("PR1030 probe: nested-fused-match-in-arm must emit wasm");
+        let mut dbr = crate::db::Db::load(parse(src));
+        let layr = crate::layout::compute(&mut dbr).expect("layout");
+        crate::backend::emit(crate::backend::Target::Rust, &mut dbr, &layr, None, None)
+            .expect("PR1030 probe: nested-fused-match-in-arm must emit rust");
+    }
+
+    #[test]
+    fn an_inlined_nested_match_in_a_fused_arm_re_resolves_both_backends() {
+        // PR#1030 (doc-vs-code reconcile, the (b) shape): an INLINED helper whose body is a match, called
+        // inside the cloned arm of an outer fused match. Inlining PINS the inner match's binders via
+        // β-substitution (`resolved_subtrees`), so this is the ONLY path where the copy_payload check
+        // (`fused_scrut == Some(scrutinee)`) actually runs on a nested binder whose scrutinee is within
+        // the clone but ≠ the outer fused scrutinee. If the narrow check under-copies, rust declines
+        // "sum payload has no bound match arm" (the a5f7cfafb divergence signature).
+        use crate::testkit::parse;
+        let src = "(module m \
+          (def (inner (: r (Result Int64 Int64))) (match r ((Ok w) (+ w 100)) ((Err e) e))) \
+          (def (f (: c Bool) (: n Int64)) \
+            (match (if c (Some n) (None)) \
+              ((Some v) (inner (if (< v 5) (Ok v) (Err (- 0 1))))) \
+              ((None) 0))) \
+          (def (main) (f true 3)) \
+          (export main))";
+        let mut dbw = crate::db::Db::load(parse(src));
+        let layw = crate::layout::compute(&mut dbw).expect("layout");
+        crate::backend::emit(crate::backend::Target::Wasm, &mut dbw, &layw, None, None)
+            .expect("PR1030 probe2: inlined-nested-match-in-fused-arm must emit wasm");
+        let mut dbr = crate::db::Db::load(parse(src));
+        let layr = crate::layout::compute(&mut dbr).expect("layout");
+        crate::backend::emit(crate::backend::Target::Rust, &mut dbr, &layr, None, None)
+            .expect("PR1030 probe2: inlined-nested-match-in-fused-arm must emit rust");
+    }
+
+    #[test]
     fn a_guard_over_a_variant_pattern_gates_on_the_payload_and_falls_through() {
         // A guard over a VARIANT pattern `(guard (Some x) (> x 0))`: the payload binder `x` is in scope for
         // the guard cond (resolve sees through the `(guard …)` wrapper to `(Some x)`), the arm fires only

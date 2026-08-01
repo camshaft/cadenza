@@ -376,8 +376,10 @@ impl Session {
                     // Thread the reducer's continuation token (§19e) into the durable frame: `None` for a
                     // Rust reducer (correlates by EffectId), the guest's `correlation` for a wasm
                     // `ComponentReducer`. Recording it here is what lets recovery rebuild the
-                    // EffectId↔token map from the log (slice-1 guard).
-                    token: token.clone(),
+                    // EffectId↔token map from the log (slice-1 guard). MOVED, not cloned: `token` is owned
+                    // (destructured off the worklist `Effect`) and unused after this — only `req` is
+                    // (`executor.perform(&req)`), which is why `req.kind/target` clone but the token needn't.
+                    token,
                 },
                 Some(cause),
             );
