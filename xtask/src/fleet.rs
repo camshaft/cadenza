@@ -2908,7 +2908,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             // A CONCIERGE at the wall can't be helped by a note (it lands in the inbox it can't drain) —
             // only the operator can restart it. Emit a loud, distinct stderr line for it. (The escalation
             // below is skipped for the concierge by the guard in `should_notify_saturation`.)
-            if a.name == "concierge" && pct >= CTX_WEDGE_THRESHOLD {
+            if concierge_wedge_needs_operator(&a.name, ctx_pct) {
                 eprintln!(
                     "  ‼ CONCIERGE itself is at {pct}% — the human interface is WEDGED and cannot be \
                      auto-notified (a note lands in an inbox it can't drain). OPERATOR must restart the \
@@ -3543,6 +3543,18 @@ fn should_notify_saturation(agent: &str, ctx_pct: Option<u8>, notified_recently:
     agent != "concierge"
         && matches!(ctx_pct, Some(p) if p >= prewall_threshold_for(agent))
         && !notified_recently
+}
+
+/// The one saturation case `should_notify_saturation` deliberately can't handle: the CONCIERGE itself at
+/// the 100% wall. A `note` to a wedged concierge lands in the inbox it can't drain, so the auto-escalate
+/// path skips it (guard above) — instead the caller emits a loud, operator-facing stderr line, since only
+/// the operator can restart the human-interface window. This predicate pins WHEN that stderr line fires:
+/// the agent is the concierge AND it is at/above the unrecoverable wall (`CTX_WEDGE_THRESHOLD`, 100). A
+/// concierge merely pre-wall (say 97%) can still self-`/compact`, so it does NOT need the operator line —
+/// only the wall is unrecoverable. Pure so this concierge-only branch is unit-tested like its siblings,
+/// rather than living untested inside the tmux-bound `watchdog` body.
+fn concierge_wedge_needs_operator(agent: &str, ctx_pct: Option<u8>) -> bool {
+    agent == "concierge" && matches!(ctx_pct, Some(p) if p >= CTX_WEDGE_THRESHOLD)
 }
 
 /// The last auto drain-nudge we sent this agent, as `(flagged-message-id, age-in-secs)`, or `None`
@@ -9341,6 +9353,23 @@ mod tests {
         // The concierge is NEVER auto-notified about its OWN wedge (a note it can't read) — the caller
         // handles a concierge wedge with a loud operator-facing stderr line instead.
         assert!(!should_notify_saturation("concierge", Some(100), false));
+    }
+
+    #[test]
+    fn concierge_wedge_needs_operator_only_for_the_concierge_at_the_wall() {
+        // The concierge at/above the 100% wall is the one case a self-note can't help (it lands in the
+        // inbox it can't drain) — only the operator can restart it, so the caller emits the loud stderr
+        // line. This pins that branch, the twin of `should_notify_saturation`'s concierge exclusion.
+        assert!(concierge_wedge_needs_operator("concierge", Some(100)));
+        // A concierge merely PRE-WALL can still self-`/compact` — no operator line yet (the live 97% case
+        // the watchdog just saw: warn, but do NOT declare it unrecoverable).
+        assert!(!concierge_wedge_needs_operator("concierge", Some(97)));
+        assert!(!concierge_wedge_needs_operator("concierge", Some(99)));
+        // Never fires for a non-concierge — those go through the note-escalation path, even at the wall.
+        assert!(!concierge_wedge_needs_operator("pr-sync", Some(100)));
+        assert!(!concierge_wedge_needs_operator("v-inference", Some(100)));
+        // No reading → nothing to declare.
+        assert!(!concierge_wedge_needs_operator("concierge", None));
     }
 
     #[test]
