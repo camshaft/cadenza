@@ -138,10 +138,16 @@ impl BlobStore for DiskBlobStore {
         // Rename tmp → final. POSIX rename atomically REPLACES an existing target, but Windows rename
         // FAILS if the target exists — so the corrupt-rewrite path (target present but bad bytes) would
         // leave the corruption UNHEALED on Windows (Copilot PR#1016, same rename-over-existing class as
-        // PR#903/#929). On failure, if the target exists, remove it and retry the rename ONCE; always
-        // clean up tmp on a hard failure so no litter is left.
+        // PR#903/#929). Recover ONLY from the specific "destination already exists" error by removing the
+        // target + retrying once.
+        //
+        // ⚠ It must be THAT error kind only (Copilot PR#1018 DATA-LOSS regression): the earlier fallback
+        // removed `path` on ANY rename error as long as the target existed — but rename also fails for
+        // permission/IO/cross-filesystem reasons, so it would DELETE A VALID BLOB and then fail. On any
+        // error that isn't AlreadyExists, leave `path` untouched, clean up tmp, and surface the error.
         if let Err(e) = std::fs::rename(&tmp, &path) {
-            if path.exists() {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                // Windows dest-exists: remove the (corrupt/stale) target and retry the rename once.
                 if let Err(e2) =
                     std::fs::remove_file(&path).and_then(|()| std::fs::rename(&tmp, &path))
                 {
@@ -149,6 +155,8 @@ impl BlobStore for DiskBlobStore {
                     return Err(e2);
                 }
             } else {
+                // Permission/IO/cross-fs/etc. — do NOT touch `path` (it may be a valid blob). Just
+                // clean up our temp and report.
                 let _ = std::fs::remove_file(&tmp);
                 return Err(e);
             }

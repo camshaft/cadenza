@@ -42,7 +42,7 @@ pub enum EffectKind {
 /// A concrete effect the reducer wants performed: a kind plus its *resolved* target argument and
 /// payload. The `target` is the SEC-F1 security-relevant string the capability predicate is checked
 /// against (a URL, a repo, a command, a session id). `payload` is opaque content (large payloads are a
-/// blob [`Hash`]; small ones inline — §4 blob boundary), interpreted by the executor, not the kernel.
+/// blob [`struct@Hash`]; small ones inline — §4 blob boundary), interpreted by the executor, not the kernel.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EffectRequest {
     pub kind: EffectKind,
@@ -130,12 +130,19 @@ fn host_of(url: &str) -> Option<&str> {
     let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let host = if let Some(rest) = authority.strip_prefix('[') {
         // IPv6 literal: `[addr]` or `[addr]:port`. The host is inside the brackets — but after the
-        // closing `]` the ONLY valid tail is empty or `:port`. Anything else (e.g. `[::1]evil.com`) is
-        // malformed/hostile: taking just the bracket contents would parse host `::1` and let a
-        // `HostIn(["::1"])` grant AUTHORIZE `[::1]evil.com` — an allow-list BYPASS (Copilot PR#1015).
-        // SEC-F1 fails closed: reject (→ None → deny) unless the tail is empty or a `:`-prefixed port.
+        // closing `]` the ONLY valid tail is empty or a REAL `:port` (colon + 1+ ASCII digits). Anything
+        // else is malformed/hostile: taking just the bracket contents would parse host `::1` and let a
+        // `HostIn(["::1"])` grant AUTHORIZE the hostile URL — an allow-list BYPASS.
+        //   - `[::1]evil.com`   → tail `evil.com`  (Copilot PR#1015, closed)
+        //   - `[::1]:80evil.com`→ tail `:80evil.com`, and `[::1]:` → tail `:` (Copilot PR#1018 REGRESSION:
+        //     a bare `starts_with(':')` accepted BOTH, re-opening the bypass just past the colon).
+        // So the tail must be empty, or `:` + all-ASCII-digits. SEC-F1 fails closed: reject → None → deny.
         let (inside, tail) = rest.split_once(']')?;
-        if !(tail.is_empty() || tail.starts_with(':')) {
+        let valid_tail = tail.is_empty()
+            || tail
+                .strip_prefix(':')
+                .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
+        if !valid_tail {
             return None;
         }
         inside
@@ -233,6 +240,25 @@ mod tests {
         // The legitimate forms still parse (guard against over-rejecting).
         assert_eq!(host_of("http://[::1]:8080/"), Some("::1"));
         assert_eq!(host_of("http://[::1]/"), Some("::1"));
+    }
+
+    #[test]
+    fn ipv6_bracket_tail_must_be_empty_or_a_real_numeric_port() {
+        // Copilot PR#1018 REGRESSION of the PR#1015 fix: a bare `starts_with(':')` accepted ANY colon
+        // tail, so the bypass re-opened just past the colon. The tail must be empty OR `:`+digits only.
+        let pred = ResourcePredicate::HostIn(vec!["::1".into()]);
+        // Hostile colon-tails: reject (host is unparseable → deny).
+        assert_eq!(host_of("http://[::1]:80evil.com/"), None, ":80evil.com");
+        assert_eq!(host_of("http://[::1]:/"), None, "bare colon, no port");
+        assert_eq!(host_of("http://[::1]:0x50/"), None, "non-decimal port");
+        assert_eq!(host_of("http://[::1]:80.evil/"), None, "port then junk");
+        assert!(
+            !pred.admits("http://[::1]:80evil.com/"),
+            "an ::1 grant must NOT authorize [::1]:80evil.com — the regression bypass"
+        );
+        // Real numeric ports still parse to the bare host.
+        assert_eq!(host_of("http://[::1]:80/"), Some("::1"));
+        assert_eq!(host_of("http://[2001:db8::1]:443/x"), Some("2001:db8::1"));
     }
 
     #[test]

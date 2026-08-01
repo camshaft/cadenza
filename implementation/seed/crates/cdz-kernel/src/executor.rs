@@ -25,7 +25,7 @@ pub trait Executor {
 /// Routes each effect to a per-KIND executor (§2 "the kernel routes, doesn't distinguish"). Until now
 /// a session wired exactly ONE `&mut dyn Executor`, so a reducer that emits more than one effect kind
 /// (e.g. an agent that does both `Http` and `Shell`) couldn't be served — a single-kind executor like
-/// [`ShellExecutor`] errors on every other kind. This is the by-kind router the executor docs promised;
+/// a single-kind executor errors on every other kind. This is the by-kind router the executor docs promised;
 /// it's independent of the wasm host, so multi-kind sessions work now.
 ///
 /// A request whose kind has no registered executor returns [`EffectOutcome::Err`] (an OBSERVABLE outcome
