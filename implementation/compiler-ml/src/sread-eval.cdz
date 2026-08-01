@@ -6,7 +6,7 @@
 /// `run-src(s)` returns `Option(Int64)`: `Some v` = the program ran to `v`; `None` = the ML compiler declines
 /// (ill-typed / out-of-subset). These pins are the executable proof that the reader + pipeline agree on the
 /// integer/bool subset, and they guard it as the reader/pipeline evolve.
-import { read-source, has-illwidth-marker } from "sread"
+import { read-source, has-illwidth-marker, has-unboundtype-marker } from "sread"
 
 import { is-bool-at, all-defs-well-scoped } from "infer-db"
 
@@ -25,7 +25,10 @@ def run-src(s: String) = match read-source(s) with
     // WHOLE-PROGRAM SCOPE check FIRST: an unbound name in an UNCALLED sibling def is still a hard reject (rcdzc
     // CDZ0101), but the demand-driven run only resolves main's reachable set — so require EVERY def body to be
     // WELL-SCOPED (no unbound name) before running, else DECLINE (matches the oracle's whole-program reject).
-    (if all-defs-well-scoped(tree) and (if has-illwidth-marker(tree) then false else true) then
+    // Plus the two reader-time type-decl markers: an invalid int/float payload width (has-illwidth-marker,
+    // CDZ0302) and an unbound TYPE name in a top-level payload (has-unboundtype-marker, gap-B-C, CDZ0101).
+    (if all-defs-well-scoped(tree) and (if has-illwidth-marker(tree) then false else true)
+        and (if has-unboundtype-marker(tree) then false else true) then
       (match run-of-db(db-of(tree), root) with | (_, v) => v)
      else Option.None(unit))
 
@@ -37,8 +40,10 @@ def run-src(s: String) = match read-source(s) with
 def run-src-typed(s: String) = match read-source(s) with
   | (root, tree) =>
     // Same whole-program scope check as run-src (this is the entry `cdz run-ml` calls, so the differential's
-    // gap1 fix lives HERE): an unbound name in an uncalled sibling def declines, matching the oracle.
-    (if all-defs-well-scoped(tree) and (if has-illwidth-marker(tree) then false else true) then
+    // gap1 fix lives HERE): an unbound name in an uncalled sibling def declines, matching the oracle. Plus the
+    // two reader-time type-decl markers (invalid payload width CDZ0302, unbound payload TYPE gap-B-C CDZ0101).
+    (if all-defs-well-scoped(tree) and (if has-illwidth-marker(tree) then false else true)
+        and (if has-unboundtype-marker(tree) then false else true) then
       (match run-of-db(db-of(tree), root) with
         | (_, Option.Some(v)) => Option.Some((v, if is-bool-at(tree, root, root) then 1 else 0))
         | (_, Option.None(_)) => Option.None(unit) : Option(Tuple(Int64, Int64)))
@@ -201,6 +206,58 @@ def se-type-decl-valid-width-still-runs() =
   match run-src("(do (type T (Mk (Int 8))) (def (main) 0) (export main))") with
     | Option.Some(v) => (if v == 0 then unit else trap("valid (Int 8) type-decl payload → main runs 0"))
     | Option.None(_) => trap("a valid-width type-decl payload must NOT block the run")
+
+@test
+def se-type-decl-unbound-payload-type-declines() =
+  // gap-B-C (breaker's last reject-path gap): an UPPERCASE, non-builtin, UNDECLARED type name in a top-level
+  // type-decl payload position is ill-formed (rcdzc CDZ0101 "unknown type `Bogus`"). `(Mk Bogus)` — Bogus is
+  // never declared. The reader's whole-program scan records the unbound-type marker → run-src declines.
+  match run-src("(do (type T (Mk Bogus)) (def (main) 42) (export main))") with
+    | Option.Some(_) => trap("an unbound payload type name must DECLINE (CDZ0101)")
+    | Option.None(_) => unit
+
+@test
+def se-type-decl-declared-payload-type-still-runs() =
+  // complement: an uppercase payload atom that IS a declared type runs. `(Wrap Id)` with `Id` declared — the
+  // corpus's 02-binding:3814 shape. Whole-program registry accepts it → main runs 42. (Guards over-rejection.)
+  match run-src("(do (type Id (Mk Int64)) (type W (Wrap Id)) (def (main) 42) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("declared payload type → main runs 42"))
+    | Option.None(_) => trap("a declared payload type must NOT decline")
+
+@test
+def se-type-decl-forward-ref-payload-type-still-runs() =
+  // FORWARD-REF (the decisive whole-program case): `(Mk A)` references `A` which is declared AFTER `B`. The
+  // oracle accepts this (forward refs are valid); the scan runs at read-source completion (registry complete),
+  // so `A` is registered before validation → accept. An at-read-time check would false-reject this.
+  match run-src("(do (type B (Mk A)) (type A (Av)) (def (main) 42) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("forward-ref payload type → main runs 42"))
+    | Option.None(_) => trap("a forward-referenced payload type must NOT decline")
+
+@test
+def se-type-decl-typevar-payload-still-runs() =
+  // a LOWERCASE payload atom is a TYPE VARIABLE, not a concrete type — `(Box a)` — always accepted (never
+  // validated). Guards against flagging generic type parameters. main runs 42.
+  match run-src("(do (type Box (Box a)) (def (main) 42) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("type-variable payload → main runs 42"))
+    | Option.None(_) => trap("a lowercase type-variable payload must NOT decline")
+
+@test
+def se-type-decl-self-ref-payload-type-still-runs() =
+  // self-reference: `(type Expr (Lit Int64) (Neg Expr))` — `Neg`'s payload is the type itself. The corpus's
+  // recursive-type shape. Registry includes the type being declared → accept. main runs 42.
+  match run-src("(do (type Expr (Lit Int64) (Neg Expr)) (def (main) 42) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("self-referential payload type → main runs 42"))
+    | Option.None(_) => trap("a self-referential payload type must NOT decline")
+
+@test
+def se-type-decl-nested-payload-not-flagged-runs() =
+  // NESTED applied-types are OUT of the Option-C narrow slice (left to the generics-unpause). `(Holder (Box
+  // Int64))` — the payload is a nested `(…)` group, which the top-level scan SKIPS. Even though a deeper name
+  // could be unbound, C deliberately does not recurse — it must NOT flag this. main runs 42. (Documents the
+  // C boundary: nested validation is A-scope, intentionally not done here.)
+  match run-src("(do (type Box (Box a)) (type Holder (Holder (Box Int64))) (def (main) 42) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("nested applied-type payload → main runs 42 (C skips nested)"))
+    | Option.None(_) => trap("a nested applied-type payload must NOT be flagged by the narrow C slice")
 
 @test
 def se-export-unbound-name-declines() =

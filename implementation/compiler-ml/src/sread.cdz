@@ -11,7 +11,7 @@
 /// `read-form` + a test here. Reuses `strlex`'s char helpers (`char-at`, `is-digit`, `scan-number`) and
 /// `parse-db`'s `Node`/`Tree`/`add-node`/`empty-tree`.
 
-import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, record-ctor-tag-typed-list, ctor-tag-of, ctor-argtype-of, ctor-argtypes-of, encode-param-type, encode-bool-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit, is-app } from "parse-db"
+import { Node, Tree, empty-tree, add-node, node-at, record-def, def-body-of, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, record-ctor-tag-typed-list, ctor-tag-of, ctor-argtype-of, ctor-argtypes-of, decl-name-registered, encode-param-type, encode-bool-type, pt-width, pt-signed, is-lit, is-bool-lit, is-bin-op, is-if, is-var, is-let, is-annlit, is-app } from "parse-db"
 import { recognize, is-int-type, ty-signed, ty-width } from "int-type"
 import { fits-width } from "int-width"
 
@@ -619,6 +619,41 @@ def has-illwidth-marker(tree: Tree) = match def-body-of(tree, illwidth-marker-ke
   | Option.Some(_) => true
   | Option.None(_) => false
 
+/// The reserved def-table key for the UNBOUND-TYPE marker (gap-B-C). A SECOND reserved key alongside
+/// `illwidth-marker-key`=0: `name-id` folds from acc=7 and only grows, so keys 0..=6 are ALL unreachable by
+/// any real identifier — 1 is safe + distinct from 0. (A reserved small NON-NEGATIVE key, deliberately not a
+/// magic negative — the operator's negative-sentinel-cleanup watch.) No user `def` can clobber it.
+def unboundtype-marker-key() = 1
+
+/// WHOLE-PROGRAM check (codegen-light — a single def-table lookup): did the reader see a TYPE-DECL payload that
+/// references an UNBOUND type name? read-source records this reserved marker (key `unboundtype-marker-key`) after
+/// the whole program is read (so a forward-referenced type is already registered); `run-src` declines when it's
+/// present (rcdzc CDZ0101 "unknown type"). One lookup, guest-safe (mirrors has-illwidth-marker).
+def has-unboundtype-marker(tree: Tree) = match def-body-of(tree, unboundtype-marker-key()) with
+  | Option.Some(_) => true
+  | Option.None(_) => false
+
+/// Is `c` (a single-char String) an UPPERCASE ASCII letter `A`..`Z`? The gap-B-C discriminator: an uppercase-led
+/// payload type ATOM names a CONCRETE type (must be declared or builtin/prelude), while a lowercase-led atom is a
+/// TYPE VARIABLE (`a` in `(type Box (Box a))`) — always accepted, never validated (oracle-verified). Byte-value
+/// check: `A`=65, `Z`=90 (String.to-bytes → the same byte the reader's name-id-fold reads).
+def is-upper-led(c: String) =
+  (match Bytes.at(String.to-bytes(c), 0) with
+    | Option.Some(b) => (b >= 65) and (b <= 90)
+    | Option.None(_) => false)
+
+/// Is `name` a BUILTIN or PRELUDE type that is accepted BARE in a payload position (oracle-verified 2026-08-01)?
+/// Int<N>/UInt<N> (is-int-type) + the fixed set {Bool, Float32, Float64, Char, String, Bytes, Unit, Option,
+/// Result}. `Float`/`Int` WITHOUT a width reject CDZ0203 (arity, a DIFFERENT diagnostic than the CDZ0101 gap-B-C
+/// targets) — excluded here so the narrow slice never flags them (it must not manufacture a wrong-code decline).
+/// The container ctors List/Map/Set/Tuple/Record appear only NESTED in the corpus (skipped) + also reject CDZ0203,
+/// so they're out of C's top-level scope; not listed. This is the C allowlist a payload atom is checked against.
+def is-prelude-or-builtin-type(name: String) =
+  (if is-int-type(name) then true
+   else (name == "Bool") or (name == "Float32") or (name == "Float64") or (name == "Char")
+        or (name == "String") or (name == "Bytes") or (name == "Unit")
+        or (name == "Option") or (name == "Result"))
+
 /// compound-payload slice-1b: read the payload TYPE ATOMS of a ctor `(Ck T0 T1 …)` starting at `p` (the first
 /// type atom, after the ctor name), stopping at the group's closing `)`. Each field encodes exactly like the
 /// single-field argType: an INT type (`Int<N>`/`UInt<N>`, is-int-type) → encode-param-type(signed, width) (≥2);
@@ -639,6 +674,57 @@ def read-payload-argtypes(s: String, p: Int64, acc: List(Int64)) =
                  (let enc = (if (is-int-type(pty)) then encode-param-type(ty-signed(pty), ty-width(pty))
                              else (if (pty == "Bool") then encode-bool-type() else (0 - 1))) in
                   read-payload-argtypes(s, pn, List.push(acc, enc)))))))
+
+/// gap-B-C — is a TOP-LEVEL payload ATOM an UNBOUND type reference? At `p` (first payload atom, after the ctor
+/// name) to the ctor's `)`: for each field, a NESTED `(…)` field is SKIPPED (nested applied-types are OUT of the
+/// Option-C narrow slice — left to the generics-unpause), a bare ATOM is checked: an UPPERCASE-led atom that is
+/// NEITHER a builtin/prelude type NOR a declared type name (whole-program registry, forward-ref-safe) is an
+/// unbound type reference (rcdzc CDZ0101) → `true`. A lowercase atom is a TYPE VARIABLE → never flagged. Walks
+/// the payload fields to the ctor's `)`. `tree` carries the COMPLETE registry (this runs at read-source
+/// completion, so a forward-declared type is already recorded).
+def ctor-payload-has-unbound(s: String, p: Int64, tree: Tree) =
+  (let q = skip-space(s, p) in
+   (if (char-at(s, q) == ")") then false                                       // end of this ctor's payload
+    else (if (char-at(s, q) == "(")
+          then ctor-payload-has-unbound(s, skip-to-close(s, q + 1, 1), tree)   // NESTED field → SKIP (out of C's scope)
+          else (match scan-atom(s, q, "") with | (atom, pn) =>
+                 (if (is-upper-led(atom) and (if is-prelude-or-builtin-type(atom) then false else true)
+                       and (if decl-name-registered(tree, name-id(atom)) then false else true))
+                  then true                                                     // uppercase, non-builtin, undeclared → unbound
+                  else ctor-payload-has-unbound(s, pn, tree))))))             // ok → check the next field
+
+/// gap-B-C — walk a `(type …)` decl's ctor list from `k` (at the first ctor `(` or the type's closing `)`),
+/// returning `true` if ANY ctor has a top-level payload atom that is an unbound type reference. A `)` ends the
+/// list. A ctor `(Cname field…)`: check its payload fields (from just after the ctor name), then recurse to the
+/// next ctor (past this ctor's `)` via skip-to-close). A non-`(`/`)` char (malformed) → false (permissive).
+def type-ctors-have-unbound(s: String, k: Int64, tree: Tree) =
+  (let q = skip-space(s, k) in
+   (if (char-at(s, q) == ")") then false                                       // ctor list closed
+    else (if (char-at(s, q) == "(")
+          then (let c0 = q + 1 in                                              // just inside the ctor's `(`, depth 1
+                (match scan-atom(s, skip-space(s, c0), "") with | (_cname, c1) =>
+                  (if ctor-payload-has-unbound(s, skip-space(s, c1), tree)
+                   then true
+                   else type-ctors-have-unbound(s, skip-to-close(s, c0, 1), tree))))   // next ctor
+          else false)))
+
+/// gap-B-C WHOLE-PROGRAM scan (reader-time, at read-source completion — NOT the run closure, so a source walk is
+/// guest-safe): does any `(type …)` decl in the source reference an UNBOUND type in a top-level payload position?
+/// Walks the source for each `(type` head (types are do-level forms; a `(Ck …)` ctor never leads with the atom
+/// `type`, and there are no nested type decls, so matching `(` + atom `type` is unambiguous in the subset), then
+/// checks that decl's ctor payloads via type-ctors-have-unbound with the COMPLETE registry. Tail-recursive over
+/// the index. A false match (a `(type` not followed by ctors) walks its ctor list to `false` — safe.
+def scan-source-unbound-type(s: String, i: Int64, tree: Tree) =
+  (if (i == String.byte-len(s)) then false
+   else (if (char-at(s, i) == "(")
+         then (match scan-atom(s, skip-space(s, i + 1), "") with | (kw, k) =>
+                (if (kw == "type")
+                 then (match scan-atom(s, skip-space(s, k), "") with | (_tyname, n1) =>   // skip the type NAME
+                        (if type-ctors-have-unbound(s, skip-space(s, n1), tree)
+                         then true
+                         else scan-source-unbound-type(s, n1, tree)))
+                 else scan-source-unbound-type(s, i + 1, tree)))
+         else scan-source-unbound-type(s, i + 1, tree)))
 
 /// Read the constructor list `(C0) (C1) … (Ck)` of a `(type …)` decl, assigning each ctor the ordinal `tag`
 /// (0,1,2,…). `k` is at the next `(` (a ctor) or the `)` that closes the type decl. A `)` here ENDS the ctor
@@ -950,7 +1036,15 @@ def read-source(s: String) =
   (let j = skip-space(s, 0) in
    (if (opens-do(s, j))
     then (match scan-atom(s, skip-space(s, j + 1), "") with | (_do, after-do) =>
-           (match read-do-form(s, after-do, 0 - 1, empty-tree()) with | (root, _, tree) => (root, tree)))
+           (match read-do-form(s, after-do, 0 - 1, empty-tree()) with | (root, _, tree) =>
+             // gap-B-C: after the WHOLE do-block is read (registry complete), scan the source's type-decl payloads
+             // for an UNBOUND type reference (uppercase-led, non-builtin/prelude, undeclared, TOP-LEVEL). If found,
+             // record the reserved unbound-type marker so run-src DECLINES (rcdzc CDZ0101). Whole-program so a
+             // forward-referenced type isn't false-rejected; nested applied-types are OUT of scope (Option-C narrow).
+             (if scan-source-unbound-type(s, 0, tree)
+              then (match add-node(tree, Node.NLit(1)) with
+                     | (mid, t1) => (root, record-def(t1, unboundtype-marker-key(), mid)))
+              else (root, tree))))
     else (match read-form(s, 0, empty-tree()) with | (root, _, tree) => (root, tree))))
 
 @test
@@ -1737,4 +1831,4 @@ def sr-ctor-pattern-arity-mismatch-declines() =
           | _ => trap("the def FOLLOWING an arity-mismatch ctor pattern must parse intact (helper = NLit 42)"))
       | Option.None(_) => trap("the following `helper` def must be recorded (reader declined the arity-mismatch arm cleanly)")))
 
-export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id, has-illwidth-marker }
+export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id, has-illwidth-marker, has-unboundtype-marker }

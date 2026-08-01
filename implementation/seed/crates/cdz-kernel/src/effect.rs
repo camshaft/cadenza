@@ -87,7 +87,12 @@ impl ResourcePredicate {
             ResourcePredicate::Exact(s) => target == s,
             ResourcePredicate::OneOf(set) => set.iter().any(|s| s == target),
             ResourcePredicate::HostIn(hosts) => match host_of(target) {
-                Some(h) => hosts.iter().any(|allowed| allowed == h),
+                // Host comparison is case- and trailing-dot-insensitive (RFC 3986 §3.2.2: host is
+                // case-insensitive; `ok.host.` is the same host as `ok.host`). Exact-string `==` here
+                // was a bug: it wrongly DENIED `OK.host`/`ok.host.` (fail-closed, but a real
+                // correctness gap). Still fail-closed — normalization only ever makes the SAME host
+                // match, never widens to a different one.
+                Some(h) => hosts.iter().any(|allowed| host_eq(allowed, h)),
                 None => false, // unparseable target → deny (fail closed)
             },
             ResourcePredicate::Prefix(p) => target.starts_with(p),
@@ -112,17 +117,36 @@ impl Capability {
 
 /// Extract the host from a `scheme://host[:port]/…` target, for `HostIn`. Deliberately tiny and
 /// conservative: no dependency, and anything it can't confidently parse yields `None` → deny.
+///
+/// Handles the IPv6 literal form `scheme://[::1]:port/…` (RFC 3986 §3.2.2): a bracketed host must NOT
+/// be split on its internal colons (the old `split_once(':')` returned `"["` for `[::1]`, so an IPv6
+/// target could never match — fail-closed, but broken). The brackets are stripped so the returned host
+/// is the bare address (`::1`), which is what a `HostIn` allow-list entry would carry.
 fn host_of(url: &str) -> Option<&str> {
     let after_scheme = url.split_once("://")?.1;
     let authority = after_scheme.split(['/', '?', '#']).next()?;
-    // strip userinfo@ and :port
+    // strip userinfo@
     let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = authority.split_once(':').map_or(authority, |(h, _)| h);
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        // IPv6 literal: `[addr]` or `[addr]:port` — the host is everything up to the closing bracket.
+        rest.split_once(']')?.0
+    } else {
+        // reg-name or IPv4: strip a trailing `:port` (host has no other colon).
+        authority.split_once(':').map_or(authority, |(h, _)| h)
+    };
     if host.is_empty() {
         None
     } else {
         Some(host)
     }
+}
+
+/// Host equality for `HostIn` (RFC 3986 §3.2.2): ASCII-case-insensitive and insensitive to a single
+/// trailing dot (the FQDN root, `ok.host.` ≡ `ok.host`). Pure + total; only ever matches the SAME
+/// host, so it can't widen a capability to a different target.
+fn host_eq(allowed: &str, actual: &str) -> bool {
+    let norm = |h: &str| h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase();
+    norm(allowed) == norm(actual)
 }
 
 #[cfg(test)]
@@ -172,6 +196,31 @@ mod tests {
             Some("host.tld")
         );
         assert_eq!(host_of("http://h.tld"), Some("h.tld"));
+    }
+
+    #[test]
+    fn host_parsing_handles_ipv6_literals() {
+        // Bracketed IPv6 host must not be split on its internal colons (the old code returned "[").
+        assert_eq!(host_of("http://[::1]/latest"), Some("::1"));
+        assert_eq!(host_of("https://[2001:db8::1]:8443/x"), Some("2001:db8::1"));
+        // And an IPv6 allow-list entry now actually matches its target.
+        let pred = ResourcePredicate::HostIn(vec!["::1".into()]);
+        assert!(pred.admits("http://[::1]/latest"));
+        assert!(!pred.admits("http://[2001:db8::2]/x"));
+    }
+
+    #[test]
+    fn host_match_is_case_and_trailing_dot_insensitive() {
+        // RFC 3986 §3.2.2: host is case-insensitive, and a trailing-dot FQDN is the same host. The old
+        // exact `==` wrongly DENIED these (fail-closed, but a real correctness bug that breaks a
+        // legitimately-granted request).
+        let pred = ResourcePredicate::HostIn(vec!["ok.host".into()]);
+        assert!(pred.admits("https://OK.Host/x"), "case-insensitive");
+        assert!(pred.admits("https://ok.host./x"), "trailing-dot FQDN");
+        assert!(pred.admits("https://ok.HOST.:443/x"), "both");
+        // Normalization must NOT widen to a DIFFERENT host (still fail-closed on real mismatches).
+        assert!(!pred.admits("https://ok.host.evil.com/x"));
+        assert!(!pred.admits("https://notok.host/x"));
     }
 
     #[test]

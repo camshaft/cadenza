@@ -6,8 +6,9 @@
 # agents, or models — those are reducers + executors (see the design doc).
 #
 # v0.1 scope (design §15b): the correctness-critical spine — content-addressed log + persistent-map KV
-# + the DURABLE effect-dispatch / effect-id-keyed continuation loop (adversarial-review S1/S4) + a
-# reducer behind a trait (wasmtime lands next). No PKI/mesh/multi-node (single hub, single operator).
+# + the DURABLE effect-dispatch / correlation-token continuation loop (adversarial-review S1/S4) + a
+# wasm-COMPONENT reducer (wasmtime is core — see below; the in-process Rust trait is the interim path) +
+# a content-addressable blob store (CAS, §4/§21b). No PKI/mesh/multi-node (single hub, single operator).
 #
 # Its OWN workspace (empty `[workspace]` table), NOT a member of the seed workspace — the same
 # isolation the old crates + cdz-cad use, so a plain `cargo build --workspace` / the corpus gate never

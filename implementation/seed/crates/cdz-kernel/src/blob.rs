@@ -21,6 +21,14 @@
 use crate::hash::Hash;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Process-global counter for unique temp-file names on disk puts. Combined with the pid it makes every
+/// in-flight `put`'s temp path distinct, so concurrent puts (even of the SAME content → same final
+/// name) never share a temp file and interleave into a torn write. (Uniqueness only — unlike a metric
+/// counter, sharing this across threads/tests is correct; it just needs to never hand out the same
+/// value twice in a process.)
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// A content-addressable blob store: put bytes (keyed by their content hash), get them back by hash.
 /// Backends are swappable (in-memory, disk, later network). Errors are backend I/O; a missing blob is
@@ -104,16 +112,34 @@ impl BlobStore for DiskBlobStore {
     fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
         let hash = Hash::of(bytes);
         let path = self.path_for(&hash);
-        // Idempotent: if the file already exists, the content is identical (content-addressed) — skip
-        // the write. Write to a temp file + rename so a crash mid-write never leaves a partial blob
-        // under the final (hash) name (a torn blob would then fail the get-time hash check anyway, but
-        // atomic rename avoids the corrupt-file state entirely).
-        if path.exists() {
-            return Ok(hash);
+        // Idempotent — BUT don't blindly trust an existing file (PR#1010): a blob that bit-rotted or was
+        // tampered on disk still sits under the right name, and skipping the write on mere existence
+        // would leave that corruption in place forever while reporting success. Verify the existing
+        // file's bytes actually hash to the key; only then treat the put as a no-op. If it's missing or
+        // corrupt, fall through and (re)write it — a put is the moment we can heal a bad blob.
+        match std::fs::read(&path) {
+            Ok(existing) if Hash::of(&existing) == hash => return Ok(hash),
+            Ok(_) => { /* corrupt on disk — fall through to rewrite the good bytes */ }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => { /* not present — write it */ }
+            Err(e) => return Err(e),
         }
-        let tmp = self.root.join(format!("{}.tmp", hash.to_hex()));
+        // Write to a UNIQUE temp file + atomic rename (PR#1011): the temp name carries a process-unique
+        // (pid, seq) suffix, so two concurrent puts of the SAME content don't share a `{hash}.tmp` path
+        // and interleave into a torn write that then renames a corrupt file into place. Each put writes
+        // its own temp fully, then renames — the final blob is always a complete, single writer's bytes.
+        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = self.root.join(format!(
+            "{}.{}.{}.tmp",
+            hash.to_hex(),
+            std::process::id(),
+            seq
+        ));
         std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, &path)?;
+        // Rename is atomic on the same filesystem; if it fails, don't leave the temp behind.
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
         Ok(hash)
     }
 
@@ -204,6 +230,60 @@ mod tests {
         std::fs::write(&path, b"tampered").unwrap();
         let err = store.get(&h).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_put_heals_a_corrupt_existing_blob_instead_of_trusting_it() {
+        // PR#1010: a blob that rotted/was-tampered on disk still sits under the right name. A put of the
+        // genuine bytes must NOT skip on mere existence (which would leave the corruption forever); it
+        // must verify the existing file and, finding it bad, rewrite the good bytes.
+        let dir = temp_dir("heal");
+        let mut store = DiskBlobStore::open(&dir).unwrap();
+        let h = store.put(b"genuine").unwrap();
+        let path = dir.join(h.to_hex());
+        // Corrupt the on-disk blob (bytes no longer hash to the name).
+        std::fs::write(&path, b"rotted!!").unwrap();
+        // A get now refuses it (corrupt).
+        assert_eq!(
+            store.get(&h).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        // Re-put the genuine bytes: put must heal (rewrite), not trust existence.
+        let h2 = store.put(b"genuine").unwrap();
+        assert_eq!(h, h2);
+        // Now the blob is good again.
+        assert_eq!(store.get(&h).unwrap().as_deref(), Some(&b"genuine"[..]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_put_uses_unique_temp_names_so_concurrent_puts_dont_collide() {
+        // PR#1011: two concurrent puts of the SAME content must not share a `{hash}.tmp` path (a torn
+        // write would then rename a corrupt file into place). We can't easily race threads deterministically
+        // here, but we CAN assert the invariant that makes the race safe: temp names are process-unique.
+        // Put twice; a leftover `{hash}.tmp` (the OLD shared name) must never exist, and both succeed.
+        let dir = temp_dir("tmp-unique");
+        let mut store = DiskBlobStore::open(&dir).unwrap();
+        let h1 = store.put(b"same content").unwrap();
+        let h2 = store.put(b"same content").unwrap();
+        assert_eq!(h1, h2);
+        // The old collision-prone temp name must not be present, and only the final blob file remains.
+        let shared_tmp = dir.join(format!("{}.tmp", h1.to_hex()));
+        assert!(
+            !shared_tmp.exists(),
+            "the shared temp name must not be used"
+        );
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            entries,
+            vec![h1.to_hex()],
+            "only the final blob remains — no leftover temp files"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
