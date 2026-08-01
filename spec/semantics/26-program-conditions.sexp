@@ -1478,15 +1478,18 @@
            already decides totality; this pins the obligation the discharge produces).")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Covers))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       (type Thm (Seq (List Term) Term))
+      (def (op-eq (: a HeadOp) (: b HeadOp))
+        (match a ((HeadOp.Covers) (match b ((HeadOp.Covers) true) (_ false)))))
       (def (term-eq (: a Term) (: b Term))
         (match a
           ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
           ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
-          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Head o)   (match b ((Term.Head p) (op-eq o p)) (_ false)))
           ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
-      (def (covers (: scrut Term) (: arms Term)) (Term.Comb (Term.Comb (Term.Const 9) scrut) arms))
+      (def (covers (: scrut Term) (: arms Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Covers) scrut) arms))
       (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
       ; total? : is the arm set (a list of covered variant tags, as Num) TOTAL for a scrutinee whose variant
       ; count is `n`? Decidable: the arm set covers exactly {0..n-1}. Here the ground check is "arms has n
@@ -1500,15 +1503,16 @@
           (Option.Some (Thm.Seq (list) (covers scrut arms-term)))
           (Option.None)))
       (export (. Term *))
+      (export (. HeadOp *))
       (export Thm)
-      (export term-eq covers concl total? exhaustive-ax)))
+      (export op-eq term-eq covers concl total? exhaustive-ax)))
   (input  (do
-            (import "bounds" (Term Thm term-eq covers concl total? exhaustive-ax))
+            (import "bounds" (HeadOp Term Thm term-eq covers concl total? exhaustive-ax))
             (def (main)
               (let ((scrut (Term.Var 0))
-                    ; the arm set as an opaque term (its identity is what COVERS names); tags are 0,1 (both
-                    ; Bool variants), nvariants = 2 → total.
-                    (arms  (Term.Const 100)))
+                    ; the arm set as an opaque term (its identity is what COVERS names — a Num stands in as a
+                    ; generic Term leaf, not an operator head); tags are 0,1 (both Bool variants), nvariants = 2 → total.
+                    (arms  (Term.Num 100)))
                 (let ((goal (covers scrut arms)))
                   (match (exhaustive-ax scrut arms (list 0 1) 2)
                     ((Option.Some proof) (term-eq (concl proof) goal))
@@ -1526,22 +1530,24 @@
            proven total).")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Covers))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       (type Thm (Seq (List Term) Term))
-      (def (covers (: scrut Term) (: arms Term)) (Term.Comb (Term.Comb (Term.Const 9) scrut) arms))
+      (def (covers (: scrut Term) (: arms Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Covers) scrut) arms))
       (def (total? (: arms (List Int64)) (: n Int64)) (= (List.len arms) n))
       (def (exhaustive-ax (: scrut Term) (: arms-term Term) (: arm-tags (List Int64)) (: nvariants Int64))
         (if (total? arm-tags nvariants)
           (Option.Some (Thm.Seq (list) (covers scrut arms-term)))
           (Option.None)))
       (export (. Term *))
+      (export (. HeadOp *))
       (export Thm)
       (export covers total? exhaustive-ax)))
   (input  (do
-            (import "bounds" (Term Thm covers total? exhaustive-ax))
+            (import "bounds" (HeadOp Term Thm covers total? exhaustive-ax))
             (def (main)
               (let ((scrut (Term.Var 0))
-                    (arms  (Term.Const 100)))
+                    (arms  (Term.Num 100)))
                 ; only tag 0 covered, nvariants = 2 → NOT total → None
                 (match (exhaustive-ax scrut arms (list 0) 2)
                   ((Option.Some _) false)
@@ -1556,7 +1562,8 @@
 ; when a `refute` rule derives a contradiction from `assume guard` + the precondition. Simplest ground
 ; instance: a trap guarded by `(lt x 0)` in a function `@requires(>= x 0)` — `ge x 0` and `lt x 0` are
 ; contradictory, so `refute` (from G |- (ge x 0) and a guard (lt x 0)) mints `UNREACHABLE (lt x 0)`.
-; `unreach`=Const 10. A guard NOT contradicted by the precondition → None (the trap stays reachable).
+; `unreach` is a UNARY HeadOp head via Term.Head (not a magic-int Const tag). A guard NOT contradicted
+; by the precondition → None (the trap stays reachable).
 
 (case "t1(trap): an explicit trap under guard (lt x 0) is UNREACHABLE when @requires(>= x 0) — the trap is dead"
   (doc    "The explicit-trap source of the @trap_free capstone. A `(if (lt x 0) (trap) …)` traps iff its
@@ -1569,17 +1576,23 @@
            the whole-function trap-free proof.")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Ge) (Lt) (Unreach))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       (type Thm (Seq (List Term) Term))
+      (def (op-eq (: a HeadOp) (: b HeadOp))
+        (match a
+          ((HeadOp.Ge)      (match b ((HeadOp.Ge)      true) (_ false)))
+          ((HeadOp.Lt)      (match b ((HeadOp.Lt)      true) (_ false)))
+          ((HeadOp.Unreach) (match b ((HeadOp.Unreach) true) (_ false)))))
       (def (term-eq (: a Term) (: b Term))
         (match a
           ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
           ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
-          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Head o)   (match b ((Term.Head p) (op-eq o p)) (_ false)))
           ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
-      (def (ge      (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
-      (def (lt      (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 7) a) b))
-      (def (unreach (: g Term)) (Term.Comb (Term.Const 10) g))
+      (def (ge      (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Ge) a) b))
+      (def (lt      (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Lt) a) b))
+      (def (unreach (: g Term)) (Term.Comb (Term.Head HeadOp.Unreach) g))
       (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
       (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
       (def (assume (: p Term)) (Thm.Seq (list p) p))
@@ -1588,19 +1601,20 @@
       ; the guard is `(lt x 0)` and the hypothesis is `(ge x 0)` for the SAME x (a recognized contradiction).
       (def (refute (: th Thm) (: guard Term))
         (match (concl th)
-          ((Term.Comb (Term.Comb (Term.Const 2) x) (Term.Num 0))
+          ((Term.Comb (Term.Comb (Term.Head HeadOp.Ge) x) (Term.Num 0))
             (match guard
-              ((Term.Comb (Term.Comb (Term.Const 7) gx) (Term.Num 0))
+              ((Term.Comb (Term.Comb (Term.Head HeadOp.Lt) gx) (Term.Num 0))
                 (if (term-eq x gx)
                   (Option.Some (Thm.Seq (hyps th) (unreach guard)))
                   (Option.None)))
               (_ (Option.None))))
           (_ (Option.None))))
       (export (. Term *))
+      (export (. HeadOp *))
       (export Thm)
-      (export term-eq ge lt unreach concl hyps assume refute)))
+      (export op-eq term-eq ge lt unreach concl hyps assume refute)))
   (input  (do
-            (import "bounds" (Term Thm term-eq ge lt unreach concl hyps assume refute))
+            (import "bounds" (HeadOp Term Thm term-eq ge lt unreach concl hyps assume refute))
             (def (main)
               (let ((x    (Term.Var 0))
                     (zero (Term.Num 0)))
@@ -1625,35 +1639,42 @@
            prove false).")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Ge) (Lt) (Unreach))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       (type Thm (Seq (List Term) Term))
+      (def (op-eq (: a HeadOp) (: b HeadOp))
+        (match a
+          ((HeadOp.Ge)      (match b ((HeadOp.Ge)      true) (_ false)))
+          ((HeadOp.Lt)      (match b ((HeadOp.Lt)      true) (_ false)))
+          ((HeadOp.Unreach) (match b ((HeadOp.Unreach) true) (_ false)))))
       (def (term-eq (: a Term) (: b Term))
         (match a
           ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
           ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
-          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Head o)   (match b ((Term.Head p) (op-eq o p)) (_ false)))
           ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
-      (def (ge      (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
-      (def (lt      (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 7) a) b))
-      (def (unreach (: g Term)) (Term.Comb (Term.Const 10) g))
+      (def (ge      (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Ge) a) b))
+      (def (lt      (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Lt) a) b))
+      (def (unreach (: g Term)) (Term.Comb (Term.Head HeadOp.Unreach) g))
       (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
       (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
       (def (assume (: p Term)) (Thm.Seq (list p) p))
       (def (refute (: th Thm) (: guard Term))
         (match (concl th)
-          ((Term.Comb (Term.Comb (Term.Const 2) x) (Term.Num 0))
+          ((Term.Comb (Term.Comb (Term.Head HeadOp.Ge) x) (Term.Num 0))
             (match guard
-              ((Term.Comb (Term.Comb (Term.Const 7) gx) (Term.Num 0))
+              ((Term.Comb (Term.Comb (Term.Head HeadOp.Lt) gx) (Term.Num 0))
                 (if (term-eq x gx)
                   (Option.Some (Thm.Seq (hyps th) (unreach guard)))
                   (Option.None)))
               (_ (Option.None))))
           (_ (Option.None))))
       (export (. Term *))
+      (export (. HeadOp *))
       (export Thm)
-      (export term-eq ge lt unreach concl hyps assume refute)))
+      (export op-eq term-eq ge lt unreach concl hyps assume refute)))
   (input  (do
-            (import "bounds" (Term Thm term-eq ge lt unreach concl hyps assume refute))
+            (import "bounds" (HeadOp Term Thm term-eq ge lt unreach concl hyps assume refute))
             (def (main)
               (let ((x     (Term.Var 0))
                     (zero  (Term.Num 0))

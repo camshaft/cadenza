@@ -359,6 +359,14 @@ export const CHAPTERS: Chapter[] = [
     section: "Events & state",
     Component: lazy(() => import("./chapters/PlatformState.tsx")),
   },
+  {
+    slug: "platform-safety",
+    title: "Doing things safely",
+    blurb: "Capabilities and authorization: every reach outward is an effect through one gate, the effect row is the permission list, and dangerous power is attenuated behind safe components.",
+    pillar: "platform",
+    section: "Doing things safely",
+    Component: lazy(() => import("./chapters/PlatformSafety.tsx")),
+  },
 ];
 
 export function chapterAt(slug: string): { chapter: Chapter; index: number } | null {

@@ -1,0 +1,97 @@
+import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
+import { Link } from "react-router-dom";
+
+/// "Cadenza the Platform" pillar, section C — doing things safely. Concept-level (kernel early-stage,
+/// content light per operator). Sources, DECIDED sections of v-agent-harness's agent-harness-kernel.md:
+/// §5 (reads-are-effects, the one choke point), §9b (effect row IS the capability manifest), §20a
+/// (resource-rescoping components), §20b (Cedar as a swappable content-addressed authorizer component).
+/// §20 is design-decided but has no code yet → framed as forward-looking, per v-agent-harness guidance.
+/// Follows PlatformState in the pillar; bridges from the language pillar's Effects and Opaque-types chapters.
+export default function PlatformSafety() {
+  return (
+    <article>
+      <H1>Doing things safely</H1>
+      <Lede>
+        An agent that can run shell commands, call the network, and message other agents is an agent that
+        can do real damage. The platform's answer to "what is this thing allowed to do?" reuses a single
+        idea you've already seen twice: an <em>effect</em>. Every risky thing an agent does is an effect,
+        every effect passes one gate, and the language makes what a program can do legible before it runs.
+      </Lede>
+
+      <H2>Every reach outward is an effect, through one gate</H2>
+      <P>
+        A reducer only ever appends to its own log. Anything else, reading another agent's status, sending
+        it a message, running a command, fetching a URL, is an <em>effect</em>: it's requested, authorized,
+        performed, and its result folded back as an event. Crucially there's no second mechanism. Reaching
+        into another agent isn't special "cross-agent" machinery; it's the same authorized-effect path as a
+        shell call, so there's exactly <em>one</em> place to secure, audit, and rate-limit.
+      </P>
+      <P>
+        That single choke point is what makes the system auditable. Every effect that crosses a boundary
+        records what caused it, so "why did this agent touch production?" is answered by following the
+        recorded chain backward, across agents, with nothing to reconstruct after the fact.
+      </P>
+
+      <H2>The effect row is the permission list</H2>
+      <P>
+        Here's where the language does the platform a favor. Because Cadenza has{" "}
+        <Link to="/effects" className="text-cadenza-300 underline-offset-2 hover:underline">
+          algebraic effects
+        </Link>
+        , a program's type already spells out the effects it performs, its <em>effect row</em>. On the
+        platform, that row <em>is</em> the set of capabilities the program requires. You don't maintain a
+        permission list beside the code and hope it stays in sync: the permission list is derivable from the
+        type, before the program runs.
+      </P>
+      <Note>
+        what a program NEEDS (its effect row, from the type)
+        <br />
+        what an agent MAY DO (its granted capabilities)
+        <br />
+        what the authorizer CHECKS (may this principal discharge this effect on this resource?)
+        <br />
+        → all three are the same object, an effect row, seen from three sides
+      </Note>
+      <P>
+        When a program needs more than an agent currently holds, the gap is itself something to request, and
+        requesting a capability is just another effect, flowing down the same authorized path. Permissions
+        stop being bolted-on access-control lists and become a property of the code the type system already
+        tracks.
+      </P>
+
+      <H2>Wrapping danger in a safe shape</H2>
+      <P>
+        A broad capability like "run any shell command" has a huge blast radius, so handing it out widely is
+        exactly what you don't want. The platform's move is to <em>attenuate</em>: publish a component that
+        internally holds the dangerous capability but exports only a narrow, safe resource. A component that
+        runs <C>date</C> and returns the string holds the full shell capability inside, but callers need
+        only a tiny "may ask for the date" grant, and the code is provably safe for anyone to invoke.
+      </P>
+      <P>
+        It's the platform echo of the language's{" "}
+        <Link to="/opaque-types" className="text-cadenza-300 underline-offset-2 hover:underline">
+          opaque types
+        </Link>
+        : hide the powerful representation behind a boundary and expose only operations that can't break the
+        invariant. The dangerous grant lives with one audited, published program instead of being scattered
+        across every caller. Powerful primitives get wrapped into safe, named, shareable resources, the way
+        a language contains an <C>unsafe</C> operation behind a checked interface.
+      </P>
+
+      <H2>The rule-maker is itself swappable</H2>
+      <P>
+        <em>Looking ahead</em> (this part is designed, not yet built): the kernel doesn't hardcode the
+        policy that decides what's allowed. It delegates each decision to an <em>authorizer component</em>,
+        another content-addressed program, passing it the requested effect and the agent's capabilities and
+        enforcing whatever it answers. The intended engine is a standard policy engine (Cedar) rather than a
+        hand-rolled one, referenced by hash from the log.
+      </P>
+      <P>
+        The payoff is that the security policy is data, not baked-in code: swapping the authorizer or
+        changing a policy is an authorized, logged event, not a redeploy, so policy changes are auditable
+        and versioned like any other content, and the kernel stays true to its one discipline of knowing
+        nothing. Next, how the kernel runs many agents at once without losing any of this.
+      </P>
+    </article>
+  );
+}

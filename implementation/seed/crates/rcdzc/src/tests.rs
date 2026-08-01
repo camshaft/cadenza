@@ -45602,6 +45602,36 @@ mod match_engine {
     }
 
     #[test]
+    fn a_fused_match_arm_binder_re_resolves_on_both_backends_not_shared_as_a_capture() {
+        // REGRESSION for the fix to the rest-binder fix (v-rust-backend bisected): the enclosing-capture
+        // share in `clone_subtree_db_for_fused` must NOT over-share the FUSED match's OWN arm binder. A
+        // Result-pipeline `(match (step1 n) ((Ok v) (step2 v)) ((Err e) (Err e)))` fuses; its arm binders
+        // `v`/`e` are `SumPayload` reading the FUSED scrutinee `(step1 n)`. The rust `emit_sum_payload`
+        // resolves a binder by its (scrutinee, path), so an over-SHARED binder reads the ORIGINAL now-
+        // detached switch → "sum payload has no bound match arm" decline (wasm passed → backend-divergent).
+        // FIX: `clone_subtree_db_for_fused` copies a `SumPayload` whose scrutinee IS the fused scrutinee
+        // (the arm's own binder — re-resolve against the branch) and shares only one reading an ENCLOSING
+        // match (a genuine capture, the rest-binder `c` case). Pins that BOTH backends EMIT the pipeline.
+        use crate::testkit::parse;
+        let src = "(module m \
+          (def (step1 (: n Int64)) (if (< n 0) (Err \"neg\") (Ok n))) \
+          (def (step2 (: v Int64)) (if (< v 10) (Ok (+ v 1)) (Err \"big\"))) \
+          (def (main (: n Int64)) (match (step1 n) ((Ok v) (step2 v)) ((Err e) (Err e)))) \
+          (export main))";
+        // WASM emit (always passed — the baseline side).
+        let mut dbw = crate::db::Db::load(parse(src));
+        let layw = crate::layout::compute(&mut dbw).expect("layout");
+        crate::backend::emit(crate::backend::Target::Wasm, &mut dbw, &layw, None, None)
+            .expect("a Result-pipeline match must emit wasm");
+        // RUST emit (the regressed side — must NOT decline "sum payload has no bound match arm").
+        let mut dbr = crate::db::Db::load(parse(src));
+        let layr = crate::layout::compute(&mut dbr).expect("layout");
+        crate::backend::emit(crate::backend::Target::Rust, &mut dbr, &layr, None, None).expect(
+            "a Result-pipeline match must emit rust — the fused arm binder re-resolves, not shared as a capture",
+        );
+    }
+
+    #[test]
     fn a_guard_over_a_variant_pattern_gates_on_the_payload_and_falls_through() {
         // A guard over a VARIANT pattern `(guard (Some x) (> x 0))`: the payload binder `x` is in scope for
         // the guard cond (resolve sees through the `(guard …)` wrapper to `(Some x)`), the arm fires only

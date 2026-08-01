@@ -462,6 +462,67 @@ fn attached_log_persists_through_on_append_no_manual_mirroring() {
 }
 
 #[test]
+fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_persist() {
+    // §16c-S1 tier-B route-guard (concierge ruling): if the Dispatched frame fails to PERSIST, the
+    // kernel must NOT route the effect (an irreversible executor call on an un-durable dispatch is the
+    // real S1 danger). A LogSink that always Errs deterministically triggers the persist failure — the
+    // fault-injection seam the S1 latch-check was previously untestable without (a real LogStore over a
+    // file can't be made to fail its append: a read-only file fails at OPEN, not append).
+    use cdz_kernel::log_store::LogSink;
+
+    struct FailingSink;
+    impl LogSink for FailingSink {
+        fn append(&mut self, _event: &cdz_kernel::event::Event) -> std::io::Result<()> {
+            Err(std::io::Error::other("disk full (injected)"))
+        }
+    }
+
+    // A reducer that dispatches one Http effect on inbound.
+    struct OneShot;
+    impl Reducer for OneShot {
+        fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            if matches!(event.body, EventBody::Inbound { .. }) {
+                FoldOutput::with(vec![EffectRequest {
+                    kind: EffectKind::Http,
+                    target: "https://ok.host/x".into(),
+                    payload: None,
+                }])
+            } else {
+                FoldOutput::none()
+            }
+        }
+    }
+
+    let mut exec = RecordingExecutor::new();
+    let mut session = Session::genesis(Hash::of(b"oneshot-v1"));
+    session.attach_sink(Box::new(FailingSink));
+
+    session
+        .deliver(inbound_go(), None, &OneShot, &http_cap(), &mut exec)
+        .unwrap();
+
+    // The Dispatched frame's persist failed → the guard fired → the executor was NEVER called (the
+    // irreversible side-effect did not run on an un-durable dispatch — the S1 guarantee).
+    assert_eq!(
+        exec.seen.len(),
+        0,
+        "an effect whose Dispatched didn't persist must NOT be routed to the executor (S1)"
+    );
+    // The persist failure is latched + surfaced to the driver.
+    assert!(
+        session.take_persist_error().is_some(),
+        "the persist failure must be latched for the driver to observe"
+    );
+    // And the effect's outcome was recorded as a failed-undurable result (observable, folds live==replay),
+    // so the id settled rather than dangling open.
+    assert_eq!(session.open_effects(), 0);
+    assert!(session.log().iter().any(|e| matches!(
+        &e.body,
+        EventBody::EffectResult { result: EffectOutcome::Err(msg), .. } if msg.contains("not durably logged")
+    )));
+}
+
+#[test]
 fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
     // End-to-end durability (§16c-S1): run a session while PERSISTING every appended event to a
     // LogStore, simulate a crash right after a Dispatched is durable but before its result, then
