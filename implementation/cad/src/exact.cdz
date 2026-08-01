@@ -688,6 +688,36 @@ def a-relative-cubic-threads-the-cursor-through-its-control-hull() =
      else trap("relative cubic threads the cursor: end reaches absolute x=15 (raw-delta bug would give 5)")))
 
 @test
+def a-relative-cursor-advance-is-consumed-by-a-later-segment() =
+  // COMPLEMENT of the two relative-reach tests above, which put the relative segment either at the ORIGIN
+  // cursor (where raw-delta == cursor+delta, indistinguishable) or LAST (its cursor advance is never consumed).
+  // A regression in `path-seg-cursor`'s LineToRel/CubicToRel arm (advancing by the RAW delta instead of
+  // cursor+delta) therefore slips. This chains relatives so each one's advance FEEDS the next:
+  //   start(0,0) → line-by(10,0) cur=10 → line-by(10,0) cur=20 → cubic-by end(5,0) cur=25 → line-by(10,0) cur=35.
+  // The final line-by REACHES x=35 only if every prior advance threaded the cursor: a LineToRel-raw bug makes
+  // the 2nd advance 10 (not 20) and a CubicToRel-raw bug makes the cubic advance 5 (not 25) — either caps the
+  // max-x at 25, not 35. So hx == 35 pins that BOTH relative cursor advances are consumed correctly downstream.
+  let p = line-by(cubic-by(line-by(line-by(path-start(), v2(10 / 1, rzero())), v2(10 / 1, rzero())),
+                           v2(5 / 1, rzero()),   // cubic end delta → cursor 20 → 25
+                           v2(rzero(), rzero()),  // controls kept small so the END/downstream line dominates x
+                           v2(rzero(), 3 / 1)),
+                  v2(10 / 1, rzero())) in         // final line-by → cursor 25 → 35, reaching x=35
+  (match path-half-extent(p) with | Vec2.V2(hx, _) =>
+    (if hx == 35 / 1 then unit
+     else trap("a chained relative path must thread the cursor through every advance: the final line-by reaches x=35 (a raw-delta advance caps it at 25)")))
+
+@test
+def path-extent-takes-the-absolute-value-of-negative-reaches() =
+  // `v2abs` must abs BOTH components — all other path tests use POSITIVE coordinates, so a regression dropping
+  // the negative-handling on one axis (returning the raw signed coordinate) would slip: a negative reach would
+  // then be dominated away by the running max instead of contributing its magnitude. Draw into NEGATIVE space:
+  // a line-to (-6, 0) and a line-to (0, -4) → the max-abs extent is (6, 4), not (0, 0). Pins v2abs on both axes.
+  let p = line-to(line-to(path-start(), v2(rzero() - (6 / 1), rzero())), v2(rzero(), rzero() - (4 / 1))) in
+  (match path-half-extent(p) with | Vec2.V2(hx, hy) =>
+    (if hx == 6 / 1 and hy == 4 / 1 then unit
+     else trap("path-half-extent abs's negative reaches: (-6,0) and (0,-4) give extent (6,4), not (0,0)")))
+
+@test
 def a-path-profile-extrudes-with-the-path-bound() =
   // a PathProfile(square) extruded height 3 → box = the path's XY extent (full 8×4, since half-extent (4,2))
   // × height 3. Pins that a Path flows through Profile → ExtrudeLinear → bounding-box.
