@@ -9,9 +9,10 @@
 //! side-effecting executor, re-driving the same key after a crash must not double-apply — the executor
 //! dedups on it. Naturally-idempotent executors can ignore it.
 
-use crate::effect::{EffectRequest, Payload};
+use crate::effect::{EffectKind, EffectRequest, Payload};
 use crate::event::EffectOutcome;
 use crate::hash::Hash;
+use std::collections::HashMap;
 
 /// Performs effects. Synchronous in v0 (the loop is single-threaded and deterministic to test); the
 /// async/remote dispatch path is a later layer that preserves this contract.
@@ -19,6 +20,54 @@ pub trait Executor {
     /// Perform `req`. `idempotency_key` lets a side-effecting executor dedup a re-driven dispatch after
     /// a crash. Returns the outcome the kernel will fold back as an `EffectResult`.
     fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome;
+}
+
+/// Routes each effect to a per-KIND executor (§2 "the kernel routes, doesn't distinguish"). Until now
+/// a session wired exactly ONE `&mut dyn Executor`, so a reducer that emits more than one effect kind
+/// (e.g. an agent that does both `Http` and `Shell`) couldn't be served — a single-kind executor like
+/// [`ShellExecutor`] errors on every other kind. This is the by-kind router the executor docs promised;
+/// it's independent of the wasm host, so multi-kind sessions work now.
+///
+/// A request whose kind has no registered executor returns [`EffectOutcome::Err`] (an OBSERVABLE outcome
+/// the reducer folds — the §9d anti-stuck contract: an unroutable effect is a normal failure event, not
+/// a panic or a wedge), never a silent drop. The `idempotency_key` passes through unchanged so a routed
+/// executor keeps its crash-dedup contract (§16c-S1).
+#[derive(Default)]
+pub struct CompositeExecutor {
+    by_kind: HashMap<EffectKind, Box<dyn Executor>>,
+}
+
+impl CompositeExecutor {
+    pub fn new() -> Self {
+        CompositeExecutor {
+            by_kind: HashMap::new(),
+        }
+    }
+
+    /// Register the executor for one effect kind. Builder-style so a session's executor set reads as one
+    /// expression. Registering a kind twice replaces the prior executor (last wins) — a deliberate
+    /// override, e.g. swapping a recording executor for a live one in a test.
+    pub fn with(mut self, kind: EffectKind, executor: Box<dyn Executor>) -> Self {
+        self.by_kind.insert(kind, executor);
+        self
+    }
+
+    /// Is an executor registered for this kind? (Lets a driver check routability before dispatch.)
+    pub fn handles(&self, kind: &EffectKind) -> bool {
+        self.by_kind.contains_key(kind)
+    }
+}
+
+impl Executor for CompositeExecutor {
+    fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+        match self.by_kind.get_mut(&req.kind) {
+            Some(inner) => inner.perform(req, idempotency_key),
+            None => EffectOutcome::Err(format!(
+                "no executor registered for effect kind {:?} (target {:?})",
+                req.kind, req.target
+            )),
+        }
+    }
 }
 
 /// A recording test executor: performs nothing real, returns a canned outcome, and logs what it saw
@@ -69,9 +118,10 @@ impl Executor for RecordingExecutor {
 /// structural (no shell), NOT reliant on the allow-list being metachar-proof — so even an over-broad
 /// grant can't yield injection, only the wrong (still-literal) program.
 ///
-/// **Non-Shell effects** return an `Err` (v0 = one kind per executor; the by-kind composite router
-/// lands with the wasm host). **Idempotency (§16c-S1):** a command is NOT generally idempotent; a real
-/// deployment dedups re-driven dispatches on `idempotency_key` (documented as the dedup handle).
+/// **Non-Shell effects** return an `Err` (this is a single-KIND executor; route multiple kinds by
+/// registering it under `Shell` in a [`CompositeExecutor`]). **Idempotency (§16c-S1):** a command is NOT
+/// generally idempotent; a real deployment dedups re-driven dispatches on `idempotency_key` (documented
+/// as the dedup handle).
 #[cfg(all(feature = "live-exec", unix))]
 pub struct ShellExecutor;
 
@@ -102,5 +152,94 @@ impl Executor for ShellExecutor {
             )),
             Err(e) => EffectOutcome::Err(format!("spawn failed: {e}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::effect::EffectKind;
+
+    fn req(kind: EffectKind, target: &str) -> EffectRequest {
+        EffectRequest {
+            kind,
+            target: target.to_string(),
+            payload: None,
+        }
+    }
+
+    // A test executor that tags its Ok payload so we can prove WHICH inner executor ran.
+    struct TagExecutor(&'static [u8]);
+    impl Executor for TagExecutor {
+        fn perform(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
+            EffectOutcome::Ok(Some(Payload::Inline(self.0.to_vec())))
+        }
+    }
+
+    #[test]
+    fn composite_routes_each_kind_to_its_executor() {
+        let mut exec = CompositeExecutor::new()
+            .with(EffectKind::Http, Box::new(TagExecutor(b"http-ran")))
+            .with(EffectKind::Shell, Box::new(TagExecutor(b"shell-ran")));
+        assert!(exec.handles(&EffectKind::Http));
+        assert!(exec.handles(&EffectKind::Shell));
+
+        // Each kind reaches its own executor — the multi-kind session the single-executor wiring couldn't serve.
+        assert_eq!(
+            exec.perform(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k")),
+            EffectOutcome::Ok(Some(Payload::Inline(b"http-ran".to_vec())))
+        );
+        assert_eq!(
+            exec.perform(&req(EffectKind::Shell, "echo hi"), Hash::of(b"k")),
+            EffectOutcome::Ok(Some(Payload::Inline(b"shell-ran".to_vec())))
+        );
+    }
+
+    #[test]
+    fn composite_unroutable_kind_is_an_observable_err_not_a_drop() {
+        // A kind with no registered executor → Err (an observable outcome the reducer folds, §9d), never
+        // a silent drop or panic.
+        let mut exec = CompositeExecutor::new().with(EffectKind::Http, Box::new(TagExecutor(b"h")));
+        assert!(!exec.handles(&EffectKind::Model));
+        match exec.perform(&req(EffectKind::Model, "gpt"), Hash::of(b"k")) {
+            EffectOutcome::Err(msg) => {
+                assert!(
+                    msg.contains("Model"),
+                    "err names the unroutable kind: {msg}"
+                );
+            }
+            other => panic!("expected Err for an unroutable kind, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn composite_last_registration_wins() {
+        // Registering a kind twice replaces the prior executor (deliberate override, e.g. swap recording
+        // for live in a test).
+        let mut exec = CompositeExecutor::new()
+            .with(EffectKind::Http, Box::new(TagExecutor(b"first")))
+            .with(EffectKind::Http, Box::new(TagExecutor(b"second")));
+        assert_eq!(
+            exec.perform(&req(EffectKind::Http, "x"), Hash::of(b"k")),
+            EffectOutcome::Ok(Some(Payload::Inline(b"second".to_vec())))
+        );
+    }
+
+    #[test]
+    fn composite_idempotency_key_passes_through() {
+        // The router must forward the key unchanged so a routed side-effecting executor keeps its
+        // crash-dedup contract (§16c-S1).
+        struct KeyEcho;
+        impl Executor for KeyEcho {
+            fn perform(&mut self, _req: &EffectRequest, key: Hash) -> EffectOutcome {
+                EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec())))
+            }
+        }
+        let mut exec = CompositeExecutor::new().with(EffectKind::Http, Box::new(KeyEcho));
+        let key = Hash::of(b"the-key");
+        assert_eq!(
+            exec.perform(&req(EffectKind::Http, "x"), key),
+            EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec())))
+        );
     }
 }

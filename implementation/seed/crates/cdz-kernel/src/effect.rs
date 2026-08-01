@@ -21,7 +21,8 @@ pub struct EffectId(pub u64);
 
 /// The kind of effect — the coarse verb. Target/args live in [`EffectRequest`]. This is deliberately a
 /// small, explicit enum for v0 (design §15b: a handful of local effects); it grows as executors land.
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// `Hash` so it can key a by-kind executor router ([`crate::executor::CompositeExecutor`]).
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum EffectKind {
     /// Run a shell command. Target = the program + args (see `EffectRequest::target`).
     Shell,

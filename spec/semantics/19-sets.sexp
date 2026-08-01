@@ -2924,3 +2924,21 @@
             (export main)))
   (call   main (: 2 Int64))
   (output (: 123 Int64)))
+
+; --- Remove-path canonicalization for sets (the map companions live in 05-compound-types):
+; a set reached VIA a remove must be byte-canonical with the directly-built set. Both sides
+; use the Set.of batch path (the Set.insert-onto-Set.empty chain still declines — see the
+; recursive-sum case's construction-path asymmetry note). ---
+
+(case "a runtime set reached VIA remove equals the directly-built set and not a decoy"
+  (doc    "History-independence of the set deletion path: `(Set.remove (Set.of (list x 99)) 99)` — build
+           {x, 99} at run time, remove 99 — must equal `(Set.of (list x))` built without 99 (tens digit 1),
+           and must NOT equal the decoy `{x+1}` (ones digit 0) → 10. The decoy leg makes the equality a
+           genuine content compare, not a trivially-true reflexive check; a remove that left residual node
+           structure would flip the first leg.")
+  (input  (do
+            (def (main (: x Int64))
+              (+ (* 10 (if (= (Set.remove (Set.of (list x 99)) 99) (Set.of (list x))) 1 0))
+                 (if (= (Set.remove (Set.of (list x 99)) 99) (Set.of (list (+ x 1)))) 1 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 10 Int64)))

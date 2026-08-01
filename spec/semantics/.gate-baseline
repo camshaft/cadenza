@@ -2765,6 +2765,8 @@ pass	a runtime list that is a proper prefix orders less than its extension
 pass	a runtime list aliased into two record fields is read intact through both
 pass	a runtime list aliased into two tuples and its original binding all read consistently
 pass	a runtime magnitude unwraps through a unit conversion
+pass	a runtime map drained by remove equals the EMPTY map literal
+pass	a runtime map reached VIA insert-then-remove equals the directly-built map
 pass	a runtime map shared across two recursive-call operands is not mutated by an insert in one
 pass	a runtime mixed-scale combine converts a COMPUTED BigInt quantity operand
 pass	a runtime mixed-scale combine converts a COMPUTED Float quantity operand
@@ -2794,6 +2796,7 @@ pass	a runtime scrutinee keeps the full switch and nested dispatch
 pass	a runtime scrutinee matching no arm traps
 pass	a runtime scrutinee of one sum type rejects a foreign sum's pattern
 pass	a runtime scrutinee selects a non-first literal arm
+pass	a runtime set reached VIA remove equals the directly-built set and not a decoy
 pass	a runtime set shared across two recursive-call operands is not mutated by an insert in one
 pass	a runtime set-difference result escapes to the host as its value form
 pass	a runtime set-union result escapes to the host as its value form
