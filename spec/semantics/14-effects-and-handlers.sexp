@@ -6410,3 +6410,66 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 515 Int64)))
+
+; --- The classic effect idioms as a family: reader (ambient env), writer (pre-order trace),
+; and gensym (fresh-symbol allocation) — each a recursive walk performing per node/element. ---
+
+(case "a RECURSIVE tree evaluator resolves variables through a READER effect with a Map-state handler"
+  (doc    "The reader-as-effect idiom (the explicit env-threading sibling landed in 05-compound): Var resolves via (Env.read name) from RECURSIVE walk frames at different depths; the handler owns the Map env as STATE; a String op-arg + scalar result cross per perform.")
+  (input  (do
+            (type Expr (Lit Int64) (Var String) (Add (Tuple Expr Expr)))
+            (effect Env (op read (-> String Int64)))
+            (def (eval-e (: e Expr))
+              (match e
+                ((Expr.Lit n) n)
+                ((Expr.Var name) (Env.read name))
+                ((Expr.Add (tuple a b)) (+ (eval-e a) (eval-e b)))))
+            (def (main (: k Int64))
+              (handle Env (Map.insert (Map.insert Map.empty "x" k) "y" 3)
+                ((read (name) s (resume (Option.expect (Map.lookup s name) "unbound") s)))
+                (eval-e (Expr.Add (tuple (Expr.Var "x") (Expr.Add (tuple (Expr.Var "y") (Expr.Lit 1))))))))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 14 Int64)))
+
+(case "a WRITER effect accumulates a PRE-ORDER trace string during a recursive tree walk"
+  (doc    "The writer idiom: each Add/Mul node logs its op tag BEFORE recursing (pre-order), the handler concats onto a String state, and dump reads the trace back beside the value ((2+3)*4: trace exactly \"*+\" — order-sensitive; the result triple-encodes value/len/content-eq).")
+  (input  (do
+            (type Expr (Lit Int64) (Add (Tuple Expr Expr)) (Mul (Tuple Expr Expr)))
+            (effect Trace (op log (-> String Unit)) (op dump (-> Unit String)))
+            (def (eval-t (: e Expr))
+              (match e
+                ((Expr.Lit n) n)
+                ((Expr.Add (tuple a b)) (do (Trace.log "+") (+ (eval-t a) (eval-t b))))
+                ((Expr.Mul (tuple a b)) (do (Trace.log "*") (* (eval-t a) (eval-t b))))))
+            (def (main (: k Int64))
+              (handle Trace ""
+                ((log (tag) s (resume unit (String.concat s tag)))
+                 (dump (_u) s (resume s s)))
+                (do
+                  (def v (eval-t (Expr.Mul (tuple (Expr.Add (tuple (Expr.Lit 2) (Expr.Lit k))) (Expr.Lit 4)))))
+                  (def trace (Trace.dump))
+                  (+ (* 100 v) (+ (* 10 (String.byte-len trace)) (if (= trace "*+") 1 0))))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 2021 Int64)))
+
+(case "a GENSYM effect derives fresh symbols from a counter state — same base yields distinct symbols"
+  (doc    "The allocator idiom at the SYMBOL level (the scalar-id gensym pin sums draws): the arm concats the string op-arg with a counter suffix and interns — the same base twice yields DISTINCT symbols (x_e/x_o); results accumulate into a list and compare against a literal intern, exercising Option<Symbol> slot equality.")
+  (input  (do
+            (effect Gensym (op fresh (-> String Symbol)))
+            (def (rename-all (: xs (List String)) (: i Int64) (: out (List Symbol)))
+              (match (List.at xs i)
+                ((Option.Some base) (rename-all xs (+ i 1) (List.push out (Gensym.fresh base))))
+                ((Option.None _u) out)))
+            (def (main (: k Int64))
+              (handle Gensym k
+                ((fresh (base) n (resume (Symbol.of (String.concat base (if (= (% n 2) 0) "_e" "_o"))) (+ n 1))))
+                (do
+                  (def syms (rename-all (list "x" "x" "y") 0 (list)))
+                  (+ (* 100 (List.len syms))
+                     (+ (* 10 (if (= (List.at syms 0) (List.at syms 1)) 1 0))
+                        (if (= (Option.expect (List.at syms 0) "s0") (Symbol.of "x_e")) 1 0))))))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 301 Int64)))

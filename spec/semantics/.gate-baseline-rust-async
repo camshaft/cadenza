@@ -708,6 +708,7 @@ pass	a Float32-overflowing literal nested in a compound payload is rejected
 pass	a Float32-overflowing magnitude literal under a Float32 Qty inner type is rejected
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
+pass	a GENSYM effect derives fresh symbols from a counter state — same base yields distinct symbols
 pass	a GENUINELY-RUNTIME Rational map/set key is found by a normalized-equal key
 pass	a GROUP-BY then REDUCE-over-groups pipeline — build a multimap, enumerate it, fold each bucket
 pass	a GUARD over a QUOTE pattern compares two bound subtrees — the x=x algebraic rewrite
@@ -800,6 +801,7 @@ pass	a RECORD field built from a runtime param boxes its Map handle correctly (f
 pass	a RECORD used as a map key hashes and matches by its field SET, independent of written order
 pass	a RECURSIVE effectful walk accumulates into a list-state handler
 pass	a RECURSIVE sum as a Map key hits and misses by structural content
+pass	a RECURSIVE tree evaluator resolves variables through a READER effect with a Map-state handler
 pass	a RECURSIVE-sum value of runtime depth rides a handler resume
 pass	a REFL tactic closes a reflexivity goal by driving the kernel, and cannot close a false goal
 pass	a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom
@@ -903,6 +905,7 @@ pass	a Unit record field beside an Int64 field, the Int64 read
 pass	a Unit.* at the wrong arity is rejected
 pass	a Unit.^ at the wrong arity is rejected
 pass	a Unit.of named with a non-symbol value is rejected
+pass	a WRITER effect accumulates a PRE-ORDER trace string during a recursive tree walk
 pass	a `?` in a CALLED (inlined, non-exported) helper finds its boundary
 pass	a `?` inside a match-arm resolves against the enclosing function boundary
 pass	a `?` inside an if-branch resolves against the enclosing function boundary
