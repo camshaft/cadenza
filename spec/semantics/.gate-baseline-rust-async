@@ -145,6 +145,7 @@ pass	TWO sequential inner handles seed from the outer's ADVANCING state
 pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	Type.of over a PERFORM result reflects the op's declared result type
 pass	WAVE reorder alternates <= and >= by index parity through a carried-element walk
+pass	a 1000-step UPSERT fold builds a 7-bucket histogram — persistent-map churn under real load
 pass	a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
 pass	a 3-arg effect op binds its operands POSITIONALLY — an argument-order swap is caught
@@ -708,6 +709,7 @@ pass	a Float32-overflowing magnitude literal under a Float32 Qty inner type is r
 pass	a GENERIC recursive sum branching through a tuple folds at a concrete instantiation
 pass	a GENERIC user sum crosses a module boundary at a concrete instantiation
 pass	a GENUINELY-RUNTIME Rational map/set key is found by a normalized-equal key
+pass	a GROUP-BY then REDUCE-over-groups pipeline — build a multimap, enumerate it, fold each bucket
 pass	a GUARD over a QUOTE pattern compares two bound subtrees — the x=x algebraic rewrite
 pass	a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index
 pass	a HOF callback matching a tuple argument computes through the nested reduction
@@ -3280,6 +3282,7 @@ pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	an EMPTY splice mid-list closes the gap, a singleton fills it, and two splices around a literal both land
+pass	an ORDER-PRESERVING dedup threads a seen-Set and an out-List as twin accumulators
 pass	an UNANNOTATED generic compose instantiates at a scalar arrow AND a String arrow in one program
 pass	dropping a list pushed FROM a survivor must not free the shared spine
 pass	dropping a map derived by persistent insert must not free nodes shared with the survivor

@@ -17086,3 +17086,74 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 1099 Int64)))
+
+; --- Collection-pipeline idioms at load: the 1000-step upsert histogram, the group-by/reduce
+; pipeline, and the order-preserving dedup with twin accumulators. ---
+
+(case "a 1000-step UPSERT fold builds a 7-bucket histogram — persistent-map churn under real load"
+  (doc    "The anagram pin tallies ~6 scalars; this runs the upsert (lookup-increment-insert) 1000 rounds into 7 buckets — each hit-key insert REPLACES, so ~993 stale versions drop through the fold, and the counts (142/143 per bucket) verify no lost or double-counted update.")
+  (input  (do
+            (def (tally (: n Int64) (: acc (Map Int64 Int64)))
+              (if (< n 1) acc
+                  (tally (- n 1)
+                    (do
+                      (def key (% n 7))
+                      (match (Map.lookup acc key)
+                        ((Option.Some c) (Map.insert acc key (+ c 1)))
+                        ((Option.None _u) (Map.insert acc key 1)))))))
+            (def (main (: n Int64))
+              (do
+                (def h (tally n Map.empty))
+                (+ (* 1000 (Map.len h))
+                   (+ (* 10 (Option.expect (Map.lookup h 0) "k0"))
+                      (Option.expect (Map.lookup h 6) "k6")))))
+            (export main)))
+  (call   main (: 1000 Int64))
+  (output (: 8563 Int64)))
+
+(case "a GROUP-BY then REDUCE-over-groups pipeline — build a multimap, enumerate it, fold each bucket"
+  (doc    "The multimap grow step exists as one read-modify-write; this is the FULL pipeline: group via upsert into (Map Int64 (List Int64)), enumerate via Map.to-list into key/bucket tuples, and fold each bucket's LIST inside the entry walk — the destructure binds a scalar key AND a heap bucket per frame; the weighted sum encodes membership and canonical entry order in one scalar.")
+  (input  (do
+            (def (group (: xs (List Int64)) (: i Int64) (: acc (Map Int64 (List Int64))))
+              (match (List.at xs i)
+                ((Option.Some v)
+                  (group xs (+ i 1)
+                    (do
+                      (def key (% v 3))
+                      (match (Map.lookup acc key)
+                        ((Option.Some bucket) (Map.insert acc key (List.push bucket v)))
+                        ((Option.None _u) (Map.insert acc key (list v)))))))
+                ((Option.None _u) acc)))
+            (def (sum-list (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Option.Some v) (sum-list xs (+ i 1) (+ acc v)))
+                ((Option.None _u) acc)))
+            (def (reduce-groups (: es (List (Tuple Int64 (List Int64)))) (: i Int64) (: acc Int64))
+              (match (List.at es i)
+                ((Option.Some (tuple key bucket)) (reduce-groups es (+ i 1) (+ acc (* key (sum-list bucket 0 0)))))
+                ((Option.None _u) acc)))
+            (def (main (: k Int64))
+              (reduce-groups (Map.to-list (group (list 1 2 3 4 5 (* k 6)) 0 Map.empty)) 0 0))
+            (export main)))
+  (call   main (: 1 Int64))
+  (output (: 19 Int64)))
+
+(case "an ORDER-PRESERVING dedup threads a seen-Set and an out-List as twin accumulators"
+  (doc    "Set dedup is canonical-order everywhere; keep-first-occurrence dedup preserves WRITTEN order by threading TWO collection accumulators through one recursion (contains->skip / insert+push). The runtime k lands both faces and the digit-encode verifies ORDER, not membership.")
+  (input  (do
+            (def (dedup-keep-first (: xs (List Int64)) (: i Int64) (: seen (Set Int64)) (: out (List Int64)))
+              (match (List.at xs i)
+                ((Option.Some v)
+                  (if (Set.contains seen v)
+                      (dedup-keep-first xs (+ i 1) seen out)
+                      (dedup-keep-first xs (+ i 1) (Set.insert seen v) (List.push out v))))
+                ((Option.None _u) out)))
+            (def (digits (: xs (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at xs i)
+                ((Option.Some v) (digits xs (+ i 1) (+ (* acc 10) v)))
+                ((Option.None _u) acc)))
+            (def (main (: k Int64))
+              (digits (dedup-keep-first (list 3 1 3 k 1 2) 0 (Set.of (list)) (list)) 0 0))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 3142 Int64))
+  (call   main (: 3 Int64)) (output (: 312 Int64)))
