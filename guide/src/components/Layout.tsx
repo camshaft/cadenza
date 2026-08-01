@@ -3,7 +3,8 @@
 
 import { NavLink, useParams } from "react-router-dom";
 import { Suspense, useEffect, useState } from "react";
-import { CHAPTERS, chapterAt, PILLARS, pillarOf, type Pillar } from "../content/chapters.ts";
+import { CHAPTERS, chapterAt, PILLARS } from "../content/chapters.ts";
+import { groupByPillar } from "../content/pillarGroups.ts";
 import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
 import { useProgress } from "../progress/ProgressContext.tsx";
 import { ExamplesNav } from "./ExamplesNav.tsx";
@@ -75,7 +76,7 @@ export function Layout() {
 /// grouping of chapter links, each with a progress badge once the reader has engaged.
 function SidebarNav() {
   const progress = useProgress();
-  const pillars = groupByPillar();
+  const pillars = groupByPillar(CHAPTERS, PILLARS);
   // Only badge chapters with a pillar header once there's more than one pillar; a single-pillar site
   // renders the bare section list exactly as before (no visual change from the pillar mechanism).
   const showPillarHeaders = pillars.length > 1;
@@ -237,19 +238,3 @@ function PrevNext({ index }: { index: number }) {
   );
 }
 
-/// Group chapters by pillar, then by section within each pillar — the sidebar's two-level structure.
-/// Pillars appear in PILLARS order; only pillars that actually have chapters are returned. Sections keep
-/// registry order within a pillar. When just one pillar is present the caller suppresses the pillar header,
-/// so a single-pillar site renders exactly as the old flat section list did.
-function groupByPillar(): { pillar: Pillar; label: string; sections: [string, typeof CHAPTERS][] }[] {
-  return PILLARS.map(({ id, label }) => {
-    const sections = new Map<string, typeof CHAPTERS>();
-    for (const c of CHAPTERS) {
-      if (pillarOf(c) !== id) continue;
-      const arr = sections.get(c.section) ?? [];
-      arr.push(c);
-      sections.set(c.section, arr);
-    }
-    return { pillar: id, label, sections: [...sections.entries()] };
-  }).filter((p) => p.sections.length > 0);
-}
