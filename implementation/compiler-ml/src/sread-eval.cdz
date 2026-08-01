@@ -296,6 +296,25 @@ def se-record-decl-declared-field-type-still-runs() =
     | Option.None(_) => trap("a record field with a declared type must NOT decline")
 
 @test
+def se-record-decl-applied-field-type-unbound-head-declines() =
+  // adv-48 head-check (PR#1026 latent gap): a record field whose type is an APPLIED type with an UNBOUND HEAD
+  // `(: field (NoSuchCtor Int64))` is ill-formed (rcdzc CDZ0101 "unknown type `NoSuchCtor`"). The one-level
+  // descent reads the applied HEAD atom `NoSuchCtor` and checks it → declines. (Earlier code kept `last`=the
+  // field name and skipped the whole group, so this ran 42 — a real reject-gap the misleading doc masked.)
+  match run-src("(do (type R (record (: field (NoSuchCtor Int64)))) (def (main) 42) (export main))") with
+    | Option.Some(_) => trap("a record field with an unbound applied-type HEAD must DECLINE (CDZ0101)")
+    | Option.None(_) => unit
+
+@test
+def se-record-decl-applied-field-type-declared-head-still-runs() =
+  // complement: an applied field type with a DECLARED head runs, AND its nested arg is NOT recursed into
+  // (STAY ONE LEVEL). `(: field (Box NoSuchInner))` with `Box` declared → head `Box` is fine, `NoSuchInner`
+  // (nested) is out of scope (oracle-CLEAN) → main runs 42. Guards both the head-accept and the no-recurse rule.
+  match run-src("(do (type Box (Box a)) (type R (record (: field (Box NoSuchInner)))) (def (main) 42) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("declared applied-head + nested arg → main runs 42 (one level)"))
+    | Option.None(_) => trap("a record field with a declared applied-type head must NOT decline (nested arg out of scope)")
+
+@test
 def se-export-unbound-name-declines() =
   // an `(export NAME)` where NAME names NO definition is ill-formed (rcdzc CDZ0101 "export names no
   // definition"). The reader used to ignore the export name (a non-def head just ended the sequence), so

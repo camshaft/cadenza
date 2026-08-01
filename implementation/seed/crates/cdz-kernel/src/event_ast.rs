@@ -6,8 +6,11 @@
 //! This is the MAPPING layer `log_store` frames each event through — `log_store::append` calls
 //! [`encode`] and `decode_frames` calls [`decode`], so the durable log IS this shared-codec form. An
 //! exhaustive round-trip test proves every event variant survives Event → Arenas → bytes → Arenas →
-//! Event unchanged, and that a corrupt/truncated encoding is classified (not panicked on) via
-//! `decode_detailed`'s `DecodeError` — exactly the torn-vs-corrupt split `log_store` recovery needs.
+//! Event unchanged, and that a malformed encoding is classified (not panicked on) as an `Err`. Note the
+//! torn-vs-corrupt SPLIT is the FRAMING layer's job, not this codec's error type: `decode_frames`
+//! detects a torn tail by a short read (a truncated length-prefix/body — it never even calls `decode`),
+//! and treats ANY `decode` failure on a COMPLETE frame as corruption. So this codec's error only means
+//! "this whole frame is bad" (→ Corrupt); the torn side is decided before decode is reached.
 //!
 //! Encoding shape (an s-expr form per event, head = a `Name` tag):
 //! - `(event <seq> <cause> <body>)` — `seq` an Int; `cause` is `(none)` or `(hash <bytes>)`.

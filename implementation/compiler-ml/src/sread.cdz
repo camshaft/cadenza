@@ -689,16 +689,21 @@ def type-atom-unbound(atom: String, tree: Tree) =
     and (if decl-name-registered(tree, name-id(atom)) then false else true))
 
 /// adv-48 — a `record` ctor's FIELD group `(: f T)` or `(f T)` at `g` (just inside the field's `(`, depth 1):
-/// read its atoms to the field's `)` and check the LAST one (the field TYPE) with `type-atom-unbound`. STAY ONE
-/// LEVEL — if the field type is itself a nested applied `(Box X)`, this reads the atom BEFORE the `(` as the last
-/// scanned atom and checks only that HEAD (a `(`-led field-type is skipped by the atom scan, matching C's
-/// head-only / no-recurse-into-applied-args rule). The `:` annotation token and the field NAME are earlier atoms,
-/// not the last, so they're naturally not the checked type. Returns true iff the field type is unbound.
+/// find the field TYPE and check it with `type-atom-unbound`. The field type is the LAST element of the group;
+/// it is EITHER a bare atom `T` OR an applied `(Head …)`. STAY ONE LEVEL (Option-C, oracle-confirmed): for an
+/// applied field type, check the HEAD constructor (`(NoSuchCtor Int64)` → check `NoSuchCtor`, rcdzc rejects
+/// CDZ0101) but do NOT recurse into its args (`(Box NoSuchInner)` → `NoSuchInner` is nested, oracle-CLEAN, out
+/// of scope). So a `(`-led last element: read its HEAD atom (just inside the paren) and check THAT; a bare last
+/// atom: check it directly. The `:` token + field NAME are earlier elements, naturally not the last.
+/// `last-is-atom` tracks whether the pending `last` is a bare atom (check `last` on close) vs already-resolved.
 def record-field-type-unbound(s: String, g: Int64, last: String, tree: Tree) =
   (let q = skip-space(s, g) in
-   (if (char-at(s, q) == ")") then type-atom-unbound(last, tree)               // field group closed → check the last atom seen
+   (if (char-at(s, q) == ")") then type-atom-unbound(last, tree)               // field group closed → check the last field-type atom
     else (if (char-at(s, q) == "(")
-          then record-field-type-unbound(s, skip-to-close(s, q + 1, 1), last, tree)  // nested applied field type → head-only (keep prior `last`)
+          then (match scan-atom(s, skip-space(s, q + 1), "") with | (head, _) =>  // applied field type `(Head …)`
+                 // STAY ONE LEVEL: the applied HEAD is the candidate field type (check on close if it's the last
+                 // element); skip past the whole `(…)` group WITHOUT recursing into its args (nested = out of scope).
+                 record-field-type-unbound(s, skip-to-close(s, q + 1, 1), head, tree))
           else (match scan-atom(s, q, "") with | (atom, pn) =>
                  record-field-type-unbound(s, pn, atom, tree)))))              // advance; this atom is the new candidate `last`
 

@@ -2213,15 +2213,24 @@ impl<'a> Parser<'a> {
         }
         self.bump(); // `(`
         let mut items = vec![ctor];
+        // A variant's payload is the SAME paren-arg surface as a type application: each arg is either a
+        // bare type OR a LABELED field `name : Type` → `(: name Type)`. The labeled form is what a
+        // RECORD-payload variant uses — `(type R (record (: field Ty)))` prints as `R = | record(field :
+        // Ty)`, and without accepting the `name : Ty` label here that re-parse failed at the `:` (the
+        // `(type _ (record …))` type-decl surface was never round-trip-exercised — breaker's report;
+        // same class as the derived-unit `type_ref` gap). Reuse `type_arg_exprs`, which parses exactly
+        // this (label or bare type) and shares the missing-`,` recovery.
         if !self.at(Kind::RParen) {
+            // `type_arg_exprs` consumes its own `(`/`)`; we already bumped `(`, so parse the args with a
+            // helper that assumes the `(` is open. Inline the same loop to avoid a double-`(` expect.
             loop {
                 let before = self.pos;
-                items.push(self.type_ref());
+                items.push(self.type_arg());
                 if !self.sep_continue(Kind::RParen) {
                     break;
                 }
-                // `type_ref`'s `prefix` at a stop token records an error without consuming; skip it so
-                // the missing-`,` branch cannot loop forever.
+                // A stop token that `type_arg`/`prefix` didn't consume would spin the missing-`,` branch;
+                // skip it so the loop always makes progress.
                 if self.pos == before {
                     self.bump();
                 }
@@ -2230,6 +2239,36 @@ impl<'a> Parser<'a> {
         self.expect(Kind::RParen, "`)`");
         let span = start.merge(self.prev_span());
         self.list(items, span)
+    }
+
+    /// One type-application / variant-payload argument: a LABELED field `name : Type` → `(: name Type)`,
+    /// or a bare [`Self::type_ref`]. A label is an `Ident`/backtick-name IMMEDIATELY followed by `:`
+    /// (so a bare `M.T` / `List(a)` positional arg is unaffected). Shared by [`Self::type_arg_exprs`]
+    /// (annotation position, e.g. `Record(x: Int64)`) and [`Self::variant`] (a record-payload variant,
+    /// e.g. `record(field : Ty)`), so both accept the label form identically.
+    fn type_arg(&mut self) -> StructId {
+        let start = self.cur_span();
+        let is_label = matches!(self.kind(), Kind::Ident | Kind::BacktickName)
+            && self.nth_kind(1) == Kind::Colon;
+        if is_label {
+            let label = match self.kind() {
+                Kind::BacktickName => {
+                    let t = self.bump().unwrap();
+                    self.name(literal::unescape_backtick_name(self.text(t)), start)
+                }
+                _ => {
+                    let t = self.bump().unwrap();
+                    self.name(self.text(t), start)
+                }
+            };
+            self.expect(Kind::Colon, "`:`");
+            let ty = self.type_ref();
+            let colon = self.name(":", start);
+            let span = start.merge(self.prev_span());
+            self.list(vec![colon, label, ty], span)
+        } else {
+            self.type_ref()
+        }
     }
 
     /// `module name { form… }`  ->  `(module name doc… form…)`.
@@ -3626,28 +3665,7 @@ impl<'a> Parser<'a> {
         let mut args = Vec::new();
         if !self.at(Kind::RParen) {
             loop {
-                let start = self.cur_span();
-                let is_label = matches!(self.kind(), Kind::Ident | Kind::BacktickName)
-                    && self.nth_kind(1) == Kind::Colon;
-                if is_label {
-                    let label = match self.kind() {
-                        Kind::BacktickName => {
-                            let t = self.bump().unwrap();
-                            self.name(literal::unescape_backtick_name(self.text(t)), start)
-                        }
-                        _ => {
-                            let t = self.bump().unwrap();
-                            self.name(self.text(t), start)
-                        }
-                    };
-                    self.expect(Kind::Colon, "`:`");
-                    let ty = self.type_ref();
-                    let colon = self.name(":", start);
-                    let span = start.merge(self.prev_span());
-                    args.push(self.list(vec![colon, label, ty], span));
-                } else {
-                    args.push(self.type_ref());
-                }
+                args.push(self.type_arg());
                 if !self.sep_continue(Kind::RParen) {
                     break;
                 }
@@ -4776,6 +4794,36 @@ mod tests {
         assert_eq!(
             sexpr::print(&parse_ok("def f(r: Record(p: forall a. a)) = r")),
             r#"(def (f (: r (Record (: p (forall (a) a))))) r)"#
+        );
+    }
+
+    #[test]
+    fn a_record_payload_variant_parses_the_labeled_field_form() {
+        use crate::sexpr;
+        // breaker report: a `(type R (record (: field Ty)))` type-declaration whose variant payload is a
+        // RECORD prints as `R = | record(field : Ty)`, but `variant`'s payload parsed each arg via
+        // `type_ref` (bare types only), so the `field : Ty` label failed re-parse at the `:` (`expected
+        // ,`). No corpus case used the `(type _ (record …))` decl form, so this surface was never
+        // round-trip-exercised. Now a variant payload accepts the SAME labeled `name : Type` arg
+        // `type_arg_exprs` does (shared `type_arg`), producing `(: field Ty)`.
+        assert_eq!(
+            sexpr::print(&parse_ok("type R =\n  | record(field : NoSuchField)")),
+            r#"(type R (record (: field NoSuchField)))"#
+        );
+        // Multiple fields.
+        assert_eq!(
+            sexpr::print(&parse_ok("type Point =\n  | record(x : Int64, y : Int64)")),
+            r#"(type Point (record (: x Int64) (: y Int64)))"#
+        );
+        // A POSITIONAL (non-labeled) variant payload is unaffected — still bare types.
+        assert_eq!(
+            sexpr::print(&parse_ok("type T =\n  | Pair(Int64, String)")),
+            r#"(type T (Pair Int64 String))"#
+        );
+        // Mixed positional + labeled in one payload also parses (label is per-arg).
+        assert_eq!(
+            sexpr::print(&parse_ok("type M =\n  | v(Int64, tag : String)")),
+            r#"(type M (v Int64 (: tag String)))"#
         );
     }
 
