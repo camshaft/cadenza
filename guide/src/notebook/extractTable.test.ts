@@ -65,6 +65,14 @@ test("a quantity cell renders friendly (`5 meter`, not `(quantity 5 meter)`) —
   assert.deepEqual(r.table.rows, [["1", "5 meter"]]);
 });
 
+test("a REAL runtime quantity `(Qty.of 5 (Unit.base #\"meter\"))` in a table renders friendly `5 meter`", () => {
+  // The runtime emits the `Qty.of` shape (not `(quantity …)`); a table column of quantities must still
+  // read `5 meter`, not the raw `(Qty.of 5 (Unit.base # meter))`.
+  const r = extractTable('(: (list (tuple 1 (Qty.of 5 (Unit.base #"meter")))) T)');
+  assert.ok(r.ok);
+  assert.deepEqual(r.table.rows, [["1", "5 meter"]]);
+});
+
 test("a non-list value → typed fallback (not a table), never throws", () => {
   const scalar = extractTable("(: 42 Int64)");
   assert.equal(scalar.ok, false);
