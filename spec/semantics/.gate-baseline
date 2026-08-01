@@ -3011,6 +3011,7 @@ pass	a single-variant abstract type's constructor match outside its module is re
 pass	a single-variant newtype BOOL literal-payload arm falls through on false
 pass	a Bool-payload ctor BINDER used as a Bool in an if computes on the compiled path
 pass	a runtime Bool-payload ctor binder threads its Bool through construction and destructure
+pass	a set reached via UNION (overlapping and self) equals the directly-built set
 pass	a single-variant newtype BOOL literal-payload arm is reached, not silently dead
 pass	a single-variant newtype list element falls through on a non-matching payload
 pass	a single-variant newtype list element with a binder payload stays irrefutable
@@ -4272,6 +4273,7 @@ pass	literal refinement on two elements of one list pattern
 pass	looking up an absent key yields None
 pass	map THEN filter compose — one combinator's output list is the next's input
 pass	map equality is independent of insertion order
+pass	maps reached via Map.swap and Map.take equal their directly-built twins
 pass	match on a Result returned by a fallible function
 pass	match on a function-returned sum takes the other variant at runtime
 pass	match on a sum value returned by a function selects the runtime variant

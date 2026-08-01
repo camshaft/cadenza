@@ -2958,3 +2958,16 @@
                  (if (= (Set.intersection (Set.of (list x 7)) (Set.of (list x 42))) (Set.of (list x))) 1 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 11 Int64)))
+
+(case "a set reached via UNION (overlapping and self) equals the directly-built set"
+  (doc    "The union face completing the set-algebra canonicalization family (difference/intersection
+           pinned above): {x,7} ∪ {7,42} — overlap 7 must dedup onto the same node layout as the direct
+           {x,7,42} (tens digit), and the self-union {x} ∪ {x} must be byte-canonical with {x} itself
+           (ones digit) → 11. A union that merged overlapping branches into a different (content-equal but
+           structurally distinct) layout would flip the first leg.")
+  (input  (do
+            (def (main (: x Int64))
+              (+ (* 10 (if (= (Set.union (Set.of (list x 7)) (Set.of (list 7 42))) (Set.of (list x 7 42))) 1 0))
+                 (if (= (Set.union (Set.of (list x)) (Set.of (list x))) (Set.of (list x))) 1 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))
