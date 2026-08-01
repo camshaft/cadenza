@@ -472,9 +472,11 @@ pub enum FleetCmd {
     /// INBOUND path (an operator's Slack message → an agent's hub inbox via the bridge's own `deliver`,
     /// which never calls this crate's wake). The bridge shells `fleet wake <to> --operator-message`
     /// after writing the inbox file so an operator message reaches an idle agent in seconds, not up to
-    /// its full interval (operator directive 2026-08-01). Applies the SAME guards as any wake (stopped /
-    /// no-live-window / already-mid-tick all skip); prints the outcome. Safe to call spuriously — a
-    /// mid-tick or stopped window is skipped, and `/loop` remains the safety net.
+    /// its full interval (operator directive 2026-08-01). The bridge runs OUTSIDE tmux, so the wake
+    /// targets an explicit `--session` (default `main`) to reach the tmux server — WITHOUT that it would
+    /// hit the `in_tmux()` gate and silently no-op (the field bug). Applies the SAME guards as any wake
+    /// (stopped / no-live-window / already-mid-tick all skip); prints the outcome. Safe to call
+    /// spuriously — a mid-tick or stopped window is skipped, and `/loop` remains the safety net.
     Wake {
         /// The agent whose idle loop to nudge into an immediate tick.
         name: String,
@@ -485,6 +487,13 @@ pub enum FleetCmd {
         /// windows for the human, matching `send`'s behavior).
         #[arg(long)]
         operator_message: bool,
+        /// The tmux SESSION the fleet windows live in (default `main`). `fleet wake` is invoked from
+        /// OUTSIDE tmux (the slack-bridge daemon has no `$TMUX`), so it must address the tmux server by
+        /// an explicit session name rather than the caller's current-client session — targeting a named
+        /// session works from outside tmux, and it bypasses the `in_tmux()` gate that would otherwise
+        /// no-op the wake. Override only for a non-default fleet session.
+        #[arg(long, default_value = "main")]
+        session: String,
     },
     /// Mirror the live gitignored work queue (`.claude/fleet/queue/`) into the TRACKED `issues/`
     /// archive at the repo root, so these hard-won reproducers are preserved in git history rather
@@ -794,7 +803,8 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::Wake {
             name,
             operator_message,
-        } => wake_cmd(&fleet, &name, operator_message),
+            session,
+        } => wake_cmd(&fleet, &name, operator_message, &session),
         FleetCmd::Archive { no_commit } => archive(&fleet, no_commit),
         FleetCmd::Sync { force } => sync(&fleet, force),
         FleetCmd::Watchdog {
@@ -1587,7 +1597,7 @@ fn send(
     // design prompt shouldn't get a peer's keystroke; the operator-message path (slack-bridge inbound)
     // is the one that passes `true`.
     if !no_wake {
-        match wake_window(fleet, to, false) {
+        match wake_window(fleet, to, false, None) {
             WakeOutcome::Woke => println!("  ↑ nudged '{to}' awake (immediate tick)"),
             // A TERMINAL skip (recipient stopped) means its loop has EXITED — the message will NOT be
             // drained on any tick, so do NOT promise "picks it up next /loop" (that false promise is
@@ -1718,7 +1728,7 @@ fn ack(fleet: &Fleet, request: &str, outcome: &str, r#ref: &str, body: &str) {
     // 3) Wake the sender so it acts on the reply immediately (a `reject` needs a fast fix; a `merged`
     // lets a one-shot agent stand down). Same guards as any delivery; the sender is a peer agent, not
     // the operator, so don't relax the interactive-role skip.
-    match wake_window(fleet, &mr.from, false) {
+    match wake_window(fleet, &mr.from, false, None) {
         WakeOutcome::Woke => println!("  ↑ nudged '{}' awake (immediate tick)", mr.from),
         WakeOutcome::Skipped(why) => println!("  (sender not woken: {why})"),
     }
@@ -2330,6 +2340,15 @@ fn wake_skip_is_terminal(why: &str) -> bool {
     why == STOPPED_SKIP_REASON
 }
 
+/// The tmux-availability gate for a wake: skip (return true) ONLY when there is no explicit session AND
+/// the caller isn't inside tmux. An explicit session (`has_session_override`) addresses the tmux server
+/// directly, so a missing `$TMUX` on the caller is irrelevant — this is the fix for the slack-bridge
+/// wake no-op (bridge daemon has no `$TMUX`; without a session it would wrongly skip before any wake).
+/// Pure, so the gate is unit-tested without env/tmux.
+fn wake_needs_tmux_client_and_lacks_it(has_session_override: bool, caller_in_tmux: bool) -> bool {
+    !has_session_override && !caller_in_tmux
+}
+
 /// Should the interactive-role wake-skip apply? An interactive window (`concierge`/`design`) is left
 /// for the human on an ordinary (peer) wake — but an operator message (`include_interactive`) DOES wake
 /// it (operator directive: no up-to-interval wait for the concierge). Pure, so the policy is unit-tested
@@ -2339,13 +2358,18 @@ fn interactive_role_skips_wake(role: &str, include_interactive: bool) -> bool {
     !include_interactive && matches!(role, "concierge" | "design")
 }
 
-/// `fleet wake <name> [--operator-message]`: nudge an idle agent's loop into an immediate tick. The
-/// standalone entry point for a delivery path that writes an inbox file WITHOUT calling `send` (the
-/// slack-bridge inbound operator-message path). Exits 0 whether it woke or skipped — a skip (stopped /
-/// mid-tick / no window) is a valid outcome, not a failure, and `/loop` is the safety net. Prints the
-/// outcome so the caller (and logs) can see whether the nudge landed.
-fn wake_cmd(fleet: &Fleet, name: &str, operator_message: bool) {
-    match wake_window(fleet, name, operator_message) {
+/// `fleet wake <name> [--operator-message] [--session <s>]`: nudge an idle agent's loop into an
+/// immediate tick. The standalone entry point for a delivery path that writes an inbox file WITHOUT
+/// calling `send` (the slack-bridge inbound operator-message path). Exits 0 whether it woke or skipped —
+/// a skip (stopped / mid-tick / no window) is a valid outcome, not a failure, and `/loop` is the safety
+/// net. Prints the outcome so the caller (and logs) can see whether the nudge landed.
+///
+/// The bridge daemon runs OUTSIDE tmux (no `$TMUX`), so a session must be given to reach the tmux server
+/// — always target an explicit session here (`session`, default `main` when the caller passes none),
+/// which also skips the `in_tmux()` caller-env gate. Without this the wake silently no-ops from the
+/// bridge (the guard short-circuits before the operator-message logic — the bug found in the field).
+fn wake_cmd(fleet: &Fleet, name: &str, operator_message: bool, session: &str) {
+    match wake_window(fleet, name, operator_message, Some(session)) {
         WakeOutcome::Woke => println!("  ↑ woke '{name}' (immediate tick)"),
         WakeOutcome::Skipped(why) if wake_skip_is_terminal(why) => eprintln!(
             "  ⚠ NOT woken: {why} — '{name}' loop has EXITED; its inbox message will sit UNREAD until \
@@ -2375,8 +2399,26 @@ fn wake_cmd(fleet: &Fleet, name: &str, operator_message: bool) {
 ///
 /// A recipient absent from the registry is still nudged if it has a live window (matches `send`'s
 /// "deliver even if not yet registered" behavior); only an explicit `stopped` status suppresses it.
-fn wake_window(fleet: &Fleet, to: &str, include_interactive: bool) -> WakeOutcome {
-    if !in_tmux() {
+///
+/// `session_override`: `None` means "resolve the current session from the tmux client" — the agent→agent
+/// path, where the caller IS inside a tmux pane (so `$TMUX` is set and `display-message` works). `Some(s)`
+/// targets the tmux SERVER's session `s` DIRECTLY and skips the `in_tmux()` hard-gate — for a caller that
+/// is OUTSIDE tmux (the slack-bridge daemon shelling `fleet wake`: its process has no `$TMUX`, so the
+/// `in_tmux()` gate would have short-circuited to "not in a tmux session" and the wake would silently
+/// no-op before any operator-message logic ran — the bug concierge found). `tmux list-windows`/`send-keys
+/// -t <session>:<window>` work fine from outside tmux against a named session on the running server; only
+/// `display-message -p '#S'` (client-relative) needs an attached client, which is exactly what
+/// `session_override` lets us bypass.
+fn wake_window(
+    fleet: &Fleet,
+    to: &str,
+    include_interactive: bool,
+    session_override: Option<&str>,
+) -> WakeOutcome {
+    // With an explicit session we address the tmux SERVER directly (no attached client needed), so the
+    // `in_tmux()` caller-env gate does NOT apply. Without one, keep the original guard: an agent→agent
+    // send from a non-tmux context has no server/session to resolve and correctly skips.
+    if wake_needs_tmux_client_and_lacks_it(session_override.is_some(), in_tmux()) {
         return WakeOutcome::Skipped("not in a tmux session");
     }
     if fleet.stopfile(to).exists() {
@@ -2394,7 +2436,11 @@ fn wake_window(fleet: &Fleet, to: &str, include_interactive: bool) -> WakeOutcom
             return WakeOutcome::Skipped("interactive role — left for the human");
         }
     }
-    let session = tmux_current_session();
+    // An explicit session targets the server directly; otherwise resolve the caller's current session.
+    let session = match session_override {
+        Some(s) => s.to_string(),
+        None => tmux_current_session(),
+    };
     if !tmux_windows(&session).iter().any(|w| w == to) {
         return WakeOutcome::Skipped("no live window");
     }
@@ -10228,6 +10274,30 @@ mod tests {
         assert!(!wake_skip_is_terminal("send-keys failed"));
         // An unrecognized reason defaults to transient (never falsely warns dead-letter on a live loop).
         assert!(!wake_skip_is_terminal("some future reason"));
+    }
+
+    #[test]
+    fn wake_tmux_gate_skips_only_without_a_session_and_outside_tmux() {
+        // The bug fix: an explicit session (the `fleet wake --session` path the slack-bridge daemon uses
+        // from OUTSIDE tmux) must NOT be gated out by the caller's missing `$TMUX`. Only the no-session +
+        // not-in-tmux combination skips (an agent→agent send from a non-tmux context, correctly).
+        // has_session_override / caller_in_tmux:
+        assert!(
+            wake_needs_tmux_client_and_lacks_it(false, false),
+            "no session + caller outside tmux → skip (agent→agent, no server to target)"
+        );
+        assert!(
+            !wake_needs_tmux_client_and_lacks_it(true, false),
+            "EXPLICIT SESSION + caller outside tmux → PROCEED (the bridge case — the bug this fixes)"
+        );
+        assert!(
+            !wake_needs_tmux_client_and_lacks_it(false, true),
+            "no session but caller IS in tmux → proceed (resolve current session)"
+        );
+        assert!(
+            !wake_needs_tmux_client_and_lacks_it(true, true),
+            "explicit session + in tmux → proceed"
+        );
     }
 
     #[test]

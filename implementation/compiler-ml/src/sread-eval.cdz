@@ -6,7 +6,7 @@
 /// `run-src(s)` returns `Option(Int64)`: `Some v` = the program ran to `v`; `None` = the ML compiler declines
 /// (ill-typed / out-of-subset). These pins are the executable proof that the reader + pipeline agree on the
 /// integer/bool subset, and they guard it as the reader/pipeline evolve.
-import { read-source } from "sread"
+import { read-source, has-illwidth-marker } from "sread"
 
 import { is-bool-at, all-defs-well-scoped } from "infer-db"
 
@@ -25,7 +25,7 @@ def run-src(s: String) = match read-source(s) with
     // WHOLE-PROGRAM SCOPE check FIRST: an unbound name in an UNCALLED sibling def is still a hard reject (rcdzc
     // CDZ0101), but the demand-driven run only resolves main's reachable set — so require EVERY def body to be
     // WELL-SCOPED (no unbound name) before running, else DECLINE (matches the oracle's whole-program reject).
-    (if all-defs-well-scoped(tree) then
+    (if all-defs-well-scoped(tree) and (if has-illwidth-marker(tree) then false else true) then
       (match run-of-db(db-of(tree), root) with | (_, v) => v)
      else Option.None(unit))
 
@@ -38,7 +38,7 @@ def run-src-typed(s: String) = match read-source(s) with
   | (root, tree) =>
     // Same whole-program scope check as run-src (this is the entry `cdz run-ml` calls, so the differential's
     // gap1 fix lives HERE): an unbound name in an uncalled sibling def declines, matching the oracle.
-    (if all-defs-well-scoped(tree) then
+    (if all-defs-well-scoped(tree) and (if has-illwidth-marker(tree) then false else true) then
       (match run-of-db(db-of(tree), root) with
         | (_, Option.Some(v)) => Option.Some((v, if is-bool-at(tree, root, root) then 1 else 0))
         | (_, Option.None(_)) => Option.None(unit) : Option(Tuple(Int64, Int64)))
@@ -167,6 +167,30 @@ def se-let-negative-literal-binder-declines() =
   match run-src("(do (def (main) (let ((-1 5)) 42)) (export main))") with
     | Option.Some(_) => trap("a negative-literal let-binder must DECLINE (CDZ0210), not run to 42")
     | Option.None(_) => unit
+
+@test
+def se-type-decl-bad-int-width-declines() =
+  // reject-path gaps 3/4: an INVALID int/float width in a type-decl payload is ill-formed (rcdzc CDZ0302),
+  // regardless of whether the ctor is used. `(Int -8)` width ∉ 1..=64. The reader records an `__illwidth__`
+  // marker → run-src declines (codegen-light: a single def lookup, vs a ctor-table fold that broke the guest).
+  match run-src("(do (type T (Mk (Int -8))) (def (main) 0) (export main))") with
+    | Option.Some(_) => trap("an ill-formed int width in a type-decl payload must DECLINE (CDZ0302)")
+    | Option.None(_) => unit
+
+@test
+def se-type-decl-bad-float-width-declines() =
+  // gap 3: a non-admitted FLOAT width `(Float 8)` (∉ {32,64}) in a type-decl payload → CDZ0302.
+  match run-src("(do (type T (Mk (Float 8))) (def (main) 0) (export main))") with
+    | Option.Some(_) => trap("a non-admitted float width in a type-decl payload must DECLINE (CDZ0302)")
+    | Option.None(_) => unit
+
+@test
+def se-type-decl-valid-width-still-runs() =
+  // complement (guard against over-rejection): a VALID int width `(Int 8)` in a type-decl payload is accepted
+  // by the oracle (main runs to 0) — the width check must NOT decline it. (Float 32 is the valid float twin.)
+  match run-src("(do (type T (Mk (Int 8))) (def (main) 0) (export main))") with
+    | Option.Some(v) => (if v == 0 then unit else trap("valid (Int 8) type-decl payload → main runs 0"))
+    | Option.None(_) => trap("a valid-width type-decl payload must NOT block the run")
 
 @test
 def se-let-multi-binding() =
