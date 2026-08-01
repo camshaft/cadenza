@@ -515,17 +515,22 @@
            match; this pins the `<=` clause + the Name/Int leaves, the load-bearing shapes.)")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Add) (Le))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       ; a minimal Ast mirror (the metaprogramming Ast sum's relevant variants for the arith fragment)
       (type Ast (AName String) (AInt Int64) (AList (List Ast)))
+      (def (op-eq (: a HeadOp) (: b HeadOp))
+        (match a
+          ((HeadOp.Add) (match b ((HeadOp.Add) true) (_ false)))
+          ((HeadOp.Le)  (match b ((HeadOp.Le)  true) (_ false)))))
       (def (term-eq (: a Term) (: b Term))
         (match a
           ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
           ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
-          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Head o)   (match b ((Term.Head p) (op-eq o p)) (_ false)))
           ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
-      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
-      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Add) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Le) a) b))
       ; the param environment: a name → its Var index. Minimal here (only `x` at index 0).
       (def (var-of (: name String)) (if (= name "x") 0 (- 0 1)))
       ; DENOTE a leaf: a name → Var, an int → Num. (A non-arith leaf is out of the fragment; here total.)
@@ -548,10 +553,11 @@
               (_ (Term.Num (- 0 1)))))
           (_ (denote-leaf a))))
       (export (. Term *))
+      (export (. HeadOp *))
       (export (. Ast *))
       (export term-eq add le denote)))
   (input  (do
-            (import "bounds" (Term Ast term-eq add le denote))
+            (import "bounds" (HeadOp Term Ast term-eq add le denote))
             (def (main)
               ; the recorded predicate `(<= x 100)` as an Ast
               (let ((pred (Ast.AList (list (Ast.AName "<=") (Ast.AName "x") (Ast.AInt 100)))))

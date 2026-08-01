@@ -560,6 +560,70 @@ pub fn compile_provider(
     })
 }
 
+/// Like [`compile_provider`], but PERSISTS the JIT'd artifact (the wasmtime "cwasm") to `cache_dir`,
+/// content-addressed by (`closure_hash` ‖ engine-compat fingerprint), and REUSES it across process/gate
+/// invocations. The provider JIT (`Component::new` of the whole import-closure — the ~1360-def self-host
+/// closure) is ~270s cold; deserializing a persisted cwasm is a load+relocate (~seconds), so an UNCHANGED
+/// shared closure skips the re-JIT entirely on the next gate — the way the value-heap runtime store already
+/// content-addresses wasm (pr-sync's ask, operator-flagged gate slowness).
+///
+/// FLOW: look for `<cache_dir>/<closure_hash>.<engine_fp>.cwasm` → `Component::deserialize` (validated against
+/// this engine; a stale/mismatched artifact returns Err → treated as a MISS, never a miscompile). MISS →
+/// `Component::new` (JIT) then `serialize` + best-effort persist. The engine fingerprint in the key means a
+/// wasmtime/`Config`/target change auto-invalidates (the old key just isn't found). SAFETY: `deserialize` is
+/// `unsafe` only in the "trust the bytes came from wasmtime" sense — satisfied because WE wrote them to our own
+/// content-addressed cache and `deserialize` re-validates compatibility. Best-effort throughout: any cache I/O
+/// failure falls back to a plain JIT (no correctness impact — "no cache").
+pub fn compile_provider_cached(
+    provider_bytes: &[u8],
+    interface: impl Into<String>,
+    cache_dir: &std::path::Path,
+    closure_hash: &str,
+) -> Result<CompiledProvider> {
+    let engine = engine();
+    let interface = interface.into();
+    let cwasm_path = cache_dir.join(format!("{closure_hash}.{}.cwasm", engine_fp(&engine)));
+
+    // HIT: a persisted cwasm for this exact closure + engine — deserialize (fast) instead of re-JIT. Any
+    // failure (missing / truncated / engine-incompatible) drops through to the JIT+persist miss path.
+    if let Ok(bytes) = std::fs::read(&cwasm_path) {
+        // SAFETY: `bytes` were produced by `Component::serialize` below and written to our own
+        // content-addressed cache; `deserialize` re-validates them against this engine (version/Config/target)
+        // and returns Err on any mismatch, which we treat as a miss.
+        if let Ok(component) = unsafe { Component::deserialize(&engine, &bytes) } {
+            return Ok(CompiledProvider {
+                component,
+                interface,
+            });
+        }
+    }
+
+    // MISS: JIT the provider, then best-effort persist its serialized cwasm (atomic temp+rename) so the next
+    // gate hits. A persist failure is silently ignored — the run still has its JIT'd Component.
+    let component = Component::new(&engine, provider_bytes)
+        .map_err(|e| anyhow!("invalid provider component: {e}"))?;
+    if let Ok(serialized) = component.serialize() {
+        let _ = std::fs::create_dir_all(cache_dir);
+        let tmp = cache_dir.join(format!(
+            ".{closure_hash}.{}.cwasm.{}.tmp",
+            engine_fp(&engine),
+            std::process::id()
+        ));
+        if std::fs::write(&tmp, &serialized).is_ok() && std::fs::rename(&tmp, &cwasm_path).is_err()
+        {
+            // Windows/rename-over-existing or a race — best-effort remove-dest + retry, else drop the temp.
+            let _ = std::fs::remove_file(&cwasm_path);
+            if std::fs::rename(&tmp, &cwasm_path).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+    }
+    Ok(CompiledProvider {
+        component,
+        interface,
+    })
+}
+
 /// Like [`compile_composition`], but the peers are ALREADY-JIT'd [`CompiledProvider`]s (shared across
 /// compositions) — so only the (thin) consumer is JIT'd here. This is the per-project-JIT-once path: JIT each
 /// shared provider ONCE ([`compile_provider`]), then compose every file's consumer against the shared

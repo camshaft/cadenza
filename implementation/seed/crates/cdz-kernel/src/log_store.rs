@@ -285,6 +285,7 @@ mod tests {
                 target: "https://ok.host/x".into(),
                 idempotency_key: Hash::of(b"k"),
                 deadline_ms: None,
+                token: None,
             },
         }
     }

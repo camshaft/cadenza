@@ -161,6 +161,21 @@ fn opt_ms_form(b: &mut Builder, ms: Option<u64>) -> StructId {
     }
 }
 
+/// The reducer's optional continuation token (§19e): `(none)` | `(token <bytes>)`.
+fn opt_bytes_form(b: &mut Builder, token: Option<&[u8]>) -> StructId {
+    match token {
+        None => {
+            let head = b.name("none");
+            b.list(vec![head])
+        }
+        Some(bytes) => {
+            let head = b.name("token");
+            let v = bytes_leaf(b, bytes);
+            b.list(vec![head, v])
+        }
+    }
+}
+
 fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
     match body {
         EventBody::Genesis { reducer } => {
@@ -184,6 +199,7 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             target,
             idempotency_key,
             deadline_ms,
+            token,
         } => {
             let head = b.name("dispatched");
             let idv = u64_leaf(b, id.0);
@@ -191,7 +207,8 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             let t = str_leaf(b, target);
             let idem = hash_form(b, idempotency_key);
             let dl = opt_ms_form(b, *deadline_ms);
-            b.list(vec![head, idv, k, t, idem, dl])
+            let tok = opt_bytes_form(b, token.as_deref());
+            b.list(vec![head, idv, k, t, idem, dl, tok])
         }
         EventBody::EffectResult { id, result } => {
             let head = b.name("effect-result");
@@ -375,6 +392,19 @@ fn read_opt_ms(a: &Arenas, id: StructId) -> Result<Option<u64>, EventAstError> {
     }
 }
 
+fn read_opt_bytes(a: &Arenas, id: StructId) -> Result<Option<Vec<u8>>, EventAstError> {
+    match head_of(a, id)? {
+        "none" => Ok(None),
+        "token" => {
+            let [v] = form(a, id, "token")? else {
+                return Err(shape("token arity"));
+            };
+            Ok(Some(read_bytes(a, *v)?))
+        }
+        _ => Err(shape("unknown token tag")),
+    }
+}
+
 fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
     Ok(match head_of(a, id)? {
         "genesis" => {
@@ -400,7 +430,7 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
             }
         }
         "dispatched" => {
-            let [idv, k, t, idem, dl] = form(a, id, "dispatched")? else {
+            let [idv, k, t, idem, dl, tok] = form(a, id, "dispatched")? else {
                 return Err(shape("dispatched arity"));
             };
             EventBody::Dispatched {
@@ -409,6 +439,7 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
                 target: read_str(a, *t)?,
                 idempotency_key: read_hash(a, *idem)?,
                 deadline_ms: read_opt_ms(a, *dl)?,
+                token: read_opt_bytes(a, *tok)?,
             }
         }
         "effect-result" => {
@@ -516,6 +547,7 @@ mod tests {
                     target: "https://ok.host/p".into(),
                     idempotency_key: h,
                     deadline_ms: Some(12345),
+                    token: Some(b"resume-tok".to_vec()),
                 },
             },
             Event {
@@ -527,6 +559,7 @@ mod tests {
                     target: "cargo test".into(),
                     idempotency_key: h,
                     deadline_ms: None,
+                    token: None,
                 },
             },
             Event {

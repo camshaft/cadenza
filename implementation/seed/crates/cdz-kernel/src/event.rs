@@ -54,6 +54,14 @@ pub enum EventBody {
         /// Absolute deadline for the auto-timeout (§9d), as a wall-clock ms anchor (§16c-S5) so it
         /// survives failover/migration — the reducer still never reads the clock.
         deadline_ms: Option<u64>,
+        /// The reducer's OWN opaque continuation token for this effect, if it supplied one (§19e). A WASM
+        /// `ComponentReducer` correlates continuations by this token, never by the kernel `EffectId`
+        /// (which stays kernel-internal). Recording it HERE — in the durable Dispatched frame — is the
+        /// §19e hard guard: the `EffectId ↔ token` bridge map is session state that MUST rebuild from the
+        /// LOG on recovery, so the token can't live only in a volatile map. `None` for effects from a
+        /// reducer that doesn't use a token (e.g. the in-process Rust `Reducer` trait), which is every
+        /// dispatch until the wasm-reducer bridge (§19e slice 2) populates it.
+        token: Option<Vec<u8>>,
     },
 
     /// The result of a previously-`Dispatched` effect, correlated by `id` (§16c-S4). The reducer
@@ -248,12 +256,14 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
             let target = c.string()?;
             let idempotency_key = Hash::from_bytes(c.hash()?);
             let deadline_ms = decode_opt_u64(c)?;
+            let token = decode_opt_bytes(c)?;
             EventBody::Dispatched {
                 id,
                 kind,
                 target,
                 idempotency_key,
                 deadline_ms,
+                token,
             }
         }
         3 => EventBody::EffectResult {
@@ -308,6 +318,22 @@ fn decode_opt_u64(c: &mut Cursor) -> Result<Option<u64>, DecodeError> {
         t => {
             return Err(DecodeError::BadTag {
                 field: "opt_u64",
+                tag: t,
+            })
+        }
+    })
+}
+
+fn decode_opt_bytes(c: &mut Cursor) -> Result<Option<Vec<u8>>, DecodeError> {
+    Ok(match c.u8()? {
+        0 => None,
+        1 => {
+            let len = c.len()?;
+            Some(c.take(len)?.to_vec())
+        }
+        t => {
+            return Err(DecodeError::BadTag {
+                field: "opt_bytes",
                 tag: t,
             })
         }
@@ -377,6 +403,7 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
             target,
             idempotency_key,
             deadline_ms,
+            token,
         } => {
             out.push(2);
             out.extend_from_slice(&id.0.to_le_bytes());
@@ -384,6 +411,7 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
             encode_str(target, out);
             out.extend_from_slice(idempotency_key.as_bytes());
             encode_opt_u64(*deadline_ms, out);
+            encode_opt_bytes(token.as_deref(), out);
         }
         EventBody::EffectResult { id, result } => {
             out.push(3);
@@ -433,6 +461,19 @@ fn encode_opt_u64(v: Option<u64>, out: &mut Vec<u8>) {
         Some(n) => {
             out.push(1);
             out.extend_from_slice(&n.to_le_bytes());
+        }
+        None => out.push(0),
+    }
+}
+
+/// Optional opaque byte string (a reducer's continuation token, §19e): `0` = None, `1` + u64-len +
+/// bytes = Some. Same present-tag + length-prefix shape as the other opt/str encoders.
+fn encode_opt_bytes(v: Option<&[u8]>, out: &mut Vec<u8>) {
+    match v {
+        Some(b) => {
+            out.push(1);
+            out.extend_from_slice(&(b.len() as u64).to_le_bytes());
+            out.extend_from_slice(b);
         }
         None => out.push(0),
     }
@@ -503,6 +544,7 @@ mod tests {
                 target: "https://ok.host/p".into(),
                 idempotency_key: Hash::from_bytes([0xCDu8; 32]),
                 deadline_ms: Some(1000),
+                token: Some(b"step-1".to_vec()),
             },
         }
     }
@@ -527,6 +569,9 @@ mod tests {
         //   target="https://ok.host/p" → its 17 UTF-8 bytes
         //   idempotency_key=0xCD.. → 32×0xCD(205)           (Hash)
         //   deadline_ms=Some(1000) → 1, then 1000 as u64 LE (232,3,0,0,0,0,0,0)
+        //   token=Some("step-1")  → 1, then 6 as u64 LE, then "step-1" (§19e — CONSCIOUS format bump:
+        //                            the Dispatched frame now carries the reducer's continuation token
+        //                            so the EffectId↔token map rebuilds from the log on recover)
         let expected: &[u8] = &[
             42, 0, 0, 0, 0, 0, 0, 0, // seq
             1, // cause: Some
@@ -543,6 +588,8 @@ mod tests {
             205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205,
             205, // idempotency_key hash
             1, 232, 3, 0, 0, 0, 0, 0, 0, // deadline_ms: Some(1000)
+            1, 6, 0, 0, 0, 0, 0, 0, 0, // token: Some, len 6
+            115, 116, 101, 112, 45, 49, // "step-1"
         ];
         assert_eq!(
             golden_event().encode(),
@@ -553,7 +600,7 @@ mod tests {
         // And the content-address hash the log/cause-edges depend on is pinned too.
         assert_eq!(
             golden_event().hash().to_hex(),
-            "65adb9660a20b1f0fa4b6457e8acc82233c37783d7e5658211e782ab73de007b",
+            "e9b6ff706b67c632eb61a64be8522ec2f613455337a0cbf46e700074b428aee0",
             "FROZEN event hash changed — persisted `cause` edges + content addresses would break."
         );
     }
@@ -636,6 +683,7 @@ mod tests {
                     target: "https://ok.host/p".into(),
                     idempotency_key: h,
                     deadline_ms: Some(12345),
+                    token: Some(b"resume-tok".to_vec()),
                 },
             },
             Event {
@@ -647,6 +695,7 @@ mod tests {
                     target: "cargo test".into(),
                     idempotency_key: h,
                     deadline_ms: None,
+                    token: None,
                 },
             },
             Event {
