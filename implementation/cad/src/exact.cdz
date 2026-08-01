@@ -533,9 +533,17 @@ def zero-dimensioned-primitives-have-a-well-formed-degenerate-box-and-are-not-pr
   if v3-eq(aabbr-size(bounding-box(zc)), zero)
      and v3-eq(aabbr-size(bounding-box(zs)), zero)
      and v3-eq(aabbr-size(bounding-box(zy)), zero) then
-    // and a zero-size cube survives simplify-r as a Cube node (not pruned to Empty like a dead branch).
+    // and each degenerate primitive survives simplify-r as its OWN primitive node (not pruned to Empty like a
+    // dead branch) — assert ALL THREE variants, since a bug pruning only sphere/cylinder degenerates would slip
+    // a cube-only check.
     (match simplify-r(zc) with
-      | Solid.Cube(_) => unit
+      | Solid.Cube(_) =>
+        (match simplify-r(zs) with
+          | Solid.Sphere(_) =>
+            (match simplify-r(zy) with
+              | Solid.Cylinder(_, _) => unit
+              | _ => trap("a zero-size Cylinder must survive simplify-r as a Cylinder node, not be pruned to Empty"))
+          | _ => trap("a zero-radius Sphere must survive simplify-r as a Sphere node, not be pruned to Empty"))
       | _ => trap("a zero-size Cube must survive simplify-r as a Cube node, not be pruned to Empty"))
   else trap("a zero-dimensioned primitive must bound to a well-formed zero box (0,0,0), not an inverted one")
 
