@@ -4399,7 +4399,19 @@ fn run_test(args: &TestArgs) -> ExitCode {
     // just means every file falls back to its own per-file compile, byte-identical to before. This ALSO
     // persists each closure group's provider to the cross-invocation cache — which is exactly the warm a
     // subsequent per-file sweep reuses.
+    let precompile_start = std::time::Instant::now();
     let precompiled = precompile_tests_per_file(&files);
+    // `--report-time`: the PRECOMPILE phase (per-closure emit — `EmitTestsComposed` on a `.provider.wasm` MISS
+    // is the heavy ~270s+ closure LOWER; `EmitTestsConsumerOnly` on a HIT is cheap — plus the `Query::
+    // ClosureHash` layout pass). Distinct from the provider JIT below: this pins whether the warm-once cost is
+    // the EMIT (provider-cache miss) or the JIT (cwasm miss), the exact split pr-sync needs.
+    if args.report_time {
+        println!(
+            "⏱ precompile: {} shared-closure provider(s) emitted/loaded in {}ms",
+            precompiled.providers.len(),
+            precompile_start.elapsed().as_millis()
+        );
+    }
 
     // JIT each shared-closure PROVIDER ONCE for the whole project, up front — then every file's composition
     // reuses the JIT'd provider `Component` instead of re-JITing it from bytes per file. `Component::new` (the
@@ -4436,6 +4448,18 @@ fn run_test(args: &TestArgs) -> ExitCode {
         })
         .collect();
 
+    // `--report-time`: the PROJECT-WIDE provider JIT/deserialize — the dominant cost, paid ONCE here (the
+    // provider-JIT-once fix) rather than per file. On a cwasm HIT this is a fast deserialize (~seconds); on a
+    // MISS it's the full ~270s JIT. Printed BEFORE the `--warm-only` return so a warming run ALSO shows it —
+    // the gate warms via `--warm-only`, so this line is how pr-sync/the operator see whether the warm step
+    // itself HIT the cwasm (fast) or had to re-JIT (slow) it.
+    if args.report_time && !jit_providers.is_empty() {
+        println!(
+            "⏱ provider JIT: {} shared closure(s) JIT'd/loaded once in {}ms",
+            jit_providers.len(),
+            provider_jit_start.elapsed().as_millis()
+        );
+    }
     // `--warm-only`: the emit cache (`.provider.wasm`, precompile above) AND the JIT cache (`.cwasm`, the
     // provider-JIT just above) are now both persisted. Stop here WITHOUT running the tests — a subsequent
     // per-file sweep HITS both (skips the closure emit AND the ~270s re-JIT). Report what warmed.
@@ -4448,15 +4472,6 @@ fn run_test(args: &TestArgs) -> ExitCode {
             files.len()
         );
         return ExitCode::SUCCESS;
-    }
-    // `--report-time`: the PROJECT-WIDE provider JIT — the dominant cost, paid ONCE here (the provider-JIT-once
-    // fix) rather than per file. Emitting it up front makes the "big shared JIT happens once" explicit.
-    if args.report_time && !jit_providers.is_empty() {
-        println!(
-            "⏱ provider JIT: {} shared closure(s) JIT'd once in {}ms",
-            jit_providers.len(),
-            provider_jit_start.elapsed().as_millis()
-        );
     }
     let pre = PrecompiledRun {
         precompiled: &precompiled,
