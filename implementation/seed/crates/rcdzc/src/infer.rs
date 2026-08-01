@@ -1666,6 +1666,16 @@ fn non_type_annotation_message(db: &mut Db, ty_expr: StructId, lead: &str) -> St
                 "`{name}` is a type constructor — it needs a type argument here, e.g. `({name} {placeholder})`"
             )
         }
+        // A bare WIDTH-FAMILY value ctor — `Int` / `UInt` / `Float`. It builds a SIZED type from a width
+        // (`(Int 64)` ≡ `Int64`), so a bare `Int` is a value; name the concrete sized default the author
+        // almost certainly meant + list the other widths, the rustc "perhaps you meant `i32`" analogue.
+        Some(name) if bare_width_ctor_default_type(db, ty_expr).is_some() => {
+            let (default, widths) = bare_width_ctor_default_type(db, ty_expr).unwrap();
+            format!(
+                "`{name}` is a width constructor, not a type — {lead} requires a sized type; use `{default}` \
+                 (or another width: {widths})"
+            )
+        }
         Some(name) => format!(
             "`{name}` is a value, not a type — {lead} requires a type (e.g. annotate `(: value Int64)`)"
         ),
@@ -1708,6 +1718,31 @@ fn bare_type_ctor_needs_argument(db: &mut Db, ty_expr: StructId) -> Option<(Stri
         return None;
     }
     Some((td.name.clone(), td.params.join(" ")))
+}
+
+/// When the bare NAME at `ty_expr` is one of the WIDTH-FAMILY *value* constructors — `Int` / `UInt` /
+/// `Float` — return `(default, widths)`: the concrete default-width TYPE a user almost certainly meant
+/// (`Int64` / `UInt64` / `Float64`) plus a short list of the other sized widths in that family. These
+/// prelude names are value constructors that BUILD a sized type from a width literal (`(Int 64)` ≡ the
+/// `Int64` type), so a bare `(: a Int)` resolves to a VALUE, not a type — the near-universal newcomer
+/// reflex (`int`/`float` name a type in most other languages). Naming the sized default + offering it as
+/// a Replace fix turns the opaque "`Int` is a value, not a type" into a one-shot repair, the direct
+/// analogue of rustc's "help: perhaps you meant `i32`" for a bare `int`. `None` for any other name (an
+/// ordinary value, or a type constructor handled by `bare_type_ctor_needs_argument`). Keyed on the
+/// `(meta apply)` prim of the resolved binding — NOT the spelling — so a shadowing `(let ((Int …)) …)`
+/// never mis-fires (it resolves to the local, whose prim is not a width ctor).
+fn bare_width_ctor_default_type(
+    db: &mut Db,
+    ty_expr: StructId,
+) -> Option<(&'static str, &'static str)> {
+    // A bare NAME only — a compound `(Int 64)` is already a valid type and never reaches this reject path.
+    db.ast.as_name(ty_expr)?;
+    match crate::eval::meta_apply_of(db, ty_expr) {
+        Some(crate::resolved::Prim::IntCtor) => Some(("Int64", "`Int32`, `Int16`, `Int8`")),
+        Some(crate::resolved::Prim::UIntCtor) => Some(("UInt64", "`UInt32`, `UInt16`, `UInt8`")),
+        Some(crate::resolved::Prim::FloatCtor) => Some(("Float64", "`Float32`")),
+        _ => None,
+    }
 }
 
 /// Validate a NON-type-denoting annotation type expression `ty_expr` (one `typeval_of` rejected), pushing
@@ -1827,13 +1862,18 @@ fn validate_non_type_annotation(
         if let Some((arg, msg)) = non_type_argument_message(db, ty_expr) {
             out.push(Reject::coded(Code::TypeMismatch, format!("{lead}: {msg}")).at(arg));
         } else {
-            out.push(
-                Reject::coded(
-                    Code::TypeMismatch,
-                    non_type_annotation_message(db, ty_expr, lead),
-                )
-                .at(ty_expr),
-            );
+            let mut reject = Reject::coded(
+                Code::TypeMismatch,
+                non_type_annotation_message(db, ty_expr, lead),
+            )
+            .at(ty_expr);
+            // A bare width ctor (`Int`/`UInt`/`Float`) carries a one-shot Replace to the sized default —
+            // applying `Int`→`Int64` clears the fault. Heuristic (the author may have wanted a narrower
+            // width), but the default retype type-checks in one edit.
+            if let Some((default, _)) = bare_width_ctor_default_type(db, ty_expr) {
+                reject = reject.with_fix(Fix::replace_heuristic(ty_expr, default));
+            }
+            out.push(reject);
         }
     }
 }
