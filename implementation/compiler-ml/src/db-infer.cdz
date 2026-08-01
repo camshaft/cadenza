@@ -11,7 +11,8 @@
 /// semantics either way).
 import { Tree } from "parse-db"
 
-import { Typed, infer-node, ground-deferred } from "infer-db"
+import { infer-node, ground-deferred } from "infer-db"
+import { Typed } from "typed"
 
 import { Db, db-tree, typed-filled } from "db"
 

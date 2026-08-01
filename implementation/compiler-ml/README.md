@@ -87,9 +87,11 @@ source → parse → resolve → infer → lower → emit, each a memoized COLUM
   each column ON the Db (resolve/infer/lower/run-driver), reading the memoized upstream columns.
 
 **Type layer (the live monomorphic HM)**
+- `typed.cdz` — the pipeline's `Typed` type as a zero-import LEAF (the infer column's per-node type fact).
+  Extracted here so ty-bridge + infer-db share it without a cycle.
 - `ty.cdz` — Tier-1 the SOLVED-TYPE UNIVERSE (ported from rcdzc `ty.rs`): `Ty` with the Sign/Width lattice.
 - `unify-ty.cdz` — unification over `ty.cdz`'s shared `Ty` (deferred-int grounds to a concrete width sibling).
-- `ty-bridge.cdz` — the `Typed` ↔ `Ty` bridge (infer-db's `Typed` ↔ the ty.cdz universe).
+- `ty-bridge.cdz` — the `Typed` ↔ `Ty` bridge (`typed.cdz`'s `Typed` ↔ the ty.cdz universe); one home for the conversion.
 - `apply-ty.cdz` — the function-application typing step (an arrow applied to args → result type).
 
 **Integer-width foundation (hardening item 2)**

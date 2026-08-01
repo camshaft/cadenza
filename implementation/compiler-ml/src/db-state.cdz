@@ -17,7 +17,7 @@ import { Tree } from "parse-db"
 
 import { Db, db-of, fill-typed, require-typed, typed-filled } from "db"
 
-import { Typed } from "infer-db"
+import { Typed } from "typed"
 
 /// The Db STATE effect: `get` reads the current Db, `put` replaces it. One state (the whole column record).
   effect DbState =

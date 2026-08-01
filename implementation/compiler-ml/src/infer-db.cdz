@@ -18,6 +18,8 @@ import { fits-width } from "int-width"
 import { Resolved, resolve-tree, resolve-node, param-scope } from "resolve-db"
 import { Ty, IntType, Sign, Width, ty-eq, ty-fixed-int, ty-deferred-int, ground-default } from "ty"
 import { unify-ty } from "unify-ty"
+import { Typed } from "typed"
+import { typed-to-ty, typed-list-to-ty } from "ty-bridge"
 
 /// The type fact. `TInt`/`TBool` = the two ground types; `TErr` = type-level poison (unbound name / ill-typed
 /// child / operator-operand mismatch). The language stopped being purely monomorphic once comparison landed:
@@ -27,20 +29,8 @@ import { unify-ty } from "unify-ty"
 /// (`TIntW(true, 64)` = the canonical `Int64`, which every literal/arithmetic result is today — the
 /// language is still monomorphic-i64, so this is a behavior-preserving representation widening that lets
 /// widths FLOW once annotations name them). `TBool`/`TErr` unchanged.
-type Typed =
-  | TIntW(Bool, Int64)
-  | TBool
-  | TErr
-  | TFn(List(Typed), Typed)        // HIGHER-ORDER (HO-2b): a FUNCTION type in the pipeline's Typed universe —
-                                   // the concrete counterpart of ty.cdz's Ty.TyFn (bridged in ty-bridge). N-ARY
-                                   // (param types + result) matching compiler-ml's N-ary NApp. A fn-typed PARAM
-                                   // and a bare def-name-as-value (RDef) infer to a TFn; `(f x)` infers to the
-                                   // TFn's result. Threaded through ty-bridge (TyFn↔TFn, replacing HO-1's TErr
-                                   // stopgap) so a fn value survives the Typed↔Ty round-trip.
-  | TSum(Int64)                    // M2-b-2b-ii-c2 USER SUM: the pipeline counterpart of Ty.TySum(declNameId) —
-                                   // a user sum type by DECL name-id. A ctor USE (nullary or payload) + a match
-                                   // over a sum scrutinee infer to TSum; decl-identity unify (bridged to
-                                   // Ty.TySum). Replaces ii-b/ii-c1's Int64 PLACEHOLDER typing of ctor nodes.
+// `type Typed` now lives in the leaf module `typed.cdz` (imported above) — extracted so ty-bridge can import
+// it without a cycle, letting infer-db import the bridge's `typed-to-ty` instead of a local duplicate.
 
 /// The canonical integer type the monomorphic-i64 pipeline produces everywhere: signed, 64-bit. A single
 /// name so the many construct sites don't repeat the `(true, 64)` pair (and a later slice that produces a
@@ -696,24 +686,9 @@ def let-type(tcol: Map(Int64, Typed), valId: Int64, bodyId: Int64) =
 /// makes an `if` well-typed). Two integer types are equal iff SAME signedness AND width — so an `if` whose
 /// branches are different-width integers is `TErr` (they don't share a ground type), the correctness rule
 /// a later narrow-width slice relies on. Today everything is `TIntW(true, 64)`, so this is behavior-neutral.
-/// `Typed` → ty.cdz's `Ty` (a LOCAL bridge — infer-db can't import the standalone ty-bridge.cdz, which
-/// imports `Typed` from here = a cycle; so the conversion lives where `Typed` does, importing only ty.cdz).
-/// A concrete `TIntW(s,w)` → a fixed `Ty` int; Bool/Err across.
-def typed-to-ty(t: Typed) = match t with
-  | Typed.TIntW(s, w) => ty-fixed-int(s, w)
-  | Typed.TBool => Ty.TyBool
-  | Typed.TErr => Ty.TyErr
-  // HIGHER-ORDER (HO-2b): a function Typed → the shared Ty.TyFn (recursively convert params + result). This is
-  // the real TyFn↔TFn bridge that replaces HO-1's TErr stopgap — a fn value survives the Typed→Ty crossing.
-  | Typed.TFn(ps, r) => Ty.TyFn(typed-list-to-ty(ps, 0), typed-to-ty(r))
-  | Typed.TSum(nm) => Ty.TySum(nm)   // M2-b-2b-ii-c2: pipeline sum → shared Ty.TySum (decl name-id across)
-
-/// Convert a param-type list `Typed → Ty` element-wise (index recursion) for typed-to-ty's TyFn arm.
-def typed-list-to-ty(ps: List(Typed), i: Int64) =
-  (if i == List.len(ps) then ([] : List(Ty))
-   else (match List.at(ps, i) with
-     | Option.Some(p) => List.concat(List.push([], typed-to-ty(p)), typed-list-to-ty(ps, i + 1))
-     | Option.None(_) => typed-list-to-ty(ps, i + 1)))
+// `typed-to-ty` / `typed-list-to-ty` now live in ty-bridge.cdz (imported above) — no longer a local
+// duplicate: extracting `Typed` to the leaf `typed.cdz` broke the old infer-db↔ty-bridge cycle, so the
+// conversion has ONE home (the bridge) and infer-db imports it.
 
 /// Structural type equality — now DELEGATES to ty.cdz's `ty-eq` (the shared type universe) via the local
 /// `Typed`→`Ty` bridge (convergence step ii, divergence #3): infer's if-join decides sameness with the SAME
@@ -1548,4 +1523,4 @@ def id-nmatchctor-terr-scrutinee-taints-match-pr849() =
                 | Option.Some(Typed.TErr) => unit                              // TErr scrutinee taints the match
                 | _ => trap("a TErr scrutinee must taint the whole NMatchCtor → TErr, not be masked by well-typed arms (PR#849)")))))))))
 
-export { Typed.*, infer-node, infer-tree, type-at, ground-deferred, well-typed, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type, bin-type, if-type, let-type, var-type }
+export { infer-node, infer-tree, type-at, ground-deferred, well-typed, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type, bin-type, if-type, let-type, var-type }
