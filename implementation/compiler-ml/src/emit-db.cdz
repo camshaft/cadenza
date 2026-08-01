@@ -319,6 +319,46 @@ def emit-def-body-d(params: List(Int64), bodyCore: Core, defidx: Map(Int64, Int6
 def code-section(body: Bytes) =
   section(10, Bytes.concat(b1(1), Bytes.concat(uleb(Bytes.len(body)), body)))
 
+/// int→DECIMAL string. The language has no `Int64.to-string` primitive (the compiler emits BYTES, never
+/// text), so the Text backend rolls its own via digit extraction. `0` → "0"; a negative prepends "-" to the
+/// magnitude's digits. `int-to-decimal-go` peels the least-significant digit (`n % 10`) off the accumulator
+/// and prepends its char, recursing on `n / 10` until 0.
+def digit-char(d: Int64) = match String.at("0123456789", d) with
+  | Option.Some(c) => c
+  | Option.None(_) => ""      // unreachable: d is always 0..9 (`n % 10`), but String.at is total-by-Option
+
+def int-to-decimal-go(n: Int64, acc: String) =
+  if n == 0 then acc
+  else int-to-decimal-go(n / 10, String.concat(digit-char(n % 10), acc))
+
+def int-to-decimal(n: Int64) =
+  if n == 0 then "0"
+  else (if n < 0 then String.concat("-", int-to-decimal-go(0 - n, "")) else int-to-decimal-go(n, ""))
+
+/// TARGET.TEXT backend: render a Core term to a readable S-expr-ish STRING. The SECOND backend behind the
+/// seam — its job is to PROVE the seam generalizes (a target that truly reads the neutral `Core`, not the
+/// wasm bytes) and to be a useful debug artifact (a Core dump). Exhaustive over all 11 Core variants; a
+/// `List(Core)` (call/ctor args) renders space-joined via `render-core-list`. This is the Text ARM behind
+/// `target-emit` — it NEVER declines (every well-formed Core renders), unlike the Wasm arm's emit-subset gate.
+def render-core(c: Core) = match c with
+  | Core.CNum(v, s, w) => String.concat("(num ", String.concat(int-to-decimal(v), String.concat(" ", String.concat(if s then "s" else "u", String.concat(int-to-decimal(w), ")")))))
+  | Core.CVar(b) => String.concat("(var ", String.concat(int-to-decimal(b), ")"))
+  | Core.CBin(op, s, w, l, r) => String.concat("(bin ", String.concat(int-to-decimal(op), String.concat(" ", String.concat(if s then "s" else "u", String.concat(int-to-decimal(w), String.concat(" ", String.concat(render-core(l), String.concat(" ", String.concat(render-core(r), ")")))))))))
+  | Core.CLet(b, v, body) => String.concat("(let ", String.concat(int-to-decimal(b), String.concat(" ", String.concat(render-core(v), String.concat(" ", String.concat(render-core(body), ")"))))))
+  | Core.CIf(cond, t, e) => String.concat("(if ", String.concat(render-core(cond), String.concat(" ", String.concat(render-core(t), String.concat(" ", String.concat(render-core(e), ")"))))))
+  | Core.CCall(name, args) => String.concat("(call ", String.concat(int-to-decimal(name), String.concat(render-core-list(args), ")")))
+  | Core.CFnRef(name) => String.concat("(fnref ", String.concat(int-to-decimal(name), ")"))
+  | Core.CFnRefVar(b, args) => String.concat("(fnrefvar ", String.concat(int-to-decimal(b), String.concat(render-core-list(args), ")")))
+  | Core.CCtor(tag, args) => String.concat("(ctor ", String.concat(int-to-decimal(tag), String.concat(render-core-list(args), ")")))
+  | Core.CMatchSum(scrut, tag, binders, t, e) => String.concat("(matchsum ", String.concat(render-core(scrut), String.concat(" ", String.concat(int-to-decimal(tag), String.concat(" nbinders=", String.concat(int-to-decimal(List.len(binders)), String.concat(" ", String.concat(render-core(t), String.concat(" ", String.concat(render-core(e), ")"))))))))))
+  | Core.CMatchEnum(scrut, tag, t, e) => String.concat("(matchenum ", String.concat(render-core(scrut), String.concat(" ", String.concat(int-to-decimal(tag), String.concat(" ", String.concat(render-core(t), String.concat(" ", String.concat(render-core(e), ")"))))))))
+
+/// Render a `List(Core)` (call/ctor/fnrefvar args) as space-prefixed renders: `""` for empty, else
+/// ` <arg0> <arg1> …`. Each arg is preceded by a space so it appends cleanly after the head token.
+def render-core-list(args: List(Core)) = match args with
+  | [] => ""
+  | [a, .. rest] => String.concat(" ", String.concat(render-core(a), render-core-list(rest)))
+
 /// THE BACKEND SEAM (ported from rcdzc `backend/mod.rs`): the ONE point where the target-neutral front
 /// (read → resolve → infer → lower → Core) meets a target-specific back. Everything above this seam is
 /// computed the same way whatever the output; a backend is a function of the Core, SELECTED here by a
@@ -329,6 +369,8 @@ def code-section(body: Bytes) =
 /// linearizing backend, as in rcdzc where `Lir` lives inside the wasm backend only).
 type Target =
   | Wasm       // a WebAssembly core module (the Stage-0 backend; what compiler-ml emits today)
+  | Text       // a readable S-expr-ish render of the Core (the SECOND backend — proves the seam generalizes
+               // to a non-wasm target + a debug artifact; `render-core`). Bytes = the UTF-8 of the render.
   // Rust — a Rust-source arm — is the next backend to add behind this seam (mirrors rcdzc backend/rust).
 
 /// Emit a `main` Core term for a chosen `Target` — the seam dispatch (rcdzc's `backend::emit(db, target)`
@@ -337,6 +379,8 @@ type Target =
 /// emitter, with the whole pipeline above unchanged.
 def target-emit(target: Target, c: Core) = match target with
   | Target.Wasm => emit-wasm-module(c)
+  // The Text arm NEVER declines (every well-formed Core renders); its bytes are the UTF-8 of the S-expr render.
+  | Target.Text => Option.Some(String.to-bytes(render-core(c)))
 
 /// Emit a whole WASM module for a `main` Core term in the emit subset (W1 CNum; W2 CBin arith; W2b CVar/CLet).
 /// Returns `None` for an out-of-subset shape (CIf/comparison = W3) so an unsupported program declines rather
@@ -378,6 +422,11 @@ def has-value(c: Core) = match eval-core(c, (Map.empty : Map(Int64, Int64))) wit
 /// a literal, calls this, captures the returned `Bytes` raw host-side, and runs them via `wasmtime::Module`
 /// — the emit≡interpret gate compares that run-value against `run-src`'s interpreted value per corpus case.
 def emit-src(s: String) = emit-src-for(Target.Wasm, s)
+
+/// `emit-text(s)` — SOURCE → the Text-backend render, through the seam (`emit-src-for(Target.Text, s)`). The
+/// Text specialization of the seam entry, mirroring `emit-src` for Wasm. `Some(bytes)` = the UTF-8 of the
+/// Core render (never declines for a well-typed program); `None` = ill-typed (lower declined upstream).
+def emit-text(s: String) = emit-src-for(Target.Text, s)
 
 /// `emit-src-for(target, s)` — SOURCE → artifact for a chosen backend, through the SEAM: read → lower to the
 /// target-neutral Core, then dispatch to the target's emitter (`target-emit`). `emit-src` is the Wasm
@@ -711,6 +760,53 @@ def em-seam-src-for-wasm-matches-emit-src() =
         | Option.None(_) => trap("emit-src emits"))
     | Option.None(_) => trap("emit-src-for Wasm emits"))
 
+/// Target.Text backend (Core→String render) ---------------------------------------------------------
+
+@test
+def em-int-to-decimal-zero() =
+  if int-to-decimal(0) == "0" then unit else trap("int-to-decimal 0 = \"0\"")
+
+@test
+def em-int-to-decimal-positive-multidigit() =
+  if int-to-decimal(4207) == "4207" then unit else trap("int-to-decimal 4207 = \"4207\"")
+
+@test
+def em-int-to-decimal-negative() =
+  if int-to-decimal(0 - 56) == "-56" then unit else trap("int-to-decimal -56 = \"-56\"")
+
+@test
+def em-render-core-num() =
+  // a plain Int64 constant renders as (num <value> s<width>).
+  if render-core(cnum64(42)) == "(num 42 s64)" then unit else trap("render CNum(42,true,64) = (num 42 s64)")
+
+@test
+def em-render-core-bin() =
+  // (+ 1 2) as Core: CBin(43, s, 64, CNum 1, CNum 2) → (bin 43 s64 (num 1 s64) (num 2 s64)).
+  (let c = Core.CBin(43, true, 64, cnum64(1), cnum64(2)) in
+   if render-core(c) == "(bin 43 s64 (num 1 s64) (num 2 s64))" then unit else trap("render CBin"))
+
+@test
+def em-render-core-var-and-let() =
+  // CLet(7, CNum 5, CVar 7) → (let 7 (num 5 s64) (var 7)).
+  (let c = Core.CLet(7, cnum64(5), Core.CVar(7)) in
+   if render-core(c) == "(let 7 (num 5 s64) (var 7))" then unit else trap("render CLet/CVar"))
+
+@test
+def em-seam-target-text-renders() =
+  // the seam `target-emit(Target.Text, core)` returns the UTF-8 of `render-core` — a NON-wasm backend behind
+  // the SAME seam, proving the seam is target-neutral (not wasm-shaped). Bytes = String.to-bytes(render).
+  (match target-emit(Target.Text, cnum64(7)) with
+    | Option.Some(b) => (if Bytes.len(b) == String.byte-len("(num 7 s64)") then unit else trap("Text seam renders (num 7 s64)"))
+    | Option.None(_) => trap("Text arm renders (never declines)"))
+
+@test
+def em-emit-text-source-to-render() =
+  // `emit-text(s)` = SOURCE → Text render through the seam: (+ 1 2) lowers to a CBin and renders. A well-typed
+  // program never declines on the Text backend (unlike Wasm's emit-subset gate). Assert it produces bytes.
+  (match emit-text("(+ 1 2)") with
+    | Option.Some(b) => (if Bytes.len(b) > 0 then unit else trap("emit-text (+ 1 2) produces a render"))
+    | Option.None(_) => trap("emit-text (+ 1 2) renders (well-typed)"))
+
 /// emit-src (SOURCE → wasm) --------------------------------------------------------------------------
 
 @test
@@ -1001,4 +1097,4 @@ def em-defenv-funcidx-map-assigns-positions() =
           | Option.None(_) => trap("901 in map"))
       | Option.None(_) => trap("900 in map"))))
 
-export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-src-bytes, bytes-to-list, emit-instrs, emit-instrs-d, emit-call-args, lookup-idx, emit-def-body, emit-def-body-d, defenv-funcidx-map, export-section-idx, can-emit, collect-binders, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi, func-section-multi, code-section-multi, uleb-each, preamble }
+export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-text, render-core, render-core-list, int-to-decimal, emit-src-bytes, bytes-to-list, emit-instrs, emit-instrs-d, emit-call-args, lookup-idx, emit-def-body, emit-def-body-d, defenv-funcidx-map, export-section-idx, can-emit, collect-binders, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi, func-section-multi, code-section-multi, uleb-each, preamble }
