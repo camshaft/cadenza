@@ -3967,18 +3967,86 @@ fn check(paths: &Paths, profile: &str) {
     println!("\ncheck: all green ✓  (full log: {})", log.path.display());
 }
 
-/// Report cadenza-ml conformance DIFFERENTIALLY against the rcdzc/wasm oracle (never fails `check`).
-/// For each corpus case: run it through the ML compiler (`cdz run-ml`) and through the Wasm oracle, and
-/// classify — ML declined → coverage-not-yet; ML value == oracle value → agree; ML value != oracle, or
-/// ML ran where the oracle declined / vice-versa → DISAGREE (a differential miscompile). Prints
-/// `cadenza-ml: X agree / D disagree / N total`; a `D>0` prints a loud warning naming the disagreeing
-/// cases. Report-only: it warns but never reds the gate (the ML front-end is subset-only + evolving).
+/// The classification totals of a cadenza-ml differential run — returned so a caller can ENFORCE (red the
+/// gate on `disagree > 0`) or merely REPORT. `disagreements` carries the per-case detail lines; `timed_out`
+/// is true when the wall-clock budget stopped the run early (the incomplete cases counted as `not_yet`).
+struct MlConformance {
+    agree: usize,
+    disagree: usize,
+    not_yet: usize,
+    disagreements: Vec<String>,
+    timed_out: bool,
+}
+
+/// The corpus files whose programs the ML front-end actually COVERS today — the integer/bool subset the
+/// self-hosted compiler compiles (literals, binding + control flow, the numeric model, and the type-system
+/// error cases). This is the set the ENFORCING merge-gate differential runs (cost proportional to genuine
+/// coverage; v-fleet-tooling ruling (b)); the FULL `default_corpus_files` report over the whole corpus stays
+/// in local `check`/CI, where new-coverage disagreements surface and this list gets extended as the front-end
+/// grows. Keep in sync with the front-end's real subset — adding a feature (e.g. compound types) adds its
+/// corpus file here once the ML compiler agrees on it.
+// `allow(dead_code)`: the CALLER is v-fleet-tooling's gate_only-path enforcing wiring (they own the step
+// framework + CDZ_GATE_ONLY, landing against this refactor per the co-design). Remove the allow when that
+// call site lands. This half (return-value refactor + covered-subset selection) is v-compiler-ml's.
+#[allow(dead_code)]
+fn covered_corpus_files(paths: &Paths) -> Vec<PathBuf> {
+    let covered = [
+        "01-literals",
+        "02-binding-and-control",
+        "06-numeric-model",
+        "07-type-system",
+    ];
+    default_corpus_files(paths)
+        .into_iter()
+        .filter(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| covered.contains(&s))
+        })
+        .collect()
+}
+
+/// Report cadenza-ml conformance DIFFERENTIALLY against the rcdzc/wasm oracle over the FULL corpus (never
+/// fails `check` — the report form). Thin wrapper over [`compute_ml_conformance`]: compute + print
+/// `cadenza-ml: X agree / D disagree / N total` and (on `D>0`) the loud per-case warning. Byte-identical to
+/// the pre-refactor behavior. The ENFORCING merge-gate variant (v-fleet-tooling wires it) instead calls
+/// `compute_ml_conformance(paths, profile, &covered_corpus_files(paths))` and reds on `disagree > 0`.
 fn report_ml_conformance(paths: &Paths, profile: &str) {
+    let files = default_corpus_files(paths);
+    let r = compute_ml_conformance(paths, profile, &files);
+    let total = r.agree + r.disagree + r.not_yet;
+    println!(
+        "cadenza-ml: {} agree / {} disagree / {total} total ({} coverage-not-yet)",
+        r.agree, r.disagree, r.not_yet
+    );
+    if r.timed_out {
+        eprintln!(
+            "  ⚠ cadenza-ml conformance hit its wall-clock budget — reported the cases that completed; \
+             the rest counted as coverage-not-yet. Report-only, so this does NOT red the gate (it bounds \
+             a slow report step so it can't stall the whole check)."
+        );
+    }
+    if r.disagree > 0 {
+        eprintln!(
+            "  ⚠ cadenza-ml DIFFERENTIAL DISAGREEMENT(S) — the ML compiler's verdict differs from the \
+             rcdzc oracle (a differential miscompile to investigate; report-only here, ENFORCED on the \
+             covered subset in the merge gate):"
+        );
+        for d in &r.disagreements {
+            eprintln!("    • {d}");
+        }
+    }
+}
+
+/// The compute core of the cadenza-ml differential: run each corpus case in `files` through the ML compiler
+/// (`cdz run-ml`) and the Wasm/rcdzc oracle, classify (agree / disagree / coverage-not-yet), and RETURN the
+/// totals + disagreement detail — no printing, no gate side-effect. Callers choose to report (full corpus,
+/// non-fatal) or enforce (covered subset, red on `disagree > 0`). Parallel per-case, wall-clock bounded.
+fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> MlConformance {
     let tools = build_tools(paths, profile);
     // The oracle (Wasm) resolves the value-heap runtime from the content-addressed store; the ML path
     // needs no store. Default store location, same as the gate.
     let store = Some(paths.repo.join("target/cadenza-store"));
-    let files = default_corpus_files(paths);
     let records: Vec<CorpusRecord> = files
         .iter()
         .flat_map(|file| read_corpus(&tools, file))
@@ -4092,25 +4160,14 @@ fn report_ml_conformance(paths: &Paths, profile: &str) {
             _ => not_yet += 1,
         }
     }
-    let total = agree + disagree + not_yet;
-    println!(
-        "cadenza-ml: {agree} agree / {disagree} disagree / {total} total ({not_yet} coverage-not-yet)"
-    );
-    if timed_out.load(std::sync::atomic::Ordering::Relaxed) {
-        eprintln!(
-            "  ⚠ cadenza-ml conformance hit its wall-clock budget — reported the cases that completed; \
-             the rest counted as coverage-not-yet. Report-only, so this does NOT red the gate (it bounds \
-             a slow report step so it can't stall the whole check)."
-        );
-    }
-    if disagree > 0 {
-        eprintln!(
-            "  ⚠ cadenza-ml DIFFERENTIAL DISAGREEMENT(S) — the ML compiler's verdict differs from the \
-             rcdzc oracle (a differential miscompile to investigate; report-only, not yet blocking):"
-        );
-        for d in &disagreements {
-            eprintln!("    • {d}");
-        }
+    // RETURN the classification — the caller reports (full corpus, non-fatal) or enforces (covered subset,
+    // red on disagree > 0). No printing / gate side-effect here.
+    MlConformance {
+        agree,
+        disagree,
+        not_yet,
+        disagreements,
+        timed_out: timed_out.load(std::sync::atomic::Ordering::Relaxed),
     }
 }
 
