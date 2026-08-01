@@ -1,3 +1,7 @@
+/// ⚠ BANKED FUTURE-HM SPIKE — NOT wired into the pipeline (parametric-polymorphic HM prototype; the LIVE
+/// pipeline uses monomorphic deferred-int HM in infer-db.cdz). Kept + tested + banked for when the source
+/// language gains generic defs. See unify.cdz's banner for the full note. (concierge steer 2026-08-01, item-3 (b).)
+///
 /// infer-let.cdz — LET-POLYMORPHIC Hindley-Milner inference: the capstone that composes monomorphic
   /// inference (infer.cdz) with generalization/instantiation (type-scheme.cdz) so that `let`-bound values are
   /// POLYMORPHIC. The classic witness is `let id = \x. x in (id id)`: with let-polymorphism it type-checks

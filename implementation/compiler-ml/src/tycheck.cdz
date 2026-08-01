@@ -1,3 +1,7 @@
+/// ⚠ BANKED FUTURE-HM SPIKE — NOT wired into the pipeline (parametric-polymorphic HM prototype; the LIVE
+/// pipeline uses monomorphic deferred-int HM in infer-db.cdz). Kept + tested + banked for when the source
+/// language gains generic defs. See unify.cdz's banner for the full note. (concierge steer 2026-08-01, item-3 (b).)
+///
 /// tycheck.cdz — a TYPE-CHECKER for a two-type expression language (`Int` + `Bool` with arithmetic,
 /// comparison, and a conditional). The middle-end pass after parsing: assign every node a type and REJECT
 /// an ill-typed program (`1 + true`, `if 3 then …`, `if c then 1 else true`) with a diagnostic, rather

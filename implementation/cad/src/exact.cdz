@@ -1098,7 +1098,7 @@ def rotate-bounds-soundly-encloses() =
   then unit else trap("rotate of a [-1,1]^3 cube soundly bounds to [-3,3]^3 (size 6, via the L1 radius 3)")
 
 @test
-def rotate-bounds-of-an-offset-child-use-the-corner-distance-not-the-half-extent() =
+def rotate-bounds-of-an-offset-child-uses-the-corner-distance-not-the-half-extent() =
   // COMPLEMENT of `rotate-bounds-soundly-encloses`, which rotates an ORIGIN-CENTRED cube whose per-axis
   // max |coord| (1,1,1) happens to EQUAL its half-extent — so that test cannot tell the sound radius
   // (from the child's farthest-corner distance-from-origin) apart from a plausible regression that summed
