@@ -296,6 +296,84 @@ fn timeout_cancels_so_a_late_result_is_dropped() {
 }
 
 #[test]
+fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
+    // S4 recovery contract, the "or time out" half: Session::recover hands the driver open_effects it
+    // must "re-drive OR time out." This exercises the time-out path — a genuinely-outstanding dispatch
+    // (here the post-crash recovered one) is settled as TimedOut by the KERNEL (no executor returns it),
+    // the reducer's timeout continuation runs, and the outcome folds observably (live == replay).
+
+    // A reducer that fetches on inbound, and on a TIMED-OUT result records that it gave up (its §9d
+    // anti-stuck continuation). It reacts to TimedOut specifically — the timeout is a real fold input.
+    struct GiveUpOnTimeout;
+    impl Reducer for GiveUpOnTimeout {
+        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
+                    kind: EffectKind::Http,
+                    target: "https://ok.host/slow".into(),
+                    payload: None,
+                }]),
+                EventBody::EffectResult {
+                    result: EffectOutcome::TimedOut,
+                    ..
+                } => {
+                    kv.put(b"status".to_vec(), b"gave-up".to_vec());
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    // Drive to a mid-flight dispatch, then recover into a fresh session with that effect still OPEN
+    // (models a crash after Dispatched, before any result — the state a driver must resolve).
+    let reducer = GiveUpOnTimeout;
+    let mut exec = RecordingExecutor::new();
+    let mut session = Session::genesis(Hash::of(b"giveup-v1"));
+    session
+        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .unwrap();
+    let full_log = session.log().to_vec();
+    let dispatch_idx = full_log
+        .iter()
+        .position(|e| matches!(e.body, EventBody::Dispatched { .. }))
+        .unwrap();
+    let open_id = match &full_log[dispatch_idx].body {
+        EventBody::Dispatched { id, .. } => *id,
+        _ => unreachable!(),
+    };
+    // Replay only up to the dispatch → a recovered session with one open, un-resulted effect.
+    let mut restored =
+        Session::replay(full_log[..=dispatch_idx].to_vec(), &reducer).expect("replay");
+    assert_eq!(restored.open_effect_ids(), vec![open_id]);
+    assert_eq!(restored.kv().get(b"status"), None);
+
+    // Time it out (the driver's "or time out" action). It settles + the reducer's timeout continuation
+    // runs (status=gave-up), and the id is no longer open.
+    let mut exec2 = RecordingExecutor::new();
+    assert!(restored.time_out_effect(open_id, &reducer, &http_cap(), &mut exec2));
+    assert_eq!(restored.kv().get(b"status"), Some(&b"gave-up"[..]));
+    assert_eq!(restored.open_effects(), 0);
+
+    // Idempotent (§16c-S4 at-most-once): timing out an already-settled id is a no-op, and a NEVER-
+    // dispatched id is likewise false — so a timeout + a late real result can't both settle one id.
+    assert!(!restored.time_out_effect(open_id, &reducer, &http_cap(), &mut exec2));
+    assert!(!restored.time_out_effect(
+        cdz_kernel::effect::EffectId(9999),
+        &reducer,
+        &http_cap(),
+        &mut exec2
+    ));
+
+    // The timeout outcome folded observably, so a replay of the WHOLE resulting log reconstructs the
+    // same KV (the §16c-S3 determinism the observable() predicate guarantees).
+    let replayed =
+        Session::replay(restored.log().to_vec(), &reducer).expect("replay after timeout");
+    assert_eq!(replayed.kv().get(b"status"), Some(&b"gave-up"[..]));
+    assert_eq!(replayed.kv(), restored.kv());
+}
+
+#[test]
 fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
     // End-to-end durability (§16c-S1): run a session while PERSISTING every appended event to a
     // LogStore, simulate a crash right after a Dispatched is durable but before its result, then

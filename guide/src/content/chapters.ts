@@ -7,16 +7,35 @@
 import type { ComponentType } from "react";
 import { lazy } from "react";
 
+/// The site's two top-level pillars (operator-directed, 2026-08-01): "Cadenza the Language" (the
+/// interactive language tour) and "Cadenza the Platform" (the agent-kernel design concepts). A chapter
+/// belongs to exactly one pillar; `section` groups chapters WITHIN a pillar. The sidebar renders a pillar
+/// header only when more than one pillar is present, so a single-pillar site looks unchanged.
+export type Pillar = "language" | "platform";
+
+/// Human-readable pillar labels, in reading order (language first). Drives the sidebar pillar headers.
+export const PILLARS: { id: Pillar; label: string }[] = [
+  { id: "language", label: "Cadenza the Language" },
+  { id: "platform", label: "Cadenza the Platform" },
+];
+
 export interface Chapter {
   slug: string;
   title: string;
   /** One-line blurb shown in the sidebar / cards. */
   blurb: string;
-  /** Section grouping for the sidebar. */
+  /** Which top-level pillar this chapter lives under. Defaults to "language" (see `pillarOf`). */
+  pillar?: Pillar;
+  /** Section grouping for the sidebar, WITHIN a pillar. */
   section: string;
   /** Number of graded exercises in the chapter (drives the sidebar progress badge). Default 0. */
   exercises?: number;
   Component: ComponentType;
+}
+
+/// A chapter's pillar, defaulting to "language" so the existing tour needs no per-entry churn.
+export function pillarOf(c: Chapter): Pillar {
+  return c.pillar ?? "language";
 }
 
 export const CHAPTERS: Chapter[] = [
