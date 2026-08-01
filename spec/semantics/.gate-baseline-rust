@@ -729,6 +729,7 @@ pass	a List-returning closure alongside a plain export — the plain
 pass	a MAP built from generated pairs is equal regardless of insertion order (the Map analogue of set convergence)
 pass	a MATCH-dispatched mutual group with the perform in one arm and the mutual call in another folds
 pass	a MAX-fold threads a CONDITIONAL accumulator over a list with a runtime element
+pass	a MEMOIZED recursion threads a (tuple result memo-Map) through both self-call branches
 pass	a MIXED Int-and-Float Tuple closure ARG flattens + rebuilds (box-int + box-float)
 pass	a MULTI-LEVEL concat-built list SET element (n>=33) is found by a push-built equal element
 pass	a MULTI-LEVEL concat-built list map key (n>=33) is found by a push-built equal key
@@ -3391,6 +3392,7 @@ pass	an Option.expect payload consumed per iteration while the option is threade
 pass	an R-suffixed decimal literal is its exact fraction
 pass	an R-suffixed integer literal is that integer over one
 pass	an R-suffixed literal composes with exact rational arithmetic
+pass	an RPN evaluator drives a LIST-as-STACK through token dispatch — push, pop-two, apply
 pass	an SI decimal prefix scales a unit by a power of ten
 pass	an UNANNOTATED generic compose instantiates at a scalar arrow AND a String arrow in one program
 pass	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)
@@ -3575,6 +3577,7 @@ pass	an export with two tuple parameters returns a list from both
 pass	an exported closure with a narrow-arg wide-result mismatched body is rejected, not miscompiled
 pass	an exported closure with an annotation-mismatched body is rejected, not emitted invalid
 pass	an exported entry with a String parameter is called with a string argument
+pass	an expression INTERPRETER threads a Map environment through Let-shadowing scopes
 pass	an expression tree built at run time is evaluated by matching its node variants
 pass	an i16 segment round-trips at its two's-complement minimum
 pass	an identity closure composes at a single Int element type (not only String)

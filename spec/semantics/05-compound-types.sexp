@@ -17157,3 +17157,83 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 3142 Int64))
   (call   main (: 3 Int64)) (output (: 312 Int64)))
+
+; --- Little-interpreter idioms: memoized recursion, an environment-threading evaluator, and a
+; stack machine. Each threads collection state through recursion in a distinct discipline
+; (memo table, persistent scopes, list-as-stack). ---
+
+(case "a MEMOIZED recursion threads a (tuple result memo-Map) through both self-call branches"
+  (doc    "The memoization idiom (the corpus memo pins are compiler-internal): fib-memo returns (tuple result updated-Map), the SECOND self-call consumes the FIRST's memo, the hit arm short-circuits — 21 entries for fib(20) prove single evaluation per n (vs ~10946 naive calls); the result encodes memo SIZE beside the value.")
+  (input  (do
+            (def (fib-memo (: n Int64) (: memo (Map Int64 Int64)))
+              (match (Map.lookup memo n)
+                ((Option.Some v) (tuple v memo))
+                ((Option.None _u)
+                  (if (< n 2) (tuple n (Map.insert memo n n))
+                      (match (fib-memo (- n 1) memo)
+                        ((tuple a m1)
+                          (match (fib-memo (- n 2) m1)
+                            ((tuple b m2)
+                              (do
+                                (def r (+ a b))
+                                (tuple r (Map.insert m2 n r)))))))))))
+            (def (main (: n Int64))
+              (match (fib-memo n Map.empty)
+                ((tuple v memo) (+ (* 10 v) (/ (Map.len memo) 10)))))
+            (export main)))
+  (call   main (: 20 Int64))
+  (output (: 67652 Int64)))
+
+(case "an expression INTERPRETER threads a Map environment through Let-shadowing scopes"
+  (doc    "The self-hosting core idiom (the structural eval-exp is env-free): an inner Let SHADOWS x via Map.insert on the recursive call while the sibling Add operand still sees the OUTER x — the env is PERSISTENT: (let x=10 in (let x=x+1 in x) + x) = 21; a mutable-env interpreter computes 22.")
+  (input  (do
+            (type Expr (Lit Int64) (Var String) (Add (Tuple Expr Expr)) (Let (Tuple String Expr Expr)))
+            (def (eval-e (: e Expr) (: env (Map String Int64)))
+              (match e
+                ((Expr.Lit n) n)
+                ((Expr.Var name) (Option.expect (Map.lookup env name) "unbound"))
+                ((Expr.Add (tuple a b)) (+ (eval-e a env) (eval-e b env)))
+                ((Expr.Let (tuple name rhs body)) (eval-e body (Map.insert env name (eval-e rhs env))))))
+            (def (main (: k Int64))
+              (eval-e
+                (Expr.Let (tuple "x" (Expr.Lit k)
+                  (Expr.Add (tuple
+                    (Expr.Let (tuple "x" (Expr.Add (tuple (Expr.Var "x") (Expr.Lit 1)))
+                      (Expr.Var "x")))
+                    (Expr.Var "x")))))
+                Map.empty))
+            (export main)))
+  (call   main (: 10 Int64))
+  (output (: 21 Int64)))
+
+(case "an RPN evaluator drives a LIST-as-STACK through token dispatch — push, pop-two, apply"
+  (doc    "The stack-machine idiom: Num pushes, operators read the top TWO by index-from-len, REBUILD the popped stack via take-n (the persistent-list pop spelling), push the result. (2 3 + 4 x) = 20 with the runtime k mid-expression.")
+  (input  (do
+            (type Tok (Num Int64) (Plus) (Times))
+            (def (take-n (: xs (List Int64)) (: n Int64) (: i Int64) (: out (List Int64)))
+              (if (>= i n) out (take-n xs n (+ i 1) (List.push out (Option.expect (List.at xs i) "e")))))
+            (def (rpn (: ts (List Tok)) (: i Int64) (: stack (List Int64)))
+              (match (List.at ts i)
+                ((Option.Some t)
+                  (match t
+                    ((Tok.Num n) (rpn ts (+ i 1) (List.push stack n)))
+                    ((Tok.Plus)
+                      (do
+                        (def len (List.len stack))
+                        (def b (Option.expect (List.at stack (- len 1)) "b"))
+                        (def a (Option.expect (List.at stack (- len 2)) "a"))
+                        (rpn ts (+ i 1) (List.push (take-n stack (- len 2) 0 (list)) (+ a b)))))
+                    ((Tok.Times)
+                      (do
+                        (def len (List.len stack))
+                        (def b (Option.expect (List.at stack (- len 1)) "b"))
+                        (def a (Option.expect (List.at stack (- len 2)) "a"))
+                        (rpn ts (+ i 1) (List.push (take-n stack (- len 2) 0 (list)) (* a b)))))))
+                ((Option.None _u) stack)))
+            (def (main (: k Int64))
+              (match (List.at (rpn (list (Tok.Num 2) (Tok.Num k) (Tok.Plus) (Tok.Num 4) (Tok.Times)) 0 (list)) 0)
+                ((Option.Some v) v)
+                ((Option.None _u) -1)))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 20 Int64)))
