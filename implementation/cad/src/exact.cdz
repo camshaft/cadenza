@@ -520,6 +520,26 @@ def empty-has-a-degenerate-box() =
       (if v3-eq(hi, v3(rzero(), rzero(), rzero())) then unit else trap("hi zero")) else trap("lo zero"))
 
 @test
+def zero-dimensioned-primitives-have-a-well-formed-degenerate-box-and-are-not-pruned() =
+  // Edge: a DEGENERATE primitive — a Cube(0,0,0) / Sphere(0) / Cylinder(0,0) — is distinct from Solid.Empty:
+  // it's a real (if zero-volume) primitive NODE. Two invariants a future change could quietly break: (a) its
+  // bbox is a WELL-FORMED zero box (size (0,0,0) via ±half-extent of 0 through `aabbr-of-corners`), NOT an
+  // inverted/garbage box; (b) `simplify-r` must NOT prune it to Empty (it prunes dead BRANCHES, not degenerate
+  // leaves — a zero cube is still a Cube). Distinct from `empty-has-a-degenerate-box` (that bounds Solid.Empty).
+  let zc = Solid.Cube(v3(rzero(), rzero(), rzero())) in
+  let zs = Solid.Sphere(rzero()) in
+  let zy = Solid.Cylinder(rzero(), rzero()) in
+  let zero = v3(rzero(), rzero(), rzero()) in
+  if v3-eq(aabbr-size(bounding-box(zc)), zero)
+     and v3-eq(aabbr-size(bounding-box(zs)), zero)
+     and v3-eq(aabbr-size(bounding-box(zy)), zero) then
+    // and a zero-size cube survives simplify-r as a Cube node (not pruned to Empty like a dead branch).
+    (match simplify-r(zc) with
+      | Solid.Cube(_) => unit
+      | _ => trap("a zero-size Cube must survive simplify-r as a Cube node, not be pruned to Empty"))
+  else trap("a zero-dimensioned primitive must bound to a well-formed zero box (0,0,0), not an inverted one")
+
+@test
 def cylinder-box-is-diameter-by-height() =
   // a cylinder (FULL height h, radius r) spans [-r,r]×[-r,r]×[-h/2,h/2] → size (2r, 2r, h), exact.
   let h = 5 / 1 in let r = 3 / 2 in
