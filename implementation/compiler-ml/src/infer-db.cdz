@@ -866,9 +866,46 @@ def all-defs-well-scoped-go(tree: Tree, entries: List(Tuple(Int64, Int64)), i: I
   (if i == List.len(entries) then true
    else (match List.at(entries, i) with
      | Option.Some((nameId, bodyId)) =>
-         (if def-body-has-unbound(tree, nameId, bodyId) then false
+         // A def is well-scoped iff its body has no unbound name AND its PARAM LIST is LINEAR (no two params
+         // share a name — `(def (f (: x …) (: x …)) …)` is non-linear, rcdzc CDZ0102; ML silently shadowed the
+         // first `x`, computing a DIFFERENT value than the oracle allows). Both are per-def, codegen-light.
+         (if def-body-has-unbound(tree, nameId, bodyId) or def-params-nonlinear(tree, nameId) then false
           else all-defs-well-scoped-go(tree, entries, i + 1))
      | Option.None(_) => all-defs-well-scoped-go(tree, entries, i + 1)))
+
+/// The source NAME-id of a param NODE (a `Node.NVar(nm)` — see sread's param binders); `-1` if the node
+/// isn't an NVar (shouldn't happen for a param). Used to compare a def's param names for linearity.
+def param-name-of(tree: Tree, paramId: Int64) = match node-at(tree, paramId) with
+  | Option.Some(Node.NVar(nm)) => nm
+  | _ => 0 - 1
+
+/// Does the def `defName` bind TWO params with the SAME name? (`(def (f (: x …) (: x …)) …)` — non-linear,
+/// rcdzc CDZ0102.) A def has ≤4 params, so this is a tiny fixed dup-check over `def-param-ids`' name-ids —
+/// codegen-light (no whole-program fold). Returns true iff a duplicate param name is present.
+def def-params-nonlinear(tree: Tree, defName: Int64) =
+  (let ids = def-param-ids(tree, defName) in
+   names-have-dup(map-param-names(tree, ids, 0), 0))
+
+def map-param-names(tree: Tree, ids: List(Int64), i: Int64) =
+  (if i == List.len(ids) then ([] : List(Int64))
+   else (match List.at(ids, i) with
+     | Option.Some(pid) => List.concat(List.push([], param-name-of(tree, pid)), map-param-names(tree, ids, i + 1))
+     | Option.None(_) => map-param-names(tree, ids, i + 1)))
+
+/// Does `names` contain a duplicate at/after index `i`? O(n²) over ≤4 elements (fixed, cheap). A name `-1`
+/// (a non-NVar param, shouldn't occur) is skipped as a dup key so it never spuriously flags.
+def names-have-dup(names: List(Int64), i: Int64) =
+  (if i >= List.len(names) then false
+   else (match List.at(names, i) with
+     | Option.Some(nm) => (if (not (nm == (0 - 1))) and name-appears-after(names, nm, i + 1) then true
+                           else names-have-dup(names, i + 1))
+     | Option.None(_) => names-have-dup(names, i + 1)))
+
+def name-appears-after(names: List(Int64), nm: Int64, i: Int64) =
+  (if i >= List.len(names) then false
+   else (match List.at(names, i) with
+     | Option.Some(other) => (if other == nm then true else name-appears-after(names, nm, i + 1))
+     | Option.None(_) => name-appears-after(names, nm, i + 1)))
 
 /// Does the def `nameId`'s body (at `bodyId`) contain an UNBOUND name (an `RPoison`) when resolved STANDALONE
 /// in the def's own param scope? Mirrors `def-arrow-type`'s standalone resolve (param scope so a param use is

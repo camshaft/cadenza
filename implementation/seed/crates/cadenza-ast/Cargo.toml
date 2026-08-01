@@ -22,3 +22,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+num-bigint = "0.4"                # arbitrary-precision Int and the Decimal significand (the value model)
+unicode-normalization = "0.1.25" # NFC on Str/Name/Sym leaves at construction (ast::Builder)

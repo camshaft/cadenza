@@ -499,12 +499,16 @@ def read-do-form(s: String, i: Int64, root: Int64, tree: Tree) =
       else (if (kw == "export") then
              // `(export NAME)`: NAME must name a DECLARED def — an export of an unbound name is ill-formed
              // (rcdzc CDZ0101 "export names no definition"). Read the export NAME atom + check the def-table;
-             // an unbound export → decline (poison root). This is the terminal form (root already set by main,
-             // nothing overrides it after), so poisoning the root here is robust.
+             // an unbound export → decline (poison root). NOT terminal: a `do` may carry SEVERAL `(export …)`
+             // forms and rcdzc rejects if ANY names an unbound def — so a VALID export must KEEP READING
+             // (read-do-next) to check the rest, else a later unbound export `(export main) (export no-such)`
+             // slips through (gap-A-residual: it used to STOP at the first valid export → ran 42). A LATER
+             // unbound export re-enters this arm, def-body-of None → poisons the root (poison overrides the
+             // valid root threaded so far); all-valid exports thread `root` to the do's terminal `)`.
              (match scan-atom(s, skip-space(s, d1), "") with | (expName, e1) =>
                (if (root == (0 - 1)) then unsupported-at(tree, d1)          // no main seen → decline (as before)
                 else (match def-body-of(tree, name-id(expName)) with
-                        | Option.Some(_) => (root, e1, tree)                 // export names a real def → keep root
+                        | Option.Some(_) => read-do-next(s, e1, root, tree)  // valid export → keep checking the rest
                         | Option.None(_) => unsupported-at(tree, d1))))      // export of an unbound name → decline
       // any other non-def head (end) → the def sequence is done. root -1 = no main seen → decline (unsupported).
       else (if (root == (0 - 1)) then unsupported-at(tree, d1) else (root, d1, tree)))))))
@@ -601,11 +605,17 @@ def payload-group-has-invalid-width(s: String, p: Int64) =
                 else payload-group-has-invalid-width(s, skip-to-close(s, q + 1, 1)))
           else (match scan-atom(s, q, "") with | (_pty, pn) => payload-group-has-invalid-width(s, pn)))))
 
+/// The reserved def-table key for the invalid-width MARKER. `name-id` folds from acc=7 and only grows, so it
+/// NEVER yields 0 — 0 is unreachable by any real identifier (it's the same reserved sentinel `unsupported()`'s
+/// `NVar(0)` uses). Keying the marker under 0 (not `name-id("__illwidth__")`) means NO user `def __illwidth__`
+/// can clobber it (record-def = Map.insert) and no name-id hash collision can false-pos/neg it (PR#1005 Copilot).
+def illwidth-marker-key() = 0
+
 /// WHOLE-PROGRAM check (codegen-light — a single def-table lookup): did the reader see an invalid int/float
-/// width in any type-decl payload? read-do-ctors records the reserved `__illwidth__` marker def on a bad width;
-/// this reports its presence so `run-src` can DECLINE (rcdzc CDZ0302). Cheap enough to add to the run closure
-/// without tipping the self-host guest emit ceiling (unlike a ctor-table fold).
-def has-illwidth-marker(tree: Tree) = match def-body-of(tree, name-id("__illwidth__")) with
+/// width in any type-decl payload? read-do-ctors records the reserved marker def (key `illwidth-marker-key`)
+/// on a bad width; this reports its presence so `run-src` can DECLINE (rcdzc CDZ0302). Cheap enough to add to
+/// the run closure without tipping the self-host guest emit ceiling (unlike a ctor-table fold).
+def has-illwidth-marker(tree: Tree) = match def-body-of(tree, illwidth-marker-key()) with
   | Option.Some(_) => true
   | Option.None(_) => false
 
@@ -674,7 +684,7 @@ def read-do-ctors(s: String, k: Int64, declName: Int64, tag: Int64, root: Int64,
                      // ceiling). A marker DEF survives main-sets-root (unlike poisoning root, which main overrides).
                      (let t2 = (if payload-group-has-invalid-width(s, c2)
                                 then (match add-node(t1, Node.NLit(1)) with
-                                       | (mid, tm) => record-def(tm, name-id("__illwidth__"), mid))
+                                       | (mid, tm) => record-def(tm, illwidth-marker-key(), mid))
                                 else t1) in
                       read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), declName, tag + 1, root, t2)))))))))
 
