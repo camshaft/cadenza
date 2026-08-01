@@ -50,7 +50,7 @@ def se-ann-int8-just-over-declines() =
 def se-ann-int8-min-fits() =
   // `(: -128 Int8)` → -128: Int8's MIN (-2^7) fits exactly (signed lower bound — matches reference).
   match run-src("(: -128 Int8)") with
-    | Option.Some(v) => (if v == 0 - 128 then unit else trap("(: -128 Int8) → -128"))
+    | Option.Some(v) => (if v == -128 then unit else trap("(: -128 Int8) → -128"))
     | Option.None(_) => trap("Int8 min -128 fits")
 
 @test
