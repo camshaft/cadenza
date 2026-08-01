@@ -4,11 +4,11 @@
 hard-coded conformance DB instead of running the corpus through compiler-ml and checking equivalence to rcdzc?"
 
 ## HEADLINE: the differential-vs-rcdzc harness ALREADY EXISTS and runs in the gate.
-`report_ml_conformance` (xtask/src/main.rs:3977) + `GateTarget::CadenzaMl` (main.rs:920) already do exactly
+`report_ml_conformance` (xtask/src/main.rs:3977) + `GateTarget::CadenzaMl` (xtask/src/main.rs:920) already do exactly
 what the operator describes:
 - It drives the **shared REAL corpus** (`default_corpus_files`, ~3700 cases — the SAME corpus rcdzc's own gate
   uses) through the self-hosted compiler-ml via `cdz run-ml` (source in → `value <sexpr>` | `declined` | `error`).
-- It compares each result **against the Wasm/rcdzc oracle** (`ml_agrees_with_oracle`, main.rs:4066): a DECLINE
+- It compares each result **against the Wasm/rcdzc oracle** (`ml_agrees_with_oracle`, xtask/src/main.rs:4066): a DECLINE
   = coverage-not-yet (the ML front-end is subset-only, most cases decline), an AGREEING value = progress, a
   DISAGREEING value = the only real failure. rcdzc IS the oracle (`run_program(..., GateTarget::Wasm)`).
 - It's a REPORT-only gate step today (never reds the gate — reports Agree/Disagree/NotYet counts), wall-clock
@@ -63,7 +63,7 @@ The differential runs `default_corpus_files` = `spec/semantics/*` which INCLUDES
 mentions) and `02-binding-and-control.sexp` (983 let/if/cond mentions). So every domain conformance-db covers is
 richly present in the shared corpus the differential already drives through compiler-ml vs the rcdzc oracle.
 ⇒ conformance-db (+cx/-rel) adds NO coverage the differential lacks; retiring it loses nothing. RETIREMENT IS
-DE-RISKED — one deletion slice when approved (no corpus additions needed first). Held pending operator go on (a).
+DE-RISKED — one deletion slice when approved (no corpus additions needed first). Held pending operator sign-off on step (a).
 
 ## RETIREMENT PLAN (2026-08-01, concierge-requested — for operator sign-off before any delete)
 
@@ -80,7 +80,7 @@ the ~3700-case corpus differential doesn't already cover. Nothing to port first.
 **⚠ Step 1 — the gating subtlety that ties delete↔gating (MUST sequence together).** conformance-db has **29
 @tests that BLOCK the gate** (they run in the compiler-ml self-host `cdz test` glob; a fail reds the gate — a
 real regression signal for the ML integer subset). The differential (`report_ml_conformance`) is **REPORT-ONLY**
-(main.rs:3976 "warns but never reds"). So DELETING conformance-db naively removes the only *blocking* conformance
+(xtask/src/main.rs:3976 "warns but never reds"). So DELETING conformance-db naively removes the only *blocking* conformance
 signal for the ML pipeline, leaving only a report-only differential → a future ML miscompile on the integer
 subset would no longer RED the gate. FIX: flip the differential to GATE-ENFORCING **before or in the same slice
 as** the delete, so gating coverage is not lost — it strictly IMPROVES (report-only-subset → blocking-full-corpus).

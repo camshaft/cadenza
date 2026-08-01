@@ -18,7 +18,7 @@ import { Core, lower-tree, lower-def-env } from "lower-db"
 import { read-source } from "sread"
 import { eval-core-d } from "eval-db"
 import { Tree } from "parse-db"
-import { functype-bytes, type-section-multi, func-section-multi, code-section-multi, emit-def-body-d, defenv-funcidx-map, export-section-idx, preamble, emit-src-bytes, bytes-to-list } from "emit-db"
+import { functype-bytes, type-section-multi, func-section-multi, code-section-multi, emit-def-body-d, defenv-funcidx-map, export-section-idx, preamble, emit-src-bytes, bytes-to-list, is-arith-op, is-cmp-op } from "emit-db"
 
 /// Is `c` in the emit subset GIVEN a def-index map? Like emit-db's `can-emit` but a `CCall` is ALLOWED when its
 /// callee is in `defidx` (an emitted recursive def) — so a recursive program (fac) can emit; a CCall to a name
@@ -42,11 +42,6 @@ def can-call-args(args: List(Core), i: Int64, defidx: Map(Int64, Int64)) =
    else (match List.at(args, i) with
      | Option.Some(a) => (if can-emit-d(a, defidx) then can-call-args(args, i + 1, defidx) else false)
      | Option.None(_) => can-call-args(args, i + 1, defidx)))
-
-/// arith op-code? (mirrors emit-db's — kept local since emit-db does not export it; small + pure.)
-def is-arith-op(op: Int64) = (op == 43) or (op == 45) or (op == 42) or (op == 47) or (op == 37)
-/// comparison op-code?
-def is-cmp-op(op: Int64) = (op == 60) or (op == 61) or (op == 62) or (op == 63) or (op == 64) or (op == 65)
 
 /// The TYPE-SECTION functypes for a recursive module — `functype-bytes(len params)` per def-env entry (in
 /// order), then `functype-bytes(0)` for the nullary main. Position = typeidx.
