@@ -1604,3 +1604,52 @@ authoritative log + snapshot tuple, and make capabilities *resource-scoped + int
 What we're dropping: baking "agent" / "Cadenza" / "Bedrock" into the kernel; the reducer returning
 serialized state (replaced by session-attached KV); two fixed Rust crates as the architecture (the
 kernel is generic; agent/Bedrock/etc. become reducers + executors).
+
+## 18. Operator design directives on landed v0.1 (2026-08-01) — plan
+
+Two operator directives (via concierge) after reviewing the landed v0.1 kernel. Folding in as design
+revisions; log-format is foundational (do before more builds on the current custom format).
+
+### 18a. LOG FORMAT → Cadenza binary s-expr, length-prefixed/streaming
+**Directive:** drop the custom binary event encoding (§ event.rs `encode`/`decode`); encode each event
+as **Cadenza binary s-expr**, length-prefix it, append. Rationale: the log becomes self-describing
+Cadenza AST/values — "programs meta-inspect logs just by decoding them like a regular AST," no bespoke
+decoder, consistent with the language. This is §9b's "Cadenza binary = wire format" pulled forward into
+v0.1 (was deferred).
+**Plan:** event → (represent as an s-expr value) → binary-sexpr encode → u32/varint len-prefix → append;
+recover = read len-prefixed frames, sexpr-decode each (streaming, one frame at a time — matches the
+current LogStore framing, only the per-frame codec changes). The framing/torn-tail/corrupt logic
+(§LogStore, PR#990 #4) stays; the `Event::encode/decode` body is what's replaced.
+**⚠ OPEN (looped to operator/concierge):** there is no lightweight binary-sexpr codec available to the
+kernel today. `cadenza-syntax`'s sexpr module is TEXT (`read(&str)`/`print()->String`), and the crate
+is dependency-heavy (cedar-policy, pulldown-cmark, num-bigint) — pulling it into the minimal standalone
+kernel workspace (blake3-only) contradicts the "minimal deps / kernel knows nothing" principle. Options
+to resolve: (a) a small standalone `cadenza-binary` codec crate (structure-only: atoms/lists/bytes/ints
++ len-framing — the stable wire layer, no interpreter) the kernel + others depend on; (b) text s-expr
+for v0.1 (self-describing + meta-inspectable NOW, binary later — but not the operator's stated binary
+ask); (c) accept the cadenza-syntax dep. **Lean = (a)** — it satisfies "self-describing s-expr,
+streaming, meta-inspectable" without the heavy dep and keeps the kernel codec-agnostic (it just frames
+opaque bytes; the s-expr codec is a separable crate). Needs operator/concierge nod on introducing a new
+small crate vs. their exact intent.
+
+### 18b. SHELL invocation — stderr, pipelines, LOCK DOWN the surface
+**Directives:** (a) capture STDERR too (keep distinguishable from stdout); (b) model PIPELINES
+(`cmd | cmd`), not just single commands; (c) SECURITY — operator "not comfortable with arbitrary shell
+invocation"; rethink the surface: structured/allowlisted/capability-gated/sandboxed, not arbitrary
+strings to `sh -c`.
+**Plan:**
+- (a) STDERR: `EffectOutcome::Ok` payload becomes a structured `{ exit, stdout, stderr }` s-expr value
+  (once 18a lands the s-expr codec) rather than raw stdout bytes; distinguishable, and debuggable.
+- (b) PIPELINES: replace the single `sh -c <string>` target with a **structured command model** — a
+  pipeline is a list of stages, each `{ program, args: [..] }`, wired stdout→stdin. No shell string
+  interpolation → no shell-injection surface. (The reducer emits the structured pipeline as the effect
+  payload, not a string.)
+- (c) SECURITY: this IS the lock-down — a structured `{program, args}` model executed via direct
+  `Command` (no `sh -c`, no shell metacharacter parsing) removes arbitrary-shell injection by
+  construction. Layer the existing SEC-F1 capability on the *program* (allowlist of program names +
+  arg predicates) instead of a command-string prefix. So: structured command model + program-allowlist
+  capability + direct-exec (no shell) + optional sandbox later. The current `ShellExecutor`
+  (`sh -c <target>`, string target, Prefix-on-string capability) is the interim; this replaces it.
+**Sequencing:** 18b's structured-outcome/`{exit,stdout,stderr}` and structured-command payloads want the
+18a s-expr codec first (they're s-expr values), so: land 18a (log/value codec) → then 18b (structured
+command model on top). Both are design revisions to the landed v0.1, not greenfield.

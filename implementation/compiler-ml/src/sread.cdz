@@ -627,12 +627,24 @@ def read-do-next(s: String, j: Int64, root: Int64, tree: Tree) =
    (if (char-at(s, e0) == ")") then read-do-form(s, e0 + 1, root, tree) else read-do-form(s, e0, root, tree)))
 
 /// After `(if` (index `i` past the `if` atom): read cond, then, else forms + consume `)` → `NIf`.
+/// TOTALITY+SOUNDNESS: `if` is exactly ternary (cond then else). If a FOURTH operand appears before the `)`
+/// (`(if c t e x)` — malformed / too many operands), the form is ill-formed and MUST DECLINE (rcdzc rejects
+/// it CDZ0201), NOT silently drop the extra and run the NIf (which is what a bare `close-paren` did — it
+/// tolerates any non-`)` by leaving it, so `(if (< 1 2) 1 2 3)` used to build NIf(<,1,2) and run to 1). So
+/// after reading else, check the next non-space is `)`: if so, build the `NIf`; otherwise build a poison
+/// `NBin(-1, …)` (→ infer TErr → decline) and skip to the close so the reader stays TOTAL.
 def read-if-form(s: String, i: Int64, tree: Tree) =
   (match read-form(s, i, tree) with | (condId, a1, t1) =>
     (match read-form(s, a1, t1) with | (thenId, a2, t2) =>
       (match read-form(s, a2, t2) with | (elseId, a3, t3) =>
-        (let a4 = close-paren(s, a3) in
-         (match add-node(t3, Node.NIf(condId, thenId, elseId)) with | (id, t4) => (id, a4, t4))))))
+        (let k = skip-space(s, a3) in
+         (if (char-at(s, k) == ")") then
+           (match add-node(t3, Node.NIf(condId, thenId, elseId)) with | (id, t4) => (id, k + 1, t4))
+          else
+           // too-many-operands: skip the extra form(s) to the close, emit a TErr-poison node → decline.
+           (match read-form(s, k, t3) with | (_, a5, t5) =>
+             (let a6 = close-paren(s, a5) in
+              (match add-node(t5, Node.NBin(0 - 1, condId, thenId)) with | (id, t6) => (id, a6, t6)))))))))
 
 /// M1-a INTEGER MATCH: `(match scrut (LIT then) (_ else))` → `NMatch(scrutId, litId, thenId, elseId)`. Read the
 /// SCRUTINEE form, then TWO parenthesized arms: arm1 `(LIT then)` = a literal PATTERN form + a body form; arm2
