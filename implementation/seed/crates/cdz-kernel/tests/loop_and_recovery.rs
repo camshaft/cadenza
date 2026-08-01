@@ -13,7 +13,7 @@ use cdz_kernel::executor::{Executor, RecordingExecutor};
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{FoldOutput, Reducer};
+use cdz_kernel::reducer::{Effect, FoldOutput, Reducer};
 
 /// A small but realistic reducer: on an inbound "go" message it performs an Http fetch; when the
 /// fetch RESULT arrives it records "done" in KV and performs a second Http call (a step-2). This is
@@ -459,6 +459,63 @@ fn attached_log_persists_through_on_append_no_manual_mirroring() {
     assert_eq!(restored.log().len(), session.log().len());
 
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
+    // §19b/§19e slice 2: a reducer's per-effect continuation token (Effect.token) must travel through
+    // the fold→drive handoff into the DURABLE Dispatched frame — so the EffectId↔token map can rebuild
+    // from the log on recovery (the §19e hard guard). This proves the channel: a reducer emitting an
+    // effect WITH a token → the logged Dispatched carries it; one WITHOUT → token None.
+    struct TokenReducer;
+    impl Reducer for TokenReducer {
+        fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            if matches!(event.body, EventBody::Inbound { .. }) {
+                FoldOutput::with_effects(vec![Effect {
+                    request: EffectRequest {
+                        kind: EffectKind::Http,
+                        target: "https://ok.host/x".into(),
+                        payload: None,
+                    },
+                    token: Some(b"guest-cont-42".to_vec()),
+                }])
+            } else {
+                FoldOutput::none()
+            }
+        }
+    }
+
+    let mut exec = RecordingExecutor::new();
+    let mut session = Session::genesis(Hash::of(b"token-v1"));
+    session
+        .deliver(inbound_go(), None, &TokenReducer, &http_cap(), &mut exec)
+        .unwrap();
+
+    // The Dispatched frame for the emitted effect carries the reducer's token verbatim.
+    let dispatched_token = session.log().iter().find_map(|e| match &e.body {
+        EventBody::Dispatched { token, .. } => Some(token.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        dispatched_token,
+        Some(Some(b"guest-cont-42".to_vec())),
+        "the reducer's continuation token must reach the durable Dispatched frame (§19e)"
+    );
+
+    // Control: a token-free reducer (the common Rust path via FoldOutput::with) records token None.
+    let mut exec2 = RecordingExecutor::new();
+    let mut s2 = Session::genesis(Hash::of(b"notoken-v1"));
+    s2.deliver(inbound_go(), None, &TwoStepReducer, &http_cap(), &mut exec2)
+        .unwrap();
+    let first_token = s2.log().iter().find_map(|e| match &e.body {
+        EventBody::Dispatched { token, .. } => Some(token.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        first_token,
+        Some(None),
+        "a token-free reducer records token None"
+    );
 }
 
 #[test]

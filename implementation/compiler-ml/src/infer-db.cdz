@@ -161,7 +161,7 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
         // lower-node(calleeBody) declines (the non-ctor nullary path infers it too). PAYLOAD: infer the arg.
         (match ctor-decl-of(tree, calleeId) with
           | Option.Some(declName) =>
-              (if (argId == (0 - 1))
+              (if (argId == (-1))
                then (match def-body-of(tree, calleeId) with        // NULLARY ctor use `(Red)` → TSum(declName)
                       | Option.Some(calleeBody) => (let tb = infer-node(tree, calleeBody, rcol, tcol) in
                                                      Map.insert(tb, id, Typed.TSum(declName)))
@@ -186,7 +186,7 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
            // helper). Any other callee-fact (or none) → TErr, exactly as before.
            | Option.None(_) => infer-fn-param-call(tree, id, argId, rcol, tcol)
            | Option.Some(calleeBody) =>
-             (if (argId == (0 - 1)) then
+             (if (argId == (-1)) then
                 (let t1 = infer-node(tree, calleeBody, rcol, tcol) in
                  (match Map.lookup(t1, calleeBody) with
                    | Option.Some(bodyTy) => Map.insert(t1, id, bodyTy)
@@ -217,7 +217,7 @@ def infer-node(tree: Tree, id: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int6
 /// which lands back here and stops at Int64 — never a body descent). This is what lets B1b's `lower-def-env`
 /// later type each body ONCE: the inner self-call types Int64 and terminates the walk.
 def infer-recursive-call(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
-  (if (argId == (0 - 1)) then Map.insert(tcol, id, t-int64())        // nullary self-call → Int64
+  (if (argId == (-1)) then Map.insert(tcol, id, t-int64())        // nullary self-call → Int64
    else (let t1 = infer-node(tree, argId, rcol, tcol) in             // type arg1 (does not descend the body)
          (let t2 = infer-rec-arg-opt(tree, arg2-of(tree, id), rcol, t1) in
           (let t3 = infer-rec-arg-opt(tree, arg3-of(tree, id), rcol, t2) in
@@ -231,7 +231,7 @@ def infer-recursive-call(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, R
 /// follow-up — HO-2b-ii-B types the RESULT so `(apply inc 41)`-style bodies type). A non-fn callee-fact, a
 /// non-TFn var-type, or no fact → TErr (a plain unknown callee, exactly as before this arm existed).
 def infer-fn-param-call(tree: Tree, id: Int64, argId: Int64, rcol: Map(Int64, Resolved), tcol: Map(Int64, Typed)) =
-  (let ta = (if (argId == (0 - 1)) then tcol else infer-node(tree, argId, rcol, tcol)) in
+  (let ta = (if (argId == (-1)) then tcol else infer-node(tree, argId, rcol, tcol)) in
    (let ta2 = infer-rec-arg-opt(tree, arg2-of(tree, id), rcol, ta) in
     (let ta3 = infer-rec-arg-opt(tree, arg3-of(tree, id), rcol, ta2) in
      (let ta4 = infer-rec-arg-opt(tree, arg4-of(tree, id), rcol, ta3) in
@@ -258,7 +258,7 @@ def args-fit-params(tree: Tree, id: Int64, argId: Int64, ptys: List(Typed), tcol
 
 /// The arg node-ids of call `id` in order: argId (if not -1) then arg2/3/4-of(id) if present.
 def collect-arg-ids(tree: Tree, id: Int64, argId: Int64) =
-  (if argId == (0 - 1) then ([] : List(Int64))
+  (if argId == (-1) then ([] : List(Int64))
    else (let a1 = List.push([], argId) in
          (let a2 = (match arg2-of(tree, id) with | Option.Some(a) => List.push(a1, a) | Option.None(_) => a1) in
           (let a3 = (match arg3-of(tree, id) with | Option.Some(a) => List.push(a2, a) | Option.None(_) => a2) in
@@ -740,7 +740,7 @@ def type-eq(a: Typed, b: Typed) = ty-eq(typed-to-ty(a), typed-to-ty(b))
 def decode-argtype-enc(enc: Int64) =
   (if (enc == 0) then t-int64()
    else (if (enc == 1) then Typed.TBool
-         else (if (enc == (0 - 1)) then Typed.TErr
+         else (if (enc == (-1)) then Typed.TErr
                else Typed.TIntW(pt-signed(enc), pt-width(enc)))))
 
 def ctor-payload-binder-type(tree: Tree, patCtorName: Int64) =
@@ -766,7 +766,7 @@ def seed-ctor-binders-go(tcol: Map(Int64, Typed), argTypes: List(Int64), binderI
               // NVar node to seed) — skip the insert but STILL advance i (the slot index tracks the FIELD position, so
               // a `_` in field 0 must not shift field 1's argType read). Mirrors resolve's node-at(-1)=None skip + eval's
               // consume-slot-skip-insert.
-              (if (bid == (0 - 1))
+              (if (bid == (-1))
                then seed-ctor-binders-go(tcol, argTypes, binderIds, i + 1)
                else (let ty = (match List.at(argTypes, i) with
                           | Option.Some(enc) => decode-argtype-enc(enc)
@@ -877,7 +877,7 @@ def all-defs-well-scoped-go(tree: Tree, entries: List(Tuple(Int64, Int64)), i: I
 /// isn't an NVar (shouldn't happen for a param). Used to compare a def's param names for linearity.
 def param-name-of(tree: Tree, paramId: Int64) = match node-at(tree, paramId) with
   | Option.Some(Node.NVar(nm)) => nm
-  | _ => 0 - 1
+  | _ => -1
 
 /// Does the def `defName` bind TWO params with the SAME name? (`(def (f (: x …) (: x …)) …)` — non-linear,
 /// rcdzc CDZ0102.) A def has ≤4 params, so this is a tiny fixed dup-check over `def-param-ids`' name-ids —
@@ -897,7 +897,7 @@ def map-param-names(tree: Tree, ids: List(Int64), i: Int64) =
 def names-have-dup(names: List(Int64), i: Int64) =
   (if i >= List.len(names) then false
    else (match List.at(names, i) with
-     | Option.Some(nm) => (if (not (nm == (0 - 1))) and name-appears-after(names, nm, i + 1) then true
+     | Option.Some(nm) => (if (not (nm == (-1))) and name-appears-after(names, nm, i + 1) then true
                            else names-have-dup(names, i + 1))
      | Option.None(_) => names-have-dup(names, i + 1)))
 
@@ -1243,7 +1243,7 @@ def id-napp-nullary-types-as-body-slice2() =
   // resolves name→body via def-body-of and types Int64. Hand-arena, no sread.
   (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
     (let t1d = record-def(t1, 900, bodyId) in
-     (match add-node(t1d, Node.NApp(900, 0 - 1)) with | (root, tree) =>
+     (match add-node(t1d, Node.NApp(900, -1)) with | (root, tree) =>
       (if is-int-at(tree, root, root) then unit else trap("a nullary NApp types as its callee body (Int64 here)")))))
 
 @test
@@ -1252,7 +1252,7 @@ def id-napp-nullary-bool-body() =
   // registered under name 900; the call NApp(900, -1) resolves name→body via def-body-of.
   (match add-node(empty-tree(), Node.NBoolLit(1)) with | (bodyId, t1) =>
     (let t1d = record-def(t1, 900, bodyId) in
-     (match add-node(t1d, Node.NApp(900, 0 - 1)) with | (root, tree) =>
+     (match add-node(t1d, Node.NApp(900, -1)) with | (root, tree) =>
       (if is-bool-at(tree, root, root) then unit else trap("a nullary NApp over a Bool body types Bool")))))
 
 @test
@@ -1339,7 +1339,7 @@ def id-recursive-nullary-call-types-int-slice-b2() =
   // node IS the call NApp(900, -1); record-def keys 900 → that node, so call-is-recursive(900) fires. infer
   // must NOT descend the body (it calls back) — it stamps the call Int64 directly. Hand-built arena (parse-
   // tokens doesn't read def-forms — recursion lives at sread; this pins the infer arm in isolation).
-  (match add-node(empty-tree(), Node.NApp(900, 0 - 1)) with | (callId, t1) =>
+  (match add-node(empty-tree(), Node.NApp(900, -1)) with | (callId, t1) =>
     (let tree = record-def(t1, 900, callId) in
      (match Map.lookup(infer-node(tree, callId, resolve-tree(tree, callId), (Map.empty : Map(Int64, Typed))), callId) with
        | Option.Some(Typed.TIntW(_, w)) => (if w == 64 then unit else trap("recursive nullary call → Int64 (width 64)"))
@@ -1525,7 +1525,7 @@ def id-payload-binder-type-unsupported-sentinel-decodes-terr() =
   // the SOUNDNESS sentinel: a ct-argType of -1 (a non-int-non-bool payload the reader can't encode — a nested sum
   // / compound) decodes to Typed.TErr, so ANY use of the binder DECLINES (never a wrong Int64 default). Pins
   // v-inference's non-int-payload soundness fix — without the distinct -1 the binder defaulted to Int64.
-  (let tree = record-ctor-tag-typed(empty-tree(), 841, 800, 1, 0 - 1) in
+  (let tree = record-ctor-tag-typed(empty-tree(), 841, 800, 1, -1) in
     (match ctor-payload-binder-type(tree, 841) with
       | Typed.TErr => unit
       | _ => trap("an unsupported (-1) ct-argType decodes to TErr (declines)")))

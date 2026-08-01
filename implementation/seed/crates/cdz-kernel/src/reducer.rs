@@ -22,13 +22,40 @@ use crate::effect::EffectRequest;
 use crate::event::{Event, EventBody};
 use crate::kv::Kv;
 
+/// One effect a fold emits: the request itself plus the reducer's OWN optional continuation token for it
+/// (§19e). This is the reducer→kernel HANDOFF type — distinct from the [`EffectRequest`] WIRE type (which
+/// the executor sees and which stays `{kind, target, payload}`, no correlation — §19e reject-C). The
+/// token is the natural home HERE because this handoff is exactly where the guest's correlation must
+/// reach the kernel's `Dispatched`-frame builder (drive records it in the frame so the `EffectId ↔ token`
+/// map rebuilds from the log on recovery). A NAMED field (not a bare tuple) per the strong-typing rule:
+/// the `Option` says what it IS (a correlation token) at every site, and the struct grows cleanly if a
+/// third per-effect handoff field ever appears.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Effect {
+    pub request: EffectRequest,
+    /// The reducer's opaque continuation token, or `None` if it correlates by kernel `EffectId` (the
+    /// in-process Rust `Reducer` trait). A WASM `ComponentReducer` sets it to the guest's `correlation`.
+    pub token: Option<Vec<u8>>,
+}
+
+impl Effect {
+    /// A token-free effect (the common case: a Rust reducer that correlates by `EffectId`).
+    pub fn new(request: EffectRequest) -> Self {
+        Effect {
+            request,
+            token: None,
+        }
+    }
+}
+
 /// What a reducer asks the kernel to do after folding one event. Effects are *requests* (§5): the
 /// kernel authorizes, assigns ids, dispatches, and folds results back as later events.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct FoldOutput {
     /// Effects to perform, in emission order. The kernel assigns each an `EffectId` (in this order)
-    /// and appends a durable `Dispatched` event before routing (§16c-S1).
-    pub effects: Vec<EffectRequest>,
+    /// and appends a durable `Dispatched` event before routing (§16c-S1). Each carries its optional
+    /// continuation token (§19e — see [`Effect`]).
+    pub effects: Vec<Effect>,
 }
 
 impl FoldOutput {
@@ -36,7 +63,17 @@ impl FoldOutput {
         FoldOutput::default()
     }
 
+    /// Build from token-free effect requests (the ergonomic path for a Rust reducer that correlates by
+    /// `EffectId`): each request becomes an [`Effect`] with `token: None`.
     pub fn with(effects: Vec<EffectRequest>) -> Self {
+        FoldOutput {
+            effects: effects.into_iter().map(Effect::new).collect(),
+        }
+    }
+
+    /// Build from fully-specified effects (each with its own token) — the path a WASM `ComponentReducer`
+    /// adapter uses to carry the guest's per-effect correlation token.
+    pub fn with_effects(effects: Vec<Effect>) -> Self {
         FoldOutput { effects }
     }
 }

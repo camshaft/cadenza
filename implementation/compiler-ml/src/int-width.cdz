@@ -113,12 +113,12 @@ def iw-pow2-small() = if (pow2(0) == 1) and (pow2(1) == 2) and (pow2(8) == 256) 
 def iw-pow2-w32() = if pow2(32) == 4294967296 then unit else trap("2^32 = 4294967296")
 
 @test
-def iw-pow2-out-of-range-is-zero() = if (pow2(63) == 0) and (pow2(0 - 1) == 0) then unit else trap("2^63 / 2^-1 → 0 sentinel")
+def iw-pow2-out-of-range-is-zero() = if (pow2(63) == 0) and (pow2(-1) == 0) then unit else trap("2^63 / 2^-1 → 0 sentinel")
 
 @test
 def iw-mod-floor-lifts-negatives() =
   // -1 mod 256 = 255 (floored), 200 mod 256 = 200, 256 mod 256 = 0.
-  if (mod-floor(0 - 1, 256) == 255) and (mod-floor(200, 256) == 200) and (mod-floor(256, 256) == 0) then unit
+  if (mod-floor(-1, 256) == 255) and (mod-floor(200, 256) == 200) and (mod-floor(256, 256) == 0) then unit
   else trap("floored mod normalizes into 0..m-1")
 
 // ---- fits-width: unsigned ----
@@ -133,7 +133,7 @@ def iw-fits-u8-max() = if fits-width(255, false, 8) then unit else trap("255 = U
 def iw-fits-u8-over() = if fits-width(256, false, 8) then trap("256 does NOT fit UInt8") else unit
 
 @test
-def iw-fits-u8-rejects-negative() = if fits-width(0 - 1, false, 8) then trap("-1 does NOT fit UInt8 (no negatives)") else unit
+def iw-fits-u8-rejects-negative() = if fits-width(-1, false, 8) then trap("-1 does NOT fit UInt8 (no negatives)") else unit
 
 // ---- fits-width: signed ----
 
@@ -144,10 +144,10 @@ def iw-fits-i8-max() = if fits-width(127, true, 8) then unit else trap("127 = In
 def iw-fits-i8-over() = if fits-width(128, true, 8) then trap("128 does NOT fit Int8") else unit
 
 @test
-def iw-fits-i8-min() = if fits-width(0 - 128, true, 8) then unit else trap("-128 = Int8.min fits")
+def iw-fits-i8-min() = if fits-width(-128, true, 8) then unit else trap("-128 = Int8.min fits")
 
 @test
-def iw-fits-i8-under() = if fits-width(0 - 129, true, 8) then trap("-129 does NOT fit Int8") else unit
+def iw-fits-i8-under() = if fits-width(-129, true, 8) then trap("-129 does NOT fit Int8") else unit
 
 @test
 def iw-fits-i8-two-hundred-declines() =
@@ -196,21 +196,21 @@ def iw-wrap-u8-unchanged-in-range() = if wrap-to(200, false, 8) == 200 then unit
 def iw-wrap-u8-overflow() = if (wrap-to(256, false, 8) == 0) and (wrap-to(257, false, 8) == 1) then unit else trap("256→0, 257→1 (mod 256)")
 
 @test
-def iw-wrap-u8-negative-to-max() = if wrap-to(0 - 1, false, 8) == 255 then unit else trap("-1 → UInt8.max 255")
+def iw-wrap-u8-negative-to-max() = if wrap-to(-1, false, 8) == 255 then unit else trap("-1 → UInt8.max 255")
 
 // ---- wrap-to: signed (two's-complement) ----
 
 @test
-def iw-wrap-i8-high-bit-negative() = if wrap-to(200, true, 8) == (0 - 56) then unit else trap("200 → -56 at Int8 (bit 7 set)")
+def iw-wrap-i8-high-bit-negative() = if wrap-to(200, true, 8) == (-56) then unit else trap("200 → -56 at Int8 (bit 7 set)")
 
 @test
-def iw-wrap-i8-all-ones() = if wrap-to(255, true, 8) == (0 - 1) then unit else trap("255 → -1 at Int8")
+def iw-wrap-i8-all-ones() = if wrap-to(255, true, 8) == (-1) then unit else trap("255 → -1 at Int8")
 
 @test
-def iw-wrap-i8-min-boundary() = if wrap-to(128, true, 8) == (0 - 128) then unit else trap("128 → Int8.min -128")
+def iw-wrap-i8-min-boundary() = if wrap-to(128, true, 8) == (-128) then unit else trap("128 → Int8.min -128")
 
 @test
-def iw-wrap-i8-in-range-unchanged() = if (wrap-to(127, true, 8) == 127) and (wrap-to(0 - 128, true, 8) == (0 - 128)) then unit else trap("Int8 in-range values unchanged")
+def iw-wrap-i8-in-range-unchanged() = if (wrap-to(127, true, 8) == 127) and (wrap-to(-128, true, 8) == (-128)) then unit else trap("Int8 in-range values unchanged")
 
 // ---- wrap-to: out-of-scope width is identity ----
 
@@ -222,7 +222,7 @@ def iw-wrap-out-of-scope-identity() = if (wrap-to(12345, true, 64) == 12345) and
 @test
 def iw-fit-implies-wrap-noop() =
   // If a value FITS, wrapping must leave it unchanged — the invariant an in-range annotation relies on.
-  if (wrap-to(100, false, 8) == 100) and (wrap-to(0 - 50, true, 8) == (0 - 50)) and (wrap-to(1000, false, 16) == 1000)
+  if (wrap-to(100, false, 8) == 100) and (wrap-to(-50, true, 8) == (-50)) and (wrap-to(1000, false, 16) == 1000)
   then unit else trap("a value that fits wraps to itself")
 
 // ---- wrapping arithmetic (T.wrapping-add / -sub / -mul) ----
@@ -240,12 +240,12 @@ def iw-wrapping-add-overflows-unsigned() =
 @test
 def iw-wrapping-add-overflows-signed() =
   // 127 + 1 = 128 wraps to Int8.min -128 (signed overflow is DEFINED here, not UB).
-  if wrapping-add(127, 1, true, 8) == (0 - 128) then unit else trap("Int8 wrapping-add 127+1 → -128")
+  if wrapping-add(127, 1, true, 8) == (-128) then unit else trap("Int8 wrapping-add 127+1 → -128")
 
 @test
 def iw-wrapping-sub-underflows() =
-  // 0 - 1 wraps to UInt8.max 255; Int8.min - 1 = -128 - 1 wraps to Int8.max 127.
-  if (wrapping-sub(0, 1, false, 8) == 255) and (wrapping-sub(0 - 128, 1, true, 8) == 127) then unit else trap("wrapping-sub: 0-1→255(u8), -128-1→127(i8)")
+  // -1 wraps to UInt8.max 255; Int8.min - 1 = -128 - 1 wraps to Int8.max 127.
+  if (wrapping-sub(0, 1, false, 8) == 255) and (wrapping-sub(-128, 1, true, 8) == 127) then unit else trap("wrapping-sub: 0-1→255(u8), -128-1→127(i8)")
 
 @test
 def iw-wrapping-mul-overflows() =
@@ -265,7 +265,7 @@ def iw-overflows-is-fits-negated() =
   // 127 fits Int8, 128 overflows; a negative under Int8.min overflows.
   if (if overflows(255, false, 8) then false else true) and overflows(256, false, 8)
      and (if overflows(127, true, 8) then false else true) and overflows(128, true, 8)
-     and overflows(0 - 129, true, 8)
+     and overflows(-129, true, 8)
   then unit else trap("overflows = !fits-width in-scope")
 
 @test
@@ -291,9 +291,9 @@ def iw-checked-add-overflow-is-none() =
 
 @test
 def iw-checked-sub-underflow-is-none() =
-  // 0 - 1 = -1 underflows UInt8 (min 0) → None; an in-range signed sub computes: 5 - 8 = -3 fits Int8 → Some.
+  // -1 = -1 underflows UInt8 (min 0) → None; an in-range signed sub computes: 5 - 8 = -3 fits Int8 → Some.
   (match checked-sub(0, 1, false, 8) with
-    | Option.None(_) => (match checked-sub(5, 8, true, 8) with | Option.Some(v) => (if v == (0 - 3) then unit else trap("i8 5-8=-3")) | Option.None(_) => trap("i8 5-8 in range → Some"))
+    | Option.None(_) => (match checked-sub(5, 8, true, 8) with | Option.Some(v) => (if v == (-3) then unit else trap("i8 5-8=-3")) | Option.None(_) => trap("i8 5-8 in range → Some"))
     | Option.Some(_) => trap("u8 0-1 underflows → None"))
 
 @test

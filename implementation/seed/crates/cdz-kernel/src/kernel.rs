@@ -28,7 +28,7 @@ use crate::event::{EffectOutcome, Event, EventBody};
 use crate::executor::Executor;
 use crate::hash::Hash;
 use crate::kv::Kv;
-use crate::reducer::Reducer;
+use crate::reducer::{Effect, Reducer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
@@ -308,12 +308,16 @@ impl Session {
     /// → execute → fold-result loop (no second, drifting copy).
     fn drive_worklist(
         &mut self,
-        mut to_process: Vec<(EffectRequest, Hash)>,
+        mut to_process: Vec<(Effect, Hash)>,
         reducer: &dyn Reducer,
         authz: &dyn Authorize,
         executor: &mut dyn Executor,
     ) {
-        while let Some((req, cause)) = to_process.pop() {
+        while let Some((effect, cause)) = to_process.pop() {
+            let Effect {
+                request: req,
+                token,
+            } = effect;
             let id = EffectId(self.next_effect_id);
             self.next_effect_id += 1;
 
@@ -369,10 +373,11 @@ impl Session {
                     target: req.target.clone(),
                     idempotency_key,
                     deadline_ms: None,
-                    // No continuation token yet: the in-process Rust `Reducer` trait doesn't supply one
-                    // (it correlates by EffectId). The wasm-reducer bridge (§19e slice 2) will thread the
-                    // guest's token through here so recovery can rebuild the EffectId↔token map.
-                    token: None,
+                    // Thread the reducer's continuation token (§19e) into the durable frame: `None` for a
+                    // Rust reducer (correlates by EffectId), the guest's `correlation` for a wasm
+                    // `ComponentReducer`. Recording it here is what lets recovery rebuild the
+                    // EffectId↔token map from the log (slice-1 guard).
+                    token: token.clone(),
                 },
                 Some(cause),
             );
@@ -415,11 +420,10 @@ impl Session {
     /// Fold the current tip event through the reducer, applying its KV writes and returning its
     /// requested effects each paired with `cause` (the tip's hash — what unlocked them). Reversed so a
     /// `pop`-driven worklist yields them in emission order.
-    fn fold_tip(&mut self, reducer: &dyn Reducer, cause: Hash) -> Vec<(EffectRequest, Hash)> {
+    fn fold_tip(&mut self, reducer: &dyn Reducer, cause: Hash) -> Vec<(Effect, Hash)> {
         let tip = self.log.last().expect("log always has genesis").clone();
         let out = reducer.fold(&tip, &mut self.kv);
-        let mut v: Vec<(EffectRequest, Hash)> =
-            out.effects.into_iter().map(|r| (r, cause)).collect();
+        let mut v: Vec<(Effect, Hash)> = out.effects.into_iter().map(|e| (e, cause)).collect();
         v.reverse();
         v
     }
@@ -433,7 +437,7 @@ impl Session {
         outcome: EffectOutcome,
         reducer: &dyn Reducer,
         dispatch_hash: Hash,
-    ) -> Vec<(EffectRequest, Hash)> {
+    ) -> Vec<(Effect, Hash)> {
         if self.settled.contains(&id.0) {
             // Already settled (e.g. timed out earlier) — drop the late result. No double-resume.
             return Vec::new();
