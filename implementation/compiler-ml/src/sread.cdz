@@ -68,15 +68,18 @@ def scan-atom(s: String, i: Int64, acc: String) =
       else scan-atom(s, i + 1, String.concat(acc, c)))))))
 
 /// The op-code for a binary operator SYMBOL, matching parse-db's codes (43 + / 45 - / 42 * / 47 / / 37 % /
-/// 60 < / 61 = (equality) / 62 > / 63 <= / 64 >= / 65 !=). Returns -1 for an unrecognized symbol.
-/// EQUALITY is spelled `=` — the reference (rcdzc) surface + the shared corpus use `(= a b)` (1359 uses),
-/// NOT `==`; mapping only `==` made compiler-ml DECLINE every real corpus equality program (a decline-vs-run
-/// conformance gap vs rcdzc's `= : a -> a -> Bool`). `==` is kept as an accepted ALIAS (compiler-ml's own
-/// Tok-built tests spell op 61 as `==`, and it is not a corpus token, so accepting both is harmless).
+/// 60 < / 61 = (equality) / 62 > / 63 <= / 64 >= / 65 !=). Returns `Option.None` for an unrecognized symbol —
+/// a plain NAME is a legitimate "not an operator" MISS (a call to a def), not a corruption, so the miss is a
+/// typed absence (Option), never an in-band `-1` sentinel. EQUALITY is spelled `=` — the reference (rcdzc)
+/// surface + the shared corpus use `(= a b)` (1359 uses), NOT `==`; mapping only `==` made compiler-ml
+/// DECLINE every real corpus equality program (a decline-vs-run conformance gap vs rcdzc's `= : a -> a ->
+/// Bool`). `==` is kept as an accepted ALIAS (compiler-ml's own Tok-built tests spell op 61 as `==`, and it
+/// is not a corpus token, so accepting both is harmless).
 def op-code-of(sym: String) = match sym with
-  | "+" => 43 | "-" => 45 | "*" => 42 | "/" => 47 | "%" => 37
-  | "<" => 60 | "=" => 61 | "==" => 61 | ">" => 62 | "<=" => 63 | ">=" => 64 | "!=" => 65
-  | _ => 0 - 1
+  | "+" => Option.Some(43) | "-" => Option.Some(45) | "*" => Option.Some(42) | "/" => Option.Some(47) | "%" => Option.Some(37)
+  | "<" => Option.Some(60) | "=" => Option.Some(61) | "==" => Option.Some(61) | ">" => Option.Some(62)
+  | "<=" => Option.Some(63) | ">=" => Option.Some(64) | "!=" => Option.Some(65)
+  | _ => Option.None(unit)
 
 /// A DETERMINISTIC name-id for an identifier string: a polynomial hash over its BYTES (`String.to-bytes`,
 /// the proven boundary-safe op). Same string → same id every time, so a `let`-binder and its `NVar` uses
@@ -162,23 +165,25 @@ def read-paren-form(s: String, i: Int64, tree: Tree) =
       else read-app-or-bin(s, sym, a0, tree)))))))))))
 
 /// The paren-form fallthrough head `sym` (not a keyword/op-symbol): either a CALL to a def-name or a binary
-/// op. slice-3b: if `sym` is a known def-name AND the form is NULLARY (the atom is immediately followed by
-/// `)`), it's a call → `NApp(defBodyId, -1)`. Otherwise (unknown name, or a form with operands) read two
-/// operands as `NBin(op-code-of(sym), …)` — a real op folds; an unknown name gives op -1 → infer TErr → decline.
-/// (A call WITH arguments is the param slice — for now it lands in the NBin arm and declines.)
+/// op. The discriminator is `op-code-of(sym)`: `None` (not an operator) → a CALL — a NULLARY form (the atom is
+/// immediately followed by `)`) reads as `read-nullary-call`, a form WITH operands as `read-param-call`;
+/// `Some(op)` (a real operator) → a bin form via `read-bin-form`.
 /// forward-ref: the call-vs-binop discriminator is NAME-BASED (op-code-of), NOT def-body-of at read time.
 /// Keywords (if/let/do/:/and/or/not) are already filtered upstream, so a `sym` reaching here is either a binary
-/// OPERATOR (op-code-of ≠ -1 → `+ - * / % < = == > <= >= !=`) → a bin form; OR a plain NAME (op-code-of == -1) →
-/// a CALL to the def `sym`. The NApp keys by `name-id(sym)` (always known at read time) instead of the callee's
-/// body node — so a FORWARD/SELF/MUTUAL call to a def not-yet-read is ACCEPTED (resolve/infer/lower map
-/// name→bodyId via def-body-of AFTER the whole do-block is recorded). Removes the read-order dependency that
-/// made forward refs decline. An unknown name still declines LATE (resolve finds no def-body → no callee).
+/// OPERATOR (op-code-of = `Some(op)` → `+ - * / % < = == > <= >= !=`) → a bin form; OR a plain NAME
+/// (op-code-of = `None`) → a CALL to the def `sym`. The NApp keys by `name-id(sym)` (always known at read
+/// time) instead of the callee's body node — so a FORWARD/SELF/MUTUAL call to a def not-yet-read is ACCEPTED
+/// (resolve/infer/lower map name→bodyId via def-body-of AFTER the whole do-block is recorded). Removes the
+/// read-order dependency that made forward refs decline. An unknown name still declines LATE (resolve finds no
+/// def-body → no callee). The single `op-code-of` MATCH here threads the resolved `op` into `read-bin-form`,
+/// so the operator lookup happens exactly once per form (no re-call).
 def read-app-or-bin(s: String, sym: String, a0: Int64, tree: Tree) =
-  (if (op-code-of(sym) == (0 - 1)) then
+  (match op-code-of(sym) with
+   | Option.None(_) =>
      (if (char-at(s, skip-space(s, a0)) == ")")
       then read-nullary-call(s, a0, name-id(sym), tree)     // `(mk)` — nullary call, NApp(nameId, -1)
       else read-param-call(s, a0, name-id(sym), tree))      // `(f arg…)` — a call, NApp(nameId, argId)
-   else read-bin-form(s, sym, a0, tree))                    // a real operator → NBin
+   | Option.Some(op) => read-bin-form(s, op, a0, tree))  // a real operator → NBin
 
 /// A nullary call `(mk)`: emit `NApp(calleeName, -1)` (calleeName = name-id of the callee) + consume `)`.
 /// forward-ref: the NApp carries the callee NAME; resolve/infer/lower map it → the def-body via def-body-of.
@@ -231,7 +236,9 @@ def read-4th-arg(s: String, g: Int64, id: Int64, arg3Id: Int64, tree: Tree) =
       // boundary so the trailing-token guard DECLINES (over-application, CDZ0203).
       else (match read-form(s, h, t5) with | (_x, a6, _t6) => (id, close-paren(s, a6), tree)))))
 
-/// A prefix binary op `(sym a b)`: read two operands + emit `NBin(op-code-of(sym), a, b)`.
+/// A prefix binary op `(sym a b)`: read two operands + emit `NBin(op, a, b)`. `op` is the operator's already-
+/// resolved code (from the single `op-code-of` match in `read-app-or-bin`), threaded in so the lookup is not
+/// repeated here.
 ///
 /// UNARY MINUS `(- x)`: a `-` head with EXACTLY ONE operand is prefix negation → desugar to `NBin(45, NLit 0,
 /// x)` = `0 - x` (mirroring parse-db's token-level `TNeg` desugar — same Core shape, no new node). The
@@ -239,15 +246,15 @@ def read-4th-arg(s: String, g: Int64, id: Int64, arg3Id: Int64, tree: Tree) =
 /// (read-bin-form unconditionally read a 2nd operand, so a 1-operand `-` mis-read the `)` / ran off). Only `-`
 /// (op 45) desugars — any OTHER op with one operand keeps reading a 2nd operand (an arity error, unchanged);
 /// binary `(- a b)` is unaffected (a 2nd operand is present, so the unary arm doesn't fire).
-def read-bin-form(s: String, sym: String, a0: Int64, tree: Tree) =
+def read-bin-form(s: String, op: Int64, a0: Int64, tree: Tree) =
   (match read-form(s, a0, tree) with | (leftId, a1, t1) =>
-    (if ((op-code-of(sym) == 45) and (char-at(s, skip-space(s, a1)) == ")"))
+    (if ((op == 45) and (char-at(s, skip-space(s, a1)) == ")"))
      then (let a3 = close-paren(s, a1) in                          // unary minus: `(- x)` → `0 - x`
            (match add-node(t1, Node.NLit(0)) with | (zeroId, t2) =>
              (match add-node(t2, Node.NBin(45, zeroId, leftId)) with | (id, t3) => (id, a3, t3))))
      else (match read-form(s, a1, t1) with | (rightId, a2, t2) =>
             (let a3 = close-paren(s, a2) in
-             (match add-node(t2, Node.NBin(op-code-of(sym), leftId, rightId)) with | (id, t3) => (id, a3, t3))))))
+             (match add-node(t2, Node.NBin(op, leftId, rightId)) with | (id, t3) => (id, a3, t3))))))
 
 /// After `(:` (index `i` past the `:` head): a TYPE ANNOTATION `(: <literal> TypeName)` — the range-check
 /// an integer annotation performs. This slice (2a-ii) handles a LITERAL operand at a fixed-width integer
