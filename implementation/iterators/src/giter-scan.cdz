@@ -1,0 +1,99 @@
+/// giter-scan.cdz — DIRECT edge coverage for the `scan` combinator (running fold), split into its own
+  /// small module.
+  ///
+  /// WHY A SEPARATE MODULE. `scan(it, acc, f)` emits the running accumulator BEFORE each step, so it yields
+  /// n+1 values for n inputs and its `Nil` base case emits the seed alone (`Cons(acc, Nil)`). giter.cdz pins
+  /// scan's happy path (running sum, n+1 count, a non-element accumulator over Strings) but NOT the
+  /// EMPTY-input edge — that `Nil`-base seed-only emission is the subtle one (an off-by-one in the base arm
+  /// would drop or duplicate the seed and slip past the non-empty tests). These pin it directly. It lives in
+  /// its own module because giter.cdz (92 @tests) sits at the per-module monomorphizer instantiation-pressure
+  /// ceiling its header documents; a fresh module isolates the added instantiation (the same "isolate the
+  /// heavy instantiation" pattern giter-flat.cdz / giter-chain.cdz follow).
+  ///
+  /// The generic pull-iterator (same cons-cell shape as the sibling modules; re-declared here so this module
+  /// is self-contained — each src/*.cdz is its own namespace).
+  type GIter =
+  | Nil
+  | Cons(a, GIter(a))
+
+/// `from-list(xs)` — the base generic producer over `xs : List(a)`, self-recursive so its result element
+/// ties to the argument.
+def from-list(xs) = match xs with
+  | [] => GIter.Nil(unit)
+  | [h, .. t] => GIter.Cons(h, from-list(t))
+
+/// `scan(it, acc, f)` — running fold: emit `acc`, then recurse with `f(acc, h)`. The `Nil` base emits the
+/// seed alone, so scan yields n+1 values for n inputs. The unit under test.
+def scan(it, acc, f) = match it with
+  | GIter.Nil(_) => GIter.Cons(acc, GIter.Nil(unit))
+  | GIter.Cons(h, rest) => GIter.Cons(acc, scan(rest, f(acc, h), f))
+
+/// `count(it)` — number of emitted values, driving the pull to exhaustion.
+def count(it) = match it with
+  | GIter.Nil(_) => 0
+  | GIter.Cons(_, rest) => 1 + count(rest)
+
+/// `take(it, n)` — the first `n` elements. Used ONLY to build a TYPED empty iterator (`take(from-list([x]),
+/// 0)`) so the empty-input scan tests pin the element type: a bare `from-list([])` leaves its result element
+/// var untied (the documented empty-producer CDZ0201 gap), while `take` of a non-empty source at count 0 is
+/// an empty iterator whose element type is pinned by the source's `[x]`.
+def take(it, n) =
+  if n <= 0 then
+    GIter.Nil(unit)
+  else
+    match it with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1))
+
+/// `collect(it)` — reify the iterator back to a `List(a)` so a test can assert the exact emitted sequence.
+def collect(it) = match it with
+  | GIter.Nil(_) => []
+  | GIter.Cons(h, rest) => List.concat([h], collect(rest))
+
+/// `int-list-eq(xs, ys)` — structural equality on `List(Int64)` for the sequence assertions.
+def int-list-eq(xs, ys) = match xs with
+  | [] => (match ys with
+    | [] => true
+    | _ => false
+  )
+  | [x, .. xr] => match ys with
+    | [] => false
+    | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
+
+/// TESTS ----------------------------------------------------------------------------------------------
+/// `scan`'s edge invariants, pinned directly (giter.cdz pins only the non-empty happy path):
+/// (1) EMPTY input still emits the seed alone (`[acc]`, count 1) — the `Nil`-base case an off-by-one would
+///     break; (2) a SINGLETON input emits seed then the folded value (`[acc, f(acc, x)]`); (3) scan works
+///     with a NON-additive fold (running max), proving the base/step arms aren't sum-specific.
+@test
+def scan-of-empty-emits-just-the-seed() =
+  if int-list-eq(collect(scan(take(from-list([1]), 0), 99, fn(a, x) => a + x)), [99]) then
+    unit
+  else
+    trap("scan of an empty iterator emits the seed alone: [99]")
+
+@test
+def scan-of-empty-has-count-one() =
+  if count(scan(take(from-list([1]), 0), 0, fn(a, x) => a + x)) == 1 then
+    unit
+  else
+    trap("scan of an empty iterator still yields one value (the seed)")
+
+@test
+def scan-singleton-emits-seed-then-folded() =
+  if int-list-eq(collect(scan(from-list([5]), 1, fn(a, x) => a + x)), [1, 6]) then
+    unit
+  else
+    trap("scan of a singleton emits [seed, f(seed, x)] = [1, 6]")
+
+@test
+def scan-running-max-is-monotonic() =
+  if int-list-eq(
+      collect(scan(from-list([3, 1, 4, 1, 5]), 0, fn(a, x) => if x > a then x else a)),
+      [0, 3, 3, 4, 4, 5]
+    ) then
+    unit
+  else
+    trap("scan with a running-max fold: [0,3,3,4,4,5]")
+
+export { GIter.* }
