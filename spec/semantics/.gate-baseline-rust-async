@@ -5429,6 +5429,8 @@ pass	a Map keyed by a COMPOUND containing an abstract type is rejected (opacity 
 pass	Set.to-list over Option elements enumerates Some-first per the declared order
 pass	a built-in comparison on a COMPOUND containing an abstract type is rejected (opacity walks the compound)
 pass	a Set/Map lookup over an abstract-element collection reached via a param is rejected (read-side opacity)
+pass	a Map keyed by a DEEPLY-nested compound containing an abstract type is rejected (opacity recurses to any depth)
+pass	an abstract-typed value held as a Map VALUE under a concrete key is legal (value-holding never triggers the opacity reject)
 pass	Record.extend chained onto Record.without of a map-borne record computes, not traps
 pass	the same without-extend chain on a LIST-borne record computes
 pass	single row ops on a map-borne record compute — without alone and extend alone

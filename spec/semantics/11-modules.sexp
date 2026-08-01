@@ -1523,6 +1523,51 @@
         (export main)))
   (call   main (: 5 Int64)) (error CDZ0202))
 
+(case "a Map keyed by a DEEPLY-nested compound containing an abstract type is rejected (opacity recurses to any depth)"
+  (doc    "The depth guard for the compound-key reject: the recursion `key_ty_contains_abstract_at`
+           (v-inference f23646b30) walks a compound key to ANY depth, not just one structural level — a
+           `(Tuple (Tuple Temp Int64) Int64)` with the abstract `Temp` leaf TWO tuples deep still has its
+           whole key spine compared by champ_eq/value-eq at insert/lookup, reaching the `Temp` leaf and
+           observing its private representation. So it rejects CDZ0202 exactly as the one-level tuple key
+           does. Pins that the opacity check does not stop at the outermost compound — a future edit that
+           made the walk shallow (only the top-level elems) would flip this to a SILENT compile+observe of
+           the abstract leaf, a soundness hole this case would catch.")
+  (module "temp"
+    (do (type Temp (T Int64)) (def (mk (: c Int64)) (T (* c 10))) (export Temp) (export mk)))
+  (input  (do
+        (import "temp" (Temp mk))
+        (def (main (: k Int64))
+          (match (Map.lookup (Map.insert Map.empty (tuple (tuple (mk k) 1) 2) 9) (tuple (tuple (mk k) 1) 2))
+            ((Some v) v) ((None _u) -1)))
+        (export main)))
+  (call   main (: 5 Int64)) (error CDZ0202))
+
+(case "an abstract-typed value held as a Map VALUE under a concrete key is legal (value-holding never triggers the opacity reject)"
+  (doc    "The NEGATIVE boundary of the abstract-opacity sweep: opacity rejects only the KEY-comparison
+           observation, NOT holding an abstract value. A Map keyed by a CONCRETE `Int64` whose VALUE is an
+           abstract `Color` obtained through the module's smart constructor `mk` is LEGAL — the value spine
+           is never compared (only the concrete key is), so the private representation is never observed;
+           the held value is read back through the exported accessor `rank` → 2. Pins the exact scope of
+           the CDZ0202 abstract-key/element check: an over-reach that rejected an abstract type in ANY
+           collection position (value, payload, paired value — not just a comparable key/element) would
+           break this legitimate hold-don't-compare use, so this positive case guards the reject from
+           creeping into value positions. The complement of the CHAMP-key reject above.")
+  (module "lib"
+    (do
+      (type Color (Red) (Green) (Blue))
+      (def (mk) Color.Green)
+      (def (rank (: c Color)) (match c ((Color.Red) 1) ((Color.Green) 2) ((Color.Blue) 3)))
+      (export Color)
+      (export mk)
+      (export rank)))
+  (input  (do
+            (import "lib" (Color mk rank))
+            (def (main (: k Int64))
+              (match (Map.lookup (Map.insert Map.empty k (mk)) k) ((Some c) (rank c)) ((None _u) -1)))
+            (export main)))
+  (call   main (: 5 Int64))
+  (output (: 2 Int64)))
+
 (case "eval of a fully-concrete imported constructor is legal from outside"
   (doc    "`(eval (quote (P.Mk 7)))` where lib2 exports `(. P *)` — the CONCRETE complement of the
            no-forge pins above: a fully-exported ctor is reachable through eval's call-site
