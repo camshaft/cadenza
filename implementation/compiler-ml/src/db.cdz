@@ -23,7 +23,7 @@ import { Tree } from "parse-db"
 
 import { Resolved } from "resolve-db"
 
-import { Typed } from "infer-db"
+import { Typed } from "typed"
 
 import { Core } from "lower-db"
 

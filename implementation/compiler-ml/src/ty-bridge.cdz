@@ -13,7 +13,7 @@
 /// concrete `Typed.TIntW` via `ground-default` (so a round-trip through the shared unify, which may leave a
 /// deferred, comes back as a concrete pipeline type). Bool and poison map straight across.
 
-import { Typed } from "infer-db"
+import { Typed } from "typed"
 import { Ty, IntType, Sign, Width, ty-fixed-int, ground-default } from "ty"
 
 /// `Typed` → `Ty`: a concrete `TIntW(signed, width)` → the fixed `Ty` int; TBool → TyBool; TErr → TyErr;
@@ -148,4 +148,4 @@ def tb-sum-round-trips() =
       else trap("TSum(1) → TySum(1) keeps id"))
     | _ => trap("TSum → TySum (forward, no grounding/drop)"))
 
-export { typed-to-ty, ty-to-typed }
+export { typed-to-ty, typed-list-to-ty, ty-to-typed }

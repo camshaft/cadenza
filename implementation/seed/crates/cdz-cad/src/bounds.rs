@@ -131,16 +131,18 @@ mod tests {
     }
 
     #[test]
-    fn a_rotated_cubes_tight_mesh_bounds_stay_inside_the_models_conservative_box() {
+    fn a_rotated_cube_tight_mesh_bounds_stay_inside_the_models_conservative_box() {
         // CROSS-IMPLEMENTATION SOUNDNESS: the model's `bounding-box` (exact.cdz) returns a CONSERVATIVE
         // symmetric box for a Rotate — the L1 corner-radius R = mx+my+mz — because an exact tight rotated box
         // needs trig. The driver, by contrast, reports the TIGHT AABB from the evaluated mesh. The contract
         // that makes the model's box safe (e.g. for a print-bed check) is: the tight mesh bounds must ALWAYS
         // be ENCLOSED by the conservative model box — never escape it. If the model box ever under-approximated
         // (the reviewer-flagged `max(mx,my,mz)` bug fixed by the L1 radius), a rotated part would exceed its
-        // reported bounds. Pin it end-to-end: a 2×2×2 cube ([-1,1]^3, per-axis |coord|=1 → R=1+1+1=3, so the
-        // model box is [-3,3]^3) rotated 45° about z. The tight mesh footprint is the 45° diamond: x/y half-
-        // extent = √2 ≈ 1.4142 (the corner (1,1) rotates onto an axis at distance √2), z unchanged at ±1.
+        // reported bounds. NOTE the model's `bounding-box` fold lives in Cadenza (exact.cdz) and is NOT callable
+        // from this Rust driver, so the conservative box is the hand-derived analytical value the L1 formula
+        // yields for THIS input — not a live call to the model. For a 2×2×2 cube ([-1,1]^3, per-axis |coord|=1
+        // → R=1+1+1=3) rotated 45° about z, that box is [-3,3]^3. The tight mesh footprint is the 45° diamond:
+        // x/y half-extent = √2 ≈ 1.4142 (the corner (1,1) rotates onto an axis at distance √2), z unchanged ±1.
         let b = bounds(
             &parse_solid(
                 "(: (Rotate (: (tuple 0/1 0/1 45/1) Vec3) (Cube (: (tuple 2/1 2/1 2/1) Vec3))) Solid)",
@@ -162,8 +164,9 @@ mod tests {
             approx(b.max[2], 1.0) && approx(b.min[2], -1.0),
             "z unchanged at ±1"
         );
-        // (b) the SOUNDNESS contract: the tight mesh bounds are strictly inside the model's conservative
-        // [-3,3]^3 box (R = 3). A margin here confirms the L1 radius over-approximates, never under.
+        // (b) the SOUNDNESS contract: the tight mesh bounds are strictly inside the conservative box the L1
+        // radius yields for this input (R = 3 → [-3,3]^3, hand-derived here since the model fold isn't callable
+        // from Rust). The margin (√2 < 3) confirms the L1 radius over-approximates, never under.
         let conservative = 3.0;
         assert!(
             b.min.iter().all(|&c| c >= -conservative) && b.max.iter().all(|&c| c <= conservative),
