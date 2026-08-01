@@ -17112,7 +17112,7 @@
   (output (: 8563 Int64)))
 
 (case "a GROUP-BY then REDUCE-over-groups pipeline — build a multimap, enumerate it, fold each bucket"
-  (doc    "The multimap grow step exists as one read-modify-write; this is the FULL pipeline: group via upsert into (Map Int64 (List Int64)), enumerate via Map.to-list into key/bucket tuples, and fold each bucket's LIST inside the entry walk — the destructure binds a scalar key AND a heap bucket per frame; the weighted sum encodes membership and canonical entry order in one scalar.")
+  (doc    "The multimap grow step exists as one read-modify-write; this is the FULL pipeline: group via upsert into (Map Int64 (List Int64)), enumerate via Map.to-list into key/bucket tuples, and fold each bucket's LIST inside the entry walk — the destructure binds a scalar key AND a heap bucket per frame. The reduction is POSITIONAL (acc*100 + key*10 + bucket-sum per entry), so it pins BOTH membership/bucket-sum AND the canonical entry order: reordering Map.to-list's entries flips the encode (a commutative sum would not). Canonical order 0,1,2 over buckets {0:[3,6]=9, 1:[1,4]=5, 2:[2,5]=7} encodes 9 -> 915 -> 91527.")
   (input  (do
             (def (group (: xs (List Int64)) (: i Int64) (: acc (Map Int64 (List Int64))))
               (match (List.at xs i)
@@ -17130,13 +17130,13 @@
                 ((Option.None _u) acc)))
             (def (reduce-groups (: es (List (Tuple Int64 (List Int64)))) (: i Int64) (: acc Int64))
               (match (List.at es i)
-                ((Option.Some (tuple key bucket)) (reduce-groups es (+ i 1) (+ acc (* key (sum-list bucket 0 0)))))
+                ((Option.Some (tuple key bucket)) (reduce-groups es (+ i 1) (+ (* acc 100) (+ (* key 10) (sum-list bucket 0 0)))))
                 ((Option.None _u) acc)))
             (def (main (: k Int64))
               (reduce-groups (Map.to-list (group (list 1 2 3 4 5 (* k 6)) 0 Map.empty)) 0 0))
             (export main)))
   (call   main (: 1 Int64))
-  (output (: 19 Int64)))
+  (output (: 91527 Int64)))
 
 (case "an ORDER-PRESERVING dedup threads a seen-Set and an out-List as twin accumulators"
   (doc    "Set dedup is canonical-order everywhere; keep-first-occurrence dedup preserves WRITTEN order by threading TWO collection accumulators through one recursion (contains->skip / insert+push). The runtime k lands both faces and the digit-encode verifies ORDER, not membership.")
