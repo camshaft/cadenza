@@ -31,7 +31,9 @@ pub mod iter;
 /// or normalize — duplicate & non-identifier keys, key order, heterogeneous arrays, exact numbers,
 /// and `null`.
 pub mod json;
-pub mod leb128;
+// The LEB128 varint moved to the shared `cadenza-ast` bottom crate; re-exported here so the public
+// path `cadenza_syntax::leb128` (and the internal `crate::leb128`) stays byte-stable.
+pub use cadenza_ast::leb128;
 pub mod lexer;
 pub mod literal;
 /// The markdown surface: a literate document (`(document …)`) is a projection of the same arena the

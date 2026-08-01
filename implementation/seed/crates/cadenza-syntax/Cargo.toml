@@ -17,6 +17,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# The AST value model + canonical binary form, extracted to a shared bottom crate (so rcdzc + the
+# agent-harness kernel depend on the same wire format). `cadenza-syntax` RE-EXPORTS what moved there
+# (e.g. `cadenza_syntax::leb128`), keeping its public API byte-stable.
+cadenza-ast = { path = "../cadenza-ast" }
 unicode-normalization = "0.1.25" # NFC on string/name leaves
 sha2 = "0.10"                    # schema-hash header over the arena type term
 num-bigint = "0.4"               # arbitrary-precision Int and the Decimal significand

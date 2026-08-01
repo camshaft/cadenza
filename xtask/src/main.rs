@@ -6044,28 +6044,35 @@ mod trap_grading_tests {
 
     #[test]
     fn known_diff_match_is_tight_title_and_code_both_required() {
-        let (title, code) = KNOWN_ML_DIFFS[0]; // uncalled-sibling / CDZ0101
-        // Exact title + exact oracle code → known.
-        assert!(disagreement_is_known(&known_msg(title, "value 42", code)));
-        // Same title, DIFFERENT oracle code → NOT known (a new way to diverge must red).
-        assert!(
-            !disagreement_is_known(&known_msg(title, "value 42", "CDZ9999")),
-            "same title, different oracle code must not be excused"
-        );
-        // Same title, oracle TRAPPED instead of rejecting → NOT known (suffix differs).
-        assert!(
-            !disagreement_is_known(&format!("{title}: ml=value 42 oracle=trap boom")),
-            "same title, non-reject oracle verdict must not be excused"
-        );
-        // A title that isn't in the list → NOT known.
+        // Drive the tightness check off a LIVE entry when one exists — `.first()`, NOT `[0]`, because
+        // `KNOWN_ML_DIFFS` is deliberately burning down to EMPTY and indexing `[0]` would PANIC at the
+        // desired end-state (empty = fully strict). When empty there's no allowlisted case to probe the
+        // "is a real entry matched, tightly" assertions against, so skip them (the always-valid negatives
+        // below still run). This tests the REAL `disagreement_is_known` against a REAL entry.
+        if let Some((title, code)) = KNOWN_ML_DIFFS.first().copied() {
+            // Exact title + exact oracle code → known.
+            assert!(disagreement_is_known(&known_msg(title, "value 42", code)));
+            // Same title, DIFFERENT oracle code → NOT known (a new way to diverge must red).
+            assert!(
+                !disagreement_is_known(&known_msg(title, "value 42", "CDZ9999")),
+                "same title, different oracle code must not be excused"
+            );
+            // Same title, oracle TRAPPED instead of rejecting → NOT known (suffix differs).
+            assert!(
+                !disagreement_is_known(&format!("{title}: ml=value 42 oracle=trap boom")),
+                "same title, non-reject oracle verdict must not be excused"
+            );
+            // Guard against a substring false-match: a title that merely CONTAINS an allowlisted title as
+            // a suffix-of-prefix must not slip through (the matcher anchors on `"{title}: "`).
+            assert!(!disagreement_is_known(&format!(
+                "x {title}: ml=value 42 oracle=reject {code}"
+            )));
+        }
+        // ALWAYS valid regardless of allowlist contents (holds even when fully burned down to empty): a
+        // title that is not in the list is never known.
         assert!(!disagreement_is_known(
             "a totally unrelated case: ml=value 1 oracle=reject CDZ0101"
         ));
-        // Guard against a substring false-match: a title that merely CONTAINS an allowlisted title as a
-        // suffix-of-prefix must not slip through (the matcher anchors on `"{title}: "`).
-        assert!(!disagreement_is_known(&format!(
-            "x {title}: ml=value 42 oracle=reject {code}"
-        )));
     }
 
     #[test]

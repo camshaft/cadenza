@@ -1669,9 +1669,14 @@ Facts (from v-syntax, the codec-surface owner, 2026-08-01):
   (refuses wrong header / malformed len-tag / out-of-range id / **cycles or shared subtrees → no
   decode-bomb** / trailing bytes — never panics, never a wrong tree). Spec-pinned by
   `spec/contracts/ast-encoding.md` + `constitution.md` (bijection, versioned; duvet `//= //#` anchors),
-  corpus-gated (`binary_surface_round_trips_the_corpus` + `all_surface_paths`, 3/3 green).
-- **rcdzc ALREADY decodes `cadenza_syntax::codec::encode` output** (rcdzc/src/{compile,lower,testkit,
-  sidecar}.rs) → 2 of the 3 consumers already share this exact wire format.
+  corpus-gated (`cadenza-syntax/tests/corpus_roundtrip.rs`: `ml_surface_round_trips_the_corpus` +
+  `binary_surface_round_trips_the_corpus` + `all_surface_paths_round_trip_the_corpus`, 3/3 green).
+- **rcdzc shares this exact wire format** — it has its OWN `crate::codec` (rcdzc/src/codec.rs) that is
+  byte-compatible with cadenza-syntax's, driven from `rcdzc/src/{compile,tests,link,backend/rust/tests}`
+  (`crate::codec::encode/decode`); it decodes what `cadenza_syntax::codec::encode` produces (rcdzc keeps
+  its own decode on its trusted derive path — v-rust-backend confirmed — so it consumes the shared
+  FORMAT, not the cadenza-syntax crate). → 2 of the 3 consumers already share the wire format. (PR#1000
+  corrected the earlier imprecise file list: rcdzc/src/sidecar.rs only *mentions* codec in a comment.)
 - **Value model** the leaf vocab MUST carry (to round-trip real programs): Int (sign+radix in the kind
   tag, no signed-zero), Float (sign+i64-exp+bigint significand), Str/Name/Sym (distinct UTF-8 kinds),
   Bytes, Char, Bool, BadChar/BadEscape MARKER leaves (malformed literal = a leaf the compiler rejects

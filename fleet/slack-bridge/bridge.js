@@ -56,8 +56,8 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 // the standalone `cargo xtask fleet wake --operator-message <agent>` — the fleet's single-source-of-truth
 // wake (same tmux `wake_window` guards). `--operator-message` relaxes the interactive-role skip so even the
 // concierge is woken; the mid-tick guard still shields an active conversation. Safe on EVERY deliver: a
-// stopped / no-window / mid-tick recipient is a clean skip (exit 0), never an error. Detached + unref'd and
-// stdio-ignored so it can't block the handler or hold the event loop; libuv reaps the child (no zombie).
+// stopped / no-window / mid-tick recipient is still an exit-0 outcome. Detached + unref'd and stdio-ignored
+// so it can't block the handler or hold the event loop; libuv reaps the child (no zombie).
 function wakeOperatorRecipient(to) {
   try {
     const child = spawn("cargo", ["xtask", "fleet", "wake", "--operator-message", to], {
@@ -65,8 +65,13 @@ function wakeOperatorRecipient(to) {
       stdio: "ignore",
       detached: true,
     });
-    // A skip (non-zero exit) is valid, not an error; only a spawn failure (e.g. cargo missing) is worth a log.
+    // `fleet wake` exits 0 whether it WOKE or SKIPPED (both are valid outcomes it just prints), so a NON-ZERO
+    // exit is a genuine failure (e.g. cargo/xtask couldn't run), not a skip — surface it (still non-fatal:
+    // the recipient's own /loop is the safety net). `error` fires only on spawn failure (e.g. cargo missing).
     child.on("error", (e) => console.error(`operator wake spawn failed for ${to} (non-fatal):`, e.message));
+    child.on("exit", (code) => {
+      if (code) console.error(`operator wake for ${to} exited ${code} (non-fatal)`);
+    });
     child.unref();
   } catch (e) {
     console.error(`operator wake spawn threw for ${to} (non-fatal):`, e.message);
