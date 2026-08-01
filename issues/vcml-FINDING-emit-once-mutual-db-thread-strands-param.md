@@ -71,6 +71,24 @@ exclude an emit-once-eligible def whose body passes one of its OWN params as an 
 emit-once-eligible def (mutual param-forwarding among emit-once defs) — per-callee pre-gateable, sound,
 degrades safely.
 
+## ⚠️ CORRECTION (2026-08-01, later tick): exclusion gate DISPROVEN — needs the general fix
+Built + tested the narrow mutual-forwarding exclusion gate against conformance-db@COST=20 on the CURRENT
+(post-PR#959 `7d705cefd`) build. Result: it does NOT fix the strand. Root re-analysis:
+- The earlier VCML_NOEMIT bisect ("exclude lower-of-db+infer-into-db → 22/0") was on the PRE-PR#959 memo,
+  which cached transient `false` and wrongly disabled emit-once for mid-solve callees. PR#959 CHANGED the
+  emit-once flip set, so that exclusion no longer fixes it on current trunk. THE BISECT WAS STALE.
+- DECISIVE new test: `VCML_NOEMIT=*` (force ALL cost-path emit-once OFF) at threshold 20 ALSO STRANDS.
+  Threshold 40 PASSES. So BOTH too-much emit-once (20) AND zero emit-once (all-inline at 20) strand, while
+  40 passes. `count-passing` is RECURSIVE (always standalone). ⇒ the strand is NOT cured by EXCLUDING a def
+  from emit-once — it is a delicate emit-once-STRUCTURE interaction: some def X (body 40+) emitting-once at
+  40 BREAKS count-passing's inline chain and PREVENTS the free db; lowering to 20 flips an ADDITIONAL def Y
+  (body 20-39) whose emit-once RE-introduces a free db in count-passing's standalone body.
+⇒ A per-callee exclusion gate CANNOT work. The real fix is the general closedness-re-lower pass (post-lower
+free-Core::Param attribution + force-inline the stranding call + re-lower), OR a precise understanding of
+why X-emit-once prevents but Y-emit-once breaks. This is real compiler-architecture work, NOT a quick gate.
+Slice-3 stays HELD (trunk sound at 40; -40% is beyond-target). Lean: DEFER slice-3 as blocked-on-real-fix,
+pivot to item-3 HM meanwhile; v-cperf owns the eligibility/re-lower design. Repro + probe method above.
+
 ## Disposition
 Slice-3's -40% emit-size win (co-verified, correctness+runtime green on the sread-eval oracle) is worth
 landing ONCE this eligibility gap is closed. Held, NOT worked-around (no threshold-dodge — that violates
