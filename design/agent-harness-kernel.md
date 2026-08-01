@@ -1840,3 +1840,64 @@ around.
 CAS blob store → component-dependency linking (compose reducer + runtime by hash) → real-Cadenza
 reducer end-to-end (surfacing + routing any Cadenza/rcdzc gaps). The in-process Rust `Reducer` trait
 stays the working reducer path until the component path is proven end-to-end with a real Cadenza reducer.
+
+## 22. Async runtime: tokio, gas, preemptive yields, session multiplexing (2026-08-01, operator directive)
+
+Operator: "Blob store needs to be async so we can do network fetches without blocking the whole runtime.
+And really everything should be async and we should pull in tokio so we can do gas and preemptive yields
+and are able to multiplex sessions more easily." Foundational execution-model stance for the kernel.
+
+### 22a. Async is the substrate (tokio)
+The kernel already uses tokio (v0.1); this leans INTO it. Async is what enables the next three, each a
+design driver:
+- **Non-blocking I/O:** effect execution + blob fetches (esp. a NETWORK-backed CAS fetch — §12 outposts /
+  a remote blob store) must not block the runtime. A fold that awaits a slow http/model effect or a
+  remote blob fetch yields the executor to other sessions instead of stalling everything.
+- **GAS (metered fuel):** bound how much a reducer/effect may consume (wasmtime's fuel/epoch mechanism —
+  cdz-run already uses an epoch deadline to trap a runaway run). A reducer can't monopolize or hang the
+  kernel; exhausting fuel is a bounded, recoverable outcome (surfaced as an effect-timeout-like event).
+- **PREEMPTIVE YIELDS:** the runtime can yield a running task at await points (and fuel/epoch checkpoints)
+  so one session/fold can't starve others.
+- **SESSION MULTIPLEXING:** run many sessions concurrently, interleaved, on the tokio executor — async
+  makes N-session hosting natural (ties to §14a central folding: the hub folds many sessions; async is
+  how it interleaves them without one blocking the rest).
+
+### 22b. Async blob store (reshapes the just-landed CAS API — next code slice)
+The §4 CAS blob store (landed sync in `blob.rs`: `BlobStore` trait + Mem/Disk) must become **async**:
+`async fn get/put/has`, so a network-backed backend fetches without blocking. Local Mem/Disk backends
+implement the async trait trivially (their bodies are sync, wrapped); the motivating case is a remote
+backend (fetch a component/blob by hash over the network). NEXT CODE SLICE: convert `BlobStore` to an
+async trait (async-trait or native), and thread async through `ComponentReducer::resolve_runtime` +
+`apply`. This is why the operator raised it now — the blob store was next on the plan; build it async.
+
+### 22c. ⚠ THE SUBTLE CONSTRAINT: async must NOT break replay-determinism (§16c-S3 crown jewel)
+Async scheduling introduces nondeterministic *task interleaving* — but the kernel's proven replay
+determinism (the whole value prop) requires the FOLD ORDER + EFFECT RESOLUTION to be deterministic. These
+are reconciled because determinism lives in the LOG, not the scheduler:
+- **Per-session fold order is already serialized by the log.** A session folds events in log-sequence
+  order; that order is recorded, not scheduler-dependent. Async interleaving happens BETWEEN sessions
+  (which have no shared mutable state — §5 cross-session is via logged effects), and WITHIN a session
+  only at effect-await points where the fold is *suspended waiting on a recorded result event* — the
+  result's content + the order it folds back are recorded (§16c-S1 durable dispatch + S4 correlation),
+  so replay re-applies recorded results in recorded order regardless of live timing.
+- **Effect completion order is nondeterministic live, deterministic on replay.** Two concurrent effects
+  may complete in either wall-clock order live; the kernel records EACH result event as it lands (with
+  its cause/id), freezing the order into the log. Replay reads that frozen order — it does NOT re-run
+  the effects or re-race them. (This is the §9c timer discipline generalized: nondeterminism at the edge,
+  determinism in the fold, because the outcome is recorded.)
+- **Gas/preemption yields are scheduler events, NOT logged fold inputs.** A preemptive yield or a
+  fuel-exhaustion pause changes WHEN a fold runs, not WHAT it folds or in what order — the fold is a pure
+  function of (event, kv), re-run identically on replay. Fuel exhaustion that ABORTS a fold IS a logged
+  outcome (like a trap → fold-failure, §16c gap A), so it replays deterministically.
+- **The invariant to hold:** the kernel may interleave/yield/meter freely, but it must record every
+  determinism-relevant fact (which event folded, each effect's result + the order results landed, any
+  fuel-abort) into the log as it happens. Replay then reconstructs from the log, never from the
+  scheduler. RAISE any place where async would leak a scheduler decision into fold state (that would be a
+  determinism bug) — don't work around it.
+
+### 22d. Fold-loop + fuel (ties to PR#1009 review finding)
+`ComponentReducer::apply` currently has NO fuel/epoch bound — a runaway guest hangs the kernel (Copilot
+PR#1009, a real DoS gap). Gas (22a) is the fix: instantiate the guest Store with a fuel limit / epoch
+deadline (cdz-run's pattern), so a fold that runs too long traps → a bounded fold-failure, not a hang.
+This is a near-term code slice (independent of the full async conversion — a fuel bound on the sync
+`apply` is a valid first step, then async makes yields cooperative).

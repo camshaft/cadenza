@@ -716,6 +716,7 @@ pass	a GENSYM effect derives fresh symbols from a counter state — same base yi
 pass	a GENUINELY-RUNTIME Rational map/set key is found by a normalized-equal key
 pass	a GROUP-BY then REDUCE-over-groups pipeline — build a multimap, enumerate it, fold each bucket
 pass	a GUARD over a QUOTE pattern compares two bound subtrees — the x=x algebraic rewrite
+pass	a HANDLE of an undeclared effect in an uncalled def is rejected
 pass	a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index
 pass	a HOF callback matching a tuple argument computes through the nested reduction
 pass	a HOF callback matching its sum argument reaches the nullary arm
@@ -786,6 +787,7 @@ pass	a NaN nested in a tuple compares equal under the canonical byte form
 pass	a NaN operand makes every runtime float ordering relation false (unordered)
 pass	a PAIR shrinker coordinate-descends each component to a jointly 1-minimal failing pair
 pass	a PARTIALLY-applied multi-payload constructor is a first-class function value
+pass	a PERFORM of an undeclared op on a declared effect in an uncalled def is rejected
 pass	a PLAIN @ensures on a NULLARY def (no parameters) enforces — ret binds the body, predicate reads only ret
 pass	a PLAIN @ensures over a HEAP result (List) TRAPS when violated — the postcondition checks the heap value
 pass	a PLAIN @ensures over a HEAP result (List) is enforced — ret binds a heap value, value-transparent when satisfied
@@ -3705,6 +3707,7 @@ pass	an unbound name in a map key is a scope error, not a coerced string
 pass	an unbound name in a resume's state position is rejected
 pass	an unbound name in a short-circuited boolean operand is still rejected
 pass	an unbound name in a type annotation's type position is rejected
+pass	an unbound name in an uncalled def's handler-ARM resume argument is rejected
 pass	an unbound name in an uncalled def's match-ARM BODY is rejected
 pass	an unbound name in an uncalled def's match-arm GUARD is rejected
 pass	an unbound name in an uncalled sibling definition is still rejected

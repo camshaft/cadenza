@@ -41,7 +41,6 @@ blake3 = "1"
 wasmtime = { version = "37", default-features = false, features = ["runtime", "cranelift", "component-model"] }
 
 [dev-dependencies]
-# `wat` (WebAssembly text → bytes) — authors tiny component fixtures in the wasm-reducer tests (the
-# reference component-WAT assembler cdz-run uses). Dev-only + small; referenced only from the
-# `#[cfg(feature = "wasm-reducer")]` test path.
+# `wat` (WebAssembly text → bytes) — authors tiny component fixtures in the wasm-host tests (the
+# reference component-WAT assembler cdz-run uses). Dev-only + small.
 wat = "1"

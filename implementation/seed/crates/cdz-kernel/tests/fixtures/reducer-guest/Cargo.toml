@@ -1,0 +1,23 @@
+# A minimal wasm-COMPONENT reducer fixture (§19b/§21c interim, concierge Option A) — a wit-bindgen Rust
+# guest that implements the `cadenza:agent-kernel` reducer world's `fold.apply` export. Compiled to a
+# wasm32-wasip1 core module then lifted to a component (`wasm-tools component new`); the cdz-kernel
+# tests load the resulting .wasm to drive ComponentReducer::apply end-to-end. Runtime-FREE (a Rust guest
+# has no Cadenza value-heap runtime import), so it proves the host machinery + apply WITHOUT needing the
+# §21b component-linking compose — that's why it's the right first end-to-end fixture.
+#
+# Its OWN workspace (empty [workspace]) — NOT part of cdz-kernel's workspace: it builds for a different
+# target (wasm32-wasip1) with a cdylib crate-type, so cdz-kernel's native `cargo test` must never try to
+# build it. A build step / CI job compiles it on demand + lifts it to a component.
+[workspace]
+
+[package]
+name = "reducer-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.45"

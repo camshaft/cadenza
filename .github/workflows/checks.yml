@@ -234,14 +234,32 @@ jobs:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
         with:
+          wasm-tools: "true"
           cache-key: cdz-kernel
+      - name: Regenerate the reducer-guest component fixture + verify it matches the committed one
+        working-directory: implementation/seed/crates/cdz-kernel
+        run: |
+          # The E2E test (component_reducer_e2e) loads a committed wasm-COMPONENT fixture built from
+          # tests/fixtures/reducer-guest (a wit-bindgen guest). Rebuild it from source + lift to a
+          # component, and DIFF against the committed one — so a stale fixture (WIT or guest changed but
+          # the .wasm wasn't regenerated) is caught in CI, not silently passing an old artifact. Same
+          # discipline the old cdz-agent CI used for its .wasm fixtures.
+          rustup target add wasm32-unknown-unknown
+          ( cd tests/fixtures/reducer-guest && cargo build --target wasm32-unknown-unknown --release )
+          wasm-tools component new \
+            tests/fixtures/reducer-guest/target/wasm32-unknown-unknown/release/reducer_guest.wasm \
+            -o /tmp/reducer_guest.component.wasm
+          # Component encoding is deterministic for the same input; a diff means the committed fixture is
+          # stale (regenerate it per the recipe in component_reducer_e2e.rs).
+          cmp tests/fixtures/reducer_guest.component.wasm /tmp/reducer_guest.component.wasm \
+            || { echo "::error::committed reducer-guest component fixture is STALE — regenerate it"; exit 1; }
       - name: Test + lint the cdz-kernel crate (standalone workspace)
         working-directory: implementation/seed/crates/cdz-kernel
         run: |
           # The default build now includes wasmtime + the component host (wasm_host.rs binds
           # wit/reducer.wit) — wasmtime is the kernel's core engine, no longer feature-gated — so the
           # plain test/clippy below cover it (incl. WIT/binding drift: the generated Host trait must
-          # match the ReducerHost impl).
+          # match the ReducerHost impl, AND the E2E test runs the guest fixture through apply).
           cargo test
           cargo clippy --all-targets -- -D warnings
           cargo fmt --check

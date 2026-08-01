@@ -6473,3 +6473,42 @@
             (export main)))
   (call   main (: 0 Int64))
   (output (: 301 Int64)))
+
+; --- Uncalled-def faces of the handler validation walk (the resume-value/state pins above are
+; CALLED-def shapes; these must reject whether or not the def is reached). Note the op-member
+; face is CDZ0201 (closed-set row lookup), not CDZ0101. ---
+
+(case "an unbound name in an uncalled def's handler-ARM resume argument is rejected"
+  (doc    "The uncalled-def face of the resume-value scope check (the CALLED-def face is pinned above): the unbound name sits in a handler arm's resume inside a never-called def — a scope walk that descends def bodies but skips handler ARMS (dispatched code, not straight-line body) runs to 42. rcdzc rejects CDZ0101.")
+  (input  (do
+            (effect E (op get (-> Unit Int64)))
+            (def (unused (: k Int64))
+              (handle E k
+                ((get (_u) s (resume no-such-name s)))
+                (E.get)))
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0101))
+
+(case "a HANDLE of an undeclared effect in an uncalled def is rejected"
+  (doc    "The effect-NAME face: (handle NoSuchEffect ...) in a never-called def — the handle head must resolve to a declared effect whether or not the def is reached. rcdzc rejects CDZ0101.")
+  (input  (do
+            (def (unused (: k Int64))
+              (handle NoSuchEffect k
+                ((op (_u) s (resume 1 s)))
+                1))
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0101))
+
+(case "a PERFORM of an undeclared op on a declared effect in an uncalled def is rejected"
+  (doc    "The op-MEMBER face: E is declared with op get, but the uncalled def performs (E.no-such-op) — the op lookup on a declared effect's row is a TYPE error (CDZ0201, the closed-set member check), distinct from the CDZ0101 unbound-name faces; it must fire in uncalled defs too. rcdzc rejects CDZ0201.")
+  (input  (do
+            (effect E (op get (-> Unit Int64)))
+            (def (unused (: k Int64))
+              (handle E k
+                ((get (_u) s (resume 1 s)))
+                (E.no-such-op)))
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0201))
