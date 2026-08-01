@@ -1,6 +1,6 @@
 /// ⚠ BANKED FUTURE-HM SPIKE — NOT wired into the pipeline (parametric-polymorphic HM prototype; the LIVE
 /// pipeline uses monomorphic deferred-int HM in infer-db.cdz). Kept + tested + banked for when the source
-/// language gains generic defs. See unify.cdz's banner for the full note. (concierge steer 2026-08-01, item-3 (b).)
+/// language gains generic defs. See unify.cdz's banner for the full note.
 ///
 /// type-scheme.cdz — TYPE SCHEMES and let-polymorphism: GENERALIZATION and INSTANTIATION, the two
   /// operations that turn Hindley-Milner (monomorphic `infer.cdz`) into let-POLYMORPHIC HM. A `let`-bound
