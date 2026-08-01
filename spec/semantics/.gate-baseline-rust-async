@@ -618,6 +618,7 @@ pass	a 2-arm match→SELECT with a performed scrutinee and pure arms stays sound
 pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 100-key runtime map resolves every key through the trie
+pass	a 1100-element runtime list resolves every index through a multi-level RRB trie
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
 todo	a @param value drives a CHAMP map lookup as the KEY

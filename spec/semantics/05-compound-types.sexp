@@ -1974,6 +1974,35 @@
   (call   main (: 0 Int64))
   (output (: (tuple 0 250 490 50 -1 0 370 50) (Tuple Int64 Int64 Int64 Int64 Int64 Int64 Int64 Int64))))
 
+; The deep-CHAMP checksum case above stresses the MAP trie (multi-level descent, node splitting) by reading
+; every key back. A List is an RRB vector with the SAME multi-level-trie machinery (base-32 radix, VEC_BITS=5),
+; but the runtime-built list cases so far stay small (n<=40 — a single strict leaf, or one interior level) so
+; the RRB's own multi-level descent and ROOT SPLIT are unexercised: a leaf holds 32, one interior level holds
+; 32*32 = 1024, so only past 1024 does the root grow a THIRD level and `vec-push`/`vec-get` must navigate two
+; interior levels of radix indexing. This is the RRB analog of the 100-key CHAMP checksum: build a list of
+; n=1100 (> 1024, forcing the level-2 root + multi-level descent) by a push-loop, then read EVERY index back
+; with `List.at` and sum — a `vec-push` that mis-split the root, or a `vec-get` that mis-navigated a radix
+; digit, loses or misroutes an element and the checksum breaks (a None poisons with a large negative).
+(case "a 1100-element runtime list resolves every index through a multi-level RRB trie"
+  (doc    "`build` pushes i for i in 0..n (`List.push` appends), producing `[0,1,..,n-1]`; at n=1100 the RRB
+           vector grows past its single-interior-level capacity (32*32 = 1024) into a THREE-level trie whose
+           root SPLIT genuinely occurs. Then `readsum` reads EVERY index i = n-1..0 back with `List.at` and
+           sums the values (value at index i is i itself): Sigma i for i in 0..1100 = 604450, with any miss
+           poisoning the sum by -1000000. A `vec-push` that mis-split the root, or a `vec-get` that indexed the
+           wrong base-32 digit at an interior level, loses or misroutes an element and breaks the checksum.
+           Runtime n keeps the whole build out of the const-fold, so it exercises the real heap RRB. The
+           List/index companion of the deep-CHAMP-map key checksum. Expected: 604450.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (readsum (: i Int64) (: xs (List Int64)) (: acc Int64))
+              (if (< i 0) acc
+                (readsum (- i 1) xs (+ acc (match (List.at xs i) ((Some v) v) ((None u) -1000000))))))
+            (def (main (: n Int64))
+              (readsum (- n 1) (build 0 n (list)) 0))
+            (export main)))
+  (call   main (: 1100 Int64)) (output (: 604450 Int64)))
+
 (case "a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read"
   (doc    "`Map.insert` is persistent — it must leave its operand map unchanged. `h` recurses with a depth
            counter: at depth>0 it sums `(h (Map.insert env \"x\" 2) 0)` (insert x=2, read it back → 2) and
