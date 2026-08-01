@@ -413,6 +413,55 @@ fn time_out_effect_on_an_armed_timer_id_is_a_noop_not_a_panic() {
 }
 
 #[test]
+fn attached_log_persists_through_on_append_no_manual_mirroring() {
+    // §16c-S1 write-through (tier B): with a LogStore attached, a live Session persists every event
+    // AS IT APPENDS — the driver does NOT mirror events by hand. Deliver a two-step run against an
+    // attached store, then recover PURELY from that store's file in a fresh session and confirm the
+    // whole run reconstructs (KV + no open obligations) — proving the session wrote through itself.
+    use cdz_kernel::log_store::LogStore;
+
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "cdz-kernel-writethrough-{}.log",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    let reducer = TwoStepReducer;
+    let mut exec = RecordingExecutor::new();
+    let mut session = Session::genesis(Hash::of(b"two-step-v1"));
+    // The store holds the log up to the current tip before attaching (here: just genesis). Then
+    // write-through owns every subsequent append.
+    {
+        let mut store = LogStore::open(&path).unwrap();
+        for e in session.log() {
+            store.append(e).unwrap();
+        }
+        session.attach_log(store);
+    }
+
+    // Drive the whole two-step loop. NO manual persistence after this point — the session writes through.
+    session
+        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .unwrap();
+    assert_eq!(session.kv().get(b"phase"), Some(&b"done"[..]));
+    // No persistence error was latched — every event reached disk.
+    assert!(session.take_persist_error().is_none());
+
+    // Recover from the FILE ONLY (drop the session's store handle first by ending its scope isn't
+    // needed — recover opens the path independently). The reconstructed session matches the live one.
+    let (restored, report) =
+        Session::recover(&path, &reducer).expect("recover from written-through log");
+    assert_eq!(report.kind, cdz_kernel::log_store::RecoveryKind::Clean);
+    assert_eq!(restored.kv().get(b"phase"), Some(&b"done"[..]));
+    // Both effects settled during the run, so recovery sees no open obligations.
+    assert_eq!(restored.open_effects(), 0);
+    assert_eq!(restored.log().len(), session.log().len());
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
     // End-to-end durability (§16c-S1): run a session while PERSISTING every appended event to a
     // LogStore, simulate a crash right after a Dispatched is durable but before its result, then

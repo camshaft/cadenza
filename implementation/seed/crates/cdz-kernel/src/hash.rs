@@ -38,6 +38,28 @@ impl Hash {
         }
         s
     }
+
+    /// Parse the canonical hex form (the inverse of [`Hash::to_hex`]): exactly 64 LOWERCASE hex chars.
+    /// `None` on any wrong-length / non-hex / UPPERCASE input. Uppercase is rejected on purpose — a
+    /// content address is canonical LOWERCASE hex, so admitting `AB..` alongside `ab..` would give one
+    /// hash two spellings (i.e. one blob two keys). This is the single home for hex→`Hash` (the inverse
+    /// of `to_hex`), so callers that read a hash out of a name/URL/build-metadata (e.g. a component
+    /// dependency's `+<hash>`) parse it here rather than reimplementing the rule.
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        if hex.len() != 64 {
+            return None;
+        }
+        // Reject uppercase explicitly (u8::from_str_radix would accept it): canonical addresses are
+        // lowercase, and two spellings of one hash would break content-addressing.
+        if hex.bytes().any(|b| b.is_ascii_uppercase()) {
+            return None;
+        }
+        let mut bytes = [0u8; 32];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
+        }
+        Some(Hash(bytes))
+    }
 }
 
 impl fmt::Debug for Hash {
@@ -76,5 +98,17 @@ mod tests {
     #[test]
     fn hex_is_64_chars() {
         assert_eq!(Hash::of(b"x").to_hex().len(), 64);
+    }
+
+    #[test]
+    fn from_hex_round_trips_and_rejects_noncanonical() {
+        let h = Hash::of(b"the content");
+        // Inverse of to_hex.
+        assert_eq!(Hash::from_hex(&h.to_hex()), Some(h));
+        // Wrong length / non-hex → None.
+        assert_eq!(Hash::from_hex("tooshort"), None);
+        assert_eq!(Hash::from_hex(&"z".repeat(64)), None);
+        // UPPERCASE is non-canonical → None (else one hash would have two spellings).
+        assert_eq!(Hash::from_hex(&h.to_hex().to_uppercase()), None);
     }
 }
