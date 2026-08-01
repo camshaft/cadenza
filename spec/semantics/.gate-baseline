@@ -4168,6 +4168,9 @@ pass	eval of a quoted proof-variant match cannot destructure an abstract proof o
 pass	eval of a quoted String.byte-len folds the string operation
 pass	eval of a quoted string executes it to the string value
 pass	eval of a quoted subtraction that goes negative preserves the sign
+pass	eval of a quoted multiplication folds through the compile-time evaluator
+pass	eval of a quoted division folds through the compile-time evaluator
+pass	eval of a quoted remainder folds through the compile-time evaluator
 pass	eval of a quoted theorem constructor cannot forge an abstract theorem outside the kernel
 pass	eval of a quoted tuple-construction form folds to the runtime tuple
 pass	eval of a template splicing a runtime VALUE folds — the working side of the boundary
