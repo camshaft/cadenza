@@ -103,15 +103,20 @@ def is-ok(v: String) -> Bool = starts-with(v, "ok")
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /// The fixed module preamble: the Comm effect + a mock self-handler opening. `<body>` + the `in` close it.
+/// IDIOMATIC (operator fleet-wide rule 2026-08-01, NO sentinel ints): a `send` that carries no meaningful
+/// reply returns `Unit`, not `Int64`; the handler state seed and `resume` values are `unit`, not magic `0`.
+/// The generated actor is real, strongly-typed Cadenza a user reads — it must model absence-of-value as
+/// `unit`, never a `0`-sentinel standing in for "nothing".
 def compile-preamble() -> String =
-  String.concat("effect Comm =\n  | send : String -> Int64\n  | recv : String -> String\n\n",
-    String.concat("def main() =\n  handle Comm(0) with\n    | send(l, s) => resume(0, 0)\n",
-      "    | recv(f, s) => resume(\"\", 0)\n  in\n  "))
+  String.concat("effect Comm =\n  | send : String -> Unit\n  | recv : String -> String\n\n",
+    String.concat("def main() =\n  handle Comm(unit) with\n    | send(l, s) => resume(unit, unit)\n",
+      "    | recv(f, s) => resume(\"\", unit)\n  in\n  "))
 
 /// Fold a role's local type into the `def main` BODY (compilable Cadenza). Sends/recvs thread via `let`;
-/// LEnd is `0`; a choice takes its first arm (mock-deterministic, matching chor-run's ichoice/ematch).
+/// LEnd is `unit` (the program's no-value result — NOT a `0`-sentinel); a choice takes its first arm
+/// (mock-deterministic, matching chor-run's ichoice/ematch).
 def compile-body(l: Local) -> String = match l with
-  | Local.LEnd => "0"
+  | Local.LEnd => "unit"
   | Local.LSend(_to, label, k) =>
     String.concat("let _ = Comm.send(\"", String.concat(label, String.concat("\") in\n  ", compile-body(k))))
   | Local.LRecv(from, _label, k) =>
@@ -120,12 +125,12 @@ def compile-body(l: Local) -> String = match l with
   | Local.LExtC(from, brs) =>
     String.concat("let _ = Comm.recv(\"", String.concat(from, String.concat("\") in\n  ", compile-first-branch(brs))))
   | Local.LBranch(_label, k) => compile-body(k)
-  | Local.LRecT(_v, _body) => "0  -- rec: unsupported in first-cut render-compilable"
-  | Local.LVarT(_v) => "0  -- var: unsupported in first-cut render-compilable"
+  | Local.LRecT(_v, _body) => "unit  -- rec: unsupported in first-cut render-compilable"
+  | Local.LVarT(_v) => "unit  -- var: unsupported in first-cut render-compilable"
 
 /// A choice's first branch body (mock-deterministic selection).
 def compile-first-branch(brs: List(Local)) -> String = match brs with
-  | [] => "0"
+  | [] => "unit"
   | [b, .. _rest] => compile-body(b)
 
 /// The complete compilable module for role `r` of protocol `g`.
@@ -302,7 +307,7 @@ def compilable-emits-effect-and-main() =
   // The compilable module for a sender starts with the Comm effect + main, ends with the export.
   let g = Chor.Comm("Buyer", "Seller", "Title") in
   let m = render-compilable(g, "Buyer") in
-  if starts-with(m, "effect Comm =\n  | send : String -> Int64") then
+  if starts-with(m, "effect Comm =\n  | send : String -> Unit") then
     (if contains-main(m) then unit else trap("emits a def main"))
   else trap("the compilable module opens with the Comm effect declaration")
 
@@ -418,13 +423,13 @@ def render-all-empty-choice-is-benign() =
 
 @test
 def compilable-sender-is-exact-golden() =
-  // GOLDEN: pin the EXACT emitted module for a single send. Verified (hand-mirrored) to `cdz compile` to a
-  // 92-byte wasm that runs → 0, so this exact string is compilable Cadenza. A future emit change that breaks
-  // compilability flips this golden.
+  // GOLDEN: pin the EXACT emitted module for a single send. Verified (hand-mirrored) to `cdz compile` to an
+  // 89-byte wasm that runs → unit, so this exact string is compilable Cadenza. A future emit change that
+  // breaks compilability flips this golden.
   let g = Chor.Comm("Buyer", "Seller", "Title") in
-  let expect = String.concat("effect Comm =\n  | send : String -> Int64\n  | recv : String -> String\n\n",
-    String.concat("def main() =\n  handle Comm(0) with\n    | send(l, s) => resume(0, 0)\n    | recv(f, s) => resume(\"\", 0)\n  in\n  ",
-      String.concat("let _ = Comm.send(\"Title\") in\n  0", "\n\nexport { main }\n"))) in
+  let expect = String.concat("effect Comm =\n  | send : String -> Unit\n  | recv : String -> String\n\n",
+    String.concat("def main() =\n  handle Comm(unit) with\n    | send(l, s) => resume(unit, unit)\n    | recv(f, s) => resume(\"\", unit)\n  in\n  ",
+      String.concat("let _ = Comm.send(\"Title\") in\n  unit", "\n\nexport { main }\n"))) in
   if render-compilable(g, "Buyer") == expect then unit
   else trap("the emitted compilable module matches the compile-verified golden")
 
@@ -433,9 +438,9 @@ def compilable-chooser-is-compilable-golden() =
   // GOLDEN: the CHOOSER's emitted module for a choice takes the first arm (mock-deterministic), performing
   // that arm's send. VERIFIED via `cdz chor` end-to-end: Buyer's module for yes-no cdz-compiles to a wasm
   // that runs → 0. Pins the LIntC (internal-choice) emit path is compilable, not just the linear path.
-  let expect = String.concat("effect Comm =\n  | send : String -> Int64\n  | recv : String -> String\n\n",
-    String.concat("def main() =\n  handle Comm(0) with\n    | send(l, s) => resume(0, 0)\n    | recv(f, s) => resume(\"\", 0)\n  in\n  ",
-      String.concat("let _ = Comm.send(\"Yes\") in\n  0", "\n\nexport { main }\n"))) in
+  let expect = String.concat("effect Comm =\n  | send : String -> Unit\n  | recv : String -> String\n\n",
+    String.concat("def main() =\n  handle Comm(unit) with\n    | send(l, s) => resume(unit, unit)\n    | recv(f, s) => resume(\"\", unit)\n  in\n  ",
+      String.concat("let _ = Comm.send(\"Yes\") in\n  unit", "\n\nexport { main }\n"))) in
   if render-compilable(yes-no(), "Buyer") == expect then unit
   else trap("the chooser's emitted choice module matches the compile-verified golden")
 
@@ -443,9 +448,9 @@ def compilable-chooser-is-compilable-golden() =
 def compilable-told-role-is-compilable-golden() =
   // GOLDEN: the TOLD role (LExtC) recvs the selection then takes the first arm's continuation. VERIFIED via
   // `cdz chor`: Seller's yes-no module cdz-compiles + runs → 0.
-  let expect = String.concat("effect Comm =\n  | send : String -> Int64\n  | recv : String -> String\n\n",
-    String.concat("def main() =\n  handle Comm(0) with\n    | send(l, s) => resume(0, 0)\n    | recv(f, s) => resume(\"\", 0)\n  in\n  ",
-      String.concat("let _ = Comm.recv(\"Buyer\") in\n  let _ = Comm.recv(\"Buyer\") in\n  0", "\n\nexport { main }\n"))) in
+  let expect = String.concat("effect Comm =\n  | send : String -> Unit\n  | recv : String -> String\n\n",
+    String.concat("def main() =\n  handle Comm(unit) with\n    | send(l, s) => resume(unit, unit)\n    | recv(f, s) => resume(\"\", unit)\n  in\n  ",
+      String.concat("let _ = Comm.recv(\"Buyer\") in\n  let _ = Comm.recv(\"Buyer\") in\n  unit", "\n\nexport { main }\n"))) in
   if render-compilable(yes-no(), "Seller") == expect then unit
   else trap("the told role's emitted choice module matches the compile-verified golden")
 

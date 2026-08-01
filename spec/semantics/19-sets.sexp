@@ -634,8 +634,11 @@
   (doc    "The 2-coloring member of the graph family (reachability above, topo-sort below, HAPPY
            orbit further down): BFS coloring over the same Map-adjacency shape — each neighbor gets
            1−parent's color through the worklist; a SAME-color edge discovered mid-drain is the
-           odd-cycle witness and rejects immediately (visit-nbrs threads an ok flag through its
-           tuple so the failure short-circuits the drain). The outer loop seeds color 0 at each
+           odd-cycle witness and rejects immediately (visit-nbrs threads a Bool ok flag through its
+           tuple so the failure short-circuits the drain). Absence is typed, not sentinel: `col-of`
+           returns `(Option Int64)` — `(None unit)` for an uncolored node, `(Some c)` for a colored
+           one — and every caller MATCHES it (the worklist-node lookup in `drain` is `(Some uc)` by
+           construction, so its `None` arm traps). The outer loop seeds color 0 at each
            still-uncolored start, covering MULTI-COMPONENT graphs. Faces: mode 1 = even 4-cycle
            1→2→3→4→1 → bipartite (1); mode 2 = ODD 3-cycle 1→2→3→1 → rejected (0); mode 3 = two
            DISCONNECTED edges 1→2, 3→4 → each component colors independently (1).")
@@ -643,36 +646,36 @@
             (def (nbrs (: g (Map Int64 (List Int64))) (: n Int64))
               (match (Map.lookup g n) ((Some xs) xs) ((None _u) (list))))
             (def (col-of (: colors (Map Int64 Int64)) (: n Int64))
-              (match (Map.lookup colors n) ((Some c) c) ((None _u) -1)))
+              (match (Map.lookup colors n) ((Some c) (Some c)) ((None _u) (None unit))))
             (def (visit-nbrs (: es (List Int64)) (: uc Int64) (: colors (Map Int64 Int64)) (: work (List Int64)))
               (match es
-                ((list) (tuple 1 colors work))
+                ((list) (tuple true colors work))
                 ((list v .. t)
-                  (do
-                    (def vc (col-of colors v))
-                    (if (= vc -1)
-                        (visit-nbrs t uc (Map.insert colors v (- 1 uc)) (List.push work v))
-                        (if (= vc uc)
-                            (tuple 0 colors work)
-                            (visit-nbrs t uc colors work)))))))
+                  (match (col-of colors v)
+                    ((None _u) (visit-nbrs t uc (Map.insert colors v (- 1 uc)) (List.push work v)))
+                    ((Some vc) (if (= vc uc)
+                                   (tuple false colors work)
+                                   (visit-nbrs t uc colors work)))))))
             (def (drain (: g (Map Int64 (List Int64))) (: work (List Int64)) (: colors (Map Int64 Int64)))
               (match work
-                ((list) (tuple 1 colors))
+                ((list) (tuple true colors))
                 ((list u .. t)
-                  (match (visit-nbrs (nbrs g u) (col-of colors u) colors t)
-                    ((tuple ok colors2 work2)
-                      (if (= ok 0)
-                          (tuple 0 colors2)
-                          (drain g work2 colors2)))))))
+                  (match (col-of colors u)
+                    ((None _u) (trap "unreachable: worklist node is uncolored"))
+                    ((Some uc)
+                      (match (visit-nbrs (nbrs g u) uc colors t)
+                        ((tuple ok colors2 work2)
+                          (if ok (drain g work2 colors2) (tuple false colors2)))))))))
             (def (all-nodes (: ns (List Int64)) (: g (Map Int64 (List Int64))) (: colors (Map Int64 Int64)))
               (match ns
                 ((list) 1)
                 ((list s .. t)
-                  (if (= (col-of colors s) -1)
+                  (match (col-of colors s)
+                    ((None _u)
                       (match (drain g (list s) (Map.insert colors s 0))
                         ((tuple ok colors2)
-                          (if (= ok 0) 0 (all-nodes t g colors2))))
-                      (all-nodes t g colors)))))
+                          (if ok (all-nodes t g colors2) 0))))
+                    ((Some _c) (all-nodes t g colors))))))
             (def (main (: mode Int64))
               (do
                 (def g (if (= mode 1)
@@ -2942,3 +2945,16 @@
                  (if (= (Set.remove (Set.of (list x 99)) 99) (Set.of (list (+ x 1)))) 1 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 10 Int64)))
+
+(case "sets reached via DIFFERENCE and INTERSECTION equal the directly-built set"
+  (doc    "The set-algebra face of construction canonicalization: {x,7,99}∖{7,99} (difference walks the
+           CHAMP removing/skipping) and {x,7}∩{x,42} (intersection builds a fresh result) must BOTH be
+           byte-canonical with (Set.of (list x)) — tens digit the difference leg, ones the intersection
+           leg → 11. An algebra op that assembled its result on a different node layout than direct
+           construction would compare unequal while holding the same elements.")
+  (input  (do
+            (def (main (: x Int64))
+              (+ (* 10 (if (= (Set.difference (Set.of (list x 7 99)) (Set.of (list 7 99))) (Set.of (list x))) 1 0))
+                 (if (= (Set.intersection (Set.of (list x 7)) (Set.of (list x 42))) (Set.of (list x))) 1 0)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))

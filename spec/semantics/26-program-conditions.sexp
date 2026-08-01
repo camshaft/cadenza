@@ -3362,3 +3362,104 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 14 Int64))
   (call   main (: 0 Int64)) (trap "unreachable"))
+
+; --- The IDIOMATIC operator-encoding: a HeadOp SUM, not a magic-int Const tag. ---
+; This case mirrors the flagship discharge (:47) but encodes each arithmetic head-symbol as a NULLARY
+; VARIANT of a closed `HeadOp` sum applied via `Term.Head`, instead of a `Term.Const Int64` magic tag
+; with an out-of-band comment legend (add=0, le=1, …). It matches the shape of the compiler-bundled
+; trusted kernel `verify_kernel.cdz` after the 2026-08-01 fleet-wide directive to eliminate C-style
+; sentinel/magic-int anti-patterns from ALL Cadenza code: a closed operator set is a sum type, `op-eq`
+; is an exhaustive sum match (a new head is a compile-checked addition, not a silently-clashing int).
+; The kernel is otherwise byte-for-byte the `bounds` order-logic — this pins that the idiomatic encoding
+; discharges the SAME no-overflow obligation end-to-end (a live semantic witness for the bundled kernel,
+; which is otherwise only parse-checked). `Var`/`Num` keep their Int64 payloads: a de Bruijn variable
+; index and a numeric literal are GENUINELY integers, not sentinels — only the operator TAG was the
+; anti-pattern.
+(case "IDIOMATIC HeadOp-sum encoding discharges no-overflow: for x<=100, (x+1)<=MAXINT (sum-typed head, not a magic-int Const tag)"
+  (doc    "The strongly-typed-head analogue of the flagship discharge at :47. Head-symbols are nullary
+           variants of a closed `HeadOp` sum (Add/Le/…) applied through `Term.Head`, matched by an
+           exhaustive `op-eq` — the idiomatic encoding of a closed operator set, replacing the
+           `Term.Const Int64` magic-tag form (add=0, le=1) the operator's fleet-wide directive kills.
+           The proof is unchanged: assume `LE x (Num 100)`, `mono-add-r` to `LE (add x 1) (add 100 1)`,
+           the CHECKED ground axiom `le-ax (add 100 1) MAXINT` mints `LE (add 100 1) MAXINT` (101<=MAXINT
+           holds), `trans-le` closes to `LE (add x 1) MAXINT`, and `term-eq` confirms the conclusion IS
+           the obligation. Runs to `true`. This is the shape of the compiler-bundled `verify_kernel.cdz`
+           after its magic-int elimination, giving that otherwise-parse-only asset a live discharge run.")
+  (module "bounds"
+    (do
+      (type HeadOp (Add) (Le))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
+      (type Thm (Seq (List Term) Term))
+      ; equality on the closed operator set — an exhaustive sum match, not an Int64 compare
+      (def (op-eq (: a HeadOp) (: b HeadOp))
+        (match a
+          ((HeadOp.Add) (match b ((HeadOp.Add) true) (_ false)))
+          ((HeadOp.Le)  (match b ((HeadOp.Le)  true) (_ false)))))
+      (def (term-eq (: a Term) (: b Term))
+        (match a
+          ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
+          ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
+          ((Term.Head o)   (match b ((Term.Head p) (op-eq o p)) (_ false)))
+          ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
+      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Add) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Le) a) b))
+      (def (maxint) (Term.Num 9223372036854775807))
+      (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
+      (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
+      (def (assume (: p Term)) (Thm.Seq (list p) p))
+      (def (eval-ground (: t Term))
+        (match t
+          ((Term.Num n) (Option.Some n))
+          ((Term.Comb (Term.Comb (Term.Head HeadOp.Add) a) b)
+            (match (eval-ground a)
+              ((Option.Some av) (match (eval-ground b)
+                                  ((Option.Some bv) (Option.Some (+ av bv)))
+                                  ((Option.None) (Option.None))))
+              ((Option.None) (Option.None))))
+          (_ (Option.None))))
+      (def (le-ax (: lhs Term) (: rhs Term))
+        (match (eval-ground lhs)
+          ((Option.Some lv) (match (eval-ground rhs)
+                              ((Option.Some rv) (if (<= lv rv)
+                                                  (Option.Some (Thm.Seq (list) (le lhs rhs)))
+                                                  (Option.None)))
+                              ((Option.None) (Option.None))))
+          ((Option.None) (Option.None))))
+      (def (mono-add-r (: th Thm) (: k Term))
+        (match (concl th)
+          ((Term.Comb (Term.Comb (Term.Head HeadOp.Le) x) c)
+            (Option.Some (Thm.Seq (hyps th) (le (add x k) (add c k)))))
+          (_ (Option.None))))
+      (def (trans-le (: t1 Thm) (: t2 Thm))
+        (match (concl t1)
+          ((Term.Comb (Term.Comb (Term.Head HeadOp.Le) a) b)
+            (match (concl t2)
+              ((Term.Comb (Term.Comb (Term.Head HeadOp.Le) b2) c)
+                (if (term-eq b b2)
+                  (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (le a c)))
+                  (Option.None)))
+              (_ (Option.None))))
+          (_ (Option.None))))
+      (export (. Term *))
+      (export (. HeadOp *))
+      (export Thm)
+      (export op-eq term-eq add le maxint concl hyps assume eval-ground le-ax mono-add-r trans-le)))
+  (input  (do
+            (import "bounds" (HeadOp Term Thm term-eq add le maxint assume eval-ground le-ax mono-add-r trans-le concl))
+            (def (main)
+              (let ((x   (Term.Var 0))
+                    (one (Term.Num 1))
+                    (c   (Term.Num 100)))
+                (let ((obligation (le (add x one) (maxint))))
+                  (let ((pre (assume (le x c))))
+                    (match (mono-add-r pre one)
+                      ((Option.Some step1)
+                        (match (le-ax (add c one) (maxint))
+                          ((Option.Some fact)
+                            (match (trans-le step1 fact)
+                              ((Option.Some proof) (term-eq (concl proof) obligation))
+                              ((Option.None) false)))
+                          ((Option.None) false)))
+                      ((Option.None) false))))))
+            (export main)))
+  (output (: true Bool)))

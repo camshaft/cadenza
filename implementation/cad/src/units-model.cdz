@@ -76,15 +76,15 @@ def lower-pathseg-q(s: PathSeg(Qty(Rational, Unit.base(#"meter")))) = match s wi
   | PathSeg.CubicToAbs(e, c0, c1) => PathSeg.CubicToAbs(lower-v2(e), lower-v2(c0), lower-v2(c1))
   | PathSeg.CubicToRel(e, c0, c1) => PathSeg.CubicToRel(lower-v2(e), lower-v2(c0), lower-v2(c1))
 
-/// Unwrap a path's `Qty[meter]` coords to bare-Rational meters (recursive; `List` has no map).
+/// Unwrap a path's `Qty[meter]` coords to bare-Rational meters. Structural recursion over the input (head/tail),
+/// accumulating the unwrapped segments in order (the fleet-standard `[h, .. t]`-destructure + `List.push` fold;
+/// no index counter).
 def lower-path-q(p: Path(Qty(Rational, Unit.base(#"meter")))) =
-  match p with | Path.Segs(xs) => Path.Segs(lower-path-q-go(xs, (0 : Int64), []))
-def lower-path-q-go(xs: List(PathSeg(Qty(Rational, Unit.base(#"meter")))), i: Int64,
-                    acc: List(PathSeg(Rational))) =
-  if i == List.len(xs) then acc
-  else (match List.at(xs, i) with
-    | Option.Some(s) => lower-path-q-go(xs, i + (1 : Int64), List.push(acc, lower-pathseg-q(s)))
-    | Option.None => acc)
+  match p with | Path.Segs(xs) => Path.Segs(lower-path-q-go(xs, []))
+def lower-path-q-go(xs: List(PathSeg(Qty(Rational, Unit.base(#"meter")))), acc: List(PathSeg(Rational))) =
+  match xs with
+    | [] => acc
+    | [s, .. t] => lower-path-q-go(t, List.push(acc, lower-pathseg-q(s)))
 
 /// Unwrap a 2-D profile's `Qty[meter]` coords to bare-Rational meters (the render-edge twin of `lower-v`
 /// for the extrude/revolve profile arms).

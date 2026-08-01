@@ -150,6 +150,53 @@ test("no example swallows a Bool as a coded 1/0 (no (if <cond> 1 0) proxy)", () 
   );
 });
 
+/// No SENTINEL INTEGER in an absence arm (operator fleet-wide directive, 2026-08-01): a `None`/`Empty`
+/// match arm must not resolve absence to an in-band magic integer. Cadenza is strongly typed — a
+/// should-never-happen absence is `(trap "…")`, checked failure is Option/Result; a magic value flowing
+/// in-band is the "spreads like wildfire" anti-pattern the operator is killing. We detect only the
+/// UNAMBIGUOUS shapes (a negative-int literal `-N`, or the `(- 0 1)` = -1 idiom, as the arm's whole value),
+/// because those have NO legitimate reading as a real element. A bare `0`/positive default is NOT flagged —
+/// it is context-dependent and sometimes correct (e.g. Rule 110's out-of-row cell truly IS dead=0, and the
+/// option-sum-types teaching example's `((None _) 0)` is an intended fallback), a judgment the operator
+/// framed as "would idiomatic strongly-typed code do this?" that a regex can't make.
+function sentinelAbsenceArms(): string[] {
+  const src = readFileSync(playgroundExamples, "utf8");
+  const found: string[] = [];
+  // `((None …) <val>)` or `((Empty …) <val>)` where <val> is a negative int literal or `(- 0 1)`.
+  const re = /\(\((?:None|Empty)\b[^)]*\)\s+(-\d+|\(-\s+0\s+1\))\s*\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    const line = src.slice(0, m.index).split("\n").length;
+    found.push(`examples.ts:${line} — ${m[0].replace(/\s+/g, " ")}`);
+  }
+  return found;
+}
+
+test("no example resolves an absence arm to a sentinel integer (use trap / Option / Result)", () => {
+  const sentinels = sentinelAbsenceArms();
+  assert.equal(
+    sentinels.length,
+    0,
+    `sentinel-integer absence arm(s) — a None/Empty case returning a magic int flowing in-band. Model it ` +
+      `idiomatically: an invariant-violation absence is \`(trap "…")\`, a checked failure is Option/Result:\n  ${sentinels.join("\n  ")}`,
+  );
+});
+
+test("the sentinel-arm detector is precise (catches the removed shapes, not legitimate defaults)", () => {
+  const probe = (s: string) => {
+    const re = /\(\((?:None|Empty)\b[^)]*\)\s+(-\d+|\(-\s+0\s+1\))\s*\)/g;
+    return re.test(s);
+  };
+  // Positive: the exact shapes swept out of n-queens / the index-walk helpers.
+  assert.ok(probe("((None) (- 0 1))"), "a (- 0 1) = -1 sentinel arm must be caught");
+  assert.ok(probe("((None) -1)"), "a negative-literal sentinel arm must be caught");
+  assert.ok(probe("((Empty _) -5)"), "a negative-literal Empty-arm sentinel must be caught");
+  // Negatives: legitimate context-dependent defaults are NOT flagged.
+  assert.ok(!probe("((None) 0)"), "a bare-0 default (rule-110 dead cell) is context-dependent, not flagged");
+  assert.ok(!probe("((None _) 0)"), "the option-sum-types teaching fallback is not flagged");
+  assert.ok(!probe('((None) (trap "oob"))'), "the idiomatic trap arm is not flagged");
+});
+
 test("the bool-proxy detector is precise (guards false-positives and a vacuous pass)", () => {
   // Positive: a real proxy is caught.
   assert.ok(isBoolProxy("(if (= a b) 1 0)"), "a (if <cond> 1 0) must be detected");

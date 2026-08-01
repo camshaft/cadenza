@@ -999,20 +999,26 @@
            deepest-first and returns the last matching position: for env `[5, 7, 5]` (name 5 bound at
            slot 0, shadowed at slot 2), looking up 5 yields 2 — the shadowing binding — not 0. Pins that
            a recursive deepest-first environment search realizes lexical shadowing correctly (a
-           first-match search would wrongly return the shadowed outer slot 0). An absent name yields -1.
-           This is the `bytes → local-slot` name resolution a reader performs, the runtime dual of the
-           `let`-shadowing value semantics above.")
+           first-match search would wrongly return the shadowed outer slot 0). Absence is an
+           `(Option Int64)` — `(None unit)` at the empty environment, `(Some k)` at a hit — not an
+           in-band sentinel: `pos` returns a typed Option and the recursion propagates a deeper `Some`
+           or falls back to the current frame, so `main` matches the result (the present name yields
+           `(Some 2)`; the `None` arm is unreachable in this witness → trap). This is the `bytes →
+           local-slot` name resolution a reader performs, the runtime dual of the `let`-shadowing
+           value semantics above.")
   (input  (do
             (type Env ENil (ECons (Tuple Int64 Env)))
             (def (pos xs target k)
               (match xs
-                ((Env.ENil _) (- 0 1))
+                ((Env.ENil _) (None unit))
                 ((Env.ECons (tuple h t))
-                  (let ((deeper (pos t target (+ k 1))))
-                    (if (= deeper (- 0 1))
-                        (if (= h target) k (- 0 1))
-                        deeper)))))
-            (def (main) (pos (Env.ECons (tuple 5 (Env.ECons (tuple 7 (Env.ECons (tuple 5 (Env.ENil ()))))))) 5 0)) (export main)))
+                  (match (pos t target (+ k 1))
+                    ((Some d)  (Some d))
+                    ((None _u) (if (= h target) (Some k) (None unit)))))))
+            (def (main)
+              (match (pos (Env.ECons (tuple 5 (Env.ECons (tuple 7 (Env.ECons (tuple 5 (Env.ENil ()))))))) 5 0)
+                ((Some p)  p)
+                ((None _u) (trap "unreachable")))) (export main)))
   (output (: 2 Int64)))
 
 (case "a reference to an unbound name is rejected before running"

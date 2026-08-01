@@ -63,6 +63,7 @@ pass	Float32 arithmetic runs at 24-bit mantissa precision — 2^24+1 absorbs, 2^
 pass	GRAY CODE encodes by shift-xor, decodes by xor-folding, and adjacent codes differ by one bit
 pass	HAPPY NUMBER iteration detects the 4-cycle with a seen-set and counts steps to resolution
 pass	HORNER polynomial evaluation folds coefficients high-to-low and agrees with a power-sum oracle
+pass	IDIOMATIC HeadOp-sum encoding discharges no-overflow: for x<=100, (x+1)<=MAXINT (sum-typed head, not a magic-int Const tag)
 pass	INTERLEAVE alternates two spines and drains the longer tail after the shorter empties
 pass	INTERLEAVED pops and inserts keep the event queue min-ordered across live mutation
 pass	INVERSION COUNT pairs every element with its successors, zero when sorted and maximal when reversed
@@ -3701,6 +3702,7 @@ pass	an unannotated predicate closure is inferred through a recursive counting H
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unannotated two-argument closure is inferred through a generic recursive HOF
 pass	an unbound CONSTRUCTOR applied in an uncalled def is rejected
+pass	an unbound PAYLOAD type in a never-constructed type declaration is still rejected
 pass	an unbound TYPE name in an uncalled definition's annotation is still rejected
 pass	an unbound export BEFORE a valid main export is rejected
 pass	an unbound export after a valid HELPER export is rejected
@@ -4477,6 +4479,7 @@ pass	rejection sampling into a narrow range refinement produces only in-range va
 pass	rejection sampling terminates on fuel exhaustion when the refinement is unsatisfiable
 pass	remainder (%) on a quantity declines cleanly (not a leaked scheme mismatch)
 pass	remainder on two strings is rejected — the whole family, including %
+pass	remove-then-REINSERT of a key with a new value equals the directly-built map
 pass	removing a key drops its association and the size
 pass	removing a key drops the ASSOCIATION and keeps the sibling — a lookup-after check, not just size
 pass	removing a runtime element drops it or is a no-op if absent
@@ -4567,6 +4570,7 @@ pass	set equality is independent of the order elements are written
 pass	set union is associative on generated inputs (the order merges are grouped does not matter)
 pass	set union is commutative on generated inputs (a grow-only-set CRDT merge converges)
 pass	set union is idempotent on generated inputs (re-delivering a set changes nothing)
+pass	sets reached via DIFFERENCE and INTERSECTION equal the directly-built set
 pass	shift-by-zero is a no-op on a runtime operand for both directions
 pass	shrinking reports the minimal failing input
 pass	sibling patterns over a two-sum tuple diverge on PER-POSITION literals

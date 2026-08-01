@@ -365,14 +365,15 @@ export const EXAMPLES: Example[] = [
   (def (push s x) (Cons (tuple x s)))
   ; A postfix token: a number, or a binary operator.
   (type Tok (Num Int64) (Plus unit) (Times unit))
-  ; An operator pops the top two operands and pushes the result.
+  ; An operator pops the top two operands and pushes the result. A well-formed postfix expression always
+  ; has two operands on the stack for a binary op, so underflow is an invariant violation — trap, not a no-op.
   (def (apply2 s f)
     (match s
       ((Cons top1)
        (match (. top1 1)
          ((Cons top2) (push (. top2 1) (f (. top2 0) (. top1 0))))
-         ((Empty _) s)))
-      ((Empty _) s)))
+         ((Empty _) (trap "rpn: operator underflow (need two operands)"))))
+      ((Empty _) (trap "rpn: operator underflow (empty stack)"))))
   (def (step s tok)
     (match tok
       ((Num n) (push s n))
@@ -384,7 +385,9 @@ export const EXAMPLES: Example[] = [
         (match (List.at toks i)
           ((Some t) (run toks (+ i 1) n (step s t)))
           ((None) s))))
-  (def (top s) (match s ((Cons t) (. t 0)) ((Empty _) 0)))
+  ; A completed RPN run leaves exactly one result on the stack; an empty stack here means a malformed
+  ; expression, so trap rather than fabricate a 0.
+  (def (top s) (match s ((Cons t) (. t 0)) ((Empty _) (trap "rpn: empty result stack"))))
   ; 3 4 + 5 *  ==>  (3 + 4) * 5 = 35
   (def (main)
     (let ((toks (list (Num 3) (Num 4) (Plus unit) (Num 5) (Times unit))))
@@ -486,11 +489,12 @@ export const EXAMPLES: Example[] = [
     theme: "data-and-collections",
     surface: "sexpr",
     source: `(do
-  ; m is a list of rows; each row is a list of Int64. elem reads m[i][j], 0 if out of range.
-  (def (elem m i j)
+  ; m is a list of rows; each row is a list of Int64. elem reads m[i][j]; i and j are always in range
+  ; (0..rows, 0..cols), so a miss is an invariant violation — trap, never a magic 0 masquerading as data.
+  (def (elem (: m (List (List Int64))) (: i Int64) (: j Int64))
     (match (List.at m i)
-      ((Some r) (match (List.at r j) ((Some v) v) ((None) 0)))
-      ((None) 0)))
+      ((Some r) (match (List.at r j) ((Some v) v) ((None) (trap "transpose: column index out of range"))))
+      ((None) (trap "transpose: row index out of range"))))
   ; Build column j by reading m[0][j], m[1][j], ... down the rows.
   (def (col m j i rows acc)
     (if (= i rows) acc (col m j (+ i 1) rows (List.push acc (elem m i j)))))
@@ -550,7 +554,9 @@ export const EXAMPLES: Example[] = [
     theme: "algorithms",
     surface: "sexpr",
     source: `(do
-  (def (at xs i) (match (List.at xs i) ((Some v) v) ((None) 0)))
+  ; The walk only reads in-range indices, so a miss is an invariant violation, not a real element.
+  (def (at (: xs (List Int64)) (: i Int64))
+    (match (List.at xs i) ((Some v) v) ((None) (trap "rle: index out of range"))))
   ; Walk the list carrying the current value + its running count; emit on a change.
   (def (go xs i n cur cnt acc)
     (if (= i n)
@@ -575,7 +581,8 @@ export const EXAMPLES: Example[] = [
     surface: "sexpr",
     source: `(do
   ; Compare bytes from both ends moving inward; a mismatch means not a palindrome.
-  (def (at bs i) (match (Bytes.at bs i) ((Some b) b) ((None) 0)))
+  ; i and j stay within [0, len), so a miss is an invariant violation — trap, don't invent a byte.
+  (def (at bs i) (match (Bytes.at bs i) ((Some b) b) ((None) (trap "palindrome: byte index out of range"))))
   (def (pal bs i j)
     (if (>= i j)
         true
@@ -601,8 +608,8 @@ export const EXAMPLES: Example[] = [
     (if (= b 105) true
     (if (= b 111) true
     (if (= b 117) true false))))))
-  ; Bytes.at returns (Option Int64); treat a missing byte as a non-vowel 0.
-  (def (byte-at bs i) (match (Bytes.at bs i) ((Some b) b) ((None) 0)))
+  ; Bytes.at returns (Option Int64); i stays within [0, len), so a miss is an invariant violation — trap.
+  (def (byte-at bs i) (match (Bytes.at bs i) ((Some b) b) ((None) (trap "count-vowels: byte index out of range"))))
   ; Walk every byte, counting vowels.
   (def (go bs i n acc)
     (if (= i n)
@@ -684,7 +691,9 @@ export const EXAMPLES: Example[] = [
     theme: "algorithms",
     surface: "sexpr",
     source: `(do
-  (def (at xs i) (match (List.at xs i) ((Some v) v) ((None) (- 0 1))))
+  ; placed positions are always in range (i < row <= length), so a miss is an invariant violation, not data.
+  (def (at (: xs (List Int64)) (: i Int64))
+    (match (List.at xs i) ((Some v) v) ((None) (trap "queens: placed[i] out of range"))))
   (def (adiff a b) (if (> a b) (- a b) (- b a)))
   ; Is this column safe in the current row, given the columns already placed above?
   (def (safe placed col row i)
@@ -716,7 +725,9 @@ export const EXAMPLES: Example[] = [
     theme: "basics",
     surface: "sexpr",
     source: `(do
-  (def (at xs i) (match (List.at xs i) ((Some v) v) ((None) 0)))
+  ; rev only reads indices in [0, len), so a miss is an invariant violation — trap, don't invent an element.
+  (def (at (: xs (List Int64)) (: i Int64))
+    (match (List.at xs i) ((Some v) v) ((None) (trap "reverse: index out of range"))))
   ; Walk from the last index down, pushing each element onto a fresh list.
   (def (rev xs i acc)
     (if (< i 0) acc (rev xs (- i 1) (List.push acc (at xs i)))))
