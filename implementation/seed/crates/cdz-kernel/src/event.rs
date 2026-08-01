@@ -66,7 +66,17 @@ pub enum EventBody {
 
     /// The result of a previously-`Dispatched` effect, correlated by `id` (§16c-S4). The reducer
     /// resumes its continuation for that id.
-    EffectResult { id: EffectId, result: EffectOutcome },
+    EffectResult {
+        id: EffectId,
+        result: EffectOutcome,
+        /// The reducer's continuation token for this effect (§19b/§19e (B)), COPIED from `id`'s
+        /// `Dispatched` frame when the result is recorded. It rides the result event so a WASM
+        /// `ComponentReducer`'s `fold` reads it back as the guest's `resumes` — without `fold` ever
+        /// touching the log/map (fold stays a pure function of `(event, kv)`). `None` = the dispatch
+        /// carried no token (a Rust reducer that correlates by `EffectId`). Derived from the durable
+        /// Dispatched frame, so it's the same live and on replay.
+        token: Option<Vec<u8>>,
+    },
 
     /// A timer was armed. Durable (§16c-S1/S5) with an ABSOLUTE deadline so any node can compute the
     /// remaining time after failover. The kernel injects a `TimerFired` at the deadline.
@@ -269,6 +279,7 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
         3 => EventBody::EffectResult {
             id: EffectId(c.u64()?),
             result: decode_outcome(c)?,
+            token: decode_opt_bytes(c)?,
         },
         4 => EventBody::TimerArmed {
             id: EffectId(c.u64()?),
@@ -413,10 +424,11 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
             encode_opt_u64(*deadline_ms, out);
             encode_opt_bytes(token.as_deref(), out);
         }
-        EventBody::EffectResult { id, result } => {
+        EventBody::EffectResult { id, result, token } => {
             out.push(3);
             out.extend_from_slice(&id.0.to_le_bytes());
             encode_outcome(result, out);
+            encode_opt_bytes(token.as_deref(), out);
         }
         EventBody::TimerArmed { id, deadline_ms } => {
             out.push(4);
@@ -704,6 +716,7 @@ mod tests {
                 body: EventBody::EffectResult {
                     id: EffectId(7),
                     result: EffectOutcome::Ok(Some(Payload::Inline(b"body".to_vec()))),
+                    token: Some(b"resume-tok".to_vec()),
                 },
             },
             Event {
@@ -712,6 +725,7 @@ mod tests {
                 body: EventBody::EffectResult {
                     id: EffectId(8),
                     result: EffectOutcome::Ok(None),
+                    token: None,
                 },
             },
             Event {
@@ -720,6 +734,7 @@ mod tests {
                 body: EventBody::EffectResult {
                     id: EffectId(9),
                     result: EffectOutcome::Err("boom".into()),
+                    token: None,
                 },
             },
             Event {
@@ -728,6 +743,7 @@ mod tests {
                 body: EventBody::EffectResult {
                     id: EffectId(9),
                     result: EffectOutcome::TimedOut,
+                    token: None,
                 },
             },
             Event {
