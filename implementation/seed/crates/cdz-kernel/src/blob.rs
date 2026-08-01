@@ -135,10 +135,23 @@ impl BlobStore for DiskBlobStore {
             seq
         ));
         std::fs::write(&tmp, bytes)?;
-        // Rename is atomic on the same filesystem; if it fails, don't leave the temp behind.
+        // Rename tmp → final. POSIX rename atomically REPLACES an existing target, but Windows rename
+        // FAILS if the target exists — so the corrupt-rewrite path (target present but bad bytes) would
+        // leave the corruption UNHEALED on Windows (Copilot PR#1016, same rename-over-existing class as
+        // PR#903/#929). On failure, if the target exists, remove it and retry the rename ONCE; always
+        // clean up tmp on a hard failure so no litter is left.
         if let Err(e) = std::fs::rename(&tmp, &path) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e);
+            if path.exists() {
+                if let Err(e2) =
+                    std::fs::remove_file(&path).and_then(|()| std::fs::rename(&tmp, &path))
+                {
+                    let _ = std::fs::remove_file(&tmp);
+                    return Err(e2);
+                }
+            } else {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
         }
         Ok(hash)
     }

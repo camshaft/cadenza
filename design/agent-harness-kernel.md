@@ -1957,6 +1957,11 @@ a built-in the kernel knows by name, interface prefix, or identity. This sharpen
 reducer needs the Cadenza runtime, load the Cadenza runtime."
 
 ### 23a. Where it's hard-coded today (to remove)
+> ✅ **DONE (code landed as the refactor below).** `RUNTIME_IFACE`/`required_runtime`/`RuntimeReq`/
+> `resolve_runtime*` are GONE from `wasm_host.rs`, replaced by generic `ComponentDep`/`declared_deps`/
+> `resolve_deps` (§23b). PR#1013 (3) split `DepMissing`/`DepStoreError`, (4) lowercase-hash enforced, (5)
+> fixture comment reconciled — all folded in. This subsection is kept as the before-state record.
+
 All in `wasm_host.rs`, from the §21b slice (`4614bdb75`, landed) — this is exactly the machinery the
 operator is pointing at, and PR#1013's Copilot findings (1)/(2) are symptoms of the same hard-coding:
 - `const RUNTIME_IFACE: &str = "cadenza:runtime/heap"` — a **named, kernel-baked identity** for one

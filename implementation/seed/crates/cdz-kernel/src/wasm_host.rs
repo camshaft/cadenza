@@ -90,11 +90,12 @@ pub struct ComponentReducer {
     // carries the `kv` host import) into a fresh Store, then call the guest's `fold.apply`.
     component: wasmtime::component::Component,
     linker: wasmtime::component::Linker<ReducerHost>,
-    // The value-heap runtime this reducer imports, if any (§21b). Detected at construction; a runtime
-    // reducer's runtime component must be composed into the linker before `apply` can instantiate it.
-    // `None` = a runtime-free reducer (the interim Rust guest). The linker-compose of the resolved
-    // runtime bytes is the next slice; construction records the requirement so `apply` knows.
-    runtime_req: Option<RuntimeReq>,
+    // The component dependencies this reducer declares by content hash (§23 — generic, NOT "the
+    // runtime"). Detected at construction from the component's `+<hash>` imports; each must be resolved
+    // from CAS and composed into the linker before `apply` can instantiate a reducer that has any.
+    // Empty = a dependency-free reducer (e.g. the interim Rust guest). The linker-compose of resolved
+    // dep bytes is the next slice; construction records the declared set so `apply` knows.
+    deps: Vec<ComponentDep>,
     // The per-fold fuel budget (§22d): the hard instruction ceiling one `apply` may consume before the
     // guest is aborted with [`ComponentError::FuelExhausted`]. A runaway/looping reducer can't hang the
     // kernel (Copilot PR#1009 DoS gap). Enforced by wasmtime's fuel metering (engine `consume_fuel` +
@@ -127,82 +128,91 @@ pub enum ComponentError {
     /// logic bug — the driver can act on it differently (e.g. quarantine the reducer, alert) and, once
     /// gas (§22a) lands, this is the signal a session's budget was consumed.
     FuelExhausted { budget: u64 },
-    /// A required runtime component couldn't be resolved from the blob store (missing by hash).
-    RuntimeUnresolved(String),
+    /// A declared component dependency isn't present in the blob store (missing by hash). DISTINCT from
+    /// [`ComponentError::DepStoreError`] (Copilot PR#1013 #3): "the store doesn't hold it" is a
+    /// different, often-actionable condition (publish/replicate the dep) than "the store itself errored."
+    DepMissing { hash: Hash },
+    /// The blob store errored while resolving a declared dependency (I/O, corruption). DISTINCT from
+    /// [`ComponentError::DepMissing`] — the dep may well exist; the store failed to serve it.
+    DepStoreError { hash: Hash, source: String },
 }
 
-/// The value-heap runtime a reducer component declares it needs (operator §21b component-dependency
-/// linking). Per component-abi.md (contract v3), a Cadenza program imports the runtime as the
-/// well-known interface `cadenza:runtime/heap@0.0.0+<hash>` — the fixed interface plus the runtime's
-/// content address as semver build-metadata. The kernel reads the hash back to fetch the exact runtime
-/// from CAS and compose it (mirrors cdz-run's RuntimeReq). A reducer with no such import (e.g. the
-/// interim Rust wit-bindgen guest, which has no Cadenza runtime) yields `None` — nothing to compose.
+/// A component DEPENDENCY a reducer declares by content hash (operator §23 — the kernel is
+/// RUNTIME-AGNOSTIC). Per component-abi.md (contract v3), a component names a dependency import with the
+/// dependency's content address as semver build-metadata (`<iface>@<semver>+<hash>`). The kernel reads
+/// the `+<hash>` off ANY such import — it has NO knowledge of what a given dependency IS (the Cadenza
+/// value-heap runtime is just one more content-addressed component, not a built-in the kernel knows by
+/// name). It resolves every declared dep from CAS and links it, uniformly. This REPLACES the old
+/// runtime-specific `RuntimeReq`/`RUNTIME_IFACE` machinery (which hard-coded "the Cadenza runtime" —
+/// exactly what the operator directed removing; also dissolves Copilot PR#1013 #1/#2, the first-of-many
+/// + `heap2@` prefix-false-match, since there's no privileged prefix to match or pick "the first" of).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeReq {
+pub struct ComponentDep {
     /// The verbatim import name the component declares — the linker MUST bind under exactly this.
     pub import_name: String,
-    /// The runtime's content address (from the `+<hash>` build-metadata), for CAS lookup.
+    /// The dependency's content address (from the `+<hash>` build-metadata), for CAS lookup.
     pub hash: Hash,
 }
 
-/// The well-known value-heap runtime interface prefix (component-abi.md v3); the full import name is
-/// `<this>@<semver>+<hash>`. Same interface id cdz-run pins as `RUNTIME_IFACE`.
-const RUNTIME_IFACE: &str = "cadenza:runtime/heap";
-
-/// Inspect a component's imports for the value-heap runtime dependency (§21b). Returns the [`RuntimeReq`]
-/// if the component declares one, `None` if it imports no runtime (a runtime-free reducer). Errors only
-/// if a runtime import is present but its `+<hash>` build-metadata is missing/malformed (a corrupt
-/// import name).
-fn required_runtime(
+/// The declared component dependencies of a component (§23): EVERY import whose name carries a
+/// `+<hash>` content-address build-metadata is a declared dep, resolved generically — NOT a name-matched
+/// "the runtime" (the kernel has zero knowledge of any specific dependency). Imports the host itself
+/// satisfies (the `kv` host import) carry no `+<hash>`, so they're excluded by construction — the
+/// distinction is "does this import name carry a `+<hash>`," never a name allow-list. Errors only if an
+/// import LOOKS like a content-addressed dep (has a `+`) but its hash is malformed (a corrupt name).
+fn declared_deps(
     component: &wasmtime::component::Component,
     engine: &wasmtime::Engine,
-) -> Result<Option<RuntimeReq>, ComponentError> {
+) -> Result<Vec<ComponentDep>, ComponentError> {
+    let mut deps = Vec::new();
     for (name, _item) in component.component_type().imports(engine) {
-        // Match the well-known interface prefix; the full name is `cadenza:runtime/heap@<ver>+<hash>`.
-        if name.starts_with(RUNTIME_IFACE) {
-            let hash_hex = name.rsplit_once('+').map(|(_, h)| h).ok_or_else(|| {
-                ComponentError::InvalidComponent(format!(
-                    "runtime import {name:?} lacks the +<hash> content-address build-metadata"
-                ))
-            })?;
-            let hash = parse_hash_hex(hash_hex).ok_or_else(|| {
-                ComponentError::InvalidComponent(format!(
-                    "runtime import {name:?} has a malformed content-address hash {hash_hex:?}"
-                ))
-            })?;
-            return Ok(Some(RuntimeReq {
-                import_name: name.to_string(),
-                hash,
-            }));
-        }
+        // A content-addressed dep names its hash as `+<hash>` build-metadata. Only such imports are
+        // deps; a host-satisfied import (e.g. `kv`) has no `+<hash>` and is skipped.
+        let Some((_iface, hash_hex)) = name.rsplit_once('+') else {
+            continue;
+        };
+        let hash = parse_hash_hex(hash_hex).ok_or_else(|| {
+            ComponentError::InvalidComponent(format!(
+                "component dependency import {name:?} has a malformed content-address hash {hash_hex:?}"
+            ))
+        })?;
+        deps.push(ComponentDep {
+            import_name: name.to_string(),
+            hash,
+        });
     }
-    Ok(None)
+    Ok(deps)
 }
 
-/// Fetch the runtime component's bytes from a blob store by its content address (§21b). `Err` if the
-/// runtime the component requires isn't present in CAS (the kernel can't run a reducer whose runtime
-/// dependency it can't resolve — surface it, don't run a half-linked component).
-fn resolve_runtime_bytes(
-    req: &RuntimeReq,
+/// Fetch one declared dependency's component bytes from a blob store by its content address (§23). The
+/// missing-vs-store-error split (PR#1013 #3) lets a caller distinguish "publish the dep" from "the store
+/// broke." The kernel can't run a reducer whose declared dep it can't resolve — surface it, don't run a
+/// half-linked component.
+fn resolve_dep_bytes(
+    dep: &ComponentDep,
     blobs: &dyn crate::blob::BlobStore,
 ) -> Result<Vec<u8>, ComponentError> {
-    match blobs.get(&req.hash) {
+    match blobs.get(&dep.hash) {
         Ok(Some(bytes)) => Ok(bytes),
-        Ok(None) => Err(ComponentError::RuntimeUnresolved(format!(
-            "required runtime {} not in the blob store",
-            req.hash
-        ))),
-        Err(e) => Err(ComponentError::RuntimeUnresolved(format!(
-            "blob store error resolving runtime {}: {e}",
-            req.hash
-        ))),
+        Ok(None) => Err(ComponentError::DepMissing { hash: dep.hash }),
+        Err(e) => Err(ComponentError::DepStoreError {
+            hash: dep.hash,
+            source: e.to_string(),
+        }),
     }
 }
 
-/// Parse 64 lowercase-hex chars into a [`Hash`] (the `+<hash>` runtime build-metadata). `None` on any
-/// non-hex / wrong-length input.
+/// Parse 64 LOWERCASE-hex chars into a [`Hash`] (the `+<hash>` content-address build-metadata). `None`
+/// on any non-hex / wrong-length / UPPERCASE input: content addresses are canonical lowercase hex
+/// (Copilot PR#1013 #4 — `from_str_radix` accepts uppercase, which would admit two spellings of one
+/// address; reject the non-canonical form).
 fn parse_hash_hex(hex: &str) -> Option<Hash> {
     if hex.len() != 64 {
+        return None;
+    }
+    // Reject uppercase explicitly (from_str_radix would accept it): canonical content addresses are
+    // lowercase, and admitting `AB..` alongside `ab..` would let one blob have two keys.
+    if hex.bytes().any(|b| b.is_ascii_uppercase()) {
         return None;
     }
     let mut bytes = [0u8; 32];
@@ -237,16 +247,16 @@ impl ComponentReducer {
             |h: &mut ReducerHost| h,
         )
         .map_err(|e| ComponentError::Link(e.to_string()))?;
-        // Detect the value-heap runtime dependency, if the component declares one (§21b). Composing the
-        // resolved runtime into the linker is the next slice; here we record the requirement so a caller
-        // can resolve its bytes from CAS (`resolve_runtime` / `resolve_runtime_bytes`) and `apply` knows
-        // whether a runtime must be composed before instantiation.
-        let runtime_req = required_runtime(&component, &engine)?;
+        // Detect the component's declared dependencies — generically, by their `+<hash>` imports (§23).
+        // The kernel has NO knowledge of what any dep IS (the Cadenza runtime is just one such dep).
+        // Composing resolved dep bytes into the linker is the next slice; here we record the declared set
+        // so a caller can resolve their bytes from CAS (`resolve_deps`) and `apply` knows what to compose.
+        let deps = declared_deps(&component, &engine)?;
         Ok(ComponentReducer {
             engine,
             component,
             linker,
-            runtime_req,
+            deps,
             fuel_budget: DEFAULT_FOLD_FUEL,
         })
     }
@@ -270,23 +280,27 @@ impl ComponentReducer {
         &self.engine
     }
 
-    /// The value-heap runtime this reducer imports, if any (§21b). `None` = runtime-free (the interim
-    /// Rust guest). A caller composes it by fetching the bytes from CAS (see [`ComponentReducer::resolve_runtime`]).
-    pub fn runtime_req(&self) -> Option<&RuntimeReq> {
-        self.runtime_req.as_ref()
+    /// The component dependencies this reducer declares by content hash (§23). Empty = dependency-free
+    /// (e.g. the interim Rust guest). A caller composes each by fetching its bytes from CAS (see
+    /// [`ComponentReducer::resolve_deps`]). The kernel treats every dep identically — no dep is special.
+    pub fn deps(&self) -> &[ComponentDep] {
+        &self.deps
     }
 
-    /// Resolve this reducer's required-runtime bytes from a blob store (§21b), or `Ok(None)` if it's
-    /// runtime-free. `Err(RuntimeUnresolved)` if it needs a runtime the store doesn't hold. (The
-    /// linker-compose of these bytes — binding them under `runtime_req.import_name` — is the next slice.)
-    pub fn resolve_runtime(
+    /// Resolve ALL of this reducer's declared dependency bytes from a blob store (§23), each paired with
+    /// the import name the linker must bind it under. Empty vec if dependency-free. `Err(DepMissing)` if
+    /// a declared dep isn't in the store, `Err(DepStoreError)` if the store itself errored (PR#1013 #3 —
+    /// the two are distinct). Generic: it resolves the Cadenza runtime, if present, exactly as it
+    /// resolves any other dep — the kernel never asks "is this the runtime?" (The linker-compose of these
+    /// bytes — binding each under its `import_name` — is the next slice.)
+    pub fn resolve_deps(
         &self,
         blobs: &dyn crate::blob::BlobStore,
-    ) -> Result<Option<Vec<u8>>, ComponentError> {
-        match &self.runtime_req {
-            Some(req) => resolve_runtime_bytes(req, blobs).map(Some),
-            None => Ok(None),
-        }
+    ) -> Result<Vec<(ComponentDep, Vec<u8>)>, ComponentError> {
+        self.deps
+            .iter()
+            .map(|dep| resolve_dep_bytes(dep, blobs).map(|bytes| (dep.clone(), bytes)))
+            .collect()
     }
 
     /// Fold ONE event through the wasm guest (§19b): instantiate the component against a fresh
@@ -390,14 +404,14 @@ mod tests {
         };
         // Engine is live (sanity that construction produced a usable host).
         let _ = reducer.engine();
-        // Runtime-free reducer: no runtime requirement detected, and resolve_runtime → Ok(None)
-        // regardless of the blob store (§21b — nothing to compose).
-        assert!(reducer.runtime_req().is_none());
+        // Dependency-free reducer: no declared deps detected, and resolve_deps → empty regardless of the
+        // blob store (§23 — nothing to compose).
+        assert!(reducer.deps().is_empty());
         assert_eq!(
             reducer
-                .resolve_runtime(&crate::blob::MemBlobStore::new())
+                .resolve_deps(&crate::blob::MemBlobStore::new())
                 .unwrap(),
-            None
+            vec![]
         );
     }
 
@@ -413,46 +427,46 @@ mod tests {
 
     #[test]
     fn parse_hash_hex_round_trips_and_rejects_bad_input() {
-        let h = Hash::of(b"the runtime");
+        let h = Hash::of(b"the dependency");
         assert_eq!(parse_hash_hex(&h.to_hex()), Some(h));
         assert_eq!(parse_hash_hex("tooshort"), None);
         assert_eq!(parse_hash_hex(&"z".repeat(64)), None); // right length, non-hex
+                                                           // PR#1013 #4: UPPERCASE hex is rejected — content addresses are canonical lowercase, so the
+                                                           // uppercase spelling of a valid hash must NOT parse (else one blob would have two keys).
+        assert_eq!(parse_hash_hex(&h.to_hex().to_uppercase()), None);
     }
 
     #[test]
-    fn runtime_free_component_requires_no_runtime() {
-        // The interim Rust guest (and this empty component) import no Cadenza runtime → None (§21b:
-        // nothing to compose). Runtime-import DETECTION on a real runtime-importing component is
-        // exercised once a real Cadenza reducer fixture exists (next slices).
+    fn dependency_free_component_declares_no_deps() {
+        // The interim Rust guest (and this empty component) declare no content-addressed deps → empty
+        // (§23: nothing to compose). Dep DETECTION on a real dep-importing component is exercised once a
+        // real Cadenza reducer fixture exists (next slices).
         let engine = wasmtime::Engine::default();
         let bytes = wat::parse_str("(component)").expect("empty component");
         let component = wasmtime::component::Component::new(&engine, &bytes).unwrap();
-        assert_eq!(required_runtime(&component, &engine).unwrap(), None);
+        assert!(declared_deps(&component, &engine).unwrap().is_empty());
     }
 
     #[test]
-    fn resolve_runtime_bytes_fetches_from_cas_or_errs_when_absent() {
+    fn resolve_dep_bytes_fetches_from_cas_or_splits_missing_vs_store_error() {
         use crate::blob::{BlobStore, MemBlobStore};
         let mut blobs = MemBlobStore::new();
-        let runtime_bytes = b"pretend value-heap runtime component";
-        let hash = blobs.put(runtime_bytes).unwrap();
-        let req = RuntimeReq {
+        let dep_bytes = b"pretend a content-addressed dependency component";
+        let hash = blobs.put(dep_bytes).unwrap();
+        let dep = ComponentDep {
             import_name: format!("cadenza:runtime/heap@0.0.0+{}", hash.to_hex()),
             hash,
         };
-        // Present in CAS → fetched.
-        assert_eq!(
-            resolve_runtime_bytes(&req, &blobs).unwrap(),
-            runtime_bytes.to_vec()
-        );
-        // Absent → RuntimeUnresolved (don't run a reducer whose runtime dep we can't resolve).
-        let missing = RuntimeReq {
-            import_name: "cadenza:runtime/heap@0.0.0+…".into(),
-            hash: Hash::of(b"a runtime never stored"),
+        // Present in CAS → fetched (the kernel resolves it generically — it's just a dep by hash).
+        assert_eq!(resolve_dep_bytes(&dep, &blobs).unwrap(), dep_bytes.to_vec());
+        // Absent → DepMissing (PR#1013 #3: distinct from a store error — "publish it" vs "store broke").
+        let missing = ComponentDep {
+            import_name: "some:iface/x@0.0.0+…".into(),
+            hash: Hash::of(b"a dep never stored"),
         };
-        match resolve_runtime_bytes(&missing, &blobs) {
-            Err(ComponentError::RuntimeUnresolved(_)) => {}
-            other => panic!("expected RuntimeUnresolved, got {other:?}"),
+        match resolve_dep_bytes(&missing, &blobs) {
+            Err(ComponentError::DepMissing { hash }) => assert_eq!(hash, missing.hash),
+            other => panic!("expected DepMissing, got {other:?}"),
         }
     }
 }
