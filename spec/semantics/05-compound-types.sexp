@@ -17237,3 +17237,29 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 20 Int64)))
+
+; --- The map-borne record literal-rebuild guard, and the uniform malformed-collection code
+; (set-element + map-key kinds, completing the MUST clause's list/map/set coverage). ---
+
+(case "a literal-record REBUILD from a map-borne record's fields computes (the #45 chain's working sibling)"
+  (doc    "The working sibling banked during the without-extend miscompile window: rebuilding a literal record from a map-borne record's PROJECTED fields (scalar + heap name crossing the rebuild) — the workaround idiom that had to stay green through the fix, kept as its regression guard.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def inv (Map.insert Map.empty 1 (record (name "widget") (qty k))))
+                (def r (Option.expect (Map.lookup inv 1) "slot"))
+                (def fresh (record (name (. r name)) (qty (+ (. r qty) 5))))
+                (+ (* 10 (. fresh qty)) (String.byte-len (. fresh name)))))
+            (export main)))
+  (call   main (: 3 Int64))
+  (output (: 86 Int64)))
+
+(case "heterogeneous constructions take ONE malformed-collection code across list, map, and set"
+  (doc    "collections-and-text.md:104: the malformed-collection code MUST be the same INDEPENDENT of collection kind. List and map-VALUE mixes are pinned; this adds the SET-element kind (CDZ0201, same code).")
+  (input  (do (def (main) (Set.of (list 1 true))) (export main)))
+  (error  CDZ0201))
+
+(case "a mixed-key map insert chain takes the same malformed-collection code"
+  (doc    "The map-KEY face (the pinned map case mixes VALUES): a second insert whose key type differs takes the same CDZ0201 — the uniform code covers the key axis too.")
+  (input  (do (def (main) (Map.insert (Map.insert Map.empty 1 10) "k" 20)) (export main)))
+  (error  CDZ0201))

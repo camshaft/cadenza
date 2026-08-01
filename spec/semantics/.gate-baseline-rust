@@ -1875,6 +1875,7 @@ pass	a literal nested in a tuple let-binder is refutable and rejected
 pass	a literal segment before a binder dispatches then reads the payload
 pass	a literal segment matches a magic-number header by equality
 pass	a literal subterm in a quote pattern matches by equality
+pass	a literal-record REBUILD from a map-borne record's fields computes (the #45 chain's working sibling)
 pass	a literal-refined recursive-sum arm folds under a statically-known discriminant
 pass	a literal-refined variant arm does not satisfy exhaustiveness
 pass	a little-endian u16 bin field stitches its bytes across a rope seam in le order
@@ -2023,6 +2024,7 @@ pass	a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall t
 pass	a multi-limb modulo keeps the truncating dividend-sign convention across the limb boundary
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
 pass	a missed literal tag falls to a BINDER bin arm that decodes the scrutinee
+pass	a mixed-key map insert chain takes the same malformed-collection code
 pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
@@ -4130,6 +4132,7 @@ pass	handler op-param and state binders stay hygienic when colliding with perfor
 pass	hash-only set ops keep working on float-leaf tuples that have no blessed order
 pass	heap string elements of a hoisted list if select by branch
 pass	heap-valued handler state above an inner abort keeps threading
+pass	heterogeneous constructions take ONE malformed-collection code across list, map, and set
 pass	hexadecimal, binary, and decimal spellings of one value are equal
 pass	hygiene fix does not over-reach: a different-named template binder needs no rename
 pass	hygiene: a spliced unquote sits beside the template's own use of the renamed binder

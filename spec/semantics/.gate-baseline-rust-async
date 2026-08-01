@@ -1839,6 +1839,7 @@ pass	a literal nested in a tuple let-binder is refutable and rejected
 pass	a literal segment before a binder dispatches then reads the payload
 pass	a literal segment matches a magic-number header by equality
 pass	a literal subterm in a quote pattern matches by equality
+pass	a literal-record REBUILD from a map-borne record's fields computes (the #45 chain's working sibling)
 pass	a literal-refined recursive-sum arm folds under a statically-known discriminant
 pass	a literal-refined variant arm does not satisfy exhaustiveness
 pass	a little-endian u16 bin field stitches its bytes across a rope seam in le order
@@ -1954,6 +1955,7 @@ pass	a member access with no field operand is rejected, not a crash
 pass	a middle module re-exports a base function and also uses it in its own exported function
 pass	a misspelled segment kind is rejected with a rename suggestion
 pass	a misspelled utf8 segment kind is rejected
+pass	a mixed-key map insert chain takes the same malformed-collection code
 pass	a mixed-match tail loop whose Option payload is a heap String finds and reads the element
 pass	a mixed-ownership inlined-match operand leaves the source map intact across repeated compares
 pass	a mixed-payload error SUM in Result.Err dispatches all four arms through nested patterns
@@ -4065,6 +4067,7 @@ pass	handler op-param and state binders stay hygienic when colliding with perfor
 pass	hash-only set ops keep working on float-leaf tuples that have no blessed order
 pass	heap string elements of a hoisted list if select by branch
 pass	heap-valued handler state above an inner abort keeps threading
+pass	heterogeneous constructions take ONE malformed-collection code across list, map, and set
 pass	hexadecimal, binary, and decimal spellings of one value are equal
 pass	hygiene fix does not over-reach: a different-named template binder needs no rename
 pass	hygiene: a spliced unquote sits beside the template's own use of the renamed binder
