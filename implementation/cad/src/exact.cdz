@@ -847,15 +847,21 @@ def aabbr-union-and-intersect-of-explicit-boxes() =
 
 @test
 def simplify-r-absorbs-empty-in-union() =
-  // Union Empty x = x (both sides); check the result is the surviving cube (box unchanged) and non-empty.
+  // Union Empty x = x (both sides): the result must STRUCTURALLY be the surviving cube, NOT a Union node with an
+  // Empty operand. A box-size check alone is too weak — an origin-centred cube's box is unchanged by a
+  // NOT-pruned Union with a degenerate empty box at the origin (it sits inside), so a regression dropping the
+  // left-operand (`sa`) empty-check would slip. Matching that each side collapses to the bare `Solid.Cube`
+  // pins that the Empty operand is absorbed on BOTH the left (Union Empty x) and right (Union x Empty).
   let one = 1 / 1 in
   let cube = Solid.Cube(v3(one, one, one)) in
   let sl = simplify-r(Solid.Union(Solid.Empty, cube)) in
   let sr = simplify-r(Solid.Union(cube, Solid.Empty)) in
-  if v3-eq(aabbr-size(bounding-box(sl)), aabbr-size(bounding-box(cube)))
-     and v3-eq(aabbr-size(bounding-box(sr)), aabbr-size(bounding-box(cube)))
-     and (solidr-is-empty(sl) == false)
-  then unit else trap("Union with Empty reduces to the other operand")
+  (match sl with
+    | Solid.Cube(_) =>
+      (match sr with
+        | Solid.Cube(_) => unit
+        | _ => trap("Union x Empty must collapse to the bare cube, not a surviving Union node"))
+    | _ => trap("Union Empty x must collapse to the bare cube, not a surviving Union node"))
 
 @test
 def simplify-r-intersection-with-empty-is-empty() =
