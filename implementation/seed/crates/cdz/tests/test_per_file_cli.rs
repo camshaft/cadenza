@@ -809,3 +809,79 @@ fn report_time_emits_per_step_and_per_test_timings_and_is_off_by_default() {
         "timing is OFF by default — no ⏱ lines without --report-time:\n{out2}"
     );
 }
+
+#[test]
+fn the_jit_cwasm_persists_across_runs_and_self_heals() {
+    // pr-sync ask (operator-flagged gate slowness): the provider JIT (~270s for the self-host closure) is
+    // re-done cold every fresh gate. `compile_provider_cached` persists the JIT'd artifact (wasmtime cwasm)
+    // content-addressed by (closure-hash ‖ engine fingerprint), so a later run with an UNCHANGED closure
+    // DESERIALIZES it (fast) instead of re-JITing. Assert: (1) a run persists a `.cwasm`; (2) a second run
+    // reuses it (still passes — behavior-identical); (3) a CORRUPT cwasm SELF-HEALS (deserialize rejects it →
+    // re-JIT), never a crash/error. Uses an isolated CDZ_PROVIDER_CACHE.
+    let dir = std::env::temp_dir().join(format!("cdz-cwasm-src-{}", std::process::id()));
+    let cache = std::env::temp_dir().join(format!("cdz-cwasm-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("shared.cdz"),
+        "def sumto(n: Int64) =\n  if n == 0 then 0 else n + sumto(n - 1)\nexport { sumto }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ta.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_a() =\n  if sumto(5) == 15 then unit else trap(\"a\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tb.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_b() =\n  if sumto(3) == 6 then unit else trap(\"b\")\n",
+    )
+    .unwrap();
+
+    let run = || -> (bool, String) {
+        let out = Command::new(cdz())
+            .args(["test", dir.to_str().unwrap()])
+            .env("CDZ_PROVIDER_CACHE", &cache)
+            .output()
+            .expect("spawn cdz test");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        )
+    };
+    let cwasm = || -> Option<std::path::PathBuf> {
+        std::fs::read_dir(&cache).ok()?.flatten().find_map(|e| {
+            let p = e.path();
+            let is_cwasm = p.extension().and_then(|x| x.to_str()) == Some("cwasm");
+            is_cwasm.then_some(p)
+        })
+    };
+
+    // RUN 1 — cwasm MISS: JIT + persist. Passes + a .cwasm now exists.
+    let (ok1, out1) = run();
+    assert!(
+        ok1 && out1.contains("PASS t_a") && out1.contains("PASS t_b"),
+        "run 1 passes:\n{out1}"
+    );
+    let cw = cwasm().expect("run 1 persisted a .cwasm for the shared closure");
+
+    // RUN 2 — cwasm HIT: deserialize (no re-JIT). Still passes (behavior-identical).
+    let (ok2, out2) = run();
+    assert!(
+        ok2 && out2.contains("PASS t_a") && out2.contains("PASS t_b"),
+        "run 2 (cwasm hit) passes:\n{out2}"
+    );
+
+    // CORRUPT the cwasm → RUN 3 must SELF-HEAL (deserialize rejects the garbage → re-JIT), NOT crash/error.
+    std::fs::write(&cw, b"GARBAGE-NOT-A-CWASM").unwrap();
+    let (ok3, out3) = run();
+    assert!(
+        ok3 && out3.contains("PASS t_a") && out3.contains("PASS t_b"),
+        "run 3 (corrupt cwasm) self-heals + passes:\n{out3}"
+    );
+    assert!(
+        !out3.contains("could not") && !out3.contains("invalid"),
+        "a corrupt cwasm must not surface as an error — it re-JITs:\n{out3}"
+    );
+}

@@ -4418,14 +4418,22 @@ fn run_test(args: &TestArgs) -> ExitCode {
     // per-file/per-test PASS/FAIL run below, so localization is untouched — we collapse the JIT, not the
     // reporting. A provider that fails to JIT here is simply omitted → that group's files fall back to their
     // standalone per-file compile in `run_test_file` (best-effort, no worse than before).
+    // JIT (or DESERIALIZE from a persisted cwasm) each shared provider. The group `key` is the closure's
+    // content hash, so when we have a cache dir we use `compile_provider_cached` — it persists the JIT'd
+    // artifact content-addressed by (closure-hash ‖ engine fingerprint) and DESERIALIZES it (fast, ~seconds)
+    // on a later gate with an unchanged closure, skipping the ~270s cold re-JIT of the heavy self-host closure
+    // (pr-sync's ask). Without a cache dir, fall back to a plain in-process JIT.
     let provider_jit_start = std::time::Instant::now();
+    let provider_cwasm_dir = provider_cache_dir();
     let jit_providers: std::collections::HashMap<String, cdz_run::CompiledProvider> = precompiled
         .providers
         .iter()
         .filter_map(|(key, (bytes, iface))| {
-            cdz_run::compile_provider(bytes, iface.clone())
-                .ok()
-                .map(|p| (key.clone(), p))
+            let compiled = match &provider_cwasm_dir {
+                Some(dir) => cdz_run::compile_provider_cached(bytes, iface.clone(), dir, key),
+                None => cdz_run::compile_provider(bytes, iface.clone()),
+            };
+            compiled.ok().map(|p| (key.clone(), p))
         })
         .collect();
     // `--report-time`: the PROJECT-WIDE provider JIT — the dominant cost, paid ONCE here (the provider-JIT-once

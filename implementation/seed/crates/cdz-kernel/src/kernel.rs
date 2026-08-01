@@ -369,6 +369,10 @@ impl Session {
                     target: req.target.clone(),
                     idempotency_key,
                     deadline_ms: None,
+                    // No continuation token yet: the in-process Rust `Reducer` trait doesn't supply one
+                    // (it correlates by EffectId). The wasm-reducer bridge (§19e slice 2) will thread the
+                    // guest's token through here so recovery can rebuild the EffectId↔token map.
+                    token: None,
                 },
                 Some(cause),
             );

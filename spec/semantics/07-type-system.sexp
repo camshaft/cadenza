@@ -1952,3 +1952,16 @@
             (def (main) 42)
             (export main)))
   (error  CDZ0101))
+
+(case "an unbound FIELD type in a never-constructed record type declaration is rejected"
+  (doc    "The record-decl face of the payload-type validation walk (the sum-ctor face is pinned above):
+           the field type atom sits one paren level down inside (record (: field NoSuchField)), so a
+           validator that only checks top-level payload atoms misses it. rcdzc rejects CDZ0101. The
+           self-hosted front-end had exactly this gap — its narrow slice checked flat sum-ctor payloads
+           but skipped the record group as nested — until the one-level record descent (1d4aaee7d);
+           pinned so the descent doesn't regress.")
+  (input  (do
+            (type R (record (: field NoSuchField)))
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0101))

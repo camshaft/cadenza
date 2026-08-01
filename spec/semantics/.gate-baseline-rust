@@ -1359,6 +1359,7 @@ pass	a distinct-signature round-trip applies the Int64->Int64 closure
 pass	a distinct-signature round-trip's Bool closure on a nonzero input
 pass	a diverging expression unifies with an integer position
 pass	a division whose divisor folds to zero still traps
+pass	a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one
 pass	a do-def shadows a MATCH BINDER and a prior def correctly
 pass	a do-local function declaration is recursive
 pass	a do-local generic function is instantiated per type
@@ -2333,6 +2334,7 @@ pass	a private sibling defined after its exported caller still resolves
 pass	a produced closure is handed back into a consumer export (the round trip)
 pass	a producer capturing a host-supplied COMPOUND parameter is declined — host→guest decode
 pass	a product type of three Qty fields with concrete units constructs and projects
+pass	a product-REACHED quantity equals the directly-composed unit in either written order
 pass	a program declares its own family unit and converts with it
 pass	a program that delegates no effect is pure and never suspends
 pass	a program's syntax tree is an ordinary value walked recursively across calls
@@ -3707,6 +3709,7 @@ pass	an unannotated predicate closure is inferred through a recursive counting H
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unannotated two-argument closure is inferred through a generic recursive HOF
 pass	an unbound CONSTRUCTOR applied in an uncalled def is rejected
+pass	an unbound FIELD type in a never-constructed record type declaration is rejected
 pass	an unbound PAYLOAD type in a never-constructed type declaration is still rejected
 pass	an unbound TYPE name in an uncalled definition's annotation is still rejected
 pass	an unbound export BEFORE a valid main export is rejected

@@ -3286,3 +3286,37 @@
             (export main)))
   (call   main (: 4 Int64))
   (output (: 16 Int64)))
+
+; --- Construction-path equality on the unit lattice (the collection/string/bytes companions
+; live in 05/19/13/10): a Qty whose unit was REACHED via arithmetic must equal one whose unit
+; was directly COMPOSED, independent of written operand order. ---
+
+(case "a product-REACHED quantity equals the directly-composed unit in either written order"
+  (doc    "Construction-path equality on the unit lattice: `(* 2m 3s)` REACHES the unit m·s through Qty
+           multiplication; the right-hand sides COMPOSE it directly with Unit.* — written m·s (tens digit)
+           and s·m (ones digit). Both must equal 6 at the same canonical unit → 11. A unit product that
+           preserved operand order (m·s ≠ s·m) or an arithmetic path that composed a structurally
+           different unit term than Unit.* breaks a leg.")
+  (input  (do
+            (def (main (: n Int64))
+              (+ (* 10 (if (= (* (Qty.of n (Unit.base #"m")) (Qty.of 3 (Unit.base #"s")))
+                             (Qty.of (* n 3) (Unit.* (Unit.base #"m") (Unit.base #"s")))) 1 0))
+                 (if (= (* (Qty.of n (Unit.base #"m")) (Qty.of 3 (Unit.base #"s")))
+                        (Qty.of (* n 3) (Unit.* (Unit.base #"s") (Unit.base #"m")))) 1 0)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 11 Int64)))
+
+(case "a division-REACHED quantity equals the inverse-composed unit and cancels to Unit.one"
+  (doc    "The division face: `(/ 6m 3s)` reaches m/s = m·s⁻¹; the direct composition spells it
+           `(Unit.* m (Unit.^ s -1))` — equal at value 2 (tens digit). And the full-cancellation face:
+           `(/ nm 1m)` must land exactly on the dimensionless `Unit.one` the literal composes (ones
+           digit) → 11. A division that left a residual m/m term (structurally present, exponent zero)
+           instead of erasing it breaks the cancel leg.")
+  (input  (do
+            (def (main (: n Int64))
+              (+ (* 10 (if (= (/ (Qty.of (* n 3) (Unit.base #"m")) (Qty.of 3 (Unit.base #"s")))
+                             (Qty.of n (Unit.* (Unit.base #"m") (Unit.^ (Unit.base #"s") -1)))) 1 0))
+                 (if (= (/ (Qty.of n (Unit.base #"m")) (Qty.of 1 (Unit.base #"m")))
+                        (Qty.of n Unit.one)) 1 0)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 11 Int64)))
