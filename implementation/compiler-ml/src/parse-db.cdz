@@ -146,6 +146,12 @@ def record-def(tree: Tree, nameId: Int64, bodyId: Int64) = match tree with
 def def-body-of(tree: Tree, nameId: Int64) = match tree with
   | Tree.Arena(_, _, dt, _, _, _, _, _, _, _, _, _) => Map.lookup(dt, nameId)
 
+/// The def-table as a `(nameId, bodyId)` list — for a WHOLE-PROGRAM pass over EVERY top-level def, not just
+/// the ones reachable from `main` (e.g. checking an UNCALLED sibling def's body is well-typed: an unbound
+/// name in it must still reject, per rcdzc's whole-program scope check).
+def def-table-entries(tree: Tree) = match tree with
+  | Tree.Arena(_, _, dt, _, _, _, _, _, _, _, _, _) => Map.to-list(dt)
+
 /// forward-ref RECURSION GUARD (does the subtree at `id` reach a CALL to `target`, within `fuel` steps?).
 /// Since a call is now inlined by resolve/infer/lower (they descend into the callee's def-body), a self/mutual
 /// recursive call would inline INFINITELY. This bounded static check lets those passes DECLINE a recursive call
@@ -1293,4 +1299,4 @@ def pd-ctor-argtype-unrecorded-none() =
     | Option.None(_) => unit
     | Option.Some(_) => trap("an unrecorded ctor has no argType"))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, record-ctor-tag-typed-list, ctor-tag-of, ctor-decl-of, ctor-argtype-of, ctor-argtypes-of, decl-is-enum-disc, encode-param-type, encode-bool-type, argtype-is-bool, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, def-table-entries, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, record-ctor-tag-typed-list, ctor-tag-of, ctor-decl-of, ctor-argtype-of, ctor-argtypes-of, decl-is-enum-disc, encode-param-type, encode-bool-type, argtype-is-bool, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }

@@ -8,7 +8,7 @@
 /// integer/bool subset, and they guard it as the reader/pipeline evolve.
 import { read-source } from "sread"
 
-import { is-bool-at } from "infer-db"
+import { is-bool-at, all-defs-well-typed } from "infer-db"
 
 import { db-of } from "db"
 
@@ -21,8 +21,13 @@ import { run-of-db } from "db-eval"
 /// demand `eval-tree`. Unblocked by the bug#4 fix (rcdzc 26e3471ac) — the let-program-at-scale divergence that
 /// forced eval-tree here is gone (se-milestone-from-source passes over the Db now).
 def run-src(s: String) = match read-source(s) with
-  | (root, tree) => match run-of-db(db-of(tree), root) with
-    | (_, v) => v
+  | (root, tree) =>
+    // WHOLE-PROGRAM scope check FIRST: an unbound name in an UNCALLED sibling def is still ill-typed (rcdzc
+    // CDZ0101), but the demand-driven run only checks main's reachable set — so require EVERY def body to be
+    // well-typed before running, else DECLINE (matches the oracle's whole-program reject).
+    (if all-defs-well-typed(tree) then
+      (match run-of-db(db-of(tree), root) with | (_, v) => v)
+     else Option.None(unit))
 
 /// Read + run, TAGGING the result with its ground type so the caller can render `true`/`false` for a
 /// Bool-typed program (Core encodes Bool as the Int 0/1, but rcdzc renders it as `true`/`false` — the
@@ -30,9 +35,14 @@ def run-src(s: String) = match read-source(s) with
 /// `isBool` is `1` when the program's ROOT is `TBool`, else `0`; `None` when the program declines. One
 /// export (a single tuple-in-Option heap value) → one compile, so the driver stays a single invocation.
 def run-src-typed(s: String) = match read-source(s) with
-  | (root, tree) => match run-of-db(db-of(tree), root) with
-    | (_, Option.Some(v)) => Option.Some((v, if is-bool-at(tree, root, root) then 1 else 0))
-    | (_, Option.None(_)) => Option.None(unit) : Option(Tuple(Int64, Int64))
+  | (root, tree) =>
+    // Same whole-program scope check as run-src (this is the entry `cdz run-ml` calls, so the differential's
+    // gap1 fix lives HERE): an unbound name in an uncalled sibling def declines, matching the oracle.
+    (if all-defs-well-typed(tree) then
+      (match run-of-db(db-of(tree), root) with
+        | (_, Option.Some(v)) => Option.Some((v, if is-bool-at(tree, root, root) then 1 else 0))
+        | (_, Option.None(_)) => Option.None(unit) : Option(Tuple(Int64, Int64)))
+     else Option.None(unit) : Option(Tuple(Int64, Int64)))
 
 @test
 def se-int-literal() = match run-src("42") with
@@ -104,6 +114,24 @@ def se-if-too-many-operands-declines() =
   match run-src("(do (def (main) (if (< 1 2) 1 2 3)) (export main))") with
     | Option.Some(_) => trap("a too-many-operands `if` must DECLINE (CDZ0201), not run")
     | Option.None(_) => unit
+
+@test
+def se-unbound-in-uncalled-sibling-declines() =
+  // WHOLE-PROGRAM scope check: an UNBOUND name in an UNCALLED sibling def is still ill-typed (rcdzc CDZ0101).
+  // `bad`'s body is a bare unbound `nonexistent`; main returns 42 without touching bad, but the demand-driven
+  // run used to skip bad (only main's reachable set checked) → ran to 42. all-defs-well-typed now scans EVERY
+  // def body standalone for an RPoison (unbound name) → declines. Reject-path gap from the conf-db differential.
+  match run-src("(do (def (bad) nonexistent) (def (main) 42) (export main))") with
+    | Option.Some(_) => trap("an unbound name in an uncalled sibling def must DECLINE (CDZ0101), not run to 42")
+    | Option.None(_) => unit
+
+@test
+def se-valid-uncalled-sibling-still-runs() =
+  // the complement (guard against over-rejection): a VALID uncalled sibling (parameterized) does NOT block the
+  // run — its param uses resolve RBound (no RPoison), so all-defs-well-typed passes it. main → 42.
+  match run-src("(do (def (helper x) (+ x 1)) (def (main) 42) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("valid uncalled sibling → main runs 42"))
+    | Option.None(_) => trap("a valid uncalled sibling must NOT block the run")
 
 @test
 def se-let() =
