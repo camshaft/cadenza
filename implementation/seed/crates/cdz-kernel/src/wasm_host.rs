@@ -202,24 +202,11 @@ fn resolve_dep_bytes(
     }
 }
 
-/// Parse 64 LOWERCASE-hex chars into a [`Hash`] (the `+<hash>` content-address build-metadata). `None`
-/// on any non-hex / wrong-length / UPPERCASE input: content addresses are canonical lowercase hex
-/// (Copilot PR#1013 #4 — `from_str_radix` accepts uppercase, which would admit two spellings of one
-/// address; reject the non-canonical form).
+/// Parse a component dependency's `+<hash>` content-address build-metadata into a [`Hash`]. Delegates
+/// to [`Hash::from_hex`] — the single home for the canonical-lowercase-hex rule (PR#1013 #4) — rather
+/// than reimplementing it here (this used to carry its own copy of the length/lowercase checks).
 fn parse_hash_hex(hex: &str) -> Option<Hash> {
-    if hex.len() != 64 {
-        return None;
-    }
-    // Reject uppercase explicitly (from_str_radix would accept it): canonical content addresses are
-    // lowercase, and admitting `AB..` alongside `ab..` would let one blob have two keys.
-    if hex.bytes().any(|b| b.is_ascii_uppercase()) {
-        return None;
-    }
-    let mut bytes = [0u8; 32];
-    for (i, b) in bytes.iter_mut().enumerate() {
-        *b = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
-    }
-    Some(Hash::from_bytes(bytes))
+    Hash::from_hex(hex)
 }
 
 impl ComponentReducer {

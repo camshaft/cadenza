@@ -31,6 +31,7 @@ use crate::hash::Hash;
 use crate::kv::Kv;
 use crate::reducer::Reducer;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 
 /// Errors the kernel surfaces to its driver. Kept small; grows with features.
 #[derive(Debug, PartialEq, Eq)]
@@ -61,6 +62,21 @@ pub struct Session {
     /// time. Rebuilt from `TimerArmed` events on replay; drained when the timer fires. The kernel — not
     /// an executor — injects `TimerFired` once `now_ms` reaches the deadline (see `fire_due_timers`).
     armed_timers: BTreeMap<u64, u64>,
+    /// The durable log this session writes THROUGH as it appends (§16c-S1), if attached via
+    /// [`Session::attach_log`]. When present, every appended event is persisted (append + flush) before
+    /// `append` returns — so the S1 "Dispatched durable before its effect routes" ordering is enforced
+    /// IN-KERNEL, not left to a driver mirroring events by hand. `None` = an in-memory-only session
+    /// (tests, or a caller that persists separately). Persistence lives here, next to the in-memory log
+    /// it shadows, so the two never diverge.
+    store: Option<crate::log_store::LogStore>,
+    /// The first persistence error hit while writing through `store`, latched here (§16c-S1, tier B —
+    /// see [`Session::attach_log`]). The in-memory log + fold always succeed, so `append`/`drive` stay
+    /// infallible; a disk write failure is recorded (not swallowed, not panicked) and surfaced to the
+    /// driver via [`Session::take_persist_error`], which it MUST check after a `deliver`/`fire_due_timers`
+    /// before acting on the run's external effects as durably-logged. Latched (first error wins) so one
+    /// failure doesn't spam; once set, further writes are skipped (the on-disk log stopped at the last
+    /// good frame, which recovery heals via `truncate_to`).
+    persist_error: Option<io::Error>,
 }
 
 impl Session {
@@ -74,6 +90,8 @@ impl Session {
             settled: BTreeSet::new(),
             open: BTreeSet::new(),
             armed_timers: BTreeMap::new(),
+            store: None,
+            persist_error: None,
         };
         s.log.push(Event {
             seq: 0,
@@ -81,6 +99,29 @@ impl Session {
             body: EventBody::Genesis { reducer },
         });
         s
+    }
+
+    /// Attach a durable [`crate::log_store::LogStore`] so this session WRITES THROUGH it on every append
+    /// (§16c-S1, durability tier B — see the `store`/`persist_error` fields). The store should already
+    /// hold this session's log up to the current tip (e.g. it was just used to [`Session::recover`], or
+    /// it's an empty store for a fresh `genesis`); attaching does NOT re-persist the existing in-memory
+    /// log. From here, each appended event is persisted before `append` returns, so the S1
+    /// "Dispatched-durable-before-route" ordering holds in-kernel. A persist failure is latched (see
+    /// [`Session::take_persist_error`]), not propagated — the in-memory session stays consistent.
+    ///
+    /// (Whether a persist failure should instead ABORT the route strictly — durability tier A — is a
+    /// design decision raised to the concierge; this tier-B write-through is the v0 baseline it hardens.)
+    pub fn attach_log(&mut self, store: crate::log_store::LogStore) {
+        self.store = Some(store);
+    }
+
+    /// Take the latched persistence error, if any (§16c-S1 tier B). A driver using [`Session::attach_log`]
+    /// MUST call this after a `deliver`/`fire_due_timers`/`time_out_effect` and, if it's `Some`, treat the
+    /// run's externally-visible effects as NOT durably logged (the on-disk log stopped at the last good
+    /// frame; recovery heals the torn tail via `truncate_to`). Clears the latch so the next run starts
+    /// clean. `None` = every event this session appended was persisted.
+    pub fn take_persist_error(&mut self) -> Option<io::Error> {
+        self.persist_error.take()
     }
 
     pub fn kv(&self) -> &Kv {
@@ -185,10 +226,16 @@ impl Session {
 
     /// Append one event to the authoritative log at the next sequence, folding it into KV. Does NOT
     /// perform effects — that's `drive`. Returns the appended event's hash (for `cause` linking).
-    /// Append is INFALLIBLE in v0: pushing onto the in-memory log cannot fail, so it returns the new
-    /// event's `Hash` directly (no `Result` to `let _ =`-swallow — the review flagged that pattern as a
-    /// latent trap for when persistence lands). Wiring durable-append error handling INTO this path is a
-    /// deliberate later slice; until then the type says what's true: it can't fail.
+    ///
+    /// Append is INFALLIBLE at the type level: pushing onto the in-memory log cannot fail, so it returns
+    /// the new event's `Hash` directly (no `Result` to `let _ =`-swallow — the review flagged that as a
+    /// latent trap). DURABLE write-through (§16c-S1, tier B): if a [`crate::log_store::LogStore`] is
+    /// attached ([`Session::attach_log`]), the event is persisted (append + flush) HERE, before the hash
+    /// is returned and thus before `drive` uses it to route the effect — the S1 "Dispatched durable
+    /// before route" ordering. A persist failure is LATCHED into `persist_error` (first error wins) and
+    /// further writes are skipped, rather than propagated — the in-memory session stays consistent and
+    /// the driver observes the failure via [`Session::take_persist_error`]. (Strict abort-on-persist-fail
+    /// — tier A — is a raised design decision; this is the tier-B baseline.)
     fn append(&mut self, body: EventBody, cause: Option<Hash>) -> Hash {
         // Maintain the open/settled sets and the armed-timer table as obligations are created and
         // discharged (§16c-S1/S4/S5).
@@ -214,6 +261,16 @@ impl Session {
         let seq = self.log.len() as u64;
         let event = Event { seq, cause, body };
         let hash = event.hash();
+        // Durable write-through BEFORE returning the hash (so the caller routes only after the event is
+        // on disk — S1). Skip once an error is latched (the on-disk log stopped at the last good frame;
+        // recovery heals the tail). First error wins; recorded, never swallowed or panicked.
+        if self.persist_error.is_none() {
+            if let Some(store) = self.store.as_mut() {
+                if let Err(e) = store.append(&event) {
+                    self.persist_error = Some(e);
+                }
+            }
+        }
         self.log.push(event);
         hash
     }
@@ -425,6 +482,8 @@ impl Session {
             settled: BTreeSet::new(),
             open: BTreeSet::new(),
             armed_timers: BTreeMap::new(),
+            store: None,
+            persist_error: None,
         };
         for (i, event) in log.into_iter().enumerate() {
             if event.seq != i as u64 {
