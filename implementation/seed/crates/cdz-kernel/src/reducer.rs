@@ -3,8 +3,10 @@
 //! A reducer is a pure fold: given the event being applied and mutable access to the session KV, it
 //! returns the effects it wants performed. It holds NO state between calls (§4) — everything it needs
 //! to continue lives in KV. In v0 this is a Rust trait so the whole kernel loop is testable before
-//! wasmtime lands; the trait's shape IS the future wasm component interface (WIT), so getting it right
-//! here is exactly gap A.
+//! wasmtime lands; the trait's shape MIRRORS the wasm component-model contract in `wit/reducer.wit`
+//! (the `cadenza:agent-kernel` reducer world — `fold.apply` export + `kv` import), which per operator
+//! directive §19b is the REAL boundary. This Rust trait is the INTERIM until the WIT world + the
+//! wasmtime component host land (the next slice); getting the shape right here is exactly §16c gap A.
 //!
 //! Determinism contract (§3, §16c-S3): a reducer MUST be a pure function of `(event, kv)`. It may not
 //! read the clock, network, or entropy directly — those enter only as effects whose results arrive as
