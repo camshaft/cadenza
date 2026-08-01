@@ -4,8 +4,16 @@
 //! the adversarial review designed in:
 //!
 //! - **S1 (durable dispatch):** before an effect is handed to an executor, a `Dispatched` event is
-//!   appended to the authoritative log. Recovery re-drives un-resulted dispatches by idempotency key,
-//!   so a crash between dispatch and result never double-fires or drops.
+//!   appended to the log, and recovery re-drives un-resulted dispatches by idempotency key so a crash
+//!   between dispatch and result never double-fires or drops. NOTE the current wiring: a live `Session`
+//!   holds its log **in memory** and does not itself write through to disk on append; durable
+//!   persistence is provided by [`crate::log_store::LogStore`] and recovery by [`Session::recover`],
+//!   both of which have landed — but a driver that wants the S1 crash guarantee must persist each event
+//!   via a `LogStore` as it is appended (the write-through is mirrored, not yet owned by `Session`).
+//!   Making `Session::append` write through a `LogStore` directly — which turns append fallible
+//!   (disk I/O) and ripples `io::Result` through the drive loop — is the remaining durability slice
+//!   (§16c-S1); the recovery *logic* (replay the log, re-drive open dispatches) is already exercised
+//!   here via `replay`/`recover`.
 //! - **S4 (effect-id correlation + timeout-cancels):** each effect gets a monotonic `EffectId`; results
 //!   fold back correlated by id. A timeout cancels the dispatch — once an outcome (Ok/Err/TimedOut) is
 //!   recorded for an id, no second outcome for that id is ever accepted.
@@ -13,8 +21,7 @@
 //!   gates the resolved target, not just the effect kind. A denied effect is logged, never executed.
 //!
 //! The KV is rebuilt by folding the log (it IS derived state — §4); a snapshot is `(seq, kv.root_hash,
-//! reducer_hash)`. v0 keeps the log in memory; durable disk-backed storage is the next slice, but the
-//! recovery *logic* (replay the log, re-drive open dispatches) is already exercised here via `replay`.
+//! reducer_hash)`.
 
 use crate::authz::Authorizer;
 use crate::effect::{EffectId, EffectKind, EffectRequest};

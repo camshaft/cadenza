@@ -12,7 +12,9 @@
 //!   cargo build --target wasm32-unknown-unknown --release
 //!   wasm-tools component new target/wasm32-unknown-unknown/release/reducer_guest.wasm \
 //!       -o ../reducer_guest.component.wasm
-//! (CI rebuilds + diffs it so a stale fixture is caught — see the cdz-kernel CI job.)
+//! (CI rebuilds it from source + validates the result is a valid component so a stale fixture is
+//! caught — NOT a byte-diff, since the guest's deps/toolchain aren't lock-pinned; see the cdz-kernel CI
+//! job. This test loading + folding the committed .wasm is what proves its correctness.)
 
 use cdz_kernel::kv::Kv;
 use cdz_kernel::wasm_host::{ComponentError, ComponentReducer, ContentType, EffectKind};
