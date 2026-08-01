@@ -8,6 +8,20 @@
 //! form per value — so the codec built on it inherits its "one canonical byte form" contract
 //! (`ast-encoding.md` §The Encoding Is A Bijection With One Canonical Byte Form).
 
+/// Why a classified varint read failed — the distinction a streaming/log consumer needs to tell a
+/// benign TORN write (the input simply ended mid-varint) from genuine CORRUPTION (a fully-present but
+/// non-canonical / over-64-bit varint). [`Reader::read_varu64`] collapses both to `None`;
+/// [`Reader::read_varu64_checked`] preserves the split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VarErr {
+    /// The input ended while more varint bytes were expected (a continuation byte with nothing after,
+    /// or no byte at all) — an interrupted/torn write, not corruption.
+    Truncated,
+    /// All the bytes the varint needs are present, but they do not form a valid canonical `VarU64` —
+    /// an over-64-bit value or a non-minimal (overlong) encoding. Genuine corruption.
+    Malformed,
+}
+
 /// Append the unsigned LEB128 encoding of `value` to `out`.
 pub fn write_u64(out: &mut Vec<u8>, mut value: u64) {
     loop {
@@ -75,27 +89,42 @@ impl<'a> Reader<'a> {
     /// encoder ([`write_u64`]) never emits such a form, so every value has exactly ONE accepted
     /// encoding — the codec's "one canonical byte form" bijection (`ast-encoding.md`) would otherwise
     /// admit many byte strings decoding to the same tree. `0x00` alone is the canonical `0`.
+    ///
+    /// Delegates to [`Self::read_varu64_checked`] and drops the failure classification, so the two never
+    /// diverge on which byte strings they accept.
     pub fn read_varu64(&mut self) -> Option<u64> {
+        self.read_varu64_checked().ok()
+    }
+
+    /// Like [`Self::read_varu64`], but distinguishes WHY it failed: [`VarErr::Truncated`] (the input
+    /// ended mid-varint — a torn/interrupted write) from [`VarErr::Malformed`] (a fully-present but
+    /// non-canonical / over-64-bit varint — genuine corruption). A streaming/log consumer needs this
+    /// split to tell a benign torn tail from real corruption; the plain [`Self::read_varu64`] collapses
+    /// both to `None`. The accept set is IDENTICAL to `read_varu64` (which is `…_checked().ok()`).
+    pub fn read_varu64_checked(&mut self) -> Result<u64, VarErr> {
         let mut result: u64 = 0;
         let mut shift = 0u32;
         loop {
-            let byte = self.byte()?;
+            // No byte where the varint needs one = the input ended mid-varint = a torn write.
+            let byte = self.byte().ok_or(VarErr::Truncated)?;
             if shift >= 64 {
-                return None;
+                // A 10th continuation byte (all 10 group-bytes present) overflows 64 bits: fully
+                // present, so malformed — not truncated.
+                return Err(VarErr::Malformed);
             }
             let payload = (byte & 0x7f) as u64;
             if shift == 63 && payload > 1 {
-                return None;
+                return Err(VarErr::Malformed);
             }
             result |= payload << shift;
             if byte & 0x80 == 0 {
                 // Minimality: a terminating zero group after at least one continuation byte means the
-                // value fit in fewer bytes — a non-canonical encoding. Reject. (`shift == 0` is the
-                // single-byte case, where a `0x00` terminator is the canonical `0`.)
+                // value fit in fewer bytes — a non-canonical encoding (all bytes present ⇒ malformed,
+                // not truncated). (`shift == 0` is the single-byte case, where `0x00` is canonical `0`.)
                 if payload == 0 && shift != 0 {
-                    return None;
+                    return Err(VarErr::Malformed);
                 }
-                return Some(result);
+                return Ok(result);
             }
             shift += 7;
         }
@@ -103,7 +132,14 @@ impl<'a> Reader<'a> {
 
     /// Read a `VarU64` and narrow to `usize`. `None` if it exceeds `usize`.
     pub fn read_var_len(&mut self) -> Option<usize> {
-        usize::try_from(self.read_varu64()?).ok()
+        self.read_var_len_checked().ok()
+    }
+
+    /// Like [`Self::read_var_len`], but classifies the failure ([`VarErr`]). A value that exceeds
+    /// `usize` (only possible on a &lt;64-bit target) is [`VarErr::Malformed`] — a fully-present but
+    /// impossibly-large length, not a torn write.
+    pub fn read_var_len_checked(&mut self) -> Result<usize, VarErr> {
+        usize::try_from(self.read_varu64_checked()?).map_err(|_| VarErr::Malformed)
     }
 
     /// Read a big-endian `u64` length and narrow to `usize`.
@@ -171,6 +207,76 @@ mod tests {
     #[test]
     fn truncated_is_none_not_panic() {
         assert_eq!(Reader::new(&[0x80]).read_varu64(), None);
+    }
+
+    #[test]
+    fn checked_read_classifies_truncated_vs_malformed() {
+        // TRUNCATED: the input ends while a continuation byte promised more (or there is no byte at
+        // all) — a torn/interrupted write.
+        assert_eq!(
+            Reader::new(&[]).read_varu64_checked(),
+            Err(VarErr::Truncated)
+        );
+        assert_eq!(
+            Reader::new(&[0x80]).read_varu64_checked(),
+            Err(VarErr::Truncated),
+            "one continuation byte, then EOF"
+        );
+        assert_eq!(
+            Reader::new(&[0x80, 0x80]).read_varu64_checked(),
+            Err(VarErr::Truncated),
+            "two continuation bytes, then EOF"
+        );
+
+        // MALFORMED: all the varint's bytes ARE present, but they don't form a canonical VarU64 —
+        // corruption, NOT a torn tail. A non-minimal (overlong) encoding:
+        assert_eq!(
+            Reader::new(&[0x80, 0x00]).read_varu64_checked(),
+            Err(VarErr::Malformed),
+            "overlong 0 is fully present but non-canonical"
+        );
+        assert_eq!(
+            Reader::new(&[0xFF, 0x00]).read_varu64_checked(),
+            Err(VarErr::Malformed),
+            "overlong 127"
+        );
+        // An over-64-bit value: 10 continuation groups + a terminator (all present) overflows u64.
+        let over64 = [
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
+        ];
+        assert_eq!(
+            Reader::new(&over64).read_varu64_checked(),
+            Err(VarErr::Malformed),
+            "an over-64-bit varint is malformed, not truncated"
+        );
+
+        // A valid value still reads as `Ok`.
+        assert_eq!(Reader::new(&[0x80, 0x01]).read_varu64_checked(), Ok(128));
+        assert_eq!(Reader::new(&[0x00]).read_varu64_checked(), Ok(0));
+    }
+
+    #[test]
+    fn checked_and_plain_read_accept_the_same_byte_strings() {
+        // `read_varu64` is defined as `read_varu64_checked().ok()`, so for EVERY input the two must
+        // agree on accept/reject (and the value when accepted). Sweep the small byte space + valid
+        // encodings to pin that they never diverge — a divergence would mean the Option API and the
+        // classified API disagree on what a valid AST byte stream is.
+        let mut rng = Rng(0x0dec_0de5_c0de_1eb1);
+        for _ in 0..20_000 {
+            let len = 1 + (rng.next() % 11) as usize;
+            let buf: Vec<u8> = (0..len).map(|_| (rng.next() & 0xff) as u8).collect();
+            let plain = Reader::new(&buf).read_varu64();
+            let checked = Reader::new(&buf).read_varu64_checked().ok();
+            assert_eq!(plain, checked, "accept sets diverge for {buf:?}");
+        }
+        // And every canonical encoding reads Ok with the same value + consumes the same bytes.
+        for v in [0u64, 1, 127, 128, 255, 300, 16_384, u64::MAX] {
+            let mut buf = Vec::new();
+            write_u64(&mut buf, v);
+            let mut rc = Reader::new(&buf);
+            assert_eq!(rc.read_varu64_checked(), Ok(v));
+            assert!(rc.at_end());
+        }
     }
 
     #[test]

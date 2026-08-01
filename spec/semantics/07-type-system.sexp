@@ -1925,3 +1925,22 @@
             (def (main) 42)
             (export main)))
   (error  CDZ0101))
+
+; --- Export-resolution walk (the multi-export gap-A family: the self-hosted front-end checked
+; only the sequence-terminating export — b27c59b96 then the d3516ee2c residual; full order
+; matrix pinned so neither face regresses). ---
+
+(case "an EXPORT naming an unbound definition is rejected"
+  (doc    "The export-resolution walk: (export no-such-def) beside a valid main — a compiler resolving exports lazily (or tracing only from main) runs instead of rejecting. rcdzc rejects CDZ0101. The self-hosted front-end had exactly this gap TWICE (single-export b27c59b96, then the multi-export residual d3516ee2c — only the sequence-terminating export was checked); pinned so neither face regresses.")
+  (input  (do (def (main) 42) (export main) (export no-such-def)))
+  (error  CDZ0101))
+
+(case "an unbound export BEFORE a valid main export is rejected"
+  (doc    "Order-matrix companion of the multi-export pin: the unbound export comes FIRST, then (export main) — a reader that only validates the final export accepts this mirror image. rcdzc rejects CDZ0101.")
+  (input  (do (def (main) 42) (export no-such-def) (export main)))
+  (error  CDZ0101))
+
+(case "an unbound export after a valid HELPER export is rejected"
+  (doc    "The helper variant of the multi-export face: (export helper) resolves, the LATER (export no-such-def) must still be checked — the self-hosted reader stopped reading after any valid export (gap-A residual). rcdzc rejects CDZ0101.")
+  (input  (do (def (helper) 1) (def (main) 42) (export helper) (export no-such-def)))
+  (error  CDZ0101))
