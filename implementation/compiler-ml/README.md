@@ -92,7 +92,6 @@ source → parse → resolve → infer → lower → emit, each a memoized COLUM
 - `ty.cdz` — Tier-1 the SOLVED-TYPE UNIVERSE (ported from rcdzc `ty.rs`): `Ty` with the Sign/Width lattice.
 - `unify-ty.cdz` — unification over `ty.cdz`'s shared `Ty` (deferred-int grounds to a concrete width sibling).
 - `ty-bridge.cdz` — the `Typed` ↔ `Ty` bridge (`typed.cdz`'s `Typed` ↔ the ty.cdz universe); one home for the conversion.
-- `apply-ty.cdz` — the function-application typing step (an arrow applied to args → result type).
 
 **Integer-width foundation (hardening item 2)**
 - `int-type.cdz` — recognize an integer type NAME → `(signed, width)` (the `(: v Int8)` annotation front).

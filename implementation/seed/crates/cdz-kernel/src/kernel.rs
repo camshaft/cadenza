@@ -1,575 +1,469 @@
-//! The tiny kernel — compile + run a Cadenza `interpret` program (minimal-kernel re-charter, rung K1).
+//! The kernel core — `fold → authorize → durably-dispatch → execute → fold result` (§2).
 //!
-//! Operator mandate (2026-07-17, confirmed): the daemon is DEPLOY-ONCE and understands NO events. It EMBEDS
-//! the compiler (rcdzc) + wasmtime (cdz-run) and, per event, runs a self-modifiable Cadenza `interpret`
-//! program that decides the host-ops to execute. This is the codeact-spike shape realized as the kernel:
-//! "compile + run any Cadenza program from the log" IS the kernel's job — agents append NEW programs that
-//! must run without a redeploy, so the kernel compiles at RUNTIME.
+//! This is the v0.1 spine, single-session and in-memory, with the correctness-critical invariants from
+//! the adversarial review designed in:
 //!
-//! **K1 (this module) is the compile+compose+run spine**, built on the PEER path v-effects + v-peer-linking
-//! verified end-to-end (a `(List HostOp)` provider result — and a `(List Event)` arg — cross to/from a
-//! Cadenza peer executor as runtime handles over the ONE shared value-heap runtime, NO host-ABI widening).
-//! So the kernel:
-//!   1. COMPILES the interpret `.cdz` source as a PROVIDER component (`cadenza:agent/kernel`) — [`compile_interpret_provider`].
-//!   2. COMPOSES it with a peer EXECUTOR (a Cadenza consumer that binds the provider, performs `interpret`,
-//!      and reduces the crossed `(List HostOp)` handle) and RUNS via `cdz_run::run_with_peers` — [`run_interpret`].
-//! The executor's per-op dispatch to the broad primitives (`exec`/`http`/`log`/…) is rung K1b; K1 proves the
-//! compile→provider→peer-executor→consume-the-result loop end-to-end, which is the load-bearing spine.
+//! - **S1 (durable dispatch):** before an effect is handed to an executor, a `Dispatched` event is
+//!   appended to the authoritative log. Recovery re-drives un-resulted dispatches by idempotency key,
+//!   so a crash between dispatch and result never double-fires or drops.
+//! - **S4 (effect-id correlation + timeout-cancels):** each effect gets a monotonic `EffectId`; results
+//!   fold back correlated by id. A timeout cancels the dispatch — once an outcome (Ok/Err/TimedOut) is
+//!   recorded for an id, no second outcome for that id is ever accepted.
+//! - **SEC-F1 (resource-scoped authz):** every effect is checked against a capability whose predicate
+//!   gates the resolved target, not just the effect kind. A denied effect is logged, never executed.
 //!
-//! Gated behind runtime-store availability (like `fold`'s tests): a runtime bump can stale the store, so a
-//! run SKIPS rather than fails when the value-heap runtime wasm is absent.
+//! The KV is rebuilt by folding the log (it IS derived state — §4); a snapshot is `(seq, kv.root_hash,
+//! reducer_hash)`. v0 keeps the log in memory; durable disk-backed storage is the next slice, but the
+//! recovery *logic* (replay the log, re-drive open dispatches) is already exercised here via `replay`.
 
-use anyhow::{anyhow, Result};
+use crate::authz::Authorizer;
+use crate::effect::{EffectId, EffectKind, EffectRequest};
+use crate::event::{EffectOutcome, Event, EventBody};
+use crate::executor::Executor;
+use crate::hash::Hash;
+use crate::kv::Kv;
+use crate::reducer::Reducer;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// The provider interface name the kernel publishes `interpret` under — the peer executor binds this.
-pub const KERNEL_IFACE: &str = "cadenza:agent/kernel";
-
-/// Compile a Cadenza `interpret` source string into a PROVIDER component published as [`KERNEL_IFACE`]. This
-/// is the kernel's live-compilation step (rcdzc embedded): parse the s-expr source → encode AST → compile
-/// with a component-name artifact so the export is a provider the peer executor can bind. Returns the wasm
-/// component bytes, or an error carrying the compiler diagnostic (a malformed program is a loud failure — the
-/// daemon reports it, it does not silently skip).
-pub fn compile_interpret_provider(src: &str) -> Result<Vec<u8>> {
-    use rcdzc::abi::Artifact;
-    use rcdzc::backend::Target;
-
-    // Parse the s-expr surface → cadenza-syntax arenas → AST BYTES via cadenza-syntax's codec. The bytes are
-    // the bridge between the two crates' distinct `Arenas` types (rcdzc's compile takes AST bytes + decodes
-    // them with its own byte-compatible codec copy — same path the gate feeds rcdzc).
-    let arenas = cadenza_syntax::sexpr::read(src)
-        .map_err(|e| anyhow!("interpret source did not parse: {e:?}"))?;
-    let ast = cadenza_syntax::codec::encode(&arenas);
-
-    // Compile with the component-name artifact so the output is a PROVIDER (its export is bound by a peer),
-    // under the compiler stack (rcdzc::host::run_with_compiler_stack sets up the arena/thread context).
-    let out = rcdzc::host::run_with_compiler_stack(|| {
-        rcdzc::compile(
-            &[
-                Artifact::new(Artifact::KIND_AST, "interpret", ast),
-                rcdzc::cli::component_name_artifact(KERNEL_IFACE),
-            ],
-            &[Target::Wasm],
-        )
-    });
-    out.artifact(Target::Wasm.artifact_kind())
-        .map(|b| b.to_vec())
-        .ok_or_else(|| anyhow!("interpret provider did not compile: {:?}", out.diagnostics))
-}
-
-/// Like [`compile_interpret_provider`], but compiles by RUNNING the compiler-wasm (`rcdzc_wasm`) instead of
-/// native rcdzc — the operator-#54 wasm-swap at the KERNEL API level. Parses the s-expr source → encodes AST →
-/// drives `rcdzc.wasm`'s `compile_named` export via [`crate::wasm_compiler::compile_via_wasm_named`], publishing
-/// the provider under [`KERNEL_IFACE`]. Same `(src) -> provider component` contract as the native fn (the
-/// differential test proves byte-identical output), so a caller holding the compiler-wasm bytes can swap the
-/// kernel's compile path with no other change. `rcdzc_wasm` is the wasm32-wasip1 build the caller supplies (a
-/// daemon reads it once; falling back to [`compile_interpret_provider`] when absent is the caller's choice).
-/// Feature-gated (`wasm-compiler`) alongside the host glue.
-#[cfg(feature = "wasm-compiler")]
-pub fn compile_interpret_provider_via_wasm(rcdzc_wasm: &[u8], src: &str) -> Result<Vec<u8>> {
-    let arenas = cadenza_syntax::sexpr::read(src)
-        .map_err(|e| anyhow!("interpret source did not parse: {e:?}"))?;
-    let ast = cadenza_syntax::codec::encode(&arenas);
-    crate::wasm_compiler::compile_via_wasm_named(rcdzc_wasm, &ast, KERNEL_IFACE)
-}
-
-/// The Cadenza EXECUTOR peer source: binds the kernel provider, performs `interpret`, and consumes the
-/// crossed `(List HostOp)` — here reduced with `List.len` to a scalar (K1 proves the handle crossed + is a
-/// live list; K1b replaces `List.len` with per-op dispatch to the broad primitives). The `HostOp` type is
-/// re-declared BY NAME (v-effects wiring finding: an effect-op result type must be a named type, not an inline
-/// `(Sum …)`), structurally identical to the provider's so they agree over the shared runtime. `kind` is the
-/// scalar event stand-in (the compound `(List Event)` arg is K1b, per the confirmed inbound handle path).
-fn executor_src() -> String {
-    "(do \
-       (type HostOp (Append String) (Exec String) (Http String) (Noop Int64)) \
-       (effect K (op interpret (-> Int64 Int64 (List HostOp)))) \
-       (bind K \"cadenza:agent/kernel\") \
-       (def (main (: kind Int64)) (host (K) (List.len (K.interpret kind 0)))) \
-       (export main))"
-        .to_string()
-}
-
-/// The K1b DISPATCHING executor: instead of `List.len`, it FOLDS the crossed `(List HostOp)` and dispatches
-/// EACH op by its variant — the shape real per-op execution takes (each variant → its broad primitive). Here
-/// the dispatch sums a per-variant COST (Append→1, Exec→10, Http→100, Noop→0) rather than performing real
-/// `exec`/`http` side-effects, so it is deterministic + gate-able with no external I/O; swapping the cost for
-/// a real broad-primitive `perform` is the same match, one rung on (K1c). This proves the executor can WALK
-/// the crossed handle + pattern-match each element over the shared runtime — the core of op execution.
-fn dispatch_executor_src() -> String {
-    "(do \
-       (type HostOp (Append String) (Exec String) (Http String) (Noop Int64)) \
-       (effect K (op interpret (-> Int64 Int64 (List HostOp)))) \
-       (bind K \"cadenza:agent/kernel\") \
-       (def (op-cost (: op HostOp)) \
-         (match op \
-           ((Append s) 1) \
-           ((Exec s) 10) \
-           ((Http s) 100) \
-           ((Noop n) 0))) \
-       (def (run-ops (: ops (List HostOp))) \
-         (match ops \
-           ((list head .. rest) (+ (op-cost head) (run-ops rest))) \
-           (_ 0))) \
-       (def (main (: kind Int64)) (host (K) (run-ops (K.interpret kind 0)))) \
-       (export main))"
-        .to_string()
-}
-
-/// The K1c PERFORMING executor: each op fires a real `Prim.run` PERFORM (the shape a real broad primitive
-/// takes — `Prim.run` stands in for exec/http/log; handled in-program here by a mock that echoes the op's tag
-/// as the perform's RESULT, like a real primitive returns its own call result). Two structural points
-/// v-effects confirmed: (1) bind the crossed `(List HostOp)` to a `let` OUTSIDE the `host (K)` block, then
-/// fold+perform outside it (a perform-fold nested INSIDE the peer host block declines — a separate un-reduced
-/// increment, reported); (2) SUM the PER-OP RESULTS (each `Prim.run` returns its own value), NOT a threaded
-/// handler-state counter — a handler-state accumulator across the cross-fn `run-ops` recursion is a separate
-/// QUEUED miscompile (v-effects pinned it; drops the recursion's final out-state). Per-op-result is exactly
-/// the real exec/http/log shape (each call returns its own result), and it folds cleanly. So kind=1 →
-/// [Append, Exec] → tags [1, 2] → sum 3; the sum PROVES each op fired a real effect + its result came back.
-fn performing_executor_src() -> String {
-    "(do \
-       (type HostOp (Append String) (Exec String) (Http String) (Noop Int64)) \
-       (effect K (op interpret (-> Int64 Int64 (List HostOp)))) \
-       (bind K \"cadenza:agent/kernel\") \
-       (effect Prim (op run (-> Int64 Int64))) \
-       (def (op-tag (: op HostOp)) \
-         (match op \
-           ((Append s) 1) \
-           ((Exec s) 2) \
-           ((Http s) 3) \
-           ((Noop n) 0))) \
-       (def (run-ops (: ops (List HostOp))) \
-         (match ops \
-           ((list head .. rest) (+ (Prim.run (op-tag head)) (run-ops rest))) \
-           (_ 0))) \
-       (def (main (: kind Int64)) \
-         (let ((ops (host (K) (K.interpret kind 0)))) \
-           (handle Prim 0 ((run (tag) s (resume tag s))) \
-             (run-ops ops)))) \
-       (export main))"
-        .to_string()
-}
-
-/// The interface the kernel publishes the broad host PRIMITIVES under — `Prim.exec`/`Prim.http`/`Prim.append`,
-/// each `(String) -> Int64` (the op's String payload crosses as a rope handle; the primitive returns a scalar
-/// result). The executor binds this; the HOST answers it with a real Rust closure (exec/http/log), unlike
-/// [`KERNEL_IFACE`] which a Cadenza PROVIDER peer answers. This is the real-primitive counterpart of the
-/// in-program `Prim` mock in [`performing_executor_src`].
-pub const PRIM_IFACE: &str = "cadenza:agent/prim";
-
-/// The K1c-HOSTED executor: like [`performing_executor_src`], but instead of HANDLING `Prim` in-program (the
-/// tag-echo mock), it declares `Prim` as a HOST effect (`Prim.exec`/`Prim.http`/`Prim.append`, each
-/// `(-> String Int64)`) bound to [`PRIM_IFACE`], and dispatches each `HostOp` variant to the matching op with
-/// the op's STRING payload. The host answers each with a REAL closure (exec/http/log) — so the fold sums the
-/// primitives' actual results. `interpret` STAYS a separately-compiled PROVIDER peer (bound via `K`); `Prim` is
-/// answered at the host. This is why the kernel needs `run_with_peers_hosted` (peer + host bindings together).
-/// (Option b of the dispatch fork: one host op per kind, each `String -> Int64`, no new cdz-run HostOp shape.)
-fn hosted_executor_src() -> String {
-    "(do \
-       (type HostOp (Append String) (Exec String) (Http String) (Noop Int64)) \
-       (effect K (op interpret (-> Int64 Int64 (List HostOp)))) \
-       (bind K \"cadenza:agent/kernel\") \
-       (effect Prim \
-         (op exec (-> String Int64)) \
-         (op http (-> String Int64)) \
-         (op append (-> String Int64))) \
-       (bind Prim \"cadenza:agent/prim\") \
-       (def (run-op (: op HostOp)) \
-         (match op \
-           ((Append s) (Prim.append s)) \
-           ((Exec s) (Prim.exec s)) \
-           ((Http s) (Prim.http s)) \
-           ((Noop n) 0))) \
-       (def (run-ops (: ops (List HostOp))) \
-         (match ops \
-           ((list head .. rest) (+ (run-op head) (run-ops rest))) \
-           (_ 0))) \
-       (def (main (: kind Int64)) \
-         (let ((ops (host (K) (K.interpret kind 0)))) \
-           (host (Prim) (run-ops ops)))) \
-       (export main))"
-        .to_string()
-}
-
-/// The result of running one interpret turn through the kernel: the number of host-ops the interpret program
-/// scheduled for the given event (the executor's `List.len` over the crossed `(List HostOp)` handle). K1b
-/// turns this into the executed op-effects; K1 surfaces the count as proof the loop ran end-to-end.
+/// Errors the kernel surfaces to its driver. Kept small; grows with features.
 #[derive(Debug, PartialEq, Eq)]
-pub struct InterpretRun {
-    pub op_count: i64,
+pub enum KernelError {
+    /// An event was appended out of sequence (log corruption / programming error).
+    NonContiguousSeq { expected: u64, got: u64 },
+    /// The first event of a session must be `Genesis`.
+    MissingGenesis,
 }
 
-/// The shared K1 SPINE: compile `interpret_src` as a provider, compose it with the given `executor` peer
-/// source, run via `cdz_run::run_with_peers` passing the scalar `event_kind`, and return the executor's scalar
-/// result. Every `run_interpret*` variant is this spine + a specific executor (the difference is only what the
-/// Cadenza executor DOES with the crossed `(List HostOp)` — count it, cost it, or perform it). `runtime` is the
-/// value-heap runtime wasm (resolve via [`find_runtime_for`]; a run SKIPS when it is absent, since a runtime
-/// bump can stale the store). `what` labels the executor in error messages.
-fn run_with_executor(
-    interpret_src: &str,
-    executor: &str,
-    what: &str,
-    event_kind: i64,
-    runtime: Vec<u8>,
-) -> Result<i64> {
-    let provider = compile_interpret_provider(interpret_src)?;
-    let peers = vec![cdz_run::Peer {
-        bytes: provider,
-        interface: KERNEL_IFACE.to_string(),
-    }];
-    let executor_arenas = cadenza_syntax::sexpr::read(executor)
-        .map_err(|e| anyhow!("{what} executor source did not parse: {e:?}"))?;
-    let consumer =
-        rcdzc::compile::compile_component(&cadenza_syntax::codec::encode(&executor_arenas))
-            .map_err(|d| {
-                anyhow!(
-                    "{what} executor peer did not compile: {} [{:?}]",
-                    d.message,
-                    d.code
-                )
-            })?;
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec![event_kind.to_string()],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    match cdz_run::run_with_peers(&consumer, &peers, &opts)? {
-        cdz_run::Outcome::Value(s) => s
-            .parse::<i64>()
-            .map_err(|_| anyhow!("{what} executor returned a non-integer result: {s:?}")),
-        cdz_run::Outcome::Trap(t) => Err(anyhow!("{what} run trapped: {t}")),
+/// A single-session kernel instance: the authoritative log plus the derived KV and the id counter.
+/// The reducer/executor/authorizer are supplied per operation so the same log can be replayed under a
+/// pinned reducer (the §16c-S3 "replay under the version that wrote it" discipline).
+pub struct Session {
+    log: Vec<Event>,
+    kv: Kv,
+    /// Next effect id to assign. Monotonic within the session (§16c-S4). Derived from the log on
+    /// replay so it never collides after recovery.
+    next_effect_id: u64,
+    /// Effect ids that have a *terminal* outcome recorded (Ok/Err/TimedOut). Used to enforce
+    /// timeout-cancels: a late result for a settled id is dropped (§16c-S4).
+    settled: BTreeSet<u64>,
+    /// Effect ids that have been dispatched but not yet settled — the crash-recovery obligation set
+    /// (§16c-S1). Populated during replay; drained as results/timeouts fold in.
+    open: BTreeSet<u64>,
+    /// Armed-but-unfired timers: effect id → ABSOLUTE deadline in wall-clock ms (§9c/§16c-S5). The
+    /// absolute anchor (not a duration) is what lets a recovered/migrated session compute remaining
+    /// time. Rebuilt from `TimerArmed` events on replay; drained when the timer fires. The kernel — not
+    /// an executor — injects `TimerFired` once `now_ms` reaches the deadline (see `fire_due_timers`).
+    armed_timers: BTreeMap<u64, u64>,
+}
+
+impl Session {
+    /// Start a fresh session with a genesis event naming the reducer. The genesis is the first log
+    /// entry; nothing is folded yet (genesis carries no effects).
+    pub fn genesis(reducer: Hash) -> Self {
+        let mut s = Session {
+            log: Vec::new(),
+            kv: Kv::new(),
+            next_effect_id: 0,
+            settled: BTreeSet::new(),
+            open: BTreeSet::new(),
+            armed_timers: BTreeMap::new(),
+        };
+        s.log.push(Event {
+            seq: 0,
+            cause: None,
+            body: EventBody::Genesis { reducer },
+        });
+        s
     }
-}
 
-/// Run one interpret turn (K1): compile interpret as a provider, compose with the counting executor, and
-/// return the number of host-ops interpret scheduled (the executor's `List.len` over the crossed list) — the
-/// whole compile → provide → peer-execute → consume-the-crossed-list spine, end to end.
-pub fn run_interpret(
-    interpret_src: &str,
-    event_kind: i64,
-    runtime: Vec<u8>,
-) -> Result<InterpretRun> {
-    let op_count = run_with_executor(interpret_src, &executor_src(), "count", event_kind, runtime)?;
-    Ok(InterpretRun { op_count })
-}
+    pub fn kv(&self) -> &Kv {
+        &self.kv
+    }
 
-/// Run one interpret turn with the K1b DISPATCHING executor: it folds the crossed `(List HostOp)` and
-/// dispatches each op by variant, returning the summed per-op cost — proof the executor WALKED the crossed
-/// list + matched each element's variant over the shared runtime.
-pub fn run_interpret_dispatched(
-    interpret_src: &str,
-    event_kind: i64,
-    runtime: Vec<u8>,
-) -> Result<i64> {
-    run_with_executor(
-        interpret_src,
-        &dispatch_executor_src(),
-        "dispatch",
-        event_kind,
-        runtime,
-    )
-}
+    pub fn log(&self) -> &[Event] {
+        &self.log
+    }
 
-/// Run one interpret turn with the K1c PERFORMING executor: each op fires a real `Prim.run` PERFORM and the
-/// fold sums the PER-OP RESULTS (each perform returns its own value — the real exec/http/log shape, NOT a
-/// threaded handler-state counter). Returns that sum — proof each op fired a real effect AND its result came
-/// back through the cross-fn fold. (v-effects confirmed per-op-result folds today; the handler-state-counter
-/// variant is a separate QUEUED miscompile, not needed here. Fetch-plan-outside-host structure per K1c doc.)
-pub fn run_interpret_performing(
-    interpret_src: &str,
-    event_kind: i64,
-    runtime: Vec<u8>,
-) -> Result<i64> {
-    run_with_executor(
-        interpret_src,
-        &performing_executor_src(),
-        "perform",
-        event_kind,
-        runtime,
-    )
-}
+    /// The current snapshot descriptor (§4): the free per-event checkpoint.
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            seq: self.log.last().map(|e| e.seq).unwrap_or(0),
+            kv_root: self.kv.root_hash(),
+            reducer: self.reducer_hash(),
+        }
+    }
 
-/// Run one interpret turn with the K1c-HOSTED executor: `interpret` stays a PROVIDER peer, but each op's
-/// `Prim.exec`/`Prim.http`/`Prim.append` is answered by a REAL host closure `prim` (exec/http/log), composed
-/// via [`cdz_run::run_with_peers_hosted`] (peer + host bindings together). `prim` is called with `(op_name,
-/// payload)` for each performed op and returns that primitive's scalar result; the fold sums them. This is the
-/// real-primitive counterpart of [`run_interpret_performing`] (which mocks `Prim` in-program). Returns the sum.
-/// `prim` is the ONLY non-Cadenza surface — bind it to the actual broad primitives (a daemon passes a closure
-/// dispatching `op_name` → exec/http/log + recording each as a log event, like `fold::drive_one_turn`).
-pub fn run_interpret_hosted<P>(
-    interpret_src: &str,
-    event_kind: i64,
-    runtime: Vec<u8>,
-    prim: P,
-) -> Result<i64>
-where
-    P: Fn(&str, String) -> i64 + Send + Sync + Clone + 'static,
-{
-    let provider = compile_interpret_provider(interpret_src)?;
-    let peers = vec![cdz_run::Peer {
-        bytes: provider,
-        interface: KERNEL_IFACE.to_string(),
-    }];
-    let executor = hosted_executor_src();
-    let executor_arenas = cadenza_syntax::sexpr::read(&executor)
-        .map_err(|e| anyhow!("hosted executor source did not parse: {e:?}"))?;
-    let consumer =
-        rcdzc::compile::compile_component(&cadenza_syntax::codec::encode(&executor_arenas))
-            .map_err(|d| {
-                anyhow!(
-                    "hosted executor peer did not compile: {} [{:?}]",
-                    d.message,
-                    d.code
-                )
-            })?;
-    let opts = cdz_run::RunOpts {
-        export: Some("main".to_string()),
-        args: vec![event_kind.to_string()],
-        runtime: Some(runtime),
-        runtime_cache_dir: None,
-        host_responses: Vec::new(),
-    };
-    // Bind each Prim op to the real closure — one HostOpBinding per op (each `String -> Int64`), all
-    // dispatching to `prim` tagged with the op name. This is option (b): one host op per kind, no new
-    // cdz-run HostOp shape (each is a `StringToScalar`).
-    let bindings = ["exec", "http", "append"]
-        .into_iter()
-        .map(|op| {
-            let prim = prim.clone();
-            let op_name = op.to_string();
-            cdz_run::HostOpBinding {
-                iface: PRIM_IFACE.to_string(),
-                op: op.to_string(),
-                host: cdz_run::HostOp::StringToScalar(Box::new(move |payload| {
-                    prim(&op_name, payload)
-                })),
+    /// The reducer this session was created with (from genesis). Panics only on a malformed log with
+    /// no genesis, which `genesis()` makes impossible to construct.
+    fn reducer_hash(&self) -> Hash {
+        match self.log.first().map(|e| &e.body) {
+            Some(EventBody::Genesis { reducer }) => *reducer,
+            _ => Hash::of(b""),
+        }
+    }
+
+    /// The count of dispatched-but-unsettled effects — the anti-stuck / recovery signal (§4b tier-2).
+    pub fn open_effects(&self) -> usize {
+        self.open.len()
+    }
+
+    /// Deliver an inbound event and run the fold→dispatch cycle to quiescence: fold the event, perform
+    /// each requested (and authorized) effect, fold its result, repeat until no new effects. This is
+    /// the reactive step (§9d): appending the inbound event is what drives the reducer.
+    pub fn deliver(
+        &mut self,
+        body: EventBody,
+        cause: Option<Hash>,
+        reducer: &dyn Reducer,
+        authz: &Authorizer,
+        executor: &mut dyn Executor,
+    ) -> Result<(), KernelError> {
+        self.append(body, cause);
+        self.drive(reducer, authz, executor);
+        Ok(())
+    }
+
+    /// Fire every armed timer whose absolute deadline has passed `now_ms`, injecting a `TimerFired`
+    /// (§9c) and driving the reducer for each — the kernel, not an executor, is what wakes a timer. The
+    /// driver calls this with the current wall clock (e.g. on a scheduler tick); the reducer stays
+    /// clock-free because it only ever sees the recorded `fired_ms`. Returns how many fired.
+    ///
+    /// Determinism (§9c): the FIRED time recorded is the timer's own `deadline_ms`, not `now_ms` — so a
+    /// timer that fires 5ms or 5s late still records the same frozen fact, and replay reconstructs
+    /// identically regardless of when `fire_due_timers` happened to run. Fires in deadline order so a
+    /// batch of overdue timers wakes the reducer oldest-first.
+    pub fn fire_due_timers(
+        &mut self,
+        now_ms: u64,
+        reducer: &dyn Reducer,
+        authz: &Authorizer,
+        executor: &mut dyn Executor,
+    ) -> usize {
+        // Collect due (id, deadline) in deadline order; drain from the table happens in `append` when
+        // the `TimerFired` lands.
+        let mut due: Vec<(u64, u64)> = self
+            .armed_timers
+            .iter()
+            .filter(|(_, &deadline)| deadline <= now_ms)
+            .map(|(&id, &deadline)| (deadline, id))
+            .collect();
+        due.sort_unstable();
+        for (deadline, id) in &due {
+            self.append(
+                EventBody::TimerFired {
+                    id: EffectId(*id),
+                    fired_ms: *deadline,
+                },
+                None,
+            );
+            // Firing wakes the reducer (a timer is a reactive trigger, §9d) — drive to quiescence,
+            // which may itself arm more timers or dispatch effects.
+            self.drive(reducer, authz, executor);
+        }
+        due.len()
+    }
+
+    /// Absolute deadlines of the currently armed-but-unfired timers (§16c-S5), for the driver's
+    /// scheduler (it sleeps until the earliest) and for tests.
+    pub fn next_timer_deadline(&self) -> Option<u64> {
+        self.armed_timers.values().copied().min()
+    }
+
+    /// Append one event to the authoritative log at the next sequence, folding it into KV. Does NOT
+    /// perform effects — that's `drive`. Returns the appended event's hash (for `cause` linking).
+    /// Append is INFALLIBLE in v0: pushing onto the in-memory log cannot fail, so it returns the new
+    /// event's `Hash` directly (no `Result` to `let _ =`-swallow — the review flagged that pattern as a
+    /// latent trap for when persistence lands). Wiring durable-append error handling INTO this path is a
+    /// deliberate later slice; until then the type says what's true: it can't fail.
+    fn append(&mut self, body: EventBody, cause: Option<Hash>) -> Hash {
+        // Maintain the open/settled sets and the armed-timer table as obligations are created and
+        // discharged (§16c-S1/S4/S5).
+        match &body {
+            EventBody::Dispatched { id, .. } => {
+                self.open.insert(id.0);
             }
-        })
-        .collect();
-    match cdz_run::run_with_peers_hosted(&consumer, &peers, &opts, bindings)? {
-        cdz_run::Outcome::Value(s) => s
-            .parse::<i64>()
-            .map_err(|_| anyhow!("hosted executor returned a non-integer result: {s:?}")),
-        cdz_run::Outcome::Trap(t) => Err(anyhow!("hosted run trapped: {t}")),
+            EventBody::TimerArmed { id, deadline_ms } => {
+                self.open.insert(id.0);
+                self.armed_timers.insert(id.0, *deadline_ms);
+            }
+            EventBody::EffectResult { id, .. } => {
+                self.open.remove(&id.0);
+                self.settled.insert(id.0);
+            }
+            EventBody::TimerFired { id, .. } => {
+                self.open.remove(&id.0);
+                self.armed_timers.remove(&id.0);
+                self.settled.insert(id.0);
+            }
+            _ => {}
+        }
+        let seq = self.log.len() as u64;
+        let event = Event { seq, cause, body };
+        let hash = event.hash();
+        self.log.push(event);
+        hash
     }
-}
 
-/// Resolve the value-heap runtime wasm the compiled provider requires, from the content-addressed store on
-/// some ancestor of `start`. Returns `None` if no ancestor store holds it (a runtime bump can stale it — the
-/// caller then skips). Reuses the same walk as [`crate::fold::find_runtime`] but resolves the hash the
-/// provider itself declares.
-pub fn find_runtime_for(consumer_or_provider: &[u8], start: &std::path::Path) -> Option<Vec<u8>> {
-    let hash = cdz_run::required_runtime(consumer_or_provider).ok()??.hash;
-    crate::fold::find_runtime(start, &hash)
-}
+    /// Run the reducer over the just-appended tip and process the effects it emits until quiescent.
+    ///
+    /// Causal DAG (§5): every effect is `cause`-linked to the event that unlocked it — the reducer
+    /// output of folding event E is caused by E. So the chain threads
+    /// trigger → dispatch → result → (next dispatch caused by that result) → …, which is exactly the
+    /// provenance audit / blast-radius (§9f) / on-behalf-of (§12f) traversals need.
+    fn drive(&mut self, reducer: &dyn Reducer, authz: &Authorizer, executor: &mut dyn Executor) {
+        // Worklist of (request, cause) — cause is the hash of the event whose fold emitted the request.
+        // The initial batch is caused by the just-appended tip.
+        let trigger = self.tip_hash();
+        let mut to_process = self.fold_tip(reducer, trigger);
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+        while let Some((req, cause)) = to_process.pop() {
+            let id = EffectId(self.next_effect_id);
+            self.next_effect_id += 1;
 
-    /// A minimal interpret provider: kind==1 → a 2-op plan [Append, Exec]; else → 1-op [Noop]. The list is
-    /// branch-built so it ESCAPES as a runtime handle (not const-folded) — the shape v-agent-harness's
-    /// interpret.cdz + v-effects' probe use.
-    const INTERPRET_SRC: &str = "(do \
-        (type HostOp (Append String) (Exec String) (Http String) (Noop Int64)) \
-        (def (interpret (: kind Int64) (: turn Int64)) \
-          (if (= kind 1) (list (Append \"ack\") (Exec \"handle\")) (list (Noop 0)))) \
-        (export interpret))";
+            // SEC-F1: authorize against the resolved target, not just the kind. The denial is caused
+            // by the event that requested the effect.
+            if let Err(reason) = authz.authorize(&req) {
+                self.append(EventBody::AuthzDenied { id, reason }, Some(cause));
+                // Denied effect never reaches an executor; folding the denial may prompt the reducer to
+                // recover (handled on the next inbound; v0 doesn't re-fold denials into `drive`).
+                continue;
+            }
 
-    /// Locate the built `rcdzc.wasm` (wasm32-wasip1 artifact). Returns None if not built (test skips).
-    #[cfg(feature = "wasm-compiler")]
-    fn find_rcdzc_wasm() -> Option<Vec<u8>> {
-        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()?
-            .join("rcdzc-wasm/target/wasm32-wasip1");
-        for profile in ["debug", "release"] {
-            let p = base.join(profile).join("rcdzc_wasm.wasm");
-            if let Ok(bytes) = std::fs::read(&p) {
-                return Some(bytes);
+            // Timers are NOT executor calls (§9c): a `Timer` effect arms a deadline the KERNEL fires
+            // later (`fire_due_timers`), keeping the reducer clock-free. Its target is the absolute
+            // wall-clock deadline in ms (§16c-S5). Arm it (an open obligation) and move on — no
+            // executor, no synchronous result.
+            if req.kind == EffectKind::Timer {
+                match req.target.parse::<u64>() {
+                    Ok(deadline_ms) => {
+                        self.append(EventBody::TimerArmed { id, deadline_ms }, Some(cause));
+                    }
+                    Err(_) => {
+                        // A malformed deadline is a request error, surfaced like a denial (audit) rather
+                        // than panicking (totality, §17). It settles the id so nothing waits on it.
+                        self.append(
+                            EventBody::AuthzDenied {
+                                id,
+                                reason: format!("timer deadline not a u64 ms: {:?}", req.target),
+                            },
+                            Some(cause),
+                        );
+                    }
+                }
+                continue;
+            }
+
+            let idempotency_key = idempotency_key_for(id, &req);
+
+            // S1: append the DURABLE dispatch record BEFORE routing to the executor. Caused by the
+            // requesting event; its result (below) is in turn caused by the dispatch.
+            let dispatch_hash = self.append(
+                EventBody::Dispatched {
+                    id,
+                    kind: req.kind.clone(),
+                    target: req.target.clone(),
+                    idempotency_key,
+                    deadline_ms: None,
+                },
+                Some(cause),
+            );
+
+            // Route + execute. (In v0 this is synchronous; the async path preserves the ordering: the
+            // Dispatched record is already durable, so a crash here recovers via replay.)
+            let outcome = executor.perform(&req, idempotency_key);
+
+            // Fold the result back (S4: correlated by id), caused by its dispatch. Any further effects
+            // the reducer emits when it folds the result are caused by the RESULT event (the new tip).
+            let more = self.record_result(id, outcome, reducer, dispatch_hash);
+            for pair in more {
+                to_process.push(pair);
             }
         }
-        None
     }
 
-    #[cfg(feature = "wasm-compiler")]
-    #[test]
-    fn provider_via_wasm_matches_native_at_the_kernel_api() {
-        // The kernel-API wasm-swap (operator #54): compile_interpret_provider_via_wasm produces a BYTE-IDENTICAL
-        // provider to the native compile_interpret_provider for the same source — so a caller can swap the
-        // kernel's compile path (native ↔ wasm) with no downstream change. Skips if rcdzc.wasm isn't built or
-        // predates the compile_named export (older artifact → missing-export error).
-        let Some(rcdzc_wasm) = find_rcdzc_wasm() else {
-            eprintln!("[kernel] rcdzc.wasm not built; skipping provider_via_wasm differential");
-            return;
+    /// Fold the current tip event through the reducer, applying its KV writes and returning its
+    /// requested effects each paired with `cause` (the tip's hash — what unlocked them). Reversed so a
+    /// `pop`-driven worklist yields them in emission order.
+    fn fold_tip(&mut self, reducer: &dyn Reducer, cause: Hash) -> Vec<(EffectRequest, Hash)> {
+        let tip = self.log.last().expect("log always has genesis").clone();
+        let out = reducer.fold(&tip, &mut self.kv);
+        let mut v: Vec<(EffectRequest, Hash)> =
+            out.effects.into_iter().map(|r| (r, cause)).collect();
+        v.reverse();
+        v
+    }
+
+    /// Record an effect result, honoring timeout-cancels (§16c-S4): a result for an already-settled id
+    /// is dropped. The result event is `cause`-linked to its dispatch (`dispatch_hash`), and any
+    /// further effects the reducer emits folding the result are caused by the result event itself.
+    fn record_result(
+        &mut self,
+        id: EffectId,
+        outcome: EffectOutcome,
+        reducer: &dyn Reducer,
+        dispatch_hash: Hash,
+    ) -> Vec<(EffectRequest, Hash)> {
+        if self.settled.contains(&id.0) {
+            // Already settled (e.g. timed out earlier) — drop the late result. No double-resume.
+            return Vec::new();
+        }
+        let result_hash = self.append(
+            EventBody::EffectResult {
+                id,
+                result: outcome,
+            },
+            Some(dispatch_hash),
+        );
+        self.fold_tip(reducer, result_hash)
+    }
+
+    /// Hash of the current tip (last log event) — the `cause` for effects its fold emits.
+    fn tip_hash(&self) -> Hash {
+        self.log.last().expect("log always has genesis").hash()
+    }
+
+    /// Replay a log to reconstruct KV + counters + the open-obligation set (§16c-S1 recovery). This is
+    /// the recovery path: given a persisted log, rebuild derived state deterministically. Effects are
+    /// NOT re-executed during replay (§17) — only their recorded results are re-folded.
+    pub fn replay(log: Vec<Event>, reducer: &dyn Reducer) -> Result<Session, KernelError> {
+        match log.first().map(|e| &e.body) {
+            Some(EventBody::Genesis { .. }) => {}
+            _ => return Err(KernelError::MissingGenesis),
+        }
+        let mut s = Session {
+            log: Vec::new(),
+            kv: Kv::new(),
+            next_effect_id: 0,
+            settled: BTreeSet::new(),
+            open: BTreeSet::new(),
+            armed_timers: BTreeMap::new(),
         };
-        let via_wasm = match compile_interpret_provider_via_wasm(&rcdzc_wasm, INTERPRET_SRC) {
-            Ok(bytes) => bytes,
-            Err(e) if format!("{e:#}").contains("compile_named` export") => {
-                eprintln!("[kernel] rcdzc.wasm predates compile_named; skipping");
-                return;
+        for (i, event) in log.into_iter().enumerate() {
+            if event.seq != i as u64 {
+                return Err(KernelError::NonContiguousSeq {
+                    expected: i as u64,
+                    got: event.seq,
+                });
             }
-            Err(e) => panic!("compile the interpret provider via wasm: {e:#}"),
-        };
-        let native = compile_interpret_provider(INTERPRET_SRC).expect("native provider compile");
-        assert_eq!(
-            via_wasm, native,
-            "the kernel-API wasm-swap produces the SAME provider as native (faithful, drop-in)"
-        );
-    }
-
-    #[test]
-    fn the_interpret_provider_compiles_as_a_provider() {
-        // The live-compilation step alone: a valid interpret source compiles to a provider component. (No
-        // runtime needed — compilation is store-independent; running is what needs the runtime.)
-        let provider = compile_interpret_provider(INTERPRET_SRC)
-            .expect("a valid interpret source compiles to a provider");
-        assert!(!provider.is_empty(), "the provider component has bytes");
-        // It imports the value-heap runtime (its (List HostOp) result is a heap handle) — proves it is a real
-        // heap program, not a const-folded scalar.
-        assert!(
-            cdz_run::required_runtime(&provider)
-                .ok()
-                .flatten()
-                .is_some(),
-            "the interpret provider imports the value-heap runtime (builds a heap list)"
-        );
-    }
-
-    #[test]
-    fn a_malformed_interpret_source_is_a_loud_compile_error() {
-        assert!(
-            compile_interpret_provider("(do (def (interpret").is_err(),
-            "a malformed interpret source fails loudly, not silently"
-        );
-    }
-
-    #[test]
-    fn the_kernel_runs_interpret_end_to_end_and_counts_the_scheduled_ops() {
-        // The full K1 spine: compile interpret as a provider → compose with the executor peer → run → the
-        // executor consumes the crossed (List HostOp) handle. kind=1 → [Append, Exec] → op_count 2.
-        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let provider = match compile_interpret_provider(INTERPRET_SRC) {
-            Ok(p) => p,
-            Err(e) => panic!("interpret compiles: {e}"),
-        };
-        let Some(runtime) = find_runtime_for(&provider, store_root) else {
-            eprintln!("[cdz-kernel::kernel] value-heap runtime not in any ancestor store (run `cargo xtask build`) or stale; skipping the run");
-            return;
-        };
-        let run = run_interpret(INTERPRET_SRC, 1, runtime.clone())
-            .expect("the kernel runs interpret end-to-end");
-        assert_eq!(
-            run.op_count, 2,
-            "kind=1 schedules [Append, Exec] → the executor reads the crossed list's length = 2"
-        );
-        // A non-message event → the single-Noop plan → op_count 1.
-        let run0 = run_interpret(INTERPRET_SRC, 9, runtime)
-            .expect("the kernel runs interpret for a non-message event");
-        assert_eq!(run0.op_count, 1, "kind=9 → [Noop] → len 1");
-    }
-
-    #[test]
-    fn the_dispatch_executor_walks_the_list_and_matches_each_op_variant() {
-        // K1b: the executor FOLDS the crossed (List HostOp) and dispatches EACH op by variant (Append→1,
-        // Exec→10, Http→100, Noop→0). kind=1 → [Append, Exec] → 1 + 10 = 11 (proves it walked BOTH elements
-        // AND matched each variant, not just counted). kind=9 → [Noop] → 0.
-        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let Some(runtime) = compile_interpret_provider(INTERPRET_SRC)
-            .ok()
-            .and_then(|p| find_runtime_for(&p, store_root))
-        else {
-            eprintln!(
-                "[cdz-kernel::kernel] value-heap runtime absent/stale; skipping the dispatch run"
-            );
-            return;
-        };
-        let cost = run_interpret_dispatched(INTERPRET_SRC, 1, runtime.clone())
-            .expect("the dispatch executor runs end-to-end");
-        assert_eq!(
-            cost, 11,
-            "kind=1 → [Append(1), Exec(10)] → the executor matched each variant + summed = 11"
-        );
-        let cost0 = run_interpret_dispatched(INTERPRET_SRC, 9, runtime)
-            .expect("the dispatch executor runs for a non-message event");
-        assert_eq!(cost0, 0, "kind=9 → [Noop(0)] → 0");
-    }
-
-    #[test]
-    fn the_performing_executor_fires_a_real_effect_per_op_and_sums_results() {
-        // K1c: each op fires a real `Prim.run` PERFORM; the fold sums the PER-OP RESULTS (each perform returns
-        // its tag — the real exec/http/log per-call-result shape, not a threaded counter). kind=1 → [Append(1),
-        // Exec(2)] → 1+2 = 3 (proves both ops performed AND their results came back through the cross-fn fold);
-        // kind=9 → [Noop(0)] → 0. A dropped perform or lost result would mis-sum.
-        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let Some(runtime) = compile_interpret_provider(INTERPRET_SRC)
-            .ok()
-            .and_then(|p| find_runtime_for(&p, store_root))
-        else {
-            eprintln!(
-                "[cdz-kernel::kernel] value-heap runtime absent/stale; skipping the perform run"
-            );
-            return;
-        };
-        let sum = run_interpret_performing(INTERPRET_SRC, 1, runtime.clone())
-            .expect("the performing executor runs end-to-end");
-        assert_eq!(
-            sum, 3,
-            "kind=1 → [Append(1), Exec(2)] → each op performed + its result summed = 3"
-        );
-        let sum0 = run_interpret_performing(INTERPRET_SRC, 9, runtime)
-            .expect("the performing executor runs for a non-message event");
-        assert_eq!(sum0, 0, "kind=9 → [Noop(0)] → 0");
-    }
-
-    #[test]
-    fn the_hosted_executor_answers_prim_with_a_real_host_closure_per_op() {
-        // K1c-HOSTED (the real-Prim slice): `interpret` stays a PROVIDER peer, but each op's Prim.exec/http/
-        // append is answered by a REAL HOST CLOSURE (composed via run_with_peers_hosted — a PEER and a HOST
-        // binding TOGETHER, which is the whole point of the new runner). The closure returns a distinct value
-        // per op (exec→2, http→3, append→1) AND records the (op, payload) it saw. kind=1 → [Append "ack",
-        // Exec "handle"] → the host is called append("ack")→1 + exec("handle")→2 → sum 3, and we assert it
-        // received BOTH the right op names AND the right payloads (proves the String payload crossed as a rope
-        // to the host, not just a count). This is the peer-AND-host-together gate v-peer-linking required.
-        use std::sync::{Arc, Mutex};
-        let store_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let Some(runtime) = compile_interpret_provider(INTERPRET_SRC)
-            .ok()
-            .and_then(|p| find_runtime_for(&p, store_root))
-        else {
-            eprintln!(
-                "[cdz-kernel::kernel] value-heap runtime absent/stale; skipping the hosted run"
-            );
-            return;
-        };
-        // The real host primitive: records each (op, payload) and returns a per-op scalar result.
-        let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
-        let prim = {
-            let calls = Arc::clone(&calls);
-            move |op: &str, payload: String| -> i64 {
-                calls.lock().unwrap().push((op.to_string(), payload));
-                match op {
-                    "exec" => 2,
-                    "http" => 3,
-                    "append" => 1,
-                    _ => 0,
+            // Reconstruct the obligation sets + armed-timer table + id counter from the log (§16c-S1/S5).
+            match &event.body {
+                EventBody::Dispatched { id, .. } => {
+                    s.open.insert(id.0);
+                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
                 }
+                EventBody::TimerArmed { id, deadline_ms } => {
+                    s.open.insert(id.0);
+                    s.armed_timers.insert(id.0, *deadline_ms);
+                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
+                }
+                EventBody::EffectResult { id, .. } => {
+                    s.open.remove(&id.0);
+                    s.settled.insert(id.0);
+                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
+                }
+                EventBody::TimerFired { id, .. } => {
+                    s.open.remove(&id.0);
+                    s.armed_timers.remove(&id.0);
+                    s.settled.insert(id.0);
+                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
+                }
+                EventBody::AuthzDenied { id, .. } => {
+                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
+                }
+                _ => {}
             }
-        };
-        let sum = run_interpret_hosted(INTERPRET_SRC, 1, runtime, prim)
-            .expect("the hosted executor runs interpret-as-peer + Prim-as-host-closure end-to-end");
-        assert_eq!(
-            sum, 3,
-            "kind=1 → append(\"ack\")→1 + exec(\"handle\")→2, summed by the fold = 3"
-        );
-        // The host closure saw BOTH ops IN ORDER with their real String payloads (crossed as ropes).
-        let seen = calls.lock().unwrap().clone();
-        assert_eq!(
-            seen,
-            vec![
-                ("append".to_string(), "ack".to_string()),
-                ("exec".to_string(), "handle".to_string()),
-            ],
-            "the real host primitive was called per op with the op's String payload, in list order"
-        );
+            // Re-fold non-genesis events to rebuild KV (effects emitted during replay are IGNORED —
+            // their results are already in the log; §17 "replay re-folds with no live effect").
+            if !matches!(event.body, EventBody::Genesis { .. }) {
+                let _ = reducer.fold(&event, &mut s.kv);
+            }
+            s.log.push(event);
+        }
+        Ok(s)
     }
+
+    /// The set of open (dispatched-but-unsettled) effect ids after recovery — what a driver must
+    /// re-drive or time out (§16c-S1). Exposed for the recovery driver + tests.
+    pub fn open_effect_ids(&self) -> Vec<EffectId> {
+        self.open.iter().map(|n| EffectId(*n)).collect()
+    }
+
+    /// Boot a session from a persisted log on disk — the real recovery entry point (§16c-S1). Reads
+    /// the durable log via [`crate::log_store::LogStore::recover`] and folds it through [`Session::replay`]
+    /// to reconstruct KV + the open-obligation set, returning the session together with a
+    /// [`RecoveryReport`] telling the driver what it must act on:
+    ///
+    /// - `torn_tail` — the log ended in an interrupted final write (benign — the crash point); the
+    ///   session is recovered to the last *whole* event before it.
+    /// - `open_effects` — dispatched-but-unsettled effects the driver must re-drive (by their stable
+    ///   idempotency key, so re-drive dedups rather than double-fires) or time out.
+    ///
+    /// An empty log (no file yet) is NOT recoverable as a session — the caller must `genesis()` a new
+    /// one. That case is reported as [`RecoverError::EmptyLog`] so it's an explicit branch, not a
+    /// silent empty session.
+    pub fn recover(
+        path: impl AsRef<std::path::Path>,
+        reducer: &dyn Reducer,
+    ) -> Result<(Session, RecoveryReport), RecoverError> {
+        let recovered = crate::log_store::LogStore::recover(path).map_err(RecoverError::Io)?;
+        if recovered.events.is_empty() {
+            return Err(RecoverError::EmptyLog);
+        }
+        let session = Session::replay(recovered.events, reducer).map_err(RecoverError::Replay)?;
+        let report = RecoveryReport {
+            torn_tail: recovered.torn_tail,
+            open_effects: session.open_effect_ids(),
+        };
+        Ok((session, report))
+    }
+}
+
+/// What [`Session::recover`] found that the driver must act on after booting from disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryReport {
+    /// The log ended in a torn (interrupted) final write — the crash point. Benign; the recovered
+    /// session stops at the last whole event.
+    pub torn_tail: bool,
+    /// Dispatched-but-unsettled effects (§16c-S1) the driver must re-drive by idempotency key or time
+    /// out. Empty = the session crashed at a clean quiescent boundary, nothing in flight.
+    pub open_effects: Vec<EffectId>,
+}
+
+/// Failure booting a session from a persisted log.
+#[derive(Debug)]
+pub enum RecoverError {
+    /// The log file couldn't be read.
+    Io(std::io::Error),
+    /// The log had no events (missing/empty file) — caller must `genesis()` a fresh session instead.
+    EmptyLog,
+    /// The recovered events didn't form a valid session log (no genesis / non-contiguous seq).
+    Replay(KernelError),
+}
+
+/// A snapshot descriptor: `(seq, kv_root, reducer)` — the free per-event checkpoint (§4). A snapshot is
+/// valid to fast-forward from only under a matching reducer (§7); v0 records the reducer so that check
+/// is possible even though v0 doesn't yet prune history.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Snapshot {
+    pub seq: u64,
+    pub kv_root: Hash,
+    pub reducer: Hash,
+}
+
+/// Derive a dispatch's idempotency key (§16c-S1). For v0 it's the hash of `(id, kind, target)` — stable
+/// across a re-drive of the *same* dispatch, distinct across different effects. A real side-effecting
+/// executor dedups on this so a crash-recovery re-drive doesn't double-apply.
+fn idempotency_key_for(id: EffectId, req: &EffectRequest) -> Hash {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&id.0.to_le_bytes());
+    buf.push(match req.kind {
+        EffectKind::Shell => 0,
+        EffectKind::Http => 1,
+        EffectKind::Model => 2,
+        EffectKind::Now => 3,
+        EffectKind::Timer => 4,
+        EffectKind::Emit => 5,
+    });
+    buf.extend_from_slice(req.target.as_bytes());
+    Hash::of(&buf)
 }

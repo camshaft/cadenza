@@ -3799,7 +3799,6 @@ fn check(paths: &Paths, profile: &str) {
     for suite in [
         "implementation/cad",
         "implementation/compiler-ml",
-        "implementation/agent-harness",
         "implementation/iterators",
         "implementation/choreography",
         "implementation/music",

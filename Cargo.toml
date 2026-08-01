@@ -36,19 +36,12 @@ exclude = [
     # (nothing in the seed depends on it), built + tested on demand by a dedicated CI job. It builds
     # standalone (`cargo build`/`cargo test` from its own dir), with its own `[workspace]` table.
     "implementation/seed/crates/cdz-cad",
-    # `cdz-agent` (the native agent-harness embedder, v-agent-harness Inc-1b) is excluded because its
-    # `bedrock` feature pulls the heavy async `aws-sdk-bedrockruntime` + `tokio` dependency tree — which
-    # a plain `cargo build --workspace` and the corpus gate must never pay. It is a leaf crate (nothing
-    # in the seed depends on it) that path-deps `cdz-run` (an excluded crate may depend on a member, as
-    # cdz-smith does with rcdzc). Builds + tests standalone (`cargo test` from its own dir, mock-only by
-    # default — no AWS creds/network); a dedicated CI job runs it. Has its own `[workspace]` table.
-    "implementation/seed/crates/cdz-agent",
-    # `cdz-kernel` (the log-native agent-runtime microkernel, v-agent-harness agent-runtime L1) is excluded
-    # for the same reason as cdz-agent: its future `aws` feature (L1d, the DynamoDB log backend) pulls the
-    # heavy async aws-sdk + tokio tree the seed's `--workspace` build + corpus gate must never pay. It is a
-    # leaf crate with its own `[workspace]` table; the default build (file-backed log, no network) builds +
-    # tests standalone, run by a dedicated CI job. Excluded up front so later rungs drop in without a
-    # workspace-topology change.
+    # `cdz-kernel` (the v2 agent-harness kernel, v-agent-harness — design/agent-harness-kernel.md) is
+    # excluded because it will grow a heavy async/wasmtime tree (the reducer host + effect executors) the
+    # seed's `--workspace` build + corpus gate must never pay. It is a leaf crate (nothing in the seed
+    # depends on it) with its own `[workspace]` table; the v0 build (blake3-only, in-memory + file-backed
+    # log, no network) builds + tests standalone, run by a dedicated CI job. Excluded up front so later
+    # slices drop in without a workspace-topology change.
     "implementation/seed/crates/cdz-kernel",
     # `rcdzc-wasm` (the Cadenza compiler as a WASM artifact, v-agent-runtime minimal-kernel K1-dep wasm-swap)
     # is excluded because it ONLY builds for a wasm target (`cargo build --target wasm32-wasip1 -p rcdzc-wasm`),
