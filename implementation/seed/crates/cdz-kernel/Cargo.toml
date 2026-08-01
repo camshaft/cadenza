@@ -47,6 +47,12 @@ cadenza-ast = { path = "../cadenza-ast" }
 # events to the shared AST (event_ast.rs). Same major cadenza-ast pins (0.4), so Cargo unifies to one
 # copy — no duplicate num-bigint in the tree.
 num-bigint = "0.4"
+# url — RFC-3986/WHATWG-compliant URL parser (Servo's) for host_of, which feeds HostIn capability authz
+# (SEC-F1). Operator directive (2026-08-01): STOP hand-rolling the authority parser — a bespoke parser
+# guarding an ALLOW-LIST is the worst place for edge-case bugs (every missed case was an authz BYPASS —
+# Copilot PR#1015/1018 IPv6 literals). `url` parses IPv6/userinfo/ports/normalization correctly, so
+# host_of just calls `.host_str()`; fail-closed is preserved (parse error / no host → deny).
+url = "2"
 # wasmtime — the CORE reactive-wasm engine (component host in wasm_host.rs binds wit/reducer.wit + runs
 # reducer components). Same version + minimal feature set cdz-run uses (runtime + cranelift +
 # component-model), so the whole tree agrees on one wasmtime. NOT optional — it's the kernel's engine.
