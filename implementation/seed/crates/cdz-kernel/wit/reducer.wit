@@ -37,6 +37,12 @@ package cadenza:agent-kernel;
 interface types {
   // A kernel-assigned id for one dispatched effect, unique within a session (§16c-S4). The guest
   // stores its continuation keyed by this and resumes when the result event carrying it arrives.
+  //
+  // The guest does NOT predict this value (PR#1003 #2): the kernel owns id allocation, and cascaded
+  // effects make ids non-contiguous across an `apply` batch. Instead the guest resumes via its OWN
+  // `correlation` token on each `effect-request`, which the kernel echoes back in the result event's
+  // `resumption` — so the guest keys its continuation on something it controls, not on a predicted id.
+  // The `effect-id` is still surfaced (in `resumption`) for host bookkeeping / debugging.
   type effect-id = u64;
 
   // The structured content-type tag (§9b): a HINT the kernel carries opaquely for routing/filtering,
@@ -61,11 +67,20 @@ interface types {
   // An effect the guest wants performed. `target` is the SEC-F1 security-relevant string the host's
   // capability predicate gates (a URL, a command, a session id) — the host authorizes it against the
   // session's resource-scoped capability BEFORE dispatch; this boundary does not self-authorize.
-  // `payload` is opaque bytes (Cadenza binary-sexpr above the wire); empty = no payload.
   record effect-request {
     kind: effect-kind,
     target: string,
-    payload: list<u8>,
+    // Opaque request body (Cadenza binary-sexpr above the wire). `none` = NO payload, distinct from
+    // `some([])` = an intentionally-empty payload (PR#1003 #3 — matches Rust `Option<Payload>`; a bare
+    // `list<u8>` couldn't tell absent from empty).
+    payload: option<list<u8>>,
+    // A guest-chosen correlation token the kernel echoes back on this effect's result event (PR#1003
+    // #2). This is how a guest resumes WITHOUT predicting the kernel-assigned effect-id: it sets a
+    // `correlation` here (e.g. a key into its KV continuation table), and the result/timer event
+    // carries the same token back so the guest looks up what to do. `none` for fire-and-forget effects
+    // the guest won't await. (The `effect-id`/`resumes` mechanism still exists for the host's bookkeeping;
+    // `correlation` is the guest-facing, guest-controlled resume key.)
+    correlation: option<list<u8>>,
   }
 }
 
@@ -87,10 +102,19 @@ interface kv {
 interface fold {
   use types.{effect-request, content-type, effect-id};
 
+  // What a result/timer event carries back so the guest can resume the effect it belongs to (§16c-S4):
+  // the kernel-assigned `id` (for the host's bookkeeping / debugging) AND the guest's own `correlation`
+  // token from the originating effect-request (PR#1003 #2 — the guest-controlled resume key, echoed
+  // verbatim; `none` if the request set none).
+  record resumption {
+    id: effect-id,
+    correlation: option<list<u8>>,
+  }
+
   // Fold ONE event into the KV, returning the effects requested (§3). Called once per event, in log
-  // order. The event is delivered as its opaque payload bytes + the envelope fields the guest needs
-  // to dispatch: which content-type it is, and — for a result/timer event — the effect-id it resumes
-  // (so the guest can look up its KV continuation, §16c-S4). Genesis/setup context arrive as ordinary
+  // order. The event is delivered as its opaque payload bytes + the envelope the guest needs: which
+  // content-type it is, and — for a result/timer event — the `resumption` (id + the guest's own
+  // correlation token) so it can look up its KV continuation. Genesis/setup context arrive as ordinary
   // early `apply` calls (§3 genesis + context-as-events), so there is no separate init export.
   //
   // TOTALITY (§17 "can't-brick"): the guest must not trap for any input — an event it doesn't
@@ -98,11 +122,11 @@ interface fold {
   // failure; the trap→event policy is a host concern, §16c gap A.)
   apply: func(
     content-type: content-type,
-    payload: list<u8>,
-    // Present when this event is the result of a prior effect (EffectResult / TimerFired), so the
-    // guest can correlate it to the continuation it stored under this id (§16c-S4). Absent for
-    // inbound messages / genesis / denials-the-guest-observes.
-    resumes: option<effect-id>,
+    payload: option<list<u8>>,
+    // Present when this event is the result of a prior effect (EffectResult / TimerFired) — carries the
+    // guest's own correlation token back so it can resume WITHOUT having predicted the effect-id.
+    // Absent for inbound messages / genesis / denials-the-guest-observes.
+    resumes: option<resumption>,
   ) -> list<effect-request>;
 }
 

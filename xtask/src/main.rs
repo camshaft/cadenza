@@ -4051,24 +4051,21 @@ fn covered_corpus_files(paths: &Paths) -> Vec<PathBuf> {
 /// disagreement — that defeats the gate. Entries are only ever REMOVED (as fixes land), never added, except
 /// this one-time seed of the 5 the operator signed off on.
 const KNOWN_ML_DIFFS: &[(&str, &str)] = &[
-    // A non-admitted float width in a type-DECL payload isn't validated by ML (runs main→0).
-    (
-        "a non-admitted float width in a type-declaration payload is rejected",
-        "CDZ0302",
-    ),
-    // Ditto for an ill-formed integer width in a type-decl payload (same total-width-validation gap).
-    (
-        "an ill-formed integer width in a type-declaration payload is rejected",
-        "CDZ0302",
-    ),
-    // BURN-DOWN LOG (entries removed as v-compiler-ml lands each reject-path fix; each verified via
-    // `cdz run-ml` to now DECLINE — a fixed gap left allowlisted would silently tolerate a future
-    // REGRESSION of that exact case, so removed the moment its fix lands):
+    // EMPTY = the differential is FULLY STRICT: ANY cadenza-ml ↔ oracle disagreement on a covered case
+    // reds the merge gate, no exceptions (the operator's "if the implementations disagree the gate is
+    // red"). The original 5 seeded WIP reject-path gaps have all been fixed by v-compiler-ml and burned
+    // down (each verified to now DECLINE before removal — a fixed gap left allowlisted would silently
+    // tolerate a future REGRESSION of that exact case):
     //  · CDZ0201 "a conditional with too many operands" — fixed 8dca2509d (batch #114).
-    //  · CDZ0101 "an unbound name in an uncalled sibling definition" — fixed, landed 1d1dd22e2.
-    //  · CDZ0210 "a literal in a let binder is refutable" — fixed, landed fa92fdc0e.
-    // REMAINING: the two CDZ0302 type-decl-payload width checks above (one width-validation fix,
-    // v-compiler-ml next). When it lands, KNOWN_ML_DIFFS is empty → the differential is fully strict.
+    //  · CDZ0101 "an unbound name in an uncalled sibling definition" — fixed 1d1dd22e2.
+    //  · CDZ0210 "a literal in a let binder is refutable" — fixed fa92fdc0e.
+    //  · CDZ0302 "a non-admitted float width in a type-declaration payload" — fixed e9c6d1723.
+    //  · CDZ0302 "an ill-formed integer width in a type-declaration payload" — fixed e9c6d1723.
+    //
+    // TO ADD AN ENTRY (only for a genuinely NEW, tracked WIP gap the fleet has agreed to tolerate while
+    // it's fixed — NOT to silence a surprise): `("<exact case title>", "<oracle CDZ code>")`, then
+    // REMOVE it the moment its fix lands + is verified to decline. It's expected this list re-grows
+    // transiently as new reject-path pins (e.g. breaker's) race their fixes; the empty state is the goal.
 ];
 
 /// Does a disagreement message match a KNOWN_ML_DIFFS allowlist entry? The message shape is
