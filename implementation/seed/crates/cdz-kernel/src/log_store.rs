@@ -1,9 +1,10 @@
 //! Disk-backed durable log — turning "recovery logic exists" into "recovery persists" (§14a, §16c-S1).
 //!
 //! The authoritative session log is append-only (§3). This is its on-disk form: a single file to
-//! which each event is appended, length-framed, using the frozen event codec ([`Event::encode`] /
-//! [`Event::decode`]). Recovery reads the file back into the event vector that [`crate::kernel::Session::replay`]
-//! reconstructs state from.
+//! which each event is appended, length-framed, encoded through the SHARED cadenza-ast canonical codec
+//! ([`crate::event_ast`] over `cadenza_ast::codec`, §19a/§S5 — the language-native wire format, not a
+//! bespoke one). Recovery reads the file back into the event vector that
+//! [`crate::kernel::Session::replay`] reconstructs state from.
 //!
 //! **Durability shape (S1):** append is `write(frame) + flush`, and the durable-dispatch invariant
 //! requires the `Dispatched` frame to be persisted before its effect is routed — so the kernel driver
@@ -16,10 +17,14 @@
 //! instead of refusing to open. A frame that is *complete on disk but internally corrupt* (not just
 //! truncated) is surfaced as an error, since that's real corruption, not an interrupted write.
 //!
-//! Framing: each record is `u32 little-endian length` followed by that many bytes of `Event::encode`
-//! output. The length prefix lets the reader know a frame's extent before trusting its contents.
+//! Framing: each record is `u32 little-endian length` followed by that many bytes of
+//! `event_ast::encode` output. The frame is kept because the shared codec is CONSUME-WHOLE (it decodes
+//! an entire slice, reporting no bytes-consumed), so the frame layer — not the codec — delimits records
+//! in the concatenated stream. The length prefix lets the reader know a frame's extent before trusting
+//! its contents.
 
 use crate::event::Event;
+use crate::event_ast;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -91,7 +96,10 @@ impl LogStore {
     /// The S1 ordering contract lives in the *caller*: append a `Dispatched` event here, and only
     /// after this returns route the effect to an executor.
     pub fn append(&mut self, event: &Event) -> io::Result<()> {
-        let body = event.encode();
+        // Encode through the SHARED cadenza-ast canonical codec (§19a/§S5) — the language-native wire
+        // format, not a bespoke one. The u32 length frame stays (cadenza-ast's decode is consume-whole,
+        // no bytes-consumed — v-syntax confirmed — so the frame layer, not the codec, delimits records).
+        let body = event_ast::encode(event);
         let len = u32::try_from(body.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "event too large to frame"))?;
         // One write of a contiguous buffer (len prefix + body) so a frame is as atomic as the OS
@@ -182,14 +190,17 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
                 good_prefix_len: pos as u64,
             };
         };
-        match Event::decode(body) {
-            // The frame length told us the body's extent; decode must consume exactly that. A frame
-            // that is fully present but doesn't decode (or under/over-consumes) is real corruption.
-            Ok((event, consumed)) if consumed == len => {
+        // The frame is EXACTLY `len` bytes (sliced above), and the shared codec is consume-whole — so a
+        // complete frame either decodes as one whole event or is corrupt. TRUNCATION is caught by the
+        // FRAME layer (a short body → TornTail, above); any decode failure HERE is on a fully-present
+        // frame → genuine corruption (incl. cadenza-ast's own `Truncated`, which inside a complete frame
+        // means the frame's length prefix over-claimed — still corruption, not an interrupted append).
+        match event_ast::decode(body) {
+            Ok(event) => {
                 events.push(event);
                 pos = body_start + len;
             }
-            _ => {
+            Err(_) => {
                 // Complete-but-invalid frame: genuine corruption, not a torn write. `Corrupt` (distinct
                 // from Clean/TornTail) so the driver can alarm / hard-fail rather than mistake data loss
                 // for a clean log end (PR#990 #4). `pos` marks where the good prefix ends (before this

@@ -36,6 +36,17 @@ live-exec = []
 [dependencies]
 # blake3: content-addressing for events, KV nodes, and blobs. Fast, no_std-friendly, stable digest.
 blake3 = "1"
+# cadenza-ast — the shared, spec-pinned canonical binary codec (ast-encoding.md, header `cdzast\x00\x01`)
+# that cadenza-syntax + rcdzc + this kernel all share (v-syntax extracted it as the bottom crate; §19a).
+# The kernel encodes its log events THROUGH this ONE codec so the on-disk log is the language-native
+# wire format, not a bespoke parallel encoding that drifts from the spec. A path dep across the workspace
+# boundary (cdz-kernel is its own workspace); pulls cadenza-ast's tiny dep floor (num-bigint +
+# unicode-normalization). `decode_detailed` gives the torn-vs-corrupt split the log recovery needs (§23).
+cadenza-ast = { path = "../cadenza-ast" }
+# num-bigint: to construct/read `cadenza_ast::ast::Leaf::Int { value: BigInt }` when mapping kernel
+# events to the shared AST (event_ast.rs). Same major cadenza-ast pins (0.4), so Cargo unifies to one
+# copy — no duplicate num-bigint in the tree.
+num-bigint = "0.4"
 # wasmtime — the CORE reactive-wasm engine (component host in wasm_host.rs binds wit/reducer.wit + runs
 # reducer components). Same version + minimal feature set cdz-run uses (runtime + cranelift +
 # component-model), so the whole tree agrees on one wasmtime. NOT optional — it's the kernel's engine.

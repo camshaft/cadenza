@@ -13,74 +13,95 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { CHAPTERS } from "./chapters.ts";
+import { CHAPTERS, pillarOf, type Chapter } from "./chapters.ts";
 
 const here = dirname(fileURLToPath(import.meta.url)); // src/content
 const DIFFERENTIATORS_SECTION = "What makes Cadenza different";
 
-/// The sections, in the order a reader walks them. If a section is renamed or a new one added (e.g. an
-/// "Example applications" capstone), update this list deliberately — that edit IS a narrative decision,
-/// and forcing it through here is the point.
-const SECTION_ORDER = [
-  "Getting started",
-  "Fundamentals",
-  "What makes Cadenza different",
-  "Example applications",
-  "Wrapping up",
-];
+/// Per-pillar section order, in the order a reader walks each pillar. The two pillars are independent
+/// arcs: "Cadenza the Language" is the original tour; "Cadenza the Platform" is the agent-kernel concept
+/// section (grows incrementally). If a section is renamed or added, update the right pillar's list
+/// deliberately — that edit IS a narrative decision, and forcing it through here is the point.
+const SECTION_ORDER: Record<string, string[]> = {
+  language: [
+    "Getting started",
+    "Fundamentals",
+    "What makes Cadenza different",
+    "Example applications",
+    "Wrapping up",
+  ],
+  platform: [
+    "The kernel model",
+  ],
+};
 
-test("every chapter's section is one of the known sections", () => {
-  const known = new Set(SECTION_ORDER);
-  const unknown = CHAPTERS.filter((c) => !known.has(c.section));
+/// Chapters of one pillar, in registry order.
+const inPillar = (pillar: string): Chapter[] => CHAPTERS.filter((c) => pillarOf(c) === pillar);
+
+test("every chapter's section is one of its pillar's known sections", () => {
+  const bad = CHAPTERS.filter((c) => !(SECTION_ORDER[pillarOf(c)] ?? []).includes(c.section));
   assert.equal(
-    unknown.length,
+    bad.length,
     0,
-    `chapter(s) in an unlisted section — add it to SECTION_ORDER on purpose:\n  ${unknown
-      .map((c) => `${c.slug} → ${JSON.stringify(c.section)}`)
+    `chapter(s) in an unlisted section — add it to SECTION_ORDER[pillar] on purpose:\n  ${bad
+      .map((c) => `${c.slug} → ${pillarOf(c)} / ${JSON.stringify(c.section)}`)
       .join("\n  ")}`,
   );
 });
 
-test("each section's chapters are contiguous (a section never gets split by another)", () => {
-  // Record the run of indices where each section appears; a section must occupy exactly one run.
-  const firstSeen = new Map<string, number>();
-  const seenBlocks: string[] = [];
+test("each section's chapters are contiguous (a section never gets split by another), within its pillar", () => {
+  for (const pillar of Object.keys(SECTION_ORDER)) {
+    const chapters = inPillar(pillar);
+    const seenBlocks: string[] = [];
+    chapters.forEach((c) => {
+      if (seenBlocks[seenBlocks.length - 1] !== c.section) seenBlocks.push(c.section);
+    });
+    const counts = new Map<string, number>();
+    for (const s of seenBlocks) counts.set(s, (counts.get(s) ?? 0) + 1);
+    const split = [...counts.entries()].filter(([, n]) => n > 1).map(([s]) => s);
+    assert.equal(
+      split.length,
+      0,
+      `[${pillar}] section(s) split across the registry (chapters of one section are not contiguous): ${split.join(", ")}`,
+    );
+  }
+});
+
+test("sections appear in the intended reading order, within each pillar", () => {
+  for (const [pillar, order] of Object.entries(SECTION_ORDER)) {
+    const chapters = inPillar(pillar);
+    const present = order.filter((s) => chapters.some((c) => c.section === s));
+    const firstIndexOf = (section: string) => chapters.findIndex((c) => c.section === section);
+    const actual = [...present].sort((a, b) => firstIndexOf(a) - firstIndexOf(b));
+    assert.deepEqual(
+      actual,
+      present,
+      `[${pillar}] sections are out of order.\n  expected: ${present.join(" → ")}\n  actual:   ${actual.join(" → ")}`,
+    );
+  }
+});
+
+test("pillars are contiguous and in order (language before platform)", () => {
+  // All of a pillar's chapters must sit together, and the language pillar comes first — the platform
+  // pillar is appended after the whole language tour. A stray platform chapter mid-language (or vice
+  // versa) would scatter the sidebar and break the two-pillar framing.
+  const seq: string[] = [];
   CHAPTERS.forEach((c) => {
-    if (seenBlocks[seenBlocks.length - 1] !== c.section) seenBlocks.push(c.section);
-    if (!firstSeen.has(c.section)) firstSeen.set(c.section, seenBlocks.length - 1);
+    const p = pillarOf(c);
+    if (seq[seq.length - 1] !== p) seq.push(p);
   });
-  // A section is split iff it appears as more than one distinct block.
-  const counts = new Map<string, number>();
-  for (const s of seenBlocks) counts.set(s, (counts.get(s) ?? 0) + 1);
-  const split = [...counts.entries()].filter(([, n]) => n > 1).map(([s]) => s);
-  assert.equal(
-    split.length,
-    0,
-    `section(s) split across the registry (chapters of one section are not contiguous): ${split.join(", ")}`,
-  );
+  assert.deepEqual(seq, ["language", "platform"], `pillars must be contiguous and language-first; got ${seq.join(" → ")}`);
 });
 
-test("sections appear in the intended reading order", () => {
-  // The order sections first appear in the registry must match SECTION_ORDER (subset-tolerant: only
-  // checks the relative order of sections that are present).
-  const present = SECTION_ORDER.filter((s) => CHAPTERS.some((c) => c.section === s));
-  const firstIndexOf = (section: string) => CHAPTERS.findIndex((c) => c.section === section);
-  const actual = [...present].sort((a, b) => firstIndexOf(a) - firstIndexOf(b));
-  assert.deepEqual(
-    actual,
-    present,
-    `sections are out of order.\n  expected: ${present.join(" → ")}\n  actual:   ${actual.join(" → ")}`,
-  );
-});
-
-test("the arc opens on Welcome and closes on Where-to-go-next", () => {
-  // The first and last chapters are load-bearing: the opener sets up the whole tour, the closer recaps
-  // and sends the reader onward. A reorder that displaced either would break the framing.
-  assert.equal(CHAPTERS[0].slug, "welcome", "the first chapter should be the Welcome opener");
+test("the language arc opens on Welcome and closes on Where-to-go-next", () => {
+  // The language pillar's first and last chapters are load-bearing: the opener sets up the tour, the
+  // closer recaps and sends the reader onward. A reorder that displaced either would break the framing.
+  const lang = inPillar("language");
+  assert.equal(lang[0].slug, "welcome", "the first language chapter should be the Welcome opener");
   assert.equal(
-    CHAPTERS[CHAPTERS.length - 1].slug,
+    lang[lang.length - 1].slug,
     "whats-next",
-    "the last chapter should be the Where-to-go-next closer",
+    "the last language chapter should be the Where-to-go-next closer",
   );
 });
 
