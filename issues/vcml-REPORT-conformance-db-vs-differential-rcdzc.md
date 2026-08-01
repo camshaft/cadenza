@@ -54,6 +54,17 @@ conformance DB thing" the operator is questioning. Proposed plan (gated, ties in
 corpus (`default_corpus_files`) so the differential covers the same ground — the ~100 integer cases almost
 certainly are, but verify no case tests something the corpus lacks; if so, add it to the corpus first.
 
+## ✅ COVERAGE AUDIT DONE (2026-08-01) — conformance-db is fully redundant with the shared corpus.
+conformance-db's 69 `c-*` cases test: literal/add/sub/mul/precedence, let (trivial/nested/shadowing),
+if (then/else/nested/nonbool-cond/branch-mismatch/bool-literal-cond), comparisons (lt/gt/le/ge/eq/ne/rel-in-if),
+div/div-by-zero/mod/div-precedence, unary-minus/double-negation, and the decline cases (unbound, bool-in-arith).
+The differential runs `default_corpus_files` = `spec/semantics/*` which INCLUDES `06-numeric-model.sexp`
+(arith: `+`×317, `-`×164, `*`×256, `/`×198, `%`×126, comparisons `<`×102/`<=`/`>`/`>=`; 1095 div/zero/overflow
+mentions) and `02-binding-and-control.sexp` (983 let/if/cond mentions). So every domain conformance-db covers is
+richly present in the shared corpus the differential already drives through compiler-ml vs the rcdzc oracle.
+⇒ conformance-db (+cx/-rel) adds NO coverage the differential lacks; retiring it loses nothing. RETIREMENT IS
+DE-RISKED — one deletion slice when approved (no corpus additions needed first). Held pending operator go on (a).
+
 ## Open decision for the operator (via concierge)
 - Approve retiring conformance-db (+cx/-rel) in favor of the existing differential? (I do the corpus-coverage
   audit + deletion as a cleanup slice.)
