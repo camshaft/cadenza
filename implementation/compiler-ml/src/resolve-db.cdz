@@ -16,7 +16,7 @@
 /// resolve column (`Map(NodeId, Resolved)`) as it descends. Once built, a lookup is O(1) — the column IS the
 /// memo (the DB discipline; rcdzc's resolve fills all of a tree's resolved facts in one demand-driven walk).
 
-import { Tok, Node, Tree, node-at, parse-tokens, is-let, add-node, empty-tree, record-def, def-body-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
+import { Tok, Node, Tree, node-at, parse-tokens, is-let, add-node, empty-tree, record-def, def-body-of, ctor-tag-of, call-is-recursive, param-of, param2-of, param3-of, param4-of, arg2-of, arg3-of, arg4-of } from "parse-db"
 
 /// The resolve fact for a variable reference. `RBound(binderId)` = bound to the `NLet` at `binderId`;
 /// `RPoison` = the name is unbound (a FILLED negative decision — not absence).
@@ -137,7 +137,16 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
                            | Option.Some(cb) => Map.insert(colArg, id, Resolved.RBound(cb))   // callee is a bound PARAM/let
                            | Option.None(_) => (match def-body-of(tree, calleeId) with
                                | Option.Some(_) => Map.insert(colArg, id, Resolved.RDef(calleeId))  // callee is a global def
-                               | Option.None(_) => colArg)) in                                       // unknown → no callee-fact
+                               // A callee head that is neither a param (RBound) nor a def (RDef) is EITHER a sum
+                               // CONSTRUCTOR `(Some 5)` (recognized via the ctor-tag table, lowered to CCtor — leave
+                               // the fact ABSENT as before, so it constructs) OR a genuinely UNBOUND name `(foo 1)`
+                               // (a use of an unbound name → RPoison, rcdzc CDZ0101, keyed at the NApp node-id). The
+                               // RPoison is what lets the whole-program scope scan catch an unbound callee in an
+                               // uncalled sibling (PR#997 — it used to be left absent, one position uncovered). So:
+                               // known ctor → absent; else → RPoison.
+                               | Option.None(_) => (match ctor-tag-of(tree, calleeId) with
+                                   | Option.Some(_) => colArg                                       // sum ctor head → CCtor path
+                                   | Option.None(_) => Map.insert(colArg, id, Resolved.RPoison)))) in  // unbound name → poison
             // forward-ref: calleeId is now the callee NAME-id → map to its def-body node via def-body-of.
             // A RECURSIVE call (body transitively calls back) would inline-loop, so DECLINE it (don't resolve
             // the body — the call gets no fact → downstream declines, matching pre-forward-ref behavior). An
