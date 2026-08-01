@@ -116,3 +116,62 @@ fn a_normal_fold_completes_within_the_default_fuel_budget() {
         "the normal fold still produces its effect"
     );
 }
+
+/// §19b/§19e slice 2b-ii: the REAL wasm guest drives the KERNEL LOOP via `impl Reducer for
+/// ComponentReducer`. Deliver an inbound "message" to a Session whose reducer IS the component; assert
+/// the kernel dispatched the guest's Http effect AND recorded the guest's correlation token in the
+/// Dispatched frame (§19e: emit token → Dispatched). This is the operator's §19b bar — a wasm reducer
+/// folding on the same loop as a Rust one — proven end to end through the kernel.
+#[test]
+fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatched_frame() {
+    use cdz_kernel::authz::Authorizer;
+    use cdz_kernel::effect::{Capability, EffectKind as KKind, Payload, ResourcePredicate};
+    use cdz_kernel::event::{ContentType as KContentType, EventBody};
+    use cdz_kernel::executor::RecordingExecutor;
+    use cdz_kernel::hash::Hash;
+    use cdz_kernel::kernel::Session;
+
+    let reducer = ComponentReducer::from_component_bytes(GUEST).expect("valid reducer component");
+    // Grant the guest's Http target (SEC-F1) so the effect isn't denied.
+    let authz = Authorizer::new(vec![Capability {
+        kind: KKind::Http,
+        predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
+    }]);
+    let mut exec = RecordingExecutor::new();
+    let mut session = Session::genesis(Hash::of(b"wasm-reducer-v1"));
+
+    // Deliver an inbound "message" — the guest emits one Http effect with correlation "step-1".
+    session
+        .deliver(
+            EventBody::Inbound {
+                content_type: KContentType {
+                    family: "message".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(b"hello".to_vec()),
+            },
+            None,
+            &reducer,
+            &authz,
+            &mut exec,
+        )
+        .unwrap();
+
+    // The kernel routed the guest's Http effect to the executor.
+    assert_eq!(
+        exec.seen.len(),
+        1,
+        "the guest's one Http effect was dispatched"
+    );
+    assert_eq!(exec.seen[0].0.target, "https://ok.host/x");
+    // And the guest's continuation token rode into the durable Dispatched frame (§19e: emit→Dispatched).
+    let dispatched_token = session.log().iter().find_map(|e| match &e.body {
+        EventBody::Dispatched { token, .. } => Some(token.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        dispatched_token,
+        Some(Some(b"step-1".to_vec())),
+        "the wasm guest's correlation token must reach the Dispatched frame through the adapter"
+    );
+}

@@ -13,6 +13,7 @@
 //! concierge-ruled Option A) to run `apply` against, and wiring `apply` into the kernel's fold loop.
 //! The in-process Rust [`crate::reducer::Reducer`] trait remains the interim reducer path meanwhile.
 
+use crate::event::{EffectOutcome, Event, EventBody};
 use crate::hash::Hash;
 use crate::kv::Kv;
 
@@ -344,6 +345,142 @@ impl ComponentReducer {
         };
         let kv = store.into_data().into_kv();
         Ok((effects, kv))
+    }
+}
+
+/// Drive a WASM `ComponentReducer` through the kernel's [`crate::reducer::Reducer`] loop (§19b/§19e
+/// slice 2b-ii). This adapter is the bridge: it translates a kernel [`Event`] into the guest's `apply`
+/// inputs `(content_type, payload, resumes)`, runs the fold, and maps the guest's returned effect
+/// requests (which carry the guest's own `correlation` token) into kernel [`crate::reducer::Effect`]s
+/// (`{request, token}`). So a real wasm reducer folds on the same loop the in-process Rust `Reducer`
+/// trait uses — the operator's §19b real boundary, wired in.
+///
+/// CORRELATION (§19e, ruling B — kernel-owns): the guest never sees the kernel `EffectId`. On a
+/// result/timer/denial event, `resumes` = the event's `token` — which slice-2b-i copied onto the event
+/// FROM the originating `Dispatched` frame (so `fold` reads it straight off `event`, staying PURE: no
+/// log/map access). On an effect the guest emits, its `correlation` becomes the `Effect.token` the drive
+/// loop records into the new `Dispatched` frame. The loop closes: emit token → Dispatched → Result →
+/// resumes.
+///
+/// TOTALITY (§17): a guest trap / fuel-exhaustion / instantiation failure is surfaced as NO effects
+/// (an empty fold) rather than a panic — the kernel treats a fold that produced nothing as quiescent.
+/// (A future ABI refinement, §16c gap A, may distinguish a trapped fold from a clean empty one; v0
+/// fails safe by emitting nothing so a broken reducer can't brick the loop.)
+impl crate::reducer::Reducer for ComponentReducer {
+    fn fold(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
+        // Map the kernel event → the guest's (content_type, payload, resumes) inputs.
+        let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
+
+        // Run the guest fold against a COPY of kv (apply takes kv by value + returns the mutated kv);
+        // write the result back so the guest's KV writes land in the session's derived state (§4).
+        match self.apply(kv.clone(), content_type, payload, resumes) {
+            Ok((guest_effects, new_kv)) => {
+                *kv = new_kv;
+                let effects = guest_effects
+                    .into_iter()
+                    .map(|g| crate::reducer::Effect {
+                        request: crate::effect::EffectRequest {
+                            kind: guest_kind_to_kernel(&g.kind),
+                            target: g.target,
+                            // The guest's payload is opaque bytes → an Inline kernel payload; None stays None.
+                            payload: g.payload.map(crate::effect::Payload::Inline),
+                        },
+                        // The guest's continuation token rides into the kernel Effect (→ Dispatched frame).
+                        token: g.correlation,
+                    })
+                    .collect();
+                crate::reducer::FoldOutput::with_effects(effects)
+            }
+            // Trap / fuel-exhausted / instantiate failure → fail safe: no effects, KV untouched. The
+            // guest's contract is totality; a violation can't brick the loop (§17).
+            Err(_) => crate::reducer::FoldOutput::none(),
+        }
+    }
+}
+
+/// Map a kernel [`EventBody`] to the guest `fold.apply` inputs `(content_type, payload, resumes)`.
+/// `resumes` (§19e ruling B) is the event's continuation token, already copied onto result/timer events
+/// from their originating `Dispatched` frame (slice-2b-i) — so this reads it off the event, never a map.
+fn event_to_guest_inputs(body: &EventBody) -> (ContentType, Option<Vec<u8>>, Option<Vec<u8>>) {
+    // A synthetic content-type for the kernel-internal event kinds the guest folds (results, timers,
+    // denials): the guest matches on `family` to know what arrived. Inbound carries its OWN content-type.
+    let synthetic = |family: &str| ContentType {
+        family: family.to_string(),
+        version: 1,
+    };
+    match body {
+        EventBody::Inbound {
+            content_type,
+            payload,
+        } => (
+            ContentType {
+                family: content_type.family.clone(),
+                version: content_type.version,
+            },
+            Some(payload_bytes(payload)),
+            None,
+        ),
+        EventBody::EffectResult { result, token, .. } => (
+            synthetic("effect-result"),
+            effect_outcome_bytes(result),
+            token.clone(),
+        ),
+        // TimerFired / AuthzDenied are ALSO terminal outcomes a guest resumes on (resumes_effect
+        // recognizes all three) — so a full bridge would carry their token too, via the same (B)
+        // mechanism (copy from the originating TimerArmed / Dispatched frame). v0 wires the common
+        // effect→result→resume cycle (EffectResult, above) and passes resumes=None here; extending
+        // token-riding to timer-fired + denial events is the follow-up slice 2b-iii. The guest still
+        // gets the event (family + payload) so it can react; it just doesn't get its token back YET.
+        EventBody::TimerFired { fired_ms, .. } => (
+            synthetic("timer-fired"),
+            Some(fired_ms.to_le_bytes().to_vec()),
+            None,
+        ),
+        EventBody::AuthzDenied { reason, .. } => (
+            synthetic("authz-denied"),
+            Some(reason.clone().into_bytes()),
+            None,
+        ),
+        // Genesis / Dispatched / TimerArmed / Closed are not folded by the reducer (they're kernel
+        // bookkeeping or setup — see the kernel's `observable()` predicate); the loop never calls fold
+        // on them, but map defensively to an empty-payload synthetic content-type rather than panic.
+        EventBody::Genesis { .. } => (synthetic("genesis"), None, None),
+        EventBody::Dispatched { .. } => (synthetic("dispatched"), None, None),
+        EventBody::TimerArmed { .. } => (synthetic("timer-armed"), None, None),
+        EventBody::Closed { .. } => (synthetic("closed"), None, None),
+    }
+}
+
+/// Opaque bytes of a kernel payload (inline bytes verbatim; a blob-by-hash surfaces its 32 hash bytes —
+/// the guest resolves the blob via its own means, out of scope for v0's fold-input mapping).
+fn payload_bytes(p: &crate::effect::Payload) -> Vec<u8> {
+    match p {
+        crate::effect::Payload::Inline(b) => b.clone(),
+        crate::effect::Payload::Blob(h) => h.as_bytes().to_vec(),
+    }
+}
+
+/// Bytes the guest sees for an effect result: the Ok payload's bytes, the Err message, or empty for a
+/// timeout. (A richer tagged encoding is a later ABI concern; v0 hands the guest the result's content.)
+fn effect_outcome_bytes(o: &EffectOutcome) -> Option<Vec<u8>> {
+    match o {
+        EffectOutcome::Ok(Some(p)) => Some(payload_bytes(p)),
+        EffectOutcome::Ok(None) => None,
+        EffectOutcome::Err(msg) => Some(msg.clone().into_bytes()),
+        EffectOutcome::TimedOut => None,
+    }
+}
+
+/// Map the guest `effect-kind` (WIT enum) to the kernel [`crate::effect::EffectKind`]. Same variants
+/// (the WIT mirrors the kernel enum); this is the type-boundary translation.
+fn guest_kind_to_kernel(k: &EffectKind) -> crate::effect::EffectKind {
+    match k {
+        EffectKind::Shell => crate::effect::EffectKind::Shell,
+        EffectKind::Http => crate::effect::EffectKind::Http,
+        EffectKind::Model => crate::effect::EffectKind::Model,
+        EffectKind::Now => crate::effect::EffectKind::Now,
+        EffectKind::Timer => crate::effect::EffectKind::Timer,
+        EffectKind::Emit => crate::effect::EffectKind::Emit,
     }
 }
 
