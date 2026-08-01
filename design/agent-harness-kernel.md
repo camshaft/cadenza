@@ -1660,16 +1660,39 @@ After reviewing the §18 plan + my codec-blocker/generic-async questions, the op
 architecture. These SUPERSEDE the earlier "trait-ify log+kv+reducer / generic+async" framing where they
 conflict. Reply with the shape was sent; folding here.
 
-### 19a. Binary-sexpr codec = a STANDALONE SHARED crate `cadenza-binary` (decided)
-Resolves the §18a open codec question. Build a minimal, structure-only binary-sexpr codec
-(atoms/lists/bytes/ints + encode + decode + length-framing, NO interpreter, tiny dep floor) as a
-**shared crate** that **cadenza-syntax + rcdzc + cdz-kernel all depend on**. This reconciles both
-positions: my minimal-dep-floor rec (don't drag cadenza-syntax's cedar/pulldown/num-bigint into the
-kernel; don't couple to rcdzc's AST) AND the operator's "one binary-sexpr codec shared by syntax+rcdzc."
-The kernel stays codec-minimal in spirit — it len-frames opaque encoded bytes; the value *shape* is the
-shared crate's concern. **Cross-vertical:** v-syntax + rcdzc are co-consumers and must be happy pinning
-the wire format → coordinate adoption with their owners before/as it lands. This is the log-format
-foundation; once it lands, the log-event codec (§18a) swaps to it.
+### 19a. Binary-sexpr codec = EXTRACT the existing `cadenza-syntax::codec` into a shared bottom crate (REVISED)
+Resolves the §18a open codec question. **The codec ALREADY EXISTS and is already shared** — the earlier
+"build cadenza-binary" is superseded (would have greenfielded a 4th impl that drifts from the spec pins).
+Facts (from v-syntax, the codec-surface owner, 2026-08-01):
+- `cadenza-syntax::codec` (`src/codec.rs`, ~838 lines) IS the canonical binary-sexpr wire format:
+  structure-only Atom/List tree, encode+decode, 8-byte version header `cdzast\x00\x01`, **TOTAL decode**
+  (refuses wrong header / malformed len-tag / out-of-range id / **cycles or shared subtrees → no
+  decode-bomb** / trailing bytes — never panics, never a wrong tree). Spec-pinned by
+  `spec/contracts/ast-encoding.md` + `constitution.md` (bijection, versioned; duvet `//= //#` anchors),
+  corpus-gated (`binary_surface_round_trips_the_corpus` + `all_surface_paths`, 3/3 green).
+- **rcdzc ALREADY decodes `cadenza_syntax::codec::encode` output** (rcdzc/src/{compile,lower,testkit,
+  sidecar}.rs) → 2 of the 3 consumers already share this exact wire format.
+- **Value model** the leaf vocab MUST carry (to round-trip real programs): Int (sign+radix in the kind
+  tag, no signed-zero), Float (sign+i64-exp+bigint significand), Str/Name/Sym (distinct UTF-8 kinds),
+  Bytes, Char, Bool, BadChar/BadEscape MARKER leaves (malformed literal = a leaf the compiler rejects
+  downstream, NOT a decode failure — decode stays total), numeric SUFFIX bodies. **Spans NOT in the
+  codec** (span-independent canonical form; spans ride a separate sidecar). Arena StructId is an
+  encoding detail (post-order child refs), not the wire contract — you decode to a tree.
+- **The one real gap = extraction:** codec.rs lives INSIDE cadenza-syntax today, dragging
+  num-bigint/sha2/unicode-normalization/pulldown/toml_edit/cedar/clap — the kernel wants none. Honest
+  dep floor after extraction = **num-bigint + hand-rolled leb128** (NOT zero — arbitrary-precision
+  Int/Float is the non-negotiable value model).
+
+**PLAN (v-syntax LEADS, kernel consumes):** extract `codec.rs` + `leb128.rs` + the Leaf/Arenas value
+types into a new BOTTOM crate (`cadenza-ast`/`cadenza-binary` — v-syntax's naming); cadenza-syntax
+RE-EXPORTS (public API + corpus gate unchanged); rcdzc + cdz-kernel depend on the same crate. v-syntax
+owns the extraction (their invariants + duvet anchors + corpus acceptance gate — must be byte-for-byte
+identical, `cdzast\x00\x01` preserved, decode stays total, tests stay green) and coordinates rcdzc.
+**Kernel-facing seam I need:** `encode(&tree)->Vec<u8>`, TOTAL `decode(&[u8])->Result<tree,DecodeError>`
+with `DecodeError` exposed (I map it to the log's corrupt/torn distinction — total decode is load-bearing
+for crash-recovery), the num-bigint+leb128-only dep floor, and a stable constructible/matchable tree
+type. Kernel's current custom event codec is the INTERIM; the log-event codec (§18a) swaps to the bottom
+crate once it lands. Not blocked meanwhile.
 
 ### 19b. WASM COMPONENT MODEL for the kernel core; log+kv stay traits (decided — reduces abstractions)
 Operator steer: "focus on the wasm component model for the agent kernel rather than a Rust trait that
