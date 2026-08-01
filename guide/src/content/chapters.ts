@@ -367,6 +367,14 @@ export const CHAPTERS: Chapter[] = [
     section: "Doing things safely",
     Component: lazy(() => import("./chapters/PlatformSafety.tsx")),
   },
+  {
+    slug: "platform-execution",
+    title: "The execution model",
+    blurb: "One kernel, many agents: sessions multiplexed concurrently, an append wakes the reducer (nothing polls, nothing gets stuck), and determinism lives in the log, not the scheduler.",
+    pillar: "platform",
+    section: "The execution model",
+    Component: lazy(() => import("./chapters/PlatformExecution.tsx")),
+  },
 ];
 
 export function chapterAt(slug: string): { chapter: Chapter; index: number } | null {

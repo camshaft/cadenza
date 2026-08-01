@@ -401,15 +401,16 @@
            forge that would otherwise make every elision unsound.")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Add) (Le))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       (type Thm (Seq (List Term) Term))
-      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
-      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Add) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Le) a) b))
       (def (maxint) (Term.Num 9223372036854775807))
       (def (eval-ground (: t Term))
         (match t
           ((Term.Num n) (Option.Some n))
-          ((Term.Comb (Term.Comb (Term.Const 0) a) b)
+          ((Term.Comb (Term.Comb (Term.Head HeadOp.Add) a) b)
             (match (eval-ground a)
               ((Option.Some av) (match (eval-ground b)
                                   ((Option.Some bv) (Option.Some (+ av bv)))
@@ -425,10 +426,11 @@
                               ((Option.None) (Option.None))))
           ((Option.None) (Option.None))))
       (export (. Term *))
+      (export (. HeadOp *))
       (export Thm)
       (export add le maxint eval-ground le-ax)))
   (input  (do
-            (import "bounds" (Term Thm add le maxint eval-ground le-ax))
+            (import "bounds" (HeadOp Term Thm add le maxint eval-ground le-ax))
             (def (main)
               (let ((x   (Term.Var 0))
                     (one (Term.Num 1)))
@@ -456,15 +458,16 @@
            'not licensed / keep the guard' — never a build abort; pinned at b3.)")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Add) (Le))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       (type Thm (Seq (List Term) Term))
-      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 0) a) b))
-      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (add (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Add) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Le) a) b))
       (def (maxint) (Term.Num 9223372036854775807))
       (def (eval-ground (: t Term))
         (match t
           ((Term.Num n) (Option.Some n))
-          ((Term.Comb (Term.Comb (Term.Const 0) a) b)
+          ((Term.Comb (Term.Comb (Term.Head HeadOp.Add) a) b)
             (match (eval-ground a)
               ((Option.Some av) (match (eval-ground b)
                                   ((Option.Some bv) (Option.Some (+ av bv)))
@@ -479,9 +482,9 @@
                                                   (Option.None)))
                               ((Option.None) (Option.None))))
           ((Option.None) (Option.None))))
-      (export (. Term *)) (export Thm) (export add le maxint eval-ground le-ax)))
+      (export (. Term *)) (export (. HeadOp *)) (export Thm) (export add le maxint eval-ground le-ax)))
   (input  (do
-            (import "bounds" (Term Thm add le maxint eval-ground le-ax))
+            (import "bounds" (HeadOp Term Thm add le maxint eval-ground le-ax))
             (def (main)
               ; attempt the forge: le-ax (add MAXINT 1) MAXINT. eval-ground(MAXINT+1) traps (checked +),
               ; so the run halts on integer overflow — no wrapped MININT, no forged fact.
