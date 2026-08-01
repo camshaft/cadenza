@@ -470,7 +470,8 @@ pub enum FleetCmd {
     /// interval. This is the standalone form of the wake that `send` already does on delivery — for a
     /// delivery path that writes an inbox file WITHOUT going through `send`, notably the slack-bridge
     /// INBOUND path (an operator's Slack message → an agent's hub inbox via the bridge's own `deliver`,
-    /// which never calls this crate's wake). The bridge shells `fleet wake <to> --operator-message`
+    /// which never calls this crate's wake). The bridge shells `fleet wake` with `--operator-message`
+    /// and the target agent (clap is order-agnostic, so the flag may precede or follow the positional)
     /// after writing the inbox file so an operator message reaches an idle agent in seconds, not up to
     /// its full interval (operator directive 2026-08-01). The bridge runs OUTSIDE tmux, so the wake
     /// targets an explicit `--session` (default `main`) to reach the tmux server — WITHOUT that it would
