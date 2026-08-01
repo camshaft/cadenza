@@ -1,17 +1,18 @@
 /// ty-bridge.cdz — the `Typed` ↔ `Ty` bridge (step (i) of the infer/unify → Ty convergence, divergence #3).
-/// infer-db's pipeline type is `Typed = TIntW(Bool, Int64) | TBool | TErr` (a concrete signed/width int, a
-/// bool, or poison); ty.cdz's canonical universe is `Ty = TyInt(IntType) | TyBool | TyErr` where
+/// The pipeline type (`typed.cdz`) is `Typed = TIntW(Bool, Int64) | TBool | TErr | TFn(List(Typed), Typed) |
+/// TSum(Int64)`; ty.cdz's canonical universe is `Ty = TyInt(IntType) | TyBool | TyErr | TyFn | TySum` where
 /// `IntType = IntType(Sign, Width)` carries the 3-state orthogonal axes. This module converts between them, so
 /// infer-db can decide type sameness/combining via ty.cdz's `ty-eq`/`unify-ty` (the shared unification)
 /// WITHOUT a big-bang rewrite of `Typed` across the pipeline (lower-db/db.cdz/db-infer all key on `Typed`).
-/// Keep `Typed` as infer-db's internal/wire form + `Ty` as the semantic form the shared logic operates on,
-/// bridging at the call site — the small, non-rippling first convergence step.
+/// Keep `Typed` as the pipeline's internal/wire form + `Ty` as the semantic form the shared logic operates on,
+/// bridging at the call site — the small, non-rippling convergence step.
 ///
-/// `Typed` carries only CONCRETE ints (a `TIntW(signed, width)` — infer-db has no deferred literal state
-/// yet; the deferred-width literal is a later slice). So `typed-to-ty` maps a `TIntW(s, w)` to a FIXED
-/// `Ty` int (`ty-fixed-int`), never a deferred one; `ty-to-typed` grounds any deferred `Ty` int back to a
-/// concrete `Typed.TIntW` via `ground-default` (so a round-trip through the shared unify, which may leave a
-/// deferred, comes back as a concrete pipeline type). Bool and poison map straight across.
+/// DEFERRED-WIDTH note (item-3 HM): a `TIntW(_, 0)` is the DEFERRED-int sentinel (an unconstrained literal
+/// width), which the live pipeline DOES produce. `typed-to-ty` here maps a `TIntW(s, w)` to a FIXED `Ty` int
+/// (`ty-fixed-int`) — it is used on already-GROUNDED types (infer-db's `typed-to-ty-defer` handles the
+/// deferred sentinel separately, mapping width 0 → a deferred `Ty`). `ty-to-typed` grounds any deferred `Ty`
+/// int back to a concrete `Typed.TIntW` via `ground-default` (a shared-unify round-trip that may leave a
+/// deferred comes back concrete). Bool/poison/fn/sum map straight across.
 
 import { Typed } from "typed"
 import { Ty, IntType, Sign, Width, ty-fixed-int, ground-default } from "ty"
@@ -148,4 +149,4 @@ def tb-sum-round-trips() =
       else trap("TSum(1) → TySum(1) keeps id"))
     | _ => trap("TSum → TySum (forward, no grounding/drop)"))
 
-export { typed-to-ty, typed-list-to-ty, ty-to-typed }
+export { typed-to-ty, ty-to-typed }

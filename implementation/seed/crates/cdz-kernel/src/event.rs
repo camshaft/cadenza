@@ -206,9 +206,18 @@ impl<'a> Cursor<'a> {
         Ok(arr)
     }
 
+    /// Read a `u64` length prefix and convert to `usize`, FAILING with `BadLength` if it doesn't fit
+    /// (PR#990 finding #3). The length comes from the untrusted durable log; a bare `as usize` would
+    /// TRUNCATE on a 32-bit target (a huge length wraps small → mis-parse). This makes the frame reject
+    /// cleanly instead. (`take` also bounds-checks against the remaining bytes, so an in-range-but-too-
+    /// large length still errors as `Truncated`.)
+    fn len(&mut self) -> Result<usize, DecodeError> {
+        usize::try_from(self.u64()?).map_err(|_| DecodeError::BadLength)
+    }
+
     /// A length-prefixed UTF-8 string (matches `encode_str`).
     fn string(&mut self) -> Result<String, DecodeError> {
-        let len = self.u64()? as usize;
+        let len = self.len()?;
         let b = self.take(len)?;
         core::str::from_utf8(b)
             .map(|s| s.to_string())
@@ -306,7 +315,7 @@ fn decode_opt_u64(c: &mut Cursor) -> Result<Option<u64>, DecodeError> {
 fn decode_payload(c: &mut Cursor) -> Result<Payload, DecodeError> {
     Ok(match c.u8()? {
         0 => {
-            let len = c.u64()? as usize;
+            let len = c.len()?;
             Payload::Inline(c.take(len)?.to_vec())
         }
         1 => Payload::Blob(Hash::from_bytes(c.hash()?)),
@@ -687,5 +696,24 @@ mod tests {
             Event::decode(&bytes),
             Err(DecodeError::BadTag { .. })
         ));
+    }
+
+    #[test]
+    fn oversized_length_prefix_errs_never_panics() {
+        // PR#990 finding #3: a length prefix from the untrusted log that is enormous (here u64::MAX)
+        // must fail cleanly (BadLength on 32-bit where it can't fit usize; Truncated on 64-bit where it
+        // exceeds the remaining bytes) — NEVER panic or wrap-truncate into a mis-parse. Build an
+        // Inbound whose content_type.family length prefix is u64::MAX.
+        // Inbound encoding: seq(8) + cause-tag(1=0) + body-tag(1) + family-len(8) + ...
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1u64.to_le_bytes()); // seq
+        bytes.push(0); // cause: None
+        bytes.push(1); // body tag = Inbound
+        bytes.extend_from_slice(&u64::MAX.to_le_bytes()); // family length = absurd
+        bytes.extend_from_slice(b"anything");
+        match Event::decode(&bytes) {
+            Err(DecodeError::BadLength) | Err(DecodeError::Truncated) => {}
+            other => panic!("expected BadLength/Truncated for an oversized length, got {other:?}"),
+        }
     }
 }
