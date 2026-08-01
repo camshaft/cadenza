@@ -545,7 +545,7 @@ fn malformed_timer_deadline_is_rejected_not_panicked() {
 /// Live shell execution (feature `live-exec`) end-to-end through the kernel: a reducer emits a Shell
 /// effect whose target is capability-gated by a command-prefix allow-list (SEC-F1); the real
 /// ShellExecutor runs it and the exit/stdout folds back as the result the reducer sees.
-#[cfg(feature = "live-exec")]
+#[cfg(all(feature = "live-exec", unix))]
 #[test]
 fn live_shell_executor_runs_a_real_command_end_to_end() {
     use cdz_kernel::executor::ShellExecutor;
@@ -595,18 +595,21 @@ fn live_shell_executor_runs_a_real_command_end_to_end() {
 
 /// A Shell effect OUTSIDE the capability's command-prefix is denied at the kernel gate (SEC-F1) and
 /// never reaches the executor — even the real one.
-#[cfg(feature = "live-exec")]
+#[cfg(all(feature = "live-exec", unix))]
 #[test]
 fn live_shell_denied_command_never_executes() {
     use cdz_kernel::executor::ShellExecutor;
 
-    struct EvilShell;
-    impl Reducer for EvilShell {
+    struct DeniedShell;
+    impl Reducer for DeniedShell {
         fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest {
                     kind: EffectKind::Shell,
-                    target: "rm -rf /tmp/should-never-run".into(),
+                    // Harmless command (PR#992 #3: no `rm -rf` in tests — CI runs --features live-exec,
+                    // so an authz regression must be observable, not destructive). Outside the `echo `
+                    // grant → denied at the gate anyway.
+                    target: "touch /tmp/cdz-kernel-should-never-run".into(),
                     payload: None,
                 }])
             } else {
@@ -614,15 +617,15 @@ fn live_shell_denied_command_never_executes() {
             }
         }
     }
-    // Only `echo ` is permitted → the destructive command is denied before the executor sees it.
+    // Only `echo ` is permitted → the touch is denied before the executor sees it.
     let authz = Authorizer::new(vec![Capability {
         kind: EffectKind::Shell,
         predicate: ResourcePredicate::Prefix("echo ".into()),
     }]);
     let mut exec = ShellExecutor;
-    let mut session = Session::genesis(Hash::of(b"evil"));
+    let mut session = Session::genesis(Hash::of(b"denied"));
     session
-        .deliver(inbound_go(), None, &EvilShell, &authz, &mut exec)
+        .deliver(inbound_go(), None, &DeniedShell, &authz, &mut exec)
         .unwrap();
 
     // Denied at the gate → a denial is logged and nothing ran.
@@ -631,6 +634,66 @@ fn live_shell_denied_command_never_executes() {
         .iter()
         .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
     assert_eq!(session.open_effects(), 0);
+    // The would-be side effect never happened.
+    assert!(!std::path::Path::new("/tmp/cdz-kernel-should-never-run").exists());
+}
+
+/// PR#992 ⚠⚠ CWE-78: the fix — direct exec (no `sh -c`) makes shell metacharacters LITERAL, so a
+/// compound like `echo ok; touch <file>` that passes the `echo ` prefix allow-list does NOT run the
+/// second command. Before the fix, `sh -c` executed the `touch`; now `;` and the rest are just literal
+/// arguments to `echo`, and the file is never created.
+#[cfg(all(feature = "live-exec", unix))]
+#[test]
+fn live_shell_no_injection_via_metacharacters() {
+    use cdz_kernel::executor::ShellExecutor;
+
+    let marker = "/tmp/cdz-kernel-injection-marker";
+    let _ = std::fs::remove_file(marker); // clean slate
+
+    struct Injector(String);
+    impl Reducer for Injector {
+        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
+                    kind: EffectKind::Shell,
+                    // Passes `starts_with("echo ")` but embeds an injection attempt.
+                    target: self.0.clone(),
+                    payload: None,
+                }]),
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(Payload::Inline(b))),
+                    ..
+                } => {
+                    kv.put(b"out".to_vec(), b.clone());
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+    let authz = Authorizer::new(vec![Capability {
+        kind: EffectKind::Shell,
+        predicate: ResourcePredicate::Prefix("echo ".into()),
+    }]);
+    let mut exec = ShellExecutor;
+    let mut session = Session::genesis(Hash::of(b"inject"));
+    let payload = format!("echo ok ; touch {marker}");
+    session
+        .deliver(inbound_go(), None, &Injector(payload), &authz, &mut exec)
+        .unwrap();
+
+    // The injection did NOT execute: the marker file was never created (no `sh -c` to interpret `;`).
+    assert!(
+        !std::path::Path::new(marker).exists(),
+        "command injection: the `; touch` ran — metacharacters were shell-interpreted (CWE-78)"
+    );
+    // And `echo` treated the whole thing as literal args (stdout contains the literal `;` and `touch`).
+    let out = session.kv().get(b"out").expect("echo ran");
+    let text = String::from_utf8_lossy(out);
+    assert!(
+        text.contains(';') && text.contains("touch"),
+        "echo should print its args literally: {text:?}"
+    );
 }
 
 #[test]
