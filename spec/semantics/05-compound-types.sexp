@@ -17163,7 +17163,7 @@
 ; (memo table, persistent scopes, list-as-stack). ---
 
 (case "a MEMOIZED recursion threads a (tuple result memo-Map) through both self-call branches"
-  (doc    "The memoization idiom (the corpus memo pins are compiler-internal): fib-memo returns (tuple result updated-Map), the SECOND self-call consumes the FIRST's memo, the hit arm short-circuits — 21 entries for fib(20) prove single evaluation per n (vs ~10946 naive calls); the result encodes memo SIZE beside the value.")
+  (doc    "The memoization idiom (the corpus memo pins are compiler-internal): fib-memo returns (tuple result updated-Map), the SECOND self-call consumes the FIRST's memo, the hit arm short-circuits — 21 entries (keys 0..20) for fib(20) prove single evaluation per n (vs ~10946 naive calls). The output encodes the EXACT memo size beside the value ((* 100 v) + Map.len = 6765*100 + 21 = 676521), so a memo one entry short (20) flips the pin — a truncating /10 encode would let both 20 and 21 pass.")
   (input  (do
             (def (fib-memo (: n Int64) (: memo (Map Int64 Int64)))
               (match (Map.lookup memo n)
@@ -17179,10 +17179,10 @@
                                 (tuple r (Map.insert m2 n r)))))))))))
             (def (main (: n Int64))
               (match (fib-memo n Map.empty)
-                ((tuple v memo) (+ (* 10 v) (/ (Map.len memo) 10)))))
+                ((tuple v memo) (+ (* 100 v) (Map.len memo)))))
             (export main)))
   (call   main (: 20 Int64))
-  (output (: 67652 Int64)))
+  (output (: 676521 Int64)))
 
 (case "an expression INTERPRETER threads a Map environment through Let-shadowing scopes"
   (doc    "The self-hosting core idiom (the structural eval-exp is env-free): an inner Let SHADOWS x via Map.insert on the recursive call while the sibling Add operand still sees the OUTER x — the env is PERSISTENT: (let x=10 in (let x=x+1 in x) + x) = 21; a mutable-env interpreter computes 22.")
