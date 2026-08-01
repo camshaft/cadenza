@@ -1562,6 +1562,68 @@
             (_           0N)))
   (output (: -9223372036854775808 BigInt)))
 
+(case "print then read of a BEYOND-i64 Ast.Int round-trips (text path is arbitrary-precision)"
+  (doc    "🔑 The TEXT-path companion of the beyond-64-bit quote pins above: an `Ast.Int` whose payload is a
+           26-digit BigInt (no i64 could carry it) `print`s to its full decimal and `read` parses it back
+           to the exact same value. Pins that the printer renders the WHOLE magnitude (a `to_i64`-based
+           renderer would decline/truncate the print) and that the reader classifies an all-digits token
+           past the i64 boundary as an `Ast.Int`, not misread it as an `Ast.Name` — so `read(print v) == v`
+           holds at arbitrary precision, not only up to i64::MIN.")
+  (input  (match (read (print (Ast.Int (: 99999999999999999999999999 BigInt))))
+            ((Ast.Int n) n)
+            (_           0N)))
+  (output (: 99999999999999999999999999 BigInt)))
+
+(case "print then read of a BEYOND-i64 NEGATIVE Ast.Int round-trips (sign survives at arbitrary precision)"
+  (doc    "The negative twin of the beyond-i64 text-path case: a 26-digit NEGATIVE BigInt `Ast.Int` prints
+           with its leading `-` and re-reads to the exact same value. Pins that the reader's sign handling
+           and the printer's full-magnitude rendering compose past the i64 boundary — a printer that dropped
+           the sign, or a reader that stripped `-` only for in-i64 tokens, would pass the positive beyond-i64
+           case but lose this one.")
+  (input  (match (read (print (Ast.Int (: -99999999999999999999999999 BigInt))))
+            ((Ast.Int n) n)
+            (_           0N)))
+  (output (: -99999999999999999999999999 BigInt)))
+
+(case "print then read of an Ast.Int at i64::MAX+1 round-trips (the exact reader handoff seam)"
+  (doc    "🔑 The FIRST magnitude past the i64 fast path: `9223372036854775808` is `i64::MAX + 1`, exactly
+           where `read`'s `str::parse::<i64>` overflows and hands the token to the arbitrary-precision
+           decimal path. An off-by-one at the handoff (accepting one-too-few digits, or reading this as a
+           misclassified `Ast.Name`) would surface HERE but pass both the in-i64 `i64::MIN` case above and
+           the comfortably-large 26-digit case. Pins the seam value itself, not just a value far past it.")
+  (input  (match (read (print (Ast.Int (: 9223372036854775808 BigInt))))
+            ((Ast.Int n) n)
+            (_           0N)))
+  (output (: 9223372036854775808 BigInt)))
+
+(case "print then read of an Ast.Int at i64::MIN-1 round-trips (the negative reader handoff seam)"
+  (doc    "The negative twin of the handoff-seam case: `-9223372036854775809` is `i64::MIN - 1`, the first
+           NEGATIVE magnitude where `str::parse::<i64>` overflows (NegOverflow). i64::MIN's own magnitude is
+           not positively i64-representable, so a reader that recovered a negative by parsing the magnitude
+           as i64 then negating would already fail one step earlier — this pins that the sign + full
+           magnitude compose correctly right at the negative handoff boundary.")
+  (input  (match (read (print (Ast.Int (: -9223372036854775809 BigInt))))
+            ((Ast.Int n) n)
+            (_           0N)))
+  (output (: -9223372036854775809 BigInt)))
+
+(case "print then read of a LIST carrying a beyond-i64 Ast.Int round-trips (bignum token bounded by parens)"
+  (doc    "The COMPOSITIONAL companion of the bare beyond-i64 scalar cases: a `(f <26-digit>)` list prints to
+           `(f 99999999999999999999999999)` and `read` recovers the exact `Ast.Int` FROM INSIDE the list.
+           This exercises a seam the bare-scalar cases don't — the reader tokenizes the bignum digit-run
+           bounded by a closing `)` (not whitespace/EOF) during RECURSIVE list parsing, and the printer
+           renders the full magnitude with no surrounding delimiter to absorb a truncation. A reader that
+           only applied the arbitrary-precision path to a top-level token, or a token scan that mis-bounded
+           the digit-run at `)`, would pass every bare-scalar bignum case yet drop the payload here. The
+           head `f` re-reads as a name and the payload as an `Ast.Int` — so the extracted second element's
+           value pins the full round-trip.")
+  (input  (match (read (print (Ast.List (list (Ast.Name "f") (Ast.Int (: 99999999999999999999999999 BigInt))))))
+            ((Ast.List xs) (match xs
+                             ((list _ (Ast.Int n)) n)
+                             (_                     0N)))
+            (_             0N)))
+  (output (: 99999999999999999999999999 BigInt)))
+
 (case "print of an exponent-scale Ast.Float round-trips through read"
   (doc    "A large-magnitude float `1e10` is rendered by `print` (shortest round-tripping form, which may
            use `e` notation) and `read` parses it back bit-exactly. Pins the exponent/large-magnitude
