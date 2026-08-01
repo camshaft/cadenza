@@ -1150,7 +1150,7 @@ def rotate-bounds-of-an-offset-child-uses-the-corner-distance-not-the-half-exten
   else trap("rotate of an offset [9,11]×[-1,1]×[-1,1] cube must bound to [-13,13]^3 (size 26) via the L1 corner radius 13, not the half-extent sum 3")
 
 @test
-def rotate-bounds-take-the-max-abs-corner-including-the-negative-side() =
+def rotate-bounds-takes-the-max-abs-corner-including-the-negative-side() =
   // COMPLEMENT of the +x offset pin above: `aabbr-rotate-radius` must take `rmax(|lo|, |hi|)` per axis, i.e.
   // the farthest-from-origin corner on EITHER side. The +x test leaves `hi` as the larger-|coord| corner, so a
   // regression that dropped the `lo` term (used only `rabs(hi)`) would still pass it. Translate the cube to
