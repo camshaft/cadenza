@@ -5,7 +5,8 @@ import { Link } from "react-router-dom";
 /// content light per operator). Sources, DECIDED sections of v-agent-harness's agent-harness-kernel.md:
 /// §5 (reads-are-effects, the one choke point), §9b (effect row IS the capability manifest), §20a
 /// (resource-rescoping components), §20b (Cedar as a swappable content-addressed authorizer component).
-/// §20 is design-decided but has no code yet → framed as forward-looking, per v-agent-harness guidance.
+/// The delegation SEAM has since landed (`cdz-kernel` drives effects through `&dyn Authorize`, v0 = a flat
+/// capability-set check) → beat 4 reflects the seam as real; the Cedar policy-engine end-state stays forward-looking.
 /// Follows PlatformState in the pillar; bridges from the language pillar's Effects and Opaque-types chapters.
 export default function PlatformSafety() {
   return (
@@ -80,11 +81,13 @@ export default function PlatformSafety() {
 
       <H2>The rule-maker is itself swappable</H2>
       <P>
-        <em>Looking ahead</em> (this part is designed, not yet built): the kernel doesn't hardcode the
-        policy that decides what's allowed. It delegates each decision to an <em>authorizer component</em>,
-        another content-addressed program, passing it the requested effect and the agent's capabilities and
-        enforcing whatever it answers. The intended engine is a standard policy engine (Cedar) rather than a
-        hand-rolled one, referenced by hash from the log.
+        The kernel doesn't hardcode the policy that decides what's allowed. It delegates each decision to an{" "}
+        <em>authorizer</em>, passing it the requested effect and the agent's capabilities and enforcing
+        whatever it answers. That delegation <em>seam</em> already exists: the kernel calls the authorizer
+        through a narrow interface, never the concrete engine, so the decision-maker can be replaced without
+        touching the kernel core. Today it holds a simple capability-set check; the design end-state, still
+        ahead, swaps in a standard policy engine (Cedar) as its own content-addressed component, referenced by
+        hash from the log.
       </P>
       <P>
         The payoff is that the security policy is data, not baked-in code: swapping the authorizer or
