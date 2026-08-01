@@ -2786,6 +2786,32 @@
         (export main)))
   (declines))
 
+;; Set.to-list over BYTES elements DECLINES uniformly — the spec blesses NO Bytes total order (Bytes is
+;; byte-canonical for EQUALITY only; 03-equality-and-observation:602's bare `< bytes bytes` decline is the
+;; scalar companion of this collection-ordering face). Regression (Copilot PR#894 leak 3674022652): rust
+;; SILENTLY ordered a `Set<Bytes>` via its `BTreeSet<Vec<u8>>` derived `Ord` (computed 231) while wasm
+;; correctly DECLINED — a reject-gap. Concierge/operator RULED (b) keep Bytes unordered; v-rust-backend made
+;; `Set/Map<Bytes>.to-list` decline to match wasm + pin-602. Now uniform-decline on all three backends
+;; (construction/contains/lookup over Bytes keys still work — only ORDERING declines). No Bytes order is blessed.
+(case "Set.to-list over Bytes elements declines uniformly — the spec blesses no Bytes order (19-sets companion of 03:602)"
+  (doc    "A set of runtime `Bytes` elements asks Set.to-list for an ORDER on its elements. Per the
+           landed 03-equality-and-observation:602 ruling, Bytes has NO blessed total order (it is
+           byte-canonical for EQUALITY only) — so ordering it DECLINES uniformly across backends
+           (reject-don't-miscompile), exactly like the tuple/list/sum/float orderable-decline cases.
+           This is the COLLECTION-ordering companion of 03:602's bare `< bytes bytes` decline: rust
+           must NOT silently order Bytes via its BTreeSet<Vec<u8>> derived Ord (that was a reject-gap
+           computing 231); it declines like wasm. No Bytes order is blessed.")
+  (input  (do
+        (def (main (: n UInt8))
+          (do
+            (def r (Bytes.concat (Bytes.of (list 1 2)) (Bytes.of (list n))))
+            (def s (Set.of (list (Bytes.of (list 5)) r (Bytes.of (list 1 2)))))
+            (def xs (Set.to-list s))
+            (def (lat (: i Int64)) (Bytes.len (Option.expect (List.at xs i) "in")))
+            (+ (* 100 (lat 0)) (+ (* 10 (lat 1)) (lat 2)))))
+        (export main)))
+  (declines))
+
 (case "Map.to-list orders by SYMBOL keys while float values — NaN included — ride along"
   (doc    "The values-need-no-order guard for the float-in-compound enumeration seam: the map's KEYS
            are symbols (blessed order) and its VALUES are floats, one a computed NaN — to-list must
