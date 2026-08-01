@@ -177,4 +177,46 @@ def an-extruded-units-rect-profile-lowers-profile-and-height-to-exact-meters() =
         | _ => trap("expected a Rect profile"))
     | _ => trap("expected an ExtrudeLinear")
 
+@test
+def a-units-path-profile-lowers-every-segment-coordinate-to-exact-meters() =
+  // Exercises the WHOLE units path-lowering chain — lower-p's PathProfile arm → lower-path-q → lower-pathseg-q
+  // → lower-v2 — which no other test touches. Build a Path in Qty[meter] with an absolute line and a cubic
+  // (distinct control points), extrude it, lower, and destructure each segment's coordinates back out. Every
+  // coordinate uses a DISTINCT x≠y value so a swapped-axis (lower-v2 x↔y) or wrong-control regression can't
+  // hide: line-to (6,2); cubic-to end (8,3) via controls (7,5) and (9,1). All must unwrap to exact meters,
+  // axis-preserving.
+  let pth = Path.Segs(List.push(List.push(List.push([],
+              PathSeg.MoveToAbs(Vec2.V2(meters(0/1), meters(0/1)))),
+              PathSeg.LineToAbs(Vec2.V2(meters(6/1), meters(2/1)))),
+              PathSeg.CubicToAbs(Vec2.V2(meters(8/1), meters(3/1)),
+                                 Vec2.V2(meters(7/1), meters(5/1)),
+                                 Vec2.V2(meters(9/1), meters(1/1))))) in
+  let model = Solid.ExtrudeLinear(Profile.PathProfile(pth), meters(4/1)) in
+  match lower(model) with
+    | Solid.ExtrudeLinear(p, h) =>
+      (match p with
+        | Profile.PathProfile(lp) =>
+          (match lp with | Path.Segs(xs) =>
+            // segment 1 is LineToAbs(6,2); segment 2 is CubicToAbs end(8,3) c0(7,5) c1(9,1).
+            (match List.at(xs, (1 : Int64)) with
+              | Option.Some(s1) => (match s1 with
+                  | PathSeg.LineToAbs(lp1) => (match lp1 with | Vec2.V2(lx, ly) =>
+                      if lx == 6/1 and ly == 2/1 then
+                        (match List.at(xs, (2 : Int64)) with
+                          | Option.Some(s2) => (match s2 with
+                              | PathSeg.CubicToAbs(e, c0, c1) =>
+                                (match e with | Vec2.V2(ex, ey) =>
+                                  (match c0 with | Vec2.V2(c0x, c0y) =>
+                                    (match c1 with | Vec2.V2(c1x, c1y) =>
+                                      if ex == 8/1 and ey == 3/1 and c0x == 7/1 and c0y == 5/1
+                                         and c1x == 9/1 and c1y == 1/1 and h == 4/1 then unit
+                                      else trap("units cubic seg lowers to end(8,3) c0(7,5) c1(9,1), height 4"))))
+                              | _ => trap("segment 2 is a CubicToAbs"))
+                          | Option.None => trap("segment 2 exists"))
+                      else trap("units line seg lowers to (6,2) axis-preserving"))
+                  | _ => trap("segment 1 is a LineToAbs"))
+              | Option.None => trap("segment 1 exists")))
+        | _ => trap("expected a PathProfile"))
+    | _ => trap("expected an ExtrudeLinear")
+
 export { meters, v3m, cube-m, sphere-m, cylinder-m, union-m, difference-m, intersection-m, translate-m, lower-v, lower }
