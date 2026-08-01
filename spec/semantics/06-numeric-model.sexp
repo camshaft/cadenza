@@ -7825,3 +7825,34 @@
   (call   main (: 16 Int64)) (output (: 4 Int64))
   (call   main (: 15 Int64)) (output (: 3 Int64))
   (call   main (: 9223372036854775807 Int64)) (output (: 3037000499 Int64)))
+
+; --- Construction-path equality for runtime Rationals (the computed-zero pin above covers
+; subtraction-to-zero; these pin the NONZERO arithmetic producers): every arithmetic result
+; must land on the one canonical byte form construction produces. ---
+
+(case "an addition-REACHED runtime Rational equals its constructed canonical form and not a decoy"
+  (doc    "The nonzero companion of the computed-zero pin: `(+ n/6 1/6)` at runtime n=2 is 3/6, which
+           must REDUCE to the same canonical node as the constructed `(Rational.of 1 2)` (tens digit)
+           and not equal the decoy 2/3 (ones digit) → 10; at n=3 it is 4/6 = 2/3, flipping both legs
+           → 1. An addition path that skipped the gcd reduction (left 3/6) or reduced to a different
+           byte form than construction would break the matching leg.")
+  (input  (do
+            (def (main (: n Int64))
+              (+ (* 10 (if (= (+ (Rational.of n 6) (Rational.of 1 6)) (Rational.of 1 2)) 1 0))
+                 (if (= (+ (Rational.of n 6) (Rational.of 1 6)) (Rational.of 2 3)) 1 0)))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 10 Int64))
+  (call   main (: 3 Int64)) (output (: 1 Int64)))
+
+(case "multiplication- and division-REACHED runtime Rationals equal the constructed canonical form"
+  (doc    "The remaining arithmetic producers: `(* 3/4 2/3)` = 6/12 must reduce to the constructed 1/2
+           (tens digit — the runtime companion of the const multiply-reduces pin), and `(/ 3/4 3/2)` =
+           (3/4)·(2/3) = 6/12 likewise (ones digit) → 11. Together with the addition case and the
+           computed-zero pin, every Rational arithmetic producer is pinned to land on the one canonical
+           byte form construction produces.")
+  (input  (do
+            (def (main (: n Int64))
+              (+ (* 10 (if (= (* (Rational.of n 4) (Rational.of 2 3)) (Rational.of 1 2)) 1 0))
+                 (if (= (/ (Rational.of n 4) (Rational.of 3 2)) (Rational.of 1 2)) 1 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 11 Int64)))

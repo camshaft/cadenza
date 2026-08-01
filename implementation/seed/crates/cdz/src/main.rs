@@ -3914,9 +3914,12 @@ fn passthrough_status(program: &std::path::Path, args: &[String], tool: &str) ->
 /// component (the >98% per-file emit/JIT cost). BEST-EFFORT: on any hiccup (compile declines, provider or a
 /// file's consumer absent, single file, multi-dir stem-collision) `run_test_file` FALLS BACK to its exact
 /// per-file `EmitTests` compile — behavior is never worse than before.
-/// A shared-closure PROVIDER peer: its component bytes + the interface name it exports (the consumer imports
-/// under this exact name). What a consumer is linked against via `run_with_peers`.
-type ProviderPeer = (Vec<u8>, String);
+/// A shared-closure PROVIDER peer: its component bytes, the interface name it exports (the consumer imports
+/// under this exact name), and the closure's CONTENT HASH (the same `Query::ClosureHash` value the
+/// `.provider.wasm` is keyed by, when available). The content hash — NOT the group key (which is the import
+/// NAME-set, stable across content edits) — is what a JIT-artifact (cwasm) cache must key on: a content change
+/// with an unchanged import set must invalidate the cwasm, else a stale compiled provider would be reused.
+type ProviderPeer = (Vec<u8>, String, Option<String>);
 
 #[derive(Default)]
 struct Precompiled {
@@ -4073,8 +4076,13 @@ fn precompile_group(
         .map(|a| (a.name.clone(), a.bytes.clone()))
         .collect();
     // Pair the provider with its interface name only when BOTH are present — a consumer can only be linked
-    // against a peer we can name; else the group's files fall back per-file (safe degrade).
-    (provider.zip(iface), consumers)
+    // against a peer we can name; else the group's files fall back per-file (safe degrade). Carry the closure
+    // CONTENT HASH so a JIT-artifact (cwasm) cache can key on it (content-addressed, not the import-name group
+    // key) — the cwasm must invalidate when the closure content changes even if the import set doesn't.
+    let peer = provider
+        .zip(iface)
+        .map(|(bytes, iface)| (bytes, iface, closure_hash.clone()));
+    (peer, consumers)
 }
 
 fn precompile_tests_per_file(files: &[String]) -> Precompiled {
@@ -4393,22 +4401,6 @@ fn run_test(args: &TestArgs) -> ExitCode {
     // subsequent per-file sweep reuses.
     let precompiled = precompile_tests_per_file(&files);
 
-    // `--warm-only`: we've now emitted + persisted every closure group's provider to the cache (that's what
-    // `precompile_tests_per_file` does on a miss). Stop here WITHOUT running the tests — a caller that will
-    // then sweep the suite per-file (each file its own process) now HITS the warmed cache instead of every
-    // file cold-emitting the shared closure in parallel. Report what warmed so the caller (and a human) can
-    // see the warm happened; a group whose emit DECLINED simply isn't in `providers` (its files will fall back
-    // to a standalone per-file compile in the sweep, exactly as without the cache — no worse than today).
-    if args.warm_only {
-        let groups = precompiled.providers.len();
-        println!(
-            "warmed {groups} shared-closure provider(s) into the cache ({} target file(s) across the suite) \
-             — a per-file `cdz test` sweep will now reuse them",
-            files.len()
-        );
-        return ExitCode::SUCCESS;
-    }
-
     // JIT each shared-closure PROVIDER ONCE for the whole project, up front — then every file's composition
     // reuses the JIT'd provider `Component` instead of re-JITing it from bytes per file. `Component::new` (the
     // wasmtime JIT) of the heavy closure (the ~1360-def self-host provider) is the DOMINANT per-file startup
@@ -4418,24 +4410,45 @@ fn run_test(args: &TestArgs) -> ExitCode {
     // per-file/per-test PASS/FAIL run below, so localization is untouched — we collapse the JIT, not the
     // reporting. A provider that fails to JIT here is simply omitted → that group's files fall back to their
     // standalone per-file compile in `run_test_file` (best-effort, no worse than before).
-    // JIT (or DESERIALIZE from a persisted cwasm) each shared provider. The group `key` is the closure's
-    // content hash, so when we have a cache dir we use `compile_provider_cached` — it persists the JIT'd
-    // artifact content-addressed by (closure-hash ‖ engine fingerprint) and DESERIALIZES it (fast, ~seconds)
-    // on a later gate with an unchanged closure, skipping the ~270s cold re-JIT of the heavy self-host closure
-    // (pr-sync's ask). Without a cache dir, fall back to a plain in-process JIT.
+    // DESERIALIZE from a persisted cwasm when possible: the group `key` is the closure's content hash, so with
+    // a cache dir we use `compile_provider_cached` — it persists the JIT'd artifact content-addressed by
+    // (closure-hash ‖ engine fingerprint) and DESERIALIZES it (fast, ~seconds) on a later gate with an
+    // unchanged closure, skipping the ~270s cold re-JIT of the heavy self-host closure. This runs BEFORE the
+    // `--warm-only` early-return too: `--warm-only` (the gate's serial warm pass) must persist the CWASM, not
+    // just the `.provider.wasm` emit — else the per-file sweep workers each cwasm-MISS and re-JIT (the 270s
+    // stall stays). So warming = emit-persist (precompile above) + JIT-persist (here). Without a cache dir,
+    // fall back to a plain in-process JIT.
     let provider_jit_start = std::time::Instant::now();
     let provider_cwasm_dir = provider_cache_dir();
     let jit_providers: std::collections::HashMap<String, cdz_run::CompiledProvider> = precompiled
         .providers
         .iter()
-        .filter_map(|(key, (bytes, iface))| {
-            let compiled = match &provider_cwasm_dir {
-                Some(dir) => cdz_run::compile_provider_cached(bytes, iface.clone(), dir, key),
-                None => cdz_run::compile_provider(bytes, iface.clone()),
+        .filter_map(|(key, (bytes, iface, content_hash))| {
+            // Key the cwasm by the closure CONTENT HASH (not the import-name group `key`), so a content edit
+            // invalidates it. Only cache when we HAVE a content hash + a cache dir; else plain in-process JIT.
+            let compiled = match (&provider_cwasm_dir, content_hash) {
+                (Some(dir), Some(hash)) => {
+                    cdz_run::compile_provider_cached(bytes, iface.clone(), dir, hash)
+                }
+                _ => cdz_run::compile_provider(bytes, iface.clone()),
             };
             compiled.ok().map(|p| (key.clone(), p))
         })
         .collect();
+
+    // `--warm-only`: the emit cache (`.provider.wasm`, precompile above) AND the JIT cache (`.cwasm`, the
+    // provider-JIT just above) are now both persisted. Stop here WITHOUT running the tests — a subsequent
+    // per-file sweep HITS both (skips the closure emit AND the ~270s re-JIT). Report what warmed.
+    if args.warm_only {
+        let groups = precompiled.providers.len();
+        let jitted = jit_providers.len();
+        println!(
+            "warmed {groups} shared-closure provider(s) — {jitted} JIT-cached (cwasm) — into the cache \
+             ({} target file(s) across the suite); a per-file `cdz test` sweep will now reuse both",
+            files.len()
+        );
+        return ExitCode::SUCCESS;
+    }
     // `--report-time`: the PROJECT-WIDE provider JIT — the dominant cost, paid ONCE here (the provider-JIT-once
     // fix) rather than per file. Emitting it up front makes the "big shared JIT happens once" explicit.
     if args.report_time && !jit_providers.is_empty() {
@@ -4709,12 +4722,11 @@ fn run_test_file(
             .components
             .get(&closure[0].name)
             .and_then(|(consumer, group_key)| {
-                precompiled
-                    .providers
-                    .get(group_key)
-                    .map(|(provider_bytes, iface)| {
+                precompiled.providers.get(group_key).map(
+                    |(provider_bytes, iface, _content_hash)| {
                         (consumer.clone(), provider_bytes, iface, group_key.as_str())
-                    })
+                    },
+                )
             });
     let component: Vec<u8> = if let Some((consumer, _, _, _)) = &composed {
         consumer.clone()

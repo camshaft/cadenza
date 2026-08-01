@@ -9,8 +9,10 @@
 //! Event unchanged, and that a malformed encoding is classified (not panicked on) as an `Err`. Note the
 //! torn-vs-corrupt SPLIT is the FRAMING layer's job, not this codec's error type: `decode_frames`
 //! detects a torn tail by a short read (a truncated length-prefix/body — it never even calls `decode`),
-//! and treats ANY `decode` failure on a COMPLETE frame as corruption. So this codec's error only means
-//! "this whole frame is bad" (→ Corrupt); the torn side is decided before decode is reached.
+//! then, on a COMPLETE frame, maps ANY `decode` failure to `Corrupt`. That "decode-error → Corrupt" rule
+//! is `decode_frames`' complete-frame CONVENTION, not `decode`'s own contract: `decode` called directly
+//! on truncated bytes can legitimately return the codec's `Truncated` ("not enough bytes"), which is only
+//! ever `Corrupt` because the framing layer has already ruled out truncation before it calls `decode`.
 //!
 //! Encoding shape (an s-expr form per event, head = a `Name` tag):
 //! - `(event <seq> <cause> <body>)` — `seq` an Int; `cause` is `(none)` or `(hash <bytes>)`.
