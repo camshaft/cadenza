@@ -8,7 +8,7 @@
 /// integer/bool subset, and they guard it as the reader/pipeline evolve.
 import { read-source } from "sread"
 
-import { is-bool-at, all-defs-well-typed } from "infer-db"
+import { is-bool-at, all-defs-well-scoped } from "infer-db"
 
 import { db-of } from "db"
 
@@ -22,10 +22,10 @@ import { run-of-db } from "db-eval"
 /// forced eval-tree here is gone (se-milestone-from-source passes over the Db now).
 def run-src(s: String) = match read-source(s) with
   | (root, tree) =>
-    // WHOLE-PROGRAM scope check FIRST: an unbound name in an UNCALLED sibling def is still ill-typed (rcdzc
-    // CDZ0101), but the demand-driven run only checks main's reachable set — so require EVERY def body to be
-    // well-typed before running, else DECLINE (matches the oracle's whole-program reject).
-    (if all-defs-well-typed(tree) then
+    // WHOLE-PROGRAM SCOPE check FIRST: an unbound name in an UNCALLED sibling def is still a hard reject (rcdzc
+    // CDZ0101), but the demand-driven run only resolves main's reachable set — so require EVERY def body to be
+    // WELL-SCOPED (no unbound name) before running, else DECLINE (matches the oracle's whole-program reject).
+    (if all-defs-well-scoped(tree) then
       (match run-of-db(db-of(tree), root) with | (_, v) => v)
      else Option.None(unit))
 
@@ -38,7 +38,7 @@ def run-src-typed(s: String) = match read-source(s) with
   | (root, tree) =>
     // Same whole-program scope check as run-src (this is the entry `cdz run-ml` calls, so the differential's
     // gap1 fix lives HERE): an unbound name in an uncalled sibling def declines, matching the oracle.
-    (if all-defs-well-typed(tree) then
+    (if all-defs-well-scoped(tree) then
       (match run-of-db(db-of(tree), root) with
         | (_, Option.Some(v)) => Option.Some((v, if is-bool-at(tree, root, root) then 1 else 0))
         | (_, Option.None(_)) => Option.None(unit) : Option(Tuple(Int64, Int64)))
@@ -119,7 +119,7 @@ def se-if-too-many-operands-declines() =
 def se-unbound-in-uncalled-sibling-declines() =
   // WHOLE-PROGRAM scope check: an UNBOUND name in an UNCALLED sibling def is still ill-typed (rcdzc CDZ0101).
   // `bad`'s body is a bare unbound `nonexistent`; main returns 42 without touching bad, but the demand-driven
-  // run used to skip bad (only main's reachable set checked) → ran to 42. all-defs-well-typed now scans EVERY
+  // run used to skip bad (only main's reachable set checked) → ran to 42. all-defs-well-scoped now scans EVERY
   // def body standalone for an RPoison (unbound name) → declines. Reject-path gap from the conf-db differential.
   match run-src("(do (def (bad) nonexistent) (def (main) 42) (export main))") with
     | Option.Some(_) => trap("an unbound name in an uncalled sibling def must DECLINE (CDZ0101), not run to 42")
@@ -128,10 +128,20 @@ def se-unbound-in-uncalled-sibling-declines() =
 @test
 def se-valid-uncalled-sibling-still-runs() =
   // the complement (guard against over-rejection): a VALID uncalled sibling (parameterized) does NOT block the
-  // run — its param uses resolve RBound (no RPoison), so all-defs-well-typed passes it. main → 42.
+  // run — its param uses resolve RBound (no RPoison), so all-defs-well-scoped passes it. main → 42.
   match run-src("(do (def (helper x) (+ x 1)) (def (main) 42) (export main))") with
     | Option.Some(v) => (if v == 42 then unit else trap("valid uncalled sibling → main runs 42"))
     | Option.None(_) => trap("a valid uncalled sibling must NOT block the run")
+
+@test
+def se-unbound-callee-head-in-uncalled-sibling-declines() =
+  // PR#997: an unbound name in CALL-HEAD position `(foo 1)` (not just value position) in an uncalled sibling
+  // must also DECLINE (CDZ0101). resolve-db's NApp arm used to leave an unknown callee head's fact ABSENT
+  // (no RPoison), so the whole-program scope scan missed it; now an unknown head (that is NOT a sum ctor) is
+  // RPoison'd. A sum-ctor head `(Some 5)` stays a construction (se-payload-ctor tests guard that complement).
+  match run-src("(do (def (bad) (foo 1)) (def (main) 42) (export main))") with
+    | Option.Some(_) => trap("an unbound callee head in an uncalled sibling must DECLINE (CDZ0101)")
+    | Option.None(_) => unit
 
 @test
 def se-let() =

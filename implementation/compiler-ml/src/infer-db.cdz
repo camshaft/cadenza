@@ -857,16 +857,18 @@ def well-typed(tree: Tree, root: Int64) = match type-at(tree, root, root) with
 /// `true` iff NO def body has an unbound name. Uses RESOLVE-level RPoison, NOT infer-level TErr, deliberately:
 /// a higher-order def like `(apply f x) = (f x)` is UNDER-DETERMINED standalone (its type is only fixed at the
 /// call site) and would spuriously infer TErr — but its names (`f`/`x` params) all RESOLVE fine (RBound), so
-/// the RPoison scan correctly passes it while still catching a genuine unbound name.
-def all-defs-well-typed(tree: Tree) = all-defs-well-typed-go(tree, def-table-entries(tree), 0)
+/// the RPoison scan correctly passes it while still catching a genuine unbound name. Covers BOTH an unbound
+/// name in value position AND in CALL-HEAD position `(foo 1)` (resolve-db's NApp arm now RPoison's an unknown
+/// callee head — PR#997; it used to leave the fact absent, one position the scan missed).
+def all-defs-well-scoped(tree: Tree) = all-defs-well-scoped-go(tree, def-table-entries(tree), 0)
 
-def all-defs-well-typed-go(tree: Tree, entries: List(Tuple(Int64, Int64)), i: Int64) =
+def all-defs-well-scoped-go(tree: Tree, entries: List(Tuple(Int64, Int64)), i: Int64) =
   (if i == List.len(entries) then true
    else (match List.at(entries, i) with
      | Option.Some((nameId, bodyId)) =>
          (if def-body-has-unbound(tree, nameId, bodyId) then false
-          else all-defs-well-typed-go(tree, entries, i + 1))
-     | Option.None(_) => all-defs-well-typed-go(tree, entries, i + 1)))
+          else all-defs-well-scoped-go(tree, entries, i + 1))
+     | Option.None(_) => all-defs-well-scoped-go(tree, entries, i + 1)))
 
 /// Does the def `nameId`'s body (at `bodyId`) contain an UNBOUND name (an `RPoison`) when resolved STANDALONE
 /// in the def's own param scope? Mirrors `def-arrow-type`'s standalone resolve (param scope so a param use is
@@ -1558,4 +1560,4 @@ def id-nmatchctor-terr-scrutinee-taints-match-pr849() =
                 | Option.Some(Typed.TErr) => unit                              // TErr scrutinee taints the match
                 | _ => trap("a TErr scrutinee must taint the whole NMatchCtor → TErr, not be masked by well-typed arms (PR#849)")))))))))
 
-export { infer-node, infer-tree, type-at, ground-deferred, well-typed, all-defs-well-typed, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type, bin-type, if-type, let-type, var-type }
+export { infer-node, infer-tree, type-at, ground-deferred, well-typed, all-defs-well-scoped, type-err-at, typed-count, is-bool-at, is-int-at, def-arrow-type, bin-type, if-type, let-type, var-type }
