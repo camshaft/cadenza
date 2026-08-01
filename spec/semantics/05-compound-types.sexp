@@ -7606,10 +7606,9 @@
                 ((list c .. t)
                   (try-coins t dp i
                     (if (<= c i)
-                        (let ((prev (at0 dp (- i c))))
-                          (omin best (match prev
-                                       ((None _u)  (None unit))
-                                       ((Some v)   (Some (+ v 1))))))
+                        (omin best (match (at0 dp (- i c))
+                                     ((None _u)  (None unit))
+                                     ((Some v)   (Some (+ v 1)))))
                         best)))))
             (def (build (: cs (List Int64)) (: i Int64) (: t Int64) (: dp (List (Option Int64))))
               (if (> i t)
