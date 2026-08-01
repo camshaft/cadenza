@@ -1656,20 +1656,31 @@ fn param_annot_ty(db: &mut Db, binder: StructId) -> Option<Ty> {
 /// literal `5`, a compound `(+ 1 2)`) keeps the generic phrasing — naming a literal adds nothing. `lead`
 /// prefixes the sentence ("a parameter's annotation" / "the type position of an annotation").
 fn non_type_annotation_message(db: &mut Db, ty_expr: StructId, lead: &str) -> String {
-    match db.ast.as_name(ty_expr).map(str::to_string) {
-        // A bare type-CONSTRUCTOR name used with NO argument — `(: xs List)`, `(: m Map)`. `List` IS a
-        // type (constructor), so "is a value, not a type" misleads; name the missing argument + the fix,
-        // the bare-name twin of the `(List Int64 Int64)` wrong-arity message.
-        Some(_) if bare_type_ctor_needs_argument(db, ty_expr).is_some() => {
-            let (name, placeholder) = bare_type_ctor_needs_argument(db, ty_expr).unwrap();
-            format!(
-                "`{name}` is a type constructor — it needs a type argument here, e.g. `({name} {placeholder})`"
-            )
-        }
-        Some(name) => format!(
+    let Some(name) = db.ast.as_name(ty_expr).map(str::to_string) else {
+        // A NON-name operand (a literal `5`, a compound `(+ 1 2)`) — naming a literal adds nothing.
+        return format!("{lead} requires a type, but found a non-type");
+    };
+    // Compute each classifier ONCE (each projects the resolved binding's metadata), then branch on the
+    // result — a bare name is at most ONE of these categories, so the checks are mutually exclusive.
+    if let Some((ctor, placeholder)) = bare_type_ctor_needs_argument(db, ty_expr) {
+        // A bare type-CONSTRUCTOR name used with NO argument — `(: xs List)`, `(: m Map)`. `List` IS a type
+        // (constructor), so "is a value, not a type" misleads; name the missing argument + the fix, the
+        // bare-name twin of the `(List Int64 Int64)` wrong-arity message.
+        format!(
+            "`{ctor}` is a type constructor — it needs a type argument here, e.g. `({ctor} {placeholder})`"
+        )
+    } else if let Some((default, widths)) = bare_width_ctor_default_type(db, ty_expr) {
+        // A bare WIDTH-FAMILY value ctor — `Int` / `UInt` / `Float`. It builds a SIZED type from a width
+        // (`(Int 64)` ≡ `Int64`), so a bare `Int` is a value; name the concrete sized default the author
+        // almost certainly meant + list the other widths, the rustc "perhaps you meant `i32`" analogue.
+        format!(
+            "`{name}` is a width constructor, not a type — {lead} requires a sized type; use `{default}` \
+             (or another width: {widths})"
+        )
+    } else {
+        format!(
             "`{name}` is a value, not a type — {lead} requires a type (e.g. annotate `(: value Int64)`)"
-        ),
-        None => format!("{lead} requires a type, but found a non-type"),
+        )
     }
 }
 
@@ -1708,6 +1719,31 @@ fn bare_type_ctor_needs_argument(db: &mut Db, ty_expr: StructId) -> Option<(Stri
         return None;
     }
     Some((td.name.clone(), td.params.join(" ")))
+}
+
+/// When the bare NAME at `ty_expr` is one of the WIDTH-FAMILY *value* constructors — `Int` / `UInt` /
+/// `Float` — return `(default, widths)`: the concrete default-width TYPE a user almost certainly meant
+/// (`Int64` / `UInt64` / `Float64`) plus a short list of the other sized widths in that family. These
+/// prelude names are value constructors that BUILD a sized type from a width literal (`(Int 64)` ≡ the
+/// `Int64` type), so a bare `(: a Int)` resolves to a VALUE, not a type — the near-universal newcomer
+/// reflex (`int`/`float` name a type in most other languages). Naming the sized default + offering it as
+/// a Replace fix turns the opaque "`Int` is a value, not a type" into a one-shot repair, the direct
+/// analogue of rustc's "help: perhaps you meant `i32`" for a bare `int`. `None` for any other name (an
+/// ordinary value, or a type constructor handled by `bare_type_ctor_needs_argument`). Keyed on the
+/// `(meta apply)` prim of the resolved binding — NOT the spelling — so a shadowing `(let ((Int …)) …)`
+/// never mis-fires (it resolves to the local, whose prim is not a width ctor).
+fn bare_width_ctor_default_type(
+    db: &mut Db,
+    ty_expr: StructId,
+) -> Option<(&'static str, &'static str)> {
+    // A bare NAME only — a compound `(Int 64)` is already a valid type and never reaches this reject path.
+    db.ast.as_name(ty_expr)?;
+    match crate::eval::meta_apply_of(db, ty_expr) {
+        Some(crate::resolved::Prim::IntCtor) => Some(("Int64", "`Int32`, `Int16`, `Int8`")),
+        Some(crate::resolved::Prim::UIntCtor) => Some(("UInt64", "`UInt32`, `UInt16`, `UInt8`")),
+        Some(crate::resolved::Prim::FloatCtor) => Some(("Float64", "`Float32`")),
+        _ => None,
+    }
 }
 
 /// Validate a NON-type-denoting annotation type expression `ty_expr` (one `typeval_of` rejected), pushing
@@ -1827,13 +1863,18 @@ fn validate_non_type_annotation(
         if let Some((arg, msg)) = non_type_argument_message(db, ty_expr) {
             out.push(Reject::coded(Code::TypeMismatch, format!("{lead}: {msg}")).at(arg));
         } else {
-            out.push(
-                Reject::coded(
-                    Code::TypeMismatch,
-                    non_type_annotation_message(db, ty_expr, lead),
-                )
-                .at(ty_expr),
-            );
+            let mut reject = Reject::coded(
+                Code::TypeMismatch,
+                non_type_annotation_message(db, ty_expr, lead),
+            )
+            .at(ty_expr);
+            // A bare width ctor (`Int`/`UInt`/`Float`) carries a one-shot Replace to the sized default —
+            // applying `Int`→`Int64` clears the fault. Heuristic (the author may have wanted a narrower
+            // width), but the default retype type-checks in one edit.
+            if let Some((default, _)) = bare_width_ctor_default_type(db, ty_expr) {
+                reject = reject.with_fix(Fix::replace_heuristic(ty_expr, default));
+            }
+            out.push(reject);
         }
     }
 }
