@@ -29,6 +29,22 @@ pub fn is_mirrored_kind(kind: &str) -> bool {
     MIRRORED_KINDS.contains(&kind)
 }
 
+/// Upper bound on how many mirrored threads the map retains. The bridge is a LONG-LIVED daemon (the
+/// fleet's reliability backbone — it runs for weeks), and `record` is called for every mirrored
+/// `ask`/`backlog`, so without a bound `slack-threads.json` grows forever: an unbounded memory + disk
+/// leak, and — because the outbound loop `load`s (parse) and `save`s (serialize) the WHOLE map every
+/// couple of seconds — a per-tick cost that grows with history. Capping keeps both O(1)-ish.
+///
+/// Pruning the OLDEST threads is safe: `by_thread` is keyed by the Slack `thread_ts` (a `<epoch>.<frac>`
+/// string that sorts chronologically), so the first keys are the oldest, and any still-pending concierge
+/// ask is by definition recent. The two degraded outcomes are both benign — an operator reply in a
+/// pruned (ancient) thread falls through to a free-form `note` instead of an `answer`, and a pruned
+/// `by_key` entry can at worst re-mirror an ask that is STILL sitting unprocessed in the concierge inbox
+/// after this many newer asks arrived, which is a harmless idempotent duplicate (`DESIGN.md`: asks are
+/// idempotent by ask-id, whichever channel answers first wins). 1000 is generous (weeks of asks) yet
+/// keeps the file small (~150 KB) so the every-2s load/save stays cheap.
+pub const MAX_THREADS: usize = 1000;
+
 /// A stable identity for a concierge inbox message, so we mirror it exactly once even though the concierge
 /// file lingers (we don't consume it). The inbox filename is unique per delivery (`<seq>-<pid>-<kind>`), so
 /// we key on it. `select_to_mirror` compares against the set of keys already in the [`ThreadMap`].
@@ -69,6 +85,7 @@ impl ThreadMap {
     }
 
     /// Record a freshly-posted mirror: the Slack `thread_ts`, the concierge message key, and the ask.
+    /// Prunes the oldest threads past [`MAX_THREADS`] so a long-lived daemon's map can't grow unbounded.
     pub fn record(
         &mut self,
         thread_ts: impl Into<String>,
@@ -78,6 +95,23 @@ impl ThreadMap {
         let ts = thread_ts.into();
         self.by_key.insert(key.into(), ts.clone());
         self.by_thread.insert(ts, ask);
+        self.prune();
+    }
+
+    /// Evict the oldest threads until at most [`MAX_THREADS`] remain. `by_thread` is keyed by the
+    /// chronologically-sortable Slack `thread_ts`, so its first keys are the oldest; we drop those and the
+    /// `by_key` entries that point at them, keeping the two indices consistent (a leftover `by_key` row
+    /// pointing at an evicted thread would merely miss the dedup — a harmless re-mirror — but we keep them
+    /// in lockstep so the map stays a faithful bijection). Cheap and a no-op under the cap.
+    fn prune(&mut self) {
+        while self.by_thread.len() > MAX_THREADS {
+            // First key = oldest thread_ts.
+            let Some(oldest) = self.by_thread.keys().next().cloned() else {
+                break;
+            };
+            self.by_thread.remove(&oldest);
+            self.by_key.retain(|_, ts| *ts != oldest);
+        }
     }
 
     /// The asker to route an `answer` to, given a Slack thread the operator replied in.
@@ -271,6 +305,86 @@ mod tests {
         let dir = tmp_dir("bad");
         std::fs::write(ThreadMap::path(&dir), "{not valid json").unwrap();
         assert_eq!(ThreadMap::load(&dir), ThreadMap::default());
+    }
+
+    #[test]
+    fn record_bounds_the_map_to_max_threads() {
+        // A long-lived daemon records one entry per mirrored ask forever; the map MUST stay bounded so
+        // slack-threads.json can't leak memory/disk and the every-2s load/save stays cheap.
+        let mut map = ThreadMap::default();
+        let over = MAX_THREADS + 250;
+        for i in 0..over {
+            // thread_ts as a chronologically-sortable "<epoch>.<frac>"; monotically increasing i keeps
+            // insertion == chronological order, so the oldest are the first-inserted.
+            map.record(
+                format!("17000{:06}.0001", i),
+                format!("{:012}-1-ask.json", i),
+                MirroredAsk {
+                    asker: format!("v-{i}"),
+                    kind: "ask".into(),
+                    subject: "s".into(),
+                },
+            );
+        }
+        assert_eq!(map.by_thread.len(), MAX_THREADS, "by_thread capped");
+        assert_eq!(map.by_key.len(), MAX_THREADS, "by_key stays in lockstep");
+        // The OLDEST (first-inserted) were evicted; the NEWEST are retained.
+        assert!(
+            map.asker_for_thread("17000000000.0001").is_none(),
+            "oldest thread pruned"
+        );
+        assert!(
+            map.asker_for_thread(&format!("17000{:06}.0001", over - 1))
+                .is_some(),
+            "newest thread retained"
+        );
+    }
+
+    #[test]
+    fn prune_keeps_indices_consistent_and_survives_disk() {
+        // After pruning, every by_key entry must still point at a live by_thread entry (a faithful
+        // bijection), and the bounded map must round-trip through save/load unchanged.
+        let dir = tmp_dir("prune-persist");
+        let mut map = ThreadMap::default();
+        for i in 0..(MAX_THREADS + 10) {
+            map.record(
+                format!("17000{:06}.0001", i),
+                format!("{:012}-1-ask.json", i),
+                MirroredAsk {
+                    asker: format!("v-{i}"),
+                    kind: "ask".into(),
+                    subject: "s".into(),
+                },
+            );
+        }
+        for ts in map.by_key.values() {
+            assert!(
+                map.by_thread.contains_key(ts),
+                "by_key points at a live thread {ts}"
+            );
+        }
+        map.save(&dir).unwrap();
+        let loaded = ThreadMap::load(&dir);
+        assert_eq!(loaded, map, "bounded map round-trips through disk");
+        assert_eq!(loaded.by_thread.len(), MAX_THREADS);
+    }
+
+    #[test]
+    fn under_the_cap_nothing_is_pruned() {
+        let mut map = ThreadMap::default();
+        for i in 0..5 {
+            map.record(
+                format!("17000{:06}.0001", i),
+                format!("{:012}-1-ask.json", i),
+                MirroredAsk {
+                    asker: format!("v-{i}"),
+                    kind: "ask".into(),
+                    subject: "s".into(),
+                },
+            );
+        }
+        assert_eq!(map.by_thread.len(), 5, "no eviction below the cap");
+        assert!(map.asker_for_thread("17000000000.0001").is_some());
     }
 
     #[test]
