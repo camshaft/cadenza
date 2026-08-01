@@ -1486,3 +1486,32 @@
             (export main)))
   (call   main (: 3 Int64))
   (output (: 28 Int64)))
+
+; --- Construction-path equality for row-op results with RUNTIME leaves (the const twins
+; above fold before emit; these run the heap path-copies). ---
+
+(case "without- and with-REACHED records with runtime leaves equal the directly-built record"
+  (doc    "The runtime-leaf face of row-op result canonicalization (the const twins fold before emit):
+           `(Record.without {a:n, b:2} (b))` — a genuine heap path-copy dropping a field — must equal
+           the directly-built {a:n} (tens digit), and `(Record.with {a:1, b:n} a 9)` must equal
+           {a:9, b:n} (ones digit) → 11. A row-op that left the dropped field's slot behind (or copied
+           the updated record onto a different field layout than direct construction) breaks a leg.")
+  (input  (do
+            (def (main (: n Int64))
+              (+ (* 10 (if (= (Record.without (record (a n) (b 2)) (b)) (record (a n))) 1 0))
+                 (if (= (Record.with (record (a 1) (b n)) #"a" 9) (record (a 9) (b n))) 1 0)))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 11 Int64)))
+
+(case "merge- and extend-REACHED records with runtime leaves equal the directly-built record"
+  (doc    "The growing row-ops: `(Record.merge {a:n} {b:2})` unions two runtime records (tens digit) and
+           `(Record.extend {a:n} b 2)` adds a field (ones digit) — both must land on the identical byte
+           form as the directly-written {a:n, b:2} → 11. Merge assembles from two heap operands and
+           extend from one plus a fresh leaf; either landing on a different canonical field order than
+           literal construction would compare unequal while projecting identically.")
+  (input  (do
+            (def (main (: n Int64))
+              (+ (* 10 (if (= (Record.merge (record (a n)) (record (b 2))) (record (a n) (b 2))) 1 0))
+                 (if (= (Record.extend (record (a n)) #"b" 2) (record (a n) (b 2))) 1 0)))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 11 Int64)))
