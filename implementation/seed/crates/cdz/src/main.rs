@@ -4409,6 +4409,29 @@ fn run_test(args: &TestArgs) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // JIT each shared-closure PROVIDER ONCE for the whole project, up front — then every file's composition
+    // reuses the JIT'd provider `Component` instead of re-JITing it from bytes per file. `Component::new` (the
+    // wasmtime JIT) of the heavy closure (the ~1360-def self-host provider) is the DOMINANT per-file startup
+    // cost — the "sits there for a bit when each file's tests start" stall — so hoisting it out of the per-file
+    // loop makes the project JIT the closure 1×, not N× (the rust-test-harness model: compile the shared code
+    // once, then run every test against it). Each file still gets its own thin consumer + its own
+    // per-file/per-test PASS/FAIL run below, so localization is untouched — we collapse the JIT, not the
+    // reporting. A provider that fails to JIT here is simply omitted → that group's files fall back to their
+    // standalone per-file compile in `run_test_file` (best-effort, no worse than before).
+    let jit_providers: std::collections::HashMap<String, cdz_run::CompiledProvider> = precompiled
+        .providers
+        .iter()
+        .filter_map(|(key, (bytes, iface))| {
+            cdz_run::compile_provider(bytes, iface.clone())
+                .ok()
+                .map(|p| (key.clone(), p))
+        })
+        .collect();
+    let pre = PrecompiledRun {
+        precompiled: &precompiled,
+        jit_providers: &jit_providers,
+    };
+
     let mut total_pass = 0usize;
     let mut total_fail = 0usize;
     let mut any_error = false; // a file whose compile DECLINED (distinct from a test that failed)
@@ -4427,7 +4450,7 @@ fn run_test(args: &TestArgs) -> ExitCode {
             &store,
             args.trials,
             args.seed,
-            &precompiled,
+            &pre,
         ) {
             Ok((p, f)) => {
                 total_pass += p;
@@ -4496,6 +4519,15 @@ fn run_test(args: &TestArgs) -> ExitCode {
 /// (its errors are printed to stderr) — distinct from a clean run where some tests failed. A file with no
 /// matching `@test` prints nothing and returns `(0, 0)` (vacuously green), so a directory of mixed
 /// modules — some without tests — aggregates cleanly.
+/// The project-wide precompiled state a `cdz test` run threads into each file's [`run_test_file`]: the
+/// per-closure grouping's components/providers ([`Precompiled`]) PLUS the providers JIT'd ONCE up front
+/// (shared across every file so the heavy closure isn't re-JIT'd per file). Bundled so `run_test_file` takes
+/// one context arg instead of two parallel maps.
+struct PrecompiledRun<'a> {
+    precompiled: &'a Precompiled,
+    jit_providers: &'a std::collections::HashMap<String, cdz_run::CompiledProvider>,
+}
+
 fn run_test_file(
     file: &str,
     filter: Option<&str>,
@@ -4503,8 +4535,10 @@ fn run_test_file(
     store: &std::path::Path,
     trials: u64,
     seed: u64,
-    precompiled: &Precompiled,
+    pre: &PrecompiledRun<'_>,
 ) -> Result<(usize, usize), ()> {
+    let precompiled = pre.precompiled;
+    let jit_providers = pre.jit_providers;
     // Follow the entry file's IMPORT CLOSURE so a test in a module that imports a sibling (e.g. a pass
     // that reuses another module's type) resolves + runs — `cdz test FILE` sees the SAME linked program
     // `cdz check FILE` does. A file that imports nothing loads as a lone file, byte-identical to a
@@ -4657,9 +4691,11 @@ fn run_test_file(
                 precompiled
                     .providers
                     .get(group_key)
-                    .map(|(provider_bytes, iface)| (consumer.clone(), provider_bytes, iface))
+                    .map(|(provider_bytes, iface)| {
+                        (consumer.clone(), provider_bytes, iface, group_key.as_str())
+                    })
             });
-    let component: Vec<u8> = if let Some((consumer, _, _)) = &composed {
+    let component: Vec<u8> = if let Some((consumer, _, _, _)) = &composed {
         consumer.clone()
     } else {
         let mut inputs = ast_arts;
@@ -4724,7 +4760,7 @@ fn run_test_file(
             // Consumer already pins the runtime — use it (same bytes the provider would resolve to).
             (Some(rt), _) => Some(rt),
             // Consumer imports no runtime but a provider peer may: resolve from the provider bytes.
-            (None, Some((_, provider_bytes, _))) => {
+            (None, Some((_, provider_bytes, _, _))) => {
                 match resolve_test_runtime(provider_bytes, store) {
                     Ok(r) => r,
                     Err(e) => {
@@ -4744,14 +4780,26 @@ fn run_test_file(
     // component. COMPOSED (Option-C): the consumer + its shared-closure provider peer, JIT'd into ONE
     // `CompiledComposition` (consumer + peer Components) reused per trial — so a multi-trial property test
     // does NOT re-JIT the composition per trial (PR#892 materialize-once fix). Both reuse across trials.
-    let target = if let Some((consumer, provider_bytes, iface)) = composed {
-        match cdz_run::compile_composition(
-            &consumer,
-            &[cdz_run::Peer {
-                bytes: provider_bytes.clone(),
-                interface: iface.clone(),
-            }],
-        ) {
+    let target = if let Some((consumer, provider_bytes, iface, group_key)) = composed {
+        // Prefer the PROJECT-WIDE pre-JIT'd provider (JIT'd ONCE in `run_test`, shared across every file) so
+        // the heavy shared closure is not re-JIT'd per file — the per-file startup-stall fix. Only the thin
+        // consumer is JIT'd here. Fall back to JITing the provider from bytes if it's somehow absent from the
+        // map (a provider that failed to pre-JIT, or a caller that didn't pre-JIT) — behavior-identical, just
+        // without the reuse. Both paths produce the SAME `CompiledComposition`, so the run is unchanged.
+        let composition = match jit_providers.get(group_key) {
+            Some(jit_provider) => cdz_run::compile_composition_with_providers(
+                &consumer,
+                std::slice::from_ref(jit_provider),
+            ),
+            None => cdz_run::compile_composition(
+                &consumer,
+                &[cdz_run::Peer {
+                    bytes: provider_bytes.clone(),
+                    interface: iface.clone(),
+                }],
+            ),
+        };
+        match composition {
             Ok(c) => RunTarget::Composed(c),
             Err(e) => {
                 eprintln!("{PROG}: {file}: could not compile the composed test component: {e:#}");
