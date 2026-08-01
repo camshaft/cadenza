@@ -719,6 +719,7 @@ pass	a GROUP-BY then REDUCE-over-groups pipeline — build a multimap, enumerate
 pass	a GUARD over a QUOTE pattern compares two bound subtrees — the x=x algebraic rewrite
 pass	a HOF callback matching a tuple argument computes through the nested reduction
 pass	a HOF callback matching its sum argument reaches the nullary arm
+pass	a KNOWN type's UNKNOWN variant constructed in an uncalled def is rejected
 pass	a LAZY comparator chain (Ordering + thunk) short-circuits on decisive and falls through on Equal
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
@@ -3728,8 +3729,10 @@ pass	an unannotated helper re-exported through a chain instantiates at TWO types
 pass	an unannotated predicate closure is inferred through a recursive counting HOF
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unannotated two-argument closure is inferred through a generic recursive HOF
+pass	an unbound CONSTRUCTOR applied in an uncalled def is rejected
 pass	an unbound TYPE name in an uncalled definition's annotation is still rejected
 pass	an unbound name as a parameter's annotation type is rejected
+pass	an unbound name as an ARGUMENT to a known ctor in an uncalled def is rejected
 pass	an unbound name in a map key is a scope error, not a coerced string
 pass	an unbound name in a resume's state position is rejected
 pass	an unbound name in a short-circuited boolean operand is still rejected

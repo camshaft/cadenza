@@ -1804,3 +1804,39 @@ just an effect whose result arrives (much) later as a recorded result event (§1
 different in shape from any other deferred effect — the reducer already resumes on the result whenever
 it lands. So "batch" is a latency-class hint the executor honors, not new kernel machinery. Note when
 model-invocation modeling lands: thread this priority class through the model effect's request record.
+
+## 21. Operator kernel-comments reorder (2026-08-01, round 4) — wasmtime core, CAS-first, real-Cadenza E2E
+
+Three operator comments on the wasm-kernel work, reshaping the §19b slice order. Standing principle
+throughout: "raise issues and get them fixed, don't work around them."
+
+### 21a. wasmtime is CORE, not optional (done)
+The kernel IS a reactive wasm runtime — wasmtime is the ENGINE, not an optional add-on. The earlier
+`wasm-reducer` feature-gate imported cdz-run's "wasmtime is edge-only" isolation (right for a
+compiler-adjacent tool, wrong for the kernel). wasmtime + the component host are now a non-optional
+kernel dependency; the feature is gone. (`live-exec` stays gated — a real security/spawn gate.)
+
+### 21b. Component-dependency linking requires CAS FIRST (reorders the plan)
+Real Cadenza reducers IMPORT the value-heap runtime component (they can't run standalone), so the kernel
+must LINK component dependencies — compose the reducer component with the runtime component, resolving
+each by content hash. That requires a **content-addressable blob store** (hash→bytes fetch). Current CAS
+state: content-ADDRESSING exists (`hash.rs` + content-addressed events/KV-roots), but there is NO blob
+store yet (the §4 blob store is designed, not built). So CAS is a genuine prerequisite. Dependency order:
+**(i) CAS blob store → (ii) component-dependency linking → (iii) real-Cadenza reducers.**
+
+### 21c. Real Cadenza reducers are the END-TO-END target; the Rust fixture is INTERIM
+The wit-bindgen Rust guest (Option A) is fine to bring up the host machinery + prove the WIT binds, but
+the operator's real bar is a **Cadenza-authored reducer via rcdzc→wasm-component**, run end-to-end, to
+prove the reducer INTERFACE is right + not over-specialized for Rust, and to **surface missing
+Cadenza/rcdzc functionality**. A Rust guest doesn't need the runtime component (no Cadenza runtime
+import), so it can bring up the host in parallel; the real E2E (Cadenza reducer) is gated on 21b
+(CAS + linking). When a real Cadenza reducer surfaces a gap (rcdzc can't emit the component/import
+shape, Cadenza can't express the reducer signature, the WIT assumes Rust-isms), **RAISE it to the owning
+lane** (rcdzc = v-rust-backend/v-compiler-ml; runtime = v-runtime; syntax = v-syntax) — do NOT work
+around.
+
+### 21d. Reordered slice plan (supersedes the §19b/§19d tail)
+[A: Rust wit-bindgen fixture — INTERIM host bring-up, in flight] → 21a wasmtime-core (done) →
+CAS blob store → component-dependency linking (compose reducer + runtime by hash) → real-Cadenza
+reducer end-to-end (surfacing + routing any Cadenza/rcdzc gaps). The in-process Rust `Reducer` trait
+stays the working reducer path until the component path is proven end-to-end with a real Cadenza reducer.

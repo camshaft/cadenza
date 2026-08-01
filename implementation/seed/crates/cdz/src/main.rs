@@ -4418,6 +4418,7 @@ fn run_test(args: &TestArgs) -> ExitCode {
     // per-file/per-test PASS/FAIL run below, so localization is untouched — we collapse the JIT, not the
     // reporting. A provider that fails to JIT here is simply omitted → that group's files fall back to their
     // standalone per-file compile in `run_test_file` (best-effort, no worse than before).
+    let provider_jit_start = std::time::Instant::now();
     let jit_providers: std::collections::HashMap<String, cdz_run::CompiledProvider> = precompiled
         .providers
         .iter()
@@ -4427,9 +4428,19 @@ fn run_test(args: &TestArgs) -> ExitCode {
                 .map(|p| (key.clone(), p))
         })
         .collect();
+    // `--report-time`: the PROJECT-WIDE provider JIT — the dominant cost, paid ONCE here (the provider-JIT-once
+    // fix) rather than per file. Emitting it up front makes the "big shared JIT happens once" explicit.
+    if args.report_time && !jit_providers.is_empty() {
+        println!(
+            "⏱ provider JIT: {} shared closure(s) JIT'd once in {}ms",
+            jit_providers.len(),
+            provider_jit_start.elapsed().as_millis()
+        );
+    }
     let pre = PrecompiledRun {
         precompiled: &precompiled,
         jit_providers: &jit_providers,
+        report_time: args.report_time,
     };
 
     let mut total_pass = 0usize;
@@ -4526,6 +4537,8 @@ fn run_test(args: &TestArgs) -> ExitCode {
 struct PrecompiledRun<'a> {
     precompiled: &'a Precompiled,
     jit_providers: &'a std::collections::HashMap<String, cdz_run::CompiledProvider>,
+    /// `--report-time`: emit per-phase (compose/run) + per-test durations (like `cargo test --report-time`).
+    report_time: bool,
 }
 
 fn run_test_file(
@@ -4780,6 +4793,8 @@ fn run_test_file(
     // component. COMPOSED (Option-C): the consumer + its shared-closure provider peer, JIT'd into ONE
     // `CompiledComposition` (consumer + peer Components) reused per trial — so a multi-trial property test
     // does NOT re-JIT the composition per trial (PR#892 materialize-once fix). Both reuse across trials.
+    // `--report-time`: time the COMPOSE phase (this file's consumer JIT — the provider was JIT'd once up front).
+    let compose_start = std::time::Instant::now();
     let target = if let Some((consumer, provider_bytes, iface, group_key)) = composed {
         // Prefer the PROJECT-WIDE pre-JIT'd provider (JIT'd ONCE in `run_test`, shared across every file) so
         // the heavy shared closure is not re-JIT'd per file — the per-file startup-stall fix. Only the thin
@@ -4821,6 +4836,9 @@ fn run_test_file(
     // runs `trials` times with generated inputs; it PASSES only if every trial returns, and FAILS on the
     // first trapping trial — reported with the failing inputs (shrunk toward a minimal counterexample) + the
     // seed to replay. The runtime cache dir is the store, so the JIT-compiled runtime is reused per trial.
+    let compose_ms = compose_start.elapsed().as_millis();
+    let run_start = std::time::Instant::now();
+
     let mut passed = 0usize;
     let mut failed = 0usize;
     for TestSpec {
@@ -4836,6 +4854,10 @@ fn run_test_file(
         let run_one = |arg_vals: &[String]| -> TrialOutcome {
             run_one_trial(&target, runtime.as_deref(), &kebab, store, arg_vals)
         };
+        // `--report-time`: per-TEST duration. Snapshot the fail-counter + a timer around this test's run;
+        // after its `match` arm prints PASS/FAIL, emit a ` ⏱ {name} {ms}ms` line (like `cargo --report-time`).
+        let test_start = std::time::Instant::now();
+        let fail_before = failed;
         match gens {
             // A parameter whose type is not a generatable scalar — cannot property-test it. Report + fail.
             None => {
@@ -5062,6 +5084,26 @@ fn run_test_file(
                 }
             },
         }
+        // Per-test duration (like `cargo test --report-time`) — a compact line under the test's PASS/FAIL,
+        // emitted only under `--report-time` so the default output is unchanged. Label the outcome so a slow
+        // PASS and a slow FAIL are both attributable at a glance.
+        if pre.report_time {
+            let outcome = if failed > fail_before { "FAIL" } else { "PASS" };
+            println!(
+                "  ⏱ {outcome} {name} {}ms",
+                test_start.elapsed().as_millis()
+            );
+        }
+    }
+
+    // Per-STEP timing for this file (compose = this file's consumer JIT; run = all its tests) — the "where the
+    // time goes" breakdown the operator asked for. The heavy shared-closure provider JIT is NOT here — it's
+    // paid ONCE up front in `run_test` (reported there), which is the whole point of the provider-JIT-once fix.
+    if pre.report_time {
+        println!(
+            "  ⏱ {file}: compose {compose_ms}ms · run {}ms",
+            run_start.elapsed().as_millis()
+        );
     }
 
     println!("\n{passed} passed, {failed} failed");
@@ -5145,6 +5187,7 @@ fn run_watch(args: &WatchArgs) -> ExitCode {
                 trials,
                 seed,
                 warm_only: false, // watch RUNS the tests on each change, never a warm-only pass
+                report_time: false, // watch is an interactive re-run; timing is an opt-in of a direct run
             }),
             WatchCmd::Build => run_build(&BuildArgs {
                 dir: Some(dir_str.clone()),
@@ -6657,6 +6700,12 @@ struct TestArgs {
     /// failure prints the seed to replay with `--seed`). Default 0 (deterministic run-to-run).
     #[arg(long, default_value_t = 0)]
     seed: u64,
+    /// Report TIMING: emit how long each phase takes (per-file provider JIT / compose / run) AND each
+    /// individual test's duration — like `cargo test --report-time`, so it's explicit "where the time goes".
+    /// Off by default (the normal PASS/FAIL output is unchanged); when set, each test line gains a ` (Nms)`
+    /// suffix and per-file a `  ⏱ compose Nms · run Nms` line is emitted.
+    #[arg(long)]
+    report_time: bool,
     /// WARM the shared-closure provider cache for the resolved suite, then EXIT WITHOUT running any tests.
     /// Emits + persists each closure GROUP's provider once (serially), so a SUBSEQUENT per-file `cdz test`
     /// sweep — e.g. the gate running each file as its own process for runaway-compile localization — HITS the

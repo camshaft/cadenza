@@ -26,20 +26,19 @@ publish = false
 # the old crate's CI used. CI must lint AND TEST `--features live-exec` (the failure mode is behavioral:
 # a real exit code flows into the fold, so a clippy-only gate wouldn't catch a regression on it).
 live-exec = []
-# `wasm-reducer` gates the wasmtime component host that runs a reducer as a wasm COMPONENT bound to
-# wit/reducer.wit (the `cadenza:agent-kernel` world — operator directive §19b: component-model at the
-# guest boundary). OFF by default so the default build stays light (wasmtime is a heavy tree — kept out
-# of the minimal floor the way cdz-run isolates it). The in-process Rust `Reducer` trait is the interim;
-# this is the real boundary. CI lints+builds this feature (execution tests arrive with the guest fixture).
-wasm-reducer = ["dep:wasmtime"]
+# NOTE: wasmtime is NO LONGER feature-gated (was `wasm-reducer`). Per operator directive (2026-08-01):
+# the kernel IS a reactive wasm runtime — wasmtime is the ENGINE, not an optional add-on. The earlier
+# feature-gate imported cdz-run's "wasmtime is an edge-only dep" isolation, which is the wrong context
+# for the kernel. wasmtime + the component host (wasm_host.rs) are now core. (Only `live-exec` stays
+# gated — that's a real security/spawn gate, a different rationale.)
 
 [dependencies]
 # blake3: content-addressing for events, KV nodes, and blobs. Fast, no_std-friendly, stable digest.
 blake3 = "1"
-# wasmtime (component host, feature-gated): binds wit/reducer.wit and runs a reducer component. Same
-# version + minimal feature set cdz-run uses (runtime + cranelift + component-model), so the kernel and
-# the rest of the tree agree on one wasmtime. Optional — only the `wasm-reducer` feature pulls it.
-wasmtime = { version = "37", default-features = false, features = ["runtime", "cranelift", "component-model"], optional = true }
+# wasmtime — the CORE reactive-wasm engine (component host in wasm_host.rs binds wit/reducer.wit + runs
+# reducer components). Same version + minimal feature set cdz-run uses (runtime + cranelift +
+# component-model), so the whole tree agrees on one wasmtime. NOT optional — it's the kernel's engine.
+wasmtime = { version = "37", default-features = false, features = ["runtime", "cranelift", "component-model"] }
 
 [dev-dependencies]
 # `wat` (WebAssembly text → bytes) — authors tiny component fixtures in the wasm-reducer tests (the

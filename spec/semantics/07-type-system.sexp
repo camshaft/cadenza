@@ -1896,3 +1896,32 @@
             (def (main) 42)
             (export main)))
   (error  CDZ0101))
+
+; --- Constructor-position validation-walk probes (uncalled-def CONSTRUCTION faces; the ML
+; differential classifies each — all three decline in ML today, coverage-not-yet). ---
+
+(case "an unbound CONSTRUCTOR applied in an uncalled def is rejected"
+  (doc    "The construction-position face of the uncalled-def scope walk: `(NoSuchCtor 1)` in a never-called def's body — a reachability skip that only validates ctor heads on the called path runs to 42. rcdzc rejects CDZ0101; the pattern-position twin (an unbound ctor as a match-arm HEAD) is pinned in 05-compound-types.")
+  (input  (do
+            (def (unused) (NoSuchCtor 1))
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0101))
+
+(case "a KNOWN type's UNKNOWN variant constructed in an uncalled def is rejected"
+  (doc    "Sharper than the bare-unbound-ctor case: a type T with variant Mk IS declared, and the uncalled def constructs `(NoSuchVariant 1)` — a walk that treats any capitalized head as a possibly-later-declared ctor (because SOME type exists) runs instead of rejecting. rcdzc rejects CDZ0101.")
+  (input  (do
+            (type T (Mk Int64))
+            (def (unused) (NoSuchVariant 1))
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0101))
+
+(case "an unbound name as an ARGUMENT to a known ctor in an uncalled def is rejected"
+  (doc    "The ctor-ARGUMENT face: the head `Mk` resolves (T is declared) but its operand `no-such-value` is unbound, inside an uncalled def — a walk that validates the ctor head then skips descending into its operands runs to 42. rcdzc rejects CDZ0101.")
+  (input  (do
+            (type T (Mk Int64))
+            (def (unused) (Mk no-such-value))
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0101))
