@@ -160,6 +160,15 @@ def se-let-refutable-literal-binder-declines() =
     | Option.None(_) => unit
 
 @test
+def se-let-negative-literal-binder-declines() =
+  // the NEGATIVE-literal twin (PR#998): `-1` in binder position is also a refutable literal → CDZ0210. The
+  // digit-led guard misses `-1` (leads with `-`, not a digit), so the guard also rejects a `-`-led binder.
+  // (A negative VALUE `(let ((x -5)) x)` still runs — the guard is on the BINDER name, not the value.)
+  match run-src("(do (def (main) (let ((-1 5)) 42)) (export main))") with
+    | Option.Some(_) => trap("a negative-literal let-binder must DECLINE (CDZ0210), not run to 42")
+    | Option.None(_) => unit
+
+@test
 def se-let-multi-binding() =
   // MULTI-binding let `(let ((x 5) (y 10)) (+ x y))` → 15. Desugars to nested single-lets
   // `(let ((x 5)) (let ((y 10)) (+ x y)))`, which resolve/lower/eval already handle. Matches the reference

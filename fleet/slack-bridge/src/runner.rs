@@ -359,9 +359,18 @@ fn spawn_operator_wake(to: String) {
                 return;
             }
         };
-        // Exit 0 = woke, non-zero = a valid skip (stopped/no-window/mid-tick). Neither is an error.
+        // `fleet wake` exits 0 whether it WOKE or SKIPPED (stopped/no-window/mid-tick) — both are valid
+        // outcomes it just prints (xtask/fleet.rs `wake_cmd`). So a NON-ZERO exit is not a skip but a genuine
+        // failure (e.g. cargo/xtask couldn't run); surface it (still non-fatal — the recipient's own /loop
+        // is the safety net, and we must never derail an inbound deliver over a wake).
         match tokio::time::timeout(WAKE_TIMEOUT, child.wait()).await {
-            Ok(_) => {}
+            Ok(Ok(status)) if status.success() => {}
+            Ok(Ok(status)) => {
+                tracing::warn!(to = %to, code = ?status.code(), "operator wake exited non-zero (non-fatal)")
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, to = %to, "operator wake wait failed (non-fatal)")
+            }
             // Timed out: explicit kill().await SIGKILLs AND reaps (not kill_on_drop's deferred reap, PR#949);
             // kill_on_drop still finalizes if that itself errors. Keeps the low-severity leak bounded.
             Err(_) => {

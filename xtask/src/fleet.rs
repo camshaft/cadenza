@@ -470,7 +470,7 @@ pub enum FleetCmd {
     /// interval. This is the standalone form of the wake that `send` already does on delivery — for a
     /// delivery path that writes an inbox file WITHOUT going through `send`, notably the slack-bridge
     /// INBOUND path (an operator's Slack message → an agent's hub inbox via the bridge's own `deliver`,
-    /// which never calls this crate's wake). The bridge shells `fleet wake --operator-message <to>`
+    /// which never calls this crate's wake). The bridge shells `fleet wake <to> --operator-message`
     /// after writing the inbox file so an operator message reaches an idle agent in seconds, not up to
     /// its full interval (operator directive 2026-08-01). Applies the SAME guards as any wake (stopped /
     /// no-live-window / already-mid-tick all skip); prints the outcome. Safe to call spuriously — a

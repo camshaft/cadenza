@@ -1,0 +1,24 @@
+# cadenza-ast — the AST value model + its canonical binary form, as a dependency-light BOTTOM crate.
+#
+# Extracted from `cadenza-syntax` so the three consumers of the canonical binary wire format —
+# `cadenza-syntax` (the text front-end), `rcdzc` (the compiler), and the agent-harness kernel — can
+# all depend on ONE encoder/decoder + ONE version header + ONE value model, rather than each carrying
+# a parallel implementation that drifts from the `spec/contracts/ast-encoding.md` pins. `cadenza-syntax`
+# re-exports what moves here, so its public API (`cadenza_syntax::leb128`, later `::ast`/`::codec`/…)
+# stays byte-stable and its corpus round-trip gate keeps passing.
+#
+# DEP FLOOR is deliberately tiny: the heavy front-end deps (unicode-normalization, sha2, pulldown-cmark,
+# toml_edit, cedar-policy, clap) stay in `cadenza-syntax` and never leak here. The only unavoidable
+# dependency (once the value types land in a later slice) is `num-bigint` — arbitrary-precision Int and
+# the Decimal significand ARE the value model, not negotiable. This first slice moves only the dep-free
+# `leb128` varint, so the crate has no dependencies yet.
+#
+# A member of the seed workspace (picked up by the `crates/*` glob). Standalone — depends on no
+# compiler crate. Like the rest of the seed, a REFERENCE implementation; the durable artifact is the
+# CONTRACT (the wire format + total decode), not this code.
+[package]
+name = "cadenza-ast"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
