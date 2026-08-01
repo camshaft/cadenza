@@ -48676,6 +48676,33 @@ mod match_engine {
             111
         );
         assert_eq!(run_returns_with::<i64>(&b3, "f", &[Val::U64(0)]), 222);
+
+        // GUARDED DEAD ARM: the elimination drops a dead arm PROBE-AND-ALL — including its guard. A
+        // `(guard 100 <cond>)` arm over `(& x 7) ∈ [0,7]` can never match (the probe `100` is out of
+        // range), so it is dropped WHOLE: no `const 100` probe, no dead body `const 111`, and the guard
+        // `<cond>` is never emitted (it can never run, so evaluating it — potentially for a side effect —
+        // would be wrong). Pins the comment's "sound to drop a GUARDED dead arm too" claim, which the
+        // unguarded cases above do not exercise.
+        let gdead = code(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) ((guard 100 (> x 0)) 111) (0 222) (_ 333))) (def (main) 0) (export main))",
+        );
+        assert!(
+            !gdead.contains(&Lir::ConstI64(100)),
+            "the dead guarded `100` probe is dropped, got: {gdead:?}"
+        );
+        assert!(
+            !gdead.contains(&Lir::ConstI64(111)),
+            "the dead guarded arm body is dropped, got: {gdead:?}"
+        );
+        // A LIVE guarded arm is KEPT and its guard still gates it: `(guard 7 (> x 100))` over `(& x 7)`
+        // fires only when x&7==7 AND x>100. x=127 (127&7=7, 127>100) → 111; x=7 (7&7=7 but 7>100 false) →
+        // falls through to the wildcard 333. The guard is NOT dropped for a LIVE in-range probe.
+        let b4 = component(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) ((guard 7 (> x 100)) 111) (100 222) (_ 333))) (export f))",
+        );
+        assert_eq!(run_returns_with::<i64>(&b4, "f", &[Val::S64(127)]), 111); // 127&7=7, 127>100 → guard true
+        assert_eq!(run_returns_with::<i64>(&b4, "f", &[Val::S64(7)]), 333); // 7&7=7 but 7>100 false → wildcard
+        assert_eq!(run_returns_with::<i64>(&b4, "f", &[Val::S64(8)]), 333); // 8&7=0 ≠ 7 → wildcard
     }
 
     #[test]
