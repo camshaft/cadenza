@@ -778,6 +778,10 @@ pass	a NESTED tuple-of-tuples let pattern destructures a call's runtime result t
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-TAIL recursion rebinding its rope arg to a slice-concat accumulates after each return
+pass	a NON-tail one-shot arm that ADVANCES the state threads the advance through the re-reduced continuation
+pass	a NON-tail state-advancing arm threads the advance through a perform in a let INIT
+pass	a NON-tail state-advancing arm threads the advance through a perform in an if CONDITION
+pass	a NON-tail state-advancing arm threads through a NON-commutative continuation
 pass	a NON-tail-resumptive arm projects a tuple parameter twice in its pure one-hole context
 pass	a NaN float leaf in a tuple Map key is found by a differently-computed NaN
 pass	a NaN map key is found by a differently-produced NaN
