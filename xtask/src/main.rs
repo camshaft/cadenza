@@ -3943,9 +3943,42 @@ fn check(paths: &Paths, profile: &str) {
     let gate_only = std::env::var_os("CDZ_GATE_ONLY").is_some();
     if gate_only {
         println!(
-            "\ncheck: CDZ_GATE_ONLY set (merge-queue gate) — skipping the two REPORT-ONLY conformance \
-             sweeps (cadenza-ml + emit≡interpret); the gate verdict is already fully decided."
+            "\ncheck: CDZ_GATE_ONLY set (merge-queue gate) — skipping the two REPORT-ONLY full-corpus \
+             conformance sweeps (cadenza-ml + emit≡interpret) that trail the already-decided verdict."
         );
+        // ENFORCING cadenza-ml differential (operator-approved; v-fleet-tooling ruling (b)). We DO run the
+        // differential in the merge gate, but SCOPED to `covered_corpus_files` — the integer/bool subset the
+        // ML front-end actually compiles — so the cost is proportional to genuine coverage, not the not-yet
+        // frontier. This is the ONE conformance check that reds the merge gate: a `disagree > 0` on a COVERED
+        // case is a differential miscompile between the ML compiler and the rcdzc/wasm oracle, and MUST block
+        // landing ("if the implementations disagree the gate is red"). `agree`/`coverage-not-yet` are
+        // non-fatal. The FULL-corpus report still runs (unchanged) in every local `check`/CI (the `else`
+        // branch), which is where new-coverage disagreements surface and `covered_corpus_files` gets extended.
+        //
+        // `timed_out` is NON-FATAL by design: gate LIVENESS must never hinge on host load — a wall-clock
+        // budget hit reports the completed cases (incomplete → not-yet) and does NOT red, with the full CI
+        // run as the backstop for anything a timed-out gate skipped. On the small covered subset today a
+        // timeout should be ~never. `compute_ml_conformance` self-bounds via its own deadline → the
+        // `timed_out` field, so `step_native` (not `step_timed`) is the right harness here.
+        log.step_native("cadenza-ml-conformance-covered-subset", || {
+            let files = covered_corpus_files(paths);
+            let r = compute_ml_conformance(paths, profile, &files);
+            let total = r.agree + r.disagree + r.not_yet;
+            println!(
+                "  cadenza-ml (covered subset, ENFORCING): {} agree / {} disagree / {total} total ({} coverage-not-yet)",
+                r.agree, r.disagree, r.not_yet
+            );
+            if r.timed_out {
+                eprintln!(
+                    "  ⚠ covered-subset differential hit its wall-clock budget — reported what completed; \
+                     the rest counted coverage-not-yet. NON-FATAL (gate liveness must not depend on host \
+                     load; the full CI run is the backstop)."
+                );
+            }
+            // The pass/red DECISION is a pure function of the tally (unit-tested below) — a `disagree > 0`
+            // yields `Err` which `step_native` turns into a RED gate; everything else is `Ok`.
+            enforcing_conformance_verdict(&r)
+        });
     } else {
         // cadenza-ml conformance — REPORTED, never a baseline gate. Drive each shared-corpus program
         // through BOTH the ML compiler (`cdz run-ml`) and the rcdzc/wasm ORACLE, and diff the verdicts:
@@ -3985,10 +4018,6 @@ struct MlConformance {
 /// in local `check`/CI, where new-coverage disagreements surface and this list gets extended as the front-end
 /// grows. Keep in sync with the front-end's real subset — adding a feature (e.g. compound types) adds its
 /// corpus file here once the ML compiler agrees on it.
-// `allow(dead_code)`: the CALLER is v-fleet-tooling's gate_only-path enforcing wiring (they own the step
-// framework + CDZ_GATE_ONLY, landing against this refactor per the co-design). Remove the allow when that
-// call site lands. This half (return-value refactor + covered-subset selection) is v-compiler-ml's.
-#[allow(dead_code)]
 fn covered_corpus_files(paths: &Paths) -> Vec<PathBuf> {
     let covered = [
         "01-literals",
@@ -4006,11 +4035,111 @@ fn covered_corpus_files(paths: &Paths) -> Vec<PathBuf> {
         .collect()
 }
 
+/// KNOWN pre-existing cadenza-ml ↔ oracle disagreements the enforcing merge gate TOLERATES (concierge
+/// ruling (b), 2026-08-01). Each is a real WIP ML reject-path gap the differential surfaced when the switch
+/// first flipped enforcing: the ML front-end runs the program to a value where the oracle correctly REJECTS.
+/// They are NOT regressions, so blocking the whole fleet on fixing them first (option (a)) would be
+/// self-inflicted; instead we enforce on every NEW divergence NOW and burn these down.
+///
+/// This is a BASELINE, not a mute: each entry is labeled `(case title, expected oracle CDZ code)`, so it's a
+/// visible burn-down list — and it's TIGHT. An entry only excuses a disagreement whose case title matches AND
+/// whose oracle verdict is exactly `reject <that code>` (see [`disagreement_is_known`]). So if a gap's shape
+/// changes at all — the ML side starts declining (it drops out of `disagree` entirely), or the oracle's code
+/// changes, or the SAME title regresses a DIFFERENT way — the entry stops matching and the gate reds on it as
+/// a genuine new divergence. v-compiler-ml removes an entry as it wires each missing decline; when the list
+/// is empty the differential is fully strict with zero exceptions. DO NOT add an entry to silence a NEW
+/// disagreement — that defeats the gate. Entries are only ever REMOVED (as fixes land), never added, except
+/// this one-time seed of the 5 the operator signed off on.
+const KNOWN_ML_DIFFS: &[(&str, &str)] = &[
+    // ML checks only main's transitively-reachable defs, so an unbound name in an uncalled sibling def
+    // runs to 42 instead of rejecting. Fix = scope-check every top-level def body.
+    (
+        "an unbound name in an uncalled sibling definition is still rejected",
+        "CDZ0101",
+    ),
+    // A literal pattern in a let binder is refutable; ML binds it and runs to 42 instead of rejecting.
+    (
+        "a literal in a let binder is refutable and rejected",
+        "CDZ0210",
+    ),
+    // A non-admitted float width in a type-DECL payload isn't validated by ML (runs main→0).
+    (
+        "a non-admitted float width in a type-declaration payload is rejected",
+        "CDZ0302",
+    ),
+    // Ditto for an ill-formed integer width in a type-decl payload (same total-width-validation gap).
+    (
+        "an ill-formed integer width in a type-declaration payload is rejected",
+        "CDZ0302",
+    ),
+    // The reader's if-form silently drops a 4th operand (permissive close-paren) → runs to 1, no reject.
+    (
+        "a conditional with too many operands is rejected, not a crash",
+        "CDZ0201",
+    ),
+];
+
+/// Does a disagreement message match a KNOWN_ML_DIFFS allowlist entry? The message shape is
+/// `"{title}: ml=… oracle=…"` (see `compute_ml_conformance`), and a rejecting oracle summarizes as
+/// `reject {code}` (see `ran_summary`). An entry `(title, code)` matches iff the message starts with
+/// `"{title}: "` AND its oracle side is exactly `reject {code}`. Requiring BOTH keeps the allowlist tight:
+/// the same title diverging a NEW way (a different oracle code, or a trap/value) is NOT excused.
+fn disagreement_is_known(msg: &str) -> bool {
+    KNOWN_ML_DIFFS.iter().any(|(title, code)| {
+        msg.starts_with(&format!("{title}: ")) && msg.ends_with(&format!("oracle=reject {code}"))
+    })
+}
+
+/// The ENFORCING merge-gate verdict for the covered-subset differential (v-fleet-tooling ruling; concierge
+/// (b) allowlist). Pure function of the tally so it's unit-tested without running the gate. Partitions the
+/// disagreements into KNOWN (allowlisted, [`disagreement_is_known`]) and NOVEL: RED (`Err`) iff there is any
+/// NOVEL disagreement; the known ones are reported as a burn-down list but never red. `agree`,
+/// `coverage-not-yet`, AND `timed_out` are all non-fatal — the rule is "if the implementations DISAGREE the
+/// gate is red", scoped to divergences that AREN'T the known pre-existing WIP gaps, and gate liveness must
+/// never hinge on a wall-clock budget hit (the full CI run backstops a timed-out gate).
+fn enforcing_conformance_verdict(r: &MlConformance) -> Result<(), String> {
+    let (known, novel): (Vec<&String>, Vec<&String>) = r
+        .disagreements
+        .iter()
+        .partition(|d| disagreement_is_known(d));
+
+    // The known-diff burn-down list: always REPORTED (so its shrinking is visible), never reds.
+    if !known.is_empty() {
+        eprintln!(
+            "  ℹ {} known pre-existing ML reject-path gap(s) tolerated (KNOWN_ML_DIFFS burn-down — \
+             v-compiler-ml removes each as it lands the fix; NOT reds):",
+            known.len()
+        );
+        for d in &known {
+            eprintln!("    · {d}");
+        }
+    }
+
+    if novel.is_empty() {
+        return Ok(());
+    }
+    // RED the merge gate: name every NOVEL disagreeing case so it's immediately actionable.
+    let detail = novel
+        .iter()
+        .map(|d| format!("    • {d}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!(
+        "cadenza-ml DIFFERENTIAL MISCOMPILE on {} NEW covered case(s) — the ML compiler's verdict differs \
+         from the rcdzc/wasm oracle, and this divergence is NOT in the KNOWN_ML_DIFFS burn-down set. The \
+         merge gate is RED (operator: \"if the implementations disagree the gate is red\"). If this is a \
+         genuine, intended new front-end gap, it must be FIXED — do not add it to the allowlist. New \
+         disagreements:\n{detail}",
+        novel.len()
+    ))
+}
+
 /// Report cadenza-ml conformance DIFFERENTIALLY against the rcdzc/wasm oracle over the FULL corpus (never
 /// fails `check` — the report form). Thin wrapper over [`compute_ml_conformance`]: compute + print
 /// `cadenza-ml: X agree / D disagree / N total` and (on `D>0`) the loud per-case warning. Byte-identical to
 /// the pre-refactor behavior. The ENFORCING merge-gate variant (v-fleet-tooling wires it) instead calls
-/// `compute_ml_conformance(paths, profile, &covered_corpus_files(paths))` and reds on `disagree > 0`.
+/// `compute_ml_conformance(paths, profile, &covered_corpus_files(paths))` and reds on `disagree > 0` via
+/// [`enforcing_conformance_verdict`].
 fn report_ml_conformance(paths: &Paths, profile: &str) {
     let files = default_corpus_files(paths);
     let r = compute_ml_conformance(paths, profile, &files);
@@ -5821,6 +5950,166 @@ mod trap_grading_tests {
     /// metric-counter contamination.) A poisoned lock (a panicking sibling) is recovered — the env is
     /// restored by each test's own cleanup, so a stale poison must not wedge the rest.
     static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // ── ENFORCING cadenza-ml conformance verdict (v-fleet-tooling ruling (b)) ─────────────────────────
+    // The gate_only-path differential reds the MERGE gate iff a COVERED case disagrees with the oracle.
+    // These lock the operator's rule ("if the implementations disagree the gate is red") + the liveness
+    // carve-outs (agree/not-yet/timed_out never red) as a pure decision, so we verify the RED behavior
+    // without running the whole (expensive) gate against an injected miscompile.
+
+    // A tally whose disagreements are all NOVEL (not in KNOWN_ML_DIFFS) — the `case-{i}` titles never
+    // appear in the allowlist, so each reds the gate.
+    fn tally(agree: usize, disagree: usize, not_yet: usize, timed_out: bool) -> MlConformance {
+        MlConformance {
+            agree,
+            disagree,
+            not_yet,
+            disagreements: (0..disagree)
+                .map(|i| format!("case-{i}: ml=1 oracle=2"))
+                .collect(),
+            timed_out,
+        }
+    }
+
+    // A tally built from explicit disagreement MESSAGES (to exercise the allowlist matcher). `agree`/
+    // `not_yet` are 0 here; `disagree` is derived from the message count.
+    fn tally_msgs(msgs: &[&str]) -> MlConformance {
+        MlConformance {
+            agree: 0,
+            disagree: msgs.len(),
+            not_yet: 0,
+            disagreements: msgs.iter().map(|s| s.to_string()).collect(),
+            timed_out: false,
+        }
+    }
+
+    // Reconstruct the exact disagreement message shape `compute_ml_conformance` emits for an allowlisted
+    // gap: `"{title}: ml={mlval} oracle=reject {code}"`. Keeps the allowlist tests coupled to the real
+    // message format (title prefix + `oracle=reject <code>` suffix) that `disagreement_is_known` matches.
+    fn known_msg(title: &str, ml_summary: &str, code: &str) -> String {
+        format!("{title}: ml={ml_summary} oracle=reject {code}")
+    }
+
+    #[test]
+    fn enforcing_verdict_reds_on_any_novel_covered_disagreement() {
+        // The core invariant: a NOVEL (non-allowlisted) disagreement → Err → step_native reds the gate.
+        let v = enforcing_conformance_verdict(&tally(5, 1, 3, false));
+        let msg = v.expect_err("a novel covered disagreement MUST red the gate");
+        assert!(
+            msg.contains("DIFFERENTIAL MISCOMPILE"),
+            "names the failure: {msg}"
+        );
+        assert!(msg.contains("gate is RED"), "states the gate reds: {msg}");
+        assert!(
+            msg.contains("case-0: ml=1 oracle=2"),
+            "names the disagreeing case: {msg}"
+        );
+        // Multiple novel disagreements: count is surfaced and every case is listed.
+        let many = enforcing_conformance_verdict(&tally(0, 3, 0, false)).unwrap_err();
+        assert!(
+            many.contains("on 3 NEW covered case(s)"),
+            "reports the novel count: {many}"
+        );
+        assert_eq!(
+            many.matches("    • ").count(),
+            3,
+            "lists every novel disagreeing case"
+        );
+    }
+
+    #[test]
+    fn enforcing_verdict_tolerates_the_known_diffs_but_reds_on_novel_alongside_them() {
+        // The seeded 5 KNOWN_ML_DIFFS, reconstructed in the real message shape, are TOLERATED (green).
+        let known: Vec<String> = KNOWN_ML_DIFFS
+            .iter()
+            .map(|(title, code)| known_msg(title, "value 42", code))
+            .collect();
+        let known_refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+        assert!(
+            enforcing_conformance_verdict(&tally_msgs(&known_refs)).is_ok(),
+            "all-known disagreements are tolerated (burn-down list, not a red)"
+        );
+
+        // A NOVEL disagreement mixed IN with the known ones still reds — the allowlist subtracts, it
+        // doesn't blanket-pass a dirty run.
+        let mut mixed = known_refs.clone();
+        let novel = "some brand-new covered case: ml=value 9 oracle=reject CDZ0999";
+        mixed.push(novel);
+        let err = enforcing_conformance_verdict(&tally_msgs(&mixed))
+            .expect_err("a novel diff alongside known ones must still red");
+        assert!(
+            err.contains("on 1 NEW covered case(s)"),
+            "counts only the novel: {err}"
+        );
+        assert!(err.contains(novel), "names the novel case: {err}");
+        assert!(
+            !err.contains("uncalled sibling"),
+            "does NOT list a known diff as a red cause: {err}"
+        );
+    }
+
+    #[test]
+    fn known_diff_match_is_tight_title_and_code_both_required() {
+        let (title, code) = KNOWN_ML_DIFFS[0]; // uncalled-sibling / CDZ0101
+        // Exact title + exact oracle code → known.
+        assert!(disagreement_is_known(&known_msg(title, "value 42", code)));
+        // Same title, DIFFERENT oracle code → NOT known (a new way to diverge must red).
+        assert!(
+            !disagreement_is_known(&known_msg(title, "value 42", "CDZ9999")),
+            "same title, different oracle code must not be excused"
+        );
+        // Same title, oracle TRAPPED instead of rejecting → NOT known (suffix differs).
+        assert!(
+            !disagreement_is_known(&format!("{title}: ml=value 42 oracle=trap boom")),
+            "same title, non-reject oracle verdict must not be excused"
+        );
+        // A title that isn't in the list → NOT known.
+        assert!(!disagreement_is_known(
+            "a totally unrelated case: ml=value 1 oracle=reject CDZ0101"
+        ));
+        // Guard against a substring false-match: a title that merely CONTAINS an allowlisted title as a
+        // suffix-of-prefix must not slip through (the matcher anchors on `"{title}: "`).
+        assert!(!disagreement_is_known(&format!(
+            "x {title}: ml=value 42 oracle=reject {code}"
+        )));
+    }
+
+    #[test]
+    fn enforcing_verdict_passes_when_no_disagreement() {
+        // All-agree, all-not-yet, and mixed-but-zero-disagree ALL pass (green merge gate).
+        assert!(
+            enforcing_conformance_verdict(&tally(10, 0, 0, false)).is_ok(),
+            "all agree → pass"
+        );
+        assert!(
+            enforcing_conformance_verdict(&tally(0, 0, 7, false)).is_ok(),
+            "all coverage-not-yet → pass"
+        );
+        assert!(
+            enforcing_conformance_verdict(&tally(4, 0, 2, false)).is_ok(),
+            "agree + not-yet, no disagree → pass"
+        );
+        assert!(
+            enforcing_conformance_verdict(&tally(0, 0, 0, false)).is_ok(),
+            "empty subset → pass (vacuous)"
+        );
+    }
+
+    #[test]
+    fn enforcing_verdict_timed_out_is_non_fatal_without_disagreement() {
+        // Gate LIVENESS carve-out: a wall-clock budget hit must NOT red the gate on its own — only a real
+        // disagreement does. (The full CI run backstops anything a timed-out gate skipped.)
+        assert!(
+            enforcing_conformance_verdict(&tally(3, 0, 5, true)).is_ok(),
+            "timed_out with no disagreement is NON-FATAL"
+        );
+        // But a disagreement that DID complete still reds even if the run later timed out — a real
+        // miscompile is not excused by a budget hit.
+        assert!(
+            enforcing_conformance_verdict(&tally(3, 1, 5, true)).is_err(),
+            "a completed disagreement reds even when timed_out"
+        );
+    }
 
     #[test]
     fn needs_clause_lint_flags_only_leading_needs_clauses() {
