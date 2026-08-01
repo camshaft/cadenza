@@ -4056,6 +4056,38 @@
   (call   main (: 18446744073709551615 UInt64) (: 1 UInt64)) (output (: 1 Int64))
   (call   main (: 1 UInt64) (: 18446744073709551615 UInt64)) (output (: 0 Int64)))
 
+(case "a CONSTANT comparison over a high-bit UInt64 operand folds unsigned, not through a signed i64 carrier"
+  (doc    "The COMPILE-TIME const-operand face of the full-width unsigned COMPARISON (the runtime face is
+           pinned just above at the HIGH-BIT operand case; the const ARITH/shift/bitwise faces are pinned
+           below). Both operands are UInt64 CONSTANTS at/above 2^63 (UInt64.max = 2^64-1, all bits set —
+           it reads as -1 through a signed i64 carrier), so the comparison folds AT COMPILE TIME rather
+           than emitting a runtime compare. The fold must decode each operand UNSIGNED: `(> u64max 1)` → 1
+           and `(< u64max 1)` → 0. A const-comparison fold that decoded the operand through a signed i64
+           carrier (the recurring u64-top-bit trap that bit the arith/decode fold paths) would read u64max
+           as -1, inverting BOTH — `gt` would fold to 0 and `lt` to 1. `ge` pins the 2^63/(2^63-1) boundary
+           (2^63 >= 2^63-1 → 1) and `eqm` pins reflexive equality of an all-bits-set constant. Nullary defs
+           so both operands are compile-time constants — the fold path, not the runtime compare. Value-only,
+           both backends (the emitted body is a literal constant on each).")
+  (input  (do
+            (def (gt ) (if (> (: 18446744073709551615 UInt64) (: 1 UInt64)) 1 0))
+            (def (lt ) (if (< (: 18446744073709551615 UInt64) (: 1 UInt64)) 1 0))
+            (def (ge ) (if (>= (: 9223372036854775808 UInt64) (: 9223372036854775807 UInt64)) 1 0))
+            (def (eqm) (if (= (: 18446744073709551615 UInt64) (: 18446744073709551615 UInt64)) 1 0))
+            (export gt)
+            (export lt)
+            (export ge)
+            (export eqm)))
+  ; u64max > 1 → 1, u64max < 1 → 0 (unsigned, not the -1 a signed carrier would give);
+  ; 2^63 >= 2^63-1 → 1 (boundary); u64max = u64max → 1 (reflexive, all bits set).
+  (call   gt)
+  (output (: 1 Int64))
+  (call   lt)
+  (output (: 0 Int64))
+  (call   ge)
+  (output (: 1 Int64))
+  (call   eqm)
+  (output (: 1 Int64)))
+
 (case "a CONSTANT algebraic identity over a high-bit UInt64 operand folds to the operand, not a spurious CDZ0304 decline"
   (doc    "The COMPILE-TIME const-operand face of the full-width unsigned family (rcdzc lower 819f5c2e3). The
            runtime cases above pass UInt64.max as an ARGUMENT; this pins a both-CONSTANT algebraic identity
