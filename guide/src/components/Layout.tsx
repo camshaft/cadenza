@@ -3,7 +3,7 @@
 
 import { NavLink, useParams } from "react-router-dom";
 import { Suspense, useEffect, useState } from "react";
-import { CHAPTERS, chapterAt } from "../content/chapters.ts";
+import { CHAPTERS, chapterAt, PILLARS, pillarOf, type Pillar } from "../content/chapters.ts";
 import { SyntaxToggle } from "../syntax/SyntaxToggle.tsx";
 import { useProgress } from "../progress/ProgressContext.tsx";
 import { ExamplesNav } from "./ExamplesNav.tsx";
@@ -75,15 +75,25 @@ export function Layout() {
 /// grouping of chapter links, each with a progress badge once the reader has engaged.
 function SidebarNav() {
   const progress = useProgress();
-  const sections = groupBySection();
+  const pillars = groupByPillar();
+  // Only badge chapters with a pillar header once there's more than one pillar; a single-pillar site
+  // renders the bare section list exactly as before (no visual change from the pillar mechanism).
+  const showPillarHeaders = pillars.length > 1;
   return (
     <nav className="space-y-6">
       <ProgressSummary />
-      {sections.map(([section, chapters]) => (
-        <div key={section}>
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">{section}</div>
-          <ul className="space-y-0.5">
-            {chapters.map((c) => {
+      {pillars.map((p) => (
+        <div key={p.pillar} className={showPillarHeaders ? "space-y-4" : "contents"}>
+          {showPillarHeaders && (
+            <div className="text-sm font-bold tracking-tight text-slate-200">{p.label}</div>
+          )}
+          {p.sections.map(([section, chapters]) => (
+            <div key={section}>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                {section}
+              </div>
+              <ul className="space-y-0.5">
+                {chapters.map((c) => {
               const total = c.exercises ?? 0;
               const done = total > 0 ? progress.countFor(c.slug) : 0;
               return (
@@ -115,8 +125,10 @@ function SidebarNav() {
                   </NavLink>
                 </li>
               );
-            })}
-          </ul>
+                })}
+              </ul>
+            </div>
+          ))}
         </div>
       ))}
       {/* Every runnable example, deep-linked + grouped (operator: call each out individually). Collapsible,
@@ -225,12 +237,19 @@ function PrevNext({ index }: { index: number }) {
   );
 }
 
-function groupBySection(): [string, typeof CHAPTERS][] {
-  const map = new Map<string, typeof CHAPTERS>();
-  for (const c of CHAPTERS) {
-    const arr = map.get(c.section) ?? [];
-    arr.push(c);
-    map.set(c.section, arr);
-  }
-  return [...map.entries()];
+/// Group chapters by pillar, then by section within each pillar — the sidebar's two-level structure.
+/// Pillars appear in PILLARS order; only pillars that actually have chapters are returned. Sections keep
+/// registry order within a pillar. When just one pillar is present the caller suppresses the pillar header,
+/// so a single-pillar site renders exactly as the old flat section list did.
+function groupByPillar(): { pillar: Pillar; label: string; sections: [string, typeof CHAPTERS][] }[] {
+  return PILLARS.map(({ id, label }) => {
+    const sections = new Map<string, typeof CHAPTERS>();
+    for (const c of CHAPTERS) {
+      if (pillarOf(c) !== id) continue;
+      const arr = sections.get(c.section) ?? [];
+      arr.push(c);
+      sections.set(c.section, arr);
+    }
+    return { pillar: id, label, sections: [...sections.entries()] };
+  }).filter((p) => p.sections.length > 0);
 }

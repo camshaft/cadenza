@@ -1817,6 +1817,11 @@ compiler-adjacent tool, wrong for the kernel). wasmtime + the component host are
 kernel dependency; the feature is gone. (`live-exec` stays gated — a real security/spawn gate.)
 
 ### 21b. Component-dependency linking requires CAS FIRST (reorders the plan)
+> ⚠ **Superseded framing — see §23.** The dependency ORDER below (CAS → linking → real-Cadenza) stands,
+> but the "resolve THE Cadenza runtime" framing is replaced by GENERIC declared-dependency resolution:
+> the kernel has no knowledge of any specific runtime; a component declares its deps by hash and the
+> kernel resolves each from CAS uniformly (operator directive, §23). Read §23 as the current design.
+
 Real Cadenza reducers IMPORT the value-heap runtime component (they can't run standalone), so the kernel
 must LINK component dependencies — compose the reducer component with the runtime component, resolving
 each by content hash. That requires a **content-addressable blob store** (hash→bytes fetch). Current CAS
@@ -1895,9 +1900,109 @@ are reconciled because determinism lives in the LOG, not the scheduler:
   scheduler. RAISE any place where async would leak a scheduler decision into fold state (that would be a
   determinism bug) — don't work around it.
 
-### 22d. Fold-loop + fuel (ties to PR#1009 review finding)
-`ComponentReducer::apply` currently has NO fuel/epoch bound — a runaway guest hangs the kernel (Copilot
-PR#1009, a real DoS gap). Gas (22a) is the fix: instantiate the guest Store with a fuel limit / epoch
-deadline (cdz-run's pattern), so a fold that runs too long traps → a bounded fold-failure, not a hang.
-This is a near-term code slice (independent of the full async conversion — a fuel bound on the sync
-`apply` is a valid first step, then async makes yields cooperative).
+### 22d. Fold-loop + fuel — a bounded fold, in two steps (PR#1009)
+**Step 1 (LANDED, `4782e74cc`, batch #132):** a hard per-fold fuel bound. The engine enables
+`Config::consume_fuel(true)`; `apply` gives instantiation headroom then resets `Store::set_fuel` to a
+per-fold budget (`DEFAULT_FOLD_FUEL`) right before the fold, so the budget bounds the FOLD, not
+instantiation; `Trap::OutOfFuel` is classified DISTINCTLY as `ComponentError::FuelExhausted{budget}`
+(resource exhaustion) vs a semantic `Trap`. This closes the runaway-guest hang (PR#1009) synchronously —
+a runaway fold TRAPS at the budget rather than hanging. It's the interim, sync form.
+
+**Step 2 (CHOSEN mechanism, §22e): cooperative async yield, not a hard trap.**
+
+### 22e. Gas = `Store::fuel_async_yield_interval` — cooperative yield (2026-08-01, operator directive)
+Operator (verbatim): *"For the gas consumption I want it to be using `Store::fuel_async_yield_interval` so
+it can yield to other tasks."* This is the CHOSEN gas mechanism for §22 — the concrete form of the
+"preemptive yields + session multiplexing" substrate (§22a).
+
+- **Mechanism.** Instead of only trapping when fuel hits zero (step-1 hard bound), configure the guest
+  Store with `fuel_async_yield_interval(Some(N))`: every `N` fuel units consumed, the guest **yields the
+  async task** (requires the async wasmtime config + tokio — which §22a/§22b are already pulling in). A
+  long-running reducer yields at fuel-interval boundaries so other sessions/tasks interleave, instead of
+  monopolizing the runtime. This is the multiplex substrate: cooperative preemption keyed on fuel, not
+  wall-clock.
+- **Relationship to step 1.** The hard budget stays as the OUTER bound (a reducer that blows a large total
+  budget is still aborted → `FuelExhausted`, a logged outcome); the yield interval is the INNER,
+  finer-grained cooperative-scheduling knob. Yield-interval = "let others run"; budget-exhaustion = "this
+  fold is a runaway, abort + record." Both are fuel-driven, so both are deterministic (below).
+- **This closes PR#1009 the operator's way.** A runaway reducer now YIELDS (and can be observed/bounded/
+  aborted by the scheduler) rather than either hanging (old) or only hard-trapping (step 1) — the DoS
+  guard becomes a scheduling property, not just a kill switch.
+- **⚠ Determinism guard (the §22c invariant, restated for gas).** A fuel-yield changes WHEN a fold runs,
+  never WHAT it folds or in what order — it's a scheduling event, not a logged fold input. The
+  fold stays a pure function of `(event, kv)`. Two hard requirements: **(a)** any fuel-EXHAUSTION-ABORT
+  outcome MUST be recorded in the log (like a trap → fold-failure, §16c gap A) so replay reconstructs it;
+  **(b)** fuel ACCOUNTING itself must be deterministic per `(event, kv)` — the same fold must charge the
+  same fuel every run, so replay reaches the same yield/abort points. wasmtime fuel is
+  instruction-counted (deterministic), so this holds — **but** if any host call the guest makes (an import,
+  a future async effect) charged fuel in a way that varied with wall-clock or host state, THAT would be a
+  determinism leak. RAISE it, don't paper over it. (Replay itself need not yield — yielding is a live
+  multiplex concern; replay just re-folds recorded events + recorded abort outcomes in log order.)
+- **Sequencing.** Gated on the async substrate (`fuel_async_yield_interval` requires async Store support +
+  the async `call_apply`), which follows the §22b async-`BlobStore` conversion. Until then, step 1's sync
+  hard bound is the live DoS guard. The impl slice touches `wasm_host.rs`.
+
+## 23. The kernel is RUNTIME-AGNOSTIC — deps are declared + CAS-resolved by hash (2026-08-01, operator directive, EMPHATIC — supersedes the Cadenza-runtime specifics of §21b)
+
+Operator (verbatim, emphatic): *"Why is the kernel hard-coding the fact that the cadenza runtime exists!?
+The component should simply declare it has a dependency on a set of components and the kernel should
+resolve it from the cas. It should have no knowledge of the cadenza runtime!"*
+
+**The principle (firm).** The kernel MUST have ZERO special knowledge of "the Cadenza value-heap
+runtime." A reducer component **declares** its dependencies — a set of component references by content
+hash — and the kernel **resolves** each from CAS and links it, treating every dependency identically. The
+Cadenza runtime is *just one more content-addressed component* a reducer happens to depend on; it is NOT
+a built-in the kernel knows by name, interface prefix, or identity. This sharpens the §21d critical path:
+**linking = generic "resolve each declared component dep from CAS by hash, then link"** — never "if the
+reducer needs the Cadenza runtime, load the Cadenza runtime."
+
+### 23a. Where it's hard-coded today (to remove)
+All in `wasm_host.rs`, from the §21b slice (`4614bdb75`, landed) — this is exactly the machinery the
+operator is pointing at, and PR#1013's Copilot findings (1)/(2) are symptoms of the same hard-coding:
+- `const RUNTIME_IFACE: &str = "cadenza:runtime/heap"` — a **named, kernel-baked identity** for one
+  specific dependency. This must go.
+- `required_runtime()` scans imports for `starts_with(RUNTIME_IFACE)` and returns a single `RuntimeReq`.
+  This bakes in (a) that there is exactly ONE special dep, (b) its name, (c) that "heap" is meaningful to
+  the kernel. PR#1013(1): it silently takes the FIRST of multiple matches; PR#1013(2): `starts_with`
+  false-matches `cadenza:runtime/heap2@…`. Both dissolve once the mechanism is generic — there's no
+  privileged prefix to match against or pick "the first" of.
+- `RuntimeReq { import_name, hash }` + `resolve_runtime()` / `resolve_runtime_bytes()` — a bespoke
+  "resolve THE runtime" path. Replace with a generic `ComponentDep { import_name, hash }` list and a
+  `resolve_deps(&[ComponentDep], &dyn BlobStore)` that resolves ALL declared deps uniformly.
+
+### 23b. The generic mechanism (replacement)
+1. **Declare:** a reducer component's imports carry their dependency's content address as the import
+   name's build-metadata (`+<hash>`), per component-abi.md v3 — but the kernel reads this for ANY
+   dependency import, not a name-matched one. The set of "imports that carry a `+<hash>` content address"
+   IS the declared dependency set. (Imports the host itself satisfies — the `kv` host import — are not
+   content-addressed deps; the distinction is "does this import name carry a `+<hash>`," not a name
+   allow-list.)
+2. **Resolve:** for each declared dep, fetch its component bytes from CAS by that hash. Missing dep →
+   error (can't run a half-linked reducer) — but a GENERIC "dependency `<hash>` unresolved," naming no
+   runtime.
+3. **Link:** compose each resolved dep component into the linker under its declared import name. Uniform
+   for all deps; transitive deps (a dep that itself declares deps) resolve by the same recursion.
+The kernel never asks "is this the Cadenza runtime?" — it asks "what does this component declare it needs,
+and can I fetch + link each by hash?"
+
+### 23c. PR#1013 findings — folded into this refactor (don't patch the doomed code)
+The generic refactor SUPERSEDES the narrow PR#1013(1)/(2) fixes — don't patch `RUNTIME_IFACE` prefix
+logic that's being deleted. The orthogonal PR#1013 findings still get fixed alongside:
+- **(3)** `RuntimeUnresolved` conflates "missing by hash" with a blob-store IO error → split into
+  `DepMissing { hash }` vs `DepStoreError { hash, source }` so callers can distinguish (a genuine bug in
+  the generic mechanism too).
+- **(4)** `parse_hash_hex` accepts uppercase though the doc says lowercase → enforce lowercase (content
+  addresses are canonical lowercase hex; accepting both invites two spellings of one address).
+- **(5)** fixture `reducer-guest/Cargo.toml` header says `wasm32-wasip1` but the regen recipe + CI build
+  `wasm32-unknown-unknown` → reconcile the comment (the target IS unknown-unknown; WASI imports break
+  `component new`).
+
+### 23d. Bootstrap check — no chicken-egg (raised + cleared)
+Removing the hard-coded runtime does NOT strand the kernel: the genesis/bootstrap program is itself a
+content-addressed component put into CAS at init (§16b-E bootstrapping); its deps (if any) resolve by the
+same generic path. Nothing about bring-up requires the kernel to KNOW a specific runtime — it only
+requires the deps to be present in CAS by the time a component that declares them is folded (a reducer's
+deps are put into CAS before/with the reducer). No genuine dependency the kernel can't express generically
+was surfaced; if one appears during the refactor, RAISE it to concierge rather than reintroducing a
+hard-code. **Net:** §21b's dependency ORDER (CAS → linking → real-Cadenza) stands; its "resolve THE
+runtime" FRAMING is replaced by generic declared-dep resolution.

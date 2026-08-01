@@ -221,8 +221,21 @@ impl Session {
         // Worklist of (request, cause) — cause is the hash of the event whose fold emitted the request.
         // The initial batch is caused by the just-appended tip.
         let trigger = self.tip_hash();
-        let mut to_process = self.fold_tip(reducer, trigger);
+        let initial = self.fold_tip(reducer, trigger);
+        self.drive_worklist(initial, reducer, authz, executor);
+    }
 
+    /// Process a worklist of `(request, cause)` effects to quiescence — the shared core of `drive` (which
+    /// seeds it by folding the tip) and `time_out_effect` (which seeds it with a timeout continuation's
+    /// effects). Kept as one method so every entry point runs the IDENTICAL authorize → durable-dispatch
+    /// → execute → fold-result loop (no second, drifting copy).
+    fn drive_worklist(
+        &mut self,
+        mut to_process: Vec<(EffectRequest, Hash)>,
+        reducer: &dyn Reducer,
+        authz: &Authorizer,
+        executor: &mut dyn Executor,
+    ) {
         while let Some((req, cause)) = to_process.pop() {
             let id = EffectId(self.next_effect_id);
             self.next_effect_id += 1;
@@ -330,6 +343,52 @@ impl Session {
             Some(dispatch_hash),
         );
         self.fold_tip(reducer, result_hash)
+    }
+
+    /// Time out an open (dispatched-but-unsettled) effect — the missing half of the S4 recovery
+    /// contract. [`Session::recover`] hands the driver a set of `open_effects` it must "re-drive OR time
+    /// out"; this is the time-out half. A dispatch that will never get a result — a genuinely-outstanding
+    /// call after a crash, or a hung async effect past its deadline — is settled here as
+    /// [`EffectOutcome::TimedOut`], folded observably (so the reducer resumes its continuation with a
+    /// timeout, and live-kv == replayed-kv — the same §9d anti-stuck outcome on both paths), and any
+    /// effects that fold emits join the drive to quiescence.
+    ///
+    /// Timeout-cancels (§16c-S4): idempotent + monotonic. Timing out an id that's already settled (a real
+    /// result beat the timeout, or it was already timed out) is a no-op returning `false` — never a
+    /// second outcome for one id, so a continuation resumes at most once. Timing out an id that was never
+    /// dispatched is likewise `false` (nothing open to cancel). Returns `true` iff this call settled it.
+    ///
+    /// The result event is `cause`-linked to the original `Dispatched` (found in the log), preserving the
+    /// causal DAG (§5): trigger → dispatch → (timeout) result, exactly as a real result would link.
+    pub fn time_out_effect(
+        &mut self,
+        id: EffectId,
+        reducer: &dyn Reducer,
+        authz: &Authorizer,
+        executor: &mut dyn Executor,
+    ) -> bool {
+        // Idempotent: only an OPEN id can be timed out. Settled (or never-dispatched) → no-op, so a late
+        // real result and a timeout can't both settle one id (§16c-S4 at-most-once).
+        if !self.open.contains(&id.0) {
+            return false;
+        }
+        // Link the timeout result to the dispatch that opened it (causal DAG §5), like a real result.
+        let dispatch_hash = self.dispatch_hash_of(id);
+        let more = self.record_result(id, EffectOutcome::TimedOut, reducer, dispatch_hash);
+        // The reducer's timeout continuation may emit further effects — drive them to quiescence.
+        self.drive_worklist(more, reducer, authz, executor);
+        true
+    }
+
+    /// The hash of the `Dispatched` event that opened effect `id` — the `cause` a result/timeout links
+    /// to. An open id always has one in the log (it's what put the id in `open`), so a miss is an
+    /// internal invariant violation, not a recoverable input.
+    fn dispatch_hash_of(&self, id: EffectId) -> Hash {
+        self.log
+            .iter()
+            .find(|e| matches!(&e.body, EventBody::Dispatched { id: d, .. } if *d == id))
+            .map(|e| e.hash())
+            .expect("an open effect id must have a Dispatched event in the log (§16c-S1)")
     }
 
     /// Hash of the current tip (last log event) — the `cause` for effects its fold emits.
