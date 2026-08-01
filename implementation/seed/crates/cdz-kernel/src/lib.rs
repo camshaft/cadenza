@@ -11,9 +11,9 @@
 //! - [`effect`] — effect kinds/requests + **resource-scoped capabilities** (SEC-F1).
 //! - [`event`] — events + the per-session log, with the **durable dispatch/result/timer** records (S1);
 //!   frozen canonical encoding (S3), byte-stability golden-pinned.
-//! - [`event_ast`] — maps an [`event::Event`] to/from a Cadenza AST so the log can be encoded through
-//!   the **shared** `cadenza-ast` canonical codec (§19a), not a bespoke one; `decode`'s error keeps the
-//!   torn-vs-corrupt split recovery needs. (Mapping landed; the `log_store` swap is a follow-up.)
+//! - [`event_ast`] — maps an [`event::Event`] to/from a Cadenza AST so the log IS encoded through the
+//!   **shared** `cadenza-ast` canonical codec (§19a), not a bespoke one; `decode`'s error keeps the
+//!   torn-vs-corrupt split recovery needs. (`log_store` uses this codec — the swap landed.)
 //! - [`kv`] — the session-attached KV; its root hash is a **free per-event snapshot** (§4), and
 //!   `encode`/`decode` make that snapshot **restorable** from CAS, not just addressable.
 //! - [`reducer`] — the pure-fold reducer contract (gap A); effect-await = KV continuation by id (S4).
