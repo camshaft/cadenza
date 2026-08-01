@@ -65,6 +65,39 @@ richly present in the shared corpus the differential already drives through comp
 ⇒ conformance-db (+cx/-rel) adds NO coverage the differential lacks; retiring it loses nothing. RETIREMENT IS
 DE-RISKED — one deletion slice when approved (no corpus additions needed first). Held pending operator go on (a).
 
+## RETIREMENT PLAN (2026-08-01, concierge-requested — for operator sign-off before any delete)
+
+**Step 0 — coverage audit (DONE, nothing unique lost).** Verified per-shape, not just per-domain: every
+conformance-db case (69 c-* cases + the -cx/-rel extensions) — arith, let (trivial/nested/shadow), if
+(then/else/nested/nonbool-cond/branch-mismatch/bool-cond), comparisons (lt/gt/le/ge/eq/ne/rel-in-if),
+div/div-by-zero/mod/mod-by-zero/div-precedence, unary-minus/double-neg, AND the declines
+(unbound, unbound-in-arith, bool-in-arith, bool-rel, bool-div, if-nonbool-cond, if-branch-mismatch) — has its
+SHAPE richly present in the shared corpus the differential drives: `06-numeric-model.sexp` (+×317 −×164 *×256
+/×198 %×126, comparisons, 111 div/mod-by-zero mentions), `02-binding-and-control.sexp` (983 let/if, 69 unbound),
+`07-type-system.sexp` (18 unbound + the bool/int type-mismatch family). ⇒ NO conformance-db case tests an edge
+the ~3700-case corpus differential doesn't already cover. Nothing to port first.
+
+**⚠ Step 1 — the gating subtlety that ties delete↔gating (MUST sequence together).** conformance-db has **29
+@tests that BLOCK the gate** (they run in the compiler-ml self-host `cdz test` glob; a fail reds the gate — a
+real regression signal for the ML integer subset). The differential (`report_ml_conformance`) is **REPORT-ONLY**
+(main.rs:3976 "warns but never reds"). So DELETING conformance-db naively removes the only *blocking* conformance
+signal for the ML pipeline, leaving only a report-only differential → a future ML miscompile on the integer
+subset would no longer RED the gate. FIX: flip the differential to GATE-ENFORCING **before or in the same slice
+as** the delete, so gating coverage is not lost — it strictly IMPROVES (report-only-subset → blocking-full-corpus).
+
+**Step 2 — flip the differential to blocking (v-fleet-tooling co-owned; xtask).** Make `report_ml_conformance`
+RED the gate on `Disagree > 0` (a real ML-vs-rcdzc disagreement = a miscompile; Agree/NotYet stay non-fatal so
+coverage-not-yet never reds). This is the operator's "checking for equivalence to rcdzc," ENFORCED. It's an
+xtask/gate-plumbing change → COORDINATE with v-fleet-tooling (they own xtask/gate wiring), as conformance-db's
+own Rust-side wiring was. Keep the wall-clock/fleet-safety bound.
+
+**Step 3 — delete conformance-db.cdz + conformance-db-cx.cdz + conformance-db-rel.cdz** (1180 LOC, 3 files, 29
+gating @tests + ~100 hand-coded cases). Project.cdz globs `src/*.cdz` so they auto-drop from modules+tests; no
+manifest edit. Also removes 3 of the SLOWEST self-host suites (~580–900s) — a gate-time win. Net: −1180 LOC,
+−3 slow suites, conformance becomes self-maintaining + full-corpus + blocking against the real rcdzc oracle.
+
+Sequencing: Step 2 (blocking flip) lands FIRST or same-slice as Step 3 (delete), never delete-then-flip.
+
 ## Open decision for the operator (via concierge)
 - Approve retiring conformance-db (+cx/-rel) in favor of the existing differential? (I do the corpus-coverage
   audit + deletion as a cleanup slice.)
