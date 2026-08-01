@@ -17314,3 +17314,34 @@
             (export main)))
   (call   main (: 4 Int64))
   (output (: 1950 Int64)))
+
+; --- Remove-path canonicalization under runtime whole-map equality: the existing runtime map
+; equality pins build both sides by INSERT only; these pin that a map reached VIA a remove
+; (CHAMP deletion path-copy, possibly with node collapse) is byte-canonical with the map built
+; directly — and that a fully DRAINED map equals the Map.empty literal itself. ---
+
+(case "a runtime map reached VIA insert-then-remove equals the directly-built map"
+  (doc    "History-independence of the deletion path: `via` builds {1↦a, 2↦20} then removes key 2; `direct`
+           builds {1↦a} outright. Canonicalize-at-construction means the remove's path-copy must land on
+           byte-identical structure with the never-had-key-2 map, so runtime `=` is 1 for every a (10, 7).
+           A deletion that left a residual node shape (collapsed differently than never-inserted) would
+           flip this to 0 while both maps still LOOK equal by content walks.")
+  (input  (do
+            (def (via (: a Int64)) (Map.remove (Map.insert (Map.insert Map.empty 1 a) 2 20) 2))
+            (def (direct (: a Int64)) (Map.insert Map.empty 1 a))
+            (def (main (: a Int64)) (if (= (via a) (direct a)) 1 0))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1 Int64))
+  (call   main (: 7 Int64)) (output (: 1 Int64)))
+
+(case "a runtime map drained by remove equals the EMPTY map literal"
+  (doc    "The boundary face of remove-path canonicalization: remove BOTH keys from a runtime 2-entry map
+           and compare with `Map.empty` itself — the drain must shrink all the way back to the canonical
+           empty representation, not a hollow root node that is len-0 but structurally distinct. The
+           existing drain case pins Map.len=0; this pins EQUALITY with the empty literal.")
+  (input  (do
+            (def (drained (: a Int64))
+              (Map.remove (Map.remove (Map.insert (Map.insert Map.empty 1 a) 2 20) 1) 2))
+            (def (main (: a Int64)) (if (= (drained a) Map.empty) 1 0))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 1 Int64)))

@@ -491,6 +491,73 @@ mod tests {
         assert_eq!(genesis().hash(), genesis().hash());
     }
 
+    // A FULLY-FIXED event (every field a literal, no Hash::of indirection) whose encoded bytes are
+    // pinned by the frozen-encoding golden test below.
+    fn golden_event() -> Event {
+        Event {
+            seq: 42,
+            cause: Some(Hash::from_bytes([0xABu8; 32])),
+            body: EventBody::Dispatched {
+                id: EffectId(7),
+                kind: EffectKind::Http,
+                target: "https://ok.host/p".into(),
+                idempotency_key: Hash::from_bytes([0xCDu8; 32]),
+                deadline_ms: Some(1000),
+            },
+        }
+    }
+
+    #[test]
+    fn frozen_encoding_is_byte_stable_golden() {
+        // §16c-S3: the encoding is FROZEN — "same event → same bytes → same hash." The round-trip test
+        // proves decode(encode(x)) == x, but NOT that encode(x) yields the SAME bytes over time: a
+        // refactor could change the byte layout while keeping round-trip intact, silently invalidating
+        // every persisted log's content-address hashes + `cause` edges (a session that recovers under a
+        // new layout would compute different hashes for the same history). This golden pin is the
+        // tripwire: if it fails, the on-disk format changed — that MUST be a conscious, versioned
+        // migration (e.g. the planned swap to the shared `cadenza-ast` codec), never an accident.
+        //
+        // Byte layout of `golden_event()` (little-endian; the frozen §16c-S3 format):
+        //   seq=42                → 42,0,0,0,0,0,0,0        (u64 LE)
+        //   cause=Some(0xAB..)    → 1, then 32×0xAB(171)    (tag + Hash)
+        //   body tag=Dispatched   → 2
+        //   id=7                  → 7,0,0,0,0,0,0,0         (u64 LE)
+        //   kind=Http             → 1                       (kind tag)
+        //   target len=17         → 17,0,0,0,0,0,0,0        (u64 LE len)
+        //   target="https://ok.host/p" → its 17 UTF-8 bytes
+        //   idempotency_key=0xCD.. → 32×0xCD(205)           (Hash)
+        //   deadline_ms=Some(1000) → 1, then 1000 as u64 LE (232,3,0,0,0,0,0,0)
+        let expected: &[u8] = &[
+            42, 0, 0, 0, 0, 0, 0, 0, // seq
+            1, // cause: Some
+            171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171,
+            171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171, 171,
+            171, // cause hash
+            2,   // body tag = Dispatched
+            7, 0, 0, 0, 0, 0, 0, 0, // id
+            1, // kind = Http
+            17, 0, 0, 0, 0, 0, 0, 0, // target len
+            104, 116, 116, 112, 115, 58, 47, 47, 111, 107, 46, 104, 111, 115, 116, 47,
+            112, // "https://ok.host/p"
+            205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205,
+            205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205, 205,
+            205, // idempotency_key hash
+            1, 232, 3, 0, 0, 0, 0, 0, 0, // deadline_ms: Some(1000)
+        ];
+        assert_eq!(
+            golden_event().encode(),
+            expected,
+            "FROZEN ENCODING CHANGED — the on-disk log format is not byte-stable. If this is an \
+             intentional format change it MUST be a versioned migration (§16c-S3), not an accident."
+        );
+        // And the content-address hash the log/cause-edges depend on is pinned too.
+        assert_eq!(
+            golden_event().hash().to_hex(),
+            "65adb9660a20b1f0fa4b6457e8acc82233c37783d7e5658211e782ab73de007b",
+            "FROZEN event hash changed — persisted `cause` edges + content addresses would break."
+        );
+    }
+
     #[test]
     fn seq_change_changes_hash() {
         let mut e = genesis();

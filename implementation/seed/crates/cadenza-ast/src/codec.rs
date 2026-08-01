@@ -110,6 +110,49 @@ const BODY_FLOAT: u8 = 1;
 const TAG_ATOM: u8 = 0;
 const TAG_LIST: u8 = 1;
 
+/// Why [`decode_detailed`] rejected a byte string. The load-bearing distinction for a streaming/log
+/// consumer (e.g. the agent-harness kernel's crash recovery) is [`DecodeError::Truncated`] — the input
+/// ended mid-read, a benign torn/interrupted write — versus EVERY OTHER variant, which means the bytes
+/// were all present but did not form a valid canonical AST: genuine corruption. A consumer that only
+/// needs that split matches `Truncated` and treats the rest as one "corrupt" case; the finer variants
+/// are for diagnostics. `decode` (the `Option`-returning API) is exactly `decode_detailed(_).ok()`, so
+/// the two never disagree on which byte strings decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeError {
+    /// A read needed more bytes than remained — the input ended mid-header, mid-varint, or mid-field.
+    /// An interrupted/torn write, NOT corruption (map to a torn-tail / clean-end in a log).
+    Truncated,
+    /// The 8-byte container version header is present but is not the recognized tag — a different/older
+    /// format or corruption. (Fewer than 8 bytes is [`Self::Truncated`], not this.)
+    BadHeader,
+    /// A tag/discriminant byte that is present but unrecognized: a structure entry tag (not
+    /// atom/list), a leaf kind, a suffix/body shape, or a bool byte (not 0/1).
+    BadTag,
+    /// A varint (a count, id, or length) is present but not a valid canonical `VarU64` — non-minimal
+    /// (overlong) or wider than 64 bits. (`leb128::VarErr::Malformed`.)
+    MalformedVarint,
+    /// A text field (string/name/sym/char/bad-char/bad-escape body) is present but not valid UTF-8, or
+    /// a single-scalar field (`char`/bad-escape) whose bytes are valid UTF-8 but empty.
+    BadText,
+    /// A referential id is present but out of range: a leaf id ≥ the leaf count, a structure child id
+    /// or the root ≥ the structure count, or an id that overflows `u32`.
+    IdOutOfRange,
+    /// The reachable structure from the root is present and in-range but is not a genuine TREE — a
+    /// cycle or a shared subtree (a decode-bomb / stack-overflow hazard for a recursive consumer).
+    NotATree,
+    /// The AST decoded but bytes remain after it — a framing error or corruption.
+    TrailingBytes,
+}
+
+impl From<crate::leb128::VarErr> for DecodeError {
+    fn from(e: crate::leb128::VarErr) -> Self {
+        match e {
+            crate::leb128::VarErr::Truncated => DecodeError::Truncated,
+            crate::leb128::VarErr::Malformed => DecodeError::MalformedVarint,
+        }
+    }
+}
+
 /// The 8-byte container version tag (a name + a version number). `decode` verifies it and refuses any
 /// bytes with an unrecognized header, per ast-encoding.md §The Encoding Is Versioned (see the module
 /// header). The content could be strengthened to a schema hash later; swapping it is a drop-in change.
@@ -257,54 +300,73 @@ fn write_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
 
 /// Decode bytes to `Arenas`, verifying the header and consuming the whole input. Total: returns
 /// `None` on header mismatch, malformed structure, out-of-range id, or trailing bytes.
+///
+/// This is exactly [`decode_detailed`] with the failure reason dropped — use `decode_detailed` when
+/// you need to tell a TORN write ([`DecodeError::Truncated`]) from CORRUPTION (every other variant),
+/// e.g. a log/stream consumer's crash recovery. Keeping this the sole `Option` surface guarantees the
+/// two never disagree on which byte strings decode.
 pub fn decode(bytes: &[u8]) -> Option<Arenas> {
-    // Header.
-    let header = bytes.get(..8)?;
+    decode_detailed(bytes).ok()
+}
+
+/// Decode bytes to `Arenas`, classifying WHY it failed (see [`DecodeError`]). Total: never panics,
+/// never over-reads, never returns a wrong tree. `Truncated` means a read ran past the end of the input
+/// (a torn/interrupted write); every other variant means the bytes were all present but did not form a
+/// valid canonical AST (corruption). Verifies the version header, referential integrity, tree-ness (no
+/// cycle or shared subtree — a decode-bomb guard), and that the whole input is consumed.
+pub fn decode_detailed(bytes: &[u8]) -> Result<Arenas, DecodeError> {
+    // Header. Fewer than 8 bytes = the input ended mid-header = truncated; 8 present but wrong = a
+    // different/older format or corruption = BadHeader.
+    let header = bytes.get(..8).ok_or(DecodeError::Truncated)?;
     if header != SCHEMA_HEADER {
-        return None;
+        return Err(DecodeError::BadHeader);
     }
     let mut r = Reader::new(&bytes[8..]);
 
     // Leaves.
-    let leaf_count = r.read_var_len()?;
+    let leaf_count = r.read_var_len_checked()?;
     let mut leaves = Vec::with_capacity(leaf_count.min(1 << 16));
     for _ in 0..leaf_count {
         leaves.push(read_leaf(&mut r)?);
     }
 
     // Structure.
-    let struct_count = r.read_var_len()?;
+    let struct_count = r.read_var_len_checked()?;
     let mut structure = Vec::with_capacity(struct_count.min(1 << 16));
     for _ in 0..struct_count {
-        let tag = r.byte()?;
+        let tag = r.byte().ok_or(DecodeError::Truncated)?;
         let entry = match tag {
             TAG_ATOM => {
-                let leaf_id = r.read_varu64()?;
+                let leaf_id = r.read_varu64_checked()?;
                 if leaf_id as usize >= leaves.len() {
-                    return None; // referential integrity: leaf id in range
+                    return Err(DecodeError::IdOutOfRange); // referential integrity: leaf id in range
                 }
-                Struct::Atom(LeafId(u32::try_from(leaf_id).ok()?))
+                Struct::Atom(LeafId(
+                    u32::try_from(leaf_id).map_err(|_| DecodeError::IdOutOfRange)?,
+                ))
             }
             TAG_LIST => {
-                let n = r.read_var_len()?;
+                let n = r.read_var_len_checked()?;
                 let mut children = Vec::with_capacity(n.min(1 << 16));
                 for _ in 0..n {
-                    let child = r.read_varu64()?;
-                    children.push(StructId(u32::try_from(child).ok()?));
+                    let child = r.read_varu64_checked()?;
+                    children.push(StructId(
+                        u32::try_from(child).map_err(|_| DecodeError::IdOutOfRange)?,
+                    ));
                 }
                 Struct::List(children)
             }
-            _ => return None,
+            _ => return Err(DecodeError::BadTag),
         };
         structure.push(entry);
     }
 
     // Root.
-    let root = r.read_varu64()?;
+    let root = r.read_varu64_checked()?;
     if root as usize >= structure.len() {
-        return None;
+        return Err(DecodeError::IdOutOfRange);
     }
-    let root = StructId(u32::try_from(root).ok()?);
+    let root = StructId(u32::try_from(root).map_err(|_| DecodeError::IdOutOfRange)?);
 
     // Referential integrity for structure child ids: every id must be in range. (Atom leaf ids
     // were checked above.) A forward reference is permitted — the codec requires only in-boundsness.
@@ -312,7 +374,7 @@ pub fn decode(bytes: &[u8]) -> Option<Arenas> {
         if let Struct::List(children) = entry {
             for StructId(id) in children {
                 if *id as usize >= structure.len() {
-                    return None;
+                    return Err(DecodeError::IdOutOfRange);
                 }
             }
         }
@@ -331,7 +393,7 @@ pub fn decode(bytes: &[u8]) -> Option<Arenas> {
         let mut stack = vec![root.0 as usize];
         while let Some(id) = stack.pop() {
             if visited[id] {
-                return None; // a node reached twice: a cycle or a shared subtree — not a tree
+                return Err(DecodeError::NotATree); // reached twice: a cycle or a shared subtree
             }
             visited[id] = true;
             if let Struct::List(children) = &structure[id] {
@@ -344,39 +406,32 @@ pub fn decode(bytes: &[u8]) -> Option<Arenas> {
 
     // No trailing bytes.
     if !r.at_end() {
-        return None;
+        return Err(DecodeError::TrailingBytes);
     }
-    Some(Arenas {
+    Ok(Arenas {
         leaves,
         structure,
         root,
     })
 }
 
-fn read_leaf(r: &mut Reader) -> Option<Leaf> {
-    let kind = r.byte()?;
-    Some(match kind {
+fn read_leaf(r: &mut Reader) -> Result<Leaf, DecodeError> {
+    let kind = r.byte().ok_or(DecodeError::Truncated)?;
+    Ok(match kind {
         KIND_INT_POS_DEC | KIND_INT_POS_HEX | KIND_INT_POS_BIN | KIND_INT_NEG_DEC
         | KIND_INT_NEG_HEX | KIND_INT_NEG_BIN => {
-            let (neg, radix) = match kind {
-                KIND_INT_POS_DEC => (false, Radix::Dec),
-                KIND_INT_POS_HEX => (false, Radix::Hex),
-                KIND_INT_POS_BIN => (false, Radix::Bin),
-                KIND_INT_NEG_DEC => (true, Radix::Dec),
-                KIND_INT_NEG_HEX => (true, Radix::Hex),
-                _ => (true, Radix::Bin),
-            };
-            let len = r.read_var_len()?;
-            let mag = r.take(len)?;
+            let (neg, radix) = int_kind_parts(kind)?;
+            let len = r.read_var_len_checked()?;
+            let mag = r.take(len).ok_or(DecodeError::Truncated)?;
             let sign = if neg { Sign::Minus } else { Sign::Plus };
             let value = BigInt::from_bytes_be(sign, mag);
             Leaf::Int { value, radix }
         }
         KIND_FLOAT => {
             let negative = read_bool(r)?;
-            let exponent = r.read_i64_be()?;
-            let sig_len = r.read_var_len()?;
-            let mag = r.take(sig_len)?;
+            let exponent = r.read_i64_be().ok_or(DecodeError::Truncated)?;
+            let sig_len = r.read_var_len_checked()?;
+            let mag = r.take(sig_len).ok_or(DecodeError::Truncated)?;
             let significand = BigInt::from_bytes_be(Sign::Plus, mag);
             Leaf::Float(Decimal {
                 negative,
@@ -390,22 +445,22 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
         KIND_BOOL_TRUE => Leaf::Bool(true),
         KIND_NAME => Leaf::Name(read_string(r)?),
         KIND_SYM => Leaf::Sym(read_string(r)?),
-        KIND_BAD_ESCAPE => Leaf::BadEscape(read_string(r)?.chars().next()?),
-        KIND_CHAR => Leaf::Char(read_string(r)?.chars().next()?),
+        KIND_BAD_ESCAPE => Leaf::BadEscape(read_scalar(r)?),
+        KIND_CHAR => Leaf::Char(read_scalar(r)?),
         KIND_BAD_CHAR => Leaf::BadChar(read_string(r)?),
         // A TYPE-SUFFIXED numeric literal: the suffix byte, a body-shape byte, then the body encoded
         // as a bare int/float (the same layout `write_leaf` emits and the int/float arms above read).
         KIND_SUFFIXED => {
-            let kind = match r.byte()? {
+            let kind = match r.byte().ok_or(DecodeError::Truncated)? {
                 SUFFIX_BIGINT => SuffixKind::BigInt,
                 SUFFIX_RATIONAL => SuffixKind::Rational,
-                _ => return None,
+                _ => return Err(DecodeError::BadTag),
             };
-            let value = match r.byte()? {
+            let value = match r.byte().ok_or(DecodeError::Truncated)? {
                 BODY_INT => {
-                    let (neg, radix) = int_kind_parts(r.byte()?)?;
-                    let len = r.read_var_len()?;
-                    let mag = r.take(len)?;
+                    let (neg, radix) = int_kind_parts(r.byte().ok_or(DecodeError::Truncated)?)?;
+                    let len = r.read_var_len_checked()?;
+                    let mag = r.take(len).ok_or(DecodeError::Truncated)?;
                     let sign = if neg { Sign::Minus } else { Sign::Plus };
                     SuffixBody::Int {
                         value: BigInt::from_bytes_be(sign, mag),
@@ -414,55 +469,64 @@ fn read_leaf(r: &mut Reader) -> Option<Leaf> {
                 }
                 BODY_FLOAT => {
                     let negative = read_bool(r)?;
-                    let exponent = r.read_i64_be()?;
-                    let sig_len = r.read_var_len()?;
-                    let mag = r.take(sig_len)?;
+                    let exponent = r.read_i64_be().ok_or(DecodeError::Truncated)?;
+                    let sig_len = r.read_var_len_checked()?;
+                    let mag = r.take(sig_len).ok_or(DecodeError::Truncated)?;
                     SuffixBody::Float(Decimal {
                         negative,
                         significand: BigInt::from_bytes_be(Sign::Plus, mag),
                         exponent,
                     })
                 }
-                _ => return None,
+                _ => return Err(DecodeError::BadTag),
             };
             Leaf::Suffixed { value, kind }
         }
-        _ => return None,
+        _ => return Err(DecodeError::BadTag),
     })
 }
 
-/// The (sign, radix) an int kind tag encodes — the inverse of [`int_kind`], for the suffixed-literal
-/// body decode (which reuses the bare-int kind byte). `None` for a non-int tag.
-fn int_kind_parts(kind: u8) -> Option<(bool, Radix)> {
-    Some(match kind {
+/// The (sign, radix) an int kind tag encodes — the inverse of [`int_kind`], used for both the bare-int
+/// leaf and the suffixed-literal body (which reuses the bare-int kind byte). A non-int tag is a
+/// present-but-invalid discriminant → [`DecodeError::BadTag`].
+fn int_kind_parts(kind: u8) -> Result<(bool, Radix), DecodeError> {
+    Ok(match kind {
         KIND_INT_POS_DEC => (false, Radix::Dec),
         KIND_INT_POS_HEX => (false, Radix::Hex),
         KIND_INT_POS_BIN => (false, Radix::Bin),
         KIND_INT_NEG_DEC => (true, Radix::Dec),
         KIND_INT_NEG_HEX => (true, Radix::Hex),
         KIND_INT_NEG_BIN => (true, Radix::Bin),
-        _ => return None,
+        _ => return Err(DecodeError::BadTag),
     })
 }
 
 /// Read a raw byte sequence (a `Bytes` leaf's payload) — a length then that many bytes verbatim (no
 /// UTF-8 check, unlike [`read_string`]).
-fn read_raw_bytes(r: &mut Reader) -> Option<Vec<u8>> {
-    let len = r.read_var_len()?;
-    Some(r.take(len)?.to_vec())
+fn read_raw_bytes(r: &mut Reader) -> Result<Vec<u8>, DecodeError> {
+    let len = r.read_var_len_checked()?;
+    Ok(r.take(len).ok_or(DecodeError::Truncated)?.to_vec())
 }
 
-fn read_string(r: &mut Reader) -> Option<String> {
-    let len = r.read_var_len()?;
-    let bytes = r.take(len)?;
-    String::from_utf8(bytes.to_vec()).ok()
+/// Read a length-prefixed UTF-8 string. A short read is [`DecodeError::Truncated`]; bytes that are
+/// present but not valid UTF-8 are [`DecodeError::BadText`].
+fn read_string(r: &mut Reader) -> Result<String, DecodeError> {
+    let len = r.read_var_len_checked()?;
+    let bytes = r.take(len).ok_or(DecodeError::Truncated)?;
+    String::from_utf8(bytes.to_vec()).map_err(|_| DecodeError::BadText)
 }
 
-fn read_bool(r: &mut Reader) -> Option<bool> {
-    match r.byte()? {
-        0 => Some(false),
-        1 => Some(true),
-        _ => None,
+/// Read a single-scalar field (a `Char` / `BadEscape` body) — a UTF-8 string that must hold exactly at
+/// least one scalar. Empty-but-valid-UTF-8 is [`DecodeError::BadText`] (the encoder always writes one).
+fn read_scalar(r: &mut Reader) -> Result<char, DecodeError> {
+    read_string(r)?.chars().next().ok_or(DecodeError::BadText)
+}
+
+fn read_bool(r: &mut Reader) -> Result<bool, DecodeError> {
+    match r.byte().ok_or(DecodeError::Truncated)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(DecodeError::BadTag),
     }
 }
 
@@ -639,6 +703,134 @@ mod tests {
         let bytes = encode(&a);
         for cut in 8..bytes.len() {
             assert_eq!(decode(&bytes[..cut]), None, "prefix len {cut}");
+        }
+    }
+
+    #[test]
+    fn decode_detailed_classifies_torn_vs_corrupt() {
+        // The whole point of `decode_detailed`: a consumer (the agent-harness kernel's crash recovery)
+        // must tell a TORN write — the input ended mid-read, a benign interrupted append — from
+        // CORRUPTION — the bytes are all present but do not form a valid canonical AST. `Truncated` is
+        // the torn case; EVERY other variant is corruption.
+        let a = sample();
+        let good = encode(&a);
+        assert!(decode_detailed(&good).is_ok(), "the sample decodes");
+
+        // TRUNCATED: every proper prefix (past the 8-byte header — a shorter one is also Truncated)
+        // ends mid-read. A torn tail, never mislabeled as corruption.
+        for cut in 0..good.len() {
+            assert_eq!(
+                decode_detailed(&good[..cut]),
+                Err(DecodeError::Truncated),
+                "a {cut}-byte prefix is a torn write, not corruption"
+            );
+        }
+
+        // BAD_HEADER: 8 bytes present but not the tag (a different/older format).
+        {
+            let mut b = good.clone();
+            b[0] ^= 0xff;
+            assert_eq!(decode_detailed(&b), Err(DecodeError::BadHeader));
+        }
+
+        // TRAILING_BYTES: a complete AST followed by extra bytes.
+        {
+            let mut b = good.clone();
+            b.push(0x00);
+            assert_eq!(decode_detailed(&b), Err(DecodeError::TrailingBytes));
+        }
+
+        // BAD_TAG: a structure-entry tag that is neither atom nor list — hand-build a 1-node arena
+        // (0 leaves) whose sole entry tag is bogus.
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 0); // leaf_count
+            leb128::write_u64(&mut b, 1); // struct_count
+            b.push(0x7f); // neither TAG_ATOM nor TAG_LIST
+            assert_eq!(decode_detailed(&b), Err(DecodeError::BadTag));
+        }
+
+        // BAD_TAG: an unknown LEAF kind byte.
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 1); // leaf_count = 1
+            b.push(0xfe); // an unknown leaf kind
+            assert_eq!(decode_detailed(&b), Err(DecodeError::BadTag));
+        }
+
+        // ID_OUT_OF_RANGE: a leaf id ≥ the leaf count.
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 0); // leaf_count = 0
+            leb128::write_u64(&mut b, 1); // struct_count = 1
+            b.push(TAG_ATOM);
+            leb128::write_u64(&mut b, 0); // leaf id 0 — out of range (no leaves)
+            leb128::write_u64(&mut b, 0); // root
+            assert_eq!(decode_detailed(&b), Err(DecodeError::IdOutOfRange));
+        }
+
+        // NOT_A_TREE: a single list node that references itself (in-bounds but cyclic).
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 0); // leaf_count = 0
+            leb128::write_u64(&mut b, 1); // struct_count = 1
+            b.push(TAG_LIST);
+            leb128::write_u64(&mut b, 1); // one child…
+            leb128::write_u64(&mut b, 0); // …which is node 0 itself → a cycle
+            leb128::write_u64(&mut b, 0); // root
+            assert_eq!(decode_detailed(&b), Err(DecodeError::NotATree));
+        }
+
+        // MALFORMED_VARINT: a non-canonical (overlong) leaf-count varint — all bytes present but not a
+        // valid VarU64. Corruption, NOT truncation, even though it sits right after the header.
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            b.extend_from_slice(&[0x80, 0x00]); // overlong 0
+            assert_eq!(decode_detailed(&b), Err(DecodeError::MalformedVarint));
+        }
+
+        // BAD_TEXT: a Str leaf whose body is present but not valid UTF-8.
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 1); // leaf_count = 1
+            b.push(KIND_STR);
+            leb128::write_u64(&mut b, 1); // body len = 1
+            b.push(0xff); // 0xff is never valid UTF-8
+            assert_eq!(decode_detailed(&b), Err(DecodeError::BadText));
+        }
+    }
+
+    #[test]
+    fn decode_and_decode_detailed_agree_on_every_input() {
+        // `decode` IS `decode_detailed(_).ok()`, so for ANY bytes they must agree on accept/reject and
+        // on the decoded arena. Sweep random byte soup (with and without a valid header prefix) to pin
+        // that they never diverge — a divergence would mean the Option surface and the classified
+        // surface disagree on what a valid AST byte stream is.
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                z ^ (z >> 31)
+            }
+        }
+        let mut rng = Rng(0xc0de_c0de_1eb1_2803);
+        for _ in 0..20_000 {
+            let len = (rng.next() % 40) as usize;
+            let mut buf: Vec<u8> = (0..len).map(|_| (rng.next() & 0xff) as u8).collect();
+            // Half the time, prepend a valid header so the interesting post-header paths are reached.
+            if rng.next() & 1 == 0 {
+                let mut h = SCHEMA_HEADER.to_vec();
+                h.extend_from_slice(&buf);
+                buf = h;
+            }
+            assert_eq!(
+                decode(&buf),
+                decode_detailed(&buf).ok(),
+                "decode and decode_detailed diverge on {buf:?}"
+            );
         }
     }
 

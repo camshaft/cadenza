@@ -66,10 +66,22 @@ impl Reducer for InertReducer {
 /// Convenience: does this event body carry an effect id the reducer might have a continuation for?
 /// (Used by the wasmtime dispatch loop to know when a reducer resume is relevant.) Kept here so the
 /// correlation mapping lives beside the contract it serves.
+///
+/// This is EVERY event that is the TERMINAL OUTCOME of a requested effect — the set the reducer might
+/// have stored a continuation for (§16c-S4). Three, not two:
+/// - `EffectResult` — the effect ran (Ok/Err/TimedOut); resume with the result.
+/// - `TimerFired` — an armed timer's deadline arrived; resume the timer's continuation.
+/// - `AuthzDenied` — the effect was DENIED at the gate and never ran; this is still that id's terminal
+///   outcome, so a reducer that stored a continuation keyed by it MUST be resumed (with the denial) or
+///   its flow strands on a denied effect — the §9d anti-stuck contract requires every requested effect
+///   to produce a resuming outcome, and a denial is one (recovery feedback, §9d). Omitting it here was a
+///   latent gap: the kernel already folds `AuthzDenied` observably, but the wasm dispatch loop keys its
+///   guest-resume on this helper, so a denied effect wouldn't have resumed the guest.
 pub fn resumes_effect(body: &EventBody) -> Option<crate::effect::EffectId> {
     match body {
         EventBody::EffectResult { id, .. } => Some(*id),
         EventBody::TimerFired { id, .. } => Some(*id),
+        EventBody::AuthzDenied { id, .. } => Some(*id),
         _ => None,
     }
 }
@@ -81,7 +93,7 @@ mod tests {
     use crate::event::EffectOutcome;
 
     #[test]
-    fn resumes_effect_recognizes_result_and_timer() {
+    fn resumes_effect_recognizes_every_terminal_outcome() {
         let result = EventBody::EffectResult {
             id: EffectId(7),
             result: EffectOutcome::Ok(None),
@@ -90,11 +102,19 @@ mod tests {
             id: EffectId(9),
             fired_ms: 1,
         };
-        let inbound = EventBody::Closed {
+        // A DENIAL is the terminal outcome of a requested effect too — the reducer's continuation for
+        // that id must resume, or its flow strands on the denied effect (§9d anti-stuck).
+        let denied = EventBody::AuthzDenied {
+            id: EffectId(11),
+            reason: "no capability".into(),
+        };
+        let closed = EventBody::Closed {
             outcome: Payload::Inline(vec![]),
         };
         assert_eq!(resumes_effect(&result), Some(EffectId(7)));
         assert_eq!(resumes_effect(&timer), Some(EffectId(9)));
-        assert_eq!(resumes_effect(&inbound), None);
+        assert_eq!(resumes_effect(&denied), Some(EffectId(11)));
+        // Non-outcome events carry no continuation to resume.
+        assert_eq!(resumes_effect(&closed), None);
     }
 }
