@@ -100,6 +100,7 @@ pass	PAIRWISE SWAP exchanges adjacent pairs, the odd tail survives, and it self-
 pass	PRODUCT-EXCEPT-SELF composes a prefix pass and a suffix pass without division
 pass	Qty map VALUES unwrap, ADD, and COMPARE in one chain preserving the unit through the collection
 pass	RANGE-SUM answers interval queries from a prefix table and agrees with a direct walk
+pass	RLE encode/decode round-trips a list — the runtime element merges or splits a run
 pass	ROTATE-90 composes row-reverse with transpose and four rotations restore the matrix
 pass	Record.extend ADDS a closure field beside two existing ones and all three apply
 pass	Record.extend widens a map-extracted record and the wide row enters a new map
@@ -148,6 +149,7 @@ pass	WAVE reorder alternates <= and >= by index parity through a carried-element
 pass	a 1000-step UPSERT fold builds a 7-bucket histogram — persistent-map churn under real load
 pass	a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
+pass	a 2x2 matrix MULTIPLY composes row extraction, column extraction, and a zipped dot product
 pass	a 3-arg effect op binds its operands POSITIONALLY — an argument-order swap is caught
 pass	a 33-VARIANT sum dispatches across the discriminant range with a payload variant last
 pass	a 5000-deep recursive-sum spine builds, walks, and compares — the eq walk survives depth

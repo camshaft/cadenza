@@ -17263,3 +17263,54 @@
   (doc    "The map-KEY face at a STRING key: a Bool mixed-KEY insert is already pinned (:13840, (Map.insert (Map.insert Map.empty 1 10) true 20)); this adds STRING as another mixed-key variant, confirming the uniform CDZ0201 covers the key axis regardless of the intruding key type (not only Bool).")
   (input  (do (def (main) (Map.insert (Map.insert Map.empty 1 10) "k" 20)) (export main)))
   (error  CDZ0201))
+
+; --- The RLE codec round-trip (runtime-decided encoding shape) and the 2x2 matrix multiply. ---
+
+(case "RLE encode/decode round-trips a list — the runtime element merges or splits a run"
+  (doc    "The codec round-trip law over tuple-run pairs: encode's lookahead carries (cur,run) accumulators, decode's rep expands each pair, and the RUNTIME element either SPLITS runs (k=5: 3 pairs) or MERGES into the head run (k=7: 2 pairs) — the encoding SHAPE is runtime-decided and decode-of-encode = id holds either way.")
+  (input  (do
+            (def (rep (: v Int64) (: n Int64) (: out (List Int64)))
+              (if (< n 1) out (rep v (- n 1) (List.push out v))))
+            (def (encode (: xs (List Int64)) (: i Int64) (: cur Int64) (: run Int64) (: out (List (Tuple Int64 Int64))))
+              (match (List.at xs i)
+                ((Option.Some v)
+                  (if (= v cur)
+                      (encode xs (+ i 1) cur (+ run 1) out)
+                      (encode xs (+ i 1) v 1 (List.push out (tuple cur run)))))
+                ((Option.None _u) (List.push out (tuple cur run)))))
+            (def (decode (: ps (List (Tuple Int64 Int64))) (: i Int64) (: out (List Int64)))
+              (match (List.at ps i)
+                ((Option.Some (tuple v n)) (decode ps (+ i 1) (rep v n out)))
+                ((Option.None _u) out)))
+            (def (main (: k Int64))
+              (do
+                (def xs (list 7 7 k 3 3 3))
+                (def enc (encode xs 1 (Option.expect (List.at xs 0) "h") 1 (list)))
+                (+ (* 100 (List.len enc))
+                   (+ (* 10 (if (= (decode enc 0 (list)) xs) 1 0))
+                      (match (List.at enc 2) ((Option.Some (tuple _v n)) n) ((Option.None _u) -1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 313 Int64))
+  (call   main (: 7 Int64)) (output (: 209 Int64)))
+
+(case "a 2x2 matrix MULTIPLY composes row extraction, column extraction, and a zipped dot product"
+  (doc    "No matrix arithmetic existed (transpose peels but never multiplies): the dot walks TWO lists in LOCKSTEP (the zip-consume shape), col extracts a column across rows (nested indexed reads), and the r00/r11 corners compose both with the runtime k in one operand.")
+  (input  (do
+            (def (dot (: a (List Int64)) (: b (List Int64)) (: i Int64) (: acc Int64))
+              (match (List.at a i)
+                ((Option.Some x) (dot a b (+ i 1) (+ acc (* x (Option.expect (List.at b i) "b")))))
+                ((Option.None _u) acc)))
+            (def (col (: m (List (List Int64))) (: j Int64) (: i Int64) (: out (List Int64)))
+              (match (List.at m i)
+                ((Option.Some row) (col m j (+ i 1) (List.push out (Option.expect (List.at row j) "c"))))
+                ((Option.None _u) out)))
+            (def (main (: k Int64))
+              (do
+                (def a (list (list 1 2) (list 3 k)))
+                (def b (list (list 5 6) (list 7 8)))
+                (def r00 (dot (Option.expect (List.at a 0) "r") (col b 0 0 (list)) 0 0))
+                (def r11 (dot (Option.expect (List.at a 1) "r") (col b 1 0 (list)) 0 0))
+                (+ (* 100 r00) r11)))
+            (export main)))
+  (call   main (: 4 Int64))
+  (output (: 1950 Int64)))

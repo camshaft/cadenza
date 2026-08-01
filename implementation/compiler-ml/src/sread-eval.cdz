@@ -97,6 +97,15 @@ def se-if() =
     | Option.None(_) => trap("runs")
 
 @test
+def se-if-too-many-operands-declines() =
+  // `if` is exactly ternary (cond then else). A FOURTH operand `(if (< 1 2) 1 2 3)` is MALFORMED (too many
+  // operands) → must DECLINE (rcdzc CDZ0201), NOT silently drop the extra + run the NIf to 1. Reject-path gap
+  // caught by the conf-db-vs-rcdzc enforcing differential; fixed in read-if-form (extra operand → TErr poison).
+  match run-src("(do (def (main) (if (< 1 2) 1 2 3)) (export main))") with
+    | Option.Some(_) => trap("a too-many-operands `if` must DECLINE (CDZ0201), not run")
+    | Option.None(_) => unit
+
+@test
 def se-let() =
   // (let ((x 10)) x) → 10 (binder + use share the name-id).
   match run-src("(let ((x 10)) x)") with
