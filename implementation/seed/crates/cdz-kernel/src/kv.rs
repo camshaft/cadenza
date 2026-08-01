@@ -62,9 +62,14 @@ impl Kv {
         self.map.is_empty()
     }
 
-    /// Content-address the entire KV (§4 free snapshot). Canonical: entries are hashed in sorted key
-    /// order with length-prefixing so no two distinct maps collide. Frozen encoding (§16c-S3).
-    pub fn root_hash(&self) -> Hash {
+    /// The KV's canonical byte serialization (§4 / §16c-S3 frozen encoding): entry count, then each
+    /// `(key, value)` in sorted key order, every field `u64`-length-prefixed so no two distinct maps
+    /// collide. This is the ONE canonical form — [`Kv::root_hash`] hashes exactly these bytes, and
+    /// [`Kv::decode`] reconstructs the map from them. Producing the bytes (not just their hash) is what
+    /// makes a snapshot RESTORABLE: store `encode()` in the blob store keyed by `root_hash()`, and a
+    /// recovering/fast-forwarding session `decode`s it instead of replaying the whole log (§4 — the
+    /// snapshot `(seq, root_hash, reducer)` is only a real checkpoint if the bytes it addresses exist).
+    pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&(self.map.len() as u64).to_le_bytes());
         for (k, v) in &self.map {
@@ -73,8 +78,76 @@ impl Kv {
             buf.extend_from_slice(&(v.len() as u64).to_le_bytes());
             buf.extend_from_slice(v);
         }
-        Hash::of(&buf)
+        buf
     }
+
+    /// Reconstruct a KV from its canonical [`Kv::encode`] bytes. Total (§17): any malformed/truncated
+    /// input yields `Err`, never a panic — the bytes come from CAS/an untrusted store, so a corrupt
+    /// snapshot must fail cleanly (the caller falls back to log replay), not crash. A successful decode
+    /// followed by `encode` is byte-identical (round-trips), so `decode(x).root_hash() == the key x was
+    /// stored under` — the integrity check a CAS-backed snapshot restore performs.
+    pub fn decode(bytes: &[u8]) -> Result<Kv, KvDecodeError> {
+        let mut pos = 0usize;
+        let take = |pos: &mut usize, n: usize| -> Result<&[u8], KvDecodeError> {
+            let end = pos.checked_add(n).ok_or(KvDecodeError::BadLength)?;
+            let slice = bytes.get(*pos..end).ok_or(KvDecodeError::Truncated)?;
+            *pos = end;
+            Ok(slice)
+        };
+        let read_u64 = |pos: &mut usize| -> Result<u64, KvDecodeError> {
+            let b = take(pos, 8)?;
+            Ok(u64::from_le_bytes(b.try_into().expect("took exactly 8")))
+        };
+        let read_len = |pos: &mut usize| -> Result<usize, KvDecodeError> {
+            usize::try_from(read_u64(pos)?).map_err(|_| KvDecodeError::BadLength)
+        };
+        let count = read_len(&mut pos)?;
+        let mut map = BTreeMap::new();
+        let mut prev_key: Option<Vec<u8>> = None;
+        for _ in 0..count {
+            let klen = read_len(&mut pos)?;
+            let key = take(&mut pos, klen)?.to_vec();
+            let vlen = read_len(&mut pos)?;
+            let val = take(&mut pos, vlen)?.to_vec();
+            // The canonical form is sorted, ascending, with no duplicate keys. Reject bytes that
+            // violate that (a non-canonical or tampered encoding) rather than silently accepting a form
+            // whose re-`encode` wouldn't reproduce it — that would break the root-hash integrity check.
+            if let Some(prev) = &prev_key {
+                if key <= *prev {
+                    return Err(KvDecodeError::NotCanonical);
+                }
+            }
+            prev_key = Some(key.clone());
+            map.insert(key, val);
+        }
+        // Exactly the framed bytes must be consumed — trailing bytes are corruption, not a valid KV.
+        if pos != bytes.len() {
+            return Err(KvDecodeError::TrailingBytes);
+        }
+        Ok(Kv { map })
+    }
+
+    /// Content-address the entire KV (§4 free snapshot). Hashes the canonical [`Kv::encode`] bytes, so
+    /// the hash and the stored/restorable form are ONE frozen encoding (§16c-S3) — no drift between what
+    /// `root_hash` addresses and what `decode` reconstructs.
+    pub fn root_hash(&self) -> Hash {
+        Hash::of(&self.encode())
+    }
+}
+
+/// A KV snapshot decode failure. Total decode (§17): a corrupt/tampered snapshot from CAS fails cleanly
+/// so the caller can fall back to log replay, never panics.
+#[derive(Debug, PartialEq, Eq)]
+pub enum KvDecodeError {
+    /// Ran out of bytes mid-field (truncated snapshot).
+    Truncated,
+    /// A length field doesn't fit `usize` (32-bit) — reject rather than wrap-truncate into a mis-parse.
+    BadLength,
+    /// Keys weren't strictly ascending / a duplicate key — not the canonical sorted form, so its
+    /// re-`encode` wouldn't reproduce it (would break the root-hash integrity check).
+    NotCanonical,
+    /// Bytes remained after the framed entries — corruption, not a valid canonical KV.
+    TrailingBytes,
 }
 
 #[cfg(test)]
@@ -120,6 +193,53 @@ mod tests {
         let mut b = Kv::new();
         b.put(b"a".to_vec(), b"b".to_vec());
         assert_ne!(a.root_hash(), b.root_hash());
+    }
+
+    #[test]
+    fn encode_decode_round_trips_and_matches_root_hash() {
+        let mut kv = Kv::new();
+        kv.put(b"b".to_vec(), b"2".to_vec());
+        kv.put(b"a".to_vec(), b"1".to_vec());
+        kv.put(b"ab".to_vec(), b"".to_vec()); // empty value + length-prefix collision guard
+        let bytes = kv.encode();
+        // Restorable: decode reconstructs the exact map (a snapshot fast-forward, not a log replay).
+        let restored = Kv::decode(&bytes).expect("round-trip");
+        assert_eq!(restored, kv);
+        // The stored bytes are addressed by root_hash — decode∘encode preserves it (the CAS integrity
+        // check a snapshot restore performs).
+        assert_eq!(restored.root_hash(), kv.root_hash());
+        assert_eq!(Hash::of(&bytes), kv.root_hash());
+    }
+
+    #[test]
+    fn empty_kv_round_trips() {
+        let kv = Kv::new();
+        assert_eq!(Kv::decode(&kv.encode()).unwrap(), kv);
+    }
+
+    #[test]
+    fn decode_is_total_on_bad_input() {
+        // Truncated: every proper prefix of a valid encoding must Err, never panic (§17).
+        let mut kv = Kv::new();
+        kv.put(b"k".to_vec(), b"vvvv".to_vec());
+        let bytes = kv.encode();
+        for cut in 0..bytes.len() {
+            assert!(Kv::decode(&bytes[..cut]).is_err(), "prefix {cut} must Err");
+        }
+        // Trailing bytes after a valid frame → corruption, not a valid KV.
+        let mut extra = bytes.clone();
+        extra.push(0xFF);
+        assert_eq!(Kv::decode(&extra), Err(KvDecodeError::TrailingBytes));
+        // Non-canonical (keys not strictly ascending): hand-build count=2 with "b" then "a".
+        let mut bad = Vec::new();
+        bad.extend_from_slice(&2u64.to_le_bytes()); // count
+        for (k, v) in [(&b"b"[..], &b"1"[..]), (&b"a"[..], &b"2"[..])] {
+            bad.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            bad.extend_from_slice(k);
+            bad.extend_from_slice(&(v.len() as u64).to_le_bytes());
+            bad.extend_from_slice(v);
+        }
+        assert_eq!(Kv::decode(&bad), Err(KvDecodeError::NotCanonical));
     }
 
     #[test]

@@ -51,12 +51,24 @@ pub struct Recovered {
     pub events: Vec<Event>,
     /// How the read ended (clean / torn tail / corrupt).
     pub kind: RecoveryKind,
+    /// Byte length of the good prefix — the offset just past the last whole, well-formed frame. On a
+    /// `Clean` end this equals the file length; on `TornTail`/`Corrupt` it's where the garbage begins.
+    /// This is what a driver truncates the log to ([`LogStore::truncate_to`]) so the torn/corrupt tail
+    /// doesn't poison future appends (an append lands AFTER the garbage, and the next recovery would
+    /// otherwise stop at the stale bad frame and silently drop everything appended since).
+    pub good_prefix_len: u64,
 }
 
 impl Recovered {
     /// Did the read end in genuine corruption (an alarm-worthy state, vs. a clean/torn end)?
     pub fn is_corrupt(&self) -> bool {
         self.kind == RecoveryKind::Corrupt
+    }
+
+    /// Is there a torn/corrupt tail past the good prefix that a driver should truncate before appending?
+    /// (True on `TornTail`/`Corrupt`; false on a `Clean` end.)
+    pub fn has_trailing_garbage(&self) -> bool {
+        self.kind != RecoveryKind::Clean
     }
 }
 
@@ -91,6 +103,23 @@ impl LogStore {
         self.file.flush()
     }
 
+    /// Truncate the log file to `len` bytes — the heal for a torn/corrupt tail (see [`Recovered`]).
+    /// After a crash-mid-append, the file carries trailing garbage past the last whole frame; appending
+    /// over it would land a good frame AFTER the garbage, and the next recovery would stop at the stale
+    /// bad frame and silently drop everything appended since. A driver that recovers with
+    /// `has_trailing_garbage()` truncates to `good_prefix_len` FIRST, then resumes appending cleanly.
+    ///
+    /// Pass the recovery's `good_prefix_len`. Truncating to a length ≥ the current file size is a no-op
+    /// (never extends). Flushes so the truncation is durable before the next append.
+    pub fn truncate_to(&mut self, len: u64) -> io::Result<()> {
+        let current = self.file.metadata()?.len();
+        if len < current {
+            self.file.set_len(len)?;
+            self.file.flush()?;
+        }
+        Ok(())
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -108,6 +137,7 @@ impl LogStore {
                 return Ok(Recovered {
                     events: Vec::new(),
                     kind: RecoveryKind::Clean,
+                    good_prefix_len: 0,
                 });
             }
             Err(e) => return Err(e),
@@ -121,7 +151,8 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
     let mut events = Vec::new();
     let mut pos = 0usize;
     loop {
-        // Need the 4-byte length prefix.
+        // Need the 4-byte length prefix. `pos` is always the offset just past the last WHOLE frame —
+        // the good-prefix length returned in every branch so a driver can truncate a bad tail to it.
         let Some(len_bytes) = bytes.get(pos..pos + 4) else {
             // Fewer than 4 trailing bytes: a torn tail iff there are leftover bytes, else a clean end.
             let kind = if pos < bytes.len() {
@@ -129,7 +160,11 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
             } else {
                 RecoveryKind::Clean
             };
-            return Recovered { events, kind };
+            return Recovered {
+                events,
+                kind,
+                good_prefix_len: pos as u64,
+            };
         };
         let len =
             u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]) as usize;
@@ -139,6 +174,7 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
             return Recovered {
                 events,
                 kind: RecoveryKind::TornTail,
+                good_prefix_len: pos as u64,
             };
         };
         match Event::decode(body) {
@@ -151,10 +187,12 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
             _ => {
                 // Complete-but-invalid frame: genuine corruption, not a torn write. `Corrupt` (distinct
                 // from Clean/TornTail) so the driver can alarm / hard-fail rather than mistake data loss
-                // for a clean log end (PR#990 #4).
+                // for a clean log end (PR#990 #4). `pos` marks where the good prefix ends (before this
+                // bad frame) so the driver can truncate to it if it chooses to heal + proceed.
                 return Recovered {
                     events,
                     kind: RecoveryKind::Corrupt,
+                    good_prefix_len: pos as u64,
                 };
             }
         }
@@ -320,6 +358,68 @@ mod tests {
             "a complete-but-invalid frame must be Corrupt (not look like a clean EOF or torn tail)"
         );
         assert!(rec.is_corrupt());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn truncate_to_heals_a_torn_tail_so_future_appends_survive_recovery() {
+        // The bug this guards: after a torn-tail crash, appending over the garbage lands a good frame
+        // AFTER the torn bytes; the next recovery stops at the torn frame and silently drops everything
+        // appended since. truncate_to(good_prefix_len) heals it — the driver's recover-then-heal flow.
+        let path = temp_path("heal");
+        {
+            let mut s = LogStore::open(&path).unwrap();
+            s.append(&genesis()).unwrap();
+            s.append(&inbound(1)).unwrap();
+        }
+        // A crash mid-append leaves a torn final frame.
+        {
+            use std::io::Write;
+            let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+            f.write_all(&100u32.to_le_bytes()).unwrap(); // claims 100 bytes...
+            f.write_all(&[1, 2, 3]).unwrap(); // ...only 3 present
+        }
+
+        // Recover: two whole events + a torn tail, and good_prefix_len points past the last whole frame.
+        let rec = LogStore::recover(&path).unwrap();
+        assert_eq!(rec.events, vec![genesis(), inbound(1)]);
+        assert_eq!(rec.kind, RecoveryKind::TornTail);
+        assert!(rec.has_trailing_garbage());
+
+        // Heal: truncate to the good prefix, then append a NEW event and close.
+        {
+            let mut s = LogStore::open(&path).unwrap();
+            s.truncate_to(rec.good_prefix_len).unwrap();
+            s.append(&inbound(2)).unwrap();
+        }
+
+        // The new append survived recovery — a CLEAN log of all three events (torn bytes gone). Before
+        // the heal this recovery would have stopped at the torn frame and never seen inbound(2).
+        let rec2 = LogStore::recover(&path).unwrap();
+        assert_eq!(rec2.kind, RecoveryKind::Clean);
+        assert_eq!(rec2.events, vec![genesis(), inbound(1), inbound(2)]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn truncate_to_at_or_beyond_len_is_a_noop() {
+        // Never extends / never drops good data: truncating to >= file size leaves the log intact.
+        let path = temp_path("noop-trunc");
+        {
+            let mut s = LogStore::open(&path).unwrap();
+            s.append(&genesis()).unwrap();
+        }
+        let before = LogStore::recover(&path).unwrap();
+        assert_eq!(before.kind, RecoveryKind::Clean);
+        {
+            let mut s = LogStore::open(&path).unwrap();
+            // A clean log's good_prefix_len == file length → truncate_to is a no-op.
+            s.truncate_to(before.good_prefix_len).unwrap();
+            s.truncate_to(u64::MAX).unwrap(); // beyond EOF → also a no-op
+        }
+        let after = LogStore::recover(&path).unwrap();
+        assert_eq!(after.events, vec![genesis()]);
+        assert_eq!(after.kind, RecoveryKind::Clean);
         let _ = std::fs::remove_file(&path);
     }
 

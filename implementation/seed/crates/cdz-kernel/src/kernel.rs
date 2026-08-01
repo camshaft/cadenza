@@ -372,23 +372,30 @@ impl Session {
         if !self.open.contains(&id.0) {
             return false;
         }
+        // `open` holds BOTH dispatched-effect ids AND armed-timer ids — but only a DISPATCHED effect can
+        // be timed out (a timer isn't a hung external call; it fires via `fire_due_timers`). A timer id
+        // has no `Dispatched` event, so `dispatch_hash_of` is None → return false (Copilot PR#1016: the
+        // old code panicked here, contradicting the "never dispatched → false" contract). Timing out a
+        // timer is a no-op, not a crash.
+        let Some(dispatch_hash) = self.dispatch_hash_of(id) else {
+            return false;
+        };
         // Link the timeout result to the dispatch that opened it (causal DAG §5), like a real result.
-        let dispatch_hash = self.dispatch_hash_of(id);
         let more = self.record_result(id, EffectOutcome::TimedOut, reducer, dispatch_hash);
         // The reducer's timeout continuation may emit further effects — drive them to quiescence.
         self.drive_worklist(more, reducer, authz, executor);
         true
     }
 
-    /// The hash of the `Dispatched` event that opened effect `id` — the `cause` a result/timeout links
-    /// to. An open id always has one in the log (it's what put the id in `open`), so a miss is an
-    /// internal invariant violation, not a recoverable input.
-    fn dispatch_hash_of(&self, id: EffectId) -> Hash {
+    /// The hash of the `Dispatched` event that opened effect `id`, or `None` if `id` has no `Dispatched`
+    /// event — which happens for an armed TIMER id (also in `open`, but opened by `TimerArmed`, not
+    /// `Dispatched`). Callers that only mean dispatched effects (e.g. `time_out_effect`) treat `None` as
+    /// "not a dispatched effect" rather than an error (PR#1016 — `open` is a mixed obligation set).
+    fn dispatch_hash_of(&self, id: EffectId) -> Option<Hash> {
         self.log
             .iter()
             .find(|e| matches!(&e.body, EventBody::Dispatched { id: d, .. } if *d == id))
             .map(|e| e.hash())
-            .expect("an open effect id must have a Dispatched event in the log (§16c-S1)")
     }
 
     /// Hash of the current tip (last log event) — the `cause` for effects its fold emits.

@@ -374,6 +374,45 @@ fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
 }
 
 #[test]
+fn time_out_effect_on_an_armed_timer_id_is_a_noop_not_a_panic() {
+    // Copilot PR#1016: `open` holds BOTH dispatched-effect ids AND armed-TIMER ids. time_out_effect
+    // must not treat a timer id as a dispatched effect — a timer has no Dispatched event, so the old
+    // dispatch_hash_of().expect() PANICKED, contradicting the "never dispatched → false" contract. A
+    // timer fires via fire_due_timers, not a manual timeout; timing one out is a no-op returning false.
+    let reducer = TimerReducer { deadline_ms: 5000 };
+    let mut exec = RecordingExecutor::new();
+    let mut session = Session::genesis(Hash::of(b"timer-v1"));
+    session
+        .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
+        .unwrap();
+
+    // The timer is armed → its id is OPEN (an obligation), but it's a TimerArmed, not a Dispatched.
+    let armed_id = session
+        .log()
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::TimerArmed { id, .. } => Some(*id),
+            _ => None,
+        })
+        .expect("a timer was armed");
+    assert_eq!(session.open_effect_ids(), vec![armed_id]);
+
+    // Timing out the TIMER id must be a clean no-op (false), NOT a panic. The timer stays armed.
+    let mut exec2 = RecordingExecutor::new();
+    assert!(
+        !session.time_out_effect(armed_id, &reducer, &timer_cap(), &mut exec2),
+        "timing out an armed-timer id is a no-op (timers fire via fire_due_timers), not a panic"
+    );
+    // The timer is untouched — still open, still armed for its deadline, and can still fire normally.
+    assert_eq!(session.open_effect_ids(), vec![armed_id]);
+    assert_eq!(session.next_timer_deadline(), Some(5000));
+    let fired = session.fire_due_timers(5000, &reducer, &timer_cap(), &mut exec2);
+    assert_eq!(fired, 1);
+    assert_eq!(session.kv().get(b"woke"), Some(&b"1"[..]));
+    assert_eq!(session.open_effects(), 0);
+}
+
+#[test]
 fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
     // End-to-end durability (§16c-S1): run a session while PERSISTING every appended event to a
     // LogStore, simulate a crash right after a Dispatched is durable but before its result, then
