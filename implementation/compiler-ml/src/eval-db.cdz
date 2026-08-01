@@ -71,7 +71,7 @@ def bind-payload(store: SumStore, h: Int64, binders: List(Int64), i: Int64, env:
         // WILDCARD `_`: a -1 sentinel binder means IGNORE this field — CONSUME the store slot (index i still
         // tracks the FIELD position, so a `_` in field 0 must NOT shift field 1's store-payload(h,1) read) but
         // insert NOTHING (no name-id(_) key → N wildcards never collide). Continue to i+1 either way.
-        (if (b == (0 - 1))
+        (if (b == -1)
          then bind-payload(store, h, binders, i + 1, env)          // skip-insert, advance slot
          else (match store-payload(store, h, i) with
                 | Option.None(_) => env
@@ -214,7 +214,7 @@ def eval-bin(op: Int64, a: Int64, b: Int64) =
         // FAULTS on it (the same INT_MIN/-1 hardware trap as division) → special-case b == -1 to 0, matching
         // rcdzc's rule (lower.rs: "MIN % -1 is 0 … but Rust's % panics there — special-case it to 0"). Without
         // this, `(% (: Int64.min Int64) (: -1 Int64))` wrongly DECLINED where rcdzc returns 0.
-        (if b == 0 then Option.None(unit) else (if b == (0 - 1) then Option.Some(0) else Option.Some(a % b)))
+        (if b == 0 then Option.None(unit) else (if b == -1 then Option.Some(0) else Option.Some(a % b)))
     | 60 => Option.Some(if a < b then 1 else 0)
     | 61 => Option.Some(if a == b then 1 else 0)
     | 62 => Option.Some(if b < a then 1 else 0)                  // a > b  ≡ b < a
@@ -538,8 +538,8 @@ def ev-mod-by-neg-one-is-zero() =
   // division) — so eval-bin special-cases b == -1 to 0, matching rcdzc (lower.rs: "MIN % -1 is 0 … Rust's %
   // panics there — special-case it to 0"). Was wrongly declining (host trap). Test via eval-bin directly:
   // Int64.min % -1 and a plain 7 % -1 both = 0.
-  (match eval-bin(37, (0 - 9223372036854775807) - 1, 0 - 1) with
-    | Option.Some(v) => (if v == 0 then (match eval-bin(37, 7, 0 - 1) with | Option.Some(w) => (if w == 0 then unit else trap("7 % -1 = 0")) | Option.None(_) => trap("7 % -1 runs")) else trap("Int64.min % -1 = 0"))
+  (match eval-bin(37, (0 - 9223372036854775807) - 1, -1) with
+    | Option.Some(v) => (if v == 0 then (match eval-bin(37, 7, -1) with | Option.Some(w) => (if w == 0 then unit else trap("7 % -1 = 0")) | Option.None(_) => trap("7 % -1 runs")) else trap("Int64.min % -1 = 0"))
     | Option.None(_) => trap("Int64.min % -1 must be 0 (special-cased), not a decline"))
 
 @test
@@ -558,7 +558,7 @@ def ev-nullary-call-evaluates-to-body() =
   // zero-args. Body registered under name 900 via record-def.
   (match add-node(empty-tree(), Node.NLit(42)) with | (bodyId, t1) =>
     (let t1d = record-def(t1, 900, bodyId) in
-     (match add-node(t1d, Node.NApp(900, 0 - 1)) with | (root, tree) =>
+     (match add-node(t1d, Node.NApp(900, -1)) with | (root, tree) =>
       (match eval-tree(tree, root) with
         | Option.Some(v) => (if v == 42 then unit else trap("nullary call evaluates to its body value (42)"))
         | Option.None(_) => trap("a nullary call runs end-to-end")))))
@@ -572,7 +572,7 @@ def ev-nullary-call-over-arith-body() =
     (match add-node(t1, Node.NLit(2)) with | (bId, t2) =>
       (match add-node(t2, Node.NBin(43, aId, bId)) with | (bodyId, t3) =>
         (let t3d = record-def(t3, 900, bodyId) in
-         (match add-node(t3d, Node.NApp(900, 0 - 1)) with | (root, tree) =>
+         (match add-node(t3d, Node.NApp(900, -1)) with | (root, tree) =>
           (match eval-tree(tree, root) with
             | Option.Some(v) => (if v == 42 then unit else trap("nullary call over (+ 40 2) = 42"))
             | Option.None(_) => trap("a nullary call over an arith body runs")))))))
@@ -584,7 +584,7 @@ def ev-nullary-call-nested-in-arith() =
   // NApp-as-root; this pins NApp-nested, the shape a real program uses: a call feeding an operator.)
   (match add-node(empty-tree(), Node.NLit(41)) with | (mkBody, t1) =>
     (let t1d = record-def(t1, 900, mkBody) in                        // register mk (name 900) → body 41
-     (match add-node(t1d, Node.NApp(900, 0 - 1)) with | (callId, t2) =>
+     (match add-node(t1d, Node.NApp(900, -1)) with | (callId, t2) =>
       (match add-node(t2, Node.NLit(1)) with | (oneId, t3) =>
         (match add-node(t3, Node.NBin(43, callId, oneId)) with | (root, tree) =>
           (match eval-tree(tree, root) with
@@ -598,9 +598,9 @@ def ev-nullary-call-chain-inlines-transitively() =
   // inlines a callee body TRANSITIVELY (NApp over NApp), the shape `(def (f) 42) (def (g) (f)) (g)` produces.
   (match add-node(empty-tree(), Node.NLit(42)) with | (fBody, t1) =>
     (let t1d = record-def(t1, 900, fBody) in                         // f (name 900) → body 42
-     (match add-node(t1d, Node.NApp(900, 0 - 1)) with | (gBody, t2) => // g's body: a call to f
+     (match add-node(t1d, Node.NApp(900, -1)) with | (gBody, t2) => // g's body: a call to f
       (let t2d = record-def(t2, 901, gBody) in                       // g (name 901) → body `(f)`
-       (match add-node(t2d, Node.NApp(901, 0 - 1)) with | (root, tree) => // root: `(g)`
+       (match add-node(t2d, Node.NApp(901, -1)) with | (root, tree) => // root: `(g)`
         (match eval-tree(tree, root) with
           | Option.Some(v) => (if v == 42 then unit else trap("(g) where g=(f), f=42 → 42 (transitive inline)"))
           | Option.None(_) => trap("a chain of nullary calls inlines transitively")))))))
@@ -800,7 +800,7 @@ def ev-cmatchsum-nested-arms-second-matches() =
   (let scrut = Core.CCtor(1, List.push([], Core.CNum(9, true, 64)))
    in (match eval-core(
      Core.CMatchSum(scrut, 0, ([] : List(Int64)), Core.CNum(0, true, 64),
-                    Core.CMatchSum(scrut, 1, List.push([], 100), Core.CVar(100), Core.CNum(0 - 1, true, 64))),
+                    Core.CMatchSum(scrut, 1, List.push([], 100), Core.CVar(100), Core.CNum(-1, true, 64))),
      (Map.empty : Map(Int64, Int64))) with
     | Option.Some(v) => (if v == 9 then unit else trap("nested sum arms: (Some 9) → the Some arm → 9"))
     | Option.None(_) => trap("a nested-arm sum match runs")))

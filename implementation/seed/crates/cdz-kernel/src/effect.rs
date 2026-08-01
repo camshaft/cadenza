@@ -93,7 +93,7 @@ impl ResourcePredicate {
                 // was a bug: it wrongly DENIED `OK.host`/`ok.host.` (fail-closed, but a real
                 // correctness gap). Still fail-closed — normalization only ever makes the SAME host
                 // match, never widens to a different one.
-                Some(h) => hosts.iter().any(|allowed| host_eq(allowed, h)),
+                Some(h) => hosts.iter().any(|allowed| host_eq(allowed, &h)),
                 None => false, // unparseable target → deny (fail closed)
             },
             ResourcePredicate::Prefix(p) => target.starts_with(p),
@@ -116,45 +116,30 @@ impl Capability {
     }
 }
 
-/// Extract the host from a `scheme://host[:port]/…` target, for `HostIn`. Deliberately tiny and
-/// conservative: no dependency, and anything it can't confidently parse yields `None` → deny.
+/// Extract the host from a `scheme://host[:port]/…` target, for `HostIn`. Uses the battle-tested `url`
+/// crate (RFC 3986 / WHATWG) rather than a hand-rolled authority parser — operator directive: a bespoke
+/// parser guarding an ALLOW-LIST is the worst place for edge-case bugs, since every missed case is an
+/// authz BYPASS (Copilot PR#1015/1018 were exactly IPv6-literal bypasses in the old hand-rolled code).
+/// `url` handles IPv6 literals, userinfo, ports, and normalization correctly, so this just parses and
+/// pulls `.host_str()`.
 ///
-/// Handles the IPv6 literal form `scheme://[::1]:port/…` (RFC 3986 §3.2.2): a bracketed host must NOT
-/// be split on its internal colons (the old `split_once(':')` returned `"["` for `[::1]`, so an IPv6
-/// target could never match — fail-closed, but broken). The brackets are stripped so the returned host
-/// is the bare address (`::1`), which is what a `HostIn` allow-list entry would carry.
-fn host_of(url: &str) -> Option<&str> {
-    let after_scheme = url.split_once("://")?.1;
-    let authority = after_scheme.split(['/', '?', '#']).next()?;
-    // strip userinfo@
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = if let Some(rest) = authority.strip_prefix('[') {
-        // IPv6 literal: `[addr]` or `[addr]:port`. The host is inside the brackets — but after the
-        // closing `]` the ONLY valid tail is empty or a REAL `:port` (colon + 1+ ASCII digits). Anything
-        // else is malformed/hostile: taking just the bracket contents would parse host `::1` and let a
-        // `HostIn(["::1"])` grant AUTHORIZE the hostile URL — an allow-list BYPASS.
-        //   - `[::1]evil.com`   → tail `evil.com`  (Copilot PR#1015, closed)
-        //   - `[::1]:80evil.com`→ tail `:80evil.com`, and `[::1]:` → tail `:` (Copilot PR#1018 REGRESSION:
-        //     a bare `starts_with(':')` accepted BOTH, re-opening the bypass just past the colon).
-        // So the tail must be empty, or `:` + all-ASCII-digits. SEC-F1 fails closed: reject → None → deny.
-        let (inside, tail) = rest.split_once(']')?;
-        let valid_tail = tail.is_empty()
-            || tail
-                .strip_prefix(':')
-                .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
-        if !valid_tail {
-            return None;
-        }
-        inside
-    } else {
-        // reg-name or IPv4: strip a trailing `:port` (host has no other colon).
-        authority.split_once(':').map_or(authority, |(h, _)| h)
-    };
+/// Fail-closed (SEC-F1): any parse error, or a URL with no host authority (`mailto:`, a relative/opaque
+/// target, an empty host), yields `None` → deny. Returns an OWNED `String` because `host_str()` borrows
+/// from the parsed `Url` (a local). For an IPv6 literal `url` gives the bracketed form (`[::1]`); we
+/// strip the brackets so the returned host is the bare address (`::1`) — what a `HostIn` entry carries.
+fn host_of(target: &str) -> Option<String> {
+    let parsed = url::Url::parse(target).ok()?;
+    let host = parsed.host_str()?;
     if host.is_empty() {
-        None
-    } else {
-        Some(host)
+        return None;
     }
+    // IPv6 literals come back bracketed (`[::1]`); a HostIn allow-list entry is the bare address. Strip
+    // exactly one matching pair. (A reg-name / IPv4 never has brackets, so this is a no-op for them.)
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    Some(host.to_string())
 }
 
 /// Host equality for `HostIn` (RFC 3986 §3.2.2): ASCII-case-insensitive and insensitive to a single
@@ -208,17 +193,20 @@ mod tests {
     #[test]
     fn host_parsing_strips_port_and_userinfo() {
         assert_eq!(
-            host_of("https://user:pw@host.tld:8443/path"),
+            host_of("https://user:pw@host.tld:8443/path").as_deref(),
             Some("host.tld")
         );
-        assert_eq!(host_of("http://h.tld"), Some("h.tld"));
+        assert_eq!(host_of("http://h.tld").as_deref(), Some("h.tld"));
     }
 
     #[test]
     fn host_parsing_handles_ipv6_literals() {
         // Bracketed IPv6 host must not be split on its internal colons (the old code returned "[").
-        assert_eq!(host_of("http://[::1]/latest"), Some("::1"));
-        assert_eq!(host_of("https://[2001:db8::1]:8443/x"), Some("2001:db8::1"));
+        assert_eq!(host_of("http://[::1]/latest").as_deref(), Some("::1"));
+        assert_eq!(
+            host_of("https://[2001:db8::1]:8443/x").as_deref(),
+            Some("2001:db8::1")
+        );
         // And an IPv6 allow-list entry now actually matches its target.
         let pred = ResourcePredicate::HostIn(vec!["::1".into()]);
         assert!(pred.admits("http://[::1]/latest"));
@@ -238,27 +226,41 @@ mod tests {
             "an ::1 grant must NOT authorize [::1]evil.com — that's the bypass"
         );
         // The legitimate forms still parse (guard against over-rejecting).
-        assert_eq!(host_of("http://[::1]:8080/"), Some("::1"));
-        assert_eq!(host_of("http://[::1]/"), Some("::1"));
+        assert_eq!(host_of("http://[::1]:8080/").as_deref(), Some("::1"));
+        assert_eq!(host_of("http://[::1]/").as_deref(), Some("::1"));
     }
 
     #[test]
     fn ipv6_bracket_tail_must_be_empty_or_a_real_numeric_port() {
-        // Copilot PR#1018 REGRESSION of the PR#1015 fix: a bare `starts_with(':')` accepted ANY colon
-        // tail, so the bypass re-opened just past the colon. The tail must be empty OR `:`+digits only.
+        // Copilot PR#1018 REGRESSION repro (the bypass that mattered): a HOSTILE colon-tail after `]`
+        // must NOT parse as host `::1` — else a HostIn(["::1"]) grant would authorize the hostile
+        // target. The `url` crate correctly REJECTS all of these (malformed authority → parse error →
+        // None → deny), so the bypass stays closed under the new parser:
         let pred = ResourcePredicate::HostIn(vec!["::1".into()]);
-        // Hostile colon-tails: reject (host is unparseable → deny).
         assert_eq!(host_of("http://[::1]:80evil.com/"), None, ":80evil.com");
-        assert_eq!(host_of("http://[::1]:/"), None, "bare colon, no port");
         assert_eq!(host_of("http://[::1]:0x50/"), None, "non-decimal port");
         assert_eq!(host_of("http://[::1]:80.evil/"), None, "port then junk");
         assert!(
             !pred.admits("http://[::1]:80evil.com/"),
             "an ::1 grant must NOT authorize [::1]:80evil.com — the regression bypass"
         );
+        // NOTE a real difference from the old hand-rolled parser: `[::1]:` (bracket + a bare, EMPTY port)
+        // is a VALID authority per WHATWG/RFC-3986 — the host genuinely IS `::1` (trailing empty port =
+        // default port), NOT a hostile tail. The old parser wrongly REJECTED it (over-strict, fail-closed
+        // but a false denial); `url` accepts it as host `::1`, which is correct + not a bypass. So this
+        // assertion is UPDATED (the old `None` expectation was the hand-rolled parser's bug, not a
+        // security property):
+        assert_eq!(
+            host_of("http://[::1]:/").as_deref(),
+            Some("::1"),
+            "empty port is valid, host is ::1"
+        );
         // Real numeric ports still parse to the bare host.
-        assert_eq!(host_of("http://[::1]:80/"), Some("::1"));
-        assert_eq!(host_of("http://[2001:db8::1]:443/x"), Some("2001:db8::1"));
+        assert_eq!(host_of("http://[::1]:80/").as_deref(), Some("::1"));
+        assert_eq!(
+            host_of("http://[2001:db8::1]:443/x").as_deref(),
+            Some("2001:db8::1")
+        );
     }
 
     #[test]

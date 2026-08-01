@@ -1352,7 +1352,8 @@
 ; checked index `List.at xs i` (or Bytes.at) traps iff i < 0 OR i >= len, so its trap-free obligation is the
 ; CONJUNCTION `(0 <= i) AND (i < len)` — a two-part bound. Under `@requires(>= i 0) @requires(< i len)`,
 ; both conjuncts are direct precondition hypotheses; the obligation is their conjunction. The base gains a
-; `lt` order (Const 7) + a `conj` connective (Const 8) + a `both` rule (from G|-p and D|-q derive G++D|-p∧q).
+; `lt` order + a `conj` connective (HeadOp sum variants Lt/Conj via Term.Head, not magic-int Const tags) + a
+; `both` rule (from G|-p and D|-q derive G++D|-p∧q).
 ; From assume(ge i 0) and assume(lt i len): `both` gives `CONJ (ge i 0) (lt i len)` = the in-bounds proof.
 
 (case "t1(oob): the out-of-bounds obligation (0<=i) AND (i<len) is DISCHARGED from the two bound preconditions"
@@ -1365,17 +1366,23 @@
            OOB obligation shape (a two-part conjunction) the capstone's per-trap-source proof discharges.")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Ge) (Lt) (Conj))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       (type Thm (Seq (List Term) Term))
+      (def (op-eq (: a HeadOp) (: b HeadOp))
+        (match a
+          ((HeadOp.Ge)   (match b ((HeadOp.Ge)   true) (_ false)))
+          ((HeadOp.Lt)   (match b ((HeadOp.Lt)   true) (_ false)))
+          ((HeadOp.Conj) (match b ((HeadOp.Conj) true) (_ false)))))
       (def (term-eq (: a Term) (: b Term))
         (match a
           ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
           ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
-          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Head o)   (match b ((Term.Head p) (op-eq o p)) (_ false)))
           ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
-      (def (ge   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
-      (def (lt   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 7) a) b))
-      (def (conj (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 8) a) b))
+      (def (ge   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Ge) a) b))
+      (def (lt   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Lt) a) b))
+      (def (conj (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Conj) a) b))
       (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
       (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
       (def (assume (: p Term)) (Thm.Seq (list p) p))
@@ -1384,10 +1391,11 @@
       (def (both (: t1 Thm) (: t2 Thm))
         (Option.Some (Thm.Seq (List.concat (hyps t1) (hyps t2)) (conj (concl t1) (concl t2)))))
       (export (. Term *))
+      (export (. HeadOp *))
       (export Thm)
-      (export term-eq ge lt conj concl hyps assume both)))
+      (export op-eq term-eq ge lt conj concl hyps assume both)))
   (input  (do
-            (import "bounds" (Term Thm term-eq ge lt conj concl hyps assume both))
+            (import "bounds" (HeadOp Term Thm term-eq ge lt conj concl hyps assume both))
             (def (main)
               (let ((i    (Term.Var 2))
                     (len  (Term.Var 3))
@@ -1413,24 +1421,31 @@
            @trap_free is sound (it never drops a bounds check unless BOTH bounds are proven).")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Ge) (Lt) (Conj))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       (type Thm (Seq (List Term) Term))
+      (def (op-eq (: a HeadOp) (: b HeadOp))
+        (match a
+          ((HeadOp.Ge)   (match b ((HeadOp.Ge)   true) (_ false)))
+          ((HeadOp.Lt)   (match b ((HeadOp.Lt)   true) (_ false)))
+          ((HeadOp.Conj) (match b ((HeadOp.Conj) true) (_ false)))))
       (def (term-eq (: a Term) (: b Term))
         (match a
           ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
           ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
-          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Head o)   (match b ((Term.Head p) (op-eq o p)) (_ false)))
           ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
-      (def (ge   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
-      (def (lt   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 7) a) b))
-      (def (conj (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 8) a) b))
+      (def (ge   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Ge) a) b))
+      (def (lt   (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Lt) a) b))
+      (def (conj (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Conj) a) b))
       (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
       (def (assume (: p Term)) (Thm.Seq (list p) p))
       (export (. Term *))
+      (export (. HeadOp *))
       (export Thm)
-      (export term-eq ge lt conj concl assume)))
+      (export op-eq term-eq ge lt conj concl assume)))
   (input  (do
-            (import "bounds" (Term Thm term-eq ge lt conj concl assume))
+            (import "bounds" (HeadOp Term Thm term-eq ge lt conj concl assume))
             (def (main)
               (let ((i    (Term.Var 2))
                     (len  (Term.Var 3))
