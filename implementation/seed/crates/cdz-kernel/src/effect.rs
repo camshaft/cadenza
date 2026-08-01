@@ -129,8 +129,16 @@ fn host_of(url: &str) -> Option<&str> {
     // strip userinfo@
     let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let host = if let Some(rest) = authority.strip_prefix('[') {
-        // IPv6 literal: `[addr]` or `[addr]:port` — the host is everything up to the closing bracket.
-        rest.split_once(']')?.0
+        // IPv6 literal: `[addr]` or `[addr]:port`. The host is inside the brackets — but after the
+        // closing `]` the ONLY valid tail is empty or `:port`. Anything else (e.g. `[::1]evil.com`) is
+        // malformed/hostile: taking just the bracket contents would parse host `::1` and let a
+        // `HostIn(["::1"])` grant AUTHORIZE `[::1]evil.com` — an allow-list BYPASS (Copilot PR#1015).
+        // SEC-F1 fails closed: reject (→ None → deny) unless the tail is empty or a `:`-prefixed port.
+        let (inside, tail) = rest.split_once(']')?;
+        if !(tail.is_empty() || tail.starts_with(':')) {
+            return None;
+        }
+        inside
     } else {
         // reg-name or IPv4: strip a trailing `:port` (host has no other colon).
         authority.split_once(':').map_or(authority, |(h, _)| h)
@@ -208,6 +216,23 @@ mod tests {
         let pred = ResourcePredicate::HostIn(vec!["::1".into()]);
         assert!(pred.admits("http://[::1]/latest"));
         assert!(!pred.admits("http://[2001:db8::2]/x"));
+    }
+
+    #[test]
+    fn ipv6_bracket_with_trailing_junk_is_denied_not_bypassed() {
+        // Copilot PR#1015 (SEC-F1 allow-list BYPASS): after the closing `]` the only valid tail is empty
+        // or `:port`. `[::1]evil.com` must NOT parse as host `::1` (which a HostIn(["::1"]) grant would
+        // then AUTHORIZE, reaching evil.com). Fail closed: unparseable → None → deny.
+        assert_eq!(host_of("http://[::1]evil.com/"), None);
+        assert_eq!(host_of("http://[::1]x/"), None);
+        let pred = ResourcePredicate::HostIn(vec!["::1".into()]);
+        assert!(
+            !pred.admits("http://[::1]evil.com/"),
+            "an ::1 grant must NOT authorize [::1]evil.com — that's the bypass"
+        );
+        // The legitimate forms still parse (guard against over-rejecting).
+        assert_eq!(host_of("http://[::1]:8080/"), Some("::1"));
+        assert_eq!(host_of("http://[::1]/"), Some("::1"));
     }
 
     #[test]
