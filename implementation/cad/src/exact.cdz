@@ -694,9 +694,12 @@ def a-relative-cursor-advance-is-consumed-by-a-later-segment() =
   // A regression in `path-seg-cursor`'s LineToRel/CubicToRel arm (advancing by the RAW delta instead of
   // cursor+delta) therefore slips. This chains relatives so each one's advance FEEDS the next:
   //   start(0,0) → line-by(10,0) cur=10 → line-by(10,0) cur=20 → cubic-by end(5,0) cur=25 → line-by(10,0) cur=35.
-  // The final line-by REACHES x=35 only if every prior advance threaded the cursor: a LineToRel-raw bug makes
-  // the 2nd advance 10 (not 20) and a CubicToRel-raw bug makes the cubic advance 5 (not 25) — either caps the
-  // max-x at 25, not 35. So hx == 35 pins that BOTH relative cursor advances are consumed correctly downstream.
+  // The final line-by REACHES x=35 only if every prior advance threaded the cursor. A LineToRel-raw bug makes
+  // the 2nd advance 10 (not 20), so the cubic then advances to 15 and the final line-by reaches 25 → max-x 25;
+  // a CubicToRel-raw bug advances the cubic to 5 (not 25), so the final line-by reaches only 15 but the cubic's
+  // own reach (resolved from cursor=20 → end 25) still contributes 25 → max-x 25. So EITHER bug independently
+  // caps the folded max-x at 25 (both verified by mutation), never 35. hx == 35 therefore pins that BOTH
+  // relative cursor advances are consumed downstream.
   let p = line-by(cubic-by(line-by(line-by(path-start(), v2(10 / 1, rzero())), v2(10 / 1, rzero())),
                            v2(5 / 1, rzero()),   // cubic end delta → cursor 20 → 25
                            v2(rzero(), rzero()),  // controls kept small so the END/downstream line dominates x
