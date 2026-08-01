@@ -46,3 +46,52 @@ impl Executor for RecordingExecutor {
         EffectOutcome::Ok(Some(Payload::Inline(b"ok".to_vec())))
     }
 }
+
+/// A REAL local shell executor (feature `live-exec`) — the first executor that touches the world.
+/// Runs an `EffectKind::Shell` request's `target` as a command line via `std::process::Command`,
+/// returning the outcome the kernel folds back:
+/// - exit 0 → `Ok(Some(stdout))`
+/// - non-zero exit → `Err("exit <code>: <stderr>")`
+/// - spawn failure → `Err`.
+///
+/// **Trust boundary:** this executor does NOT re-authorize. The kernel has already gated the effect's
+/// resolved `target` against a resource-scoped capability (SEC-F1) before dispatching, so by the time a
+/// request reaches here it is permitted. A `ShellExecutor` should only ever be handed effects for a
+/// session whose capability constrains `Shell` targets (e.g. a command allow-list `Prefix`), never an
+/// `Any` shell grant.
+///
+/// **Non-Shell effects** return an `Err` (in v0 a single executor handles one kind; the composite
+/// router that dispatches by kind — WASI vs. model vs. peer — lands with the wasm host). **Idempotency
+/// (§16c-S1):** a shell command is NOT generally idempotent, so a real deployment must dedup re-driven
+/// dispatches on `idempotency_key`; v0's ShellExecutor executes unconditionally (single-node, no
+/// crash-retry loop yet) and documents the key as the dedup handle for when retry lands.
+#[cfg(feature = "live-exec")]
+pub struct ShellExecutor;
+
+#[cfg(feature = "live-exec")]
+impl Executor for ShellExecutor {
+    fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
+        use crate::effect::EffectKind;
+        if req.kind != EffectKind::Shell {
+            return EffectOutcome::Err(format!(
+                "ShellExecutor only handles Shell effects, got {:?}",
+                req.kind
+            ));
+        }
+        // Run via `sh -c <target>` so the target is a normal command line. The target was
+        // capability-gated upstream (SEC-F1) — this executor trusts that authorization.
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&req.target)
+            .output();
+        match output {
+            Ok(out) if out.status.success() => EffectOutcome::Ok(Some(Payload::Inline(out.stdout))),
+            Ok(out) => EffectOutcome::Err(format!(
+                "exit {}: {}",
+                out.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )),
+            Err(e) => EffectOutcome::Err(format!("spawn failed: {e}")),
+        }
+    }
+}
