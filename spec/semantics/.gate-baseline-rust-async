@@ -4706,6 +4706,7 @@ pass	the minimum integer scrutinee misses a zero-based jump table
 pass	the minimum signed 8-bit value is its per-width bound
 pass	the mirror per-arm mix — a crossing #sym sibling over a String scrutinee — is rejected
 pass	the mismatched-pair rejection is order-independent
+pass	the model-oracle property has DISCRIMINATING power — a BROKEN model (counts every insert) diverges from Map.len
 pass	the module entrypoint is the def named main regardless of its position
 pass	the multiply-by-zero annihilator does not discard a trapping runtime operand
 pass	the negative power agrees with dividing into the dimensionless one
