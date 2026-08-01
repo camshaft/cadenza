@@ -3402,6 +3402,7 @@ pass	an active unquote of a let-bound string lifts to Ast.Str by inferred type
 pass	an active unquote of a string literal lifts to an Ast.Str node
 pass	an active unquote of an Ast-valued expression splices the subtree as identity
 pass	an active-unquoted boolean literal equals the quoted form
+pass	an addition-REACHED runtime Rational equals its constructed canonical form and not a decoy
 pass	an agreeing Result error type short-circuits through the boundary
 pass	an agreeing arrow annotation on a lambda is accepted and the function applies normally
 pass	an agreeing redeclaration compares the normalized ratio, not the literal numerator and denominator
@@ -4233,6 +4234,7 @@ pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
+pass	multiplication- and division-REACHED runtime Rationals equal the constructed canonical form
 pass	multiply-by-zero is NOT an annihilator for FLOAT — nan * 0.0 is nan, not 0.0
 pass	multiplying a compound (tuple) by a number is a cross-kind type error, not invalid wasm
 pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled

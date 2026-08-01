@@ -884,4 +884,44 @@ fn the_jit_cwasm_persists_across_runs_and_self_heals() {
         !out3.contains("could not") && !out3.contains("invalid"),
         "a corrupt cwasm must not surface as an error — it re-JITs:\n{out3}"
     );
+
+    // CONTENT-INVALIDATION (the correctness crux): the cwasm is keyed by the closure CONTENT hash, NOT the
+    // import-name group key — so EDITING the shared closure's content (unchanged import set) must produce a
+    // NEW cwasm key → a MISS → re-JIT against the new closure, never a STALE hit of the old compiled provider.
+    // Change `sumto` so its results differ, and update the tests to the NEW semantics: a correct re-JIT PASSes;
+    // a stale-cwasm hit would run the OLD closure and FAIL. A second .cwasm (new hash) must appear.
+    std::fs::write(
+        dir.join("shared.cdz"),
+        "def sumto(n: Int64) =\n  if n == 0 then 0 else n + n + sumto(n - 1)\nexport { sumto }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ta.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_a() =\n  if sumto(2) == 6 then unit else trap(\"a-new\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tb.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_b() =\n  if sumto(1) == 2 then unit else trap(\"b-new\")\n",
+    )
+    .unwrap();
+    let (ok4, out4) = run();
+    assert!(
+        ok4 && out4.contains("PASS t_a") && out4.contains("PASS t_b"),
+        "run 4 (closure content edited) re-JITs against the NEW closure + passes — NOT a stale-cwasm hit of the \
+         old closure (which would fail the new expectations):\n{out4}"
+    );
+    // A distinct cwasm now exists for the new content hash (the old one is a harmless content-addressed stale
+    // entry, never mis-hit). Two distinct `.cwasm` files = the content-hash keying invalidated correctly.
+    let cwasm_count = std::fs::read_dir(&cache)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("cwasm"))
+                .count()
+        })
+        .unwrap_or(0);
+    assert!(
+        cwasm_count >= 2,
+        "the content edit produced a NEW content-hash cwasm (content-addressed invalidation), got {cwasm_count}"
+    );
 }

@@ -694,8 +694,8 @@ def type-atom-unbound(atom: String, tree: Tree) =
 /// applied field type, check the HEAD constructor (`(NoSuchCtor Int64)` → check `NoSuchCtor`, rcdzc rejects
 /// CDZ0101) but do NOT recurse into its args (`(Box NoSuchInner)` → `NoSuchInner` is nested, oracle-CLEAN, out
 /// of scope). So a `(`-led last element: read its HEAD atom (just inside the paren) and check THAT; a bare last
-/// atom: check it directly. The `:` token + field NAME are earlier elements, naturally not the last.
-/// `last-is-atom` tracks whether the pending `last` is a bare atom (check `last` on close) vs already-resolved.
+/// atom: check it directly. The `:` token + field NAME are earlier elements, naturally not the last. `last`
+/// carries the current candidate field-type atom/head, checked with `type-atom-unbound` when the group closes.
 def record-field-type-unbound(s: String, g: Int64, last: String, tree: Tree) =
   (let q = skip-space(s, g) in
    (if (char-at(s, q) == ")") then type-atom-unbound(last, tree)               // field group closed → check the last field-type atom

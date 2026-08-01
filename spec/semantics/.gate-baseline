@@ -3391,6 +3391,7 @@ pass	an EXPORT naming an unbound definition is rejected
 pass	an ORDER-PRESERVING dedup threads a seen-Set and an out-List as twin accumulators
 pass	an RPN evaluator drives a LIST-as-STACK through token dispatch — push, pop-two, apply
 pass	an UNANNOTATED generic compose instantiates at a scalar arrow AND a String arrow in one program
+pass	an addition-REACHED runtime Rational equals its constructed canonical form and not a decoy
 pass	an all-UInt8 handler (state, op result, arm arithmetic) computes at narrow width
 pass	an argument swap weaves with perform results through a recursive handler body
 pass	an arm-body shadow of the param composes with the scrutinee's pre-shadow read
@@ -4354,6 +4355,7 @@ pass	multiplication
 pass	multiplication of an integer and a float does not silently promote
 pass	multiplication of the minimum integer by -1 overflows and traps
 pass	multiplication past the maximum integer overflows and traps
+pass	multiplication- and division-REACHED runtime Rationals equal the constructed canonical form
 pass	multiply-by-zero is NOT an annihilator for FLOAT — nan * 0.0 is nan, not 0.0
 pass	multiplying a compound (tuple) by a number is a cross-kind type error, not invalid wasm
 pass	multiplying a scaled-unit quantity by the literal one keeps its dimension and displays scaled
