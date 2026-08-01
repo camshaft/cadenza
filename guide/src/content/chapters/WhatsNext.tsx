@@ -100,6 +100,14 @@ export default function WhatsNext() {
         <Ch to="/example-apps">example applications</Ch>: the calculator, CAD preview, notebook, and
         playground, each a differentiator you learned running as a full program.
       </P>
+      <P>
+        Finally, if you want to see where the language leads, there's a second pillar to this guide:{" "}
+        <Ch to="/platform-overview">Cadenza the Platform</Ch>. It takes the{" "}
+        <Ch to="/recorded-log">history-as-a-value</Ch> idea you just met and scales it into a running
+        system, an agent kernel where an agent's whole state is a pure fold over an event log and Cadenza
+        is what flows through it. It's a concept tour rather than more language to learn, so read it when
+        you're curious how these ideas add up to a platform.
+      </P>
     </article>
   );
 }
