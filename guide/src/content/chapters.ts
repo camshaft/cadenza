@@ -339,6 +339,18 @@ export const CHAPTERS: Chapter[] = [
     section: "Wrapping up",
     Component: lazy(() => import("./chapters/WhatsNext.tsx")),
   },
+  // ── Cadenza the Platform ─────────────────────────────────────────────────────────────────────────
+  // The agent-kernel pillar. Concept-level chapters, content deliberately light (kernel is early-stage);
+  // every kernel claim is sourced from v-agent-harness's design/agent-harness-kernel.md. This pillar grows
+  // incrementally; the intro below bridges from the language pillar's "History as a value" chapter.
+  {
+    slug: "platform-overview",
+    title: "Cadenza the Platform",
+    blurb: "The agent kernel: a generic runtime where an agent's state is a pure fold over an event log, and the language is what flows through it.",
+    pillar: "platform",
+    section: "The kernel model",
+    Component: lazy(() => import("./chapters/PlatformOverview.tsx")),
+  },
 ];
 
 export function chapterAt(slug: string): { chapter: Chapter; index: number } | null {

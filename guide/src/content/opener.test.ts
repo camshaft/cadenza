@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { CHAPTERS } from "./chapters.ts";
+import { CHAPTERS, pillarOf } from "./chapters.ts";
 
 const here = dirname(fileURLToPath(import.meta.url)); // src/content
 const chaptersDir = join(here, "chapters");
@@ -80,6 +80,11 @@ test("every teaching chapter carries at least one <Runnable> (Welcome's 'every e
   const map = fileForSlug();
   const missing: string[] = [];
   for (const c of CHAPTERS) {
+    // Only the LANGUAGE pillar makes the "every example is live" promise — its chapters run in-browser.
+    // The PLATFORM pillar is concept-level (the agent kernel has no in-browser runtime yet; the eventual
+    // "platform explorer" is the future payoff), so its concept chapters are exempt from the <Runnable>
+    // requirement rather than forced to carry a fake one.
+    if (pillarOf(c) !== "language") continue;
     if (NON_TEACHING_SECTIONS.has(c.section) || RUNNABLE_EXEMPT.has(c.slug)) continue;
     const file = map.get(c.slug);
     if (!file) continue;
