@@ -1,3 +1,7 @@
+/// ⚠ BANKED FUTURE-HM SPIKE — NOT wired into the pipeline (parametric-polymorphic HM prototype; the LIVE
+/// pipeline uses monomorphic deferred-int HM in infer-db.cdz). Kept + tested + banked for when the source
+/// language gains generic defs. See unify.cdz's banner for the full note. (concierge steer 2026-08-01, item-3 (b).)
+///
 /// ty-eq.cdz — structural type EQUALITY over a recursive `Ty` sum, written the IDIOMATIC way: a SINGLE
   /// `match (a, b)` on the TUPLE of both types, with same-constructor arms and a self-recursive call on the
   /// payload sub-terms. This is the natural HM type-checker dispatch (`unify`/`ty-eq`/`subtype` all take it).

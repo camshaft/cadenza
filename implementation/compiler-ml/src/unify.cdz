@@ -1,3 +1,11 @@
+/// ⚠ BANKED FUTURE-HM SPIKE — NOT wired into the pipeline. This module (and its siblings infer/tycheck/
+/// type-scheme/type-env/ty-eq/infer-let) prototypes PARAMETRIC-POLYMORPHIC Hindley-Milner (type variables,
+/// let-generalization, instantiation). The LIVE pipeline (infer-db.cdz) uses a MONOMORPHIC HM — deferred-int
+/// unification via ty.cdz/unify-ty.cdz's Sign+Width lattice + TFn arrows — which is item-3-done-for-current-
+/// scope (the source language is monomorphic, no TVar consumer). These spikes are kept, tested, and banked as
+/// the head-start for when the source language gains generic defs (concierge steer 2026-08-01, item-3 (b));
+/// they gate green on their own @tests but are imported by nothing. Do NOT treat as live inference code.
+///
 /// unify.cdz — the core of Hindley-Milner inference: unification with a substitution.
 ///
 /// A `Ty` is a recursive sum: a unification VARIABLE (an Int64 id), a nullary CONstructor
