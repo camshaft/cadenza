@@ -110,12 +110,17 @@ impl LogStore {
     /// `has_trailing_garbage()` truncates to `good_prefix_len` FIRST, then resumes appending cleanly.
     ///
     /// Pass the recovery's `good_prefix_len`. Truncating to a length ≥ the current file size is a no-op
-    /// (never extends). Flushes so the truncation is durable before the next append.
+    /// (never extends). fsyncs so the truncation is DURABLE before the next append — this is the heal
+    /// path, so a crash right after must not resurrect the garbage tail.
     pub fn truncate_to(&mut self, len: u64) -> io::Result<()> {
         let current = self.file.metadata()?.len();
         if len < current {
             self.file.set_len(len)?;
-            self.file.flush()?;
+            // sync_all (fsync), NOT flush(): `File::flush` is a NO-OP (std File is unbuffered), so it
+            // gave no durability at all (Copilot PR#1018) — a crash after the heal could leave the
+            // garbage tail on disk and the next recovery would re-see it. The truncation must reach
+            // stable storage before we resume appending.
+            self.file.sync_all()?;
         }
         Ok(())
     }

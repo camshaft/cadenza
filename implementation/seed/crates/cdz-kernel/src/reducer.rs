@@ -13,7 +13,7 @@
 //! later events. The wasm sandbox will enforce this structurally; the trait documents it.
 //!
 //! Effect-await pattern (§16c-S4): a reducer cannot "await" — the call returns and the instance is
-//! gone. To continue after an effect, it emits the effect (getting an [`EffectId`] back via the
+//! gone. To continue after an effect, it emits the effect (getting an [`crate::effect::EffectId`] back via the
 //! kernel) and stores its continuation in KV keyed by that id; when the result event arrives it looks
 //! the continuation up and resumes. The kernel enforces timeout-cancels semantics so a continuation is
 //! resumed at most once (by a result OR a timeout, never both).
