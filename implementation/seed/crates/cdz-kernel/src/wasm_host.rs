@@ -6,11 +6,12 @@
 //! and IMPORTS `kv` (which the host provides; §4b: a reducer reads its own KV as a direct non-effect
 //! call). Log + KV stay HOST concerns (traits); this is their guest-facing wiring.
 //!
-//! This slice is the FOUNDATION: it generates the bindings and stands up the host-side `kv` import
-//! backed by the kernel's [`crate::kv::Kv`], proving the world binds and the linker wires up. Actually
-//! DRIVING a guest component through the fold loop (a `Reducer` impl over `apply`, with a compiled
-//! guest fixture) is the next slice — kept separate so this one is small + gate-green. The in-process
-//! Rust [`crate::reducer::Reducer`] trait remains the interim reducer path meanwhile.
+//! Host surface: [`ReducerHost`] serves the `kv` import (backed by the kernel [`crate::kv::Kv`]) and
+//! [`ComponentReducer`] builds a reducer from component bytes + drives a fold via [`ComponentReducer::apply`]
+//! (instantiate → call the guest's `fold.apply` → return effects + mutated KV). What remains for
+//! end-to-end use: a compiled guest FIXTURE that exports `fold.apply` (a wit-bindgen Rust guest,
+//! concierge-ruled Option A) to run `apply` against, and wiring `apply` into the kernel's fold loop.
+//! The in-process Rust [`crate::reducer::Reducer`] trait remains the interim reducer path meanwhile.
 
 #![cfg(feature = "wasm-reducer")]
 
@@ -23,8 +24,8 @@ wasmtime::component::bindgen!({
     path: "wit/reducer.wit",
 });
 
-// Re-export the generated agent-kernel type modules under clear names so the rest of the crate refers
-// to `wasm_host::EffectRequest` etc. rather than the deep generated path.
+// Re-export the generated agent-kernel types under clear names so the rest of the crate refers to
+// `wasm_host::EffectRequest` etc. rather than the deep generated path.
 pub use self::cadenza::agent_kernel::types::{ContentType, EffectKind, EffectRequest};
 
 /// The host state a reducer component runs against: its session KV (the `kv` import is served from
@@ -79,19 +80,16 @@ impl self::cadenza::agent_kernel::kv::Host for ReducerHost {
 /// the wasmtime `Engine` + the compiled `Component` + a `Linker` with the host `kv` import registered;
 /// each fold instantiates the component fresh (the guest is stateless between events — §4 — and the KV
 /// state lives host-side, threaded in per call). This is the component-model path that will REPLACE the
-/// in-process Rust [`crate::reducer::Reducer`] trait once a guest fixture exists to drive it end-to-end
-/// (the guest-fixture toolchain is a separate decision/slice); the host machinery is built here so that
-/// slice only has to add the fixture + the fold-loop wiring.
+/// in-process Rust [`crate::reducer::Reducer`] trait. `apply` (below) drives a fold; what remains for
+/// end-to-end use is a compiled guest FIXTURE that exports `fold.apply` (a wit-bindgen Rust guest —
+/// concierge-ruled Option A) + wiring `apply` into the kernel's fold loop. Until that fixture lands,
+/// `apply` is exercised only against a guest in tests (next slice); the Rust `Reducer` trait stays the
+/// working path meanwhile.
 pub struct ComponentReducer {
     engine: wasmtime::Engine,
-    // `component` + `linker` are the instantiation inputs the next slice's `apply` fold reads (it does
-    // `linker.instantiate(&mut store, &component)` then calls `fold.apply`). Stored now because this
-    // slice builds the construction path; allow(dead_code) until `apply` lands (it can't be written
-    // without a guest fixture — the pending toolchain decision). NOT `_`-prefixed: they're real fields
-    // with a known imminent reader, not throwaways.
-    #[allow(dead_code)]
+    // The instantiation inputs `apply` reads each fold: instantiate `component` against `linker` (which
+    // carries the `kv` host import) into a fresh Store, then call the guest's `fold.apply`.
     component: wasmtime::component::Component,
-    #[allow(dead_code)]
     linker: wasmtime::component::Linker<ReducerHost>,
 }
 
@@ -102,6 +100,11 @@ pub enum ComponentError {
     InvalidComponent(String),
     /// Host-import linking failed (the `kv` import couldn't be registered).
     Link(String),
+    /// Instantiating the component against the host failed.
+    Instantiate(String),
+    /// The guest trapped during `fold.apply` (a totality-contract violation — §16c gap A: the driver
+    /// treats this as a fold failure, distinct from a clean empty-effect return).
+    Trap(String),
 }
 
 impl ComponentReducer {
@@ -134,11 +137,39 @@ impl ComponentReducer {
         &self.engine
     }
 
-    // NOTE: the `apply`-invoking fold method (instantiate the component against a ReducerHost carrying
-    // the session KV, call the guest's `fold.apply`, return the effect-requests) lands with the guest
-    // fixture in the next slice — it can't be meaningfully tested without a component that exports
-    // `fold.apply`, and authoring that guest is the pending toolchain decision (wit-bindgen vs core-WAT).
-    // The construction path above IS testable now (Engine/Component/Linker + kv-import registration).
+    /// Fold ONE event through the wasm guest (§19b): instantiate the component against a fresh
+    /// [`ReducerHost`] carrying `kv` (the guest reads it directly, §4b), call the guest's exported
+    /// `fold.apply`, and return the requested effects paired with the (possibly-mutated) KV for the
+    /// host to persist as derived state (§4 — KV mutations are the fold's deterministic side output).
+    /// The guest is instantiated fresh per fold (stateless between events — §4).
+    ///
+    /// `resumes` is the guest's OWN continuation token, echoed verbatim from the originating effect's
+    /// `correlation` for a result/timer event (the single resume mechanism — operator design review;
+    /// the guest never sees the kernel's internal effect id). Errors on instantiation failure or a
+    /// guest trap (totality is the guest's contract, but a trap is surfaced as a fold failure the
+    /// driver handles — §16c gap A).
+    pub fn apply(
+        &self,
+        kv: Kv,
+        content_type: ContentType,
+        payload: Option<Vec<u8>>,
+        resumes: Option<Vec<u8>>,
+    ) -> Result<(Vec<EffectRequest>, Kv), ComponentError> {
+        let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
+        let instance = Reducer::instantiate(&mut store, &self.component, &self.linker)
+            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+        let effects = instance
+            .cadenza_agent_kernel_fold()
+            .call_apply(
+                &mut store,
+                &content_type,
+                payload.as_deref(),
+                resumes.as_deref(),
+            )
+            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+        let kv = store.into_data().into_kv();
+        Ok((effects, kv))
+    }
 }
 
 #[cfg(test)]

@@ -1730,3 +1730,77 @@ Operator mused WASI-as-ABI might help the shell-security concern, then doubted i
 (b) WIT reducer world + wasmtime component host (§19b); log+kv stay traits. Current Rust `Reducer` trait
     is interim until this lands.
 (c) structured-command shell lock-down (§18b); WASI for fs/net where it fits (§19c).
+
+## 20. Operator authz directives (2026-08-01, round 3) — reshape the capability/authz story
+
+Two operator directives (verbatim relayed) that reshape authz. Both fold into the capability model
+(§4c/§9b/§12c) and the effect-row-as-manifest thinking (as corrected by SEC-F1 to resource-scoped caps).
+
+### 20a. RESOURCE-RESCOPING components — "Rust unsafe-block for capabilities" (decided)
+Operator: a published component can DOWN-SCOPE a broad, dangerous capability into a narrow,
+provably-safe resource that callers can be granted freely. Example: a program that runs `date` and
+returns it. Under the raw model, invoking it needs the arbitrary-`shell` capability (huge blast
+radius). Instead, publish a component that INTERNALLY holds the shell capability but EXPORTS only a
+narrow `date`-shaped resource — callers need just the narrow `date` grant, and the code is provably
+safe for anyone to invoke. Analogy: Rust's `unsafe` blocks — encapsulate a powerful operation behind a
+safe, minimally-scoped interface so the danger is contained + audited in one place, not spread to every
+caller.
+
+**How it fits the model:** this is **capability attenuation via a published component** — the exact dual
+of the §12f attenuating delegation (which narrows DOWN a spawn tree). A rescoping component is a
+content-addressed program whose own effect row includes the broad cap (`shell(target="date")` — already
+resource-scoped per SEC-F1) but whose EXPORTED interface is a new, narrow *virtual resource*
+(`date.now → string`) requiring only a `date` capability to invoke. The authorizer treats "may invoke
+the date-component" as a distinct, cheaply-grantable capability; the component, once invoked under its
+own identity/grant, performs the broad effect internally. So the powerful grant lives with ONE audited,
+published, content-addressed program, and N callers hold only the safe narrow grant. This makes
+capability surface *composable*: dangerous primitives get wrapped into safe, named, shareable resources
+(and a rescoping component is itself a tool that can be published/recalled like any other — §9b
+tooling-as-programs). First-class authz primitive: **a capability can be a "may-invoke-component-X"
+grant, and X re-exports a narrower resource than it internally wields.**
+
+### 20b. CEDAR as a content-addressable wasm COMPONENT + genesis bootstrap (decided — don't reinvent)
+Operator: the kernel is "building a poor man's Cedar." Do NOT hand-roll authz. **Cedar (the policy
+engine) is ANOTHER content-addressable wasm component** (like the authorizer already is in §1/§9b — this
+directive makes it concrete + names Cedar as THE engine, not a bespoke one). The harness has its own
+**GENESIS program + log** that bootstraps the whole runtime — authz included. Requirements:
+- **Update Cedar WITHOUT redeployment:** the Cedar-engine component is content-addressed and referenced
+  by hash from the log; swapping it = an authorized `set` of the engine pointer (§4c mutable name +
+  §7 self-mod), no binary redeploy. This is exactly the "kernel deploys once, everything else is a
+  swappable component" thesis (§12e) applied to the authorizer.
+- **Ship Cedar policies + reference them ON the log:** policies are content-addressed artifacts; a
+  session's/operator's active policy set is named on the log (a `set(policy-name, hash)` event, §4c), so
+  policy changes are logged, auditable, versioned, and shippable between operators like any content.
+- **Genesis bootstrap:** the runtime's own genesis program + log installs the Cedar engine + initial
+  policies as its first events (§3 genesis + context-as-events) — the authz layer is itself set up
+  through the log, not baked into the kernel binary. The kernel stays authz-agnostic: it invokes
+  whatever authorizer component the log currently points at, passing it the effect + the session's
+  capability context; Cedar (as that component) renders the decision.
+- **Don't reinvent the wheel:** the v0 in-kernel capability check (§4c/authz.rs) is the INTERIM; the
+  end-state authorizer is the Cedar component. The kernel's job shrinks to "invoke the current
+  authorizer component"; Cedar owns policy semantics.
+
+**Net authz shape:** kernel = mechanism (invoke the authorizer component, carry capability context,
+enforce the decision). Cedar-component = policy engine (swappable by hash, no redeploy). Policies =
+content-addressed artifacts referenced on the log. Capabilities = resource-scoped (SEC-F1) grants,
+including "may-invoke-component-X" grants that enable resource-rescoping (§20a). All bootstrapped by the
+genesis program/log. This supersedes any notion of a hand-rolled kernel authz engine — the kernel
+authorizes by DELEGATING to a component, exactly as it treats every other capability.
+
+## 20c. Model-invocation effect: realtime-vs-batch priority class (FORWARD-LOOKING — capture, no build)
+
+Operator forward-looking idea (2026-08-01) — captured for when the kernel models AI-model invocation as
+a first-class effect; NOT a build item now (v0's `model` EffectKind is a placeholder). When the
+model-invocation effect is designed, its request should carry a **realtime-vs-batch priority/latency
+class**:
+- **realtime** → standard synchronous model invocation (interactive / user-facing turns).
+- **batch** → route to the provider's cheaper batch interface (e.g. Bedrock's batch API, ~half the price
+  of standard invocations), for LOW-PRIORITY async-analysis tasks that don't need an immediate answer.
+
+Fits the effect model cleanly: it's a field on the model-invocation `effect-request` (like `target`
+carries the model id), and it's a routing/executor concern — the executor picks the standard vs. batch
+backend by the class. It composes with the async/deferred nature of the kernel: a batch invocation is
+just an effect whose result arrives (much) later as a recorded result event (§16c-S4 continuation), no
+different in shape from any other deferred effect — the reducer already resumes on the result whenever
+it lands. So "batch" is a latency-class hint the executor honors, not new kernel machinery. Note when
+model-invocation modeling lands: thread this priority class through the model effect's request record.

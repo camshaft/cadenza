@@ -525,6 +525,58 @@ pub fn compile_composition(consumer_bytes: &[u8], peers: &[Peer]) -> Result<Comp
     })
 }
 
+/// A shared-closure PROVIDER peer JIT-compiled ONCE, reusable across MANY compositions — the interface name it
+/// exports + its JIT'd [`Component`] (`Component` is `Clone`/`Arc`-backed, so sharing it is a refcount bump).
+/// The whole point: `cdz test <dir>` composes N per-file consumers against ONE shared provider, and the
+/// provider (the whole import-closure — the ~1360-def self-host closure) is the DOMINANT JIT cost. Compiling
+/// it ONCE here and reusing the `Component` across every file's [`compile_composition_with_providers`] means
+/// the heavy provider is JIT'd 1×, not N× (the per-file "sits there for a bit" startup stall) — while each
+/// file keeps its own thin consumer + its own per-file/per-test PASS/FAIL run (localization preserved).
+#[derive(Clone)]
+pub struct CompiledProvider {
+    /// The JIT'd provider component (reused across compositions).
+    pub component: Component,
+    /// The interface it exports (bound into each consumer's like-named import).
+    pub interface: String,
+}
+
+/// JIT-compile a provider's bytes into a reusable [`CompiledProvider`] — do this ONCE per shared closure, then
+/// hand the result to [`compile_composition_with_providers`] for each consumer that imports it. Splits the
+/// expensive provider JIT out of the per-consumer [`compile_composition`] (which re-JITs the provider from
+/// bytes every call).
+pub fn compile_provider(
+    provider_bytes: &[u8],
+    interface: impl Into<String>,
+) -> Result<CompiledProvider> {
+    let engine = engine();
+    let component = Component::new(&engine, provider_bytes)
+        .map_err(|e| anyhow!("invalid provider component: {e}"))?;
+    Ok(CompiledProvider {
+        component,
+        interface: interface.into(),
+    })
+}
+
+/// Like [`compile_composition`], but the peers are ALREADY-JIT'd [`CompiledProvider`]s (shared across
+/// compositions) — so only the (thin) consumer is JIT'd here. This is the per-project-JIT-once path: JIT each
+/// shared provider ONCE ([`compile_provider`]), then compose every file's consumer against the shared
+/// provider Component(s) without re-JITing the heavy closure. Behavior-identical to `compile_composition` +
+/// `run_composition_*` — same instantiation, same shared-runtime binding — only the provider JIT is hoisted
+/// out of the per-file loop.
+pub fn compile_composition_with_providers(
+    consumer_bytes: &[u8],
+    providers: &[CompiledProvider],
+) -> Result<CompiledComposition> {
+    let engine = engine();
+    let consumer = Component::new(&engine, consumer_bytes)
+        .map_err(|e| anyhow!("invalid consumer component: {e}"))?;
+    let peers = providers
+        .iter()
+        .map(|p| (p.component.clone(), p.interface.clone()))
+        .collect();
+    Ok(CompiledComposition { consumer, peers })
+}
+
 /// Run a pre-compiled [`CompiledComposition`] once, returning `(Outcome, observed-host-op-list)`. Builds a
 /// FRESH store + linker + shared-runtime instance per call (per-run state), reusing the JIT'd consumer/peer
 /// Components — so N trials cost N cheap runs + ONE JIT, not N JITs. No host closures (that is the hosted
