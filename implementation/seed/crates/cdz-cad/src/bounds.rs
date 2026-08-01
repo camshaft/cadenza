@@ -131,6 +131,47 @@ mod tests {
     }
 
     #[test]
+    fn a_rotated_cubes_tight_mesh_bounds_stay_inside_the_models_conservative_box() {
+        // CROSS-IMPLEMENTATION SOUNDNESS: the model's `bounding-box` (exact.cdz) returns a CONSERVATIVE
+        // symmetric box for a Rotate — the L1 corner-radius R = mx+my+mz — because an exact tight rotated box
+        // needs trig. The driver, by contrast, reports the TIGHT AABB from the evaluated mesh. The contract
+        // that makes the model's box safe (e.g. for a print-bed check) is: the tight mesh bounds must ALWAYS
+        // be ENCLOSED by the conservative model box — never escape it. If the model box ever under-approximated
+        // (the reviewer-flagged `max(mx,my,mz)` bug fixed by the L1 radius), a rotated part would exceed its
+        // reported bounds. Pin it end-to-end: a 2×2×2 cube ([-1,1]^3, per-axis |coord|=1 → R=1+1+1=3, so the
+        // model box is [-3,3]^3) rotated 45° about z. The tight mesh footprint is the 45° diamond: x/y half-
+        // extent = √2 ≈ 1.4142 (the corner (1,1) rotates onto an axis at distance √2), z unchanged at ±1.
+        let b = bounds(
+            &parse_solid(
+                "(: (Rotate (: (tuple 0/1 0/1 45/1) Vec3) (Cube (: (tuple 2/1 2/1 2/1) Vec3))) Solid)",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        // (a) the tight bounds are the expected 45° diamond: ±√2 in x/y, ±1 in z.
+        let root2 = 2.0_f64.sqrt();
+        assert!(
+            approx(b.max[0], root2) && approx(b.min[0], -root2),
+            "tight x half-extent is √2 (the rotated corner)"
+        );
+        assert!(
+            approx(b.max[1], root2) && approx(b.min[1], -root2),
+            "tight y half-extent is √2"
+        );
+        assert!(
+            approx(b.max[2], 1.0) && approx(b.min[2], -1.0),
+            "z unchanged at ±1"
+        );
+        // (b) the SOUNDNESS contract: the tight mesh bounds are strictly inside the model's conservative
+        // [-3,3]^3 box (R = 3). A margin here confirms the L1 radius over-approximates, never under.
+        let conservative = 3.0;
+        assert!(
+            b.min.iter().all(|&c| c >= -conservative) && b.max.iter().all(|&c| c <= conservative),
+            "the tight rotated-cube bounds must stay inside the model's conservative [-3,3]^3 box"
+        );
+    }
+
+    #[test]
     fn fits_within_a_build_volume() {
         let b =
             bounds(&parse_solid("(: (Cube (: (tuple 2.0 2.0 2.0) Vec3)) Solid)").unwrap()).unwrap();
