@@ -108,8 +108,11 @@ impl<'a> Reader<'a> {
             // No byte where the varint needs one = the input ended mid-varint = a torn write.
             let byte = self.byte().ok_or(VarErr::Truncated)?;
             if shift >= 64 {
-                // A 10th continuation byte (all 10 group-bytes present) overflows 64 bits: fully
-                // present, so malformed — not truncated.
+                // We are about to read an 11th byte (shift is 70 here: bytes 1..=10 advanced it
+                // 0→63→70). A u64 LEB128 is at most 10 bytes, so an 11th byte means the varint claims
+                // more than 64 bits — fully present (we HAD the byte), so malformed, not truncated.
+                // (The 10th byte, at shift 63, is bounds-checked by the `shift == 63 && payload > 1`
+                // guard below.)
                 return Err(VarErr::Malformed);
             }
             let payload = (byte & 0x7f) as u64;

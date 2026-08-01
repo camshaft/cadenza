@@ -486,6 +486,23 @@ def decl-enum-disc-go(tree: Tree, entries: List(Tuple(Int64, Tuple(Int64, Int64,
                   | Option.None(_) => decl-enum-disc-go(tree, entries, declName, i + 1, nullary, payload + 1))
            else decl-enum-disc-go(tree, entries, declName, i + 1, nullary, payload))))))
 
+/// gap-B-C registry: is `nameId` the name of a DECLARED type? Every `(type Name …)` records its `Name` name-id
+/// as the `declName` VALUE of each of its ctors' ct-entries (record-ctor-tag[-typed-list]), so the set of
+/// declared type names = the set of distinct declNames in the ct-table. Scans the ct-entry list for ANY entry
+/// whose declName == nameId. WHOLE-PROGRAM: called AFTER the full program is read, so a FORWARD-referenced type
+/// (`(type B (Mk A)) (type A …)`) is already registered (matches the oracle: forward refs are valid). Index
+/// recursion over the entries (mirrors decl-enum-disc-go). Codegen-note: this fold is at READER time (read-source
+/// completion), NOT in the run closure — the guest emit ceiling bounds only the run closure, so a fold here is safe.
+def decl-name-registered(tree: Tree, nameId: Int64) = match tree with
+  | Tree.Arena(_, _, _, _, _, _, _, _, _, _, _, ct) => decl-name-registered-go(Map.to-list(ct), nameId, 0)
+
+def decl-name-registered-go(entries: List(Tuple(Int64, Tuple(Int64, Int64, List(Int64)))), nameId: Int64, i: Int64) =
+  (if (i == List.len(entries)) then false
+   else (match List.at(entries, i) with
+     | Option.None(_) => false
+     | Option.Some(e) => (match e with | (_ctorName, dt) => (match dt with | (dn, _tag, _argTypes) =>
+          (if (dn == nameId) then true else decl-name-registered-go(entries, nameId, i + 1))))))
+
 /// Encode a param's declared `(signed, width)` into the single Int64 the param-type table stores: `width*2 +
 /// (1 if signed else 0)`. Width ≤ 64, so the low bit is the sign and the rest is the width — unambiguous.
 def encode-param-type(signed: Bool, width: Int64) = (width * 2) + (if signed then 1 else 0)
@@ -1299,4 +1316,4 @@ def pd-ctor-argtype-unrecorded-none() =
     | Option.None(_) => unit
     | Option.Some(_) => trap("an unrecorded ctor has no argType"))
 
-export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, def-table-entries, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, record-ctor-tag-typed-list, ctor-tag-of, ctor-decl-of, ctor-argtype-of, ctor-argtypes-of, decl-is-enum-disc, encode-param-type, encode-bool-type, argtype-is-bool, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
+export { Tok.*, Node.*, Tree.*, empty-tree, add-node, node-at, node-count, record-def, def-body-of, def-table-entries, call-is-recursive, call-is-self-recursive, record-param, param-of, record-param2, param2-of, record-arg2, arg2-of, record-param3, param3-of, record-arg3, arg3-of, record-param4, param4-of, record-arg4, arg4-of, record-param-type, param-type-of, record-ctor-tag, record-ctor-tag-typed, record-ctor-tag-typed-list, ctor-tag-of, ctor-decl-of, ctor-argtype-of, ctor-argtypes-of, decl-is-enum-disc, decl-name-registered, encode-param-type, encode-bool-type, argtype-is-bool, pt-width, pt-signed, parse-tokens, is-bin-op, is-lit, is-var, is-let, is-if, is-bool-lit, is-annlit, is-app }
