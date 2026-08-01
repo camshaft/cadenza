@@ -1114,4 +1114,4 @@ def em-defenv-funcidx-map-assigns-positions() =
           | Option.None(_) => trap("901 in map"))
       | Option.None(_) => trap("900 in map"))))
 
-export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-text, render-core, render-core-list, int-to-decimal, emit-src-bytes, bytes-to-list, emit-instrs, emit-instrs-d, emit-call-args, lookup-idx, emit-def-body, emit-def-body-d, defenv-funcidx-map, export-section-idx, can-emit, collect-binders, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi, func-section-multi, code-section-multi, uleb-each, preamble }
+export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-text, render-core, render-core-list, int-to-decimal, emit-src-bytes, bytes-to-list, emit-instrs, emit-instrs-d, emit-call-args, lookup-idx, emit-def-body, emit-def-body-d, defenv-funcidx-map, export-section-idx, can-emit, collect-binders, is-arith-op, is-cmp-op, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi, func-section-multi, code-section-multi, uleb-each, preamble }
