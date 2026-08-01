@@ -3692,6 +3692,7 @@ pass	an unannotated generic sum ACCUMULATOR infers its parameter from the values
 pass	an unannotated predicate closure is inferred through a recursive counting HOF
 pass	an unannotated program with a valid typing type-checks and runs
 pass	an unannotated two-argument closure is inferred through a generic recursive HOF
+pass	an unbound TYPE name in an uncalled definition's annotation is still rejected
 pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name in a map key is a scope error, not a coerced string
 pass	an unbound name in a resume's state position is rejected
@@ -3700,6 +3701,7 @@ pass	an unbound name in a type annotation's type position is rejected
 pass	an unbound name in an uncalled sibling definition is still rejected
 pass	an unbound name in an unselected conditional branch is still rejected
 pass	an unbound name in an unselected match arm is still rejected
+pass	an unbound name inside an UNCALLED lambda body is still rejected
 pass	an unbound uppercase name in a type annotation's type position is rejected
 pass	an underscore export name crosses under a normalized extern name
 pass	an underscore-letter identifier binds and resolves

@@ -5580,3 +5580,14 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 110 Int64))
   (call   main (: 0 Int64)) (output (: 10 Int64)))
+
+; --- Validation-walk completeness probes (the cadenza-ml differential classifies each): an
+; unbound name in an uncalled LAMBDA body. ---
+
+(case "an unbound name inside an UNCALLED lambda body is still rejected"
+  (doc    "The ML-differential probe adjacent to KNOWN_ML_DIFFS #1 (unbound-in-uncalled-def): here the def's VALUE is a lambda that is never applied — a reachability walk that skips uncalled sibling defs may or may not descend into a bound-but-unapplied fn value. rcdzc rejects; the differential classifies ML.")
+  (input  (do
+            (def unused-lambda (fn ((: x Int64)) (+ x undefined-name)))
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0101))
