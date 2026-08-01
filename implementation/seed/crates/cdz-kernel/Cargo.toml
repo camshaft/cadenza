@@ -20,6 +20,13 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
+[features]
+# `live-exec` gates the ONE real side-effecting executor (ShellExecutor, which spawns a subprocess via
+# std::process::Command). OFF by default so the default build/tests never spawn — the same discipline
+# the old crate's CI used. CI must lint AND TEST `--features live-exec` (the failure mode is behavioral:
+# a real exit code flows into the fold, so a clippy-only gate wouldn't catch a regression on it).
+live-exec = []
+
 [dependencies]
 # blake3: content-addressing for events, KV nodes, and blobs. Fast, no_std-friendly, stable digest.
 blake3 = "1"

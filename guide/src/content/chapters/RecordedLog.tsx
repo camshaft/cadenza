@@ -1,4 +1,4 @@
-import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
+import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -103,31 +103,17 @@ export default function RecordedLog() {
 
       <H2>The real thing runs this over a durable log</H2>
       <P>
-        The miniatures above are the model. The production tool is <C>cdz-agent</C>, and it runs this exact
-        fold over a real, durable log on disk, where the events are genuine host actions the agent performed.
-        The session below is a terminal transcript, not an editable panel, but every command maps to the
-        model you just ran: seeding a log, appending a trigger event, folding it with real effects, then
-        replaying that same history deterministically.
+        The miniatures above are the model. In production the very same fold runs over a real, durable log
+        on disk, where the events aren't toy <C>Deposit</C>s but genuine host actions the agent performed: a
+        message received, a file written, a tool invoked. The runtime appends each such action to the log as
+        it happens, and recovering or replaying the agent is this exact fold over that on-disk history,
+        answering each action from what the log recorded so the replay reproduces the original result with
+        nothing performed twice.
       </P>
-      <Note>
-        <C>$ cdz-agent bootstrap agent.log</C>
-        <br />
-        <C>$ cdz-agent emit agent.log trigger deposit</C>
-        <br />
-        <C>$ cdz-agent hosted agent.log 1</C>
-        <br />
-        {"    "}summed per-op result = 3; 2 performed + 0 denied
-        <br />
-        <C>$ cdz-agent replay agent.log 1</C>
-        <br />
-        {"    "}summed per-op result = 3; 2 op(s) replayed, 0 missing (faithful)
-      </Note>
       <P>
-        The miniature above is the model; <C>cdz-agent</C> runs it over a real durable log, answering each
-        host action from what the log recorded so the replay reproduces the original result with nothing
-        performed twice. Replay re-runs the same timeline; fork branches a new one from any point; recovery
-        resumes from a cursor. All three are the fold you already wrote, applied to a value that happens to
-        be a program's whole past.
+        Nothing about the model changes at that scale. Replay re-runs the same timeline; fork branches a new
+        one from any point; recovery resumes from a cursor. All three are the fold you already wrote, applied
+        to a value that happens to be a program's whole past.
       </P>
 
       <Why tenet="A program's history is an ordinary value">

@@ -241,6 +241,11 @@ jobs:
           cargo test
           cargo clippy --all-targets -- -D warnings
           cargo fmt --check
+          # `live-exec` gates the one real side-effecting executor (ShellExecutor, spawns a subprocess).
+          # TEST it (not just clippy) — the failure mode is behavioral: a real exit code flows into the
+          # fold, so a clippy-only gate would miss a regression on that path.
+          cargo clippy --all-targets --features live-exec -- -D warnings
+          cargo test --features live-exec
 
   rcdzc-wasm:
     # The Cadenza COMPILER as a WASM artifact (implementation/seed/crates/rcdzc-wasm, v-agent-harness

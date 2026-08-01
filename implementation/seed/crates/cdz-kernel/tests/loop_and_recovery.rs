@@ -541,3 +541,94 @@ fn malformed_timer_deadline_is_rejected_not_panicked() {
         .iter()
         .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
 }
+
+/// Live shell execution (feature `live-exec`) end-to-end through the kernel: a reducer emits a Shell
+/// effect whose target is capability-gated by a command-prefix allow-list (SEC-F1); the real
+/// ShellExecutor runs it and the exit/stdout folds back as the result the reducer sees.
+#[cfg(feature = "live-exec")]
+#[test]
+fn live_shell_executor_runs_a_real_command_end_to_end() {
+    use cdz_kernel::executor::ShellExecutor;
+
+    // Reducer: on "go", run `echo hi`; on the result, stash whether it succeeded + the stdout.
+    struct ShellReducer;
+    impl Reducer for ShellReducer {
+        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
+                    kind: EffectKind::Shell,
+                    target: "echo hi".into(),
+                    payload: None,
+                }]),
+                EventBody::EffectResult { result, .. } => {
+                    match result {
+                        EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
+                            kv.put(b"stdout".to_vec(), bytes.clone());
+                        }
+                        _ => {
+                            kv.put(b"stdout".to_vec(), b"<not-ok>".to_vec());
+                        }
+                    }
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    // Capability gates Shell to a command-prefix allow-list (never an `Any` shell grant).
+    let authz = Authorizer::new(vec![Capability {
+        kind: EffectKind::Shell,
+        predicate: ResourcePredicate::Prefix("echo ".into()),
+    }]);
+    let mut exec = ShellExecutor;
+    let mut session = Session::genesis(Hash::of(b"shell"));
+    session
+        .deliver(inbound_go(), None, &ShellReducer, &authz, &mut exec)
+        .unwrap();
+
+    // The real subprocess ran; its stdout ("hi\n") folded back into KV.
+    let stdout = session.kv().get(b"stdout").expect("stdout recorded");
+    assert_eq!(String::from_utf8_lossy(stdout).trim(), "hi");
+    assert_eq!(session.open_effects(), 0);
+}
+
+/// A Shell effect OUTSIDE the capability's command-prefix is denied at the kernel gate (SEC-F1) and
+/// never reaches the executor — even the real one.
+#[cfg(feature = "live-exec")]
+#[test]
+fn live_shell_denied_command_never_executes() {
+    use cdz_kernel::executor::ShellExecutor;
+
+    struct EvilShell;
+    impl Reducer for EvilShell {
+        fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            if matches!(event.body, EventBody::Inbound { .. }) {
+                FoldOutput::with(vec![EffectRequest {
+                    kind: EffectKind::Shell,
+                    target: "rm -rf /tmp/should-never-run".into(),
+                    payload: None,
+                }])
+            } else {
+                FoldOutput::none()
+            }
+        }
+    }
+    // Only `echo ` is permitted → the destructive command is denied before the executor sees it.
+    let authz = Authorizer::new(vec![Capability {
+        kind: EffectKind::Shell,
+        predicate: ResourcePredicate::Prefix("echo ".into()),
+    }]);
+    let mut exec = ShellExecutor;
+    let mut session = Session::genesis(Hash::of(b"evil"));
+    session
+        .deliver(inbound_go(), None, &EvilShell, &authz, &mut exec)
+        .unwrap();
+
+    // Denied at the gate → a denial is logged and nothing ran.
+    assert!(session
+        .log()
+        .iter()
+        .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
+    assert_eq!(session.open_effects(), 0);
+}
