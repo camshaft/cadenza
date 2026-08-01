@@ -69,8 +69,11 @@ function wakeOperatorRecipient(to) {
     // exit is a genuine failure (e.g. cargo/xtask couldn't run), not a skip — surface it (still non-fatal:
     // the recipient's own /loop is the safety net). `error` fires only on spawn failure (e.g. cargo missing).
     child.on("error", (e) => console.error(`operator wake spawn failed for ${to} (non-fatal):`, e.message));
-    child.on("exit", (code) => {
+    child.on("exit", (code, signal) => {
+      // A non-zero EXIT code is a real failure; a SIGNAL kill reports code===null + signal set (e.g. the
+      // process was killed) — surface that too. A clean exit 0 (woke or skipped) logs nothing.
       if (code) console.error(`operator wake for ${to} exited ${code} (non-fatal)`);
+      else if (signal) console.error(`operator wake for ${to} killed by ${signal} (non-fatal)`);
     });
     child.unref();
   } catch (e) {

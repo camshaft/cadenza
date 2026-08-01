@@ -12,7 +12,14 @@
 //! round-trip gate keeps passing. This is a REFERENCE implementation destined to be rewritten in
 //! Cadenza; the durable artifact is the CONTRACT (the wire format + total decode), not this code.
 //!
-//! This first extraction slice contains only the dependency-free [`leb128`] varint — the foundation the
-//! binary codec is built on. The value types (`ast`) and the codec itself land in later slices.
+//! This crate holds the value model ([`ast`] — `Arenas`/`Leaf`/`Struct`/`Builder`), its canonical form
+//! ([`canon`]), the binary codec ([`codec`]), the LEB128 varint the codec is built on ([`leb128`]), and
+//! the small hasher they share ([`fxhash`]). Surface-dependent tests (which build inputs via
+//! `cadenza-syntax`'s text/s-expr readers) live in `cadenza-syntax`'s integration tests, since this
+//! crate sits BELOW those surfaces.
 
+pub mod ast;
+pub mod canon;
+pub mod codec;
+pub mod fxhash;
 pub mod leb128;

@@ -185,6 +185,16 @@ def se-type-decl-bad-float-width-declines() =
     | Option.None(_) => unit
 
 @test
+def se-user-def-cannot-clobber-illwidth-marker() =
+  // PR#1005 Copilot robustness: the invalid-width marker is keyed under the reserved def-table key 0 (which
+  // `name-id` can never yield — it folds from 7 and only grows), NOT under name-id("__illwidth__"). So a user
+  // `def __illwidth__` can NEITHER clobber the marker NOR false-trip has-illwidth-marker: a program with a
+  // user `__illwidth__` def and NO bad width must still RUN (would have false-declined under the name key).
+  match run-src("(do (def (__illwidth__) 7) (def (main) 5) (export main))") with
+    | Option.Some(v) => (if v == 5 then unit else trap("a user __illwidth__ def with no bad width → main runs 5"))
+    | Option.None(_) => trap("a user __illwidth__ def must NOT false-trip the invalid-width marker")
+
+@test
 def se-type-decl-valid-width-still-runs() =
   // complement (guard against over-rejection): a VALID int width `(Int 8)` in a type-decl payload is accepted
   // by the oracle (main runs to 0) — the width check must NOT decline it. (Float 32 is the valid float twin.)
@@ -207,6 +217,49 @@ def se-export-real-def-still-runs() =
   match run-src("(do (def (helper) 7) (def (main) 42) (export helper))") with
     | Option.Some(v) => (if v == 42 then unit else trap("export of a real def → main runs 42"))
     | Option.None(_) => trap("exporting a declared def must NOT decline")
+
+@test
+def se-later-unbound-export-declines() =
+  // gap-A RESIDUAL (breaker re-probe): a VALID export FOLLOWED by an unbound one must ALSO decline. The first
+  // fix stopped reading at the FIRST valid export, so `(export main) (export no-such-def)` slipped through
+  // and ran 42; rcdzc rejects ALL these CDZ0101. read-do-form now KEEPS READING after a valid export
+  // (read-do-next) so a LATER unbound export re-enters the check + poisons the root.
+  match run-src("(do (def (main) 42) (export main) (export no-such-def))") with
+    | Option.Some(_) => trap("a later unbound export must DECLINE (CDZ0101), not run to 42")
+    | Option.None(_) => unit
+
+@test
+def se-later-unbound-export-after-helper-declines() =
+  // breaker's second residual shape: `(export helper) (export no-such-def)` — a valid helper export followed
+  // by an unbound one. Also must decline (rcdzc CDZ0101), same multi-export walk.
+  match run-src("(do (def (helper) 7) (def (main) 42) (export helper) (export no-such-def))") with
+    | Option.Some(_) => trap("a later unbound export after a valid one must DECLINE (CDZ0101)")
+    | Option.None(_) => unit
+
+@test
+def se-multiple-valid-exports-still-run() =
+  // complement (guard against over-rejection): MULTIPLE all-valid exports thread the root through to the
+  // do's terminal `)` — `(export main) (export helper)` both name real defs → main runs 42.
+  match run-src("(do (def (helper) 7) (def (main) 42) (export main) (export helper))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("multiple valid exports → main runs 42"))
+    | Option.None(_) => trap("multiple valid exports must NOT decline")
+
+@test
+def se-duplicate-param-name-declines() =
+  // PARAM LINEARITY (breaker adv-47): a def binding two params with the SAME name `(def (f (: x …) (: x …)) x)`
+  // is non-linear → rcdzc CDZ0102. ML silently shadowed the first `x`, so `(f 1 2)` computed 2 (a DIFFERENT
+  // value than the oracle allows — worse than a missing reject). all-defs-well-scoped now also rejects a def
+  // whose param names aren't distinct.
+  match run-src("(do (def (f (: x Int64) (: x Int64)) x) (def (main) (f 1 2)) (export main))") with
+    | Option.Some(_) => trap("a def with two same-named params must DECLINE (CDZ0102), not shadow + run to 2")
+    | Option.None(_) => unit
+
+@test
+def se-distinct-param-names-still-run() =
+  // complement: a def with DISTINCT param names is fine — `(f (: x …) (: y …)) = (+ x y)`, `(f 1 2)` → 3.
+  match run-src("(do (def (f (: x Int64) (: y Int64)) (+ x y)) (def (main) (f 1 2)) (export main))") with
+    | Option.Some(v) => (if v == 3 then unit else trap("distinct-param fn (f 1 2) → 3"))
+    | Option.None(_) => trap("a def with distinct param names must NOT decline")
 
 @test
 def se-let-multi-binding() =
