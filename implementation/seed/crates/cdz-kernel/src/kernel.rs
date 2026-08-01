@@ -67,7 +67,7 @@ pub struct Session {
     /// IN-KERNEL, not left to a driver mirroring events by hand. `None` = an in-memory-only session
     /// (tests, or a caller that persists separately). Persistence lives here, next to the in-memory log
     /// it shadows, so the two never diverge.
-    store: Option<crate::log_store::LogStore>,
+    store: Option<Box<dyn crate::log_store::LogSink>>,
     /// The first persistence error hit while writing through `store`, latched here (§16c-S1, tier B —
     /// see [`Session::attach_log`]). The in-memory log + fold always succeed, so `append`/`drive` stay
     /// infallible; a disk write failure is recorded (not swallowed, not panicked) and surfaced to the
@@ -116,7 +116,14 @@ impl Session {
     /// [`Session::take_persist_error`]; if `Some`, the run's log is not fully durable (recovery heals the
     /// torn tail via `truncate_to`) — surface/alert, don't silently continue.
     pub fn attach_log(&mut self, store: crate::log_store::LogStore) {
-        self.store = Some(store);
+        self.store = Some(Box::new(store));
+    }
+
+    /// Attach an arbitrary [`crate::log_store::LogSink`] as the write-through target — the generic form
+    /// of [`Session::attach_log`]. Lets a caller supply a non-`LogStore` sink (a network/replicated log,
+    /// or — in tests — a sink that fails its append so the S1 route-guard can be exercised).
+    pub fn attach_sink(&mut self, sink: Box<dyn crate::log_store::LogSink>) {
+        self.store = Some(sink);
     }
 
     /// Take the latched persistence error, if any (§16c-S1 tier B). Call after a

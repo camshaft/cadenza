@@ -1711,6 +1711,30 @@ later maps to it — reduce the number of abstractions." So:
   `Reducer` trait is the INTERIM until the WIT world + wasmtime component host lands (the next big slice
   after the codec).
 
+### 19e. Wiring a WASM reducer into the kernel loop — correlation ABI (decided: KERNEL-OWNS, tier A)
+The kernel `drive` loop keys continuations by a kernel-assigned `EffectId`; a WASM `ComponentReducer`
+speaks its OWN opaque continuation TOKEN (echoed back verbatim as `resumes`; the guest never sees the
+`EffectId` — the operator's earlier collapse-to-one-token ruling). Bridging them is §16c-gap-A, and the
+correlation-ownership fork was ruled (concierge, faithful reading of the standing token ruling):
+
+- **DECIDED: (A) KERNEL-OWNS.** The kernel keeps its `EffectId` INTERNAL-ONLY (durable-dispatch recovery
+  §16c-S1, the open-obligation set, the timer table all need it, for a WASM reducer as much as a Rust
+  one). The guest stays token-only. A small `EffectId ↔ token` map bridges them at the boundary: when the
+  guest emits an effect carrying a token, the kernel assigns an `EffectId` and records the pairing; on the
+  result event it looks the token back up to feed the guest's `resumes`. This is the faithful
+  implementation of the existing token ruling — not a re-decision.
+- **Rejected (B) guest-token-native loop** — would fork the loop by reducer-kind and risk the WASM path
+  losing recovery keying (the kernel needs `EffectId` for replay regardless of reducer kind). **Rejected
+  (C) add a correlation field to the kernel `EffectRequest`** — leaks the guest concept into the kernel's
+  clean `{kind, target, payload}` type; the map keeps it out.
+- **⚠ HARD GUARD (durable/replay path):** the `EffectId↔token` map is session state that MUST be
+  replay-deterministic and REBUILDABLE FROM THE LOG on `Session::recover` — NOT volatile-only. So the
+  guest token is **persisted IN the `Dispatched` frame** (which already records the dispatch + its
+  `EffectId`); recovery rebuilds the map from the recorded frames. A crash must not lose the mapping.
+- **Build order:** (1) add the token to `Dispatched` (event.rs — re-pins the frozen golden) + rebuild the
+  map on replay; (2) `impl Reducer for ComponentReducer` translating `Event` → `(content_type, payload,
+  resumes-token)` via the map. The current Rust `Reducer` trait stays the interim path until this lands.
+
 ### 19c. WASI-as-host-ABI — SPLIT verdict (my read, sent to operator; open for their call)
 Operator mused WASI-as-ABI might help the shell-security concern, then doubted it. My read:
 - **WASI is a GOOD fit for filesystem / network / clock / random** capability-gating — it's

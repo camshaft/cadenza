@@ -30,10 +30,29 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+/// The write-through SINK a [`crate::kernel::Session`] persists appended events to (§16c-S1). Abstracted
+/// as a trait — like the crate's other host backends ([`crate::executor::Executor`],
+/// [`crate::authz::Authorize`], [`crate::blob::BlobStore`]) — so the durable log is swappable ([`LogStore`]
+/// for disk today; a network/replicated sink later) AND so a persist FAILURE can be exercised in tests
+/// (a `LogStore` over a real file can't be made to fail its append deterministically — a read-only file
+/// fails at open, not append — so the S1 route-guard's "don't route on an un-durable dispatch" path is
+/// otherwise untestable; a test impl that returns `Err` closes that gap).
+pub trait LogSink {
+    /// Persist one event durably (append + flush/fsync as the impl's tier requires). `Err` = the event
+    /// did NOT reach stable storage — the caller (`Session`) latches it and refuses to route (§16c-S1).
+    fn append(&mut self, event: &Event) -> io::Result<()>;
+}
+
 /// A durable append-only event log backed by a single file.
 pub struct LogStore {
     path: PathBuf,
     file: File,
+}
+
+impl LogSink for LogStore {
+    fn append(&mut self, event: &Event) -> io::Result<()> {
+        LogStore::append(self, event)
+    }
 }
 
 /// How a recovery read ended — the three tail states are mutually exclusive, so an ENUM type-enforces
