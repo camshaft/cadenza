@@ -95,7 +95,19 @@ pub struct ComponentReducer {
     // `None` = a runtime-free reducer (the interim Rust guest). The linker-compose of the resolved
     // runtime bytes is the next slice; construction records the requirement so `apply` knows.
     runtime_req: Option<RuntimeReq>,
+    // The per-fold fuel budget (§22d): the hard instruction ceiling one `apply` may consume before the
+    // guest is aborted with [`ComponentError::FuelExhausted`]. A runaway/looping reducer can't hang the
+    // kernel (Copilot PR#1009 DoS gap). Enforced by wasmtime's fuel metering (engine `consume_fuel` +
+    // `Store::set_fuel` per fold). This is the interim, sync first-step toward full gas (§22a); the
+    // budget is uniform per fold today — per-session gas accounting arrives with the async substrate.
+    fuel_budget: u64,
 }
+
+/// Default per-fold fuel ceiling (§22d). Chosen generous enough that a legitimate reducer fold (a bit
+/// of KV work + assembling a handful of effect-requests) never approaches it, but finite so a runaway
+/// guest is aborted rather than hanging the kernel. Tunable per reducer via
+/// [`ComponentReducer::with_fuel_budget`]; the real per-session budget lands with gas (§22a).
+pub const DEFAULT_FOLD_FUEL: u64 = 1_000_000_000;
 
 /// Errors constructing or running a component reducer. Kept small; grows as the fold path lands.
 #[derive(Debug)]
@@ -109,6 +121,12 @@ pub enum ComponentError {
     /// The guest trapped during `fold.apply` (a totality-contract violation — §16c gap A: the driver
     /// treats this as a fold failure, distinct from a clean empty-effect return).
     Trap(String),
+    /// The guest exhausted its fuel budget mid-fold (§22d): a runaway/looping reducer hit the hard
+    /// instruction ceiling before returning. Surfaced DISTINCTLY from a semantic [`ComponentError::Trap`]
+    /// because it's a resource-exhaustion outcome (a real DoS vector — Copilot PR#1009), not a guest
+    /// logic bug — the driver can act on it differently (e.g. quarantine the reducer, alert) and, once
+    /// gas (§22a) lands, this is the signal a session's budget was consumed.
+    FuelExhausted { budget: u64 },
     /// A required runtime component couldn't be resolved from the blob store (missing by hash).
     RuntimeUnresolved(String),
 }
@@ -200,7 +218,14 @@ impl ComponentReducer {
     /// `Reducer::add_to_linker`) so an instantiated guest can call its own KV directly (§4b). Does NOT
     /// instantiate yet — instantiation is per-fold (stateless guest).
     pub fn from_component_bytes(bytes: &[u8]) -> Result<Self, ComponentError> {
-        let engine = wasmtime::Engine::default();
+        // Enable fuel metering on the engine (§22d): every instruction the guest executes consumes
+        // fuel, so `apply` can cap a fold at a finite instruction budget and abort a runaway guest
+        // (Copilot PR#1009 DoS gap) with `OutOfFuel` rather than hanging. The per-fold budget is
+        // charged in `apply` via `Store::set_fuel`; here we just turn metering on.
+        let mut config = wasmtime::Config::new();
+        config.consume_fuel(true);
+        let engine = wasmtime::Engine::new(&config)
+            .map_err(|e| ComponentError::InvalidComponent(e.to_string()))?;
         let component = wasmtime::component::Component::new(&engine, bytes)
             .map_err(|e| ComponentError::InvalidComponent(e.to_string()))?;
         let mut linker = wasmtime::component::Linker::<ReducerHost>::new(&engine);
@@ -222,7 +247,22 @@ impl ComponentReducer {
             component,
             linker,
             runtime_req,
+            fuel_budget: DEFAULT_FOLD_FUEL,
         })
+    }
+
+    /// Override the per-fold fuel budget (§22d). Use a smaller ceiling for untrusted/low-trust reducers
+    /// or a larger one for a reducer with a legitimately heavier fold; the [`DEFAULT_FOLD_FUEL`] suits a
+    /// typical fold. (When gas §22a lands this becomes per-session budget accounting rather than a
+    /// uniform per-fold cap.)
+    pub fn with_fuel_budget(mut self, fuel: u64) -> Self {
+        self.fuel_budget = fuel;
+        self
+    }
+
+    /// The per-fold fuel budget this reducer enforces (§22d).
+    pub fn fuel_budget(&self) -> u64 {
+        self.fuel_budget
     }
 
     /// The engine (exposed for tests / advanced host composition).
@@ -268,17 +308,39 @@ impl ComponentReducer {
         resumes: Option<Vec<u8>>,
     ) -> Result<(Vec<EffectRequest>, Kv), ComponentError> {
         let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
+        // Fuel metering is enabled on the engine (§22d). Instantiation isn't the DoS surface — a
+        // reactive fold guest's runaway risk is in its `fold.apply` body, not its (structure-bounded)
+        // instantiation — so give instantiation ample headroom, then reset fuel to the per-fold budget
+        // right before the call. That way the budget bounds the FOLD precisely, and an exhausted budget
+        // is unambiguously the guest's fold looping (not load cost). set_fuel can't fail with metering
+        // on, but surface any error rather than unwrap.
+        store
+            .set_fuel(u64::MAX)
+            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
         let instance = Reducer::instantiate(&mut store, &self.component, &self.linker)
             .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
-        let effects = instance
-            .cadenza_agent_kernel_fold()
-            .call_apply(
-                &mut store,
-                &content_type,
-                payload.as_deref(),
-                resumes.as_deref(),
-            )
+        store
+            .set_fuel(self.fuel_budget)
             .map_err(|e| ComponentError::Trap(e.to_string()))?;
+        let effects = match instance.cadenza_agent_kernel_fold().call_apply(
+            &mut store,
+            &content_type,
+            payload.as_deref(),
+            resumes.as_deref(),
+        ) {
+            Ok(effects) => effects,
+            Err(e) => {
+                // Distinguish a runaway guest (fuel exhausted) from a semantic guest trap: a fold that
+                // consumed its whole budget is a resource-exhaustion outcome the driver handles
+                // differently (§22d / PR#1009). `Trap::OutOfFuel` is carried in the error chain.
+                if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
+                    return Err(ComponentError::FuelExhausted {
+                        budget: self.fuel_budget,
+                    });
+                }
+                return Err(ComponentError::Trap(e.to_string()));
+            }
+        };
         let kv = store.into_data().into_kv();
         Ok((effects, kv))
     }

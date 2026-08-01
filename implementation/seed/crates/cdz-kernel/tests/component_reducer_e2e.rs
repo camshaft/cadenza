@@ -15,7 +15,7 @@
 //! (CI rebuilds + diffs it so a stale fixture is caught — see the cdz-kernel CI job.)
 
 use cdz_kernel::kv::Kv;
-use cdz_kernel::wasm_host::{ComponentReducer, ContentType, EffectKind};
+use cdz_kernel::wasm_host::{ComponentError, ComponentReducer, ContentType, EffectKind};
 
 const GUEST: &[u8] = include_bytes!("fixtures/reducer_guest.component.wasm");
 
@@ -62,5 +62,54 @@ fn real_guest_component_folds_through_apply_end_to_end() {
     assert!(
         more.is_empty(),
         "the guest emits no further effects on the result event"
+    );
+}
+
+/// §22d fuel bound: a fold that exceeds its fuel budget is aborted with a DISTINCT
+/// `ComponentError::FuelExhausted` (not a semantic `Trap`) — the runaway-guest DoS guard (Copilot
+/// PR#1009). We can't easily commit a forever-looping component fixture, so we starve the REAL guest:
+/// a 1-fuel budget is smaller than even this tiny fold's instruction cost, so it exhausts mid-`apply`.
+/// This proves (a) the budget is charged against the fold, and (b) exhaustion is classified correctly.
+#[test]
+fn a_fold_that_exceeds_its_fuel_budget_is_aborted_as_fuel_exhausted() {
+    let reducer = ComponentReducer::from_component_bytes(GUEST)
+        .expect("valid reducer component")
+        // A budget of 1 fuel unit: instantiation gets full headroom (reset internally), but the fold
+        // itself executes real instructions, so 1 unit can't cover it → OutOfFuel.
+        .with_fuel_budget(1);
+    assert_eq!(reducer.fuel_budget(), 1);
+
+    let ct = ContentType {
+        family: "message".to_string(),
+        version: 1,
+    };
+    match reducer.apply(Kv::new(), ct, Some(b"hello".to_vec()), None) {
+        Err(ComponentError::FuelExhausted { budget }) => {
+            assert_eq!(
+                budget, 1,
+                "the reported budget is the one that was exhausted"
+            );
+        }
+        Err(other) => panic!("expected FuelExhausted, got {other:?}"),
+        Ok(_) => panic!("a 1-fuel budget must not let the fold complete"),
+    }
+}
+
+/// The counterpart: the DEFAULT budget is generous enough that a legitimate fold completes normally
+/// (guards against a budget so tight it breaks real reducers — the default must not false-positive).
+#[test]
+fn a_normal_fold_completes_within_the_default_fuel_budget() {
+    let reducer = ComponentReducer::from_component_bytes(GUEST).expect("valid reducer component");
+    let ct = ContentType {
+        family: "message".to_string(),
+        version: 1,
+    };
+    let (effects, _kv) = reducer
+        .apply(Kv::new(), ct, Some(b"hello".to_vec()), None)
+        .expect("a normal fold completes within the default fuel budget");
+    assert_eq!(
+        effects.len(),
+        1,
+        "the normal fold still produces its effect"
     );
 }

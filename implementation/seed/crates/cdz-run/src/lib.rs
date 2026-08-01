@@ -534,10 +534,13 @@ pub fn compile_composition(consumer_bytes: &[u8], peers: &[Peer]) -> Result<Comp
 /// file keeps its own thin consumer + its own per-file/per-test PASS/FAIL run (localization preserved).
 #[derive(Clone)]
 pub struct CompiledProvider {
-    /// The JIT'd provider component (reused across compositions).
-    pub component: Component,
+    /// The JIT'd provider component (reused across compositions). PRIVATE: a `wasmtime::component::Component`
+    /// is an internal implementation detail — exposing it publicly would leak the wasmtime dependency into
+    /// cdz-run's public API. Callers only ever obtain a `CompiledProvider` from [`compile_provider`] and pass
+    /// it back into [`compile_composition_with_providers`] (both opaque), so the fields need not be public.
+    component: Component,
     /// The interface it exports (bound into each consumer's like-named import).
-    pub interface: String,
+    interface: String,
 }
 
 /// JIT-compile a provider's bytes into a reusable [`CompiledProvider`] — do this ONCE per shared closure, then

@@ -6700,10 +6700,11 @@ struct TestArgs {
     /// failure prints the seed to replay with `--seed`). Default 0 (deterministic run-to-run).
     #[arg(long, default_value_t = 0)]
     seed: u64,
-    /// Report TIMING: emit how long each phase takes (per-file provider JIT / compose / run) AND each
-    /// individual test's duration — like `cargo test --report-time`, so it's explicit "where the time goes".
-    /// Off by default (the normal PASS/FAIL output is unchanged); when set, each test line gains a ` (Nms)`
-    /// suffix and per-file a `  ⏱ compose Nms · run Nms` line is emitted.
+    /// Report TIMING — like `cargo test --report-time`, so it's explicit "where the time goes". Off by
+    /// default (the normal PASS/FAIL output is unchanged). When set, emits `⏱` lines: ONE up-front
+    /// `⏱ provider JIT: N shared closure(s) JIT'd once in Xms` (the shared closures are JIT'd once per
+    /// project, not per file); per test an indented `⏱ PASS|FAIL <name> Xms` under its result; and per file
+    /// a `⏱ <file>: compose Xms · run Yms` (compose = that file's consumer JIT, run = all its tests).
     #[arg(long)]
     report_time: bool,
     /// WARM the shared-closure provider cache for the resolved suite, then EXIT WITHOUT running any tests.
