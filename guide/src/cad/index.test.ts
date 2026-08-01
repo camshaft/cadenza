@@ -229,3 +229,46 @@ test("a 6-fold rotational array (Union of rotated bars) meshes more geometry tha
     );
   }
 });
+
+// ── grammar completeness: parse EVERY lower-emittable constructor in one solid ────────────────────────
+// Twin of v-cad's native-parser completeness guard (cdz-cad Rust, batch #103): the native driver pins that
+// a sexpr touching every SolidR head + every Profile + every PathSeg parses, so a model `lower` arm added
+// (or removed) without a matching parser arm fails LOUDLY instead of silently rendering nothing — the
+// RENDER-BLANK class (the empty-Solid/"snowflake blank" family). This is the browser twin over index.ts's
+// parser: parseNode declines an unknown/removed head with `unknown Solid constructor` (→ a typed error,
+// never a throw), so if any of the 13 SolidR heads / 3 Profiles / 6 PathSegs loses its arm, this all-in-one
+// solid stops meshing and the test goes red. The exact model↔driver grammar lives in
+// implementation/cad/src/exact.cdz (SolidR / ProfileR / PathSegR).
+const ALL_CONSTRUCTORS =
+  "(: (Union" +
+  " (Difference (Intersection (Cube (: (tuple 4/1 4/1 4/1) Vec3)) (Sphere 3/1)) (Cylinder 2/1 1/1))" +
+  " (Union" +
+  "  (Translate (: (tuple 10/1 0/1 0/1) Vec3) (Scale (: (tuple 1/1 1/1 1/1) Vec3)" +
+  "   (Rotate (: (tuple 0/1 0/1 45/1) Vec3) (Mirror (: (tuple 1/1 0/1 0/1) Vec3) (Cube (: (tuple 2/1 2/1 2/1) Vec3))))))" +
+  "  (Union (ExtrudeLinear (Rect (: (tuple 4/1 2/1) Vec2R)) 6/1)" +
+  "   (Union (ExtrudeLinear (Circle 3/1) 5/1)" +
+  "    (Union (Revolve (Rect (: (tuple 2/1 4/1) Vec2R)) 360/1)" +
+  "     (Union" +
+  "      (ExtrudeLinear (PathProfile (: (list" +
+  "       (MoveToAbs (: (tuple 0/1 0/1) Vec2R)) (LineToAbs (: (tuple 4/1 0/1) Vec2R))" +
+  "       (CubicToAbs (: (tuple 4/1 4/1) Vec2R) (: (tuple 5/1 1/1) Vec2R) (: (tuple 5/1 3/1) Vec2R))" +
+  "       (MoveToRel (: (tuple 1/1 1/1) Vec2R)) (LineToRel (: (tuple 2/1 0/1) Vec2R))" +
+  "       (CubicToRel (: (tuple 0/1 2/1) Vec2R) (: (tuple 1/1 0/1) Vec2R) (: (tuple 1/1 1/1) Vec2R)))" +
+  "       PathR)) 3/1)" +
+  "      (Empty unit)))))))" +
+  " Solid)";
+
+test("the parser handles EVERY render-grammar constructor (a removed head → render-blank regression)", async () => {
+  // Every SolidR head (13: Empty, Cube, Sphere, Cylinder, Union, Difference, Intersection, Translate,
+  // Scale, Rotate, Mirror, ExtrudeLinear, Revolve), every Profile (Rect/Circle/PathProfile via Extrude+
+  // Revolve), and every PathSeg (MoveToAbs/Rel, LineToAbs/Rel, CubicToAbs/Rel) appear in this one solid.
+  const r = await meshFromSolid(ALL_CONSTRUCTORS);
+  assert.equal(
+    r.ok,
+    true,
+    r.ok ? "" : `an all-constructors solid must parse + mesh, got error: ${r.error}`,
+  );
+  if (r.ok) {
+    assert.ok(r.indices.length > 0 && r.indices.length % 3 === 0, "the all-constructors solid meshes to triangles");
+  }
+});
