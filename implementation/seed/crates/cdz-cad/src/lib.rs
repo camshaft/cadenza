@@ -533,7 +533,13 @@ mod tests {
 
     // The EXACT text cdz-run renders for a Solid (captured from the live compiler), covering every variant.
     // Rational leaves `n/d`; no Rotate (no exact rotation).
-    const ALL_VARIANTS: &str = "(: (Intersection (Difference (Union (Cube (: (tuple 2/1 2/1 2/1) Vec3)) (Sphere 3/2)) (Cylinder 3/1 1/2)) (Scale (: (tuple 2/1 2/1 2/1) Vec3) (Translate (: (tuple 1/1 0/1 0/1) Vec3) (Empty unit)))) Solid)";
+    // Every SolidR constructor `lower` (exact.cdz) can emit — all 13 Solid heads plus a PathProfile that
+    // exercises all six PathSeg kinds — so this is a grammar-COMPLETENESS guard: if a new arm is added to the
+    // model's `lower` without a matching driver parser arm (the render-blank class), this fails to parse.
+    // Left subtree (9 nodes / 3 leaves): Intersection, Difference, Union, Cube, Sphere, Cylinder, Scale,
+    // Translate, Empty. Right subtree adds Rotate→ExtrudeLinear(PathProfile) and Mirror→Revolve(Circle) under
+    // a Union → +6 nodes / +2 leaves. Total 15 nodes / 5 leaves.
+    const ALL_VARIANTS: &str = "(: (Union (Intersection (Difference (Union (Cube (: (tuple 2/1 2/1 2/1) Vec3)) (Sphere 3/2)) (Cylinder 3/1 1/2)) (Scale (: (tuple 2/1 2/1 2/1) Vec3) (Translate (: (tuple 1/1 0/1 0/1) Vec3) (Empty unit)))) (Union (Rotate (: (tuple 0/1 0/1 45/1) Vec3) (ExtrudeLinear (PathProfile (list (MoveToAbs (tuple 0/1 0/1)) (LineToAbs (tuple 4/1 0/1)) (LineToRel (tuple 0/1 2/1)) (MoveToRel (tuple 1/1 1/1)) (CubicToAbs (tuple 6/1 0/1) (tuple 3/1 5/1) (tuple 5/1 0/1)) (CubicToRel (tuple 1/1 0/1) (tuple 0/1 1/1) (tuple 1/1 1/1)))) 4/1)) (Mirror (: (tuple 1/1 0/1 0/1) Vec3) (Revolve (Circle 3/1) 360/1)))) Solid)";
 
     #[test]
     fn parses_a_single_cube() {
@@ -594,10 +600,11 @@ mod tests {
     #[test]
     fn parses_every_variant_and_counts_match() {
         let s = parse_solid(ALL_VARIANTS).unwrap();
-        // Cube, Sphere, Cylinder (3 leaves) + Empty (0) = 3 primitive leaves.
-        assert_eq!(s.leaf_count(), 3);
-        // Intersection, Difference, Union, Cube, Sphere, Cylinder, Scale, Translate, Empty = 9.
-        assert_eq!(s.node_count(), 9);
+        // Leaves: Cube, Sphere, Cylinder + ExtrudeLinear + Revolve = 5 (Empty/booleans/transforms are structure).
+        assert_eq!(s.leaf_count(), 5);
+        // Nodes: 9 in the left subtree (Intersection, Difference, Union, Cube, Sphere, Cylinder, Scale,
+        // Translate, Empty) + the outer Union + Rotate + ExtrudeLinear + Mirror + Revolve + inner Union = 15.
+        assert_eq!(s.node_count(), 15);
     }
 
     #[test]
