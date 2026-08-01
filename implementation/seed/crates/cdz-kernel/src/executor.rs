@@ -47,28 +47,35 @@ impl Executor for RecordingExecutor {
     }
 }
 
-/// A REAL local shell executor (feature `live-exec`) — the first executor that touches the world.
-/// Runs an `EffectKind::Shell` request's `target` as a command line via `std::process::Command`,
-/// returning the outcome the kernel folds back:
+/// A REAL local command executor (feature `live-exec`, Unix only) — the first executor that touches the
+/// world. Runs an `EffectKind::Shell` request's `target` as a program + args, executed **directly via
+/// `Command::new(program).args(...)` — NO `sh -c`** (PR#992 security fix, CWE-78). Returns the outcome
+/// the kernel folds back:
 /// - exit 0 → `Ok(Some(stdout))`
 /// - non-zero exit → `Err("exit <code>: <stderr>")`
-/// - spawn failure → `Err`.
+/// - spawn failure / empty command → `Err`.
 ///
-/// **Trust boundary:** this executor does NOT re-authorize. The kernel has already gated the effect's
-/// resolved `target` against a resource-scoped capability (SEC-F1) before dispatching, so by the time a
-/// request reaches here it is permitted. A `ShellExecutor` should only ever be handed effects for a
-/// session whose capability constrains `Shell` targets (e.g. a command allow-list `Prefix`), never an
-/// `Any` shell grant.
+/// **No shell = no injection (PR#992 ⚠⚠ command injection):** the previous `sh -c <target>` let shell
+/// metacharacters in the target (`;`, `|`, `&&`, `$()`, backtick) execute arbitrary commands, DEFEATING
+/// the SEC-F1 `Prefix` allow-list — `echo ok; rm -rf /` passes `starts_with("echo ")` but `sh` ran the
+/// `rm`. Direct exec makes every token a LITERAL argument: a `;` is an argument to the program, not a
+/// separator. The target is split on whitespace into `program` + `args` (v0's minimal arg model — the
+/// operator-directed structured `{program, args}` command model, §18b, is the fuller successor; this is
+/// the injection-safe interim). Note this means the v0 target cannot contain quoted args with spaces —
+/// acceptable for the allow-listed commands v0 runs; the structured model lifts that.
 ///
-/// **Non-Shell effects** return an `Err` (in v0 a single executor handles one kind; the composite
-/// router that dispatches by kind — WASI vs. model vs. peer — lands with the wasm host). **Idempotency
-/// (§16c-S1):** a shell command is NOT generally idempotent, so a real deployment must dedup re-driven
-/// dispatches on `idempotency_key`; v0's ShellExecutor executes unconditionally (single-node, no
-/// crash-retry loop yet) and documents the key as the dedup handle for when retry lands.
-#[cfg(feature = "live-exec")]
+/// **Trust boundary:** this executor does NOT re-authorize; the kernel gated the resolved `target`
+/// against a resource-scoped capability (SEC-F1) before dispatch. But note the fix's defense is
+/// structural (no shell), NOT reliant on the allow-list being metachar-proof — so even an over-broad
+/// grant can't yield injection, only the wrong (still-literal) program.
+///
+/// **Non-Shell effects** return an `Err` (v0 = one kind per executor; the by-kind composite router
+/// lands with the wasm host). **Idempotency (§16c-S1):** a command is NOT generally idempotent; a real
+/// deployment dedups re-driven dispatches on `idempotency_key` (documented as the dedup handle).
+#[cfg(all(feature = "live-exec", unix))]
 pub struct ShellExecutor;
 
-#[cfg(feature = "live-exec")]
+#[cfg(all(feature = "live-exec", unix))]
 impl Executor for ShellExecutor {
     fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
         use crate::effect::EffectKind;
@@ -78,12 +85,14 @@ impl Executor for ShellExecutor {
                 req.kind
             ));
         }
-        // Run via `sh -c <target>` so the target is a normal command line. The target was
-        // capability-gated upstream (SEC-F1) — this executor trusts that authorization.
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&req.target)
-            .output();
+        // Split the target into program + args on whitespace and exec DIRECTLY — no shell, so
+        // metacharacters are literal arguments, not interpreted (PR#992 CWE-78 fix).
+        let mut parts = req.target.split_whitespace();
+        let Some(program) = parts.next() else {
+            return EffectOutcome::Err("empty command".to_string());
+        };
+        let args: Vec<&str> = parts.collect();
+        let output = std::process::Command::new(program).args(&args).output();
         match output {
             Ok(out) if out.status.success() => EffectOutcome::Ok(Some(Payload::Inline(out.stdout))),
             Ok(out) => EffectOutcome::Err(format!(
