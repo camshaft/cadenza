@@ -5203,16 +5203,24 @@ fn ast_subtree_size_capped(db: &mut Db, id: StructId, cap: usize) -> usize {
 }
 
 /// The match-FUSION arm-clone, threading the FUSED match's SCRUTINEE (`fused_scrut`)
-/// so a pinned `SumPayload` binder can be classified:
-///  - a binder of the MATCH BEING FUSED (its `SumPayload.scrutinee` IS `fused_scrut`, OR the scrutinee is
-///    within the cloned subtree itself) must be COPIED — the clone re-emits that match over the branch
-///    value, and the copied binder re-resolves against the new branch scrutinee (the whole point of the
-///    fusion; the rust `emit_sum_payload` resolves a binder by its (scrutinee, path), so a SHARED binder
-///    would read the ORIGINAL now-detached switch → "sum payload has no bound match arm" decline);
-///  - a binder of an ENCLOSING match (its scrutinee is neither `fused_scrut` nor within the clone — e.g. an
-///    outer `(match cs ((list c .. t) … <cloned arm reads c>))`) is a genuine CAPTURE and must be SHARED,
+/// so a pinned `SumPayload` binder can be classified by scrutinee IDENTITY:
+///  - a binder of the MATCH BEING FUSED (its `SumPayload.scrutinee` IS `fused_scrut`) must be COPIED — the
+///    clone re-emits that match over the branch value, and the copied binder re-resolves against the new
+///    branch scrutinee (the whole point of the fusion; the rust `emit_sum_payload` resolves a binder by its
+///    (scrutinee, path), so a SHARED binder would read the ORIGINAL now-detached switch → "sum payload has
+///    no bound match arm" decline);
+///  - a binder of an ENCLOSING match (its scrutinee is NOT `fused_scrut` — e.g. an outer
+///    `(match cs ((list c .. t) … <cloned arm reads c>))`) is a genuine CAPTURE and must be SHARED,
 ///    exactly like a non-payload pinned name; copying it fresh re-resolves it lexically against the orphaned
 ///    clone → spurious CDZ0101 (the rest-pattern-binder-in-an-inlined-callee bug).
+///
+/// The classification is by scrutinee IDENTITY, NOT subtree containment: the pinned-binder path only sees
+/// binders resolved by β-SUBSTITUTION (`resolved_subtrees`); a nested match's OWN binders INSIDE a cloned
+/// arm resolve lexically and re-resolve against the clone via the name-copy fall-through, so they never
+/// need this copy-test (verified: nested-fused-match-in-arm + inlined-nested-match-in-arm both emit on both
+/// backends). The identity check is exact — sharper than the `is_within(scrutinee, clone_root)` containment
+/// test the prior impl (`11c39b005`) threaded, which over-shared the fused match's OWN binder (its scrutinee
+/// also sits outside the arm subtree) and regressed a rust Result/Option pipeline (fixed by `a5f7cfafb`).
 ///
 /// `fused_scrut` is `Some(the fused match's scrutinee)` at every current call site; `None` (share every
 /// pinned SumPayload) is available for a future non-fusion clone that has no own-binder to re-resolve.
@@ -5228,7 +5236,7 @@ fn clone_subtree_db_for_fused(
                 // a β-SUBSTITUTION, not lexically — must be SHARED, not copied fresh (the `run (mk k) k`
                 // case). But a `SumPayload` binder of the MATCH BEING FUSED must still COPY + re-resolve
                 // against the branch scrutinee. Distinguish by the binder's own scrutinee: it belongs to
-                // the fused match iff its scrutinee IS `fused_scrut` (or sits within the cloned subtree);
+                // the fused match iff its scrutinee IS `fused_scrut` (an exact identity test, not containment);
                 // otherwise it reads an ENCLOSING match and is a capture to share. See the fn doc.
                 if db.resolved_subtrees.contains(&id) {
                     let copy_payload = matches!(

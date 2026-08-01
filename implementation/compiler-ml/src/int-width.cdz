@@ -244,7 +244,7 @@ def iw-wrapping-add-overflows-signed() =
 
 @test
 def iw-wrapping-sub-underflows() =
-  // -1 wraps to UInt8.max 255; Int8.min - 1 = -128 - 1 wraps to Int8.max 127.
+  // 0 - 1 = -1 wraps to UInt8.max 255; Int8.min - 1 = -128 - 1 wraps to Int8.max 127.
   if (wrapping-sub(0, 1, false, 8) == 255) and (wrapping-sub(-128, 1, true, 8) == 127) then unit else trap("wrapping-sub: 0-1→255(u8), -128-1→127(i8)")
 
 @test
@@ -291,7 +291,7 @@ def iw-checked-add-overflow-is-none() =
 
 @test
 def iw-checked-sub-underflow-is-none() =
-  // -1 = -1 underflows UInt8 (min 0) → None; an in-range signed sub computes: 5 - 8 = -3 fits Int8 → Some.
+  // 0 - 1 = -1 underflows UInt8 (min 0) → None; an in-range signed sub computes: 5 - 8 = -3 fits Int8 → Some.
   (match checked-sub(0, 1, false, 8) with
     | Option.None(_) => (match checked-sub(5, 8, true, 8) with | Option.Some(v) => (if v == (-3) then unit else trap("i8 5-8=-3")) | Option.None(_) => trap("i8 5-8 in range → Some"))
     | Option.Some(_) => trap("u8 0-1 underflows → None"))
