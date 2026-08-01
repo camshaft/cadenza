@@ -1,20 +1,17 @@
-# cdz-kernel — the log-native agent-runtime MICROKERNEL (v-agent-harness, agent-runtime L1).
+# cdz-kernel — the v2 agent-harness KERNEL (from-scratch rebuild; design/agent-harness-kernel.md).
 #
-# The vision (implementation/design/DESIGN-agent-runtime-vision.md) is a log-native agent OS whose minimal
-# core is: tail an ordered LOG -> FOLD it with a Cadenza program -> execute the effect-requests the fold
-# emits, appending each result back as an immutable event (recorded-effect determinism, vision §2.3). This
-# crate is that microkernel, built up the L1 ladder (see DESIGN-agent-runtime-L1-plan.md):
-#   L1a (this commit) — the `Log` abstraction + a deterministic file-backed impl (local, no network).
-#   L1b — the single-threaded fold owner driving one agent-loop turn (reuses cdz-agent's embedder + the
-#         cdz-run host driver).
-#   L1c — the replay-determinism gate (live-record -> re-fold-from-record -> identical, zero live calls).
-#   L1d — swap the file log for DynamoDB behind an `aws` feature (like cdz-agent's `bedrock`).
+# A generic, minimal, if-this-then-that runtime: accept signed content-addressed events into an
+# append-only per-session log, fold the current wasm reducer over each event, authorize the effects it
+# requests, dispatch them, and fold the results back in. The kernel knows NOTHING about Cadenza,
+# agents, or models — those are reducers + executors (see the design doc).
 #
-# EXCLUDED from the seed workspace (own `[workspace]` table + root Cargo.toml exclude), the same isolation
-# cdz-agent/cdz-cad use: the L1d `aws` feature will pull the heavy aws-sdk + tokio tree, which a plain
-# `cargo build --workspace` and the corpus gate must never pay. L1a has no heavy deps yet; the isolation is
-# established up front so later rungs drop in without a workspace-topology change. A dedicated CI job builds
-# + tests it (default features = file log + mock model, no creds/network — CI-safe).
+# v0.1 scope (design §15b): the correctness-critical spine — content-addressed log + persistent-map KV
+# + the DURABLE effect-dispatch / effect-id-keyed continuation loop (adversarial-review S1/S4) + a
+# reducer behind a trait (wasmtime lands next). No PKI/mesh/multi-node (single hub, single operator).
+#
+# Its OWN workspace (empty `[workspace]` table), NOT a member of the seed workspace — the same
+# isolation the old crates + cdz-cad use, so a plain `cargo build --workspace` / the corpus gate never
+# pays for the kernel's (future) async/wasmtime tree. A dedicated CI job gates it.
 [workspace]
 
 [package]
@@ -23,54 +20,8 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
-[features]
-# OFF by default: the DynamoDB log backend (L1d) — the async aws-sdk + tokio tree. The default build is the
-# file-backed log, so `cargo build`/`cargo test` here needs no AWS creds and no network (the CI-gated path).
-# The `aws` feature adds the real `DynamoLog` (the §2.1 many-writer ordering authority: a conditional write
-# assigns the monotonic seq). The event↔item MARSHALLING is pure + tested in the DEFAULT build; only the
-# DynamoDB client calls are feature-gated (network-only, exercised manually), mirroring cdz-agent's bedrock.
-default = []
-aws = ["dep:aws-config", "dep:aws-sdk-dynamodb", "dep:tokio"]
-# Run the compiler AS A WASM (`rcdzc.wasm`) via wasmtime+WASI (operator #54, concierge-approved plan a). OFF
-# by default — the default build uses the native rcdzc compile path; this feature adds loading + invoking the
-# compiler-wasm (a wasm32-wasip1 core module exporting alloc/compile/dealloc). wasmtime is the SAME engine v37
-# cdz-run already pulls; wasmtime-wasi adds the thin preview1 ctx a wasm32-wasip1 module needs.
-wasm-compiler = ["dep:wasmtime", "dep:wasmtime-wasi"]
-# OFF by default: LIVE `exec` — the daemon's `Prim.exec` op spawns a REAL subprocess (std::process::Command,
-# no new dep) and returns its exit code, instead of the record-only tag. Defense-in-depth (concierge ruling):
-# a build WITHOUT this feature CANNOT spawn a process regardless of the Cedar policy — the safe default for a
-# kernel running self-modifiable Cadenza brains. With the feature, `exec` is still Cedar-gated + audit-logged;
-# the flag is a SECOND, build-time boundary on top of the policy. `http` stays record-only (no HTTP-client dep).
-live-exec = []
-
 [dependencies]
-anyhow = "1"
-# The generic host-op driver (`run_agent_hosted`) + recorded-effect determinism (`RunOpts::host_responses`)
-# the fold owner (L1b) drives the agent loop through, and the embedder (`mock_converse`/`bedrock_converse`)
-# it binds the Model effect to. Both are excluded seed crates; an excluded crate may path-dep them (as
-# cdz-agent path-deps cdz-run). No new heavy tree — cdz-agent's aws-sdk stays behind ITS `bedrock` feature.
-cdz-run = { path = "../cdz-run" }
-cdz-agent = { path = "../cdz-agent" }
+# blake3: content-addressing for events, KV nodes, and blobs. Fast, no_std-friendly, stable digest.
+blake3 = "1"
 
-# The COMPILER, embedded in the kernel (minimal-kernel rung K1). Operator ruling (2026-07-17, confirmed by
-# concierge): the deploy-once daemon must COMPILE Cadenza AT RUNTIME — agents append NEW programs to the log
-# that must run without a kernel redeploy, so the kernel embeds rcdzc (compile a `.cdz` source → a wasm
-# provider) + cdz-run's wasmtime (run it) in-process. This is the codeact-spike shape realized as the kernel:
-# "compile + run any Cadenza program from the log" IS the kernel's job. rcdzc is the kernel's one big dep; its
-# size is acceptable because the kernel is deploy-once (compile-anything-forever matters more than binary size).
-rcdzc = { path = "../rcdzc" }
-cadenza-syntax = { path = "../cadenza-syntax" }
-
-# Run the compiler-wasm (`rcdzc.wasm`) — the wasm-swap host, behind the `wasm-compiler` feature. Same wasmtime
-# engine (v37) cdz-run pulls; wasmtime-wasi is the preview1 ctx for the wasm32-wasip1 core module.
-wasmtime = { version = "37", default-features = false, features = ["runtime", "cranelift"], optional = true }
-wasmtime-wasi = { version = "37", optional = true }
-
-# The DynamoDB log backend (L1d), behind the `aws` feature only (heavy async tree — kept out of default).
-aws-config = { version = "1", optional = true }
-aws-sdk-dynamodb = { version = "1", optional = true }
-tokio = { version = "1", features = ["rt", "rt-multi-thread"], optional = true }
-
-[lib]
-name = "cdz_kernel"
-path = "src/lib.rs"
+[dev-dependencies]
