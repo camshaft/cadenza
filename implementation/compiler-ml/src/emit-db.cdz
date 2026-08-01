@@ -327,13 +327,18 @@ def digit-char(d: Int64) = match String.at("0123456789", d) with
   | Option.Some(c) => c
   | Option.None(_) => ""      // unreachable: d is always 0..9 (`n % 10`), but String.at is total-by-Option
 
+/// Extract digits keeping the working value `n` ≤ 0 THROUGHOUT — so `Int64.min` (whose positive magnitude is
+/// NOT i64-representable) never needs negating. For `n ≤ 0`, `n % 10` is ≤ 0, so `0 - (n % 10)` is the digit
+/// (0..9), and `n / 10` stays ≤ 0. Terminates when `n` reaches 0. (`int-to-decimal` seeds it with `-|n|`.)
 def int-to-decimal-go(n: Int64, acc: String) =
   if n == 0 then acc
-  else int-to-decimal-go(n / 10, String.concat(digit-char(n % 10), acc))
+  else int-to-decimal-go(n / 10, String.concat(digit-char(0 - (n % 10)), acc))
 
 def int-to-decimal(n: Int64) =
+  // Work in the NEGATIVE domain to stay Int64.min-safe: negating a positive to ≤ 0 never overflows, but
+  // negating Int64.min to a positive would. So map n → its ≤ 0 twin, extract there, prefix "-" if n < 0.
   if n == 0 then "0"
-  else (if n < 0 then String.concat("-", int-to-decimal-go(0 - n, "")) else int-to-decimal-go(n, ""))
+  else (if n < 0 then String.concat("-", int-to-decimal-go(n, "")) else int-to-decimal-go(0 - n, ""))
 
 /// TARGET.TEXT backend: render a Core term to a readable S-expr-ish STRING. The SECOND backend behind the
 /// seam — its job is to PROVE the seam generalizes (a target that truly reads the neutral `Core`, not the
@@ -773,6 +778,18 @@ def em-int-to-decimal-positive-multidigit() =
 @test
 def em-int-to-decimal-negative() =
   if int-to-decimal(0 - 56) == "-56" then unit else trap("int-to-decimal -56 = \"-56\"")
+
+@test
+def em-int-to-decimal-int64-min() =
+  // Int64.min (-9223372036854775808) is the corner: its POSITIVE magnitude is NOT i64-representable, so a
+  // negate-to-positive render would overflow (trap/wrong). int-to-decimal works in the ≤0 domain, so it renders.
+  if int-to-decimal(-9223372036854775808) == "-9223372036854775808" then unit
+  else trap("int-to-decimal Int64.min renders (no negate-to-positive overflow)")
+
+@test
+def em-int-to-decimal-int64-max() =
+  if int-to-decimal(9223372036854775807) == "9223372036854775807" then unit
+  else trap("int-to-decimal Int64.max = \"9223372036854775807\"")
 
 @test
 def em-render-core-num() =
