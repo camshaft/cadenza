@@ -6,7 +6,7 @@
 /// SPLIT RATIONALE: emit-db reached ~112 defs, at which point adding this assembly (~16 more defs) tipped its
 /// `cdz test` component build over a HOST codegen size threshold (invalid component / wasm function[58]; see
 /// queue/mlrepro-emit-db-size-threshold-invalid-component-function58.md — filed to corpus-bugfix). Same idiom
-/// as the sread-eval / conformance-db splits: keep each file under the per-module ceiling. This file IMPORTS
+/// as the sread-eval split: keep each file under the per-module ceiling. This file IMPORTS
 /// emit-db's byte primitives (functype-bytes, *-section-multi, emit-def-body-d, defenv-funcidx-map,
 /// export-section-idx, preamble) and holds only the recursion-specific assembly + `emit-rec-src` entry.
 ///

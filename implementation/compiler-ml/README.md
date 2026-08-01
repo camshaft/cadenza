@@ -107,10 +107,10 @@ source → parse → resolve → infer → lower → emit, each a memoized COLUM
   types (nullary + payload/deconstruction). `sread-eval-ann.cdz` — width-annotated literals.
   `sread-eval-params.cdz` — parameter shapes. `sread-eval-nonrec.cdz` — non-recursive frontier regressions.
 
-**Conformance scoreboard (hard-coded — retirement proposed, see the queue report)**
-- `conformance-db.cdz` (+ `conformance-db-cx.cdz` composition, `conformance-db-rel.cdz` relational) — a hand-maintained in-Cadenza scoreboard of
-  ~100 integer programs with hard-coded expected values. REDUNDANT with the gate's differential-vs-rcdzc
-  harness (`report_ml_conformance`, which runs the full shared corpus); retirement plan filed for operator go.
+Conformance is now the gate's **differential-vs-rcdzc** harness (`report_ml_conformance`, xtask): the shared
+corpus runs through the ML compiler and is compared to the rcdzc oracle — a divergence on the covered
+integer subset REDS the merge gate (enforcing since batch #115). This replaced the hand-maintained in-Cadenza
+`conformance-db.cdz`(+cx/-rel) scoreboard (retired — the differential covers strictly more, self-maintaining).
 
 
 ## Language issues found

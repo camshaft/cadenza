@@ -466,6 +466,26 @@ pub enum FleetCmd {
         #[arg(long, value_name = "MSG")]
         processed: Option<String>,
     },
+    /// Wake an idle agent's loop NOW (an immediate tick) instead of letting it wait out its `/loop`
+    /// interval. This is the standalone form of the wake that `send` already does on delivery — for a
+    /// delivery path that writes an inbox file WITHOUT going through `send`, notably the slack-bridge
+    /// INBOUND path (an operator's Slack message → an agent's hub inbox via the bridge's own `deliver`,
+    /// which never calls this crate's wake). The bridge shells `fleet wake --operator-message <to>`
+    /// after writing the inbox file so an operator message reaches an idle agent in seconds, not up to
+    /// its full interval (operator directive 2026-08-01). Applies the SAME guards as any wake (stopped /
+    /// no-live-window / already-mid-tick all skip); prints the outcome. Safe to call spuriously — a
+    /// mid-tick or stopped window is skipped, and `/loop` remains the safety net.
+    Wake {
+        /// The agent whose idle loop to nudge into an immediate tick.
+        name: String,
+        /// Relax the interactive-role skip so `concierge`/`design` ARE woken — for an OPERATOR message
+        /// (the operator interacts via Slack, not the pane, and wants no up-to-interval wait for the
+        /// concierge). Still shielded by the mid-tick guard, so it never derails an active
+        /// human/design conversation. OMIT for a peer/agent-originated wake (default: leave interactive
+        /// windows for the human, matching `send`'s behavior).
+        #[arg(long)]
+        operator_message: bool,
+    },
     /// Mirror the live gitignored work queue (`.claude/fleet/queue/`) into the TRACKED `issues/`
     /// archive at the repo root, so these hard-won reproducers are preserved in git history rather
     /// than living only in agent-local state. Copies every queue file into `issues/`, removes tracked
@@ -771,6 +791,10 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             Some(msg) => inbox_consume(&fleet, &name, &msg),
             None => inbox_list(&fleet, &name),
         },
+        FleetCmd::Wake {
+            name,
+            operator_message,
+        } => wake_cmd(&fleet, &name, operator_message),
         FleetCmd::Archive { no_commit } => archive(&fleet, no_commit),
         FleetCmd::Sync { force } => sync(&fleet, force),
         FleetCmd::Watchdog {
@@ -1558,9 +1582,12 @@ fn send(
     }
 
     // Wake the recipient so it reacts to this message NOW rather than at its next scheduled tick.
-    // Delivery == wake. `/loop` stays the safety net for any nudge that doesn't land.
+    // Delivery == wake. `/loop` stays the safety net for any nudge that doesn't land. Agent→agent
+    // sends do NOT wake interactive roles (`include_interactive = false`) — a human at the concierge/
+    // design prompt shouldn't get a peer's keystroke; the operator-message path (slack-bridge inbound)
+    // is the one that passes `true`.
     if !no_wake {
-        match wake_window(fleet, to) {
+        match wake_window(fleet, to, false) {
             WakeOutcome::Woke => println!("  ↑ nudged '{to}' awake (immediate tick)"),
             // A TERMINAL skip (recipient stopped) means its loop has EXITED — the message will NOT be
             // drained on any tick, so do NOT promise "picks it up next /loop" (that false promise is
@@ -1689,8 +1716,9 @@ fn ack(fleet: &Fleet, request: &str, outcome: &str, r#ref: &str, body: &str) {
     }
 
     // 3) Wake the sender so it acts on the reply immediately (a `reject` needs a fast fix; a `merged`
-    // lets a one-shot agent stand down). Same guards as any delivery.
-    match wake_window(fleet, &mr.from) {
+    // lets a one-shot agent stand down). Same guards as any delivery; the sender is a peer agent, not
+    // the operator, so don't relax the interactive-role skip.
+    match wake_window(fleet, &mr.from, false) {
         WakeOutcome::Woke => println!("  ↑ nudged '{}' awake (immediate tick)", mr.from),
         WakeOutcome::Skipped(why) => println!("  (sender not woken: {why})"),
     }
@@ -2302,31 +2330,67 @@ fn wake_skip_is_terminal(why: &str) -> bool {
     why == STOPPED_SKIP_REASON
 }
 
+/// Should the interactive-role wake-skip apply? An interactive window (`concierge`/`design`) is left
+/// for the human on an ordinary (peer) wake — but an operator message (`include_interactive`) DOES wake
+/// it (operator directive: no up-to-interval wait for the concierge). Pure, so the policy is unit-tested
+/// without tmux; the mid-tick guard in `wake_window` separately shields an interactive agent that's
+/// actively in a turn, so relaxing this never clobbers an in-progress conversation.
+fn interactive_role_skips_wake(role: &str, include_interactive: bool) -> bool {
+    !include_interactive && matches!(role, "concierge" | "design")
+}
+
+/// `fleet wake <name> [--operator-message]`: nudge an idle agent's loop into an immediate tick. The
+/// standalone entry point for a delivery path that writes an inbox file WITHOUT calling `send` (the
+/// slack-bridge inbound operator-message path). Exits 0 whether it woke or skipped — a skip (stopped /
+/// mid-tick / no window) is a valid outcome, not a failure, and `/loop` is the safety net. Prints the
+/// outcome so the caller (and logs) can see whether the nudge landed.
+fn wake_cmd(fleet: &Fleet, name: &str, operator_message: bool) {
+    match wake_window(fleet, name, operator_message) {
+        WakeOutcome::Woke => println!("  ↑ woke '{name}' (immediate tick)"),
+        WakeOutcome::Skipped(why) if wake_skip_is_terminal(why) => eprintln!(
+            "  ⚠ NOT woken: {why} — '{name}' loop has EXITED; its inbox message will sit UNREAD until \
+             the agent is reactivated (`fleet add`/`up`)."
+        ),
+        WakeOutcome::Skipped(why) => println!("  (not woken: {why} — picks it up next /loop)"),
+    }
+}
+
 /// Nudge a message recipient's tmux window into an immediate tick, subject to the wake guards:
 ///   * not in a tmux session → nothing to nudge;
 ///   * a stopped recipient (stop-file present) MUST stay down;
 ///   * the interactive `concierge`/`design` windows are left alone — a human may be typing, and a
-///     nudge would clobber their input (they poll their inbox on their own cadence);
+///     nudge would clobber their input (they poll their inbox on their own cadence) — UNLESS
+///     `include_interactive` is set (see below);
 ///   * no live tmux window by that name → nothing to nudge (a not-yet-launched or reaped agent);
 ///   * a window already mid-tick ("esc to interrupt") does NOT need a nudge — it will drain the
 ///     freshly-delivered message when the current tick finishes, and a keystroke mid-turn is noise.
 ///
+/// `include_interactive`: when true, the interactive-role skip is RELAXED so `concierge`/`design`
+/// ARE woken. This is for the OPERATOR-message case (operator directive 2026-08-01: "it doesn't
+/// matter if it's the concierge or not — if an agent gets a message and it's idle it should be woken
+/// before the tick"). It is safe precisely because the `window_is_working` guard below still fires:
+/// an interactive agent MID-CONVERSATION (mid-turn) is skipped regardless, so a genuine new message
+/// only ever nudges an IDLE-at-prompt interactive window — never clobbers a human's in-progress input
+/// or derails an active design session. Ordinary agent→agent sends pass `false` (unchanged behavior).
+///
 /// A recipient absent from the registry is still nudged if it has a live window (matches `send`'s
 /// "deliver even if not yet registered" behavior); only an explicit `stopped` status suppresses it.
-fn wake_window(fleet: &Fleet, to: &str) -> WakeOutcome {
+fn wake_window(fleet: &Fleet, to: &str, include_interactive: bool) -> WakeOutcome {
     if !in_tmux() {
         return WakeOutcome::Skipped("not in a tmux session");
     }
     if fleet.stopfile(to).exists() {
         return WakeOutcome::Skipped(STOPPED_SKIP_REASON);
     }
-    // Interactive roles talk to the human directly; never inject keystrokes into their window.
+    // Interactive roles talk to the human directly; never inject keystrokes into their window — unless
+    // `include_interactive` (an operator message): the `window_is_working` guard below still shields a
+    // mid-conversation interactive agent, so this only nudges an IDLE interactive window.
     let reg = fleet.load();
     if let Some(a) = reg.agents.iter().find(|a| a.name == to) {
         if a.status == "stopped" {
             return WakeOutcome::Skipped(STOPPED_SKIP_REASON);
         }
-        if matches!(a.role.as_str(), "concierge" | "design") {
+        if interactive_role_skips_wake(&a.role, include_interactive) {
             return WakeOutcome::Skipped("interactive role — left for the human");
         }
     }
@@ -10164,6 +10228,23 @@ mod tests {
         assert!(!wake_skip_is_terminal("send-keys failed"));
         // An unrecognized reason defaults to transient (never falsely warns dead-letter on a live loop).
         assert!(!wake_skip_is_terminal("some future reason"));
+    }
+
+    #[test]
+    fn interactive_role_wake_skip_relaxes_only_for_an_operator_message() {
+        // Default (peer wake, include_interactive = false): interactive roles are LEFT for the human.
+        assert!(interactive_role_skips_wake("concierge", false));
+        assert!(interactive_role_skips_wake("design", false));
+        // A non-interactive role is never skipped on this axis (it wakes on any delivery).
+        assert!(!interactive_role_skips_wake("vertical", false));
+        assert!(!interactive_role_skips_wake("pr-sync", false));
+        // An OPERATOR message (include_interactive = true) relaxes the skip for interactive roles —
+        // the operator's "wake the concierge on my message" ask. (The mid-tick guard still shields an
+        // active conversation; this only governs the role axis.)
+        assert!(!interactive_role_skips_wake("concierge", true));
+        assert!(!interactive_role_skips_wake("design", true));
+        // And a non-interactive role is likewise not skipped with the flag (nothing to relax).
+        assert!(!interactive_role_skips_wake("vertical", true));
     }
 
     #[test]

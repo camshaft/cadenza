@@ -332,7 +332,7 @@ fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
 
     // Phase 2: recover from disk ONLY, then replay into a fresh Session.
     let recovered = LogStore::recover(&path).unwrap();
-    assert!(!recovered.torn_tail);
+    assert_eq!(recovered.kind, cdz_kernel::log_store::RecoveryKind::Clean);
     let restored = Session::replay(recovered.events, &reducer).unwrap();
 
     // KV reconstructed to the crash point (reducer had set phase=fetching before dispatching)...
@@ -347,10 +347,10 @@ fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
 #[test]
 fn session_recover_is_the_one_call_recovery_entry_point() {
     // The composed entry point (§16c-S1): Session::recover(path) does LogStore::recover + replay in
-    // one call and hands the driver a RecoveryReport (torn_tail + open_effects to re-drive). This is
+    // one call and hands the driver a RecoveryReport (kind + open_effects to re-drive). This is
     // what an operator actually calls to boot a persisted session.
     use cdz_kernel::kernel::{RecoverError, RecoveryReport};
-    use cdz_kernel::log_store::LogStore;
+    use cdz_kernel::log_store::{LogStore, RecoveryKind};
 
     let mut path = std::env::temp_dir();
     path.push(format!("cdz-kernel-recover-{}.log", std::process::id()));
@@ -385,11 +385,63 @@ fn session_recover_is_the_one_call_recovery_entry_point() {
     let (restored, report): (Session, RecoveryReport) =
         Session::recover(&path, &reducer).expect("recover");
     assert_eq!(restored.kv().get(b"phase"), Some(&b"fetching"[..]));
-    // The report tells the driver exactly what's in flight to re-drive.
-    assert!(!report.torn_tail);
+    // The report tells the driver exactly what's in flight to re-drive, and how the log ended.
+    assert_eq!(report.kind, RecoveryKind::Clean);
+    assert!(!report.is_corrupt());
     assert_eq!(report.open_effects.len(), 1);
     assert_eq!(report.open_effects, restored.open_effect_ids());
 
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn session_recover_surfaces_corruption_to_the_caller() {
+    // PR#993 #1 (substantive): the corrupt state must reach the PUBLIC Session::recover caller — the
+    // whole point of detecting it. Persist a good genesis then a complete-but-invalid frame; recover
+    // must return a report whose kind is Corrupt (with the good prefix still recovered).
+    use cdz_kernel::kernel::RecoveryReport;
+    use cdz_kernel::log_store::{LogStore, RecoveryKind};
+    use std::io::Write;
+
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "cdz-kernel-recover-corrupt-{}.log",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    let reducer = TwoStepReducer;
+    // A valid genesis, then a full-but-garbage frame (length matches body, body doesn't decode).
+    {
+        let mut store = LogStore::open(&path).unwrap();
+        store
+            .append(&Event {
+                seq: 0,
+                cause: None,
+                body: EventBody::Genesis {
+                    reducer: Hash::of(b"two-step-v1"),
+                },
+            })
+            .unwrap();
+    }
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let garbage = [0xFFu8; 6];
+        f.write_all(&(garbage.len() as u32).to_le_bytes()).unwrap();
+        f.write_all(&garbage).unwrap();
+    }
+
+    let (_session, report): (Session, RecoveryReport) =
+        Session::recover(&path, &reducer).expect("recovers the good genesis prefix");
+    // The corruption reaches the caller (not dropped) — the fix's whole point.
+    assert_eq!(report.kind, RecoveryKind::Corrupt);
+    assert!(
+        report.is_corrupt(),
+        "Session::recover must surface corruption to the caller (PR#993 #1)"
+    );
     let _ = std::fs::remove_file(&path);
 }
 
