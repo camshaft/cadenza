@@ -4072,11 +4072,11 @@ const KNOWN_ML_DIFFS: &[(&str, &str)] = &[
         "an ill-formed integer width in a type-declaration payload is rejected",
         "CDZ0302",
     ),
-    // The reader's if-form silently drops a 4th operand (permissive close-paren) → runs to 1, no reject.
-    (
-        "a conditional with too many operands is rejected, not a crash",
-        "CDZ0201",
-    ),
+    // BURN-DOWN: the 5th seed — CDZ0201 "a conditional with too many operands" — was FIXED by
+    // v-compiler-ml (8dca2509d, batch #114): `(if true 1 2 3)` now DECLINES instead of running to 1
+    // (verified via `cdz run-ml`), so it is no longer a disagreement and its entry is removed. A fixed
+    // gap left allowlisted would silently tolerate a future REGRESSION of that exact case — hence removed.
+    // First entry off the burn-down list; v-compiler-ml burns the remaining 4 as it lands each fix.
 ];
 
 /// Does a disagreement message match a KNOWN_ML_DIFFS allowlist entry? The message shape is
@@ -4285,7 +4285,8 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
                 disagree += 1;
                 disagreements.push(msg);
             }
-            // NotYet or an unfilled slot (a worker that never reached it — shouldn't happen) → not-yet.
+            // NotYet, or an unfilled slot — a worker cut this case off at the wall-clock deadline, so it
+            // never ran (EXPECTED on timeout; `timed_out` is set). An un-run case IS coverage-not-yet.
             _ => not_yet += 1,
         }
     }
@@ -6019,7 +6020,8 @@ mod trap_grading_tests {
 
     #[test]
     fn enforcing_verdict_tolerates_the_known_diffs_but_reds_on_novel_alongside_them() {
-        // The seeded 5 KNOWN_ML_DIFFS, reconstructed in the real message shape, are TOLERATED (green).
+        // Every current KNOWN_ML_DIFFS entry, reconstructed in the real message shape, is TOLERATED
+        // (green). Iterates the const so it stays correct as entries burn down.
         let known: Vec<String> = KNOWN_ML_DIFFS
             .iter()
             .map(|(title, code)| known_msg(title, "value 42", code))
