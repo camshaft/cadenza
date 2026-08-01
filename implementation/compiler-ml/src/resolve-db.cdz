@@ -117,7 +117,7 @@ def resolve-node(tree: Tree, id: Int64, env: Map(Int64, Int64), col: Map(Int64, 
         //      keyed) → the body's `n` resolves RBound(paramNode) → lower CVar(paramNode), matching CLet.
         //  slice-3d: a 2-ARG call `(add a b)` resolves BOTH args in the caller scope, and the body sees BOTH
         //  params bound `{p1→param1, p2→param2}` (found by bodyId). arg2 is keyed by this NApp node-id (id).
-        (let colA1 = (if (argId == (0 - 1)) then col else resolve-node(tree, argId, env, col)) in
+        (let colA1 = (if (argId == -1) then col else resolve-node(tree, argId, env, col)) in
          (let colA2 = (match arg2-of(tree, id) with
                           | Option.Some(a2) => resolve-node(tree, a2, env, colA1)   // resolve arg2 in caller scope too
                           | Option.None(_) => colA1) in
@@ -348,7 +348,7 @@ def rd-nullary-call-body-is-lexical-no-caller-capture() =
   (match add-node(empty-tree(), Node.NLit(0)) with | (valId, t1) =>          // the let value `0`
     (match add-node(t1, Node.NVar(1)) with | (mkBodyId, t2) =>               // mk's body: bare var `x` (name 1)
       (let t2d = record-def(t2, 900, mkBodyId) in                            // register mk (name 900) → its body
-       (match add-node(t2d, Node.NApp(900, 0 - 1)) with | (callId, t3) =>    // `(mk)` — a nullary call to name 900
+       (match add-node(t2d, Node.NApp(900, -1)) with | (callId, t3) =>    // `(mk)` — a nullary call to name 900
         (match add-node(t3, Node.NLet(1, valId, callId)) with | (root, tree) => // `let x(=1) = 0 in (mk)`
           // the callee body's var (mkBodyId) must be POISON — a fresh-scope resolve, no caller-let capture.
           (if resolved-poison(tree, root, mkBodyId) then unit

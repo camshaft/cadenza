@@ -206,12 +206,12 @@ def int-parts(t: Ty) = match t with
         match s with
           | Sign.Signed => 1
           | Sign.Unsigned => 0
-          | Sign.SignDef => 0 - 1,
+          | Sign.SignDef => -1,
         n
       )
-      | Width.WidthDef => (0 - 1, 0 - 1)
+      | Width.WidthDef => (-1, -1)
   )
-  | _ => (0 - 1, 0 - 1)
+  | _ => (-1, -1)
 
 @test
 def ty-ground-default-deferred-to-int64() =

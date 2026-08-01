@@ -23,6 +23,7 @@
 //! (S3/S8). Cross-version replay, multi-node, PKI, and Cadenza-native reducers are explicitly deferred.
 
 pub mod authz;
+pub mod blob;
 pub mod effect;
 pub mod event;
 pub mod executor;
