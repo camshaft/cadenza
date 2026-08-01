@@ -1,5 +1,11 @@
 # Design/scoping: HIGHER-ORDER functions decline — lower-db has no var-headed-application arm
 
+> ✅ **RESOLVED (verified 2026-08-01, trunk d06499da4).** The proposed slice LANDED (HO-3 milestone): eval-db
+> has `CFnRef` (a def-name as a first-class value), `CFnRefVar(fBinder, args)` (apply a fn-value param), and
+> the shared `apply-def-by-name` dispatch. `sread-eval-ho.cdz` (6 @tests, gated) pins the exact DECLINES cases
+> as now-RUNNING: `(apply inc 41)` → 42 and `(twice inc 40)` → 42. The var-headed-application gap this doc
+> describes is CLOSED. Kept for history; do NOT scope from the "DECLINES (the gap)" section below — it is stale.
+
 **Found:** 2026-07-22 (tick 187), v-compiler-ml, generics-increment scoping probe (host idle). NOT a bug to
 report to corpus-bugfix — this is compiler-ml's own expected frontier (the next increment), precisely localized.
 
