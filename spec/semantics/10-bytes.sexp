@@ -1784,3 +1784,36 @@
             (export main)))
   (call   main (: 20 Int64))
   (output (: 540 Int64)))
+
+; --- Construction-path equality for runtime byte ropes (the string companions live in
+; 13-strings; the const concat identities above fold before emit). ---
+
+(case "a runtime concat-reached Bytes equals the directly-built Bytes and not a decoy"
+  (doc    "The runtime-operand face of the concat==flat identity (the const pin folds before emit):
+           `via` splices a runtime leaf [k] onto [3,4] — a genuine two-leaf rope — and must equal the
+           directly-built [k,3,4] (tens digit, both k) but not the decoy [k,3,5] (ones digit) → 10.
+           The Bytes companion of the cross-path string pin in 13-strings.")
+  (input  (do
+            (def (via (: k Int64)) (Bytes.concat (Bytes.of (list (UInt8.wrap k))) (Bytes.of (list 3 4))))
+            (def (direct (: k Int64)) (Bytes.of (list (UInt8.wrap k) 3 4)))
+            (def (decoy (: k Int64)) (Bytes.of (list (UInt8.wrap k) 3 5)))
+            (def (main (: k Int64))
+              (+ (* 10 (if (= (via k) (direct k)) 1 0))
+                 (if (= (via k) (decoy k)) 1 0)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 10 Int64))
+  (call   main (: 7 Int64)) (output (: 10 Int64)))
+
+(case "a slice of a runtime Bytes rope equals the directly-built window"
+  (doc    "The slice-of-rope face for Bytes (the string twin lives in 13-strings): rope [k]++[3,4,5];
+           the window at start 1 len 2 ([3,4], based entirely in the second leaf after the seam at
+           index 1) and the window at start 0 len 1 ([k], the first leaf alone) must both equal their
+           directly-built twins → 11. A slice that re-based its window against the wrong leaf (or read
+           through the seam without rebasing) flips a leg.")
+  (input  (do
+            (def (rope (: k Int64)) (Bytes.concat (Bytes.of (list (UInt8.wrap k))) (Bytes.of (list 3 4 5))))
+            (def (main (: k Int64))
+              (+ (* 10 (if (= (Option.expect (Bytes.slice (rope k) 1 2) "in bounds") (Bytes.of (list 3 4))) 1 0))
+                 (if (= (Option.expect (Bytes.slice (rope k) 0 1) "in bounds") (Bytes.of (list (UInt8.wrap k)))) 1 0)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 11 Int64)))

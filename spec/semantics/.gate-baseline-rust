@@ -2527,6 +2527,7 @@ pass	a runtime BigInt narrowed to Int64 at the EXACT maximum fits and one past t
 pass	a runtime BigInt narrowed to Int64 at the EXACT minimum fits and one below traps
 pass	a runtime bin ENCODE lays out le and signed fields byte-exactly
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
+pass	a runtime concat-reached Bytes equals the directly-built Bytes and not a decoy
 pass	alternating prepend and push keep both list ends straight
 pass	an @invariant newtype constructed INSIDE a handler arm establishes per resume
 pass	an ANAGRAM check builds per-string scalar frequency maps and compares them by map equality
@@ -2998,6 +2999,7 @@ pass	a single-variant-sum binding pattern destructures a multi-payload construct
 pass	a single-variant-sum binding pattern nests inside another
 pass	a slice VIEW and a rope compare by content across the two non-flat reps
 pass	a slice crosses the seam of a runtime-assembled byte rope
+pass	a slice of a runtime Bytes rope equals the directly-built window
 pass	a slice of a runtime rope equals the flat literal of its window
 pass	a slice of a slice composes scalar offsets against the VIEW, not the base string
 pass	a slice spanning a concatenation sees the logical bytes

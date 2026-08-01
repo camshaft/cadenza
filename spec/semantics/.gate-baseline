@@ -2714,6 +2714,7 @@ pass	a runtime compound structural equality is expressible as a hand-written rec
 pass	a runtime compound with a String leaf orders by the blessed content-lexicographic String order
 pass	a runtime compound with a float leaf still equality-compares though it declines ordering (§313 vs §319)
 pass	a runtime concat places the second operand's elements after the first's
+pass	a runtime concat-reached Bytes equals the directly-built Bytes and not a decoy
 pass	a runtime condition selects an abortive branch reading an enclosing parameter
 pass	a runtime conditional selects its then-branch when the runtime condition holds
 pass	a runtime conjunction still shields a comparison right operand whose subexpression traps
@@ -3025,6 +3026,7 @@ pass	a single-variant-sum binding pattern destructures a multi-payload construct
 pass	a single-variant-sum binding pattern nests inside another
 pass	a slice VIEW and a rope compare by content across the two non-flat reps
 pass	a slice crosses the seam of a runtime-assembled byte rope
+pass	a slice of a runtime Bytes rope equals the directly-built window
 pass	a slice of a runtime rope equals the flat literal of its window
 pass	a slice of a slice composes scalar offsets against the VIEW, not the base string
 pass	a slice spanning a concatenation sees the logical bytes
