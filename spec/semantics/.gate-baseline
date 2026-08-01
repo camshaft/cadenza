@@ -1481,6 +1481,7 @@ pass	a recursive scalar-walk over a guest-built rope classifies characters on ev
 pass	a recursive walk over a runtime-SHAPED tree dispatches per call
 pass	a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
+pass	a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves
 pass	a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite
 pass	a NONZERO BigInt literal probe in a recursive quasiquote-pattern simp matches its own constructor
 pass	a rope accumulates across perform/resume boundaries and content-checks at the exit

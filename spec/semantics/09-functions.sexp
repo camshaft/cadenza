@@ -3235,6 +3235,49 @@
             (export main)))
   (output (: 1 Int64)))
 
+; --- A rest-pattern head binder read inside an INLINED match-arg callee's scrutinee ------------
+; The monomorphization pair above pins one face of the "re-parent / orphaned-binder" class: a match-arm
+; payload binder whose scrutinee lies WITHIN a COPIED generic body was wrongly SHARED (read the orphaned
+; original). This pins the FUSION face of the same class — the one an inliner + match-fusion triggers,
+; not monomorphization. A rest-pattern HEAD binder `c` from `(list c .. t)` is referenced INSIDE a
+; nested-match scrutinee `(match (at0 dp (- i c)) …)`, and that whole nested match is the ARGUMENT to a
+; callee (`omin`) which MATCHES its own parameter — so inlining `omin` fuses the two matches and CLONES
+; the arm carrying the nested match. The clone helper must COPY a payload binder OF the match being
+; cloned (so it re-resolves against the branch scrutinee) but SHARE one whose scrutinee is OUTSIDE the
+; clone — here `c` reads the ENCLOSING `(match cs …)` scrutinee, not the fused match, so it must be
+; SHARED. Copying it fresh re-resolved it lexically against the orphaned clone → a spurious CDZ0101
+; `unbound c` REJECT of a valid program on all backends (an operator-escalated inliner miscompile-class
+; bug that also pushed authors toward the sentinel `-1` anti-pattern the fleet is eradicating). Fixed by
+; threading the clone ROOT and applying the `is_within(scrutinee, clone_root)` test (the `beta_reduce`
+; analogue) — the same within-vs-enclosing distinction as the F2 do-def and Finding-46 guard-desugar
+; fixes. `f` is a coin-change-DP min fold: cs=(5 10), dp=(Some 0), i=1, best=None; c=5 and c=10 both fail
+; the `(<= c i)` gate (5>1, 10>1) so `best` stays `None` through both cons steps → main's `None` arm → -1.
+; A regression that re-orphans `c` reappears as a compile-time REJECT (no value), not a wrong value.
+(case "a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves"
+  (doc    "The FUSION face of the re-parent/orphaned-binder class (companion to the monomorphization-copy
+           pair above). A rest-pattern head binder `c` from `(list c .. t)` is read inside a nested-match
+           scrutinee `(match (at0 dp (- i c)) …)` that is the ARGUMENT to `omin`, a callee that matches its
+           own parameter and gets INLINED — triggering a match-fusion that clones the arm carrying the
+           nested match. `c`'s scrutinee is the ENCLOSING `(match cs …)`, OUTSIDE the cloned fused match, so
+           the clone must SHARE `c` (copying it fresh re-resolves it against the orphaned clone → a spurious
+           CDZ0101 `unbound c`). Fixed by the `is_within(scrutinee, clone_root)` test. This coin-DP min fold:
+           cs=(5 10), i=1 — both coins exceed `i` so `best` stays `None` and main's `None` arm yields -1. A
+           re-orphaning regression reappears as a REJECT, not a wrong value.")
+  (input  (do
+            (def (at0 (: xs (List (Option Int64))) (: i Int64)) (Option.expect (List.at xs i) "x"))
+            (def (omin (: a (Option Int64)) (: b (Option Int64)))
+              (match a ((None _u) b) ((Some av) (match b ((None _u) a) ((Some bv) (if (< av bv) a b))))))
+            (def (f (: cs (List Int64)) (: dp (List (Option Int64))) (: i Int64) (: best (Option Int64)))
+              (match cs ((list) best)
+                ((list c .. t)
+                  (f t dp i
+                    (if (<= c i)
+                        (omin best (match (at0 dp (- i c)) ((None _u) (None unit)) ((Some v) (Some (+ v 1)))))
+                        best)))))
+            (def (main) (match (f (list 5 10) (list (Some 0)) 1 (None unit)) ((None _u) -1) ((Some r) r)))
+            (export main)))
+  (output (: -1 Int64)))
+
 ; --- A TAIL call runs in constant stack ---------------------------------------------------------
 ; A recursive call in TAIL position (the function's result is exactly that call) must reuse the
 ; caller's stack frame rather than pushing a new one — otherwise a tail-recursive loop over a RUNTIME
