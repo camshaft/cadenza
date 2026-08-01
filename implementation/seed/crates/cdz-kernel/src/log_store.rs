@@ -12,10 +12,11 @@
 //! leaves a `Dispatched` with no result on disk: exactly the open obligation recovery re-drives.
 //!
 //! **Torn-write tolerance (totality, §17):** a crash mid-append can leave a partial final frame. The
-//! reader stops cleanly at the first frame it can't fully read (short length prefix, short body, or a
-//! body the codec rejects) and returns every whole event before it — the log survives a torn tail
-//! instead of refusing to open. A frame that is *complete on disk but internally corrupt* (not just
-//! truncated) is surfaced as an error, since that's real corruption, not an interrupted write.
+//! reader stops cleanly at the first frame it can't fully read (short length prefix, or a short body)
+//! and returns every whole event before it — the log survives a torn tail instead of refusing to open.
+//! A frame that is *complete on disk but internally corrupt* — a full-length body the codec rejects — is
+//! NOT a torn tail: it's surfaced as `RecoveryKind::Corrupt` (see below), since that's real corruption,
+//! not an interrupted write.
 //!
 //! Framing: each record is `u32 little-endian length` followed by that many bytes of
 //! `event_ast::encode` output. The frame is kept because the shared codec is CONSUME-WHOLE (it decodes

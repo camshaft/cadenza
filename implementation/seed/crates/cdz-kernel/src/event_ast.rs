@@ -3,10 +3,10 @@
 //! `cdzast\x00\x01`, ast-encoding.md) instead of the bespoke `Event::encode` (§19a: the kernel, the
 //! text front-end, and rcdzc all share one wire format rather than parallel encodings that drift).
 //!
-//! This is the MAPPING layer only — it does not yet replace `log_store`'s framing (that swap + the
-//! frozen-encoding golden re-pin is the follow-up slice). Building it in isolation, with an exhaustive
-//! round-trip test, de-risks that swap: it proves every event variant survives Event → Arenas → bytes →
-//! Arenas → Event unchanged, and that a corrupt/truncated encoding is classified (not panicked on) via
+//! This is the MAPPING layer `log_store` frames each event through — `log_store::append` calls
+//! [`encode`] and `decode_frames` calls [`decode`], so the durable log IS this shared-codec form. An
+//! exhaustive round-trip test proves every event variant survives Event → Arenas → bytes → Arenas →
+//! Event unchanged, and that a corrupt/truncated encoding is classified (not panicked on) via
 //! `decode_detailed`'s `DecodeError` — exactly the torn-vs-corrupt split `log_store` recovery needs.
 //!
 //! Encoding shape (an s-expr form per event, head = a `Name` tag):
