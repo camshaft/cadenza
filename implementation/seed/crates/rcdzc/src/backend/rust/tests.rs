@@ -6779,3 +6779,46 @@ fn rustc_roundtrip_recursive_option_carrying_sum_compare_recurses_through_a_list
         }
     }
 }
+
+#[test]
+fn rustc_roundtrip_list_of_option_compare_is_lexicographic_with_some_before_none() {
+    // Pins the List cmp walk (expr.rs `emit_value_cmp_walk_seen` Ty::List arm) COMPOSED with the Option
+    // Some<None flip: `(List (Option Int64))` compare is element-wise lexicographic (first non-Equal element
+    // decides), with a length tiebreak (a proper prefix is Less), and each element ordered by the Cadenza
+    // declared order Some k < None — NOT std's `Vec<Option<_>>` derived Ord (which is None < Some). Before
+    // this, the List-cmp path and the Option flip were each witnessed alone, but never their COMPOSITION on
+    // the rust backend — a future change to either the List zip/length shape or the Option flip could
+    // silently mis-order a list of options without a failing case.
+    let src = "(module m \
+        (def (cmp2 (: a (List (Option Int64))) (: b (List (Option Int64)))) \
+          (match (compare a b) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+        (def (p1) (cmp2 (list (Some 1)) (list (: (None unit) (Option Int64))))) \
+        (def (p2) (cmp2 (list (Some 1)) (list (Some 1) (Some 2)))) \
+        (def (p3) (cmp2 (list (: (None unit) (Option Int64))) (list (Some 1)))) \
+        (def (p4) (cmp2 (list (Some 1) (Some 2)) (list (Some 1) (Some 2)))) \
+        (export p1) (export p2) (export p3) (export p4))";
+    match compile_rust_result(src) {
+        // A clean decline is acceptable — the invariant is: if it emits, it must order Some<None
+        // lexicographically, never std's None<Some.
+        Err(_) => {}
+        Ok(_) => {
+            let rs = compile_rust(src);
+            // [Some 1] vs [None]: first element Some 1 < None → Less (1).
+            if let Some(out) = rustc_run(&rs, "p1()") {
+                assert_eq!(out, "1", "[Some 1] < [None] — Some precedes None:\n{rs}");
+            }
+            // [Some 1] vs [Some 1, Some 2]: equal prefix, shorter is Less (1).
+            if let Some(out) = rustc_run(&rs, "p2()") {
+                assert_eq!(out, "1", "a proper prefix is Less (length tiebreak):\n{rs}");
+            }
+            // [None] vs [Some 1]: first element None > Some 1 → Greater (3).
+            if let Some(out) = rustc_run(&rs, "p3()") {
+                assert_eq!(out, "3", "[None] > [Some 1] — None follows Some:\n{rs}");
+            }
+            // identical lists → Equal (2).
+            if let Some(out) = rustc_run(&rs, "p4()") {
+                assert_eq!(out, "2", "identical option-lists compare Equal:\n{rs}");
+            }
+        }
+    }
+}
