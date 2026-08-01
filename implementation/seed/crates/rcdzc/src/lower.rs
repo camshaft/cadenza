@@ -11855,28 +11855,43 @@ fn emit_once_callee_eligible(db: &mut Db, callee: usize) -> bool {
     if let Some(&v) = db.emit_shared.get(&callee) {
         return v;
     }
-    let eligible = emit_once_callee_eligible_uncached(db, callee);
-    db.emit_shared.insert(callee, eligible);
-    eligible
+    // Only memoize a DEFINITE eligibility. `_uncached` returns `None` when the callee's scheme is not yet
+    // determined (`def_scheme` returns a TRANSIENT uncached `None` mid-scheme-solve, deliberately, to avoid
+    // poisoning later queries — infer.rs `solving_params`/`solving_schemes`). Caching the transient `false`
+    // would PERMANENTLY disable emit-once for a callee that was merely queried mid-solve, so once its scheme
+    // determines emit-once would never fire (a behavior change vs the pre-memo per-call recompute; Copilot
+    // PR#959 id 3693671598). Treat "not yet determined" as ineligible FOR THIS QUERY (return false) but do
+    // NOT cache it — the next query recomputes once the scheme is ready.
+    match emit_once_callee_eligible_uncached(db, callee) {
+        Some(eligible) => {
+            db.emit_shared.insert(callee, eligible);
+            eligible
+        }
+        None => false, // scheme not yet determined — ineligible now, but NOT memoized
+    }
 }
 
-fn emit_once_callee_eligible_uncached(db: &mut Db, callee: usize) -> bool {
+/// Returns `Some(eligible)` for a DEFINITE per-callee decision (safe to memoize), or `None` when the
+/// callee's scheme is not yet determined (`def_scheme == None` mid-solve — a transient the caller must NOT
+/// cache; see [`emit_once_callee_eligible`]).
+fn emit_once_callee_eligible_uncached(db: &mut Db, callee: usize) -> Option<bool> {
     // CHEAPEST GATE FIRST: a SMALL body is the common case and always inlines — bail before any resolve/scheme
     // work. `bounded_node_count` saturates at the threshold, so this is O(threshold), not O(body).
     let Some(body) = db.defs[callee].body else {
-        return false;
+        return Some(false);
     };
     let cost_threshold = inline_cost_threshold();
     if bounded_node_count(db, body, cost_threshold) < cost_threshold {
-        return false;
+        return Some(false);
     }
     // A monomorphic, non-`const` scheme only — a generic / `const`-param callee is a specialization the shared
-    // path already handles (and MUST inline/specialize, not be diverted by cost).
+    // path already handles (and MUST inline/specialize, not be diverted by cost). A `None` here is TRANSIENT
+    // (scheme mid-solve, uncached by `def_scheme`) → signal "not yet determined" so the caller does not cache.
     let Some(scheme) = crate::infer::def_scheme(db, callee) else {
-        return false; // undetermined signature — cannot emit a standalone function anyway
+        return None; // undetermined signature — recompute later, do NOT memoize
     };
     if !scheme.ty_vars.is_empty() {
-        return false;
+        return Some(false);
     }
     let callee_params = db.defs[callee].params.clone();
     let has_const_param = callee_params.iter().any(|&p| {
@@ -11884,11 +11899,11 @@ fn emit_once_callee_eligible_uncached(db: &mut Db, callee: usize) -> bool {
             .contains(&crate::eval::param_name_occ(db, p))
     });
     if has_const_param {
-        return false;
+        return Some(false);
     }
     // COST GATE: called at ≥ INLINE_MIN_CALLERS sites (the whole-program call-site index, built once + cached) —
     // the duplication emit-once avoids is only real at ≥2 sites.
-    crate::infer::callee_call_site_count(db, callee) >= inline_min_callers()
+    Some(crate::infer::callee_call_site_count(db, callee) >= inline_min_callers())
 }
 
 /// Emit a call to a NAMED top-level def `callee` as a `Core::Call` — SPECIALIZING it (monomorphizing a
