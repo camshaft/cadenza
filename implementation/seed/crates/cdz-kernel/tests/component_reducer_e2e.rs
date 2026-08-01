@@ -25,10 +25,11 @@ fn real_guest_component_folds_through_apply_end_to_end() {
         Ok(r) => r,
         Err(e) => panic!("the guest fixture must be a valid reducer component: {e:?}"),
     };
-    // The Rust guest is runtime-free (no Cadenza value-heap runtime import), so no §21b compose needed.
+    // The Rust guest is dependency-free (no content-addressed component imports), so no §23 compose
+    // needed — the kernel resolves declared deps generically by hash, and this guest declares none.
     assert!(
-        reducer.runtime_req().is_none(),
-        "the Rust guest imports no runtime"
+        reducer.deps().is_empty(),
+        "the Rust guest declares no component dependencies"
     );
 
     // Fold an inbound "message" event through the REAL guest.
