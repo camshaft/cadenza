@@ -1236,7 +1236,13 @@ def simplify-r-preserves-a-real-rotate-and-mirror() =
         (match mir with
           | Solid.Mirror(_, _) =>
             // extent preserved: mirror of a cube at x∈[9,11] → x∈[-11,-9], size stays 2×2×2.
-            (if v3-eq(aabbr-size(bounding-box(mir)), v3(2 / 1, 2 / 1, 2 / 1)) then unit
+            (if v3-eq(aabbr-size(bounding-box(mir)), v3(2 / 1, 2 / 1, 2 / 1)) then
+              // …and simplify-r is IDEMPOTENT on these arms: a SECOND pass is a no-op (the general idempotence
+              // test uses a Difference/Cube/Sphere tree; this pins it specifically for the Rotate/Mirror arms).
+              (if v3-eq(aabbr-size(bounding-box(simplify-r(rot))), aabbr-size(bounding-box(rot)))
+                  and v3-eq(aabbr-size(bounding-box(simplify-r(mir))), aabbr-size(bounding-box(mir)))
+                  and (solidr-is-empty(simplify-r(rot)) == false) then unit
+               else trap("simplify-r must be idempotent on the rotate/mirror arms (a second pass is a no-op)"))
              else trap("simplify-r must preserve the mirrored cube's 2×2×2 extent"))
           | _ => trap("simplify-r dropped the Mirror node on a real child"))
       | _ => trap("simplify-r dropped the Rotate node on a real child"))

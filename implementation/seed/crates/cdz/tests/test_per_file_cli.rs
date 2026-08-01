@@ -738,3 +738,74 @@ fn warm_only_populates_the_cache_so_a_later_per_file_sweep_hits() {
         );
     }
 }
+
+#[test]
+fn report_time_emits_per_step_and_per_test_timings_and_is_off_by_default() {
+    // `--report-time` (operator ask: "emit how long each step takes; tests should include how long they run"):
+    // per-STEP (provider JIT once + per-file compose/run) + per-TEST durations, like `cargo test --report-time`.
+    // OFF by default (the normal PASS/FAIL output is unchanged — no ⏱ lines).
+    let dir = std::env::temp_dir().join(format!("cdz-rt-{}", std::process::id()));
+    let cache = std::env::temp_dir().join(format!("cdz-rt-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("shared.cdz"),
+        "def sumto(n: Int64) =\n  if n == 0 then 0 else n + sumto(n - 1)\nexport { sumto }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ta.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_a() =\n  if sumto(5) == 15 then unit else trap(\"a\")\n\
+         @test\ndef t_b() =\n  if sumto(3) == 6 then unit else trap(\"b\")\n",
+    )
+    .unwrap();
+
+    let run = |report_time: bool| -> (bool, String) {
+        let mut args = vec!["test".to_string()];
+        if report_time {
+            args.push("--report-time".to_string());
+        }
+        args.push(dir.to_str().unwrap().to_string());
+        let out = Command::new(cdz())
+            .args(&args)
+            .env("CDZ_PROVIDER_CACHE", &cache)
+            .output()
+            .expect("spawn cdz test");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        )
+    };
+
+    // WITH --report-time: per-test lines (⏱ PASS t_a / t_b), a per-file compose·run step line, and the
+    // provider-JIT-once line — the tests still PASS (timing is additive, never changes the verdict).
+    let (ok, out) = run(true);
+    assert!(
+        ok && out.contains("PASS t_a") && out.contains("PASS t_b"),
+        "tests still pass under --report-time:\n{out}"
+    );
+    assert!(
+        out.contains("⏱ PASS t_a") && out.contains("⏱ PASS t_b"),
+        "per-test durations are emitted (like cargo --report-time):\n{out}"
+    );
+    assert!(
+        out.contains("compose ") && out.contains("· run "),
+        "per-file compose/run step timing is emitted:\n{out}"
+    );
+    assert!(
+        out.contains("provider JIT"),
+        "the once-per-project provider JIT step is emitted:\n{out}"
+    );
+
+    // WITHOUT the flag: identical PASS/FAIL, but NO ⏱ timing lines (default output unchanged).
+    let (ok2, out2) = run(false);
+    assert!(
+        ok2 && out2.contains("PASS t_a") && out2.contains("PASS t_b"),
+        "tests pass without the flag:\n{out2}"
+    );
+    assert!(
+        !out2.contains("⏱"),
+        "timing is OFF by default — no ⏱ lines without --report-time:\n{out2}"
+    );
+}

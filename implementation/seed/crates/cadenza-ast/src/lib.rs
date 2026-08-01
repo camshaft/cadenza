@@ -2,7 +2,8 @@
 //! crate shared by every consumer of the canonical wire format.
 //!
 //! The canonical form of a Cadenza program is a stable binary serialization of its abstract syntax
-//! tree (`constitution.md` §X; `spec/contracts/ast-encoding.md`). That encoding, its total decoder, and
+//! tree (`constitution.md` "Programs Are Readable By Agents And Humans";
+//! `spec/contracts/ast-encoding.md`). That encoding, its total decoder, and
 //! the value model they operate over were originally grown inside `cadenza-syntax`; they live here so
 //! `cadenza-syntax` (text front-end), `rcdzc` (compiler), and the agent-harness kernel can all depend
 //! on ONE implementation — one encoder/decoder, one version header, one value model — rather than each

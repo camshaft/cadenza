@@ -1,4 +1,4 @@
-//! The wasmtime component host for wasm reducers (feature `wasm-reducer`, §19b).
+//! The wasmtime component host for wasm reducers (§19b).
 //!
 //! Operator directive §19b: the reducer boundary is the wasm COMPONENT MODEL, not a Rust trait later
 //! mapped. This module binds `wit/reducer.wit` (the `cadenza:agent-kernel` reducer world) via
@@ -12,8 +12,6 @@
 //! end-to-end use: a compiled guest FIXTURE that exports `fold.apply` (a wit-bindgen Rust guest,
 //! concierge-ruled Option A) to run `apply` against, and wiring `apply` into the kernel's fold loop.
 //! The in-process Rust [`crate::reducer::Reducer`] trait remains the interim reducer path meanwhile.
-
-#![cfg(feature = "wasm-reducer")]
 
 use crate::kv::Kv;
 
