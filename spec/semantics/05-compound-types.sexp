@@ -17373,3 +17373,18 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 10 Int64))
   (call   main (: 99 Int64)) (output (: 11 Int64)))
+
+(case "maps reached via Map.swap and Map.take equal their directly-built twins"
+  (doc    "The value-yielding ops' MAP-component face of construction canonicalization: `(. (Map.swap m 1
+           99) 1)` (swap's new-map component) must equal the directly-built {1↦99, 2↦20} (tens digit), and
+           `(. (Map.take m 2) 1)` (take's remaining-map component) must equal the never-had-key-2 {1↦a} (ones
+           digit) → 11 ∀a (10, 5). Swap/take share the insert/remove structural walks but return through
+           the tuple path — a divergence in the tupled copy would break equality while lookups still work.")
+  (input  (do
+            (def (m (: a Int64)) (Map.insert (Map.insert Map.empty 1 a) 2 20))
+            (def (main (: a Int64))
+              (+ (* 10 (if (= (. (Map.swap (m a) 1 99) 1) (Map.insert (Map.insert Map.empty 1 99) 2 20)) 1 0))
+                 (if (= (. (Map.take (m a) 2) 1) (Map.insert Map.empty 1 a)) 1 0)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 11 Int64))
+  (call   main (: 5 Int64)) (output (: 11 Int64)))

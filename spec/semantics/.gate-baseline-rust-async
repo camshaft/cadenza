@@ -2892,6 +2892,7 @@ pass	a set of two NaN floats dedups to one (canonical quiet-NaN)
 pass	a set of two identical positive floats dedups to one
 pass	a set of user-sum elements tests membership by variant
 pass	a set over a NULLARY-SUM key enumerates canonically — permutation-invariant AND discriminant-ordered
+pass	a set reached via UNION (overlapping and self) equals the directly-built set
 pass	a set threaded as a recursive accumulator dedups during accumulation
 pass	a set type whose element position holds a value is rejected
 pass	a set with elements of two different types is a type error
@@ -4155,6 +4156,7 @@ pass	literal refinement on two elements of one list pattern
 pass	looking up an absent key yields None
 pass	map THEN filter compose — one combinator's output list is the next's input
 pass	map equality is independent of insertion order
+pass	maps reached via Map.swap and Map.take equal their directly-built twins
 pass	match on a Result returned by a fallible function
 pass	match on a function-returned sum takes the other variant at runtime
 pass	match on a sum value returned by a function selects the runtime variant
