@@ -1889,3 +1889,10 @@
             (export main)))
   (call   main (: 5 Int64))
   (output (: 1 Int64)))
+(case "an unbound TYPE name in an uncalled definition's annotation is still rejected"
+  (doc    "The TYPE-position sibling of the uncalled-def gap: the annotation's resolve is a different walk from the body's — an ML reachability skip may treat annotations differently. rcdzc rejects CDZ0101.")
+  (input  (do
+            (def (unused (: x NoSuchType)) x)
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0101))

@@ -31,3 +31,5 @@ pub mod kernel;
 pub mod kv;
 pub mod log_store;
 pub mod reducer;
+#[cfg(feature = "wasm-reducer")]
+pub mod wasm_host;

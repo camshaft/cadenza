@@ -43,6 +43,28 @@ export FLEET_DIR="${FLEET_DIR:-$repo_root/.claude/fleet}"
 impl="${BRIDGE_IMPL:-node}"
 delay="${RESTART_DELAY:-5}"
 
+# Make the bridge's INBOUND operator-message wake actually fire. The bridge shells
+# `cargo xtask fleet wake --operator-message <agent>` after delivering an operator's Slack message, so an
+# idle agent ticks in seconds instead of waiting out its /loop. But `wake_window`'s first guard is
+# `if !in_tmux() { Skipped }`, and `in_tmux()` is just `std::env::var("TMUX").is_ok()`. This daemon runs
+# OUTSIDE tmux (systemd/detached), so with no TMUX in the environment the shelled wake inherits none, the
+# guard short-circuits, and EVERY operator wake is a silent no-op (it exits 0, so nothing logs it) — the
+# "still some delay" the operator reported (2026-08-01, concierge assign). The default tmux server IS
+# reachable without TMUX (tmux uses its default socket), so exporting a correct TMUX makes the wake pass the
+# guard and reach the real window logic. Only set it when unset (an inherited TMUX from a tmux-launched
+# run.sh is already correct) and only when the default server actually responds (else leave it — the bridge
+# must still start; the wake just stays the no-op it is today).
+if [[ -z "${TMUX:-}" ]]; then
+  tmux_pid="$(tmux display-message -p '#{pid}' 2>/dev/null || true)"
+  tmux_sock="$(tmux display-message -p '#{socket_path}' 2>/dev/null || true)"
+  if [[ -n "$tmux_pid" && -n "$tmux_sock" ]]; then
+    export TMUX="$tmux_sock,$tmux_pid,0"
+    echo "run.sh: exported TMUX=$TMUX so the inbound operator-message wake reaches tmux"
+  else
+    echo "run.sh: no reachable tmux server — operator-message wake will be a no-op (agents still tick via /loop)" >&2
+  fi
+fi
+
 start() {
   case "$impl" in
     node) node "$here/bridge.js" ;;

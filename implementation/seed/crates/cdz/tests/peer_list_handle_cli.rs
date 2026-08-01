@@ -39,7 +39,18 @@ fn store_present() -> bool {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_cdz"))
         .parent()
         .and_then(|d| d.parent())
-        .map(|t| t.join("cadenza-store").exists())
+        .map(|t| {
+            // Must be NON-EMPTY, not merely present: CI's rust-cache can restore an empty
+            // `target/cadenza-store` dir (no `cargo xtask build` ran), and a bare `.exists()`
+            // then falsely reports the store present → the peer run executes storeless and fails
+            // "no runtime of content address … refusing to run". Match the `CADENZA_STORE` branch
+            // above (non-empty check) so an empty dir reads as absent and the run SKIPS.
+            let store = t.join("cadenza-store");
+            store.is_dir()
+                && std::fs::read_dir(&store)
+                    .map(|mut e| e.next().is_some())
+                    .unwrap_or(false)
+        })
         .unwrap_or(false)
 }
 

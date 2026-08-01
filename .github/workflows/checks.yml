@@ -246,6 +246,11 @@ jobs:
           # fold, so a clippy-only gate would miss a regression on that path.
           cargo clippy --all-targets --features live-exec -- -D warnings
           cargo test --features live-exec
+          # `wasm-reducer` gates the wasmtime component host that binds wit/reducer.wit (§19b). Pulls the
+          # heavy wasmtime tree, so it's off by default; build+test it here so a WIT/binding drift (the
+          # generated Host trait must match the ReducerHost impl) is caught in CI, not just locally.
+          cargo clippy --all-targets --features wasm-reducer -- -D warnings
+          cargo test --features wasm-reducer
 
   rcdzc-wasm:
     # The Cadenza COMPILER as a WASM artifact (implementation/seed/crates/rcdzc-wasm, v-agent-harness

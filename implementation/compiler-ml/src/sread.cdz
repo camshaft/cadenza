@@ -496,8 +496,18 @@ def read-do-form(s: String, i: Int64, root: Int64, tree: Tree) =
    (match scan-atom(s, skip-space(s, d0), "") with | (kw, d1) =>
      (if (kw == "def") then read-do-def(s, d1, root, tree)
       else (if (kw == "type") then read-do-type(s, d1, root, tree)   // M2-a: user sum type → nullary-ctor defs
-      // non-def head (export / end) → the def sequence is done. root -1 = no main seen → decline (unsupported).
-      else (if (root == (0 - 1)) then unsupported-at(tree, d1) else (root, d1, tree))))))
+      else (if (kw == "export") then
+             // `(export NAME)`: NAME must name a DECLARED def — an export of an unbound name is ill-formed
+             // (rcdzc CDZ0101 "export names no definition"). Read the export NAME atom + check the def-table;
+             // an unbound export → decline (poison root). This is the terminal form (root already set by main,
+             // nothing overrides it after), so poisoning the root here is robust.
+             (match scan-atom(s, skip-space(s, d1), "") with | (expName, e1) =>
+               (if (root == (0 - 1)) then unsupported-at(tree, d1)          // no main seen → decline (as before)
+                else (match def-body-of(tree, name-id(expName)) with
+                        | Option.Some(_) => (root, e1, tree)                 // export names a real def → keep root
+                        | Option.None(_) => unsupported-at(tree, d1))))      // export of an unbound name → decline
+      // any other non-def head (end) → the def sequence is done. root -1 = no main seen → decline (unsupported).
+      else (if (root == (0 - 1)) then unsupported-at(tree, d1) else (root, d1, tree)))))))
 
 /// Handle one `(def …)` inside a `do`: read it (nullary, single-, or two-param); if it's `main`, its body is
 /// the root; if a helper, record its body + (if present) its param(s), then recurse to the next def; if the
@@ -560,6 +570,45 @@ def skip-to-close(s: String, i: Int64, depth: Int64) =
                 else (if (c == ")") then skip-to-close(s, i + 1, depth - 1)
                       else skip-to-close(s, i + 1, depth))))))
 
+/// A PARENTHESIZED payload field `(Head …)` at `q` (the `(`): `true` iff it is an applied INT/FLOAT type
+/// `(Int N)`/`(Float N)` with an INVALID width (int ∉ 1..=64, float ∉ {32,64}) — rcdzc rejects such a type-decl
+/// payload CDZ0302. A valid width, a nested compound, or any other paren head → `false` (the existing `-1`
+/// unsupported behavior). Reads the head atom then an optional width (`-N` or `N`) before the field's `)`.
+def paren-payload-field-invalid-width(s: String, q: Int64) =
+  (match scan-atom(s, skip-space(s, q + 1), "") with | (head, a1) =>
+    (let w0 = skip-space(s, a1) in
+     (if (head == "Int") or (head == "UInt") then
+       (if (char-at(s, w0) == "-") then true                     // negative int width → never admitted (1..=64)
+        else (if is-digit(char-at(s, w0)) then
+               (match scan-number(s, w0, 0) with | (w, _) => (w < 1) or (w > 64))
+              else false))                                       // `(Int)` w/ no width → not our invalid case
+      else (if (head == "Float") then
+             (if (char-at(s, w0) == "-") then true
+              else (if is-digit(char-at(s, w0)) then
+                     (match scan-number(s, w0, 0) with | (w, _) => (if (w == 32) or (w == 64) then false else true))
+                    else false))
+            else false))))
+
+/// Does the ctor's payload group (from `c2`, the first field, to the ctor's `)`) contain a `(Int N)`/`(Float N)`
+/// field with an INVALID width? A FLAT scan of the payload fields (no allocation) — codegen-light on purpose: a
+/// bad width poisons the WHOLE-PROGRAM root at read-time (read-do-ctors), avoiding a heavier post-read ctor-table
+/// fold in the run closure (which tipped the self-host guest over the emit codegen ceiling). Stops at the `)`.
+def payload-group-has-invalid-width(s: String, p: Int64) =
+  (let q = skip-space(s, p) in
+   (if (char-at(s, q) == ")") then false
+    else (if (char-at(s, q) == "(")
+          then (if paren-payload-field-invalid-width(s, q) then true
+                else payload-group-has-invalid-width(s, skip-to-close(s, q + 1, 1)))
+          else (match scan-atom(s, q, "") with | (_pty, pn) => payload-group-has-invalid-width(s, pn)))))
+
+/// WHOLE-PROGRAM check (codegen-light — a single def-table lookup): did the reader see an invalid int/float
+/// width in any type-decl payload? read-do-ctors records the reserved `__illwidth__` marker def on a bad width;
+/// this reports its presence so `run-src` can DECLINE (rcdzc CDZ0302). Cheap enough to add to the run closure
+/// without tipping the self-host guest emit ceiling (unlike a ctor-table fold).
+def has-illwidth-marker(tree: Tree) = match def-body-of(tree, name-id("__illwidth__")) with
+  | Option.Some(_) => true
+  | Option.None(_) => false
+
 /// compound-payload slice-1b: read the payload TYPE ATOMS of a ctor `(Ck T0 T1 …)` starting at `p` (the first
 /// type atom, after the ctor name), stopping at the group's closing `)`. Each field encodes exactly like the
 /// single-field argType: an INT type (`Int<N>`/`UInt<N>`, is-int-type) → encode-param-type(signed, width) (≥2);
@@ -618,7 +667,16 @@ def read-do-ctors(s: String, k: Int64, declName: Int64, tag: Int64, root: Int64,
              // matching `)` and recurse tag+1.
              else (let argTypes = read-payload-argtypes(s, c2, []) in
                     (let t1 = record-ctor-tag-typed-list(tree, name-id(cnm), declName, tag, argTypes) in
-                     read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), declName, tag + 1, root, t1))))))))
+                     // WHOLE-PROGRAM reject at read-time: a `(Int N)`/`(Float N)` payload with an INVALID width
+                     // (rcdzc CDZ0302) records a reserved MARKER def `__illwidth__ → NLit(1)`; `run-src` declines
+                     // any program whose tree carries that marker (a single `def-body-of` lookup — codegen-light,
+                     // vs a heavy ctor-table fold in the run closure that tipped the self-host guest over the emit
+                     // ceiling). A marker DEF survives main-sets-root (unlike poisoning root, which main overrides).
+                     (let t2 = (if payload-group-has-invalid-width(s, c2)
+                                then (match add-node(t1, Node.NLit(1)) with
+                                       | (mid, tm) => record-def(tm, name-id("__illwidth__"), mid))
+                                else t1) in
+                      read-do-ctors(s, skip-space(s, skip-to-close(s, c1, 1)), declName, tag + 1, root, t2)))))))))
 
 /// After a def ended at `j`: skip its closing `)` (if present) and read the next form in the do, threading the
 /// accumulated `root` (main's body, or -1 if not yet seen).
@@ -1669,4 +1727,4 @@ def sr-ctor-pattern-arity-mismatch-declines() =
           | _ => trap("the def FOLLOWING an arity-mismatch ctor pattern must parse intact (helper = NLit 42)"))
       | Option.None(_) => trap("the following `helper` def must be recorded (reader declined the arity-mismatch arm cleanly)")))
 
-export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id }
+export { skip-space, read-form, read-source, scan-atom, op-code-of, name-id, has-illwidth-marker }
