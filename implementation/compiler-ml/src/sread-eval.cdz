@@ -141,6 +141,15 @@ def se-let() =
     | Option.None(_) => trap("runs")
 
 @test
+def se-let-refutable-literal-binder-declines() =
+  // a let BINDER must be an IDENTIFIER; a numeric literal `0` in binder position `(let ((0 5)) 42)` is a
+  // REFUTABLE pattern → rcdzc rejects CDZ0210. The reader used to bind `name-id("0")` + run to 42; now a
+  // digit-led binder emits the `unsupported` poison → DECLINE. Reject-path gap from the conf-db differential.
+  match run-src("(do (def (main) (let ((0 5)) 42)) (export main))") with
+    | Option.Some(_) => trap("a refutable literal let-binder must DECLINE (CDZ0210), not run to 42")
+    | Option.None(_) => unit
+
+@test
 def se-let-multi-binding() =
   // MULTI-binding let `(let ((x 5) (y 10)) (+ x y))` → 15. Desugars to nested single-lets
   // `(let ((x 5)) (let ((y 10)) (+ x y)))`, which resolve/lower/eval already handle. Matches the reference

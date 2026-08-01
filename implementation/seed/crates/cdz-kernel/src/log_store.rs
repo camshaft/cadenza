@@ -30,21 +30,34 @@ pub struct LogStore {
     file: File,
 }
 
-/// What a recovery read found. Distinguishes THREE tail states so the driver can react correctly
-/// (PR#990 finding #4 — corruption must not be indistinguishable from a clean EOF):
-/// - clean end (torn_tail=false, corrupt=false),
-/// - benign torn tail — a partial final frame from a crash mid-append (torn_tail=true),
-/// - genuine corruption — a fully-present frame whose bytes don't decode (corrupt=true).
+/// How a recovery read ended — the three tail states are mutually exclusive, so an ENUM type-enforces
+/// that (PR#993 #4 / operator r3695380903 — was two `mutually exclusive` bools). The driver reacts to
+/// this: `Clean`/`TornTail` are normal (a torn tail is a benign crash-mid-append), `Corrupt` is an
+/// alarm (possible data loss — a fully-present frame that didn't decode, NOT a clean end).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryKind {
+    /// The file ended exactly on a frame boundary — a clean log end.
+    Clean,
+    /// The file ended with a partial/torn final frame that was skipped (crash mid-append — benign).
+    TornTail,
+    /// A COMPLETE frame failed to decode — genuine corruption, not a clean EOF or torn write.
+    Corrupt,
+}
+
+/// What a recovery read found: the good prefix of whole events, plus how the read ended.
 #[derive(Debug)]
 pub struct Recovered {
-    /// Every whole, well-formed event read in order (the good prefix, in all three cases).
+    /// Every whole, well-formed event read in order (the good prefix, in all three [`RecoveryKind`]s).
     pub events: Vec<Event>,
-    /// `true` if the file ended with a partial/torn frame that was skipped (a crash mid-append —
-    /// benign). Mutually exclusive with `corrupt`.
-    pub torn_tail: bool,
-    /// `true` if a COMPLETE frame failed to decode — genuine corruption, NOT a clean EOF or torn write.
-    /// The driver should treat this as an alarm (possible data loss), not a normal log end.
-    pub corrupt: bool,
+    /// How the read ended (clean / torn tail / corrupt).
+    pub kind: RecoveryKind,
+}
+
+impl Recovered {
+    /// Did the read end in genuine corruption (an alarm-worthy state, vs. a clean/torn end)?
+    pub fn is_corrupt(&self) -> bool {
+        self.kind == RecoveryKind::Corrupt
+    }
 }
 
 impl LogStore {
@@ -94,8 +107,7 @@ impl LogStore {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 return Ok(Recovered {
                     events: Vec::new(),
-                    torn_tail: false,
-                    corrupt: false,
+                    kind: RecoveryKind::Clean,
                 });
             }
             Err(e) => return Err(e),
@@ -111,12 +123,13 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
     loop {
         // Need the 4-byte length prefix.
         let Some(len_bytes) = bytes.get(pos..pos + 4) else {
-            // Fewer than 4 trailing bytes: torn tail iff there are leftover bytes.
-            return Recovered {
-                events,
-                torn_tail: pos < bytes.len(),
-                corrupt: false,
+            // Fewer than 4 trailing bytes: a torn tail iff there are leftover bytes, else a clean end.
+            let kind = if pos < bytes.len() {
+                RecoveryKind::TornTail
+            } else {
+                RecoveryKind::Clean
             };
+            return Recovered { events, kind };
         };
         let len =
             u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]) as usize;
@@ -125,8 +138,7 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
             // Length prefix present but body truncated: a torn final frame — stop cleanly.
             return Recovered {
                 events,
-                torn_tail: true,
-                corrupt: false,
+                kind: RecoveryKind::TornTail,
             };
         };
         match Event::decode(body) {
@@ -137,13 +149,12 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
                 pos = body_start + len;
             }
             _ => {
-                // Complete-but-invalid frame: genuine corruption, not a torn write. Report corrupt=true
-                // (distinct from a clean EOF, torn_tail=false/corrupt=false) so the driver can alarm /
-                // hard-fail rather than mistake data loss for a clean log end (finding #4).
+                // Complete-but-invalid frame: genuine corruption, not a torn write. `Corrupt` (distinct
+                // from Clean/TornTail) so the driver can alarm / hard-fail rather than mistake data loss
+                // for a clean log end (PR#990 #4).
                 return Recovered {
                     events,
-                    torn_tail: false,
-                    corrupt: true,
+                    kind: RecoveryKind::Corrupt,
                 };
             }
         }
@@ -214,7 +225,7 @@ mod tests {
             store.append(&dispatched(2)).unwrap();
         }
         let rec = LogStore::recover(&path).unwrap();
-        assert!(!rec.torn_tail);
+        assert_eq!(rec.kind, RecoveryKind::Clean);
         assert_eq!(rec.events, vec![genesis(), inbound(1), dispatched(2)]);
         let _ = std::fs::remove_file(&path);
     }
@@ -224,7 +235,7 @@ mod tests {
         let path = temp_path("missing");
         let rec = LogStore::recover(&path).unwrap();
         assert!(rec.events.is_empty());
-        assert!(!rec.torn_tail);
+        assert_eq!(rec.kind, RecoveryKind::Clean);
     }
 
     #[test]
@@ -262,7 +273,7 @@ mod tests {
         let rec = LogStore::recover(&path).unwrap();
         // The two whole events survive; the torn tail is skipped and flagged.
         assert_eq!(rec.events, vec![genesis(), inbound(1)]);
-        assert!(rec.torn_tail);
+        assert_eq!(rec.kind, RecoveryKind::TornTail);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -280,7 +291,7 @@ mod tests {
         }
         let rec = LogStore::recover(&path).unwrap();
         assert_eq!(rec.events, vec![genesis()]);
-        assert!(rec.torn_tail);
+        assert_eq!(rec.kind, RecoveryKind::TornTail);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -302,21 +313,19 @@ mod tests {
         }
         let rec = LogStore::recover(&path).unwrap();
         assert_eq!(rec.events, vec![genesis()]); // the good prefix is preserved
-                                                 // finding #4: corruption is DISTINGUISHABLE from a clean EOF — corrupt=true, torn_tail=false.
-        assert!(
-            !rec.torn_tail,
-            "a complete-but-invalid frame is corruption, not a torn tail"
+                                                 // PR#990 #4 / #993 #4: corruption is DISTINGUISHABLE from a clean EOF — a dedicated enum variant.
+        assert_eq!(
+            rec.kind,
+            RecoveryKind::Corrupt,
+            "a complete-but-invalid frame must be Corrupt (not look like a clean EOF or torn tail)"
         );
-        assert!(
-            rec.corrupt,
-            "a complete-but-invalid frame must set corrupt (not look like clean EOF)"
-        );
+        assert!(rec.is_corrupt());
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn clean_and_torn_tails_are_not_flagged_corrupt() {
-        // The three tail states are distinct: a clean log and a torn tail both have corrupt=false.
+        // The three tail states are distinct: a clean log is Clean (neither torn nor corrupt).
         let path = temp_path("clean-not-corrupt");
         {
             let mut s = LogStore::open(&path).unwrap();
@@ -324,10 +333,8 @@ mod tests {
             s.append(&inbound(1)).unwrap();
         }
         let rec = LogStore::recover(&path).unwrap();
-        assert!(
-            !rec.torn_tail && !rec.corrupt,
-            "a clean log is neither torn nor corrupt"
-        );
+        assert_eq!(rec.kind, RecoveryKind::Clean);
+        assert!(!rec.is_corrupt(), "a clean log is not corrupt");
         let _ = std::fs::remove_file(&path);
     }
 }

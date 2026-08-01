@@ -851,7 +851,14 @@ def read-let-bindings(s: String, k: Int64, tree: Tree) =
             (match read-form(s, v0, tree) with | (valId, v1, t1) =>
               (let c1 = close-paren(s, v1) in                          // close this binding `)`
                (match read-let-bindings(s, c1, t1) with | (innerId, e0, t2) =>   // the rest (bindings→body)
-                 (match add-node(t2, Node.NLet(name-id(nm), valId, innerId)) with | (id, t3) => (id, e0, t3)))))))
+                 // A let BINDER must be an IDENTIFIER, not a refutable literal: `(let ((0 5)) 42)` has a
+                 // numeric binder `0` (a refutable PATTERN) which rcdzc rejects CDZ0210. A digit-led `nm` is
+                 // such a literal → the binding is malformed → emit the `unsupported` poison (→ decline),
+                 // NOT an NLet that silently binds `name-id("0")`. A normal identifier binder builds the NLet.
+                 (if is-digit(char-at(nm, 0)) then
+                   (match unsupported(t2) with | (id, t3) => (id, e0, t3))
+                  else
+                   (match add-node(t2, Node.NLet(name-id(nm), valId, innerId)) with | (id, t3) => (id, e0, t3))))))))
     // no more bindings: the list-closing `)` is here — consume it, read the body, then the `let`'s own `)`.
     else (let c2 = close-paren(s, p) in
           (match read-form(s, c2, tree) with | (bodyId, e0, t1) =>

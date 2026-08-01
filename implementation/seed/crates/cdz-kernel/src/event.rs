@@ -208,9 +208,11 @@ impl<'a> Cursor<'a> {
 
     /// Read a `u64` length prefix and convert to `usize`, FAILING with `BadLength` if it doesn't fit
     /// (PR#990 finding #3). The length comes from the untrusted durable log; a bare `as usize` would
-    /// TRUNCATE on a 32-bit target (a huge length wraps small → mis-parse). This makes the frame reject
-    /// cleanly instead. (`take` also bounds-checks against the remaining bytes, so an in-range-but-too-
-    /// large length still errors as `Truncated`.)
+    /// TRUNCATE on a 32-bit target (a huge length wraps small → mis-parse). This rejects the frame
+    /// cleanly instead. A too-large length then errs one of two ways at the subsequent `take` (PR#993
+    /// #3): `Truncated` if it merely exceeds the remaining bytes, or `BadLength` if `pos + len`
+    /// overflows `usize` (take's own checked-add guard) — both clean rejections, never a panic or
+    /// mis-parse.
     fn len(&mut self) -> Result<usize, DecodeError> {
         usize::try_from(self.u64()?).map_err(|_| DecodeError::BadLength)
     }

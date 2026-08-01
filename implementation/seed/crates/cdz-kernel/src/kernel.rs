@@ -410,14 +410,17 @@ impl Session {
     /// to reconstruct KV + the open-obligation set, returning the session together with a
     /// [`RecoveryReport`] telling the driver what it must act on:
     ///
-    /// - `torn_tail` — the log ended in an interrupted final write (benign — the crash point); the
-    ///   session is recovered to the last *whole* event before it.
+    /// - `kind` — how the log ended: `Clean`, `TornTail` (benign crash mid-append), or `Corrupt`
+    ///   (a fully-present frame that didn't decode — an ALARM the driver must not miss; PR#993 #1
+    ///   propagates this from `LogStore` so `Session::recover` callers can react, not just internal
+    ///   code). The session is recovered to the last *whole* event before the tail either way.
     /// - `open_effects` — dispatched-but-unsettled effects the driver must re-drive (by their stable
     ///   idempotency key, so re-drive dedups rather than double-fires) or time out.
     ///
-    /// An empty log (no file yet) is NOT recoverable as a session — the caller must `genesis()` a new
-    /// one. That case is reported as [`RecoverError::EmptyLog`] so it's an explicit branch, not a
-    /// silent empty session.
+    /// Corruption is reported (not turned into a hard `Err`) so the driver keeps the recovered
+    /// good-prefix + open-effects and DECIDES whether to proceed or halt — `report.kind` /
+    /// `report.is_corrupt()` is the signal. An empty log (no file yet) is NOT recoverable as a session
+    /// — the caller must `genesis()` a new one — reported as [`RecoverError::EmptyLog`].
     pub fn recover(
         path: impl AsRef<std::path::Path>,
         reducer: &dyn Reducer,
@@ -426,9 +429,10 @@ impl Session {
         if recovered.events.is_empty() {
             return Err(RecoverError::EmptyLog);
         }
+        let kind = recovered.kind;
         let session = Session::replay(recovered.events, reducer).map_err(RecoverError::Replay)?;
         let report = RecoveryReport {
-            torn_tail: recovered.torn_tail,
+            kind,
             open_effects: session.open_effect_ids(),
         };
         Ok((session, report))
@@ -438,12 +442,19 @@ impl Session {
 /// What [`Session::recover`] found that the driver must act on after booting from disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveryReport {
-    /// The log ended in a torn (interrupted) final write — the crash point. Benign; the recovered
-    /// session stops at the last whole event.
-    pub torn_tail: bool,
+    /// How the log ended (clean / torn tail / **corrupt**). `Corrupt` is an alarm the driver must not
+    /// miss (PR#993 #1 — propagated from `LogStore` so `Session::recover` callers can react).
+    pub kind: crate::log_store::RecoveryKind,
     /// Dispatched-but-unsettled effects (§16c-S1) the driver must re-drive by idempotency key or time
     /// out. Empty = the session crashed at a clean quiescent boundary, nothing in flight.
     pub open_effects: Vec<EffectId>,
+}
+
+impl RecoveryReport {
+    /// Did recovery hit genuine corruption (an alarm, vs. a clean/torn end)?
+    pub fn is_corrupt(&self) -> bool {
+        self.kind == crate::log_store::RecoveryKind::Corrupt
+    }
 }
 
 /// Failure booting a session from a persisted log.
@@ -467,12 +478,16 @@ pub struct Snapshot {
     pub reducer: Hash,
 }
 
-/// Does the reducer FOLD this event body? The single source of truth used by BOTH the live `drive`
-/// path and `replay`, so live-kv and replayed-kv can never diverge (PR#990 finding #1). A reducer
-/// observes its INPUTS and OUTCOMES — inbound messages, effect results, timer fires, authorization
-/// denials (a denial is recovery feedback, §9d) — but NOT the kernel's internal bookkeeping
-/// (`Dispatched`/`TimerArmed` exist only to drive the crash-recovery obligation sets) nor `Genesis`
-/// (session setup, not a fold input).
+/// Does the reducer FOLD this event body? This defines the set of "observable" events; `replay`
+/// consults it directly, and the live `drive` path folds the SAME set by construction — it only ever
+/// calls `fold_tip` at append sites for observable events (Inbound tip, EffectResult, TimerFired,
+/// AuthzDenied), and never folds the bookkeeping events (`Dispatched`/`TimerArmed`) it appends. So the
+/// two paths fold identical event sets and live-kv can't diverge from replayed-kv (PR#990 finding #1);
+/// this helper is the explicit encoding of that set on the replay side (PR#993 #2 — clarified that
+/// `drive` enforces it structurally rather than calling this helper). A reducer observes its INPUTS and
+/// OUTCOMES — inbound messages, effect results, timer fires, authorization denials (a denial is recovery
+/// feedback, §9d) — but NOT the kernel's internal bookkeeping (`Dispatched`/`TimerArmed` exist only to
+/// drive the crash-recovery obligation sets) nor `Genesis` (session setup, not a fold input).
 fn observable(body: &EventBody) -> bool {
     match body {
         EventBody::Inbound { .. }
