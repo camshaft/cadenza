@@ -39,15 +39,24 @@ directly and keep `AskUserQuestion`; every other role runs unattended (see invar
 
 4. **You run UNATTENDED. Never wait on the human.** The operator is not watching your window for a
    prompt and you must never block on their input. There is exactly ONE agent that talks to the
-   human — the **`concierge`**. When you hit something only the operator can decide, send the
-   concierge an `ask` and **move on** (pick different work this tick, or stand down and let the next
-   tick retry) — do not sit idle waiting for an answer. The concierge bubbles asks up to the human
-   and routes the `answer` back to your inbox on a later tick. The only agents that expect a human
-   reply are the two INTERACTIVE roles — `concierge` (the standing interface) and `design` (an
-   on-demand session the operator switches to). **Enforced structurally:** every fleet window
-   except those two is launched with `--disallowedTools AskUserQuestion`, so the human-prompt tool
-   is denied at the harness level — you *cannot* pop a question in your window even by mistake. If
-   you feel the urge to ask, that's always an `ask` to the concierge.
+   human — the **`concierge`** — and it does so through the **Slack bridge**, not a terminal prompt
+   (operator directive 2026-08-01: "most of our interactions now are over Slack"). When you hit
+   something only the operator can decide, send the concierge an `ask` and **move on** (pick different
+   work this tick, or stand down and let the next tick retry) — do not sit idle waiting for an answer.
+   The concierge routes your `ask`/`backlog`/`status` to the operator over Slack (the bridge watches
+   the concierge inbox and threads the operator's reply back as an `answer`), which lands in your inbox
+   on a later tick. **Enforced structurally:** every fleet window EXCEPT `design` (the on-demand
+   terminal session the operator explicitly switches to and types into) is launched with
+   `--disallowedTools AskUserQuestion`, so the human-prompt tool is denied at the harness level — you
+   *cannot* pop a question in your window even by mistake. That now includes the concierge itself, and
+   for a concrete reason, not aesthetics: `AskUserQuestion` BLOCKS the agent's turn waiting for a
+   TERMINAL answer, and while the concierge is blocked in that prompt its `/loop` cannot drain its inbox
+   — so any operator message arriving over the Slack bridge sits UNREAD until the terminal question is
+   answered. One stray `AskUserQuestion` could thus pin the concierge to the terminal and make it go
+   DEAF on Slack indefinitely. Denying it is the fix: the concierge never blocks on a terminal prompt,
+   surfaces every operator-decision as an `ask`/`backlog` (which the bridge mirrors to Slack + threads
+   the `answer` back), and keeps looping/draining meanwhile — the same never-block-on-human invariant
+   every other role has. If you feel the urge to ask, that's always an `ask` to the concierge.
 
 ## The tick
 
