@@ -531,9 +531,8 @@ impl Parser<'_> {
 mod tests {
     use super::*;
 
-    // The EXACT text cdz-run renders for a Solid (captured from the live compiler), covering every variant.
-    // Rational leaves `n/d`; no Rotate (no exact rotation).
-    // Every SolidR constructor `lower` (exact.cdz) can emit — all 13 Solid heads plus a PathProfile that
+    // A CURATED render-form s-expr (the `n/d`-rational text `cdz-run` emits for a Solid), hand-built to cover
+    // every SolidR constructor `lower` (exact.cdz) can emit — all 13 Solid heads plus a PathProfile that
     // exercises all six PathSeg kinds — so this is a grammar-COMPLETENESS guard: if a new arm is added to the
     // model's `lower` without a matching driver parser arm (the render-blank class), this fails to parse.
     // Left subtree (9 nodes / 3 leaves): Intersection, Difference, Union, Cube, Sphere, Cylinder, Scale,
