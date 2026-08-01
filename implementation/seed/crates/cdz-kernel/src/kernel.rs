@@ -22,7 +22,7 @@
 //! The KV is rebuilt by folding the log (it IS derived state — §4); a snapshot is `(seq, kv.root_hash,
 //! reducer_hash)`.
 
-use crate::authz::Authorizer;
+use crate::authz::Authorize;
 use crate::effect::{EffectId, EffectKind, EffectRequest};
 use crate::event::{EffectOutcome, Event, EventBody};
 use crate::executor::Executor;
@@ -176,7 +176,7 @@ impl Session {
         body: EventBody,
         cause: Option<Hash>,
         reducer: &dyn Reducer,
-        authz: &Authorizer,
+        authz: &dyn Authorize,
         executor: &mut dyn Executor,
     ) -> Result<(), KernelError> {
         self.append(body, cause);
@@ -197,7 +197,7 @@ impl Session {
         &mut self,
         now_ms: u64,
         reducer: &dyn Reducer,
-        authz: &Authorizer,
+        authz: &dyn Authorize,
         executor: &mut dyn Executor,
     ) -> usize {
         // Collect due (id, deadline) in deadline order; drain from the table happens in `append` when
@@ -287,7 +287,7 @@ impl Session {
     /// output of folding event E is caused by E. So the chain threads
     /// trigger → dispatch → result → (next dispatch caused by that result) → …, which is exactly the
     /// provenance audit / blast-radius (§9f) / on-behalf-of (§12f) traversals need.
-    fn drive(&mut self, reducer: &dyn Reducer, authz: &Authorizer, executor: &mut dyn Executor) {
+    fn drive(&mut self, reducer: &dyn Reducer, authz: &dyn Authorize, executor: &mut dyn Executor) {
         // Worklist of (request, cause) — cause is the hash of the event whose fold emitted the request.
         // The initial batch is caused by the just-appended tip.
         let trigger = self.tip_hash();
@@ -303,7 +303,7 @@ impl Session {
         &mut self,
         mut to_process: Vec<(EffectRequest, Hash)>,
         reducer: &dyn Reducer,
-        authz: &Authorizer,
+        authz: &dyn Authorize,
         executor: &mut dyn Executor,
     ) {
         while let Some((req, cause)) = to_process.pop() {
@@ -456,7 +456,7 @@ impl Session {
         &mut self,
         id: EffectId,
         reducer: &dyn Reducer,
-        authz: &Authorizer,
+        authz: &dyn Authorize,
         executor: &mut dyn Executor,
     ) -> bool {
         // Idempotent: only an OPEN id can be timed out. Settled (or never-dispatched) → no-op, so a late

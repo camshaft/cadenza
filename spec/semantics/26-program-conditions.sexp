@@ -1238,7 +1238,8 @@
 ; source: a checked `a / b` traps iff b = 0, so its trap-free obligation is `NEQ b 0` (the divisor is
 ; non-zero). Under `@requires(> b 0)`, the obligation discharges: from `assume (gt b 0)`, a `pos-nonzero`
 ; rule (a positive value is non-zero) yields `NEQ b 0`. The base gains a `gt` order + `neq` + `pos-nonzero`
-; + the CHECKED ground `gt-ax`. `gt`=Const 5, `neq`=Const 6. Pins the div0 trap-source obligation shape the
+; + the CHECKED ground `gt-ax`. Head-symbols are `HeadOp` sum variants (`Gt`/`Neq`) via `Term.Head`, not
+; magic-int `Const` tags. Pins the div0 trap-source obligation shape the
 ; capstone's per-source conjunction needs.
 
 (case "t1(div0): the divide-by-zero obligation NEQ b 0 is DISCHARGED for b > 0 — so a/b cannot trap"
@@ -1251,16 +1252,21 @@
            proof).")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Gt) (Neq))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       (type Thm (Seq (List Term) Term))
+      (def (op-eq (: a HeadOp) (: b HeadOp))
+        (match a
+          ((HeadOp.Gt)  (match b ((HeadOp.Gt)  true) (_ false)))
+          ((HeadOp.Neq) (match b ((HeadOp.Neq) true) (_ false)))))
       (def (term-eq (: a Term) (: b Term))
         (match a
           ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
           ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
-          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Head o)   (match b ((Term.Head p) (op-eq o p)) (_ false)))
           ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
-      (def (gt  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 5) a) b))
-      (def (neq (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 6) a) b))
+      (def (gt  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Gt) a) b))
+      (def (neq (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Neq) a) b))
       (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
       (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
       (def (assume (: p Term)) (Thm.Seq (list p) p))
@@ -1268,14 +1274,15 @@
       ; non-zero. The rule fires ONLY when the premise is `(gt x (Num 0))` (the zero literal); else None.
       (def (pos-nonzero (: th Thm))
         (match (concl th)
-          ((Term.Comb (Term.Comb (Term.Const 5) x) (Term.Num 0))
+          ((Term.Comb (Term.Comb (Term.Head HeadOp.Gt) x) (Term.Num 0))
             (Option.Some (Thm.Seq (hyps th) (neq x (Term.Num 0)))))
           (_ (Option.None))))
       (export (. Term *))
+      (export (. HeadOp *))
       (export Thm)
-      (export term-eq gt neq concl hyps assume pos-nonzero)))
+      (export op-eq term-eq gt neq concl hyps assume pos-nonzero)))
   (input  (do
-            (import "bounds" (Term Thm term-eq gt neq concl hyps assume pos-nonzero))
+            (import "bounds" (HeadOp Term Thm term-eq gt neq concl hyps assume pos-nonzero))
             (def (main)
               (let ((b    (Term.Var 1))
                     (zero (Term.Num 0)))
@@ -1299,29 +1306,35 @@
            certifies a function whose divisor could be zero).")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Gt) (Neq))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       (type Thm (Seq (List Term) Term))
+      (def (op-eq (: a HeadOp) (: b HeadOp))
+        (match a
+          ((HeadOp.Gt)  (match b ((HeadOp.Gt)  true) (_ false)))
+          ((HeadOp.Neq) (match b ((HeadOp.Neq) true) (_ false)))))
       (def (term-eq (: a Term) (: b Term))
         (match a
           ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
           ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
-          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Head o)   (match b ((Term.Head p) (op-eq o p)) (_ false)))
           ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
-      (def (gt  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 5) a) b))
-      (def (neq (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 6) a) b))
+      (def (gt  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Gt) a) b))
+      (def (neq (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Neq) a) b))
       (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
       (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
       (def (assume (: p Term)) (Thm.Seq (list p) p))
       (def (pos-nonzero (: th Thm))
         (match (concl th)
-          ((Term.Comb (Term.Comb (Term.Const 5) x) (Term.Num 0))
+          ((Term.Comb (Term.Comb (Term.Head HeadOp.Gt) x) (Term.Num 0))
             (Option.Some (Thm.Seq (hyps th) (neq x (Term.Num 0)))))
           (_ (Option.None))))
       (export (. Term *))
+      (export (. HeadOp *))
       (export Thm)
-      (export term-eq gt neq concl hyps assume pos-nonzero)))
+      (export op-eq term-eq gt neq concl hyps assume pos-nonzero)))
   (input  (do
-            (import "bounds" (Term Thm term-eq gt neq concl hyps assume pos-nonzero))
+            (import "bounds" (HeadOp Term Thm term-eq gt neq concl hyps assume pos-nonzero))
             (def (main)
               (let ((b    (Term.Var 1))
                     (zero (Term.Num 0)))

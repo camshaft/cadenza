@@ -351,6 +351,14 @@ export const CHAPTERS: Chapter[] = [
     section: "The kernel model",
     Component: lazy(() => import("./chapters/PlatformOverview.tsx")),
   },
+  {
+    slug: "platform-state",
+    title: "Events & state",
+    blurb: "How the pure-fold model stays practical: a reducer stateless between events, a persistent-map KV that snapshots for free, and one rule for reading immutable-by-hash vs. mutable-now.",
+    pillar: "platform",
+    section: "Events & state",
+    Component: lazy(() => import("./chapters/PlatformState.tsx")),
+  },
 ];
 
 export function chapterAt(slug: string): { chapter: Chapter; index: number } | null {

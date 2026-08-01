@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { CHAPTERS, pillarOf, type Chapter } from "./chapters.ts";
+import { CHAPTERS, pillarOf, type Chapter, type Pillar } from "./chapters.ts";
 
 const here = dirname(fileURLToPath(import.meta.url)); // src/content
 const DIFFERENTIATORS_SECTION = "What makes Cadenza different";
@@ -22,7 +22,9 @@ const DIFFERENTIATORS_SECTION = "What makes Cadenza different";
 /// arcs: "Cadenza the Language" is the original tour; "Cadenza the Platform" is the agent-kernel concept
 /// section (grows incrementally). If a section is renamed or added, update the right pillar's list
 /// deliberately — that edit IS a narrative decision, and forcing it through here is the point.
-const SECTION_ORDER: Record<string, string[]> = {
+// Keyed by the Pillar union (not a bare string) so a mistyped pillar key is a compile error rather than
+// silently producing an empty section list (PR#1023 / Copilot polish).
+const SECTION_ORDER: Record<Pillar, string[]> = {
   language: [
     "Getting started",
     "Fundamentals",
@@ -32,11 +34,16 @@ const SECTION_ORDER: Record<string, string[]> = {
   ],
   platform: [
     "The kernel model",
+    "Events & state",
   ],
 };
 
+/// The pillar keys, typed as Pillar (Object.keys widens to string, which would defeat the Pillar-keyed
+/// SECTION_ORDER — iterate this instead).
+const PILLAR_KEYS = Object.keys(SECTION_ORDER) as Pillar[];
+
 /// Chapters of one pillar, in registry order.
-const inPillar = (pillar: string): Chapter[] => CHAPTERS.filter((c) => pillarOf(c) === pillar);
+const inPillar = (pillar: Pillar): Chapter[] => CHAPTERS.filter((c) => pillarOf(c) === pillar);
 
 test("every chapter's section is one of its pillar's known sections", () => {
   const bad = CHAPTERS.filter((c) => !(SECTION_ORDER[pillarOf(c)] ?? []).includes(c.section));
@@ -50,7 +57,7 @@ test("every chapter's section is one of its pillar's known sections", () => {
 });
 
 test("each section's chapters are contiguous (a section never gets split by another), within its pillar", () => {
-  for (const pillar of Object.keys(SECTION_ORDER)) {
+  for (const pillar of PILLAR_KEYS) {
     const chapters = inPillar(pillar);
     const seenBlocks: string[] = [];
     chapters.forEach((c) => {
@@ -68,7 +75,8 @@ test("each section's chapters are contiguous (a section never gets split by anot
 });
 
 test("sections appear in the intended reading order, within each pillar", () => {
-  for (const [pillar, order] of Object.entries(SECTION_ORDER)) {
+  for (const pillar of PILLAR_KEYS) {
+    const order = SECTION_ORDER[pillar];
     const chapters = inPillar(pillar);
     const present = order.filter((s) => chapters.some((c) => c.section === s));
     const firstIndexOf = (section: string) => chapters.findIndex((c) => c.section === section);
