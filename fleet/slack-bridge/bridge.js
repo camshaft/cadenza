@@ -32,6 +32,7 @@
 "use strict";
 
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 const { App } = require("@slack/bolt");
 const { deliver, drain, markProcessed } = require("./inbox.js");
 const { parseOperatorMessage, renderFleetMessage, helpText, isTransientSocketModeFault } = require("./format.js");
@@ -45,6 +46,32 @@ const POLL_MS = Number(process.env.POLL_MS || 2000);
 // Default FLEET_DIR: this file's tracked home is <repo>/fleet/slack-bridge/bridge.js, and the runtime
 // fleet state (inboxes) lives at <repo>/.claude/fleet — so run from the main checkout, or set FLEET_DIR.
 const FLEET_DIR = process.env.FLEET_DIR || path.resolve(__dirname, "..", "..", ".claude", "fleet");
+// Repo root (this file lives at <repo>/fleet/slack-bridge/bridge.js) — the cwd for shelling `cargo xtask`,
+// same as the watchdog runner uses. Used by wakeOperatorRecipient below.
+const REPO_ROOT = path.resolve(__dirname, "..", "..");
+
+// Fire-and-forget: wake an idle recipient NOW so an operator's Slack message reaches it in seconds rather
+// than waiting out its full `/loop` interval. The inbound path writes the inbox file with our own `deliver`
+// (it never goes through `cargo xtask fleet send`, which is what normally wakes on delivery), so we shell
+// the standalone `cargo xtask fleet wake --operator-message <agent>` — the fleet's single-source-of-truth
+// wake (same tmux `wake_window` guards). `--operator-message` relaxes the interactive-role skip so even the
+// concierge is woken; the mid-tick guard still shields an active conversation. Safe on EVERY deliver: a
+// stopped / no-window / mid-tick recipient is a clean skip (exit 0), never an error. Detached + unref'd and
+// stdio-ignored so it can't block the handler or hold the event loop; libuv reaps the child (no zombie).
+function wakeOperatorRecipient(to) {
+  try {
+    const child = spawn("cargo", ["xtask", "fleet", "wake", "--operator-message", to], {
+      cwd: REPO_ROOT,
+      stdio: "ignore",
+      detached: true,
+    });
+    // A skip (non-zero exit) is valid, not an error; only a spawn failure (e.g. cargo missing) is worth a log.
+    child.on("error", (e) => console.error(`operator wake spawn failed for ${to} (non-fatal):`, e.message));
+    child.unref();
+  } catch (e) {
+    console.error(`operator wake spawn threw for ${to} (non-fatal):`, e.message);
+  }
+}
 
 // A KNOWN, self-recovering Socket Mode fault (`isTransientSocketModeFault`, defined in the dependency-free
 // format.js so the smoke test can pin it WITHOUT loading @slack/bolt): `@slack/socket-mode` drives its
@@ -111,6 +138,8 @@ function main() {
         subject: intent.subject,
         body: intent.body,
       });
+      // Wake the recipient NOW so this operator message doesn't wait out its /loop interval.
+      wakeOperatorRecipient(intent.to);
       await say(`:incoming_envelope: → *${intent.to}* _(${intent.kind})_`);
     } catch (e) {
       console.error("deliver failed:", e);

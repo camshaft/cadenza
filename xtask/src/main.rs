@@ -4051,17 +4051,6 @@ fn covered_corpus_files(paths: &Paths) -> Vec<PathBuf> {
 /// disagreement — that defeats the gate. Entries are only ever REMOVED (as fixes land), never added, except
 /// this one-time seed of the 5 the operator signed off on.
 const KNOWN_ML_DIFFS: &[(&str, &str)] = &[
-    // ML checks only main's transitively-reachable defs, so an unbound name in an uncalled sibling def
-    // runs to 42 instead of rejecting. Fix = scope-check every top-level def body.
-    (
-        "an unbound name in an uncalled sibling definition is still rejected",
-        "CDZ0101",
-    ),
-    // A literal pattern in a let binder is refutable; ML binds it and runs to 42 instead of rejecting.
-    (
-        "a literal in a let binder is refutable and rejected",
-        "CDZ0210",
-    ),
     // A non-admitted float width in a type-DECL payload isn't validated by ML (runs main→0).
     (
         "a non-admitted float width in a type-declaration payload is rejected",
@@ -4072,11 +4061,14 @@ const KNOWN_ML_DIFFS: &[(&str, &str)] = &[
         "an ill-formed integer width in a type-declaration payload is rejected",
         "CDZ0302",
     ),
-    // BURN-DOWN: the 5th seed — CDZ0201 "a conditional with too many operands" — was FIXED by
-    // v-compiler-ml (8dca2509d, batch #114): `(if true 1 2 3)` now DECLINES instead of running to 1
-    // (verified via `cdz run-ml`), so it is no longer a disagreement and its entry is removed. A fixed
-    // gap left allowlisted would silently tolerate a future REGRESSION of that exact case — hence removed.
-    // First entry off the burn-down list; v-compiler-ml burns the remaining 4 as it lands each fix.
+    // BURN-DOWN LOG (entries removed as v-compiler-ml lands each reject-path fix; each verified via
+    // `cdz run-ml` to now DECLINE — a fixed gap left allowlisted would silently tolerate a future
+    // REGRESSION of that exact case, so removed the moment its fix lands):
+    //  · CDZ0201 "a conditional with too many operands" — fixed 8dca2509d (batch #114).
+    //  · CDZ0101 "an unbound name in an uncalled sibling definition" — fixed, landed 1d1dd22e2.
+    //  · CDZ0210 "a literal in a let binder is refutable" — fixed, landed fa92fdc0e.
+    // REMAINING: the two CDZ0302 type-decl-payload width checks above (one width-validation fix,
+    // v-compiler-ml next). When it lands, KNOWN_ML_DIFFS is empty → the differential is fully strict.
 ];
 
 /// Does a disagreement message match a KNOWN_ML_DIFFS allowlist entry? The message shape is

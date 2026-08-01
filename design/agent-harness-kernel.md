@@ -1653,3 +1653,52 @@ strings to `sh -c`.
 **Sequencing:** 18b's structured-outcome/`{exit,stdout,stderr}` and structured-command payloads want the
 18a s-expr codec first (they're s-expr values), so: land 18a (log/value codec) → then 18b (structured
 command model on top). Both are design revisions to the landed v0.1, not greenfield.
+
+## 19. Operator architecture refinements (2026-08-01, round 2) — supersedes parts of §18
+
+After reviewing the §18 plan + my codec-blocker/generic-async questions, the operator refined the
+architecture. These SUPERSEDE the earlier "trait-ify log+kv+reducer / generic+async" framing where they
+conflict. Reply with the shape was sent; folding here.
+
+### 19a. Binary-sexpr codec = a STANDALONE SHARED crate `cadenza-binary` (decided)
+Resolves the §18a open codec question. Build a minimal, structure-only binary-sexpr codec
+(atoms/lists/bytes/ints + encode + decode + length-framing, NO interpreter, tiny dep floor) as a
+**shared crate** that **cadenza-syntax + rcdzc + cdz-kernel all depend on**. This reconciles both
+positions: my minimal-dep-floor rec (don't drag cadenza-syntax's cedar/pulldown/num-bigint into the
+kernel; don't couple to rcdzc's AST) AND the operator's "one binary-sexpr codec shared by syntax+rcdzc."
+The kernel stays codec-minimal in spirit — it len-frames opaque encoded bytes; the value *shape* is the
+shared crate's concern. **Cross-vertical:** v-syntax + rcdzc are co-consumers and must be happy pinning
+the wire format → coordinate adoption with their owners before/as it lands. This is the log-format
+foundation; once it lands, the log-event codec (§18a) swaps to it.
+
+### 19b. WASM COMPONENT MODEL for the kernel core; log+kv stay traits (decided — reduces abstractions)
+Operator steer: "focus on the wasm component model for the agent kernel rather than a Rust trait that
+later maps to it — reduce the number of abstractions." So:
+- **Guest boundary = a WIT world (component model), from the start.** The REDUCER is a wasm component
+  the kernel instantiates; the host↔reducer contract is a WIT world (events in → effect-requests out),
+  NOT a Rust `Reducer` trait later mapped to wasm. This SUPERSEDES §18/earlier "trait-ify the reducer."
+- **Host-backend boundary = Rust traits.** LOG + KV STAY traits (operator carve-out — they're a property
+  of the HOST, swappable backends; trait-abstraction is correct there).
+- So: component-model at the GUEST boundary, traits at the HOST-backend boundary. The current Rust
+  `Reducer` trait is the INTERIM until the WIT world + wasmtime component host lands (the next big slice
+  after the codec).
+
+### 19c. WASI-as-host-ABI — SPLIT verdict (my read, sent to operator; open for their call)
+Operator mused WASI-as-ABI might help the shell-security concern, then doubted it. My read:
+- **WASI is a GOOD fit for filesystem / network / clock / random** capability-gating — it's
+  capability-oriented by construction (explicit granted handles, no ambient authority), maps directly
+  onto SEC-F1 resource-scoped caps, and is the component-model-native way to sandbox what a reducer can
+  reach. Adopt it for those effect kinds.
+- **WASI is the WRONG fit / no help for SHELL** — and the operator's instinct is right: WASI has NO
+  subprocess/exec (`wasi:process/exec` doesn't exist in preview 2; spawning is deliberately outside
+  WASI). So the shell surface CAN'T be a WASI capability — it stays a host executor + the §18b
+  structured-command lock-down, independent of WASI.
+- **Synthesis:** WASI is COMPLEMENTARY — use it where it models the effect (fs/net/clock/random), keep
+  shell a first-class kernel effect with the structured-command lock-down. Not a replacement for the
+  shell design.
+
+### 19d. Net sequencing (the forward plan)
+(a) `cadenza-binary` shared crate (coordinate w/ v-syntax+rcdzc) → log-format swap to it (§18a).
+(b) WIT reducer world + wasmtime component host (§19b); log+kv stay traits. Current Rust `Reducer` trait
+    is interim until this lands.
+(c) structured-command shell lock-down (§18b); WASI for fs/net where it fits (§19c).

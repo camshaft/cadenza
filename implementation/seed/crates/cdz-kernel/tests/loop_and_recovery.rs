@@ -652,16 +652,21 @@ fn live_shell_executor_runs_a_real_command_end_to_end() {
 fn live_shell_denied_command_never_executes() {
     use cdz_kernel::executor::ShellExecutor;
 
-    struct DeniedShell;
+    // Unique per-pid marker (PR#996: parallel-safe + no false-fail from a pre-existing file). Bind the
+    // path once, remove any stale copy at START, and reuse the SAME var in both the touch target and
+    // the assertion — so the test proves THIS run's gate, not leftover state.
+    let marker = format!("/tmp/cdz-kernel-denied-marker-{}", std::process::id());
+    let _ = std::fs::remove_file(&marker);
+
+    struct DeniedShell(String);
     impl Reducer for DeniedShell {
         fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest {
                     kind: EffectKind::Shell,
-                    // Harmless command (PR#992 #3: no `rm -rf` in tests — CI runs --features live-exec,
-                    // so an authz regression must be observable, not destructive). Outside the `echo `
-                    // grant → denied at the gate anyway.
-                    target: "touch /tmp/cdz-kernel-should-never-run".into(),
+                    // Harmless command (PR#992 #3: no `rm -rf` in tests). Outside the `echo ` grant →
+                    // denied at the gate anyway; the marker would only appear if the gate FAILED.
+                    target: format!("touch {}", self.0),
                     payload: None,
                 }])
             } else {
@@ -677,7 +682,13 @@ fn live_shell_denied_command_never_executes() {
     let mut exec = ShellExecutor;
     let mut session = Session::genesis(Hash::of(b"denied"));
     session
-        .deliver(inbound_go(), None, &DeniedShell, &authz, &mut exec)
+        .deliver(
+            inbound_go(),
+            None,
+            &DeniedShell(marker.clone()),
+            &authz,
+            &mut exec,
+        )
         .unwrap();
 
     // Denied at the gate → a denial is logged and nothing ran.
@@ -686,8 +697,9 @@ fn live_shell_denied_command_never_executes() {
         .iter()
         .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
     assert_eq!(session.open_effects(), 0);
-    // The would-be side effect never happened.
-    assert!(!std::path::Path::new("/tmp/cdz-kernel-should-never-run").exists());
+    // The would-be side effect never happened (marker was removed at start, so this is THIS run's gate).
+    assert!(!std::path::Path::new(&marker).exists());
+    let _ = std::fs::remove_file(&marker);
 }
 
 /// PR#992 ⚠⚠ CWE-78: the fix — direct exec (no `sh -c`) makes shell metacharacters LITERAL, so a
@@ -699,7 +711,9 @@ fn live_shell_denied_command_never_executes() {
 fn live_shell_no_injection_via_metacharacters() {
     use cdz_kernel::executor::ShellExecutor;
 
-    let marker = "/tmp/cdz-kernel-injection-marker";
+    // Per-pid marker (parallel-safe; consistent with the denied-command test, PR#996).
+    let marker = format!("/tmp/cdz-kernel-injection-marker-{}", std::process::id());
+    let marker = marker.as_str();
     let _ = std::fs::remove_file(marker); // clean slate
 
     struct Injector(String);

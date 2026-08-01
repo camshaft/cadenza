@@ -290,7 +290,8 @@ async fn handle_message(state: &BridgeState, msg: SlackMessageEvent) {
                 .with_body(text);
             match deliver(&cfg.fleet_dir, &ask.asker, m) {
                 Ok(_) => {
-                    tracing::info!(asker = %ask.asker, "routed operator reply as answer (auto-nudges)")
+                    tracing::info!(asker = %ask.asker, "routed operator reply as answer");
+                    spawn_operator_wake(ask.asker.clone());
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, asker = %ask.asker, "failed to deliver answer")
@@ -306,7 +307,10 @@ async fn handle_message(state: &BridgeState, msg: SlackMessageEvent) {
     let m = Message::new(&cfg.bridge_agent, &intent.to, &intent.kind, &intent.subject)
         .with_body(&intent.body);
     match deliver(&cfg.fleet_dir, &intent.to, m) {
-        Ok(_) => tracing::info!(to = %intent.to, kind = %intent.kind, "delivered operator message"),
+        Ok(_) => {
+            tracing::info!(to = %intent.to, kind = %intent.kind, "delivered operator message");
+            spawn_operator_wake(intent.to.clone());
+        }
         Err(e) => tracing::warn!(error = %e, to = %intent.to, "failed to deliver (rejected name?)"),
     }
 }
@@ -314,6 +318,63 @@ async fn handle_message(state: &BridgeState, msg: SlackMessageEvent) {
 fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").trim().to_string()
 }
+
+/// Fire-and-forget: wake an idle recipient NOW so an operator Slack message reaches it in seconds instead
+/// of waiting out its full `/loop` interval. The inbound path writes the inbox file with the crate's own
+/// `deliver` (it never goes through `cargo xtask fleet send`, which is what normally wakes on delivery), so
+/// we shell the standalone `cargo xtask fleet wake --operator-message <agent>` — the same single-source-of-
+/// truth `wake_window` the rest of the fleet uses, exactly like the watchdog fire (`--operator-message`
+/// relaxes the interactive-role skip so even the concierge is woken; the mid-tick guard still shields an
+/// active conversation). It is safe on EVERY deliver: a stopped / no-window / mid-tick recipient is a clean
+/// skip (exit 0), never an error.
+///
+/// Runs inside its OWN `tokio::spawn` so it can't block the message handler, and it awaits the child —
+/// which REAPS it (waitpid). A bare fire-and-forget that never waited would leave a zombie until the daemon
+/// exits (the same deferred-reap hazard fixed for the watchdog in PR#949); awaiting in a detached task keeps
+/// the handler non-blocking AND the child reaped.
+///
+/// The wait is BOUNDED by [`WAKE_TIMEOUT`] with an explicit kill+reap on elapse, mirroring
+/// `run_watchdog_once`. `fleet wake` is a fast tmux/fs op, but if it ever wedged (a stuck tmux/git/registry
+/// call) an unbounded await would leak this detached task + its child until the daemon exits. Low-severity
+/// on its own (detached per-message — a hang can't stall the handler, unlike the watchdog fire loop it
+/// borrows the pattern from), but bounding it keeps the crate consistent with the reap-and-timeout
+/// discipline (reviewer consistency note on PR be8c4d98a).
+fn spawn_operator_wake(to: String) {
+    tokio::spawn(async move {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        let mut child = match tokio::process::Command::new("cargo")
+            .args(["xtask", "fleet", "wake", "--operator-message", &to])
+            .current_dir(&repo_root)
+            .kill_on_drop(true)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, to = %to, "operator wake spawn failed (non-fatal)");
+                return;
+            }
+        };
+        // Exit 0 = woke, non-zero = a valid skip (stopped/no-window/mid-tick). Neither is an error.
+        match tokio::time::timeout(WAKE_TIMEOUT, child.wait()).await {
+            Ok(_) => {}
+            // Timed out: explicit kill().await SIGKILLs AND reaps (not kill_on_drop's deferred reap, PR#949);
+            // kill_on_drop still finalizes if that itself errors. Keeps the low-severity leak bounded.
+            Err(_) => {
+                let _ = child.kill().await;
+                tracing::warn!(to = %to, secs = WAKE_TIMEOUT.as_secs(), "operator wake timed out — killed (non-fatal)");
+            }
+        }
+    });
+}
+
+/// Bound for a single `cargo xtask fleet wake` fire (see [`spawn_operator_wake`]). Generous vs a healthy
+/// wake (a tmux/fs op is sub-second) but finite, so a wedged call can't leak a detached task/child forever.
+const WAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn hyper_client() -> Result<SlackHyperClient, BoxErr> {
     Ok(SlackClient::new(SlackClientHyperConnector::new()?))
