@@ -12,7 +12,7 @@
 /// helper that reuses it re-performs the host call per use (general effectful-fn-arg eval; let-bind first).
 @!default-fraction Rational
 
-import { Solid, Vec3, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
+import { Solid, SolidR, Vec3, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
 
 import { box, cyl, hole-through, fuse, move-z } from "helpers";
 
@@ -52,5 +52,17 @@ def plate-at-fixed-dims-is-a-drilled-block() =
     unit
   else
     trap("plate(50,30,5,3) envelope is the 50×30×5 block, non-empty")
+
+@test
+def the-lowered-plate-render-form-is-non-empty() =
+  // THE render-edge pin (the sibling showcases all have one; this showcase pinned only the MODEL above). main =
+  // lower(plate(...)) is the exact SolidR tree the mesh driver consumes — a `lower` regression that dropped or
+  // emptied a branch would leave the MODEL non-empty (checked above) while the RENDER goes blank: exactly the
+  // empty-Solid-mesh class the snowflake shipped once ("meshes" ≠ "renders"). Pin that the LOWERED output is
+  // not SolidR.Empty. (plate's top node is hole-through = a Difference → the lowered top is SolidR.Difference,
+  // a real meshable render node.)
+  match lower(plate(50 / 1, 30 / 1, 5 / 1, 3 / 1)) with
+    | SolidR.Empty => trap("the lowered plate render form (what the driver meshes) must NOT be empty")
+    | _ => unit
 
 export { main }
