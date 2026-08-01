@@ -5591,3 +5591,33 @@
             (def (main) 42)
             (export main)))
   (error  CDZ0101))
+
+; --- Non-linear binding, param-list face (annotated variant; adv-47) + uncalled-def match
+; faces (arm body / arm guard — positions a scope walk may skip). ---
+
+(case "a function with two SAME-NAMED parameters is a non-linear binding rejection"
+  (doc    "The param-list face of the CDZ0102 non-linearity rule (let and match faces pinned elsewhere; 05-compound pins the UNTYPED (def (f x x)) shape) — here both params carry Int64 annotations, so the reject must fire on the repeated NAME, not the annotation path. The self-hosted front-end accepted this and silently last-wins-shadowed ((f 1 2) returned 2) — adv-47, fixed b80c1d374.")
+  (input  (do (def (f (: x Int64) (: x Int64)) x) (def (main) (f 1 2)) (export main)))
+  (error  CDZ0102))
+
+(case "an unbound name in an uncalled def's match-ARM BODY is rejected"
+  (doc    "The match-arm-body face of the uncalled-def scope walk: the unbound name sits inside an arm of a match in a never-called def — a walk that descends def bodies but not into match arms runs to 42. rcdzc rejects CDZ0101.")
+  (input  (do
+            (def (unused (: x Int64))
+              (match x
+                ((1) no-such-name)
+                (_ 0)))
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0101))
+
+(case "an unbound name in an uncalled def's match-arm GUARD is rejected"
+  (doc    "The GUARD face: the unbound name is in an arm's guard expression, a position evaluated only during match dispatch — a scope walk that skips guard expressions in uncalled defs runs to 42. rcdzc rejects CDZ0101.")
+  (input  (do
+            (def (unused (: x Int64))
+              (match x
+                ((y (> y no-such-guard)) 1)
+                (_ 0)))
+            (def (main) 42)
+            (export main)))
+  (error  CDZ0101))

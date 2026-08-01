@@ -1416,6 +1416,7 @@ pass	a fitting recursive annotated result computes at the narrow width
 pass	a float divide by zero takes the DIVIDEND's sign into the infinity
 pass	a float literal compared against a Float32 param computes at the narrow width
 pass	a full-width UInt64 comparison over a HIGH-BIT operand is unsigned
+pass	a function with two SAME-NAMED parameters is a non-linear binding rejection
 pass	a guard runs a NESTED MATCH on the quote-bound subtree — value-dependent rewriting
 pass	a handler STATE that is a recursive sum GROWS one constructor per operation
 pass	a handler arm computes its NEXT-STATE with a recursive pure helper
@@ -3343,6 +3344,7 @@ pass	an Ast-value-spliced template round-trips through encode and decode
 pass	an Ast.Bool and an Ast.Int are distinct by variant tag not by numeric value
 pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	an EMPTY splice mid-list closes the gap, a singleton fills it, and two splices around a literal both land
+pass	an EXPORT naming an unbound definition is rejected
 pass	an eval match binder shadowing a HEAP-typed outer name leaves the heap value intact
 pass	an eval splice consumes a value extracted from a CHAMP map at run time
 pass	an i64 le field at the sign boundary decodes negative from its high LAST byte
@@ -3695,12 +3697,16 @@ pass	an unannotated program with a valid typing type-checks and runs
 pass	an unannotated two-argument closure is inferred through a generic recursive HOF
 pass	an unbound CONSTRUCTOR applied in an uncalled def is rejected
 pass	an unbound TYPE name in an uncalled definition's annotation is still rejected
+pass	an unbound export BEFORE a valid main export is rejected
+pass	an unbound export after a valid HELPER export is rejected
 pass	an unbound name as a parameter's annotation type is rejected
 pass	an unbound name as an ARGUMENT to a known ctor in an uncalled def is rejected
 pass	an unbound name in a map key is a scope error, not a coerced string
 pass	an unbound name in a resume's state position is rejected
 pass	an unbound name in a short-circuited boolean operand is still rejected
 pass	an unbound name in a type annotation's type position is rejected
+pass	an unbound name in an uncalled def's match-ARM BODY is rejected
+pass	an unbound name in an uncalled def's match-arm GUARD is rejected
 pass	an unbound name in an uncalled sibling definition is still rejected
 pass	an unbound name in an unselected conditional branch is still rejected
 pass	an unbound name in an unselected match arm is still rejected
