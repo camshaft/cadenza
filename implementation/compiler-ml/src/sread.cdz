@@ -682,28 +682,58 @@ def read-payload-argtypes(s: String, p: Int64, acc: List(Int64)) =
 /// unbound type reference (rcdzc CDZ0101) → `true`. A lowercase atom is a TYPE VARIABLE → never flagged. Walks
 /// the payload fields to the ctor's `)`. `tree` carries the COMPLETE registry (this runs at read-source
 /// completion, so a forward-declared type is already recorded).
-def ctor-payload-has-unbound(s: String, p: Int64, tree: Tree) =
+/// Is `atom` an UNBOUND type reference? The shared gap-B-C predicate: uppercase-led + not a builtin/prelude
+/// type + not a declared type name (whole-program registry). A lowercase atom (type variable) → false.
+def type-atom-unbound(atom: String, tree: Tree) =
+  (is-upper-led(atom) and (if is-prelude-or-builtin-type(atom) then false else true)
+    and (if decl-name-registered(tree, name-id(atom)) then false else true))
+
+/// adv-48 — a `record` ctor's FIELD group `(: f T)` or `(f T)` at `g` (just inside the field's `(`, depth 1):
+/// read its atoms to the field's `)` and check the LAST one (the field TYPE) with `type-atom-unbound`. STAY ONE
+/// LEVEL — if the field type is itself a nested applied `(Box X)`, this reads the atom BEFORE the `(` as the last
+/// scanned atom and checks only that HEAD (a `(`-led field-type is skipped by the atom scan, matching C's
+/// head-only / no-recurse-into-applied-args rule). The `:` annotation token and the field NAME are earlier atoms,
+/// not the last, so they're naturally not the checked type. Returns true iff the field type is unbound.
+def record-field-type-unbound(s: String, g: Int64, last: String, tree: Tree) =
+  (let q = skip-space(s, g) in
+   (if (char-at(s, q) == ")") then type-atom-unbound(last, tree)               // field group closed → check the last atom seen
+    else (if (char-at(s, q) == "(")
+          then record-field-type-unbound(s, skip-to-close(s, q + 1, 1), last, tree)  // nested applied field type → head-only (keep prior `last`)
+          else (match scan-atom(s, q, "") with | (atom, pn) =>
+                 record-field-type-unbound(s, pn, atom, tree)))))              // advance; this atom is the new candidate `last`
+
+/// gap-B-C — is a payload ATOM (from `p` to the ctor's `)`) an unbound type reference? `is-record` = the enclosing
+/// ctor is a `record` (adv-48): then a nested `(` field group `(: f T)` is DESCENDED ONE LEVEL (its field-TYPE atom
+/// checked via record-field-type-unbound) instead of skipped. For a NON-record ctor, a nested `(` field is SKIPPED
+/// (nested applied-types are OUT of the narrow slice — the generics frontier). A bare atom is checked directly (the
+/// flat sum-ctor payload face, gap-B-C's original scope).
+def ctor-payload-has-unbound(s: String, p: Int64, is-record: Bool, tree: Tree) =
   (let q = skip-space(s, p) in
    (if (char-at(s, q) == ")") then false                                       // end of this ctor's payload
     else (if (char-at(s, q) == "(")
-          then ctor-payload-has-unbound(s, skip-to-close(s, q + 1, 1), tree)   // NESTED field → SKIP (out of C's scope)
+          then (if is-record                                                   // record field group → descend ONE level (adv-48)
+                then (if record-field-type-unbound(s, q + 1, "", tree)
+                      then true
+                      else ctor-payload-has-unbound(s, skip-to-close(s, q + 1, 1), is-record, tree))
+                else ctor-payload-has-unbound(s, skip-to-close(s, q + 1, 1), is-record, tree))  // non-record nested field → SKIP
           else (match scan-atom(s, q, "") with | (atom, pn) =>
-                 (if (is-upper-led(atom) and (if is-prelude-or-builtin-type(atom) then false else true)
-                       and (if decl-name-registered(tree, name-id(atom)) then false else true))
+                 (if type-atom-unbound(atom, tree)
                   then true                                                     // uppercase, non-builtin, undeclared → unbound
-                  else ctor-payload-has-unbound(s, pn, tree))))))             // ok → check the next field
+                  else ctor-payload-has-unbound(s, pn, is-record, tree))))))    // ok → check the next field
 
 /// gap-B-C — walk a `(type …)` decl's ctor list from `k` (at the first ctor `(` or the type's closing `)`),
 /// returning `true` if ANY ctor has a top-level payload atom that is an unbound type reference. A `)` ends the
 /// list. A ctor `(Cname field…)`: check its payload fields (from just after the ctor name), then recurse to the
 /// next ctor (past this ctor's `)` via skip-to-close). A non-`(`/`)` char (malformed) → false (permissive).
+/// adv-48: a ctor NAMED `record` (a misparsed record decl `(type R (record (: f T) …))`) descends one level into
+/// its field groups (is-record=true) — the field-type atom is checked, so `(record (: f NoSuchField))` declines.
 def type-ctors-have-unbound(s: String, k: Int64, tree: Tree) =
   (let q = skip-space(s, k) in
    (if (char-at(s, q) == ")") then false                                       // ctor list closed
     else (if (char-at(s, q) == "(")
           then (let c0 = q + 1 in                                              // just inside the ctor's `(`, depth 1
-                (match scan-atom(s, skip-space(s, c0), "") with | (_cname, c1) =>
-                  (if ctor-payload-has-unbound(s, skip-space(s, c1), tree)
+                (match scan-atom(s, skip-space(s, c0), "") with | (cname, c1) =>
+                  (if ctor-payload-has-unbound(s, skip-space(s, c1), cname == "record", tree)
                    then true
                    else type-ctors-have-unbound(s, skip-to-close(s, c0, 1), tree))))   // next ctor
           else false)))

@@ -25,23 +25,26 @@ export default function PatternMatching() {
 
       <P>
         Literals aren't just numbers, since you can match a <C>String</C> the same way, and this is the
-        everyday shape for dispatching on a keyword or command name. Here <C>op</C> turns an operation name into a
-        code, falling back to <C>0</C> for anything it doesn't recognise:
+        everyday shape for dispatching on a keyword or command name. Here <C>known-op</C> reports whether a
+        name is one of the operations it recognises, answering <C>false</C> for everything else:
       </P>
       <Runnable
-        source={`(def (op name)
+        source={`(def (known-op name)
   (match name
-    ("add" 1)
-    ("sub" 2)
-    (_ 0)))
-(def (main) (op "sub"))`}
+    ("add" true)
+    ("sub" true)
+    (_ false)))
+(def (main) (known-op "sub"))`}
       />
       <P>
-        <C>"sub"</C> takes the second arm, <C>2</C>. Change it to <C>"add"</C> or something unknown like{" "}
-        <C>"mul"</C> and Run again. The <C>_</C> arm isn't optional here: <C>String</C> (like <C>Int64</C>)
-        has infinitely many values, so the compiler can't see that you've covered them all: leave the
-        wildcard off and it declines with a non-exhaustive-match error, the same guarantee you'll meet with
-        sums below.
+        <C>"sub"</C> takes the second arm, <C>true</C>. Change it to <C>"add"</C> or something unknown like{" "}
+        <C>"mul"</C> and Run again. Note the answer is an honest <C>Bool</C>, not a stand-in number: a
+        recognised name is <C>true</C>, anything else is <C>false</C>. (When a lookup needs to hand back a{" "}
+        <em>result</em> that might not exist, you reach for <C>Option</C> rather than a magic value like{" "}
+        <C>-1</C>, which is exactly what the next section builds.) The <C>_</C> arm isn't optional here:{" "}
+        <C>String</C> (like <C>Int64</C>) has infinitely many values, so the compiler can't see that you've
+        covered them all: leave the wildcard off and it declines with a non-exhaustive-match error, the same
+        guarantee you'll meet with sums below.
       </P>
 
       <H2>Sum types</H2>

@@ -5,15 +5,14 @@
 //!
 //! - **S1 (durable dispatch):** before an effect is handed to an executor, a `Dispatched` event is
 //!   appended to the log, and recovery re-drives un-resulted dispatches by idempotency key so a crash
-//!   between dispatch and result never double-fires or drops. NOTE the current wiring: a live `Session`
-//!   holds its log **in memory** and does not itself write through to disk on append; durable
-//!   persistence is provided by [`crate::log_store::LogStore`] and recovery by [`Session::recover`],
-//!   both of which have landed — but a driver that wants the S1 crash guarantee must persist each event
-//!   via a `LogStore` as it is appended (the write-through is mirrored, not yet owned by `Session`).
-//!   Making `Session::append` write through a `LogStore` directly — which turns append fallible
-//!   (disk I/O) and ripples `io::Result` through the drive loop — is the remaining durability slice
-//!   (§16c-S1); the recovery *logic* (replay the log, re-drive open dispatches) is already exercised
-//!   here via `replay`/`recover`.
+//!   between dispatch and result never double-fires or drops. A `Session` with a [`crate::log_store::LogStore`]
+//!   attached ([`Session::attach_log`]) WRITES THROUGH on every append (persist before the hash is
+//!   returned + used to route), so the durable-before-route ordering holds in-kernel — and the drive
+//!   loop refuses to route an effect whose `Dispatched` frame failed to persist (it records a
+//!   failed-undurable result instead of calling the executor). This is durability tier B (latched, via
+//!   `persist_error` / [`Session::take_persist_error`]); tier A (strict fallible-abort of the whole
+//!   drive) is the tracked hardening for when irreversible external routing goes live in anger. Recovery
+//!   (`replay`/`recover`) rebuilds KV + the open-obligation set from the log.
 //! - **S4 (effect-id correlation + timeout-cancels):** each effect gets a monotonic `EffectId`; results
 //!   fold back correlated by id. A timeout cancels the dispatch — once an outcome (Ok/Err/TimedOut) is
 //!   recorded for an id, no second outcome for that id is ever accepted.
@@ -109,17 +108,24 @@ impl Session {
     /// "Dispatched-durable-before-route" ordering holds in-kernel. A persist failure is latched (see
     /// [`Session::take_persist_error`]), not propagated — the in-memory session stays consistent.
     ///
-    /// (Whether a persist failure should instead ABORT the route strictly — durability tier A — is a
-    /// design decision raised to the concierge; this tier-B write-through is the v0 baseline it hardens.)
+    /// **Durability tier (concierge ruling): B (latched) is the v0 baseline; A (strict abort) is the
+    /// committed hardening for when the kernel routes irreversible external effects in anger.** In tier
+    /// B, the kernel already refuses to ROUTE an effect whose `Dispatched` frame failed to persist (the
+    /// drive loop checks the latch before `executor.perform` — the actual S1 danger, an un-doable route
+    /// on an un-durable dispatch). The driver's remaining obligation: after a run, call
+    /// [`Session::take_persist_error`]; if `Some`, the run's log is not fully durable (recovery heals the
+    /// torn tail via `truncate_to`) — surface/alert, don't silently continue.
     pub fn attach_log(&mut self, store: crate::log_store::LogStore) {
         self.store = Some(store);
     }
 
-    /// Take the latched persistence error, if any (§16c-S1 tier B). A driver using [`Session::attach_log`]
-    /// MUST call this after a `deliver`/`fire_due_timers`/`time_out_effect` and, if it's `Some`, treat the
-    /// run's externally-visible effects as NOT durably logged (the on-disk log stopped at the last good
-    /// frame; recovery heals the torn tail via `truncate_to`). Clears the latch so the next run starts
-    /// clean. `None` = every event this session appended was persisted.
+    /// Take the latched persistence error, if any (§16c-S1 tier B). Call after a
+    /// `deliver`/`fire_due_timers`/`time_out_effect`; `Some` means a write-through failed mid-run, so the
+    /// on-disk log stopped at the last good frame (recovery heals the torn tail via `truncate_to`) —
+    /// alert/surface, don't silently proceed. Note the kernel ALREADY prevents the core S1 hazard: an
+    /// effect whose `Dispatched` frame didn't persist is NOT routed (its outcome is a failed-undurable
+    /// `EffectResult::Err`, not an executor call). Clears the latch. `None` = every appended event
+    /// persisted.
     pub fn take_persist_error(&mut self) -> Option<io::Error> {
         self.persist_error.take()
     }
@@ -359,6 +365,28 @@ impl Session {
                 },
                 Some(cause),
             );
+
+            // S1 latch-check BEFORE routing (concierge ruling, tier B): if persisting THIS Dispatched
+            // frame failed, the dispatch is NOT durable — so we must NOT route the effect, because an
+            // executor may perform an irreversible external side-effect (e.g. ShellExecutor spawns a
+            // process) that a crash-recovery would then re-drive with no record it already ran. Instead
+            // of performing, record the effect as failed-undurable (an observable outcome the reducer
+            // folds, live == replay) and move on. The latch stays set (surfaced to the driver via
+            // take_persist_error); subsequent dispatches short-circuit here too. This is the tier-B
+            // durable-before-route guarantee at the actual danger point (an un-doable route on an
+            // un-durable dispatch); tier A (strict fallible-abort of the whole drive) is the tracked
+            // hardening for when external routing goes live in anger.
+            if self.persist_error.is_some() {
+                let outcome = EffectOutcome::Err(
+                    "dispatch not durably logged (persist failure) — effect NOT routed (S1)"
+                        .to_string(),
+                );
+                let more = self.record_result(id, outcome, reducer, dispatch_hash);
+                for pair in more {
+                    to_process.push(pair);
+                }
+                continue;
+            }
 
             // Route + execute. (In v0 this is synchronous; the async path preserves the ordering: the
             // Dispatched record is already durable, so a crash here recovers via replay.)

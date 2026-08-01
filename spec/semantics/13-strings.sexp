@@ -4205,3 +4205,37 @@
             (export main)))
   (call   main (: 1 Int64))
   (output (: 501 Int64)))
+
+; --- Construction-path equality for strings (the collection companions live in 05/19): a
+; string reached via one construction path must compare equal to the same content reached
+; via another — the rope-vs-flat and opposite-order pins above cover concat shapes; these
+; add SLICE windows (seam-spanning) and the concat-vs-slice cross. ---
+
+(case "a slice of a runtime rope equals the flat literal of its window"
+  (doc    "The slice-of-rope face of string canonicalization: `mk` builds the rope \"ab\"+\"cdef\" at run
+           time; a slice window SPANNING the seam (indices 1..4 → \"bcd\", crossing the leaf boundary at
+           index 2) and a window INSIDE one leaf (0..2 → \"ab\") must both equal their flat literals → 11.
+           A slice that re-based against a single leaf (ignoring the rope's seam) or compared the rope
+           window without compaction breaks the seam-spanning leg first.")
+  (input  (do
+            (def (mk (: a String)) (String.concat a "cdef"))
+            (def (main (: k Int64))
+              (+ (* 10 (if (= (Option.expect (String.slice (mk "ab") 1 4) "in bounds") "bcd") 1 0))
+                 (if (= (Option.expect (String.slice (mk "ab") 0 2) "in bounds") "ab") 1 0)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 11 Int64)))
+
+(case "a concat-reached string equals a slice-reached string of the same content and not a decoy"
+  (doc    "Cross-construction-path equality: \"abcd\" reached via CONCAT (\"ab\"+\"cd\", a rope) and via
+           SLICE (the 1..5 window of \"xabcdy\", a re-based view) — two maximally different physical
+           representations of the same 4 bytes must compare equal (tens digit), and the concat rope must
+           NOT equal the decoy \"abce\" (ones digit) → 10. The string companion of the collection
+           construction-path equality family (via-remove/algebra/swap-take pins in 05/19).")
+  (input  (do
+            (def (via-concat (: a String)) (String.concat a "cd"))
+            (def (via-slice) (Option.expect (String.slice "xabcdy" 1 5) "in bounds"))
+            (def (main (: k Int64))
+              (+ (* 10 (if (= (via-concat "ab") (via-slice)) 1 0))
+                 (if (= (via-concat "ab") "abce") 1 0)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 10 Int64)))

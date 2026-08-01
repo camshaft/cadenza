@@ -1162,6 +1162,7 @@ pass	a concat of two runtime SLICES joins the sliced views, not the originals
 pass	a concat-built and a push-built SMALL list (single-leaf, n<=32) with the same elements are the same map key
 pass	a concat-built list = a push-built list with the same elements (element-wise, shape-independent, n>=33)
 pass	a closure stored as a MAP value is looked up by a runtime key and applied
+pass	a concat-reached string equals a slice-reached string of the same content and not a decoy
 pass	a conditional evaluates only the selected branch
 pass	a conditional inside a function with a constant condition and mismatched branches is a type error
 pass	a conditional on a negated runtime condition selects the correct branch and shields the other
@@ -2944,6 +2945,7 @@ pass	a single-variant-sum binding pattern destructures a multi-payload construct
 pass	a single-variant-sum binding pattern nests inside another
 pass	a slice VIEW and a rope compare by content across the two non-flat reps
 pass	a slice crosses the seam of a runtime-assembled byte rope
+pass	a slice of a runtime rope equals the flat literal of its window
 pass	a slice of a slice composes scalar offsets against the VIEW, not the base string
 pass	a slice spanning a concatenation sees the logical bytes
 pass	a slice whose end is beyond the string length yields None

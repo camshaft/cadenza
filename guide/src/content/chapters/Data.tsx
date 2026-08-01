@@ -69,12 +69,13 @@ export default function Data() {
       </P>
       <Runnable
         source={`(match (tuple 3 4)
-  ((tuple a b) (+ a b))
-  (_           0))`}
+  ((tuple a b) (+ a b)))`}
       />
       <P>
-        Destructuring like this is the subject of <strong>Pattern matching</strong>; the point here is
-        that a tuple or record is an ordinary value a pattern can name and take apart.
+        One arm is enough: a two-tuple always has exactly this shape, so <C>(tuple a b)</C> is an{" "}
+        <em>irrefutable</em> pattern that can't fail to match, and no catch-all is needed. Destructuring like
+        this is the subject of <strong>Pattern matching</strong>; the point here is that a tuple or record is
+        an ordinary value a pattern can name and take apart.
       </P>
 
       <H2>They compose</H2>

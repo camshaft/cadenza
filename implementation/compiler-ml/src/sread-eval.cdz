@@ -260,6 +260,42 @@ def se-type-decl-nested-payload-not-flagged-runs() =
     | Option.None(_) => trap("a nested applied-type payload must NOT be flagged by the narrow C slice")
 
 @test
+def se-record-decl-unbound-field-type-declines() =
+  // adv-48 (breaker's record-field face): a `record` decl's FIELD with an unbound TYPE is ill-formed (rcdzc
+  // CDZ0101 "unknown type `NoSuchField`"). `(type R (record (: field NoSuchField)))` — the reader misparses
+  // `record` as a ctor whose payload is the field group `(: field NoSuchField)`; the adv-48 one-level descent
+  // reads the field group and checks its field-TYPE atom → declines. (Ruled WITHIN Option-C's bar: one bounded
+  // level into the known flat record shape, distinct from arbitrary nested applied-type recursion.)
+  match run-src("(do (type R (record (: field NoSuchField))) (def (main) 42) (export main))") with
+    | Option.Some(_) => trap("a record field with an unbound type must DECLINE (CDZ0101)")
+    | Option.None(_) => unit
+
+@test
+def se-record-decl-unbound-field-type-no-annotation-declines() =
+  // the no-annotation spelling `(record (field NoSuchField))` (no `:`): the field group's LAST atom is still the
+  // type `NoSuchField` → declines too. (Oracle rejects both spellings CDZ0101; breaker banked both.)
+  match run-src("(do (type R (record (field NoSuchField))) (def (main) 42) (export main))") with
+    | Option.Some(_) => trap("a no-annotation record field with an unbound type must DECLINE (CDZ0101)")
+    | Option.None(_) => unit
+
+@test
+def se-record-decl-valid-field-type-still-runs() =
+  // complement (guard against over-rejection): a record decl whose field type is a BUILTIN runs. `(record
+  // (: field Int64))` → Int64 is a builtin, not flagged → main runs 42. (The descent must NOT flag the field
+  // NAME `field` (lowercase, not the last atom) nor the `:` token — only the field-TYPE atom.)
+  match run-src("(do (type R (record (: field Int64))) (def (main) 42) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("valid record field type → main runs 42"))
+    | Option.None(_) => trap("a record field with a valid (builtin) type must NOT decline")
+
+@test
+def se-record-decl-declared-field-type-still-runs() =
+  // complement: a record field whose type is a DECLARED type (whole-program registry) runs. `Id` is declared,
+  // `(record (: field Id))` accepts. Guards the one-level descent against over-rejecting a legitimate type ref.
+  match run-src("(do (type Id (Mk Int64)) (type R (record (: field Id))) (def (main) 42) (export main))") with
+    | Option.Some(v) => (if v == 42 then unit else trap("declared record field type → main runs 42"))
+    | Option.None(_) => trap("a record field with a declared type must NOT decline")
+
+@test
 def se-export-unbound-name-declines() =
   // an `(export NAME)` where NAME names NO definition is ill-formed (rcdzc CDZ0101 "export names no
   // definition"). The reader used to ignore the export name (a non-def head just ended the sequence), so
