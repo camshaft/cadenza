@@ -13678,6 +13678,61 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_equality_point_fact_elides_the_then_branch_arith_overflow_guard() {
+        // The EQUALITY face of the interval refinement (refine_from_comparison, diverge.rs): inside the
+        // THEN branch of `(if (= x c) …)` the fact pins `x` to the EXACT point range `[c, c]`, so a checked
+        // arith on `x` whose result at `x == c` provably fits the type sheds its overflow guard — exactly as
+        // an ORDERING refinement (`x > 0`) elides the underflow guard, but licensed by a POINT fact instead
+        // of an interval. Sibling of `a_flow_refined_arith_op_elides_its_overflow_guard_on_the_rust_backend`
+        // and the nonneg-div elision above; the corpus counterpart is the 02-binding-and-control Eq case.
+        // Pin it at the Lir level (not just value parity) so a refinement regression that stopped pinning
+        // the point fact would be caught here, not silently keep the dead guard.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let lir = |params: &str, body: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(&format!(
+                "(module m (def (f {params}) {body}) (def (main) 0) (export main))"
+            ));
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        // BASELINE: a bare `(+ x 1)` on the narrow Int8 type carries its overflow guard (x = 127 → 128
+        // overflows Int8), so the guard is live and must be present.
+        let bare = lir("(: x Int8)", "(+ x 1)");
+        assert!(
+            bare.iter().any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
+            "bare (+ x 1) on Int8 keeps its overflow guard; got {bare:?}"
+        );
+        // REFINED: under `(= x 5)` the then-branch pins `x = [5, 5]`, so `(+ x 1) = 6` provably fits Int8 →
+        // the overflow guard is dead and dropped (the value-facts point-fact invariant).
+        let refined = lir("(: x Int8)", "(if (= x 5) (+ x 1) 0)");
+        assert!(
+            !refined
+                .iter()
+                .any(|i| matches!(i, Lir::IfIntegerOverflowEnd)),
+            "an equality point fact (x == 5) drops the (+ x 1) overflow guard; got {refined:?}"
+        );
+    }
+
+    #[test]
     fn divisibility_by_a_power_of_two_becomes_a_mask_test() {
         use crate::backend::wasm::lir::Lir;
         use crate::db::Db;
