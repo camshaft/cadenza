@@ -515,6 +515,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn suffix_kind_char_is_a_case_sensitive_bijection_with_from_char() {
+        // `suffix_char` (kind → letter) and `from_char` (letter → kind) are duals — the printer renders
+        // a suffixed leaf with `suffix_char`, and the lexer re-reads that letter with `from_char`, so a
+        // suffixed literal round-trips to text that re-reads to the SAME kind. A future third suffix kind
+        // that added a `suffix_char` arm but forgot the `from_char` arm (or vice versa) would silently
+        // break that round-trip with nothing at the bottom crate to catch it. Pin the bijection over
+        // EVERY kind, plus the deliberate CASE-SENSITIVITY (`n`/`r` are NOT suffixes — one canonical
+        // spelling), and that every OTHER char is rejected.
+        for kind in [SuffixKind::BigInt, SuffixKind::Rational] {
+            let c = kind.suffix_char();
+            assert_eq!(
+                SuffixKind::from_char(c),
+                Some(kind),
+                "suffix_char/from_char are not inverse for {kind:?} (char {c:?})"
+            );
+            // The type name each desugars to is exactly the annotation type the reader grounds against.
+            assert_eq!(
+                kind.type_name(),
+                match kind {
+                    SuffixKind::BigInt => "BigInt",
+                    SuffixKind::Rational => "Rational",
+                }
+            );
+        }
+        // Case-sensitive: the lowercase forms are not suffix letters.
+        assert_eq!(
+            SuffixKind::from_char('n'),
+            None,
+            "lowercase n is not a suffix"
+        );
+        assert_eq!(
+            SuffixKind::from_char('r'),
+            None,
+            "lowercase r is not a suffix"
+        );
+        // A sweep of other plausible letters/digits is rejected — only `N`/`R` classify.
+        for c in [
+            'a', 'B', 'Z', 'x', '0', '9', 'i', 'I', 'f', 'F', 'u', 'U', 'L', ' ', '_',
+        ] {
+            assert_eq!(
+                SuffixKind::from_char(c),
+                None,
+                "only N/R are suffixes; {c:?} must not classify"
+            );
+        }
+    }
+
+    #[test]
     fn leaves_dedup_occurrences_do_not() {
         // (+ x x): two `x` occurrences share ONE leaf, but are distinct structure ids.
         let mut b = Builder::new();
