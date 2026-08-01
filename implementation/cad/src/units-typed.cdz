@@ -84,9 +84,15 @@ def v3-len-stores-exact-meters() =
 
 @test
 def a-coordinate-round-trips-out-as-a-meter-length() =
-  // m-x is the dual of v3-len: read the x coordinate back as a Qty in meters, magnitude exactly 1.
+  // m-x/m-y/m-z are the duals of v3-len: read each coordinate back as a Qty in meters. Distinct 1/2/3
+  // magnitudes so a swapped accessor (m-y returning x, etc.) can't hide — the earlier version only read m-x,
+  // leaving m-y/m-z (and an axis-swap in either) unpinned.
   let v = v3-len(meters(1), meters(2), meters(3)) in
-  if Qty.value(m-x(v)) == 1 / 1 then unit else trap("m-x")
+  if Qty.value(m-x(v)) == 1 / 1 then
+    (if Qty.value(m-y(v)) == 2 / 1 then
+      (if Qty.value(m-z(v)) == 3 / 1 then unit else trap("m-z must read the z coordinate (3 m)"))
+     else trap("m-y must read the y coordinate (2 m)"))
+  else trap("m-x must read the x coordinate (1 m)")
 
 @test
 def authoring-in-inches-stores-exact-meters() =

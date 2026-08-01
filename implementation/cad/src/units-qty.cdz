@@ -68,12 +68,15 @@ def vec3q-to-vec3(v: Vec3q) = match v with
 /// ============================ @test suite (S2b — Qty-field product, exact meters) ============================
 @test
 def a-vec3q-field-holds-a-length-quantity() =
-  // The field itself is a Qty — read a component back and it is a meter quantity of the right magnitude.
+  // The field itself is a Qty — read each component back and it is a meter quantity of the right magnitude.
+  // Distinct 5/2/3 magnitudes across all THREE accessors so a swapped accessor (q-y returning x, etc.) can't
+  // hide — the earlier version skipped q-y, leaving the middle accessor + an axis-swap unpinned.
   let v = v3q(qm(5), qm(2), qm(3)) in
   if Qty.value(q-x(v)) == 5 / 1 then
-    if Qty.value(q-z(v)) == 3 / 1 then unit else trap("z")
-  else
-    trap("x")
+    (if Qty.value(q-y(v)) == 2 / 1 then
+      (if Qty.value(q-z(v)) == 3 / 1 then unit else trap("q-z must read the z component (3 m)"))
+     else trap("q-y must read the y component (2 m)"))
+  else trap("q-x must read the x component (5 m)")
 
 @test
 def vec3q-bridges-to-the-exact-vec3-core() =
