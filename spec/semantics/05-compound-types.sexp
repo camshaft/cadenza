@@ -17255,11 +17255,11 @@
   (output (: 86 Int64)))
 
 (case "heterogeneous constructions take ONE malformed-collection code across list, map, and set"
-  (doc    "collections-and-text.md:104: the malformed-collection code MUST be the same INDEPENDENT of collection kind. List and map-VALUE mixes are pinned; this adds the SET-element kind (CDZ0201, same code).")
+  (doc    "collections-and-text.md:104: the malformed-collection code MUST be the same INDEPENDENT of collection kind. List and map-VALUE mixes are pinned; `(Set.of (list 1 true))` reaches the SET-construction surface with the SAME code (CDZ0201), via its heterogeneous element-list literal. (The fault attaches at the inner list literal — Set.of takes a homogeneous list; a mismatched Set.insert of a Bool instead takes CDZ0203, the type-mismatch code, not CDZ0201 — so CDZ0201 for a set specifically arrives through the element-list construction, not a post-hoc insert.)")
   (input  (do (def (main) (Set.of (list 1 true))) (export main)))
   (error  CDZ0201))
 
 (case "a mixed-key map insert chain takes the same malformed-collection code"
-  (doc    "The map-KEY face (the pinned map case mixes VALUES): a second insert whose key type differs takes the same CDZ0201 — the uniform code covers the key axis too.")
+  (doc    "The map-KEY face at a STRING key: a Bool mixed-KEY insert is already pinned (:13840, (Map.insert (Map.insert Map.empty 1 10) true 20)); this adds STRING as another mixed-key variant, confirming the uniform CDZ0201 covers the key axis regardless of the intruding key type (not only Bool).")
   (input  (do (def (main) (Map.insert (Map.insert Map.empty 1 10) "k" 20)) (export main)))
   (error  CDZ0201))

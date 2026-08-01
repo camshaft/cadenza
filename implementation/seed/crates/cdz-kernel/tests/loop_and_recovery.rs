@@ -632,3 +632,80 @@ fn live_shell_denied_command_never_executes() {
         .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })));
     assert_eq!(session.open_effects(), 0);
 }
+
+#[test]
+fn authz_denied_is_folded_live_so_replay_matches() {
+    // PR#990 finding #1: a denial is an observable outcome the reducer folds in BOTH paths. A reducer
+    // that records denials in KV must reach the SAME kv live and on replay — else event-sourcing's
+    // replay-equivalence (the core invariant) is broken.
+    struct DenialCounter;
+    impl Reducer for DenialCounter {
+        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
+                    kind: EffectKind::Http,
+                    target: "https://denied.host/x".into(), // outside the capability → denied
+                    payload: None,
+                }]),
+                EventBody::AuthzDenied { .. } => {
+                    let n = kv.get(b"denials").map(|b| b[0]).unwrap_or(0) + 1;
+                    kv.put(b"denials".to_vec(), vec![n]);
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+    // Capability permits only ok.host, so the denied.host effect is denied at the gate.
+    let authz = Authorizer::new(vec![Capability {
+        kind: EffectKind::Http,
+        predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
+    }]);
+    let mut exec = RecordingExecutor::new();
+    let mut session = Session::genesis(Hash::of(b"denial"));
+    session
+        .deliver(inbound_go(), None, &DenialCounter, &authz, &mut exec)
+        .unwrap();
+
+    // Live: the reducer folded the denial → counter is 1, and the executor never ran.
+    assert_eq!(session.kv().get(b"denials"), Some(&[1u8][..]));
+    assert_eq!(exec.seen.len(), 0);
+    let live_root = session.snapshot().kv_root;
+
+    // Replay: must reconstruct the SAME kv (the denial is folded in replay too, matching live).
+    let replayed = Session::replay(session.log().to_vec(), &DenialCounter).unwrap();
+    assert_eq!(replayed.kv().get(b"denials"), Some(&[1u8][..]));
+    assert_eq!(
+        replayed.snapshot().kv_root,
+        live_root,
+        "live kv must equal replayed kv even with a denial in the log (finding #1)"
+    );
+}
+
+#[test]
+fn replay_rejects_a_genesis_less_log_loudly() {
+    // PR#990 finding #2: a Genesis-less log is corruption. The public boot path (replay) FAILS LOUDLY
+    // rather than masking it — so a Session is only ever constructed WITH a Genesis first event, which
+    // is exactly why reducer_hash's now-panicking invariant is unreachable in practice.
+    struct Inert;
+    impl Reducer for Inert {
+        fn fold(&self, _e: &Event, _kv: &mut Kv) -> FoldOutput {
+            FoldOutput::none()
+        }
+    }
+    let genesis_less = vec![Event {
+        seq: 0,
+        cause: None,
+        body: EventBody::Inbound {
+            content_type: ContentType {
+                family: "m".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(vec![]),
+        },
+    }];
+    assert!(
+        Session::replay(genesis_less, &Inert).is_err(),
+        "replay must reject a log whose first event is not Genesis (finding #2 fail-loud)"
+    );
+}

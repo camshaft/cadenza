@@ -15,7 +15,7 @@
 /// cannot do and the reason Rational plus Qty exist.
 @!default-fraction Rational
 
-import { Solid, Vec3, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
+import { Solid, SolidR, Vec3, lower, v3, v3-eq, bounding-box, aabbr-size, solidr-is-empty } from "exact"
 
 import { box, hole-through } from "helpers"
 
@@ -66,5 +66,16 @@ def bracket-at-fixed-inches-has-the-exact-mm-envelope() =
 def a-quarter-inch-bore-converts-to-exact-mm() =
   // The exact-Rational unit payoff pinned directly: a quarter-inch bore radius is 127/20 mm, exact.
   if inch(1 / 4) == 127 / 20 then unit else trap("quarter inch is 127/20 mm exactly")
+
+@test
+def the-lowered-bracket-render-form-is-non-empty() =
+  // THE render-edge pin (matching the other showcases): main = lower(bracket(...)) is the SolidR tree the mesh
+  // driver consumes. The MODEL being non-empty (above) is NOT enough — a `lower` regression dropping/emptying a
+  // branch leaves the model non-empty while the RENDER goes blank (the snowflake-shipped-blank class). Pin that
+  // the LOWERED output is not SolidR.Empty. (bracket's top node is hole-through = a Difference → the lowered top
+  // is SolidR.Difference, a real meshable render node.)
+  match lower(bracket(3 / 1, 2 / 1, 1 / 1, 1 / 4)) with
+    | SolidR.Empty => trap("the lowered bracket render form (what the driver meshes) must NOT be empty")
+    | _ => unit
 
 export { main }

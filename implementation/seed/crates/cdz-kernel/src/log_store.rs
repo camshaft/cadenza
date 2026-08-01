@@ -30,15 +30,21 @@ pub struct LogStore {
     file: File,
 }
 
-/// What a recovery read found. Distinguishes a clean torn tail (expected after a crash) from genuine
-/// mid-stream corruption (a complete-but-invalid frame), so the driver can treat them differently.
+/// What a recovery read found. Distinguishes THREE tail states so the driver can react correctly
+/// (PR#990 finding #4 — corruption must not be indistinguishable from a clean EOF):
+/// - clean end (torn_tail=false, corrupt=false),
+/// - benign torn tail — a partial final frame from a crash mid-append (torn_tail=true),
+/// - genuine corruption — a fully-present frame whose bytes don't decode (corrupt=true).
 #[derive(Debug)]
 pub struct Recovered {
-    /// Every whole, well-formed event read in order.
+    /// Every whole, well-formed event read in order (the good prefix, in all three cases).
     pub events: Vec<Event>,
     /// `true` if the file ended with a partial/torn frame that was skipped (a crash mid-append —
-    /// benign). `false` if the file ended exactly on a frame boundary.
+    /// benign). Mutually exclusive with `corrupt`.
     pub torn_tail: bool,
+    /// `true` if a COMPLETE frame failed to decode — genuine corruption, NOT a clean EOF or torn write.
+    /// The driver should treat this as an alarm (possible data loss), not a normal log end.
+    pub corrupt: bool,
 }
 
 impl LogStore {
@@ -89,6 +95,7 @@ impl LogStore {
                 return Ok(Recovered {
                     events: Vec::new(),
                     torn_tail: false,
+                    corrupt: false,
                 });
             }
             Err(e) => return Err(e),
@@ -108,6 +115,7 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
             return Recovered {
                 events,
                 torn_tail: pos < bytes.len(),
+                corrupt: false,
             };
         };
         let len =
@@ -118,6 +126,7 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
             return Recovered {
                 events,
                 torn_tail: true,
+                corrupt: false,
             };
         };
         match Event::decode(body) {
@@ -128,11 +137,13 @@ fn decode_frames(bytes: &[u8]) -> Recovered {
                 pos = body_start + len;
             }
             _ => {
-                // Complete-but-invalid frame: genuine corruption, not a torn write. Stop and report
-                // torn_tail=false so the driver can distinguish (it may choose to hard-fail here).
+                // Complete-but-invalid frame: genuine corruption, not a torn write. Report corrupt=true
+                // (distinct from a clean EOF, torn_tail=false/corrupt=false) so the driver can alarm /
+                // hard-fail rather than mistake data loss for a clean log end (finding #4).
                 return Recovered {
                     events,
                     torn_tail: false,
+                    corrupt: true,
                 };
             }
         }
@@ -291,9 +302,31 @@ mod tests {
         }
         let rec = LogStore::recover(&path).unwrap();
         assert_eq!(rec.events, vec![genesis()]); // the good prefix is preserved
+                                                 // finding #4: corruption is DISTINGUISHABLE from a clean EOF — corrupt=true, torn_tail=false.
         assert!(
             !rec.torn_tail,
             "a complete-but-invalid frame is corruption, not a torn tail"
+        );
+        assert!(
+            rec.corrupt,
+            "a complete-but-invalid frame must set corrupt (not look like clean EOF)"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn clean_and_torn_tails_are_not_flagged_corrupt() {
+        // The three tail states are distinct: a clean log and a torn tail both have corrupt=false.
+        let path = temp_path("clean-not-corrupt");
+        {
+            let mut s = LogStore::open(&path).unwrap();
+            s.append(&genesis()).unwrap();
+            s.append(&inbound(1)).unwrap();
+        }
+        let rec = LogStore::recover(&path).unwrap();
+        assert!(
+            !rec.torn_tail && !rec.corrupt,
+            "a clean log is neither torn nor corrupt"
         );
         let _ = std::fs::remove_file(&path);
     }

@@ -93,12 +93,19 @@ impl Session {
         }
     }
 
-    /// The reducer this session was created with (from genesis). Panics only on a malformed log with
-    /// no genesis, which `genesis()` makes impossible to construct.
+    /// The reducer this session was created with (from genesis). FAILS LOUDLY on a log whose first
+    /// event isn't Genesis (PR#990 finding #2): both `genesis()` and `replay()` guarantee a Genesis
+    /// first event, so a missing one is corruption, not a normal state — masking it with a bogus
+    /// `Hash::of(b"")` would produce a misleading snapshot. This is an internal invariant, so a panic is
+    /// the right failure (a corrupt in-memory session is a bug, not a recoverable input — untrusted log
+    /// bytes are already rejected by `replay`/`decode` before a Session exists).
     fn reducer_hash(&self) -> Hash {
         match self.log.first().map(|e| &e.body) {
             Some(EventBody::Genesis { reducer }) => *reducer,
-            _ => Hash::of(b""),
+            _ => panic!(
+                "cdz-kernel invariant violated: session log's first event is not Genesis \
+                 (a Session is only constructed via genesis()/replay(), both of which guarantee it)"
+            ),
         }
     }
 
@@ -223,9 +230,14 @@ impl Session {
             // SEC-F1: authorize against the resolved target, not just the kind. The denial is caused
             // by the event that requested the effect.
             if let Err(reason) = authz.authorize(&req) {
-                self.append(EventBody::AuthzDenied { id, reason }, Some(cause));
-                // Denied effect never reaches an executor; folding the denial may prompt the reducer to
-                // recover (handled on the next inbound; v0 doesn't re-fold denials into `drive`).
+                // A denial is an OBSERVABLE outcome (§9d recovery): the reducer folds it in BOTH the
+                // live and replay paths, so live-kv == replayed-kv (PR#990 finding #1 — the denial was
+                // appended but not folded live, while replay folds it → divergence). Folding may emit
+                // recovery effects, which join the worklist.
+                let denial_hash = self.append(EventBody::AuthzDenied { id, reason }, Some(cause));
+                for pair in self.fold_tip(reducer, denial_hash) {
+                    to_process.push(pair);
+                }
                 continue;
             }
 
@@ -240,14 +252,17 @@ impl Session {
                     }
                     Err(_) => {
                         // A malformed deadline is a request error, surfaced like a denial (audit) rather
-                        // than panicking (totality, §17). It settles the id so nothing waits on it.
-                        self.append(
+                        // than panicking (totality, §17). Observable → folded in both paths (finding #1).
+                        let denial_hash = self.append(
                             EventBody::AuthzDenied {
                                 id,
                                 reason: format!("timer deadline not a u64 ms: {:?}", req.target),
                             },
                             Some(cause),
                         );
+                        for pair in self.fold_tip(reducer, denial_hash) {
+                            to_process.push(pair);
+                        }
                     }
                 }
                 continue;
@@ -372,9 +387,11 @@ impl Session {
                 }
                 _ => {}
             }
-            // Re-fold non-genesis events to rebuild KV (effects emitted during replay are IGNORED —
-            // their results are already in the log; §17 "replay re-folds with no live effect").
-            if !matches!(event.body, EventBody::Genesis { .. }) {
+            // Re-fold OBSERVABLE events to rebuild KV — the SAME set the live `drive` path folds, so
+            // replayed-kv == live-kv (PR#990 finding #1). Kernel-internal bookkeeping events
+            // (Dispatched, TimerArmed) are NOT folded in either path; effects emitted during replay are
+            // IGNORED — their results are already in the log (§17 "replay re-folds with no live effect").
+            if observable(&event.body) {
                 let _ = reducer.fold(&event, &mut s.kv);
             }
             s.log.push(event);
@@ -448,6 +465,25 @@ pub struct Snapshot {
     pub seq: u64,
     pub kv_root: Hash,
     pub reducer: Hash,
+}
+
+/// Does the reducer FOLD this event body? The single source of truth used by BOTH the live `drive`
+/// path and `replay`, so live-kv and replayed-kv can never diverge (PR#990 finding #1). A reducer
+/// observes its INPUTS and OUTCOMES — inbound messages, effect results, timer fires, authorization
+/// denials (a denial is recovery feedback, §9d) — but NOT the kernel's internal bookkeeping
+/// (`Dispatched`/`TimerArmed` exist only to drive the crash-recovery obligation sets) nor `Genesis`
+/// (session setup, not a fold input).
+fn observable(body: &EventBody) -> bool {
+    match body {
+        EventBody::Inbound { .. }
+        | EventBody::EffectResult { .. }
+        | EventBody::TimerFired { .. }
+        | EventBody::AuthzDenied { .. }
+        | EventBody::Closed { .. } => true,
+        EventBody::Genesis { .. } | EventBody::Dispatched { .. } | EventBody::TimerArmed { .. } => {
+            false
+        }
+    }
 }
 
 /// Derive a dispatch's idempotency key (§16c-S1). For v0 it's the hash of `(id, kind, target)` — stable
