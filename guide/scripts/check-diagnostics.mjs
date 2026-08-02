@@ -22,7 +22,25 @@ const pkgDir = join(guideRoot, "src/wasm/pkg");
 
 const { default: init, compile } = await import(pathToFileURL(join(pkgDir, "cdz_wasm.js")).href);
 await init({ module_or_path: readFileSync(join(pkgDir, "cdz_wasm_bg.wasm")) });
-const { wrapModule } = await import(pathToFileURL(join(guideRoot, "src/components/wrapModule.ts")).href);
+// `wrapModule.ts` is loaded directly VIA TYPE-STRIPPING — needs Node ≥ 22.6 (on by default) or ≥ 20.19 with
+// --experimental-strip-types. On an older Node the import fails with a cryptic "Unknown file extension .ts"
+// loader error; catch it and say exactly what's wrong + how to fix (mirrors check-examples.mjs's guard).
+let wrapModule;
+try {
+  ({ wrapModule } = await import(pathToFileURL(join(guideRoot, "src/components/wrapModule.ts")).href));
+} catch (e) {
+  const msg = String(e && e.message ? e.message : e);
+  if (/Unknown file extension|strip.?types|\.ts/i.test(msg)) {
+    console.error(
+      `\ncheck-diagnostics: cannot load src/components/wrapModule.ts — this Node (${process.version}) doesn't\n` +
+        `strip TypeScript types. Use Node ≥ 22.6 (type-stripping on by default), or run with\n` +
+        `\`node --experimental-strip-types scripts/check-diagnostics.mjs\` on Node ≥ 20.19.\n` +
+        `(underlying error: ${msg})`,
+    );
+    process.exit(1);
+  }
+  throw e;
+}
 
 /// Each PIN: a snippet that MUST decline, its expected diagnostic code, and the load-bearing phrases its message
 /// MUST contain (case-insensitive substring). `chapter` documents which prose depends on it. Add a pin whenever a
