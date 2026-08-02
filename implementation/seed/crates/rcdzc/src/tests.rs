@@ -62204,6 +62204,44 @@ mod stage1 {
     }
 
     #[test]
+    fn a_single_handler_dispatches_a_resuming_and_an_abortive_arm_by_op() {
+        // One handler for one effect `E` with TWO ops of DIFFERENT arm kinds — `get` resumes, `bail`
+        // abandons — so the fold must route each performed op to its own arm kind within a SINGLE handler
+        // context (distinct from the nested three-handler abort, where each kind is its own handler). Body
+        // `(+ (E.get) (E.bail 7))` seeded 0: `E.get` resumes 5, then `E.bail 7` — non-resuming — ABANDONS
+        // the pending `(+ 5 …)` and the arm value 7 becomes the whole handle's value (NOT 5+7).
+        let mixed_src = "(do (effect E (op get (-> Unit Int64)) (op bail (-> Int64 Int64))) \
+                   (def (main) (handle E 0 ((get (u) s (resume 5 s)) (bail (b) s b)) \
+                   (+ (E.get) (E.bail 7)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(mixed_src))).expect(
+                    "a single mixed resuming+abortive handler dispatches each op to its arm kind"
+                ),
+                "main"
+            ),
+            7,
+            "the abortive bail must abandon the pending (+ 5 ..) even though get resumed in the same handler"
+        );
+        // Control: the same two-op handler but the body performs ONLY the resuming op — the abortive arm is
+        // present but never reached, so nothing abandons and the handle folds to the resumed value.
+        // `(+ (E.get) 100)` seeded 0: get resumes 5, `(+ 5 100)` = 105.
+        let only_resume_src = "(do (effect E (op get (-> Unit Int64)) (op bail (-> Int64 Int64))) \
+                   (def (main) (handle E 0 ((get (u) s (resume 5 s)) (bail (b) s b)) \
+                   (+ (E.get) 100))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(only_resume_src))).expect(
+                    "a mixed handler folds normally when its abortive op is never performed"
+                ),
+                "main"
+            ),
+            105,
+            "the mere presence of an abortive arm must not perturb the resuming path"
+        );
+    }
+
+    #[test]
     fn a_cross_function_perform_is_discharged_by_the_callers_handler() {
         // E1c-3 (the inline trigger): a perform in a CALLEE `gen` is discharged by the handler enclosing
         // `gen`'s CALL — `(handle … (gen))`. The fold inlines `gen` into the handled region (β-reduces

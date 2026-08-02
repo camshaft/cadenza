@@ -3000,6 +3000,8 @@ pass	a signed pattern segment reads a two's-complement integer as negative
 pass	a signed segment reads the sign-bit-only byte as the minimum, not its magnitude
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a single Map.swap reports the OLD prior value WHILE the new map holds the NEW value (combined atomicity)
+pass	a single handler with both a resuming and an abortive arm dispatches each op to its own arm kind
+pass	a single mixed handler uses only its resuming arm when the abortive op is never performed
 pass	a single-form body admits a sequence by holding a do block
 pass	a single-scalar String.slice equals the String.at of the same index (the two scalar-addressing paths agree)
 pass	a single-task DES scheduler sleeps a task and fast-forwards the clock to its wake instant
