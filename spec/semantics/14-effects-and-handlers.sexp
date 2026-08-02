@@ -1139,6 +1139,32 @@
                     (+ (A.a) (+ (B.b) (Bail.bail 99))))))) (export main)))
   (output (: 99 Int64)))
 
+(case "a single handler with both a resuming and an abortive arm dispatches each op to its own arm kind"
+  (doc    "One handler for ONE effect `E` declaring TWO operations whose arms are DIFFERENT KINDS — `get`
+           resumes, `bail` abandons — so the fold must dispatch each performed op to its own arm kind within
+           a single handler context (distinct from the nested three-separate-handler abort above, where each
+           kind is its own handler). Body `(+ (E.get) (E.bail 7))` seeded 0: `E.get` resumes with 5, then
+           `E.bail 7` — a NON-resuming arm — ABANDONS the pending `(+ 5 …)` and yields the arm value 7 as the
+           whole handle's value (NOT 5+7). Pins that a mixed-arm handler routes the resuming op through the
+           resume fold AND the abortive op through the non-local exit, in one handler.")
+  (input  (do
+            (effect E (op get (-> Unit Int64)) (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle E 0 ((get (u) s (resume 5 s)) (bail (b) s b)) (+ (E.get) (E.bail 7)))) (export main)))
+  (output (: 7 Int64)))
+
+(case "a single mixed handler uses only its resuming arm when the abortive op is never performed"
+  (doc    "The control companion of the mixed-arm case above: the SAME two-op handler (`get` resuming,
+           `bail` abortive) but the body performs ONLY the resuming op — the abortive arm is present but
+           never reached, so nothing abandons. Body `(+ (E.get) 100)` seeded 0: `E.get` resumes with 5,
+           `(+ 5 100)` = 105. Pins that the mere PRESENCE of an abortive arm does not perturb the resuming
+           path — the handle folds to the ordinary resumed value when the abortive op is not performed.")
+  (input  (do
+            (effect E (op get (-> Unit Int64)) (op bail (-> Int64 Int64)))
+            (def (main)
+              (handle E 0 ((get (u) s (resume 5 s)) (bail (b) s b)) (+ (E.get) 100))) (export main)))
+  (output (: 105 Int64)))
+
 (case "when two abortive performs sit on one spine the FIRST (leftmost) abort wins"
   (doc    "Refines the abortive class for MULTIPLE performs. Operands evaluate LEFT-TO-RIGHT, and an
            abortive perform ABANDONS the rest of the computation, so on `(+ (Bail.bail 7) (Bail.bail 9))` the
