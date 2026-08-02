@@ -6764,14 +6764,15 @@ struct TestArgs {
     #[arg(long, default_value_t = 0)]
     seed: u64,
     /// Report TIMING — like `cargo test --report-time`, so it's explicit "where the time goes". Off by
-    /// default (the normal PASS/FAIL output is unchanged). When set, emits `⏱` lines: TWO up-front
-    /// project-wide phase lines — `⏱ precompile: N shared-closure provider(s) emitted/loaded in Xms` (the
-    /// per-closure EMIT, cheap on a `.provider.wasm` cache hit / the heavy closure lower on a miss) and
-    /// `⏱ provider JIT: N shared closure(s) JIT'd/loaded once in Xms` (the closures are JIT'd once per
-    /// project, not per file — a fast cwasm deserialize on a hit, the full JIT on a miss); then per test an
-    /// indented `⏱ PASS|FAIL <name> Xms` under its result; and per file a `⏱ <file>: compose Xms · run Yms`
-    /// (compose = that file's consumer JIT, run = all its tests). The two up-front lines split the warm-once
-    /// cost into EMIT vs JIT so a warming/gate run shows which cache missed.
+    /// default (the normal PASS/FAIL output is unchanged). When set, emits `⏱` lines. Up front, ALWAYS a
+    /// `⏱ precompile: N shared-closure provider(s) emitted/loaded in Xms` line (the per-closure EMIT, cheap
+    /// on a `.provider.wasm` cache hit / the heavy closure lower on a miss); and — ONLY when the suite has at
+    /// least one shared closure to JIT (none → this line is omitted) — a `⏱ provider JIT: N shared closure(s)
+    /// JIT'd/loaded once in Xms` line (JIT'd once per project, not per file — a fast cwasm deserialize on a
+    /// hit, the full JIT on a miss). Then per test an indented `⏱ PASS|FAIL <name> Xms` under its result; and
+    /// per file a `⏱ <file>: compose Xms · run Yms` (compose = that file's consumer JIT, run = all its
+    /// tests). The up-front lines split the warm-once cost into EMIT vs JIT so a warming/gate run shows which
+    /// cache missed.
     #[arg(long)]
     report_time: bool,
     /// WARM the shared-closure provider cache for the resolved suite, then EXIT WITHOUT running any tests.
