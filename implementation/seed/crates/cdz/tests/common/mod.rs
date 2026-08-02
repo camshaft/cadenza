@@ -15,8 +15,7 @@ use std::process::ChildStdin;
 /// on a slower runner, returns `BrokenPipe` — benign here, since these tests assert on `cdz`'s exit status +
 /// stderr (checked after `wait`), not that every byte was consumed. So swallow ONLY `BrokenPipe` and panic
 /// on any other write error. Single-sourced so the tolerated kind can't drift across the CLI test files.
-pub fn write_stdin_tolerating_broken_pipe(stdin: ChildStdin, bytes: &[u8]) {
-    let mut stdin = stdin;
+pub fn write_stdin_tolerating_broken_pipe(mut stdin: ChildStdin, bytes: &[u8]) {
     if let Err(e) = stdin.write_all(bytes) {
         assert_eq!(
             e.kind(),
