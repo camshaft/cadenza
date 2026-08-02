@@ -25,6 +25,40 @@ pub trait Authorize {
     fn authorize(&self, req: &EffectRequest) -> Result<(), String>;
 }
 
+/// The ASYNC authorization seam — the async counterpart of [`Authorize`] (operator all-async directive).
+///
+/// A wasm-component authorizer ([`crate::wasm_host::ComponentAuthorizer`], Cedar-as-wasm) evaluates a
+/// policy by instantiating + calling a wasm guest — a call that, on the all-async engine, can cooperatively
+/// yield. So the authz gate becomes awaitable too (no residual sync interface — the operator's "all async,
+/// no sync at all"). Introduced ADDITIVELY alongside sync [`Authorize`] (nothing in the kernel loop
+/// consumes it yet; the async drive loop switches to it in the same follow-up slice as the async executor,
+/// once the authorizer impls are migrated). Removed with the sync path at the end.
+///
+/// **Object-safe via `async-trait`.** The kernel gates through `&dyn Authorize`, so the async trait stays
+/// dyn-compatible via `#[async_trait(?Send)]`; `?Send` for the single-threaded kernel (a ComponentAuthorizer
+/// holds a non-`Send` wasmtime store). A sync [`Authorize`] wraps in [`SyncAuthorizeAsAsync`] (explicit
+/// adapter, not a blanket — same coherence reason as [`crate::reducer::SyncAsAsync`]).
+#[async_trait::async_trait(?Send)]
+pub trait AsyncAuthorize {
+    /// Is this request permitted? Async counterpart of [`Authorize::authorize`] — same total/pure contract
+    /// (`Ok(())` permit, `Err(reason)` deny, no panic); may `.await` a wasm policy evaluation internally.
+    async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String>;
+}
+
+/// Adapt any sync [`Authorize`] into an [`AsyncAuthorize`] (its `authorize_async` runs the sync `authorize`
+/// — no await point, correct for the in-kernel capability check). The explicit alternative to a blanket
+/// impl (so a genuinely-async authorizer, e.g. a wasm ComponentAuthorizer, writes its own `AsyncAuthorize`
+/// without a coherence collision). Wrap a sync authorizer — `SyncAuthorizeAsAsync(MyAuthorizer)` — to gate
+/// through the async kernel loop.
+pub struct SyncAuthorizeAsAsync<A>(pub A);
+
+#[async_trait::async_trait(?Send)]
+impl<A: Authorize> AsyncAuthorize for SyncAuthorizeAsAsync<A> {
+    async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String> {
+        self.0.authorize(req)
+    }
+}
+
 /// Decides whether a requested effect may be performed. The result is logged either way (§10): a
 /// permitted effect proceeds to dispatch; a denied one becomes an `AuthzDenied` event and never runs.
 /// The v0 [`Authorize`] impl: a flat capability-set check (SEC-F1). A future Cedar/delegation authorizer
@@ -93,6 +127,25 @@ mod tests {
     fn deny_all_denies_everything() {
         let authz = Authorizer::deny_all();
         assert!(authz.authorize(&req(EffectKind::Now, "")).is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sync_authorizer_wrapped_in_adapter_gates_via_async_trait() {
+        // A sync Authorize wrapped in SyncAuthorizeAsAsync gates via the async path (authorize_async runs
+        // the sync authorize). Exercise through &dyn AsyncAuthorize (object-safety) — via the adapter.
+        let authz = SyncAuthorizeAsAsync(Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
+        }]));
+        let dyn_authz: &dyn AsyncAuthorize = &authz;
+        assert!(dyn_authz
+            .authorize_async(&req(EffectKind::Http, "https://ok.host/x"))
+            .await
+            .is_ok());
+        assert!(dyn_authz
+            .authorize_async(&req(EffectKind::Http, "https://evil.host/x"))
+            .await
+            .is_err());
     }
 
     #[test]

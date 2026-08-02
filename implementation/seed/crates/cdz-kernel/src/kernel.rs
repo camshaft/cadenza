@@ -330,9 +330,12 @@ impl Session {
     /// Deliver an inbound event and drive the fold→authorize→dispatch→fold-result loop to quiescence,
     /// awaiting the reducer's fold via [`AsyncReducer`] — the async form of [`Session::deliver`]. Appends
     /// `body` (cause-linked to `cause`), then folds it through `reducer`; each effect the fold emits is
-    /// authorized, durably dispatched, executed, and its result folded back, until no new effects remain.
-    /// Because the fold is `.await`ed, a long-running wasm fold cooperatively YIELDS at fuel intervals (see
-    /// [`crate::wasm_host::AsyncComponentReducer`]) rather than blocking the caller's single-threaded loop.
+    /// authorized then handled by kind: an executor-dispatched effect (Http/Model/Shell/Now/Emit) is
+    /// durably dispatched, performed by the executor, and its result folded back; a `Timer` effect is
+    /// ARMED (a durable `TimerArmed`, no executor call) and fired later by [`Session::fire_due_timers_async`].
+    /// The loop runs until no new effects remain. Because the fold is `.await`ed, a long-running wasm fold
+    /// cooperatively YIELDS at fuel intervals (see [`crate::wasm_host::AsyncComponentReducer`]) rather than
+    /// blocking the caller's single-threaded loop.
     ///
     /// The executor is invoked synchronously (`&mut dyn Executor`): only the reducer fold awaits. The
     /// guest-facing WIT ABI is blocking — the async lives entirely in the host-side Rust driving the
