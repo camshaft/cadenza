@@ -17619,3 +17619,50 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 73 Int64))
   (call   main (: 2 Int64)) (output (: 5 Int64)))
+
+; --- Perceus sharing under path-copy derivatives: a base heap value threaded through recursion
+; while each level builds a derivative SHARING its interior (a path-copied insert / an extension
+; rope) that is read on some levels and silently DROPPED on others. An over-release of a shared
+; node when the derivative drops corrupts the base for the levels below; the base's final read
+; is the witness. ---
+
+(case "a shared CHAMP map survives per-level path-copied inserts that are read or dropped"
+  (doc    "The base map {1↦100, 2↦200} threads DOWN the recursion unchanged; each level builds
+           `(Map.insert m (+ 10 n) n)` — a path-copy SHARING interior nodes with m — read on even
+           levels (lookup of the fresh key) and dropped unread on odd ones. The base's `Map.len` at
+           the bottom must still see 2 (an over-release of a shared node when an odd level's
+           derivative drops corrupts the base below; an aggressive dup-elision reading a freed node
+           returns garbage). n=3 → even-level read 2 + base len 2 = 4; n=4 → 4 + 4 = 8.")
+  (input  (do
+            (def (go (: m (Map Int64 Int64)) (: n Int64))
+              (if (= n 0)
+                (Map.len m)
+                (let ((m2 (Map.insert m (+ 10 n) n)))
+                  (if (= (% n 2) 0)
+                    (+ (match (Map.lookup m2 (+ 10 n)) ((Some v) v) ((None u) -100))
+                       (go m (- n 1)))
+                    (go m (- n 1))))))
+            (def (main (: n Int64))
+              (go (Map.insert (Map.insert Map.empty 1 100) 2 200) n))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 4 Int64))
+  (call   main (: 4 Int64)) (output (: 8 Int64)))
+
+(case "a shared runtime rope survives per-level extension ropes that are read or dropped"
+  (doc    "The rope-String twin: the shared base `\"ab\"+\"cde\"` (5 bytes, a runtime concat) threads
+           down while each level builds the extension rope `s ++ \"x\"` (sharing the base chunks) —
+           byte-len read on even levels (6), dropped unread on odd. The base's own byte-len at the
+           bottom must still be 5. n=3 → 6 + 5 = 11; n=4 → 6 + 11 = 17.")
+  (input  (do
+            (def (go (: s String) (: n Int64))
+              (if (= n 0)
+                (String.byte-len s)
+                (let ((s2 (String.concat s "x")))
+                  (if (= (% n 2) 0)
+                    (+ (String.byte-len s2) (go s (- n 1)))
+                    (go s (- n 1))))))
+            (def (main (: n Int64))
+              (go (String.concat "ab" "cde") n))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 11 Int64))
+  (call   main (: 4 Int64)) (output (: 17 Int64)))
