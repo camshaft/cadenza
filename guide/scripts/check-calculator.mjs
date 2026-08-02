@@ -16,9 +16,14 @@ import { tmpdir } from "node:os";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(here, "..", "src", "wasm", "pkg");
 
-const { default: init, compile, render_value, render_syntax } = await import(join(pkgDir, "cdz_wasm.js"));
+const { default: init, compile, repl_eval, render_value, render_syntax } = await import(join(pkgDir, "cdz_wasm.js"));
 await init(readFileSync(join(pkgDir, "cdz_wasm_bg.wasm")));
 const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
+
+// The SAME mixed-number transform the browser engine applies to a rational result (`47/12` → `3 + 11/12`,
+// operator's Q-b ruling). Imported from source so the round-trip gate below pins the ACTUAL render, not a
+// re-spelling of it.
+const { toMixed } = await import(join(here, "..", "src", "calculator", "mixed.ts"));
 
 const runtimeBytes = readFileSync(join(here, "..", "src", "wasm", "runtime.wasm"));
 
@@ -108,6 +113,19 @@ async function evalExactSexpr(sexprExpr) {
   return await runComponent(out.component);
 }
 
+/// Evaluate an ML expression through the EXACT calculator path — `repl_eval(buffer, expr, "ml", true)`,
+/// the exact call the browser engine makes (buffer `"0"`, all state in the expr) — and return the
+/// display-rendered value. This is the real pipeline a pasted-back mixed number travels, so it's what the
+/// round-trip gate must use (not the s-expr helper).
+async function evalExactMlDisplay(mlExpr) {
+  const out = repl_eval("0", mlExpr, "ml", true);
+  if (!out.component) {
+    const err = (out.diagnostics || []).find((d) => d.error);
+    throw new Error(err ? `${err.code || ""} ${err.message}`.trim() : "declined");
+  }
+  return await runComponent(out.component);
+}
+
 let pass = 0;
 let fail = 0;
 async function check(label, expr, bindings, wantSubstr) {
@@ -157,6 +175,34 @@ await checkExact("bare 1/3 is exact", "(/ 1 3)", "1/3");
 await checkExact("bare thirds sum to 1", "(+ (+ (/ 1 3) (/ 1 3)) (/ 1 3))", "1/1");
 // A bare decimal grounds to its exact fraction (0.1 + 0.2 = 3/10, not 0.30000…004).
 await checkExact("bare decimal exact", "(+ 0.1 0.2)", "3/10");
+
+// --- MIXED-NUMBER ROUND-TRIP (operator Q-b: `47/12` shows as explicit-plus `3 + 11/12`) ---
+// The load-bearing property of the ruling: the rendered mixed form is itself VALID Cadenza that
+// re-evaluates to the SAME rational. Pin it against the real compiler: evaluate an improper rational,
+// render it with the ACTUAL `toMixed` transform (imported from source), feed that string BACK through the
+// exact ML path, and assert the paste-back yields the same canonical value. This is what stops the render
+// from ever drifting into a form that doesn't re-parse (a plain-space `3 11/12` would fail here).
+async function checkMixedRoundTrip(label, mlExpr) {
+  try {
+    const canonical = String(await evalExactMlDisplay(mlExpr)); // e.g. "(: 13/4 Rational)"
+    // The display surface the engine renders is the bare rational inside the `(: … Rational)` wrapper.
+    const bare = (canonical.match(/(-?\d+\/\d+)/) || [])[1];
+    if (!bare) throw new Error(`no bare rational in ${canonical}`);
+    const mixed = toMixed(bare);
+    if (!mixed.includes(" + ")) throw new Error(`toMixed did not produce a mixed form: ${bare} -> ${mixed}`);
+    // Paste the mixed render back in as a fresh line.
+    const roundTripped = String(await evalExactMlDisplay(mixed));
+    const ok = roundTripped === canonical;
+    console.log(`${ok ? "ok  " : "FAIL"}  mixed round-trip ${label}: ${mlExpr} => ${bare} => "${mixed}" => ${roundTripped}`);
+    ok ? pass++ : fail++;
+  } catch (e) {
+    console.log(`FAIL  mixed round-trip ${label}: ${mlExpr} => threw ${e.message}`);
+    fail++;
+  }
+}
+await checkMixedRoundTrip("positive 13/4", "13R / 4R");
+await checkMixedRoundTrip("positive 47/12", "47R / 12R");
+await checkMixedRoundTrip("negative -13/4", "-13R / 4R");
 
 console.log(`\ncalculator check: ${pass} pass, ${fail} fail`);
 // Vacuous-pass floor: the scenarios are inline `await check(...)` calls, so if a refactor ever dropped
