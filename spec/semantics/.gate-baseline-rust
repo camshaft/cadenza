@@ -2386,6 +2386,7 @@ pass	a quantity over a Rational magnitude compares by its exact value
 pass	a quantity over an exact rational magnitude divides exactly and derives its dimension
 pass	a quantity raised to the zeroth power is a dimensionless one
 pass	a quantity's erased value is the identical numeric value the bare literal has
+pass	a quote carrying a symbol literal declines — no Ast.Symbol variant to reify it into
 pass	a quote inside a tagged-template hole reaches the tag function as an Ast value
 pass	a quote pattern binds an unquoted operand of a compound form
 pass	a quote pattern is equivalent to the Ast.* constructor pattern
@@ -4117,6 +4118,7 @@ pass	eval of a partially-exported type's WITHHELD constructor is rejected
 pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quasiquote splicing a string works through String ops
 pass	eval of a quasiquote-built form with a float unquote folds
+pass	eval of a quote carrying a symbol literal declines CDZ0101 — the reify bail as a perf-bound tripwire
 pass	eval of a quoted RECURSIVE call folds through the compile-time evaluator
 pass	eval of a quoted RECURSIVE-sum construction builds the heap spine
 pass	eval of a quoted boolean connective short-circuits

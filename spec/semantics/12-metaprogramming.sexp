@@ -869,6 +869,33 @@
   (input  (eval (eval (quote (quote (+ 2 3))))))
   (error  CDZ0101))
 
+(case "a quote carrying a symbol literal declines — no Ast.Symbol variant to reify it into"
+  (doc    "`(quote #\"hi\")` declines. The `Ast` sum has leaf variants for Int/Float/Bool/Str/Name/List but
+           NO `Ast.Symbol` (nor `Ast.Char`/`Ast.Bytes`): quote's reify leaf-dispatch has an explicit
+           `_ => None` bail for any leaf kind with no `Ast` variant, so the WHOLE quote declines rather than
+           forging the symbol into a wrong leaf. A minimal-repro companion to the compound tripwire below:
+           this pins the ROOT (reify bails at `#\"…\"`), so the reason the compound form declines is witnessed
+           directly, not only through the knock-on. INTENDED (reject-don't-miscompile) until an `Ast.Symbol`
+           variant lands with the symbols vertical — this flips to a value that day, flagging the pins below
+           to re-home. Ruled by v-metaprogramming (2026-08-02).")
+  (input  (quote #"hi"))
+  (declines))
+
+(case "eval of a quote carrying a symbol literal declines CDZ0101 — the reify bail as a perf-bound tripwire"
+  (doc    "`(eval (quote (Qty.of 5 (Unit.of #\"zorks\"))))` is rejected CDZ0101. The decline is at the QUOTE
+           (reify), NOT eval's reconstructor: `Unit.of` takes a `#\"…\"` symbol argument, and quote's reify has
+           no `Ast.Symbol` variant to build (the minimal-root case above), so the whole quote bails before eval
+           sees a node. A CODED tripwire (not merely a missing feature): the reify bail is the boundary that
+           keeps a runtime-synthesized `Unit.of` node from ever existing — exactly the assumption a
+           node-count-bounded unknown-units analysis relies on. The day an `Ast.Symbol` variant lands and quote
+           reifies the symbol, this flips to a value (a running `(Qty.of 5 (Unit.of #\"zorks\"))`, which would
+           then surface the unknown-unit CDZ0201 the direct form already reports, 18-units-of-measure) and trips
+           the gate, flagging that the node-count bound now needs re-examining. Companion to the
+           no-runtime-AST-interpreter decline above: both are the quote/eval reconstruction boundary, different
+           non-reifiable entry point.")
+  (input  (eval (quote (Qty.of 5 (Unit.of #"zorks")))))
+  (error  CDZ0101))
+
 (case "an active unquote of a let-bound boolean lifts to Ast.Bool by inferred type"
   (doc    "A RUNTIME operand (a let-bound name) lifts by its inferred type: `b : Bool` → `Ast.Bool`.
            `(let ((b true)) `(f ,b))` builds `(Ast.List (list (Ast.Name \"f\") (Ast.Bool true)))`. Pins the
