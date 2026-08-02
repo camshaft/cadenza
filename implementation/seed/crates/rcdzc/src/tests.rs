@@ -1640,6 +1640,81 @@ fn cse_does_not_hoist_a_trapping_subexpr_out_of_a_short_circuit_and() {
     }
 }
 
+/// The Lir-level + `||` twin of the adv-55 short-circuit CSE-frontier pin (`cse_does_not_hoist_a_
+/// trapping_subexpr_out_of_a_short_circuit_and` above, which is `&&`-only + runtime-only). `Core::And`
+/// is the UNIFIED short-circuit node (`is_and=true` = `&&`, rhs runs iff lhs TRUE; `is_and=false` = `||`,
+/// rhs runs iff lhs FALSE), so BOTH connectives shield their rhs and BOTH must keep a repeated trapping
+/// rhs OUT of the dominating frontier (else the always-on `select.rs` CSE hoists it before the connective
+/// → spurious trap on the short-circuited path). This pins it at the LIR level (no `I64DivS` emitted
+/// BEFORE the connective's branch) for `||` — the polarity the `&&` runtime witness does not exercise —
+/// so a future `collect_dominating_frontier` change that drops the `Core::And` arm re-regresses THIS test
+/// at the emit-shape level, not only on a specific trapping input.
+#[test]
+fn cse_keeps_a_trapping_rhs_inside_a_short_circuit_or_at_the_lir_level() {
+    use crate::backend::wasm::lir::Lir;
+    use crate::db::Db;
+    let lir = |body: &str| -> Vec<Lir> {
+        let ast = crate::testkit::parse(&format!(
+            "(module m (def (f (: x Int64)) {body}) (def (main) 0) (export main))"
+        ));
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let bb = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (bb, crate::infer::type_of(&mut db, bb))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+            .expect("select")
+            .code
+    };
+    // `(or (= x 0) (< (/ 100 x) 5))` returns a Bool: `||` short-circuits — the rhs `(< (/ 100 x) 5)`
+    // (containing the trapping `(/ 100 x)`) runs ONLY when the lhs `(= x 0)` is FALSE (x != 0). The
+    // repeated-node CSE could target `(/ 100 x)` only if it were a class member in the dominating
+    // frontier; the `Core::And` frontier arm (lhs-only) keeps the shielded rhs OUT, so NO divide is
+    // emitted before the connective's short-circuit branch.
+    let code = lir("(or (= x 0) (< (/ 100 x) 5))");
+    let branch_ix = code
+        .iter()
+        .position(|i| matches!(i, Lir::If(_)))
+        .expect("a short-circuit `||` lowers to an if for its rhs");
+    let div_before = code[..branch_ix]
+        .iter()
+        .filter(|i| matches!(i, Lir::I64DivS))
+        .count();
+    assert_eq!(
+        div_before, 0,
+        "no `(/ 100 x)` may be hoisted before the `||` short-circuit branch (would trap at x=0 where \
+         the lhs is true and the rhs must never run): {code:?}"
+    );
+    // RUNTIME trap/value parity for the `||`: x=0 → lhs `(= x 0)` true → short-circuits, rhs never runs
+    // → true (1), NO trap; x=4 → lhs false → rhs `(< 25 5)` = false → the `or` is false (0); x=50 → lhs
+    // false → rhs `(< 2 5)` = true → 1.
+    use wasmtime::component::Val;
+    let src = "(module m (def (f (: x Int64)) (or (= x 0) (< (/ 100 x) 5))) (export f))";
+    let bytes =
+        compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
+    assert!(
+        run_returns_with::<bool>(&bytes, "f", &[Val::S64(0)]),
+        "x=0: lhs true short-circuits the `||`, the trapping rhs must NOT run (no divide-by-zero) → true"
+    );
+    assert!(!run_returns_with::<bool>(&bytes, "f", &[Val::S64(4)])); // 100/4=25, !(25<5) → false
+    assert!(run_returns_with::<bool>(&bytes, "f", &[Val::S64(50)])); // 100/50=2, 2<5 → true
+    // The TAKEN rhs still traps when it genuinely runs: x nonzero but... a divide-by-zero can only occur
+    // at x=0, which short-circuits — so the `||` here never traps for any input (the point: the frontier
+    // fix removed the SPURIOUS trap without suppressing a real one; a real divide only runs at x!=0).
+}
+
 /// The common-constructor sink also fires for a MATCH whose every (unguarded) arm builds the same
 /// constructor: `(match k (0 (Some 10)) (1 (Some 20)) (_ (Some 30)))` builds `Some` ONCE and sinks the
 /// payload into a per-position `match` (a scalar decision tree), instead of DUPLICATING the `sum-new`
