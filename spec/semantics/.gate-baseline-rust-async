@@ -681,6 +681,7 @@ pass	a NEGATIVE prefixed quantity carries its sign through the reference scale-f
 pass	a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin
 pass	a bin-arm guard cond that traps at the decoded binder TRAPS the match — it does not fall through
 pass	a failed multi-segment bin guard falls through and the NEXT arm re-decodes its own binders
+pass	a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)
 pass	a point fact flows through a let binding into a compare fold — the point-fact composition face
 pass	a NESTED Record ARG (a record containing a record) crosses the direct-call boundary
 pass	a NESTED Record ARG with a LIST result crosses the direct-call boundary
@@ -2532,6 +2533,7 @@ pass	a record of quantities RETURNED as a value renders every field scaled to it
 pass	a record op argument with a HEAP field crosses the perform and its scalar field accumulates state
 pass	a record scrutinee is bound whole by a match binder
 pass	a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)
+pass	a record threaded through self-recursion with per-step Record.with leaves the SEED intact
 pass	a record whose field is a List projects the list handle and indexes it, alongside a scalar field
 pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record whose field is a tuple with a Float64 leaf is a Map key found by content

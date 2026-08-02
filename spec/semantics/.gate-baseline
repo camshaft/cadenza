@@ -1904,6 +1904,7 @@ pass	a list pattern over a non-list scrutinee is a type error
 pass	a list type whose element position holds a value is rejected
 pass	a list value consumed by two operations in one function is not freed early
 pass	a list with a runtime element is returned as a program result
+pass	a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)
 pass	a list-arm constructor element over a runtime-built list
 pass	a list-arm map element whose key is absent falls through
 pass	a list-carrying recursion whose base arm does a fallible indexed read compiles
@@ -2563,6 +2564,7 @@ pass	a record of quantities RETURNED as a value renders every field scaled to it
 pass	a record op argument with a HEAP field crosses the perform and its scalar field accumulates state
 pass	a record scrutinee is bound whole by a match binder
 pass	a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)
+pass	a record threaded through self-recursion with per-step Record.with leaves the SEED intact
 pass	a record whose field is a List projects the list handle and indexes it, alongside a scalar field
 pass	a record whose field is a runtime tuple nests across the boundary
 pass	a record whose field is a tuple with a Float64 leaf is a Map key found by content
