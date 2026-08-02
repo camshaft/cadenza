@@ -944,6 +944,21 @@ def pd-div-op() =
     (if is-bin-op(tree, root, 47) then unit else trap("root is a / Bin")))
 
 @test
+def pd-op-code-is-option() =
+  // Pins op-code's Option contract (the B10 sentinel-elimination invariant): a TOp token yields Some(code),
+  // any non-operator token yields None — never an in-band -1. Guards the parse-tail dispatch against a future
+  // change re-introducing a magic miss value that would be compared as if it were a real op code.
+  (match op-code(plus()) with
+    | Option.Some(c) => (if (c == 43) then
+        (match op-code(n(7)) with          // a number token is not an operator
+          | Option.None(_) => (match op-code(var(99)) with   // nor is a name token
+              | Option.None(_) => unit
+              | Option.Some(_) => trap("a TName token has no op-code (None)"))
+          | Option.Some(_) => trap("a TNum token has no op-code (None)"))
+      else trap("op-code(TOp 43) = Some(43)"))
+    | Option.None(_) => trap("op-code of a TOp token is Some(code)"))
+
+@test
 def pd-mod-same-precedence-as-mul() =
   // "1 + 6 % 4" → root is `+` whose RIGHT is a `%` Bin (% binds tighter than +, same tier as *).
   (match parse-tokens([n(1), plus(), n(6), modop(), n(4)]) with | (root, tree) =>
