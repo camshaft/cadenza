@@ -122,14 +122,18 @@ pub struct PassManager {
 
 impl PassManager {
     /// Build the manager for a requested level, registering the standard Core-pass pipeline in canonical
-    /// order. (This slice registers NO passes yet — the pipeline is empty, so `run` is a no-op and the
-    /// emitted artifact is byte-identical at every level. Passes are added under this seam in later
-    /// slices, each with its declared tier and a level-equivalence gate case.)
+    /// order. Each pass declares its `min_level`; the manager runs only those the requested level reaches,
+    /// so a lower level skips the higher-tier passes and stays fast. Every pass is behavior-preserving at
+    /// every level (the correctness bar) — the level-equivalence gate (`xtask gate --opt-sweep`) proves it.
     pub fn for_level(level: OptLevel) -> Self {
-        PassManager {
+        let mut pm = PassManager {
             level,
             passes: Vec::new(),
-        }
+        };
+        // O2 — WHOLE-FUNCTION global common-subexpression elimination on the Core IR (backend-independent,
+        // so BOTH backends inherit it; the wasm backend's Lir-slot CSE stays as a realization backstop).
+        pm.register(Box::new(cse::GlobalCsePass));
+        pm
     }
 
     /// The level this manager runs at.
@@ -162,6 +166,357 @@ impl PassManager {
                 trace!(target: "rcdzc::opt", pass = pass.name(), level = %self.level, "running core pass");
                 pass.run(db);
             }
+        }
+    }
+}
+
+/// Global common-subexpression elimination as a Core O2 pass.
+///
+/// The BACKEND-INDEPENDENT lift of the wasm backend's Lir-slot CSE (`backend/wasm/select.rs`): it names a
+/// repeated, trap-free, SCALAR Core subexpression ONCE in a `Core::Let` and points every occurrence at the
+/// shared binding, so BOTH backends compute it once instead of re-emitting it. The value-level analysis is
+/// shared (`crate::core_analysis`); the wasm backend keeps its Lir-slot realization as a backstop for what
+/// this leaves (they no-op on each other's residue). Registered at `O2` (a whole-function analysis).
+///
+/// **Soundness (the three guards, replicated verbatim from v-wasm-opt's `select.rs` analysis so the two
+/// stay identical — a divergence here is a miscompile on BOTH backends):**
+/// - (A) SCALAR-ONLY: a candidate's type must be `!is_heap_type` AND `valtype_of(ty).is_some()`. Sharing a
+///   HEAP-handle would drift Perceus refcounts — the binding dups once in the prologue while the body may
+///   consume the handle per use, so a second use FBIP-mutates a shared handle (the drift `select.rs`'s
+///   4696 guard blocks). A non-representable/unit type has no value to thread through a binding.
+/// - (B) FRONTIER: a class is shared only if ≥1 member is in the DOMINATING FRONTIER (always evaluated).
+///   A trapping subexpression buried in a branch must not be pulled to the top (it would speculate a trap
+///   that a run might never reach); a frontier member is evaluated on every path the body is, so binding
+///   it once is trap-equivalent.
+/// - (C) TRAP-FREE-OR-FRONTIER via the shared analysis + `is_trap_free`: the candidate predicate admits
+///   only deterministic, effect-free reads, and the frontier gate handles the trapping-but-always-run case.
+///
+/// **Post-lowering rewrite (why it is not the during-lowering `kept_bindings` idiom).** This pass runs
+/// after the core column is memoized, so a member occurrence is already concrete Core (not a `LocalRef`).
+/// `lower::core_of` consults `db.core_override` FIRST for every node and every parent re-reads its children
+/// through `core_of`, so an override on a child IS seen by its parents. For a class with representative
+/// `rep` (a canonical member) and members `m…`: bind `rep`'s ORIGINAL subexpression once (in a fresh
+/// `synth_core` node `rep_init`, a SEPARATE occurrence so overriding `rep` cannot make the initializer
+/// self-referential), wrap the body in `Core::Let { (rep, rep_init) … }`, and override every member
+/// occurrence — including `rep` itself inside the body — to `Core::LocalRef { binder: rep }`. Classes are
+/// bound inner-first (by `subtree_size`) in one sequential `let*` so a nested class's binding precedes an
+/// outer class that reads it.
+pub(crate) mod cse {
+    use super::{CorePass, OptLevel};
+    use crate::ast::StructId;
+    use crate::core::Core;
+    use crate::core_analysis::{
+        collect_dominating_frontier, collect_node_refs, core_eq, core_hash_key, is_heap_type,
+        licm_children, subtree_size,
+    };
+    use crate::db::Db;
+    use crate::lower::{core_of, synth_core};
+
+    /// The O2 global-CSE pass.
+    pub(crate) struct GlobalCsePass;
+
+    impl CorePass for GlobalCsePass {
+        fn min_level(&self) -> OptLevel {
+            OptLevel::O2
+        }
+        fn name(&self) -> &'static str {
+            "global-cse"
+        }
+        fn run(&self, db: &mut Db) {
+            // Enumerate every emittable body: each top-level / internal def body + each lifted-lambda body.
+            // (A malformed def has `body: None` and is skipped.) `db.defs` / `db.lifted` are the same bodies
+            // the backends walk, so CSE-ing them here is inherited by every backend.
+            let bodies: Vec<StructId> = db
+                .defs
+                .iter()
+                .filter(|d| !d.internal)
+                .filter_map(|d| d.body)
+                .collect();
+            for body in bodies {
+                // ELIGIBILITY (MVP): only CSE a body whose resolved subtree is ENTIRELY context-free
+                // PURE-SCALAR forms. This pass runs at the PassManager hook, which currently fires BEFORE
+                // lazy lowering — so a pass-time `core_of` is the FIRST demand of a node, and a node whose
+                // correct lowering needs a context established at lower time (a lambda-lift / handler-lift /
+                // contract desugar / `?`-try / pattern binder) would lower WITHOUT it and MEMO-POISON
+                // `db.core` (→ "reference has no local slot" at emit). The closed pure-scalar whitelist
+                // guarantees every node this pass touches is safe to lower first-demand. The proper fix is
+                // TIMING — run the pass over an already-lowered+lifted column (a `force-lower-all` before
+                // the PassManager); that Option-A follow-up lets CSE cover capturing/effectful bodies too.
+                // This MVP delivers the common repeated-scalar-subexpr win soundly and never ships the poison.
+                if body_is_pure_scalar(db, body) {
+                    cse_body(db, body);
+                }
+            }
+        }
+    }
+
+    /// Whether the body's resolved subtree is built ENTIRELY from CONTEXT-FREE PURE-SCALAR forms — the
+    /// eligibility gate for this MVP pass.
+    ///
+    /// The hazard (root-caused with v-wasm-opt): this pass currently runs at the PassManager hook which
+    /// fires BEFORE lazy lowering, so `db.core` / `db.captured_ref` are empty. A pass-time `core_of` is thus
+    /// the FIRST demand of a node — and for any node whose correct lowering needs a context established at
+    /// lower time (a lambda-lift populating `captured_ref`, a handler lift, a contract desugar, a `?`-try, a
+    /// pattern binder) that first-demand lowers WITHOUT the context and MEMO-POISONS `db.core` permanently
+    /// (surfacing at emit as "parameter/let reference has no local slot"). The proper fix is TIMING (run the
+    /// pass over an already-filled+lifted column — a `force-lower-all` step before the PassManager, tracked
+    /// as the Option-A follow-up). Until then this MVP gates to a CLOSED WHITELIST of forms whose lowering
+    /// is context-free, so a `core_of` over such a body touches only nodes safe to lower first-demand.
+    ///
+    /// A closed ALLOW-list (reject any unlisted / future variant — the safe default) rather than a blocklist
+    /// of risky forms (which is open-ended: effects, contracts, try, match-binders, map-patterns, …). The
+    /// check uses `resolved_of`, NOT `core_of`, so the pre-check itself cannot poison the memo.
+    fn body_is_pure_scalar(db: &mut Db, id: StructId) -> bool {
+        use crate::resolved::Resolved;
+        let ok = match crate::resolve::resolved_of(db, id) {
+            // Leaves + pure scalar/boolean operators + straight control flow whose lowering needs no
+            // lift/capture/contract/pattern context. `Ref`/`Param` read a param or a plain let-local slot
+            // that lowering establishes in-body; `Let`/`If`/`And`/`Not`/`Annot`/`Prim` are scalar-structural;
+            // `Proj`/`Member` are pure field reads. Everything else — `Lambda` (lift), `Handle`/`Host`/
+            // `Resume` (effects), `Try` (fallible desugar), `Match` (pattern binders), `Apply` (arbitrary
+            // callee, may reach any of the above), `Map`/`MapField`/`List`/`Record`/`Tuple`/`Bin`/`BinField`/
+            // `SumPayload` (heap builds / pattern-bound / context-lowered) — is REJECTED.
+            Resolved::Unit
+            | Resolved::Bool(_)
+            | Resolved::Int(_)
+            | Resolved::Float(_)
+            | Resolved::Char(_)
+            | Resolved::Str(_)
+            | Resolved::SymbolConst(_)
+            | Resolved::Prim(_)
+            | Resolved::Ref { .. }
+            | Resolved::Param { .. }
+            | Resolved::And { .. }
+            | Resolved::Not { .. }
+            | Resolved::If { .. }
+            | Resolved::Proj { .. }
+            | Resolved::Member { .. }
+            | Resolved::Annot { .. }
+            | Resolved::Let { .. } => true,
+            // An APPLY is admitted ONLY when it is a PRIM operator application — `(+ a b)`, `(& x 7)`,
+            // `(< a b)` etc. `crate::eval::prim_of` follows the head (a bare operator name resolves to a
+            // `Ref` into the prelude, not a bare `Prim`) and returns the `Prim` iff this is a built-in
+            // operator; a prim-headed apply lowers context-free (no lambda/handler lift). An apply of an
+            // ARBITRARY function (`prim_of` is `None`) is REJECTED: the callee's body could reach an
+            // effect/lift/contract. (Args are checked by the recursive AST walk below; the scalar-RESULT
+            // filter on candidates still decides what actually gets CSE'd.)
+            Resolved::Apply { head, .. } => crate::eval::meta_apply_of(db, head)
+                .or_else(|| crate::eval::prim_of(db, head))
+                .is_some(),
+            _ => false,
+        };
+        if !ok {
+            return false;
+        }
+        match db.ast.get(id).clone() {
+            crate::ast::Struct::List(children) => {
+                children.iter().all(|&c| body_is_pure_scalar(db, c))
+            }
+            crate::ast::Struct::Atom(_) => true,
+        }
+    }
+
+    /// CSE one function body: find the shareable classes and install the `Core::Let` + `LocalRef` overrides.
+    fn cse_body(db: &mut Db, body: StructId) {
+        let groups = candidate_groups(db, body);
+        if groups.is_empty() {
+            return;
+        }
+        // Bind every class representative in ONE `Core::Let` wrapping the (original) body. Inner-first order
+        // (candidate_groups already sorts by subtree_size) makes a nested class's binding precede an outer
+        // one that references it — `let*` sequential semantics.
+        let body_ty = crate::infer::type_of(db, body);
+        let body_core = core_of(db, body);
+        let inner = synth_core(db, body_core, body_ty);
+        let mut bindings: Vec<(StructId, StructId)> = Vec::with_capacity(groups.len());
+        for group in &groups {
+            let rep = group[0];
+            let rep_ty = crate::infer::type_of(db, rep);
+            // A SEPARATE occurrence holding rep's ORIGINAL subexpr — the binding's VALUE, so no member
+            // override affects it.
+            let rep_core = core_of(db, rep);
+            let rep_init = synth_core(db, rep_core, rep_ty.clone());
+            // A FRESH binder id for the slot key. It must NOT be any of the member occurrences: the backend
+            // keys the `Core::Let` slot by the binder and resolves a `LocalRef { binder }` by that key, so
+            // if the binder were a member (which we override to `LocalRef { binder }`) it would resolve to
+            // itself — an infinite cycle. A distinct synth node (its core is the value, though only its id
+            // is used as the key) keeps the binding value, the slot key, and the reads all distinct.
+            let binder = synth_core(db, Core::LocalRef { binder: rep_init }, rep_ty);
+            bindings.push((binder, rep_init));
+            // Every member occurrence (including `rep`'s own) now reads the shared binding's slot.
+            for &member in group {
+                db.install_core_override(member, Core::LocalRef { binder });
+            }
+        }
+        db.install_core_override(
+            body,
+            Core::Let {
+                bindings,
+                body: inner,
+            },
+        );
+    }
+
+    /// The shareable CSE classes of `body`, inner-first. A class is a set of `core_eq` occurrences of a
+    /// SCALAR, trap-free-shareable subexpression with ≥2 total references and ≥1 dominating-frontier member.
+    fn candidate_groups(db: &mut Db, body: StructId) -> Vec<Vec<StructId>> {
+        let mut counts: std::collections::HashMap<StructId, u32> = std::collections::HashMap::new();
+        let mut order: Vec<StructId> = Vec::new();
+        collect_node_refs(db, body, &mut counts, &mut order);
+        let mut dominating: std::collections::HashSet<StructId> = std::collections::HashSet::new();
+        collect_dominating_frontier(db, body, &mut dominating);
+
+        // Keep the shareable / non-trivial / SCALAR distinct nodes, in first-seen order (determinism).
+        let mut cands: Vec<StructId> = Vec::new();
+        for id in order {
+            if is_trivial(db, id) || !is_cse_candidate(db, id) {
+                continue;
+            }
+            let ty = crate::infer::type_of(db, id);
+            // Guard (A): scalar-only — a heap handle drifts rc; a non-representable/unit type has no value.
+            if is_heap_type(&ty) || crate::backend::wasm::lir::valtype_of(&ty).is_none() {
+                continue;
+            }
+            // Guard (D) — BODY-ROOT SCOPE. This pass wraps the WHOLE body in ONE `Core::Let` at the body
+            // ROOT, so every shared occurrence is EMITTED at the root and reads the root binding. Two things
+            // must therefore hold of each candidate OCCURRENCE:
+            //  (D1) it must be in the DOMINATING FRONTIER — an always-evaluated, body-root-reachable
+            //       position. An occurrence buried inside a `Match` arm / `If` branch / `Let` body is
+            //       reached only conditionally AND lives in that inner scope; hoisting it to the root both
+            //       speculates it and detaches it from its scope. The frontier is exactly the set of
+            //       root-reachable straight-line positions, so requiring frontier membership keeps the
+            //       shared occurrence at a position the root binding dominates. (Previously only the CLASS
+            //       needed one frontier member — but a NON-frontier member of that class, sitting inside an
+            //       arm, was still overridden to read the root binding → CDZ0101 when its arm-scoped
+            //       operands weren't live at the root. Gating EACH occurrence closes that.)
+            //  (D2) its subtree must read only body-root-live references (PARAMS / consts), never a
+            //       `LocalRef` (a source `let`-local / kept binding) or `Captured` (closure env) — a
+            //       `Core::Param` inside a match arm can be an ARM binder (not body-root-live), which (D1)
+            //       already excludes by position; (D2) additionally rejects an explicit inner-binder read.
+            // (A later, more invasive slice could place the sharing `Let` at an enclosing scope to CSE
+            // sub-scope-local subexpressions; this MVP shares only body-root-frontier, body-root-closed reads.)
+            if !dominating.contains(&id) || !body_root_closed(db, id) {
+                continue;
+            }
+            cands.push(id);
+        }
+
+        // Partition into `core_eq` value classes, bucketed by a cheap shallow hash first (so unequal
+        // candidates never pairwise-compare — same bound as v-wasm-opt's analysis).
+        let mut classes: Vec<Vec<StructId>> = Vec::new();
+        let mut by_key: crate::fxhash::FxHashMap<u64, Vec<usize>> =
+            crate::fxhash::FxHashMap::default();
+        let mut hash_memo: crate::fxhash::FxHashMap<StructId, u64> =
+            crate::fxhash::FxHashMap::default();
+        for id in cands {
+            let key = core_hash_key(db, id, &mut hash_memo);
+            let bucket = by_key.entry(key).or_default();
+            let mut placed = false;
+            for &ci in bucket.iter() {
+                if core_eq(db, classes[ci][0], id) {
+                    classes[ci].push(id);
+                    placed = true;
+                    break;
+                }
+            }
+            if !placed {
+                bucket.push(classes.len());
+                classes.push(vec![id]);
+            }
+        }
+
+        // Keep a class iff (a) total references ≥2 (a real repeat worth naming) AND (b) guard (B): ≥1 member
+        // in the dominating frontier (so binding it to the top is sound on every path).
+        let mut groups: Vec<Vec<StructId>> = classes
+            .into_iter()
+            .filter(|c| {
+                c.iter().map(|m| counts[m]).sum::<u32>() >= 2
+                    && c.iter().any(|m| dominating.contains(m))
+            })
+            .collect();
+        // Inner-first, so a nested class's `Core::Let` binding precedes an outer class that reads it.
+        groups.sort_by_key(|c| subtree_size(db, c[0]));
+        groups
+    }
+
+    /// Whether every reference in the subtree at `id` is live at the BODY ROOT — i.e. it reads only
+    /// `Param`s / constants, never a `LocalRef` (a source `let`-local or kept binding) or a `Captured`
+    /// (closure env cell). Such a subtree can be hoisted into the body-root `Core::Let` this pass builds;
+    /// a subtree reading an inner binder cannot (its slot is unbound at the root → CDZ0101 / "no local
+    /// slot"). Walks the full VALUE-position subtree via `licm_children` (which descends the sub-scope
+    /// children too), so it catches an inner-binder read at any depth — e.g. a `Proj`/`SumPayload` over a
+    /// match-arm-bound scrutinee, or an operand nested in an `if` branch.
+    fn body_root_closed(db: &mut Db, id: StructId) -> bool {
+        match core_of(db, id) {
+            // The two reference leaves that name an INNER binder — disqualifying.
+            Core::LocalRef { .. } | Core::Captured { .. } => false,
+            _ => licm_children(db, id)
+                .into_iter()
+                .all(|c| body_root_closed(db, c)),
+        }
+    }
+
+    /// A node too trivial to name: a bare parameter or constant is already a single read at each use, so
+    /// binding it would only add an indirection. (`LocalRef` is NOT trivial here — it is a shareable leaf.)
+    fn is_trivial(db: &mut Db, id: StructId) -> bool {
+        matches!(
+            core_of(db, id),
+            Core::Param { .. } | Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit
+        )
+    }
+
+    /// Whether `id` is a PURE, DETERMINISTIC scalar computation whose sharing is observably identical to
+    /// recomputing it — v-wasm-opt's `is_cse_shareable` (`select.rs`) with the ONE difference that a
+    /// `Core::LocalRef` IS shareable here: their pass hoists BEFORE the body (where a let-local's slot is
+    /// unbound), but THIS pass introduces the `Core::Let` IN PLACE, so a reference to an enclosing let-local
+    /// is live at the binding point. Every other arm is identical (a divergence would let the two CSEs
+    /// disagree on what is safe). Determinism/effect-freedom only — the caller applies the scalar filter.
+    fn is_cse_candidate(db: &mut Db, id: StructId) -> bool {
+        match core_of(db, id) {
+            Core::ConstInt(_) | Core::ConstBool(_) | Core::Unit | Core::Param { .. } => true,
+            // A `let`-LOCAL reference is NOT shareable: this pass wraps the WHOLE body in one outer
+            // `Core::Let`, which sits OUTSIDE any enclosing source `let ((k …))`, so a shared subexpression
+            // that reads `k` (a `LocalRef`) would be bound BEFORE `k`'s slot exists → "let-binding
+            // reference has no local slot". (My earlier assumption that this pass binds "in place" was
+            // wrong — the sharing `Let` is at the body root, not at the inner `let`'s scope.) So a
+            // computation OVER a let-local stays put, exactly as v-wasm-opt's hoist-before-body CSE
+            // excludes it. Params (slots `0..n`, live for the whole body) remain shareable. Extending CSE
+            // to let-local subexpressions needs the sharing `Let` placed at the enclosing let's scope — a
+            // later, more invasive slice; this MVP shares only body-root-live (param/const-rooted) reads.
+            Core::LocalRef { .. } => false,
+            Core::Arith { lhs, rhs, .. }
+            | Core::Compare { lhs, rhs, .. }
+            | Core::StrCmp { lhs, rhs, .. }
+            | Core::FloatCompare { lhs, rhs, .. } => {
+                is_cse_candidate(db, lhs) && is_cse_candidate(db, rhs)
+            }
+            Core::Convert { operand, .. } | Core::Not { operand } | Core::Proj { operand, .. } => {
+                is_cse_candidate(db, operand)
+            }
+            Core::ListLen { operand }
+            | Core::BytesLen { operand }
+            | Core::StrScalarLen { operand } => is_cse_candidate(db, operand),
+            Core::MapSize { map } => is_cse_candidate(db, map),
+            Core::SetLen { set } => is_cse_candidate(db, set),
+            Core::SumPayload { scrutinee, .. } => is_cse_candidate(db, scrutinee),
+            Core::ListAt { list, index, .. } => {
+                is_cse_candidate(db, list) && is_cse_candidate(db, index)
+            }
+            Core::BytesAt { bytes, index, .. } => {
+                is_cse_candidate(db, bytes) && is_cse_candidate(db, index)
+            }
+            Core::MapLookup { map, key, .. } => {
+                is_cse_candidate(db, map) && is_cse_candidate(db, key)
+            }
+            Core::SumExpect { scrutinee, .. } => is_cse_candidate(db, scrutinee),
+            Core::If {
+                cond, then_, else_, ..
+            } => {
+                is_cse_candidate(db, cond)
+                    && is_cse_candidate(db, then_)
+                    && is_cse_candidate(db, else_)
+            }
+            _ => false,
         }
     }
 }
@@ -275,6 +630,10 @@ mod tests {
 
     #[test]
     fn o3_enables_the_whole_pipeline() {
+        // Count the STANDARD pipeline `for_level` registers (currently the O2 `global-cse`), then assert
+        // that at O3 all four added markers (one per tier) enable ON TOP of it — so the delta is exactly 4,
+        // regardless of how many real passes the standard pipeline grows.
+        let baseline = PassManager::for_level(OptLevel::O3).enabled().count();
         let mut pm = PassManager::for_level(OptLevel::O3);
         for (min, name) in [
             (OptLevel::O0, "a"),
@@ -284,7 +643,7 @@ mod tests {
         ] {
             pm.register(Box::new(MarkerPass { min, name }));
         }
-        assert_eq!(pm.enabled().count(), 4);
+        assert_eq!(pm.enabled().count(), baseline + 4);
     }
 
     // ── The core-override seam (§9a) — the mechanism a real CorePass uses to rewrite the Core-IR ──
@@ -482,6 +841,69 @@ mod tests {
         assert!(
             !db.has_core_overrides(),
             "an unlicensed node gets NO override — the check stays (default is always the check)"
+        );
+    }
+
+    #[test]
+    fn global_cse_shares_a_repeated_scalar_subexpression_in_a_let() {
+        // `(+ (& x 7) (& x 7))` — the scalar `(& x 7)` appears twice, trap-free, dominating-frontier
+        // (both operands of `+` are always evaluated). The O2 CSE pass names it once in a `Core::Let` and
+        // points both occurrences at the binding, so the body becomes `let t = (& x 7) in (+ t t)`.
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main (: x Int64)) (+ (& x 7) (& x 7))) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        let _ = crate::lower::core_of(&mut db, body);
+        assert!(!db.has_core_overrides(), "no override before the pass");
+
+        cse::GlobalCsePass.run(&mut db);
+
+        // The body is now a `Core::Let` binding one value, whose body adds two `LocalRef`s of that binding.
+        match crate::lower::core_of(&mut db, body) {
+            crate::core::Core::Let {
+                bindings,
+                body: inner,
+            } => {
+                assert_eq!(
+                    bindings.len(),
+                    1,
+                    "one shared binding for the repeated `(& x 7)`"
+                );
+                let binder = bindings[0].0;
+                match crate::lower::core_of(&mut db, inner) {
+                    crate::core::Core::Arith { lhs, rhs, .. } => {
+                        for (label, side) in [("lhs", lhs), ("rhs", rhs)] {
+                            assert!(
+                                matches!(
+                                    crate::lower::core_of(&mut db, side),
+                                    crate::core::Core::LocalRef { binder: b } if b == binder
+                                ),
+                                "the {label} operand reads the shared binding, got {:?}",
+                                crate::lower::core_of(&mut db, side)
+                            );
+                        }
+                    }
+                    other => panic!("expected the Let body to be the `+`, got {other:?}"),
+                }
+            }
+            other => panic!("expected a `Core::Let` sharing the repeat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn global_cse_leaves_a_single_use_body_untouched() {
+        // No repeat → nothing to share → no override (the pass must not manufacture a binding).
+        let mut db = crate::db::Db::load(crate::testkit::parse(
+            "(module m (def (main (: x Int64)) (+ (& x 7) (& x 3))) (export main))",
+        ));
+        let d = db.def_by_name("main").expect("def main");
+        let body = db.defs[d].body.expect("main body");
+        let _ = crate::lower::core_of(&mut db, body);
+        cse::GlobalCsePass.run(&mut db);
+        assert!(
+            !db.has_core_overrides(),
+            "distinct subexpressions are not shared — no override installed"
         );
     }
 }
