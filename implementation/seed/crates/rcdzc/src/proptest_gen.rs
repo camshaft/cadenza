@@ -2502,7 +2502,14 @@ mod tests {
                 "p-gen",
             ),
         ] {
-            let db = Db::load(crate::testkit::parse(src));
+            // Synthesize on the raw AST so the wrapper's BODY is inspectable (a DECLINING wrapper's body is
+            // `(do (Test.gen/Test.fail …) (trap …))`; a REAL generator's body is a `let`-chain that builds
+            // the sum + calls the inner def — NO trap). Both wrappers are nullary and rename the def, so
+            // nullary+rename alone does NOT discriminate; the trap-freedom of the body is what pins that
+            // classify_sum produced a REAL generator, not the declining fallback (Copilot PR#1199 review).
+            let mut ast = crate::testkit::parse(src);
+            super::synthesize(&mut ast);
+            let db = Db::load(ast.clone());
             let names: Vec<String> = db
                 .test_defs()
                 .into_iter()
@@ -2513,14 +2520,30 @@ mod tests {
                 "{def}: a bare-name-nullary sum generates a REAL wrapper {wrapper} (not declining), \
                  original neutralized; got {names:?}"
             );
-            // A real generator wrapper is NULLARY (the compound param is generated internally) — same as
-            // any -gen wrapper. Distinguish it from the DECLINING wrapper by asserting the def BODY is not
-            // a bare `Test.fail`/`trap` (a real gen builds + calls the inner def). We check indirectly: the
-            // wrapper exists AND the run-side classifies it as a Sum (covered e2e in test_manifest_cli).
             let w = db.defs.iter().find(|d| d.name == wrapper).unwrap();
             assert!(
                 w.params.is_empty(),
                 "the generator wrapper is nullary (generates the sum param internally): {wrapper}"
+            );
+            // DISCRIMINATING assertion: the real generator's body has NO `trap` form. A DECLINING wrapper
+            // (what a NON-generatable sum would produce, and what this test would wrongly pass without the
+            // classify_sum bare-name-nullary fix) traps. Walk the wrapper def's body subtree for any `trap`.
+            let body = w.body.expect("the generator wrapper has a body");
+            let mut stack = vec![body];
+            let mut has_trap = false;
+            while let Some(id) = stack.pop() {
+                if ast.as_form(id, "trap").is_some() {
+                    has_trap = true;
+                    break;
+                }
+                if let crate::ast::Struct::List(kids) = ast.get(id) {
+                    stack.extend(kids.iter().copied());
+                }
+            }
+            assert!(
+                !has_trap,
+                "{wrapper}: a REAL sum generator's body must NOT trap (a DECLINING wrapper traps) — this \
+                 discriminates the classify_sum bare-name-nullary fix from the declining fallback"
             );
         }
     }
