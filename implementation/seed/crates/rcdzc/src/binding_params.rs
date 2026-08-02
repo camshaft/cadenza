@@ -121,8 +121,11 @@ fn collect_destructuring_lambdas(ast: &Arenas, node: StructId, out: &mut Vec<Str
     {
         out.push(node);
     }
+    // Recurse into children. `collect_destructuring_lambdas` borrows `ast` IMMUTABLY (no `&mut`), so the
+    // `ast.get(node)` borrow and the recursive re-borrow coexist — iterate the child slice in place with
+    // NO per-call Vec clone (the earlier `children.clone()` was an unnecessary copy, not a borrow need).
     if let Struct::List(children) = ast.get(node) {
-        for &child in children.clone().iter() {
+        for &child in children {
             collect_destructuring_lambdas(ast, child, out);
         }
     }
