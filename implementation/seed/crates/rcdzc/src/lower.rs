@@ -4740,9 +4740,6 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                 Some(g) if g.len() == 2 => (g[0], Some(g[1])),
                 _ => (pat, None),
             };
-            // `(= scrutinee <literal>)` — runtime string equality, lowers to `value-eq`.
-            let eq_head = db.push_name("=");
-            let eq = db.push_list(vec![eq_head, scrutinee, inner_pat]);
             // A guard nests INSIDE the matched branch: `(if guard body <else>)`, so a false guard falls
             // through to the same `else` as a non-matching literal.
             let then_branch = match guard {
@@ -4752,8 +4749,34 @@ fn lower_match(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructId)]) 
                 }
                 None => body,
             };
-            let if_head = db.push_name("if");
-            else_node = db.push_list(vec![if_head, eq, then_branch, else_node]);
+            // A NAMED-wildcard inner pattern (`(guard t cond)`, `t` a bare name ≠ `_`) binds the WHOLE
+            // scrutinee to `t` — it is NOT a string literal to compare, so there is NO `(= scrutinee t)`
+            // test (a wildcard matches every string; the guard alone gates it). Bind `t` with a wrapping
+            // `(let ((t scrutinee)) (if guard body <else>))` — WITHOUT this, the extracted test severed `t`
+            // from its `(guard …)` ancestor and a `t` reference resolved UNBOUND (false CDZ0101) on the
+            // heap/string face of Finding #46 (breaker adv-53); the #46 fix only covered the guarded-SCALAR
+            // desugar, not this sibling runtime-STRING path. `forget_subtree` + binding-aware scope-skip so
+            // `t` re-resolves to the new `let` binder (and any outer name the guard reads re-resolves up the
+            // live chain), the exact discipline the scalar path uses.
+            match db.ast.as_name(inner_pat).map(str::to_string) {
+                Some(nm) if nm != "_" => {
+                    let let_head = db.push_name("let");
+                    let binder = db.push_name(&nm);
+                    let pair = db.push_list(vec![binder, scrutinee]);
+                    let bindings = db.push_list(vec![pair]);
+                    let wrapped = db.push_list(vec![let_head, bindings, then_branch]);
+                    crate::resolve::forget_subtree(db, wrapped);
+                    db.extend_scope_skip_into_subtree(wrapped);
+                    else_node = wrapped;
+                }
+                _ => {
+                    // A string-LITERAL inner pattern: `(= scrutinee <literal>)` (value-eq) gates the arm.
+                    let eq_head = db.push_name("=");
+                    let eq = db.push_list(vec![eq_head, scrutinee, inner_pat]);
+                    let if_head = db.push_name("if");
+                    else_node = db.push_list(vec![if_head, eq, then_branch, else_node]);
+                }
+            }
         }
         // Give the synthesized `value-eq` if-chain scope-skip entries BEFORE resolving it: the chain nests
         // O(arms) deep and every node is a non-binding `if`/`=`/application form (the arm bodies + guards
