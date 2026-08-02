@@ -258,6 +258,41 @@ fn a_nonexistent_file_target_reds_the_run_with_a_read_error_not_a_false_green() 
     );
 }
 
+#[test]
+fn the_check_gate_reds_a_broken_file_even_when_a_filter_would_exclude_the_broken_test() {
+    // ORDERING invariant: the `cdz check` clean-gate runs over ALL resolved files BEFORE any `--filter`/
+    // `--tag` selection narrows the test set. Otherwise a selector that happens to exclude the broken
+    // `@test` (here `--filter` matches nothing, or only the good test) would let the file's error slip
+    // through and the surviving tests report a false green — reopening the mask class from a different
+    // angle. Pin it: a file with a good test + an unbound-name test, run with a `--filter` that matches
+    // NEITHER, must still RED on the resolve error, not report "0 tests matched". No store — nothing runs.
+    let d = dir("gate-before-filter");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@test def good() = if 1 == 1 then unit else trap(\"g\")\n\
+         @test def broken() = if unbound_abc() == 1 then unit else trap(\"b\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f, "--filter", "zzznomatch"]);
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        !ok,
+        "the check-gate must RED a broken file before --filter selection can hide it: {combined}"
+    );
+    assert!(
+        combined.contains("CDZ0101") && combined.contains("unbound_abc"),
+        "the resolve error is reported even though --filter would exclude the broken test: {combined}"
+    );
+    assert!(
+        stderr.contains("NOT running the suite"),
+        "the gate note is shown — the suite did not run under the filter: {stderr}"
+    );
+    assert!(
+        !stdout.contains("0 tests matched") && !stdout.contains("passed,"),
+        "must NOT reach the filter-selection path (no '0 tests matched' / green summary): {stdout}"
+    );
+}
+
 /// A single explicit `cdz test <file>` that contributes ZERO tests must PRINT a "0 tests found" hint, not
 /// exit silently — otherwise a file whose only marker is an UNRECOGNIZED test-ish annotation (`@property`,
 /// which is silently stripped, so its def is NOT a `@test`) is dead + "green" by omission (breaker's
