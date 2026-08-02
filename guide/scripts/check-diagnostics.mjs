@@ -37,6 +37,14 @@ const PINS = [
   },
 ];
 
+// Vacuous-pass floor: this gate's whole job is to pin diagnostics, so a run with ZERO pins (a botched edit
+// or bad merge that empties PINS) must FAIL, not silently print "✓ … 0 pinned" and exit 0 — that false
+// green is exactly what a conformance gate must never do (cf. the check:examples/prose/music-preload floors).
+if (PINS.length === 0) {
+  console.error("\n✗ diagnostic-message conformance: PINS is EMPTY — nothing is being pinned. This gate must pin ≥1 diagnostic; refusing a vacuous pass.\n");
+  process.exit(1);
+}
+
 const failures = [];
 for (const pin of PINS) {
   const program = wrapModule(pin.snippet, "sexpr");
