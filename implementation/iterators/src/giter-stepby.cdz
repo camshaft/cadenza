@@ -88,7 +88,7 @@ def step-by-of-empty-is-empty() =
 /// minimal single-element trailing skip: step-by 2 over 4 keeps indices 0,2 = [1,3] then SKIPS index 3
 /// into Nil. (Overlaps giter.cdz's stride-2 mechanism — kept as a small explicit witness, not a new gap.)
 @test
-def step-by-exhausts-mid-stride() =
+def step-by-two-single-element-trailing-skip() =
   if int-list-eq(collect(step-by(from-list([1, 2, 3, 4]), 2)), [1, 3]) then
     unit
   else
