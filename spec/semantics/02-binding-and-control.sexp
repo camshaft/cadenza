@@ -5716,3 +5716,26 @@
             (def (main) 42)
             (export main)))
   (error  CDZ0101))
+
+(case "pure guards on fused-match arms read the payload binder and an enclosing capture"
+  (doc    "Guards × the match-fusion seam: the scrutinee is a CALL result (`mk`, whose arms clone
+           into the callee's branches) and the guards read BOTH the arm's SumPayload binder AND an
+           enclosing let-bound capture (`lim`) — with guarded and unguarded arms interleaved on the
+           SAME variant (Hi guarded then Hi unguarded = the fall-through). k=9 → 9>8 → 90; k=7 →
+           guard fails → unguarded Hi arm → 7; k=2 → Lo guard 2<8 → 200. A fused clone that
+           mis-classified either binder read (copy the capture / share the payload) breaks a guard's
+           value; the guard-position companion of the fused direct-read pins.")
+  (input  (do
+            (type Sz (Hi Int64) (Lo Int64))
+            (def (mk x) (if (> x 5) (Hi x) (Lo x)))
+            (def (main (: k Int64))
+              (let ((lim 8))
+                (match (mk k)
+                  ((guard (Hi h) (> h lim)) (* h 10))
+                  ((Hi h2) h2)
+                  ((guard (Lo w) (< w lim)) (* w 100))
+                  (_ -999))))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 90 Int64))
+  (call   main (: 7 Int64)) (output (: 7 Int64))
+  (call   main (: 2 Int64)) (output (: 200 Int64)))
