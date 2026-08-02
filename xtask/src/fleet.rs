@@ -2335,9 +2335,9 @@ fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String
         if merge_request_ref_is_missing(&mr.r#ref) {
             continue;
         }
-        // CHEAP predicates FIRST (no subprocess): under-threshold or in-flight → skip before spending
-        // any `git` on it (PR #1234 review — don't shell `git cherry`/`git show` for an MR the cheap
-        // checks already exclude). Only survivors pay for the (expensive) landed + file-collision tests.
+        // CHEAP predicates FIRST (no subprocess), THEN the git checks ordered cheapest-decisive-first,
+        // so an MR excluded by an earlier check never pays for a later (more expensive) one. Only a
+        // candidate that survives every prior gate spends the next subprocess.
         let age = file_mtime_unix(&p)
             .map(|m| now.saturating_sub(m))
             .unwrap_or(0);
@@ -2345,7 +2345,7 @@ fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String
             continue; // still within the wait window — a healthy queued MR, not stale
         }
         // In flight if a live ci-dispatch record names this ref (prefix-tolerant, git shas). Cheap
-        // (in-memory set), so checked before the git calls.
+        // (in-memory set), so checked before any git call.
         let in_flight = in_flight_refs.iter().any(|r| {
             let (a, b) = (r.to_ascii_lowercase(), mr.r#ref.to_ascii_lowercase());
             a.starts_with(&b) || b.starts_with(&a)
@@ -2353,17 +2353,21 @@ fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String
         if in_flight {
             continue;
         }
-        // Now the EXPENSIVE checks, only for a candidate that's old + not-in-flight: is it already
-        // landed (git cherry), and is it file-blocked behind an in-flight candidate (git show)?
-        let landed = ref_landed_on_trunk(fleet, &mr.r#ref);
-        // If we CAN'T compute the MR's files (None = git error/unresolvable ref), do NOT flag it stale
-        // (PR #1244 review): an unknown file set must not read as "file-disjoint" and get surfaced as a
-        // dispatchable-but-stuck MR — treat unknown conservatively as blocked (skip the classification).
+        // Already landed (git cherry) → can never be stale-queued; skip BEFORE the `git show` that the
+        // file-collision test needs (one subprocess, not two, for a landed MR).
+        if ref_landed_on_trunk(fleet, &mr.r#ref) {
+            continue;
+        }
+        // Last gate: file-blocked behind an in-flight candidate (git show). If we CAN'T compute the
+        // MR's files (None = git error/unresolvable ref), do NOT flag it stale — an unknown file set
+        // must not read as "file-disjoint" and get surfaced as a dispatchable-but-stuck MR; treat
+        // unknown conservatively as blocked (skip the classification).
         let file_blocked = match changed_files_of(&mr.r#ref) {
             Some(files) => files_collide(&files, &in_flight_files),
             None => true, // unresolvable → conservatively blocked, never stale-flagged
         };
-        if mr_is_stale_queued(age, in_flight, landed, file_blocked, STALE_QUEUED_MR_SECS) {
+        // age>threshold + not-in-flight + not-landed already established above; this is the file gate.
+        if mr_is_stale_queued(age, false, false, file_blocked, STALE_QUEUED_MR_SECS) {
             out.push((fname, mr.from.clone(), mr.r#ref.clone(), age));
         }
     }
