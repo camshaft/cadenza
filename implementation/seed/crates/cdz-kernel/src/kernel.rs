@@ -327,16 +327,16 @@ impl Session {
         Ok(())
     }
 
-    /// The ASYNC twin of [`Session::deliver`] (operator all-async directive) — deliver an inbound event
-    /// and run the fold→dispatch cycle to quiescence, but folding through an [`AsyncReducer`] so a long
-    /// wasm fold cooperatively YIELDS (fuel_async_yield) instead of blocking the single-threaded host loop.
-    /// Additive alongside the sync `deliver` during the migration; the sync path is removed once every
-    /// caller (incl. the host's async loop) is on the async path (the operator's "no sync remains").
+    /// Deliver an inbound event and drive the fold→authorize→dispatch→fold-result loop to quiescence,
+    /// awaiting the reducer's fold via [`AsyncReducer`] — the async form of [`Session::deliver`]. Appends
+    /// `body` (cause-linked to `cause`), then folds it through `reducer`; each effect the fold emits is
+    /// authorized, durably dispatched, executed, and its result folded back, until no new effects remain.
+    /// Because the fold is `.await`ed, a long-running wasm fold cooperatively YIELDS at fuel intervals (see
+    /// [`crate::wasm_host::AsyncComponentReducer`]) rather than blocking the caller's single-threaded loop.
     ///
-    /// The EXECUTOR stays sync here (`&mut dyn Executor`): only the REDUCER fold is the long-running wasm
-    /// that needs to yield; a real async executor (Bedrock/HTTP) is a later step of the async arc. The
-    /// guest-facing ABI stays blocking (operator seq-42): the async is purely host-side Rust — the guest's
-    /// `fold.apply` is a plain sync WIT function that the host drives asynchronously.
+    /// The executor is invoked synchronously (`&mut dyn Executor`): only the reducer fold awaits. The
+    /// guest-facing WIT ABI is blocking — the async lives entirely in the host-side Rust driving the
+    /// component, never in the guest's interface.
     pub async fn deliver_async(
         &mut self,
         body: EventBody,
@@ -1474,34 +1474,119 @@ mod status_snapshot_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn deliver_async_drives_the_loop_identically_to_sync_deliver() {
-        // The async driver (deliver_async) must produce the SAME result as sync deliver for a sync-bodied
-        // reducer wrapped in SyncAsAsync — the additive-migration invariant (the async path is behavior-
-        // preserving; it only adds cooperative yield for a long wasm fold). Drive StatusReducer via the
-        // async loop and assert the same Active state + armed timer + published-only-public KV.
+    async fn deliver_async_is_equivalent_to_sync_deliver() {
+        // The safety property of the async migration: deliver_async must produce a session BYTE-IDENTICAL
+        // to sync deliver for a sync-bodied reducer wrapped in SyncAsAsync (the async path only adds
+        // cooperative yield; it changes no observable behavior). Build BOTH — a sync-delivered session and
+        // an async-delivered one — and assert they match on the KV ROOT HASH (the whole KV, not one key),
+        // the log length, and the derived status. A deliver/deliver_async drift fails loudly HERE.
         use crate::reducer::SyncAsAsync;
-        let mut exec = RecordingExecutor::new();
-        let mut s = Session::genesis(Hash::of(b"status-v1"));
-        s.deliver_async(
-            inbound(),
-            None,
-            &SyncAsAsync(StatusReducer),
-            &timer_cap(),
-            &mut exec,
-        )
-        .await
-        .unwrap();
 
-        let snap = s.status_snapshot(Some(500), 300_000);
-        assert_eq!(snap.state, SessionState::Active);
-        assert_eq!(snap.armed_timers, 1);
+        let mut sync_exec = RecordingExecutor::new();
+        let mut sync_s = Session::genesis(Hash::of(b"status-v1"));
+        sync_s
+            .deliver(
+                inbound(),
+                None,
+                &StatusReducer,
+                &timer_cap(),
+                &mut sync_exec,
+            )
+            .unwrap();
+
+        let mut async_exec = RecordingExecutor::new();
+        let mut async_s = Session::genesis(Hash::of(b"status-v1"));
+        async_s
+            .deliver_async(
+                inbound(),
+                None,
+                &SyncAsAsync(StatusReducer),
+                &timer_cap(),
+                &mut async_exec,
+            )
+            .await
+            .unwrap();
+
+        // EQUIVALENCE: identical KV root (whole-KV content-address), log length, and derived snapshot.
         assert_eq!(
-            snap.published
+            async_s.snapshot().kv_root,
+            sync_s.snapshot().kv_root,
+            "async KV root must equal sync KV root"
+        );
+        assert_eq!(async_s.log().len(), sync_s.log().len());
+        let sync_snap = sync_s.status_snapshot(Some(500), 300_000);
+        let async_snap = async_s.status_snapshot(Some(500), 300_000);
+        assert_eq!(async_snap.state, sync_snap.state);
+        assert_eq!(async_snap.armed_timers, sync_snap.armed_timers);
+        assert_eq!(async_snap.published, sync_snap.published);
+        // And the absolute expected result (not just "they agree"): Active, one armed timer, public-only.
+        assert_eq!(async_snap.state, SessionState::Active);
+        assert_eq!(async_snap.armed_timers, 1);
+        assert_eq!(
+            async_snap
+                .published
                 .get(b"public/status".as_slice())
                 .map(|v| &v[..]),
             Some(&b"investigating auth"[..])
         );
-        assert!(!snap.published.contains_key(b"private/secret".as_slice()));
+        assert!(!async_snap
+            .published
+            .contains_key(b"private/secret".as_slice()));
+    }
+
+    // A reducer that arms a timer on an inbound message and, when that timer FIRES, publishes a marker —
+    // so a test can prove fire_due_timers_async actually wakes the reducer (not just drains the table).
+    struct TimerThenPublishReducer;
+    impl Reducer for TimerThenPublishReducer {
+        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    FoldOutput::with_effects(vec![crate::reducer::Effect {
+                        request: EffectRequest {
+                            kind: EffectKind::Timer,
+                            target: "1000".into(), // absolute deadline ms
+                            payload: None,
+                            timeliness: Timeliness::Interactive,
+                        },
+                        token: None,
+                    }])
+                }
+                EventBody::TimerFired { .. } => {
+                    kv.put(b"public/woke".to_vec(), b"timer-fired".to_vec());
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fire_due_timers_async_wakes_the_reducer_and_settles_the_timer() {
+        // fire_due_timers_async is a new public API; pin it: arm a timer via an inbound, then fire it and
+        // assert (a) it returns 1 (one timer fired), (b) the reducer WOKE (its TimerFired fold ran, writing
+        // the marker), (c) the armed-timer + open-obligation sets drained (the timer settled). Same
+        // determinism as the sync path — recorded fired_ms is the deadline, so replay is stable.
+        use crate::reducer::SyncAsAsync;
+        let reducer = SyncAsAsync(TimerThenPublishReducer);
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"timer-v1"));
+        s.deliver_async(inbound(), None, &reducer, &timer_cap(), &mut exec)
+            .await
+            .unwrap();
+        // Armed, not yet fired.
+        assert_eq!(s.next_timer_deadline(), Some(1000));
+        assert!(s.kv().get(b"public/woke").is_none());
+
+        // Fire everything due at now=1500 (past the 1000ms deadline).
+        let fired = s
+            .fire_due_timers_async(1500, &reducer, &timer_cap(), &mut exec)
+            .await;
+        assert_eq!(fired, 1, "exactly one timer was due and fired");
+        // The reducer woke on the TimerFired and published its marker.
+        assert_eq!(s.kv().get(b"public/woke"), Some(&b"timer-fired"[..]));
+        // The timer settled: no armed timers left, no open obligations.
+        assert_eq!(s.next_timer_deadline(), None);
+        assert_eq!(s.open_effects(), 0);
     }
 
     #[test]
