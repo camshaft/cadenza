@@ -388,6 +388,35 @@
   (call   main (: 5 Int64)) (output (: 6 Int64))
   (call   main (: 7 Int64)) (output (: 0 Int64)))
 
+(case "an equality point fact sheds a then-branch arithmetic overflow guard, but the trap survives unguarded"
+  (doc    "The EQUALITY companion of the interval underflow-elision case below: an `(= x c)` guard yields a
+           POINT fact `x ∈ [c, c]` (not an interval), and that is enough to shed a checked-arith overflow
+           guard when the result at `x == c` provably fits the NARROW type. `shed`: inside the then-branch of
+           `(if (= x 5) …)`, `x` is pinned to `[5, 5]`, so `(+ x 1) = 6` cannot overflow Int8 and its
+           overflow guard is dropped (value unchanged: x = 5 → 6, and the else covers everything else → 0).
+           `raw`: the SAME `(+ x 1)` on Int8 WITHOUT the `(= x 5)` guard is unrefined, so at x = 127 it must
+           still TRAP (127 + 1 overflows Int8) — the SOUNDNESS TWIN proving the elision is licensed by the
+           POINT fact, not by luck. The Lir-level guard-drop is unit-pinned in rcdzc
+           `an_equality_point_fact_elides_the_then_branch_arith_overflow_guard`; this pins the value + trap
+           parity fleet-wide on both backends. Distinct from the ORDERING refinements (this is the point-fact
+           face) and from the Eq-else known-false pin above (this elides an ARITHMETIC guard, not a compare).")
+  (input  (do
+            (def (shed (: x Int8)) (if (= x 5) (: (+ x 1) Int8) 0))
+            (def (raw  (: x Int8)) (: (+ x 1) Int8))
+            (export shed)
+            (export raw)))
+  ; shed: x == 5 pins x to [5,5], so (+ x 1) sheds its overflow guard; x = 5 → 6, any other x → else → 0.
+  (call   shed (: 5 Int8))
+  (output (: 6 Int64))
+  (call   shed (: 100 Int8))
+  (output (: 0 Int64))
+  ; raw: unguarded (+ x 1) is value-correct for small x...
+  (call   raw (: 3 Int8))
+  (output (: 4 Int64))
+  ; ...and MUST still trap at x = 127 (Int8 overflow) — the trap the elision must NOT have dropped.
+  (call   raw (: 127 Int8))
+  (trap   "integer overflow"))
+
 (case "an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type"
   (doc    "The operator's motivating value-facts example (`if x > 0` ⇒ `x - 1` cannot underflow) on an
            UNSIGNED type, which value-facts slice 2 (GAP-A) newly enables — before it, the unsigned `(> x 0)`
