@@ -27,27 +27,34 @@ function head(n: Node): string | null {
 ///
 /// 🔑 The RUNTIME renders a quantity as `(Qty.of <value> <unit>)` (spec 18-units case 72), NOT
 /// `(quantity …)` — the notebook runs + renders output in the canonical s-expr surface, so this friendly
-/// path is what turns `(Qty.of 5 (Unit.base #"meter"))` into `5 meter`. The legacy `quantity`-head branch
-/// is kept as a harmless fallback but the runtime never emits it.
+/// path is what turns `(Qty.of 5 (Unit.base #"meter"))` into `5 meter`. The quantity shape decision lives
+/// in the shared `asQuantity` helper (also used by the formula classifier); the legacy `quantity`-head
+/// shape is kept as a harmless fallback but the runtime never emits it.
 export function displayNode(n: Node): string {
   if (isAtom(n)) return displayAtom(n.atom);
-  const h = head(n);
-  if (h === "Qty.of") {
-    // (Qty.of <value> <unit>) → "<value> <unit>"; a dimensionless (Unit.one) unit renders empty → value only.
-    const list = (n as { list: Node[] }).list;
-    if (list.length === 3) {
-      const value = displayNode(list[1]);
-      const unit = displayUnit(list[2]);
-      return unit ? `${value} ${unit}` : value;
-    }
-    // Unexpected arity — fall through to the compact render rather than mangling.
-  }
-  if (h === "quantity") {
-    // Legacy shape (the runtime emits `Qty.of`, not this) — kept as a lenient fallback.
-    const parts = (n as { list: Node[] }).list.slice(1).map(displayNode);
-    return parts.join(" ");
-  }
+  const q = asQuantity(n);
+  if (q) return q.unit ? `${q.value} ${q.unit}` : q.value;
   return compact(n);
+}
+
+/// Decompose a quantity node into its friendly `{ value, unit }` display parts, or null if the node isn't
+/// a quantity. The RUNTIME emits `(Qty.of <value> <unit>)` (spec 18-units case 72); the legacy
+/// `(quantity <value> <unit>)` shape (never emitted now) is handled as a lenient fallback. `value` is the
+/// friendly magnitude (`5`, `5/2`); `unit` is the concise unit surface (`meter`, `meter/second`,
+/// `meter/(second^2)`), or `""` for a dimensionless quantity (`Unit.one`). Exported so both the value/table
+/// display path (`displayNode`) AND the formula classifier (`classifyFormula`) share ONE quantity-shape
+/// decision — a change here can't leave one renderer matching a stale shape while the other doesn't.
+export function asQuantity(n: Node): { value: string; unit: string } | null {
+  if (!isList(n)) return null;
+  const h = head(n);
+  if (h === "Qty.of" && n.list.length === 3) {
+    return { value: displayNode(n.list[1]), unit: displayUnit(n.list[2]) };
+  }
+  if (h === "quantity" && n.list.length >= 2) {
+    // Legacy shape (the runtime emits `Qty.of`, not this): value + remaining atoms as the unit.
+    return { value: displayNode(n.list[1]), unit: n.list.slice(2).map(displayNode).join(" ") };
+  }
+  return null;
 }
 
 /// The name a unit-symbol node carries (`(Unit.base #"meter")` tokenizes to `[Unit.base, #, "meter"]` — the
