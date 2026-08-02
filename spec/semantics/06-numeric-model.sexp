@@ -4119,6 +4119,33 @@
   (call   and_lt)
   (output (: 1 Int64)))
 
+(case "a CONSTANT match on a high-bit UInt64 scalar decides its literal patterns unsigned"
+  (doc    "The MATCH-fold face of the wide-UInt64 family: a fully-constant `match` on a UInt64 scalar
+           at/above 2^63 folds at compile time, and the pattern-equality against each literal arm must decode
+           UNSIGNED, not through a signed i64 carrier. `(match u64max (u64max => 1) (_ => 0))` folds to 1 (the
+           all-bits-set scrutinee equals the all-bits-set pattern); `(match u64max (2^63 => 1) (_ => 0))` folds
+           to 0 (u64max != 2^63); `(match 2^63 (2^63 => 7) (_ => 0))` folds to 7. If the match dispatch decoded
+           the scrutinee/pattern through a signed i64 (the recurring u64-top-bit carrier trap), u64max would
+           read as -1 and 2^63 as i64::MIN — `cmiss` could spuriously match (both negative-looking) or `chit`/
+           `ctwo` could fail their reflexive arm. The runtime comparison + const arith/shift/bitwise + const
+           comparison (direct & compose) faces are pinned above; this closes the const MATCH face. Nullary
+           defs so the scrutinee is a compile-time constant — the fold path. Value-only, both backends fold
+           each body to a literal constant.")
+  (input  (do
+            (def (chit)  (match (: 18446744073709551615 UInt64) (18446744073709551615 1) (_ 0)))
+            (def (cmiss) (match (: 18446744073709551615 UInt64) (9223372036854775808 1) (_ 0)))
+            (def (ctwo)  (match (: 9223372036854775808 UInt64) (9223372036854775808 7) (_ 0)))
+            (export chit)
+            (export cmiss)
+            (export ctwo)))
+  ; u64max matches the u64max arm → 1; u64max does NOT match the 2^63 arm → 0; 2^63 matches the 2^63 arm → 7.
+  (call   chit)
+  (output (: 1 Int64))
+  (call   cmiss)
+  (output (: 0 Int64))
+  (call   ctwo)
+  (output (: 7 Int64)))
+
 (case "a CONSTANT algebraic identity over a high-bit UInt64 operand folds to the operand, not a spurious CDZ0304 decline"
   (doc    "The COMPILE-TIME const-operand face of the full-width unsigned family (rcdzc lower 819f5c2e3). The
            runtime cases above pass UInt64.max as an ARGUMENT; this pins a both-CONSTANT algebraic identity
