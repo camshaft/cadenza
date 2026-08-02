@@ -1599,6 +1599,47 @@ fn a_trapping_shared_payload_before_the_diff_does_not_preempt_a_trapping_cond() 
     }
 }
 
+/// CSE must NOT hoist a repeated trapping subexpression out of a SHORT-CIRCUIT connective's shielded
+/// right operand (adv-55, a wasm soundness miscompile). `(if (and b (= (/ 10 d) (/ 10 d))) 1 0)`: the
+/// `and`'s rhs (the two divisions) is evaluated ONLY when `b` is true — short-circuit shields it exactly
+/// as a conditional's unselected branch (core-semantics.md #Boolean Connectives Short-Circuit). The
+/// repeated `(/ 10 d)` is a CSE class, but a hoist to the body root would evaluate it unconditionally →
+/// a spurious 'integer divide by zero' at `d=0` even when `b` is false. The fix: `collect_dominating_
+/// frontier` treats `Core::And`'s rhs as conditional (contributes only `lhs`), so the shielded division
+/// is never in the frontier a CSE hoist targets. At `main(false, 0)` the answer MUST be 0 (no trap).
+#[test]
+fn cse_does_not_hoist_a_trapping_subexpr_out_of_a_short_circuit_and() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (main (: b Bool) (: d Int64)) \
+                   (if (and b (= (/ 10 d) (/ 10 d))) 1 0)) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    // b=false → the `and` short-circuits, the divisions never run, result is 0. A CSE that hoisted the
+    // repeated `(/ 10 d)` above the connective would divide by zero here.
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["false".to_string(), "0".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(v) => assert_eq!(
+            v, "0",
+            "b=false short-circuits the `and`, so its trapping rhs must not run — expected 0"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!(
+            "CSE hoisted the short-circuit-shielded `(/ 10 d)` above the `and` → spurious trap at \
+             d=0 when b=false; the frontier must treat And's rhs as conditional. Got trap: {t}"
+        ),
+    }
+}
+
 /// The common-constructor sink also fires for a MATCH whose every (unguarded) arm builds the same
 /// constructor: `(match k (0 (Some 10)) (1 (Some 20)) (_ (Some 30)))` builds `Some` ONCE and sinks the
 /// payload into a per-position `match` (a scalar decision tree), instead of DUPLICATING the `sum-new`
