@@ -1,0 +1,138 @@
+/// giter-takedrop.cdz — DIRECT count-BOUNDARY + partition coverage for the `take` / `drop` pair, split
+/// into its own small module.
+///
+/// WHY A SEPARATE MODULE. `take(it, n)` and `drop(it, n)` are the foundational prefix/suffix combinators
+/// (and the typed-empty idiom every sibling module leans on is `take(_, 0)`), but giter.cdz pins only
+/// their INTERIOR behavior: take a mid prefix + take past-the-end; drop a mid suffix. The COUNT BOUNDARIES
+/// — where the `n <= 0` guard and the length-vs-n comparison decide the result — are unpinned, and that is
+/// where an off-by-one hides:
+///   - take 0 (and take n<0) → empty (the `n <= 0` guard fires before touching the iterator);
+///   - take EXACTLY the length → the whole thing (the recursion bottoms out on `Nil`, not on `n`);
+///   - drop 0 (and drop n<0) → the whole iterator UNCHANGED (the `n <= 0` arm returns `Cons(h, rest)`);
+///   - drop >= the length → empty (the recursion exhausts the iterator before `n` reaches 0).
+/// And the invariant that ties the pair: `take(it, n)` ++ `drop(it, n)` reconstructs the original for ANY
+/// n — the prefix and suffix partition the input at the split point. giter.cdz has a take(drop(chain))
+/// COMPOSITION test but never pins this PARTITION law directly.
+/// It lives in its own module because giter.cdz sits at the per-module monomorphizer instantiation-pressure
+/// ceiling its header documents; a fresh module isolates the added instantiation (the same "isolate the
+/// heavy instantiation" pattern giter-flat/chain/scan/spanwhile/zipstop/interleave/stepby use).
+///
+/// The generic pull-iterator (same cons-cell shape as the sibling modules; re-declared here so this module
+/// is self-contained — each src/*.cdz is its own namespace).
+type GIter =
+  | Nil
+  | Cons(a, GIter(a))
+
+/// `from-list(xs)` — the base generic producer over `xs : List(a)`, self-recursive so its result element
+/// ties to the argument.
+def from-list(xs) = match xs with
+  | [] => GIter.Nil(unit)
+  | [h, .. t] => GIter.Cons(h, from-list(t))
+
+/// `take(it, n)` — the first `n` elements (empty when `n <= 0`). The unit under test.
+def take(it, n) =
+  if n <= 0 then
+    GIter.Nil(unit)
+  else
+    match it with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1))
+
+/// `drop(it, n)` — all but the first `n` elements (the whole iterator when `n <= 0`). The unit under test.
+def drop(it, n) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => if n <= 0 then GIter.Cons(h, rest) else drop(rest, n - 1)
+
+/// `count(it)` — number of emitted values, driving the pull to exhaustion.
+def count(it) = match it with
+  | GIter.Nil(_) => 0
+  | GIter.Cons(_, rest) => 1 + count(rest)
+
+/// `collect(it)` — reify the iterator back to a `List(a)` so a test can assert the exact emitted sequence.
+def collect(it) = match it with
+  | GIter.Nil(_) => []
+  | GIter.Cons(h, rest) => List.concat([h], collect(rest))
+
+/// `concat-lists(xs, ys)` — used to state the partition law `take ++ drop == original`.
+def concat-lists(xs, ys) = match xs with
+  | [] => ys
+  | [h, .. t] => List.concat([h], concat-lists(t, ys))
+
+/// `int-list-eq(xs, ys)` — structural equality on `List(Int64)` for the sequence assertions.
+def int-list-eq(xs, ys) = match xs with
+  | [] => (match ys with
+    | [] => true
+    | _ => false
+  )
+  | [x, .. xr] => match ys with
+    | [] => false
+    | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
+
+/// TESTS ----------------------------------------------------------------------------------------------
+/// take count boundaries: 0 and negative → empty (the `n <= 0` guard); exactly-length → the whole thing.
+@test
+def take-zero-is-empty() =
+  if count(take(from-list([1, 2, 3]), 0)) == 0 then
+    unit
+  else
+    trap("take 0 is empty")
+
+@test
+def take-negative-is-empty() =
+  if count(take(from-list([1, 2, 3]), -2)) == 0 then
+    unit
+  else
+    trap("take with a negative count is empty (the n <= 0 guard)")
+
+@test
+def take-exactly-length-is-whole() =
+  if int-list-eq(collect(take(from-list([1, 2, 3]), 3)), [1, 2, 3]) then
+    unit
+  else
+    trap("take of exactly the length yields the whole iterator: [1,2,3]")
+
+/// drop count boundaries: 0 and negative → the whole iterator unchanged (the `n <= 0` arm); >= length →
+/// empty (the recursion exhausts before n reaches 0).
+@test
+def drop-zero-is-whole() =
+  if int-list-eq(collect(drop(from-list([1, 2, 3]), 0)), [1, 2, 3]) then
+    unit
+  else
+    trap("drop 0 yields the whole iterator unchanged: [1,2,3]")
+
+@test
+def drop-negative-is-whole() =
+  if int-list-eq(collect(drop(from-list([1, 2, 3]), -5)), [1, 2, 3]) then
+    unit
+  else
+    trap("drop with a negative count yields the whole iterator (the n <= 0 arm): [1,2,3]")
+
+@test
+def drop-at-length-is-empty() =
+  if count(drop(from-list([1, 2, 3]), 3)) == 0 then
+    unit
+  else
+    trap("drop of exactly the length is empty")
+
+@test
+def drop-past-length-is-empty() =
+  if count(drop(from-list([1, 2, 3]), 9)) == 0 then
+    unit
+  else
+    trap("drop past the length is empty (recursion exhausts before n reaches 0)")
+
+/// the partition law: take(it, n) ++ drop(it, n) reconstructs the original for any n (here a mid split).
+@test
+def take-drop-partition-the-input() =
+  if int-list-eq(
+      concat-lists(
+        collect(take(from-list([1, 2, 3, 4, 5]), 2)),
+        collect(drop(from-list([1, 2, 3, 4, 5]), 2))
+      ),
+      [1, 2, 3, 4, 5]
+    ) then
+    unit
+  else
+    trap("take(n) ++ drop(n) reconstructs the original: [1,2,3,4,5]")
+
+export { GIter.* }
