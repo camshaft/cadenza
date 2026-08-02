@@ -13607,9 +13607,11 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             // A runtime `String.slice` / `String.to-bytes` (`StrSlice`/`StrToBytes`) builds a fresh leaf and
             // CONSUMES/dups its source — a genuine runtime computation — so a `let`-bound one used more than
             // once MUST be NAMED (evaluated once, the handle read by each use), NOT copy-propagated into every
-            // use site. This is adv-54: `(let ((b (String.to-bytes (String.slice s i j)))) (+ (Bytes.at b 0)
-            // (Bytes.at b 1)))` copy-propagated `b` (neither op was in this list), RECOMPUTING the slice+
-            // to-bytes at each read; the recompute CONSUMES the (borrowed) source, so the 2nd read saw freed
+            // use site. This is adv-54: `(let ((tail (Option.expect (String.slice s i j) "in")))
+            // (let ((b (String.to-bytes tail))) (+ (Bytes.at b 0) (Bytes.at b 1))))` copy-propagated `b`
+            // (neither op was in this list), RECOMPUTING the slice+to-bytes at each read (`String.slice`
+            // returns `(Option String)`, so it is unwrapped before `String.to-bytes`);
+            // the recompute CONSUMES the (borrowed) source, so the 2nd read saw freed
             // bytes → 0 — a wasm-only HIGH soundness miscompile (rust rebuilt correctly). Not multibyte-
             // specific: an ASCII RUNTIME slice fails too; the breaker's "ASCII OK" used a CONSTANT slice (which
             // const-folds, no runtime recompute). Keeping these two under the >= 2-use rule fixes it. (SCOPED
