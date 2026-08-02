@@ -647,14 +647,14 @@ def em-narrow-in-let-overflow-declines() =
 /// every op these tests pass IS in the emit subset, so a decline is a broken test premise, not an in-band -1.
 def emitted-op-byte(op: Int64) = match emit-module(Core.CBin(op, true, 64, cnum64(1), cnum64(1))) with
   | Option.Some(m) => byte-of(m, Bytes.len(m) - 2)
-  | Option.None(_) => trap("emitted-op-byte: CBin op did not emit (out of subset?)")
+  | Option.None(_) => trap(String.concat("emitted-op-byte: CBin op ", String.concat(int-to-decimal(op), " did not emit (out of subset?)")))
 
 /// The RELATIONAL opcode of an emitted `CBin cmp 1 1` module — for a comparison the tail is `<cmp> ad 0b`,
 /// so the opcode is 3 bytes before the end (the 0xad extend + 0x0b end follow it). TRAPS on a decline (same
 /// reason as emitted-op-byte: the comparison ops these tests use are all in the emit subset).
 def cmp-byte(op: Int64) = match emit-module(Core.CBin(op, true, 64, cnum64(1), cnum64(1))) with
   | Option.Some(m) => byte-of(m, Bytes.len(m) - 3)
-  | Option.None(_) => trap("cmp-byte: CBin comparison did not emit (out of subset?)")
+  | Option.None(_) => trap(String.concat("cmp-byte: CBin comparison op ", String.concat(int-to-decimal(op), " did not emit (out of subset?)")))
 
 @test
 def em-cbin-op-mapping() =
