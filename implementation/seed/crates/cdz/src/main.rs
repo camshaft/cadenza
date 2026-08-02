@@ -968,6 +968,25 @@ fn run_chor(args: &ChorArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    // 5b. WARN on recursion degradation. `render-compilable` cannot yet emit a `def main` back-jump for a
+    // recursive protocol (LRecT/LVarT), so it emits a `-- rec/var: unsupported` marker inside an otherwise
+    // valid, COMPILABLE stub actor (the loop body is dropped). Without this warning the emitted actor
+    // compiles+runs fine but silently does NOT loop, so a user could believe a recursive protocol shredded
+    // correctly. Name every affected role so the degradation is visible, not buried in a comment.
+    let degraded: Vec<&str> = actors
+        .iter()
+        .filter(|(_role, module)| chor_module_is_rec_degraded(module))
+        .map(|(role, _module)| role.as_str())
+        .collect();
+    if !degraded.is_empty() {
+        eprintln!(
+            "{PROG} chor: warning: recursive protocol — {} emitted a NON-LOOPING stub (the loop body is \
+             dropped; rec-emit is not yet supported). The actor compiles but does not repeat; treat it as a \
+             single-session projection only.",
+            degraded.join(", ")
+        );
+    }
+
     match &args.out {
         None => {
             print!("{bundle}");
@@ -1121,6 +1140,14 @@ fn split_actor_bundle(bundle: &str) -> Vec<(String, String)> {
         actors.push((r, m.trim_end().to_string()));
     }
     actors
+}
+
+/// Does an emitted actor module carry the recursion-degradation marker? `render-compilable` cannot yet emit
+/// a `def main` back-jump for a recursive protocol (LRecT/LVarT), so it leaves a `-- rec: unsupported` /
+/// `-- var: unsupported` marker in an otherwise-compilable stub whose loop body is dropped. `cdz chor` uses
+/// this to WARN (the stub compiles but does not loop, so the degradation must be surfaced, not buried).
+fn chor_module_is_rec_degraded(module: &str) -> bool {
+    module.contains("-- rec: unsupported") || module.contains("-- var: unsupported")
 }
 
 /// Turn a no-actors `render-all`/`shred-sexp` bundle verdict into an ACTIONABLE `cdz chor` error message
@@ -9935,6 +9962,28 @@ mod tests {
         assert!(actors[1].1.contains("def main() = 1"));
         // A bundle with no markers yields no actors (the run_chor empty-guard fires).
         assert!(split_actor_bundle("no markers here").is_empty());
+    }
+
+    #[test]
+    fn chor_module_rec_degradation_is_detected() {
+        // A recursive protocol's emitted actor carries the `-- rec: unsupported` / `-- var: unsupported`
+        // marker (render-compilable can't emit a def-main back-jump yet); `cdz chor` must detect it to warn.
+        let rec_stub = "effect Comm = ...\ndef main() =\n  unit  -- rec: unsupported in first-cut render-compilable\nexport { main }\n";
+        assert!(
+            chor_module_is_rec_degraded(rec_stub),
+            "a rec-unsupported stub is degraded"
+        );
+        let var_stub = "def main() =\n  unit  -- var: unsupported in first-cut render-compilable\n";
+        assert!(
+            chor_module_is_rec_degraded(var_stub),
+            "a var-unsupported stub is degraded"
+        );
+        // A normal linear actor (no marker) is NOT degraded — no spurious warning.
+        let ok = "effect Comm = ...\ndef main() =\n  let _ = Comm.send(\"Title\") in\n  unit\nexport { main }\n";
+        assert!(
+            !chor_module_is_rec_degraded(ok),
+            "a non-recursive actor must not be flagged degraded"
+        );
     }
 
     #[test]
