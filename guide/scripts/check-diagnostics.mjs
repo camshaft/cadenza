@@ -46,6 +46,15 @@ const PINS = [
     code: "CDZ0210",
     phrases: ["non-exhaustive match", "not covered"],
   },
+  {
+    name: "mixed float widths → CDZ0301 precisions differ",
+    // Floats.tsx quotes the exact phrase "floating-point precisions differ" as the diagnostic text. A reworded
+    // width-mismatch message would silently drift that prose (same class as the CDZ0203 / CDZ0210 pins).
+    chapter: "Floats.tsx — the no-silent-widening Note",
+    snippet: `(+ (Float32.of 1.0) (Float64.of 2.0))`,
+    code: "CDZ0301",
+    phrases: ["floating-point precisions differ"],
+  },
 ];
 
 // Vacuous-pass floor: this gate's whole job is to pin diagnostics, so a run with ZERO pins (a botched edit
