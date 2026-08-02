@@ -2,6 +2,17 @@ import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { StatusLegend } from "../../components/StatusIcon.tsx";
 import { Why } from "../../components/Why.tsx";
+import { Link } from "react-router-dom";
+
+/// A small internal link that respects the router basename (works under a Pages sub-path). Mirrors the
+/// same inline helper used by the other chapters (WhatsNext / ExampleApps).
+function Ch({ to, children }: { to: string; children: React.ReactNode }) {
+  return (
+    <Link to={to} className="text-cadenza-300 underline-offset-2 hover:underline">
+      {children}
+    </Link>
+  );
+}
 
 export default function Welcome() {
   return (
@@ -63,11 +74,19 @@ export default function Welcome() {
 
       <H2>How to use this guide</H2>
       <P>
-        Work through the chapters in order using the sidebar, or jump around. Each chapter has runnable
-        examples you are encouraged to edit, and you will learn faster by changing things and seeing what
-        happens than by only reading. Many chapters end with <strong>exercises</strong>: fill in the
-        blank, press <C>Check</C>, and the guide grades your answer. A <C>Show solution</C> button is
-        always there if you get stuck, but try not to lean on it too soon.
+        The sidebar has two parts. <strong>Cadenza the Language</strong> is the interactive tour you're
+        starting now: work through its chapters in order, or jump around. <strong>Cadenza the Platform</strong>{" "}
+        comes after it, a shorter concept tour of the agent kernel the language was built to run on; it's
+        reading rather than exercises, and you can save it for when you're curious how the pieces add up to
+        a system, or head there early from <Ch to="/platform-overview">its overview</Ch>. This first part
+        is where you'll actually learn to write Cadenza.
+      </P>
+      <P>
+        Each chapter has runnable examples you are encouraged to edit, and you will learn faster by
+        changing things and seeing what happens than by only reading. Many chapters end with{" "}
+        <strong>exercises</strong>: fill in the blank, press <C>Check</C>, and the guide grades your
+        answer. A <C>Show solution</C> button is always there if you get stuck, but try not to lean on it
+        too soon.
       </P>
 
       <P>When you run an example, its result is tagged so you always know what happened:</P>
