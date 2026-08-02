@@ -12,15 +12,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { CHAPTERS, pillarOf } from "./chapters.ts";
+import { CHAPTERS, NON_TEACHING_SECTIONS, pillarOf } from "./chapters.ts";
 
 const here = dirname(fileURLToPath(import.meta.url)); // src/content
 const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
 
-/// Sections whose chapters are NOT expected to carry a tenet box: "Wrapping up" wraps up rather than
-/// teaches, and "Example applications" is a showcase gallery (it demonstrates the features in real
-/// programs rather than introducing a concept — its tenets live in the chapters it cross-links to).
-const NON_TEACHING_SECTIONS = new Set(["Wrapping up", "Example applications"]);
+// NON_TEACHING_SECTIONS (the sections exempt from the tenet-box invariant — "Wrapping up" wraps up rather
+// than teaches; "Example applications" is a showcase whose tenets live in the chapters it cross-links to)
+// is imported from chapters.ts, a single source of truth shared with opener.test.ts so the two gates can't
+// drift on which sections count as teaching.
 
 /// slug → TSX filename, parsed from the registry (same idiom as chapters.test.ts / exercises.test.ts).
 function fileForSlug(): Map<string, string> {
