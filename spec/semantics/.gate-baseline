@@ -5546,3 +5546,4 @@ pass	a runtime Int8 wrapping-add overflow wraps with sign-extension (127 + 1 = -
 pass	a runtime Int8 wrapping-mul overflow wraps with sign-extension (-128 * -1 = -128)
 pass	a runtime Int16 wrapping-add overflow wraps with sign-extension (32767 + 1 = -32768)
 pass	chained runtime UInt8 wrapping ops each re-normalize to width (250+10 then *2 = 8)
+todo	a discarded pure trapping item in a host do-body is elided beside a host call (dead-init ruling)
