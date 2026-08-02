@@ -48966,6 +48966,44 @@ mod match_engine {
         assert_eq!(run_returns_with::<i64>(&b4, "f", &[Val::S64(127)]), 111); // 127&7=7, 127>100 → guard true
         assert_eq!(run_returns_with::<i64>(&b4, "f", &[Val::S64(7)]), 333); // 7&7=7 but 7>100 false → wildcard
         assert_eq!(run_returns_with::<i64>(&b4, "f", &[Val::S64(8)]), 333); // 8&7=0 ≠ 7 → wildcard
+
+        // FLOW-REFINED DEAD ARM: the drop's OTHER `value_range` source. The cases above narrow the
+        // scrutinee via an `&`-MASK (a static arith range); this exercises the pass comment's second
+        // claim — "a flow-refined scrutinee (`(match n …)` under `(> n 100)`) drops arms below the
+        // refinement". Inside the THEN branch of `(> n 100)`, the bare param `n` is refined to
+        // `[101, MAX]` (`value_range` reads `db.refined_range`), so the `5`-arm is dead and dropped
+        // probe-and-body — no `const 5`, no dead body `const 111`. This is a DISTINCT trigger from the
+        // masked cases (a branch-scoped refinement, not a static operand range), and was unpinned.
+        let refined = code(
+            "(module m (def (f (: n Int64)) (if (> n 100) (match n (5 111) (200 222) (_ 333)) 0)) (def (main) 0) (export main))",
+        );
+        assert!(
+            !refined.contains(&Lir::ConstI64(5)),
+            "the flow-refined dead `5` probe is dropped, got: {refined:?}"
+        );
+        assert!(
+            !refined.contains(&Lir::ConstI64(111)),
+            "the flow-refined dead arm body is dropped, got: {refined:?}"
+        );
+        // CAUSALITY CONTROL that makes the drop attributable to the REFINEMENT (not the arm never being
+        // emitted): the SAME match WITHOUT the enclosing `(> n 100)` guard keeps the `5`-arm live — both
+        // `const 5` and its body `const 111` are present. So the absence above is the refinement doing
+        // the work, not a probe/body that simply never lowers.
+        let unrefined = code(
+            "(module m (def (f (: n Int64)) (match n (5 111) (200 222) (_ 333))) (def (main) 0) (export main))",
+        );
+        assert!(
+            unrefined.contains(&Lir::ConstI64(5)) && unrefined.contains(&Lir::ConstI64(111)),
+            "the unrefined `5`-arm (probe + body) stays live, got: {unrefined:?}"
+        );
+        // VALUE PARITY: dropping the refined-dead arm must not change dispatch. `(> n 100)` then a match:
+        // n=200 → arm 200 → 222; n=150 (in-range, not 200) → wildcard 333; n=5 (fails the guard) → else 0.
+        let b5 = component(
+            "(module m (def (f (: n Int64)) (if (> n 100) (match n (5 111) (200 222) (_ 333)) 0)) (export f))",
+        );
+        assert_eq!(run_returns_with::<i64>(&b5, "f", &[Val::S64(200)]), 222); // >100, ==200 → 222
+        assert_eq!(run_returns_with::<i64>(&b5, "f", &[Val::S64(150)]), 333); // >100, not 200 → wildcard
+        assert_eq!(run_returns_with::<i64>(&b5, "f", &[Val::S64(5)]), 0); // !(>100) → else 0 (dead arm unreachable anyway)
     }
 
     #[test]
