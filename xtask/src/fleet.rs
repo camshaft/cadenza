@@ -7113,48 +7113,52 @@ fn read_ci_dispatches(fleet: &Fleet) -> Vec<CiDispatch> {
 struct SchedCandidate {
     mr_file: String,
     lane: String,
+    /// The candidate's changed files — the collision universe for dispatch. A candidate is BLOCKED if
+    /// any of these is also touched by an in-flight candidate (or one picked earlier THIS pass), since
+    /// those will land and shift `origin/main` under it → re-parent conflict (pr-sync 2026-08-02).
+    files: Vec<String>,
 }
 
-/// The PURE core of the I4 scheduler: given the merge-requests queued (each with its lane), the lanes
-/// ALREADY in flight (from the `ci-dispatch` state), the set of lanes that must SERIALIZE (≤1 in
-/// flight — the non-parallel lanes), and the in-flight `cap`, decide which queued MRs to dispatch NOW.
+/// The PURE core of the I4 scheduler: given the merge-requests queued (each with its changed FILES),
+/// the set of files touched by candidates ALREADY in flight, and the in-flight `cap`, decide which
+/// queued MRs to dispatch NOW.
 ///
-/// Rules (mirrors `fleet/CI-GATED-LANES-DESIGN.md`):
-///   - Never exceed `cap` total in-flight (runner-budget bound; pilot found ~8 the sweet spot).
-///   - A SERIALIZED lane admits at most ONE candidate in flight — skip a queued MR whose lane is
-///     serialized AND already in flight (either from `in_flight_lanes` or a peer we picked THIS pass).
-///   - A PARALLEL lane (docs/corpus/leaf subsystems) has no per-lane limit — only the global `cap`.
+/// Rules (mirrors `fleet/CI-GATED-LANES-DESIGN.md`; FILE-level collision, pr-sync's dispatch model):
+///   - Never exceed `cap` total in-flight (runner-budget bound; operator ruled ~8-10).
+///   - BLOCK a queued MR that shares ANY changed file with an in-flight candidate OR with a candidate
+///     already PICKED this pass — those commits WILL land and shift `origin/main` under it, so
+///     dispatching it now yields a re-parent conflict on auto-merge. This is FILE-level, NOT lane-label
+///     (pr-sync 2026-08-02): a baseline-toucher must block a 2nd baseline-toucher of ANY lane label
+///     (e.g. a `mixed` MR that also edits baselines), while `code` MRs on DISJOINT files run parallel.
 ///   - Oldest-first (the queue order passed in); deterministic, so a re-run picks the same set.
 ///
 /// Pure over its inputs (no git/gh/fs) so the whole dispatch policy is unit-tested. Returns the
 /// `mr_file`s to dispatch, in order.
 fn schedule_dispatch(
     queued: &[SchedCandidate],
-    in_flight_lanes: &[String],
-    serialized_lanes: &dyn Fn(&str) -> bool,
+    in_flight_files: &std::collections::HashSet<String>,
     cap: usize,
     current_in_flight: usize,
 ) -> Vec<String> {
     let mut picked = Vec::new();
     let mut slots = cap.saturating_sub(current_in_flight);
-    // Lanes occupied by a SERIALIZED in-flight candidate (existing or picked this pass) — blocks more.
-    let mut busy_serialized: std::collections::HashSet<String> = in_flight_lanes
-        .iter()
-        .filter(|l| serialized_lanes(l))
-        .cloned()
-        .collect();
+    // The FILE collision universe: every file touched by an in-flight candidate PLUS every file
+    // touched by a candidate we PICK this pass. A queued MR sharing any of these is blocked — those
+    // commits WILL land and shift origin/main under it, so dispatching it now yields a re-parent
+    // conflict on auto-merge (pr-sync 2026-08-02: file-level, NOT lane-label — a baseline-toucher must
+    // block a second baseline-toucher of ANY lane label, e.g. a `mixed` MR that also edits baselines).
+    let mut blocked_files: std::collections::HashSet<String> = in_flight_files.clone();
     for c in queued {
         if slots == 0 {
             break;
         }
-        if serialized_lanes(&c.lane) && busy_serialized.contains(&c.lane) {
-            continue; // that serialized lane already has one in flight — hold this MR
+        if c.files.iter().any(|f| blocked_files.contains(f)) {
+            continue; // shares a file with an in-flight / already-picked candidate → hold it
         }
         picked.push(c.mr_file.clone());
         slots -= 1;
-        if serialized_lanes(&c.lane) {
-            busy_serialized.insert(c.lane.clone());
-        }
+        // This pick will land too, so its files now block any later same-file candidate this pass.
+        blocked_files.extend(c.files.iter().cloned());
     }
     picked
 }
@@ -7330,28 +7334,25 @@ fn schedule_plan(fleet: &Fleet, cap: usize) {
     }
     let in_flight_refs: std::collections::HashSet<&str> =
         dispatched.iter().map(|d| d.r#ref.as_str()).collect();
-    let in_flight_lanes: Vec<String> = dispatched.iter().map(|d| d.lane.clone()).collect();
-    // Queued MRs NOT already in flight, oldest-first, each tagged with its lane.
+    // The FILE collision universe: every file touched by an in-flight candidate. A queued MR sharing
+    // any is blocked (those will land + shift origin/main under it → re-parent conflict). File-level,
+    // NOT lane-label (pr-sync 2026-08-02: a baseline-toucher must block a 2nd baseline-toucher of ANY
+    // lane label; `code` candidates on DISJOINT files run parallel).
+    let in_flight_files: std::collections::HashSet<String> = dispatched
+        .iter()
+        .flat_map(|d| changed_files_of(&d.r#ref))
+        .collect();
+    // Queued MRs NOT already in flight, oldest-first, each tagged with its lane + changed files.
     let queued: Vec<SchedCandidate> = queued_merge_requests(fleet)
         .into_iter()
         .filter(|mr| !in_flight_refs.contains(mr.r#ref.as_str()))
         .map(|mr| SchedCandidate {
-            mr_file: mr.file,
             lane: lane_label_for_ref(&mr.r#ref),
+            files: changed_files_of(&mr.r#ref),
+            mr_file: mr.file,
         })
         .collect();
-    // A lane serializes iff it is NOT a parallel lane (reuse the single source of truth via a probe
-    // path — build a one-file path set in that lane and ask `lane_of`; simplest is to reconstruct the
-    // parallel flag from a representative path, but the label→parallel map is small and stable, so ask
-    // `lane_of_path` through a synthetic marker is fragile; instead consult LANE_RULES directly).
-    let serialized = |lane: &str| -> bool { !lane_is_parallel(lane) };
-    let picks = schedule_dispatch(
-        &queued,
-        &in_flight_lanes,
-        &serialized,
-        cap,
-        dispatched.len(),
-    );
+    let picks = schedule_dispatch(&queued, &in_flight_files, cap, dispatched.len());
     println!(
         "schedule-plan: cap={cap}, in-flight={}, queued(not-in-flight)={}",
         dispatched.len(),
@@ -11848,51 +11849,77 @@ mod tests {
     }
 
     #[test]
-    fn schedule_dispatch_respects_cap_and_serialized_lanes() {
-        let cand = |file: &str, lane: &str| SchedCandidate {
+    fn schedule_dispatch_respects_cap_and_file_collisions() {
+        // Each candidate carries its changed FILES — the collision universe (lane is metadata only).
+        let cand = |file: &str, lane: &str, files: &[&str]| SchedCandidate {
             mr_file: file.into(),
             lane: lane.into(),
+            files: files.iter().map(|s| s.to_string()).collect(),
         };
-        // A lane serializes iff it is NOT parallel (same rule the command uses).
-        let serial = |l: &str| !lane_is_parallel(l);
+        let none: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let set = |fs: &[&str]| -> std::collections::HashSet<String> {
+            fs.iter().map(|s| s.to_string()).collect()
+        };
 
-        // CAP: 5 queued, cap 3, none in flight → dispatch the oldest 3.
+        // CAP: 5 file-disjoint candidates, cap 3, none in flight → dispatch the oldest 3.
         let q = vec![
-            cand("a", "docs"),
-            cand("b", "corpus"),
-            cand("c", "cad"),
-            cand("d", "music"),
-            cand("e", "des"),
+            cand("a", "docs", &["guide/a.md"]),
+            cand("b", "corpus", &["spec/b.sexp"]),
+            cand("c", "cad", &["implementation/cad/c.cdz"]),
+            cand("d", "music", &["implementation/music/d.cdz"]),
+            cand("e", "des", &["implementation/des/e.cdz"]),
+        ];
+        assert_eq!(schedule_dispatch(&q, &none, 3, 0), vec!["a", "b", "c"]);
+
+        // File-DISJOINT candidates all dispatch (no per-lane limit — collision is by file).
+        let q2 = vec![
+            cand("a", "docs", &["guide/a.md"]),
+            cand("b", "docs", &["guide/b.md"]),
+            cand("c", "docs", &["guide/c.md"]),
+        ];
+        assert_eq!(schedule_dispatch(&q2, &none, 5, 0), vec!["a", "b", "c"]);
+
+        // FILE COLLISION within the pass: two MRs touch the SAME file → only the FIRST goes; a
+        // disjoint one between them still dispatches. (The core pr-sync bug: 2 baseline-touchers.)
+        let q3 = vec![
+            cand("x", "baseline", &["spec/semantics/.gate-baseline"]),
+            cand("y", "docs", &["guide/y.md"]),
+            cand(
+                "z",
+                "mixed",
+                &["spec/semantics/.gate-baseline", "spec/1.sexp"],
+            ), // shares baseline w/ x
+        ];
+        assert_eq!(schedule_dispatch(&q3, &none, 9, 0), vec!["x", "y"]); // z HELD (shares baseline w/ x)
+
+        // An IN-FLIGHT file blocks a queued MR sharing it — REGARDLESS of lane label (the reported bug:
+        // #1120 baseline in flight, a `mixed` baseline-toucher must be held even though its label ≠ the
+        // in-flight one's).
+        let q4 = vec![
+            cand(
+                "m",
+                "mixed",
+                &["spec/semantics/.gate-baseline", "spec/2.sexp"],
+            ),
+            cand("n", "docs", &["guide/n.md"]),
         ];
         assert_eq!(
-            schedule_dispatch(&q, &[], &serial, 3, 0),
-            vec!["a", "b", "c"]
+            schedule_dispatch(&q4, &set(&["spec/semantics/.gate-baseline"]), 9, 1),
+            vec!["n"] // m held (shares the in-flight baseline file); n (disjoint) proceeds
         );
 
-        // PARALLEL lanes have no per-lane limit: 3 docs candidates all dispatch under a cap of 5.
-        let q2 = vec![cand("a", "docs"), cand("b", "docs"), cand("c", "docs")];
-        assert_eq!(
-            schedule_dispatch(&q2, &[], &serial, 5, 0),
-            vec!["a", "b", "c"]
-        );
-
-        // SERIALIZED lane: two `code` candidates → only the FIRST dispatches (≤1 in flight per lane);
-        // the parallel `docs` between them still goes.
-        let q3 = vec![cand("x", "code"), cand("y", "docs"), cand("z", "code")];
-        assert_eq!(schedule_dispatch(&q3, &[], &serial, 9, 0), vec!["x", "y"]);
-
-        // A serialized lane ALREADY in flight blocks a new one of the same lane.
-        let q4 = vec![cand("m", "code"), cand("n", "docs")];
-        assert_eq!(
-            schedule_dispatch(&q4, &["code".into()], &serial, 9, 1),
-            vec!["n"] // `m` (code) held — code already in flight; `n` (docs) proceeds
-        );
-
-        // CAP already reached (current_in_flight == cap) → dispatch nothing.
-        assert!(schedule_dispatch(&q, &[], &serial, 3, 3).is_empty());
-        // Two different serialized lanes can BOTH be in flight (serialize is per-lane, not global).
-        let q5 = vec![cand("p", "code"), cand("r", "fleet-tooling")];
-        assert_eq!(schedule_dispatch(&q5, &[], &serial, 9, 0), vec!["p", "r"]);
+        // CAP already reached → dispatch nothing.
+        assert!(schedule_dispatch(&q, &none, 3, 3).is_empty());
+        // File-disjoint candidates both go even if same lane label (collision is FILE, not label).
+        let q5 = vec![
+            cand(
+                "p",
+                "code",
+                &["implementation/seed/crates/rcdzc/src/lower.rs"],
+            ),
+            cand("r", "code", &["implementation/seed/crates/cdz/src/main.rs"]),
+        ];
+        assert_eq!(schedule_dispatch(&q5, &none, 9, 0), vec!["p", "r"]);
     }
 
     #[test]
