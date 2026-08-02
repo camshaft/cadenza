@@ -52822,6 +52822,62 @@ mod diagnostics {
     }
 
     #[test]
+    fn a_bin_pattern_byte_order_modifier_is_not_an_unused_match_binding() {
+        // adv-59 (breaker): the unused-binding lint walked a `(bin <seg>…)` pattern's raw AST and collected
+        // a segment's TRAILING atoms as match binders — so the byte-order MODIFIER `le` in `(bin (u16 n le))`
+        // false-flagged `warning [CDZ0306] unused match binding: le`. Worse, the suggested `_le` fix
+        // HARD-ERRORS (the segment stops parsing as a modifier → CDZ0201 "the only integer bin-segment
+        // modifier is `le`" + CDZ0101 unbound `n`), so following the lint BREAKS a working program — and it
+        // fired on the corpus's own pinned `le` idiom (16-binary-matching:165). A corpus pin can't guard
+        // this (the gate ignores warnings), so this lint unit test is the guard. FIX: `arm_pattern_binders`
+        // descends only a bin segment's SLOT (`seg[1]`), never the kind head / modifier / width / size atoms.
+        // `le` must NOT warn; the used binder `n` must NOT warn.
+        assert!(
+            unused_of(
+                "(module m (def (f (: b Bytes)) (match b ((bin (u16 n le)) n) (_ -1))) (export f))"
+            )
+            .is_empty(),
+            "a bin-pattern `le` modifier + a used slot binder must not warn CDZ0306: {:?}",
+            unused_of(
+                "(module m (def (f (: b Bytes)) (match b ((bin (u16 n le)) n) (_ -1))) (export f))"
+            )
+        );
+        // Every int-segment face with `le` is clean (u16/u32/i16 all parse `le` as a modifier, not a binder).
+        for src in [
+            "(module m (def (f (: b Bytes)) (match b ((bin (u32 n le)) n) (_ -1))) (export f))",
+            "(module m (def (f (: b Bytes)) (match b ((bin (i16 n le)) n) (_ -1))) (export f))",
+        ] {
+            assert!(
+                unused_of(src).is_empty(),
+                "no int-segment `le` face may warn CDZ0306: {src} -> {:?}",
+                unused_of(src)
+            );
+        }
+        // NOT over-suppressed: a bin SLOT binder that is genuinely UNUSED (body ignores it) STILL warns —
+        // only the modifier is excluded, not the slot. Here `n` is bound (with `le`) but the body returns 0.
+        let dead = unused_of(
+            "(module m (def (f (: b Bytes)) (match b ((bin (u16 n le)) 0) (_ -1))) (export f))",
+        );
+        assert_eq!(
+            dead.len(),
+            1,
+            "an unused bin slot binder still warns: {dead:?}"
+        );
+        assert!(
+            dead[0].contains("`n`"),
+            "the warning is on the slot binder n, not le: {dead:?}"
+        );
+        // A `bytes` segment's dependent-SIZE reference (`len`) is not a new binder either; the slot `body`
+        // is used, so this arm is clean (no false CDZ0306 on `len`).
+        assert!(
+            unused_of("(module m (def (f (: b Bytes)) (match b ((bin (u8 len) (bytes body len)) (Bytes.len body)) (_ -1))) (export f))")
+                .is_empty(),
+            "a bytes-segment dependent-size ref must not warn, and a used slot is clean: {:?}",
+            unused_of("(module m (def (f (: b Bytes)) (match b ((bin (u8 len) (bytes body len)) (Bytes.len body)) (_ -1))) (export f))")
+        );
+    }
+
+    #[test]
     fn a_bin_segment_size_operand_name_is_counted_used_not_flagged_cdz0306() {
         // REGRESSION (v-lsp: red squiggles in the guide binary-matching chapter): a name bound by an int
         // segment `(u8 n)` and used as the dependent SIZE of a later segment `(bytes body n)` was NOT

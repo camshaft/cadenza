@@ -1308,6 +1308,30 @@ fn collect_arm_binder_leaves(db: &Db, pat: StructId, out: &mut Vec<(String, Stru
         {
             // A member form binds nothing.
         }
+        // A `(bin <seg>…)` binary pattern — each segment is `(<kind> <slot> [modifier|size]…)`. ONLY the
+        // SLOT (`seg[1]`) introduces a binder; the trailing atoms are a byte-order MODIFIER (`le` on an
+        // int segment), a bit-field WIDTH (`k`, a constant), or a dependent-SIZE operand (`n` on
+        // `bytes`/`utf8`, a reference to an already-bound size, not a new binding) — none of which the
+        // unused-binding lint should treat as a match binder. The generic `skip(1)` recursion below would
+        // walk EVERY post-head atom and collect `le` (adv-59: a false CDZ0306 "unused match binding `le`",
+        // whose suggested `_le` fix HARD-ERRORS since the segment stops parsing as a modifier). So descend
+        // each segment's slot only. (A `(bin)` with no segments binds nothing.)
+        Struct::List(children)
+            if children
+                .first()
+                .is_some_and(|&h| db.ast.as_name(h) == Some("bin")) =>
+        {
+            for &seg in children.iter().skip(1) {
+                // A segment is itself `(<kind> <slot> …)`; the slot is its second child. Recurse into the
+                // slot (a bare binder, or a nested pattern the slot may carry) — never the kind head or the
+                // trailing modifier/width/size atoms.
+                if let Struct::List(parts) = db.ast.get(seg)
+                    && let Some(&slot) = parts.get(1)
+                {
+                    collect_arm_binder_leaves(db, slot, out);
+                }
+            }
+        }
         // A compound pattern `(head arg…)` — skip the HEAD (a ctor / `list`/`tuple`/`map` alias / `guard`),
         // recurse the arguments. A `(map (k v) …)` entry is itself a compound, so the recursion reaches its
         // `k`/`v` leaves naturally.
