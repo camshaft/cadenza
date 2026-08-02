@@ -8,6 +8,9 @@
 
 use std::process::Command;
 
+mod common;
+use common::write_stdin_tolerating_broken_pipe;
+
 /// Run `cdz <args…>`, returning (exit_ok, stdout, stderr).
 fn run(args: &[&str]) -> (bool, String, String) {
     let exe = env!("CARGO_BIN_EXE_cdz");
@@ -17,21 +20,6 @@ fn run(args: &[&str]) -> (bool, String, String) {
         String::from_utf8_lossy(&out.stdout).to_string(),
         String::from_utf8_lossy(&out.stderr).to_string(),
     )
-}
-
-/// Write `bytes` to a child's stdin, TOLERATING a `BrokenPipe`: `cdz` may report an error and EXIT before
-/// it reads stdin (e.g. a missing `--from`), closing the read end — the write then races that close and can
-/// return `BrokenPipe`. That's benign (the point of the test is cdz's exit + stderr, checked after), but it
-/// makes the write flaky on a slow runner, so swallow ONLY `BrokenPipe` and panic on any other write error.
-fn write_stdin_tolerant(mut stdin: std::process::ChildStdin, bytes: &[u8]) {
-    use std::io::Write;
-    if let Err(e) = stdin.write_all(bytes) {
-        assert_eq!(
-            e.kind(),
-            std::io::ErrorKind::BrokenPipe,
-            "unexpected stdin write error (not the benign BrokenPipe race): {e}"
-        );
-    }
 }
 
 /// Write `src` to a unique temp file with the given name; returns (dir, path).
@@ -97,7 +85,7 @@ fn convert_round_trips_sexpr_through_ml_via_the_cli() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn cdz convert (stdin)");
-    write_stdin_tolerant(child.stdin.take().unwrap(), ml.as_bytes());
+    write_stdin_tolerating_broken_pipe(child.stdin.take().unwrap(), ml.as_bytes());
     let out = child.wait_with_output().expect("wait cdz");
     let back = String::from_utf8_lossy(&out.stdout).trim().to_string();
     assert!(
@@ -121,7 +109,7 @@ fn convert_reading_stdin_requires_from() {
         .spawn()
         .expect("spawn cdz convert (stdin)");
     // cdz errors on the missing --from and EXITS before reading stdin, so this write races the pipe close.
-    write_stdin_tolerant(child.stdin.take().unwrap(), SEXPR.as_bytes());
+    write_stdin_tolerating_broken_pipe(child.stdin.take().unwrap(), SEXPR.as_bytes());
     let out = child.wait_with_output().expect("wait cdz");
     assert!(!out.status.success(), "stdin without --from must fail");
     assert!(
