@@ -631,6 +631,16 @@ pub enum FleetCmd {
         #[arg(value_name = "PR_OR_BRANCH")]
         target: String,
     },
+    /// Print the collision-risk LANE a candidate commit belongs to (docs | corpus | fleet-tooling |
+    /// code | mixed) + whether that lane lands in parallel. The categorizer for the CI-gated parallel
+    /// integration model (operator directive 2026-08-02: "multiple PRs … categorized by the likelihood
+    /// of causing issues"). Folds the ref's changed-path set via `lane_of`. See
+    /// `fleet/CI-GATED-LANES-DESIGN.md`.
+    LaneOf {
+        /// The commit-ish (sha / branch) whose changed paths determine its lane.
+        #[arg(value_name = "REF")]
+        r#ref: String,
+    },
     /// STAGE a batch of merge-request refs into a SCRATCH ref (`refs/fleet/batch-staging`) built off the
     /// CURRENT `trunk`, WITHOUT touching `trunk`. This closes the intermediate-rewind window at its source:
     /// pr-sync's historical batch build did `git reset --hard trunk` then `git merge --no-ff` each ref onto
@@ -851,6 +861,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::MergeFloor { ours, theirs } => merge_floor(&ours, &theirs),
         FleetCmd::GateBatch { dry_run, limit } => gate_batch(&fleet, dry_run, limit),
         FleetCmd::CiStatus { target } => ci_status(&target),
+        FleetCmd::LaneOf { r#ref } => lane_of_cmd(&r#ref),
         FleetCmd::BatchStage { refs } => batch_stage(&fleet, &refs),
         FleetCmd::BatchCommit { execute } => batch_commit(&fleet, execute),
     }
@@ -6553,6 +6564,219 @@ fn json_str_field(fragment: &str, field: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
+/// A collision-risk LANE for the CI-gated parallel integration model (operator directive 2026-08-02:
+/// "multiple PRs going in parallel categorized by the likelihood of causing issues … documentation
+/// changes can go in one … corpus changes/fixes in another"). A candidate's lane is a pure function of
+/// its changed path set ([`lane_of`]); candidates in DISJOINT-file-territory lanes land in parallel,
+/// while a lane over shared files is serialized within itself. See `fleet/CI-GATED-LANES-DESIGN.md`.
+///
+/// A `Lane` is just its NAME (its identity for grouping) — NOT a fixed enum. Operator ruling
+/// (2026-08-02): "It doesn't have to be just those two lanes … feel free to scale it up as much as
+/// needed. Those were just examples." So the taxonomy is DATA-DRIVEN: [`LANE_RULES`] is an ordered table
+/// of (glob-ish matcher → lane name + parallel-eligibility), and adding a lane is adding ONE row, not a
+/// code change to a match arm. More disjoint lanes ⟹ more parallelism, which is the operator's intent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Lane {
+    /// The lane name (also the `fleet lane-of` output token), e.g. `docs`, `corpus`, `cad`, `code`.
+    name: String,
+    /// Whether candidates in this lane land FREELY in parallel (disjoint territory, order-independent)
+    /// vs. serialize within the lane (shared files → one in flight at a time).
+    parallel: bool,
+}
+
+impl Lane {
+    fn label(&self) -> &str {
+        &self.name
+    }
+    fn lands_in_parallel(&self) -> bool {
+        self.parallel
+    }
+    /// The reserved lane for a candidate that spans MORE THAN ONE lane's territory (or an
+    /// unclassifiable path): serialized globally, the safe default. Never parallel.
+    fn mixed() -> Lane {
+        Lane {
+            name: "mixed".to_string(),
+            parallel: false,
+        }
+    }
+}
+
+/// One row of the data-driven lane taxonomy: a path belongs to `lane` (with `parallel` eligibility) if
+/// ANY of its `prefixes` prefix-match OR ANY of its `suffixes` suffix-match the (trimmed) path. The
+/// TABLE below is ordered — FIRST matching rule wins — so a more-specific territory (e.g. corpus
+/// `.sexp`) is listed before a broader one (docs `.md`). To add a lane, add a row; no code arm changes.
+struct LaneRule {
+    lane: &'static str,
+    parallel: bool,
+    prefixes: &'static [&'static str],
+    suffixes: &'static [&'static str],
+}
+
+/// The lane taxonomy (ordered, first-match-wins). EXTENSIBLE per the operator's "scale it up as much as
+/// needed": each leaf subsystem with its own disjoint file territory is its own PARALLEL lane (they
+/// can't collide with each other), while the shared compiler/runtime core and the fleet tooling
+/// serialize (many candidates touch the same files). Add a subsystem = add a row.
+const LANE_RULES: &[LaneRule] = &[
+    // ── Corpus/spec cases: independent, land in parallel. Checked FIRST so a `.sexp`/baseline under any
+    //    directory reads as corpus rather than falling into a code/docs lane. ──
+    LaneRule {
+        lane: "corpus",
+        parallel: true,
+        prefixes: &["spec/"],
+        suffixes: &[".sexp"],
+    },
+    // ── Per-subsystem LEAF code lanes: each owns a disjoint `implementation/<x>/` tree, so two different
+    //    subsystems' candidates never collide → all parallel-eligible. (More rows = more parallelism.) ──
+    LaneRule {
+        lane: "cad",
+        parallel: true,
+        prefixes: &["implementation/cad/"],
+        suffixes: &[],
+    },
+    LaneRule {
+        lane: "music",
+        parallel: true,
+        prefixes: &["implementation/music/"],
+        suffixes: &[],
+    },
+    LaneRule {
+        lane: "des",
+        parallel: true,
+        prefixes: &["implementation/des/"],
+        suffixes: &[],
+    },
+    LaneRule {
+        lane: "choreography",
+        parallel: true,
+        prefixes: &["implementation/choreography/"],
+        suffixes: &[],
+    },
+    LaneRule {
+        lane: "iterators",
+        parallel: true,
+        prefixes: &["implementation/iterators/"],
+        suffixes: &[],
+    },
+    LaneRule {
+        lane: "compiler-ml",
+        parallel: true,
+        prefixes: &["implementation/compiler-ml/"],
+        suffixes: &[],
+    },
+    // ── Fleet tooling: `xtask/**` + non-doc `fleet/**` (window.sh, roster, slack-bridge). Serialized —
+    //    many candidates touch the shared `fleet.rs`. (`fleet/**/*.md` docs fall to the docs rule below,
+    //    which is fine: a docs-only fleet change is low-collision.) ──
+    LaneRule {
+        lane: "fleet-tooling",
+        parallel: false,
+        prefixes: &["xtask/"],
+        suffixes: &[],
+    },
+    // ── Docs/prose/config: guide site, any markdown, playground/skills/templates prose. Parallel. ──
+    LaneRule {
+        lane: "docs",
+        parallel: true,
+        prefixes: &["guide/", "playground/", "skills/", "templates/", "design/"],
+        suffixes: &[".md"],
+    },
+    // ── The shared compiler/runtime CORE (rcdzc, seed crates, runtime, wit): the highest-collision
+    //    territory (a miscompile fails alone, but many candidates touch these files) → serialized. Listed
+    //    AFTER the leaf subsystems so `implementation/cad/…` matched its own lane first; this catches the
+    //    rest of `implementation/**` (the seed compiler + crates). ──
+    LaneRule {
+        lane: "code",
+        parallel: false,
+        prefixes: &["implementation/"],
+        suffixes: &[],
+    },
+    // Non-doc `fleet/**` that isn't xtask (e.g. window.sh, roster.json) → tooling. After docs so a
+    // fleet `.md` is docs; this row catches the tooling remainder.
+    LaneRule {
+        lane: "fleet-tooling",
+        parallel: false,
+        prefixes: &["fleet/"],
+        suffixes: &[],
+    },
+];
+
+/// Classify ONE changed path into its lane by the first matching [`LANE_RULES`] row. An unrecognized
+/// top-level territory returns [`Lane::mixed`] (conservative — serialized, never mis-fast-pathed into a
+/// parallel lane). Pure. Case-sensitive on paths (git paths are).
+fn lane_of_path(path: &str) -> Lane {
+    let p = path.trim();
+    for rule in LANE_RULES {
+        let hit = rule.prefixes.iter().any(|pre| p.starts_with(pre))
+            || rule.suffixes.iter().any(|suf| p.ends_with(suf));
+        if hit {
+            return Lane {
+                name: rule.lane.to_string(),
+                parallel: rule.parallel,
+            };
+        }
+    }
+    Lane::mixed()
+}
+
+/// The LANE for a whole candidate = the lane of its changed path SET. If every path maps to the same
+/// lane NAME, that's the lane. If paths span MORE THAN ONE lane, the candidate is [`Lane::mixed`]
+/// (serialized globally) — the safe default, since it touches multiple territories and could collide
+/// with any. An empty path set (no files changed) is also mixed (nothing to reason about → don't
+/// fast-path into a parallel lane). Pure over the path list so the categorization policy is unit-tested.
+fn lane_of(paths: &[String]) -> Lane {
+    let mut lane: Option<Lane> = None;
+    for p in paths {
+        if p.trim().is_empty() {
+            continue;
+        }
+        let this = lane_of_path(p);
+        match &lane {
+            None => lane = Some(this),
+            Some(l) if l.name == this.name => {}
+            // Two different lanes in one candidate → it spans territories → mixed.
+            Some(_) => return Lane::mixed(),
+        }
+    }
+    lane.unwrap_or_else(Lane::mixed)
+}
+
+/// `fleet lane-of <ref>`: print the collision-risk LANE a candidate commit belongs to (its changed-path
+/// set folded by [`lane_of`]) + whether that lane lands in parallel, so pr-sync's scheduler (and a human
+/// inspecting) can see how a merge-request would be categorized. Reads `git show --name-only` for the
+/// ref; an unresolvable ref prints `mixed` with a note (conservative — never mis-fast-path an unknown).
+fn lane_of_cmd(r#ref: &str) {
+    let out = Command::new("git")
+        .args(["show", "--name-only", "--format=", r#ref])
+        .output();
+    let paths: Vec<String> = match &out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        _ => {
+            eprintln!(
+                "lane-of: could not resolve '{}' — defaulting to `mixed` (conservative).",
+                r#ref
+            );
+            println!("mixed");
+            return;
+        }
+    };
+    let lane = lane_of(&paths);
+    for p in &paths {
+        println!("  {}\t{}", lane_of_path(p).label(), p);
+    }
+    println!(
+        "{}  ({})",
+        lane.label(),
+        if lane.lands_in_parallel() {
+            "parallel"
+        } else {
+            "serialized"
+        }
+    );
+}
+
 /// Build the value-heap runtime store in the gate-batch scratch worktree (`cargo xtask build`), so the
 /// combined-tree gate can resolve the runtime by content address instead of false-failing every heap
 /// case as a store miss. Returns true on success. Runs in `wt` (its own `target/cadenza-store`).
@@ -10623,6 +10847,80 @@ mod tests {
         assert!(parse_gh_checks("").is_empty());
         assert!(parse_gh_checks("[]").is_empty());
         assert!(parse_gh_checks("{\"bucket\":\"pass\"}").is_empty()); // not an array → ignored
+    }
+
+    #[test]
+    fn lane_of_path_classifies_each_territory() {
+        let lane = |p: &str| lane_of_path(p);
+        // Corpus is checked before docs: a `.sexp`/spec path is corpus even if nested oddly.
+        assert_eq!(lane("spec/semantics/12-foo.sexp").label(), "corpus");
+        assert_eq!(lane("some/dir/case.sexp").label(), "corpus");
+        assert_eq!(lane("spec/anything").label(), "corpus");
+        assert!(lane("spec/semantics/1.sexp").lands_in_parallel());
+        // Per-subsystem leaf lanes (each disjoint territory → parallel).
+        assert_eq!(lane("implementation/cad/foo.cdz").label(), "cad");
+        assert_eq!(lane("implementation/music/scale.cdz").label(), "music");
+        assert_eq!(
+            lane("implementation/compiler-ml/x.cdz").label(),
+            "compiler-ml"
+        );
+        assert!(lane("implementation/cad/foo.cdz").lands_in_parallel());
+        // Tooling (serialized — shared fleet.rs).
+        assert_eq!(lane("xtask/src/fleet.rs").label(), "fleet-tooling");
+        assert_eq!(lane("fleet/window.sh").label(), "fleet-tooling");
+        assert_eq!(lane("fleet/roster.json").label(), "fleet-tooling");
+        assert!(!lane("xtask/src/fleet.rs").lands_in_parallel());
+        // Docs/prose/config (parallel). `.md` wins over fleet/ tooling.
+        assert_eq!(lane("guide/src/intro.tsx").label(), "docs");
+        assert_eq!(lane("README.md").label(), "docs");
+        assert_eq!(lane("fleet/loops/pr-sync.md").label(), "docs");
+        assert!(lane("README.md").lands_in_parallel());
+        // Shared compiler/runtime CORE (serialized) — the rest of implementation/ after leaf lanes.
+        assert_eq!(
+            lane("implementation/seed/crates/rcdzc/src/lib.rs").label(),
+            "code"
+        );
+        assert!(!lane("implementation/seed/crates/rcdzc/src/lib.rs").lands_in_parallel());
+        // Unknown top-level territory → conservative mixed (serialized).
+        assert_eq!(lane("Cargo.toml").label(), "mixed");
+        assert_eq!(lane("some-random-file").label(), "mixed");
+        assert!(!lane("Cargo.toml").lands_in_parallel());
+    }
+
+    #[test]
+    fn lane_of_folds_a_path_set_and_spans_go_mixed() {
+        let name =
+            |ps: &[&str]| lane_of(&ps.iter().map(|s| s.to_string()).collect::<Vec<_>>()).name;
+        // Homogeneous sets take their lane.
+        assert_eq!(name(&["README.md", "guide/x.tsx"]), "docs");
+        assert_eq!(
+            name(&["spec/semantics/1.sexp", "spec/semantics/2.sexp"]),
+            "corpus"
+        );
+        assert_eq!(name(&["xtask/src/fleet.rs"]), "fleet-tooling");
+        assert_eq!(
+            name(&["implementation/cad/a.cdz", "implementation/cad/b.cdz"]),
+            "cad"
+        );
+        // A candidate spanning two DIFFERENT lanes → mixed (serialized globally, the safe default) —
+        // even two different PARALLEL leaf lanes (cad + music) span territory → mixed.
+        assert_eq!(
+            name(&["README.md", "implementation/seed/crates/rcdzc/src/lib.rs"]),
+            "mixed"
+        );
+        assert_eq!(
+            name(&["implementation/cad/a.cdz", "implementation/music/b.cdz"]),
+            "mixed"
+        );
+        // Empty path set → mixed (nothing to reason about; don't fast-path into a parallel lane).
+        assert_eq!(name(&[]), "mixed");
+        assert_eq!(name(&["", "  "]), "mixed"); // blank lines ignored → empty → mixed
+        // Parallel-eligibility by lane.
+        assert!(lane_of(&["README.md".into()]).lands_in_parallel());
+        assert!(lane_of(&["implementation/cad/a.cdz".into()]).lands_in_parallel());
+        assert!(!lane_of(&["xtask/x.rs".into()]).lands_in_parallel());
+        assert!(!lane_of(&["implementation/seed/crates/rcdzc/x.rs".into()]).lands_in_parallel());
+        assert!(!Lane::mixed().lands_in_parallel());
     }
 
     #[test]
