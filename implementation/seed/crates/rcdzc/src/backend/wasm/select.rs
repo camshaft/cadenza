@@ -428,6 +428,16 @@ fn binding_escapes_dup_aware(
         Core::LocalRef { binder: b } => {
             b == binder && !tail_borrowed && !dup_sites.is_some_and(|s| s.contains(&id))
         }
+        // A reference to a PARAMETER, treated exactly like a `LocalRef` to a `let` binding: it escapes
+        // unless this occurrence is a borrow (`tail_borrowed`) or a Perceus retain (`dup_sites`). Params are
+        // referenced via `Core::Param` (not `LocalRef`), so without this arm a param-keyed escape query
+        // (the owned-heap-param drop epilogue's `param_escapes_non_backedge`) would NEVER see the param's
+        // own occurrences and wrongly report "never escapes" → drop a value that flows out → UAF. SAFE for
+        // the ~80 let-binder callers: they pass a `let`-binding id, and a param occurrence's `b` is a
+        // distinct param-binder id, so `b == binder` is false there (this arm is inert for them).
+        Core::Param { binder: b } => {
+            b == binder && !tail_borrowed && !dup_sites.is_some_and(|s| s.contains(&id))
+        }
         // A projection of a SCALAR element BORROWS its operand — `arr-get` then `get-int`/`get-bool` COPIES
         // the value out, retaining nothing from the aggregate — so a `LocalRef` directly under such a `Proj`
         // does not escape through it (recurse with the borrow flag). But a projection of a NESTED-COMPOUND
@@ -785,7 +795,6 @@ fn binding_escapes_dup_aware(
         | Core::ConstFloatNan
         | Core::Unit
         | Core::Trap
-        | Core::Param { .. }
         | Core::Captured { .. }
         | Core::Poison(_) => false,
     }
@@ -2648,6 +2657,109 @@ pub fn collect_used_ops(
         out.insert(OP_DUP);
     }
     collect_used_ops_into(db, id, out);
+    // NOTE: the owned-heap-param DROP epilogue (`select_body`, looped functions) also needs `drop` imported,
+    // but only when it ACTUALLY fires (looping + a dead-at-exit invariant heap param) — which needs the
+    // def's `self_def`/params, not available here. That precise import is added by `collect_module_used_ops`
+    // (which has the def index) via `looped_owned_param_drops`, NOT here — importing `drop` for every
+    // heap-param body would over-declare it (violating the drop-import-minimization discipline the
+    // `str_at_does_not_over_declare_drop` test pins).
+}
+
+/// The parameter SLOTS the owned-heap-param drop epilogue (`select_body`) will reclaim at the loop exit for
+/// the def whose body is `body`, params `params`, self index `self_def`. EMPTY for a non-looping def, a def
+/// with no heap param, or one whose heap params all escape / vary across a back-edge. Shared by `select_body`
+/// (to EMIT the drops) and `collect_module_used_ops` (to IMPORT `drop` iff non-empty) so the emit and the
+/// import agree exactly — the precise companion of the dup-site import/emit agreement.
+/// Whether the def with `body`/`params`/`self_def` will emit at least one owned-heap-param drop at its loop
+/// exit — the import-side companion of [`looped_owned_param_drops`], so `collect_module_used_ops` imports
+/// `drop` iff the epilogue actually emits one (precise, not the over-declaration the drop-minimization tests
+/// forbid). `pub` for the module's op-collection.
+pub fn def_drops_owned_param(
+    db: &mut Db,
+    body: StructId,
+    params: &[(StructId, Ty)],
+    self_def: Option<usize>,
+) -> bool {
+    !looped_owned_param_drops(db, body, params, self_def).is_empty()
+}
+
+fn looped_owned_param_drops(
+    db: &mut Db,
+    body: StructId,
+    params: &[(StructId, Ty)],
+    self_def: Option<usize>,
+) -> Vec<u32> {
+    let Some(self_d) = self_def else {
+        return Vec::new();
+    };
+    // Re-derive the param slot assignment exactly as `select_function_of` does: represented params take
+    // dense slots `0..n` in order, a Unit param (zero-width) is ELIDED (occupies no slot). This must match
+    // the emit's `slot_of`/`param_slots` so the drop targets the right local.
+    let mut slot_of: HashMap<StructId, u32> = HashMap::new();
+    let mut param_slots: Vec<u32> = Vec::new();
+    for (binder, ty) in params.iter() {
+        if matches!(ty.strip_nominal(), Ty::Unit) {
+            continue;
+        }
+        if valtype_of(ty).is_none() {
+            return Vec::new(); // a param with no machine rep → this def won't select; no drops.
+        }
+        let slot = param_slots.len() as u32;
+        slot_of.insert(*binder, slot);
+        param_slots.push(slot);
+    }
+    let slot_of = &slot_of;
+    let param_slots = &param_slots[..];
+    let loop_members: Vec<usize> = if param_slots.is_empty() {
+        Vec::new()
+    } else {
+        mutual_loop_group(db, self_d)
+    };
+    if loop_members.is_empty() {
+        return Vec::new(); // not a looping function → the non-tail `emit` path handles dead-binding drops.
+    }
+    // NARROW: only PLAIN SELF-recursion (a single-member loop group). A MUTUAL group shares one set of
+    // parameter slots across members whose bodies are emitted inline under a dispatch — a heap param is
+    // carried BETWEEN members, and a partner member may CONSUME it (a non-tail call), so `tree` in a
+    // `read-do-next`/`read-do-form` mutual pair is NOT owned at the group's exit even though each member
+    // passes it identity on its own back-edge. Jointly analyzing every member's body is the general pass's
+    // job; the narrow gate declines the whole mutual case (leak, never a double-free). The witnessed leak
+    // shape (`walk`) is single-member self-recursion, so it is unaffected.
+    if loop_members.len() != 1 {
+        return Vec::new();
+    }
+    // Params identity-passed on EVERY back-edge (invariant) — a varying heap param is left to leak (a single
+    // exit drop would miss the per-iteration re-boxed values).
+    let mut invariant: std::collections::HashSet<StructId> =
+        params.iter().map(|(b, _)| *b).collect();
+    invalidate_varying_params(
+        db,
+        body,
+        param_slots,
+        slot_of,
+        &loop_members,
+        self_d,
+        &mut invariant,
+        params,
+    );
+    let mut drops = Vec::new();
+    for (binder, ty) in params.iter() {
+        if !is_heap_type(ty) {
+            continue;
+        }
+        let Some(&slot) = slot_of.get(binder) else {
+            continue;
+        };
+        if !invariant.contains(binder) {
+            continue; // varying across a back-edge — leave it (a single exit drop would be wrong).
+        }
+        if !param_only_borrowed_or_backedge(db, body, *binder, &loop_members, param_slots, slot_of)
+        {
+            continue; // not provably (borrow + tail-back-edge) only → conservatively leave it (default-deny).
+        }
+        drops.push(slot);
+    }
+    drops
 }
 
 /// The recursive worker of [`collect_used_ops`] — descends every sub-position (both `if` branches, every
@@ -4209,6 +4321,28 @@ pub fn select_function_of(
         // result value on the stack — that value is the loop's (and the function's) result.
         code.push(Lir::End);
     }
+    // OWNED-HEAP-PARAM DROP EPILOGUE (recursion-param unwind leak). Under callee-owns-args this frame OWNS
+    // each heap param; the non-tail `emit` path reclaims a dead `let` binding after the body, but a LOOPED
+    // body has no such site — so an owned heap param carried across iterations and consumed only at the base
+    // case (a borrowed-heap-sum recursion param `walk(n, w)` whose base `match w` only BORROWS it) is never
+    // dropped and LEAKS one cell. Reclaim it HERE, after the body/loop leaves the result on the stack: the
+    // runtime `drop` takes the handle as a call ARG (pushed immediately before) and returns nothing, so
+    // `local.get slot; call drop` reclaims the param WITHOUT disturbing the result beneath it (exactly the
+    // `Core::Let` drop shape). Gated conservatively so it NEVER double-frees:
+    //   (a) LOOPED functions only — the non-loop path already emits the dead-binding drops via `emit`.
+    //   (b) A HEAP param whose slot ref is DEAD at exit per `param_escapes_non_backedge` (the loop-aware
+    //       escape: escapes only into IDENTITY member-tail-call args = the back-edge, not the result / a
+    //       constructor / a non-member call / a re-boxed member arg). A param that flows out is not dropped.
+    //   (c) INVARIANT across every back-edge (identity-passed on all member calls) — so its slot holds the
+    //       SAME handle throughout and a single exit drop is correct. A VARYING heap param (re-boxed each
+    //       iteration) would need a per-back-edge drop of the OLD value; that is out of scope, so such a
+    //       param is conservatively LEFT (not dropped) — a leak, never a double-free.
+    // (b)+(c) together are sound: identity-carried (c) means the exit slot value is the original owned param
+    // handle, and dead-at-exit (b) means nothing else reclaims or transfers it — so this is its sole owner.
+    for slot in looped_owned_param_drops(db, body, params, self_def) {
+        code.push(Lir::LocalGet(slot));
+        code.push(Lir::CallImport(OP_DROP));
+    }
     // Declare scratch slots `base..high` in slot order, each at its recorded type (default i64 for a slot
     // that was counted in the high-water mark but never explicitly typed — a defensive fallback).
     let declared: Vec<ValType> = (base..high)
@@ -4547,6 +4681,143 @@ fn invalidate_varying_params_sum(
             }
         }
     }
+}
+
+/// NARROW, provable-safety (default-DENY) gate for the owned-heap-param loop-exit drop: whether EVERY
+/// occurrence of heap PARAMETER `binder` in `id` is either (1) a BORROW (a direct `Param` operand of a
+/// match-dispatch / projection / len / sum-payload read — read without consuming) or (2) the loop
+/// back-edge (an identity arg to a MEMBER tail-call, which `emit_loop_iteration` turns into an identity
+/// slot move). Returns `false` (⇒ do NOT drop, conservatively leak) at the FIRST occurrence that is
+/// anything else, and for ANY node kind this walk does not explicitly whitelist.
+///
+/// DEFAULT-DENY is the point. An earlier "absence-of-escape" gate (delegate uncovered nodes to
+/// `binding_escapes`) OVER-FIRED across 3 self-host rounds: "not proven to escape" defaulted to droppable
+/// over nodes it didn't model (a non-tail-consumed `tree`, a `MatchSum` sum-payload arm, a threaded-mutated
+/// `store`), and dropping a param whose ownership was transferred out double-freed → wasm `unreachable`.
+/// A whitelist that can only UNDER-drop (a missed borrow ⇒ a leak, never a double-free) is sound by
+/// construction for a UAF-critical reclaim. This is deliberately NARROW: it fires for the witnessed
+/// self-recursive-loop shape (a heap param used SOLELY as a base-case-match borrow + the tail-identity
+/// back-edge) and declines everything else. The general owned-heap-param pass (the default-deny whitelist
+/// extended to model every consuming node precisely) is a documented follow-up, not landed here.
+fn param_only_borrowed_or_backedge(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    members: &[usize],
+    param_slots: &[u32],
+    slots: &HashMap<StructId, u32>,
+) -> bool {
+    param_only_borrowed_or_backedge_rec(db, id, binder, members, param_slots, slots, false)
+}
+
+/// The worker, with a `borrowed` flag: `true` iff THIS occurrence is reached through a BORROW position (a
+/// projection / len / sum-payload read / match-dispatch scrutinee), where a direct `Param(binder)` is a
+/// pure read (OK); `false` in a CONSUME/result position, where a direct `Param(binder)` is an ownership
+/// transfer OUT (deny). Mirrors `binding_escapes`'s `tail_borrowed` threading.
+fn param_only_borrowed_or_backedge_rec(
+    db: &mut Db,
+    id: StructId,
+    binder: StructId,
+    members: &[usize],
+    param_slots: &[u32],
+    slots: &HashMap<StructId, u32>,
+    borrowed: bool,
+) -> bool {
+    // Fast path: a subtree that does not reference `binder` at all is trivially fine (nothing to consume).
+    if !occurs_in(db, id, binder) {
+        return true;
+    }
+    let recur = |db: &mut Db, c: StructId, borrowed: bool| {
+        param_only_borrowed_or_backedge_rec(db, c, binder, members, param_slots, slots, borrowed)
+    };
+    match core_of(db, id) {
+        // A direct reference to the param: OK iff this occurrence is in a BORROW position (read, not
+        // consumed). In a consume/result position it transfers ownership out → deny.
+        Core::Param { binder: b } => b != binder || borrowed,
+        // A member TAIL-call back-edge: every arg that is `binder`'s identity pass-through re-establishes
+        // the slot (fine); every OTHER arg must not reference `binder` (a re-boxed `(Mk w)` / non-identity
+        // `w` CONSUMES → deny).
+        Core::Call { callee, args } if members.contains(&callee) => {
+            args.iter().enumerate().all(|(i, &arg)| {
+                let is_identity = i < param_slots.len()
+                    && matches!(core_of(db, arg), Core::Param { binder: b }
+                        if b == binder && slots.get(&binder) == Some(&param_slots[i]));
+                is_identity || !occurs_in(db, arg, binder)
+            })
+        }
+        // BORROW ops: their heap operand is read without consuming → recurse it with `borrowed = true` (a
+        // direct `Param` operand is then a pure borrow; a nested `SumPayload{Param}` / borrow chain threads
+        // the flag). Other fields (a `Proj` index, a slice bound) are scalars that don't hold `binder`.
+        Core::Proj { operand, .. }
+        | Core::ListLen { operand }
+        | Core::BytesLen { operand }
+        | Core::StrScalarLen { operand }
+        | Core::BigIntToI64 { operand }
+        | Core::RationalNum { operand }
+        | Core::RationalDen { operand } => recur(db, operand, true),
+        Core::SumPayload { scrutinee, .. } | Core::SumExpect { scrutinee, .. } => {
+            recur(db, scrutinee, true)
+        }
+        // Match dispatch BORROWS its scrutinee (sum-disc / list-len read) → scrutinee recursed borrowed;
+        // each arm body is a RESULT position → recursed unborrowed.
+        Core::Match { arms, scrutinee } => {
+            recur(db, scrutinee, true) && arms.iter().all(|a| recur(db, a.body, false))
+        }
+        Core::MatchList { arms, scrutinee } => {
+            recur(db, scrutinee, true) && arms.iter().all(|a| recur(db, a.body, false))
+        }
+        Core::MatchSum { scrutinee, root } => {
+            recur(db, scrutinee, true)
+                && cont_only_borrowed_or_backedge(db, &root, binder, members, param_slots, slots)
+        }
+        // Control flow / binding: recurse each sub-position in RESULT (unborrowed) position — the fast path
+        // already cleared sub-positions that don't reference `binder`. (A `let` initializer that borrows the
+        // param into a scalar binding is rare + not whitelisted here; conservative = leak, never double-free.)
+        Core::If { cond, then_, else_ } => {
+            recur(db, cond, false) && recur(db, then_, false) && recur(db, else_, false)
+        }
+        Core::Let { bindings, body } => {
+            bindings.iter().all(|&(_, v)| recur(db, v, false)) && recur(db, body, false)
+        }
+        // Every OTHER node kind that references `binder` (a non-member Call, a constructor, a mutating op, a
+        // Closure, a Seq, arith/compare that consumes, …) is not whitelisted → deny. NARROW by design.
+        _ => false,
+    }
+}
+
+/// `param_only_borrowed_or_backedge` over a sum-match continuation (the `SumCont` tree): the leaf/guarded/
+/// switch bodies are result positions checked the same way; the `Payload`/`Elem` path steps are borrows
+/// carrying no binding, so only the continuations matter (mirrors `cont_binding_escapes`).
+fn cont_only_borrowed_or_backedge(
+    db: &mut Db,
+    cont: &crate::core::SumCont,
+    binder: StructId,
+    members: &[usize],
+    param_slots: &[u32],
+    slots: &HashMap<StructId, u32>,
+) -> bool {
+    match cont {
+        crate::core::SumCont::Leaf(body) => {
+            param_only_borrowed_or_backedge(db, *body, binder, members, param_slots, slots)
+        }
+        crate::core::SumCont::Guarded { body, els, .. } => {
+            param_only_borrowed_or_backedge(db, *body, binder, members, param_slots, slots)
+                && cont_only_borrowed_or_backedge(db, els, binder, members, param_slots, slots)
+        }
+        crate::core::SumCont::LitTest { then_, els, .. } => {
+            cont_only_borrowed_or_backedge(db, then_, binder, members, param_slots, slots)
+                && cont_only_borrowed_or_backedge(db, els, binder, members, param_slots, slots)
+        }
+        crate::core::SumCont::Switch { arms, .. } => arms.iter().all(|a| {
+            cont_only_borrowed_or_backedge(db, &a.cont, binder, members, param_slots, slots)
+        }),
+    }
+}
+
+/// Whether `binder` occurs anywhere in the subtree at `id` (a fresh-cache wrapper over `binder_occurs`).
+fn occurs_in(db: &mut Db, id: StructId, binder: StructId) -> bool {
+    let mut cache: HashMap<StructId, bool> = HashMap::new();
+    binder_occurs(db, id, binder, &mut cache)
 }
 
 /// Whether the node at `id` is LOOP-INVARIANT given the set of invariant param binders — it is built

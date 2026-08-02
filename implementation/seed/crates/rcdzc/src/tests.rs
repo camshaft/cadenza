@@ -5193,24 +5193,24 @@ fn option_expect_over_a_dead_after_borrowed_compound_payload_is_value_correct_bu
     );
 }
 
-/// KNOWN-GAP witness (v-memory-safety), pinning a leak triaged from the corpus-bugfix queue (author:
-/// v-wasm-opt drift-guard 2026-07-24, CONFIRMED still live on trunk `0fbab6d7f`; repro
+/// FIXED-LEAK witness (v-memory-safety), pinning the FIX of a leak triaged from the corpus-bugfix queue
+/// (author: v-wasm-opt drift-guard 2026-07-24, was live on trunk `0fbab6d7f`; repro
 /// `adv-recursive-heap-payload-sum-scrutinee-borrowed-param-leaks-one-cell.sexp`): a SELF-RECURSIVE fn
-/// taking a sum with a HEAP payload (BigInt OR String) as a BORROWED param leaks exactly ONE live cell as
-/// the recursion unwinds. The heap-payload sum `w` is a borrowed self-recursion param; across the recursive
-/// call the sum shell (or its payload leaf) is retained-but-not-dropped ONCE when the frames unwind → 1
-/// orphaned cell. Isolation from the finding: HEAP-payload-specific (an Int64 SCALAR payload nets 0),
-/// RECURSIVE-specific (a non-recursive call nets 0), probe-INDEPENDENT (a plain `(Mk x)` bind leaks the same
-/// 1), const-vs-runtime-arg-INDEPENDENT. VALUE is CORRECT (no UAF) — a PURE reclaim gap; not gate-visible via
-/// the corpus (value passes), so this `live_objects()` witness is the ONLY durable pin. Adjacent to — and
-/// expected to be subsumed by — the node-keyed payload-escape pass (my deep backlog, which owns a compound
-/// payload borrowed out of a shell that then dies). This is the same borrowed-heap-sum-recursion-param
-/// ownership class as the `option_expect_…`/`from-bytes_…` compound-Some-shell siblings above.
+/// taking a sum with a HEAP payload (BigInt OR String) as a BORROWED param USED TO LEAK exactly ONE live
+/// cell as the recursion unwound — the heap-payload sum `w` is a borrowed self-recursion param, and across
+/// the loop the sum shell was retained-but-not-dropped once (nothing reclaimed the frame-owned param; the
+/// base `match w` only BORROWS it). FIXED by the owned-heap-param drop epilogue in `select_body`
+/// (`param_escapes_non_backedge` + `invalidate_varying_params` gate → `LocalGet; drop` at the loop exit for
+/// a dead-at-exit, identity-carried heap param). Isolation from the finding: HEAP-payload-specific (an Int64
+/// SCALAR payload always netted 0), RECURSIVE/LOOP-specific (a non-recursive call nets 0). NOW nets 0 for
+/// the heap faces too, value still correct (no double-free — the drop fires only for a param proven dead +
+/// invariant). Same ownership class as the `option_expect_…`/`from-bytes_…` compound-Some-shell siblings
+/// above (those remain the deeper node-keyed payload-escape backlog — a different shape: an owned SHELL
+/// borrowed-out-of, not a frame-owned param).
 ///
-/// Asserts VALUE-CORRECT (3, no UAF/trap) + the EXACT deterministic leak count (`== 1`, not a loose bound): a
-/// regression that WORSENED it to 2+, or a spurious UAF that made it 0-via-double-free (value would corrupt/
-/// trap first), is still caught. Flip the guard to `assert_eq!(live, 0, …)` when the payload-escape pass lands.
-/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
+/// Asserts VALUE-CORRECT (3, no UAF/trap) + ZERO live cells: a regression that REINTRODUCED the leak (drop
+/// epilogue stopped firing → 1) or a NEW leak (>1) fails, and a drop that OVER-fired (double-free) fails the
+/// value assert. `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
 #[test]
 #[ignore = "needs the debug-counters store (cargo xtask build)"]
 fn a_recursive_fn_holding_a_borrowed_heap_payload_sum_param_leaks_one_cell_known_gap() {
@@ -5241,17 +5241,17 @@ fn a_recursive_fn_holding_a_borrowed_heap_payload_sum_param_leaks_one_cell_known
         Val::S64(3),
         "Int64.of the BigInt payload of a borrowed heap-sum recursion param = 3 (value-correct + NO UAF)"
     );
-    // KNOWN LEAK (pinned, not yet fixed): the borrowed heap-payload sum is retained-but-not-dropped once as
-    // the recursion unwinds. The count is DETERMINISTIC — measured EXACTLY 1 (not allocator/backend-sensitive
-    // like the reclaim batteries) — so assert the EXACT value (self-consistent with "exactly 1"): a 1→2
-    // regression fails here, and a 0 (spurious double-free) is caught by the value assert above too. When
-    // the node-keyed payload-escape fix lands, flip to `assert_eq!(live, 0, …)`.
+    // FIXED (owned-heap-param drop epilogue, `select_body`): the borrowed heap-payload sum is now RECLAIMED
+    // at the loop exit — under callee-owns-args this frame owns `w`, and a looped body's dead-at-exit
+    // invariant heap param is dropped in the epilogue (it used to leak 1 cell, only the base-case `match`
+    // borrowing it, nothing dropping the owned shell). NOW ZERO live cells: value still correct (3, no
+    // double-free — the drop fires only for a param proven dead-at-exit + identity-carried across the loop).
     let live = rt.live_objects();
     assert_eq!(
-        live, 1,
-        "borrowed-heap-sum-recursion-param leak: expected the KNOWN deterministic 1-cell unwind residual \
-         pending the node-keyed payload-escape fix — got {live}. If 0, the fix may have landed (flip to \
-         == 0); if above 1, a NEW leak compounded it."
+        live, 0,
+        "borrowed-heap-sum-recursion-param leak FIXED: the owned heap param is reclaimed at the loop exit \
+         → 0 live cells — got {live}. If 1, the drop epilogue regressed (stopped firing); if above 1, a \
+         NEW leak; if a UAF/wrong value, the drop over-fired (double-free)."
     );
 }
 
@@ -5265,8 +5265,8 @@ fn a_recursive_fn_holding_a_borrowed_heap_payload_sum_param_leaks_one_cell_known
 /// ownership gap; deep-backlog node-keyed payload-escape pass). VALUE-CORRECT (no UAF) → not corpus-gate-
 /// visible, so this `live_objects()` witness is the only durable pin.
 ///
-/// Asserts value-correct + the EXACT deterministic leak count (`== 1`). Flip to `== 0` when the payload-escape
-/// fix lands. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+/// Asserts value-correct + ZERO live cells (the owned-heap-param drop epilogue FIXED the leak — see the
+/// BigInt sibling). `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
 #[test]
 #[ignore = "needs the debug-counters store (cargo xtask build)"]
 fn a_recursive_fn_holding_a_borrowed_string_payload_sum_param_leaks_one_cell_known_gap() {
@@ -5298,13 +5298,14 @@ fn a_recursive_fn_holding_a_borrowed_string_payload_sum_param_leaks_one_cell_kno
         Val::S64(2),
         "String.scalar-len of the String payload of a borrowed heap-sum recursion param = 2 (value-correct + NO UAF)"
     );
-    // KNOWN LEAK (same deterministic 1-cell unwind residual as the BigInt sibling): assert the EXACT value.
+    // FIXED (owned-heap-param drop epilogue): reclaimed at the loop exit exactly like the BigInt sibling
+    // (payload-type-independent) — NOW ZERO live cells, value still 2 (no double-free).
     let live = rt.live_objects();
     assert_eq!(
-        live, 1,
-        "borrowed-STRING-sum-recursion-param leak: expected the KNOWN deterministic 1-cell unwind residual \
-         (payload-type-independent with the BigInt sibling) pending the node-keyed payload-escape fix — got {live}. If 0, \
-         the fix may have landed (flip to == 0); if above 1, a NEW leak compounded it."
+        live, 0,
+        "borrowed-STRING-sum-recursion-param leak FIXED: the owned heap param is reclaimed at the loop exit \
+         → 0 live cells (payload-type-independent with the BigInt sibling) — got {live}. If 1, the drop \
+         epilogue regressed; if a UAF/wrong value, the drop over-fired (double-free)."
     );
 }
 
@@ -7475,9 +7476,9 @@ fn a_recursive_heap_payload_sum_borrowed_param_leaks_one_cell_known_gap() {
         Val::S64(3),
         "walk destructures (Mk (BigInt.of 3)) at the base case → payload 3 (value-correct + NO UAF)"
     );
-    // ONE cell leaks regardless of depth — the owned sum is built once and only borrowed down the recursion;
-    // whole-function last-use param-drop (the general Perceus pass) is not yet inserted. A count > 1 would be
-    // a per-recursion-level allocation REGRESSION. Deeper recursion must leak the SAME one cell.
+    // FIXED (owned-heap-param drop epilogue): the owned sum built once and borrowed down the recursion is now
+    // RECLAIMED at the loop exit (whole-function last-use param-drop, gated on dead-at-exit + invariant). NOW
+    // ZERO cells, at any depth. A count of 1 = the drop epilogue regressed (stopped firing); > 1 = a new leak.
     let deep = "(module m \
                  (type W (Mk BigInt)) \
                  (def (mk (: k Int64)) (Mk (BigInt.of k))) \
@@ -7489,15 +7490,15 @@ fn a_recursive_heap_payload_sum_borrowed_param_leaks_one_cell_known_gap() {
     assert_eq!(rtd.call("main", &[]), Val::S64(3), "n=50 same value 3");
     assert_eq!(
         rt.live_objects(),
-        1,
-        "KNOWN GAP: a heap-payload sum threaded through recursion as a borrowed param leaks exactly 1 cell \
-         (the cross-cutting recursive-param gap; same root as the closure/tuple twins). Flip to 0 when the \
-         general Perceus param-drop pass lands. A count > 1 is a REGRESSION (per-level allocation)."
+        0,
+        "FIXED: a heap-payload sum threaded through recursion as a borrowed param is now reclaimed at the \
+         loop exit → 0 live cells (the owned-heap-param drop epilogue). If 1, the epilogue regressed; > 1 = \
+         a new leak; a UAF/wrong value = the drop over-fired (double-free)."
     );
     assert_eq!(
         rtd.live_objects(),
-        1,
-        "the leak is O(1): n=50 leaks the same ONE cell as n=1 (no per-recursion-level growth)"
+        0,
+        "the fix holds at depth: n=50 also reclaims to 0 (no per-recursion-level residue)"
     );
 }
 

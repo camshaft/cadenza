@@ -7896,6 +7896,16 @@ fn collect_module_used_ops(
     for &def in &layout.order {
         let body = def_body(db, def)?;
         select::collect_used_ops(db, body, used);
+        // The looped owned-heap-param drop epilogue (`select_body`) imports `drop` iff it ACTUALLY reclaims
+        // a param — computed here (the def index gives `self_def` + params, which `collect_used_ops` lacks),
+        // so the import matches the emit exactly (no over-declaration).
+        let params = match layout.export_plan(def) {
+            Some(e) => e.params.clone(),
+            None => crate::layout::def_params(db, def),
+        };
+        if select::def_drops_owned_param(db, body, &params, Some(def)) {
+            used.insert("drop");
+        }
     }
     for (code, lifted) in layout.lifted.clone().into_iter().enumerate() {
         if layout.lifted_reached.get(code).copied().unwrap_or(true) {
