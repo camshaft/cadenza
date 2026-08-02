@@ -46,6 +46,23 @@ fn store_present() -> bool {
         .unwrap_or(false)
 }
 
+/// The `implementation/compiler-ml/src` dir if this checkout has it (search up from the crate dir), else
+/// `None`. The self-host suite is the only tree large enough to exercise the monomorphized-shared-closure
+/// provider-cache path (a small hand-fixture inlines its closures / declines the composed emit), so the
+/// key-set-stability witness needs it; absent it, the witness skips (don't fail the harness).
+fn compiler_ml_src() -> Option<std::path::PathBuf> {
+    let mut root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    loop {
+        let cand = root.join("implementation/compiler-ml/src");
+        if cand.is_dir() {
+            return Some(cand);
+        }
+        if !root.pop() {
+            return None;
+        }
+    }
+}
+
 /// Write a multi-file package: `a` (1 pass + 1 fail), `b` (1 pass), `lib` (no @test). Returns the dir.
 fn package(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("cdz-perfile-{tag}-{}", std::process::id()));
@@ -1074,4 +1091,85 @@ fn the_jit_cwasm_persists_across_runs_and_self_heals() {
         cwasm_count >= 2,
         "the content edit produced a NEW content-hash cwasm (content-addressed invalidation), got {cwasm_count}"
     );
+}
+
+/// Extract the sorted, deduped set of shared-closure provider-cache KEYS a `cdz test --warm-only <dir>` run
+/// persists — the closure content-hashes. `CDZ_PROVIDER_CACHE_TRACE=1` emits one `[provider-cache] <hit|miss
+/// persisted> key=<hash> …` line per group on stderr; we collect the `key=` hashes.
+fn warm_only_key_set(
+    dir: &std::path::Path,
+    cache: &std::path::Path,
+) -> std::collections::BTreeSet<String> {
+    let out = Command::new(cdz())
+        .args(["test", "--warm-only", dir.to_str().unwrap()])
+        .env("CDZ_PROVIDER_CACHE", cache)
+        .env("CDZ_PROVIDER_CACHE_TRACE", "1")
+        .output()
+        .expect("spawn cdz test --warm-only");
+    let err = String::from_utf8_lossy(&out.stderr);
+    err.lines()
+        .filter_map(|l| l.split("key=").nth(1))
+        .map(|rest| {
+            rest.split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .filter(|k| !k.is_empty())
+        .collect()
+}
+
+#[test]
+#[ignore = "drives the full compiler-ml warm-once TWICE (~minutes); run with --ignored — the closure-hash \
+            run-stability witness (the provider-cache-key determinism the gate warm-once amortization needs)"]
+fn the_shared_closure_cache_key_set_is_stable_across_two_independent_warm_runs() {
+    // END-TO-END determinism lock-in for the provider-cache KEY (the closure content-hash). The gate's
+    // warm-once only amortizes if a monomorphized shared closure hashes to the SAME key across runs — else it
+    // re-emits every time (the ~256s residual root-caused to two run-varying inputs in `def_content_hash`:
+    // the `#mono{N}` name counter + the `Sum/Nominal` decl-id arena position, both fixed in rcdzc #1463).
+    // This is the CLI-observable complement to that fix's fixture-free unit test: it catches a FUTURE new
+    // run-varying input in ANY encode path the unit test doesn't cover, by asserting the whole suite's
+    // persisted key-SET is identical across two independent `--warm-only` runs (fresh cache each). A small
+    // hand-fixture can't stand in (its closures inline / decline the composed emit → zero provider keys), so
+    // this uses the self-host suite; store- and src-guarded + `#[ignore]` heavyweight, like the func-layout
+    // witness. Needs the runtime store (the warm JITs the provider) — skip storeless so CI's bare `test` job
+    // (no `cargo xtask build`) doesn't false-fail.
+    if !store_present() {
+        return;
+    }
+    let Some(src) = compiler_ml_src() else {
+        return;
+    };
+    let src_parent = src.parent().expect("compiler-ml dir");
+
+    let c1 = std::env::temp_dir().join(format!("cdz-keyset-a-{}", std::process::id()));
+    let c2 = std::env::temp_dir().join(format!("cdz-keyset-b-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&c1);
+    let _ = std::fs::remove_dir_all(&c2);
+
+    let keys_a = warm_only_key_set(src_parent, &c1);
+    let keys_b = warm_only_key_set(src_parent, &c2);
+
+    assert!(
+        !keys_a.is_empty(),
+        "the self-host warm-only run persisted at least one shared-closure provider key (else this witness \
+         is vacuous — the composed-provider path didn't fire): got {}",
+        keys_a.len()
+    );
+    // THE INVARIANT: two independent warm runs of the SAME suite persist the IDENTICAL key-set. A run-varying
+    // input in the closure content-hash (like the #mono{N}/decl-id bug) would make some keys differ → the
+    // provider cache would never hit those groups across runs → the gate warm-once would never amortize.
+    assert_eq!(
+        keys_a,
+        keys_b,
+        "the shared-closure provider-cache key-set DIFFERS across two independent --warm-only runs — a \
+         run-varying input has reappeared in def_content_hash (mono'd closures won't cache-hit across runs, \
+         so the gate warm-once re-emits). only-in-A: {:?}; only-in-B: {:?}",
+        keys_a.difference(&keys_b).collect::<Vec<_>>(),
+        keys_b.difference(&keys_a).collect::<Vec<_>>(),
+    );
+
+    let _ = std::fs::remove_dir_all(&c1);
+    let _ = std::fs::remove_dir_all(&c2);
 }
