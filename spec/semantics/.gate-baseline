@@ -3461,6 +3461,7 @@ pass	an EFFECTFUL @requires predicate performs under the caller's handler and ad
 pass	an EQUALITY test refines the same test in its own else to known-false
 pass	an equality point fact sheds a then-branch arithmetic overflow guard, but the trap survives unguarded
 pass	an equality point fact folds an inner range comparison, both directions — the point-fact analogue of the ordering fold
+pass	an equality point fact decides a DIFFERENT equality test in the then branch — the point-fact eq-fold face
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
 pass	an IEC-prefixed quantity displays scaled to its reference over Int64

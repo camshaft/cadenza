@@ -16388,6 +16388,80 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_point_fact_decides_a_different_equality_test_in_the_then_branch() {
+        // The EQUALITY-FOLD face of the point fact: inside the then-branch of `(if (= x 5) …)` the fact pins
+        // `x` to `[5,5]`, and `refined_comparison_const` (lower.rs) folds an inner `(= x k)` — TRUE when the
+        // range PINS x to {k} (k == 5), FALSE when k is OUTSIDE [5,5] (k != 5). This is distinct from the
+        // Eq-else known-false pin (which refines the SAME test `(= x 5)` in its OWN else via the negation);
+        // here the point decides a DIFFERENT-constant equality in the THEN. Since the compiler has no
+        // `Prim::Ne` (resolved.rs: only Lt/Gt/Le/Ge/Eq), `!=` desugars to `(not (= …))`, so the not-equal
+        // face folds transitively via the same Eq arm — covered by the `outside` leg here.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |code: &[Lir]| code.iter().filter(|i| matches!(i, Lir::I64Eq)).count();
+        // OUTSIDE: `(if (= x 5) (if (= x 3) 1 2) 0)` — under x==5 the inner `(= x 3)` is decided FALSE (3
+        // outside [5,5]) → inner folds to arm 2, the `1` arm is dead. Only the OUTER `= 5` compare remains.
+        let outside = select(
+            "(module m (def (f (: n Int64)) (if (= n 5) (if (= n 3) 1 2) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&outside),
+            1,
+            "under x==5 the inner `(= x 3)` folds FALSE (3 outside [5,5]); only the outer `= 5` remains, got: {outside:?}"
+        );
+        assert!(
+            !outside.contains(&Lir::ConstI64(1)),
+            "the inner `= 3`'s `1` arm is dead under the [5,5] point, got: {outside:?}"
+        );
+        // PINNED: `(if (= x 5) (if (= x 5) 1 2) 0)` — under x==5 the repeated `(= x 5)` is decided TRUE (pins
+        // to {5}) → inner folds to arm 1, the `2` arm is dead. Again only the outer compare remains.
+        let pinned = select(
+            "(module m (def (f (: n Int64)) (if (= n 5) (if (= n 5) 1 2) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&pinned),
+            1,
+            "under x==5 the repeated `(= x 5)` folds TRUE (pinned to {{5}}); only the outer compare remains, got: {pinned:?}"
+        );
+        assert!(
+            !pinned.contains(&Lir::ConstI64(2)),
+            "the repeated `= 5`'s `2` arm is dead under the [5,5] point, got: {pinned:?}"
+        );
+        // VALUE parity: only x=5 enters the then; there `= 3` is false (→2) and the repeated `= 5` is true (→1).
+        let out_s = "(if (= n 5) (if (= n 3) 1 2) 0)";
+        assert_eq!(run::<i64>("(: n Int64)", out_s, &[Val::S64(5)]), 2);
+        assert_eq!(run::<i64>("(: n Int64)", out_s, &[Val::S64(3)]), 0); // fails outer = 5
+        let pin_s = "(if (= n 5) (if (= n 5) 1 2) 0)";
+        assert_eq!(run::<i64>("(: n Int64)", pin_s, &[Val::S64(5)]), 1);
+        assert_eq!(run::<i64>("(: n Int64)", pin_s, &[Val::S64(7)]), 0);
+    }
+
+    #[test]
     fn a_below_len_guard_elides_the_matching_list_ats_own_bounds_check_but_not_a_different_lists() {
         // BOUNDED-INDEX (below-len) FACET — operator-greenlit bounds-elision. Inside the then-branch of
         // `(< i (List.len xs))`, the index `i` is flow-known `< len(xs)`, so a `List.at xs i` there can shed
