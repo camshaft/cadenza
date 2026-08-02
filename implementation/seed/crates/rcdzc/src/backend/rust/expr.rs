@@ -2851,14 +2851,18 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     "the Rust backend does not yet render a host call WITH ARGUMENTS (later increment)",
                 ));
             }
-            let Some(res_ty) = types::rust_type(&result).filter(|t| int_rust_ty(t)) else {
-                return Err(Reject::decline(
-                    "the Rust backend does not yet render a host call whose result is not a fixed-width integer (later increment)",
-                ));
-            };
             let shim = host_shim_ident(&crate::effects::canonical_host_op_key(&effect, &op));
-            // The shim yields the recorded scalar as `i64`; cast to the op's declared integer width.
-            Ok(format!("(crate::{shim}() as {res_ty})"))
+            // The runner's shim yields the recorded scalar as `i64`. Marshal it to the op's declared result:
+            // a fixed-width INTEGER casts to that width (`as u8`/…); a BOOL reads truthiness (`!= 0`, the
+            // recorded response is `0`/`1`, matching the wasm boundary's i32→bool). Any other result
+            // (float/string/bytes/compound) needs its own boundary form → a later increment, decline.
+            match types::rust_type(&result) {
+                Some(t) if int_rust_ty(&t) => Ok(format!("(crate::{shim}() as {t})")),
+                Some(t) if t == "bool" => Ok(format!("(crate::{shim}() != 0)")),
+                _ => Err(Reject::decline(
+                    "the Rust backend does not yet render a host call whose result is not a fixed-width integer or bool (later increment)",
+                )),
+            }
         }
         // A sequencing block only ever holds a host-call statement today; rendered in a later increment.
         | Core::Seq { .. }

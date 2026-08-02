@@ -5158,7 +5158,7 @@ todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 pass	a recursive evaluator destructures a built Ast by quote patterns and recurses
 pass	a run's result is a deterministic function of a host call's recorded response
 pass	a runtime structural = on a sum with List and Float payloads walks it (value-eq-shaped over a Sum)
-todo	an @param of a Bool type generates a Bool-typed accessor
+pass	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor
 pass	an @param site generates a Param accessor a host delegation reads at run time
 pass	an @param with no widget config still generates its typed accessor
@@ -5189,7 +5189,7 @@ todo	expect traps on the absent case of a runtime optional
 todo	function arguments are evaluated left to right
 todo	host calls are observed in the order they were made
 todo	let bindings' initializers are evaluated in binding order
-todo	mixed-type @param sites share one Param effect and drive control flow
+pass	mixed-type @param sites share one Param effect and drive control flow
 todo	or performs the right operand's effect when the left is false
 todo	or short-circuit does not perform the right operand's effect
 pass	round-trip byte-rope consumer alongside a plain export — the consumer
