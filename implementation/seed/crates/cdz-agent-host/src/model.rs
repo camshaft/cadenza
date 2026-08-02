@@ -17,6 +17,7 @@
 //! kernel's `idempotency_key` and passes it to the transport, so a real Bedrock transport can dedup a
 //! re-driven dispatch after a crash (or at least be aware the same key means "the same logical call").
 
+use crate::retry;
 use bytes::Bytes;
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
@@ -28,12 +29,20 @@ use cdz_kernel::hash::Hash;
 /// a stub returns canned bytes for tests. Total: it returns `Err(reason)` rather than panicking, so the
 /// executor can fold a transport failure as an observable `EffectOutcome::Err` (§9d/§17).
 ///
-/// Returns [`Bytes`] (not `Vec<u8>`): a model completion is a hot-path body that gets folded into the
-/// log/KV and cloned on the way, so a ref-counted buffer avoids the deep copy (operator perf directive,
-/// 2026-08-02). A transport that already has a `Vec<u8>` freezes it with `.into()` (a move, no copy).
+/// Returns the response body as [`Bytes`]: a model completion is a hot-path body that gets folded into
+/// the log/KV and cloned on the way, so a ref-counted buffer makes a clone an O(1) refcount bump, not a
+/// deep copy (operator perf directive). A transport holding a `Vec<u8>` freezes it with `.into()` (a
+/// move, no copy).
+///
+/// **Error classification (supervision, [`crate::retry`]):** an `Err(reason)` MUST lead with a
+/// retryability token so the kernel supervisor can decide backoff-retry vs give-up — a transient failure
+/// (Bedrock 429/5xx/timeout, throttle, connection reset) as [`crate::retry::retryable`], a permanent one
+/// (400/auth/malformed) as [`crate::retry::permanent`]. An unprefixed reason is treated PERMANENT
+/// (fail-closed), so forgetting the prefix means "not retried," never "retried forever."
 pub trait ModelTransport {
     /// Invoke `model_id` with the opaque request `body`, returning the raw response bytes. The
-    /// `idempotency_key` lets a side-effecting transport dedup a crash-re-driven dispatch (§16c-S1/D).
+    /// `idempotency_key` lets a side-effecting transport dedup a crash-re-driven dispatch (§16c-S1/D) —
+    /// so a supervisor's retry of a RETRYABLE failure re-drives with the same key and doesn't double-charge.
     fn invoke(&self, model_id: &str, body: &[u8], idempotency_key: Hash) -> Result<Bytes, String>;
 }
 
@@ -52,32 +61,34 @@ impl<T: ModelTransport> ModelExecutor<T> {
 
 impl<T: ModelTransport> Executor for ModelExecutor<T> {
     fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+        // These are structural request errors — retrying can't fix them, so they're PERMANENT (§17
+        // totality: an observable Err, never a panic).
         if req.kind != EffectKind::Model {
-            return EffectOutcome::Err(format!(
+            return EffectOutcome::Err(retry::permanent(format!(
                 "ModelExecutor only handles Model effects, got {:?}",
                 req.kind
-            ));
+            )));
         }
-        // A model call needs a request body. Inline bytes are the request; a Blob-ref payload isn't
-        // supported yet (the transport would have to fetch it from the blob store — a later slice).
-        // Both "wrong shape" cases are observable Errs, never panics (§17).
+        // A model call needs a request body. An inline payload IS the request; a blob-ref payload is
+        // rejected because this executor has no blob-store handle to resolve it, and a payload-free Model
+        // effect has no request at all. Both are structural (PERMANENT), never panics.
         let body: &[u8] = match &req.payload {
             Some(Payload::Inline(bytes)) => bytes,
             Some(Payload::Blob(_)) => {
-                return EffectOutcome::Err(
-                    "ModelExecutor: blob-ref payload not supported yet (inline the request body)"
-                        .to_string(),
-                );
+                return EffectOutcome::Err(retry::permanent(
+                    "ModelExecutor: blob-ref payload unsupported — this executor has no blob-store access; inline the request body",
+                ));
             }
             None => {
-                return EffectOutcome::Err(
-                    "ModelExecutor: a Model effect requires a request payload".to_string(),
-                );
+                return EffectOutcome::Err(retry::permanent(
+                    "ModelExecutor: a Model effect requires a request payload",
+                ));
             }
         };
         match self.transport.invoke(&req.target, body, idempotency_key) {
-            // The transport's `Bytes` completion moves straight into `Payload::Inline` (now ref-counted
-            // `Bytes` after the kernel's perf-directive flip) — no copy, no conversion.
+            // The transport's `Bytes` completion moves straight into `Payload::Inline` (ref-counted
+            // `Bytes`) — no copy. The transport's Err reason already carries its own retryability token
+            // (RETRYABLE:/PERMANENT:, per the trait contract), so pass it through unchanged.
             Ok(response) => EffectOutcome::Ok(Some(Payload::Inline(response))),
             Err(reason) => EffectOutcome::Err(reason),
         }
@@ -87,6 +98,7 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cdz_kernel::effect::Timeliness;
 
     /// A transport that echoes a canned completion, recording what it was asked to invoke so a test can
     /// assert the executor extracted the model id + body correctly.
@@ -107,6 +119,7 @@ mod tests {
             kind: EffectKind::Model,
             target: "test-model".to_string(),
             payload,
+            timeliness: Timeliness::Interactive,
         }
     }
 
@@ -132,13 +145,21 @@ mod tests {
             response: Bytes::new(),
         });
         match exec.perform(&model_req(None), Hash::of(b"k")) {
-            EffectOutcome::Err(msg) => assert!(msg.contains("requires a request payload"), "{msg}"),
+            EffectOutcome::Err(msg) => {
+                assert!(msg.contains("requires a request payload"), "{msg}");
+                // A structural request error is PERMANENT — a supervisor must not retry it.
+                assert_eq!(
+                    retry::classify(&msg),
+                    retry::Retryability::Permanent,
+                    "{msg}"
+                );
+            }
             other => panic!("expected Err for a payload-free Model effect, got {other:?}"),
         }
     }
 
     #[test]
-    fn a_blob_payload_is_an_observable_err_for_now() {
+    fn a_blob_payload_is_a_permanent_err_no_blob_store_access() {
         let mut exec = ModelExecutor::new(StubTransport {
             response: Bytes::new(),
         });
@@ -147,32 +168,47 @@ mod tests {
             Hash::of(b"k"),
         ) {
             EffectOutcome::Err(msg) => {
-                assert!(msg.contains("blob-ref payload not supported"), "{msg}")
+                // Rejected because this executor has no blob-store access (an invariant, not a "yet").
+                assert!(msg.contains("no blob-store access"), "{msg}");
+                assert_eq!(
+                    retry::classify(&msg),
+                    retry::Retryability::Permanent,
+                    "{msg}"
+                );
             }
             other => panic!("expected Err for a blob-ref payload, got {other:?}"),
         }
     }
 
     #[test]
-    fn a_transport_failure_folds_as_an_err_not_a_panic() {
-        struct FailingTransport;
-        impl ModelTransport for FailingTransport {
+    fn a_transient_transport_failure_stays_retryable_through_the_executor() {
+        // A transport classifies its own error; the executor passes the reason through unchanged, so a
+        // RETRYABLE transport failure (e.g. a Bedrock throttle) reaches the supervisor still RETRYABLE.
+        struct ThrottledTransport;
+        impl ModelTransport for ThrottledTransport {
             fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<Bytes, String> {
-                Err("bedrock throttled (429)".to_string())
+                Err(retry::retryable("bedrock throttled (429)"))
             }
         }
-        let mut exec = ModelExecutor::new(FailingTransport);
+        let mut exec = ModelExecutor::new(ThrottledTransport);
         match exec.perform(
             &model_req(Some(Payload::Inline(b"prompt".to_vec().into()))),
             Hash::of(b"k"),
         ) {
-            EffectOutcome::Err(msg) => assert!(msg.contains("throttled"), "{msg}"),
+            EffectOutcome::Err(msg) => {
+                assert!(msg.contains("throttled"), "{msg}");
+                assert_eq!(
+                    retry::classify(&msg),
+                    retry::Retryability::Retryable,
+                    "{msg}"
+                );
+            }
             other => panic!("expected the transport error to fold as Err, got {other:?}"),
         }
     }
 
     #[test]
-    fn non_model_kind_is_an_observable_err() {
+    fn non_model_kind_is_a_permanent_err() {
         struct NeverCalled;
         impl ModelTransport for NeverCalled {
             fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<Bytes, String> {
@@ -184,10 +220,16 @@ mod tests {
             kind: EffectKind::Http,
             target: "https://x/".to_string(),
             payload: Some(Payload::Inline(b"x".to_vec().into())),
+            timeliness: Timeliness::Interactive,
         };
         match exec.perform(&req, Hash::of(b"k")) {
             EffectOutcome::Err(msg) => {
-                assert!(msg.contains("Model"), "err names the handled kind: {msg}")
+                assert!(msg.contains("Model"), "err names the handled kind: {msg}");
+                assert_eq!(
+                    retry::classify(&msg),
+                    retry::Retryability::Permanent,
+                    "{msg}"
+                );
             }
             other => panic!("expected Err for a non-Model kind, got {other:?}"),
         }

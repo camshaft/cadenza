@@ -11,6 +11,7 @@
 //! self-describing, endianness-free representation a reducer parses with `str::parse`. (`Now`'s target
 //! is empty; a capability gates it by kind, e.g. `Capability { kind: Now, predicate: Any }`.)
 
+use crate::retry;
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
@@ -37,22 +38,26 @@ impl ClockExecutor {
 impl Executor for ClockExecutor {
     fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
         if req.kind != EffectKind::Now {
-            return EffectOutcome::Err(format!(
+            // A wrong-kind request is structural — PERMANENT, a supervisor must not retry it (§17: an
+            // observable Err, never a panic).
+            return EffectOutcome::Err(retry::permanent(format!(
                 "ClockExecutor only handles Now effects, got {:?}",
                 req.kind
-            ));
+            )));
         }
         // Milliseconds since the Unix epoch, as ASCII decimal. A clock set before the epoch is not a
         // panic (§17 totality) — surface it as an observable Err the reducer folds.
         match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(dur) => {
                 let ms = dur.as_millis();
-                // `.into()` builds the kernel's `Payload::Inline`: identity for a `Vec<u8>` inner and the
-                // `From<Vec<u8>>` freeze once the kernel flipped `Inline` to ref-counted `bytes::Bytes`
-                // (operator perf directive) — so this one call site compiles across the flip.
+                // Freeze the ASCII-decimal `Vec<u8>` into the kernel's ref-counted `Payload::Inline`
+                // (`bytes::Bytes`) via `From<Vec<u8>>` — a move, no copy.
                 EffectOutcome::Ok(Some(Payload::Inline(ms.to_string().into_bytes().into())))
             }
-            Err(e) => EffectOutcome::Err(format!("system clock is before the Unix epoch: {e}")),
+            // A pre-epoch clock is a host misconfiguration, not a transient blip — PERMANENT.
+            Err(e) => EffectOutcome::Err(retry::permanent(format!(
+                "system clock is before the Unix epoch: {e}"
+            ))),
         }
     }
 }
@@ -60,12 +65,14 @@ impl Executor for ClockExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cdz_kernel::effect::Timeliness;
 
     fn req(kind: EffectKind, target: &str) -> EffectRequest {
         EffectRequest {
             kind,
             target: target.to_string(),
             payload: None,
+            timeliness: Timeliness::Interactive,
         }
     }
 
@@ -74,8 +81,7 @@ mod tests {
         let mut exec = ClockExecutor::new();
         match exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k")) {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
-                // `.to_vec()` copies the payload's bytes into an owned `Vec<u8>` for `from_utf8` — works
-                // whether `Inline` holds a `Vec<u8>` or (post-flip) `bytes::Bytes` (both deref to `&[u8]`).
+                // `.to_vec()` copies the `Bytes` payload into an owned `Vec<u8>` for `from_utf8`.
                 let text = String::from_utf8(bytes.to_vec()).expect("ascii decimal");
                 let ms: u128 = text.parse().expect("parses as millis");
                 // A sane lower bound: well after 2020 (1_577_836_800_000 ms = 2020-01-01) — proves it's a
@@ -112,7 +118,12 @@ mod tests {
         let mut exec = ClockExecutor::new();
         match exec.perform(&req(EffectKind::Http, "https://x/"), Hash::of(b"k")) {
             EffectOutcome::Err(msg) => {
-                assert!(msg.contains("Now"), "err names the handled kind: {msg}")
+                assert!(msg.contains("Now"), "err names the handled kind: {msg}");
+                assert_eq!(
+                    retry::classify(&msg),
+                    retry::Retryability::Permanent,
+                    "{msg}"
+                );
             }
             other => panic!("expected Err for a non-Now kind, got {other:?}"),
         }
