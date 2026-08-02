@@ -26,9 +26,11 @@ parallel while higher-risk work (compiler/runtime) is ordered within its lane.
 ## The two facts this design stands on (verified)
 
 - **CI already runs the full gate in parallel.** `.github/workflows/ci.yml` triggers
-  `checks.yml` on `pull_request → main`, fanning out fmt / clippy / test / codegen / wasm-runtime /
-  **corpus-gate** / cad-tests / cdz-kernel / alloc-bench / guide as separate jobs. This is exactly
-  what `cargo xtask check` runs *serially* locally — so the local gate is genuinely redundant.
+  `checks.yml` on `pull_request → main`, fanning out the real workflow jobs — `rustfmt`, `clippy`,
+  `test` (ubuntu + macos), `codegen`, `wasm-runtime`, **`gate`** (the corpus gate), `cad-tests`,
+  `cdz-kernel`, `bench` (the allocation bench), `guide-examples` — as separate jobs. This is exactly
+  what `cargo xtask check` runs *serially* locally — so the local gate is genuinely redundant. (Job
+  ids are the real `checks.yml` names so this doesn't drift — PR #1083 review.)
 - **Peers `fleet sync` reset onto the LOCAL `trunk`** bare-hub ref (verified in `fleet.rs`). So a
   broken local trunk breaks every peer's base *immediately*, before CI ever sees it. This is the
   reason the local gate existed. The CI-gated model resolves it a different way: **`trunk` is
