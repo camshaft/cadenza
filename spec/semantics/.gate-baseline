@@ -5453,6 +5453,7 @@ pass	three-way compare orders (Some 3) below None per the declared discriminant 
 pass	the boolean ordering operator places (Some 3) below None like the three-way compare
 pass	Result ordering agrees across targets — Ok below Err on the shared declaration order
 pass	a tuple containing an Option leaf orders by the declared Some-below-None
+pass	a two-sided squeeze refines to an exact point and folds an inner comparison — the intersection face of the point fact
 pass	a list of Options orders its elements by the declared Some-below-None
 pass	an all-nullary user sum orders by discriminant — Lo below Hi
 pass	the Sign sum orders Neg below Pos per its declaration

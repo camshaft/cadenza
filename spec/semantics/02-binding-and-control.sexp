@@ -446,6 +446,37 @@
   (call   lo (: 5 Int64)) (output (: 2 Int64))
   (call   lo (: 9 Int64)) (output (: 0 Int64)))
 
+(case "a two-sided squeeze refines to an exact point and folds an inner comparison — the intersection face of the point fact"
+  (doc    "The INTERVAL-INTERSECTION face of the point fact: a `[c,c]` point can arise WITHOUT a syntactic
+           `(= x c)` guard — a two-sided squeeze `x >= c AND x <= c` intersects to the single point `[c,c]`,
+           and that decides an inner comparison exactly as the `Eq` arm does. `refine_from_comparison`
+           (diverge.rs) intersects each new bound with the existing frame bound (`lo.max(nl)`, `hi.min(nh)`),
+           and select.rs lowers each branch body with the refined frame as its base, so BOTH surface forms
+           reach the point:
+             `nested`: `(if (>= x 5) (if (<= x 5) (if (> x 5) 1 2) 3) 4)` — the inner `<= 5` intersects the
+                       parent's `[5, MAX]` (from `>= 5`) down to `[5, 5]`, so the innermost `(> x 5)` is decided
+                       FALSE and folds to its else (the `1` arm is dead). x=5 → 2; x=4 fails `>=5` → 4; x=9 fails
+                       `<=5` → 3.
+             `anded`:  `(if (and (>= x 5) (<= x 5)) (if (> x 5) 1 2) 3)` — the `and`-arm applies BOTH operands
+                       into one frame → `[5, 5]`, same fold. x=5 → 2; x=6 → 3.
+           SOUNDNESS: a regression that stopped INTERSECTING (kept only the last bound) would leave `[5, MAX]`,
+           NOT decide `> 5`, and return 1 at x=5 — so the x=5 → 2 outputs prove the intersection produced the
+           tight POINT. Pins that the point fact is reachable via the INTERSECTION path, not only the syntactic
+           `Eq` arm (the `(= x c)` cases above). Both Int64 scalar (gates on both backends). The rcdzc Lir
+           counterpart is `a_two_sided_squeeze_refines_to_an_exact_point_and_folds_an_inner_comparison`.")
+  (input  (do
+            (def (nested (: x Int64)) (if (>= x 5) (if (<= x 5) (if (> x 5) 1 2) 3) 4))
+            (def (anded  (: x Int64)) (if (and (>= x 5) (<= x 5)) (if (> x 5) 1 2) 3))
+            (export nested)
+            (export anded)))
+  ; nested: only x=5 satisfies >=5 AND <=5; there the squeezed [5,5] decides (> x 5) FALSE → inner else (2).
+  (call   nested (: 5 Int64)) (output (: 2 Int64))
+  (call   nested (: 4 Int64)) (output (: 4 Int64))
+  (call   nested (: 9 Int64)) (output (: 3 Int64))
+  ; anded: the (and …) squeeze reaches the same [5,5] point and folds the inner (> x 5) the same way.
+  (call   anded (: 5 Int64)) (output (: 2 Int64))
+  (call   anded (: 6 Int64)) (output (: 3 Int64)))
+
 (case "an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type"
   (doc    "The operator's motivating value-facts example (`if x > 0` ⇒ `x - 1` cannot underflow) on an
            UNSIGNED type, which value-facts slice 2 (GAP-A) newly enables — before it, the unsigned `(> x 0)`

@@ -16193,6 +16193,88 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_two_sided_squeeze_refines_to_an_exact_point_and_folds_an_inner_comparison() {
+        // INTERVAL-INTERSECTION face of the point fact: a `[c,c]` point can arise WITHOUT a syntactic `(= x c)`
+        // — a two-sided squeeze `x >= c && x <= c` intersects to the single point `[c,c]`, and that decides an
+        // inner comparison exactly as the `Eq` arm does. `refine_from_comparison` (common/diverge.rs) intersects
+        // each new bound with the existing frame bound (`lo.max(nl)`, `hi.min(nh)`), and select.rs lowers each
+        // branch body with the refined frame as its base, so:
+        //   NESTED: `(if (>= x 5) (if (<= x 5) (if (> x 5) 1 2) 3) 4)` — the inner `<=5` intersects the parent's
+        //           `[5,MAX]` to `[5,5]`, so the innermost `(> x 5)` is decided FALSE and folds (1-arm dead).
+        //   AND:    `(if (and (>= x 5) (<= x 5)) (if (> x 5) 1 2) 3)` — the `And` arm applies BOTH operands into
+        //           one frame → `[5,5]`, same fold. Pins that the intersection path (not only the `Eq` arm)
+        //           reaches a point fact. A regression that stopped intersecting (kept only the last bound) would
+        //           leave `[5,MAX]`, NOT decide `> 5`, and keep the compare — caught by the compare-count here.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |code: &[Lir]| {
+            code.iter()
+                .filter(|i| {
+                    matches!(
+                        i,
+                        Lir::I64GtS | Lir::I64GeS | Lir::I64LtS | Lir::I64LeS | Lir::I64Eq
+                    )
+                })
+                .count()
+        };
+        // NESTED squeeze: `>= 5` then `<= 5` intersects to `[5,5]`; innermost `> 5` folds → the two guard
+        // compares (`>=5`, `<=5`) remain but the innermost `> 5` is GONE, and the dead `1` arm with it.
+        let nested = select(
+            "(module m (def (f (: n Int64)) (if (>= n 5) (if (<= n 5) (if (> n 5) 1 2) 3) 4)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&nested),
+            2,
+            "the two guards stay but the squeezed `> 5` folds away — a non-intersecting regression keeps 3, got: {nested:?}"
+        );
+        assert!(
+            !nested.contains(&Lir::ConstI64(1)),
+            "the innermost `> 5` is decided FALSE by the [5,5] point, so its `1` arm is dead, got: {nested:?}"
+        );
+        // AND squeeze: same point via the `And` arm applying both operands into one frame.
+        let anded = select(
+            "(module m (def (f (: n Int64)) (if (and (>= n 5) (<= n 5)) (if (> n 5) 1 2) 3)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !anded.contains(&Lir::ConstI64(1)),
+            "the `and`-squeeze also reaches [5,5] and folds the inner `> 5` (1-arm dead), got: {anded:?}"
+        );
+        // VALUE parity: only x=5 satisfies the squeeze, and there `> 5` is false → the inner else (2).
+        let nested_s = "(if (>= n 5) (if (<= n 5) (if (> n 5) 1 2) 3) 4)";
+        assert_eq!(run::<i64>("(: n Int64)", nested_s, &[Val::S64(5)]), 2); // squeeze holds, > 5 false
+        assert_eq!(run::<i64>("(: n Int64)", nested_s, &[Val::S64(4)]), 4); // fails >= 5
+        assert_eq!(run::<i64>("(: n Int64)", nested_s, &[Val::S64(9)]), 3); // >= 5 but fails <= 5
+        let and_s = "(if (and (>= n 5) (<= n 5)) (if (> n 5) 1 2) 3)";
+        assert_eq!(run::<i64>("(: n Int64)", and_s, &[Val::S64(5)]), 2);
+        assert_eq!(run::<i64>("(: n Int64)", and_s, &[Val::S64(6)]), 3);
+    }
+
+    #[test]
     fn a_below_len_guard_elides_the_matching_list_ats_own_bounds_check_but_not_a_different_lists() {
         // BOUNDED-INDEX (below-len) FACET — operator-greenlit bounds-elision. Inside the then-branch of
         // `(< i (List.len xs))`, the index `i` is flow-known `< len(xs)`, so a `List.at xs i` there can shed
