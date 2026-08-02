@@ -31,8 +31,8 @@ fn temp_src(tag: &str, src: &str) -> (std::path::PathBuf, String, String) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
     let path = dir.join("m.sexp");
-    std::fs::write(&path, src).unwrap();
-    (dir, path.to_str().unwrap().to_string(), src.to_string())
+    std::fs::write(&path, src).expect("write test file");
+    (dir, path.to_string_lossy().into_owned(), src.to_string())
 }
 
 /// `main` references `inc`; a cursor on that reference must jump to `inc`'s DEFINITION.

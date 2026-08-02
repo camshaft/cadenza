@@ -25,8 +25,8 @@ fn temp(tag: &str, name: &str, src: &str) -> (std::path::PathBuf, String) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("mkdir");
     let path = dir.join(name);
-    std::fs::write(&path, src).unwrap();
-    (dir, path.to_str().unwrap().to_string())
+    std::fs::write(&path, src).expect("write test file");
+    (dir, path.to_string_lossy().into_owned())
 }
 
 const SEXPR: &str = "(module m (def (main) (+ 1 2)) (export main))";
