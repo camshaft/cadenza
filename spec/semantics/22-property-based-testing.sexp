@@ -80,6 +80,25 @@
   (call   main (: 12345 Int64)) (output (: true Bool))
   (call   main (: -7 Int64)) (output (: true Bool)))
 
+(case "a generated LIST value is reproducible from its seed AND distinct seeds give distinct lists (runtime list = walks the spine)"
+  (doc    "§Generation Is Seeded And Reproducible for a LIST value — the historically-blocked case (P4): a
+           list `=` needs a runtime SPINE WALK (compare length + each element), which the runtime now
+           realizes. `gen` draws a 3-element `(List Int64)` from the seed (three successive masked draws).
+           REPRODUCIBILITY: `(= (gen a) (gen a))` = true — the same seed re-draws the identical list, the
+           `=` walking the spine + every element. DISCRIMINATING power (so the list `=` is not vacuously
+           true): two DIFFERENT seeds give DIFFERENT lists, `(gen a) ≠ (gen b)`. `main` returns 1 iff BOTH
+           hold. Runs at the boundary so the draw + the spine walk are real instructions — NOT a compile-time
+           fold (a LITERAL list `=` const-folds, which would falsely look 'unblocked'; the seed-drawn elements
+           force the real runtime walk). This closes the last blocked §Generation-reproducibility container
+           (list), joining tuple/record/set/map/sum + the BigInt/Rational/Float/Symbol leaves.")
+  (input  (do (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (gen (: s Int64)) (list (& (next s) 255) (& (next (next s)) 255) (& (next (next (next s))) 255)))
+              (def (main (: a Int64) (: b Int64))
+                (if (= (gen a) (gen a)) (if (not (= (gen a) (gen b))) 1 0) 0))
+              (export main)))
+  (call   main (: 12345 Int64) (: 999 Int64)) (output (: 1 Int64))
+  (call   main (: -7 Int64) (: 42 Int64)) (output (: 1 Int64)))
+
 (case "a generated value with a BIGINT leaf is reproducible (compound = walks the bignum)"
   (doc    "Witnesses §Generation Is Seeded And Reproducible for a compound value carrying an ARBITRARY-
            PRECISION leaf: `gen` draws a `(Tuple BigInt Bool)` — the int is lifted to a `BigInt` via
