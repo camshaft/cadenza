@@ -6370,6 +6370,53 @@ mod tests {
     }
 
     #[test]
+    fn selection_range_handler_is_total_on_a_malformed_buffer_one_self_range_per_position() {
+        // The multi-cursor arity contract (one SelectionRange per requested position, in order) must hold
+        // even when the document does not parse. An s-expr buffer HARD-fails to parse (unlike the ML
+        // surface, which recovers), driving the handler's `Err(_)` arm — which must still return `Some`
+        // with exactly one DEGENERATE (start == end, no parent) self-range per position, never `None` and
+        // never a dropped/reordered entry. A regression that returned `None` (or the recovered-tree arity)
+        // on a parse failure would break every client that batches cursors over a mid-edit s-expr buffer.
+        use std::str::FromStr;
+        let uri = Uri::from_str("file:///t.sexp").expect("a .sexp uri");
+        let (mut server, _client) = memory_server();
+        server
+            // Unbalanced parens: `read_spanned` and the `read_all_spanned` fallback both fail → `Err(_)`.
+            .handle_notification(did_open_note(&uri, "(def (f x"))
+            .expect("didOpen");
+        let positions = vec![
+            Position::new(0, 1),
+            Position::new(0, 6),
+            Position::new(5, 0),
+        ];
+        let params = SelectionRangeParams {
+            text_document: lsp_types::TextDocumentIdentifier { uri: uri.clone() },
+            positions: positions.clone(),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let ranges = server
+            .selection_range(&params)
+            .expect("a malformed buffer still gets a response, not None");
+        assert_eq!(
+            ranges.len(),
+            positions.len(),
+            "one SelectionRange per requested position, in order — even on a parse failure"
+        );
+        for (i, (sr, &pos)) in ranges.iter().zip(positions.iter()).enumerate() {
+            assert_eq!(
+                sr.range,
+                Range::new(pos, pos),
+                "entry {i} must be the degenerate self-range at its requested position"
+            );
+            assert!(
+                sr.parent.is_none(),
+                "entry {i} on a malformed buffer has no enclosing node, so no parent chain"
+            );
+        }
+    }
+
+    #[test]
     fn selection_range_capability_is_advertised() {
         let value = serde_json::to_value(capabilities()).expect("serializes");
         assert_eq!(
