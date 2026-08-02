@@ -7,7 +7,7 @@
 //! single-threaded (current-thread) executor (the runtime the kernel is designed for — no Send).
 
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::AsyncReducer;
+use cdz_kernel::reducer::Reducer;
 use cdz_kernel::wasm_host::{AsyncComponentReducer, ComponentError, ContentType, EffectKind};
 
 // The SAME committed guest fixture the sync e2e uses — a dependency-free wit-bindgen reducer that, on an
@@ -43,12 +43,12 @@ async fn real_guest_folds_through_async_apply_end_to_end() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn async_reducer_drives_via_the_async_reducer_trait() {
-    // Drive through the `AsyncReducer` trait (what the async kernel loop will call) via a `&dyn` reference
-    // — proving the native `impl AsyncReducer for AsyncComponentReducer` is object-safe + folds a real
+    // Drive through the `Reducer` trait (what the async kernel loop will call) via a `&dyn` reference
+    // — proving the native `impl Reducer for AsyncComponentReducer` is object-safe + folds a real
     // Inbound event, mutating the passed-in KV (the fold_async contract).
     let reducer =
         AsyncComponentReducer::from_component_bytes(GUEST).expect("valid async reducer component");
-    let dyn_reducer: &dyn AsyncReducer = &reducer;
+    let dyn_reducer: &dyn Reducer = &reducer;
 
     let event = cdz_kernel::event::Event {
         seq: 0,

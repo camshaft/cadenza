@@ -217,7 +217,7 @@ async fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatc
 #[tokio::test(flavor = "current_thread")]
 async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
     use cdz_kernel::event::{ContentType as KContentType, EventBody};
-    use cdz_kernel::reducer::AsyncReducer;
+    use cdz_kernel::reducer::Reducer;
 
     // An inner async fn (not a closure — a closure returning a future that borrows its `&reducer` arg
     // trips the borrow checker; an `async fn` scopes the borrow to its own await cleanly).

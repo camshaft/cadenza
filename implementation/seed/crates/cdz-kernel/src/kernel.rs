@@ -22,13 +22,13 @@
 //! The KV is rebuilt by folding the log (it IS derived state — §4); a snapshot is `(seq, kv.root_hash,
 //! reducer_hash)`.
 
-use crate::authz::AsyncAuthorize;
+use crate::authz::Authorize;
 use crate::effect::{EffectId, EffectKind, EffectRequest};
 use crate::event::{EffectOutcome, Event, EventBody};
-use crate::executor::AsyncExecutor;
+use crate::executor::Executor;
 use crate::hash::Hash;
 use crate::kv::Kv;
-use crate::reducer::{AsyncReducer, Effect};
+use crate::reducer::{Effect, Reducer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
@@ -312,7 +312,7 @@ impl Session {
     }
 
     /// Deliver an inbound event and drive the fold→authorize→dispatch→fold-result loop to quiescence,
-    /// awaiting the reducer's fold via [`AsyncReducer`] — the async form of [`Session::deliver`]. Appends
+    /// awaiting the reducer's fold via [`Reducer`] — the async form of [`Session::deliver`]. Appends
     /// `body` (cause-linked to `cause`), then folds it through `reducer`; each effect the fold emits is
     /// authorized then handled by kind: an executor-dispatched effect (Http/Model/Shell/Now/Emit) is
     /// durably dispatched, performed by the executor, and its result folded back; a `Timer` effect is
@@ -328,9 +328,9 @@ impl Session {
         &mut self,
         body: EventBody,
         cause: Option<Hash>,
-        reducer: &dyn AsyncReducer,
-        authz: &(impl AsyncAuthorize + ?Sized),
-        executor: &mut (impl AsyncExecutor + ?Sized),
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
     ) -> Result<(), KernelError> {
         self.append(body, cause);
         self.drive_async(reducer, authz, executor).await;
@@ -338,14 +338,14 @@ impl Session {
     }
 
     /// The ASYNC twin of [`Session::fire_due_timers`] — fire every armed timer past `now_ms`, driving the
-    /// [`AsyncReducer`] for each. Same determinism (§9c): the FIRED time is the timer's own deadline, not
+    /// [`Reducer`] for each. Same determinism (§9c): the FIRED time is the timer's own deadline, not
     /// `now_ms`, so replay reconstructs identically. Additive alongside the sync `fire_due_timers`.
     pub async fn fire_due_timers_async(
         &mut self,
         now_ms: u64,
-        reducer: &dyn AsyncReducer,
-        authz: &(impl AsyncAuthorize + ?Sized),
-        executor: &mut (impl AsyncExecutor + ?Sized),
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
     ) -> usize {
         let mut due: Vec<(u64, u64)> = self
             .armed_timers
@@ -429,13 +429,13 @@ impl Session {
     }
 
     /// The ASYNC twin of [`Session::drive`] — same fold→authorize→dispatch→fold-result loop, but the
-    /// reducer folds are `.await`ed (via [`AsyncReducer`]) so a long wasm fold cooperatively yields. The
+    /// reducer folds are `.await`ed (via [`Reducer`]) so a long wasm fold cooperatively yields. The
     /// authorize/executor/append mechanics are IDENTICAL to the sync path — only the fold calls await.
     async fn drive_async(
         &mut self,
-        reducer: &dyn AsyncReducer,
-        authz: &(impl AsyncAuthorize + ?Sized),
-        executor: &mut (impl AsyncExecutor + ?Sized),
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
     ) {
         let trigger = self.tip_hash();
         let initial = self.fold_tip_async(reducer, trigger).await;
@@ -453,9 +453,9 @@ impl Session {
     async fn drive_worklist_async(
         &mut self,
         mut to_process: Vec<(Effect, Hash)>,
-        reducer: &dyn AsyncReducer,
-        authz: &(impl AsyncAuthorize + ?Sized),
-        executor: &mut (impl AsyncExecutor + ?Sized),
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
     ) {
         while let Some((effect, cause)) = to_process.pop() {
             let Effect {
@@ -556,13 +556,9 @@ impl Session {
         }
     }
 
-    /// The ASYNC twin of [`Session::fold_tip`] — folds the tip through an [`AsyncReducer`] (`.await`),
+    /// The ASYNC twin of [`Session::fold_tip`] — folds the tip through an [`Reducer`] (`.await`),
     /// same FoldFailed capture + effect-reversal. This is the ONE place the reducer actually awaits.
-    async fn fold_tip_async(
-        &mut self,
-        reducer: &dyn AsyncReducer,
-        cause: Hash,
-    ) -> Vec<(Effect, Hash)> {
+    async fn fold_tip_async(&mut self, reducer: &dyn Reducer, cause: Hash) -> Vec<(Effect, Hash)> {
         let tip = self.log.last().expect("log always has genesis").clone();
         let out = reducer.fold_async(&tip, &mut self.kv).await;
         // Error-resilience (§17): a failed fold is captured as a FoldFailed log event, not folded further
@@ -584,12 +580,12 @@ impl Session {
 
     /// The ASYNC twin of [`Session::record_result`] — same timeout-cancels (drop a late result for a
     /// settled id) + token-copy-from-Dispatched-frame invariant, but folds the result through an
-    /// [`AsyncReducer`] (`.await`).
+    /// [`Reducer`] (`.await`).
     async fn record_result_async(
         &mut self,
         id: EffectId,
         outcome: EffectOutcome,
-        reducer: &dyn AsyncReducer,
+        reducer: &dyn Reducer,
         dispatch_hash: Hash,
     ) -> Vec<(Effect, Hash)> {
         if self.settled.contains(&id.0) {
@@ -630,9 +626,9 @@ impl Session {
     pub async fn time_out_effect(
         &mut self,
         id: EffectId,
-        reducer: &dyn AsyncReducer,
-        authz: &(impl AsyncAuthorize + ?Sized),
-        executor: &mut (impl AsyncExecutor + ?Sized),
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
     ) -> bool {
         // Idempotent: only an OPEN id can be timed out. Settled (or never-dispatched) → no-op, so a late
         // real result and a timeout can't both settle one id (§16c-S4 at-most-once).
@@ -721,16 +717,16 @@ impl Session {
     }
 
     /// The ASYNC twin of [`Session::replay`] (operator all-async directive) — reconstruct a session from a
-    /// persisted log, folding each observable event through an [`AsyncReducer`] (`.await`). Identical
+    /// persisted log, folding each observable event through an [`Reducer`] (`.await`). Identical
     /// reconstruction of the obligation sets / armed-timer table / `next_effect_id` / `last_now` high-water
     /// mark; only the re-fold awaits. Additive alongside the sync [`Session::replay`] during the migration;
-    /// the sync one is removed once every reducer is `AsyncReducer` (the operator's "one async trait only").
+    /// the sync one is removed once every reducer is `Reducer` (the operator's "one async trait only").
     ///
     /// Effects emitted during replay are IGNORED (§17 "replay re-folds with no live effect" — the results
     /// are already in the log), exactly as the sync path; so replayed-kv == live-kv (PR#990 finding #1).
     pub async fn replay_async(
         log: Vec<Event>,
-        reducer: &dyn AsyncReducer,
+        reducer: &dyn Reducer,
     ) -> Result<Session, KernelError> {
         match log.first().map(|e| &e.body) {
             Some(EventBody::Genesis { .. }) => {}
@@ -825,7 +821,7 @@ impl Session {
     /// — the caller must `genesis()` a new one — reported as [`RecoverError::EmptyLog`].
     pub async fn recover(
         path: impl AsRef<std::path::Path>,
-        reducer: &dyn AsyncReducer,
+        reducer: &dyn Reducer,
     ) -> Result<(Session, RecoveryReport), RecoverError> {
         let recovered = crate::log_store::LogStore::recover(path).map_err(RecoverError::Io)?;
         if recovered.events.is_empty() {
@@ -1047,13 +1043,13 @@ mod status_snapshot_tests {
     use crate::effect::{Capability, EffectKind, EffectRequest, ResourcePredicate, Timeliness};
     use crate::event::{ContentType, EventBody};
     use crate::executor::RecordingExecutor;
-    use crate::reducer::{AsyncReducer, FoldOutput};
+    use crate::reducer::{FoldOutput, Reducer};
 
     // A reducer that, on an inbound message, publishes a semantic status to `public/` and arms a Timer
     // (an open obligation that stays unsettled — no executor call — so the session reads as Active).
     struct StatusReducer;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for StatusReducer {
+    impl Reducer for StatusReducer {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
@@ -1080,7 +1076,7 @@ mod status_snapshot_tests {
     // This is the generic-reducer shape a query fold uses: `if ct.is_report() { …summarize… }`.
     struct ReportingReducer;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for ReportingReducer {
+    impl Reducer for ReportingReducer {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
@@ -1269,7 +1265,7 @@ mod status_snapshot_tests {
     // so a test can prove fire_due_timers_async actually wakes the reducer (not just drains the table).
     struct TimerThenPublishReducer;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for TimerThenPublishReducer {
+    impl Reducer for TimerThenPublishReducer {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
@@ -1431,7 +1427,7 @@ mod monotonic_now_tests {
         Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
     };
     use crate::event::{ContentType, EffectOutcome, EventBody};
-    use crate::reducer::{AsyncReducer, Effect, FoldOutput};
+    use crate::reducer::{Effect, FoldOutput, Reducer};
 
     // The clamp helper directly: a fresh reading above the floor passes through (and raises last_now);
     // a reading <= last_now is clamped UP to last_now+1 (strictly increasing).
@@ -1506,7 +1502,7 @@ mod monotonic_now_tests {
     // index so we can read the sequence back.
     struct NowReducer;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for NowReducer {
+    impl Reducer for NowReducer {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } | EventBody::EffectResult { .. } => {
@@ -1541,7 +1537,7 @@ mod monotonic_now_tests {
     // clamp must still make the recorded sequence strictly increasing.
     struct StuckClock(u64);
     #[async_trait::async_trait(?Send)]
-    impl AsyncExecutor for StuckClock {
+    impl Executor for StuckClock {
         async fn perform_async(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
             assert_eq!(req.kind, EffectKind::Now);
             EffectOutcome::Ok(Some(Payload::Inline(self.0.to_le_bytes().to_vec().into())))
@@ -1613,7 +1609,7 @@ mod monotonic_now_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn replay_async_reconstructs_identically_to_sync_replay() {
-        // The async twin `replay_async` (driving an AsyncReducer) must reconstruct a session BYTE-IDENTICAL
+        // The async twin `replay_async` (driving an Reducer) must reconstruct a session BYTE-IDENTICAL
         // to sync `replay` — the additive-migration invariant (replay's re-fold only awaits; it changes no
         // reconstruction). Build a session, then replay the SAME log both ways and compare KV root + last_now
         // + open set + log length. A replay/replay_async drift fails loudly HERE.

@@ -19,19 +19,19 @@ use std::collections::HashMap;
 /// yields instead of blocking the single-threaded kernel loop; an in-memory/test executor just returns (an
 /// `async fn` with no `.await`).
 ///
-/// **Object-safe via `async-trait`.** The kernel routes effects through `&mut dyn AsyncExecutor` (see
-/// [`AsyncCompositeExecutor`], which holds `Box<dyn AsyncExecutor>`), so the trait MUST stay dyn-compatible —
+/// **Object-safe via `async-trait`.** The kernel routes effects through `&mut dyn Executor` (see
+/// [`CompositeExecutor`], which holds `Box<dyn Executor>`), so the trait MUST stay dyn-compatible —
 /// native `async fn` in a trait is not, so this uses `#[async_trait(?Send)]`. `?Send` because the kernel is
 /// single-threaded by design and a real transport future (a non-`Send` client / wasmtime store) needn't
 /// cross threads.
 #[async_trait::async_trait(?Send)]
-pub trait AsyncExecutor {
+pub trait Executor {
     /// Perform `req`. `idempotency_key` lets a side-effecting executor dedup a re-driven dispatch after a
     /// crash. Returns the outcome the kernel folds back as an `EffectResult`. May `.await` real I/O.
     async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome;
 }
 
-/// The by-kind effect router (§2 "the kernel routes, doesn't distinguish"): holds `Box<dyn AsyncExecutor>`
+/// The by-kind effect router (§2 "the kernel routes, doesn't distinguish"): holds `Box<dyn Executor>`
 /// per kind and routes `perform_async` to the registered executor, awaiting it. A session that emits more
 /// than one effect kind (an agent doing both `Http` and `Model`) wires one of these; a native-async
 /// executor (a real Bedrock/HTTP one that awaits its transport) registers directly.
@@ -41,20 +41,20 @@ pub trait AsyncExecutor {
 /// wedge), never a silent drop; `idempotency_key` passes through so a routed executor keeps its crash-dedup
 /// contract (§16c-S1).
 #[derive(Default)]
-pub struct AsyncCompositeExecutor {
-    by_kind: HashMap<EffectKind, Box<dyn AsyncExecutor>>,
+pub struct CompositeExecutor {
+    by_kind: HashMap<EffectKind, Box<dyn Executor>>,
 }
 
-impl AsyncCompositeExecutor {
+impl CompositeExecutor {
     pub fn new() -> Self {
-        AsyncCompositeExecutor {
+        CompositeExecutor {
             by_kind: HashMap::new(),
         }
     }
 
     /// Register the async executor for one effect kind (builder-style; last registration wins — a
     /// deliberate override, e.g. swapping a recording executor for a live one in a test).
-    pub fn with(mut self, kind: EffectKind, executor: Box<dyn AsyncExecutor>) -> Self {
+    pub fn with(mut self, kind: EffectKind, executor: Box<dyn Executor>) -> Self {
         self.by_kind.insert(kind, executor);
         self
     }
@@ -66,7 +66,7 @@ impl AsyncCompositeExecutor {
 }
 
 #[async_trait::async_trait(?Send)]
-impl AsyncExecutor for AsyncCompositeExecutor {
+impl Executor for CompositeExecutor {
     async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         match self.by_kind.get_mut(&req.kind) {
             Some(inner) => inner.perform_async(req, idempotency_key).await,
@@ -77,6 +77,17 @@ impl AsyncExecutor for AsyncCompositeExecutor {
         }
     }
 }
+
+// Transitional aliases for `Executor` / `CompositeExecutor` — the redundant `Async` prefix was dropped
+// now there is one (async) executor trait each (operator directive 2026-08-02). `pub use` re-exports
+// (NOT `type` aliases) so `impl AsyncExecutor for X`, `dyn AsyncExecutor`, and
+// `AsyncCompositeExecutor::new()` in the downstream `cdz-agent-host` crate keep compiling verbatim across
+// the rename (alias-bridge beat 1); removed once its impls migrate to the bare names (beat 3). Do not use
+// in new code — write `Executor` / `CompositeExecutor`.
+#[doc(hidden)]
+pub use self::CompositeExecutor as AsyncCompositeExecutor;
+#[doc(hidden)]
+pub use self::Executor as AsyncExecutor;
 
 /// A recording test executor: performs nothing real, returns a canned outcome, and logs what it saw
 /// (including whether an idempotency key was replayed). Lets kernel-loop tests assert the crash /
@@ -98,7 +109,7 @@ impl RecordingExecutor {
 }
 
 #[async_trait::async_trait(?Send)]
-impl AsyncExecutor for RecordingExecutor {
+impl Executor for RecordingExecutor {
     async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         self.seen.push((req.clone(), idempotency_key));
         EffectOutcome::Ok(Some(Payload::Inline(b"ok".to_vec().into())))
@@ -128,7 +139,7 @@ impl AsyncExecutor for RecordingExecutor {
 /// grant can't yield injection, only the wrong (still-literal) program.
 ///
 /// **Non-Shell effects** return an `Err` (this is a single-KIND executor; route multiple kinds by
-/// registering it under `Shell` in an [`AsyncCompositeExecutor`]). **Idempotency (§16c-S1):** a command is
+/// registering it under `Shell` in an [`CompositeExecutor`]). **Idempotency (§16c-S1):** a command is
 /// NOT generally idempotent; a real deployment dedups re-driven dispatches on `idempotency_key` (documented
 /// as the dedup handle). Native async (the subprocess spawn is sync `std::process` today — no `.await`; a
 /// truly-async spawn is a later refinement, but the trait is async so it drops in without a signature
@@ -138,7 +149,7 @@ pub struct ShellExecutor;
 
 #[cfg(all(feature = "live-exec", unix))]
 #[async_trait::async_trait(?Send)]
-impl AsyncExecutor for ShellExecutor {
+impl Executor for ShellExecutor {
     async fn perform_async(
         &mut self,
         req: &EffectRequest,
@@ -190,7 +201,7 @@ mod tests {
     // A test executor that tags its Ok payload so we can prove WHICH inner executor ran. Native async.
     struct TagExecutor(&'static [u8]);
     #[async_trait::async_trait(?Send)]
-    impl AsyncExecutor for TagExecutor {
+    impl Executor for TagExecutor {
         async fn perform_async(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
             EffectOutcome::Ok(Some(Payload::Inline(self.0.to_vec().into())))
         }
@@ -198,9 +209,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn tag_executor_is_object_safe_as_dyn_async_executor() {
-        // Drivable through &mut dyn AsyncExecutor — object-safety (the reason for async-trait).
+        // Drivable through &mut dyn Executor — object-safety (the reason for async-trait).
         let mut tagged = TagExecutor(b"async-ran");
-        let dyn_exec: &mut dyn AsyncExecutor = &mut tagged;
+        let dyn_exec: &mut dyn Executor = &mut tagged;
         let out = dyn_exec
             .perform_async(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k"))
             .await;
@@ -212,7 +223,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn composite_routes_each_kind_to_its_executor() {
-        let mut exec = AsyncCompositeExecutor::new()
+        let mut exec = CompositeExecutor::new()
             .with(EffectKind::Http, Box::new(TagExecutor(b"http-ran")))
             .with(EffectKind::Shell, Box::new(TagExecutor(b"shell-ran")));
         assert!(exec.handles(&EffectKind::Http));
@@ -235,8 +246,7 @@ mod tests {
     async fn composite_unroutable_kind_is_an_observable_err_not_a_drop() {
         // A kind with no registered executor → Err (an observable outcome the reducer folds, §9d), never
         // a silent drop or panic.
-        let mut exec =
-            AsyncCompositeExecutor::new().with(EffectKind::Http, Box::new(TagExecutor(b"h")));
+        let mut exec = CompositeExecutor::new().with(EffectKind::Http, Box::new(TagExecutor(b"h")));
         assert!(!exec.handles(&EffectKind::Model));
         match exec
             .perform_async(&req(EffectKind::Model, "gpt"), Hash::of(b"k"))
@@ -255,7 +265,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn composite_last_registration_wins() {
         // Registering a kind twice replaces the prior executor (deliberate override).
-        let mut exec = AsyncCompositeExecutor::new()
+        let mut exec = CompositeExecutor::new()
             .with(EffectKind::Http, Box::new(TagExecutor(b"first")))
             .with(EffectKind::Http, Box::new(TagExecutor(b"second")));
         assert_eq!(
@@ -271,12 +281,12 @@ mod tests {
         // crash-dedup contract (§16c-S1).
         struct KeyEcho;
         #[async_trait::async_trait(?Send)]
-        impl AsyncExecutor for KeyEcho {
+        impl Executor for KeyEcho {
             async fn perform_async(&mut self, _req: &EffectRequest, key: Hash) -> EffectOutcome {
                 EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec().into())))
             }
         }
-        let mut exec = AsyncCompositeExecutor::new().with(EffectKind::Http, Box::new(KeyEcho));
+        let mut exec = CompositeExecutor::new().with(EffectKind::Http, Box::new(KeyEcho));
         let key = Hash::of(b"the-key");
         assert_eq!(
             exec.perform_async(&req(EffectKind::Http, "x"), key).await,
