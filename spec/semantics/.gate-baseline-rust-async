@@ -5526,3 +5526,5 @@ todo	two same-unit Qty host results combine guest-side as a same-dimension add
 todo	two specializations of one driver on different closures do not collide in the spec memo
 pass	a computed (runtime-branched) label operand to Record.with is rejected — labels are static
 todo	a host op returning Bool crosses the boundary and drives a branch
+pass	the compare walk recurses list-of-sums-of-lists with discriminant-first at depth
+pass	a List.update at depth-3 RRB path-copies one spine and shares the rest
