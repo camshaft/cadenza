@@ -11852,11 +11852,13 @@ const INLINE_MIN_CALLERS_DEFAULT: usize = 2;
 /// read-only config, fixed for the process), so it never touches the memoized hot path.
 fn inline_cost_threshold() -> u32 {
     static CACHE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *CACHE.get_or_init(|| {
-        std::env::var("CDZ_INLINE_COST_THRESHOLD")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(INLINE_COST_THRESHOLD_DEFAULT)
+    // FAIL-FAST on a PRESENT-but-invalid value (unset → default is fine): a typo'd
+    // `CDZ_INLINE_COST_THRESHOLD=4O` must NOT silently measure the default while the sweeper believes it
+    // swept 40 — that yields misleading sweep data (the whole point of this knob is a trustworthy sweep).
+    // Unset → default (byte-identical codegen); present-but-unparseable → panic naming the knob.
+    *CACHE.get_or_init(|| match std::env::var("CDZ_INLINE_COST_THRESHOLD") {
+        Ok(v) => v.parse().expect("CDZ_INLINE_COST_THRESHOLD must be a u32"),
+        Err(_) => INLINE_COST_THRESHOLD_DEFAULT,
     })
 }
 
@@ -11864,11 +11866,11 @@ fn inline_cost_threshold() -> u32 {
 /// overrides it for the same set-widening co-measure sweep; UNSET → 2 → byte-identical.
 fn inline_min_callers() -> usize {
     static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *CACHE.get_or_init(|| {
-        std::env::var("CDZ_INLINE_MIN_CALLERS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(INLINE_MIN_CALLERS_DEFAULT)
+    // FAIL-FAST on a PRESENT-but-invalid value (unset → default), the sibling of `inline_cost_threshold`'s
+    // guard: a typo'd `CDZ_INLINE_MIN_CALLERS` must not silently sweep the default.
+    *CACHE.get_or_init(|| match std::env::var("CDZ_INLINE_MIN_CALLERS") {
+        Ok(v) => v.parse().expect("CDZ_INLINE_MIN_CALLERS must be a usize"),
+        Err(_) => INLINE_MIN_CALLERS_DEFAULT,
     })
 }
 
@@ -11961,8 +11963,9 @@ fn emit_once_callee_eligible_uncached(db: &mut Db, callee: usize) -> Option<bool
     if has_const_param {
         return Some(false);
     }
-    // COST GATE: called at ≥ INLINE_MIN_CALLERS sites (the whole-program call-site index, built once + cached) —
-    // the duplication emit-once avoids is only real at ≥2 sites.
+    // COST GATE: called at ≥ `inline_min_callers()` sites (the whole-program call-site index, built once +
+    // cached) — the effective floor is `INLINE_MIN_CALLERS_DEFAULT` (2), env-overridable via the
+    // `inline_min_callers()` knob. The duplication emit-once avoids is only real at ≥2 sites.
     Some(crate::infer::callee_call_site_count(db, callee) >= inline_min_callers())
 }
 
