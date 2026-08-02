@@ -17,6 +17,7 @@ import { replEval, type Surface } from "../compiler/client.ts";
 import { run as runComponent } from "../runner/client.ts";
 import { classify } from "./classify.ts";
 import { type Binding, visibleBindings, wrapInLets } from "./letChain.ts";
+import { toMixed } from "./mixed.ts";
 
 // `classify`/`isIdentifier` moved to the React-free `./classify.ts` so `node --test` can cover them
 // (this module transitively imports the wasm runtime). Re-exported for existing importers.
@@ -101,7 +102,9 @@ export class Calculator {
     const r = await runComponent(out.component, this.surface, true);
     switch (r.kind) {
       case "value":
-        return { kind: "value", text: r.text };
+        // An improper bare rational shows as an explicit-plus mixed number (`47/12` → `3 + 11/12`,
+        // operator's Q-b ruling) — still valid, pasteable Cadenza. Anything else passes through.
+        return { kind: "value", text: toMixed(r.text) };
       case "trap":
         return { kind: "trap", message: r.message };
       case "timeout":
