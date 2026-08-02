@@ -129,10 +129,15 @@ pub trait Reducer {
 /// fold holds a non-`Send` wasmtime store — requiring `Send` futures would exclude exactly the reducer the
 /// async path exists for.
 ///
-/// **Every sync [`Reducer`] is already an `AsyncReducer`** via the blanket impl below (its `fold_async`
-/// just runs the sync `fold` — it completes without yielding, which is correct for a pure in-process
-/// reducer). So existing reducers need NO change to be driven by the async loop; only a reducer that
-/// genuinely awaits mid-fold (the wasm `ComponentReducer`, once its async apply lands) overrides this.
+/// **A sync [`Reducer`] is driven async by WRAPPING it in [`SyncAsAsync`]** — NOT by a blanket
+/// `impl<R: Reducer> AsyncReducer for R`. A blanket impl would be a coherence TRAP: it would make Rust
+/// forbid ANY concrete `Reducer` (notably the wasm [`crate::wasm_host::ComponentReducer`]) from writing
+/// its OWN `AsyncReducer` impl — the two would overlap — so the reducer that the whole cooperative-yield
+/// arc exists for (the one that genuinely `.await`s a fuel-yielding wasm fold) could never provide a
+/// yielding `fold_async`. The explicit [`SyncAsAsync`] adapter keeps the two worlds disjoint: pure
+/// in-process reducers opt in via the wrapper (their `fold_async` just runs `fold`, no await point), while
+/// `ComponentReducer` writes a NATIVE `impl AsyncReducer` (its async apply, a follow-up slice) with no
+/// conflict.
 #[async_trait::async_trait(?Send)]
 pub trait AsyncReducer {
     /// Fold one event into the KV, returning requested effects — the async counterpart of
@@ -142,14 +147,17 @@ pub trait AsyncReducer {
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput;
 }
 
-// Every sync `Reducer` is trivially an `AsyncReducer`: its async fold just runs the sync fold to
-// completion (no await point — a pure in-process reducer never blocks). No `+ Send`/`+ Sync` bound (the
-// `?Send` trait doesn't cross threads, and the sig only needs `&self`), so this applies even to a reducer
-// holding non-Send/non-Sync interior state (e.g. the wasmtime-store-holding `ComponentReducer`).
+/// Adapt any sync [`Reducer`] into an [`AsyncReducer`] (its `fold_async` runs the sync `fold` to
+/// completion — no await point, correct for a pure in-process reducer that never blocks). This is the
+/// EXPLICIT alternative to a blanket impl (see [`AsyncReducer`]'s docs for why the blanket would forbid a
+/// native async `ComponentReducer`). Wrap a sync reducer — `SyncAsAsync(MyReducer)` — to drive it through
+/// the async kernel loop; a genuinely-async reducer skips the wrapper and impls [`AsyncReducer`] directly.
+pub struct SyncAsAsync<R>(pub R);
+
 #[async_trait::async_trait(?Send)]
-impl<R: Reducer + ?Sized> AsyncReducer for R {
+impl<R: Reducer> AsyncReducer for SyncAsAsync<R> {
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
-        self.fold(event, kv)
+        self.0.fold(event, kv)
     }
 }
 
@@ -192,12 +200,12 @@ mod tests {
     use crate::effect::{EffectId, Payload};
     use crate::event::EffectOutcome;
 
-    // The blanket `impl<R: Reducer> AsyncReducer for R` means any sync reducer is drivable via the async
-    // path with no change — `fold_async` just runs the sync `fold`. Prove it with InertReducer + a
-    // tiny current-thread executor (no tokio dep needed to poll a ready future).
+    // A sync reducer wrapped in `SyncAsAsync` is drivable via the async path (its `fold_async` runs the
+    // sync `fold`). Prove it through `&dyn AsyncReducer` so object-safety is exercised (the whole reason
+    // for async-trait) — and via the ADAPTER, not a blanket impl (so the test doesn't force keeping one).
     #[test]
-    fn every_sync_reducer_is_an_async_reducer_via_the_blanket_impl() {
-        let reducer = InertReducer;
+    fn sync_reducer_wrapped_in_adapter_is_an_async_reducer() {
+        let reducer = SyncAsAsync(InertReducer);
         let event = Event {
             seq: 0,
             cause: None,
@@ -206,17 +214,15 @@ mod tests {
             },
         };
         let mut kv = Kv::new();
-        // Drive the async fold through a dyn reference to prove object-safety holds (the whole reason for
-        // async-trait): `&dyn AsyncReducer` must be a legal type.
         let dyn_reducer: &dyn AsyncReducer = &reducer;
-        let out = pollster_block_on(dyn_reducer.fold_async(&event, &mut kv));
+        let out = poll_ready(dyn_reducer.fold_async(&event, &mut kv));
         assert_eq!(out, FoldOutput::none());
     }
 
-    // Minimal no-dep executor: poll a future to completion on the current thread with a no-op waker. The
-    // blanket-impl futures are always immediately-ready (they wrap a sync fold), so one poll suffices, but
-    // loop defensively.
-    fn pollster_block_on<F: std::future::Future>(mut fut: F) -> F::Output {
+    // Poll an IMMEDIATELY-READY future once with a no-op waker (the adapter's `fold_async` wraps a sync
+    // fold, so it never returns Pending). Fail-fast on Pending rather than spin — this helper is only for
+    // known-ready futures; a Pending here is a bug, not something to busy-wait on.
+    fn poll_ready<F: std::future::Future>(fut: F) -> F::Output {
         use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
         fn noop_raw() -> RawWaker {
             fn no_op(_: *const ()) {}
@@ -230,12 +236,11 @@ mod tests {
         }
         let waker = unsafe { Waker::from_raw(noop_raw()) };
         let mut cx = Context::from_waker(&waker);
-        // SAFETY: `fut` is owned + never moved after pinning (it lives on this stack for the loop).
-        let mut fut = unsafe { std::pin::Pin::new_unchecked(&mut fut) };
-        loop {
-            match fut.as_mut().poll(&mut cx) {
-                Poll::Ready(v) => return v,
-                Poll::Pending => std::hint::spin_loop(),
+        let mut fut = std::pin::pin!(fut);
+        match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(v) => v,
+            Poll::Pending => {
+                panic!("poll_ready: future was not immediately ready (unexpected .await)")
             }
         }
     }
