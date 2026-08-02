@@ -788,6 +788,7 @@ pass	a ROTATE-BY-K splits at the wrapped offset and swaps the halves, identity a
 pass	a RUNTIME Ast structural equality compares by value (Ast.Int scalar leaf and Ast.List compound)
 pass	a RUNTIME Result-of-Result from chained fallible helpers dispatches all three arms
 pass	a RUNTIME branch selects between an abortive perform and a plain value per call
+pass	a RUNTIME erased Qty add is still CHECKED at the inner width (overflow traps at run time)
 pass	a RUNTIME guarded sum-match arm dispatches through its guard
 pass	a RUNTIME if-chain selects among four different-length heap lists
 pass	a RUNTIME list of floats compares equal element-wise (the value-eq-shaped walk)
