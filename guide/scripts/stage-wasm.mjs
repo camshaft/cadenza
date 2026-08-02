@@ -128,6 +128,16 @@ const musicLibs = [
   // lands), and an unused staged lib is benign (the existsSync loop below + check-music-preload read their
   // own name lists, not this array), so this add is gate-safe on its own.
   "pattern.cdz",
+  // `interval-vector.cdz` (Allen Forte interval-class vector: an `Icv` record + interval-class /
+  // interval-class-vector / icv-count / ic-tritone / icv-total) and `set-class.cdz` (pitch-class set
+  // transposition: transpose-pc-set / transposition-between / same-transposition-class). Both are pure
+  // pitch-class arithmetic over Int64, TOTAL, self-contained (no imports beyond their own pc-set fold) —
+  // self-consistent staged alone (landed #1088 + follow-up). STAGING-ONLY, same as pattern.cdz above:
+  // NOT in musicPreload.ts MUSIC_PRELOAD_NAMES (no showcase imports them yet), and an unused staged lib is
+  // benign (the ⊆ gate allows musicLibs ⊇ MUSIC_PRELOAD_NAMES; existsSync loop + check-music-preload read
+  // their own name lists, not this array). v-music/v-guide bump MUSIC_PRELOAD_NAMES + PRELOAD_SOURCES +
+  // preloadArity in lockstep IF/WHEN a showcase imports them.
+  "interval-vector.cdz", "set-class.cdz",
 ];
 await mkdir(join(dest, "music"), { recursive: true });
 for (const lib of musicLibs) {
