@@ -6920,6 +6920,41 @@ fn schedule_dispatch(
     picked
 }
 
+/// What the scheduler should DO with one in-flight candidate PR, given whether GitHub has already
+/// auto-merged it and its current CI [`CiVerdict`]. The other half of the executor's decision layer
+/// (the reap, complementing [`schedule_dispatch`]'s dispatch). Pure so the land/reject/wait policy is
+/// unit-tested without gh. See `fleet/CI-GATED-LANES-DESIGN.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReapAction {
+    /// PR merged on GitHub → FF local `trunk` from `origin/main` + `fleet ack merged`, then drop the
+    /// `ci-dispatch` record.
+    LandMerged,
+    /// CI went red → `fleet ack reject` (failing job + run URL), close the PR, drop the record.
+    Reject,
+    /// CI still pending / not concluded and not yet merged → leave in flight, poll again next pass.
+    KeepWaiting,
+}
+
+/// Decide the reap action for one in-flight candidate. `merged` = GitHub reports the PR already
+/// squash-merged (auto-merge fired on green). `verdict` = its current CI verdict. Precedence:
+///   1. `merged` → `LandMerged` (GitHub only auto-merges on green, so a merged PR is authoritative —
+///      land it even if a straggler check bucket still reads pending in a racy poll).
+///   2. else `Red` → `Reject` (a failed check; auto-merge will never fire, so stop waiting).
+///   3. else (`Green` but not yet merged, `Pending`, `NoChecks`) → `KeepWaiting` (auto-merge hasn't
+///      completed yet, or CI is still running — never advance trunk off an unmerged PR ourselves;
+///      GitHub owns the merge, we only observe it).
+///
+/// Pure over its two inputs.
+fn reap_action(merged: bool, verdict: CiVerdict) -> ReapAction {
+    if merged {
+        ReapAction::LandMerged
+    } else if verdict == CiVerdict::Red {
+        ReapAction::Reject
+    } else {
+        ReapAction::KeepWaiting
+    }
+}
+
 /// `fleet dispatch-plan <ref>`: print what `publish-candidate` WOULD do for a merge-request's `--ref`
 /// — the candidate branch, the full push refspec (pilot gotcha #1), the lane + parallel/serial, and
 /// whether an in-flight candidate for this ref already exists — WITHOUT any side-effect (no push, no
@@ -6988,12 +7023,52 @@ fn lane_label_for_ref(r#ref: &str) -> String {
     lane_of(&paths).label().to_string()
 }
 
+/// Query GitHub for a candidate PR's `(merged?, CI verdict)` — the two inputs [`reap_action`] needs.
+/// `gh pr view <n> --json state,mergedAt` gives the merge state; `gh pr checks` gives the buckets. A
+/// gh error is reported as `(false, NoChecks)` (→ `KeepWaiting`), never a false `merged`/`Green`.
+fn pr_merged_and_verdict(pr: u64) -> (bool, CiVerdict) {
+    let n = pr.to_string();
+    let merged = Command::new("gh")
+        .args(["pr", "view", &n, "--json", "state"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("\"MERGED\""))
+        .unwrap_or(false);
+    let checks_out = Command::new("gh")
+        .args(["pr", "checks", &n, "--json", "bucket,name,state"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let verdict = ci_verdict_from_buckets(
+        parse_gh_checks(&checks_out)
+            .iter()
+            .map(|(b, _, _)| b.as_str()),
+    );
+    (merged, verdict)
+}
+
 /// `fleet schedule-plan [--cap N]`: read the queued merge-requests + the in-flight `ci-dispatch` state
-/// and print which MRs the scheduler WOULD dispatch next (via the pure [`schedule_dispatch`]), honoring
-/// the in-flight cap + per-lane serialization — WITHOUT any side-effect. The read-only preview of one
-/// I4 scheduler pass, for pr-sync + humans. Skips MRs already in flight (their ref is in `ci-dispatch`).
+/// and print BOTH halves of one I4 scheduler pass — WITHOUT any side-effect: (1) the REAP preview (for
+/// each in-flight candidate PR, the [`reap_action`] from its merged-state + CI verdict), and (2) which
+/// queued MRs it WOULD dispatch next (via the pure [`schedule_dispatch`]), honoring the cap + per-lane
+/// serialization. The read-only preview for pr-sync + humans; skips MRs already in flight.
 fn schedule_plan(fleet: &Fleet, cap: usize) {
     let dispatched = read_ci_dispatches(fleet);
+    // ── REAP preview: what each in-flight candidate PR resolves to right now. ──
+    if !dispatched.is_empty() {
+        println!("in-flight ({}):", dispatched.len());
+        for d in &dispatched {
+            let (merged, verdict) = pr_merged_and_verdict(d.pr_number);
+            let action = match reap_action(merged, verdict) {
+                ReapAction::LandMerged => "LAND (merged → FF trunk + ack merged)",
+                ReapAction::Reject => "REJECT (CI red → ack reject + close)",
+                ReapAction::KeepWaiting => "wait (CI pending / not merged)",
+            };
+            println!("  PR #{}\t[{}]\t{}", d.pr_number, d.lane, action);
+        }
+    }
     let in_flight_refs: std::collections::HashSet<&str> =
         dispatched.iter().map(|d| d.r#ref.as_str()).collect();
     let in_flight_lanes: Vec<String> = dispatched.iter().map(|d| d.lane.clone()).collect();
@@ -11297,6 +11372,21 @@ mod tests {
         // Two different serialized lanes can BOTH be in flight (serialize is per-lane, not global).
         let q5 = vec![cand("p", "code"), cand("r", "fleet-tooling")];
         assert_eq!(schedule_dispatch(&q5, &[], &serial, 9, 0), vec!["p", "r"]);
+    }
+
+    #[test]
+    fn reap_action_lands_merged_rejects_red_else_waits() {
+        use CiVerdict::*;
+        // merged (auto-merge fired on green) → LAND, regardless of a racy straggler verdict.
+        assert_eq!(reap_action(true, Green), ReapAction::LandMerged);
+        assert_eq!(reap_action(true, Pending), ReapAction::LandMerged);
+        assert_eq!(reap_action(true, Red), ReapAction::LandMerged); // merged wins (shouldn't happen, but merged is authoritative)
+        // not merged + red CI → REJECT (auto-merge will never fire).
+        assert_eq!(reap_action(false, Red), ReapAction::Reject);
+        // not merged + still running / green-but-not-yet-merged / no checks → keep waiting (GitHub owns the merge).
+        assert_eq!(reap_action(false, Pending), ReapAction::KeepWaiting);
+        assert_eq!(reap_action(false, Green), ReapAction::KeepWaiting);
+        assert_eq!(reap_action(false, NoChecks), ReapAction::KeepWaiting);
     }
 
     #[test]
