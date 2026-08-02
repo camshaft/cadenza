@@ -5358,6 +5358,11 @@ pass	two composed times-minus-one strength reductions round-trip a normal operan
 pass	a literal in a RECORD FIELD that overflows the annotated field width is rejected
 pass	a literal MAP VALUE that overflows the annotated value width is rejected
 pass	a literal MAP KEY that overflows the annotated key width is rejected
+pass	an out-of-range literal MAP VALUE through a builder chain (Map.insert) is rejected
+pass	an out-of-range literal MAP KEY through a builder chain (Map.insert) is rejected
+pass	an out-of-range literal SET element via Set.of is rejected
+pass	an out-of-range literal SET element via Set.insert is rejected
+pass	an IN-RANGE literal through a Map.insert builder chain compiles (the CDZ0302 control)
 pass	a bare in-range ConstFloat if-branch under a Float32 annotation emits valid f32 and runs
 pass	a FITTING narrow record-field literal grounds to the field width and computes (emit twin of the reject)
 pass	a user sum named Ast with NON-colliding variants renders its ctor heads BARE on all backends

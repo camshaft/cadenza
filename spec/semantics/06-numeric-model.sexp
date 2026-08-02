@@ -626,6 +626,50 @@
   (input  (: (map (999 1)) (Map Int8 Int64)))
   (error  CDZ0302))
 
+(case "an out-of-range literal MAP VALUE through a builder chain (Map.insert) is rejected"
+  (doc    "The BUILDER-CHAIN twin of the `(map …)` literal cases above: the width fit-check must descend
+           through `Map.insert Map.empty 1 200` under a `(Map Int64 Int8)` annotation and ground the
+           inserted VALUE literal `200` to the declared `Int8` — `200` overflows Int8 (max 127) → CDZ0302.
+           Before `03976fd5b` the check descended into a `(map …)` LITERAL but NOT a builder chain, so the
+           insert escaped and silently truncated (200 → -56). Pins the descent reaches a Map.insert value.")
+  (input  (: (Map.insert Map.empty 1 200) (Map Int64 Int8)))
+  (error  CDZ0302))
+
+(case "an out-of-range literal MAP KEY through a builder chain (Map.insert) is rejected"
+  (doc    "The key twin of the builder-chain map-value case: `Map.insert Map.empty 200 1` under
+           `(Map Int8 Int64)` grounds the inserted KEY literal `200` to `Int8` → overflow → CDZ0302. Pins the
+           builder-chain descent reaches a Map.insert KEY (not only the value).")
+  (input  (: (Map.insert Map.empty 200 1) (Map Int8 Int64)))
+  (error  CDZ0302))
+
+(case "an out-of-range literal SET element via Set.of is rejected"
+  (doc    "The Set face of the collection width fit-check: `Set.of (list 200)` under `(Set Int8)` grounds the
+           element literal `200` to `Int8` → overflow → CDZ0302. Before `03976fd5b` the entire `Ty::Set` arm
+           was absent, so a Set element under a narrow annotation escaped the check. Pins the descent reaches
+           a Set.of element.")
+  (input  (: (Set.of (list 200)) (Set Int8)))
+  (error  CDZ0302))
+
+(case "an out-of-range literal SET element via Set.insert is rejected"
+  (doc    "The builder-chain Set twin: `Set.insert Set.empty 200` under `(Set Int8)` grounds the inserted
+           element `200` to `Int8` → overflow → CDZ0302. Pins the descent reaches a Set.insert element, the
+           Set analogue of the Map.insert cases.")
+  (input  (: (Set.insert Set.empty 200) (Set Int8)))
+  (error  CDZ0302))
+
+(case "an IN-RANGE literal through a Map.insert builder chain compiles (the CDZ0302 control)"
+  (doc    "The passing control for the builder-chain overflow rejects above: an in-range `5` (fits Int8)
+           inserted into a `(Map Int64 Int8)` compiles + runs — the width fit-check must REJECT only genuine
+           overflows, not every narrow-annotated builder value. Reads the value back (Map.lookup → 5) to
+           confirm the in-range value round-trips through the narrow-annotated builder.")
+  (input  (do
+            (def (main (: n Int8))
+              (match (Map.lookup (: (Map.insert Map.empty 1 n) (Map Int64 Int8)) 1)
+                ((Some v) (Int64.of v))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 5 Int8)) (output (: 5 Int64)))
+
 (case "a Float32-overflowing literal nested in a compound payload is rejected"
   (doc    "The FLOAT analogue of the compound-payload width descent above: `(: (Some 1.0e300) (Option
            Float32))` — the annotation's `Float32` grounds the `Some` payload literal, and `1.0e300` (finite
