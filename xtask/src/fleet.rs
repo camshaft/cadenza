@@ -722,6 +722,21 @@ pub enum FleetCmd {
         #[arg(long, default_value_t = 8)]
         cap: usize,
     },
+    /// RUN one I4 SCHEDULER pass (operator-greenlit executor): (1) REAP each in-flight candidate PR —
+    /// merged → FF local `trunk` from origin/main (CAS) + `ack merged` + resolve the record; CI-red or
+    /// closed-unmerged → `ack reject` + resolve; else leave in flight — then (2) TOP-UP dispatch from the
+    /// queue via `publish-candidate --execute`, honoring the cap + per-lane serialization. This is
+    /// PR-SYNC'S loop as one command (replaces its manual gh + local gate). DRY by default (same preview
+    /// as `schedule-plan`, no side-effects); pass `--execute` to actually reap + dispatch. Because it
+    /// WRITES `trunk`, only pr-sync should `--execute` it. See `fleet/CI-GATED-LANES-DESIGN.md`.
+    SchedulePass {
+        /// Max in-flight candidate PRs. Default 8.
+        #[arg(long, default_value_t = 8)]
+        cap: usize,
+        /// Actually reap + dispatch (write trunk, send acks, open PRs). Without it, DRY preview only.
+        #[arg(long)]
+        execute: bool,
+    },
     /// Report where a merge-request stands in the CI-gated pipeline — in-flight as a candidate PR (with
     /// lane + how to poll its CI), queued at a position in its lane, or resolved (merged/rejected). A
     /// read-only join over `ci-dispatch` + the queue + inboxes so agents self-serve "where is my MR?"
@@ -960,6 +975,13 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             execute,
         } => publish_candidate(&fleet, &r#ref, &agent, &mr_file, execute),
         FleetCmd::SchedulePlan { cap } => schedule_plan(&fleet, cap),
+        FleetCmd::SchedulePass { cap, execute } => {
+            if execute {
+                schedule_pass_execute(&fleet, cap)
+            } else {
+                schedule_plan(&fleet, cap) // DRY preview == the read-only plan
+            }
+        }
         FleetCmd::MrStatus { query } => mr_status(&fleet, &query),
         FleetCmd::BatchStage { refs } => batch_stage(&fleet, &refs),
         FleetCmd::BatchCommit { execute } => batch_commit(&fleet, execute),
@@ -8046,6 +8068,190 @@ fn schedule_plan(fleet: &Fleet, cap: usize) {
             .unwrap_or("?");
         println!("    {f}\t[{lane}]");
     }
+}
+
+/// Mark an in-flight `CiDispatch` record RESOLVED (status → `merged`/`rejected`) so a later
+/// `schedule-pass` reap skips it (idempotent — a re-run won't re-ack or re-FF). Rewrites the record in
+/// place (atomic tmp+rename via `write_ci_dispatch`). We resolve-in-place rather than delete so the
+/// record survives as an audit trail + so a crash mid-pass leaves a resolved (not vanished) record.
+fn mark_dispatch_resolved(fleet: &Fleet, d: &CiDispatch, status: &str) {
+    let resolved = CiDispatch {
+        status: status.to_string(),
+        ..d.clone()
+    };
+    if let Err(e) = write_ci_dispatch(fleet, &resolved) {
+        eprintln!(
+            "schedule-pass: PR #{} reaped ({status}) but FAILED to resolve its ci-dispatch record ({e}) — a re-run may re-process it; resolve by hand: {}",
+            d.pr_number, d.mr_file
+        );
+    }
+}
+
+/// FF local `trunk` to `origin/main` after a candidate merged there — a compare-and-swap
+/// (`update-ref <ref> <new> <old>`) so it only moves if trunk is STILL where we read it (a concurrent
+/// advance fails the CAS rather than clobbering; preserves forward-only + single-writer). Returns
+/// `Ok(new_sha)` on advance, `Ok(current)` if already at origin/main (nothing to do), `Err` on a git
+/// failure or a lost CAS. FAST-FORWARD ONLY — never a merge/reset that could move trunk backward.
+fn ff_trunk_from_origin_main(fleet: &Fleet) -> Result<String, String> {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(&fleet.repo)
+            .args(args)
+            .output()
+    };
+    let _ = git(&["fetch", "origin", "--quiet"]);
+    let rev = |r: &str| {
+        git(&["rev-parse", r])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let old = rev(TRUNK).ok_or_else(|| "cannot resolve trunk".to_string())?;
+    let new = rev("origin/main").ok_or_else(|| "cannot resolve origin/main".to_string())?;
+    if old == new {
+        return Ok(new); // already current
+    }
+    // FF only: origin/main must be a DESCENDANT of trunk (forward move). Never move trunk backward.
+    let is_ff = git(&["merge-base", "--is-ancestor", &old, "origin/main"])
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !is_ff {
+        return Err(format!(
+            "origin/main ({new}) is NOT a fast-forward of trunk ({old}) — refusing to move trunk (a peer/external commit diverged; needs manual reconcile)"
+        ));
+    }
+    let trunk_ref = format!("refs/heads/{TRUNK}");
+    let ok = git(&["update-ref", &trunk_ref, &new, &old])
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if ok {
+        Ok(new)
+    } else {
+        Err(format!(
+            "update-ref CAS failed — trunk moved from {old} between read and write (concurrent advance); retry next pass"
+        ))
+    }
+}
+
+/// I4 — one LIVE scheduler pass (operator-greenlit executor; DRY path is `schedule-plan`). Reaps each
+/// in-flight candidate PR then tops up dispatch under the cap. This is pr-sync's integration loop as one
+/// command; it WRITES `trunk`, so only pr-sync should run it. Each step is idempotent + fail-safe so a
+/// re-run (or a crash mid-pass) never double-lands or double-acks.
+fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
+    let dispatched: Vec<CiDispatch> = read_ci_dispatches(fleet)
+        .into_iter()
+        .filter(dispatch_is_in_flight)
+        .collect();
+    // ── REAP ──
+    let mut reaped_merged = 0usize;
+    let mut reaped_rejected = 0usize;
+    for d in &dispatched {
+        let (state, verdict) = pr_state_and_verdict(d.pr_number);
+        match reap_action(state, verdict) {
+            ReapAction::LandMerged => {
+                // GitHub already merged the PR to origin/main; FF trunk to match, then ack the sender.
+                match ff_trunk_from_origin_main(fleet) {
+                    Ok(sha) => {
+                        ack(
+                            fleet,
+                            &d.mr_file,
+                            "merged",
+                            &sha,
+                            &format!(
+                                "landed via candidate PR #{} (auto-merged on green); trunk @ {sha}",
+                                d.pr_number
+                            ),
+                        );
+                        mark_dispatch_resolved(fleet, d, "merged");
+                        reaped_merged += 1;
+                        println!("  ✓ reaped PR #{} → MERGED, trunk @ {sha}", d.pr_number);
+                    }
+                    Err(e) => {
+                        // Don't ack/resolve if we couldn't advance trunk — leave in flight, retry next pass.
+                        eprintln!(
+                            "  ! PR #{} merged on GitHub but trunk FF FAILED ({e}) — leaving in flight, will retry.",
+                            d.pr_number
+                        );
+                    }
+                }
+            }
+            ReapAction::Reject => {
+                let why = if state == PrState::Closed {
+                    format!(
+                        "candidate PR #{} was CLOSED without merging — resend a fresh --ref if still wanted",
+                        d.pr_number
+                    )
+                } else {
+                    format!(
+                        "candidate PR #{} CI went RED — fix + resend (see the PR's failing checks)",
+                        d.pr_number
+                    )
+                };
+                ack(fleet, &d.mr_file, "reject", "", &why);
+                mark_dispatch_resolved(fleet, d, "rejected");
+                reaped_rejected += 1;
+                println!(
+                    "  ✗ reaped PR #{} → REJECT ({})",
+                    d.pr_number,
+                    if state == PrState::Closed {
+                        "closed-unmerged"
+                    } else {
+                        "ci-red"
+                    }
+                );
+            }
+            ReapAction::KeepWaiting => {} // still gating — leave it.
+        }
+    }
+    // ── TOP-UP DISPATCH ── recompute in-flight AFTER reaping (freed slots count).
+    let still_in_flight: Vec<CiDispatch> = read_ci_dispatches(fleet)
+        .into_iter()
+        .filter(dispatch_is_in_flight)
+        .collect();
+    let in_flight_refs: std::collections::HashSet<&str> =
+        still_in_flight.iter().map(|d| d.r#ref.as_str()).collect();
+    let (in_flight_files, in_flight_unknown) = in_flight_file_set(&still_in_flight);
+    let queued: Vec<SchedCandidate> = queued_merge_requests(fleet)
+        .into_iter()
+        .filter(|mr| !in_flight_refs.contains(mr.r#ref.as_str()))
+        .map(|mr| {
+            let (files, lane) = match changed_files_of(&mr.r#ref) {
+                Some(files) => {
+                    let lane = lane_of(&files).label().to_string();
+                    (files, lane)
+                }
+                None => (
+                    vec![format!("<unresolved-ref:{}>", mr.r#ref)],
+                    Lane::mixed().label().to_string(),
+                ),
+            };
+            SchedCandidate {
+                lane,
+                files,
+                mr_file: mr.file,
+            }
+        })
+        .collect();
+    let picks = if in_flight_unknown {
+        Vec::new()
+    } else {
+        schedule_dispatch(&queued, &in_flight_files, cap, still_in_flight.len())
+    };
+    let mut dispatched_now = 0usize;
+    for mr_file in &picks {
+        // Recover the sender + ref from the queued MR to dispatch it live.
+        if let Some(mr) = queued_merge_requests(fleet)
+            .into_iter()
+            .find(|m| &m.file == mr_file)
+        {
+            publish_candidate(fleet, &mr.r#ref, &mr.from, mr_file, /*execute=*/ true);
+            dispatched_now += 1;
+        }
+    }
+    println!(
+        "schedule-pass: reaped {reaped_merged} merged + {reaped_rejected} rejected; dispatched {dispatched_now} new (cap {cap}, in-flight now {}).",
+        still_in_flight.len() + dispatched_now
+    );
 }
 
 /// Whether a lane LABEL is a parallel lane (docs/corpus/leaf subsystems) vs. serialized. Consults the
