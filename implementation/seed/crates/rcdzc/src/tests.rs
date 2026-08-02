@@ -5148,6 +5148,65 @@ fn option_expect_over_a_dead_after_borrowed_compound_payload_is_value_correct_bu
     );
 }
 
+/// KNOWN-GAP witness (v-memory-safety), pinning a leak triaged from the corpus-bugfix queue (author:
+/// v-wasm-opt drift-guard 2026-07-24, CONFIRMED still live on trunk `0fbab6d7f`; repro
+/// `adv-recursive-heap-payload-sum-scrutinee-borrowed-param-leaks-one-cell.sexp`): a SELF-RECURSIVE fn
+/// taking a sum with a HEAP payload (BigInt OR String) as a BORROWED param leaks exactly ONE live cell as
+/// the recursion unwinds. The heap-payload sum `w` is a borrowed self-recursion param; across the recursive
+/// call the sum shell (or its payload leaf) is retained-but-not-dropped ONCE when the frames unwind → 1
+/// orphaned cell. Isolation from the finding: HEAP-payload-specific (an Int64 SCALAR payload nets 0),
+/// RECURSIVE-specific (a non-recursive call nets 0), probe-INDEPENDENT (a plain `(Mk x)` bind leaks the same
+/// 1), const-vs-runtime-arg-INDEPENDENT. VALUE is CORRECT (no UAF) — a PURE reclaim gap; not gate-visible via
+/// the corpus (value passes), so this `live_objects()` witness is the ONLY durable pin. Adjacent to — and
+/// expected to be subsumed by — the node-keyed payload-escape pass (my deep backlog, which owns a compound
+/// payload borrowed out of a shell that then dies). This is the same borrowed-heap-sum-recursion-param
+/// ownership class as the `option_expect_…`/`from-bytes_…` compound-Some-shell siblings above.
+///
+/// Asserts VALUE-CORRECT (3, no UAF/trap) + leak PRESENT + BOUNDED (a witness, not a `== 0` gate): a
+/// regression that WORSENED it, or a spurious UAF that made it 0-via-double-free (value would corrupt/trap
+/// first), is still caught. Flip the guard to `assert_eq!(live, 0, …)` when the payload-escape pass lands.
+/// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
+#[test]
+#[ignore = "needs the debug-counters store (cargo xtask build)"]
+fn a_recursive_fn_holding_a_borrowed_heap_payload_sum_param_leaks_one_cell_known_gap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "debug-counters runtime not in the store (run `cargo xtask build`); skipping borrowed-heap-sum-recursion-param leak witness"
+        );
+        return;
+    };
+    // The finding's minimal repro (bind-only, no probe machinery): `walk` recurses on scalar `n`, holding a
+    // BigInt-payload sum `w` as a BORROWED param, and only at the base matches `(Mk x)` to read it. `main`
+    // recurses once (`walk 1`). VALUE = `Int64.of 3` = 3.
+    let src = "(module m \
+                 (type W (Mk BigInt)) \
+                 (def (mk (: k Int64)) (Mk (BigInt.of k))) \
+                 (def (walk (: n Int64) (: w W)) \
+                    (if (>= n 0) (walk (- n 1) w) (match w ((Mk x) (Int64.of x))))) \
+                 (def (main (: n Int64)) (walk n (mk 3))) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    // VALUE-CORRECT: the borrowed heap-payload sum is read AFTER the recursion → 3. A UAF would trap/corrupt
+    // before returning; this proves the leak is NON-OOB and value-safe.
+    assert_eq!(
+        rt.call("main", &[Val::S64(1)]),
+        Val::S64(3),
+        "Int64.of the BigInt payload of a borrowed heap-sum recursion param = 3 (value-correct + NO UAF)"
+    );
+    // KNOWN LEAK (pinned, not yet fixed): the borrowed heap-payload sum is retained-but-not-dropped once as
+    // the recursion unwinds. The finding measured exactly 1; assert PRESENT + BOUNDED so a WORSENING
+    // regression (or a 0-via-double-free that the value assert above would already have caught) still fails.
+    let live = rt.live_objects();
+    assert!(
+        live > 0 && live <= 16,
+        "borrowed-heap-sum-recursion-param leak: expected the KNOWN 1-cell unwind residual pending the \
+         node-keyed payload-escape fix — got {live}. If 0, the fix may have landed (flip to == 0); if far \
+         above 1, a NEW leak compounded it."
+    );
+}
+
 /// DIRECT leak witness for the `match` (Core::MatchSum) OWNED-sum-SHELL reclaim — the twin of the
 /// `option_expect_…` SumExpect probe, NARROWED after v-patterns caught a UAF: the sound gate is that the
 /// sum's variants ALL carry SCALAR (or no) payloads, NOT merely a scalar RESULT. A fallible read
