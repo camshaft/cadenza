@@ -496,6 +496,41 @@ mod tests {
         assert_eq!(host.fire_due_timers(9999).await, 0);
     }
 
+    #[tokio::test]
+    async fn next_deadline_across_sessions_is_the_min_and_none_when_no_timer_armed() {
+        // The async host loop's timer wheel: `next_timer_deadline_across_sessions` is what the run-loop
+        // sleeps until, so it must return the EARLIEST armed deadline across all sessions (min), and
+        // `None` when nothing is armed (the loop then only wakes on inbound). Directly pinned here because
+        // the loop consumes it but no test asserted its value.
+        let mut host = AgentHost::new();
+        // Empty registry → no timer → None.
+        assert_eq!(host.next_timer_deadline_across_sessions(), None);
+
+        host.spawn(SessionId::new("late"), timer_host(5000));
+        host.spawn(SessionId::new("early"), timer_host(1000));
+        host.spawn(SessionId::new("no-timer"), now_host()); // arms no timer
+
+        // Before any inbound, no session has armed its timer yet → still None.
+        assert_eq!(host.next_timer_deadline_across_sessions(), None);
+
+        // Arm both timers (the no-timer session gets no inbound, so it contributes nothing).
+        host.deliver(&SessionId::new("late"), inbound_go(), None)
+            .await;
+        host.deliver(&SessionId::new("early"), inbound_go(), None)
+            .await;
+
+        // The wheel returns the MIN of the two armed deadlines (1000), not 5000 and not the no-timer None.
+        assert_eq!(host.next_timer_deadline_across_sessions(), Some(1000));
+
+        // After the earliest fires, the wheel advances to the next-earliest (5000).
+        assert_eq!(host.fire_due_timers(1000).await, 1);
+        assert_eq!(host.next_timer_deadline_across_sessions(), Some(5000));
+
+        // After the last fires, nothing armed → None again.
+        assert_eq!(host.fire_due_timers(5000).await, 1);
+        assert_eq!(host.next_timer_deadline_across_sessions(), None);
+    }
+
     /// A report-aware agent: on a normal inbound it records live work in KV; on a `report` inbound it
     /// summarizes itself from that local KV into `public/summary` (no model call — the cheap tier-1 path).
     struct ReportingAgent;
