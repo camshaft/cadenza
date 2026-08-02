@@ -167,6 +167,7 @@ mod tests {
             kind,
             target: target.to_string(),
             payload: None,
+            timeliness: crate::effect::Timeliness::Interactive,
         }
     }
 

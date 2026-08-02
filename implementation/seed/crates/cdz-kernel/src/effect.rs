@@ -50,6 +50,31 @@ pub struct EffectRequest {
     pub target: String,
     /// Opaque request body. `None` for argument-free effects (e.g. `Now`).
     pub payload: Option<Payload>,
+    /// How latency-sensitive this effect is (§ operator timeliness directive). A [`Timeliness::Batchable`]
+    /// effect MAY be deferred/batched by the executor for cost (e.g. Bedrock batch inference is ~half the
+    /// on-demand price at higher latency); [`Timeliness::Interactive`] must run now. First-class (not a
+    /// payload convention) so it's on the durable log — replay-deterministic — and the executor reads it
+    /// directly to pick the on-demand vs batch path. Meaningful for `Model` today; a first-class field so
+    /// future batchable kinds (embeddings, bulk fetches) reuse it. Default `Interactive`.
+    pub timeliness: Timeliness,
+}
+
+/// How latency-sensitive an effect is — the operator's timeliness parameter (batchable-or-not). A sum,
+/// not a bool (no-sentinels standing directive): the `Batchable` arm carries an optional caller latency
+/// hint, and the type grows cleanly if a third timeliness class ever appears.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub enum Timeliness {
+    /// Latency-sensitive: the executor must run it NOW (on-demand). The default for every effect.
+    #[default]
+    Interactive,
+    /// May be DEFERRED/batched for cost — the executor is free to route it to a cheaper, higher-latency
+    /// batch path (e.g. Bedrock batch inference at ~half price). The deferred result folds back through
+    /// the SAME durable dispatch→result→resume cycle whenever the batch completes (a Batchable call is
+    /// just an effect whose `EffectResult` arrives much later — no new kernel machinery). `max_latency_ms`
+    /// is an OPTIONAL caller hint for the longest latency it will tolerate (`None` = batch whenever); it
+    /// also informs a longer auto-timeout deadline once §9d auto-timeout is wired, so a slow batch isn't
+    /// prematurely cancelled.
+    Batchable { max_latency_ms: Option<u64> },
 }
 
 /// An effect payload or result body: either inlined small bytes or a reference to a stored blob.
@@ -167,7 +192,36 @@ mod tests {
             kind: EffectKind::Http,
             target: target.to_string(),
             payload: None,
+            timeliness: Timeliness::Interactive,
         }
+    }
+
+    #[test]
+    fn timeliness_defaults_to_interactive_and_batchable_carries_its_hint() {
+        // Default is Interactive (the operator's latency-sensitive default — every effect runs now
+        // unless it opts into batching).
+        assert_eq!(Timeliness::default(), Timeliness::Interactive);
+        // A Batchable request carries its optional caller latency hint (a sum, not a bool — the hint
+        // rides the variant). None = batch whenever; Some(ms) = the longest latency tolerated.
+        let deferred = EffectRequest {
+            kind: EffectKind::Model,
+            target: "anthropic.claude".to_string(),
+            payload: None,
+            timeliness: Timeliness::Batchable {
+                max_latency_ms: Some(3_600_000),
+            },
+        };
+        match deferred.timeliness {
+            Timeliness::Batchable { max_latency_ms } => assert_eq!(max_latency_ms, Some(3_600_000)),
+            Timeliness::Interactive => panic!("expected Batchable"),
+        }
+        // Batchable-whenever (no hint) is distinct from Interactive.
+        assert_ne!(
+            Timeliness::Batchable {
+                max_latency_ms: None
+            },
+            Timeliness::Interactive
+        );
     }
 
     #[test]
@@ -295,11 +349,13 @@ mod tests {
             kind: EffectKind::Shell,
             target: "cargo test".into(),
             payload: None,
+            timeliness: Timeliness::Interactive,
         };
         let bad = EffectRequest {
             kind: EffectKind::Shell,
             target: "rm -rf /".into(),
             payload: None,
+            timeliness: Timeliness::Interactive,
         };
         assert!(cap.permits(&ok));
         assert!(!cap.permits(&bad));
