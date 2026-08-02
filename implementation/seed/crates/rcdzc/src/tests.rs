@@ -38800,6 +38800,24 @@ mod match_engine {
         )))
         .expect_err("a fixed-arity list binding is refutable");
         assert_eq!(fixed_err.code.as_deref(), Some("CDZ0210"));
+        // The suggestion must name the ZERO-LEADING `(list .. rest)` — the only rest form valid as a
+        // binding. It previously said "use `(list p… .. rest)`", but a LEADING-element rest is itself
+        // refutable here (asserted just above), so following that advice hits CDZ0210 again. The message
+        // now names the zero-leading form + notes the leading-element caveat, and that suggestion compiles.
+        let msg = &fixed_err.message;
+        assert!(
+            msg.contains("ZERO-LEADING `(list .. rest)`")
+                && msg.contains("leading-element `(list a .. rest)` is itself refutable"),
+            "the fixed-arity refutable message names the zero-leading rest, not a leading-element one: {msg}"
+        );
+        // ROUND-TRIP: the suggested zero-leading `(list .. rest)` binding checks clean.
+        assert!(
+            compile_component(&crate::codec::encode(&crate::testkit::parse(
+                "(module m (def (main) (let (((list .. rest) (list 1 2))) (List.len rest))) (export main))",
+            )))
+            .is_ok(),
+            "the suggested zero-leading `(list .. rest)` binding compiles"
+        );
     }
 
     #[test]
