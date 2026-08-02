@@ -196,6 +196,22 @@ def er-recursive-types-puts-main-last() =
       | Option.None(_) => trap("recursive-types is non-empty"))))
 
 @test
+def er-recursive-bodies-puts-main-last() =
+  // Main's code body is emitted LAST, so main = funcidx k and export-section-idx(k) names it (the FUNCTION-list
+  // order — this is the order that actually governs the export).
+  (let entries = List.push(([] : List(Tuple(Int64, Tuple(List(Int64), Core)))), (900, (([] : List(Int64)), Core.CBin(43, true, 64, Core.CNum(1, true, 64), Core.CNum(2, true, 64))))) in
+   (let bodies = recursive-bodies(entries, Core.CNum(7, true, 64), (Map.empty : Map(Int64, Int64))) in
+    (if (List.len(bodies) == 2) then                          // 1 def body + main body
+      (match List.at(bodies, List.len(bodies) - 1) with       // LAST body must be main's (nullary CNum 7 → 4 bytes: 00 42 07 0b)
+        | Option.Some(lastB) => (if (Bytes.len(lastB) == 4) then
+            (match List.at(bodies, 0) with                    // index 0 is the def's arith body (7 bytes), NOT main's
+              | Option.Some(firstB) => (if (Bytes.len(firstB) == 7) then unit else trap("funcidx 0 is the def's arith body (7 bytes), not main"))
+              | Option.None(_) => trap("recursive-bodies has a first entry"))
+          else trap("LAST body is nullary main (CNum 7 body, 4 bytes)"))
+        | Option.None(_) => trap("recursive-bodies is non-empty"))
+     else trap("recursive-bodies = 1 def + main = 2 bodies"))))
+
+@test
 def er-all-defs-emittable-gates-out-of-subset-body() =
   // The def-body emit gate: all-defs-emittable is TRUE iff EVERY entry's body is in the emit subset. A def
   // whose body is an out-of-subset form (CMatchSum — eval-only, not emit-subset) must make it FALSE so
