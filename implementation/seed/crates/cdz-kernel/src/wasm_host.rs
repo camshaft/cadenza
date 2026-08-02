@@ -28,6 +28,18 @@ wasmtime::component::bindgen!({
 // `wasm_host::EffectRequest` etc. rather than the deep generated path.
 pub use self::cadenza::agent_kernel::types::{ContentType, EffectKind, EffectRequest};
 
+// Generate host bindings for the AUTHORIZER world in its OWN module (a second `bindgen!` at module scope
+// would clash on the generated `types`/world names with the reducer bindings above). A policy component
+// EXPORTS `authorize` + imports nothing, so this world has no host trait to implement — the bindings are
+// just the typed `Authorizer` world + its `AuthorizerPre` for pre-instantiation, plus the request/decision
+// records.
+mod authz_bindings {
+    wasmtime::component::bindgen!({
+        world: "authorizer-world",
+        path: "wit/authorizer.wit",
+    });
+}
+
 /// The host state a reducer component runs against: its session KV (the `kv` import is served from
 /// here) plus room for the fold's output. One per fold invocation (the guest is stateless between
 /// events — §4 — so the host owns the KV and hands the guest a view for the call).
@@ -425,10 +437,9 @@ impl ComponentReducer {
         let deps = declared_deps(&component, &engine)?;
         // Pre-instantiate ONCE for the dependency-free path (perf): resolve + type-check the linker
         // against the component now, so each fold just `.instantiate(store)`s the cached `ReducerPre`
-        // instead of re-linking. Only valid when there are no deps to compose per-fold (a dep reducer's
-        // linker differs each fold). `instantiate_pre` fails only on a genuine link/type mismatch — the
-        // same error `Reducer::instantiate` would raise — so surface it as `Instantiate` at construction.
-        // Pre-instantiate ONLY if it succeeds — `ReducerPre::new` type-checks that the component exports
+        // instead of re-linking. Only for a reducer with no deps to compose per-fold (a dep reducer's
+        // linker differs each fold). Best-effort (PR#1270): pre-instantiate ONLY if it succeeds —
+        // `ReducerPre::new` type-checks that the component exports
         // the `fold` world, so a valid-but-non-fold-exporting component (e.g. a construction-only test
         // fixture, or a not-yet-a-reducer blob) can't be pre-instantiated. In that case leave
         // `instance_pre = None`: `apply` falls back to the per-fold `Reducer::instantiate`, which surfaces
@@ -711,6 +722,112 @@ impl crate::reducer::Reducer for ComponentReducer {
     }
 }
 
+/// An [`crate::authz::Authorize`] backed by a wasm POLICY COMPONENT (operator ruling: Cedar-as-wasm,
+/// §10/SEC-F1). Holds the same wasmtime `Engine` + compiled policy `Component` + a `AuthorizerWorldPre`
+/// (pre-instantiated once — the policy world imports nothing, so a fresh empty linker suffices), and
+/// decides each request by instantiating the policy into a throwaway store, calling its exported
+/// `authorize(request) -> decision`, and mapping the verdict to the kernel's `Result<(), String>`. This
+/// is the component-model authz path that drops in wherever the flat-capability [`crate::authz::Authorizer`]
+/// does — a Cedar policy set compiled to a component (built by v-agent-harness-host) is the intended
+/// guest; construction here is guest-agnostic (any component exporting the `authorizer` world works).
+///
+/// FAIL-CLOSED (§10 + §17): a policy trap / instantiate failure is a DENY (a policy that can't decide
+/// must not accidentally permit), never a panic — so a broken policy fails safe, not open.
+pub struct ComponentAuthorizer {
+    engine: wasmtime::Engine,
+    pre: self::authz_bindings::AuthorizerWorldPre<()>,
+    /// The principal (session/agent identity) every request is authorized under — Cedar's PRINCIPAL.
+    /// v0 holds one principal per authorizer (the session it guards); delegation/on-behalf-of (§12f)
+    /// layers on later.
+    principal: String,
+}
+
+impl ComponentAuthorizer {
+    /// Build a policy authorizer from a compiled policy component's bytes, authorizing every request
+    /// under `principal` (the session/agent identity). The policy world imports nothing, so the linker
+    /// is empty; pre-instantiate once so each `authorize` just instantiates into a fresh store. Errors
+    /// if the bytes aren't a valid component exporting the `authorizer` world.
+    pub fn from_policy_bytes(
+        bytes: &[u8],
+        principal: impl Into<String>,
+    ) -> Result<Self, ComponentError> {
+        let mut config = wasmtime::Config::new();
+        config.consume_fuel(true);
+        let engine = wasmtime::Engine::new(&config)
+            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+        let component = wasmtime::component::Component::new(&engine, bytes)
+            .map_err(|e| ComponentError::InvalidComponent(e.to_string()))?;
+        let linker = wasmtime::component::Linker::<()>::new(&engine);
+        let pre = linker
+            .instantiate_pre(&component)
+            .and_then(self::authz_bindings::AuthorizerWorldPre::new)
+            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+        Ok(ComponentAuthorizer {
+            engine,
+            pre,
+            principal: principal.into(),
+        })
+    }
+
+    /// The engine (exposed for tests / advanced host composition).
+    pub fn engine(&self) -> &wasmtime::Engine {
+        &self.engine
+    }
+}
+
+impl crate::authz::Authorize for ComponentAuthorizer {
+    /// Decide via the policy component: map the `EffectRequest` to the PARC triple (principal, action =
+    /// effect kind, target = resolved target), instantiate the policy into a fresh store, call
+    /// `authorize`, and map the verdict. FAIL-CLOSED: any instantiate/trap failure denies (§10 safe
+    /// default), never panics (§17). A generous fuel budget bounds a runaway policy without tripping a
+    /// legitimate decision.
+    fn authorize(&self, req: &crate::effect::EffectRequest) -> Result<(), String> {
+        let mut store = wasmtime::Store::new(&self.engine, ());
+        if store.set_fuel(DEFAULT_FOLD_FUEL).is_err() {
+            return Err("authz: fuel init failed (fail-closed deny)".to_string());
+        }
+        let world = match self.pre.instantiate(&mut store) {
+            Ok(w) => w,
+            Err(e) => {
+                return Err(format!(
+                    "authz: policy instantiate failed (fail-closed deny): {e}"
+                ))
+            }
+        };
+        let request = self::authz_bindings::cadenza::agent_kernel_authz::types::AuthRequest {
+            principal: self.principal.clone(),
+            action: effect_kind_wire_name(&req.kind).to_string(),
+            target: req.target.clone(),
+        };
+        match world
+            .cadenza_agent_kernel_authz_authorizer()
+            .call_authorize(&mut store, &request)
+        {
+            Ok(decision) if decision.allow => Ok(()),
+            Ok(decision) => Err(if decision.reason.is_empty() {
+                "denied by policy".to_string()
+            } else {
+                decision.reason
+            }),
+            // A trapped policy is a fail-CLOSED deny — a policy that can't decide must not permit.
+            Err(e) => Err(format!("authz: policy trapped (fail-closed deny): {e}")),
+        }
+    }
+}
+
+/// The wire name of an effect kind for the authorizer's `action` field (Cedar's ACTION verb). Lowercase,
+/// stable — a policy matches on these strings.
+fn effect_kind_wire_name(kind: &crate::effect::EffectKind) -> &'static str {
+    match kind {
+        crate::effect::EffectKind::Shell => "shell",
+        crate::effect::EffectKind::Http => "http",
+        crate::effect::EffectKind::Model => "model",
+        crate::effect::EffectKind::Now => "now",
+        crate::effect::EffectKind::Timer => "timer",
+        crate::effect::EffectKind::Emit => "emit",
+    }
+}
+
 /// Map a kernel [`EventBody`] to the guest `fold.apply` inputs `(content_type, payload, resumes)`.
 /// `resumes` (§19e ruling B) is the event's continuation token, already copied onto result/timer events
 /// from their originating `Dispatched` frame (slice-2b-i) — so this reads it off the event, never a map.
@@ -891,6 +1008,31 @@ mod tests {
             Err(other) => panic!("expected InvalidComponent (bad bytes), got {other:?}"),
             Ok(_) => panic!("garbage bytes must not build a component"),
         }
+    }
+
+    // ComponentAuthorizer construction (§10 Cedar-as-wasm authz). A real allow/deny DECISION test needs a
+    // policy component exporting the `authorizer` world (a cedar-policy wit-bindgen guest — v-agent-harness-
+    // host's fixture, mirroring reducer-guest); these pin the construction contract kernel-side now.
+    #[test]
+    fn component_authorizer_rejects_garbage_and_a_non_authorizer_component() {
+        use crate::authz::Authorize;
+        // Garbage bytes → InvalidComponent (the bytes aren't a component at all).
+        match ComponentAuthorizer::from_policy_bytes(b"not a policy component", "session-1") {
+            Err(ComponentError::InvalidComponent(_)) => {}
+            Err(other) => panic!("expected InvalidComponent, got {other:?}"),
+            Ok(_) => panic!("garbage must not build a policy authorizer"),
+        }
+        // A valid component that does NOT export the `authorizer` world → Instantiate (pre-instantiation
+        // type-checks the world's exports, so a non-policy component is rejected at construction).
+        let empty = wat::parse_str("(component)").expect("empty component");
+        match ComponentAuthorizer::from_policy_bytes(&empty, "session-1") {
+            Err(ComponentError::Instantiate(_)) => {}
+            Err(other) => panic!("expected Instantiate (no authorizer export), got {other:?}"),
+            Ok(_) => panic!("a non-authorizer component must not build a policy authorizer"),
+        }
+        // (A ComponentAuthorizer over a real policy denies fail-closed on a policy trap — exercised e2e
+        // once the Cedar policy guest exists; the trait impl's Err arms encode the fail-closed contract.)
+        let _ = <ComponentAuthorizer as Authorize>::authorize; // name-check the impl exists
     }
 
     #[test]
