@@ -2657,6 +2657,7 @@ pass	a repeated condition inside a branch propagates the known truth value
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
 pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator
+pass	a repeated trapping division in a guarded arm stays shielded — a CSE class must not hoist past the branch
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
 pass	a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves
 pass	a resume outside any handler arm is rejected
