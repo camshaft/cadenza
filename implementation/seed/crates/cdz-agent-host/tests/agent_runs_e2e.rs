@@ -24,7 +24,7 @@ use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{FoldOutput, Reducer};
+use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
 
 /// A minimal but real agent: on an inbound "go" it asks the kernel for the current time (a `Now`
 /// effect); when the recorded instant comes back it stashes it in KV under `started_at` and marks
@@ -77,16 +77,17 @@ fn now_cap() -> Authorizer {
     }])
 }
 
-#[test]
-fn agent_loop_runs_end_to_end_through_the_real_clock_executor() {
-    let reducer = ClockAgent;
+#[tokio::test]
+async fn agent_loop_runs_end_to_end_through_the_real_clock_executor() {
+    let reducer = SyncAsAsync(ClockAgent);
     let authz = now_cap();
     // The real executor, wired by kind exactly as the Bedrock Model executor will be alongside it.
     let mut exec = CompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
     let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
 
     session
-        .deliver(inbound_go(), None, &reducer, &authz, &mut exec)
+        .deliver_async(inbound_go(), None, &reducer, &authz, &mut exec)
+        .await
         .unwrap();
 
     // The loop closed: the reducer asked for the time, the REAL clock served it, the result folded back
@@ -109,16 +110,26 @@ fn agent_loop_runs_end_to_end_through_the_real_clock_executor() {
     assert_eq!(session.open_effects(), 0);
 }
 
-#[test]
-fn the_recorded_instant_makes_the_run_replayable() {
+#[tokio::test]
+async fn the_recorded_instant_makes_the_run_replayable() {
     // §9c/§16c-S3: the clock read is non-deterministic, but its OUTCOME is recorded — so replaying the
     // log reconstructs the identical KV without ever touching the clock again. This is why a
     // world-touching executor doesn't break event-sourcing's replay-equivalence.
+    // `deliver_async` drives the loop through the async path (a sync reducer wrapped `SyncAsAsync`);
+    // `Session::replay` stays SYNC (it re-folds the recorded log, runs no executor) so it takes the
+    // bare sync `ClockAgent`.
     let reducer = ClockAgent;
     let mut exec = CompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
     let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
     session
-        .deliver(inbound_go(), None, &reducer, &now_cap(), &mut exec)
+        .deliver_async(
+            inbound_go(),
+            None,
+            &SyncAsAsync(ClockAgent),
+            &now_cap(),
+            &mut exec,
+        )
+        .await
         .unwrap();
 
     let live_started = session.kv().get(b"started_at").unwrap().to_vec();
@@ -135,16 +146,17 @@ fn the_recorded_instant_makes_the_run_replayable() {
     assert_eq!(replayed.snapshot().kv_root, session.snapshot().kv_root);
 }
 
-#[test]
-fn a_now_effect_outside_the_grant_is_denied_never_reaching_the_clock() {
+#[tokio::test]
+async fn a_now_effect_outside_the_grant_is_denied_never_reaching_the_clock() {
     // Deny-by-default (SEC-F1): an agent with NO `Now` capability that asks for the time is denied at
     // the gate — the real executor is never consulted, and the denial is on the log for audit (§10).
-    let reducer = ClockAgent;
+    let reducer = SyncAsAsync(ClockAgent);
     let deny = Authorizer::deny_all();
     let mut exec = CompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
     let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
     session
-        .deliver(inbound_go(), None, &reducer, &deny, &mut exec)
+        .deliver_async(inbound_go(), None, &reducer, &deny, &mut exec)
+        .await
         .unwrap();
 
     // Never advanced to running (the time never came back), and the denial is logged.

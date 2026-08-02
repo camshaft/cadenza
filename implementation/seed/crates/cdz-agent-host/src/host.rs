@@ -22,12 +22,19 @@ use cdz_kernel::event::EventBody;
 use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::{KernelError, Session};
-use cdz_kernel::reducer::Reducer;
+use cdz_kernel::reducer::AsyncReducer;
 use std::collections::HashMap;
 
 /// A session's identity in the host registry. A short opaque string the operator/driver assigns (e.g.
 /// `"concierge"`, `"builder-42"`) — distinct from the kernel's per-effect `EffectId` and from the
 /// content `Hash` of the reducer. Owned so the registry key needs no lifetime.
+//
+// The host drives sessions through the kernel's ASYNC loop (`Session::deliver_async`) so a long fold can
+// cooperatively yield and sessions interleave (§15b). A reducer is therefore held as a `Box<dyn
+// AsyncReducer>`: a pure-Rust reducer is wrapped by the caller as `SyncAsAsync(r)` (its `fold_async` just
+// runs the sync `fold`, no await point), and a wasm reducer uses `AsyncComponentReducer` (native
+// `AsyncReducer`, no wrap). The wrap is the caller's because only they know if their reducer is sync or
+// natively async — and `SyncAsAsync<R>` needs a concrete `R: Reducer`, which a `Box<dyn Reducer>` isn't.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct SessionId(pub String);
 
@@ -45,7 +52,7 @@ impl SessionId {
 /// borrows reducer/authz/executor per call; bundling them here is what lets the host re-supply them).
 pub struct HostedSession {
     session: Session,
-    reducer: Box<dyn Reducer>,
+    reducer: Box<dyn AsyncReducer>,
     authz: Box<dyn Authorize>,
     executor: CompositeExecutor,
 }
@@ -55,9 +62,12 @@ impl HostedSession {
     /// `reducer` drives folds; `executor` (a by-kind [`CompositeExecutor`]) performs authorized effects;
     /// `authz` gates them (SEC-F1). This is the assembly point — real executors (Now/Model/Http) go into
     /// `executor`, a real policy into `authz`.
+    ///
+    /// `reducer` is a `Box<dyn AsyncReducer>`: a pure-Rust reducer is passed as
+    /// `Box::new(SyncAsAsync(my_reducer))`, a wasm reducer as `Box::new(AsyncComponentReducer::…)`.
     pub fn genesis(
         reducer_hash: Hash,
-        reducer: Box<dyn Reducer>,
+        reducer: Box<dyn AsyncReducer>,
         authz: Box<dyn Authorize>,
         executor: CompositeExecutor,
     ) -> Self {
@@ -70,22 +80,30 @@ impl HostedSession {
     }
 
     /// Deliver one inbound event and run the reactive loop to quiescence (the kernel drives
-    /// fold→dispatch→fold-result until no more effects are pending). This is one turn of the agent.
-    pub fn deliver(&mut self, body: EventBody, cause: Option<Hash>) -> Result<(), KernelError> {
-        self.session.deliver(
-            body,
-            cause,
-            &*self.reducer,
-            &*self.authz,
-            &mut self.executor,
-        )
+    /// fold→dispatch→fold-result until no more effects are pending). This is one turn of the agent. Async
+    /// so a long fold cooperatively yields and the host loop can interleave other sessions (§15b).
+    pub async fn deliver(
+        &mut self,
+        body: EventBody,
+        cause: Option<Hash>,
+    ) -> Result<(), KernelError> {
+        self.session
+            .deliver_async(
+                body,
+                cause,
+                &*self.reducer,
+                &*self.authz,
+                &mut self.executor,
+            )
+            .await
     }
 
     /// Fire every armed timer whose deadline has passed `now_ms`, waking the reducer (§9c). The host's
     /// scheduler calls this on a tick; returns how many fired.
-    pub fn fire_due_timers(&mut self, now_ms: u64) -> usize {
+    pub async fn fire_due_timers(&mut self, now_ms: u64) -> usize {
         self.session
-            .fire_due_timers(now_ms, &*self.reducer, &*self.authz, &mut self.executor)
+            .fire_due_timers_async(now_ms, &*self.reducer, &*self.authz, &mut self.executor)
+            .await
     }
 
     /// Read-only access to the underlying `Session` (for status queries, snapshotting, log inspection).
@@ -113,14 +131,14 @@ impl HostedSession {
     /// `public/summary` KV — then DROPS the fork (never persisted). The parent is provably untouched (the
     /// fork is a separate `Session`; this method takes `&self`).
     ///
-    /// The caller supplies the fork's `reducer` (the same logic the session runs — a `Box<dyn Reducer>`
-    /// can't be cloned out of this `HostedSession`, so the caller re-provides it), a MODEL-ONLY `authz`
-    /// (a scoped capability so a summarize-fold can call the model but CANNOT take world-actions —
-    /// SEC-F1), and an `executor` to serve that model call. Returns `Some(summary_bytes)` if the reducer
-    /// published `public/summary`, else `None` (it summarized elsewhere / didn't, or the fork erred).
-    pub fn fork_for_query(
+    /// The caller supplies the fork's `reducer` (the same logic the session runs — a `Box<dyn AsyncReducer>`
+    /// can't be cloned out of this `HostedSession`, so the caller re-provides it as a `&dyn AsyncReducer`),
+    /// a MODEL-ONLY `authz` (a scoped capability so a summarize-fold can call the model but CANNOT take
+    /// world-actions — SEC-F1), and an `executor` to serve that model call. Returns `Some(summary_bytes)`
+    /// if the reducer published `public/summary`, else `None` (it summarized elsewhere / didn't, or erred).
+    pub async fn fork_for_query(
         &self,
-        reducer: &dyn Reducer,
+        reducer: &dyn AsyncReducer,
         authz: &dyn Authorize,
         executor: &mut CompositeExecutor,
     ) -> Option<Vec<u8>> {
@@ -131,7 +149,9 @@ impl HostedSession {
             content_type: cdz_kernel::event::ContentType::report(),
             payload: cdz_kernel::effect::Payload::Inline(Vec::new().into()),
         };
-        fork.deliver(body, None, reducer, authz, executor).ok()?;
+        fork.deliver_async(body, None, reducer, authz, executor)
+            .await
+            .ok()?;
         // The summary the reducer published for observers (§4b tier-1). Cloned out before the fork drops.
         fork.kv().get(b"public/summary").map(|v| v.to_vec())
     }
@@ -168,13 +188,16 @@ impl AgentHost {
     /// treat that as "unknown session"); `Ok(Some(Ok(())))` a successful turn; `Ok(Some(Err(_)))` a
     /// kernel error from the loop. Kept as a nested result so "unknown id" is distinct from "the loop
     /// erred" — a host serving many sessions must tell those apart.
-    pub fn deliver(
+    pub async fn deliver(
         &mut self,
         id: &SessionId,
         body: EventBody,
         cause: Option<Hash>,
     ) -> Option<Result<(), KernelError>> {
-        self.sessions.get_mut(id).map(|s| s.deliver(body, cause))
+        match self.sessions.get_mut(id) {
+            Some(s) => Some(s.deliver(body, cause).await),
+            None => None,
+        }
     }
 
     /// Read-only access to a hosted session (for a status query / inspection). `None` = unknown id.
@@ -209,11 +232,12 @@ impl AgentHost {
     /// Fire due timers across ALL registered sessions at `now_ms` (a host scheduler tick). Returns the
     /// total number of timers fired. A real async host wakes only sessions with a due deadline; v0's
     /// synchronous sweep is correct and simple.
-    pub fn fire_due_timers(&mut self, now_ms: u64) -> usize {
-        self.sessions
-            .values_mut()
-            .map(|s| s.fire_due_timers(now_ms))
-            .sum()
+    pub async fn fire_due_timers(&mut self, now_ms: u64) -> usize {
+        let mut fired = 0;
+        for s in self.sessions.values_mut() {
+            fired += s.fire_due_timers(now_ms).await;
+        }
+        fired
     }
 
     /// The EARLIEST armed-timer deadline across all registered sessions, or `None` if no session has an
@@ -237,7 +261,7 @@ mod tests {
     };
     use cdz_kernel::event::{ContentType, EffectOutcome, Event};
     use cdz_kernel::kv::Kv;
-    use cdz_kernel::reducer::{FoldOutput, Reducer};
+    use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
 
     /// A tiny agent: on inbound "go" it asks the clock; when the time comes back it records "ran".
     struct ClockAgent;
@@ -281,7 +305,7 @@ mod tests {
         }]);
         HostedSession::genesis(
             Hash::of(b"clock-agent-v1"),
-            Box::new(ClockAgent),
+            Box::new(SyncAsAsync(ClockAgent)),
             Box::new(authz),
             executor,
         )
@@ -318,21 +342,21 @@ mod tests {
         }]);
         HostedSession::genesis(
             Hash::of(b"timer-agent-v1"),
-            Box::new(TimerAgent { deadline_ms }),
+            Box::new(SyncAsAsync(TimerAgent { deadline_ms })),
             Box::new(authz),
             CompositeExecutor::new(),
         )
     }
 
-    #[test]
-    fn host_spawns_and_drives_a_session_through_a_real_executor() {
+    #[tokio::test]
+    async fn host_spawns_and_drives_a_session_through_a_real_executor() {
         let mut host = AgentHost::new();
         let id = host.spawn(SessionId::new("agent-1"), now_host());
         assert!(host.contains(&id));
         assert_eq!(host.len(), 1);
 
         // Deliver an inbound event — the host drives the whole loop through the real ClockExecutor.
-        let outcome = host.deliver(&id, inbound_go(), None);
+        let outcome = host.deliver(&id, inbound_go(), None).await;
         assert!(
             matches!(outcome, Some(Ok(()))),
             "a known session runs a turn"
@@ -344,12 +368,13 @@ mod tests {
         assert_eq!(hosted.open_effects(), 0);
     }
 
-    #[test]
-    fn delivering_to_an_unknown_session_is_none_not_a_panic() {
+    #[tokio::test]
+    async fn delivering_to_an_unknown_session_is_none_not_a_panic() {
         let mut host = AgentHost::new();
         // No session registered → None (an unknown id is distinct from a loop error).
         assert!(host
             .deliver(&SessionId::new("nope"), inbound_go(), None)
+            .await
             .is_none());
         assert!(host.get(&SessionId::new("nope")).is_none());
     }
@@ -372,13 +397,13 @@ mod tests {
         assert!(host.remove(&SessionId::new("a")).is_none());
     }
 
-    #[test]
-    fn two_sessions_run_independently() {
+    #[tokio::test]
+    async fn two_sessions_run_independently() {
         let mut host = AgentHost::new();
         host.spawn(SessionId::new("a"), now_host());
         host.spawn(SessionId::new("b"), now_host());
         // Drive only "a".
-        host.deliver(&SessionId::new("a"), inbound_go(), None);
+        host.deliver(&SessionId::new("a"), inbound_go(), None).await;
         assert_eq!(
             host.get(&SessionId::new("a"))
                 .unwrap()
@@ -398,15 +423,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn hosted_session_fires_its_due_timer_on_a_tick() {
+    #[tokio::test]
+    async fn hosted_session_fires_its_due_timer_on_a_tick() {
         // A HostedSession arms a timer on inbound; the host's fire_due_timers wakes it once the clock
         // reaches the deadline (the reactive-timer path, driven by the host's scheduler tick, not an
         // executor).
         let mut host = AgentHost::new();
         let id = SessionId::new("timed");
         host.spawn(id.clone(), timer_host(1000));
-        host.deliver(&id, inbound_go(), None);
+        host.deliver(&id, inbound_go(), None).await;
 
         // Armed but not yet fired: one open obligation (the timer), not yet woken.
         let hosted = host.get(&id).unwrap();
@@ -415,15 +440,15 @@ mod tests {
         assert_eq!(hosted.session().kv().get(b"woke"), None);
 
         // A tick before the deadline fires nothing; a tick at the deadline fires it (wakes the reducer).
-        assert_eq!(host.fire_due_timers(999), 0);
-        assert_eq!(host.fire_due_timers(1000), 1);
+        assert_eq!(host.fire_due_timers(999).await, 0);
+        assert_eq!(host.fire_due_timers(1000).await, 1);
         let hosted = host.get(&id).unwrap();
         assert_eq!(hosted.session().kv().get(b"woke"), Some(&b"1"[..]));
         assert_eq!(hosted.open_effects(), 0);
     }
 
-    #[test]
-    fn host_fire_due_timers_sweeps_all_sessions_and_sums_fired() {
+    #[tokio::test]
+    async fn host_fire_due_timers_sweeps_all_sessions_and_sums_fired() {
         // The all-session scheduler sweep: fire_due_timers(now) fires EVERY session's due timers and
         // returns the total count. Two sessions with different deadlines → a tick between them fires only
         // the earlier one; a later tick fires the other. A session with no timer contributes 0 (not woken).
@@ -431,12 +456,14 @@ mod tests {
         host.spawn(SessionId::new("early"), timer_host(1000));
         host.spawn(SessionId::new("late"), timer_host(5000));
         host.spawn(SessionId::new("no-timer"), now_host()); // arms no timer
-        host.deliver(&SessionId::new("early"), inbound_go(), None);
-        host.deliver(&SessionId::new("late"), inbound_go(), None);
+        host.deliver(&SessionId::new("early"), inbound_go(), None)
+            .await;
+        host.deliver(&SessionId::new("late"), inbound_go(), None)
+            .await;
         // no-timer session gets no inbound → no armed timer.
 
         // Tick at 1000: only "early" is due → 1 fired total.
-        assert_eq!(host.fire_due_timers(1000), 1);
+        assert_eq!(host.fire_due_timers(1000).await, 1);
         assert_eq!(
             host.get(&SessionId::new("early"))
                 .unwrap()
@@ -456,7 +483,7 @@ mod tests {
         );
 
         // Tick at 5000: "late" now due (and "early" already fired) → 1 more fired.
-        assert_eq!(host.fire_due_timers(5000), 1);
+        assert_eq!(host.fire_due_timers(5000).await, 1);
         assert_eq!(
             host.get(&SessionId::new("late"))
                 .unwrap()
@@ -466,7 +493,7 @@ mod tests {
             Some(&b"1"[..])
         );
         // A further tick fires nothing (all timers settled).
-        assert_eq!(host.fire_due_timers(9999), 0);
+        assert_eq!(host.fire_due_timers(9999).await, 0);
     }
 
     /// A report-aware agent: on a normal inbound it records live work in KV; on a `report` inbound it
@@ -492,8 +519,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fork_for_query_summarizes_a_copy_without_touching_the_live_session() {
+    #[tokio::test]
+    async fn fork_for_query_summarizes_a_copy_without_touching_the_live_session() {
         // §4b tier-1: fork-for-query asks a COPY to summarize itself; the live session is untouched.
         let mut host = AgentHost::new();
         let id = SessionId::new("worker");
@@ -501,23 +528,30 @@ mod tests {
             id.clone(),
             HostedSession::genesis(
                 Hash::of(b"reporting-v1"),
-                Box::new(ReportingAgent),
+                Box::new(SyncAsAsync(ReportingAgent)),
                 Box::new(Authorizer::deny_all()), // the live session takes no effects here
                 CompositeExecutor::new(),
             ),
         );
         // Advance the live session so it has state to summarize (phase=working).
-        host.deliver(&id, inbound_go(), None);
+        host.deliver(&id, inbound_go(), None).await;
         let hosted = host.get(&id).unwrap();
         assert_eq!(hosted.session().kv().get(b"phase"), Some(&b"working"[..]));
         // Precondition: no summary on the LIVE session yet.
         assert_eq!(hosted.session().kv().get(b"public/summary"), None);
         let live_event_count = hosted.session().log().len();
 
-        // Fork-query it: caller supplies the same reducer + a model-only authz (deny_all here — the
-        // summarize fold takes no effects) + an executor. Returns the fork's published summary.
+        // Fork-for-query it: caller supplies the same reducer (wrapped SyncAsAsync — it's a sync reducer)
+        // + a model-only authz (deny_all here — the summarize fold takes no effects) + an executor.
+        // Returns the fork's published summary.
         let mut exec = CompositeExecutor::new();
-        let summary = hosted.fork_for_query(&ReportingAgent, &Authorizer::deny_all(), &mut exec);
+        let summary = hosted
+            .fork_for_query(
+                &SyncAsAsync(ReportingAgent),
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await;
         assert_eq!(
             summary.as_deref(),
             Some(&b"phase=working"[..]),

@@ -174,7 +174,7 @@ mod tests {
     use cdz_kernel::event::{ContentType, Event, EventBody};
     use cdz_kernel::hash::Hash;
     use cdz_kernel::kv::Kv;
-    use cdz_kernel::reducer::{FoldOutput, Reducer};
+    use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
 
     /// An agent that, on "go", publishes a status under `public/` and arms a far-future TIMER. A timer is
     /// a kernel-internal open obligation (it needs no executor), so it stays armed → the session reads
@@ -218,18 +218,18 @@ mod tests {
         }]);
         HostedSession::genesis(
             Hash::of(b"publish-time-v1"),
-            Box::new(PublishAndTime),
+            Box::new(SyncAsAsync(PublishAndTime)),
             Box::new(authz),
             executor,
         )
     }
 
-    #[test]
-    fn renders_active_session_with_published_view_as_json() {
+    #[tokio::test]
+    async fn renders_active_session_with_published_view_as_json() {
         let mut host = AgentHost::new();
         let id = SessionId::new("agent-1");
         host.spawn(id.clone(), timer_host());
-        host.deliver(&id, inbound_go(), None);
+        host.deliver(&id, inbound_go(), None).await;
 
         let json = host_session_status_json(&host, &id, Some(1000), DEFAULT_STALL_AFTER_MS)
             .expect("session exists");
@@ -249,8 +249,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_faulted_session_reports_errored_with_the_reason() {
+    #[tokio::test]
+    async fn a_faulted_session_reports_errored_with_the_reason() {
         // A reducer whose fold FAILS (FoldOutput::failed — the Rust analogue of a wasm guest trap) makes
         // the kernel record a FoldFailed log event (§17: captured, never a panic). The kernel's structural
         // `state` has no errored variant, so the host surfaces `errored:true` + the reason.
@@ -271,12 +271,12 @@ mod tests {
             id.clone(),
             HostedSession::genesis(
                 Hash::of(b"faulter"),
-                Box::new(Faulter),
+                Box::new(SyncAsAsync(Faulter)),
                 Box::new(Authorizer::deny_all()),
                 executor,
             ),
         );
-        host.deliver(&id, inbound_go(), None);
+        host.deliver(&id, inbound_go(), None).await;
 
         let json = host_session_status_json(&host, &id, Some(0), DEFAULT_STALL_AFTER_MS).unwrap();
         assert!(json.contains("\"errored\":true"), "{json}");
@@ -310,8 +310,8 @@ mod tests {
         assert_eq!(escape("plain"), "\"plain\"");
     }
 
-    #[test]
-    fn a_quiescent_session_reports_no_in_flight() {
+    #[tokio::test]
+    async fn a_quiescent_session_reports_no_in_flight() {
         // Drive a clock agent to completion → Quiescent, empty in_flight.
         struct ClockOnce;
         impl Reducer for ClockOnce {
@@ -340,12 +340,12 @@ mod tests {
             id.clone(),
             HostedSession::genesis(
                 Hash::of(b"clock-once"),
-                Box::new(ClockOnce),
+                Box::new(SyncAsAsync(ClockOnce)),
                 Box::new(authz),
                 executor,
             ),
         );
-        host.deliver(&id, inbound_go(), None);
+        host.deliver(&id, inbound_go(), None).await;
 
         let json = host_session_status_json(&host, &id, Some(0), DEFAULT_STALL_AFTER_MS).unwrap();
         assert!(json.contains("\"state\":\"Quiescent\""), "{json}");

@@ -19,7 +19,7 @@ use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{FoldOutput, Reducer};
+use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
 use cdz_kernel::wasm_host::ComponentAuthorizer;
 
 /// Load the lifted Cedar policy component the CI job built. `None` ONLY when the env var is UNSET (a
@@ -92,8 +92,8 @@ impl Reducer for PolicyProbe {
     }
 }
 
-#[test]
-fn a_real_agent_is_gated_by_a_real_cedar_decision() {
+#[tokio::test]
+async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
     let Some(bytes) = policy_component_bytes() else {
         eprintln!(
             "SKIP cedar_authz_e2e: CEDAR_POLICY_COMPONENT unset (build the cedar-policy-guest component \
@@ -109,12 +109,13 @@ fn a_real_agent_is_gated_by_a_real_cedar_decision() {
     // PERMIT case: a Model call to the allow-listed id → the policy permits → the executor runs → the
     // result folds back → the agent records "permitted".
     {
-        let reducer = PolicyProbe;
+        let reducer = SyncAsAsync(PolicyProbe);
         let mut exec = CompositeExecutor::new()
             .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
         let mut session = Session::genesis(Hash::of(b"cedar-permit-v1"));
         session
-            .deliver(inbound("model-ok"), None, &reducer, &authz, &mut exec)
+            .deliver_async(inbound("model-ok"), None, &reducer, &authz, &mut exec)
+            .await
             .unwrap();
         assert_eq!(
             session.kv().get(b"permitted"),
@@ -132,14 +133,15 @@ fn a_real_agent_is_gated_by_a_real_cedar_decision() {
     // DENY case: an Http call to the IMDS host the policy FORBIDs → the Cedar decision denies at the gate
     // → the executor is never consulted → an AuthzDenied is on the log + the agent is not "permitted".
     {
-        let reducer = PolicyProbe;
+        let reducer = SyncAsAsync(PolicyProbe);
         // A Model executor is registered, but the Http effect is denied before any executor runs; an
         // Http executor isn't even needed to prove the deny (the gate stops it first).
         let mut exec = CompositeExecutor::new()
             .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
         let mut session = Session::genesis(Hash::of(b"cedar-deny-v1"));
         session
-            .deliver(inbound("http-imds"), None, &reducer, &authz, &mut exec)
+            .deliver_async(inbound("http-imds"), None, &reducer, &authz, &mut exec)
+            .await
             .unwrap();
         assert_ne!(
             session.kv().get(b"permitted"),

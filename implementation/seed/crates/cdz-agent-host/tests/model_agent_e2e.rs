@@ -21,7 +21,7 @@ use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{FoldOutput, Reducer};
+use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
 
 /// A stub model transport: returns a canned completion, so the agent loop is hermetic. The real Bedrock
 /// transport implements this same trait behind `live-net`.
@@ -84,15 +84,22 @@ fn model_cap() -> Authorizer {
     }])
 }
 
-#[test]
-fn agent_loop_runs_end_to_end_through_the_model_executor() {
+#[tokio::test]
+async fn agent_loop_runs_end_to_end_through_the_model_executor() {
     let reducer = ModelAgent;
     let mut exec =
         CompositeExecutor::new().with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
     let mut session = Session::genesis(Hash::of(b"model-agent-v1"));
 
     session
-        .deliver(inbound_go(), None, &reducer, &model_cap(), &mut exec)
+        .deliver_async(
+            inbound_go(),
+            None,
+            &SyncAsAsync(ModelAgent),
+            &model_cap(),
+            &mut exec,
+        )
+        .await
         .unwrap();
 
     // The loop closed: the agent prompted the model, the executor invoked the transport, and the
@@ -116,8 +123,8 @@ fn agent_loop_runs_end_to_end_through_the_model_executor() {
     assert_eq!(replayed.snapshot().kv_root, session.snapshot().kv_root);
 }
 
-#[test]
-fn one_composite_routes_both_now_and_model_for_one_agent() {
+#[tokio::test]
+async fn one_composite_routes_both_now_and_model_for_one_agent() {
     // A real agent both reads the clock AND calls a model — the CompositeExecutor routes each kind to
     // its own real executor. This proves the compose path v-agent-harness confirmed (with(kind, exec)).
     struct ClockThenModel;
@@ -178,7 +185,14 @@ fn one_composite_routes_both_now_and_model_for_one_agent() {
     let mut session = Session::genesis(Hash::of(b"clock-then-model-v1"));
 
     session
-        .deliver(inbound_go(), None, &ClockThenModel, &authz, &mut exec)
+        .deliver_async(
+            inbound_go(),
+            None,
+            &SyncAsAsync(ClockThenModel),
+            &authz,
+            &mut exec,
+        )
+        .await
         .unwrap();
 
     // Both kinds routed to their own real executor across the multi-step loop: a real recorded time,
@@ -192,8 +206,8 @@ fn one_composite_routes_both_now_and_model_for_one_agent() {
     assert_eq!(session.open_effects(), 0);
 }
 
-#[test]
-fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
+#[tokio::test]
+async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
     // Deny-by-default (SEC-F1): the grant is for `claude-test`; an agent prompting a DIFFERENT model id
     // is denied at the gate — the transport (a paid call) is never reached. A transport that panics if
     // called proves the executor was never consulted.
@@ -222,13 +236,14 @@ fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
         CompositeExecutor::new().with(EffectKind::Model, Box::new(ModelExecutor::new(MustNotCall)));
     let mut session = Session::genesis(Hash::of(b"wrong-model-v1"));
     session
-        .deliver(
+        .deliver_async(
             inbound_go(),
             None,
-            &WrongModelAgent,
+            &SyncAsAsync(WrongModelAgent),
             &model_cap(),
             &mut exec,
         )
+        .await
         .unwrap();
 
     // Denied at the gate → a denial is on the log and nothing left open.
