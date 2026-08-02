@@ -7157,14 +7157,9 @@ fn rustc_host_call_no_arg_int_result_emits_a_canonical_shim_call() {
         rc.contains("crate::__cdz_host_env_width()"),
         "a capitalized effect kebab-normalizes in the shim ident (Env → env):\n{rc}"
     );
-
-    // A host op WITH ARGUMENTS is a later increment — it declines cleanly (not a miscompile).
-    let with_args = "(module m (effect kv (op get (-> Int64 Int64))) \
-        (def (main) (host (kv) (kv.get 5))) (export main))";
-    assert!(
-        compile_rust_result(with_args).is_err(),
-        "a host call with arguments declines (later increment):\n{with_args:?}"
-    );
+    // (A host op WITH integer ARGUMENTS now emits too — see
+    // rustc_host_call_with_int_arg_emits_left_to_right_bound_args (H3); the earlier
+    // "with-args declines" sub-assertion here was retired when H3 landed.)
 }
 
 #[test]
@@ -7197,5 +7192,29 @@ fn rustc_host_call_bool_result_reads_the_shim_i64_truthiness() {
     assert!(
         rs.contains("crate::__cdz_host_param_mirror() != 0"),
         "a Bool-result host op reads the shim's i64 truthiness (!= 0):\n{rs}"
+    );
+}
+
+#[test]
+fn rustc_host_call_with_int_arg_emits_left_to_right_bound_args() {
+    // H3 host-call emit: a delegated host op WITH an integer argument (`out.put -> Int64 Int64`, arg a guest
+    // arithmetic expr) emits the arg EVALUATED and passed to the shim. Args bind to `let __ha<i>` in source
+    // LEFT-TO-RIGHT order (the host-call sequence the oracle records — the arg values cross the boundary but
+    // are not compared; only the op name is), then `crate::__cdz_host_<key>(__ha0, …)`. Marshalled `as i64`
+    // to the shim's i64 param. Pins the arg-eval + call shape.
+    let src = "(module m (effect out (op put (-> Int64 Int64))) \
+        (def (main (: n Int64)) (host (out) (out.put (* (+ n 1) 10)))) (export main))";
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("let __ha0 = ") && rs.contains("crate::__cdz_host_out_put(__ha0)"),
+        "a host call with an int arg binds the arg (__ha0) then passes it to the shim:\n{rs}"
+    );
+
+    // A host op with a NON-INTEGER arg (a String) is a later increment — declines cleanly.
+    let strarg = "(module m (effect log (op emit (-> String Int64))) \
+        (def (main) (host (log) (log.emit \"hi\"))) (export main))";
+    assert!(
+        compile_rust_result(strarg).is_err(),
+        "a host call with a non-integer (String) arg declines (later increment):\n{strarg:?}"
     );
 }
