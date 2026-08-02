@@ -27,8 +27,28 @@ test("a plain scalar classifies as plain friendly text", () => {
   assert.deepEqual(classifyFormula('(: "hi" String)'), { kind: "plain", text: "hi" });
 });
 
-test("a quantity classifies as value + unit", () => {
+test("a legacy `(quantity …)` shape classifies as value + unit", () => {
   assert.deepEqual(classifyFormula("(: (quantity 2192 meter) T)"), { kind: "quantity", value: "2192", unit: "meter" });
+});
+
+test("a REAL runtime quantity `(Qty.of value unit)` classifies as value + unit (not unrenderable)", () => {
+  // The runtime emits the `Qty.of` shape (spec 18-units case 72); a formula cell computing a quantity must
+  // classify as `quantity` (value + concise unit), NOT fall through to `unrenderable` (the pre-fix bug —
+  // formula.ts matched only the synthetic `(quantity …)` head the runtime never produces).
+  assert.deepEqual(
+    classifyFormula('(: (Qty.of 5 (Unit.base #"meter")) T)'),
+    { kind: "quantity", value: "5", unit: "meter" },
+  );
+  assert.deepEqual(
+    classifyFormula('(: (Qty.of 5/2 (Unit.base #"second")) T)'),
+    { kind: "quantity", value: "5/2", unit: "second" },
+  );
+  assert.deepEqual(
+    classifyFormula('(: (Qty.of 9 (Unit./ (Unit.base #"meter") (Unit.^ (Unit.base #"second") 2))) T)'),
+    { kind: "quantity", value: "9", unit: "meter/(second^2)" },
+  );
+  // a dimensionless quantity has an empty unit (renders as just its value)
+  assert.deepEqual(classifyFormula("(: (Qty.of 5 Unit.one) T)"), { kind: "quantity", value: "5", unit: "" });
 });
 
 test("a compound value surfaces the gap (unrenderable) — NOT a faked formula", () => {
