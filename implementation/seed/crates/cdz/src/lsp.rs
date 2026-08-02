@@ -4022,18 +4022,33 @@ mod tests {
     }
 
     #[test]
-    fn hover_on_a_cursor_inside_a_multibyte_char_does_not_panic() {
-        // The LSP analogue of the cdz-type-at mid-multibyte-cursor pin (#1173): an editor may send a
-        // (line, character) whose UTF-16 column lands "inside" a multibyte char's units. `position_to_byte`
-        // must map it to a CHAR-BOUNDARY byte offset (it advances by `len_utf16` per char), so no downstream
-        // `&text[off..]` slice can split a multibyte sequence and panic. Drive hover with a column that
-        // targets the interior of `café`'s `é` and assert it returns (Some or None) without a Rust panic.
+    fn hover_on_a_column_at_and_past_a_multibyte_char_does_not_panic() {
+        // The LSP analogue of the cdz-type-at multibyte-cursor pin (#1173): a column AT and PAST a
+        // multibyte char must map to a char-boundary byte offset (`position_to_byte` advances by
+        // `len_utf16` per char), so no downstream `&text[off..]` slice can split a UTF-8 sequence and
+        // panic. `é` is a BMP char (2 UTF-8 bytes, 1 UTF-16 unit), so an LSP client can only address a
+        // column AT or AFTER it — not inside it (that needs a surrogate pair; see the astral test below).
         let text = "def café = 42";
-        // `café` starts at col 4; `é` is the char at UTF-16 col 7. A column pointing at/just past it must
-        // still resolve to a char boundary — total, never a panic.
+        // `café` starts at col 4; `é` occupies UTF-16 col 7. Columns at/after it stay total, never a panic.
         let _ = hover_at(text, true, Position::new(0, 7));
         let _ = hover_at(text, true, Position::new(0, 8));
         // (Reaching this line at all is the assertion: neither call unwound a panic.)
+    }
+
+    #[test]
+    fn hover_on_a_column_inside_an_astral_surrogate_pair_does_not_panic() {
+        // The genuine "column inside a scalar" edge Copilot flagged (PR #1207): only a NON-BMP char
+        // (`𝟙`, U+1D7D9 — 4 UTF-8 bytes, 2 UTF-16 code units = a surrogate pair) has a UTF-16 column
+        // strictly INSIDE it that an LSP client can send. `position_to_byte` counts UTF-16 units per char,
+        // so a column landing between the pair's two units must still resolve to a CHAR BOUNDARY (the
+        // start or end of the scalar), never a byte splitting the 4-byte sequence — no `&text[off..]`
+        // panic. The astral char sits in a `///` doc comment (accepted by the front-end; `cdz check`
+        // passes). The `𝟙` starts at UTF-16 col 8 and spans [8, 10); col 9 is strictly inside it.
+        let text = "/// doc 𝟙 more\ndef answer = 42";
+        let _ = hover_at(text, true, Position::new(0, 9)); // inside the surrogate pair
+        let _ = hover_at(text, true, Position::new(0, 8)); // at the pair start
+        let _ = hover_at(text, true, Position::new(0, 10)); // just past the pair
+        // (Reaching this line at all is the assertion: no call unwound a panic on a mid-surrogate column.)
     }
 
     #[test]
