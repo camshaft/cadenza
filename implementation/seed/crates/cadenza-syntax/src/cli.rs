@@ -620,6 +620,22 @@ fn would_drop_comments(input: &[u8], output: &[u8], lexis: CommentLexis) -> Opti
     }
 }
 
+/// Whether a target's formatted output should be written straight to stdout (the disposition shared by
+/// `run_fmt` and `run_normalize`), given whether it came from stdin and the mode flags.
+///
+/// This is the exact locus of a fixed bug: `--stdout` is an unconditional "emit the formatted program"
+/// mode, and reading stdin has no file to edit so it ALSO emits to stdout by default — BUT only when
+/// NOT inspecting. `--check`/`--diff` are no-write INSPECTION modes, and piping into `--check` is a
+/// natural CI shape (`cat f | cdz fmt - --check` = "is this already formatted?"). The old code gated the
+/// stdin emit on `spec.path.is_none()` ALONE, evaluated BEFORE the check/diff branches, so `fmt - --check`
+/// printed the formatted text and exited 0 even on UNFORMATTED stdin — a silent false-pass defeating the
+/// CI contract. So a stdin `--check`/`--diff` must FALL THROUGH to the inspection branches (labelled
+/// `<stdin>`), i.e. NOT emit here. `--stdout` is rejected up front as mutually exclusive with
+/// `--check`/`--diff`, so it never co-occurs with them; it always emits.
+fn emits_to_stdout(from_stdin: bool, stdout: bool, check: bool, diff: bool) -> bool {
+    stdout || (from_stdin && !check && !diff)
+}
+
 fn run_fmt(args: &FmtArgs) -> Result<bool, String> {
     // `--check`/`--diff` inspect without writing; `--stdout` writes elsewhere. They are exclusive: a
     // single run has one output disposition, so an ambiguous combination is rejected up front rather
@@ -668,17 +684,18 @@ fn run_fmt(args: &FmtArgs) -> Result<bool, String> {
             Err(e) => return Err(with_path(&spec.path, &e.to_string())),
         };
 
-        // Emit to stdout — the EXPLICIT `--stdout` mode, and the IMPLICIT mode when reading stdin
-        // (there is no file to edit). Unlike the write/diff/check modes below, this always prints the
-        // formatted text, even when the file was already canonical: `--stdout` is a "give me the
+        // Emit to stdout — the EXPLICIT `--stdout` mode, and the IMPLICIT mode when reading stdin (see
+        // `emits_to_stdout`, which also carries the `fmt - --check` false-pass fix). Always prints the
+        // formatted text, even when already canonical: `--stdout`/implicit-stdin is a "give me the
         // formatted program" request (like `convert`), not a conditional edit.
-        if args.stdout || spec.path.is_none() {
+        if emits_to_stdout(spec.path.is_none(), args.stdout, args.check, args.diff) {
             std::io::stdout()
                 .write_all(&formatted)
                 .map_err(|e| format!("writing stdout: {e}"))?;
             continue;
         }
-        let path = spec.path.as_deref().expect("a non-stdin target has a path");
+        // The label for messages/diffs: a real path, or `<stdin>` for a piped `--check`/`--diff`.
+        let path = spec.path.as_deref().unwrap_or("<stdin>");
 
         if formatted == input {
             // Already canonical — nothing to do in the write/diff/check modes (no diff, no write, no
@@ -687,8 +704,8 @@ fn run_fmt(args: &FmtArgs) -> Result<bool, String> {
         }
 
         if args.check {
-            // The file WOULD change — report it and remember to fail (but keep scanning the rest, so
-            // one `--check` run lists every unformatted file).
+            // The input WOULD change — report it and remember to fail (but keep scanning the rest, so
+            // one `--check` run lists every unformatted file; a piped stdin reports as `<stdin>`).
             all_formatted = false;
             println!("not formatted: {path}");
             continue;
@@ -779,14 +796,17 @@ fn run_normalize(args: &NormalizeArgs) -> Result<bool, String> {
             normalized.push(b'\n');
         }
 
-        // stdout — the explicit `--stdout` mode and the implicit mode for stdin input. Always emits.
-        if args.stdout || spec.path.is_none() {
+        // stdout — the explicit `--stdout` mode and the implicit mode for stdin input. Shares
+        // `run_fmt`'s `emits_to_stdout` decision, so `normalize - --check` piped from CI exits non-zero
+        // on a would-normalize input instead of silently printing + exiting 0 (the same false-pass fix).
+        if emits_to_stdout(spec.path.is_none(), args.stdout, args.check, args.diff) {
             std::io::stdout()
                 .write_all(&normalized)
                 .map_err(|e| format!("writing stdout: {e}"))?;
             continue;
         }
-        let path = spec.path.as_deref().expect("a non-stdin target has a path");
+        // The label for messages/diffs: a real path, or `<stdin>` for a piped `--check`/`--diff`.
+        let path = spec.path.as_deref().unwrap_or("<stdin>");
 
         // Nothing rewritten → the file is already normalized. (Guard on the rewrite COUNT, not a byte
         // compare: a canonical reprint of an untransformed tree can still differ from the original
@@ -1658,6 +1678,57 @@ mod tests {
             diff,
             stdout,
         }
+    }
+
+    #[test]
+    fn emits_to_stdout_honors_check_and_diff_on_stdin() {
+        // The disposition predicate shared by `run_fmt`/`run_normalize`, pinning the `fmt - --check`
+        // false-pass fix (v-cdz-tooling report): a stdin `--check`/`--diff` must NOT emit to stdout —
+        // it must fall through to the inspection branches so an unformatted pipe exits non-zero, instead
+        // of the old behavior that printed + returned success. Table over (from_stdin, stdout, check, diff):
+
+        // --stdout ALWAYS emits (it's the explicit "give me the formatted program" mode). It's rejected
+        // up front as mutually exclusive with check/diff, so those are false alongside it here.
+        assert!(
+            emits_to_stdout(false, true, false, false),
+            "--stdout on a file emits"
+        );
+        assert!(
+            emits_to_stdout(true, true, false, false),
+            "--stdout on stdin emits"
+        );
+
+        // Plain stdin (no mode flag) emits to stdout — the implicit "no file to edit" disposition.
+        assert!(
+            emits_to_stdout(true, false, false, false),
+            "bare stdin emits to stdout"
+        );
+
+        // THE FIX: stdin + --check / stdin + --diff must NOT emit — they inspect (the regression case
+        // that used to print + exit 0 on unformatted input).
+        assert!(
+            !emits_to_stdout(true, false, true, false),
+            "stdin + --check does NOT emit (inspects)"
+        );
+        assert!(
+            !emits_to_stdout(true, false, false, true),
+            "stdin + --diff does NOT emit (inspects)"
+        );
+
+        // A FILE never auto-emits (it edits in place / checks / diffs against the path), regardless of
+        // check/diff — only explicit --stdout redirects a file to stdout.
+        assert!(
+            !emits_to_stdout(false, false, false, false),
+            "a file edits in place, no stdout"
+        );
+        assert!(
+            !emits_to_stdout(false, false, true, false),
+            "a file + --check inspects, no stdout"
+        );
+        assert!(
+            !emits_to_stdout(false, false, false, true),
+            "a file + --diff inspects, no stdout"
+        );
     }
 
     #[test]
