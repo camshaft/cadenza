@@ -35,6 +35,7 @@ pass	@requires over a MAP argument walks the CHAMP at body entry
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	ACKERMANN evaluates — a recursive call in the ARGUMENT of a recursive call (not primitive-recursive)
 pass	a 1100-element prepend-built runtime list reads every index through a multi-level RRB front-spine
+pass	a 200-element runtime Set of BYTES resolves every member through a multi-level CHAMP over the blessed byte order
 pass	a 200-element runtime Set resolves every member through a multi-level CHAMP trie and rejects non-members
 pass	a Map keyed by a (Bytes, Int64) tuple is looked up by content through the compound key descent
 pass	a Set of (Int64, Bytes) tuples orders by int then Bytes lexicographically and dedups by content
