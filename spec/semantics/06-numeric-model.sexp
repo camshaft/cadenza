@@ -3929,6 +3929,31 @@
   (call   main (: 7 Int64))
   (output (: 0 Int64)))
 
+(case "the multiply-by-zero annihilator does not swallow a COMPILE-PROVABLE overflow in the discarded operand"
+  (doc    "The COMPILE-TIME companion of the runtime annihilator-discard cases above: when the discarded
+           operand is a CONSTANT whose evaluation is a compile-provable OVERFLOW, the `x * 0 → 0` fold must
+           NOT swallow it — the operand is still evaluated (at compile time here), so the overflow trap is
+           OBSERVED and the compile must reject CDZ0304, exactly as the bare overflow would. `(* (* (:
+           UInt64.max UInt64) (: 2 UInt64)) (: 0 UInt64))`: the inner `(* UInt64.max 2)` = 2^65-2 overflows
+           the u64 width — a genuine compile-provable trap. A fold that applied `x*0 → 0` BEFORE checking the
+           discarded operand would return a trap-free 0 and silently drop the overflow (the annihilator may
+           drop the operand's VALUE, never its evaluation/trap — core-semantics.md §Partial Operations Have A
+           Defined Outcome). This is the CDZ0304 (ConstTrap — the trap IS observed) twin of the runtime
+           `(* (/ 10 z) 0)` div-by-zero case; a discarded operand the compiler proves DEAD would instead earn
+           CDZ0305 (DeadTrap), but an annihilator's operand is evaluated first, so the trap is live → CDZ0304.
+           The trap-free control `(* (* 100 2) 0)` = 0 (no overflow → annihilates) is pinned just below.")
+  (input  (do (def (main) (* (* (: 18446744073709551615 UInt64) (: 2 UInt64)) (: 0 UInt64))) (export main)))
+  (error  CDZ0304))
+
+(case "the multiply-by-zero annihilator folds to zero when the discarded constant operand is total"
+  (doc    "The trap-free control for the compile-provable-overflow case above: `(* (* (: 100 UInt64) (: 2
+           UInt64)) (: 0 UInt64))` — the inner `(* 100 2)` = 200 does NOT overflow, so the discarded operand
+           is total and the `x * 0` annihilator applies, folding the whole expression to a trap-free 0. Pins
+           that the overflow-preservation above does not over-suppress the annihilator when the discarded
+           operand cannot trap — the dual of the trapping case, mirroring the runtime `(* z 0)` = 0 control.")
+  (input  (do (def (main) (* (* (: 100 UInt64) (: 2 UInt64)) (: 0 UInt64))) (export main)))
+  (output (: 0 UInt64)))
+
 (case "multiply-by-zero is NOT an annihilator for FLOAT — nan * 0.0 is nan, not 0.0"
   (doc    "The `x * 0` annihilator above folds to the constant 0 for INTEGER `x` (the operand is discarded,
            value-wise). For FLOAT it MUST NOT: `x * 0.0` is 0.0 only for a FINITE `x` — `nan * 0.0` = nan

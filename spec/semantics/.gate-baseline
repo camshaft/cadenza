@@ -5492,3 +5492,5 @@ pass	two mutually-recursive functions instantiate one generic chooser at differe
 pass	a CONSTANT match on the Int64.min/max boundary decides its literal patterns exactly
 pass	a shared CHAMP map survives per-level path-copied inserts that are read or dropped
 pass	a shared runtime rope survives per-level extension ropes that are read or dropped
+pass	the multiply-by-zero annihilator does not swallow a COMPILE-PROVABLE overflow in the discarded operand
+pass	the multiply-by-zero annihilator folds to zero when the discarded constant operand is total
