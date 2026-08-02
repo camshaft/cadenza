@@ -138,10 +138,13 @@ def a-degenerate-roll-range-is-the-single-point() =
 def seed-state-normalizes-into-a-valid-nonzero-minstd-state() =
   // `seed-state` is the THIRD inline arithmetic def (with lcg-next/roll) and was the last one unpinned — the
   // determinism/seeds-differ tests feed it only small non-zero seeds (1,2,7,42), where its exact value never
-  // matters. Its ACTUAL job is to map ANY Int64 seed into a valid non-zero MINSTD state: zero is MINSTD's dead
-  // fixed point (lcg-next(0)=0 forever → every "random" draw identical), so seed-state must never emit 0.
-  //   • seed-state(0) = (0 % 2147483646) + 1 = 1 — pins the `+1` (drop it → 0, the dead state). A zero seed is a
-  //     real slider value; without the +1 the snowflake would silently collapse to a degenerate single shape.
+  // matters. Its job is to map a seed in the UI's non-negative range (the `seed` slider is [1,200]) into a valid
+  // non-zero MINSTD state: zero is MINSTD's dead fixed point (lcg-next(0)=0 forever → every "random" draw
+  // identical), so seed-state must never emit 0 on that domain. (Negatives are out of the slider's range and NOT
+  // normalized — Cadenza `%` keeps the dividend's sign, so e.g. seed-state(-1) = (-1)+1 = 0; a negative seed is
+  // never fed here. If the domain ever widened to include negatives, switch to a Euclidean-mod normalization.)
+  //   • seed-state(0) = (0 % 2147483646) + 1 = 1 — the boundary probe of the `+1` (drop it → 0, the dead state);
+  //     without the +1 a seed that reduces to 0 would silently collapse the snowflake to a degenerate single shape.
   //   • seed-state(2147483646) = (0) + 1 = 1 — a modulus-MULTIPLE also lands on 1, pinning the reduction modulus
   //     2147483646 (a wrong 2147483647 gives 2147483647, itself an invalid ≥-modulus state).
   if seed-state(0 : Int64) == (1 : Int64) then
