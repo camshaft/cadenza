@@ -463,4 +463,33 @@ mod tests {
         );
         assert!(dbg.contains("D0X"), "non-secret fields still shown");
     }
+
+    #[test]
+    fn redact_never_leaks_a_malformed_secret_body() {
+        // PR #393's invariant is that ANY secret shape is redacted, not just a well-formed `xoxb-…`.
+        // The fallback arms (no hyphen, empty prefix, no dash) are the security-critical ones — a
+        // refactor that regressed them would leak a body-with-no-prefix. Pin that the body NEVER
+        // appears for every degenerate shape (only a well-formed prefix is ever kept).
+        let t = SlackTokens {
+            bot_token: "xoxbNOHYPHENSECRET".into(), // no '-' → whole thing is the "body"
+            app_token: "-LEADINGHYPHENSECRET".into(), // empty prefix → not kept
+        };
+        let dbg = format!("{t:?}");
+        assert!(
+            !dbg.contains("NOHYPHENSECRET") && !dbg.contains("LEADINGHYPHENSECRET"),
+            "no malformed-token body may leak: {dbg}"
+        );
+        assert!(
+            dbg.contains("***"),
+            "a malformed secret still redacts to ***: {dbg}"
+        );
+
+        // An EMPTY secret is distinguishable as `<unset>` (not a leak — there's nothing to hide) so an
+        // operator can tell "not configured" from "configured but redacted".
+        let empty = SlackTokens {
+            bot_token: String::new(),
+            app_token: String::new(),
+        };
+        assert!(format!("{empty:?}").contains("<unset>"));
+    }
 }
