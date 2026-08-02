@@ -66077,6 +66077,65 @@ mod stage1 {
     }
 
     #[test]
+    fn check_unknown_units_scans_only_user_nodes_not_the_prelude() {
+        // REGRESSION (perf): `infer::check_unknown_units` runs at EVERY compile/check, scanning every node
+        // for a `(Unit.of …)` head (`resolved_ref` + `meta_apply_of`) — but it scanned the FULL structure,
+        // which appends the O(prelude) built-in bindings + every evaluator-synthesized β-copy. On a large
+        // unit-FREE real program (the whole ML compiler uses no units) this pass had inclusive-time
+        // dominance (~6% of `emit-db.cdz`'s compile) walking built-in nodes for nothing. FIX: bound the scan
+        // to `user_node_count` — a genuine unknown-unit fault can only anchor at a USER node (a prelude /
+        // synth anchor has no span → nulled by `sanitize_origin`; a β-copy relocates to its user origin,
+        // already in-range), so the built-in bulk is never a source of a reportable fault.
+        //
+        // The noise-free signal is `CHECK_UNKNOWN_UNITS_SCAN_NODES`: it must equal exactly the program's
+        // USER node count, never the (larger) full structure length. Correctness (an `(Unit.of #"zorks")`
+        // still reports CDZ0201 with a did-you-mean) is pinned by the units unit + corpus tests, and
+        // re-verified here.
+        fn scan_and_user_count(src: &str) -> (u64, u64) {
+            crate::host::run_with_compiler_stack(|| {
+                crate::db::CHECK_UNKNOWN_UNITS_SCAN_NODES.with(|c| c.set(0));
+                let mut db = crate::db::Db::load(parse(src));
+                let _ = crate::diagnostics(&mut db);
+                let user = db.user_node_count() as u64;
+                let scanned = crate::db::CHECK_UNKNOWN_UNITS_SCAN_NODES.with(|c| c.get());
+                (scanned, user)
+            })
+        }
+        // A large unit-free program: its full structure is user + a big prelude append. The scan must cover
+        // ONLY the user nodes.
+        let unit_free: String = {
+            let decls: String = (0..50)
+                .map(|i| format!("(type T{i} (Mk{i} Int64))"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("(module m {decls} (def (main) 0) (export main))")
+        };
+        let (scanned, user) = scan_and_user_count(&unit_free);
+        assert_eq!(
+            scanned, user,
+            "check_unknown_units must scan EXACTLY the user nodes ({user}), not the full structure — the \
+             prelude/synth bulk carries no reportable unknown-unit fault, so it is skipped (was {scanned})"
+        );
+        assert!(
+            user > 0,
+            "the program must have user nodes to make the bound meaningful"
+        );
+
+        // Correctness re-verify: a genuine unknown unit STILL surfaces CDZ0201 (the bound must not drop a
+        // real user-node fault). The bad `Unit.of` is a user node, in-range of the bounded scan.
+        let bad = "(module m (def (main) (Qty.of 5 (Unit.of #\"zorks\"))) (export main))";
+        let diags = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(bad)))
+        });
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("unknown unit `zorks`")),
+            "a user `(Unit.of #\"zorks\")` must still report the unknown-unit CDZ0201 under the bounded scan"
+        );
+    }
+
+    #[test]
     fn a_wide_arithmetic_body_partitions_cse_candidates_in_bounded_time() {
         // REGRESSION (perf): the wasm CSE class-partition (`collect_cse_candidate_groups`) grouped
         // candidates into value-equivalence classes by an ALL-PAIRS `core_eq` scan ("a body has few CSE
