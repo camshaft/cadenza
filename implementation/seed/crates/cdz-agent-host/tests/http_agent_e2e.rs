@@ -15,7 +15,7 @@ use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{FoldOutput, Reducer};
+use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
 
 /// A stub HTTP transport: returns a canned response body so the fetch loop is hermetic. The real client
 /// implements this same trait behind `live-net`.
@@ -72,15 +72,22 @@ fn host_cap() -> Authorizer {
     }])
 }
 
-#[test]
-fn agent_loop_runs_end_to_end_through_the_http_executor() {
+#[tokio::test]
+async fn agent_loop_runs_end_to_end_through_the_http_executor() {
     let reducer = FetchAgent;
     let mut exec =
         CompositeExecutor::new().with(EffectKind::Http, Box::new(HttpExecutor::new(StubHttp)));
     let mut session = Session::genesis(Hash::of(b"fetch-agent-v1"));
 
     session
-        .deliver(inbound_go(), None, &reducer, &host_cap(), &mut exec)
+        .deliver_async(
+            inbound_go(),
+            None,
+            &SyncAsAsync(FetchAgent),
+            &host_cap(),
+            &mut exec,
+        )
+        .await
         .unwrap();
 
     // The loop closed: the agent fetched, the executor performed the request, and the response body
@@ -98,8 +105,8 @@ fn agent_loop_runs_end_to_end_through_the_http_executor() {
     assert_eq!(replayed.snapshot().kv_root, session.snapshot().kv_root);
 }
 
-#[test]
-fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
+#[tokio::test]
+async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
     // Deny-by-default / SEC-F1: the grant is for `ok.host`; an agent fetching a DIFFERENT host (an
     // exfil/SSRF attempt) is denied at the gate — the client (a real network call) is never reached. A
     // transport that panics if called proves the executor was never consulted.
@@ -128,7 +135,14 @@ fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
         CompositeExecutor::new().with(EffectKind::Http, Box::new(HttpExecutor::new(MustNotCall)));
     let mut session = Session::genesis(Hash::of(b"exfil-agent-v1"));
     session
-        .deliver(inbound_go(), None, &ExfilAgent, &host_cap(), &mut exec)
+        .deliver_async(
+            inbound_go(),
+            None,
+            &SyncAsAsync(ExfilAgent),
+            &host_cap(),
+            &mut exec,
+        )
+        .await
         .unwrap();
 
     // Denied at the gate → a denial is on the log and nothing left open.

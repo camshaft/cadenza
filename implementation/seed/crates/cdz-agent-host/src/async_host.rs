@@ -13,12 +13,11 @@
 //! saturates the useful concurrency — parallelism across sessions buys nothing. This loop needs no
 //! `Send`; sessions never cross a thread.
 //!
-//! **The kernel-async seam:** today `AgentHost::deliver`/`fire_due_timers` are synchronous, so a single
-//! session's fold blocks this loop for its duration (still fine: sessions interleave between deliveries,
-//! and a fold is short). When v-agent-harness lands the kernel-async conversion (async
-//! `deliver`/`apply` + `Store::fuel_async_yield_interval`), the in-place `host.deliver(..)` here becomes
-//! `host.deliver(..).await` and a long fold cooperatively YIELDS — SAME loop, no reshape, no `Send`
-//! (still one task). That's the clean swap seam this shape is built for.
+//! **The kernel-async seam:** `AgentHost::deliver`/`fire_due_timers` are ASYNC (they drive the kernel's
+//! `Session::deliver_async`/`fire_due_timers_async`, folding through an [`cdz_kernel::reducer::AsyncReducer`]
+//! with `Store::fuel_async_yield_interval`), so a long fold cooperatively YIELDS and this loop interleaves
+//! other sessions while it awaits — SAME loop, no reshape, no `Send` (still one task). The in-place
+//! `host.deliver(..).await` here is exactly that seam.
 
 use crate::host::{AgentHost, SessionId};
 use cdz_kernel::event::EventBody;
@@ -103,7 +102,7 @@ impl AsyncAgentHost {
             // guarantee). Bounds a timer's lateness to a single iteration.
             if let Some(deadline) = self.host.next_timer_deadline_across_sessions() {
                 if deadline <= now_ms() {
-                    self.host.fire_due_timers(now_ms());
+                    self.host.fire_due_timers(now_ms()).await;
                     // Loop back: firing may have armed new timers / the inbox may now be ready; re-evaluate.
                     continue;
                 }
@@ -129,7 +128,7 @@ impl AsyncAgentHost {
                 maybe = self.rx.recv() => {
                     match maybe {
                         Some(msg) => {
-                            match self.host.deliver(&msg.session, msg.body, msg.cause) {
+                            match self.host.deliver(&msg.session, msg.body, msg.cause).await {
                                 // Delivered + the session ran a turn.
                                 Some(Ok(())) => {}
                                 // Unknown session id: a no-op (the producer addressed a session that isn't
@@ -148,7 +147,7 @@ impl AsyncAgentHost {
                 // The earliest FUTURE timer came due → fire due timers across sessions (next iteration's
                 // up-front check also catches any that became due meanwhile).
                 _ = sleep => {
-                    self.host.fire_due_timers(now_ms());
+                    self.host.fire_due_timers(now_ms()).await;
                 }
             }
         }
@@ -167,7 +166,7 @@ mod tests {
     use cdz_kernel::event::{ContentType, EffectOutcome, Event};
     use cdz_kernel::executor::CompositeExecutor;
     use cdz_kernel::kv::Kv;
-    use cdz_kernel::reducer::{FoldOutput, Reducer};
+    use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
 
     /// On "go", record which session ran by stamping "ran" in KV (via a Now round-trip so it exercises
     /// the real executor path through the loop).
@@ -198,7 +197,7 @@ mod tests {
             .with(EffectKind::Now, Box::new(ClockExecutor::new()));
         HostedSession::genesis(
             Hash::of(b"mark-v1"),
-            Box::new(MarkAgent),
+            Box::new(SyncAsAsync(MarkAgent)),
             Box::new(Authorizer::new(vec![Capability {
                 kind: EffectKind::Now,
                 predicate: ResourcePredicate::Any,
@@ -320,13 +319,13 @@ mod tests {
             SessionId::new("t"),
             HostedSession::genesis(
                 Hash::of(b"timer-v1"),
-                Box::new(TimerAgent { deadline_ms: 1000 }),
+                Box::new(SyncAsAsync(TimerAgent { deadline_ms: 1000 })),
                 Box::new(authz),
                 CompositeExecutor::new(),
             ),
         );
         // Arm the timer directly (pre-run) so it's already armed when the loop starts.
-        host.deliver(&SessionId::new("t"), go(), None);
+        host.deliver(&SessionId::new("t"), go(), None).await;
         assert_eq!(
             host.get(&SessionId::new("t"))
                 .unwrap()
