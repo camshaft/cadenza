@@ -197,10 +197,11 @@ def ty-bool-not-int() =
   else
     if is-ground-int(Ty.TyBool) then trap("Bool not ground-int") else unit
 
-/// Test helper: extract a ground int type's `(Sign, width)`, or `None` for a non-int or non-fixed-width axis.
-/// Returns the `Sign` SUM directly (not a 1|0|-1 int projection) and models "not a ground fixed int" as typed
-/// absence — no in-band `-1` sentinel on either axis. A `WFixed(n)` carries any sign (Signed/Unsigned/SignDef,
-/// the third resolved by `ground-default` before this is read); `WidthDef` / non-int → `None`.
+/// Test helper: extract a FIXED-WIDTH int type's `(Sign, width)`, or `None` for a non-int or width-deferred
+/// type. WIDTH-ground only — the SIGN axis is returned as-is (the `Sign` SUM directly, not a 1|0|-1 int), so a
+/// `WFixed(n)` with a still-deferred `Sign.SignDef` yields `Some((SignDef, n))`; callers pass `ground-default`
+/// output, which resolves `SignDef`→`Signed`, so a fully-ground int is the norm at the call sites. Models
+/// "not a fixed-width int" as typed absence (`WidthDef` / non-int → `None`) — no in-band `-1` sentinel.
 def int-parts(t: Ty) = match t with
   | Ty.TyInt(it) => (match it with
     | IntType.IntType(s, w) => (match w with
@@ -213,7 +214,7 @@ def ty-ground-default-deferred-to-int64() =
   // grounding a fully-deferred literal → Int64 (signed, 64) — the default.
   match int-parts(ground-default(ty-deferred-int())) with
     | Option.Some((sg, w)) => (match sg with | Sign.Signed => (if w == 64 then unit else trap("deferred grounds to Int64 width 64")) | _ => trap("deferred grounds to SIGNED"))
-    | Option.None(_) => trap("deferred grounds to a fixed int")
+    | Option.None(_) => trap("deferred did NOT ground to a fixed-width int (int-parts = None)")
 
 @test
 def ty-ground-default-keeps-fixed() =
