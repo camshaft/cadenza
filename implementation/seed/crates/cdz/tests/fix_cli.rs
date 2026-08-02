@@ -158,3 +158,48 @@ fn ml_non_exhaustive_match_carries_the_insert_arms_fix_and_it_applies_clean() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn fix_preview_modes_diff_and_dry_run_do_not_mutate_the_file() {
+    // PREVIEW SAFETY: `cdz fix --diff` and `--dry-run` must be READ-ONLY — a user runs them to SEE what would
+    // change, so silently editing the file would be a serious surprise (and defeats the preview). The suite
+    // pins the --diff OUTPUT but never that the source stays byte-identical afterward; pin it here. A file
+    // with a fixable diagnostic (an unused def → `_`-prefix): capture its bytes, run --diff then --dry-run,
+    // and assert the bytes are UNCHANGED each time. (A final plain `fix` then DOES mutate — the contrast that
+    // proves the preview modes are the read-only ones, not that nothing was fixable.)
+    let dir = temp_dir("preview-nomutate");
+    let f = dir.join("p.cdz");
+    let original = "def unused_thing() -> Int64 = 42\ndef main() -> Int64 = 1\nexport { main }\n";
+    std::fs::write(&f, original).unwrap();
+
+    let (dok, dout, derr) = run(&["fix", f.to_str().unwrap(), "--diff"]);
+    assert!(dok, "cdz fix --diff succeeds: {derr}");
+    assert!(
+        dout.contains("_unused_thing"),
+        "--diff previews the intended `_`-prefix rename: {dout}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        original,
+        "`--diff` is READ-ONLY — it must not mutate the source"
+    );
+
+    let (dryok, _dryout, dryerr) = run(&["fix", f.to_str().unwrap(), "--dry-run"]);
+    assert!(dryok, "cdz fix --dry-run succeeds: {dryerr}");
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        original,
+        "`--dry-run` is READ-ONLY — it must not mutate the source"
+    );
+
+    // Contrast: a plain `fix` (no preview flag) DOES write — proving the file was genuinely fixable and the
+    // preview modes' no-op was a deliberate read-only contract, not an empty fix set.
+    let (aok, _ao, aerr) = run(&["fix", f.to_str().unwrap()]);
+    assert!(aok, "plain cdz fix applies + succeeds: {aerr}");
+    assert_ne!(
+        std::fs::read_to_string(&f).unwrap(),
+        original,
+        "a plain `fix` DOES mutate (the file was fixable — the preview no-op was the read-only contract)"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
