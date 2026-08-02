@@ -707,8 +707,14 @@ impl ComponentReducer {
 /// (an empty fold) rather than a panic — the kernel treats a fold that produced nothing as quiescent.
 /// (A future ABI refinement, §16c gap A, may distinguish a trapped fold from a clean empty one; v0
 /// fails safe by emitting nothing so a broken reducer can't brick the loop.)
-impl crate::reducer::Reducer for ComponentReducer {
-    fn fold(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
+#[async_trait::async_trait(?Send)]
+impl crate::reducer::AsyncReducer for ComponentReducer {
+    /// Native `AsyncReducer` — but NOTE: `ComponentReducer` runs a SYNC wasm engine, so `fold_async` calls
+    /// the sync `apply` with no `.await` (it does not cooperatively yield mid-fold). The fuel-yielding
+    /// async wasm path is [`AsyncComponentReducer`]. `ComponentReducer` remains because it is the only
+    /// dep-CAPABLE wasm reducer today (§23 dep-compose; `AsyncComponentReducer` declines deps pending async
+    /// dep-compose). Once async dep-compose lands, `ComponentReducer` collapses into `AsyncComponentReducer`.
+    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
         // Map the kernel event → the guest's (content_type, payload, resumes) inputs.
         let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
 
@@ -1035,13 +1041,16 @@ impl ComponentAuthorizer {
     }
 }
 
-impl crate::authz::Authorize for ComponentAuthorizer {
+#[async_trait::async_trait(?Send)]
+impl crate::authz::AsyncAuthorize for ComponentAuthorizer {
     /// Decide via the policy component: map the `EffectRequest` to the PARC triple (principal, action =
     /// effect kind, target = resolved target), instantiate the policy into a fresh store, call
     /// `authorize`, and map the verdict. FAIL-CLOSED: any instantiate/trap failure denies (§10 safe
     /// default), never panics (§17). A generous fuel budget bounds a runaway policy without tripping a
-    /// legitimate decision.
-    fn authorize(&self, req: &crate::effect::EffectRequest) -> Result<(), String> {
+    /// legitimate decision. Native `AsyncAuthorize` — the policy instantiate/call is a SYNC wasm engine
+    /// call today (no `.await`); a fuel-yielding async policy eval is a later refinement (the trait is
+    /// async so it drops in without a signature change).
+    async fn authorize_async(&self, req: &crate::effect::EffectRequest) -> Result<(), String> {
         let mut store = wasmtime::Store::new(&self.engine, ());
         if store.set_fuel(DEFAULT_FOLD_FUEL).is_err() {
             return Err("authz: fuel init failed (fail-closed deny)".to_string());
@@ -1275,7 +1284,7 @@ mod tests {
     // host's fixture, mirroring reducer-guest); these pin the construction contract kernel-side now.
     #[test]
     fn component_authorizer_rejects_garbage_and_a_non_authorizer_component() {
-        use crate::authz::Authorize;
+        use crate::authz::AsyncAuthorize;
         // Garbage bytes → InvalidComponent (the bytes aren't a component at all).
         match ComponentAuthorizer::from_policy_bytes(b"not a policy component", "session-1") {
             Err(ComponentError::InvalidComponent(_)) => {}
@@ -1292,7 +1301,7 @@ mod tests {
         }
         // (A ComponentAuthorizer over a real policy denies fail-closed on a policy trap — exercised e2e
         // once the Cedar policy guest exists; the trait impl's Err arms encode the fail-closed contract.)
-        let _ = <ComponentAuthorizer as Authorize>::authorize; // name-check the impl exists
+        let _ = <ComponentAuthorizer as AsyncAuthorize>::authorize_async; // name-check the impl exists
     }
 
     #[test]

@@ -21,8 +21,8 @@ use cdz_kernel::wasm_host::{ComponentError, ComponentReducer, ContentType, Effec
 
 const GUEST: &[u8] = include_bytes!("fixtures/reducer_guest.component.wasm");
 
-#[test]
-fn real_guest_component_folds_through_apply_end_to_end() {
+#[tokio::test(flavor = "current_thread")]
+async fn real_guest_component_folds_through_apply_end_to_end() {
     let reducer = match ComponentReducer::from_component_bytes(GUEST) {
         Ok(r) => r,
         Err(e) => panic!("the guest fixture must be a valid reducer component: {e:?}"),
@@ -74,8 +74,8 @@ fn real_guest_component_folds_through_apply_end_to_end() {
 /// fast path; a fold still works identically through it (behavior unchanged — the cache is a perf lever,
 /// not a semantic one). True Instance-reuse across folds is unsafe (Instance is Store-bound); caching
 /// the pre-instantiation is the safe form.
-#[test]
-fn dependency_free_reducer_takes_the_cached_instance_pre_fast_path() {
+#[tokio::test(flavor = "current_thread")]
+async fn dependency_free_reducer_takes_the_cached_instance_pre_fast_path() {
     let reducer = ComponentReducer::from_component_bytes(GUEST).expect("valid reducer component");
     assert!(
         reducer.uses_cached_instance_pre(),
@@ -98,8 +98,8 @@ fn dependency_free_reducer_takes_the_cached_instance_pre_fast_path() {
 /// PR#1009). We can't easily commit a forever-looping component fixture, so we starve the REAL guest:
 /// a 1-fuel budget is smaller than even this tiny fold's instruction cost, so it exhausts mid-`apply`.
 /// This proves (a) the budget is charged against the fold, and (b) exhaustion is classified correctly.
-#[test]
-fn a_fold_that_exceeds_its_fuel_budget_is_aborted_as_fuel_exhausted() {
+#[tokio::test(flavor = "current_thread")]
+async fn a_fold_that_exceeds_its_fuel_budget_is_aborted_as_fuel_exhausted() {
     let reducer = ComponentReducer::from_component_bytes(GUEST)
         .expect("valid reducer component")
         // A budget of 1 fuel unit: instantiation gets full headroom (reset internally), but the fold
@@ -127,8 +127,8 @@ fn a_fold_that_exceeds_its_fuel_budget_is_aborted_as_fuel_exhausted() {
 
 /// The counterpart: the DEFAULT budget is generous enough that a legitimate fold completes normally
 /// (guards against a budget so tight it breaks real reducers — the default must not false-positive).
-#[test]
-fn a_normal_fold_completes_within_the_default_fuel_budget() {
+#[tokio::test(flavor = "current_thread")]
+async fn a_normal_fold_completes_within_the_default_fuel_budget() {
     let reducer = ComponentReducer::from_component_bytes(GUEST).expect("valid reducer component");
     let ct = ContentType {
         family: "message".to_string(),
@@ -149,8 +149,8 @@ fn a_normal_fold_completes_within_the_default_fuel_budget() {
 /// the kernel dispatched the guest's Http effect AND recorded the guest's correlation token in the
 /// Dispatched frame (§19e: emit token → Dispatched). This is the operator's §19b bar — a wasm reducer
 /// folding on the same loop as a Rust one — proven end to end through the kernel.
-#[test]
-fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatched_frame() {
+#[tokio::test(flavor = "current_thread")]
+async fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatched_frame() {
     use cdz_kernel::authz::Authorizer;
     use cdz_kernel::effect::{Capability, EffectKind as KKind, Payload, ResourcePredicate};
     use cdz_kernel::event::{ContentType as KContentType, EventBody};
@@ -169,7 +169,7 @@ fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatched_fr
 
     // Deliver an inbound "message" — the guest emits one Http effect with correlation "step-1".
     session
-        .deliver(
+        .deliver_async(
             EventBody::Inbound {
                 content_type: KContentType {
                     family: "message".into(),
@@ -182,6 +182,7 @@ fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatched_fr
             &authz,
             &mut exec,
         )
+        .await
         .unwrap();
 
     // The kernel routed the guest's Http effect to the executor.
@@ -213,34 +214,38 @@ fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatched_fr
 ///   emptied — guarding the `mem::take`). (The write-then-discard atomicity itself is pinned at the
 ///   host-overlay unit level in `host_kv_writes_are_discarded_without_commit`, which is deterministic;
 ///   the fuel path can't reliably write-then-trap without brittle budget calibration.)
-#[test]
-fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
+#[tokio::test(flavor = "current_thread")]
+async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
     use cdz_kernel::event::{ContentType as KContentType, EventBody};
-    use cdz_kernel::reducer::Reducer;
+    use cdz_kernel::reducer::AsyncReducer;
 
-    let inbound = |kv: &mut Kv, reducer: &ComponentReducer| {
-        reducer.fold(
-            &cdz_kernel::event::Event {
-                seq: 1,
-                cause: None,
-                body: EventBody::Inbound {
-                    content_type: KContentType {
-                        family: "message".into(),
-                        version: 1,
+    // An inner async fn (not a closure — a closure returning a future that borrows its `&reducer` arg
+    // trips the borrow checker; an `async fn` scopes the borrow to its own await cleanly).
+    async fn inbound(kv: &mut Kv, reducer: &ComponentReducer) -> cdz_kernel::reducer::FoldOutput {
+        reducer
+            .fold_async(
+                &cdz_kernel::event::Event {
+                    seq: 1,
+                    cause: None,
+                    body: EventBody::Inbound {
+                        content_type: KContentType {
+                            family: "message".into(),
+                            version: 1,
+                        },
+                        payload: cdz_kernel::effect::Payload::Inline(b"hello".to_vec().into()),
                     },
-                    payload: cdz_kernel::effect::Payload::Inline(b"hello".to_vec().into()),
                 },
-            },
-            kv,
-        )
-    };
+                kv,
+            )
+            .await
+    }
 
     // SUCCESS path: default budget. Pre-populate an unrelated key; the fold bumps "count".
     let ok_reducer =
         ComponentReducer::from_component_bytes(GUEST).expect("valid reducer component");
     let mut kv = Kv::new();
     kv.put(b"unrelated".to_vec(), b"keep".to_vec());
-    let out = inbound(&mut kv, &ok_reducer);
+    let out = inbound(&mut kv, &ok_reducer).await;
     assert_eq!(out.effects.len(), 1, "the successful fold emits its effect");
     // Commit MERGED: the guest's new "count" AND the pre-existing "unrelated" both present.
     assert_eq!(kv.get(b"count"), Some(&[1u8][..]), "guest write committed");
@@ -258,7 +263,7 @@ fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
     let mut kv2 = Kv::new();
     kv2.put(b"a".to_vec(), b"1".to_vec());
     kv2.put(b"b".to_vec(), b"2".to_vec());
-    let out2 = inbound(&mut kv2, &fail_reducer);
+    let out2 = inbound(&mut kv2, &fail_reducer).await;
     assert!(out2.effects.is_empty(), "a failed fold emits no effects");
     // The failure is CAPTURED (not a silent empty fold) — error-resilience direction.
     assert!(
@@ -274,8 +279,8 @@ fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
 /// CAPTURED as a first-class `FoldFailed` LOG event — driven through the real kernel loop — rather than
 /// vanishing into a silent empty fold ("errors into the void"). A supervisor reading the log sees the
 /// failure + which event caused it. The session doesn't die: the loop continues (§17 can't-brick).
-#[test]
-fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
     use cdz_kernel::authz::Authorizer;
     use cdz_kernel::effect::{Capability, EffectKind as KKind, Payload, ResourcePredicate};
     use cdz_kernel::event::{ContentType as KContentType, EventBody};
@@ -296,7 +301,7 @@ fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
 
     // Deliver an inbound message — the guest's fold traps on 1 fuel. deliver() must NOT panic (§17).
     session
-        .deliver(
+        .deliver_async(
             EventBody::Inbound {
                 content_type: KContentType {
                     family: "message".into(),
@@ -309,6 +314,7 @@ fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
             &authz,
             &mut exec,
         )
+        .await
         .expect("deliver does not error on a trapped fold");
 
     // A FoldFailed event is on the log (the failure was CAPTURED, not swallowed) — with a reason.

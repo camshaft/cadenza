@@ -20,7 +20,7 @@ use cdz_kernel::executor::RecordingExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{FoldOutput, Reducer};
+use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
 
 /// A reducer that exercises varied KV shapes and the effect chain. On an inbound message it writes a
 /// per-key counter, appends to a running list under a scanned prefix, and (for some inputs) emits an
@@ -28,8 +28,9 @@ use cdz_kernel::reducer::{FoldOutput, Reducer};
 /// The behavior is a pure function of the event + current KV — exactly what replay must reproduce.
 struct BusyReducer;
 
-impl Reducer for BusyReducer {
-    fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+#[async_trait::async_trait(?Send)]
+impl AsyncReducer for BusyReducer {
+    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { payload, .. } => {
                 let byte = match payload {
@@ -104,7 +105,7 @@ fn cap() -> Authorizer {
 }
 
 /// Run one generated sequence to quiescence and return the resulting session.
-fn run_sequence(seed: u64, len: usize) -> Session {
+async fn run_sequence(seed: u64, len: usize) -> Session {
     let reducer = BusyReducer;
     let authz = cap();
     let mut exec = RecordingExecutor::new();
@@ -120,25 +121,26 @@ fn run_sequence(seed: u64, len: usize) -> Session {
             payload: Payload::Inline(vec![byte].into()),
         };
         session
-            .deliver(body, None, &reducer, &authz, &mut exec)
+            .deliver_async(body, None, &reducer, &authz, &mut exec)
+            .await
             .unwrap();
     }
     session
 }
 
-#[test]
-fn replay_reconstructs_identical_kv_root_over_many_sequences() {
+#[tokio::test(flavor = "current_thread")]
+async fn replay_reconstructs_identical_kv_root_over_many_sequences() {
     let reducer = BusyReducer;
     // Many seeds × varied lengths — a broad sweep of event sequences.
     for seed in 0..200u64 {
         let len = (seed as usize % 40) + 1;
-        let session = run_sequence(seed.wrapping_mul(2654435761), len);
+        let session = run_sequence(seed.wrapping_mul(2654435761), len).await;
 
         let original_root = session.snapshot().kv_root;
         let log = session.log().to_vec();
 
         // Replay the session's OWN log into a fresh Session and compare KV roots.
-        let replayed = Session::replay(log.clone(), &reducer).unwrap();
+        let replayed = Session::replay_async(log.clone(), &reducer).await.unwrap();
         assert_eq!(
             replayed.snapshot().kv_root,
             original_root,
@@ -146,7 +148,9 @@ fn replay_reconstructs_identical_kv_root_over_many_sequences() {
         );
 
         // Replay must also be idempotent: replaying the replayed session's log again matches.
-        let twice = Session::replay(replayed.log().to_vec(), &reducer).unwrap();
+        let twice = Session::replay_async(replayed.log().to_vec(), &reducer)
+            .await
+            .unwrap();
         assert_eq!(
             twice.snapshot().kv_root,
             original_root,
@@ -155,14 +159,14 @@ fn replay_reconstructs_identical_kv_root_over_many_sequences() {
     }
 }
 
-#[test]
-fn identical_sequences_produce_identical_roots() {
+#[tokio::test(flavor = "current_thread")]
+async fn identical_sequences_produce_identical_roots() {
     // Determinism of the forward run itself: the same seed twice → identical KV root (no hidden
     // nondeterminism in the fold/drive path).
     for seed in 0..50u64 {
         let len = (seed as usize % 20) + 1;
-        let a = run_sequence(seed, len).snapshot().kv_root;
-        let b = run_sequence(seed, len).snapshot().kv_root;
+        let a = run_sequence(seed, len).await.snapshot().kv_root;
+        let b = run_sequence(seed, len).await.snapshot().kv_root;
         assert_eq!(
             a, b,
             "same sequence produced different roots for seed={seed}"
@@ -170,8 +174,8 @@ fn identical_sequences_produce_identical_roots() {
     }
 }
 
-#[test]
-fn different_sequences_generally_produce_different_roots() {
+#[tokio::test(flavor = "current_thread")]
+async fn different_sequences_generally_produce_different_roots() {
     // Sanity that the root actually reflects contents (guards against a degenerate always-equal hash
     // that would make the determinism test vacuous). Not every pair must differ, but the set of roots
     // over many distinct sequences must have real variety.
@@ -179,6 +183,7 @@ fn different_sequences_generally_produce_different_roots() {
     let mut roots = HashSet::new();
     for seed in 0..100u64 {
         let root = run_sequence(seed.wrapping_mul(2654435761), (seed as usize % 30) + 3)
+            .await
             .snapshot()
             .kv_root;
         roots.insert(root);
@@ -194,8 +199,9 @@ fn different_sequences_generally_produce_different_roots() {
 /// a deterministic total order (§16c-S8): if scan order ever depended on insertion history, replaying
 /// a log whose events arrived in a different internal order would diverge.
 struct ScanOrderReducer;
-impl Reducer for ScanOrderReducer {
-    fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+#[async_trait::async_trait(?Send)]
+impl AsyncReducer for ScanOrderReducer {
+    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         if let EventBody::Inbound { payload, .. } = &event.body {
             let byte = match payload {
                 Payload::Inline(b) if !b.is_empty() => b[0],
@@ -214,8 +220,8 @@ impl Reducer for ScanOrderReducer {
     }
 }
 
-#[test]
-fn scan_order_dependent_reducer_still_replays_identically() {
+#[tokio::test(flavor = "current_thread")]
+async fn scan_order_dependent_reducer_still_replays_identically() {
     let reducer = ScanOrderReducer;
     let authz = Authorizer::deny_all(); // this reducer emits no effects
     for seed in 0..100u64 {
@@ -231,11 +237,14 @@ fn scan_order_dependent_reducer_still_replays_identically() {
                 payload: Payload::Inline(vec![rng.byte()].into()),
             };
             session
-                .deliver(body, None, &reducer, &authz, &mut exec)
+                .deliver_async(body, None, &reducer, &authz, &mut exec)
+                .await
                 .unwrap();
         }
         let original = session.snapshot().kv_root;
-        let replayed = Session::replay(session.log().to_vec(), &reducer).unwrap();
+        let replayed = Session::replay_async(session.log().to_vec(), &reducer)
+            .await
+            .unwrap();
         assert_eq!(
             replayed.snapshot().kv_root,
             original,
