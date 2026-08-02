@@ -388,7 +388,7 @@ fn decode_payload(c: &mut Cursor) -> Result<Payload, DecodeError> {
     Ok(match c.u8()? {
         0 => {
             let len = c.len()?;
-            Payload::Inline(c.take(len)?.to_vec())
+            Payload::Inline(c.take(len)?.to_vec().into())
         }
         1 => Payload::Blob(Hash::from_bytes(c.hash()?)),
         t => {
@@ -705,7 +705,7 @@ mod tests {
     fn cause_edge_is_part_of_identity() {
         let mut e = genesis();
         e.body = EventBody::Closed {
-            outcome: Payload::Inline(vec![]),
+            outcome: Payload::Inline(vec![].into()),
         };
         let without = e.hash();
         e.cause = Some(Hash::of(b"parent"));
@@ -731,7 +731,7 @@ mod tests {
                 cause: Some(h),
                 body: EventBody::Inbound {
                     content_type: ct.clone(),
-                    payload: Payload::Inline(b"hello".to_vec()),
+                    payload: Payload::Inline(b"hello".to_vec().into()),
                 },
             },
             Event {
@@ -771,7 +771,7 @@ mod tests {
                 cause: None,
                 body: EventBody::EffectResult {
                     id: EffectId(7),
-                    result: EffectOutcome::Ok(Some(Payload::Inline(b"body".to_vec()))),
+                    result: EffectOutcome::Ok(Some(Payload::Inline(b"body".to_vec().into()))),
                     token: Some(b"resume-tok".to_vec()),
                 },
             },
@@ -835,7 +835,7 @@ mod tests {
                 seq: 12,
                 cause: None,
                 body: EventBody::Closed {
-                    outcome: Payload::Inline(vec![]),
+                    outcome: Payload::Inline(vec![].into()),
                 },
             },
         ]

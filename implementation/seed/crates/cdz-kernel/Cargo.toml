@@ -36,6 +36,12 @@ live-exec = []
 [dependencies]
 # blake3: content-addressing for events, KV nodes, and blobs. Fast, no_std-friendly, stable digest.
 blake3 = "1"
+# bytes: ref-counted immutable byte buffer (operator perf directive 2026-08-02). Hot-path payloads /
+# continuation tokens / KV values that get CLONED + shared but not mutated in place are `Bytes` so a
+# clone is an O(1) refcount bump + slice, not a deep memcpy. `Bytes: From<Vec<u8>>` keeps build-then-
+# freeze ergonomics (build a Vec, `.into()` it). Already in the tree (transitive via wasmtime), so no
+# new dep floor. std String similarly moves to a UTF8-validated wrapper over Bytes where immutable.
+bytes = "1"
 # cadenza-ast — the shared, spec-pinned canonical binary codec (ast-encoding.md, header `cdzast\x00\x01`)
 # that cadenza-syntax + rcdzc + this kernel all share (v-syntax extracted it as the bottom crate; §19a).
 # The kernel encodes its log events THROUGH this ONE codec so the on-disk log is the language-native

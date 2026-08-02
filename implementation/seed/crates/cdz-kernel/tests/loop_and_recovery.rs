@@ -71,7 +71,7 @@ fn inbound_go() -> EventBody {
             family: "message".into(),
             version: 1,
         },
-        payload: Payload::Inline(b"go".to_vec()),
+        payload: Payload::Inline(b"go".to_vec().into()),
     }
 }
 
@@ -1025,7 +1025,7 @@ fn live_shell_executor_runs_a_real_command_end_to_end() {
                 EventBody::EffectResult { result, .. } => {
                     match result {
                         EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
-                            kv.put(b"stdout".to_vec(), bytes.clone());
+                            kv.put(b"stdout".to_vec(), bytes.to_vec());
                         }
                         _ => {
                             kv.put(b"stdout".to_vec(), b"<not-ok>".to_vec());
@@ -1140,7 +1140,7 @@ fn live_shell_no_injection_via_metacharacters() {
                     result: EffectOutcome::Ok(Some(Payload::Inline(b))),
                     ..
                 } => {
-                    kv.put(b"out".to_vec(), b.clone());
+                    kv.put(b"out".to_vec(), b.to_vec());
                     FoldOutput::none()
                 }
                 _ => FoldOutput::none(),
@@ -1240,7 +1240,7 @@ fn replay_rejects_a_genesis_less_log_loudly() {
                 family: "m".into(),
                 version: 1,
             },
-            payload: Payload::Inline(vec![]),
+            payload: Payload::Inline(vec![].into()),
         },
     }];
     assert!(
