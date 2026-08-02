@@ -207,6 +207,31 @@
   (call   main (: 12345 Int64)) (output (: true Bool))
   (call   main (: 777 Int64)) (output (: true Bool)))
 
+(case "a MIXED payload+nullary SUM compound = has DISCRIMINATING power (separates tags AND a payloaded vs a nullary variant)"
+  (doc    "The vacuity guard for the mixed-sum reproducibility case above: the compound `=` over a sum that
+           MIXES payloaded and nullary variants must SEPARATE values that differ, not just equate identical
+           ones — otherwise the reproducibility case (which only asserts `x = x`) could pass on a `=` that
+           returns true for everything. Distinct from the all-payloaded `Result Ok/Err` discriminating case:
+           this pins the two mixed-arity distinctions the bare-name-nullary generation needs to hold —
+           (1) SAME tag same payload → equal (`Circle v = Circle v`); (2) DIFFERENT tag same payload →
+           unequal (`Circle v ≠ Square v` — the discriminant decides even when the carried Int64 matches);
+           (3) a PAYLOADED variant ≠ a NULLARY variant (`Circle v ≠ Point` — a heap-carrying value vs a bare
+           nullary tag never compare equal). The constructor is SELECTED at runtime via `mk tag v` so no
+           comparison const-folds (a literal `(= (Circle v) (Point))` could be decided at compile time);
+           `main` returns 1 iff all three hold. Pins that mixed payload+nullary sum `=` has power in every
+           direction on a value inference cannot pre-decide.")
+  (input  (do (type Shape (Circle Int64) (Square Int64) (Point))
+              (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (mk (: tag Int64) (: v Int64)) (if (= tag 0) (Circle v) (if (= tag 1) (Square v) Point)))
+              (def (main (: seed Int64))
+                (let ((v (& (next seed) 255)))
+                  (if (= (mk 0 v) (mk 0 v))
+                    (if (not (= (mk 0 v) (mk 1 v)))
+                      (if (not (= (mk 0 v) (mk 2 v))) 1 0) 0) 0)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: 1 Int64))
+  (call   main (: 777 Int64)) (output (: 1 Int64)))
+
 (case "a generated RECORD value is reproducible from its seed (compound = walks the record fields)"
   (doc    "Witnesses §Generation Is Seeded And Reproducible for a generator that produces a RECORD — the
            other named product container beside the tuple. The doc of the tuple case promises structural

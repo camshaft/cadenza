@@ -864,6 +864,7 @@ pass	a SET of SETS dedups elements by set CONTENT — insertion-order twins coll
 pass	a SINGLE-variant open sum still requires an open-tail arm
 pass	a STALLED counter makes all Set.of perform results collide to a singleton
 pass	a STRING-result effect op resumes with a string that folds through a concat
+pass	a MIXED payload+nullary SUM compound = has DISCRIMINATING power (separates tags AND a payloaded vs a nullary variant)
 pass	a SUM compound = has DISCRIMINATING power (a runtime-selected constructor separates two tagged values)
 pass	a SUM constructor payload that is a compound built from performs threads and destructures
 pass	a SUM is threaded as a handler's folded state across operations
