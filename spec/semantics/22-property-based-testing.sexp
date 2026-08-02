@@ -693,6 +693,35 @@
   (call   main (: 777 Int64))
   (output (: 16 Int64)))
 
+(case "the per-key linear-scan model oracle has DISCRIMINATING power — a value-forgetting model diverges at every present key"
+  (doc    "The vacuity guard for the per-key model oracle above: a model that MISREADS a value does NOT
+           agree with the real structure at a present key, so the per-key oracle catches it. Same generated
+           workload (30 seeded inserts over the 16-key masked domain) drives the SAME real `Map.insert`, but
+           the model here is a BROKEN value-forgetting scan that returns a constant 0 for EVERY key instead
+           of the map's stored value. `drive` inserts value `n` (the countdown 30..1 — ALWAYS >= 1, never
+           0), so every PRESENT key's real `Map.lookup` returns >= 1, which never equals the model's 0 →
+           `verify` diverges (-999) at the first present key (>= 1 key is always present after 30 inserts).
+           Two seeds return -999. Pins that the STRONGEST oracle (per-key agreement) genuinely detects a
+           value-level real-vs-model disagreement, not a tautology — the discriminating counterpart the
+           count-model family (line 643) has but the exhaustive per-key family lacked.")
+  (input  (do
+            (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+            (def (broken-scan (: ps (List (Tuple Int64 Int64))) (: k Int64)) 0)
+            (def (drive (: s Int64) (: n Int64) (: m (Map Int64 Int64)))
+              (if (< n 1) m (drive (next s) (- n 1) (Map.insert m (& (next s) 15) n))))
+            (def (verify (: m (Map Int64 Int64)) (: ps (List (Tuple Int64 Int64))) (: k Int64) (: acc Int64))
+              (if (> k 15) acc
+                (verify m ps (+ k 1)
+                  (if (= (match (Map.lookup m k) ((Some v) v) ((None u) -1)) (broken-scan ps k)) (+ acc 1) -999))))
+            (def (main (: seed Int64))
+              (let ((m (drive seed 30 Map.empty)))
+                (verify m (Map.to-list m) 0 0)))
+            (export main)))
+  (call   main (: 42 Int64))
+  (output (: -999 Int64))
+  (call   main (: 777 Int64))
+  (output (: -999 Int64)))
+
 (case "a generated insert/remove Set workload agrees with a BITMASK model at every step's end"
   (doc    "The model-oracles above drive INSERT-only workloads; this one mixes DELETIONS: the seeded
            stream drives Set.insert/Set.remove (key = s&7, op = bit 8) against a bitmask model
