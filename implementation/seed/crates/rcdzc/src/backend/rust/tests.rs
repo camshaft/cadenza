@@ -6894,3 +6894,57 @@ fn rustc_roundtrip_record_with_option_field_compare_is_lexicographic_in_sorted_k
         assert_eq!(out, "2", "identical records compare Equal:\n{rs}");
     }
 }
+
+#[test]
+fn rustc_roundtrip_nonrecursive_user_sum_with_option_payload_compare_declared_disc_then_flip() {
+    // Pins emit_sum_cmp_walk's DIRECT (non-helper) path for a NON-RECURSIVE multi-variant user sum whose
+    // variants carry Option payloads, composed with the Some<None flip. Distinct from the RECURSIVE-sum pin
+    // (rustc_roundtrip_recursive_option_carrying_sum_compare_terminates_via_helper), which exercises the
+    // seen-guard `__cmp_<Ident>` self-call recursion base; THIS pins the declared-discriminant ordering
+    // (`__ord` maps `A`→0, `B`→1 by DECLARATION order) fused with same-variant payload compare through the
+    // Option flip helper — the Cadenza order (declared disc ascending, then payload), NOT std's derived Ord.
+    // Verified NON-VACUOUS: emits `fn __cmp_W(..) { let __ord = |v| match v { W::A(..)=>0, W::B(..)=>1 };
+    // match (l,r) { (W::A,W::A)=>__cmp_Option(..), (W::B,W::B)=>__cmp_Option(..), _=>__ord(l).cmp(&__ord(r)) }}`.
+    let src = "(module m \
+        (type W (A (Option Int64)) (B (Option Int64))) \
+        (def (mk-a (: k Int64)) (if (= k 0) (W.A (: (None unit) (Option Int64))) (W.A (Some k)))) \
+        (def (mk-b (: k Int64)) (if (= k 0) (W.B (: (None unit) (Option Int64))) (W.B (Some k)))) \
+        (def (cmp2 (: x W) (: y W)) \
+          (match (compare x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+        (def (p1) (cmp2 (mk-a 5) (mk-b 5))) \
+        (def (p2) (cmp2 (mk-b 5) (mk-a 5))) \
+        (def (p3) (cmp2 (mk-a 1) (mk-a 0))) \
+        (def (p4) (cmp2 (mk-a 7) (mk-a 7))) \
+        (export p1) (export p2) (export p3) (export p4))";
+    // A non-recursive multi-variant user sum carrying Option payloads IS representable on rust (verified —
+    // emits `__cmp_W` with an `__ord` declared-disc map + same-variant `__cmp_Option` routing), so a DECLINE
+    // is a real emit regression: `compile_rust` HARD-FAILS on decline (an `Err(_) => {}` arm would silently
+    // mask the pin). Compiled ONCE; all four probes assert against the single artifact.
+    let rs = compile_rust(src);
+    // A(Some 5) vs B(Some 5): different variants, declared A(disc 0) < B(disc 1) → Less (1).
+    // (payloads are equal, so ONLY the declared-discriminant order can decide.)
+    if let Some(out) = rustc_run(&rs, "p1()") {
+        assert_eq!(
+            out, "1",
+            "declared discriminant decides across variants: A < B → Less:\n{rs}"
+        );
+    }
+    // symmetric: B(Some 5) vs A(Some 5): B(disc 1) > A(disc 0) → Greater (3).
+    if let Some(out) = rustc_run(&rs, "p2()") {
+        assert_eq!(
+            out, "3",
+            "symmetric — B follows A by declared discriminant:\n{rs}"
+        );
+    }
+    // A(Some 1) vs A(None): same variant A, payload Some 1 < None → Less (1) (the flip inside a variant).
+    if let Some(out) = rustc_run(&rs, "p3()") {
+        assert_eq!(
+            out, "1",
+            "same-variant payload uses Some<None flip: Some 1 < None → Less:\n{rs}"
+        );
+    }
+    // A(Some 7) vs A(Some 7): identical → Equal (2).
+    if let Some(out) = rustc_run(&rs, "p4()") {
+        assert_eq!(out, "2", "identical sum values compare Equal:\n{rs}");
+    }
+}
