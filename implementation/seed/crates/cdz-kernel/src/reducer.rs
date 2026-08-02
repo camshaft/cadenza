@@ -175,7 +175,7 @@ mod tests {
     // The native `Reducer` (InertReducer) is drivable through `&dyn Reducer` — proving
     // object-safety holds (the whole reason for async-trait), which the kernel + host rely on.
     #[test]
-    fn inert_reducer_is_object_safe_as_dyn_async_reducer() {
+    fn inert_reducer_is_object_safe_as_dyn_reducer() {
         let reducer = InertReducer;
         let event = Event {
             seq: 0,

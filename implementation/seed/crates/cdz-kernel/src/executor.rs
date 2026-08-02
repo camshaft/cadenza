@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn tag_executor_is_object_safe_as_dyn_async_executor() {
+    async fn tag_executor_is_object_safe_as_dyn_executor() {
         // Drivable through &mut dyn Executor — object-safety (the reason for async-trait).
         let mut tagged = TagExecutor(b"async-ran");
         let dyn_exec: &mut dyn Executor = &mut tagged;

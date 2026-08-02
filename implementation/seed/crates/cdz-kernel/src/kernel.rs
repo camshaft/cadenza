@@ -556,7 +556,7 @@ impl Session {
         }
     }
 
-    /// The ASYNC twin of [`Session::fold_tip`] — folds the tip through an [`Reducer`] (`.await`),
+    /// The ASYNC twin of [`Session::fold_tip`] — folds the tip through a [`Reducer`] (`.await`),
     /// same FoldFailed capture + effect-reversal. This is the ONE place the reducer actually awaits.
     async fn fold_tip_async(&mut self, reducer: &dyn Reducer, cause: Hash) -> Vec<(Effect, Hash)> {
         let tip = self.log.last().expect("log always has genesis").clone();
@@ -717,7 +717,7 @@ impl Session {
     }
 
     /// The ASYNC twin of [`Session::replay`] (operator all-async directive) — reconstruct a session from a
-    /// persisted log, folding each observable event through an [`Reducer`] (`.await`). Identical
+    /// persisted log, folding each observable event through a [`Reducer`] (`.await`). Identical
     /// reconstruction of the obligation sets / armed-timer table / `next_effect_id` / `last_now` high-water
     /// mark; only the re-fold awaits. Additive alongside the sync [`Session::replay`] during the migration;
     /// the sync one is removed once every reducer is `Reducer` (the operator's "one async trait only").
@@ -1609,7 +1609,7 @@ mod monotonic_now_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn replay_async_reconstructs_identically_to_sync_replay() {
-        // The async twin `replay_async` (driving an Reducer) must reconstruct a session BYTE-IDENTICAL
+        // The async twin `replay_async` (driving a Reducer) must reconstruct a session BYTE-IDENTICAL
         // to sync `replay` — the additive-migration invariant (replay's re-fold only awaits; it changes no
         // reconstruction). Build a session, then replay the SAME log both ways and compare KV root + last_now
         // + open set + log length. A replay/replay_async drift fails loudly HERE.
