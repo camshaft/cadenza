@@ -108,6 +108,14 @@ Rationale: the lane fold is a **pure function of the changed path set** → unit
 "low-risk". A ref spanning two lanes (even two PARALLEL leaves, e.g. `cad`+`music`) is `mixed`
 (serialized globally) — it touches multiple territories and could collide with either.
 
+**Combinable lane sets** (avoid false `mixed`): some multi-lane spans have a natural CONTAINING lane
+and shouldn't fall to global `mixed`. Today's rule: `{corpus, baseline}` → `baseline`. That's the
+NORMAL corpus workflow — editing a `.sexp` case updates the shared `.gate-baseline*` files in the same
+commit. It collides on the baseline hot files (→ serialize as `baseline`), but folding it to `mixed`
+would needlessly serialize it against UNRELATED mixed work (a docs+code MR). Measured on the live
+queue: this drops `mixed` from 11/29 → 5/29 (the other 6 become `baseline`), a real parallelism win.
+Any *other* multi-lane span (truly unrelated territories) stays `mixed`.
+
 ### Cross-lane ordering — the hard part (the operator's "make sure things are flowing")
 
 Two candidate PRs can both be CI-green against `origin/main` yet conflict once one lands (the second
@@ -127,6 +135,15 @@ was gated against a trunk that no longer exists). Handling, cheapest first:
 
 Landing is still a **fast-forward / clean `--no-ff` merge only** — never a conflict resolution by
 pr-sync (that stays the author's job, same as today's reject-on-conflict).
+
+**Reap edge case — a CLOSED-but-not-merged PR.** `reap_action(merged, verdict)` today resolves
+merged→land, not-merged+red→reject, else→wait. But a candidate PR can also be **CLOSED without
+merging and without a red CI** (manually closed, superseded, or its branch deleted) — that reads
+`merged=false` + a pending/green verdict → `KeepWaiting` FOREVER, a stuck in-flight slot. I4 must add
+the PR `state` as a third reap input: `CLOSED && !MERGED` → treat as a `Reject`-equivalent (ack the MR
+so its sender can resend, drop the `ci-dispatch` record, free the slot). `pr_merged_and_verdict`
+already fetches `state` via `gh pr view` — extend it to return the closed-not-merged case. (Deferred to
+the I4 executor build, not the read-only preview; noted so it isn't lost.)
 
 ## Pilot learnings (pr-sync's manual validation, 2026-08-02 — bake these into I3/I4)
 
@@ -164,6 +181,19 @@ auto-merge-armed, gating in parallel; my base landed via #1038). Hard-won gotcha
    lane model (each lane declares its required check set). Raised to the operator as a follow-on
    optimization; NOT urgent (pipeline is healthy at cap-8). Size I3/I4 for a SUSTAINED ~30-deep queue,
    not a one-time drain.
+9. **pr-sync's OWN housekeeping commits need a publish path** (pr-sync note, on record). The
+   `fleet archive` step (charter step 4: mirror `.claude/fleet/queue/` → tracked `issues/`) makes a
+   trunk-only commit that is NOT an agent MR, so it has no candidate-PR route to `origin/main`. In the
+   old serial model it rode out with each publish cycle; in the CI-gated model it would waste a full
+   16-job CI slot + scarce arm runners for zero correctness value, so pr-sync currently DEFERS it
+   (verified: `git diff trunk origin/main -- . :(exclude)issues/` is empty every tick — the only
+   trunk-only content is the `issues/` reproducer archive, which is safe on trunk; peers sync fine).
+   The durable model needs SOME path so reproducers reach `origin/main` eventually. Options: (a) a
+   dedicated `fleet publish-housekeeping` that pushes `issues/` straight to `origin/main` with MINIMAL
+   checks (a `housekeeping`/`archive` lane = the per-lane-check-subset idea applied — this is pr-sync's
+   and my lean); (b) piggyback the archive onto the next agent candidate PR already gating; (c) a
+   periodic low-priority direct push during a lull. NOT urgent (issues/-only, non-blocking); fold into
+   I5 hardening.
 
 ## Increments (each independently landable + gated)
 
@@ -182,7 +212,8 @@ auto-merge-armed, gating in parallel; my base landed via #1038). Hard-won gotcha
   `ack reject` with failing job + run URL, close PR) → top-up in-flight per lane under a global cap.
   Update `fleet/loops/pr-sync.md` + `AGENTS-fleet.md`. (No bisect — a red fails its own PR alone.)
 - **I5 — hardening.** In-flight cap tuning, CI timeout → reject-with-timeout, stale-candidate-branch
-  GC, remove the now-dead local-gate code (`gate_subset`, `gate-batch` bisect) once I4 is proven.
+  GC, the housekeeping-publish path for pr-sync's `issues/` archive (finding 9 above), and remove the
+  now-dead local-gate code (`gate_subset`, `gate-batch` bisect) once I4 is proven.
 
 Each increment lands as its own merge-request (per-commit cadence). Trunk-safety invariant holds at
 every step: nothing advances trunk except a CI-green candidate.
