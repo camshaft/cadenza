@@ -49063,6 +49063,42 @@ mod match_engine {
         assert_eq!(run_returns_with::<i64>(&b5, "f", &[Val::S64(200)]), 222); // >100, ==200 → 222
         assert_eq!(run_returns_with::<i64>(&b5, "f", &[Val::S64(150)]), 333); // >100, not 200 → wildcard
         assert_eq!(run_returns_with::<i64>(&b5, "f", &[Val::S64(5)]), 0); // !(>100) → else 0 (dead arm unreachable anyway)
+
+        // ALL NON-WILDCARD ARMS DEAD → the match COLLAPSES to the wildcard body, emitted UNCONDITIONALLY.
+        // `(match (& x 7) (100 …) (200 …) (_ …))` over `(& x 7) ∈ [0,7]`: BOTH `100` and `200` are dead,
+        // so the elimination drops them all and `kept` is just the wildcard `_` arm. A lone wildcard arm
+        // has no probe to test — `emit_match_arms_tailable` emits its body straight-line, with NO `i64.eq`
+        // and NO dead probe constants. This exercises the pass dropping MULTIPLE arms at once and the
+        // degenerate single-wildcard-arm emit it produces (distinct from the single-dead-arm cases above).
+        let alldead = code(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (200 222) (_ 333))) (def (main) 0) (export main))",
+        );
+        assert!(
+            !alldead.contains(&Lir::ConstI64(100)) && !alldead.contains(&Lir::ConstI64(200)),
+            "both dead probes are dropped, got: {alldead:?}"
+        );
+        assert!(
+            !alldead.contains(&Lir::I64Eq),
+            "the match collapsed to the wildcard body — no probe `eq` remains, got: {alldead:?}"
+        );
+        // CONTRAST that keeps the collapse honest: with ONE live arm (`7 ∈ [0,7]`) beside the dead ones,
+        // the match does NOT collapse — a probe `eq` for the live arm survives (so the `!I64Eq` above is
+        // the all-dead collapse doing the work, not `eq` simply never being emitted for this shape).
+        let onelive = code(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (7 222) (_ 333))) (def (main) 0) (export main))",
+        );
+        assert!(
+            onelive.contains(&Lir::I64Eq),
+            "with a live arm the probe `eq` survives (collapse is all-dead-specific), got: {onelive:?}"
+        );
+        // VALUE PARITY: the collapsed match returns the wildcard body for EVERY input (all probes were
+        // unreachable). `(& x 7)` is always in [0,7], never 100/200, so every x yields 333.
+        let b6 = component(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) (100 111) (200 222) (_ 333))) (export f))",
+        );
+        assert_eq!(run_returns_with::<i64>(&b6, "f", &[Val::S64(0)]), 333);
+        assert_eq!(run_returns_with::<i64>(&b6, "f", &[Val::S64(7)]), 333);
+        assert_eq!(run_returns_with::<i64>(&b6, "f", &[Val::S64(999)]), 333); // 999&7=7 → still wildcard
     }
 
     #[test]
