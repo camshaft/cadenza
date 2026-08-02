@@ -640,6 +640,30 @@
   (call   main (: 999 Int64))
   (output (: 1 Int64)))
 
+(case "the model-oracle property has DISCRIMINATING power — a BROKEN model (counts every insert) diverges from Map.len"
+  (doc    "The counterpoint that makes the count-model oracle above meaningful: a model that MISCOUNTS
+           does NOT agree with the real structure, so the oracle catches it. Same generated workload
+           (20 seeded inserts, keys masked 0..7 so collisions are guaranteed and the real CHAMP map holds
+           at most 8 distinct keys) drives the SAME real `Map.insert`, but the model here counts EVERY
+           insert (`(+ cnt 1)` unconditionally) instead of only the distinct-key misses. `Map.len m`
+           (<= 8) can never equal a 20-count, so the agreement check is false and main returns 0 on both
+           seeds. Pins that the model-oracle idiom genuinely detects a real-vs-abstract divergence — a
+           model-based property author gets a real check, not a tautology that a trivially-true agreement
+           would pass. The vacuity guard the algebraic-law families have (permutation/set-convergence/=)
+           but the model-oracle family lacked.")
+  (input  (do
+            (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+            (def (drive (: s Int64) (: n Int64) (: m (Map Int64 Int64)) (: cnt Int64))
+              (if (< n 1) (if (= (Map.len m) cnt) 1 0)
+                (let ((k (& (next s) 7)))
+                  (drive (next s) (- n 1) (Map.insert m k 1) (+ cnt 1)))))
+            (def (main (: seed Int64)) (drive seed 20 Map.empty 0))
+            (export main)))
+  (call   main (: 12345 Int64))
+  (output (: 0 Int64))
+  (call   main (: 999 Int64))
+  (output (: 0 Int64)))
+
 (case "a generated map workload agrees with a linear-scan model at EVERY key of the domain"
   (doc    "The exhaustive-agreement upgrade of the count-model pin above (which checks ONE aggregate):
            30 generated inserts over a 16-key masked domain (overwrites guaranteed), then EVERY key
