@@ -401,7 +401,10 @@ fn plan_for_item(ast: &Arenas, item: StructId, items: &[StructId]) -> Option<Tes
             // serialize — all killing the file. The `@param`-of-Rational sidecar path is UNAFFECTED: it desugars
             // via a `pragma param`, never through `@test`/proptest synthesis. See the spec 26-runtime-params
             // ruling — a heap Rational has no host boundary form.)
-            None if is_compound_form || is_ungeneratable_concrete_scalar(ast, ty) => {
+            None if is_compound_form
+                || is_ungeneratable_concrete_scalar(ast, ty)
+                || name_resolves_to_user_type(ast, ty, items) =>
+            {
                 return Some(TestPlan {
                     inner_def: inner,
                     wrapper_name: format!("{def_name}-gen"),
@@ -412,10 +415,15 @@ fn plan_for_item(ast: &Arenas, item: StructId, items: &[StructId]) -> Option<Tes
                     nested_anns,
                 });
             }
-            // A non-generatable bare name that is NOT a known concrete scalar (an unresolvable/ambiguous name
-            // like `Nonexistent`, or an inference-typed param) — NOT ours. Returning None leaves the genuine
-            // type error to the boundary/layout (CDZ0101 "unknown type" / "ambiguous — annotate it"), which is
-            // the actionable diagnosis; masking it as a per-test decline would hide a real mistake.
+            // A non-generatable bare name that is NOT a known concrete scalar AND does NOT resolve to a user
+            // `(type …)` declaration (an unresolvable/ambiguous name like `Nonexistent`, or an inference-typed
+            // param) — NOT ours. Returning None leaves the genuine type error to the boundary/layout (CDZ0101
+            // "unknown type" / "ambiguous — annotate it"), which is the actionable diagnosis; masking it as a
+            // per-test decline would hide a real mistake. (A bare name that DOES resolve to a user `(type …)`
+            // whose shape the generator can't produce — a recursive sum, a multi-payload variant, or a mixed
+            // nullary+payload sum classify_sum declines — is caught by the `name_resolves_to_user_type` guard
+            // above: it gets a DECLINING wrapper so the sibling tests still run, rather than escaping to the
+            // boundary and aborting the WHOLE `cdz test` file. Symmetric with the compound-form leaf case.)
             None => return None,
         }
     }
@@ -1170,6 +1178,26 @@ fn ctor_name_of_pattern(ast: &Arenas, pat: StructId) -> Option<String> {
     }
     // A bare constructor name.
     ast.as_name(pat).map(str::to_string)
+}
+
+/// True if `ty` is a BARE NAME that resolves to a user `(type NAME …)` declaration in `items` (seeing
+/// through an annotation wrapper, like `classify_sum`). Used by `plan_for_item` to distinguish a param
+/// typed by a KNOWN user type whose shape the generator can't produce (a recursive sum, a multi-payload
+/// variant, or a mixed nullary+payload sum classify_sum declines) — which should get a DECLINING wrapper
+/// so siblings survive — from a genuinely-unresolvable/inference-typed name, which should keep its CDZ0101
+/// boundary diagnostic. Without this, a `@test def p(x: T)` over such a `T` fell through to the boundary
+/// and ABORTED THE WHOLE `cdz test` file, killing every sibling test — the exact failure the
+/// declining-wrapper mechanism prevents for a non-generatable COMPOUND-FORM leaf (`(List Char)`).
+fn name_resolves_to_user_type(ast: &Arenas, ty: StructId, items: &[StructId]) -> bool {
+    let Some(type_name) = ast.as_name(ty) else {
+        return false; // not a bare name — a compound FORM is handled by `is_compound_form`
+    };
+    items.iter().copied().any(|it| {
+        type_decl_form(ast, it).is_some_and(|tail| {
+            tail.first()
+                .is_some_and(|&n| ast.as_name(n) == Some(type_name))
+        })
+    })
 }
 
 fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize) -> Option<GenTy> {
@@ -2508,10 +2536,17 @@ mod tests {
     /// guard: an unbounded generator is not synthesized.
     #[test]
     fn a_recursive_sum_declines_without_hanging() {
-        let ast = crate::testkit::parse(
+        // A recursive sum (unbounded generator) declines at the depth guard → classify_sum returns None.
+        // Because `Tree` RESOLVES to a user `(type …)`, `plan_for_item` gives it a DECLINING wrapper
+        // (`tr-gen`, trapping nullary; original `tr` neutralized) so the runner reports a per-test FAIL
+        // while a sibling still runs — rather than escaping to the export boundary and ABORTING the whole
+        // `cdz test` file (which is what "no wrapper" meant at the CLI level: `a Tree sum crosses the host
+        // boundary only as a single nullary export's result`, exit 1, siblings killed). Without hanging.
+        let mut ast = crate::testkit::parse(
             "(do (type Tree (Leaf Int64) (Node (Tuple Tree Tree))) \
                (@ test (def (tr (: t Tree)) unit)) (def (o) 1))",
         );
+        super::synthesize(&mut ast);
         let db = Db::load(ast);
         let names: Vec<String> = db
             .test_defs()
@@ -2519,21 +2554,35 @@ mod tests {
             .map(|i| db.defs[i].name.clone())
             .collect();
         assert!(
-            !names.iter().any(|n| n == "tr-gen"),
-            "a recursive sum gets no wrapper (depth guard): {names:?}"
+            names.iter().any(|n| n == "tr-gen") && !names.iter().any(|n| n == "tr"),
+            "a recursive sum gets a DECLINING wrapper (tr-gen), original tr neutralized — siblings survive \
+             instead of a file-abort: {names:?}"
+        );
+        let tr_gen = db
+            .defs
+            .iter()
+            .find(|d| d.name == "tr-gen")
+            .expect("tr-gen def exists");
+        assert!(
+            tr_gen.params.is_empty(),
+            "the declining wrapper is nullary (neutralizes the sum param → never hits the boundary)"
         );
     }
 
     /// `classify_sum` models a variant as `(VNAME PAYLOAD?)` — zero or ONE payload occurrence (several
     /// fields are a single `(Tuple …)`/`(Record …)` payload). A variant with TWO+ payload occurrences
-    /// (`(Var Int64 Bool)`) is not that shape, so the whole sum declines and no wrapper is synthesized —
-    /// the `@test` then declines cleanly at the boundary rather than a mis-generated multi-slot variant.
+    /// (`(Var Int64 Bool)`) is not that shape, so the whole sum declines (classify_sum → None). Because
+    /// `Bad` RESOLVES to a user `(type …)`, `plan_for_item` gives it a DECLINING wrapper (`b-gen`, trapping
+    /// nullary; original `b` neutralized) so the runner reports a per-test FAIL while a sibling still runs
+    /// — rather than escaping to the export boundary and ABORTING the whole `cdz test` file (what "no
+    /// wrapper" meant at the CLI: `a Bad sum crosses the host boundary…`, exit 1, siblings killed).
     #[test]
     fn a_multi_payload_variant_declines() {
-        let ast = crate::testkit::parse(
+        let mut ast = crate::testkit::parse(
             "(do (type Bad (Var Int64 Bool) (Nil)) \
                (@ test (def (b (: v Bad)) unit)) (def (o) 1))",
         );
+        super::synthesize(&mut ast);
         let db = Db::load(ast);
         let names: Vec<String> = db
             .test_defs()
@@ -2541,8 +2590,18 @@ mod tests {
             .map(|i| db.defs[i].name.clone())
             .collect();
         assert!(
-            !names.iter().any(|n| n == "b-gen"),
-            "a multi-payload variant gets no wrapper (single-payload guard): {names:?}"
+            names.iter().any(|n| n == "b-gen") && !names.iter().any(|n| n == "b"),
+            "a multi-payload variant gets a DECLINING wrapper (b-gen), original b neutralized — siblings \
+             survive instead of a file-abort: {names:?}"
+        );
+        let b_gen = db
+            .defs
+            .iter()
+            .find(|d| d.name == "b-gen")
+            .expect("b-gen def exists");
+        assert!(
+            b_gen.params.is_empty(),
+            "the declining wrapper is nullary (neutralizes the sum param → never hits the boundary)"
         );
     }
 
@@ -3033,5 +3092,44 @@ mod tests {
                  boundary)"
             );
         }
+    }
+
+    /// A `@test` over a USER-SUM param whose PAYLOAD is non-generatable (`type T = A(Char) | B` — `Char`
+    /// unsupported) gets a DECLINING wrapper (`p-gen`, trapping nullary; original `p` neutralized), NOT a
+    /// file-abort. classify_sum returns None (the `Char` payload isn't generatable), and because `T`
+    /// RESOLVES to a user `(type …)` the `name_resolves_to_user_type` guard routes it to the declining
+    /// wrapper — so a sibling test still runs, rather than `p` escaping to the export boundary and aborting
+    /// the whole `cdz test` file (`a T sum crosses the host boundary…`, exit 1, siblings killed). The
+    /// user-sum counterpart to `a_nongeneratable_leaf_compound_gets_a_declining_wrapper` (a COMPOUND-FORM
+    /// leaf). GUARDS AGAINST OVER-CAPTURE: an UNRESOLVABLE bare name still returns None (keeps its CDZ0101),
+    /// pinned by `an_unknown_bare_name_type_param_is_not_masked_as_a_declining_wrapper`; and a GENERATABLE
+    /// sum still gets a REAL wrapper, pinned by `synthesizes_a_generator_wrapper_for_a_sum_test`.
+    #[test]
+    fn a_user_sum_with_a_nongeneratable_payload_gets_a_declining_wrapper() {
+        let mut ast = crate::testkit::parse(
+            "(do (type T (A Char) (B)) \
+               (@ test (def (p (: x T)) unit)) (def (o) 1))",
+        );
+        super::synthesize(&mut ast);
+        let db = Db::load(ast);
+        let names: Vec<String> = db
+            .test_defs()
+            .into_iter()
+            .map(|i| db.defs[i].name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "p-gen") && !names.iter().any(|n| n == "p"),
+            "a user-sum-with-nongeneratable-payload gets a DECLINING wrapper (p-gen), original p \
+             neutralized — siblings survive instead of a file-abort: {names:?}"
+        );
+        let p_gen = db
+            .defs
+            .iter()
+            .find(|d| d.name == "p-gen")
+            .expect("p-gen def exists");
+        assert!(
+            p_gen.params.is_empty(),
+            "the declining wrapper is nullary (neutralizes the sum param → never hits the boundary)"
+        );
     }
 }
