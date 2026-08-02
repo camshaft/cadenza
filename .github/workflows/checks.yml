@@ -296,11 +296,14 @@ jobs:
         working-directory: implementation/seed/crates/cdz-agent-host
         run: |
           # The Cedar authorizer GUEST (tests/fixtures/cedar-policy-guest, a wit-bindgen guest embedding a
-          # Cedar PolicySet) is lifted to a wasm component that the kernel's ComponentAuthorizer instantiates.
-          # Guard against a STALE fixture (WIT or guest source changed) by rebuilding from source + verifying
-          # the fresh build is a VALID component (wasm-tools validate) — NOT a byte-diff (guest dep versions
-          # aren't lock-pinned + CI floats toolchains → different-but-valid bytes; same rationale as
-          # reducer-guest, trunk@455dcb7e7). Catches "source no longer produces a valid authorizer component."
+          # Cedar PolicySet) is lifted to a wasm component that the kernel's ComponentAuthorizer instantiates
+          # + that the cedar_authz_e2e test drives. Rebuild it from source here + verify the fresh build is a
+          # VALID component (wasm-tools validate). This catches "source no longer produces a valid authorizer
+          # component" — NOT staleness of a committed artifact (there is NO committed cedar .component.wasm:
+          # it's ~3.3 MB with the Cedar engine embedded, so it's CI-built here, not checked in). Validate,
+          # not a byte-diff: guest dep versions aren't lock-pinned + CI floats toolchains → different-but-
+          # valid bytes (same rationale as reducer-guest, trunk@455dcb7e7). The lifted component's PATH is
+          # handed to the e2e via CEDAR_POLICY_COMPONENT (next step).
           rustup target add wasm32-unknown-unknown
           ( cd tests/fixtures/cedar-policy-guest && cargo build --target wasm32-unknown-unknown --release )
           wasm-tools component new \
@@ -310,12 +313,19 @@ jobs:
             || { echo "::error::cedar-policy-guest source no longer builds a valid wasm component"; exit 1; }
       - name: Test + lint the cdz-agent-host crate (standalone workspace)
         working-directory: implementation/seed/crates/cdz-agent-host
+        # Hand the lifted Cedar component (built above) to the cedar_authz_e2e test, which gates a real
+        # agent through the kernel's ComponentAuthorizer built from it (permit + fail-closed deny). Absent
+        # this var — a plain local `cargo test` without the wasm toolchain — that e2e skips cleanly.
+        env:
+          CEDAR_POLICY_COMPONENT: /tmp/cedar_policy_guest.component.wasm
         run: |
           cargo test
           cargo clippy --all-targets -- -D warnings
           cargo fmt --check
-          # `live-net` gates the network executors (Bedrock model / real HTTP transports). Lint AND (where a
-          # runner has egress) test it — but the default build stays hermetic, so gate it clippy-clean here.
+          # `live-net` gates the network executors (Bedrock model / real HTTP transports), which need egress
+          # + credentials a CI runner lacks — so LINT-ONLY here (clippy), no `cargo test --features live-net`
+          # (unlike the sibling cdz-kernel live-exec, whose subprocess spawn works on any runner). The default
+          # build stays hermetic; the live transports are exercised where egress exists, not in this job.
           cargo clippy --all-targets --features live-net -- -D warnings
 
   rcdzc-wasm:
