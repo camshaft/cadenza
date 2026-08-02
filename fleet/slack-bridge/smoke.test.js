@@ -154,6 +154,19 @@ test("empty-ish text yields a non-empty subject placeholder", () => {
   assert.ok(i.subject.length > 0);
 });
 
+test("subject cap is by code points — an astral char is never split into a lone surrogate", () => {
+  // 200 emoji (each a UTF-16 surrogate PAIR). Capping by `firstLine.length`/`slice` (UTF-16 units)
+  // would cut mid-pair at index 117 → a lone surrogate = ill-formed subject, disagreeing with the
+  // Rust `cap_subject` (Unicode scalars). Cap by code points so JS and Rust match (PR #405 class).
+  const i = parseOperatorMessage("👍".repeat(200), "concierge");
+  const cps = [...i.subject];
+  assert.ok(cps.length <= 120, `capped by code points: ${cps.length}`);
+  assert.ok(i.subject.endsWith("…"), "capped subject is elided");
+  // A well-formed string round-trips through UTF-8 unchanged; a lone surrogate becomes U+FFFD.
+  assert.ok(!Buffer.from(i.subject, "utf8").toString("utf8").includes("�"), "no lone surrogate");
+  assert.strictEqual(cps[cps.length - 2], "👍", "the char before the ellipsis is a whole emoji");
+});
+
 // ---- format: fleet → Slack render -----------------------------------------------------------------
 
 test("renderFleetMessage shows from, kind, subject, body, ref", () => {
