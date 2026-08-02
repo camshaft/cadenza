@@ -270,6 +270,57 @@ mod tests {
     }
 
     #[test]
+    fn effect_family_strings_are_a_stable_lowercase_ascii_wire_contract() {
+        // Slice 1 made the `effect_ct` family strings a CROSS-SITE WIRE CONTRACT: they are the exact
+        // bytes the codec writes into the durable append-only log, the key the executor router matches
+        // on, and the Cedar policy ACTION name. So their literal values are frozen — a rename (even one
+        // that keeps family()/from_family consistent, e.g. "shell"→"Shell") would silently break on-disk
+        // log compatibility + every deployed Cedar policy. The round-trip test only pins http's literal;
+        // this pins the WHOLE vocab byte-for-byte, plus the two structural invariants a string-keyed
+        // registry needs (no collisions, canonical lowercase-ascii) so a future extension can't drift.
+        let vocab = [
+            (EffectKind::Shell, effect_ct::SHELL, "shell"),
+            (EffectKind::Http, effect_ct::HTTP, "http"),
+            (EffectKind::Model, effect_ct::MODEL, "model"),
+            (EffectKind::Now, effect_ct::NOW, "now"),
+            (EffectKind::Timer, effect_ct::TIMER, "timer"),
+            (EffectKind::Emit, effect_ct::EMIT, "emit"),
+        ];
+        // 1. Every const is its exact frozen literal, and family() returns that same const (one source).
+        for (kind, konst, literal) in &vocab {
+            assert_eq!(
+                konst, literal,
+                "the {literal:?} family const drifted from its wire byte"
+            );
+            assert_eq!(
+                &kind.family(),
+                konst,
+                "family() must return the effect_ct const verbatim"
+            );
+        }
+        // 2. The family strings are pairwise UNIQUE — a string-keyed router/authz would be ambiguous if
+        //    two kinds shared a name (a copy-paste typo like MODEL:"http"), so pin no-collision directly.
+        for i in 0..vocab.len() {
+            for j in (i + 1)..vocab.len() {
+                assert_ne!(
+                    vocab[i].1, vocab[j].1,
+                    "family strings must be unique: {} and {} collide",
+                    vocab[i].1, vocab[j].1
+                );
+            }
+        }
+        // 3. Canonical form: lowercase ASCII, non-empty (the doc's "lowercase FAMILY string" promise —
+        //    a new extension const that broke this would route/authorize inconsistently across sites).
+        for (_, konst, _) in &vocab {
+            assert!(!konst.is_empty(), "a family string must be non-empty");
+            assert!(
+                konst.chars().all(|c| c.is_ascii_lowercase()),
+                "family string {konst:?} must be lowercase ascii (canonical wire form)"
+            );
+        }
+    }
+
+    #[test]
     fn timeliness_defaults_to_interactive_and_batchable_carries_its_hint() {
         // Default is Interactive (the operator's latency-sensitive default — every effect runs now
         // unless it opts into batching).
