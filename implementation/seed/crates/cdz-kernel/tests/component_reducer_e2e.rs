@@ -68,6 +68,31 @@ fn real_guest_component_folds_through_apply_end_to_end() {
     );
 }
 
+/// Operator wasmtime-instance-pooling perf directive: a dependency-free fold-exporting reducer is
+/// PRE-INSTANTIATED once at construction (cached `ReducerPre`), so every fold skips the link/type-check
+/// and just `.instantiate(store)`s. The real guest declares no deps + exports `fold`, so it takes the
+/// fast path; a fold still works identically through it (behavior unchanged — the cache is a perf lever,
+/// not a semantic one). True Instance-reuse across folds is unsafe (Instance is Store-bound); caching
+/// the pre-instantiation is the safe form.
+#[test]
+fn dependency_free_reducer_takes_the_cached_instance_pre_fast_path() {
+    let reducer = ComponentReducer::from_component_bytes(GUEST).expect("valid reducer component");
+    assert!(
+        reducer.uses_cached_instance_pre(),
+        "a dep-free fold-exporting reducer must cache its ReducerPre (the per-fold fast path)"
+    );
+    // The fast path still folds correctly (same result as the slow path would give).
+    let ct = ContentType {
+        family: "message".to_string(),
+        version: 1,
+    };
+    let (effects, kv) = reducer
+        .apply(Kv::new(), ct, Some(b"hello".to_vec()), None)
+        .expect("cached-pre fold works");
+    assert_eq!(effects.len(), 1);
+    assert_eq!(kv.get(b"count"), Some(&[1u8][..]));
+}
+
 /// §22d fuel bound: a fold that exceeds its fuel budget is aborted with a DISTINCT
 /// `ComponentError::FuelExhausted` (not a semantic `Trap`) — the runaway-guest DoS guard (Copilot
 /// PR#1009). We can't easily commit a forever-looping component fixture, so we starve the REAL guest:

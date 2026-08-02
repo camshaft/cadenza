@@ -172,6 +172,17 @@ pub struct ComponentReducer {
     // because a dep instance must live in the SAME per-fold `Store` as the consumer — so composition
     // happens per fold, from these bytes, not once at construction.
     resolved_deps: Vec<(String, Vec<u8>)>,
+    // PRE-INSTANTIATION artifact for the dependency-FREE path (operator perf directive: don't re-do the
+    // link/type-check work every fold). `Linker::instantiate` is `instantiate_pre(component)?.instantiate
+    // (store)` — the `instantiate_pre` half (resolving + type-checking the linker against the component)
+    // is IDENTICAL every fold since neither `component` nor `linker` changes, so we do it ONCE at
+    // construction and each fold just calls `.instantiate(store)` on the cached `ReducerPre`. `None` for a
+    // reducer with resolved deps (its linker is composed PER-FOLD in the shared store — the deps' instances
+    // can't outlive a fold's store — so that path can't reuse a single pre-instantiation; it stays on the
+    // per-fold `Reducer::instantiate`). True Instance-reuse across folds is unsafe (an `Instance` is bound
+    // to its `Store`, and each fold needs a fresh `Store` for its `ReducerHost` KV) — caching the
+    // `ReducerPre` is the safe, wasmtime-idiomatic form of the operator's "persist instances" intent.
+    instance_pre: Option<ReducerPre<ReducerHost>>,
     // The per-fold fuel budget (§22d): the hard instruction ceiling one `apply` may consume before the
     // guest is aborted with [`ComponentError::FuelExhausted`]. A runaway/looping reducer can't hang the
     // kernel (Copilot PR#1009 DoS gap). Enforced by wasmtime's fuel metering (engine `consume_fuel` +
@@ -412,12 +423,32 @@ impl ComponentReducer {
         // Composing resolved dep bytes into the linker is the next slice; here we record the declared set
         // so a caller can resolve their bytes from CAS (`resolve_deps`) and `apply` knows what to compose.
         let deps = declared_deps(&component, &engine)?;
+        // Pre-instantiate ONCE for the dependency-free path (perf): resolve + type-check the linker
+        // against the component now, so each fold just `.instantiate(store)`s the cached `ReducerPre`
+        // instead of re-linking. Only valid when there are no deps to compose per-fold (a dep reducer's
+        // linker differs each fold). `instantiate_pre` fails only on a genuine link/type mismatch — the
+        // same error `Reducer::instantiate` would raise — so surface it as `Instantiate` at construction.
+        // Pre-instantiate ONLY if it succeeds — `ReducerPre::new` type-checks that the component exports
+        // the `fold` world, so a valid-but-non-fold-exporting component (e.g. a construction-only test
+        // fixture, or a not-yet-a-reducer blob) can't be pre-instantiated. In that case leave
+        // `instance_pre = None`: `apply` falls back to the per-fold `Reducer::instantiate`, which surfaces
+        // the SAME "no fold export" error at apply time — so construction stays lenient (unchanged
+        // contract: any valid component builds), and only real fold-exporting reducers get the fast path.
+        let instance_pre = if deps.is_empty() {
+            linker
+                .instantiate_pre(&component)
+                .ok()
+                .and_then(|pre| ReducerPre::new(pre).ok())
+        } else {
+            None
+        };
         Ok(ComponentReducer {
             engine,
             component,
             linker,
             deps,
             resolved_deps: Vec::new(),
+            instance_pre,
             fuel_budget: DEFAULT_FOLD_FUEL,
         })
     }
@@ -433,6 +464,13 @@ impl ComponentReducer {
             .into_iter()
             .map(|(dep, bytes)| (dep.import_name, bytes))
             .collect();
+        // Attaching deps moves this reducer to the per-fold compose path — the cached dependency-free
+        // pre-instantiation no longer applies (its linker lacks the dep imports), so drop it. `apply`
+        // sees `instance_pre == None` and composes deps per fold. (If `resolved` is empty this is a no-op
+        // set + a harmless clear — a genuinely dep-free reducer keeps its pre via `from_component_bytes`.)
+        if !self.resolved_deps.is_empty() {
+            self.instance_pre = None;
+        }
         self
     }
 
@@ -460,6 +498,14 @@ impl ComponentReducer {
     /// [`ComponentReducer::resolve_deps`]). The kernel treats every dep identically — no dep is special.
     pub fn deps(&self) -> &[ComponentDep] {
         &self.deps
+    }
+
+    /// Whether this reducer takes the cached-`ReducerPre` FAST PATH per fold (perf): `true` for a
+    /// dependency-free, fold-exporting reducer (pre-instantiated once at construction, so each `apply`
+    /// skips re-linking); `false` for a dep reducer (composed per fold) or a component that doesn't
+    /// export the `fold` world (falls back to per-fold instantiate). Exposed for observability + tests.
+    pub fn uses_cached_instance_pre(&self) -> bool {
+        self.instance_pre.is_some()
     }
 
     /// Resolve ALL of this reducer's declared dependency bytes from a blob store (§23), each paired with
@@ -517,33 +563,41 @@ impl ComponentReducer {
             let kv = store.into_data().into_kv();
             return Err((ComponentError::Instantiate(e.to_string()), kv));
         }
-        // Compose this reducer's resolved dependency components into the linker BEFORE instantiate (§23):
-        // each dep instance must live in THIS fold's `store`, so composition is per-fold. A
-        // dependency-free reducer (empty `resolved_deps`) instantiates directly against `self.linker`
-        // (no clone). With deps, clone the base linker (carrying the `kv` host import) and compose each
-        // dep into the clone under its import name. `bindgen`'s generated `Reducer::instantiate` uses the
-        // linker, so composing into it is what satisfies the guest's dep imports.
-        let composed_linker;
-        let linker = if self.resolved_deps.is_empty() {
-            &self.linker
-        } else {
-            let mut l = self.linker.clone();
-            for (import_name, bytes) in &self.resolved_deps {
-                if let Err(e) =
-                    compose_dep_into_linker(&self.engine, &mut store, &mut l, import_name, bytes)
-                {
+        // Instantiate the guest. FAST PATH (dependency-free): use the cached `instance_pre` — the link/
+        // type-check was done ONCE at construction, so this fold just `.instantiate(store)`s it (perf
+        // directive; no per-fold re-link). DEP PATH: this reducer's resolved dep components must be
+        // composed into the linker in THIS fold's `store` (a dep instance can't outlive the store), so we
+        // clone the base linker, compose each dep, and instantiate against the composed linker — can't
+        // reuse a single pre-instantiation. (`instance_pre` is None exactly when there are deps.)
+        let instance = match &self.instance_pre {
+            Some(pre) => match pre.instantiate(&mut store) {
+                Ok(i) => i,
+                Err(e) => {
                     let kv = store.into_data().into_kv();
-                    return Err((e, kv));
+                    return Err((ComponentError::Instantiate(e.to_string()), kv));
                 }
-            }
-            composed_linker = l;
-            &composed_linker
-        };
-        let instance = match Reducer::instantiate(&mut store, &self.component, linker) {
-            Ok(i) => i,
-            Err(e) => {
-                let kv = store.into_data().into_kv();
-                return Err((ComponentError::Instantiate(e.to_string()), kv));
+            },
+            None => {
+                let mut l = self.linker.clone();
+                for (import_name, bytes) in &self.resolved_deps {
+                    if let Err(e) = compose_dep_into_linker(
+                        &self.engine,
+                        &mut store,
+                        &mut l,
+                        import_name,
+                        bytes,
+                    ) {
+                        let kv = store.into_data().into_kv();
+                        return Err((e, kv));
+                    }
+                }
+                match Reducer::instantiate(&mut store, &self.component, &l) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        let kv = store.into_data().into_kv();
+                        return Err((ComponentError::Instantiate(e.to_string()), kv));
+                    }
+                }
             }
         };
         if let Err(e) = store.set_fuel(self.fuel_budget) {
@@ -952,6 +1006,9 @@ mod tests {
             Err(e) => panic!("valid component: {e:?}"),
         };
         assert!(reducer.resolved_deps.is_empty(), "none attached yet");
+        // The empty component exports no `fold` world, so it can't be pre-instantiated — falls back to
+        // per-fold instantiate (which would surface the missing-fold error at apply time, unchanged).
+        assert!(!reducer.uses_cached_instance_pre());
         let dep = ComponentDep {
             import_name: "cadenza:runtime/heap@0.0.0+abc".to_string(),
             hash: Hash::of(b"a dep"),
