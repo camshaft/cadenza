@@ -6,8 +6,10 @@ see the Status section at the bottom for the resolved operator decisions). Owner
 flake that builds + wires *everything*, with incremental test-skipping, no committed-wasm, and a
 shared cache.
 
-This is a FEASIBILITY + INCREMENTAL-PATH read, not a commitment. The CI-gated parallel-lanes rewire
-(`fleet/CI-GATED-LANES-DESIGN.md`) remains priority #1; this is evaluated alongside, not instead.
+This started as a feasibility + incremental-path read and is now the COMMITTED direction (operator
+GO, 2026-08-02 — see the Status section at the bottom). The CI-gated parallel-lanes rewire
+(`fleet/CI-GATED-LANES-DESIGN.md`) remains priority #1; the Nix migration proceeds alongside it, with
+N1+ HELD behind the CI-lanes I4/I5 cutover (never two big pipeline changes in flight at once).
 
 ## The operator's pitch (verbatim intent)
 
@@ -21,16 +23,17 @@ committing built wasm, (3) shared cache (cachix).
 
 ## Ground-truth corrections (verified against the tree, 2026-08-02)
 
-The note's stated evidence needs two corrections before scoping — they change the starting point but
+The note's stated evidence needed two corrections at scoping time — they changed the starting point but
 not the merit of the idea:
 
-1. **"cachix already wired … see `.github/workflows/k-framework.yml:26`" is STALE.** There is NO
-   `k-framework.yml`, NO `flake.nix`/`flake.lock`, and NO `cachix` reference in the current tree's
-   **CI / Nix config** — `git ls-files` + grep over `.github/**` and any flake files = 0 hits (this
-   doc's own prose aside). They DID exist historically — the K-framework reference
-   implementation (PRs #141–#144: `camshaft` + `k-framework` cachix caches added to a flake and CI) —
-   but that whole `reference/` subsystem, its flake, and its cachix wiring were **removed**. So we are
-   NOT extending a live flake; we would be **re-introducing** one from scratch. The upside: there's a
+1. **"cachix already wired … see `.github/workflows/k-framework.yml:26`" was STALE.** At scoping time
+   there was NO `k-framework.yml`, NO `flake.nix`/`flake.lock`, and NO `cachix` reference in the tree's
+   **CI / Nix config** — `git ls-files` + grep over `.github/**` and any flake files = 0 hits. (N0 has
+   since ADDED `flake.nix` + `flake.lock`; what remains missing is any `k-framework.yml` and any cachix
+   CI wiring — those come with N1+.) The flake + cachix DID exist historically — the K-framework
+   reference implementation (PRs #141–#144: `camshaft` + `k-framework` cachix caches added to a flake
+   and CI) — but that whole `reference/` subsystem, its flake, and its cachix wiring were **removed**.
+   So we were NOT extending a live flake; N0 **re-introduced** one from scratch. The upside: there's a
    known-good prior-art commit to crib from (`7815edccb`, `0d625573a`) for the cachix + flake shape,
    and the `camshaft` cachix cache is CONFIRMED to still exist (operator) — so N1+ just wires its push
    token, no new-cache provisioning. Net effort is HIGHER than "extend what's wired" but the pattern is
