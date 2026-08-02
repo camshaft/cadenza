@@ -4941,6 +4941,21 @@ mod tests {
     }
 
     #[test]
+    fn definition_on_a_builtin_reference_is_none() {
+        // The LSP go-to-def analogue of the cdz-def "no navigable definition (a literal/builtin) fails"
+        // contrast (#1312): a reference to a BUILTIN / prelude operator has no USER definition in the
+        // buffer to jump to, so go-to-definition declines (None) rather than landing somewhere wrong.
+        // This is the deliberate contrast with hover-doc (which surfaces a type even for a builtin) — pin
+        // it so a refactor can't make go-to-def resolve a builtin to a spurious location.
+        let text = "def main = 1 + 2";
+        // Cursor on the `+` operator (col 13 of `def main = 1 + 2`).
+        assert!(
+            definition_at(text, true, Position::new(0, 13), &test_uri()).is_none(),
+            "go-to-definition on a builtin operator has no navigable user-def → None"
+        );
+    }
+
+    #[test]
     fn type_definition_jumps_from_a_value_to_its_type_declaration() {
         // Go-to-TYPE-definition: from a value whose static type is the user-declared `Color`, jump to the
         // `type Color = …` declaration (line 0), NOT the value's own definition. `favorite` returns Color;
