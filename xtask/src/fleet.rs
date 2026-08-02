@@ -661,6 +661,15 @@ pub enum FleetCmd {
         #[arg(long, default_value_t = 8)]
         cap: usize,
     },
+    /// Report where a merge-request stands in the CI-gated pipeline — in-flight as a candidate PR (with
+    /// lane + how to poll its CI), queued at a position in its lane, or resolved (merged/rejected). A
+    /// read-only join over `ci-dispatch` + the queue + inboxes so agents self-serve "where is my MR?"
+    /// instead of pinging pr-sync. See `fleet/CI-GATED-LANES-DESIGN.md`.
+    MrStatus {
+        /// A merge-request `--ref` (abbreviated ok) OR an agent name to look up.
+        #[arg(value_name = "REF_OR_AGENT")]
+        query: String,
+    },
     /// STAGE a batch of merge-request refs into a SCRATCH ref (`refs/fleet/batch-staging`) built off the
     /// CURRENT `trunk`, WITHOUT touching `trunk`. This closes the intermediate-rewind window at its source:
     /// pr-sync's historical batch build did `git reset --hard trunk` then `git merge --no-ff` each ref onto
@@ -884,6 +893,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::LaneOf { r#ref } => lane_of_cmd(&r#ref),
         FleetCmd::DispatchPlan { r#ref, agent } => dispatch_plan(&fleet, &r#ref, &agent),
         FleetCmd::SchedulePlan { cap } => schedule_plan(&fleet, cap),
+        FleetCmd::MrStatus { query } => mr_status(&fleet, &query),
         FleetCmd::BatchStage { refs } => batch_stage(&fleet, &refs),
         FleetCmd::BatchCommit { execute } => batch_commit(&fleet, execute),
     }
@@ -7238,6 +7248,149 @@ fn lane_is_parallel(label: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Where a merge-request stands in the CI-gated pipeline — the answer `fleet mr-status` gives so an
+/// agent (or the concierge) can self-serve "where is my MR?" instead of pinging pr-sync (pilot found a
+/// steady status-ping load; the `ci-dispatch` state + queue already hold the answer). See I5 in
+/// `fleet/CI-GATED-LANES-DESIGN.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MrStatus {
+    /// Dispatched as candidate PR #N in `lane` (poll its CI with `fleet ci-status <N>`).
+    InFlight { pr: u64, lane: String },
+    /// Still queued in pr-sync's inbox at 0-based `pos_in_lane` behind other same-lane MRs (a
+    /// serialized lane admits one at a time; a parallel lane is only cap-bounded). `lane` is its lane.
+    Queued { lane: String, pos_in_lane: usize },
+    /// Neither in flight nor queued — already resolved (merged/rejected), or an unknown ref/agent. The
+    /// command then checks the sender's inbox for a `merged`/`reject` reply to say which.
+    NotPending,
+}
+
+/// Pure classification of a query (an MR `--ref` OR an agent name) against the in-flight dispatch
+/// records and the queued merge-requests. Returns the first match: in-flight (ref or agent matches a
+/// dispatch) → `InFlight`; else queued (ref or agent matches a queued MR) → `Queued` with its position
+/// among same-lane queued MRs (oldest-first); else `NotPending`. Prefix-matches the ref (abbreviated
+/// shas), case-insensitively (git shas). Pure over its inputs so the join logic is unit-tested.
+fn mr_status_of(
+    query: &str,
+    dispatches: &[CiDispatch],
+    queued: &[(String, String, String)], // (mr_file, ref, lane) oldest-first
+) -> MrStatus {
+    let q = query.trim().to_ascii_lowercase();
+    let ref_matches = |r: &str| {
+        let r = r.to_ascii_lowercase();
+        !q.is_empty() && (r.starts_with(&q) || q.starts_with(&r))
+    };
+    // In-flight? (only records still in flight — a resolved one isn't occupying the pipeline).
+    if let Some(d) = dispatches
+        .iter()
+        .filter(|d| dispatch_is_in_flight(d))
+        .find(|d| ref_matches(&d.r#ref) || d.agent == query)
+    {
+        return MrStatus::InFlight {
+            pr: d.pr_number,
+            lane: d.lane.clone(),
+        };
+    }
+    // Queued? Find the MR by ref (abbreviated/case-insensitive), then its 0-based position among
+    // same-lane queued MRs (dispatch order, oldest-first).
+    if let Some((_, _, lane)) = queued.iter().find(|(_, r, _)| ref_matches(r)) {
+        let pos = queued
+            .iter()
+            .filter(|(_, _, l)| l == lane)
+            .position(|(_, r, _)| ref_matches(r))
+            .unwrap_or(0);
+        return MrStatus::Queued {
+            lane: lane.clone(),
+            pos_in_lane: pos,
+        };
+    }
+    MrStatus::NotPending
+}
+
+/// `fleet mr-status <ref-or-agent>`: report where a merge-request stands — in-flight as a candidate PR
+/// (with its lane + live CI verdict), queued at a position in its lane, or not-pending (then look for a
+/// `merged`/`reject` reply in the sender's inbox). Read-only join over `.claude/fleet/ci-dispatch/` +
+/// pr-sync's queue + the sender's inbox. Lets agents/concierge self-serve "where is my MR?" instead of
+/// pinging pr-sync (I5, `fleet/CI-GATED-LANES-DESIGN.md`). Composes with `ci-status` + `lane-of`.
+fn mr_status(fleet: &Fleet, query: &str) {
+    let dispatches = read_ci_dispatches(fleet);
+    let queued: Vec<(String, String, String)> = queued_merge_requests(fleet)
+        .into_iter()
+        .map(|mr| (mr.file, mr.r#ref.clone(), lane_label_for_ref(&mr.r#ref)))
+        .collect();
+    match mr_status_of(query, &dispatches, &queued) {
+        MrStatus::InFlight { pr, lane } => {
+            println!("{query}: IN-FLIGHT as candidate PR #{pr} (lane {lane}).");
+            println!("  poll its CI: cargo xtask fleet ci-status {pr}");
+        }
+        MrStatus::Queued { lane, pos_in_lane } => {
+            let ahead = queued.iter().filter(|(_, _, l)| *l == lane).count();
+            println!(
+                "{query}: QUEUED in lane '{lane}' — position {} of {} same-lane MR(s){}.",
+                pos_in_lane + 1,
+                ahead,
+                if lane_is_parallel(&lane) {
+                    " (parallel lane — cap-bounded, not serialized)"
+                } else {
+                    " (serialized lane — one in flight at a time)"
+                }
+            );
+        }
+        MrStatus::NotPending => {
+            // Not in flight or queued → look for a resolved reply in the asker's own inbox.
+            let reply = mr_resolved_reply(fleet, query);
+            match reply {
+                Some((kind, subject)) => {
+                    println!("{query}: {} — \"{subject}\".", kind.to_uppercase())
+                }
+                None => println!(
+                    "{query}: not pending (no in-flight PR, not queued, no merged/reject reply found) \
+                     — already landed under a re-parented sha, an unknown ref/agent, or a stale query."
+                ),
+            }
+        }
+    }
+}
+
+/// Scan the querying agent's OWN inbox (+ processed/) for the most recent `merged`/`reject` reply whose
+/// ref or body mentions the query — so `mr-status` on a resolved MR can say which. Best-effort: returns
+/// `(kind, subject)` of the first match, or `None`. Only used for the `NotPending` case.
+fn mr_resolved_reply(fleet: &Fleet, query: &str) -> Option<(String, String)> {
+    let q = query.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return None;
+    }
+    // Look in the query-as-agent's inbox if it names an agent, else scan all agent inboxes is overkill —
+    // the common call is `mr-status <my-ref>` from the owner, so check the inbox dirs for a reply whose
+    // ref/subject/body contains the query. Scan the hub inbox root's per-agent dirs + their processed/.
+    let inbox_root = fleet.root.join("inbox");
+    let agent_dirs = std::fs::read_dir(&inbox_root).ok()?;
+    for ad in agent_dirs.filter_map(Result::ok) {
+        for dir in [ad.path(), ad.path().join("processed")] {
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in rd.filter_map(Result::ok) {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if !(name.ends_with("-merged.json") || name.ends_with("-reject.json")) {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(e.path()) else {
+                    continue;
+                };
+                let hay = text.to_ascii_lowercase();
+                if hay.contains(&q)
+                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+                {
+                    let kind = v.get("kind").and_then(|x| x.as_str()).unwrap_or("reply");
+                    let subject = v.get("subject").and_then(|x| x.as_str()).unwrap_or("");
+                    return Some((kind.to_string(), subject.to_string()));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Build the value-heap runtime store in the gate-batch scratch worktree (`cargo xtask build`), so the
 /// combined-tree gate can resolve the runtime by content address instead of false-failing every heap
 /// case as a store miss. Returns true on success. Runs in `wt` (its own `target/cadenza-store`).
@@ -11593,6 +11746,100 @@ mod tests {
         assert_eq!(reap_action(false, Pending), ReapAction::KeepWaiting);
         assert_eq!(reap_action(false, Green), ReapAction::KeepWaiting);
         assert_eq!(reap_action(false, NoChecks), ReapAction::KeepWaiting);
+    }
+
+    #[test]
+    fn mr_status_of_joins_dispatch_and_queue() {
+        let disp = |mr: &str, agent: &str, r: &str, pr: u64, lane: &str, status: &str| CiDispatch {
+            mr_file: mr.into(),
+            agent: agent.into(),
+            r#ref: r.into(),
+            cand_branch: format!("cand/{agent}-{r}"),
+            cand_sha: "x".into(),
+            pr_number: pr,
+            lane: lane.into(),
+            status: status.into(),
+        };
+        let dispatches = vec![
+            disp("m1.json", "v-a", "aaaa1111", 1201, "code", "in-flight"),
+            disp("m2.json", "v-b", "bbbb2222", 1202, "docs", "merged"), // resolved → not in-flight
+        ];
+        // (mr_file, ref, lane) oldest-first: two serialized `code` queued behind, one `docs`.
+        let queued = vec![
+            (
+                "q1.json".to_string(),
+                "cccc3333".to_string(),
+                "code".to_string(),
+            ),
+            (
+                "q2.json".to_string(),
+                "dddd4444".to_string(),
+                "code".to_string(),
+            ),
+            (
+                "q3.json".to_string(),
+                "eeee5555".to_string(),
+                "docs".to_string(),
+            ),
+        ];
+
+        // In-flight by ref (abbreviated, case-insensitive) and by agent.
+        assert_eq!(
+            mr_status_of("aaaa1111", &dispatches, &queued),
+            MrStatus::InFlight {
+                pr: 1201,
+                lane: "code".into()
+            }
+        );
+        assert_eq!(
+            mr_status_of("AAAA", &dispatches, &queued),
+            MrStatus::InFlight {
+                pr: 1201,
+                lane: "code".into()
+            }
+        );
+        assert_eq!(
+            mr_status_of("v-a", &dispatches, &queued),
+            MrStatus::InFlight {
+                pr: 1201,
+                lane: "code".into()
+            }
+        );
+        // A RESOLVED dispatch (status=merged) is NOT reported in-flight — falls through.
+        assert_eq!(
+            mr_status_of("bbbb2222", &dispatches, &queued),
+            MrStatus::NotPending
+        );
+
+        // Queued: position within its lane (0-based), oldest-first.
+        assert_eq!(
+            mr_status_of("cccc3333", &dispatches, &queued),
+            MrStatus::Queued {
+                lane: "code".into(),
+                pos_in_lane: 0
+            }
+        );
+        assert_eq!(
+            mr_status_of("dddd4444", &dispatches, &queued),
+            MrStatus::Queued {
+                lane: "code".into(),
+                pos_in_lane: 1
+            }
+        );
+        assert_eq!(
+            mr_status_of("eeee5555", &dispatches, &queued),
+            MrStatus::Queued {
+                lane: "docs".into(),
+                pos_in_lane: 0
+            }
+        );
+
+        // Unknown ref/agent, and empty query → NotPending (never a false in-flight).
+        assert_eq!(
+            mr_status_of("ffff9999", &dispatches, &queued),
+            MrStatus::NotPending
+        );
+        assert_eq!(mr_status_of("", &dispatches, &queued), MrStatus::NotPending);
     }
 
     #[test]
