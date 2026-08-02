@@ -7166,3 +7166,21 @@ fn rustc_host_call_no_arg_int_result_emits_a_canonical_shim_call() {
         "a host call with arguments declines (later increment):\n{with_args:?}"
     );
 }
+
+#[test]
+fn rustc_host_call_narrow_int_result_casts_the_shim_i64_to_the_declared_width() {
+    // H1 host-call emit, narrow-result face: a delegated host op whose result is a NARROW fixed-width int
+    // (`src.next -> UInt8`) emits `(crate::__cdz_host_<key>() as u8)` — the runner's shim returns the recorded
+    // scalar as `i64`, and the emit casts to the op's DECLARED width. `as u8` truncates to the byte, matching
+    // the wasm boundary's width semantics (the host supplies a value of the op's declared type). Here the
+    // whole is re-widened by `Int64.of`, so the emit is `((… as u8) as i64)` — pins BOTH the narrow cast and
+    // that it composes with a widening op. No corpus case exercises a DELEGATED narrow-result host op (the
+    // only UInt8 host op is handled in-program), so this rcdzc-lib pin is the sole witness for the cast path.
+    let src = "(module m (effect src (op next (-> Unit UInt8))) \
+        (def (main) (host (src) (Int64.of (src.next)))) (export main))";
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("crate::__cdz_host_src_next() as u8"),
+        "a UInt8-result host op casts the shim's i64 to u8 (the declared width):\n{rs}"
+    );
+}
