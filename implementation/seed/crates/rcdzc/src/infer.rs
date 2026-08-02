@@ -1075,7 +1075,19 @@ pub(crate) fn nested_runtime_width_type(db: &mut Db, ty_expr: StructId) -> Optio
 /// out-of-range nested literal's reject (anchored at that literal, so `cdz fix` targets it).
 fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) -> Option<Reject> {
     let expected = crate::eval::typeval_of(db, ty_expr)?;
-    match &expected {
+    nested_literal_width_faults_against(db, value, &expected)
+}
+
+/// The `&Ty`-typed core of [`nested_literal_width_faults`] — takes the already-resolved expected `Ty`
+/// instead of an annotation NODE, so a collection builder-chain arm (a `Map.insert`/`Set.insert` operand)
+/// can RECURSE into the operand collection against the SAME `Ty::Map`/`Ty::Set` without a type-expr node
+/// to re-resolve. The public entry point resolves `ty_expr` once and delegates here.
+fn nested_literal_width_faults_against(
+    db: &mut Db,
+    value: StructId,
+    expected: &Ty,
+) -> Option<Reject> {
+    match expected {
         // A NARROW-INT annotation on a non-literal that `literal_width_fault` could not check directly — a
         // runtime `(if c 10000 0)` / `(match …)` annotated `(: … UInt8)`: the value is neither a
         // `Resolved::Int` nor a folding constant, so the scalar check above found nothing, yet each live
@@ -1083,13 +1095,13 @@ fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) 
         // `width_fault_against_ty` (which descends a runtime `if` into both branches + range-checks the
         // narrow int). A bare out-of-range literal in a branch (`(: (if c 10000 0) UInt8)`) then rejects at
         // `check` as the emit path already does — closing the same check-vs-emit gap the compound arms close.
-        Ty::Int(_) => width_fault_against_ty(db, value, &expected),
+        Ty::Int(_) => width_fault_against_ty(db, value, expected),
         // A narrow `Float32` annotation on a non-literal `literal_width_fault` could not check directly — a
         // runtime `(if c 1.0e300 0.0)` / `(match …)` annotated `(: … Float32)`. Route it through
         // `width_fault_against_ty` (which descends the conditional's branches + applies the Float32-overflow
         // check to each branch literal). Without this, an overflowing branch literal slipped `cdz check`
         // while the emit path produced an INVALID module — the float sibling of the narrow-int gap.
-        Ty::Float(_) => width_fault_against_ty(db, value, &expected),
+        Ty::Float(_) => width_fault_against_ty(db, value, expected),
         // A single-payload variant `(Some 999)` : `(Option Int8)` — drill the payload arg against the
         // payload type at this sum's instantiation. (A multi-payload variant boxes its payloads as a tuple;
         // its single ctor arg is that tuple, handled by the Tuple arm once drilled — kept simple here to the
@@ -1101,7 +1113,7 @@ fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) 
             if crate::eval::variant_disc_of(db, head).is_none() || args.len() != 1 {
                 return None;
             }
-            let want = payload_ty_at_instantiation(db, head, &expected)?;
+            let want = payload_ty_at_instantiation(db, head, expected)?;
             width_fault_against_ty(db, args[0], &want)
         }
         // A user-declared NOMINAL type — a newtype `(type W (W Int8))` (`inner` = the payload type) or a
@@ -1173,13 +1185,20 @@ fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) 
         // Int64))` accepted an out-of-range key. Descend the entry key/value nodes (paired, in order) each
         // against its declared side. The map value's entries are `(key value)` occurrence pairs.
         Ty::Map(key_ty, val_ty) => {
-            // A map literal resolves as a folded `Resolved::Map { entries }` OR an `Apply(MapNew, [(k v)…])`
-            // name-alias; read the `(key value)` node pairs from whichever shape.
+            let (key_ty, val_ty) = ((**key_ty).clone(), (**val_ty).clone());
             // A map literal resolves as a folded `Resolved::Map { entries }` OR an `Apply(MapNew, [(k v)…])`
             // name-alias; read the `(key value)` node pairs from whichever shape (each Apply arg is a
-            // two-element `(key value)` list, as `resolve_map` reads them).
-            let entries: Vec<(StructId, StructId)> = match resolved_of(db, value) {
-                Resolved::Map { entries } => entries.to_vec(),
+            // two-element `(key value)` list, as `resolve_map` reads them). A map BUILT by a `Map.insert`
+            // chain (`Apply(MapInsert, [map, key, val])`, bottoming at `Map.empty`) is NOT a literal — its
+            // key/value literals escaped this check entirely, so an out-of-range literal fed through
+            // `(Map.insert Map.empty k 200) : (Map Int64 Int8)` compiled clean AND ran to a truncated -56
+            // (a silent miscompile — the builder-chain face of the map-literal case). Walk the insert chain
+            // too: range-check this insert's key/value args, then recurse into the operand map.
+            match resolved_of(db, value) {
+                Resolved::Map { entries } => entries.to_vec().iter().find_map(|&(k, v)| {
+                    width_fault_against_ty(db, k, &key_ty)
+                        .or_else(|| width_fault_against_ty(db, v, &val_ty))
+                }),
                 Resolved::Apply { head, args }
                     if crate::eval::meta_apply_of(db, head)
                         == Some(crate::resolved::Prim::MapNew) =>
@@ -1191,15 +1210,54 @@ fn nested_literal_width_faults(db: &mut Db, value: StructId, ty_expr: StructId) 
                             }
                             _ => None,
                         })
-                        .collect()
+                        .collect::<Vec<_>>()
+                        .iter()
+                        .find_map(|&(k, v)| {
+                            width_fault_against_ty(db, k, &key_ty)
+                                .or_else(|| width_fault_against_ty(db, v, &val_ty))
+                        })
                 }
-                _ => return None,
-            };
-            let (key_ty, val_ty) = ((**key_ty).clone(), (**val_ty).clone());
-            entries.iter().find_map(|&(k, v)| {
-                width_fault_against_ty(db, k, &key_ty)
-                    .or_else(|| width_fault_against_ty(db, v, &val_ty))
-            })
+                // `(Map.insert <map> <key> <val>)` — check this entry's key + value, then recurse the
+                // operand map (`Map.empty` bottoms out as a non-insert with no literal → None).
+                Resolved::Apply { head, args }
+                    if crate::eval::meta_apply_of(db, head)
+                        == Some(crate::resolved::Prim::MapInsert)
+                        && args.len() == 3 =>
+                {
+                    width_fault_against_ty(db, args[1], &key_ty)
+                        .or_else(|| width_fault_against_ty(db, args[2], &val_ty))
+                        .or_else(|| nested_literal_width_faults_against(db, args[0], expected))
+                }
+                _ => None,
+            }
+        }
+        // A set BUILT by `Set.of (list …)` or a `Set.insert` chain : `(Set Int8)` — each element literal
+        // against the element type. Previously there was NO `Ty::Set` arm at all, so an out-of-range set
+        // element escaped the fit-check on both `check` and `emit` (the set face of the map builder-chain
+        // silent miscompile). `Set.of list` (single list arg) descends the list elements; `Set.insert set
+        // elem` checks the inserted element then recurses the operand set (`Set.empty` bottoms out).
+        Ty::Set(elem_ty) => {
+            let elem_ty = (**elem_ty).clone();
+            match resolved_of(db, value) {
+                Resolved::Apply { head, args }
+                    if crate::eval::meta_apply_of(db, head)
+                        == Some(crate::resolved::Prim::SetOf)
+                        && args.len() == 1 =>
+                {
+                    positional_value_nodes(db, args[0], crate::resolved::Prim::ListNew)?
+                        .iter()
+                        .find_map(|&e| width_fault_against_ty(db, e, &elem_ty))
+                }
+                Resolved::Apply { head, args }
+                    if crate::eval::meta_apply_of(db, head)
+                        == Some(crate::resolved::Prim::SetInsert)
+                        && args.len() == 2 =>
+                {
+                    width_fault_against_ty(db, args[1], &elem_ty)
+                        .or_else(|| nested_literal_width_faults_against(db, args[0], expected))
+                }
+                _ => None,
+            }
         }
         // A quantity `(Qty.of 300 kilometer)` : `(Qty UInt8 meter)` — drill the MAGNITUDE against the
         // annotation's INNER numeric type. A quantity annotation checks the dimension (not the scale, so
