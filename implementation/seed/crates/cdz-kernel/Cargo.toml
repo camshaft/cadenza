@@ -34,6 +34,13 @@ live-exec = []
 # gated — that's a real security/spawn gate, a different rationale.)
 
 [dependencies]
+# async-trait: object-safe async methods on the `AsyncReducer` trait (the cooperative-gas-yield migration,
+# operator async directive). Native `async fn` in a trait is NOT dyn-compatible in stable Rust, but the
+# kernel takes `&dyn` reducers and the host holds `Box<dyn Reducer>` — so the async reducer trait needs
+# `async-trait`'s `Pin<Box<dyn Future>>` desugaring to stay object-safe. Used with `?Send` (the kernel is
+# single-threaded / no-Send by design — a fold holds a non-Send wasmtime store), so the futures needn't be
+# Send. Tiny proc-macro dep, already resolvable offline.
+async-trait = "0.1"
 # blake3: content-addressing for events, KV nodes, and blobs. Fast, no_std-friendly, stable digest.
 blake3 = "1"
 # bytes: ref-counted immutable byte buffer (operator perf directive 2026-08-02). Hot-path payloads /
