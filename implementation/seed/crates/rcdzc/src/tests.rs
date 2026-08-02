@@ -5162,9 +5162,9 @@ fn option_expect_over_a_dead_after_borrowed_compound_payload_is_value_correct_bu
 /// payload borrowed out of a shell that then dies). This is the same borrowed-heap-sum-recursion-param
 /// ownership class as the `option_expect_…`/`from-bytes_…` compound-Some-shell siblings above.
 ///
-/// Asserts VALUE-CORRECT (3, no UAF/trap) + leak PRESENT + BOUNDED (a witness, not a `== 0` gate): a
-/// regression that WORSENED it, or a spurious UAF that made it 0-via-double-free (value would corrupt/trap
-/// first), is still caught. Flip the guard to `assert_eq!(live, 0, …)` when the payload-escape pass lands.
+/// Asserts VALUE-CORRECT (3, no UAF/trap) + the EXACT deterministic leak count (`== 1`, not a loose bound): a
+/// regression that WORSENED it to 2+, or a spurious UAF that made it 0-via-double-free (value would corrupt/
+/// trap first), is still caught. Flip the guard to `assert_eq!(live, 0, …)` when the payload-escape pass lands.
 /// `#[ignore]` — needs the debug-counters store (`cargo xtask build`), run with `-- --ignored`.
 #[test]
 #[ignore = "needs the debug-counters store (cargo xtask build)"]
@@ -5198,15 +5198,15 @@ fn a_recursive_fn_holding_a_borrowed_heap_payload_sum_param_leaks_one_cell_known
     );
     // KNOWN LEAK (pinned, not yet fixed): the borrowed heap-payload sum is retained-but-not-dropped once as
     // the recursion unwinds. The count is DETERMINISTIC — measured EXACTLY 1 (not allocator/backend-sensitive
-    // like the reclaim batteries) — so the bound is TIGHT (`<= 2`, a single cell of headroom) rather than
-    // loose: a 2-cell regression fails here, and a `== 0` (spurious double-free) is already caught by the
-    // value assert above. When the node-keyed payload-escape fix lands, flip to `assert_eq!(live, 0, …)`.
+    // like the reclaim batteries) — so assert the EXACT value (self-consistent with "exactly 1"): a 1→2
+    // regression fails here, and a 0 (spurious double-free) is caught by the value assert above too. When
+    // the node-keyed payload-escape fix lands, flip to `assert_eq!(live, 0, …)`.
     let live = rt.live_objects();
-    assert!(
-        live > 0 && live <= 2,
-        "borrowed-heap-sum-recursion-param leak: expected the KNOWN 1-cell unwind residual pending the \
-         node-keyed payload-escape fix — got {live}. If 0, the fix may have landed (flip to == 0); if \
-         above 2, a NEW leak compounded it."
+    assert_eq!(
+        live, 1,
+        "borrowed-heap-sum-recursion-param leak: expected the KNOWN deterministic 1-cell unwind residual \
+         pending the node-keyed payload-escape fix — got {live}. If 0, the fix may have landed (flip to \
+         == 0); if above 1, a NEW leak compounded it."
     );
 }
 
@@ -5220,8 +5220,8 @@ fn a_recursive_fn_holding_a_borrowed_heap_payload_sum_param_leaks_one_cell_known
 /// ownership gap; deep-backlog node-keyed payload-escape pass). VALUE-CORRECT (no UAF) → not corpus-gate-
 /// visible, so this `live_objects()` witness is the only durable pin.
 ///
-/// Asserts value-correct + leak PRESENT + BOUNDED (`<= 2`, tight — the count is the deterministic 1). Flip to
-/// `== 0` when the payload-escape fix lands. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+/// Asserts value-correct + the EXACT deterministic leak count (`== 1`). Flip to `== 0` when the payload-escape
+/// fix lands. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
 #[test]
 #[ignore = "needs the debug-counters store (cargo xtask build)"]
 fn a_recursive_fn_holding_a_borrowed_string_payload_sum_param_leaks_one_cell_known_gap() {
@@ -5253,13 +5253,13 @@ fn a_recursive_fn_holding_a_borrowed_string_payload_sum_param_leaks_one_cell_kno
         Val::S64(2),
         "String.scalar-len of the String payload of a borrowed heap-sum recursion param = 2 (value-correct + NO UAF)"
     );
-    // KNOWN LEAK (same deterministic 1-cell unwind residual as the BigInt sibling): tight bound `<= 2`.
+    // KNOWN LEAK (same deterministic 1-cell unwind residual as the BigInt sibling): assert the EXACT value.
     let live = rt.live_objects();
-    assert!(
-        live > 0 && live <= 2,
-        "borrowed-STRING-sum-recursion-param leak: expected the KNOWN 1-cell unwind residual (payload-type-\
-         independent with the BigInt sibling) pending the node-keyed payload-escape fix — got {live}. If 0, \
-         the fix may have landed (flip to == 0); if above 2, a NEW leak compounded it."
+    assert_eq!(
+        live, 1,
+        "borrowed-STRING-sum-recursion-param leak: expected the KNOWN deterministic 1-cell unwind residual \
+         (payload-type-independent with the BigInt sibling) pending the node-keyed payload-escape fix — got {live}. If 0, \
+         the fix may have landed (flip to == 0); if above 1, a NEW leak compounded it."
     );
 }
 
