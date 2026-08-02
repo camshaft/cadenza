@@ -1,4 +1,4 @@
-import { H1, Lede, H2, P, C } from "../../components/Prose.tsx";
+import { H1, Lede, H2, P, C, Note } from "../../components/Prose.tsx";
 import { Runnable } from "../../components/Runnable.tsx";
 import { Exercise } from "../../components/Exercise.tsx";
 import { Why } from "../../components/Why.tsx";
@@ -130,6 +130,41 @@ export default function Lists() {
         Toggle to the ML surface and the pattern reads as <C>[x, .. rest]</C>, the shape spelled out. You
         didn't declare the element type either: it flows from the <C>+</C>, so <C>sum</C> is inferred over
         a list of <C>Int64</C>.
+      </P>
+
+      <P>
+        The <C>rest</C> after <C>..</C> is special: it binds the <em>whole tail</em> as one sublist, so it
+        must be a plain name (or <C>_</C>), not another pattern. You can destructure the leading elements as
+        deeply as you like, but you can't nest a pattern in the rest slot itself. This tries to, and the
+        compiler stops you:
+      </P>
+      <Note>
+        This one is <strong>meant to be rejected</strong>: <C>(list b .. r)</C> in the rest position asks to
+        match the tail against a shape, but the rest binder only ever names the tail. The fix is to bind it,
+        then match it.
+      </Note>
+      <Runnable
+        source={`(match (list 1 2 3)
+  ((list a .. (list b .. r)) a)
+  (_ 0))`}
+        expect="error"
+      />
+      <P>
+        To reach the second element, bind the tail to a name and match <em>that</em>, a two-step you'll use
+        whenever you need more than the head: peel one layer, then look again. Here <C>rest</C> is{" "}
+        <C>(list 20 30)</C>, and matching it pulls out <C>20</C>:
+      </P>
+      <Runnable
+        source={`(match (list 10 20 30)
+  ((list a .. rest)
+   (match rest
+     ((list b .. r) b)
+     ((list) 0)))
+  ((list) 0))`}
+      />
+      <P>
+        A leading element can still be any pattern, so <C>(list (tuple x y) .. rest)</C> is fine, only the
+        rest slot is name-only. Reach for the tail by name and match it again when you need to see inside.
       </P>
 
       <P>
