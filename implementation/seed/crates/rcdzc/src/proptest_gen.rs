@@ -2698,7 +2698,8 @@ mod tests {
         let ast = crate::testkit::parse(
             "(do (@ test (def (r (: xs (List Char))) (List.len xs))) (def (other) 1))",
         );
-        // Synthesize directly so we can inspect the wrapper body (a trapping nullary def), before Db load.
+        // `Db::load` runs proptest_gen::synthesize, producing the declining `r-gen` wrapper (a trapping
+        // nullary def) and neutralizing the original `r`; the assertions below inspect `db.defs` for it.
         let db = Db::load(ast);
         let test_names: Vec<String> = db
             .test_defs()
