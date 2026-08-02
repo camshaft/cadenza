@@ -1557,6 +1557,73 @@
               (handle Amb 0 ((flip (u) s (+ 1 (resume 10 s)))) (+ (Amb.flip) (Amb.flip)))) (export main)))
   (output (: 22 Int64)))
 
+(case "a NON-tail one-shot arm that ADVANCES the state threads the advance through the re-reduced continuation"
+  (doc    "The two-perform re-reducing fold above holds the state CONSTANT (`(resume 10 s)`); this pins the
+           sharper composition where the arm is BOTH non-tail (work wraps the resume) AND state-advancing.
+           Arm `(tick (u) s (+ 100 (resume s (+ s 1))))` resumes with the CURRENT state `s` and threads
+           `s+1` forward, over the body `(+ (St.tick) (St.tick))`, seeded 0. The leading tick's continuation
+           `C = (+ [] (St.tick))`; `(resume 0 1)` re-reduces `C[0] = (+ 0 (St.tick))` under state 1 — the
+           inner tick reads 1, resumes `(resume 1 2)` into its own continuation `(+ 0 [])` = 1, its arm
+           yields `(+ 100 1)` = 101, so `C[0]` = `(+ 0 101)` = 101; the outer arm then yields `(+ 100 101)`
+           = 201. Pins that the `(+ s 1)` advance survives EACH continuation re-reduction — a fold that
+           dropped the advance would resume the second tick with 0 too and compute 200, not 201. The state
+           threads 0->1->2 across the nested re-reductions while every resume is wrapped by pure work.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (main)
+              (handle St 0 ((tick (u) s (+ 100 (resume s (+ s 1))))) (+ (St.tick) (St.tick)))) (export main)))
+  (output (: 201 Int64)))
+
+(case "a NON-tail state-advancing arm threads through a NON-commutative continuation"
+  (doc    "The non-commutative companion of the case above — it pins BOTH the continuation nesting AND the
+           left-to-right state advance at once, since a fold that dropped the advance lands on a different
+           value. Same arm `(tick (u) s (+ 100 (resume s (+ s 1))))` seeded 0, but the body subtracts:
+           `(- (St.tick) (St.tick))`. The leading tick's continuation `C = (- [] (St.tick))`; `(resume 0 1)`
+           re-reduces `C[0] = (- 0 (St.tick))` under state 1 — the inner tick reads 1, resumes into its own
+           continuation `(- 0 [])` = -1, its arm yields `(+ 100 -1)` = 99, so `C[0]` = 99; the outer arm
+           then yields `(+ 100 99)` = 199. A fold that read both ticks at the SAME state (advance dropped)
+           would resume the second tick with 0 and compute 200, not 199. Both backends agree.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (main)
+              (handle St 0 ((tick (u) s (+ 100 (resume s (+ s 1))))) (- (St.tick) (St.tick)))) (export main)))
+  (output (: 199 Int64)))
+
+(case "a NON-tail state-advancing arm threads the advance through a perform in an if CONDITION"
+  (doc    "The two cases above pin the non-tail state-advancing arm `(tick (u) s (+ 100 (resume s (+ s 1))))`
+           over a FLAT operator body; this pins the same arm when the leading perform sits in an if
+           CONDITION and the branch performs again — the handler-distribution seam composed with the advance.
+           Body `(if (< (St.tick) 50) (+ 2000 (St.tick)) 999)`, seed 0. The condition's tick reads 0, its
+           continuation `C = (if (< [] 50) (+ 2000 (St.tick)) 999)`; `(resume 0 1)` re-reduces `C[0] =
+           (if (< 0 50) (+ 2000 (St.tick)) 999)` under state 1 — the guard is true, so the taken branch
+           `(+ 2000 (St.tick))` runs: the inner tick reads 1 (the ADVANCED state), resumes into its own
+           continuation `(+ 2000 [])` = 2001, its arm yields `(+ 100 2001)` = 2101, so `C[0]` = 2101; the
+           outer arm then yields `(+ 100 2101)` = 2201. Pins that the `(+ s 1)` advance reaches the BRANCH
+           tick across the condition re-reduction — a constant-state arm `(resume s s)` (advance dropped)
+           would read the branch tick at 0 and compute 2200, not 2201.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (main)
+              (handle St 0 ((tick (u) s (+ 100 (resume s (+ s 1))))) (if (< (St.tick) 50) (+ 2000 (St.tick)) 999))) (export main)))
+  (output (: 2201 Int64)))
+
+(case "a NON-tail state-advancing arm threads the advance through a perform in a let INIT"
+  (doc    "The let-init companion of the if-condition case above: the same non-tail state-advancing arm
+           `(tick (u) s (+ 100 (resume s (+ s 1))))` with the leading perform as a `let` INIT whose binding
+           is reused, and a SECOND perform in the let body. Body `(let ((x (St.tick))) (+ (* 1000 (+ x 1))
+           (St.tick)))`, seed 0. The init tick reads 0, its continuation `C = (let ((x [])) (+ (* 1000
+           (+ x 1)) (St.tick)))`; `(resume 0 1)` re-reduces `C[0]` under state 1 with `x` bound to 0 — the
+           body `(+ (* 1000 (+ 0 1)) (St.tick))` = `(+ 1000 (St.tick))`: the inner tick reads 1 (advanced),
+           resumes into its continuation `(+ 1000 [])` = 1001, its arm yields `(+ 100 1001)` = 1101, so
+           `C[0]` = 1101; the outer arm yields `(+ 100 1101)` = 1201. Pins that the advance survives the
+           let-init re-reduction AND that the bound `x` reads the PRE-advance state 0 (a fold that let `x`
+           see the advanced 1 would compute `(* 1000 2)` = 2000-based, not 1000-based).")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (main)
+              (handle St 0 ((tick (u) s (+ 100 (resume s (+ s 1))))) (let ((x (St.tick))) (+ (* 1000 (+ x 1)) (St.tick))))) (export main)))
+  (output (: 1201 Int64)))
+
 (case "a MULTI-shot handler arm folds a two-hole body by re-reducing per resume"
   (doc    "The re-reducing fold extends to a MULTI-shot arm — one that resumes more than once — when the
            body's performs are all discharged BY THIS handler (no effect escapes to be re-issued). The fold
