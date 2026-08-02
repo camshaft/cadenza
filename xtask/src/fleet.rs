@@ -652,6 +652,14 @@ pub enum FleetCmd {
         #[arg(long, default_value = "unknown")]
         agent: String,
     },
+    /// Preview one I4 SCHEDULER pass: read the queued merge-requests + in-flight `ci-dispatch` state
+    /// and print which MRs would be dispatched next (honoring the in-flight cap + per-lane
+    /// serialization), WITHOUT side-effects. See `fleet/CI-GATED-LANES-DESIGN.md`.
+    SchedulePlan {
+        /// Max in-flight candidate PRs (runner-budget bound; operator ruled 8). Default 8.
+        #[arg(long, default_value_t = 8)]
+        cap: usize,
+    },
     /// STAGE a batch of merge-request refs into a SCRATCH ref (`refs/fleet/batch-staging`) built off the
     /// CURRENT `trunk`, WITHOUT touching `trunk`. This closes the intermediate-rewind window at its source:
     /// pr-sync's historical batch build did `git reset --hard trunk` then `git merge --no-ff` each ref onto
@@ -874,6 +882,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::CiStatus { target } => ci_status(&target),
         FleetCmd::LaneOf { r#ref } => lane_of_cmd(&r#ref),
         FleetCmd::DispatchPlan { r#ref, agent } => dispatch_plan(&fleet, &r#ref, &agent),
+        FleetCmd::SchedulePlan { cap } => schedule_plan(&fleet, cap),
         FleetCmd::BatchStage { refs } => batch_stage(&fleet, &refs),
         FleetCmd::BatchCommit { execute } => batch_commit(&fleet, execute),
     }
@@ -6858,6 +6867,59 @@ fn read_ci_dispatches(fleet: &Fleet) -> Vec<CiDispatch> {
         .collect()
 }
 
+/// A queued merge-request the scheduler is considering, reduced to what the dispatch DECISION needs:
+/// its inbox filename (the dispatch key) and its lane label. (`lane_of` computes the label from the
+/// ref's paths; the scheduler only compares labels.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SchedCandidate {
+    mr_file: String,
+    lane: String,
+}
+
+/// The PURE core of the I4 scheduler: given the merge-requests queued (each with its lane), the lanes
+/// ALREADY in flight (from the `ci-dispatch` state), the set of lanes that must SERIALIZE (≤1 in
+/// flight — the non-parallel lanes), and the in-flight `cap`, decide which queued MRs to dispatch NOW.
+///
+/// Rules (mirrors `fleet/CI-GATED-LANES-DESIGN.md`):
+///   - Never exceed `cap` total in-flight (runner-budget bound; pilot found ~8 the sweet spot).
+///   - A SERIALIZED lane admits at most ONE candidate in flight — skip a queued MR whose lane is
+///     serialized AND already in flight (either from `in_flight_lanes` or a peer we picked THIS pass).
+///   - A PARALLEL lane (docs/corpus/leaf subsystems) has no per-lane limit — only the global `cap`.
+///   - Oldest-first (the queue order passed in); deterministic, so a re-run picks the same set.
+///
+/// Pure over its inputs (no git/gh/fs) so the whole dispatch policy is unit-tested. Returns the
+/// `mr_file`s to dispatch, in order.
+fn schedule_dispatch(
+    queued: &[SchedCandidate],
+    in_flight_lanes: &[String],
+    serialized_lanes: &dyn Fn(&str) -> bool,
+    cap: usize,
+    current_in_flight: usize,
+) -> Vec<String> {
+    let mut picked = Vec::new();
+    let mut slots = cap.saturating_sub(current_in_flight);
+    // Lanes occupied by a SERIALIZED in-flight candidate (existing or picked this pass) — blocks more.
+    let mut busy_serialized: std::collections::HashSet<String> = in_flight_lanes
+        .iter()
+        .filter(|l| serialized_lanes(l))
+        .cloned()
+        .collect();
+    for c in queued {
+        if slots == 0 {
+            break;
+        }
+        if serialized_lanes(&c.lane) && busy_serialized.contains(&c.lane) {
+            continue; // that serialized lane already has one in flight — hold this MR
+        }
+        picked.push(c.mr_file.clone());
+        slots -= 1;
+        if serialized_lanes(&c.lane) {
+            busy_serialized.insert(c.lane.clone());
+        }
+    }
+    picked
+}
+
 /// `fleet dispatch-plan <ref>`: print what `publish-candidate` WOULD do for a merge-request's `--ref`
 /// — the candidate branch, the full push refspec (pilot gotcha #1), the lane + parallel/serial, and
 /// whether an in-flight candidate for this ref already exists — WITHOUT any side-effect (no push, no
@@ -6905,6 +6967,90 @@ fn dispatch_plan(fleet: &Fleet, r#ref: &str, agent: &str) {
         ),
         None => println!("  in-flight   : no — safe to dispatch"),
     }
+}
+
+/// The lane label for a queued merge-request, computed from its `--ref`'s changed paths (same source
+/// as `lane-of`). An unresolvable ref → `mixed` (conservative, serialized). Shells one `git show`.
+fn lane_label_for_ref(r#ref: &str) -> String {
+    let paths: Vec<String> = Command::new("git")
+        .args(["show", "--name-only", "--format=", r#ref])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    lane_of(&paths).label().to_string()
+}
+
+/// `fleet schedule-plan [--cap N]`: read the queued merge-requests + the in-flight `ci-dispatch` state
+/// and print which MRs the scheduler WOULD dispatch next (via the pure [`schedule_dispatch`]), honoring
+/// the in-flight cap + per-lane serialization — WITHOUT any side-effect. The read-only preview of one
+/// I4 scheduler pass, for pr-sync + humans. Skips MRs already in flight (their ref is in `ci-dispatch`).
+fn schedule_plan(fleet: &Fleet, cap: usize) {
+    let dispatched = read_ci_dispatches(fleet);
+    let in_flight_refs: std::collections::HashSet<&str> =
+        dispatched.iter().map(|d| d.r#ref.as_str()).collect();
+    let in_flight_lanes: Vec<String> = dispatched.iter().map(|d| d.lane.clone()).collect();
+    // Queued MRs NOT already in flight, oldest-first, each tagged with its lane.
+    let queued: Vec<SchedCandidate> = queued_merge_requests(fleet)
+        .into_iter()
+        .filter(|mr| !in_flight_refs.contains(mr.r#ref.as_str()))
+        .map(|mr| SchedCandidate {
+            mr_file: mr.file,
+            lane: lane_label_for_ref(&mr.r#ref),
+        })
+        .collect();
+    // A lane serializes iff it is NOT a parallel lane (reuse the single source of truth via a probe
+    // path — build a one-file path set in that lane and ask `lane_of`; simplest is to reconstruct the
+    // parallel flag from a representative path, but the label→parallel map is small and stable, so ask
+    // `lane_of_path` through a synthetic marker is fragile; instead consult LANE_RULES directly).
+    let serialized = |lane: &str| -> bool { !lane_is_parallel(lane) };
+    let picks = schedule_dispatch(
+        &queued,
+        &in_flight_lanes,
+        &serialized,
+        cap,
+        dispatched.len(),
+    );
+    println!(
+        "schedule-plan: cap={cap}, in-flight={}, queued(not-in-flight)={}",
+        dispatched.len(),
+        queued.len()
+    );
+    if picks.is_empty() {
+        println!(
+            "  → dispatch nothing this pass (cap full, or all queued lanes serialized-and-busy)."
+        );
+        return;
+    }
+    println!("  → would dispatch {} candidate(s):", picks.len());
+    for f in &picks {
+        let lane = queued
+            .iter()
+            .find(|c| c.mr_file == *f)
+            .map(|c| c.lane.as_str())
+            .unwrap_or("?");
+        println!("    {f}\t[{lane}]");
+    }
+}
+
+/// Whether a lane LABEL is a parallel lane (docs/corpus/leaf subsystems) vs. serialized. Consults the
+/// [`LANE_RULES`] table so it stays the single source of truth; `mixed`/unknown → serialized (false).
+fn lane_is_parallel(label: &str) -> bool {
+    if label == "mixed" {
+        return false;
+    }
+    LANE_RULES
+        .iter()
+        .find(|r| r.lane == label)
+        .map(|r| r.parallel)
+        .unwrap_or(false)
 }
 
 /// Build the value-heap runtime store in the gate-batch scratch worktree (`cargo xtask build`), so the
@@ -11091,6 +11237,66 @@ mod tests {
         // The `ref` field serializes as "ref" (r#ref raw-identifier → plain key), so a hand-written /
         // pr-sync-written record with "ref" round-trips too.
         assert!(json.contains("\"ref\":\"55c9f407c002\""));
+    }
+
+    #[test]
+    fn lane_is_parallel_matches_the_lane_rules_table() {
+        // Parallel lanes: docs/corpus + the leaf subsystems.
+        for l in ["docs", "corpus", "cad", "music", "compiler-ml"] {
+            assert!(lane_is_parallel(l), "{l} should be a parallel lane");
+        }
+        // Serialized lanes + the reserved mixed + an unknown label.
+        for l in ["fleet-tooling", "code", "mixed", "totally-unknown-lane"] {
+            assert!(!lane_is_parallel(l), "{l} should serialize");
+        }
+    }
+
+    #[test]
+    fn schedule_dispatch_respects_cap_and_serialized_lanes() {
+        let cand = |file: &str, lane: &str| SchedCandidate {
+            mr_file: file.into(),
+            lane: lane.into(),
+        };
+        // A lane serializes iff it is NOT parallel (same rule the command uses).
+        let serial = |l: &str| !lane_is_parallel(l);
+
+        // CAP: 5 queued, cap 3, none in flight → dispatch the oldest 3.
+        let q = vec![
+            cand("a", "docs"),
+            cand("b", "corpus"),
+            cand("c", "cad"),
+            cand("d", "music"),
+            cand("e", "des"),
+        ];
+        assert_eq!(
+            schedule_dispatch(&q, &[], &serial, 3, 0),
+            vec!["a", "b", "c"]
+        );
+
+        // PARALLEL lanes have no per-lane limit: 3 docs candidates all dispatch under a cap of 5.
+        let q2 = vec![cand("a", "docs"), cand("b", "docs"), cand("c", "docs")];
+        assert_eq!(
+            schedule_dispatch(&q2, &[], &serial, 5, 0),
+            vec!["a", "b", "c"]
+        );
+
+        // SERIALIZED lane: two `code` candidates → only the FIRST dispatches (≤1 in flight per lane);
+        // the parallel `docs` between them still goes.
+        let q3 = vec![cand("x", "code"), cand("y", "docs"), cand("z", "code")];
+        assert_eq!(schedule_dispatch(&q3, &[], &serial, 9, 0), vec!["x", "y"]);
+
+        // A serialized lane ALREADY in flight blocks a new one of the same lane.
+        let q4 = vec![cand("m", "code"), cand("n", "docs")];
+        assert_eq!(
+            schedule_dispatch(&q4, &["code".into()], &serial, 9, 1),
+            vec!["n"] // `m` (code) held — code already in flight; `n` (docs) proceeds
+        );
+
+        // CAP already reached (current_in_flight == cap) → dispatch nothing.
+        assert!(schedule_dispatch(&q, &[], &serial, 3, 3).is_empty());
+        // Two different serialized lanes can BOTH be in flight (serialize is per-lane, not global).
+        let q5 = vec![cand("p", "code"), cand("r", "fleet-tooling")];
+        assert_eq!(schedule_dispatch(&q5, &[], &serial, 9, 0), vec!["p", "r"]);
     }
 
     #[test]

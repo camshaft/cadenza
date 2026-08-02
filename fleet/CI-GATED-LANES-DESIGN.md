@@ -141,6 +141,19 @@ auto-merge-armed, gating in parallel; my base landed via #1038). Hard-won gotcha
    works.** So `gh pr merge --squash --auto` is the merge mechanism (no merge-queue to integrate with).
 7. **State convention adopted:** `.claude/fleet/ci-dispatch/<mr-file>.json` (pr-sync is already
    writing these) — the MR↔candidate-PR map I3 writes and I4's reaper reads.
+8. **BOTTLENECK = runner concurrency (jobs-in-flight), NOT PRs-in-flight, NOT arch, NOT collisions**
+   (pilot at cap-8: 6 landed / 1 CI-red-rejected / 1 dup, 8 continuously in flight, backlog fed as
+   fast as drained = healthy steady state). On the freshest PR ~14/16 jobs were QUEUED (incl. ubuntu
+   clippy/rustfmt), so it's global GitHub Actions runner saturation: 8 PRs × ~16 jobs ≈ 128 jobs
+   behind the account runner limit. IMPLICATIONS for I4: (a) raising the cap ABOVE 8 likely won't
+   help — more PRs just deepen the shared job queue and may trigger GitHub throttling/cancellation;
+   8 is the sweet spot the operator already picked. (b) The real tuning knob is JOBS-in-flight, not
+   PRs — so the highest-leverage optimization is a **per-lane lighter check subset**: a low-risk lane
+   (docs/corpus) need not run the full ~16-job arm gate — a docs PR gating on `guide-examples` + fmt
+   + the relevant subset frees runners for `code` PRs that need the full gate. This composes with the
+   lane model (each lane declares its required check set). Raised to the operator as a follow-on
+   optimization; NOT urgent (pipeline is healthy at cap-8). Size I3/I4 for a SUSTAINED ~30-deep queue,
+   not a one-time drain.
 
 ## Increments (each independently landable + gated)
 
