@@ -1680,6 +1680,18 @@
             (export main)))
   (error  CDZ0216))
 
+(case "a function stored as a runtime SET element is rejected (CDZ0216 — the Set face of the Map-key reject)"
+  (doc    "The SET-element companion of the fn-Map-KEY reject above: a Set element needs the same equality
+           a Map key does (collections-and-text §A Set Is A Collection Of Unique Elements — membership by
+           structural equality), and a function is neither equatable nor orderable (no canonical identity),
+           so `(Set.of (list (fn (x) (+ x 1))))` → CDZ0216 (NotEquatable). Pins the Set face + an INLINE
+           lambda (the Map-key case uses a named `def f`), so the reject fires on an anonymous `fn`, not only
+           a named function. This closed a wasm-vs-rust DIVERGENCE breaker found (adv-50 residual): wasm
+           formerly INVENTED a closure identity and computed, while rust E0277'd on `dyn Fn: Ord` — the
+           uniform CDZ0216 reject at type-check is the ruled fix (v-inference, concierge-confirmed).")
+  (input  (do (def (main) (Set.len (Set.of (list (fn (x) (+ x 1)))))) (export main)))
+  (error  CDZ0216))
+
 (case "Type.of grounds a Map-value function nested inside a tuple"
   (doc    "The compounding facet: a runtime-Map-value function wrapped in an outer container —
            `(tuple (Map.insert Map.empty 1 f) 0)`. The tuple-element reflection recurses INTO the
