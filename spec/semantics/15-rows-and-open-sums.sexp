@@ -515,6 +515,45 @@
   (call   main (: 3 Int64))
   (output (: 65 Int64)))
 
+(case "a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)"
+  (doc    "The ALIAS face of Record.with persistence: the existing persistence pins read the original
+           through its own BINDING; here the original is ALSO aliased into a LIST before the update, and
+           the post-update read goes through the ALIAS (`List.at` then project). A Perceus reuse that
+           treated the record as uniquely owned at the `with` (missing the list's dup) would update the
+           shared payload in place and the alias would read the NEW x — this pins the alias reads the OLD
+           one. done.x = k+1 = 4; alias.x = k = 3 → 4 + 100·3 = 304.")
+  (input  (do
+            (def (bump-x (: r (Record (x Int64) (y Int64))))
+              (Record.with r #"x" (+ (. r x) 1)))
+            (def (main (: k Int64))
+              (let ((seed (record (x k) (y 100))))
+                (let ((alias (list seed)))
+                  (let ((done (bump-x seed)))
+                    (+ (. done x)
+                       (* 100 (match (List.at alias 0) ((Some a) (. a x)) ((None _u) -1))))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 304 Int64)))
+
+(case "a record threaded through self-recursion with per-step Record.with leaves the SEED intact"
+  (doc    "The RECURSION face of Record.with persistence, guarding the owned-heap-param drop-epilogue
+           seam: `go-n` is a single-member self-recursion whose record param is rebuilt per step
+           (`bump-x` = a `with` over the previous value) and RETURNED at the base case — the exact shape
+           the recursion-param epilogue gates on. The caller's seed must still read its original x after
+           the recursion returns (the epilogue must not treat the borrowed-and-escaping param as uniquely
+           dead, and the per-step `with` must not reuse the shared seed's cell). done.x = k+5 = 8;
+           seed.x = k = 3 → 8 + 1000·3 = 3008.")
+  (input  (do
+            (def (bump-x (: r (Record (x Int64) (y Int64))))
+              (Record.with r #"x" (+ (. r x) 1)))
+            (def (go-n (: r (Record (x Int64) (y Int64))) (: n Int64))
+              (if (> n 0) (go-n (bump-x r) (- n 1)) r))
+            (def (main (: k Int64))
+              (let ((seed (record (x k) (y 100))))
+                (let ((done (go-n seed 5)))
+                  (+ (. done x) (* 1000 (. seed x))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 3008 Int64)))
+
 (case "the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)"
   (doc    "Finding #45 boundary: the same chain but `r` is read via a DOUBLE lookup (a map nested in a map).
            This depth computed 8 on all backends even pre-fix, while the single-lookup form (first witness)
