@@ -23,8 +23,9 @@ The note's stated evidence needs two corrections before scoping — they change 
 not the merit of the idea:
 
 1. **"cachix already wired … see `.github/workflows/k-framework.yml:26`" is STALE.** There is NO
-   `k-framework.yml`, NO `flake.nix`/`flake.lock`, and NO `cachix` reference anywhere in the current
-   tree (`git ls-files` + grep = 0 hits). They DID exist historically — the K-framework reference
+   `k-framework.yml`, NO `flake.nix`/`flake.lock`, and NO `cachix` reference in the current tree's
+   **CI / Nix config** — `git ls-files` + grep over `.github/**` and any flake files = 0 hits (this
+   doc's own prose aside). They DID exist historically — the K-framework reference
    implementation (PRs #141–#144: `camshaft` + `k-framework` cachix caches added to a flake and CI) —
    but that whole `reference/` subsystem, its flake, and its cachix wiring were **removed**. So we are
    NOT extending a live flake; we would be **re-introducing** one from scratch. The upside: there's a
@@ -33,10 +34,11 @@ not the merit of the idea:
    raised as an ask below). Net effort is HIGHER than "extend what's wired" but the pattern is proven.
 
 2. **The committed-wasm problem is SMALL today, but real and growing.** Exactly ONE committed built
-   `.wasm` in the tree: `cdz-kernel/tests/fixtures/reducer_guest.component.wasm` (22 KB,
-   `include_bytes!` into `component_reducer_e2e.rs`; its source `reducer-guest/` crate is committed and
-   `.gitignore`s its own `/target`). The Cedar fixture the concierge flagged (the ~3.3 MB decision
-   relayed to v-agent-harness-host) ships today as SOURCE (`cedar-policy-guest/{Cargo.toml,src,wit}`),
+   `.wasm` in the tree: `implementation/seed/crates/cdz-kernel/tests/fixtures/reducer_guest.component.wasm`
+   (22 KB, `include_bytes!` into `component_reducer_e2e.rs`; its source `reducer-guest/` crate is
+   committed and `.gitignore`s its own `/target`). The Cedar fixture the concierge flagged (the ~3.3 MB
+   decision relayed to v-agent-harness-host) ships today as SOURCE (under
+   `implementation/seed/crates/cdz-agent-host/tests/fixtures/cedar-policy-guest/{Cargo.toml,src,wit}`),
    built in the `cdz-agent-host` CI job — NOT as a committed binary yet. So the operator is right that
    this is the SYMPTOM to solve generally: the pattern "commit a built guest wasm because building it in
    every consumer is expensive" will recur (kernel reducer today, Cedar authorizer next, more guests
