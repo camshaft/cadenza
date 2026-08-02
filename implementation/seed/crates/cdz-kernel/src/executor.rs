@@ -108,6 +108,54 @@ impl Executor for CompositeExecutor {
     }
 }
 
+/// The ASYNC by-kind router — the async twin of [`CompositeExecutor`] (operator all-async directive).
+/// Holds `Box<dyn AsyncExecutor>` per kind and routes `perform_async` to the registered executor, awaiting
+/// it. This is what a session's async drive loop routes through once effects go async: a NATIVE-async
+/// executor (a real Bedrock/HTTP one that awaits its transport) registers here directly; a sync executor
+/// registers wrapped in [`SyncExecutorAsAsync`]. Separate from [`CompositeExecutor`] because an
+/// `AsyncExecutor` can't be a sync `Executor` (perform can't await) — both coexist during the sync→async
+/// migration; the sync one is removed once every caller is async.
+///
+/// Same routing contract as the sync router: an unroutable kind returns an OBSERVABLE [`EffectOutcome::Err`]
+/// (the reducer folds it — §9d anti-stuck), never a panic or silent drop; `idempotency_key` passes through.
+#[derive(Default)]
+pub struct AsyncCompositeExecutor {
+    by_kind: HashMap<EffectKind, Box<dyn AsyncExecutor>>,
+}
+
+impl AsyncCompositeExecutor {
+    pub fn new() -> Self {
+        AsyncCompositeExecutor {
+            by_kind: HashMap::new(),
+        }
+    }
+
+    /// Register the async executor for one effect kind (builder-style; last registration wins, mirroring
+    /// [`CompositeExecutor::with`]).
+    pub fn with(mut self, kind: EffectKind, executor: Box<dyn AsyncExecutor>) -> Self {
+        self.by_kind.insert(kind, executor);
+        self
+    }
+
+    /// Is an async executor registered for this kind?
+    pub fn handles(&self, kind: &EffectKind) -> bool {
+        self.by_kind.contains_key(kind)
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl AsyncExecutor for AsyncCompositeExecutor {
+    async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+        match self.by_kind.get_mut(&req.kind) {
+            Some(inner) => inner.perform_async(req, idempotency_key).await,
+            None => EffectOutcome::Err(format!(
+                "no executor registered for effect kind {:?} (target {:?})",
+                req.kind, req.target
+            )),
+        }
+    }
+}
+
 /// A recording test executor: performs nothing real, returns a canned outcome, and logs what it saw
 /// (including whether an idempotency key was replayed). Lets kernel-loop tests assert the crash /
 /// no-double-fire behavior deterministically.
@@ -231,6 +279,39 @@ mod tests {
             out,
             EffectOutcome::Ok(Some(Payload::Inline(b"async-ran".to_vec().into())))
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_composite_routes_each_kind_and_errors_on_unroutable() {
+        // The async router mirrors the sync one: route by kind (awaiting the inner async executor), and an
+        // unroutable kind is an OBSERVABLE Err, not a panic/drop. Register sync TagExecutors via the
+        // SyncExecutorAsAsync adapter (proving a sync executor plugs into the async router during transition).
+        let mut exec = AsyncCompositeExecutor::new()
+            .with(
+                EffectKind::Http,
+                Box::new(SyncExecutorAsAsync(TagExecutor(b"http-ran"))),
+            )
+            .with(
+                EffectKind::Model,
+                Box::new(SyncExecutorAsAsync(TagExecutor(b"model-ran"))),
+            );
+        assert!(exec.handles(&EffectKind::Http));
+        assert_eq!(
+            exec.perform_async(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k"))
+                .await,
+            EffectOutcome::Ok(Some(Payload::Inline(b"http-ran".to_vec().into())))
+        );
+        assert_eq!(
+            exec.perform_async(&req(EffectKind::Model, "m"), Hash::of(b"k"))
+                .await,
+            EffectOutcome::Ok(Some(Payload::Inline(b"model-ran".to_vec().into())))
+        );
+        // Unroutable kind → observable Err (Shell wasn't registered).
+        assert!(matches!(
+            exec.perform_async(&req(EffectKind::Shell, "echo hi"), Hash::of(b"k"))
+                .await,
+            EffectOutcome::Err(_)
+        ));
     }
 
     #[test]
