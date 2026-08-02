@@ -40,6 +40,23 @@ mod authz_bindings {
     });
 }
 
+// Generate a SECOND set of reducer bindings with ASYNC lowering of the guest export, in its own module
+// (the async `call_apply_async` + async `instantiate_async`). A bindgen with `async` config lowers the
+// `fold.apply` EXPORT to an async call; `async_support(true)` is a per-ENGINE flag and a sync call panics
+// on an async store (and vice versa), so the async path needs its OWN engine + its OWN generated
+// `call_apply_async` — it can't reuse the sync bindings above. `only_imports: []` keeps the `kv` IMPORT
+// methods SYNC (they're pure in-memory BTreeMap ops on `ReducerHost` — no reason to yield, and async'ing
+// them would force the `kv::Host` impl async for nothing). The store data type is the SAME `ReducerHost`.
+mod async_reducer_bindings {
+    wasmtime::component::bindgen!({
+        world: "reducer",
+        path: "wit/reducer.wit",
+        // Lower the guest EXPORT (`fold.apply`) async → generates `call_apply_async`. IMPORTS (`kv`)
+        // stay SYNC (omitted → default sync): pure in-memory BTreeMap ops on `ReducerHost`, no yield.
+        exports: { default: async },
+    });
+}
+
 /// The host state a reducer component runs against: its session KV (the `kv` import is served from
 /// here) plus room for the fold's output. One per fold invocation (the guest is stateless between
 /// events — §4 — so the host owns the KV and hands the guest a view for the call).
@@ -151,6 +168,27 @@ impl self::cadenza::agent_kernel::kv::Host for ReducerHost {
             }
         }
         merged.into_iter().collect()
+    }
+}
+
+// The ASYNC `bindgen!` module generates its OWN `kv::Host` / `types::Host` traits (distinct from the sync
+// module's), so `ReducerHost` must implement THOSE too to serve the async reducer's `kv` import. The kv
+// methods are pure in-memory ops (kept SYNC — imports weren't lowered async), so these DELEGATE to the sync
+// `kv::Host` impl above rather than duplicate the overlay logic — one source of truth for the KV semantics.
+impl async_reducer_bindings::cadenza::agent_kernel::types::Host for ReducerHost {}
+
+impl async_reducer_bindings::cadenza::agent_kernel::kv::Host for ReducerHost {
+    fn get(&mut self, key: Vec<u8>) -> Option<Vec<u8>> {
+        self::cadenza::agent_kernel::kv::Host::get(self, key)
+    }
+    fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self::cadenza::agent_kernel::kv::Host::put(self, key, value)
+    }
+    fn delete(&mut self, key: Vec<u8>) -> bool {
+        self::cadenza::agent_kernel::kv::Host::delete(self, key)
+    }
+    fn prefix_scan(&mut self, prefix: Vec<u8>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self::cadenza::agent_kernel::kv::Host::prefix_scan(self, prefix)
     }
 }
 
@@ -719,6 +757,228 @@ impl crate::reducer::Reducer for ComponentReducer {
                 crate::reducer::FoldOutput::failed(format!("wasm reducer fold failed: {err:?}"))
             }
         }
+    }
+}
+
+/// A wasm reducer that folds ASYNCHRONOUSLY (operator all-async directive) — the cooperative-gas-yield
+/// counterpart of [`ComponentReducer`]. Its engine is configured with `async_support(true)` and
+/// `fuel_async_yield_interval`, so a long `fold.apply` YIELDS at fuel intervals (letting the single-
+/// threaded host loop interleave other sessions) instead of blocking, while the per-fold fuel BUDGET still
+/// traps a true runaway. It implements [`crate::reducer::AsyncReducer`] natively (its `fold_async` awaits
+/// the guest's async `call_apply_async`) — the reason the `AsyncReducer` trait uses an explicit
+/// [`crate::reducer::SyncAsAsync`] adapter for sync reducers rather than a blanket impl (a blanket would
+/// forbid this native impl by coherence overlap; see `AsyncReducer`'s docs).
+///
+/// SEPARATE from [`ComponentReducer`] because `async_support` is a per-ENGINE flag: a sync call panics on
+/// an async store and vice versa, so the async fold needs its own async-configured engine + the async
+/// `bindgen!` lowering (`async_reducer_bindings`). During the sync→async migration both coexist; the sync
+/// [`ComponentReducer`] is removed once every caller is async (the operator's "no sync path remains").
+///
+/// v1 scope: the dependency-FREE path (the reducer fixture + the near-term agent reducer). A reducer that
+/// declares component deps (§23) is a follow-up on the async path — [`AsyncComponentReducer::from_component_bytes`]
+/// declines one with [`ComponentError::Instantiate`] rather than silently ignoring its deps (the sync
+/// [`ComponentReducer`] carries the dep-compose machinery; porting it to the async instantiate is deferred,
+/// tracked, and not needed until an async reducer ships deps).
+pub struct AsyncComponentReducer {
+    engine: wasmtime::Engine,
+    // Pre-instantiation artifact (perf, same rationale as ComponentReducer::instance_pre): the async
+    // world's `ReducerPre`, built once at construction for the dependency-free fold-exporting reducer.
+    // (The dependency-free path needs no per-fold `Component` — `instance_pre` holds the type-checked
+    // linkage; the dep path, which would, is a deferred follow-up on the async reducer.)
+    instance_pre: async_reducer_bindings::ReducerPre<ReducerHost>,
+    fuel_budget: u64,
+    // How much fuel the guest may burn between cooperative yields (§ async directive): the store yields
+    // control every this-many fuel units so a long fold doesn't monopolize the single-threaded loop. The
+    // per-fold `fuel_budget` is still the hard ceiling that traps a runaway (both: yield=cooperation,
+    // budget=DoS trap).
+    fuel_yield_interval: u64,
+}
+
+/// Default cooperative-yield interval (§ async directive): the guest yields control roughly every this
+/// many fuel units. Smaller = more responsive interleaving, more yield overhead; a coarse default that a
+/// long fold still yields under well before its billion-fuel budget.
+pub const DEFAULT_FUEL_YIELD_INTERVAL: u64 = 1_000_000;
+
+impl AsyncComponentReducer {
+    /// Build an async reducer from a compiled component's bytes. Like
+    /// [`ComponentReducer::from_component_bytes`] but the engine is `async_support`-enabled and the guest
+    /// export is lowered async. Pre-instantiates the dependency-free fold world once (perf). Declines a
+    /// component that declares deps (§23 async dep-compose is a follow-up) or that doesn't export the
+    /// `fold` world, both as [`ComponentError::Instantiate`]/[`ComponentError::InvalidComponent`].
+    pub fn from_component_bytes(bytes: &[u8]) -> Result<Self, ComponentError> {
+        let mut config = wasmtime::Config::new();
+        config.consume_fuel(true);
+        // The all-async engine: a long fold cooperatively yields (fuel_async_yield_interval, set per-store
+        // in fold_async) instead of blocking; sync calls would panic on this engine (per-engine flag).
+        config.async_support(true);
+        let engine = wasmtime::Engine::new(&config)
+            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+        let component = wasmtime::component::Component::new(&engine, bytes)
+            .map_err(|e| ComponentError::InvalidComponent(e.to_string()))?;
+        // A reducer with declared deps needs per-fold linker composition (async instantiate) — deferred;
+        // decline rather than instantiate a reducer whose deps we'd silently drop.
+        let deps = declared_deps(&component, &engine)?;
+        if !deps.is_empty() {
+            return Err(ComponentError::Instantiate(
+                "async reducer with component dependencies is not yet supported (§23 async \
+                 dep-compose is a follow-up); use the sync ComponentReducer path meanwhile"
+                    .to_string(),
+            ));
+        }
+        let mut linker = wasmtime::component::Linker::<ReducerHost>::new(&engine);
+        async_reducer_bindings::Reducer::add_to_linker::<
+            _,
+            wasmtime::component::HasSelf<ReducerHost>,
+        >(&mut linker, |h: &mut ReducerHost| h)
+        .map_err(|e| ComponentError::Link(e.to_string()))?;
+        // Pre-instantiate the fold world ONCE (perf). Unlike the sync path this is REQUIRED here (not
+        // best-effort): a component that doesn't export the fold world can't be an async reducer, so a
+        // pre-instantiation failure is a real decline, not a fallback.
+        let pre = linker
+            .instantiate_pre(&component)
+            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+        let instance_pre = async_reducer_bindings::ReducerPre::new(pre)
+            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
+        Ok(AsyncComponentReducer {
+            engine,
+            instance_pre,
+            fuel_budget: DEFAULT_FOLD_FUEL,
+            fuel_yield_interval: DEFAULT_FUEL_YIELD_INTERVAL,
+        })
+    }
+
+    /// Fold ONE event through the wasm guest ASYNCHRONOUSLY (the async twin of [`ComponentReducer::apply`]).
+    /// Same transactional + no-full-KV-clone contract: `kv` moves in, is returned in BOTH arms; the guest's
+    /// writes hit the [`ReducerHost`] overlay, committed only on success (a trapped/fuel-exhausted fold
+    /// leaves KV atomically untouched). The difference is the guest call `.await`s (`call_apply_async`) and
+    /// the store is armed with `fuel_async_yield_interval` so a long fold yields cooperatively.
+    pub async fn apply(
+        &self,
+        kv: Kv,
+        content_type: ContentType,
+        payload: Option<Vec<u8>>,
+        resumes: Option<Vec<u8>>,
+    ) -> Result<(Vec<EffectRequest>, Kv), (ComponentError, Kv)> {
+        // Bridge the PUBLIC (sync-module re-exported) `ContentType` to the async bindgen module's own
+        // generated type — the two `bindgen!`s produce distinct structs, so the async guest call needs its
+        // module's `ContentType`. Same fields; a trivial field copy at the boundary.
+        let content_type = async_reducer_bindings::cadenza::agent_kernel::types::ContentType {
+            family: content_type.family,
+            version: content_type.version,
+        };
+        let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
+        // Cooperative yield: the guest yields control every `fuel_yield_interval` fuel so a long fold
+        // doesn't monopolize the single-threaded loop. Set alongside the fuel budget below (yield-interval
+        // = cooperation, set_fuel-ceiling = the DoS trap — both, §22d + async directive).
+        if let Err(e) = store.fuel_async_yield_interval(Some(self.fuel_yield_interval)) {
+            let kv = store.into_data().into_kv();
+            return Err((ComponentError::Instantiate(e.to_string()), kv));
+        }
+        // Ample fuel for instantiation, then reset to the per-fold budget right before the call (same as
+        // the sync path: the budget bounds the FOLD precisely, not load cost).
+        if let Err(e) = store.set_fuel(u64::MAX) {
+            let kv = store.into_data().into_kv();
+            return Err((ComponentError::Instantiate(e.to_string()), kv));
+        }
+        let instance = match self.instance_pre.instantiate_async(&mut store).await {
+            Ok(i) => i,
+            Err(e) => {
+                let kv = store.into_data().into_kv();
+                return Err((ComponentError::Instantiate(e.to_string()), kv));
+            }
+        };
+        if let Err(e) = store.set_fuel(self.fuel_budget) {
+            let kv = store.into_data().into_kv();
+            return Err((ComponentError::Trap(e.to_string()), kv));
+        }
+        let effects = match instance
+            .cadenza_agent_kernel_fold()
+            .call_apply(
+                &mut store,
+                &content_type,
+                payload.as_deref(),
+                resumes.as_deref(),
+            )
+            .await
+        {
+            Ok(effects) => effects,
+            Err(e) => {
+                let kv = store.into_data().into_kv();
+                if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
+                    return Err((
+                        ComponentError::FuelExhausted {
+                            budget: self.fuel_budget,
+                        },
+                        kv,
+                    ));
+                }
+                return Err((ComponentError::Trap(e.to_string()), kv));
+            }
+        };
+        let mut host = store.into_data();
+        host.commit();
+        let kv = host.into_kv();
+        // Bridge the async-bindgen guest `EffectRequest`s back to the PUBLIC (sync-module) `EffectRequest`
+        // the crate exposes everywhere else — structurally identical, distinct generated types.
+        let effects = effects
+            .into_iter()
+            .map(|g| EffectRequest {
+                kind: async_guest_kind_to_public(&g.kind),
+                target: g.target,
+                payload: g.payload,
+                correlation: g.correlation,
+            })
+            .collect();
+        Ok((effects, kv))
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl crate::reducer::AsyncReducer for AsyncComponentReducer {
+    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
+        let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
+        let taken = std::mem::take(kv);
+        match self.apply(taken, content_type, payload, resumes).await {
+            Ok((guest_effects, new_kv)) => {
+                *kv = new_kv;
+                let effects = guest_effects
+                    .into_iter()
+                    .map(|g| crate::reducer::Effect {
+                        request: crate::effect::EffectRequest {
+                            kind: guest_kind_to_kernel(&g.kind),
+                            target: g.target,
+                            payload: g.payload.map(|p| crate::effect::Payload::Inline(p.into())),
+                            timeliness: crate::effect::Timeliness::Interactive,
+                        },
+                        token: g.correlation,
+                    })
+                    .collect();
+                crate::reducer::FoldOutput::with_effects(effects)
+            }
+            Err((err, restored_kv)) => {
+                *kv = restored_kv;
+                crate::reducer::FoldOutput::failed(format!(
+                    "async wasm reducer fold failed: {err:?}"
+                ))
+            }
+        }
+    }
+}
+
+/// Map the ASYNC-bindgen guest `effect-kind` to the PUBLIC (sync-module) [`EffectKind`] — the two
+/// `bindgen!` modules generate DISTINCT `EffectKind` enums, so `apply` bridges the async guest's effects
+/// back to the public type the crate exposes. Same variants (both mirror the one WIT enum).
+fn async_guest_kind_to_public(
+    k: &async_reducer_bindings::cadenza::agent_kernel::types::EffectKind,
+) -> EffectKind {
+    use async_reducer_bindings::cadenza::agent_kernel::types::EffectKind as AsyncKind;
+    match k {
+        AsyncKind::Shell => EffectKind::Shell,
+        AsyncKind::Http => EffectKind::Http,
+        AsyncKind::Model => EffectKind::Model,
+        AsyncKind::Now => EffectKind::Now,
+        AsyncKind::Timer => EffectKind::Timer,
+        AsyncKind::Emit => EffectKind::Emit,
     }
 }
 
