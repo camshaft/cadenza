@@ -85,6 +85,14 @@ fn prewall_threshold_for(agent: &str) -> u8 {
 /// one concierge `note` per this window until the operator acts (the watchdog sweeps every ~4 min).
 const SAT_NOTIFY_GRACE: u64 = 1800;
 
+/// Thrash-guard (seconds) between AUTO-RESTARTs of the same agent's window for a context wedge. A
+/// restart relaunches `window.sh`, which starts a fresh session that must re-read its charter + re-arm
+/// its `/loop` — so back-to-back restarts must not fire faster than a relaunched agent can settle and
+/// (if it immediately re-saturates on genuinely huge in-flight work) be worth restarting again. Long
+/// enough to avoid a restart loop, short enough that a wedge is cleared within a sweep or two. The
+/// watchdog sweeps every ~4 min, so this permits at most one restart per agent per ~10 min.
+const WEDGE_RESTART_GRACE: u64 = 600;
+
 /// Short recheck window (seconds) for a drain-nudge that DIDN'T stick: if the SAME flagged message is
 /// still unconsumed this long after we auto-nudged, re-nudge (and flag loudly) rather than waiting out
 /// the full `--drain-nudge-grace` anti-churn window. Two ticks of a typical vertical (30m interval is
@@ -2834,6 +2842,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
     let mut drain_stall_escalations = 0usize;
     let mut saturated = 0usize;
     let mut wedge_escalations = 0usize;
+    let mut wedge_restarts = 0usize;
     for a in &reg.agents {
         // Only ACTIVE agents with no stop-file are candidates — a stopped/removed agent SHOULD be idle.
         if a.status != "active" || fleet.stopfile(&a.name).exists() {
@@ -3137,9 +3146,58 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             if concierge_wedge_needs_operator(&a.name, ctx_pct) {
                 eprintln!(
                     "  ‼ CONCIERGE itself is at {pct}% — the human interface is WEDGED and cannot be \
-                     auto-notified (a note lands in an inbox it can't drain). OPERATOR must restart the \
-                     concierge window."
+                     auto-notified (a note lands in an inbox it can't drain). The auto-restart below is \
+                     the self-heal (no operator needed)."
                 );
+            }
+            // ── SELF-HEAL: auto-restart at the 100% wall (operator directive 2026-08-02). ──
+            // The wall is the one state a `/compact` nudge can't fix (it can't submit with no headroom),
+            // so the watchdog — which runs out-of-band and is NOT itself wedged — kills + relaunches the
+            // window. Safe: the agent's durable state (worktree/registry/memory/asks) persists, and a
+            // 100%-context agent can't make progress, so there's no real work to interrupt. Applies to
+            // EVERY agent including the concierge (unlike the note escalation, which can't help a
+            // concierge that can't drain its inbox). Thrash-guarded by WEDGE_RESTART_GRACE.
+            let restarted_recently = wedge_restart_age_secs(fleet, &a.name, now)
+                .is_some_and(|s| s < WEDGE_RESTART_GRACE);
+            if should_auto_restart_wedge(ctx_pct, restarted_recently) {
+                if dry_run {
+                    println!(
+                        "  DRY-RUN would AUTO-RESTART '{}' window (context wedge {pct}%)",
+                        a.name
+                    );
+                } else {
+                    match restart_window(fleet, &session, &a.name) {
+                        RestartOutcome::Restarted => {
+                            stamp_wedge_restart(fleet, &a.name);
+                            wedge_restarts += 1;
+                            eprintln!(
+                                "  ⟳ AUTO-RESTARTED '{}' (was at {pct}% — the unrecoverable wall). \
+                                 Window killed + relaunched; its durable state persists, so it resumes \
+                                 on the fresh session. (self-heal, no operator needed)",
+                                a.name
+                            );
+                            println!("  ⟳ auto-restarted '{}' context wedge ({pct}%)", a.name);
+                        }
+                        RestartOutcome::RelaunchFailed => {
+                            // Killed but relaunch failed — the window is now GONE. Loud so the next
+                            // `fleet up` (or an operator) re-creates it; do NOT stamp (let a later sweep
+                            // retry the relaunch rather than sit in the grace window with no window).
+                            eprintln!(
+                                "  ‼ '{}' context wedge: killed the window but RELAUNCH FAILED — the \
+                                 window is now gone. `fleet up` will re-create it; not rate-limiting so \
+                                 the next sweep retries.",
+                                a.name
+                            );
+                        }
+                        RestartOutcome::KillFailed => {
+                            eprintln!(
+                                "  ! '{}' context wedge: tmux kill-window failed — left as-is, will \
+                                 retry next sweep.",
+                                a.name
+                            );
+                        }
+                    }
+                }
             }
             if should_notify_saturation(&a.name, ctx_pct, notified_recently) {
                 // Distinguish PRE-WALL (still compactable — nudge) from AT-WALL (unrecoverable — restart),
@@ -3547,6 +3605,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 saturated,
                 queued_but_landed: landed_queued.len(),
                 wedge_escalations,
+                wedge_restarts,
                 leases_reaped,
                 stranded_agents,
                 dead_letters_reaped,
@@ -3604,6 +3663,11 @@ struct WatchdogCounts {
     saturated: usize,
     queued_but_landed: usize,
     wedge_escalations: usize,
+    /// Windows AUTO-RESTARTED this sweep to self-heal a 100%-context wedge (operator directive
+    /// 2026-08-02). An ACTION count (like `reaped`) — a durable record that the fleet self-healed a
+    /// wedge without an operator. Persistently >0 across sweeps means agents keep hitting the wall (the
+    /// self-compact discipline is failing upstream), worth a deeper fix than the restart papering over it.
+    wedge_restarts: usize,
     leases_reaped: usize,
     /// STOPPED agents holding stranded (permanently-undrained) actionable dead-letters this sweep. A
     /// standing anomaly (unlike the transient re-arm/reap counts) — persistently >0 across sweeps is the
@@ -3641,6 +3705,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         && c.saturated == 0
         && c.queued_but_landed == 0
         && c.wedge_escalations == 0
+        && c.wedge_restarts == 0
         && c.leases_reaped == 0
         && c.stranded_agents == 0
         && c.dead_letters_reaped == 0
@@ -3656,7 +3721,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         format!("\treissued_agents={}", c.reissued_agents.join(","))
     };
     Some(format!(
-        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}{reissued_agents}",
+        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\twedge_restarts={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}{reissued_agents}",
         c.rearmed,
         c.reissued,
         c.reaped,
@@ -3665,6 +3730,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         c.saturated,
         c.queued_but_landed,
         c.wedge_escalations,
+        c.wedge_restarts,
         c.leases_reaped,
         c.stranded_agents,
         c.dead_letters_reaped,
@@ -3781,6 +3847,42 @@ fn should_notify_saturation(agent: &str, ctx_pct: Option<u8>, notified_recently:
 /// rather than living untested inside the tmux-bound `watchdog` body.
 fn concierge_wedge_needs_operator(agent: &str, ctx_pct: Option<u8>) -> bool {
     agent == "concierge" && matches!(ctx_pct, Some(p) if p >= CTX_WEDGE_THRESHOLD)
+}
+
+/// Should the watchdog AUTO-RESTART this agent's window this sweep? The operator directive (2026-08-02:
+/// "we need to be able to have the fleet self-heal … context hits 100% and can't recover … that's not
+/// acceptable") — the 100% wall is the ONE state a `/compact` nudge cannot fix (it can't submit with no
+/// headroom), so the only remedy is to kill + relaunch the window. A restart is SAFE + non-destructive:
+/// the agent's durable state (worktree, registry, memory, operator-asks) persists across it, and a
+/// 100%-context agent by definition can't make progress, so at-the-wall is a safe auto-restart trigger
+/// (no risk of interrupting real work — it can't do any). Fires only when BOTH hold:
+///   * at/above the unrecoverable wall (`ctx_pct >= CTX_WEDGE_THRESHOLD`, 100) — NOT the pre-wall level,
+///     where a `/compact` still submits and a restart would needlessly discard a compactable session;
+///   * not restarted within `WEDGE_RESTART_GRACE` (thrash-guard — a relaunched agent needs time to
+///     re-read its charter + re-arm its loop before we'd consider restarting it again).
+///
+/// UNLIKE the concierge-note escalation (`should_notify_saturation`, which skips the concierge because a
+/// note lands in the inbox it can't drain), auto-restart applies to EVERY agent INCLUDING the concierge:
+/// a kill+relaunch is exactly what recovers a wedged concierge without the operator. Pure so the trigger
+/// is unit-tested without tmux.
+fn should_auto_restart_wedge(ctx_pct: Option<u8>, restarted_recently: bool) -> bool {
+    matches!(ctx_pct, Some(p) if p >= CTX_WEDGE_THRESHOLD) && !restarted_recently
+}
+
+/// Age (seconds) since we last auto-restarted this agent for a context wedge (mtime of
+/// `.claude/fleet/wedge-restart/<name>`), or `None` if never. The thrash-guard for
+/// `should_auto_restart_wedge`.
+fn wedge_restart_age_secs(fleet: &Fleet, name: &str, now: u64) -> Option<u64> {
+    file_mtime_unix(&fleet.root.join("wedge-restart").join(name)).map(|m| now.saturating_sub(m))
+}
+
+/// Record that we auto-restarted this agent's window for a context wedge (touch
+/// `.claude/fleet/wedge-restart/<name>` — mtime is the restart time, for the `WEDGE_RESTART_GRACE`
+/// thrash-guard).
+fn stamp_wedge_restart(fleet: &Fleet, name: &str) {
+    let dir = fleet.root.join("wedge-restart");
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(dir.join(name), "wedge-restart\n").ok();
 }
 
 /// The last auto drain-nudge we sent this agent, as `(flagged-message-id, age-in-secs)`, or `None`
@@ -5690,6 +5792,52 @@ fn kill_window(session: &str, agent: &str) -> KillOutcome {
         KillOutcome::Killed
     } else {
         KillOutcome::TmuxError
+    }
+}
+
+/// The outcome of an auto-restart attempt, so the watchdog can report precisely what happened.
+enum RestartOutcome {
+    /// Window killed and relaunched fresh.
+    Restarted,
+    /// The relaunch (`tmux new-window`) failed after the kill — the window may now be GONE. Loud: an
+    /// agent with no window is worse than a wedged one (the next `fleet up` re-creates it, but until
+    /// then it's dark).
+    RelaunchFailed,
+    /// `tmux` errored on the kill (couldn't enumerate/kill) — left as-is, nothing relaunched.
+    KillFailed,
+}
+
+/// AUTO-RESTART an agent's tmux window: kill it, then relaunch `window.sh <name>` fresh — the watchdog's
+/// self-heal for a 100%-context wedge (operator directive 2026-08-02). Safe because the agent's durable
+/// state (worktree, registry, memory, operator-asks) lives outside the window, so a relaunched session
+/// re-reads its charter + re-arms its loop from where it left off. Composes the existing `kill_window` +
+/// the same detached `new-window` launch `ensure_window` uses, so a restarted window is identical to a
+/// freshly-`up`ped one. Relaunches by NAME into the same session, matching `ensure_window`.
+fn restart_window(fleet: &Fleet, session: &str, name: &str) -> RestartOutcome {
+    match kill_window(session, name) {
+        // TmuxError on the kill: don't relaunch (we couldn't prove the old one is gone — a relaunch
+        // could duplicate the window). Report so the caller escalates instead.
+        KillOutcome::TmuxError => return RestartOutcome::KillFailed,
+        // Killed or NotFound (already gone) both mean "no live window now" → safe to (re)launch.
+        KillOutcome::Killed | KillOutcome::NotFound => {}
+    }
+    let sh = fleet.window_sh();
+    let target = format!("{session}:");
+    let cmdline = format!(
+        "{} {}",
+        shell_quote(&sh.to_string_lossy()),
+        shell_quote(name)
+    );
+    let ok = Command::new("tmux")
+        .args(["new-window", "-d", "-t", &target, "-n", name, &cmdline])
+        .current_dir(&fleet.repo)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        RestartOutcome::Restarted
+    } else {
+        RestartOutcome::RelaunchFailed
     }
 }
 
@@ -10382,6 +10530,7 @@ mod tests {
                     saturated: 3,
                     queued_but_landed: 5,
                     wedge_escalations: 1,
+                    wedge_restarts: 2,
                     leases_reaped: 4,
                     stranded_agents: 6,
                     dead_letters_reaped: 7,
@@ -10392,7 +10541,7 @@ mod tests {
                 }
             ),
             Some(
-                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tdrain_stall_escalations=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\tleases_reaped=4\tstranded_agents=6\tdead_letters_reaped=7"
+                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tdrain_stall_escalations=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\twedge_restarts=2\tleases_reaped=4\tstranded_agents=6\tdead_letters_reaped=7"
                     .to_string()
             )
         );
@@ -10727,6 +10876,51 @@ mod tests {
         assert!(!concierge_wedge_needs_operator("v-inference", Some(100)));
         // No reading → nothing to declare.
         assert!(!concierge_wedge_needs_operator("concierge", None));
+    }
+
+    #[test]
+    fn should_auto_restart_wedge_fires_only_at_the_wall_and_respects_the_thrash_guard() {
+        // The self-heal trigger (operator directive 2026-08-02): auto-restart ONLY at/above the 100%
+        // wall — the one state a `/compact` nudge can't fix — and only if not restarted recently.
+        assert!(should_auto_restart_wedge(Some(100), false)); // at the wall, first time → restart
+        assert!(should_auto_restart_wedge(Some(120), false)); // over the wall too (defensive)
+        // Below the wall a `/compact` still submits — a restart would needlessly discard a compactable
+        // session, so it must NOT fire (that band is the note-escalation's job, not the restart's).
+        assert!(!should_auto_restart_wedge(Some(99), false));
+        assert!(!should_auto_restart_wedge(Some(95), false));
+        assert!(!should_auto_restart_wedge(Some(85), false));
+        // Thrash-guard: already restarted within WEDGE_RESTART_GRACE → hold, even at the wall (a fresh
+        // session needs time to re-read its charter + re-arm before we'd restart it again).
+        assert!(!should_auto_restart_wedge(Some(100), true));
+        // No reading → never restart (can't prove a wedge).
+        assert!(!should_auto_restart_wedge(None, false));
+        // The restart trigger sits exactly AT the wall while the note escalates BELOW it — the two
+        // remedies partition the saturation range at CTX_WEDGE_THRESHOLD (no gap, no overlap in intent):
+        // pre-wall → nudge/note (still compactable); at-wall → restart (only remedy left).
+        assert!(should_auto_restart_wedge(Some(CTX_WEDGE_THRESHOLD), false));
+        assert!(!should_auto_restart_wedge(
+            Some(CTX_WEDGE_THRESHOLD - 1),
+            false
+        ));
+    }
+
+    #[test]
+    fn watchdog_log_line_reports_a_wedge_restart_as_a_notable_anomaly() {
+        // A sweep that ONLY auto-restarted a wedge (no other anomaly) must still write a log line — the
+        // self-heal is a durable record ("did the fleet recover a wedge, and how often?"). Guards the
+        // exhaustive-anomaly-gate contract: a new action counter omitted from the gate would be dropped.
+        let line = watchdog_log_line(
+            42,
+            10,
+            &WatchdogCounts {
+                wedge_restarts: 1,
+                ..Default::default()
+            },
+        )
+        .expect("a wedge-restart is a notable anomaly → must produce a log line");
+        assert!(line.contains("wedge_restarts=1"), "line was: {line}");
+        // And a fully-clean sweep still writes nothing (the restart counter didn't break the gate).
+        assert!(watchdog_log_line(42, 10, &WatchdogCounts::default()).is_none());
     }
 
     #[test]
