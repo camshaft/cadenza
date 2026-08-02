@@ -4122,7 +4122,7 @@ pass	eval of a partially-exported type's WITHHELD constructor is rejected
 pass	eval of a quasiquote splicing a compile-time-known value
 pass	eval of a quasiquote splicing a string works through String ops
 pass	eval of a quasiquote-built form with a float unquote folds
-pass	eval of a quote carrying a symbol literal declines CDZ0101 — the reify bail as a perf-bound tripwire
+pass	eval of a quote carrying a symbol literal is rejected CDZ0101 — the reify bail as a perf-bound tripwire
 pass	eval of a quoted RECURSIVE call folds through the compile-time evaluator
 pass	eval of a quoted RECURSIVE-sum construction builds the heap spine
 pass	eval of a quoted boolean connective short-circuits
