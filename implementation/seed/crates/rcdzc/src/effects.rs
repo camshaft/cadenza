@@ -983,6 +983,21 @@ fn effect_decl_of_value(db: &mut Db, id: StructId) -> Option<u32> {
 /// lowering, so reaching here means no such handler intervenes.
 //= spec/capabilities/capabilities-and-effects.md#host-binding-is-a-routing-decision-made-at-the-entrypoint
 //# The concrete form by which an entrypoint delegates a set of effects to the host MUST be pinned at the declared-default location and MUST resolve an operation it delegates exactly as the nearest enclosing handler would, so that host delegation is the boundary member of the same nearest-enclosing resolution as in-program handling and two builds agree on the surface a delegation takes.
+/// Canonical dotted key of a host operation — the single source of truth for the `e.op` name a delegated
+/// host call is named/observed/matched by. The EFFECT name is KEBAB-NORMALIZED (the component/WIT extern
+/// convention — `kebab_extern_name`: `Env`→`env`, `Log`→`log`, `Param`→`param`, `E`→`e`), the OP name is
+/// kept VERBATIM. This is the observed name cdz-run binds/records; the corpus `(host-responses …)` fixtures
+/// are written in mixed casing (`env.width` normalized, `Param.width` source), but cdz-run matches after
+/// normalizing BOTH sides — so a consumer of this key MUST likewise normalize the effect part of a recorded
+/// response key before comparing (the rust gate driver does: it splits the response key, kebab-normalizes
+/// the effect, then derives the same shim ident this backend emits). Spec: host-interface-binding.md
+/// #a-host-import-is-a-wit-typed-function. (Landed with its first rcdzc caller — the rust `Core::HostCall`
+/// emit — since an uncalled helper trips clippy `dead_code`.)
+pub(crate) fn canonical_host_op_key(effect: &str, op: &str) -> String {
+    let eff = crate::backend::common::export_name::kebab_extern_name(effect);
+    format!("{eff}.{op}")
+}
+
 pub fn perform_host_target(
     db: &mut Db,
     perform: StructId,

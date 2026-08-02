@@ -7138,3 +7138,37 @@ fn rustc_roundtrip_generic_user_sum_carrying_option_compare_emits_via_full_type_
         );
     }
 }
+
+#[test]
+fn rustc_host_call_no_arg_int_result_emits_a_canonical_shim_call() {
+    // H1 host-boundary emit: a delegated no-arg, integer-result host op (`ask.ask -> Int64`) renders as a
+    // call to a crate-root shim `crate::__cdz_host_<key>()` the runner supplies (the gate driver generates
+    // it from recorded host-responses; a real embedder implements it). The shim name derives from the
+    // CANONICAL op key (kebab-normalized effect + verbatim op) so it agrees with the driver-generated fn
+    // regardless of the source effect's casing — here effect `ask` → `ask.ask` → `__cdz_host_ask_ask`.
+    let src = "(module m (effect ask (op ask (-> Unit Int64))) \
+        (def (main) (host (ask) (* (ask.ask) 10))) (export main))";
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("crate::__cdz_host_ask_ask()"),
+        "a no-arg Int64 host op emits a canonical crate-root shim call:\n{rs}"
+    );
+
+    // A CAPITALIZED effect name kebab-normalizes in the shim ident (`Env` → `env`), matching the component
+    // extern name the corpus/cdz-run key by — so backend-emitted and driver-generated idents agree.
+    let cap = "(module m (effect Env (op width (-> Unit Int64))) \
+        (def (main) (host (Env) (Env.width))) (export main))";
+    let rc = compile_rust(cap);
+    assert!(
+        rc.contains("crate::__cdz_host_env_width()"),
+        "a capitalized effect kebab-normalizes in the shim ident (Env → env):\n{rc}"
+    );
+
+    // A host op WITH ARGUMENTS is a later increment — it declines cleanly (not a miscompile).
+    let with_args = "(module m (effect kv (op get (-> Int64 Int64))) \
+        (def (main) (host (kv) (kv.get 5))) (export main))";
+    assert!(
+        compile_rust_result(with_args).is_err(),
+        "a host call with arguments declines (later increment):\n{with_args:?}"
+    );
+}
