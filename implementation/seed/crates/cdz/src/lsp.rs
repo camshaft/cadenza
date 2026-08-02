@@ -4127,6 +4127,41 @@ mod tests {
     }
 
     #[test]
+    fn hover_on_the_definition_itself_shows_its_docstring() {
+        // The LSP hover-doc analogue of the cdz-doc-at "on the definition" case (#1291): the existing
+        // documented-def test hovers a USE (call site); pin the DEFINITION SITE too — hovering the def's
+        // own NAME must also surface its `///` doc, not only a downstream reference. Cursor on `double`
+        // in the def line (line 1, col 4).
+        let text = "/// Doubles its argument.\ndef double(x: Int64) -> Int64 = x + x\ndef use = double(21)";
+        let h = hover_at(text, true, Position::new(1, 4)).expect("a hover on the definition name");
+        let rendered = match &h.contents {
+            HoverContents::Markup(m) => m.value.clone(),
+            other => panic!("expected Markdown hover with a doc on the def site, got: {other:?}"),
+        };
+        assert!(
+            rendered.contains("Doubles its argument."),
+            "hovering the definition itself should surface its docstring, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn hover_on_an_undocumented_def_is_a_plain_type_without_markdown() {
+        // The LSP hover-doc analogue of the cdz-doc-at "undocumented node → no documentation" case
+        // (#1291): pin END-TO-END through `hover_at` (not just the `hover_contents` helper) that an
+        // undocumented-but-valid def hovers to a PLAIN type string, never an empty/spurious Markdown doc
+        // block. Cursor on the `double` def name (line 0, col 4) — no `///` precedes it.
+        let text = "def double(x: Int64) -> Int64 = x + x\ndef use = double(21)";
+        let h = hover_at(text, true, Position::new(0, 4)).expect("a hover on the undocumented def");
+        match &h.contents {
+            HoverContents::Scalar(MarkedString::String(s)) => assert!(
+                s.contains("->") || s.contains("Int"),
+                "an undocumented def hovers to a plain type string, got: {s}"
+            ),
+            other => panic!("expected a plain scalar type (no doc Markdown), got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn hover_on_a_use_of_a_let_local_reports_its_inferred_type() {
         // A `let`-bound local has NO written annotation, yet a USE of it hovers to its INFERRED type: the
         // `TypeAt` query resolves a use-site name to the solved type of what it refers to. This is the one
