@@ -979,9 +979,25 @@ fn closure_hash_text(db: &mut Db) -> String {
 /// their arena structure (node shape + leaf bytes) into an [`FxHasher`], so two byte-identical source defs
 /// (even at different global `StructId`s, since link splices files at an offset) hash the SAME. Independent
 /// of the def's global id and of surrounding files — only its own subtree content.
+///
+/// ⚠ RUN-STABILITY: every `Name` leaf in the hashed subtrees is desuffixed to its
+/// [`crate::layout::source_boundary_name`] (the name before any `$acc`/`#mono{N}` transform suffix) by
+/// `hash_subtree` — both the def's OWN `#mono{N}` head name AND every body reference to a sibling
+/// specialization. A monomorphized specialization mints its name as `{base}#mono{db.defs.len()}`
+/// (`lower.rs`), and `db.defs.len()` at mint time is RUN-VARYING (specialization order differs run to run),
+/// so hashing the raw names gave the SAME specialization a DIFFERENT hash each run → its shared-closure
+/// provider-cache key ([`closure_content_hash`]) never hit → the closure re-emitted (full lower) on every
+/// `--warm-only`, the gate's stubborn ~256s. The `#mono{N}` counter carries NO semantic identity (two
+/// DISTINCT specializations of one base still hash differently — the BODY subtree bakes in their concrete
+/// type args), so stripping the suffix makes identical specializations hash identically across runs without
+/// colliding distinct ones. Both sides of the two-sided provider-cache key fold THIS function, so they stay
+/// in agreement by construction. See `def_content_hash_is_invariant_to_the_monomorph_mint_counter`.
 pub(crate) fn def_content_hash(db: &Db, def: usize) -> u64 {
     use std::hash::Hasher;
     let mut h = crate::fxhash::FxHasher::default();
+    // Hashes the sig + body subtrees via `hash_subtree`, which desuffixes every `Name` leaf (the def's own
+    // `#mono{N}` head name AND every body reference to a sibling specialization) to its run-stable boundary
+    // name — so the run-varying mint counter never enters the hash. See the run-stability note above.
     hash_subtree(db, db.defs[def].sig_occ, &mut h);
     if let Some(body) = db.defs[def].body {
         hash_subtree(db, body, &mut h);
@@ -1019,19 +1035,45 @@ fn hash_subtree(db: &Db, id: StructId, h: &mut crate::fxhash::FxHasher) {
         Struct::List(kids) => {
             h.write_u8(0); // tag: list
             h.write_u32(kids.len() as u32);
-            // Iterate by ref — `hash_subtree` only borrows `db` immutably, so the shared borrow of `kids`
-            // (into `db.ast`) coexists with the recursive shared borrows; no clone needed.
-            for &k in kids {
+            // A `(typeval …)` payload encodes a `Ty::Sum`/`Ty::Nominal` as `(Sum NAME <decl> arg…)` /
+            // `(Nominal NAME <decl> (args…) <inner>)` where `<decl>` (child index 2) is the declaration
+            // OCCURRENCE — a raw arena `StructId` rendered as an Int leaf (`encode_ty`, eval.rs). That id is
+            // RUN-VARYING for a monomorphized/synth type (its arena position shifts with mint order), and a
+            // mono def body bakes in such type-exprs, so hashing the decl int reintroduces run-instability
+            // (the residual the Name-desuffix alone couldn't reach — it's an Int, not a Name). The decl id
+            // carries NO CONTENT identity for a closure-cache key: the NAME (index 1, desuffixed) + the ARGS
+            // + the INNER already identify the type; the arena occurrence is position, not content. So SKIP
+            // the decl int for these two shapes. Two structurally-identical Sum/Nominal type-exprs differing
+            // only in arena decl.0 then hash the same across runs, without colliding distinct types (name +
+            // args + inner still distinguish them). Any other list hashes every child as before.
+            let head = db.ast.head_name(id);
+            let skip_decl = matches!(head, Some("Sum") | Some("Nominal")) && kids.len() >= 3;
+            for (i, &k) in kids.iter().enumerate() {
+                if skip_decl && i == 2 {
+                    continue; // the run-varying arena decl-id — excluded from the CONTENT hash
+                }
                 hash_subtree(db, k, h);
             }
         }
         Struct::Atom(leaf) => {
             h.write_u8(1); // tag: atom
-            // The `Leaf` (Int/Float/Str/Name/Char/…) IS the atom's content identity; it derives `Hash`,
-            // so hash it directly — two byte-identical source atoms produce the same leaf, hence the same
-            // contribution regardless of arena position.
-            let leaf = *leaf;
-            db.ast.leaf(leaf).hash(h);
+            // The `Leaf` (Int/Float/Str/Name/Char/…) IS the atom's content identity; it derives `Hash`, so
+            // hash it directly — two byte-identical source atoms produce the same leaf, hence the same
+            // contribution regardless of arena position. EXCEPT a `Name` leaf: hash its SUFFIX-STRIPPED form
+            // (`source_boundary_name`), because a monomorphized def's body REFERENCES its sibling
+            // specializations by their `{base}#mono{N}` names, and that `N` (= `db.defs.len()` at mint) is
+            // RUN-VARYING — so hashing the raw referenced name reintroduces the run-instability that
+            // desuffixing the def's OWN name (in `def_content_hash`) removes. Stripping the suffix on every
+            // Name leaf makes a body call to `f#mono5` hash identically to one to `f#mono3` — the reference's
+            // SEMANTIC identity (the base callee) is run-stable; the mint counter is not. A non-transformed
+            // name (no `$`/`#`) is unchanged, so an ordinary program hashes exactly as before.
+            match db.ast.leaf(*leaf) {
+                crate::ast::Leaf::Name(n) => {
+                    h.write_u8(2); // sub-tag: name (distinct from other leaves)
+                    crate::layout::source_boundary_name(n).hash(h);
+                }
+                other => other.hash(h),
+            }
         }
     }
 }

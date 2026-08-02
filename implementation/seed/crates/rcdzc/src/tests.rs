@@ -77208,6 +77208,97 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn def_content_hash_is_invariant_to_the_monomorph_mint_counter() {
+        // REGRESSION (gate perf, v-cdz-tooling coordination): a monomorphized specialization mints its name
+        // `{base}#mono{db.defs.len()}` (lower.rs), and `db.defs.len()` at mint time is RUN-VARYING. Two
+        // things then leaked that run-varying counter into `sidecar::def_content_hash` — the shared-closure
+        // provider-cache KEY (`closure_content_hash`) folds it — so the SAME specialization hashed
+        // DIFFERENTLY each run → its `.provider.wasm` cache never hit → re-emitted (full lower) on every
+        // `--warm-only`, the gate's ~256s. The two leaks, both fixed:
+        //   (1) the def's own `#mono{N}` head NAME + body references to sibling `#mono{N}` names — now
+        //       desuffixed to `source_boundary_name` when hashing a `Name` leaf;
+        //   (2) the `decl.0` arena StructId baked as an Int leaf into an encoded `(Sum NAME <decl> …)` /
+        //       `(Nominal NAME <decl> …)` type-expr in the body — now SKIPPED (child index 2) for those two
+        //       shapes.
+        // This pins BOTH: two defs identical up to the mint counter (in the name AND in a body Sum/Nominal
+        // decl-id) MUST hash the same. Fixture-free — builds the two defs' subtrees directly in a Db arena,
+        // no CLI / provider-cache path (that path only reproduces at compiler-ml's ~8min scale).
+        use crate::ast::{IntValue, Leaf, Radix};
+        use crate::db::Def;
+
+        // Build one def named `{name}#mono{n}` whose body reads a field off a `(Nominal Foo <decl_id> (args) Unit)`
+        // type-expr — so BOTH run-varying inputs (the mono name suffix AND the decl arena-id) are present.
+        let make_def = |db: &mut crate::db::Db, mint_n: usize, decl_id: i64| -> usize {
+            let sig_name = db.push_name(&format!("f#mono{mint_n}"));
+            let sig = db.push_list(vec![sig_name]); // nullary sig `(f#monoN)`
+            // body: `(typeval (Nominal Foo <decl_id> (args) Unit))` — a mono'd type-expr carrying the decl id.
+            let tv_head = db.push_name("typeval");
+            let nom = db.push_name("Nominal");
+            let foo = db.push_name("Foo");
+            let decl = db.push_atom(Leaf::Int {
+                value: IntValue::from_i64(decl_id),
+                radix: Radix::Dec,
+            });
+            let args_head = db.push_name("args");
+            let args = db.push_list(vec![args_head]);
+            let unit = db.push_name("Unit");
+            let nominal = db.push_list(vec![nom, foo, decl, args, unit]);
+            let body = db.push_list(vec![tv_head, nominal]);
+            db.defs.push(Def {
+                name: format!("f#mono{mint_n}"),
+                sig_occ: sig,
+                params: Vec::new(),
+                body: Some(body),
+                internal: false,
+            });
+            db.defs.len() - 1
+        };
+
+        let mut db = crate::db::Db::load(parse("(module m (def (main) 0) (export main))"));
+        // Same specialization, but minted at DIFFERENT counters (3 vs 99) AND with a DIFFERENT arena decl-id
+        // (100 vs 200) — mimicking two runs where mono order shifted both.
+        let a = make_def(&mut db, 3, 100);
+        let b = make_def(&mut db, 99, 200);
+        assert_eq!(
+            crate::sidecar::def_content_hash(&db, a),
+            crate::sidecar::def_content_hash(&db, b),
+            "def_content_hash must be INVARIANT to the run-varying #mono mint counter (name) AND the arena \
+             decl-id (Sum/Nominal type-expr) — else a mono'd shared closure never cache-hits across runs"
+        );
+
+        // NEGATIVE guard: two GENUINELY-DIFFERENT specializations (different Nominal NAME) must still DIFFER,
+        // so the desuffix/skip doesn't collapse distinct closures into one cache key.
+        let sig_name = db.push_name("f#mono5");
+        let sig = db.push_list(vec![sig_name]);
+        let tv_head = db.push_name("typeval");
+        let nom = db.push_name("Nominal");
+        let bar = db.push_name("Bar"); // different nominal name
+        let decl = db.push_atom(Leaf::Int {
+            value: IntValue::from_i64(100),
+            radix: Radix::Dec,
+        });
+        let args_head = db.push_name("args");
+        let args = db.push_list(vec![args_head]);
+        let unit = db.push_name("Unit");
+        let nominal = db.push_list(vec![nom, bar, decl, args, unit]);
+        let body = db.push_list(vec![tv_head, nominal]);
+        db.defs.push(Def {
+            name: "f#mono5".to_string(),
+            sig_occ: sig,
+            params: Vec::new(),
+            body: Some(body),
+            internal: false,
+        });
+        let c = db.defs.len() - 1;
+        assert_ne!(
+            crate::sidecar::def_content_hash(&db, a),
+            crate::sidecar::def_content_hash(&db, c),
+            "a DIFFERENT specialization (Nominal Foo vs Bar) must still hash differently — the fix strips the \
+             run-varying counter/decl-id, NOT the semantic content (name/args/inner still distinguish)"
+        );
+    }
+
+    #[test]
     fn option_c_cross_edge_import_shift_offsets_positions_for_a_coexisting_peer_extern() {
         // PR#882 CORRECTNESS fix: `compute_tests_consumer` computes `cross_edge_import` positions 0-based (the
         // consumer layout carries no other extern imports at layout time). But the backend emit prepends a
