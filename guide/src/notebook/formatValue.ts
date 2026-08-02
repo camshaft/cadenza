@@ -73,10 +73,11 @@ function unitSymbolName(list: Node[]): string | null {
 /// Pretty-print a unit node into the concise unit surface (`meter`, `meter/second`, `meter^2`,
 /// `meter/(second^2)`). Handles the algebraic combinators the notebook produces — `Unit.base`, the
 /// dimensionless identity `Unit.one`, product `Unit.*`, quotient `Unit./`, and integer power `Unit.^`.
-/// A compound sub-unit is PARENTHESIZED so the result is unambiguous (`meter/(second^2)`, `(a^2)*b`),
-/// matching the compiler's nested display; a base unit / power stays bare. Any unrecognized unit shape
-/// (e.g. the `Unit.of`/`Unit.prefix` family/scale layer, which the compiler itself renders as a raw call)
-/// falls back to the compact canonical render, so a value with an unusual unit is still shown, never lost.
+/// A compound sub-unit — a product, quotient, OR power — is PARENTHESIZED so the result is unambiguous
+/// (`meter/(second^2)`, `(a^2)*b`), matching the compiler's nested display; only a bare base unit (or the
+/// dimensionless identity) stays unwrapped. Any unrecognized unit shape (e.g. the `Unit.of`/`Unit.prefix`
+/// family/scale layer, which the compiler itself renders as a raw call) falls back to the compact
+/// canonical render, so a value with an unusual unit is still shown, never lost.
 /// Returns "" for the dimensionless identity so a dimensionless quantity renders as just its value.
 function displayUnit(n: Node): string {
   if (isAtom(n)) {
