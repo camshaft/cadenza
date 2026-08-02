@@ -194,26 +194,14 @@ impl Session {
     /// so a query fold can't take world-actions (no Http/Shell/Emit leaking from a debug query) — the
     /// kernel supplies the mechanism (a clean isolated session); the caller supplies the scoped `Authorize`.
     pub fn fork_for_query(&self) -> Session {
-        let mut fork = Session {
-            log: Vec::new(),
-            kv: self.kv.clone(),
-            next_effect_id: 0,
-            settled: BTreeSet::new(),
-            open: BTreeSet::new(),
-            armed_timers: BTreeMap::new(),
-            last_now: self.last_now,
-            store: None,
-            persist_error: None,
-        };
-        // Own genesis naming the SAME reducer — the fork folds with the identical logic, and its snapshot
-        // descriptor reports the parent's reducer-hash.
-        fork.log.push(Event {
-            seq: 0,
-            cause: None,
-            body: EventBody::Genesis {
-                reducer: self.reducer_hash(),
-            },
-        });
+        // Build the clean base via `genesis` so the fork can't DRIFT from the canonical construction if
+        // `Session` gains a field (PR#1297 review): a fresh session over the SAME reducer already gives
+        // empty open/settled/armed-timer sets, `next_effect_id` reset, no log store, and no latched persist
+        // error. Then override only the fork DELTAS: the materialized KV (cloned) and the monotonic clock
+        // floor (so a `Now` read in the fork can't observe time earlier than the parent already did).
+        let mut fork = Session::genesis(self.reducer_hash());
+        fork.kv = self.kv.clone();
+        fork.last_now = self.last_now;
         fork
     }
 
