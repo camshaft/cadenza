@@ -2334,16 +2334,27 @@ fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String
         if merge_request_ref_is_missing(&mr.r#ref) {
             continue;
         }
+        // CHEAP predicates FIRST (no subprocess): under-threshold or in-flight → skip before spending
+        // any `git` on it (PR #1234 review — don't shell `git cherry`/`git show` for an MR the cheap
+        // checks already exclude). Only survivors pay for the (expensive) landed + file-collision tests.
         let age = file_mtime_unix(&p)
             .map(|m| now.saturating_sub(m))
             .unwrap_or(0);
-        // In flight if a live ci-dispatch record names this ref (prefix-tolerant, git shas).
+        if age <= STALE_QUEUED_MR_SECS {
+            continue; // still within the wait window — a healthy queued MR, not stale
+        }
+        // In flight if a live ci-dispatch record names this ref (prefix-tolerant, git shas). Cheap
+        // (in-memory set), so checked before the git calls.
         let in_flight = in_flight_refs.iter().any(|r| {
             let (a, b) = (r.to_ascii_lowercase(), mr.r#ref.to_ascii_lowercase());
             a.starts_with(&b) || b.starts_with(&a)
         });
+        if in_flight {
+            continue;
+        }
+        // Now the EXPENSIVE checks, only for a candidate that's old + not-in-flight: is it already
+        // landed (git cherry), and is it file-blocked behind an in-flight candidate (git show)?
         let landed = ref_landed_on_trunk(fleet, &mr.r#ref);
-        // FILE-blocked if it shares any changed file with an in-flight candidate (correctly serialized).
         let file_blocked = files_collide(&changed_files_of(&mr.r#ref), &in_flight_files);
         if mr_is_stale_queued(age, in_flight, landed, file_blocked, STALE_QUEUED_MR_SECS) {
             out.push((fname, mr.from.clone(), mr.r#ref.clone(), age));
