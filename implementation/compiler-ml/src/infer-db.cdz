@@ -873,11 +873,12 @@ def all-defs-well-scoped-go(tree: Tree, entries: List(Tuple(Int64, Int64)), i: I
           else all-defs-well-scoped-go(tree, entries, i + 1))
      | Option.None(_) => all-defs-well-scoped-go(tree, entries, i + 1)))
 
-/// The source NAME-id of a param NODE (a `Node.NVar(nm)` — see sread's param binders); `-1` if the node
-/// isn't an NVar (shouldn't happen for a param). Used to compare a def's param names for linearity.
+/// The source NAME-id of a param NODE (a `Node.NVar(nm)` — see sread's param binders), or `None` if the node
+/// isn't an NVar (a malformed/unsupported param that has no comparable name). Typed absence, not an in-band
+/// `-1` sentinel: the linearity check simply skips a `None` param (a name-less param can't collide).
 def param-name-of(tree: Tree, paramId: Int64) = match node-at(tree, paramId) with
-  | Option.Some(Node.NVar(nm)) => nm
-  | _ => -1
+  | Option.Some(Node.NVar(nm)) => Option.Some(nm)
+  | _ => Option.None(unit)
 
 /// Does the def `defName` bind TWO params with the SAME name? (`(def (f (: x …) (: x …)) …)` — non-linear,
 /// rcdzc CDZ0102.) A def has ≤4 params, so this is a tiny fixed dup-check over `def-param-ids`' name-ids —
@@ -889,15 +890,19 @@ def def-params-nonlinear(tree: Tree, defName: Int64) =
 def map-param-names(tree: Tree, ids: List(Int64), i: Int64) =
   (if i == List.len(ids) then ([] : List(Int64))
    else (match List.at(ids, i) with
-     | Option.Some(pid) => List.concat(List.push([], param-name-of(tree, pid)), map-param-names(tree, ids, i + 1))
+     | Option.Some(pid) => (match param-name-of(tree, pid) with
+         // Collect only NAMED params (Some) — a name-less param (None) can't collide, so it's omitted
+         // at the source rather than carried as a sentinel the dup-check must special-case.
+         | Option.Some(nm) => List.concat(List.push([], nm), map-param-names(tree, ids, i + 1))
+         | Option.None(_) => map-param-names(tree, ids, i + 1))
      | Option.None(_) => map-param-names(tree, ids, i + 1)))
 
-/// Does `names` contain a duplicate at/after index `i`? O(n²) over ≤4 elements (fixed, cheap). A name `-1`
-/// (a non-NVar param, shouldn't occur) is skipped as a dup key so it never spuriously flags.
+/// Does `names` contain a duplicate at/after index `i`? O(n²) over ≤4 elements (fixed, cheap). Every element
+/// is a real param name (map-param-names collects only NAMED params), so no sentinel-skip is needed.
 def names-have-dup(names: List(Int64), i: Int64) =
   (if i >= List.len(names) then false
    else (match List.at(names, i) with
-     | Option.Some(nm) => (if (not (nm == (-1))) and name-appears-after(names, nm, i + 1) then true
+     | Option.Some(nm) => (if name-appears-after(names, nm, i + 1) then true
                            else names-have-dup(names, i + 1))
      | Option.None(_) => names-have-dup(names, i + 1)))
 
