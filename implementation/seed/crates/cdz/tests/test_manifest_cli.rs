@@ -190,6 +190,46 @@ fn a_parse_broken_sibling_def_fails_the_run_not_a_false_green() {
     );
 }
 
+#[test]
+fn a_test_referencing_an_undefined_name_fails_the_run_not_a_false_green() {
+    // The RESOLVE-ERROR sibling of `a_parse_broken_sibling_def_fails_the_run_not_a_false_green`: a `@test`
+    // that PARSES cleanly but references an UNBOUND name (`undefined_symbol()`) is a CDZ0101 resolve error,
+    // not a parse error — so the reader's paren-recovery path doesn't apply, but the def is still invalid.
+    // Before the check-gate, the file's OTHER (good) `@test`s would still compile+run and the suite would
+    // report "N passed, 0 failed" with the broken def silently dropped — the same false-green class the
+    // parse-broken case landed. `cdz test` now gates on `cdz check` clean FIRST (`check_one` follows the
+    // import closure and reports any error-severity fault, resolve OR parse), so a CDZ0101 must RED the run,
+    // print the diagnostic, and print NO green passed-count. This pins the RESOLVE flavor so a future refactor
+    // of the check-gate can't reopen the mask for resolve errors while the parse-error test still passes.
+    let d = dir("undefined-name");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@test def good() = if 1 == 1 then unit else trap(\"g\")\n\
+         @test def broken() = if undefined_symbol() == 1 then unit else trap(\"b\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f]);
+    assert!(
+        !ok,
+        "an unbound-name resolve error must FAIL the run: {stdout}{stderr}"
+    );
+    // The CDZ0101 diagnostic is printed by `check_one` to STDOUT; the "NOT running the suite" note to
+    // STDERR — assert the diagnostic against the combined output so the stream split doesn't matter.
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("CDZ0101") && combined.contains("undefined_symbol"),
+        "the CDZ0101 diagnostic naming the unbound symbol is shown: {combined}"
+    );
+    assert!(
+        stderr.contains("NOT running the suite"),
+        "the run is gated on check-clean and says it didn't run the suite: {stderr}"
+    );
+    assert!(
+        !stdout.contains("passed,"),
+        "must NOT report a green `N passed` summary when a @test has a resolve error: {stdout}"
+    );
+}
+
 /// A single explicit `cdz test <file>` that contributes ZERO tests must PRINT a "0 tests found" hint, not
 /// exit silently — otherwise a file whose only marker is an UNRECOGNIZED test-ish annotation (`@property`,
 /// which is silently stripped, so its def is NOT a `@test`) is dead + "green" by omission (breaker's
