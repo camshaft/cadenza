@@ -14,7 +14,7 @@
 //! `Send`; sessions never cross a thread.
 //!
 //! **The kernel-async seam:** `AgentHost::deliver`/`fire_due_timers` are ASYNC (they drive the kernel's
-//! `Session::deliver_async`/`fire_due_timers_async`, folding through an [`cdz_kernel::reducer::AsyncReducer`]
+//! `Session::deliver_async`/`fire_due_timers_async`, folding through an [`cdz_kernel::reducer::Reducer`]
 //! with `Store::fuel_async_yield_interval`), so a long fold cooperatively YIELDS and this loop interleaves
 //! other sessions while it awaits — SAME loop, no reshape, no `Send` (still one task). The in-place
 //! `host.deliver(..).await` here is exactly that seam.
@@ -164,15 +164,15 @@ mod tests {
         Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
     };
     use cdz_kernel::event::{ContentType, EffectOutcome, Event};
-    use cdz_kernel::executor::AsyncCompositeExecutor;
+    use cdz_kernel::executor::CompositeExecutor;
     use cdz_kernel::kv::Kv;
-    use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
+    use cdz_kernel::reducer::{FoldOutput, Reducer};
 
     /// On "go", record which session ran by stamping "ran" in KV (via a Now round-trip so it exercises
     /// the real executor path through the loop).
     struct MarkAgent;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for MarkAgent {
+    impl Reducer for MarkAgent {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
@@ -194,7 +194,7 @@ mod tests {
     }
 
     fn mark_host() -> HostedSession {
-        let executor = cdz_kernel::executor::AsyncCompositeExecutor::new()
+        let executor = cdz_kernel::executor::CompositeExecutor::new()
             .with(EffectKind::Now, Box::new(ClockExecutor::new()));
         HostedSession::genesis(
             Hash::of(b"mark-v1"),
@@ -287,7 +287,7 @@ mod tests {
         deadline_ms: u64,
     }
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for TimerAgent {
+    impl Reducer for TimerAgent {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
@@ -323,7 +323,7 @@ mod tests {
                 Hash::of(b"timer-v1"),
                 Box::new(TimerAgent { deadline_ms: 1000 }),
                 Box::new(authz),
-                AsyncCompositeExecutor::new(),
+                CompositeExecutor::new(),
             ),
         );
         // Arm the timer directly (pre-run) so it's already armed when the loop starts.

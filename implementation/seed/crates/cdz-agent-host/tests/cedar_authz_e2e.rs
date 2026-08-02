@@ -15,11 +15,11 @@
 use cdz_agent_host::{ModelExecutor, ModelTransport};
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload, Timeliness};
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
-use cdz_kernel::executor::AsyncCompositeExecutor;
+use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
+use cdz_kernel::reducer::{FoldOutput, Reducer};
 use cdz_kernel::wasm_host::ComponentAuthorizer;
 
 /// Load the lifted Cedar policy component the CI job built. `None` ONLY when the env var is UNSET (a
@@ -64,7 +64,7 @@ fn inbound(kind_marker: &str) -> EventBody {
 /// reducer drive both the permit and deny cases against the real Cedar component.
 struct PolicyProbe;
 #[async_trait::async_trait(?Send)]
-impl AsyncReducer for PolicyProbe {
+impl Reducer for PolicyProbe {
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { payload, .. } => {
@@ -117,7 +117,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
     // result folds back → the agent records "permitted".
     {
         let reducer = PolicyProbe;
-        let mut exec = AsyncCompositeExecutor::new()
+        let mut exec = CompositeExecutor::new()
             .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
         let mut session = Session::genesis(Hash::of(b"cedar-permit-v1"));
         session
@@ -143,7 +143,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
         let reducer = PolicyProbe;
         // A Model executor is registered, but the Http effect is denied before any executor runs; an
         // Http executor isn't even needed to prove the deny (the gate stops it first).
-        let mut exec = AsyncCompositeExecutor::new()
+        let mut exec = CompositeExecutor::new()
             .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
         let mut session = Session::genesis(Hash::of(b"cedar-deny-v1"));
         session

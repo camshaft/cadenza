@@ -21,7 +21,7 @@ use crate::retry;
 use bytes::Bytes;
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
-use cdz_kernel::executor::AsyncExecutor;
+use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
 
 /// The I/O half of an HTTP request, factored out so the executor's logic is hermetically testable. An
@@ -63,7 +63,7 @@ impl<T: HttpTransport> HttpExecutor<T> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<T: HttpTransport> AsyncExecutor for HttpExecutor<T> {
+impl<T: HttpTransport> Executor for HttpExecutor<T> {
     async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         if req.kind != EffectKind::Http {
             // Structural — PERMANENT, a supervisor must not retry it (§17: observable Err, never a panic).

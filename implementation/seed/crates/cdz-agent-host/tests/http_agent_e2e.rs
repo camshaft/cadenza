@@ -11,11 +11,11 @@ use cdz_kernel::effect::{
     Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
 };
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
-use cdz_kernel::executor::AsyncCompositeExecutor;
+use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
+use cdz_kernel::reducer::{FoldOutput, Reducer};
 
 /// A stub HTTP transport: returns a canned response body so the fetch loop is hermetic. The real client
 /// implements this same trait behind `live-net`.
@@ -36,7 +36,7 @@ impl HttpTransport for StubHttp {
 /// it stashes the body and marks itself `fetched`. The loop closes through a real executor.
 struct FetchAgent;
 #[async_trait::async_trait(?Send)]
-impl AsyncReducer for FetchAgent {
+impl Reducer for FetchAgent {
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
@@ -83,7 +83,7 @@ fn host_cap() -> Authorizer {
 async fn agent_loop_runs_end_to_end_through_the_http_executor() {
     let reducer = FetchAgent;
     let mut exec =
-        AsyncCompositeExecutor::new().with(EffectKind::Http, Box::new(HttpExecutor::new(StubHttp)));
+        CompositeExecutor::new().with(EffectKind::Http, Box::new(HttpExecutor::new(StubHttp)));
     let mut session = Session::genesis(Hash::of(b"fetch-agent-v1"));
 
     session
@@ -127,7 +127,7 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
     }
     struct ExfilAgent;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for ExfilAgent {
+    impl Reducer for ExfilAgent {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest {
@@ -141,8 +141,8 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
             }
         }
     }
-    let mut exec = AsyncCompositeExecutor::new()
-        .with(EffectKind::Http, Box::new(HttpExecutor::new(MustNotCall)));
+    let mut exec =
+        CompositeExecutor::new().with(EffectKind::Http, Box::new(HttpExecutor::new(MustNotCall)));
     let mut session = Session::genesis(Hash::of(b"exfil-agent-v1"));
     session
         .deliver_async(inbound_go(), None, &ExfilAgent, &host_cap(), &mut exec)
