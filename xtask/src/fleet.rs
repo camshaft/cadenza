@@ -621,6 +621,16 @@ pub enum FleetCmd {
         #[arg(long, default_value_t = 0)]
         limit: usize,
     },
+    /// Query GitHub Actions for a pushed candidate's check verdict and print it (GREEN | RED | PENDING |
+    /// NO-CHECKS) + a per-check breakdown. The polling PRIMITIVE for the CI-gated land path (operator
+    /// ruling 2026-08-02: pr-sync pushes a candidate, then relies ENTIRELY on GitHub Actions for the gate
+    /// — no local gate — polling THIS to decide advance-trunk-on-green vs reject-to-author-on-red). Exit
+    /// code mirrors the verdict for shell branching: 0=green, 1=red, 8=pending, 2=no-checks/gh-error.
+    CiStatus {
+        /// The PR number, PR URL, or branch name whose checks to query (passed straight to `gh pr checks`).
+        #[arg(value_name = "PR_OR_BRANCH")]
+        target: String,
+    },
     /// STAGE a batch of merge-request refs into a SCRATCH ref (`refs/fleet/batch-staging`) built off the
     /// CURRENT `trunk`, WITHOUT touching `trunk`. This closes the intermediate-rewind window at its source:
     /// pr-sync's historical batch build did `git reset --hard trunk` then `git merge --no-ff` each ref onto
@@ -840,6 +850,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::RerouteUnknown { dry_run } => reroute_unknown(&fleet, dry_run),
         FleetCmd::MergeFloor { ours, theirs } => merge_floor(&ours, &theirs),
         FleetCmd::GateBatch { dry_run, limit } => gate_batch(&fleet, dry_run, limit),
+        FleetCmd::CiStatus { target } => ci_status(&target),
         FleetCmd::BatchStage { refs } => batch_stage(&fleet, &refs),
         FleetCmd::BatchCommit { execute } => batch_commit(&fleet, execute),
     }
@@ -6397,6 +6408,151 @@ fn scrub_gate_batch_worktree(wt: &Path) {
     git(&["clean", "-fd", "-e", "target"]);
 }
 
+/// The verdict of GitHub Actions on a pushed candidate — the authority pr-sync consults instead of a
+/// local gate (operator ruling 2026-08-02: "push and rely ENTIRELY on the GitHub actions for the
+/// gate"). Green ⟹ advance trunk; Red ⟹ reject to the author; Pending ⟹ CI still running, poll again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CiVerdict {
+    /// Every check concluded and none failed — safe to advance `trunk` (forward-only preserved: the
+    /// tree pr-sync is about to land is CI-verified).
+    Green,
+    /// At least one check FAILED or was CANCELLED — do NOT land; reject to the author with the failure.
+    Red,
+    /// At least one check is still running (and none has failed yet) — CI hasn't concluded; poll again.
+    Pending,
+    /// No checks were reported at all (empty set) — treated as PENDING, never Green: an empty result is
+    /// "CI hasn't registered/started the run yet", and landing on it would defeat the whole point (an
+    /// unverified tree on trunk). The caller polls until real checks appear (with an overall timeout).
+    NoChecks,
+}
+
+impl CiVerdict {
+    /// Only an all-concluded, none-failed run authorizes a trunk advance.
+    fn is_landable(self) -> bool {
+        self == CiVerdict::Green
+    }
+}
+
+/// Fold the per-check `bucket` field from `gh pr checks --json bucket` into one batch [`CiVerdict`].
+/// `gh` categorizes every check into `pass` | `fail` | `pending` | `skipping` | `cancel` (its documented
+/// bucket vocabulary). The fold is deliberately CONSERVATIVE about landing — precedence, strongest first:
+///   1. ANY `fail`/`cancel` → `Red` (one broken/aborted check sinks the batch — never land a red tree).
+///   2. else ANY `pending` → `Pending` (CI hasn't concluded; unknown/unrecognized buckets also count
+///      here — we never treat a bucket we don't understand as a pass).
+///   3. else (all `pass`/`skipping`, at least one present) → `Green`.
+///   4. no checks at all → `NoChecks` (poll again; an empty set is NOT green).
+///
+/// Pure over the bucket strings so the whole land-authorization policy is unit-tested without `gh`/network.
+/// Case-insensitive on the bucket token so a future `gh` output-case change can't silently flip a verdict.
+fn ci_verdict_from_buckets<'a>(buckets: impl IntoIterator<Item = &'a str>) -> CiVerdict {
+    let mut saw_any = false;
+    let mut saw_unlandable_pending = false;
+    for b in buckets {
+        saw_any = true;
+        match b.trim().to_ascii_lowercase().as_str() {
+            // A failed or cancelled check is decisive — stop, it's red.
+            "fail" | "cancel" => return CiVerdict::Red,
+            // Concluded-and-fine buckets don't by themselves block a green.
+            "pass" | "skipping" => {}
+            // `pending` — and ANY bucket we don't recognize — must NOT be read as a pass; hold at pending.
+            _ => saw_unlandable_pending = true,
+        }
+    }
+    if !saw_any {
+        CiVerdict::NoChecks
+    } else if saw_unlandable_pending {
+        CiVerdict::Pending
+    } else {
+        CiVerdict::Green
+    }
+}
+
+/// `fleet ci-status <pr-or-branch>`: query GitHub Actions for the candidate's check verdict and print it
+/// (one word: GREEN | RED | PENDING | NO-CHECKS) + a per-check breakdown, exiting non-zero on RED so a
+/// shell caller can branch. This is the polling PRIMITIVE the CI-gated land path (operator ruling
+/// 2026-08-02) is built on: pr-sync pushes a candidate, then consults THIS to decide advance-vs-reject
+/// instead of running a local gate. Shells `gh pr checks <arg> --json bucket,name,state`; a `gh` error
+/// (no PR for the ref yet, auth, network) is reported as NO-CHECKS (poll again), never a false GREEN.
+fn ci_status(target: &str) {
+    let out = Command::new("gh")
+        .args(["pr", "checks", target, "--json", "bucket,name,state"])
+        .output();
+    let stdout = match &out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Err(e) => {
+            eprintln!(
+                "ci-status: could not invoke `gh` ({e}) — treating as NO-CHECKS (poll again)."
+            );
+            println!("NO-CHECKS");
+            std::process::exit(2);
+        }
+    };
+    let checks = parse_gh_checks(&stdout);
+    let verdict = ci_verdict_from_buckets(checks.iter().map(|(b, _, _)| b.as_str()));
+    for (bucket, name, state) in &checks {
+        println!("  {bucket:<9} {state:<10} {name}");
+    }
+    // The land decision the CI-gated pr-sync path keys off: only GREEN authorizes a trunk advance.
+    println!(
+        "decision: {}",
+        if verdict.is_landable() {
+            "LANDABLE (advance trunk)"
+        } else {
+            "HOLD (do not advance trunk)"
+        }
+    );
+    match verdict {
+        CiVerdict::Green => {
+            println!("GREEN");
+        }
+        CiVerdict::Red => {
+            println!("RED");
+            std::process::exit(1);
+        }
+        CiVerdict::Pending => {
+            println!("PENDING");
+            std::process::exit(8); // mirror `gh pr checks`'s own "checks pending" exit code
+        }
+        CiVerdict::NoChecks => {
+            println!("NO-CHECKS");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Parse `gh pr checks --json bucket,name,state` output into `(bucket, name, state)` triples. Tolerant:
+/// a non-array / malformed / empty payload yields an empty vec (→ `NoChecks` upstream, i.e. poll again),
+/// never a panic and never a spurious pass. Hand-rolled over the flat JSON objects `gh` emits so xtask
+/// takes no serde_json dep for this one call; each object is `{"bucket":"…","name":"…","state":"…"}`.
+fn parse_gh_checks(json: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let bytes = json.trim();
+    if !bytes.starts_with('[') {
+        return out;
+    }
+    // Split into objects on `}` boundaries; robust enough for gh's flat, un-nested check objects.
+    for obj in json.split('}') {
+        let bucket = json_str_field(obj, "bucket");
+        let name = json_str_field(obj, "name");
+        let state = json_str_field(obj, "state");
+        if let Some(bucket) = bucket {
+            out.push((bucket, name.unwrap_or_default(), state.unwrap_or_default()));
+        }
+    }
+    out
+}
+
+/// Extract the string value of `"<field>":"<value>"` from one flat JSON fragment, or `None`. Handles the
+/// simple unescaped values `gh`'s check buckets/names/states use (no nested quotes in a bucket/state; a
+/// name with an escaped quote just truncates at it, which is fine — we only key decisions off `bucket`).
+fn json_str_field(fragment: &str, field: &str) -> Option<String> {
+    let key = format!("\"{field}\":");
+    let after = fragment.split_once(&key)?.1.trim_start();
+    let rest = after.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
 /// Build the value-heap runtime store in the gate-batch scratch worktree (`cargo xtask build`), so the
 /// combined-tree gate can resolve the runtime by content address instead of false-failing every heap
 /// case as a store miss. Returns true on success. Runs in `wt` (its own `target/cadenza-store`).
@@ -10417,6 +10573,56 @@ mod tests {
                 "role {r:?} is not terminal-interactive"
             );
         }
+    }
+
+    #[test]
+    fn ci_verdict_folds_gh_buckets_conservatively() {
+        use CiVerdict::*;
+        // All concluded-and-fine → Green (pass + skipping both count as fine).
+        assert_eq!(ci_verdict_from_buckets(["pass", "pass", "skipping"]), Green);
+        // A single fail (or cancel) sinks the whole batch → Red, regardless of other passes.
+        assert_eq!(ci_verdict_from_buckets(["pass", "fail", "pass"]), Red);
+        assert_eq!(ci_verdict_from_buckets(["pass", "cancel"]), Red);
+        // Fail WINS over pending (strongest precedence) — a still-running sibling never masks a red.
+        assert_eq!(ci_verdict_from_buckets(["pending", "fail"]), Red);
+        // A pending with no failure → Pending (CI hasn't concluded; do not land).
+        assert_eq!(ci_verdict_from_buckets(["pass", "pending"]), Pending);
+        // An UNRECOGNIZED bucket is never a pass — it holds at Pending (conservative: never land on
+        // a bucket we don't understand, e.g. a future `gh` vocabulary addition).
+        assert_eq!(ci_verdict_from_buckets(["pass", "mystery"]), Pending);
+        // Empty set → NoChecks (poll again), NEVER Green — the core forward-only safety property: an
+        // unverified/absent CI run must never authorize a trunk advance.
+        assert_eq!(ci_verdict_from_buckets([]), NoChecks);
+        assert!(!ci_verdict_from_buckets([]).is_landable());
+        assert!(!ci_verdict_from_buckets(["pending"]).is_landable());
+        assert!(!ci_verdict_from_buckets(["fail"]).is_landable());
+        assert!(ci_verdict_from_buckets(["pass"]).is_landable());
+        // Case-insensitive on the bucket token (a gh output-case change can't silently flip a verdict).
+        assert_eq!(ci_verdict_from_buckets(["PASS", "Pass"]), Green);
+        assert_eq!(ci_verdict_from_buckets(["FAIL"]), Red);
+    }
+
+    #[test]
+    fn parse_gh_checks_reads_real_output_and_tolerates_garbage() {
+        // A representative slice of real `gh pr checks --json bucket,name,state` output (incl. a
+        // non-`checks/` entry like "Amazon Q Developer", which must parse like any other).
+        let json = r#"[{"bucket":"pass","name":"checks / rustfmt","state":"SUCCESS"},{"bucket":"fail","name":"checks / gate","state":"FAILURE"},{"bucket":"pending","name":"Amazon Q Developer","state":"IN_PROGRESS"}]"#;
+        let checks = parse_gh_checks(json);
+        assert_eq!(checks.len(), 3);
+        assert_eq!(checks[0].0, "pass");
+        assert_eq!(checks[1].0, "fail");
+        assert_eq!(checks[1].1, "checks / gate");
+        assert_eq!(checks[2].0, "pending");
+        // The fold over the parsed buckets → Red (the gate failed).
+        assert_eq!(
+            ci_verdict_from_buckets(checks.iter().map(|(b, _, _)| b.as_str())),
+            CiVerdict::Red
+        );
+        // Garbage / non-array / empty → empty vec (→ NoChecks upstream), never a panic or false pass.
+        assert!(parse_gh_checks("not json").is_empty());
+        assert!(parse_gh_checks("").is_empty());
+        assert!(parse_gh_checks("[]").is_empty());
+        assert!(parse_gh_checks("{\"bucket\":\"pass\"}").is_empty()); // not an array → ignored
     }
 
     #[test]
