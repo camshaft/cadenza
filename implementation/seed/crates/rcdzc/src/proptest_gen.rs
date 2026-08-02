@@ -2502,14 +2502,13 @@ mod tests {
                 "p-gen",
             ),
         ] {
-            // Synthesize on the raw AST so the wrapper's BODY is inspectable (a DECLINING wrapper's body is
-            // `(do (Test.gen/Test.fail …) (trap …))`; a REAL generator's body is a `let`-chain that builds
-            // the sum + calls the inner def — NO trap). Both wrappers are nullary and rename the def, so
-            // nullary+rename alone does NOT discriminate; the trap-freedom of the body is what pins that
-            // classify_sum produced a REAL generator, not the declining fallback (Copilot PR#1199 review).
-            let mut ast = crate::testkit::parse(src);
-            super::synthesize(&mut ast);
-            let db = Db::load(ast.clone());
+            // `Db::load` runs proptest_gen::synthesize and exposes the synthesized AST as `db.ast`, so the
+            // wrapper's BODY is inspectable directly (no separate `super::synthesize`). Both a REAL generator
+            // wrapper and a DECLINING wrapper are nullary and rename the def, so nullary+rename alone does
+            // NOT discriminate; the trap-freedom of the body is what pins that classify_sum produced a REAL
+            // generator (a `let`-chain, NO trap), not the declining fallback (`(do (Test.fail …) (trap …))`)
+            // — Copilot PR#1199 review.
+            let db = Db::load(crate::testkit::parse(src));
             let names: Vec<String> = db
                 .test_defs()
                 .into_iter()
@@ -2532,11 +2531,11 @@ mod tests {
             let mut stack = vec![body];
             let mut has_trap = false;
             while let Some(id) = stack.pop() {
-                if ast.as_form(id, "trap").is_some() {
+                if db.ast.as_form(id, "trap").is_some() {
                     has_trap = true;
                     break;
                 }
-                if let crate::ast::Struct::List(kids) = ast.get(id) {
+                if let crate::ast::Struct::List(kids) = db.ast.get(id) {
                     stack.extend(kids.iter().copied());
                 }
             }
@@ -2627,11 +2626,10 @@ mod tests {
         // while a sibling still runs — rather than escaping to the export boundary and ABORTING the whole
         // `cdz test` file (which is what "no wrapper" meant at the CLI level: `a Tree sum crosses the host
         // boundary only as a single nullary export's result`, exit 1, siblings killed). Without hanging.
-        let mut ast = crate::testkit::parse(
+        let ast = crate::testkit::parse(
             "(do (type Tree (Leaf Int64) (Node (Tuple Tree Tree))) \
                (@ test (def (tr (: t Tree)) unit)) (def (o) 1))",
         );
-        super::synthesize(&mut ast);
         let db = Db::load(ast);
         let names: Vec<String> = db
             .test_defs()
@@ -2663,11 +2661,10 @@ mod tests {
     /// wrapper" meant at the CLI: `a Bad sum crosses the host boundary…`, exit 1, siblings killed).
     #[test]
     fn a_multi_payload_variant_declines() {
-        let mut ast = crate::testkit::parse(
+        let ast = crate::testkit::parse(
             "(do (type Bad (Var Int64 Bool) (Nil)) \
                (@ test (def (b (: v Bad)) unit)) (def (o) 1))",
         );
-        super::synthesize(&mut ast);
         let db = Db::load(ast);
         let names: Vec<String> = db
             .test_defs()
@@ -2698,11 +2695,10 @@ mod tests {
     /// generatable and get a REAL generator wrapper; only the non-generatable LEAF triggers the declining one.)
     #[test]
     fn a_nongeneratable_leaf_compound_gets_a_declining_wrapper() {
-        let mut ast = crate::testkit::parse(
+        let ast = crate::testkit::parse(
             "(do (@ test (def (r (: xs (List Char))) (List.len xs))) (def (other) 1))",
         );
         // Synthesize directly so we can inspect the wrapper body (a trapping nullary def), before Db load.
-        super::synthesize(&mut ast);
         let db = Db::load(ast);
         let test_names: Vec<String> = db
             .test_defs()
@@ -2734,10 +2730,9 @@ mod tests {
     /// Now it declines per-test, symmetric with the non-generatable-leaf COMPOUND case above.
     #[test]
     fn a_bare_name_nongeneratable_scalar_param_gets_a_declining_wrapper() {
-        let mut ast = crate::testkit::parse(
+        let ast = crate::testkit::parse(
             "(do (@ test (def (p (: r Rational)) (if (= r r) unit (trap \"neq\")))) (def (other) 1))",
         );
-        super::synthesize(&mut ast);
         let db = Db::load(ast);
         let test_names: Vec<String> = db
             .test_defs()
@@ -2766,10 +2761,9 @@ mod tests {
     /// concern), leaving the diagnosis intact. Guards against `is_ungeneratable_concrete_scalar` over-matching.
     #[test]
     fn an_unknown_bare_name_type_param_is_not_masked_as_a_declining_wrapper() {
-        let mut ast = crate::testkit::parse(
+        let ast = crate::testkit::parse(
             "(do (@ test (def (p (: x Nonexistent)) (if (= x x) unit (trap \"neq\")))) (def (other) 1))",
         );
-        super::synthesize(&mut ast);
         let db = Db::load(ast);
         let test_names: Vec<String> = db
             .test_defs()
@@ -3152,8 +3146,7 @@ mod tests {
                 "r-gen",
             ),
         ] {
-            let mut ast = crate::testkit::parse(src);
-            super::synthesize(&mut ast);
+            let ast = crate::testkit::parse(src);
             let db = Db::load(ast);
             let orig = wrapper.trim_end_matches("-gen").to_string();
             let test_names: Vec<String> = db
@@ -3191,11 +3184,10 @@ mod tests {
     /// sum still gets a REAL wrapper, pinned by `synthesizes_a_generator_wrapper_for_a_sum_test`.
     #[test]
     fn a_user_sum_with_a_nongeneratable_payload_gets_a_declining_wrapper() {
-        let mut ast = crate::testkit::parse(
+        let ast = crate::testkit::parse(
             "(do (type T (A Char) (B)) \
                (@ test (def (p (: x T)) unit)) (def (o) 1))",
         );
-        super::synthesize(&mut ast);
         let db = Db::load(ast);
         let names: Vec<String> = db
             .test_defs()
