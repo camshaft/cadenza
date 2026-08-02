@@ -22,12 +22,13 @@ export interface Example {
   /// program runs to exactly this value — turning the example into a regression test rather than a mere
   /// "it runs" check. BOTH scalars (bare number/bool) AND compound values are pinnable: a playground
   /// example has no in-browser Check (it's loaded and Run), so an s-expr-canonical compound like
-  /// `(: (list 1 2 3) (List Int64))` is stable to pin. IMPORTANT: the gate asserts `expected` ONLY on the
-  /// s-expr pass (the ML-toggle pass compiles+runs but does NOT compare it), so a pin is only meaningful on
-  /// a `surface: "sexpr"` example — all playground examples are, and check-examples FAILS LOUDLY if an
-  /// `expected` is ever set on a non-sexpr example (a pin that would silently never be checked). (A graded
-  /// chapter EXERCISE differs: it's compared in the reader's LIVE surface, where a compound renders
-  /// differently in ML vs s-expr, so exercise pins stay scalar-only — see check-examples.)
+  /// `(: (list 1 2 3) (List Int64))` is stable to pin. The value is compared on the s-expr pass, and the
+  /// gate runs both surfaces — so a pin IS checked either way, but for an ML-authored example it's only
+  /// asserted against the RENDERED s-expr toggle output (brittle: depends on a byte-stable ML→s-expr
+  /// render, and the pin reads in a different surface than it's maintained in). So pins must be
+  /// `surface: "sexpr"` — all playground examples are, and check-examples FAILS LOUDLY on a non-sexpr pin.
+  /// (A graded chapter EXERCISE differs: it's compared in the reader's LIVE surface, where a compound
+  /// renders differently in ML vs s-expr, so exercise pins stay scalar-only — see check-examples.)
   expected?: string;
 }
 

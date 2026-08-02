@@ -452,15 +452,18 @@ try {
     // THAT value, not merely "to some value", so a future compiler change that flips e.g. Collatz from
     // 111 to 42 is caught instead of silently accepted (a true regression test). A playground example
     // may pin EITHER a scalar OR a compound value: it has no in-browser Check (unlike a graded exercise),
-    // so an s-expr-canonical compound like `(: (list 1 2 3) (List Int64))` is stable to pin. But the
-    // value assertion runs ONLY on the s-expr pass (`checkProgram`'s `if (surface === "sexpr")` block —
-    // the ML-toggle pass compiles+runs but does NOT compare `expected`), so a pin is only meaningful on a
-    // SEXPR-authored example. Guard that invariant loudly: an `expected` on a non-sexpr example would
-    // SILENTLY never be asserted (a decorative, false-safety pin) — fail the gate instead of shipping it.
+    // so an s-expr-canonical compound like `(: (list 1 2 3) (List Int64))` is stable to pin. The value is
+    // compared on the S-EXPR pass (`checkProgram`'s `if (surface === "sexpr")` block); `checkExample` runs
+    // BOTH surfaces, so a pin IS checked whether the example is sexpr-authored (its authored pass) or
+    // ml-authored (its render_syntax'd sexpr TOGGLE pass). The catch: an ml-authored pin is asserted only
+    // against the RENDERED sexpr output, so its value depends on the ML→s-expr render being byte-stable —
+    // brittle, and the pin reads in a different surface than it's maintained in. So require sexpr-authored
+    // pins: all playground examples are sexpr, and a pin should live in the same surface it's asserted in.
     if (p.expected != null && p.surface !== "sexpr")
       throw new Error(
         `playground example "${p.id}" pins \`expected\` but is authored surface="${p.surface}"; ` +
-          `check-examples only asserts \`expected\` on the s-expr pass, so a non-sexpr pin is never checked. ` +
+          `\`expected\` is compared on the s-expr pass, so an ml-authored pin is only checked against the ` +
+          `RENDERED s-expr toggle output (brittle — depends on a byte-stable ML→s-expr render). ` +
           `Author it in s-expr (all playground examples are), or drop the \`expected\`.`,
       );
     examples.push({
