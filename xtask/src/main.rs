@@ -1526,14 +1526,21 @@ fn host_shim_ident_from_key(op_key: &str) -> String {
 /// `host-call\t<recorded-op>`; an unmatched symbol gets a `panic!` stub (never reached on a passing trial,
 /// loud on a real mismatch). H1: fixed-width-INTEGER responses (`i64`; backend casts to width).
 fn build_rust_host_shims(module: &str, host_responses: &[(String, String)]) -> String {
-    // Map recorded op key → (its dotted key for the host-call print, values in order), by shim ident.
+    // Map recorded op key → (its CANONICAL dotted key for the host-call print, values in order), by shim
+    // ident. The printed `host-call\t<op>` is the CANONICAL key (kebab-normalized effect + verbatim op), NOT
+    // the raw recorded key — a case's `(host-calls …)` records the canonical form, and the grader compares
+    // observed vs expected by exact string, so a source-cased response key (`Param.width`) must be
+    // normalized (`param.width`) before printing or the assertion never matches (the wasm oracle observes
+    // the canonical name too, via cdz-run's two-sided normalization).
     let mut by_ident: std::collections::BTreeMap<String, (String, Vec<String>)> =
         std::collections::BTreeMap::new();
     for (op, value) in host_responses {
         let ident = host_shim_ident_from_key(op);
+        let (eff, opname) = op.split_once('.').unwrap_or(("", op.as_str()));
+        let canonical = format!("{}.{}", kebab_effect(eff), opname);
         by_ident
             .entry(ident)
-            .or_insert_with(|| (op.clone(), Vec::new()))
+            .or_insert_with(|| (canonical, Vec::new()))
             .1
             .push(value.clone());
     }
