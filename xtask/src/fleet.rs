@@ -2310,12 +2310,10 @@ fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String
         dispatches.iter().map(|d| d.r#ref.clone()).collect();
     // The union of files changed by every in-flight candidate — a queued MR that touches ANY of these
     // is correctly serialized behind that candidate (dispatching it would conflict on re-parent), so
-    // it is NOT stuck. This is pr-sync's file-level disjointness test, stricter than a lane-label match.
-    let in_flight_files: std::collections::HashSet<String> = dispatches
-        .iter()
-        .filter_map(|d| changed_files_of(&d.r#ref))
-        .flatten()
-        .collect();
+    // it is NOT stuck. `in_flight_unknown` = some in-flight ref's files couldn't be resolved; then we
+    // can't prove ANY queued MR file-disjoint, so force every one blocked (never stale-flag under
+    // unknown in-flight territory — PR #1330, the in-flight side of the #1244 None-handling fix).
+    let (in_flight_files, in_flight_unknown) = in_flight_file_set(&dispatches);
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(fleet.inbox("pr-sync")) else {
         return out;
@@ -2358,14 +2356,15 @@ fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String
         if ref_landed_on_trunk(fleet, &mr.r#ref) {
             continue;
         }
-        // Last gate: file-blocked behind an in-flight candidate (git show). If we CAN'T compute the
-        // MR's files (None = git error/unresolvable ref), do NOT flag it stale — an unknown file set
-        // must not read as "file-disjoint" and get surfaced as a dispatchable-but-stuck MR; treat
-        // unknown conservatively as blocked (skip the classification).
-        let file_blocked = match changed_files_of(&mr.r#ref) {
-            Some(files) => files_collide(&files, &in_flight_files),
-            None => true, // unresolvable → conservatively blocked, never stale-flagged
-        };
+        // Last gate: file-blocked behind an in-flight candidate (git show). Blocked if (a) some in-flight
+        // ref's files were UNKNOWN (can't prove disjointness → conservatively blocked), OR (b) THIS MR's
+        // files can't be computed (None), OR (c) they collide. An unknown file set on EITHER side must
+        // not read as "file-disjoint" and surface a dispatchable-but-stuck MR (PR #1244/#1330).
+        let file_blocked = in_flight_unknown
+            || match changed_files_of(&mr.r#ref) {
+                Some(files) => files_collide(&files, &in_flight_files),
+                None => true, // this MR unresolvable → conservatively blocked
+            };
         // age>threshold + not-in-flight + not-landed already established above; this is the file gate.
         if mr_is_stale_queued(age, false, false, file_blocked, STALE_QUEUED_MR_SECS) {
             out.push((fname, mr.from.clone(), mr.r#ref.clone(), age));
@@ -7300,9 +7299,11 @@ fn lane_label_for_ref(r#ref: &str) -> String {
     }
 }
 
-/// The changed file paths of a commit-ish (`git show --name-only`), trimmed + non-empty, or empty on
-/// an unresolvable ref / git error. The shared source for lane classification AND file-level collision
-/// checks (the two callers must see the SAME file set, so they share this helper).
+/// The changed file paths of a commit-ish (`git show --name-only`), trimmed + non-empty: `Some(files)`
+/// on a resolved ref (possibly an EMPTY vec — a genuine no-file commit), `None` on an unresolvable ref
+/// / git error. Callers MUST NOT read `None` as "empty/clean" — an unknown file set is handled
+/// conservatively (treat as blocked / force collision), never as file-disjoint (PR #1244/#1330). The
+/// shared source for lane classification AND file-level collision checks (same file set for both).
 fn changed_files_of(r#ref: &str) -> Option<Vec<String>> {
     // `Some(files)` on a resolved ref (possibly EMPTY — a genuinely no-file commit); `None` on a git
     // ERROR / unresolvable ref. The distinction matters (PR #1244 review): a caller must NOT read a
@@ -7322,6 +7323,24 @@ fn changed_files_of(r#ref: &str) -> Option<Vec<String>> {
             .filter(|l| !l.is_empty())
             .collect(),
     )
+}
+
+/// The union of files changed by every in-flight candidate, PLUS whether ANY of their refs was
+/// UNRESOLVABLE (`changed_files_of` → None). Returns `(files, any_unresolved)`. The `any_unresolved`
+/// flag is the fix for the in-flight side of the None-vs-empty trap (PR #1330): if an in-flight ref's
+/// files can't be computed, its real files are UNKNOWN — dropping it (the old `filter_map`) would make
+/// a queued MR that ACTUALLY collides with it read as file-disjoint (falsely dispatchable/stale). The
+/// caller must instead treat `any_unresolved` conservatively: force every queued MR blocked this pass.
+fn in_flight_file_set(dispatches: &[CiDispatch]) -> (std::collections::HashSet<String>, bool) {
+    let mut files = std::collections::HashSet::new();
+    let mut any_unresolved = false;
+    for d in dispatches {
+        match changed_files_of(&d.r#ref) {
+            Some(fs) => files.extend(fs),
+            None => any_unresolved = true, // unknown in-flight territory → caller forces collision
+        }
+    }
+    (files, any_unresolved)
 }
 
 /// Whether two commits COLLIDE — share at least one changed file — the file-level disjointness test
@@ -7389,13 +7408,12 @@ fn schedule_plan(fleet: &Fleet, cap: usize) {
         dispatched.iter().map(|d| d.r#ref.as_str()).collect();
     // The FILE collision universe: every file touched by an in-flight candidate. A queued MR sharing
     // any is blocked (those will land + shift origin/main under it → re-parent conflict). File-level,
-    // NOT lane-label (pr-sync 2026-08-02: a baseline-toucher must block a 2nd baseline-toucher of ANY
-    // lane label; `code` candidates on DISJOINT files run parallel).
-    let in_flight_files: std::collections::HashSet<String> = dispatched
-        .iter()
-        .filter_map(|d| changed_files_of(&d.r#ref))
-        .flatten()
-        .collect();
+    // NOT lane-label (a baseline-toucher must block a 2nd baseline-toucher of ANY lane label; `code`
+    // candidates on DISJOINT files run parallel). `in_flight_unknown` = some in-flight ref's files
+    // couldn't be resolved → we can't prove ANY candidate disjoint, so dispatch NOTHING new this pass
+    // rather than risk dispatching into a collision we couldn't see (PR #1330, in-flight side of the
+    // None-handling fix). Handled below by skipping the dispatch entirely.
+    let (in_flight_files, in_flight_unknown) = in_flight_file_set(&dispatched);
     // Queued MRs NOT already in flight, oldest-first, each tagged with its lane + changed files.
     // Compute `changed_files_of` ONCE per MR and derive BOTH the files and the lane label from that
     // single result (PR #1260 review — avoid a 2nd `git show` via lane_label_for_ref). If a ref's files
@@ -7423,17 +7441,29 @@ fn schedule_plan(fleet: &Fleet, cap: usize) {
             }
         })
         .collect();
-    let picks = schedule_dispatch(&queued, &in_flight_files, cap, dispatched.len());
+    // Under unknown in-flight territory, dispatch nothing (pass an empty candidate list) — safest.
+    let picks = if in_flight_unknown {
+        Vec::new()
+    } else {
+        schedule_dispatch(&queued, &in_flight_files, cap, dispatched.len())
+    };
     println!(
         "schedule-plan: cap={cap}, in-flight={}, queued(not-in-flight)={}",
         dispatched.len(),
         queued.len()
     );
     if picks.is_empty() {
-        println!(
-            "  → dispatch nothing this pass (cap full, or every queued MR file-collides with an \
-             in-flight candidate)."
-        );
+        if in_flight_unknown {
+            println!(
+                "  → dispatch nothing this pass: an in-flight candidate's changed files can't be \
+                 resolved, so no queued MR can be proven collision-free (conservative)."
+            );
+        } else {
+            println!(
+                "  → dispatch nothing this pass (cap full, or every queued MR file-collides with an \
+                 in-flight candidate)."
+            );
+        }
         return;
     }
     println!("  → would dispatch {} candidate(s):", picks.len());
@@ -11951,6 +11981,33 @@ mod tests {
         // The `ref` field serializes as "ref" (r#ref raw-identifier → plain key), so a hand-written /
         // pr-sync-written record with "ref" round-trips too.
         assert!(json.contains("\"ref\":\"55c9f407c002\""));
+    }
+
+    #[test]
+    fn in_flight_file_set_flags_an_unresolvable_ref() {
+        // PR #1330: an in-flight ref whose files can't be computed must set `any_unresolved` (so the
+        // caller forces collision), NOT silently vanish from the file set. A bogus ref won't resolve
+        // via `git show` → None → any_unresolved. (Uses a ref that can't exist so the git call fails
+        // deterministically regardless of the test's cwd/repo state.)
+        let disp = |r: &str| CiDispatch {
+            mr_file: "m.json".into(),
+            agent: "a".into(),
+            r#ref: r.into(),
+            cand_branch: "b".into(),
+            cand_sha: "s".into(),
+            pr_number: 1,
+            lane: "code".into(),
+            status: "in-flight".into(),
+        };
+        let (_files, any_unresolved) =
+            in_flight_file_set(&[disp("0000000000000000000000000000000000000000-not-a-ref")]);
+        assert!(
+            any_unresolved,
+            "an unresolvable in-flight ref must set any_unresolved (→ caller forces collision), not vanish"
+        );
+        // Empty in-flight set → nothing unresolved (vacuously), empty files.
+        let (files, any) = in_flight_file_set(&[]);
+        assert!(files.is_empty() && !any);
     }
 
     #[test]
