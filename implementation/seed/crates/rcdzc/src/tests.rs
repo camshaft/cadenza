@@ -52305,12 +52305,14 @@ mod diagnostics {
         // this path fires only on a ctor-shaped head, never a legitimate `(list …)` pattern or a binder.
         let ok = "(module m (def (go (: acc Int64) (: rest (List Int64))) \
                   (match rest ((list) acc) ((list h .. t) (go (+ acc h) t)))) (export go))";
+        // Bind once — `diags_of` recompiles the module, so evaluating it in both the predicate and the
+        // failure message would double the compile cost (PR #1167 review).
+        let ok_diags = diags_of(ok);
         assert!(
-            diags_of(ok)
+            ok_diags
                 .iter()
                 .all(|d| d.severity != crate::abi::Severity::Error),
-            "a well-formed recursive list fold still checks clean: {:?}",
-            diags_of(ok)
+            "a well-formed recursive list fold still checks clean: {ok_diags:?}"
         );
     }
 
@@ -52347,12 +52349,13 @@ mod diagnostics {
         // coded-head propagation fires only on an unbound/non-member ctor head, never a real pattern.
         let ok = "(module m (def (go (: mp (Map Int64 Int64))) \
                   (match mp ((map (1 v)) v) (_ 0))) (export go))";
+        // Bind once — `diags_of` recompiles the module (PR #1167 review).
+        let ok_diags = diags_of(ok);
         assert!(
-            diags_of(ok)
+            ok_diags
                 .iter()
                 .all(|d| d.severity != crate::abi::Severity::Error),
-            "a well-formed runtime map match still checks clean: {:?}",
-            diags_of(ok)
+            "a well-formed runtime map match still checks clean: {ok_diags:?}"
         );
     }
 
@@ -52449,12 +52452,13 @@ mod diagnostics {
         // NO false alarm: a WELL-FORMED map rest pattern (`.. rest` final, one binder) checks clean.
         let ok = "(module m (def (f (: mp (Map Int64 Int64))) \
                   (match mp ((map (1 v) .. rest) v) (_ 0))) (export f))";
+        // Bind once — `diags_of` recompiles the module (PR #1167 review).
+        let ok_diags = diags_of(ok);
         assert!(
-            diags_of(ok)
+            ok_diags
                 .iter()
                 .all(|d| d.severity != crate::abi::Severity::Error),
-            "a well-formed map rest pattern still checks clean: {:?}",
-            diags_of(ok)
+            "a well-formed map rest pattern still checks clean: {ok_diags:?}"
         );
         // NESTED: a malformed-rest map INSIDE a variant payload (`(Wrap (map … .. r (j w)))`) gets the
         // SAME specific rest-shape message (not the vague "a malformed map pattern") and NO unbound leak —
@@ -52474,12 +52478,13 @@ mod diagnostics {
         // NO false alarm: a WELL-FORMED nested map (`.. r` final) still checks clean.
         let nested_ok = "(module m (type W (Wrap (Map Int64 Int64))) \
                          (def (f (: w W)) (match w ((Wrap (map (1 v) .. r)) v) (_ 0))) (export f))";
+        // Bind once — `diags_of` recompiles the module (PR #1167 review).
+        let nested_ok_diags = diags_of(nested_ok);
         assert!(
-            diags_of(nested_ok)
+            nested_ok_diags
                 .iter()
                 .all(|d| d.severity != crate::abi::Severity::Error),
-            "a well-formed nested map rest pattern still checks clean: {:?}",
-            diags_of(nested_ok)
+            "a well-formed nested map rest pattern still checks clean: {nested_ok_diags:?}"
         );
     }
 
