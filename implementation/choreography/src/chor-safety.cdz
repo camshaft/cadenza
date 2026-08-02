@@ -117,11 +117,12 @@ def purchase-linear() =
     Chor.Seq(Chor.Comm("Seller", "Buyer", "Quote"),
       Chor.Comm("Seller", "Shipper", "Ship")))
 
-/// A pure 4-hop RELAY chain A→B→C→D: each role (except the endpoints) both receives from its predecessor and
-/// sends to its successor, with no fan-out. Distinct from `purchase-linear` (where Seller fans out — sends to
-/// both Buyer and Shipper): here every intermediate role is a single-in/single-out relay, so matched I/O must
-/// hold across a longer sequential chain where B's recv-from-A pairs with A's send AND B's send-to-C pairs
-/// with C's recv, etc. Witnesses that deadlock-freedom composes down a hop-chain, not just a fan-out tree.
+/// A pure 4-role / 3-hop RELAY chain A→B→C→D (three communications: A→B, B→C, C→D): each role (except the
+/// endpoints) both receives from its predecessor and sends to its successor, with no fan-out. Distinct from
+/// `purchase-linear` (where Seller fans out — sends to both Buyer and Shipper): here every intermediate role
+/// is a single-in/single-out relay, so matched I/O must hold across a longer sequential chain where B's
+/// recv-from-A pairs with A's send AND B's send-to-C pairs with C's recv, etc. Witnesses that
+/// deadlock-freedom composes down a hop-chain, not just a fan-out tree.
 def relay-chain() =
   Chor.Seq(Chor.Comm("A", "B", "x"),
     Chor.Seq(Chor.Comm("B", "C", "y"),
@@ -185,11 +186,11 @@ def deadlock-free-done() =
 @test
 def deadlock-free-relay-chain() =
   // COVERAGE PIN: the only linear deadlock-free witness so far was `purchase-linear`, where Seller FANS OUT
-  // (sends to both Buyer and Shipper). A pure 4-hop relay A→B→C→D has every intermediate role as a single
+  // (sends to both Buyer and Shipper). A pure 4-role / 3-hop relay A→B→C→D has every intermediate role as a single
   // in/out relay — B's recv-from-A must pair with A's send, B's send-to-C with C's recv, and so on down the
   // chain. Pins that matched I/O composes along a longer sequential hop-chain, not only across a fan-out.
   if deadlock-free(["A", "B", "C", "D"], relay-chain()) then unit
-  else trap("a 4-hop relay chain A->B->C->D is deadlock-free (matched I/O composes down the chain)")
+  else trap("a 4-role / 3-hop relay chain A->B->C->D is deadlock-free (matched I/O composes down the chain)")
 
 @test
 def deadlock-free-divergent-choice() =
