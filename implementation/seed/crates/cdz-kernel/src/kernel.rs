@@ -1108,6 +1108,42 @@ mod status_snapshot_tests {
         }
     }
 
+    // A report-aware reducer (the fork-for-query summarize protocol, operator ruling (a)): on an ordinary
+    // message it does work + publishes status; on the well-known `report` content-type it describes ITSELF
+    // from LOCAL STATE (no model call — the operator's preferred path) by writing a summary to `public/`.
+    // This is the generic-reducer shape a query fold uses: `if ct.is_report() { …summarize… }`.
+    struct ReportingReducer;
+    impl Reducer for ReportingReducer {
+        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { content_type, .. } if content_type.is_report() => {
+                    // Summarize from local KV alone — read the goal it recorded, describe progress.
+                    let goal = kv
+                        .get(b"private/goal")
+                        .map(|v| String::from_utf8_lossy(v).into_owned())
+                        .unwrap_or_else(|| "(no goal set)".to_string());
+                    let summary = format!("working on: {goal}");
+                    kv.put(b"public/summary".to_vec(), summary.into_bytes());
+                    FoldOutput::none() // a local-state report takes NO effects (no model call)
+                }
+                EventBody::Inbound { .. } => {
+                    // Ordinary work: record a private goal (what a real reducer would be doing).
+                    kv.put(b"private/goal".to_vec(), b"the auth module".to_vec());
+                    kv.put(b"public/status".to_vec(), b"active".to_vec());
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    fn report_inbound() -> EventBody {
+        EventBody::Inbound {
+            content_type: ContentType::report(),
+            payload: crate::effect::Payload::Inline(b"summarize yourself".to_vec().into()),
+        }
+    }
+
     fn timer_cap() -> Authorizer {
         Authorizer::new(vec![Capability {
             kind: EffectKind::Timer,
@@ -1225,6 +1261,51 @@ mod status_snapshot_tests {
 
         // The parent's log length is untouched by anything the fork did.
         assert_eq!(s.log().len(), parent_events);
+    }
+
+    #[test]
+    fn fork_query_summarizes_from_local_state_via_the_report_content_type() {
+        // END-TO-END fork-for-query, all three landed pieces together (fork_for_query + the `report`
+        // content-type + a report-aware reducer): a live session does work, then a DEBUG query forks it,
+        // delivers a `report()` message, and the fork summarizes ITSELF from local state — with the
+        // original session provably untouched (non-interference).
+        let mut exec = RecordingExecutor::new();
+        let mut live = Session::genesis(Hash::of(b"reporting-v1"));
+        // The live session does ordinary work: records a private goal + public status.
+        live.deliver(inbound(), None, &ReportingReducer, &timer_cap(), &mut exec)
+            .unwrap();
+        let live_events_before = live.log().len();
+        assert_eq!(
+            live.kv().get(b"private/goal"),
+            Some(&b"the auth module"[..])
+        );
+
+        // Operator asks "what is this session doing?" → fork it and deliver a report query.
+        let mut fork = live.fork_for_query();
+        let mut fork_exec = RecordingExecutor::new();
+        fork.deliver(
+            report_inbound(),
+            None,
+            &ReportingReducer,
+            &timer_cap(),
+            &mut fork_exec,
+        )
+        .unwrap();
+
+        // The fork summarized itself FROM LOCAL STATE (no model call — RecordingExecutor saw no effects)
+        // using the goal it inherited from the live session's materialized KV.
+        let snap = fork.status_snapshot(Some(0), 300_000);
+        assert_eq!(
+            snap.published
+                .get(b"public/summary".as_slice())
+                .map(|v| &v[..]),
+            Some(&b"working on: the auth module"[..])
+        );
+
+        // NON-INTERFERENCE: the live session never saw the query — its log is unchanged and it has no
+        // `public/summary` (only the fork produced one).
+        assert_eq!(live.log().len(), live_events_before);
+        assert!(live.kv().get(b"public/summary").is_none());
     }
 
     #[test]
