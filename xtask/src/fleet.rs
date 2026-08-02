@@ -6843,8 +6843,17 @@ fn combine_lanes(lanes: Vec<Lane>) -> Lane {
         _ => {
             let names: std::collections::BTreeSet<&str> =
                 lanes.iter().map(|l| l.name.as_str()).collect();
-            // {corpus, baseline} → baseline (the corpus+baseline commit collides on the baseline files).
-            if names.len() == 2 && names.contains("corpus") && names.contains("baseline") {
+            // BASELINE DOMINATES CORPUS (pr-sync pilot bug): a commit that touches the shared
+            // `.gate-baseline*` files AT ALL must SERIALIZE as `baseline`, even alongside `.sexp`
+            // corpus changes (the normal corpus-with-baseline workflow) — the baseline files textually
+            // collide (~6 agents append pass-rows), so two such commits can't land in parallel. The
+            // set must be a SUBSET of {corpus, baseline} (i.e. all spec/ territory) so we don't
+            // swallow a genuine cross-territory span; baseline's SERIALIZED disposition wins over
+            // corpus's parallel one. (Without this a baseline commit inherited corpus/parallel and the
+            // scheduler would dispatch 2+ baseline MRs concurrently → squash-merge conflict.)
+            if names.contains("baseline")
+                && names.iter().all(|n| *n == "baseline" || *n == "corpus")
+            {
                 return Lane {
                     name: "baseline".to_string(),
                     parallel: false,
@@ -11574,6 +11583,29 @@ mod tests {
                 "spec/semantics/9.sexp".into()
             ])
             .lands_in_parallel()
+        );
+        // pr-sync pilot bug: the REAL shape is all 3 baseline files + one-or-more `.sexp` (the
+        // corpus-with-baseline workflow). baseline's SERIALIZED disposition must DOMINATE corpus's
+        // parallel one — the whole set is spec/ territory but collides on the baseline files. Pin that
+        // baseline+multi-corpus → baseline/serialized (not corpus/parallel — the landed-#1083 bug).
+        assert_eq!(
+            name(&[
+                "spec/semantics/.gate-baseline",
+                "spec/semantics/.gate-baseline-rust",
+                "spec/semantics/.gate-baseline-rust-async",
+                "spec/semantics/05-compound-types.sexp",
+                "spec/semantics/15-rows-and-open-sums.sexp",
+            ]),
+            "baseline"
+        );
+        assert!(
+            !lane_of(&[
+                "spec/semantics/.gate-baseline".into(),
+                "spec/semantics/05-compound-types.sexp".into(),
+                "spec/semantics/15-rows-and-open-sums.sexp".into(),
+            ])
+            .lands_in_parallel(),
+            "baseline serializes; must not inherit corpus's parallel"
         );
         // But baseline + a CODE change is still mixed (spans truly unrelated territory).
         assert_eq!(
