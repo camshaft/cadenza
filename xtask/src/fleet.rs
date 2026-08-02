@@ -6509,8 +6509,27 @@ fn ci_status(target: &str) {
     let out = Command::new("gh")
         .args(["pr", "checks", target, "--json", "bucket,name,state"])
         .output();
+    // A `gh` failure — couldn't spawn, OR a NON-ZERO EXIT (auth/network/invalid target/no PR yet) with
+    // no checks output — is NO-CHECKS (poll again), NEVER parsed for a verdict. Ignoring the exit code
+    // and parsing stdout anyway risks a FALSE GREEN — the worst outcome for the CI-gated land primitive,
+    // since it could authorize a trunk advance off a tree CI never approved (PR #1071 review). NB
+    // `gh pr checks` also exits NON-ZERO on a legitimately RED/PENDING run (exit 8 = pending) but DOES
+    // emit the checks array then — so distinguish "gh errored" from "gh reported red/pending" by whether
+    // stdout is a JSON array, not by the exit code alone (else a real red/pending would misread as NO-CHECKS).
     let stdout = match &out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        Ok(o) => {
+            let s = String::from_utf8_lossy(&o.stdout).into_owned();
+            if !o.status.success() && !s.trim_start().starts_with('[') {
+                eprintln!(
+                    "ci-status: `gh pr checks {target}` failed ({}) with no checks output — NO-CHECKS.\n{}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+                println!("NO-CHECKS");
+                std::process::exit(2);
+            }
+            s
+        }
         Err(e) => {
             eprintln!(
                 "ci-status: could not invoke `gh` ({e}) — treating as NO-CHECKS (poll again)."
@@ -6552,37 +6571,31 @@ fn ci_status(target: &str) {
     }
 }
 
-/// Parse `gh pr checks --json bucket,name,state` output into `(bucket, name, state)` triples. Tolerant:
-/// a non-array / malformed / empty payload yields an empty vec (→ `NoChecks` upstream, i.e. poll again),
-/// never a panic and never a spurious pass. Hand-rolled over the flat JSON objects `gh` emits so xtask
-/// takes no serde_json dep for this one call; each object is `{"bucket":"…","name":"…","state":"…"}`.
+/// Parse `gh pr checks --json bucket,name,state` output into `(bucket, name, state)` triples via
+/// `serde_json` (already a heavy dep of this file — no reason to hand-roll). Tolerant: a
+/// non-array / malformed / empty payload → empty vec (→ `NoChecks` upstream, i.e. poll again), never a
+/// panic and never a spurious pass. Parsing through serde (rather than string-splitting on `}`)
+/// correctly handles a check `name` that contains a `}` or an escaped quote — a real case, since check
+/// names are free-form (`checks / test (macos-latest)`, third-party app names, etc.). (PR #1071 review.)
 fn parse_gh_checks(json: &str) -> Vec<(String, String, String)> {
-    let mut out = Vec::new();
-    let bytes = json.trim();
-    if !bytes.starts_with('[') {
-        return out;
-    }
-    // Split into objects on `}` boundaries; robust enough for gh's flat, un-nested check objects.
-    for obj in json.split('}') {
-        let bucket = json_str_field(obj, "bucket");
-        let name = json_str_field(obj, "name");
-        let state = json_str_field(obj, "state");
-        if let Some(bucket) = bucket {
-            out.push((bucket, name.unwrap_or_default(), state.unwrap_or_default()));
-        }
-    }
-    out
-}
-
-/// Extract the string value of `"<field>":"<value>"` from one flat JSON fragment, or `None`. Handles the
-/// simple unescaped values `gh`'s check buckets/names/states use (no nested quotes in a bucket/state; a
-/// name with an escaped quote just truncates at it, which is fine — we only key decisions off `bucket`).
-fn json_str_field(fragment: &str, field: &str) -> Option<String> {
-    let key = format!("\"{field}\":");
-    let after = fragment.split_once(&key)?.1.trim_start();
-    let rest = after.strip_prefix('"')?;
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(json)
+    else {
+        return Vec::new();
+    };
+    items
+        .into_iter()
+        .filter_map(|v| {
+            // Only rows with a `bucket` count (the verdict key); name/state default to "" if absent.
+            let bucket = v.get("bucket")?.as_str()?.to_string();
+            let field = |k: &str| {
+                v.get(k)
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            Some((bucket, field("name"), field("state")))
+        })
+        .collect()
 }
 
 /// A collision-risk LANE for the CI-gated parallel integration model (operator directive 2026-08-02:
@@ -11294,6 +11307,20 @@ mod tests {
         assert!(parse_gh_checks("").is_empty());
         assert!(parse_gh_checks("[]").is_empty());
         assert!(parse_gh_checks("{\"bucket\":\"pass\"}").is_empty()); // not an array → ignored
+        // PR #1071 review point 2: a check `name` containing `}` or an escaped quote must NOT misparse
+        // (the old string-split-on-`}` broke here). serde handles it correctly.
+        let tricky = r#"[{"bucket":"pass","name":"weird } name \"q\"","state":"SUCCESS"},{"bucket":"fail","name":"x","state":"FAILURE"}]"#;
+        let ck = parse_gh_checks(tricky);
+        assert_eq!(
+            ck.len(),
+            2,
+            "a brace or quote in a name must not split a row"
+        );
+        assert_eq!(ck[0].0, "pass");
+        assert_eq!(ck[0].1, "weird } name \"q\"");
+        assert_eq!(ck[1].0, "fail");
+        // A row missing `bucket` is skipped (only bucket-bearing rows carry a verdict).
+        assert!(parse_gh_checks(r#"[{"name":"no bucket"}]"#).is_empty());
     }
 
     #[test]
