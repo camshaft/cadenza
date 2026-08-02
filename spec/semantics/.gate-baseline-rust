@@ -530,6 +530,8 @@ pass	Set.to-list over a runtime set sums its distinct elements
 pass	Set.to-list places a NaN element after the positives but before the negatives, by canonical byte order
 pass	Set.to-list sorts a PREFIX string before its extension (length tiebreak on equal prefixes)
 pass	Set.to-list sorts runtime ROPE string elements smallest-first by content byte order
+pass	Set.to-list orders runtime Bytes elements by unsigned-lexicographic byte order — 0x80 sorts LAST, not as signed -128
+pass	Map.to-list enumerates runtime Bytes keys by unsigned-lexicographic byte order — same key-cmp as the Set element order
 pass	Sim.now reads the scheduler clock — a tail-resumptive handler arm that works today
 pass	String.at addresses scalars across the seam of a runtime multibyte rope
 pass	String.at on a decomposed literal returns the composed scalar at the normalized index

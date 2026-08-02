@@ -1611,6 +1611,55 @@
             (export main)))
   (call   main (: 2 Int64)) (output (: 1 Int64)))
 
+(case "Set.to-list orders runtime Bytes elements by unsigned-lexicographic byte order — 0x80 sorts LAST, not as signed -128"
+  (doc    "Bytes gained a BLESSED TOTAL ORDER (§order, operator directive 2026-08-02; rcdzc+runtime #1120):
+           content-lexicographic over UNSIGNED byte values, the same machinery as String/Symbol (03-equality:602
+           is the bare-`<` witness). This pins the COLLECTION face: a `Set` of single-byte `Bytes` {0x80,0x05,0x7f}
+           built runtime + inserted out of order enumerates via `Set.to-list` in UNSIGNED order [5, 127, 128] —
+           first element's byte is 5, and the LAST is 128 (`0x80`). The 0x80-LAST is the discriminating assertion:
+           a SIGNED byte order (the trap) would read `0x80` as -128 and sort it FIRST, making the last element 127.
+           So this guards the unsigned-lexicographic contract THROUGH the to-list enumeration path (not just the
+           bare relational op), uniform across backends (wasm bytes-len/get walk == rust `Vec<u8>` Ord). Encodes
+           first-byte (100s) and last-byte (units) → 100*5 + 128 = 628.")
+  (input  (do
+            (def (b1 (: n Int64)) (Bytes.of (list (UInt8.wrap n))))
+            (def (lastbyte (: xs (List Bytes)) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (lastbyte t (match (Bytes.at h 0) ((Some v) v) ((None u) -1))))))
+            (def (main (: z Int64))
+              (let ((xs (Set.to-list (Set.of (list (b1 128) (b1 5) (b1 127))))))
+                (+ (* 100 (match xs
+                            ((list h .. t) (match (Bytes.at h 0) ((Some v) v) ((None u) -1)))
+                            ((list) -2)))
+                   (lastbyte xs -9))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 628 Int64)))
+
+(case "Map.to-list enumerates runtime Bytes keys by unsigned-lexicographic byte order — same key-cmp as the Set element order"
+  (doc    "The Map-key companion of the Set.to-list Bytes-order pin above: a `Map` keyed by single-byte `Bytes`
+           {0x80↦900, 0x05↦100, 0x7f↦700} inserted out of order enumerates its (key value) pairs via `Map.to-list`
+           in UNSIGNED key order [5, 127, 128] — the FIRST pair's key-byte is 5 and the LAST is 128 (0x80), the
+           same signed-vs-unsigned discriminator as the Set case (a signed order would put 0x80=-128 first → last
+           key 127). Confirms the Bytes total order drives the CHAMP key enumeration identically for Map keys as
+           for Set elements (same `value_cmp_shaped` Bytes arm). Encodes first-key-byte (100s) + last-key-byte
+           (units) → 100*5 + 128 = 628.")
+  (input  (do
+            (def (b1 (: n Int64)) (Bytes.of (list (UInt8.wrap n))))
+            (def (lastkey (: xs (List (Tuple Bytes Int64))) (: acc Int64))
+              (match xs
+                ((list) acc)
+                ((list h .. t) (match h ((tuple k _v) (lastkey t (match (Bytes.at k 0) ((Some v) v) ((None u) -1))))))))
+            (def (main (: z Int64))
+              (let ((m (Map.insert (Map.insert (Map.insert Map.empty (b1 128) 900) (b1 5) 100) (b1 127) 700)))
+                (let ((ps (Map.to-list m)))
+                  (+ (* 100 (match ps
+                              ((list h .. t) (match h ((tuple k _v) (match (Bytes.at k 0) ((Some v) v) ((None u) -1)))))
+                              ((list) -2)))
+                     (lastkey ps -9)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 628 Int64)))
+
 (case "Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order"
   (doc    "String order is UNSIGNED byte-lexicographic (13-strings:78 — a multi-byte scalar's lead byte
            0xC3 exceeds every ASCII byte), so in `{\"é\",\"z\",\"a\"}` the multibyte \"é\" sorts LAST:
