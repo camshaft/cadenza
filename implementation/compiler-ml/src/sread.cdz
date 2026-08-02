@@ -1097,13 +1097,17 @@ def sr-op-code-of-is-option() =
   // change re-introducing a magic miss value that would be treated as a real operator code.
   (match op-code-of("+") with
     | Option.Some(c) => (if (c == 43) then
-        (match op-code-of("==") with
-          | Option.Some(c2) => (if (c2 == 61) then
-              (match op-code-of("foo") with       // a plain name is NOT an operator
-                | Option.None(_) => unit
-                | Option.Some(_) => trap("a plain name has no op-code-of (None)"))
-            else trap("op-code-of(==) = Some(61)"))
-          | Option.None(_) => trap("op-code-of(==) is Some"))
+        (match op-code-of("=") with           // "=" is the CANONICAL equality op (61); "==" is its alias
+          | Option.Some(ceq) => (if (ceq == 61) then
+              (match op-code-of("==") with     // the alias maps to the SAME code 61
+                | Option.Some(c2) => (if (c2 == 61) then
+                    (match op-code-of("foo") with       // a plain name is NOT an operator
+                      | Option.None(_) => unit
+                      | Option.Some(_) => trap("a plain name has no op-code-of (None)"))
+                  else trap("op-code-of(==) = Some(61)"))
+                | Option.None(_) => trap("op-code-of(==) is Some"))
+            else trap("op-code-of(=) = Some(61) canonical equality"))
+          | Option.None(_) => trap("op-code-of(=) is Some (canonical equality)"))
       else trap("op-code-of(+) = Some(43)"))
     | Option.None(_) => trap("op-code-of(+) is Some(43)"))
 
