@@ -7065,3 +7065,76 @@ fn rustc_roundtrip_nested_option_of_option_compare_emits_declared_order_some_bef
         );
     }
 }
+
+#[test]
+fn rustc_roundtrip_nested_option_of_option_float_eq_emits_and_walks_canonical_bytes() {
+    // Mirror of the nested/generic-Option value-CMP emit slice, for value-EQ. `(Option (Option Float64))`
+    // equality used to DECLINE ("runtime structural equality over a RECURSIVE GENERIC sum is not yet
+    // rendered") — the eq walk's recursion guard keyed on the bare `Option` decl, so the inner Option
+    // re-entering the same decl false-tripped the recursive-generic decline. (A nested Option of an Eq type
+    // like Int64 never reaches here — it takes the native `==` fast-path; a FLOAT leaf is what forces the eq
+    // WALK, since f64 is not `Eq`.) The fix keys the guard on the FULL instantiated type, so the inner
+    // Option<Float64> expands inline. The float leaf still compares by the canonical byte form (NaN==NaN,
+    // -0.0 != +0.0), NOT f64's `PartialEq`. `compile_rust` HARD-FAILS on decline (this MUST emit now).
+    let src = "(module m \
+        (def (eq2 (: x (Option (Option Float64))) (: y (Option (Option Float64)))) (if (= x y) 1 0)) \
+        (def (mk (: k Float64)) (if (= k 0.0) (: (None unit) (Option Float64)) (Some k))) \
+        (def (p1) (eq2 (Some (mk 1.5)) (Some (mk 1.5)))) \
+        (def (p2) (eq2 (Some (mk 1.5)) (Some (mk 2.5)))) \
+        (def (p3) (eq2 (Some (mk 0.0)) (: (None unit) (Option (Option Float64))))) \
+        (def (p4) (eq2 (: (None unit) (Option (Option Float64))) (: (None unit) (Option (Option Float64))))) \
+        (export p1) (export p2) (export p3) (export p4))";
+    let rs = compile_rust(src);
+    // Some(Some 1.5) == Some(Some 1.5) → equal (1); the inner float compares by canonical bytes.
+    if let Some(out) = rustc_run(&rs, "p1()") {
+        assert_eq!(out, "1", "equal nested-option floats compare equal:\n{rs}");
+    }
+    // Some(Some 1.5) vs Some(Some 2.5) → the inner float differs → not equal (0).
+    if let Some(out) = rustc_run(&rs, "p2()") {
+        assert_eq!(out, "0", "a differing inner float → unequal:\n{rs}");
+    }
+    // Some(None) vs None → the OUTER option differs → not equal (0).
+    if let Some(out) = rustc_run(&rs, "p3()") {
+        assert_eq!(out, "0", "Some(None) != None (outer differs):\n{rs}");
+    }
+    // None == None → equal (1).
+    if let Some(out) = rustc_run(&rs, "p4()") {
+        assert_eq!(out, "1", "None == None:\n{rs}");
+    }
+}
+
+#[test]
+fn rustc_roundtrip_generic_user_sum_carrying_option_compare_emits_via_full_type_guard() {
+    // The nested/generic-Option value-CMP fix (full-instantiated-type recursion key + per-instantiation
+    // helper name) generalizes BEYOND the built-in Option: a GENERIC USER sum carrying an Option payload —
+    // `(type Box a (Wrap a) (Empty))` at `Box (Option Int64)` — now emits its compare too (it used to hit the
+    // same false recursive-generic decline). Declared order: Wrap(disc 0) < Empty(disc 1); same-variant Wrap
+    // compares the Option payload with the Some<None flip. `compile_rust` HARD-FAILS on decline.
+    let src = "(module m \
+        (type Box a (Wrap a) (Empty)) \
+        (def (cmp2 (: x (Box (Option Int64))) (: y (Box (Option Int64)))) \
+          (match (compare x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+        (def (p1) (cmp2 (Box.Wrap (Some 1)) (Box.Wrap (: (None unit) (Option Int64))))) \
+        (def (p2) (cmp2 (Box.Wrap (Some 1)) (Box.Empty))) \
+        (def (p3) (cmp2 (Box.Wrap (Some 1)) (Box.Wrap (Some 1)))) \
+        (export p1) (export p2) (export p3))";
+    let rs = compile_rust(src);
+    // Wrap(Some 1) vs Wrap(None): same variant Wrap, payload Some 1 < None → Less (1).
+    if let Some(out) = rustc_run(&rs, "p1()") {
+        assert_eq!(
+            out, "1",
+            "Wrap(Some 1) < Wrap(None) via the Some<None payload flip:\n{rs}"
+        );
+    }
+    // Wrap(Some 1) vs Empty: Wrap(disc 0) < Empty(disc 1) → Less (1).
+    if let Some(out) = rustc_run(&rs, "p2()") {
+        assert_eq!(out, "1", "Wrap < Empty by declared discriminant:\n{rs}");
+    }
+    // identical → Equal (2).
+    if let Some(out) = rustc_run(&rs, "p3()") {
+        assert_eq!(
+            out, "2",
+            "identical generic-user-sum values compare Equal:\n{rs}"
+        );
+    }
+}

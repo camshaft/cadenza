@@ -3108,7 +3108,13 @@ fn emit_value_eq_walk_seen(
     ty: &Ty,
     l: &str,
     r: &str,
-    seen: &mut Vec<crate::ast::StructId>,
+    // Keyed on the FULL instantiated sum type (`Ty`, compared by decl+args), NOT the bare `StructId` decl —
+    // mirrors the value-CMP walk. A NESTED distinct instantiation like `(Option (Option Float64))` (which
+    // reaches this walk because the Float leaf is NOT native-`Eq`, so the `ty_supports_eq` `==` fast-path
+    // above does not fire) re-enters the SAME `Option` decl but is a DIFFERENT type; a decl-only key
+    // false-tripped the "recursive generic" decline. Keyed on the full type, only TRUE self-recursion
+    // (identical decl+args) re-enters — nested instantiations expand inline (finite depth).
+    seen: &mut Vec<Ty>,
     helpers: &mut Vec<String>,
 ) -> Result<String, Reject> {
     // A native-Eq leaf (Int/Bool/Bytes/String/BigInt/… and any all-Eq compound) — a plain `==`. Checked
@@ -3210,9 +3216,13 @@ fn emit_value_eq_walk_seen(
             let enum_ty = super::types::rust_type(ty)
                 .ok_or_else(|| Reject::decline("sum eq: no rust type for the enum"))?;
             let fn_name = format!("__eq_{}", super::types::sum_ident(name));
-            // On re-entry of a sum already being expanded, emit a CALL to its helper (the recursion base).
-            // For a GENERIC instantiation the helper isn't generated (see above) → decline, as before.
-            if seen.contains(decl) {
+            let sum_ty = ty.clone();
+            // On re-entry of THIS EXACT instantiated type (a true self-referential cycle — identical
+            // decl+args), emit a CALL to its helper (the recursion base). A GENERIC self-recursive sum still
+            // can't spell a generic helper signature → decline. But a NESTED DISTINCT instantiation
+            // (`Option<Option<T>>` reaching `Option<T>`) is a DIFFERENT type, does NOT re-enter, and takes the
+            // inline-match generic path below — the gap this closes (was falsely declined as recursive-generic).
+            if seen.contains(&sum_ty) {
                 if !args.is_empty() {
                     return Err(Reject::decline(
                         "runtime structural equality over a RECURSIVE GENERIC sum is not yet rendered by the Rust backend (needs a generic helper fn)",
@@ -3220,7 +3230,7 @@ fn emit_value_eq_walk_seen(
                 }
                 return Ok(format!("{fn_name}(&{l}, &{r})"));
             }
-            seen.push(*decl);
+            seen.push(sum_ty);
             let variant_count = match db.type_decl_by_occ(*decl).map(|t| t.variants.len()) {
                 Some(n) => n,
                 None => {
