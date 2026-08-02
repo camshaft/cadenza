@@ -11,13 +11,15 @@
 /// Pure pitch-class arithmetic over Int64, total, no imports beyond the pitch-class fold. Input note
 /// numbers are folded to pitch classes and DEDUPED first (a pitch class appearing in two octaves is one
 /// set member) so the vector counts SET pairs, matching the set-theoretic definition. The six counts are
-/// returned as an `Icv` record of named fields — NOT a bare 6-list — so a caller reads `ic-tritone` by
-/// name rather than indexing a positional list (no magic index into a list of counts).
+/// returned as a dedicated `Icv` value (a single-constructor type holding the six counts positionally) read
+/// through accessor helpers — `icv-count(v, k)` for interval class `k`, `ic-tritone(v)` for the common ic6
+/// — NOT a bare `List(Int64)` a caller would index by a magic position.
 
 // ---- the interval-class vector -----------------------------------------------------------------------
 
 /// The six interval-class counts of a pitch-class set: `ic1` (semitones/major sevenths) through `ic6`
-/// (tritones). Named fields so no caller indexes a positional list for "the tritone count".
+/// (tritones), held positionally in a single-constructor type. Read the counts through `icv-count`/
+/// `ic-tritone` rather than a raw `List(Int64)` index, so callers never hard-code a magic position.
 type Icv =
   | Icv(Int64, Int64, Int64, Int64, Int64, Int64)
 
@@ -89,7 +91,7 @@ def icv-count(v: Icv, k: Int64) = match v with
     else if k == 4 then c4
     else if k == 5 then c5
     else if k == 6 then c6
-    else trap("interval class is 1..6")
+    else trap("icv-count: interval class k must be 1..6 (0 is the unison, not an interval class)")
 
 /// The tritone count (interval class 6) — the classic tension marker a harmony tool reads directly.
 def ic-tritone(v: Icv) = icv-count(v, 6)
