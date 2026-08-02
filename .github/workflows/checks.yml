@@ -276,6 +276,48 @@ jobs:
           cargo clippy --all-targets --features live-exec -- -D warnings
           cargo test --features live-exec
 
+  cdz-agent-host:
+    # The REAL kernel effect executors + host runner + Cedar authorizer guest
+    # (implementation/seed/crates/cdz-agent-host, v-agent-harness-host). Its OWN workspace (empty
+    # `[workspace]`), EXCLUDED from the seed workspace (it path-deps cdz-kernel + grows a network/AWS/tokio
+    # tree the seed `--workspace` jobs must never pay), so the test/clippy/fmt jobs above don't cover it —
+    # gate it HERE (same isolation rationale as cdz-kernel). Without this job the crate was UNGATED in CI: a
+    # peer's cdz-kernel shared-type change (the Payload::Inline→Bytes flip, the required Timeliness field)
+    # broke it red on trunk with nothing catching it — this job is that missing coverage.
+    name: cdz-agent-host
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          wasm-tools: "true"
+          cache-key: cdz-agent-host
+      - name: Rebuild the cedar-policy-guest fixture from source + verify it's a valid component
+        working-directory: implementation/seed/crates/cdz-agent-host
+        run: |
+          # The Cedar authorizer GUEST (tests/fixtures/cedar-policy-guest, a wit-bindgen guest embedding a
+          # Cedar PolicySet) is lifted to a wasm component that the kernel's ComponentAuthorizer instantiates.
+          # Guard against a STALE fixture (WIT or guest source changed) by rebuilding from source + verifying
+          # the fresh build is a VALID component (wasm-tools validate) — NOT a byte-diff (guest dep versions
+          # aren't lock-pinned + CI floats toolchains → different-but-valid bytes; same rationale as
+          # reducer-guest, trunk@455dcb7e7). Catches "source no longer produces a valid authorizer component."
+          rustup target add wasm32-unknown-unknown
+          ( cd tests/fixtures/cedar-policy-guest && cargo build --target wasm32-unknown-unknown --release )
+          wasm-tools component new \
+            tests/fixtures/cedar-policy-guest/target/wasm32-unknown-unknown/release/cedar_policy_guest.wasm \
+            -o /tmp/cedar_policy_guest.component.wasm
+          wasm-tools validate --features component-model /tmp/cedar_policy_guest.component.wasm \
+            || { echo "::error::cedar-policy-guest source no longer builds a valid wasm component"; exit 1; }
+      - name: Test + lint the cdz-agent-host crate (standalone workspace)
+        working-directory: implementation/seed/crates/cdz-agent-host
+        run: |
+          cargo test
+          cargo clippy --all-targets -- -D warnings
+          cargo fmt --check
+          # `live-net` gates the network executors (Bedrock model / real HTTP transports). Lint AND (where a
+          # runner has egress) test it — but the default build stays hermetic, so gate it clippy-clean here.
+          cargo clippy --all-targets --features live-net -- -D warnings
+
   rcdzc-wasm:
     # The Cadenza COMPILER as a WASM artifact (implementation/seed/crates/rcdzc-wasm, v-agent-harness
     # minimal-kernel K1-dep wasm-swap — operator #54). EXCLUDED + wasm-only: it builds to wasm32-wasip1 (a
