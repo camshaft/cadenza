@@ -278,8 +278,8 @@ def emit-call-args(args: List(Core), i: Int64, binders: List(Int64), defidx: Map
      | Option.Some(a) => Bytes.concat(emit-instrs-d(a, binders, defidx), emit-call-args(args, i + 1, binders, defidx))
      | Option.None(_) => emit-call-args(args, i + 1, binders, defidx)))
 
-/// slice-B'(Bp3): a def-name's wasm function index from the def-index map, or -1 (missing — unreached under
-/// can-emit's gate). A MISS cannot legitimately happen — `can-emit` gates a `CCall` program on the callee
+/// slice-B'(Bp3): a def-name's wasm function index from the def-index map; TRAPS on a missing name (a
+/// checked-get, not a `-1`). A MISS cannot legitimately happen — `can-emit` gates a `CCall` program on the callee
 /// being a present emitted recursive def, so the name is always in `defidx` by the time we emit. A miss = a
 /// funcidx we'd `uleb`-encode into a bogus `call <garbage>`, i.e. corrupt lowering → `trap` (a checked-get
 /// that can't miss), never an in-band `-1` sentinel. Mirrors `index-of`/`byte-of`.
