@@ -1058,9 +1058,14 @@ pass	a capturing closure returning a nominal-over-scalar
 pass	a capturing closure stored as a runtime list element is extracted by List.at and applied
 pass	a capturing closure stored in a let-bound record is projected and applied
 pass	a capturing closure stored in a let-bound tuple is projected and applied
+pass	a capturing closure stored in a list and also called directly emits a valid artifact
+pass	a capturing closure stored in a map and also called directly emits a valid artifact
+pass	a capturing closure stored in a sum payload and also called directly emits a valid artifact
+pass	a capturing closure stored in a tuple and also called directly folds through its capture
 pass	a capturing closure stored in a tuple is extracted and applied
 pass	a capturing closure stored in a variant is applied via a devirtualized direct call
 pass	a capturing closure whose body uses the capture after an inner computation
+pass	a capturing closure whose surviving map store and direct call both feed the result
 pass	a capturing closure with a let binding in its body
 pass	a capturing unannotated closure in a payload is typed from the declared arrow
 pass	a chained Option.expect(Option.expect s) payload consumed per iteration accumulates stably
@@ -2182,6 +2187,7 @@ pass	a non-admitted float width NESTED in a compound annotation is rejected
 pass	a non-admitted float width in a parameter annotation is rejected
 pass	a non-admitted float width in a type-declaration payload is rejected
 pass	a non-byte-aligned bit-field width takes its exact arbitrary-width unsigned type
+pass	a non-capturing closure stored and also called directly emits a valid artifact
 pass	a non-constructor type applied to arguments in type position is rejected
 pass	a non-dividing conversion ratio truncates on an Int magnitude
 pass	a non-empty scrutinee does not match an empty bin pattern

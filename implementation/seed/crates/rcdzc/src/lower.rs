@@ -11138,6 +11138,15 @@ fn head_is_runtime_fn_value(db: &mut Db, id: StructId) -> bool {
     }
     match resolved_of(db, id) {
         Resolved::Param { .. } => true,
+        // A KEPT `let`-binding that holds a runtime closure — the adv-50 force-keep (`should_keep_binding`
+        // keeps a CAPTURING lambda whose handle both escapes-whole and is direct-called). The binding was
+        // materialized as ONE `Core::Closure` in a `Core::Let` slot; its reference lowers to a
+        // `Core::LocalRef` reading that cell, so an application of it must `call_indirect` the cell, NOT
+        // β-fold the lambda (folding is exactly the poison the force-keep avoids). Checked BEFORE the
+        // `Ref`-follow below, which would otherwise chase `value` through to the original `(fn …)` and
+        // report NOT-runtime (β-reduce). Only a KEPT binding diverts here — an ordinary copy-propagated
+        // lambda binding still follows through and folds, unchanged.
+        Resolved::Ref { value } if db.kept_bindings.contains(&value) => true,
         Resolved::Ref { value } => head_is_runtime_fn_value(db, value),
         // A CALL that RETURNS a closure — a head `(selfp n)` where `selfp` is a RECURSIVE def whose result
         // is a function value (`(def (selfp n) (if (= n 0) (fn (x) …) (selfp (- n 1))))`), applied
@@ -12987,6 +12996,13 @@ fn callee_def_index(db: &mut Db, head: StructId) -> Option<usize> {
 pub(crate) struct BindingUses {
     count: crate::fxhash::FxHashMap<StructId, u32>,
     escapes_whole: crate::fxhash::FxHashSet<StructId>,
+    /// Bindings referenced as a DIRECT APPLICATION HEAD via a bare `Ref` — `(f1 d)` where `f1` names the
+    /// binding. Such a use is a CALL (it β-folds, or `call_indirect`s a kept runtime closure), NOT a
+    /// whole-value escape — so it is recorded here and NOT in `escapes_whole` (which then means "escapes
+    /// as a value in a NON-called position": stored into a compound/collection, passed as an argument,
+    /// returned). Used by `should_keep_binding` to detect the adv-50 CALL-BOTH-WAYS shape (a capturing
+    /// lambda whose handle both `escapes_whole` AND is `called_direct`), which must be force-kept.
+    called_direct: crate::fxhash::FxHashSet<StructId>,
 }
 
 /// Walk `node` once, recording into `out` a use (and, unless `proj_operand`, a whole-value escape) for
@@ -12998,6 +13014,26 @@ pub(crate) struct BindingUses {
 fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &mut BindingUses) {
     #[cfg(test)]
     crate::db::COLLECT_BINDING_USES_VISITS.with(|c| c.set(c.get() + 1));
+    // A `(do S… tail)` block resolves to `Ref{last}` (`resolve_do` collapses it), which would hide the
+    // NON-FINAL statements — a discarded intermediate like `(Map.insert m 1 f1)` never reaches the
+    // recursion, so `f1`'s use there goes UNCOUNTED and its whole-value ESCAPE unrecorded. That matters
+    // for the adv-50 force-keep: a capturing lambda STORED into a discarded intermediate is still LIFTED
+    // (the discarded statement is lowered by `subtree_reaches_host_call`, poisoning the shared capture
+    // occurrence), so its handle DOES escape even though the store's value is dropped — the escape must
+    // be seen here for the CALL-BOTH-WAYS force-keep to fire. Walk each statement (matching what
+    // `compute`'s `do` arm lowers), then fall through to the collapsed `resolved_of` for the tail. A pure
+    // do (no discarded store) records the same facts either way, so this only ADDS the previously-hidden
+    // intermediate uses — it never drops one.
+    if let Some(forms) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
+        for f in forms {
+            // A do-local `(def …)` is a binding, not a value statement — its refs are collected where the
+            // def is used (by name), not as a statement here; skip it (matching `compute`'s `do` split).
+            if db.ast.head_name(f) != Some("def") {
+                collect_binding_uses(db, f, false, out);
+            }
+        }
+        return;
+    }
     match resolved_of(db, node) {
         Resolved::Ref { value } => {
             *out.count.entry(value).or_insert(0) += 1;
@@ -13061,7 +13097,19 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
         }
         Resolved::Annot { expr, .. } => collect_binding_uses(db, expr, false, out),
         Resolved::Apply { head, args } => {
-            collect_binding_uses(db, head, false, out);
+            // A bare-name application HEAD `(f1 …)` is a CALL of the binding `f1`, not a whole-value
+            // escape of it: record it as `called_direct` (and count the use) but do NOT flag
+            // `escapes_whole` — a called head β-folds or `call_indirect`s, it does not store/pass the
+            // handle. A NON-`Ref` head (a nested `Apply` for a curried `((f1 a) b)`, a projection, a
+            // prim) recurses normally; the curried case re-enters this arm at each level, so the bottom
+            // bare-`Ref` head is still recorded as the direct call. This is what lets `should_keep_binding`
+            // tell the adv-50 CALL-BOTH-WAYS shape (escapes AND called) from a pure call or a pure escape.
+            if let Resolved::Ref { value } = resolved_of(db, head) {
+                *out.count.entry(value).or_insert(0) += 1;
+                out.called_direct.insert(value);
+            } else {
+                collect_binding_uses(db, head, false, out);
+            }
             for &a in args.iter() {
                 collect_binding_uses(db, a, false, out);
             }
@@ -13111,6 +13159,36 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
     }
 }
 
+/// Whether the lambda occurrence `init` CAPTURES a free variable — references an enclosing runtime
+/// binding (a `let` init / an enclosing parameter). Detected LIFT-FREE by reusing [`collect_captures`],
+/// which reads only `resolved_of` (it never calls `core_of` / `lower_lambda_value`), so the check does
+/// not trigger the very speculative lift the adv-50 force-keep guards against. A non-capturing lambda
+/// (`(fn (x) (+ x 1))`) has an empty capture set and needs no env cell, so it is not subject to the
+/// captured-occurrence poison and stays copy-propagated. Returns false for a non-lambda `init`.
+fn lambda_is_capturing(db: &mut Db, init: StructId) -> bool {
+    let Resolved::Lambda { params, body } = resolved_of(db, init) else {
+        return false;
+    };
+    let param_occs: Vec<StructId> = params
+        .iter()
+        .map(|&p| crate::eval::param_name_occ(db, p))
+        .collect();
+    let mut captures: Vec<StructId> = Vec::new();
+    let mut capture_refs: Vec<(StructId, usize)> = Vec::new();
+    // `collect_captures` returns false only on an unrepresentable capture (still a capture); its OUTPUT
+    // `captures` set is what tells capturing from closed. A `false` return with a non-empty set is still
+    // capturing — so gate on the set, not the return.
+    let _ = collect_captures(
+        db,
+        body,
+        &param_occs,
+        init,
+        &mut captures,
+        &mut capture_refs,
+    );
+    !captures.is_empty()
+}
+
 /// Whether a `let` binding whose initializer is `init` should be KEPT as a named `Core::Let` binding
 /// rather than copy-propagated. Kept iff (1) its value is a RUNTIME computation — its core is not a
 /// constant/atom that folds away, so following it through would re-emit the computation — AND (2) its
@@ -13122,6 +13200,33 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
 /// [`BindingUses`]); the whole-value-escape and use-count queries are O(1) lookups into it rather than an
 /// O(scope) walk per binding (the O(N²) a wide `let` otherwise pays).
 fn should_keep_binding(db: &mut Db, init: StructId, uses: &BindingUses) -> bool {
+    // A CAPTURING lambda whose HANDLE ESCAPES WHOLE (stored into a heap collection / sum payload / passed
+    // / returned) AND is ALSO DIRECTLY CALLED — the adv-50 CALL-BOTH-WAYS shape — must be FORCE-KEPT as
+    // ONE materialized runtime closure. This is the DUAL of the copy-propagate short-circuit just below.
+    // The hazard: the ESCAPE lowers `f1` as a value (`lower_lambda_value` LIFTS it, recording the body's
+    // capturing-reference occurrences in `db.captured_ref`), while the copy-propagate short-circuit would
+    // let the DIRECT call `(f1 d)` β-fold to `(+ k d)` — REUSING the SAME captured occurrence `k`, now
+    // memoized as a `Core::Captured` env-read in the ENCLOSING (env-less) scope → invalid wasm module /
+    // rust `__cap0` unbound (E0425). Prior faces of this family AVOIDED the lift (propagate); here the
+    // escape genuinely REQUIRES the lift, so instead AVOID THE FOLD: keep the binding as a `Core::Let`
+    // slot holding the ONE lifted `Core::Closure`, and route the direct call through it via
+    // `call_indirect` (`head_is_runtime_fn_value` recognizes a kept lambda binding as a runtime fn value).
+    // Both uses then share the single materialized cell — no fold reuses a poisoned occurrence. Gated on
+    // BOTH `escapes_whole` (a non-called whole-value escape → the lift is mandatory) AND `called_direct`
+    // (a bare-`Ref` application head → the folding use that would reuse the occurrence): a pure escape
+    // (no direct call) has no fold to poison and lifts fine unkept, and a pure direct call (no escape)
+    // folds cleanly with no lift — only the intersection miscompiles. Detected lift-free via `resolved_of`
+    // + the lexical `body_captures_free_runtime_name` walk (neither `core_of`-lowers, so the detection
+    // itself never triggers the very lift it guards against). TUPLE/RECORD element storage is a
+    // fixed-shape UNBOXED rep handled by the `compound_contains_*` arms below (they PASS today), so this
+    // only engages the boxed-cell reps (list/set/map/sum-payload) the boundary sweep found broken.
+    if matches!(resolved_of(db, init), Resolved::Lambda { .. })
+        && uses.escapes_whole.contains(&init)
+        && uses.called_direct.contains(&init)
+        && lambda_is_capturing(db, init)
+    {
+        return true;
+    }
     // A LAMBDA-valued binding is NEVER kept as a runtime `let` slot — it is copy-propagated so its
     // applications fold (β-reduce) at each use. Short-circuit HERE, before `is_runtime_computation` calls
     // `core_of(init)` — which for a lambda runs `lower_lambda_value`, LIFTING it speculatively and (for a
