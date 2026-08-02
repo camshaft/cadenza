@@ -15,7 +15,7 @@ use cdz_kernel::executor::AsyncCompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
+use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
 
 /// A stub HTTP transport: returns a canned response body so the fetch loop is hermetic. The real client
 /// implements this same trait behind `live-net`.
@@ -35,8 +35,9 @@ impl HttpTransport for StubHttp {
 /// A minimal agent that fetches a URL: on "go" it emits an `Http` effect; when the response comes back
 /// it stashes the body and marks itself `fetched`. The loop closes through a real executor.
 struct FetchAgent;
-impl Reducer for FetchAgent {
-    fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+#[async_trait::async_trait(?Send)]
+impl AsyncReducer for FetchAgent {
+    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"fetching".to_vec());
@@ -86,13 +87,7 @@ async fn agent_loop_runs_end_to_end_through_the_http_executor() {
     let mut session = Session::genesis(Hash::of(b"fetch-agent-v1"));
 
     session
-        .deliver_async(
-            inbound_go(),
-            None,
-            &SyncAsAsync(FetchAgent),
-            &host_cap(),
-            &mut exec,
-        )
+        .deliver_async(inbound_go(), None, &FetchAgent, &host_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -107,7 +102,9 @@ async fn agent_loop_runs_end_to_end_through_the_http_executor() {
 
     // Replay-equivalence: the response is recorded, so replay reconstructs the identical KV without
     // re-fetching.
-    let replayed = Session::replay(session.log().to_vec(), &reducer).unwrap();
+    let replayed = Session::replay_async(session.log().to_vec(), &reducer)
+        .await
+        .unwrap();
     assert_eq!(replayed.snapshot().kv_root, session.snapshot().kv_root);
 }
 
@@ -129,8 +126,9 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
         }
     }
     struct ExfilAgent;
-    impl Reducer for ExfilAgent {
-        fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for ExfilAgent {
+        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest {
                     kind: EffectKind::Http,
@@ -147,13 +145,7 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
         .with(EffectKind::Http, Box::new(HttpExecutor::new(MustNotCall)));
     let mut session = Session::genesis(Hash::of(b"exfil-agent-v1"));
     session
-        .deliver_async(
-            inbound_go(),
-            None,
-            &SyncAsAsync(ExfilAgent),
-            &host_cap(),
-            &mut exec,
-        )
+        .deliver_async(inbound_go(), None, &ExfilAgent, &host_cap(), &mut exec)
         .await
         .unwrap();
 

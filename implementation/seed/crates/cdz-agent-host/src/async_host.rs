@@ -166,13 +166,14 @@ mod tests {
     use cdz_kernel::event::{ContentType, EffectOutcome, Event};
     use cdz_kernel::executor::AsyncCompositeExecutor;
     use cdz_kernel::kv::Kv;
-    use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
+    use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
 
     /// On "go", record which session ran by stamping "ran" in KV (via a Now round-trip so it exercises
     /// the real executor path through the loop).
     struct MarkAgent;
-    impl Reducer for MarkAgent {
-        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for MarkAgent {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
                     kind: EffectKind::Now,
@@ -197,7 +198,7 @@ mod tests {
             .with(EffectKind::Now, Box::new(ClockExecutor::new()));
         HostedSession::genesis(
             Hash::of(b"mark-v1"),
-            Box::new(SyncAsAsync(MarkAgent)),
+            Box::new(MarkAgent),
             Box::new(Authorizer::new(vec![Capability {
                 kind: EffectKind::Now,
                 predicate: ResourcePredicate::Any,
@@ -285,8 +286,9 @@ mod tests {
     struct TimerAgent {
         deadline_ms: u64,
     }
-    impl Reducer for TimerAgent {
-        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for TimerAgent {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
                     kind: EffectKind::Timer,
@@ -319,7 +321,7 @@ mod tests {
             SessionId::new("t"),
             HostedSession::genesis(
                 Hash::of(b"timer-v1"),
-                Box::new(SyncAsAsync(TimerAgent { deadline_ms: 1000 })),
+                Box::new(TimerAgent { deadline_ms: 1000 }),
                 Box::new(authz),
                 AsyncCompositeExecutor::new(),
             ),

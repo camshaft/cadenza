@@ -19,7 +19,7 @@ use cdz_kernel::executor::AsyncCompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
+use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
 use cdz_kernel::wasm_host::ComponentAuthorizer;
 
 /// Load the lifted Cedar policy component the CI job built. `None` ONLY when the env var is UNSET (a
@@ -63,8 +63,9 @@ fn inbound(kind_marker: &str) -> EventBody {
 /// the policy-allow-listed id; "http-imds" → an Http call to the IMDS host the policy FORBIDs. Lets one
 /// reducer drive both the permit and deny cases against the real Cedar component.
 struct PolicyProbe;
-impl Reducer for PolicyProbe {
-    fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+#[async_trait::async_trait(?Send)]
+impl AsyncReducer for PolicyProbe {
+    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { payload, .. } => {
                 let Payload::Inline(m) = payload else {
@@ -115,7 +116,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
     // PERMIT case: a Model call to the allow-listed id → the policy permits → the executor runs → the
     // result folds back → the agent records "permitted".
     {
-        let reducer = SyncAsAsync(PolicyProbe);
+        let reducer = PolicyProbe;
         let mut exec = AsyncCompositeExecutor::new()
             .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
         let mut session = Session::genesis(Hash::of(b"cedar-permit-v1"));
@@ -139,7 +140,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
     // DENY case: an Http call to the IMDS host the policy FORBIDs → the Cedar decision denies at the gate
     // → the executor is never consulted → an AuthzDenied is on the log + the agent is not "permitted".
     {
-        let reducer = SyncAsAsync(PolicyProbe);
+        let reducer = PolicyProbe;
         // A Model executor is registered, but the Http effect is denied before any executor runs; an
         // Http executor isn't even needed to prove the deny (the gate stops it first).
         let mut exec = AsyncCompositeExecutor::new()
