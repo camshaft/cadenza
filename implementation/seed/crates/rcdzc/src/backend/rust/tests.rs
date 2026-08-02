@@ -5509,8 +5509,10 @@ fn rustc_roundtrip_structural_eq_over_a_compound_with_a_float_leaf() {
 fn rustc_roundtrip_structural_eq_over_a_list_of_floats_is_elementwise_construction_independent() {
     // Pins the Ty::List arm of emit_value_eq_walk with a FLOAT element (expr.rs comment "Two lists ... equal
     // ... independent of how each was constructed"). A `(List Float64)` equality can't use `Vec<f64>`'s
-    // `PartialEq` (it HAS one, but its float semantics are wrong for VALUE equality: NaN != NaN and
-    // -0.0 == +0.0; and `f64: !Eq`, so there's no total `==`) — the backend emits an element-wise walk:
+    // `PartialEq` (it HAS `==`, but for VALUE equality its float semantics are wrong — NaN != NaN and
+    // -0.0 == +0.0 — because `f64: !Eq`: its `PartialEq` is not an equivalence relation, NaN breaking
+    // reflexivity, so the derived `Vec<f64>` equality is unsuitable here) — the backend emits an
+    // element-wise walk:
     // `l.len()==r.len() && l.iter().zip(r.iter()).all(|(le,re)| <canonical-byte float eq>)`.
     // The float-leaf eq walk was witnessed for TUPLES/RECORDS but NOT for a LIST element on the rust backend.
     // Verified NON-VACUOUS: emits `.len()==.len() && .iter().zip().all(|..| ({...is_nan()...to_bits()...}))`.
