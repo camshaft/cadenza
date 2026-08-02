@@ -103,6 +103,38 @@ impl HostedSession {
     pub fn open_effects(&self) -> usize {
         self.session.open_effects()
     }
+
+    /// FORK-FOR-QUERY (the semantic "what is this session DOING?" answer, §4b tier-1): non-interferingly
+    /// ask a COPY of this session to summarize itself, WITHOUT touching the live session. The kernel's
+    /// `Session::fork_for_query` clones this session's materialized KV + reducer-hash into a fresh
+    /// EPHEMERAL session (clean id-space, no inherited obligations/timers/log, parent's `last_now` floor);
+    /// this drives that fork with the caller-supplied collaborators, delivers a `report` event so a
+    /// report-aware reducer summarizes itself, runs to quiescence, and returns the summary from the fork's
+    /// `public/summary` KV — then DROPS the fork (never persisted). The parent is provably untouched (the
+    /// fork is a separate `Session`; this method takes `&self`).
+    ///
+    /// The caller supplies the fork's `reducer` (the same logic the session runs — a `Box<dyn Reducer>`
+    /// can't be cloned out of this `HostedSession`, so the caller re-provides it), a MODEL-ONLY `authz`
+    /// (a scoped capability so a summarize-fold can call the model but CANNOT take world-actions —
+    /// SEC-F1), and an `executor` to serve that model call. Returns `Some(summary_bytes)` if the reducer
+    /// published `public/summary`, else `None` (it summarized elsewhere / didn't, or the fork erred).
+    pub fn fork_query(
+        &self,
+        reducer: &dyn Reducer,
+        authz: &dyn Authorize,
+        executor: &mut CompositeExecutor,
+    ) -> Option<Vec<u8>> {
+        let mut fork = self.session.fork_for_query();
+        // Deliver a `report` inbound so a report-aware reducer (branching on ct.is_report()) summarizes
+        // itself from local KV. A KernelError here just means no summary (the fork is discarded regardless).
+        let body = EventBody::Inbound {
+            content_type: cdz_kernel::event::ContentType::report(),
+            payload: cdz_kernel::effect::Payload::Inline(Vec::new().into()),
+        };
+        fork.deliver(body, None, reducer, authz, executor).ok()?;
+        // The summary the reducer published for observers (§4b tier-1). Cloned out before the fork drops.
+        fork.kv().get(b"public/summary").map(|v| v.to_vec())
+    }
 }
 
 /// The host: a registry of running agent sessions keyed by [`SessionId`]. Owns each [`HostedSession`],
@@ -435,5 +467,67 @@ mod tests {
         );
         // A further tick fires nothing (all timers settled).
         assert_eq!(host.fire_due_timers(9999), 0);
+    }
+
+    /// A report-aware agent: on a normal inbound it records live work in KV; on a `report` inbound it
+    /// summarizes itself from that local KV into `public/summary` (no model call — the cheap tier-1 path).
+    struct ReportingAgent;
+    impl Reducer for ReportingAgent {
+        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { content_type, .. } if content_type.is_report() => {
+                    // Summarize from local KV — here, echo the recorded phase into the published summary.
+                    let phase = kv.get(b"phase").map(|v| v.to_vec()).unwrap_or_default();
+                    let mut summary = b"phase=".to_vec();
+                    summary.extend_from_slice(&phase);
+                    kv.put(b"public/summary".to_vec(), summary);
+                    FoldOutput::none()
+                }
+                EventBody::Inbound { .. } => {
+                    kv.put(b"phase".to_vec(), b"working".to_vec());
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[test]
+    fn fork_query_summarizes_a_copy_without_touching_the_live_session() {
+        // §4b tier-1: fork-for-query asks a COPY to summarize itself; the live session is untouched.
+        let mut host = AgentHost::new();
+        let id = SessionId::new("worker");
+        host.spawn(
+            id.clone(),
+            HostedSession::genesis(
+                Hash::of(b"reporting-v1"),
+                Box::new(ReportingAgent),
+                Box::new(Authorizer::deny_all()), // the live session takes no effects here
+                CompositeExecutor::new(),
+            ),
+        );
+        // Advance the live session so it has state to summarize (phase=working).
+        host.deliver(&id, inbound_go(), None);
+        let hosted = host.get(&id).unwrap();
+        assert_eq!(hosted.session().kv().get(b"phase"), Some(&b"working"[..]));
+        // Precondition: no summary on the LIVE session yet.
+        assert_eq!(hosted.session().kv().get(b"public/summary"), None);
+        let live_event_count = hosted.session().log().len();
+
+        // Fork-query it: caller supplies the same reducer + a model-only authz (deny_all here — the
+        // summarize fold takes no effects) + an executor. Returns the fork's published summary.
+        let mut exec = CompositeExecutor::new();
+        let summary = hosted.fork_query(&ReportingAgent, &Authorizer::deny_all(), &mut exec);
+        assert_eq!(
+            summary.as_deref(),
+            Some(&b"phase=working"[..]),
+            "the fork summarizes the copied KV state"
+        );
+
+        // NON-INTERFERENCE: the live session is byte-for-byte unchanged — no summary appeared on it, and
+        // its log didn't grow (the fork is a separate Session; fork_query took &self).
+        let hosted = host.get(&id).unwrap();
+        assert_eq!(hosted.session().kv().get(b"public/summary"), None);
+        assert_eq!(hosted.session().log().len(), live_event_count);
     }
 }
