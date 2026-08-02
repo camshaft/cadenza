@@ -46,7 +46,13 @@ ALL integration. Two disciplines keep that from ever happening — follow BOTH e
    before draining the batch** (never risk reaching the unrecoverable 100%).
 2. **Drain your inbox**, oldest-first — list it with `cargo xtask fleet inbox pr-sync` (resolves the
    canonical HUB path; a bare relative `.claude/fleet/inbox/...` glob from your worktree silently
-   matches nothing — the recurring drain-stall class the watchdog escalates). The messages that matter are `merge-request`s (from any agent).
+   matches nothing — the recurring drain-stall class the watchdog escalates). `merge-request`s (from
+   any agent) are your PRIMARY work, but you MUST **also read and act on every `note`/`ask`** and move
+   it to `processed/` — do NOT filter to merge-requests only. Notes carry coordination you cannot
+   afford to miss: cutover/hand-off plans, stale-MR + conflict heads-ups, choreography/diagnosis
+   findings, peer territory hand-offs. (This line once said "the messages that matter are
+   merge-requests" — which made pr-sync charter-blind to notes, silently piling up an 8h+ note backlog
+   and blocking coordination the watchdog's note-backlog signal now flags. Notes matter too.)
 
    **⚡ DEFAULT FAST PATH — OPTIMISTIC BATCH + BISECT (`cargo xtask fleet gate-batch`).** Re-gating
    per MR costs N full gate cycles for N MRs — the 13-30 min batch latency. Instead, when the queue has
