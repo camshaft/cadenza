@@ -7,7 +7,9 @@
 //! deterministic replay recovery.
 
 use cdz_kernel::authz::Authorizer;
-use cdz_kernel::effect::{Capability, EffectKind, EffectRequest, Payload, ResourcePredicate};
+use cdz_kernel::effect::{
+    Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
+};
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
 use cdz_kernel::executor::{Executor, RecordingExecutor};
 use cdz_kernel::hash::Hash;
@@ -30,6 +32,7 @@ impl Reducer for TwoStepReducer {
                     kind: EffectKind::Http,
                     target: "https://ok.host/step1".into(),
                     payload: None,
+                    timeliness: Timeliness::Interactive,
                 }])
             }
             EventBody::EffectResult {
@@ -44,6 +47,7 @@ impl Reducer for TwoStepReducer {
                             kind: EffectKind::Http,
                             target: "https://ok.host/step2".into(),
                             payload: None,
+                            timeliness: Timeliness::Interactive,
                         }])
                     }
                     Some(b"step2") => {
@@ -168,6 +172,7 @@ fn denied_effect_is_logged_and_never_executed() {
                     kind: EffectKind::Http,
                     target: "https://attacker.example/exfil".into(),
                     payload: None,
+                    timeliness: Timeliness::Interactive,
                 }])
             } else {
                 FoldOutput::none()
@@ -260,6 +265,7 @@ fn timeout_cancels_so_a_late_result_is_dropped() {
                     kind: EffectKind::Http,
                     target: "https://ok.host/slow".into(),
                     payload: None,
+                    timeliness: Timeliness::Interactive,
                 }]);
             }
             if let EventBody::EffectResult {
@@ -312,6 +318,7 @@ fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
                     kind: EffectKind::Http,
                     target: "https://ok.host/slow".into(),
                     payload: None,
+                    timeliness: Timeliness::Interactive,
                 }]),
                 EventBody::EffectResult {
                     result: EffectOutcome::TimedOut,
@@ -481,6 +488,7 @@ fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
                         kind: EffectKind::Http,
                         target: "https://ok.host/x".into(),
                         payload: None,
+                        timeliness: Timeliness::Interactive,
                     },
                     token: Some(b"guest-cont-42".to_vec()),
                 }])
@@ -554,6 +562,7 @@ fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
                         kind: EffectKind::Timer,
                         target: "1000".into(), // absolute deadline ms
                         payload: None,
+                        timeliness: Timeliness::Interactive,
                     },
                     token: Some(b"timer-cont-7".to_vec()),
                 }]),
@@ -611,6 +620,7 @@ fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
                         kind: EffectKind::Http,
                         target: "https://denied.host/x".into(),
                         payload: None,
+                        timeliness: Timeliness::Interactive,
                     },
                     token: Some(b"denied-cont-9".to_vec()),
                 }])
@@ -669,6 +679,7 @@ fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_persist() 
                     kind: EffectKind::Http,
                     target: "https://ok.host/x".into(),
                     payload: None,
+                    timeliness: Timeliness::Interactive,
                 }])
             } else {
                 FoldOutput::none()
@@ -868,6 +879,7 @@ impl Reducer for TimerReducer {
                 kind: EffectKind::Timer,
                 target: self.deadline_ms.to_string(), // absolute deadline ms (§16c-S5)
                 payload: None,
+                timeliness: Timeliness::Interactive,
             }]),
             EventBody::TimerFired { .. } => {
                 kv.put(b"woke".to_vec(), b"1".to_vec());
@@ -984,6 +996,7 @@ fn malformed_timer_deadline_is_rejected_not_panicked() {
                     kind: EffectKind::Timer,
                     target: "not-a-number".into(),
                     payload: None,
+                    timeliness: Timeliness::Interactive,
                 }])
             } else {
                 FoldOutput::none()
@@ -1021,6 +1034,7 @@ fn live_shell_executor_runs_a_real_command_end_to_end() {
                     kind: EffectKind::Shell,
                     target: "echo hi".into(),
                     payload: None,
+                    timeliness: Timeliness::Interactive,
                 }]),
                 EventBody::EffectResult { result, .. } => {
                     match result {
@@ -1078,6 +1092,7 @@ fn live_shell_denied_command_never_executes() {
                     // denied at the gate anyway; the marker would only appear if the gate FAILED.
                     target: format!("touch {}", self.0),
                     payload: None,
+                    timeliness: Timeliness::Interactive,
                 }])
             } else {
                 FoldOutput::none()
@@ -1135,6 +1150,7 @@ fn live_shell_no_injection_via_metacharacters() {
                     // Passes `starts_with("echo ")` but embeds an injection attempt.
                     target: self.0.clone(),
                     payload: None,
+                    timeliness: Timeliness::Interactive,
                 }]),
                 EventBody::EffectResult {
                     result: EffectOutcome::Ok(Some(Payload::Inline(b))),
@@ -1185,6 +1201,7 @@ fn authz_denied_is_folded_live_so_replay_matches() {
                     kind: EffectKind::Http,
                     target: "https://denied.host/x".into(), // outside the capability → denied
                     payload: None,
+                    timeliness: Timeliness::Interactive,
                 }]),
                 EventBody::AuthzDenied { .. } => {
                     let n = kv.get(b"denials").map(|b| b[0]).unwrap_or(0) + 1;

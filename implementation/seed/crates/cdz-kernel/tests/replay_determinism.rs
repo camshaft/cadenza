@@ -12,7 +12,9 @@
 //! wall-clock/entropy (which would themselves violate the determinism the test checks).
 
 use cdz_kernel::authz::Authorizer;
-use cdz_kernel::effect::{Capability, EffectKind, EffectRequest, Payload, ResourcePredicate};
+use cdz_kernel::effect::{
+    Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
+};
 use cdz_kernel::event::{ContentType, Event, EventBody};
 use cdz_kernel::executor::RecordingExecutor;
 use cdz_kernel::hash::Hash;
@@ -58,6 +60,7 @@ impl Reducer for BusyReducer {
                         kind: EffectKind::Http,
                         target: "https://ok.host/x".into(),
                         payload: None,
+                        timeliness: Timeliness::Interactive,
                     }])
                 } else {
                     FoldOutput::none()
