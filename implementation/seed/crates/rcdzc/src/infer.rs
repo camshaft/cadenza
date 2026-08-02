@@ -1016,6 +1016,43 @@ fn nested_ill_formed_float_width(db: &mut Db, ty_expr: StructId) -> Option<Struc
 pub(crate) const FLOAT_WIDTH_MESSAGE: &str =
     "a floating-point width must be one of the admitted IEEE widths (32 or 64)";
 
+/// The UNBOUND-WIDTH companion of [`nested_ill_formed_int_width`]/[`nested_ill_formed_float_width`]: the
+/// position of a width constructor `(Int W)`/`(UInt W)`/`(Float W)` whose width argument `W` is an UNBOUND
+/// NAME (`(: a (Int hello))`), at `ty_expr` OR nested in one of its type-argument positions (`(List (Int
+/// hello))`). `None` when no width position holds an unbound name. An unbound name in a WIDTH slot is not a
+/// type (so the nested-type-var walk skips it) and reads as a non-constant width (so `int_width_fault`
+/// waves it through as if it were a bound width variable), which let it slip past `cdz check` silently —
+/// this closes that gap. Same skip-first descent as the sibling width walkers (child 0 of a `(head arg…)`
+/// form is the ctor, never a nested type). A BOUND width variable (`(Int a)` with `a` a `Type`/width param)
+/// is valid and returns `None` — `eval::unbound_width_arg` distinguishes the two by the arg's resolution.
+fn nested_unbound_width(db: &mut Db, ty_expr: StructId) -> Option<(StructId, &'static str)> {
+    if let Some(found) = crate::eval::unbound_width_arg(db, ty_expr) {
+        return Some(found);
+    }
+    let crate::ast::Struct::List(children) = db.ast.get(ty_expr) else {
+        return None;
+    };
+    for &child in children.clone().iter().skip(1) {
+        if let Some(found) = nested_unbound_width(db, child) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The CDZ0101 message for an UNBOUND NAME in a width position — `(: a (Int hello))` / `(Float hi)`. Names
+/// the specific mistake (a width is a compile-time integer literal, not a name) and the repair: write the
+/// literal, or the sized type directly. `example` is a ctor-appropriate sized type (`Int64`/`UInt64`/
+/// `Float64`), so a `Float` width names a float example rather than the misleading `Int64`. The
+/// width-position analogue of the lowercase-type-var guidance, but a width is not a type, so the fix is a
+/// literal like `64`, not "leave the parameter unannotated".
+pub(crate) fn unbound_width_message(name: &str, example: &str) -> String {
+    format!(
+        "unbound name `{name}` — a width must be a compile-time integer literal like `64`, not a name \
+         (write the width literal, or the sized type `{example}` directly)"
+    )
+}
+
 /// The CDZ0302 REPAIR for an ill-formed FLOAT width at `pos` — the actionable half of
 /// [`FLOAT_WIDTH_MESSAGE`] (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix),
 /// the float twin of [`ill_formed_int_width_fix`]. A CONCRETE natural width outside the admitted IEEE set
@@ -2419,6 +2456,17 @@ pub fn param_annotation_faults(db: &mut Db, param: StructId, out: &mut Vec<Rejec
             reject = reject.with_fix(fix);
         }
         out.push(reject);
+        return;
+    }
+    // An UNBOUND NAME in a width position — `(: a (Int hello))`, or nested `(: xs (List (Int hello)))`. A
+    // width is not a type (so the nested-type-var walk skips it) and reads as a non-constant width (so the
+    // ill-formed-width check waves it through as if it were a bound width variable), so it slipped past
+    // `cdz check` silently. Surface the width-specific CDZ0101 at the offending arg. A BOUND width variable
+    // (`(Int a)` with `a` a `Type` param) is valid and does not match.
+    if let Some((pos, example)) = nested_unbound_width(db, ty_expr) {
+        trace!(target: "rcdzc::infer", param = param.0, "fault: unbound name in a width position (CDZ0101)");
+        let name = db.ast.as_name(pos).unwrap_or("?").to_string();
+        out.push(Reject::coded(Code::Unbound, unbound_width_message(&name, example)).at(pos));
         return;
     }
     // A TYPE CONSTRUCTOR applied to the WRONG number of arguments — a prelude `(List Int64 Int64)` (fails
@@ -13434,6 +13482,17 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         reject = reject.with_fix(fix);
                     }
                     out.push(reject);
+                }
+                // An UNBOUND NAME in a width position — `(: v (Int hello))` — the value-annotation twin of
+                // the parameter-path check: a width is not a type, so the nested-type-var walk skips it, and
+                // it reads as a non-constant width, so it slipped past `cdz check`. A bound width variable is
+                // valid and does not match.
+                if let Some((pos, example)) = nested_unbound_width(db, ty_expr) {
+                    trace!(target: "rcdzc::infer", node = id.0, "fault: unbound name in a width position (CDZ0101)");
+                    let name = db.ast.as_name(pos).unwrap_or("?").to_string();
+                    out.push(
+                        Reject::coded(Code::Unbound, unbound_width_message(&name, example)).at(pos),
+                    );
                 }
                 // A bare integer LITERAL annotated with an integer type is a GROUNDING, not a
                 // unification: the literal has no intrinsic signedness/width to conflict, so the
