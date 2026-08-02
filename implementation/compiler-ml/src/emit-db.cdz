@@ -264,8 +264,8 @@ def emit-instrs-d(c: Core, binders: List(Int64), defidx: Map(Int64, Int64)) = ma
                 Bytes.concat(emit-instrs-d(els, binders, defidx), b1(11))))))))  // <else> ; end
   | Core.CCall(name, args) =>
       // slice-B'(Bp3): a recursive call. Emit each arg onto the stack (left→right, wasm call convention), then
-      // `call <funcidx>` (0x10). funcidx from the def-index map; a missing name (empty map / non-recursive) →
-      // funcidx via a -1 miss, but can-emit gates a CCall program on the callee being an emitted recursive def.
+      // `call <funcidx>` (0x10). funcidx from the def-index map; can-emit gates a CCall program on the callee
+      // being an emitted recursive def, so lookup-idx always hits here (a miss traps — corrupt lowering).
       Bytes.concat(emit-call-args(args, 0, binders, defidx),
         Bytes.concat(b1(16), uleb(lookup-idx(defidx, name))))              // 0x10 call <funcidx>
   | _ => Bytes.of([])
@@ -279,9 +279,12 @@ def emit-call-args(args: List(Core), i: Int64, binders: List(Int64), defidx: Map
      | Option.None(_) => emit-call-args(args, i + 1, binders, defidx)))
 
 /// slice-B'(Bp3): a def-name's wasm function index from the def-index map, or -1 (missing — unreached under
-/// can-emit's gate). A plain Map.lookup with an Int64 default.
+/// can-emit's gate). A MISS cannot legitimately happen — `can-emit` gates a `CCall` program on the callee
+/// being a present emitted recursive def, so the name is always in `defidx` by the time we emit. A miss = a
+/// funcidx we'd `uleb`-encode into a bogus `call <garbage>`, i.e. corrupt lowering → `trap` (a checked-get
+/// that can't miss), never an in-band `-1` sentinel. Mirrors `index-of`/`byte-of`.
 def lookup-idx(defidx: Map(Int64, Int64), name: Int64) =
-  (match Map.lookup(defidx, name) with | Option.Some(ix) => ix | Option.None(_) => -1)
+  (match Map.lookup(defidx, name) with | Option.Some(ix) => ix | Option.None(_) => trap("lookup-idx: CCall to a name absent from the def-index map (corrupt lowering)"))
 
 /// Wrap emitted instructions into a function body: the LOCALS vector then the instructions then `0b` end.
 /// `nlocals` i64 locals declare as ONE group `<uleb nlocals> 7e` (all locals are i64); `nlocals == 0` is the
@@ -1134,5 +1137,14 @@ def em-defenv-funcidx-map-assigns-positions() =
           | Option.Some(i1) => (if (i0 + i1 == 1) then unit else trap("two defs get funcidx 0 and 1 (sum 1)"))
           | Option.None(_) => trap("901 in map"))
       | Option.None(_) => trap("900 in map"))))
+
+@test
+def em-lookup-idx-resolves-present-funcidx() =
+  // Pins lookup-idx's contract: a name PRESENT in the def-index map resolves to its funcidx. A CCall only
+  // reaches emit when can-emit has gated its callee into `defidx`, so a miss is impossible by construction —
+  // the None arm traps (corrupt lowering) rather than returning a -1 that would `uleb` into a bogus `call`.
+  // This witnesses only the legitimate present-lookup path.
+  (let m = defenv-funcidx-map(Map.to-list(Map.insert((Map.empty : Map(Int64, Tuple(List(Int64), Core))), 42, ([], Core.CNum(0, true, 64))))) in
+   (if (lookup-idx(m, 42) == 0) then unit else trap("lookup-idx resolves a present name to its funcidx 0")))
 
 export { Target.*, target-emit, emit-wasm-module, emit-src-for, emit-module, emit-src, emit-text, render-core, render-core-list, int-to-decimal, emit-src-bytes, bytes-to-list, emit-instrs, emit-instrs-d, emit-call-args, lookup-idx, emit-def-body, emit-def-body-d, defenv-funcidx-map, export-section-idx, can-emit, collect-binders, is-arith-op, is-cmp-op, wasm-op, cmp-op, uleb, sleb, functype-bytes, type-section-multi, func-section-multi, code-section-multi, uleb-each, preamble }
