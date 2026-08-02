@@ -6785,20 +6785,50 @@ fn lane_of_path(path: &str) -> Lane {
 /// with any. An empty path set (no files changed) is also mixed (nothing to reason about → don't
 /// fast-path into a parallel lane). Pure over the path list so the categorization policy is unit-tested.
 fn lane_of(paths: &[String]) -> Lane {
-    let mut lane: Option<Lane> = None;
+    // Collect the DISTINCT lanes the candidate's paths fall into (order-preserving, deduped).
+    let mut lanes: Vec<Lane> = Vec::new();
     for p in paths {
         if p.trim().is_empty() {
             continue;
         }
         let this = lane_of_path(p);
-        match &lane {
-            None => lane = Some(this),
-            Some(l) if l.name == this.name => {}
-            // Two different lanes in one candidate → it spans territories → mixed.
-            Some(_) => return Lane::mixed(),
+        if !lanes.iter().any(|l| l.name == this.name) {
+            lanes.push(this);
         }
     }
-    lane.unwrap_or_else(Lane::mixed)
+    combine_lanes(lanes)
+}
+
+/// Resolve the set of distinct lanes a candidate's paths fell into to its SINGLE lane:
+///   - empty (no files) → `mixed` (nothing to reason about; don't fast-path into a parallel lane).
+///   - one lane → that lane.
+///   - a known COMBINABLE set → its containing lane. The one such rule today: `{corpus, baseline}` →
+///     `baseline`. That's the NORMAL corpus workflow — adding/editing a `.sexp` case updates the shared
+///     `.gate-baseline*` files in the SAME commit. It touches the baseline hot files, so it must
+///     serialize as `baseline` — but it should NOT fall to global `mixed`, which would serialize it
+///     against UNRELATED mixed work (a docs+code MR). Folding it to `baseline` keeps it serialized only
+///     against other baseline work (correct — they all edit the baselines) while unrelated lanes still
+///     run in parallel. (Empirically 11/29 queued MRs this shape — a real parallelism win.)
+///   - any other multi-lane span (truly unrelated territories) → `mixed` (serialized globally, safest).
+///
+/// Pure over the lane set so the combination policy is unit-tested.
+fn combine_lanes(lanes: Vec<Lane>) -> Lane {
+    match lanes.len() {
+        0 => Lane::mixed(),
+        1 => lanes.into_iter().next().unwrap(),
+        _ => {
+            let names: std::collections::BTreeSet<&str> =
+                lanes.iter().map(|l| l.name.as_str()).collect();
+            // {corpus, baseline} → baseline (the corpus+baseline commit collides on the baseline files).
+            if names.len() == 2 && names.contains("corpus") && names.contains("baseline") {
+                return Lane {
+                    name: "baseline".to_string(),
+                    parallel: false,
+                };
+            }
+            Lane::mixed()
+        }
+    }
 }
 
 /// `fleet lane-of <ref>`: print the collision-risk LANE a candidate commit belongs to (its changed-path
@@ -11349,10 +11379,27 @@ mod tests {
             name(&["implementation/seed/crates/rcdzc/src/lower.rs"]),
             "code"
         );
-        // (A candidate that touches BOTH a baseline and a .sexp spans two lanes → mixed, correctly —
-        // it really does contend with both a baseline MR and a corpus MR.)
+        // The NORMAL corpus workflow: a `.sexp` case edit + its `.gate-baseline*` updates in ONE
+        // commit → the {corpus, baseline} combinable set folds to `baseline` (serialize on the baseline
+        // hot files), NOT global `mixed` — so it doesn't false-serialize against unrelated mixed work.
+        // (Empirically ~11/29 queued MRs are this shape.)
         assert_eq!(
             name(&["spec/semantics/.gate-baseline", "spec/semantics/9.sexp"]),
+            "baseline"
+        );
+        assert!(
+            !lane_of(&[
+                "spec/semantics/.gate-baseline".into(),
+                "spec/semantics/9.sexp".into()
+            ])
+            .lands_in_parallel()
+        );
+        // But baseline + a CODE change is still mixed (spans truly unrelated territory).
+        assert_eq!(
+            name(&[
+                "spec/semantics/.gate-baseline",
+                "implementation/seed/crates/rcdzc/src/lib.rs"
+            ]),
             "mixed"
         );
         // A candidate spanning two DIFFERENT lanes → mixed (serialized globally, the safe default) —
