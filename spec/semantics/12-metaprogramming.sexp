@@ -179,10 +179,11 @@
   (output (: -7 Int64)))
 
 (case "eval of a quoted multiplication folds through the compile-time evaluator"
-  (doc    "The multiplicative companion of the `+`/`-` eval cases (which are the only arithmetic operators
-           the eval-fold path witnessed): `(eval (quote (* 6 7)))` = 42. Pins that eval's arithmetic
-           reduction dispatches the `*` head, not just the additive `+`/`-` heads — a folder that hard-coded
-           only add/sub would pass every prior arithmetic case yet decline or miscompute here.")
+  (doc    "The multiplicative companion of the earlier `+`/`-` eval cases (the additive operators the
+           eval-fold path witnessed before this family was completed): `(eval (quote (* 6 7)))` = 42. Pins
+           that eval's arithmetic reduction dispatches the `*` head, not just the additive `+`/`-` heads — a
+           folder that hard-coded only add/sub would pass every prior arithmetic case yet decline or
+           miscompute here.")
   (input  (eval (quote (* 6 7))))
   (output (: 42 Int64)))
 
