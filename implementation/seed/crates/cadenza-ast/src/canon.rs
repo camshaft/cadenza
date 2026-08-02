@@ -223,3 +223,199 @@ impl Canon<'_> {
         id
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{Arenas, Builder, StructId};
+    use crate::codec;
+    use std::borrow::Cow;
+
+    // A NATURALLY-built `(f (g a) b)`: leaves interned in first-encounter order and lists appended
+    // after their children (post-order) — exactly the normal form, so this arena is ALREADY canonical.
+    fn natural() -> Arenas {
+        let mut b = Builder::new();
+        let f = b.name("f");
+        let g = b.name("g");
+        let a = b.name("a");
+        let ga = b.list(vec![g, a]);
+        let bb = b.name("b");
+        let root = b.list(vec![f, ga, bb]);
+        b.finish(root)
+    }
+
+    // The SAME tree `(f (g a) b)`, but with `b` interned FIRST — so the first child `f` gets leaf id 1,
+    // not the 0 the pre-order walk expects. Denotes the identical program; NOT in normal form.
+    fn scrambled() -> Arenas {
+        let mut b = Builder::new();
+        let bb = b.name("b"); // interned first: leaf 0 (out of pre-order first-encounter order)
+        let f = b.name("f");
+        let g = b.name("g");
+        let a = b.name("a");
+        let ga = b.list(vec![g, a]);
+        let root = b.list(vec![f, ga, bb]);
+        b.finish(root)
+    }
+
+    #[test]
+    fn empty_structure_is_never_canonical() {
+        // An arena with no structure entries has no reachable root, so it is not a valid normal form —
+        // `is_canonical` short-circuits to false (the guard that keeps the walk from indexing an empty
+        // arena). A hand-built/degenerate arena is the only way to reach this; the reader never emits it.
+        let empty = Arenas {
+            leaves: Vec::new(),
+            structure: Vec::new(),
+            root: StructId(0),
+        };
+        assert!(!is_canonical(&empty));
+    }
+
+    #[test]
+    fn a_natural_pre_order_build_is_already_canonical_and_borrows() {
+        // The common case: the s-expr reader builds structure in pre-order and interns leaves in
+        // first-encounter order, so a fresh parse is ALREADY normal form. `is_canonical` says true and
+        // `canonicalize` returns `Borrowed` — no clone, no rebuild.
+        let a = natural();
+        assert!(is_canonical(&a));
+        assert!(matches!(canonicalize(&a), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn a_scrambled_build_is_non_canonical_and_rebuilds_to_the_normal_form() {
+        // A build that denotes the same tree but numbers its leaves out of pre-order first-encounter
+        // order is NOT canonical, so `canonicalize` returns `Owned` — and the rebuilt arena is exactly
+        // the unique normal form, byte-for-byte equal to the naturally-built one.
+        let scr = scrambled();
+        let nat = natural();
+        assert!(!is_canonical(&scr));
+        // Same denoted program before canon (structural equality ignores interning/id order)...
+        assert!(scr.structurally_eq(&nat));
+        match canonicalize(&scr) {
+            Cow::Owned(c) => {
+                assert!(is_canonical(&c), "the rebuilt form is itself canonical");
+                assert_eq!(&c, &nat, "rebuild lands on the unique normal form");
+            }
+            Cow::Borrowed(_) => panic!("a scrambled arena must rebuild, not borrow"),
+        }
+    }
+
+    #[test]
+    fn canonicalize_is_idempotent() {
+        // Canonicalizing twice is a no-op the second time: the first pass reaches the normal form, which
+        // `is_canonical` then accepts, so the second `canonicalize` borrows it unchanged.
+        let once = canonicalize(&scrambled()).into_owned();
+        assert!(is_canonical(&once));
+        assert!(matches!(canonicalize(&once), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn equal_programs_built_in_different_orders_encode_to_identical_bytes() {
+        // THE point of the module (its doc's "equal programs encode to identical bytes"): the natural and
+        // the scrambled builds denote the same tree but carry DIFFERENT raw leaf orders (so their arena
+        // vectors are unequal — the test is non-vacuous), yet `encode` — which imposes the normal form
+        // via `canonicalize` — yields IDENTICAL bytes. This is the byte-identity property downstream
+        // consumers (content addressing, `Event::hash`) rely on.
+        let nat = natural();
+        let scr = scrambled();
+        assert_ne!(
+            nat.leaves, scr.leaves,
+            "the two builds differ in raw leaf order — otherwise the test proves nothing"
+        );
+        assert_eq!(
+            codec::encode(&nat),
+            codec::encode(&scr),
+            "encode canonicalizes, so equal programs encode byte-identically"
+        );
+    }
+
+    #[test]
+    fn canonicalize_with_map_gives_the_identity_map_on_a_canonical_arena() {
+        // On an already-canonical arena the remap is the identity — every old id maps to the same new id
+        // (the caller's span table needs no shuffling). Every node is reachable, so no `None`.
+        let nat = natural();
+        let (out, map) = canonicalize_with_map(&nat);
+        assert_eq!(&out, &nat, "canonical in, canonical out (identity rebuild)");
+        assert_eq!(map.len(), nat.structure.len());
+        for (old, slot) in map.iter().enumerate() {
+            assert_eq!(
+                *slot,
+                Some(StructId(old as u32)),
+                "old {old} maps to itself"
+            );
+        }
+    }
+
+    #[test]
+    fn canonicalize_with_map_remaps_a_scrambled_arena_and_drops_unreachable_nodes() {
+        // `read_ml` builds nodes out of canonical order AND a hand-built arena may carry unreachable
+        // nodes. `canonicalize_with_map` must (a) remap every reachable old id to its new id so a span
+        // table keyed by old ids realigns to the encoded arena, and (b) report unreachable old ids as
+        // `None` (dropped from the normal form).
+        let mut b = Builder::new();
+        let x = b.name("x"); // old struct 0, reachable
+        let orphan = b.name("orphan"); // old struct 1, UNREACHABLE (never linked under root)
+        let _ = orphan;
+        let root = b.list(vec![x]); // old struct 2, the root
+        let a = b.finish(root);
+
+        let (out, map) = canonicalize_with_map(&a);
+        // The orphan leaf + node are gone from the normal form.
+        assert_eq!(out.structure.len(), 2, "orphan node dropped");
+        assert_eq!(out.leaves.len(), 1, "orphan leaf dropped");
+        assert!(is_canonical(&out));
+        // Reachable ids remapped; the orphan reported as dropped.
+        assert_eq!(map[0], Some(StructId(0)), "x atom → new 0");
+        assert_eq!(
+            map[2],
+            Some(StructId(1)),
+            "root list → new 1 (after its child)"
+        );
+        assert_eq!(map[1], None, "unreachable orphan → None");
+    }
+
+    #[test]
+    fn a_shared_non_tree_node_is_not_canonical() {
+        // A node reached twice (a shared, DAG-shaped arena — the reader never produces one, but a
+        // hand-built arena can) is not a normal form: `is_canonical` bails on the second entry so the
+        // sound rebuild runs (which un-shares by visiting the node once per occurrence).
+        let mut b = Builder::new();
+        let x = b.name("x");
+        let inner = b.list(vec![x]);
+        let root = b.list(vec![inner, inner]); // `inner` referenced twice
+        let a = b.finish(root);
+        assert!(!is_canonical(&a));
+        // The rebuild duplicates the shared subtree into a genuine tree (structure grows), and the
+        // result is itself canonical + idempotent.
+        let c = canonicalize(&a).into_owned();
+        assert!(is_canonical(&c));
+    }
+
+    #[test]
+    fn deep_nesting_does_not_overflow_the_native_stack() {
+        // `canonicalize`'s `visit` and `is_canonical` both use an EXPLICIT stack precisely because they
+        // run on decoded arenas at arbitrary depth (no `MAX_NESTING_DEPTH` cap post-decode). Build a
+        // 100k-deep chain (past any native-recursion limit) and drive BOTH the walk (`is_canonical`) and
+        // the rebuild (`canonicalize_with_map` always calls `visit`) without a SIGABRT.
+        let depth = 100_000usize;
+        let mut b = Builder::new();
+        let mut cur = b.name("x");
+        for _ in 0..depth {
+            cur = b.list(vec![cur]);
+        }
+        let a = b.finish(cur);
+        assert!(
+            is_canonical(&a),
+            "a natural deep chain is already canonical"
+        );
+        let (out, map) = canonicalize_with_map(&a);
+        assert_eq!(out.structure.len(), a.structure.len(), "no nodes dropped");
+        assert_eq!(map.len(), a.structure.len());
+        assert!(map.iter().all(Option::is_some), "every node reachable");
+        // And the round-trip through the codec survives the depth too.
+        assert_eq!(
+            codec::decode(&codec::encode(&out)).as_ref(),
+            Some(&out),
+            "deep canonical arena round-trips through the codec"
+        );
+    }
+}
