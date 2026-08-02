@@ -95,6 +95,29 @@ export default function DesignByContract() {
         and asks you to rename the parameter.
       </Note>
 
+      <H2>A contract is an ordinary boolean</H2>
+      <P>
+        A contract's predicate is just a boolean expression in the def's scope, so it can say far more than{" "}
+        <C>&gt;= 0</C>. It can relate two parameters (<C>{`(requires (< lo hi))`}</C>), compare the result to
+        an input (<C>{`(ensures (> ret x))`}</C>), reach into a tuple or record, or even <em>match</em> a sum
+        result. Here <C>safe-dec</C> returns an <C>Option</C>, and the postcondition matches it, promising
+        that whenever there <em>is</em> a value it's non-negative:
+      </P>
+      <Runnable
+        source={`(def (main) (safe-dec 5))
+(@ (requires (>= x 0))
+  (@ (ensures (match ret
+                ((Some v) (>= v 0))
+                ((None _u) true)))
+    (def (safe-dec (: x Int64))
+      (if (> x 0) (Some (- x 1)) (None unit)))))`}
+      />
+      <P>
+        Called with <C>5</C> the result is <C>(Some 4)</C>, and the postcondition's <C>Some</C> arm checks{" "}
+        <C>4 &gt;= 0</C>. Because the predicate is ordinary code, a contract is as expressive as any other
+        boolean you could write, it just runs at the boundary instead of in the body.
+      </P>
+
       <H2>@invariant: guarding a type</H2>
       <P>
         <C>@requires</C> guards a function's entry and <C>@ensures</C> its exit. The third contract,{" "}
