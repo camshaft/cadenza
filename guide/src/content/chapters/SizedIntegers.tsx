@@ -71,7 +71,7 @@ export default function SizedIntegers() {
       </P>
       <Note>
         This one is <strong>meant to be refused</strong>: <C>Int</C> on its own is a value, not a type, so
-        the annotation has nothing to stand on. The diagnostic points you at the default width, <C>Int64</C>,
+        the annotation has nothing to stand on. The diagnostic suggests a concrete width (e.g. <C>Int64</C>)
         and reminds you that <C>Int</C> is a value, not a type.
       </Note>
       <Runnable source={`(def (f (: a Int)) a)`} expect="error" />
