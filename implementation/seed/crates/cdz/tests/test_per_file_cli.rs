@@ -770,7 +770,12 @@ fn warm_only_report_time_emits_both_precompile_and_provider_jit_phases() {
         .unwrap();
     }
 
-    let warm = |report_time: bool| -> (bool, String) {
+    // Return stdout AND stderr: a `--warm-only` run reports errors/warnings on stderr, so an assertion that
+    // fails must surface the real diagnostic — dropping stderr would hide (e.g.) a check-gate rejection or a
+    // provider-emit error behind a bare "exit != 0". `CDZ_PROVIDER_CACHE_TRACE=1` makes the provider-cache
+    // path emit `[provider-cache] …` lines on stderr, which the guard below uses to prove the fixture actually
+    // exercised the provider cache (so the `⏱ provider JIT:` assertion is not vacuously true).
+    let warm = |report_time: bool| -> (bool, String, String) {
         let mut args = vec!["test".to_string(), "--warm-only".to_string()];
         if report_time {
             args.push("--report-time".to_string());
@@ -779,37 +784,61 @@ fn warm_only_report_time_emits_both_precompile_and_provider_jit_phases() {
         let out = Command::new(cdz())
             .args(&args)
             .env("CDZ_PROVIDER_CACHE", &cache)
+            .env("CDZ_PROVIDER_CACHE_TRACE", "1")
             .output()
             .expect("spawn cdz test --warm-only [--report-time]");
         (
             out.status.success(),
             String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
         )
     };
 
     // WITH --report-time: a warming run prints BOTH phase lines (the split pr-sync needs), still exits 0, still
     // runs NO tests (warm-only). This is the crux — the provider-JIT line used to be UNREACHABLE in warm mode.
-    let (ok, out) = warm(true);
-    assert!(ok, "warm-only --report-time exits 0:\n{out}");
+    let (ok, out, err) = warm(true);
+    assert!(
+        ok,
+        "warm-only --report-time exits 0:\nstdout:\n{out}\nstderr:\n{err}"
+    );
+    // GUARD: the fixture actually exercised the provider-cache path — a fresh cache MISS is persisted (the
+    // shared closure was emitted into the cache) and a `.provider.wasm` lands. Without this, the `⏱ provider
+    // JIT:` line below could be present for a degenerate reason; here it reflects a real provider warm.
+    assert!(
+        err.contains("[provider-cache] miss persisted"),
+        "the warm run exercises the provider-cache path (miss persisted), so the ⏱ provider JIT line is \
+         meaningful:\nstderr:\n{err}"
+    );
+    let cached_provider = std::fs::read_dir(&cache).ok().and_then(|rd| {
+        rd.flatten().find(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.ends_with(".provider.wasm"))
+        })
+    });
+    assert!(
+        cached_provider.is_some(),
+        "the warm run persisted a shared-closure provider `.provider.wasm` into the cache:\nstderr:\n{err}"
+    );
     assert!(
         out.contains("⏱ precompile:"),
-        "the PRECOMPILE/EMIT phase is timed under --warm-only (was untimed before 4feac9a35):\n{out}"
+        "the PRECOMPILE/EMIT phase is timed under --warm-only (was untimed before 4feac9a35):\nstdout:\n{out}\nstderr:\n{err}"
     );
     assert!(
         out.contains("⏱ provider JIT:"),
-        "the provider-JIT phase is VISIBLE under --warm-only (was printed after the early-return before):\n{out}"
+        "the provider-JIT phase is VISIBLE under --warm-only (was printed after the early-return before):\nstdout:\n{out}\nstderr:\n{err}"
     );
     assert!(
         !out.contains("PASS "),
-        "warm-only still runs NO tests even with --report-time (warms the cache, exits):\n{out}"
+        "warm-only still runs NO tests even with --report-time (warms the cache, exits):\nstdout:\n{out}\nstderr:\n{err}"
     );
 
     // WITHOUT the flag: a warming run prints NEITHER ⏱ line — the timing stays opt-in in warm mode too.
-    let (ok2, out2) = warm(false);
-    assert!(ok2, "warm-only exits 0:\n{out2}");
+    let (ok2, out2, err2) = warm(false);
+    assert!(ok2, "warm-only exits 0:\nstdout:\n{out2}\nstderr:\n{err2}");
     assert!(
         !out2.contains("⏱"),
-        "no ⏱ timing lines under --warm-only without --report-time (opt-in preserved):\n{out2}"
+        "no ⏱ timing lines under --warm-only without --report-time (opt-in preserved):\nstdout:\n{out2}\nstderr:\n{err2}"
     );
 }
 
