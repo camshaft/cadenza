@@ -77,7 +77,9 @@ folded by `lane_of`). First-match-wins, ordered most-specific/lowest-collision f
 
 | Lane            | Path territory (first match wins, top-down)          | Lands       |
 |-----------------|------------------------------------------------------|-------------|
-| `corpus`        | `spec/**`, `*.sexp` (incl. `spec/semantics/.gate-baseline*`) | PARALLEL — independent cases |
+| `baseline`      | EXACT: the 3 `spec/semantics/.gate-baseline*` files  | serialize — ~6 agents share these files |
+| `rcdzc-tests`   | EXACT: `implementation/seed/crates/rcdzc/src/tests.rs` | serialize — ~6 agents append to this file |
+| `corpus`        | `spec/**`, `*.sexp` (NON-baseline)                   | PARALLEL — independent cases |
 | `cad`           | `implementation/cad/**`                              | PARALLEL — disjoint leaf |
 | `music`         | `implementation/music/**`                            | PARALLEL — disjoint leaf |
 | `des`           | `implementation/des/**`                              | PARALLEL — disjoint leaf |
@@ -93,6 +95,14 @@ folded by `lane_of`). First-match-wins, ordered most-specific/lowest-collision f
 Each LEAF subsystem (`cad`/`music`/`des`/…) owns a disjoint `implementation/<x>/` tree, so their
 candidates can never collide with each other → all parallel. The shared compiler/runtime CORE and the
 fleet tooling serialize (many candidates touch the same files). Add a new subsystem = add a row.
+
+**The real collision unit is a set of shared HOT FILES, not a directory** (pr-sync pilot evidence).
+A rule can match EXACT files (`exacts`), checked before prefixes/suffixes. Two such lanes exist
+because ~6 agents each contend on one shared file: `baseline` (the 3 `.gate-baseline*` files) and
+`rcdzc-tests` (`rcdzc/src/tests.rs`). They are SERIALIZED but SEPARATE from `corpus`/`code`, so a
+`.sexp`-only change (not a baseline) or a non-`tests.rs` code change still lands in PARALLEL with an
+in-flight baseline/tests.rs MR. Folding them into corpus/code would FALSE-serialize disjoint work and
+lose throughput — the finer the *accurate* lane cut, the more parallelism.
 
 Rationale: the lane fold is a **pure function of the changed path set** → unit-testable, no false
 "low-risk". A ref spanning two lanes (even two PARALLEL leaves, e.g. `cad`+`music`) is `mixed`
