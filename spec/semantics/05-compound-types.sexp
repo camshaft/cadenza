@@ -14354,6 +14354,25 @@
             (export main)))
   (call   main (: 9 Int64)) (output (: 5 Int64)))
 
+(case "TWO guarded map arms over a PARTIAL-CONST map fall through, each re-resolving its value binder"
+  (doc    "The MULTI-ARM fall-through companion of the partial-const guarded-map fix: over the same
+           partial-const map `{1: 5, 2: n}`, the FIRST guarded arm `(guard (map (1 v) ..) (> v 100))`
+           reads `v`=5, its guard folds FALSE (5 ≤ 100), so it falls through to the SECOND guarded arm
+           `(guard (map (1 v) ..) (> v 3))` which reads `v`=5 again and holds → `(+ v 1)` = 6. Each arm's
+           reused guard+body `v` (a `MapField` ascending to its OWN `(map …)` arm) must re-resolve
+           correctly on the eval-minted clone — before the fix the surplus/reused binders on the cloned
+           arms leaked CDZ0101; this pins that MULTIPLE guarded arms + the guard fall-through all resolve
+           over the partial-const shape. `main 9` → first guard fails, second holds → 5 + 1 = 6.")
+  (input  (do
+            (def (f (: n Int64))
+              (match (Map.insert (Map.insert (Map.empty) 1 5) 2 n)
+                ((guard (map (1 v) .. r) (> v 100)) v)
+                ((guard (map (1 v) .. r) (> v 3)) (+ v 1))
+                (_ -1)))
+            (def (main (: d Int64)) (f 9))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 6 Int64)))
+
 ; ── An un-projected element / un-referenced field is UNOBSERVED, so its trap is not raised ──────────
 ; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed: a trap occurs when the
 ; computation that would raise it is observed — its value flowing to the result, a host call, or an
