@@ -3128,6 +3128,29 @@
   (call   main-rel (: 9 Int64))
   (trap   "unreachable"))
 
+(case "@ensures predicate PROJECTS a NESTED component (`(. (. ret 0) 1)` — a tuple inside a tuple), the deepest projection face"
+  (doc    "The enforcement-predicate projection face at DEPTH > 1 — the nested companion to the single-level
+           tuple-component (`(. ret N)`) and record-field pins. A projection predicate may chain accessors to
+           reach a component of a component; this pins that `(. (. ret 0) 1)` resolves + lowers correctly when
+           the result is a tuple whose 0th component is ITSELF a tuple. `proj-nest` returns
+           `(tuple (tuple n (+ n 1)) 99)` under @ensures(>= (. (. ret 0) 1) 0): the postcondition projects
+           outer component 0 (the inner tuple), then inner component 1 (which is n+1) — so it holds iff
+           n+1 >= 0. proj-nest(5): inner is (5,6), the nested projection reads 6 >= 0 → holds, and main returns
+           inner component 0 = 5. proj-nest(-3): inner is (-3,-2), the nested projection reads -2 < 0 → TRAPS
+           before returning. Pins that a chained `(. (. binder i) j)` accessor in a contract predicate resolves
+           against the result binder `ret` and lowers to the right nested read, so a future change to projection
+           lowering or predicate scoping cannot silently break enforcement over nested product results. Runtime
+           payload via main's param (no const-fold).")
+  (input  (do
+            (@ (ensures (>= (. (. ret 0) 1) 0))
+               (def (proj-nest (: n Int64)) (tuple (tuple n (+ n 1)) 99)))
+            (def (main-nest (: k Int64)) (. (. (proj-nest k) 0) 0))
+            (export main-nest)))
+  (call   main-nest (: 5 Int64))
+  (output (: 5 Int64))
+  (call   main-nest (: -3 Int64))
+  (trap   "unreachable"))
+
 (case "@requires over a HANDLE-bodied def, and @ensures over a handle arm that uses state 3x — both enforce (effects-fold robustness)"
   (doc    "Two more effects-seam pins hardening the let-over-handle / seed-thread fix beyond the single
            @ensures-over-handle shape already pinned. `req` puts a @requires(>= n 0) over a handle-bodied def

@@ -7,6 +7,7 @@ pass	@ensures on a def with a parameter named ret is REJECTED (would silently no
 pass	@ensures over a BIGINT (arbitrary-precision heap) result checks it with structural equality — the postcondition reads a non-scalar heap value
 pass	@ensures over a HANDLE-bodied def called with a runtime arg is enforced (the verify_enforce let-over-handle shape)
 pass	@ensures over a def whose body uses the `?` try-operator under an Option boundary — the postcondition matches the FALLIBLE result
+pass	@ensures predicate PROJECTS a NESTED component (`(. (. ret 0) 1)` — a tuple inside a tuple), the deepest projection face
 pass	@ensures predicate PROJECTS a RECORD field of the result (single field, and a two-field relation)
 pass	@ensures-over-@requires stacked on an EFFECTFUL body is order-insensitive: compiles + enforces like the forward order
 pass	@invariant ESTABLISH (divert) over a heap payload: a NonEmptyList newtype traps on the empty list, constructs a non-empty one (design §10.1/§10.2, (D))
