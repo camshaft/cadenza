@@ -1987,7 +1987,7 @@
   (doc    "`build` pushes i for i in 0..n (`List.push` appends), producing `[0,1,..,n-1]`; at n=1100 the RRB
            vector grows past its single-interior-level capacity (32*32 = 1024) into a THREE-level trie whose
            root SPLIT genuinely occurs. Then `readsum` reads EVERY index i = n-1..0 back with `List.at` and
-           sums the values (value at index i is i itself): Sigma i for i in 0..1100 = 604450, with any miss
+           sums the values (value at index i is i itself): Sigma i for i in 0..=1099 (the n=1100 indices) = 604450, with any miss
            poisoning the sum by -1000000. A `vec-push` that mis-split the root, or a `vec-get` that indexed the
            wrong base-32 digit at an interior level, loses or misroutes an element and breaks the checksum.
            Runtime n keeps the whole build out of the const-fold, so it exercises the real heap RRB. The
@@ -8053,6 +8053,42 @@
   (input  (do (def (main (: x Int64)) (= (tuple 0 (Set.of (list 1 x))) (tuple 0 (Set.of (list 1 2))))) (export main)))
   (call   main (: 2 Int64)) (output (: true Bool))
   (call   main (: 9 Int64)) (output (: false Bool)))
+
+(case "a Set of (Int64, Bytes) tuples orders by int then Bytes lexicographically and dedups by content"
+  (doc    "A tuple `(Int64, Bytes)` is orderable exactly because BOTH components are (Bytes now has a blessed
+           total order, lexicographic over unsigned bytes — core-semantics §Ordering Where Offered Is Total),
+           so a Set of such tuples dedups + enumerates by the compound lexicographic order (first the Int64
+           field, then the Bytes field). Insert (1,[2]), (1,[1]), and a (1,[2]) DUPLICATE: the duplicate
+           collapses (dedup by content, the Bytes leaf compared by value not rope-identity), leaving
+           {(1,[1]),(1,[2])}; Set.to-list enumerates them sorted, so the FIRST element is (1,[1]) and reading
+           its Bytes field's first byte yields 1. A Bytes leaf that failed to compose into the compound order
+           (or compared by rope-physical bytes) would misorder or fail to dedup. The compound companion of the
+           bare-Bytes Set.to-list order case.")
+  (input  (do
+            (def (b (: n Int64)) (Bytes.of (list (UInt8.wrap n))))
+            (def (main (: z Int64))
+              (match (Set.to-list (Set.of (list (tuple 1 (b 2)) (tuple 1 (b 1)) (tuple 1 (b 2)))))
+                ((list h .. t) (match h ((tuple _i by) (match (Bytes.at by 0) ((Some v) v) ((None u) -1)))))
+                ((list) -2)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+(case "a Map keyed by a (Bytes, Int64) tuple is looked up by content through the compound key descent"
+  (doc    "A Map key `(Bytes, Int64)` is orderable/keyable because both components are; the champ key descent
+           compares the Bytes component by content (value, not rope-identity). Insert under keys ([7],1)->700
+           and ([9],1)->900, then look up ([k],1): k=7 hits 700, k=9 hits 900, and k=8 (a key never inserted)
+           correctly MISSES (None -> -1). A Bytes-in-key that keyed by rope-physical bytes or failed to compose
+           into the compound key would miss a present key or spuriously hit. The compound-key companion of the
+           bare Bytes Map-key lookup case.")
+  (input  (do
+            (def (b (: n Int64)) (Bytes.of (list (UInt8.wrap n))))
+            (def (main (: k Int64))
+              (let ((m (Map.insert (Map.insert Map.empty (tuple (b 7) 1) 700) (tuple (b 9) 1) 900)))
+                (match (Map.lookup m (tuple (b k) 1)) ((Some v) v) ((None u) -1))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 700 Int64))
+  (call   main (: 9 Int64)) (output (: 900 Int64))
+  (call   main (: 8 Int64)) (output (: -1 Int64)))
 
 (case "indexing a list in bounds yields Some of the element"
   (doc    "Witnesses collections-and-text.md #Indexing And Lookup Are Fallible, Not Trapping: a

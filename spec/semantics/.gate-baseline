@@ -189,6 +189,7 @@ pass	a MATCH as a NON-FINAL multi-binding let init selects the binding value per
 pass	a MEDIAN-OF-3 filter smooths interior spikes while endpoints pass through unchanged
 pass	a MIXED-endian frame packs big and little fields side by side and round-trips both
 pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
+pass	a Map keyed by a (Bytes, Int64) tuple is looked up by content through the compound key descent
 pass	a Map.remove on a derived generation unshares the path without touching the ancestor
 pass	a NON-LAST handler arm whose body is a MATCH round-trips through the ML printer
 pass	a NaN selected through a runtime if-join stays self-equal and unordered downstream
@@ -210,6 +211,7 @@ pass	a SPLIT on separator slices fields between hits and round-trips through the
 pass	a STACK-MACHINE interpreter dispatches instruction sums over a list operand stack
 pass	a STATS record threads min/max/sum/count as one fold accumulator with data-dependent field updates
 pass	a STRING run-length grouping counts adjacent equal scalars across a rope seam
+pass	a Set of (Int64, Bytes) tuples orders by int then Bytes lexicographically and dedups by content
 pass	a Symbol stored as a map VALUE round-trips through lookup to its content string
 pass	a THREE-DEEP compose chain stacks closure envs with a runtime capture mid-chain
 pass	a THREE-WAY scalar classifier splits vowels, consonants, and other by range and membership

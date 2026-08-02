@@ -33,6 +33,8 @@ pass	@requires over a HEAP argument reads the list's content at body entry
 pass	@requires over a MAP argument walks the CHAMP at body entry
 pass	@requires stacked OVER @ensures: the precondition is still enforced when an @ensures wrapper sits between it and the def
 pass	ACKERMANN evaluates — a recursive call in the ARGUMENT of a recursive call (not primitive-recursive)
+pass	a Map keyed by a (Bytes, Int64) tuple is looked up by content through the compound key descent
+pass	a Set of (Int64, Bytes) tuples orders by int then Bytes lexicographically and dedups by content
 todo	Ast values key a map across quote and Ast.* construction routes
 pass	Ast.decode converts bytes to an AST sum type value
 pass	Ast.decode decodes bytes that arrive as a function argument
