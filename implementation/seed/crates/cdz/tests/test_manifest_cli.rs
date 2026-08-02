@@ -1515,6 +1515,65 @@ fn a_user_sum_with_a_nongeneratable_payload_declines_cleanly_and_siblings_run() 
     );
 }
 
+/// Positive coverage for sum-type GENERATION (operator directive: sum types must be generated, not
+/// declined): a `@test` over a MIXED payload+nullary sum (`Shape = Circle(Int64) | Square(Int64) | Point`)
+/// AND a plain ALL-NULLARY enum (`Color = Red | Green | Blue`) each get a REAL synthesized generator and
+/// RUN successfully over the trials. The ML surface lowers a nullary variant to a bare NAME (`Point`,
+/// `Red`…), and classify_sum accepts bare-name nullary variants, so both shapes generate — pinning the
+/// whole class as WORKING (not declining). What this asserts: generator SYNTHESIS (a real `…-gen` wrapper,
+/// not the declining one), NON-decline (no "not property-testable"), and successful EXECUTION over the
+/// trials — the property bodies `match` every variant and return unit, so they always pass (a `@test`
+/// passes by returning); this does NOT verify variant-coverage of the generated stream, only that a real
+/// sum generator was built and ran. Guards the sum-generation feature end-to-end at the CLI.
+#[test]
+fn a_mixed_sum_and_an_all_nullary_enum_property_both_generate_and_run() {
+    // The @test bodies EXECUTE under the runtime (a generated sum value flows through the compiled
+    // property), which resolves the value-heap runtime by content-address from the store. CI's storeless
+    // `test` job builds no store, so skip when absent — matching the sibling runtime tests (the
+    // store-having `gate`/`@test suites` jobs exercise it fully). The guard checks the STORE, not a
+    // run-error string (the correct storeless-skip pattern). See `store_present`.
+    if !store_present() {
+        eprintln!(
+            "skipping: no cadenza-store (storeless test job) — @test sum bodies execute under the runtime"
+        );
+        return;
+    }
+    let d = dir("sum-gen-positive-coverage");
+    let f = write(
+        &d,
+        "m.cdz",
+        "type Shape = Circle(Int64) | Square(Int64) | Point\n\
+         type Color = Red | Green | Blue\n\
+         @test def shape_matches_a_variant(s: Shape) =\n\
+         \x20 match s with\n\
+         \x20 | Circle(r) => unit\n\
+         \x20 | Square(w) => unit\n\
+         \x20 | Point => unit\n\
+         @test def color_matches_a_variant(c: Color) =\n\
+         \x20 match c with\n\
+         \x20 | Red => unit\n\
+         \x20 | Green => unit\n\
+         \x20 | Blue => unit\n",
+    );
+    // Pass --trials 100 explicitly so the asserted trial count stays stable if the CLI default changes.
+    let (ok, stdout, stderr) = run(&["test", &f, "--trials", "100"]);
+    assert!(
+        ok,
+        "both sum-generated property tests should PASS: {stdout}{stderr}"
+    );
+    // Each is driven by a REAL synthesized generator over 100 trials (a declining wrapper would report
+    // `FAIL …-gen: not property-testable` instead). A mixed payload+nullary sum AND an all-nullary enum.
+    assert!(
+        stdout.contains("PASS shape_matches_a_variant-gen (100 trials)")
+            && stdout.contains("PASS color_matches_a_variant-gen (100 trials)"),
+        "a mixed sum and an all-nullary enum each generate + run a real property (100 trials): {stdout}"
+    );
+    assert!(
+        !stdout.contains("not property-testable"),
+        "neither sum should decline — both must generate: {stdout}"
+    );
+}
+
 /// The counterexample-VALUE render covers a user SUM parameter: a failing property over a `(type Res (Ok
 /// Int64) (Err Int64))` reports the concrete failing VALUE (`never_ok(Ok(0))` — the variant name + its
 /// decoded payload) rather than the raw driver ints. The runner classifies the wrapper's param via
