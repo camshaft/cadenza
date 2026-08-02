@@ -137,6 +137,16 @@ def two-senders() =
     Chor.Seq(Chor.Comm("C", "Hub", "M2"),
       Chor.Comm("Hub", "A", "Ack")))
 
+/// A projectable CHOICE: Buyer tells Seller Yes/No in each branch. Every consistency fixture before this was
+/// choice-FREE (Purchase, single-comm, two-senders), so `recv-labels`/`send-labels`' LIntC/LExtC/LBranch
+/// branch-UNION arms were entirely unexercised by the cross-pass check. Here Seller's branch-union recv set
+/// is [Yes, No] (2) and Buyer's send set is [Yes, No] (2), and the generated ematch/ichoice, run against
+/// that inbox, still drains it fully and emits the matching sends.
+def yes-no-choice() =
+  Chor.Choice("Buyer", [
+    Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Yes")),
+    Chor.Branch("No", Chor.Comm("Buyer", "Seller", "No"))])
+
 @test
 def hub-with-two-recvs-is-consistent() =
   // PIN: cross-pass consistency for a role with MULTIPLE recv obligations — Hub recvs M1 (from A) and M2
@@ -153,5 +163,21 @@ def all-roles-consistent-with-a-multi-recv-hub() =
     (if consistent-role(two-senders(), "C") then
        (if consistent-role(two-senders(), "Hub") then unit else trap("Hub")) else trap("C"))
   else trap("A")
+
+@test
+def told-role-in-a-choice-is-cross-pass-consistent() =
+  // PIN: cross-pass consistency for a TOLD (external-choice) role in a CHOICE protocol. All prior consistency
+  // fixtures were choice-free, so the branch-UNION arms of recv-labels (LExtC/LBranch) were unexercised.
+  // Seller is told Yes/No by Buyer, so its projection is an LExtC whose branch-union recv set is [Yes, No]
+  // (2); its emitted `ematch`, run against that 2-label inbox, drains fully AND emits its (0) sends — so
+  // consumed==recv-oblig and emitted==send-oblig hold. Witnesses the branch-union recv arm end-to-end.
+  // NOTE: the CHOOSER (Buyer) is intentionally NOT asserted here — its mock run takes ONE branch of the
+  // ichoice, emitting a per-branch send count (1), while `send-labels` counts the branch UNION (2), so the
+  // count-equality invariant legitimately does NOT hold for a chooser under the deterministic mock run. That
+  // is the "choice-free / single-session" scope this module's header calls out, not a drift bug (verified by
+  // probe: Seller consistent, Buyer's emitted=1 vs branch-union send-oblig=2). Consistency of the chooser's
+  // CHOSEN branch is covered by the choice-free per-branch fixtures.
+  if consistent-role(yes-no-choice(), "Seller") then unit
+  else trap("a told role's ematch run drains its branch-union recv inbox consistently")
 
 export { recv-labels, send-labels, consistent-role }
