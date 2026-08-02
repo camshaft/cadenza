@@ -5453,3 +5453,5 @@ pass	a record field holding a via-remove map equals the direct-field record
 pass	tuple elements holding a remove-reached set and a drained map equal the direct tuple
 pass	a CONSTANT comparison over a high-bit UInt64 operand folds unsigned, not through a signed i64 carrier
 pass	a CONSTANT comparison over a FOLDED wide-UInt64 subexpression carries the folded value unsigned
+pass	a double fused match chain through a shared callee computes both calls
+pass	an inlined helper matching a sum built FROM the fused binder plus an enclosing capture

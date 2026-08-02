@@ -17435,3 +17435,56 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 11 Int64))
   (call   main (: 7 Int64)) (output (: 11 Int64)))
+
+; --- The match-FUSION arm-clone seam (lower.rs clone_subtree_db_for_fused): a match whose scrutinee
+; is a CALL result gets its arms cloned into the callee's branches; a SumPayload binder of the fused
+; match must COPY (re-resolve against the branch value) while an enclosing capture must SHARE. These
+; pin the seam's value behavior from the outside — a mis-classified binder is a CDZ0101 or a wrong
+; read on one backend. ---
+
+(case "a double fused match chain through a shared callee computes both calls"
+  (doc    "TWO fusion opportunities stacked through ONE shared callee: `(match (step (match (step (Okv n))
+           …)) …)` — the inner match's scrutinee is a `step` call, its arms feed a second `step` call
+           matched by the outer match, and `step` itself matches its own argument. Each fusion clones
+           arms whose payload binders (v, e) must re-resolve against their OWN branch value; the shared
+           callee means the same `step` body is the fusion target twice. n=5 → step→6, ×2→12, step→13;
+           n=-3 rides the same Okv path (−3→−2→−4→−3). A clone that shared the fused match's own binder
+           reads the detached original switch (the a5f7cfafb regression class).")
+  (input  (do
+            (type R (Okv Int64) (Errv Int64))
+            (def (step a) (match a ((Okv v) (Okv (+ v 1))) ((Errv e) (Errv e))))
+            (def (main (: n Int64))
+              (match (step (match (step (Okv n))
+                             ((Okv v) (Okv (* v 2)))
+                             ((Errv e) (Errv e))))
+                ((Okv v) v)
+                ((Errv e) e)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 13 Int64))
+  (call   main (: -3 Int64)) (output (: -3 Int64)))
+
+(case "an inlined helper matching a sum built FROM the fused binder plus an enclosing capture"
+  (doc    "The copy-test stress: a fused match (scrutinee = `mk` call) whose arm calls `flip` on a sum
+           built FROM the fused binder h — the helper inlines, so its match's SumPayload binder is
+           β-pinned with a scrutinee that is INSIDE the cloned arm but NOT the fused scrutinee (the
+           only path that exercises the copy-test on a within-clone binder whose scrutinee ≠
+           fused_scrut, per the 70d76178c verification note) — while the same arm also reads the
+           enclosing let-bound list binder c (a genuine capture to SHARE). k=7: Hi 7 → flip → Lo 70 →
+           70+3=73; k=2: Lo 2 → 2+3=5.")
+  (input  (do
+            (type T (Hi Int64) (Lo Int64))
+            (def (mk x) (if (> x 5) (Hi x) (Lo x)))
+            (def (flip a) (match a ((Hi v) (Lo (* v 10))) ((Lo w) (Hi (* w 10)))))
+            (def (main (: n Int64))
+              (let ((xs (list 3 4)))
+                (match xs
+                  ((list c .. t)
+                    (match (mk n)
+                      ((Hi h) (match (flip (Hi h))
+                                ((Lo l) (+ l c))
+                                ((Hi z) (- 0 z))))
+                      ((Lo g) (+ g c))))
+                  ((list) -1))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 73 Int64))
+  (call   main (: 2 Int64)) (output (: 5 Int64)))
