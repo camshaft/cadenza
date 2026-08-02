@@ -4021,34 +4021,72 @@ mod tests {
         );
     }
 
+    // A hover result is WELL-FORMED when it is either `None` (no node) or a `Some` whose range (if
+    // present) has start <= end AND both endpoints map back to CHAR-BOUNDARY byte offsets in `text`. This
+    // is the POSITIVE contract for the multibyte no-panic tests below: asserting it (not merely "the call
+    // returned") means a silently-corrupt result — a range split across a multibyte char, or a crash that
+    // aborts before returning — fails the test, per the PR #1173/#1207 review that a bare "did not panic"
+    // is also satisfied by a silent abort (#1263).
+    fn assert_hover_is_well_formed(text: &str, h: &Option<Hover>) {
+        if let Some(hover) = h
+            && let Some(range) = hover.range
+        {
+            let start = position_to_byte(text, range.start);
+            let end = position_to_byte(text, range.end);
+            assert!(
+                start <= end,
+                "hover range start {start} must be <= end {end}"
+            );
+            assert!(
+                text.is_char_boundary(start) && text.is_char_boundary(end),
+                "hover range must map to char boundaries (start {start}, end {end}) in {text:?}"
+            );
+        }
+    }
+
     #[test]
-    fn hover_on_a_column_at_and_past_a_multibyte_char_does_not_panic() {
+    fn hover_on_a_column_at_and_past_a_multibyte_char_is_well_formed() {
         // The LSP analogue of the cdz-type-at multibyte-cursor pin (#1173): a column AT and PAST a
         // multibyte char must map to a char-boundary byte offset (`position_to_byte` advances by
         // `len_utf16` per char), so no downstream `&text[off..]` slice can split a UTF-8 sequence and
         // panic. `é` is a BMP char (2 UTF-8 bytes, 1 UTF-16 unit), so an LSP client can only address a
         // column AT or AFTER it — not inside it (that needs a surrogate pair; see the astral test below).
+        // Assert the POSITIVE contract (per PR #1263 review): the cursor ON the `café` name (col 7, the
+        // `é`) resolves to a hover reporting the Int type, and a column just PAST it stays well-formed
+        // (None or a valid range) — a silent crash would abort before returning and fail these asserts.
         let text = "def café = 42";
-        // `café` starts at col 4; `é` occupies UTF-16 col 7. Columns at/after it stay total, never a panic.
-        let _ = hover_at(text, true, Position::new(0, 7));
-        let _ = hover_at(text, true, Position::new(0, 8));
-        // (Reaching this line at all is the assertion: neither call unwound a panic.)
+        // Col 7 is the `é` inside the `café` NAME — hover must resolve the def and report its type.
+        let on_name =
+            hover_at(text, true, Position::new(0, 7)).expect("hover on the café name resolves");
+        assert_hover_is_well_formed(text, &Some(on_name.clone()));
+        let rendered = match &on_name.contents {
+            HoverContents::Scalar(MarkedString::String(s)) => s.clone(),
+            HoverContents::Markup(m) => m.value.clone(),
+            other => panic!("unexpected hover contents: {other:?}"),
+        };
+        assert!(
+            rendered.contains("Int"),
+            "hover on the multibyte name must report the Int type, got: {rendered}"
+        );
+        // Col 8 is just past `café` (on the space/`=`) — total: whatever it returns must be well-formed.
+        assert_hover_is_well_formed(text, &hover_at(text, true, Position::new(0, 8)));
     }
 
     #[test]
-    fn hover_on_a_column_inside_an_astral_surrogate_pair_does_not_panic() {
+    fn hover_on_a_column_inside_an_astral_surrogate_pair_is_well_formed() {
         // The genuine "column inside a scalar" edge Copilot flagged (PR #1207): only a NON-BMP char
         // (`𝟙`, U+1D7D9 — 4 UTF-8 bytes, 2 UTF-16 code units = a surrogate pair) has a UTF-16 column
         // strictly INSIDE it that an LSP client can send. `position_to_byte` counts UTF-16 units per char,
         // so a column landing between the pair's two units must still resolve to a CHAR BOUNDARY (the
         // start or end of the scalar), never a byte splitting the 4-byte sequence — no `&text[off..]`
         // panic. The astral char sits in a `///` doc comment (accepted by the front-end; `cdz check`
-        // passes). The `𝟙` starts at UTF-16 col 8 and spans [8, 10); col 9 is strictly inside it.
+        // passes). The `𝟙` starts at UTF-16 col 8 and spans [8, 10); col 9 is strictly inside it. Assert
+        // the POSITIVE contract (per PR #1263 review): each result is well-formed (None or a valid
+        // char-boundary range), so a silent abort on a mid-surrogate column fails the test.
         let text = "/// doc 𝟙 more\ndef answer = 42";
-        let _ = hover_at(text, true, Position::new(0, 9)); // inside the surrogate pair
-        let _ = hover_at(text, true, Position::new(0, 8)); // at the pair start
-        let _ = hover_at(text, true, Position::new(0, 10)); // just past the pair
-        // (Reaching this line at all is the assertion: no call unwound a panic on a mid-surrogate column.)
+        assert_hover_is_well_formed(text, &hover_at(text, true, Position::new(0, 9))); // inside the pair
+        assert_hover_is_well_formed(text, &hover_at(text, true, Position::new(0, 8))); // at the pair start
+        assert_hover_is_well_formed(text, &hover_at(text, true, Position::new(0, 10))); // just past the pair
     }
 
     #[test]
