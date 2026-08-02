@@ -19835,23 +19835,32 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 }
             } else if matches!(op, Prim::Eq) && {
                 let opnd_ty = crate::infer::type_of(db, args[0]);
-                is_orderable_compound(db, &opnd_ty)
+                // A BYTES leaf makes the compound take the `ValueEqShaped` path below, NOT this `ValueCmp{op:Eq}`
+                // one — even though Bytes is now orderable (so `is_orderable_compound` is true). RATIONALE: a
+                // Bytes element may be a runtime rope/SLICE-VIEW, and `value_eq_shaped`'s Bytes arm compares it
+                // by `leaf_bytes_eq` (flatten-then-`raw`-compare), the proven-canonicalizing equality the
+                // slice-view corpus cases pin; routing a `List<Bytes>` `=` through the ordering walk regressed
+                // that (a view element mis-compared). ORDERING (`<` below) still uses `ValueCmp` for Bytes —
+                // only EQUALITY prefers the shaped walk, which is exactly what `is_value_eq_shaped_compound`
+                // selects. So: take this arm only when orderable AND NOT a value-eq-shaped (Bytes-containing)
+                // compound; a Bytes-containing List falls through to the `ValueEqShaped` arm.
+                is_orderable_compound(db, &opnd_ty) && !is_value_eq_shaped_compound(db, &opnd_ty)
             } {
                 // RUNTIME LIST(-CONTAINING) EQUALITY — a `=` on two compound values that contain a LIST and
-                // whose leaves are all ORDERABLE. This is reached ONLY after the `compound_eq_heap_walkable`
-                // arm above DECLINED it: a List is an RRB vector that is element-canonical but NOT
-                // shape-canonical (a concat-built and a push-built list with the same elements have different
-                // internal byte layouts), so `value-eq`'s tagless `champ_eq` byte-walk is UNSOUND for it —
-                // `ty_heap_walkable`/`compound_eq_heap_walkable` return false for `Ty::List` by design. Route
-                // instead to `Core::ValueCmp { op: Prim::Eq }` — the descriptor-guided element-wise value-cmp
-                // walk (which compares a list element-by-element via vec-get, shape-INDEPENDENT), with the
-                // emit mapping the three-way result to `res == 0`. So a concat-built `[1,2,3]` `=` a push-built
-                // `[1,2,3]` is TRUE (the §331 companion for equality: the same value-cmp walk the boolean `<`
-                // uses). A List-FREE orderable compound already took the `ValueEq` arm above (cheaper, and
-                // champ_eq IS sound there — no non-canonical RRB spine); only a List-containing (or bare-List)
-                // orderable type falls through to here. A float/Bytes/Set/Map leaf makes it non-orderable
-                // (`is_orderable_compound` false) → declines below (a `List<Float>` `=` awaits a later increment;
-                // that leaf is byte-canonical but the list spine is not, so it needs a value-eq-shaped walk).
+                // whose leaves are all ORDERABLE (and none is a Bytes leaf — see the guard above). This is
+                // reached ONLY after the `compound_eq_heap_walkable` arm above DECLINED it: a List is an RRB
+                // vector that is element-canonical but NOT shape-canonical (a concat-built and a push-built
+                // list with the same elements have different internal byte layouts), so `value-eq`'s tagless
+                // `champ_eq` byte-walk is UNSOUND for it — `ty_heap_walkable`/`compound_eq_heap_walkable`
+                // return false for `Ty::List` by design. Route instead to `Core::ValueCmp { op: Prim::Eq }` —
+                // the descriptor-guided element-wise value-cmp walk (which compares a list element-by-element
+                // via vec-get, shape-INDEPENDENT), with the emit mapping the three-way result to `res == 0`. So
+                // a concat-built `[1,2,3]` `=` a push-built `[1,2,3]` is TRUE (the §331 companion for equality:
+                // the same value-cmp walk the boolean `<` uses). A List-FREE orderable compound already took the
+                // `ValueEq` arm above (cheaper, and champ_eq IS sound there — no non-canonical RRB spine); only
+                // a List-containing (or bare-List) orderable Bytes-FREE type falls through to here. A
+                // Bytes-containing List takes `ValueEqShaped` (the guard); a float/Set/Map leaf makes it
+                // non-orderable → declines / ValueEqShaped below.
                 //= spec/capabilities/collections-and-text.md#a-list-is-an-ordered-homogeneous-sequence
                 //# Two lists MUST be equal exactly when they have equal elements in the same order.
                 trace!(target: "rcdzc::lower", op = intrinsic_name(op), "runtime list-containing equality → ValueCmp op=Eq (value-cmp == 0, element-wise)");
@@ -25387,15 +25396,25 @@ fn orderable_leaf_or_compound(
 ) -> bool {
     use crate::ty::Ty;
     match ty {
-        // Blessed-order leaves.
-        Ty::Int(_) | Ty::Bool | Ty::Unit | Ty::String | Ty::Symbol | Ty::BigInt | Ty::Rational => {
-            true
-        }
+        // Blessed-order leaves. Bytes joins these (§order): a Bytes value has a TOTAL order —
+        // lexicographic over its UNSIGNED byte values — exactly like String/Symbol (both are byte leaves),
+        // so it is orderable in BOTH modes (`<`/`ValueCmp` numeric AND to-list enumeration) and, unlike a
+        // float, composes soundly INSIDE a compound. The runtime's `compare_scalar_leaf`/`value_cmp_shaped`
+        // Bytes arms (over the flattened `raw` slice) realize this order; they MUST stay in lockstep with
+        // this guard (the orderable-guard/shape_of divergence trap).
+        Ty::Int(_)
+        | Ty::Bool
+        | Ty::Unit
+        | Ty::String
+        | Ty::Symbol
+        | Ty::BigInt
+        | Ty::Rational
+        | Ty::Bytes => true,
         // A float is orderable ONLY by canonical bytes as a BARE ROOT (to-list), never by numeric `<` and
         // never INSIDE a compound — see `float_ok` + the doc above.
         Ty::Float(_) => float_ok,
-        // Non-orderable leaves in EITHER mode — Bytes/Char/Set/Map (no blessed order at all).
-        Ty::Bytes | Ty::Char | Ty::Set(_) | Ty::Map(..) => false,
+        // Non-orderable leaves in EITHER mode — Char/Set/Map (no blessed order at all).
+        Ty::Char | Ty::Set(_) | Ty::Map(..) => false,
         // COMPOUND arms recurse with `float_ok = false`: a float component makes the compound un-orderable
         // (03:626 / §319), regardless of the caller's bare-root float mode.
         Ty::Tuple(elems) => elems
@@ -25612,12 +25631,15 @@ fn is_scalar(db: &mut Db, id: StructId) -> bool {
     )
 }
 
-/// Whether the node at `id` has a solved type of `String` or `Symbol` — a UTF-8 byte leaf whose blessed
-/// total order is content-lexicographic (routed to `Core::StrCmp` for a runtime ordering compare).
+/// Whether the node at `id` has a solved type of `String`, `Symbol`, or `Bytes` — a BYTE LEAF whose blessed
+/// total order is content-lexicographic over its raw bytes (String/Symbol: UTF-8 == Unicode-scalar order;
+/// Bytes: unsigned byte values, §order). All three are routed to `Core::StrCmp` for a runtime ordering
+/// compare — its byte-lex walk (`bytes-len`/`bytes-get` on wasm; native slice `cmp` on rust) is byte-leaf-
+/// generic, so a Bytes operand compares identically with NO emit change.
 fn operand_is_string_or_symbol(db: &mut Db, id: StructId) -> bool {
     matches!(
         crate::infer::type_of(db, id),
-        crate::ty::Ty::String | crate::ty::Ty::Symbol
+        crate::ty::Ty::String | crate::ty::Ty::Symbol | crate::ty::Ty::Bytes
     )
 }
 

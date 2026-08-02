@@ -599,22 +599,21 @@
             (export main)))
   (output (: 1 Int64)))
 
-(case "runtime Bytes ordering declines uniformly — the spec blesses no Bytes order"
-  (doc    "`(< (mk 2) (mk 3))` where `mk` builds a runtime `(Bytes.of (list 1 n))` asks for a three-way order
-           on two runtime byte sequences. Bytes is byte-canonical for EQUALITY (`byte sequences are equal by
-           their bytes in order`, 10-bytes.sexp) but the spec blesses a total ORDER only for
-           Int/Float/Symbol/String — Bytes, like a plain list/tuple/sum, has NONE — so all backends DECLINE
-           rather than invent a byte-lexicographic order the language never defined. (This is more surprising
-           than the list case because a byte sequence LOOKS orderable, but the ordering was never blessed;
-           contrast Symbol/String, whose content-lexicographic order IS blessed and computes.) The Bytes
-           companion of the list-ordering decline above: an intentional, tracked reject-don't-miscompile
-           boundary, UNIFORM across backends (not a wasm-vs-rust divergence), that would flip to a witness only
-           if a Bytes order were blessed and its lexicographic walk built.")
+(case "runtime Bytes ordering is content-lexicographic over unsigned bytes — the blessed total order"
+  (doc    "`(< (mk 2) (mk 3))` where `mk` builds a runtime `(Bytes.of (list n 2))` asks for a three-way order
+           on two runtime byte sequences. Bytes has a BLESSED TOTAL ORDER (§order): content-lexicographic over
+           its UNSIGNED byte values — the SAME machinery as String/Symbol (all three are byte leaves), realized
+           by the runtime `value_cmp_shaped` Bytes arm (over the flattened `raw` slice) and, on rust, `Vec<u8>`'s
+           native `Ord`. `mk 2` = `[2,2]`, `mk 3` = `[3,2]`; the first byte 2<3 decides, so `(< [2,2] [3,2])` is
+           TRUE → 1. Uniform across all backends (wasm bytes-len/bytes-get walk == rust slice cmp). This REVERSES
+           the former uniform decline (operator directive 2026-08-02: 'we need total order on bytes … the
+           lexicographic order is the right approach') — Bytes now joins Int/Float/Symbol/String as an orderable
+           leaf that also composes soundly inside a compound (unlike a float, whose order is IEEE-partial).")
   (input  (do
             (def (mk (: n Int64)) (Bytes.of (list (UInt8.wrap n) 2)))
             (def (main) (if (< (mk 2) (mk 3)) 1 0))
             (export main)))
-  (declines))
+  (output (: 1 Int64)))
 
 ; A compound containing a FLOAT leaf offers NO total order — the §319 carve-out, made concrete for a
 ; compound. core-semantics.md #Ordering Where Offered Is Total: a floating-point type MUST NOT be treated as
@@ -2710,8 +2709,14 @@
 ; --- Unorderable/incomparable leaves inside compounds: Bytes/Float sum payloads decline compare;
 ; a closure leaf declines equality (no reference-eq fallback). ---
 
-(case "compare on a sum whose payload is BYTES declines — an unorderable leaf poisons the sum walk"
-  (doc    "The decline family covers TUPLE positions; a Bytes leaf in a SUM PAYLOAD enters the walk through the discriminant-then-payload path — same-variant compare must refuse (the compiler refuses uniformly at check time), never fall back to a byte-form order.")
+(case "compare on a sum whose payload is BYTES orders by discriminant then Bytes payload lexicographically"
+  (doc    "A Bytes leaf now offers a blessed TOTAL order (§order, content-lexicographic over unsigned bytes),
+           so it composes soundly inside a sum PAYLOAD (unlike a float, whose IEEE partial order still declines
+           below). A same-variant compare enters the discriminant-then-payload walk (`ValueCmp{op:Compare}`):
+           both are `BP.T`, so the payloads decide — `a = T([1,k])`, `b = T([1,3])`. With `k = 5` the payload
+           `[1,5]` > `[1,3]` (first byte equal, second 5>3), so `compare a b` = Greater → 3. This REVERSES the
+           former decline (operator directive 2026-08-02); the sum-payload Bytes walk now agrees with the bare
+           Bytes `<` and both backends. Contrast the FLOAT-payload sibling below, which still declines (§319).")
   (input  (do
             (type BP (T Bytes) (U))
             (def (main (: k Int64))
@@ -2720,7 +2725,7 @@
                 (def b (BP.T (Bytes.of (list 1 3))))
                 (match (compare a b) ((Ordering.Less _u) 1) ((Ordering.Equal _u) 2) ((Ordering.Greater _u) 3))))
             (export main)))
-  (declines))
+  (call   main (: 5 Int64)) (output (: 3 Int64)))
 
 (case "compare on a sum whose payload is a FLOAT declines — the IEEE partial order never enters the walk"
   (doc    "The float sibling: a Float64 payload makes the sum un-orderable per the §319 carve-out; same-variant compare declines rather than smuggling the IEEE partial order (or the canonical byte order) into the sum walk.")

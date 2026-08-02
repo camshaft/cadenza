@@ -3903,7 +3903,7 @@ pass	compacting a byte sequence built at run time preserves its bytes
 pass	compacting a runtime CONCAT ROPE materializes it, preserving the value and staying usable
 pass	compacting a slice preserves its bytes
 pass	compacting is the identity on value for a whole byte sequence
-pass	compare on a sum whose payload is BYTES declines — an unorderable leaf poisons the sum walk
+pass	compare on a sum whose payload is BYTES orders by discriminant then Bytes payload lexicographically
 pass	comparing a Float32 nan to a Float64 finite value is a cross-width type error
 pass	comparing a Float32 nan to a Float64 nan is a cross-width type error
 pass	comparing a char to a FLOAT is rejected with a working two-step conversion fix
@@ -4615,7 +4615,7 @@ pass	runtime BigInt add/subtract carries and borrows exactly across the 64-bit l
 pass	runtime BigInt addition runs on the arbitrary-precision runtime
 pass	runtime BigInt equality holds for values reached by different arithmetic
 pass	runtime BigInt remainder runs on the arbitrary-precision runtime
-pass	runtime Bytes ordering declines uniformly — the spec blesses no Bytes order
+pass	runtime Bytes ordering is content-lexicographic over unsigned bytes — the blessed total order
 pass	runtime Bytes value-equality distinguishes different content
 pass	runtime Rational DIVISION inverts the divisor and reduces to lowest terms
 pass	runtime Rational MULTIPLICATION of two parameter-built fractions reduces to lowest terms

@@ -5875,8 +5875,21 @@ fn compare_scalar_leaf(
         // decided at compile time — the compiler routes numeric `<` away from this walk.
         Shape::Float => Some(op_get_float(a).to_bits().cmp(&op_get_float(b).to_bits())),
         Shape::Float32 => Some(op_get_float32(a).to_bits().cmp(&op_get_float32(b).to_bits())),
-        // Bytes still offers no blessed total order (spec is silent; symmetric with the compile-time carve-out).
-        Shape::Bytes => None,
+        // Bytes has a blessed TOTAL order (§order): content-lexicographic over its UNSIGNED byte values —
+        // the SAME machinery as `Shape::Str` above (both are byte leaves; a Bytes value may be a rope, so
+        // flatten both to a leaf first — content-preserving/unobservable — then compare the borrowed `raw`
+        // slices with NO `to_vec`, the zero-alloc discipline `champ_eq` uses). Unlike a float this order is
+        // total AND composes inside a compound; the compiler's `orderable_leaf_or_compound` admits Bytes in
+        // lockstep with this arm.
+        Shape::Bytes => {
+            bytes_flatten(a);
+            bytes_flatten(b);
+            let av = unsafe { a.0.as_ref() };
+            let bv = unsafe { b.0.as_ref() };
+            let as_ = av.map_or(&[][..], |n| n.raw.as_slice());
+            let bs = bv.map_or(&[][..], |n| n.raw.as_slice());
+            Some(as_.cmp(bs))
+        }
         // Not a scalar leaf — a compound / set / map / framed root: the caller falls through to the walk.
         Shape::Tuple(_)
         | Shape::List(_)
@@ -5941,11 +5954,15 @@ fn value_cmp_shaped(
                         n if n < 0 => return Some(Ordering::Less),
                         _ => return Some(Ordering::Greater),
                     },
-                    Shape::Str => {
-                        // Content-lexicographic over the UTF-8 bytes (== Unicode-scalar order for well-formed
-                        // UTF-8, #58). A String may be a ROPE — flatten both to a leaf first (iterative,
-                        // content-preserving/unobservable) so `raw` holds the logical bytes, then compare the
-                        // borrowed slices without allocating (the same zero-alloc discipline `champ_eq` uses).
+                    // A String is content-lexicographic over its UTF-8 bytes (== Unicode-scalar order for
+                    // well-formed UTF-8, #58); a Bytes value is content-lexicographic over its UNSIGNED byte
+                    // values (§order). BOTH are `raw`-byte leaves comparing identically, so they share this
+                    // arm. Either may be a ROPE — flatten both to a leaf first (iterative, content-preserving/
+                    // unobservable) so `raw` holds the logical bytes, then compare the borrowed slices without
+                    // allocating (the same zero-alloc discipline `champ_eq` uses). Bytes composes soundly here
+                    // inside a compound (its order is total), unlike a float — the compiler admits Bytes in
+                    // lockstep (`orderable_leaf_or_compound`).
+                    Shape::Str | Shape::Bytes => {
                         bytes_flatten(a);
                         bytes_flatten(b);
                         let ord = {
@@ -5961,9 +5978,8 @@ fn value_cmp_shaped(
                         }
                     }
                     // Non-orderable — the spec offers no total order (defensive; the compiler declines these
-                    // before emitting a value-cmp call). Float/Float32 (#319 partial), Bytes (spec silent),
-                    // Set/Map (not yet offered).
-                    Shape::Float | Shape::Float32 | Shape::Bytes | Shape::Set(_) | Shape::Map(..) => {
+                    // before emitting a value-cmp call). Float/Float32 (#319 partial), Set/Map (not offered).
+                    Shape::Float | Shape::Float32 | Shape::Set(_) | Shape::Map(..) => {
                         return None;
                     }
                     Shape::Tuple(elems) => {
@@ -13534,11 +13550,68 @@ mod tests {
             Some(Ordering::Equal),
             "canonical NaN == canonical NaN (NaN collapsed on box; a total order)"
         );
+        // A Bytes leaf has a BLESSED TOTAL order (§order): content-lexicographic over its UNSIGNED byte
+        // values — the same `raw`-slice compare as Str, unlike Float (bare-bits-only). Build Bytes values and
+        // pin the ordering rules, INCLUDING a byte >= 128 (the case a SIGNED-byte compare gets wrong).
+        let desc_bytes = Descriptor { table: vec![Shape::Bytes], root: 0 };
+        let mk_bytes = |bs: &[u8]| {
+            let b = op_bytes_alloc(bs.len() as u32);
+            let mut h = b;
+            for (i, &x) in bs.iter().enumerate() {
+                h = op_bytes_set(h, i as u32, x as u32);
+            }
+            h
+        };
+        assert_eq!(
+            value_cmp_shaped(&desc_bytes, mk_bytes(&[1, 2]), mk_bytes(&[1, 3]), 0),
+            Some(Ordering::Less),
+            "[1,2] < [1,3]: first differing byte 2<3 decides (lexicographic)"
+        );
+        assert_eq!(
+            value_cmp_shaped(&desc_bytes, mk_bytes(&[1, 2]), mk_bytes(&[1, 2, 0]), 0),
+            Some(Ordering::Less),
+            "[1,2] < [1,2,0]: a proper prefix is less than its extension"
+        );
+        assert_eq!(
+            value_cmp_shaped(&desc_bytes, mk_bytes(&[0x80]), mk_bytes(&[0x7f]), 0),
+            Some(Ordering::Greater),
+            "[0x80] > [0x7f]: UNSIGNED byte order (128 > 127; a signed-byte compare would sort 0x80 as -128 < 127)"
+        );
+        assert_eq!(
+            value_cmp_shaped(&desc_bytes, mk_bytes(&[9, 9]), mk_bytes(&[9, 9]), 0),
+            Some(Ordering::Equal),
+            "equal byte sequences compare Equal"
+        );
+        assert_eq!(
+            value_cmp_shaped(&desc_bytes, mk_bytes(&[]), mk_bytes(&[0]), 0),
+            Some(Ordering::Less),
+            "empty Bytes < non-empty (empty is a proper prefix)"
+        );
+        // A Bytes leaf INSIDE a compound composes soundly (unlike a float): Tuple(Bytes,Int) is lexicographic.
+        let desc_tb = Descriptor {
+            table: vec![Shape::Bytes, Shape::Int, Shape::Tuple(vec![0, 1])],
+            root: 2,
+        };
+        let mk_tb = |bs: &[u8], y: i64| {
+            let t = op_arr_alloc(2);
+            op_arr_set(t, 0, mk_bytes(bs));
+            op_arr_set(t, 1, op_box_int(y));
+            t
+        };
+        assert_eq!(
+            value_cmp_shaped(&desc_tb, mk_tb(&[1], 9), mk_tb(&[2], 0), 2),
+            Some(Ordering::Less),
+            "(b\"\\x01\",9) < (b\"\\x02\",0): the Bytes field decides first (composes inside a compound)"
+        );
         // Consistency with equality: cmp == Equal exactly when champ_eq.
         let p = mk_pair(5, 6);
         let q = mk_pair(5, 6);
         assert_eq!(value_cmp_shaped(&desc_tup, p, q, 1), Some(Ordering::Equal));
         assert!(champ_eq(p, q), "cmp Equal agrees with champ_eq");
+        let bx = mk_bytes(&[7, 8]);
+        let by = mk_bytes(&[7, 8]);
+        assert_eq!(value_cmp_shaped(&desc_bytes, bx, by, 0), Some(Ordering::Equal));
+        assert!(champ_eq(bx, by), "Bytes cmp Equal agrees with champ_eq");
     }
 
     /// `value_cmp_shaped` hardening: SUM by discriminant-then-payload, RECORD by field order, and a DEEPLY
@@ -13685,6 +13758,40 @@ mod tests {
         assert_eq!(value_eq_shaped(&desc_deep, da, db, cur), Some(true), "200-deep list<float> equal, no overflow");
         op_drop(da);
         op_drop(db);
+    }
+
+    /// REGRESSION ISOLATION for the Bytes-total-order slice: a `List<Bytes>` whose element is a runtime SLICE
+    /// VIEW must compare equal to its flat twin under `value_cmp_shaped` (op=Eq path), just as `value_eq_shaped`
+    /// already did — the per-leaf Bytes arm must flatten the view (`bytes_flatten`) before comparing `raw`.
+    #[test]
+    fn value_cmp_shaped_flattens_a_bytes_slice_view_list_element() {
+        use super::{Descriptor, Shape};
+        use core::cmp::Ordering;
+        reset();
+        // desc: [0]=Bytes, [1]=List(0).
+        let desc = Descriptor { table: vec![Shape::Bytes, Shape::List(0)], root: 1 };
+        let mk_bytes = |bs: &[u8]| {
+            let b = op_bytes_alloc(bs.len() as u32);
+            let mut h = b;
+            for (i, &x) in bs.iter().enumerate() {
+                h = op_bytes_set(h, i as u32, x as u32);
+            }
+            h
+        };
+        // A slice VIEW of [9,20,30,8] at offset 1 len 2 → window [20,30] (arity>0, NOT a flat leaf).
+        let parent = mk_bytes(&[9, 20, 30, 8]);
+        let view = op_bytes_slice(parent, 1, 2);
+        assert!(
+            with_node(view, 0usize, |n| n.handles.len()) > 0,
+            "precondition: the slice is a VIEW node (arity>0), not already flat"
+        );
+        let list_view = op_vec_push(op_vec_empty(), view);
+        let list_flat = op_vec_push(op_vec_empty(), mk_bytes(&[20, 30]));
+        assert_eq!(
+            value_cmp_shaped(&desc, list_view, list_flat, 1),
+            Some(Ordering::Equal),
+            "[<slice-view 20,30>] == [<flat 20,30>]: the Bytes list element flattens the view before comparing"
+        );
     }
 
     /// THE list-key miscompile fix (`value_canonicalize_shaped`): a Map with a CONCAT-built list KEY must be

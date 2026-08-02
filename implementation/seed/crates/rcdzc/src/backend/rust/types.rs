@@ -321,13 +321,12 @@ pub(super) fn ty_is_ord(db: &mut Db, ty: &Ty) -> bool {
     match ty {
         // A float is `PartialOrd` but NOT `Ord` — the one scalar that cannot key a `BTree*`.
         Ty::Float(_) => false,
-        // `Bytes` has NO blessed total order — the spec blesses a total order ONLY for Int/Float/Symbol/
-        // String; Bytes (like a plain list/tuple/sum) has none (03-equality-and-observation.sexp §"runtime
-        // Bytes ordering declines uniformly", a landed pin). So an ordering op / `Set`/`Map` over `Bytes`
-        // must DECLINE, matching wasm — NOT silently order via `BTreeSet<Vec<u8>>`'s derived lexicographic
-        // `Ord` (a byte order the language never defined). This is ORDER-only: `Bytes` EQUALITY is blessed
-        // (byte-canonical) and stays derivable via `enums::ty_derives_eq` — untouched by this.
-        Ty::Bytes => false,
+        // `Bytes` HAS a blessed total order (§order): lexicographic over its UNSIGNED byte values. That is
+        // EXACTLY the derived `Ord` on `Vec<u8>` (Bytes' Rust rep), so an ordering op / `Set`/`Map` over
+        // `Bytes` maps directly to `BTreeSet<Vec<u8>>`/`BTreeMap<Vec<u8>, _>` with NO wrapper — and this order
+        // agrees byte-for-byte with the wasm `value_cmp_shaped` Bytes arm (both compare the raw byte slices).
+        // Bytes EQUALITY was already blessed (byte-canonical, `enums::ty_derives_eq`); this adds the ORDER.
+        Ty::Bytes => true,
         // Compounds are `Ord` iff every ordered component is. Recurse over BORROWS directly — `db: &mut Db`
         // and the element borrows (which come from `ty`, not `db`) don't conflict, so no clone is needed
         // (the earlier `.clone()`s were over-defensive; this mirrors `enums::ty_derives_eq`'s

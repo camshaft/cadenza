@@ -326,6 +326,8 @@ The ordering a type offers MUST be a deterministic function of the values compar
 
 The Bool type MUST offer a total order in which false is less than true.
 
+A `Bytes` value MUST offer a total order that is lexicographic over its unsigned byte values: comparing bytes from the first, the first differing byte is decisive under the numeric order of the two bytes taken as unsigned, and a byte sequence that is a proper prefix of another MUST compare less than that longer sequence. This order agrees with the byte-sequence equality already required, and is the same content-lexicographic ordering a string offers over its UTF-8 bytes; because it is a total order, a `Bytes` value may be used where an ordering is required — as a set element, a map key, or a component of an ordered compound.
+
 ### A Total Order Is Observed Through A Three-Way Comparison
 
 A type that offers a total order MUST offer a three-way comparison that yields an ordering value with exactly three variants — less, equal, and greater — so that a single comparison reports the full relation between two values rather than a single boolean bit of it.
