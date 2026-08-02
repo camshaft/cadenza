@@ -13044,16 +13044,24 @@ fn collect_binding_uses(db: &mut Db, node: StructId, proj_operand: bool, out: &m
     // for the adv-50 force-keep: a capturing lambda STORED into a discarded intermediate is still LIFTED
     // (the discarded statement is lowered by `subtree_reaches_host_call`, poisoning the shared capture
     // occurrence), so its handle DOES escape even though the store's value is dropped — the escape must
-    // be seen here for the CALL-BOTH-WAYS force-keep to fire. Walk each statement (matching what
-    // `compute`'s `do` arm lowers), then fall through to the collapsed `resolved_of` for the tail. A pure
-    // do (no discarded store) records the same facts either way, so this only ADDS the previously-hidden
-    // intermediate uses — it never drops one.
+    // be seen here for the CALL-BOTH-WAYS force-keep to fire. Walk EVERY form directly — the TAIL (the
+    // last form, the do's value) is analyzed by its own iteration here, which is MORE precise than the
+    // collapsed `resolved_of(do) = Ref{last}` would be, so we `return` afterward rather than falling
+    // through (the tail is NOT missed — PR #1245 amazon-q). A pure do (no discarded store) records the
+    // same facts either way, so this only ADDS the previously-hidden intermediate uses — never drops one.
     if let Some(forms) = db.ast.as_form(node, "do").map(<[_]>::to_vec) {
-        for f in forms {
+        let last_ix = forms.len().saturating_sub(1);
+        for (i, f) in forms.iter().enumerate() {
             // A do-local `(def …)` is a binding, not a value statement — its refs are collected where the
             // def is used (by name), not as a statement here; skip it (matching `compute`'s `do` split).
-            if db.ast.head_name(f) != Some("def") {
-                collect_binding_uses(db, f, false, out);
+            if db.ast.head_name(*f) != Some("def") {
+                // The TAIL (last form) IS the do's value, so it inherits the caller's `proj_operand`: a
+                // `do` sitting in a projection/member operand position projects its tail, so a bare `Ref`
+                // tail is a piece-read, NOT a whole-value escape. Hard-coding `false` there would spuriously
+                // flag it `escapes_whole` and flip keep/copy-propagation (PR #1245 Copilot). The NON-FINAL
+                // statements are sequenced (their value discarded) → never a projection operand → `false`.
+                let po = if i == last_ix { proj_operand } else { false };
+                collect_binding_uses(db, *f, po, out);
             }
         }
         return;
