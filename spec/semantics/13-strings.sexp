@@ -3786,6 +3786,27 @@
   (call   main (: 1 Int64))
   (output (: 2 Int64)))
 
+(case "a named-wildcard guard binder over a string binds in both the guard and the body"
+  (doc    "`(guard t (< t \"m\"))` — a bare-NAME wildcard binder `t` (not `_`, not a string literal) over a
+           String scrutinee: `t` binds the WHOLE matched string (a named wildcard matches every string; the
+           guard alone gates the arm), and BOTH the guard cond `(< t \"m\")` AND the body read `t`. This is
+           the heap/STRING face of the named-guard-binder rule (Finding #46's scalar `let`-wrap, extended to
+           the runtime-STRING match desugar by adv-53 / PR#1414): the guarded-wildcard branch must `(let ((t
+           scrutinee)) (if guard body else))`-wrap so `t` re-resolves to the `let` binder rather than being
+           severed from its `(guard …)` ancestor (which false-rejected CDZ0101 `unbound t`) — and must NOT
+           emit a spurious `(= scrutinee t)` (a named wildcard is not a string literal to compare). Prior
+           string-guard corpus cases all used a string-LITERAL arm; this pins the NAMED-BINDER shape. `band
+           \"apple\"`: `\"apple\" < \"m\"` holds → body reads `t` via `String.byte-len` → 5; the guard-false
+           path (`\"zebra\"`) falls to the tail → 3.")
+  (input  (do (def (band (: s String))
+                (match s ((guard t (< t "m")) (String.byte-len t)) (_ 3)))
+              (def (main (: pick Int64)) (if (> pick 0) (band "apple") (band "zebra")))
+              (export main)))
+  (call   main (: 1 Int64))
+  (output (: 5 Int64))
+  (call   main (: 0 Int64))
+  (output (: 3 Int64)))
+
 ; ============================================================================================
 ; An exported entry with a STRING parameter, called with a string argument — the exported-entry String-arg
 ; boundary. The emitted rust LIBRARY (`fn main(s: String) -> i64`) is valid, but the rust-target test DRIVER
