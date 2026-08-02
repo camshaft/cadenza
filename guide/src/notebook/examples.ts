@@ -262,6 +262,36 @@ A **text** field is free String input:
 (def (main) label)
 ~~~`;
 
+/// A UNITS-OF-MEASURE showcase: a value cell whose result is a QUANTITY renders in the concise unit
+/// surface (`100 meter`, `25/2 meter/second`) rather than the raw canonical form. Two sliders (a distance
+/// and a time) drive a base-unit quantity and a DERIVED-unit quantity (a speed = distance / time), so both
+/// the base-unit and the `Unit./` quotient display paths are exercised live. A quantity is built with
+/// `Qty.of <magnitude> <unit>`; `Unit.base` names a base dimension by a `#"…"` symbol and `Unit./` forms a
+/// quotient. The notebook runs rational-by-default, so `distance / time` is an EXACT fraction magnitude
+/// (operator: no floats). Gives the quantity value-render path (value/table friendly display) an
+/// end-to-end example + gate coverage; before this, no shipped example produced a quantity.
+const UNITS_DEMO = `# Units of measure
+
+A cell whose value is a **quantity** shows its magnitude with the unit attached, so drag the sliders and
+watch the units come along.
+
+~~~cadenza widget
+distance : Int64 = slider(1, 100, default: 100)
+time : Int64 = slider(1, 60, default: 8)
+~~~
+
+The **distance** is a base-unit quantity, a length in \`meter\`:
+
+~~~cadenza value
+(def (main) (Qty.of distance (Unit.base #"meter")))
+~~~
+
+Dividing distance by **time** gives a **speed** with a derived unit, the quotient \`meter / second\`:
+
+~~~cadenza value
+(def (main) (Qty.of (/ distance time) (Unit./ (Unit.base #"meter") (Unit.base #"second"))))
+~~~`;
+
 export const EXAMPLES: ExampleNotebook[] = [
   { slug: "compound-interest", title: "Compound interest", markdown: COMPOUND_INTEREST },
   { slug: "loan", title: "Loan repayment", markdown: LOAN },
@@ -274,6 +304,7 @@ export const EXAMPLES: ExampleNotebook[] = [
   { slug: "formulas", title: "Formulas", markdown: FORMULA_DEMO },
   { slug: "controls", title: "Controls", markdown: CONTROLS_DEMO },
   { slug: "values", title: "Values", markdown: VALUE_DEMO },
+  { slug: "units", title: "Units of measure", markdown: UNITS_DEMO },
 ];
 
 /// The default notebook the /notebook route opens with.
