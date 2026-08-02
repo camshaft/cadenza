@@ -643,6 +643,48 @@ export const EXAMPLES: Example[] = [
     expected: "(: (tuple (Some 5) (None unit)) (Tuple (Option Int64) (Option Int64)))",
   },
   {
+    // Shows off: a binary search TREE — a recursive, branching sum type (distinct from the cons-list
+    // shape used elsewhere). Insert keeps the ordering invariant; an in-order traversal then reads the
+    // values back in sorted order, so the tree sorts for free. [5 3 8 1 4 7 9 2 6] => [1..9].
+    id: "binary-search-tree",
+    name: "Binary search tree",
+    theme: "data-and-collections",
+    surface: "sexpr",
+    source: `(do
+  ; A binary search tree: a recursive, branching sum type (distinct from the cons-LIST shape).
+  ; Leaf is the empty tree; Node carries a value plus its left and right subtrees.
+  (type Tree (Leaf Unit) (Node (Tuple Int64 Tree Tree)))
+  ; Insert keeps the ordering invariant: smaller keys go left, larger go right, dup ignored.
+  (def (insert (: t Tree) (: x Int64))
+    (match t
+      ((Leaf _u) (Node (tuple x (Leaf unit) (Leaf unit))))
+      ((Node nd)
+       (match nd ((tuple v l r)
+         (if (< x v)
+             (Node (tuple v (insert l x) r))
+             (if (> x v)
+                 (Node (tuple v l (insert r x)))
+                 (Node (tuple v l r)))))))))
+  ; In-order traversal yields the values in SORTED order — the tree sorts for free.
+  (def (inorder (: t Tree))
+    (match t
+      ((Leaf _u) (: (list) (List Int64)))
+      ((Node nd)
+       (match nd ((tuple v l r)
+         (List.concat (List.push (inorder l) v) (inorder r)))))))
+  (def (build (: xs (List Int64)) (: i Int64) (: t Tree))
+    (if (= i (List.len xs))
+        t
+        (match (List.at xs i)
+          ((Some x) (build xs (+ i 1) (insert t x)))
+          ((None) (trap "build: index out of range")))))
+  (def (main)
+    (let ((xs (list 5 3 8 1 4 7 9 2 6)))
+      (inorder (build xs 0 (Leaf unit)))))
+  (export main))`,
+    expected: "(: (list 1 2 3 4 5 6 7 8 9) (List Int64))",
+  },
+  {
     // Shows off: string work via bytes — check a word reads the same forwards and backwards by comparing
     // the i-th and (n-1-i)-th UTF-8 bytes moving inward. "racecar" -> 1 (true).
     id: "palindrome-check",
