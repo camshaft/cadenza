@@ -5313,13 +5313,15 @@ fn a_consumed_heap_param_in_a_self_recursive_loop_is_not_dropped_no_double_free(
     // position `(+ (sink xs) (walk (- n 1) xs))` it (a) consumes `xs` via `sink xs` AND (b) identity-passes
     // `xs` on the recursive back-edge — so `xs` is NOT borrow-only, and the narrow gate must NOT drop it at
     // the loop exit (dropping it would free a handle the back-edge / the caller still holds → double-free).
-    // The Perceus retain dups `xs` for the `sink` consume so the recursion's `xs` survives. VALUE: for n=2,
-    // sink(xs)=len=3 is added 3 times (n=2,1,0) then 0 at n=-1 → 3+3+3 = 9. A double-free would trap/garble.
+    // The Perceus retain dups `xs` for the `sink` consume so the recursion's `xs` survives. `main` threads
+    // its harness input `n` into `walk` (so the passed arg actually drives the result — an inert hard-coded
+    // arg would mask a call-site regression). VALUE: for n=2, sink(xs)=len=3 is added 3 times (n=2,1,0) then
+    // 0 at n=-1 → 3+3+3 = 9. A double-free would trap/garble.
     let src = "(module m \
                  (def (sink (: ys (List Int64))) ((. List len) ys)) \
                  (def (walk (: n Int64) (: xs (List Int64))) \
                     (if (>= n 0) (+ (sink xs) (walk (- n 1) xs)) 0)) \
-                 (def (main (: n Int64)) (walk 2 ((. List push) ((. List push) ((. List push) (list) 1) 2) 3))) \
+                 (def (main (: n Int64)) (walk n ((. List push) ((. List push) ((. List push) (list) 1) 2) 3))) \
                  (export main))";
     let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
     let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
