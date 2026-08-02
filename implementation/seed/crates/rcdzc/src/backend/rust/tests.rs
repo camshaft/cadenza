@@ -157,40 +157,52 @@ fn a_recursive_fold_matching_a_rebuilt_list_with_a_payload_binder_builds_and_com
 }
 
 #[test]
-fn a_set_or_map_over_bytes_declines_no_blessed_order() {
-    // Concierge ruling (landed pin 03-equality-and-observation.sexp §"runtime Bytes ordering declines
-    // uniformly"): the spec blesses a total order ONLY for Int/Float/Symbol/String — Bytes has none. So a
-    // Set<Bytes> / Map<Bytes,_> (which need an Ord element/key) must DECLINE on rust, matching wasm, NOT
-    // silently order via BTreeSet<Vec<u8>>'s derived lexicographic Ord (a byte order the language never
-    // defined). ORDER-only: Bytes EQUALITY stays blessed (a Bytes value round-trips + compares equal fine).
+fn a_set_or_map_over_bytes_orders_by_the_blessed_unsigned_byte_order() {
+    // Operator directive (2026-08-02): Bytes has a BLESSED TOTAL order (§order) — content-lexicographic over
+    // unsigned byte values, the String/Symbol byte-leaf template. So a Set<Bytes> / Map<Bytes,_> (which need
+    // an Ord element/key) now COMPILES and orders on rust via `BTreeSet<Vec<u8>>` / `BTreeMap<Vec<u8>, _>`
+    // (Vec<u8>'s native derived Ord IS lexicographic-over-unsigned = byte-identical to the wasm value-cmp
+    // walk). This REVERSES the former uniform decline. `ty_is_ord(Ty::Bytes)` = true drives it.
     let set_bytes = "(module m \
         (def (run) (List.len (Set.to-list (Set.of (list (Bytes.of (list 1 2))))))) \
         (export run))";
-    assert!(
-        try_compile_rust(set_bytes).is_err(),
-        "a Set over Bytes must decline (no blessed Bytes order), not emit a BTreeSet<Vec<u8>>"
-    );
-    // Use `Map.len` (NOT the retired `Map.size` → CDZ0603 rename rejection, which would make this decline
-    // pass for the WRONG reason even if Bytes ordering were accidentally permitted — github-liaison PR#871).
-    // Assert the decline is ATTRIBUTABLE to the non-Ord Bytes key, not some unrelated reject.
+    if let Some(out) = rustc_run(&compile_rust(set_bytes), "run()") {
+        assert_eq!(
+            out, "1",
+            "a Set over Bytes builds a BTreeSet<Vec<u8>> and enumerates its one element"
+        );
+    }
+    // Use `Map.len` (NOT the retired `Map.size` → CDZ0603 rename rejection). A Map keyed by Bytes now emits a
+    // BTreeMap<Vec<u8>, _> and holds its one entry.
     let map_bytes = "(module m \
         (def (run) (Map.len (Map.insert (Map.empty) (Bytes.of (list 1 2)) 7))) \
         (export run))";
-    let map_err = try_compile_rust(map_bytes)
-        .expect_err("a Map keyed by Bytes must decline (no blessed Bytes order)");
     assert!(
-        map_err
-            .iter()
-            .any(|m| m.contains("non-Ord key") && m.contains("Bytes")),
-        "the Map<Bytes> decline must be attributable to the non-Ord Bytes key, got: {map_err:?}"
+        try_compile_rust(map_bytes).is_ok(),
+        "a Map keyed by Bytes must now compile (Vec<u8> is Ord): {:?}",
+        try_compile_rust(map_bytes).err()
     );
-    // Bytes EQUALITY is untouched — a Bytes value still builds + round-trips (it derives Eq, just not Ord).
+    if let Some(out) = rustc_run(&compile_rust(map_bytes), "run()") {
+        assert_eq!(out, "1", "a Bytes-keyed Map holds its one inserted entry");
+    }
+    // A bare Bytes `<` orders lexicographically over unsigned bytes: [1,2] < [1,3] → true. (The direct witness
+    // that the order is REAL, not just an Ord-derive that never runs.)
+    let bytes_lt = "(module m \
+        (def (run) (if (< (Bytes.of (list 1 2)) (Bytes.of (list 1 3))) 1 0)) \
+        (export run))";
+    if let Some(out) = rustc_run(&compile_rust(bytes_lt), "run()") {
+        assert_eq!(
+            out, "1",
+            "[1,2] < [1,3] lexicographically over unsigned bytes"
+        );
+    }
+    // Bytes EQUALITY is untouched — a Bytes value still builds + round-trips (it derives Eq, and now Ord).
     let bytes_eq = "(module m \
         (def (run) (if (= (Bytes.of (list 1 2)) (Bytes.of (list 1 2))) 1 0)) \
         (export run))";
     assert!(
         try_compile_rust(bytes_eq).is_ok(),
-        "Bytes EQUALITY stays blessed — only ORDER declines:\n{:?}",
+        "Bytes EQUALITY stays blessed:\n{:?}",
         try_compile_rust(bytes_eq).err()
     );
 }
