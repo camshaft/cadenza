@@ -1345,8 +1345,9 @@ fn build_wrapper(ast: &mut Arenas, plan: &TestPlan) -> StructId {
                 ast,
                 Leaf::Str(format!(
                     "{}: a parameter's type has no property-test-generatable form yet \
-                     (Char/Rational/BigInt/String/Symbol, or a compound with such a leaf) — not \
-                     property-testable; use a boundary-representable type or drop the @test",
+                     (Char/Rational/BigInt/String/Symbol, a compound with such a leaf, or an empty \
+                     (Tuple)/(Record) with nothing to generate) — not property-testable; use a \
+                     boundary-representable type or drop the @test",
                     plan.def_name
                 )),
             );
