@@ -1,0 +1,31 @@
+# cdz-agent-host — the REAL effect executors + authorizer that make a kernel session actually RUN
+# against the world (v-agent-harness-host). The `cdz-kernel` crate owns the generic if-this-then-that
+# spine + the `Executor`/`Authorize` TRAIT definitions; THIS crate provides the concrete impls that
+# perform effects for real: a system-clock executor for `Now`, an HTTP client for `Http`, a Bedrock
+# model executor for `Model` (the standing cred-broker / Bedrock-direct directive), and a Cedar-as-wasm
+# authorizer (§10/SEC-F1 deny-by-default). It DEPENDS ON cdz-kernel and never edits its src — the shared
+# surface is only the trait signatures (`Executor::perform`, `Authorize::authorize`).
+#
+# Its OWN workspace (empty `[workspace]` table), NOT a member of the seed workspace — the same isolation
+# cdz-kernel/cdz-cad use, so the seed's `cargo build --workspace` + corpus gate never pay for the
+# executors' (future) network/AWS/wasmtime tree. A dedicated CI job gates it (its own cargo test + fmt +
+# clippy — cdz-kernel is not in `xtask check`, and neither is this).
+[workspace]
+
+[package]
+name = "cdz-agent-host"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[features]
+# `live-net` gates executors that touch the network (the Bedrock model executor, a real HTTP client) —
+# OFF by default so the default build/tests never make a network call or need AWS credentials, exactly
+# like cdz-kernel's `live-exec` gates the one subprocess-spawning executor. CI lints AND tests
+# `--features live-net` where a runner has egress; the default gate stays hermetic.
+live-net = []
+
+[dependencies]
+# The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the
+# workspace boundary (both are their own workspaces). We CONSUME these traits; we never edit its src.
+cdz-kernel = { path = "../cdz-kernel" }
