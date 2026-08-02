@@ -2010,7 +2010,22 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 // checked `Int64.of` narrowing (TRAPS on overflow). All existing prims → hash-neutral.
                 Some(Prim::RationalTruncate) if args.len() == 1 => match core_of(db, args[0]) {
                     Core::ConstRational(n, d) => match n.divmod(&d) {
-                        Some((q, _rem)) => Core::ConstInt(q),
+                        // `Rational.truncate` narrows the integer part to Int64. The quotient `q` is an
+                        // arbitrary-precision `IntValue`, so it can EXCEED Int64 even when every source
+                        // literal fits (here `3 * Int64.max`): the runtime twin's checked `Int64.of` TRAPS
+                        // on that overflow, so the const fold must reject it AT THE FOLD (a compile-provable
+                        // trap), NOT emit an out-of-width `Core::ConstInt(q)` — that beyond-i64 literal trips
+                        // the backend's downstream width check as a span-less CDZ0302 ("integer literal does
+                        // not fit its width"), which misattributes the overflow to a source literal (none is
+                        // out of width) and gives no node to anchor to (adv-60). Rejecting here with
+                        // `ConstTrap` (CDZ0304) + this node's span matches every other compile-provable const
+                        // overflow (e.g. `(+ Int64.max 1)`) and surfaces in `cdz check`.
+                        Some((q, _rem)) if q.to_i64().is_some() => Core::ConstInt(q),
+                        Some(_) => Core::Poison(Reject::coded(
+                            Code::ConstTrap,
+                            "constant Rational.truncate traps: the integer part overflows Int64 \
+                             — compute in a wider type, or check the value fits",
+                        )),
                         // A `ConstRational` is normalized (`Rational.of` traps a zero denominator at
                         // construction), so `d > 0` and `divmod` is `Some`; this arm is defensive.
                         None => Core::Poison(Reject::coded(
@@ -2030,10 +2045,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::RationalFloor) if args.len() == 1 => match core_of(db, args[0]) {
                     Core::ConstRational(n, d) => match n.divmod(&d) {
                         Some((q, rem)) => {
-                            if n.negative && !rem.is_zero() {
-                                Core::ConstInt(q.sub(&crate::ast::IntValue::from_i64(1)))
+                            let v = if n.negative && !rem.is_zero() {
+                                q.sub(&crate::ast::IntValue::from_i64(1))
                             } else {
-                                Core::ConstInt(q)
+                                q
+                            };
+                            // Narrows to Int64 — reject a beyond-i64 integer part at the fold (CDZ0304),
+                            // not as a span-less downstream width error (adv-60; see `RationalTruncate`).
+                            if v.to_i64().is_some() {
+                                Core::ConstInt(v)
+                            } else {
+                                Core::Poison(Reject::coded(
+                                    Code::ConstTrap,
+                                    "constant Rational.floor traps: the integer part overflows Int64 \
+                                     — compute in a wider type, or check the value fits",
+                                ))
                             }
                         }
                         None => Core::Poison(Reject::coded(
@@ -2047,10 +2073,20 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 Some(Prim::RationalCeil) if args.len() == 1 => match core_of(db, args[0]) {
                     Core::ConstRational(n, d) => match n.divmod(&d) {
                         Some((q, rem)) => {
-                            if !n.negative && !rem.is_zero() {
-                                Core::ConstInt(q.add(&crate::ast::IntValue::from_i64(1)))
+                            let v = if !n.negative && !rem.is_zero() {
+                                q.add(&crate::ast::IntValue::from_i64(1))
                             } else {
-                                Core::ConstInt(q)
+                                q
+                            };
+                            // Narrows to Int64 — reject a beyond-i64 integer part at the fold (adv-60).
+                            if v.to_i64().is_some() {
+                                Core::ConstInt(v)
+                            } else {
+                                Core::Poison(Reject::coded(
+                                    Code::ConstTrap,
+                                    "constant Rational.ceil traps: the integer part overflows Int64 \
+                                     — compute in a wider type, or check the value fits",
+                                ))
                             }
                         }
                         None => Core::Poison(Reject::coded(
@@ -2077,15 +2113,21 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                             };
                             let two = crate::ast::IntValue::from_i64(2);
                             // Tie test `2·|rem| ≥ d` — round away from zero (by the sign of `n`) when true.
-                            if two.mul(&abs_rem).cmp(&d) != std::cmp::Ordering::Less {
+                            let v = if two.mul(&abs_rem).cmp(&d) != std::cmp::Ordering::Less {
                                 let one = crate::ast::IntValue::from_i64(1);
-                                if n.negative {
-                                    Core::ConstInt(q.sub(&one))
-                                } else {
-                                    Core::ConstInt(q.add(&one))
-                                }
+                                if n.negative { q.sub(&one) } else { q.add(&one) }
                             } else {
-                                Core::ConstInt(q)
+                                q
+                            };
+                            // Narrows to Int64 — reject a beyond-i64 rounded value at the fold (adv-60).
+                            if v.to_i64().is_some() {
+                                Core::ConstInt(v)
+                            } else {
+                                Core::Poison(Reject::coded(
+                                    Code::ConstTrap,
+                                    "constant Rational.round traps: the rounded value overflows Int64 \
+                                     — compute in a wider type, or check the value fits",
+                                ))
                             }
                         }
                         None => Core::Poison(Reject::coded(
