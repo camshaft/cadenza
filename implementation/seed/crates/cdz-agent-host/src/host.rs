@@ -17,9 +17,9 @@
 //! v0 is synchronous + single-threaded (the kernel loop is; §15b). The async/multi-session-scheduler
 //! layer is a later slice that preserves this shape — a tokio task per session driving the same loop.
 
-use cdz_kernel::authz::Authorize;
+use cdz_kernel::authz::AsyncAuthorize;
 use cdz_kernel::event::EventBody;
-use cdz_kernel::executor::CompositeExecutor;
+use cdz_kernel::executor::AsyncCompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::{KernelError, Session};
 use cdz_kernel::reducer::AsyncReducer;
@@ -53,8 +53,8 @@ impl SessionId {
 pub struct HostedSession {
     session: Session,
     reducer: Box<dyn AsyncReducer>,
-    authz: Box<dyn Authorize>,
-    executor: CompositeExecutor,
+    authz: Box<dyn AsyncAuthorize>,
+    executor: AsyncCompositeExecutor,
 }
 
 impl HostedSession {
@@ -68,8 +68,8 @@ impl HostedSession {
     pub fn genesis(
         reducer_hash: Hash,
         reducer: Box<dyn AsyncReducer>,
-        authz: Box<dyn Authorize>,
-        executor: CompositeExecutor,
+        authz: Box<dyn AsyncAuthorize>,
+        executor: AsyncCompositeExecutor,
     ) -> Self {
         HostedSession {
             session: Session::genesis(reducer_hash),
@@ -139,8 +139,8 @@ impl HostedSession {
     pub async fn fork_for_query(
         &self,
         reducer: &dyn AsyncReducer,
-        authz: &dyn Authorize,
-        executor: &mut CompositeExecutor,
+        authz: &dyn AsyncAuthorize,
+        executor: &mut AsyncCompositeExecutor,
     ) -> Option<Vec<u8>> {
         let mut fork = self.session.fork_for_query();
         // Deliver a `report` inbound so a report-aware reducer (branching on ct.is_report()) summarizes
@@ -298,7 +298,7 @@ mod tests {
 
     fn now_host() -> HostedSession {
         let executor =
-            CompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
+            AsyncCompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Now,
             predicate: ResourcePredicate::Any,
@@ -344,7 +344,7 @@ mod tests {
             Hash::of(b"timer-agent-v1"),
             Box::new(SyncAsAsync(TimerAgent { deadline_ms })),
             Box::new(authz),
-            CompositeExecutor::new(),
+            AsyncCompositeExecutor::new(),
         )
     }
 
@@ -530,7 +530,7 @@ mod tests {
                 Hash::of(b"reporting-v1"),
                 Box::new(SyncAsAsync(ReportingAgent)),
                 Box::new(Authorizer::deny_all()), // the live session takes no effects here
-                CompositeExecutor::new(),
+                AsyncCompositeExecutor::new(),
             ),
         );
         // Advance the live session so it has state to summarize (phase=working).
@@ -544,7 +544,7 @@ mod tests {
         // Fork-for-query it: caller supplies the same reducer (wrapped SyncAsAsync — it's a sync reducer)
         // + a model-only authz (deny_all here — the summarize fold takes no effects) + an executor.
         // Returns the fork's published summary.
-        let mut exec = CompositeExecutor::new();
+        let mut exec = AsyncCompositeExecutor::new();
         let summary = hosted
             .fork_for_query(
                 &SyncAsAsync(ReportingAgent),

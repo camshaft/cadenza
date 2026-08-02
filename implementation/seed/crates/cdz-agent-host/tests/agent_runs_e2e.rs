@@ -20,7 +20,7 @@ use cdz_kernel::effect::{
     Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
 };
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
-use cdz_kernel::executor::CompositeExecutor;
+use cdz_kernel::executor::AsyncCompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
@@ -82,7 +82,8 @@ async fn agent_loop_runs_end_to_end_through_the_real_clock_executor() {
     let reducer = SyncAsAsync(ClockAgent);
     let authz = now_cap();
     // The real executor, wired by kind exactly as the Bedrock Model executor will be alongside it.
-    let mut exec = CompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
+    let mut exec =
+        AsyncCompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
     let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
 
     session
@@ -119,7 +120,8 @@ async fn the_recorded_instant_makes_the_run_replayable() {
     // `Session::replay` stays SYNC (it re-folds the recorded log, runs no executor) so it takes the
     // bare sync `ClockAgent`.
     let reducer = ClockAgent;
-    let mut exec = CompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
+    let mut exec =
+        AsyncCompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
     let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
     session
         .deliver_async(
@@ -152,7 +154,8 @@ async fn a_now_effect_outside_the_grant_is_denied_never_reaching_the_clock() {
     // the gate — the real executor is never consulted, and the denial is on the log for audit (§10).
     let reducer = SyncAsAsync(ClockAgent);
     let deny = Authorizer::deny_all();
-    let mut exec = CompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
+    let mut exec =
+        AsyncCompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
     let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
     session
         .deliver_async(inbound_go(), None, &reducer, &deny, &mut exec)

@@ -11,7 +11,7 @@ use cdz_kernel::effect::{
     Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
 };
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
-use cdz_kernel::executor::CompositeExecutor;
+use cdz_kernel::executor::AsyncCompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
@@ -20,8 +20,14 @@ use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
 /// A stub HTTP transport: returns a canned response body so the fetch loop is hermetic. The real client
 /// implements this same trait behind `live-net`.
 struct StubHttp;
+#[async_trait::async_trait(?Send)]
 impl HttpTransport for StubHttp {
-    fn request(&self, url: &str, _body: Option<&[u8]>, _key: Hash) -> Result<bytes::Bytes, String> {
+    async fn request(
+        &self,
+        url: &str,
+        _body: Option<&[u8]>,
+        _key: Hash,
+    ) -> Result<bytes::Bytes, String> {
         Ok(format!("fetched {url}").into_bytes().into())
     }
 }
@@ -76,7 +82,7 @@ fn host_cap() -> Authorizer {
 async fn agent_loop_runs_end_to_end_through_the_http_executor() {
     let reducer = FetchAgent;
     let mut exec =
-        CompositeExecutor::new().with(EffectKind::Http, Box::new(HttpExecutor::new(StubHttp)));
+        AsyncCompositeExecutor::new().with(EffectKind::Http, Box::new(HttpExecutor::new(StubHttp)));
     let mut session = Session::genesis(Hash::of(b"fetch-agent-v1"));
 
     session
@@ -111,8 +117,14 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
     // exfil/SSRF attempt) is denied at the gate — the client (a real network call) is never reached. A
     // transport that panics if called proves the executor was never consulted.
     struct MustNotCall;
+    #[async_trait::async_trait(?Send)]
     impl HttpTransport for MustNotCall {
-        fn request(&self, _u: &str, _b: Option<&[u8]>, _k: Hash) -> Result<bytes::Bytes, String> {
+        async fn request(
+            &self,
+            _u: &str,
+            _b: Option<&[u8]>,
+            _k: Hash,
+        ) -> Result<bytes::Bytes, String> {
             panic!("a denied Http effect must never reach the client");
         }
     }
@@ -131,8 +143,8 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
             }
         }
     }
-    let mut exec =
-        CompositeExecutor::new().with(EffectKind::Http, Box::new(HttpExecutor::new(MustNotCall)));
+    let mut exec = AsyncCompositeExecutor::new()
+        .with(EffectKind::Http, Box::new(HttpExecutor::new(MustNotCall)));
     let mut session = Session::genesis(Hash::of(b"exfil-agent-v1"));
     session
         .deliver_async(

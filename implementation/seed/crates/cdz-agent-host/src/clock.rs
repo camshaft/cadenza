@@ -21,7 +21,7 @@
 use crate::retry;
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
-use cdz_kernel::executor::Executor;
+use cdz_kernel::executor::AsyncExecutor;
 use cdz_kernel::hash::Hash;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,8 +42,18 @@ impl ClockExecutor {
     }
 }
 
-impl Executor for ClockExecutor {
-    fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
+// Native `AsyncExecutor` (not driven via the `SyncExecutorAsAsync` blanket): the async kernel loop calls
+// `perform_async`. Reading the clock is synchronous (no `.await` point) — an executor that touches real
+// I/O (Model/Http) awaits its transport, but the clock read is instantaneous — so `perform_async` here
+// has no await. It impls `AsyncExecutor` directly (dropping the old sync `Executor` impl) so it can sit in
+// an `AsyncCompositeExecutor` and not overlap the blanket (§ all-async, step-5).
+#[async_trait::async_trait(?Send)]
+impl AsyncExecutor for ClockExecutor {
+    async fn perform_async(
+        &mut self,
+        req: &EffectRequest,
+        _idempotency_key: Hash,
+    ) -> EffectOutcome {
         if req.kind != EffectKind::Now {
             // A wrong-kind request is structural — PERMANENT, a supervisor must not retry it (§17: an
             // observable Err, never a panic).
@@ -100,10 +110,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn now_returns_an_8_byte_le_u64_nanos_timestamp() {
+    #[tokio::test]
+    async fn now_returns_an_8_byte_le_u64_nanos_timestamp() {
         let mut exec = ClockExecutor::new();
-        let ns = decode_ns(exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k")));
+        let ns = decode_ns(
+            exec.perform_async(&req(EffectKind::Now, ""), Hash::of(b"k"))
+                .await,
+        );
         // A sane lower bound: well after 2020 (1_577_836_800_000_000_000 ns = 2020-01-01) — proves it's a
         // real epoch timestamp in NANOSECONDS, not ms/zero/garbage.
         assert!(
@@ -112,12 +125,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn now_payload_is_exactly_8_bytes() {
+    #[tokio::test]
+    async fn now_payload_is_exactly_8_bytes() {
         // The kernel clamp only clamps an 8-byte LE u64 (anything else passes through un-clamped), so the
         // width is load-bearing for the monotonic guarantee.
         let mut exec = ClockExecutor::new();
-        match exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k")) {
+        match exec
+            .perform_async(&req(EffectKind::Now, ""), Hash::of(b"k"))
+            .await
+        {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
                 assert_eq!(
                     bytes.len(),
@@ -129,15 +145,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn two_reads_both_return_sane_epoch_nanos() {
+    #[tokio::test]
+    async fn two_reads_both_return_sane_epoch_nanos() {
         // This executor emits the RAW wall-clock read — it does NOT enforce monotonicity (that's the
         // kernel clamp's job). So two successive reads must NOT be asserted b >= a: the wall clock isn't
         // monotonic (an NTP step can move it backwards mid-test), which would be a latent CI flake. Assert
         // only what this executor guarantees — each read is a sane epoch-nanos value.
         let mut exec = ClockExecutor::new();
-        let a = decode_ns(exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k")));
-        let b = decode_ns(exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k")));
+        let a = decode_ns(
+            exec.perform_async(&req(EffectKind::Now, ""), Hash::of(b"k"))
+                .await,
+        );
+        let b = decode_ns(
+            exec.perform_async(&req(EffectKind::Now, ""), Hash::of(b"k"))
+                .await,
+        );
         assert!(
             a > 1_577_836_800_000_000_000,
             "first read is a real epoch nanos: {a}"
@@ -148,11 +170,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn non_now_kind_is_an_observable_err_not_a_panic() {
+    #[tokio::test]
+    async fn non_now_kind_is_an_observable_err_not_a_panic() {
         // This is a single-kind executor; a wrong kind is an observable Err (§9d), never a panic.
         let mut exec = ClockExecutor::new();
-        match exec.perform(&req(EffectKind::Http, "https://x/"), Hash::of(b"k")) {
+        match exec
+            .perform_async(&req(EffectKind::Http, "https://x/"), Hash::of(b"k"))
+            .await
+        {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("Now"), "err names the handled kind: {msg}");
                 assert_eq!(

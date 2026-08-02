@@ -210,7 +210,7 @@ mod tests {
 
     fn timer_host() -> HostedSession {
         // Timer effects are kernel-internal (no executor needed); a ClockExecutor is registered but unused.
-        let executor = cdz_kernel::executor::CompositeExecutor::new()
+        let executor = cdz_kernel::executor::AsyncCompositeExecutor::new()
             .with(EffectKind::Now, Box::new(ClockExecutor::new()));
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Timer,
@@ -264,7 +264,7 @@ mod tests {
                 }
             }
         }
-        let executor = cdz_kernel::executor::CompositeExecutor::new();
+        let executor = cdz_kernel::executor::AsyncCompositeExecutor::new();
         let mut host = AgentHost::new();
         let id = SessionId::new("boom");
         host.spawn(
@@ -328,7 +328,7 @@ mod tests {
                 }
             }
         }
-        let executor = cdz_kernel::executor::CompositeExecutor::new()
+        let executor = cdz_kernel::executor::AsyncCompositeExecutor::new()
             .with(EffectKind::Now, Box::new(ClockExecutor::new()));
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Now,
