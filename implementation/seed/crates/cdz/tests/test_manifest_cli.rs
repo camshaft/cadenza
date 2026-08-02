@@ -1358,6 +1358,49 @@ fn a_nongeneratable_leaf_compound_test_declines_cleanly_and_siblings_run() {
     );
 }
 
+/// A `@test` over an EMPTY `(Tuple)` param declines CLEANLY PER-TEST (sibling survives) AND names the
+/// EMPTY-COMPOUND cause — distinct from the non-generatable-LEAF path above. An empty tuple/record has no
+/// leaf at all; it is un-generatable because it is EMPTY (nothing to draw), so `classify_ty_at`'s zero-slot
+/// guard declines and the wrapper's reason string must NOT point the author at leaf types (`Char/…`) that
+/// aren't the problem. Pins the broadened decline message ("…or an empty (Tuple)/(Record) with nothing to
+/// generate…") so the empty-compound author gets an accurate hint. No store needed (declining wrapper traps
+/// before any heap use).
+#[test]
+fn an_empty_tuple_compound_test_declines_with_the_empty_compound_reason() {
+    let d = dir("empty-tuple-decline");
+    let f = write(
+        &d,
+        "m.cdz",
+        "@test def emptytup(t: Tuple()) = unit\n\
+         @test def sibling_runs() = if 1 == 1 then unit else trap(\"sibling should run\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f]);
+    // The run FAILS overall (the empty-compound test declines), but NOT a file-level compile abort.
+    assert!(
+        !ok,
+        "the empty-tuple test declines → non-zero exit: {stdout}{stderr}"
+    );
+    assert!(
+        !stderr.contains("no component boundary representation"),
+        "the empty-compound param must NOT abort the file at the boundary (declining wrapper \
+         intercepts): {stderr}"
+    );
+    // Test isolation: the sibling still RUNS and passes.
+    assert!(
+        stdout.contains("PASS sibling_runs"),
+        "a sibling test still runs despite the empty-compound test: {stdout}"
+    );
+    // The empty-compound test declines with the ACCURATE per-test FAIL naming the EMPTY-COMPOUND cause
+    // (not the leaf-only reason) — the broadened decline message.
+    assert!(
+        stdout.contains("FAIL emptytup-gen")
+            && stdout.contains("not property-testable")
+            && stdout.contains("empty (Tuple)/(Record)"),
+        "the empty-tuple test declines with an ACTIONABLE per-test FAIL naming the empty-compound \
+         cause: {stdout}"
+    );
+}
+
 /// The counterexample-VALUE render covers a user SUM parameter: a failing property over a `(type Res (Ok
 /// Int64) (Err Int64))` reports the concrete failing VALUE (`never_ok(Ok(0))` — the variant name + its
 /// decoded payload) rather than the raw driver ints. The runner classifies the wrapper's param via
