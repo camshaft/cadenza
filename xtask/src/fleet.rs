@@ -3183,9 +3183,9 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                             // `fleet up` (or an operator) re-creates it; do NOT stamp (let a later sweep
                             // retry the relaunch rather than sit in the grace window with no window).
                             eprintln!(
-                                "  ‼ '{}' context wedge: killed the window but RELAUNCH FAILED — the \
-                                 window is now gone. `fleet up` will re-create it; not rate-limiting so \
-                                 the next sweep retries.",
+                                "  ‼ '{}' context wedge: RELAUNCH FAILED (after killing the window, or \
+                                 it was already gone) — no window is running now. `fleet up` will \
+                                 re-create it; not rate-limiting so the next sweep retries.",
                                 a.name
                             );
                         }
@@ -3878,11 +3878,25 @@ fn wedge_restart_age_secs(fleet: &Fleet, name: &str, now: u64) -> Option<u64> {
 
 /// Record that we auto-restarted this agent's window for a context wedge (touch
 /// `.claude/fleet/wedge-restart/<name>` — mtime is the restart time, for the `WEDGE_RESTART_GRACE`
-/// thrash-guard).
+/// thrash-guard). Unlike the sibling `stamp_*` markers (which only rate-limit a NOTE), a failed write
+/// here silently DISABLES the anti-thrash guard — the next sweep would see no marker and restart the
+/// same wedged window AGAIN, every ~4 min, indefinitely. So surface a loud warning on failure (PR #1391
+/// review): the operator needs to know the guard is off, and WHY the window keeps bouncing.
 fn stamp_wedge_restart(fleet: &Fleet, name: &str) {
     let dir = fleet.root.join("wedge-restart");
-    std::fs::create_dir_all(&dir).ok();
-    std::fs::write(dir.join(name), "wedge-restart\n").ok();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "  ! watchdog: could not create the wedge-restart marker dir for '{name}' ({e}) — the \
+             anti-thrash guard is OFF, so this window may be auto-restarted every sweep until it clears."
+        );
+        return;
+    }
+    if let Err(e) = std::fs::write(dir.join(name), "wedge-restart\n") {
+        eprintln!(
+            "  ! watchdog: could not write the wedge-restart marker for '{name}' ({e}) — the anti-thrash \
+             guard is OFF, so this window may be auto-restarted every sweep until it clears."
+        );
+    }
 }
 
 /// The last auto drain-nudge we sent this agent, as `(flagged-message-id, age-in-secs)`, or `None`
