@@ -7012,3 +7012,56 @@ fn rustc_roundtrip_nonrecursive_user_sum_with_option_payload_compare_declared_di
         assert_eq!(out, "2", "identical sum values compare Equal:\n{rs}");
     }
 }
+
+#[test]
+fn rustc_roundtrip_nested_option_of_option_compare_emits_declared_order_some_before_none() {
+    // The generic/nested-Option compare EMIT slice: `compare` over `(Option (Option Int64))` used to DECLINE
+    // ("value-cmp over a RECURSIVE GENERIC Option-carrying sum is not yet rendered") — a FALSE trigger of the
+    // recursion guard, which keyed on the bare `Option` decl id, so the INNER Option re-entering the SAME
+    // decl tripped the "recursive generic" path even though `Option<Option<i64>>` is a FINITE distinct
+    // instantiation, not self-recursion. The fix keys the guard on the FULL instantiated type (Ty by
+    // decl+args) and mangles the `__cmp_*` helper name per instantiation, so the two Option layers get
+    // distinct helpers and the walk expands inline. The Cadenza declared order is Some(_) < None at BOTH
+    // layers, giving the total order Some(Some k) < Some(None) < None (NOT std's None < Some).
+    let src = "(module m \
+        (def (cmp2 (: x (Option (Option Int64))) (: y (Option (Option Int64)))) \
+          (match (compare x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+        (def (p1) (cmp2 (Some (Some 1)) (Some (: (None unit) (Option Int64))))) \
+        (def (p2) (cmp2 (Some (: (None unit) (Option Int64))) (: (None unit) (Option (Option Int64))))) \
+        (def (p3) (cmp2 (Some (Some 1)) (Some (Some 1)))) \
+        (def (p4) (cmp2 (Some (Some 1)) (Some (Some 2)))) \
+        (def (p5) (cmp2 (Some (Some 2)) (Some (Some 1)))) \
+        (export p1) (export p2) (export p3) (export p4) (export p5))";
+    // MUST emit now (this is the whole point of the slice) — `compile_rust` HARD-FAILS on a decline so a
+    // regression back to the old "recursive generic" decline reds this test.
+    let rs = compile_rust(src);
+    // Some(Some 1) vs Some(None): both outer Some, inner Some 1 < None → Less (1).
+    if let Some(out) = rustc_run(&rs, "p1()") {
+        assert_eq!(
+            out, "1",
+            "Some(Some 1) < Some(None): inner Some<None decides → Less:\n{rs}"
+        );
+    }
+    // Some(None) vs None: outer Some < None → Less (1).
+    if let Some(out) = rustc_run(&rs, "p2()") {
+        assert_eq!(out, "1", "Some(None) < None: outer Some<None → Less:\n{rs}");
+    }
+    // identical Some(Some 1) → Equal (2).
+    if let Some(out) = rustc_run(&rs, "p3()") {
+        assert_eq!(out, "2", "identical nested options compare Equal:\n{rs}");
+    }
+    // Some(Some 1) vs Some(Some 2): inner payload 1 < 2 → Less (1).
+    if let Some(out) = rustc_run(&rs, "p4()") {
+        assert_eq!(
+            out, "1",
+            "Some(Some 1) < Some(Some 2) by inner payload:\n{rs}"
+        );
+    }
+    // symmetric: Some(Some 2) vs Some(Some 1) → Greater (3).
+    if let Some(out) = rustc_run(&rs, "p5()") {
+        assert_eq!(
+            out, "3",
+            "Some(Some 2) > Some(Some 1) by inner payload:\n{rs}"
+        );
+    }
+}

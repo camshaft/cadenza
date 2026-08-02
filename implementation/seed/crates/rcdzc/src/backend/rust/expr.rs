@@ -3414,7 +3414,12 @@ fn emit_value_cmp_walk_seen(
     ty: &Ty,
     l: &str,
     r: &str,
-    seen: &mut Vec<crate::ast::StructId>,
+    // The recursion guard keys on the FULL instantiated sum type (`Ty`, compared by decl + args), NOT the
+    // bare `StructId` decl: a NESTED distinct instantiation like `(Option (Option Int64))` re-enters the
+    // SAME `Option` decl but is a DIFFERENT type, so a decl-only key would false-trip the "recursive
+    // generic" decline. Keyed on the full type, only a TRULY self-referential type (identical decl+args)
+    // re-enters — the finite value's own cycle — and nested instantiations expand inline (finite depth).
+    seen: &mut Vec<Ty>,
     helpers: &mut Vec<String>,
 ) -> Result<String, Reject> {
     // An Option-FREE subtree compares correctly under the native derived `Ord` — emit `l.cmp(&r)` and stop
@@ -3496,32 +3501,37 @@ fn emit_sum_cmp_walk(
     ty: &Ty,
     l: &str,
     r: &str,
-    seen: &mut Vec<crate::ast::StructId>,
+    seen: &mut Vec<Ty>,
     helpers: &mut Vec<String>,
 ) -> Result<String, Reject> {
-    let (decl_occ, args) = match ty.strip_nominal() {
-        Ty::Sum { decl, args, .. } => (*decl, args.clone()),
+    let sum_ty = ty.strip_nominal().clone();
+    match &sum_ty {
+        Ty::Sum { .. } => {}
         _ => return Err(Reject::decline("value-cmp: not a sum type")),
     };
     let enum_ty = super::types::rust_type(ty)
         .ok_or_else(|| Reject::decline("value-cmp: no rust type for the sum"))?;
-    let fn_name = format!("__cmp_{}", super::types::sum_ident(&ty_sum_name(ty)));
-    // RECURSION GUARD (PR#890): a sum whose payload re-enters THIS decl (a recursive Option-carrying sum,
-    // `T = (Node (Tuple (Option Int64) T)) | (Leaf)`) would inline-recurse UNBOUNDED in codegen (a compiler
-    // stack overflow) if expanded inline. Mirror `emit_value_eq_walk`'s `__eq_` routing: on re-entry of a
-    // decl already being expanded, emit a CALL to its helper `fn __cmp_<Ident>` (the recursion base). A
-    // GENERIC instantiation (args non-empty) can't yet spell the helper's generic signature → decline (todo,
-    // not a miscompile — the compare declines cleanly, matching `emit_value_eq_walk`'s generic-recursion
-    // decline). A MONOMORPHIC recursive sum routes through the helper below.
-    if seen.contains(&decl_occ) {
-        if !args.is_empty() {
-            return Err(Reject::decline(
-                "value-cmp over a RECURSIVE GENERIC Option-carrying sum is not yet rendered (needs a generic helper fn)",
-            ));
-        }
+    // The helper fn name is mangled by the FULL INSTANTIATED type (via `rust_type`), not the bare sum name:
+    // a nested `(Option (Option Int64))` needs a distinct `fn __cmp_*` for the outer `Option<Option<i64>>`
+    // and the inner `Option<i64>` (different signatures) — a bare `__cmp_Option` would collide (the dedup
+    // guard would suppress the 2nd, leaving an ill-typed call). `cmp_helper_name` hashes `enum_ty`, so each
+    // instantiation gets a unique, valid ident.
+    let fn_name = cmp_helper_name(&enum_ty);
+    // RECURSION GUARD (PR#890): a TRULY self-referential sum (`T = (Node (Tuple (Option Int64) T)) | (Leaf)`)
+    // re-enters its OWN type and would inline-recurse UNBOUNDED in codegen (a compiler stack overflow); route
+    // it through a helper `fn` (the recursion base) instead. The key is the FULL instantiated type, so a
+    // NESTED distinct instantiation (`Option<Option<i64>>` containing `Option<i64>`) does NOT trip this — the
+    // two are different types → the inner expands inline (finite), no false "recursive generic" decline (the
+    // gap this closes). Only an identical decl+args re-entry (a real cycle in the finite value) routes to the
+    // helper by call-indirection.
+    if seen.contains(&sum_ty) {
         return Ok(format!("{fn_name}(&{l}, &{r})"));
     }
-    seen.push(decl_occ);
+    let decl_occ = match &sum_ty {
+        Ty::Sum { decl, .. } => *decl,
+        _ => unreachable!("checked Ty::Sum above"),
+    };
+    seen.push(sum_ty.clone());
     let variant_count = match db.type_decl_by_occ(decl_occ).map(|t| t.variants.len()) {
         Some(n) => n,
         None => {
@@ -3592,13 +3602,20 @@ fn emit_sum_cmp_walk(
     Ok(format!("{fn_name}(&{l}, &{r})"))
 }
 
-/// The sum's declared NAME (`Option`, `Node`, …) — the identity `sum_ident` mangles into the helper fn name.
-/// Peels a nominal (its cmp helper keys on the erased sum's name).
-fn ty_sum_name(ty: &Ty) -> String {
-    match ty.strip_nominal() {
-        Ty::Sum { name, .. } => name.clone(),
-        _ => "sum".to_string(),
+/// The `fn __cmp_*` helper name for a sum's value-cmp walk, mangled by its FULL rendered Rust type
+/// (`enum_ty`, e.g. `Option<Option<i64>>`) rather than the bare sum name. Two DISTINCT instantiations of one
+/// generic sum (`Option<Option<i64>>` vs `Option<i64>` in a nested compare) need DISTINCT helpers — same
+/// bare name + different signatures would collide (the dedup guard suppresses the 2nd → an ill-typed call).
+/// Hex-encoding the rendered type gives a unique, valid, collision-free ident (the same injective hex idiom
+/// `types::sum_ident` uses for lossy names); the leading `__cmp_` keeps it in the generated-helper namespace
+/// (user idents with a leading `__` are escaped by `sanitize_ident`, so no clash with a user fn).
+fn cmp_helper_name(enum_ty: &str) -> String {
+    let mut s = String::with_capacity(enum_ty.len() * 2 + 6);
+    s.push_str("__cmp_");
+    for b in enum_ty.bytes() {
+        s.push_str(&format!("{b:02x}"));
     }
+    s
 }
 
 /// Whether a runtime `(= a b)` over type `ty` can emit a native Rust `==` — the operand type maps to a
