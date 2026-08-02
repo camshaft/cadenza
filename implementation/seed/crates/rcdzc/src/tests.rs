@@ -60342,6 +60342,57 @@ mod stage1 {
     }
 
     #[test]
+    fn a_refutable_binding_pattern_inside_an_inline_lambda_rejects_cdz0210() {
+        // OVER-ACCEPT FIX (v-inference 2026-08-02): a REFUTABLE let-binding pattern (or a refutable
+        // destructuring PARAM, which the desugar moves into a body `let`) inside an INLINE/let-bound LAMBDA
+        // compiled CLEAN, while the SAME pattern in a DEF body correctly rejects CDZ0210 (binding-position
+        // non-exhaustiveness, core-semantics.md:139). ROOT: `collect_node`'s Lambda arm does NOT `collect`
+        // an inline lambda body (avoids double-report + spurious generic-body faults), so a refutable binding
+        // there was never seen. FIX: a narrow SHAPE-ONLY binding-pattern irrefutability walk over the inline
+        // lambda body (`inline_lambda_binding_pattern_faults`), matching what a def-body `let` gets, without
+        // the risky full descent. Refutability is shape-based, so a generic/irrefutable body stays clean.
+        use crate::abi::Artifact;
+        let codes_for = |s: &str| -> Vec<String> {
+            let entry = crate::codec::encode(&parse(s));
+            let out = crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
+                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                ],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .filter_map(|d| d.code.clone())
+                .collect()
+        };
+        // A refutable `let` (a multi-variant ctor `(Some x)`) inside an inline lambda body → CDZ0210.
+        assert!(
+            codes_for("(do (def (main) (let ((f (fn (p) (let (((Some x) p)) x)))) (f (Some 3)))) (export main))")
+                .contains(&"CDZ0210".to_string()),
+            "a refutable let inside an inline lambda body must reject CDZ0210"
+        );
+        // A refutable destructuring PARAM `(Some x)` on an inline lambda (desugars to the above) → CDZ0210.
+        assert!(
+            codes_for("(do (def (main) (let ((f (fn ((Some x)) x))) (f (Some 3)))) (export main))")
+                .contains(&"CDZ0210".to_string()),
+            "a refutable ctor param on an inline lambda must reject CDZ0210"
+        );
+        // CONTROL: an IRREFUTABLE tuple param on an inline lambda stays legal (no over-reject).
+        assert!(
+            !codes_for("(do (def (main) (let ((f (fn ((tuple a b)) (+ a b)))) (f (tuple 3 4)))) (export main))")
+                .contains(&"CDZ0210".to_string()),
+            "an irrefutable tuple param on an inline lambda stays legal"
+        );
+        // CONTROL: a GENERIC bare-param inline lambda stays clean (the shape-only check must not spuriously
+        // fault an uninstantiated body).
+        assert!(
+            codes_for("(do (def (main) (let ((id (fn (x) x))) (id 5))) (export main))").is_empty(),
+            "a generic bare-param inline lambda compiles clean (no spurious fault)"
+        );
+    }
+
+    #[test]
     fn a_named_wildcard_guard_binder_over_a_string_param_binds_in_a_helper() {
         // OVER-REJECT FIX (v-inference 2026-08-02, breaker adv-53): a bare-binder guard `(guard t (< t "m"))`
         // over a STRING (heap) param scrutinee in a non-entry HELPER rejected CDZ0101 "unbound t", while the

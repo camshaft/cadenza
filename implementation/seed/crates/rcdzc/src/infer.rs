@@ -14560,6 +14560,14 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // an argument `(hof (fn (x) …))`) is NOT a registered def body, so `def_index_by_body` is
             // `None` and it is skipped here — its body is checked at the β-reduction call site as before,
             // avoiding a double report and a spurious fault over an uninstantiated generic body.
+            // A destructuring PARAM is desugared (binding_params) into a body `let`, so a refutable param
+            // shows up as a refutable `let` LHS in `body` — validate binding-pattern irrefutability here for
+            // an inline lambda too (a def-body `let` gets this via the def-body walk; an inline lambda's body
+            // is otherwise unwalked, so a refutable `let`/param escaped CDZ0210). Shape-only, so it's safe on
+            // a generic/uninstantiated body (unlike a full `collect`, which is why the arms below gate on
+            // named-def / applied-try). Runs for EVERY lambda (the def-body/applied-try `collect` below
+            // subsumes it, and `dedup_faults` collapses any overlap).
+            inline_lambda_binding_pattern_faults(db, body, out);
             if db.def_index_by_body(id).is_some() {
                 collect(db, body, out);
             } else if lambda_heads_an_application(db, id) && subtree_contains_try_form(db, body) {
@@ -14579,6 +14587,44 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 // inlined copy (which itself raises nothing for the `?`, being inconclusive).
                 collect(db, body, out);
             }
+        }
+    }
+}
+
+/// Validate the IRREFUTABILITY of every binding pattern (`let` LHS) in the subtree at `node`, reporting
+/// CDZ0210 (refutable) / CDZ0201 (wrong-shape) / CDZ0102 (non-linear) for a genuinely ill-formed one.
+/// SHAPE-ONLY: `check_binding_pattern` against `Ty::Any` classifies refutability from the pattern's shape
+/// alone (a literal element / a multi-variant ctor is refutable regardless of the value type), so this
+/// NEVER touches a generic/uninstantiated body's TYPE resolution — it can't produce a spurious fault the
+/// way a full `collect` of an inline lambda body could. Used to close the gap where a refutable `let`
+/// (or a refutable destructuring param, which the desugar moves into a body `let`) inside an INLINE
+/// lambda escaped CDZ0210: `collect_node`'s Lambda arm does NOT `collect` an inline lambda body (to avoid
+/// double-reporting + spurious generic-body faults), so a refutable binding there was never seen. This
+/// narrow walk restores JUST the binding-position irrefutability check, matching what a def-body `let`
+/// gets, without the risky full body descent. Does NOT recurse into a NESTED lambda's body (that lambda
+/// gets its own `collect_node` Lambda-arm visit).
+fn inline_lambda_binding_pattern_faults(db: &mut Db, node: StructId, out: &mut Vec<Reject>) {
+    // A `(let <bindings> <body>)` — check each binding's LHS pattern for irrefutability.
+    if let Some(tail) = db.ast.as_form(node, "let")
+        && let Some(&bindings_occ) = tail.first()
+        && let crate::ast::Struct::List(bindings) = db.ast.get(bindings_occ)
+    {
+        for pair in bindings.clone() {
+            if let crate::ast::Struct::List(kv) = db.ast.get(pair)
+                && let Some(&lhs) = kv.first()
+                && let Err(r) = crate::lower::check_binding_pattern(db, lhs, &crate::ty::Ty::Any)
+            {
+                out.push(r);
+            }
+        }
+    }
+    // Recurse into children, but STOP at a nested `fn` (a nested lambda is validated by its own
+    // `collect_node` Lambda-arm entry — descending here would double-report + risk its generic body).
+    if db.ast.as_form(node, "fn").is_none()
+        && let crate::ast::Struct::List(children) = db.ast.get(node)
+    {
+        for child in children.clone() {
+            inline_lambda_binding_pattern_faults(db, child, out);
         }
     }
 }
