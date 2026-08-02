@@ -5527,7 +5527,5 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
-pass	a computed (runtime-branched) label operand to Record.with is rejected — labels are static
-pass	a host op returning Bool crosses the boundary and drives a branch
 pass	the compare walk recurses list-of-sums-of-lists with discriminant-first at depth
 pass	a List.update at depth-3 RRB path-copies one spine and shares the rest
