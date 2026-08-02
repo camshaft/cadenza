@@ -13604,6 +13604,21 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             // duplication for a call with any effect (calling it once, not N times). A single-use call
             // still inlines (`n < 2`).
             | Core::Call { .. }
+            // A runtime `String.slice` / `String.to-bytes` (`StrSlice`/`StrToBytes`) builds a fresh leaf and
+            // CONSUMES/dups its source — a genuine runtime computation — so a `let`-bound one used more than
+            // once MUST be NAMED (evaluated once, the handle read by each use), NOT copy-propagated into every
+            // use site. This is adv-54: `(let ((b (String.to-bytes (String.slice s i j)))) (+ (Bytes.at b 0)
+            // (Bytes.at b 1)))` copy-propagated `b` (neither op was in this list), RECOMPUTING the slice+
+            // to-bytes at each read; the recompute CONSUMES the (borrowed) source, so the 2nd read saw freed
+            // bytes → 0 — a wasm-only HIGH soundness miscompile (rust rebuilt correctly). Not multibyte-
+            // specific: an ASCII RUNTIME slice fails too; the breaker's "ASCII OK" used a CONSTANT slice (which
+            // const-folds, no runtime recompute). Keeping these two under the >= 2-use rule fixes it. (SCOPED
+            // to these two: the other Bytes/List/Map/Set/BigInt/Rational/Bin heap ops share the SAME latent
+            // copy-propagate shape, but forcing them kept regressed 3 cases [bin-parse invalid-component + a
+            // rope-keyed-map bytes-compact] — their kept-binding EMIT has its own bug to fix first (follow-up)
+            // before widening. Scalar READS — *Len/*Size/BytesAt/*Cmp/Contains/HasKeys — copy-propagate fine.)
+            | Core::StrToBytes { .. }
+            | Core::StrSlice { .. }
     )
 }
 
