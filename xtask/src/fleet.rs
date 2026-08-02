@@ -641,6 +641,17 @@ pub enum FleetCmd {
         #[arg(value_name = "REF")]
         r#ref: String,
     },
+    /// Preview what `publish-candidate` WOULD do for a merge-request's `--ref` (candidate branch, full
+    /// push refspec, lane, in-flight status) WITHOUT any side-effect. Read-only planning inspector for
+    /// the CI-gated dispatch path. See `fleet/CI-GATED-LANES-DESIGN.md`.
+    DispatchPlan {
+        /// The merge-request commit sha to plan a candidate for.
+        #[arg(value_name = "REF")]
+        r#ref: String,
+        /// The sending agent (names the candidate branch `cand/<agent>-<sha>`). Defaults to `unknown`.
+        #[arg(long, default_value = "unknown")]
+        agent: String,
+    },
     /// STAGE a batch of merge-request refs into a SCRATCH ref (`refs/fleet/batch-staging`) built off the
     /// CURRENT `trunk`, WITHOUT touching `trunk`. This closes the intermediate-rewind window at its source:
     /// pr-sync's historical batch build did `git reset --hard trunk` then `git merge --no-ff` each ref onto
@@ -862,6 +873,7 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::GateBatch { dry_run, limit } => gate_batch(&fleet, dry_run, limit),
         FleetCmd::CiStatus { target } => ci_status(&target),
         FleetCmd::LaneOf { r#ref } => lane_of_cmd(&r#ref),
+        FleetCmd::DispatchPlan { r#ref, agent } => dispatch_plan(&fleet, &r#ref, &agent),
         FleetCmd::BatchStage { refs } => batch_stage(&fleet, &refs),
         FleetCmd::BatchCommit { execute } => batch_commit(&fleet, execute),
     }
@@ -6777,6 +6789,124 @@ fn lane_of_cmd(r#ref: &str) {
     );
 }
 
+/// The candidate BRANCH NAME for an agent's merge-request `--ref`, as `cand/<agent>-<short-sha>`. This
+/// is the local branch the candidate PR is opened from. NB (pr-sync pilot gotcha #1): the scratch
+/// worktree is a DETACHED HEAD, so the push must use the FULL refspec `HEAD:refs/heads/<this>` — a bare
+/// `HEAD:<this>` errors ("src is a commit object, did you mean refs/heads/…"). See [`candidate_refspec`].
+/// Sanitizes the agent name to the git-ref-safe `[A-Za-z0-9._-]` (others → `-`) so an odd agent name
+/// can't produce an invalid ref. The sha is shortened to 12 chars (unambiguous, readable).
+fn candidate_branch(agent: &str, r#ref: &str) -> String {
+    let safe_agent: String = agent
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let short: String = r#ref.chars().take(12).collect();
+    format!("cand/{safe_agent}-{short}")
+}
+
+/// The FULL push refspec for a candidate branch pushed from a detached-HEAD scratch worktree:
+/// `HEAD:refs/heads/cand/<agent>-<sha>`. Using the fully-qualified `refs/heads/` form is REQUIRED
+/// (pilot gotcha #1) — git refuses `HEAD:cand/…` because the source is a commit object, not a branch.
+fn candidate_refspec(branch: &str) -> String {
+    format!("HEAD:refs/heads/{branch}")
+}
+
+/// The durable in-flight state record mapping a merge-request to the candidate PR pr-sync dispatched
+/// for it, written to `.claude/fleet/ci-dispatch/<mr-file>.json` (the convention pr-sync adopted). A
+/// scheduler pass reads these to: (a) not double-dispatch an MR already in flight, (b) map a
+/// merged/red PR back to its MR to `fleet ack`, (c) resume across ticks/restarts (the manifest, not
+/// memory, is the truth — same principle as the registry). See `fleet/CI-GATED-LANES-DESIGN.md`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CiDispatch {
+    /// The merge-request inbox filename this candidate is for (the key; also the file's own basename).
+    mr_file: String,
+    /// The sending agent.
+    agent: String,
+    /// The agent's commit sha (the MR `--ref`) that was cherry-picked into the candidate.
+    r#ref: String,
+    /// The candidate branch pushed to GitHub (`cand/<agent>-<sha>`).
+    cand_branch: String,
+    /// The candidate PR number, once `gh pr create` returned it.
+    pr_number: u64,
+    /// The collision-risk lane (`lane_of` label) — the scheduler's grouping key for parallel-vs-serial.
+    lane: String,
+}
+
+/// The `.claude/fleet/ci-dispatch/` directory holding the in-flight MR↔PR state records.
+fn ci_dispatch_dir(fleet: &Fleet) -> PathBuf {
+    fleet.root.join("ci-dispatch")
+}
+
+/// Read every in-flight [`CiDispatch`] record from `.claude/fleet/ci-dispatch/`. Skips any file that
+/// doesn't parse (partial write / foreign file) rather than failing — the scheduler tolerates a bad
+/// record the way `load()` tolerates a bad registry line. Used to see what's already dispatched (so a
+/// scheduler pass doesn't double-dispatch) and to map merged/red PRs back to their MRs.
+fn read_ci_dispatches(fleet: &Fleet) -> Vec<CiDispatch> {
+    std::fs::read_dir(ci_dispatch_dir(fleet))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".json"))
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .filter_map(|s| serde_json::from_str::<CiDispatch>(&s).ok())
+        .collect()
+}
+
+/// `fleet dispatch-plan <ref>`: print what `publish-candidate` WOULD do for a merge-request's `--ref`
+/// — the candidate branch, the full push refspec (pilot gotcha #1), the lane + parallel/serial, and
+/// whether an in-flight candidate for this ref already exists — WITHOUT any side-effect (no push, no
+/// PR). The read-only planning inspector for the CI-gated dispatch path (see
+/// `fleet/CI-GATED-LANES-DESIGN.md`); pr-sync's scheduler and a human can preview a dispatch. The live
+/// push+PR (`publish-candidate`) is a separate command, kept out of this so planning is always safe.
+fn dispatch_plan(fleet: &Fleet, r#ref: &str, agent: &str) {
+    let branch = candidate_branch(agent, r#ref);
+    let refspec = candidate_refspec(&branch);
+    // Lane from the ref's changed paths (same source as `lane-of`).
+    let paths: Vec<String> = Command::new("git")
+        .args(["show", "--name-only", "--format=", r#ref])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let lane = lane_of(&paths);
+    let already = read_ci_dispatches(fleet)
+        .into_iter()
+        .find(|d| d.r#ref == r#ref || d.agent == agent);
+    println!("dispatch-plan for {agent} @ {ref}:");
+    println!("  cand branch : {branch}");
+    println!("  push refspec: git push origin {refspec}");
+    println!("  gh pr create: --base main --head {branch}");
+    println!(
+        "  lane        : {} ({})",
+        lane.label(),
+        if lane.lands_in_parallel() {
+            "parallel"
+        } else {
+            "serialized"
+        }
+    );
+    match already {
+        Some(d) => println!(
+            "  in-flight   : YES — already dispatched as PR #{} (branch {}); do NOT re-dispatch",
+            d.pr_number, d.cand_branch
+        ),
+        None => println!("  in-flight   : no — safe to dispatch"),
+    }
+}
+
 /// Build the value-heap runtime store in the gate-batch scratch worktree (`cargo xtask build`), so the
 /// combined-tree gate can resolve the runtime by content address instead of false-failing every heap
 /// case as a store miss. Returns true on success. Runs in `wt` (its own `target/cadenza-store`).
@@ -10921,6 +11051,46 @@ mod tests {
         assert!(!lane_of(&["xtask/x.rs".into()]).lands_in_parallel());
         assert!(!lane_of(&["implementation/seed/crates/rcdzc/x.rs".into()]).lands_in_parallel());
         assert!(!Lane::mixed().lands_in_parallel());
+    }
+
+    #[test]
+    fn candidate_branch_and_refspec_are_ref_safe_and_fully_qualified() {
+        // Branch: cand/<agent>-<short-sha>, sha truncated to 12.
+        assert_eq!(
+            candidate_branch(
+                "v-fleet-tooling",
+                "55c9f407c002ee636d721c32ec081f9bfc474e99"
+            ),
+            "cand/v-fleet-tooling-55c9f407c002"
+        );
+        // An odd agent name is sanitized to git-ref-safe chars (spaces/slashes → '-').
+        assert_eq!(
+            candidate_branch("weird name/x", "abc123"),
+            "cand/weird-name-x-abc123"
+        );
+        // Refspec is the FULLY-QUALIFIED form (pilot gotcha #1) — a bare `HEAD:cand/…` would error.
+        assert_eq!(
+            candidate_refspec("cand/v-fleet-tooling-55c9f407c002"),
+            "HEAD:refs/heads/cand/v-fleet-tooling-55c9f407c002"
+        );
+    }
+
+    #[test]
+    fn ci_dispatch_record_round_trips_json() {
+        let d = CiDispatch {
+            mr_file: "000000019987-1977601-merge-request.json".into(),
+            agent: "v-fleet-tooling".into(),
+            r#ref: "55c9f407c002".into(),
+            cand_branch: "cand/v-fleet-tooling-55c9f407c002".into(),
+            pr_number: 1042,
+            lane: "fleet-tooling".into(),
+        };
+        let json = serde_json::to_string(&d).unwrap();
+        let back: CiDispatch = serde_json::from_str(&json).unwrap();
+        assert_eq!(d, back);
+        // The `ref` field serializes as "ref" (r#ref raw-identifier → plain key), so a hand-written /
+        // pr-sync-written record with "ref" round-trips too.
+        assert!(json.contains("\"ref\":\"55c9f407c002\""));
     }
 
     #[test]
