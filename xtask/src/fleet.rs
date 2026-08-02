@@ -7605,8 +7605,9 @@ fn schedule_plan(fleet: &Fleet, cap: usize) {
         queued.len()
     );
     if picks.is_empty() {
-        // Name the ACTUAL reason (PR #1340 review) — the 3 empty-picks causes read very differently to
-        // an operator, so don't collapse them into "collision".
+        // Name the ACTUAL reason (PR #1340 review) — the empty-picks causes (unresolved in-flight
+        // territory, empty queue, at-cap throttle, file-collision) read very differently to an operator,
+        // so don't collapse them into "collision".
         let reason = if in_flight_unknown {
             "an in-flight candidate's changed files can't be resolved, so no queued MR can be proven \
              collision-free (conservative)"
