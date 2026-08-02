@@ -1292,8 +1292,18 @@ mod status_snapshot_tests {
         )
         .unwrap();
 
-        // The fork summarized itself FROM LOCAL STATE (no model call — RecordingExecutor saw no effects)
-        // using the goal it inherited from the live session's materialized KV.
+        // The fork summarized itself FROM LOCAL STATE — no effects at all. ASSERT it (not just narrate):
+        // a local-state report must dispatch NOTHING (no model call, no world-action), so the fork's
+        // executor is never invoked. Pinning this is the point — a regression that made a report query
+        // perform effects (e.g. a model call slipping in, or a leaked world-action) would fail HERE, not
+        // silently pass (PR#1324 review).
+        assert!(
+            fork_exec.seen.is_empty(),
+            "a local-state report query must perform no effects, but the fork executor saw {}",
+            fork_exec.seen.len()
+        );
+
+        // The fork summarized itself using the goal it inherited from the live session's materialized KV.
         let snap = fork.status_snapshot(Some(0), 300_000);
         assert_eq!(
             snap.published
