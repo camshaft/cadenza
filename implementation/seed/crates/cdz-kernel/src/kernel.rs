@@ -180,6 +180,91 @@ impl Session {
         self.open.len()
     }
 
+    /// Assemble a structural [`StatusSnapshot`] — the CHEAP, non-interfering session-debug read (operator
+    /// session-query design). Reads ONLY already-materialized state (the log, the open-obligation set, the
+    /// armed-timer table, the published KV view): it appends NO event, runs NO fold, so the session can't
+    /// be derailed and doesn't know it was asked. This is the "is X alive/stalled/idle?" answer for free;
+    /// the semantic "what is X DOING?" answer is a fork-for-query (a fork's model summarizes itself).
+    ///
+    /// `now_ms` is passed by the CALLER (the kernel stays clock-free — §9c — it never reads the clock
+    /// itself; see `fire_due_timers`): it's used only to derive [`SessionState::Stalled`] from how long an
+    /// in-flight effect has been outstanding. `stall_after_ms` is the staleness threshold (e.g. 5 min); an
+    /// in-flight effect whose dispatch is older than it flips the state to `Stalled`. Passing `None` for
+    /// `now_ms` skips stall detection (state is Active/Quiescent/Closed only) — for a caller with no clock.
+    pub fn status_snapshot(&self, now_ms: Option<u64>, stall_after_ms: u64) -> StatusSnapshot {
+        // In-flight effects: each open id's DURABLE Dispatched frame carries its kind + target (what it's
+        // waiting on) + the dispatch deadline anchor. Scan the log once, keep those whose id is still open.
+        let mut in_flight = Vec::new();
+        let mut oldest_dispatch_ms: Option<u64> = None;
+        for e in &self.log {
+            if let EventBody::Dispatched {
+                id,
+                kind,
+                target,
+                deadline_ms,
+                ..
+            } = &e.body
+            {
+                if self.open.contains(&id.0) {
+                    in_flight.push(InFlight {
+                        kind: effect_kind_name(kind),
+                        target: target.clone(),
+                    });
+                    // The dispatch's deadline anchor (if any) doubles as its dispatch-time reference for
+                    // stall detection; track the oldest so a long-outstanding effect trips Stalled.
+                    if let Some(d) = deadline_ms {
+                        oldest_dispatch_ms =
+                            Some(oldest_dispatch_ms.map_or(*d, |o: u64| o.min(*d)));
+                    }
+                }
+            }
+        }
+
+        let closed = self
+            .log
+            .iter()
+            .any(|e| matches!(e.body, EventBody::Closed { .. }));
+        let has_work = !self.open.is_empty() || !self.armed_timers.is_empty();
+        // Stall: an in-flight effect outstanding longer than the threshold (only derivable with a clock).
+        let stalled = match (now_ms, oldest_dispatch_ms) {
+            (Some(now), Some(oldest)) if !self.open.is_empty() => {
+                now.saturating_sub(oldest) > stall_after_ms
+            }
+            _ => false,
+        };
+        let state = if closed {
+            SessionState::Closed
+        } else if stalled {
+            SessionState::Stalled
+        } else if has_work {
+            SessionState::Active
+        } else {
+            SessionState::Quiescent
+        };
+
+        // Tier-1 published view: the session's KV entries under the `public/` prefix — the semantic status
+        // it CHOSE to expose (the full KV is higher-privilege, not surfaced here).
+        let published = self
+            .kv
+            .prefix_scan(b"public/")
+            .into_iter()
+            .map(|(k, v)| (k.to_vec(), v.to_vec()))
+            .collect();
+
+        StatusSnapshot {
+            state,
+            event_count: self.log.len() as u64,
+            last_event_kind: self
+                .log
+                .last()
+                .map(|e| event_body_name(&e.body))
+                .unwrap_or("(empty)"),
+            in_flight,
+            armed_timers: self.armed_timers.len() as u32,
+            published,
+        }
+    }
+
     /// Deliver an inbound event and run the fold→dispatch cycle to quiescence: fold the event, perform
     /// each requested (and authorized) effect, fold its result, repeat until no new effects. This is
     /// the reactive step (§9d): appending the inbound event is what drives the reducer.
@@ -724,6 +809,54 @@ pub struct Snapshot {
     pub reducer: Hash,
 }
 
+/// A structural, OUT-OF-BAND status report of a session — the CHEAP, non-interfering complement to a
+/// fork-for-query (operator session-debug design, §4b tier-2 + tier-1). Assembled by reading the
+/// session's ALREADY-MATERIALIZED state ([`Session::status_snapshot`]) — it appends NO event, runs NO
+/// fold, and the session doesn't know it was asked, so it can never derail a session mid-work. Answers
+/// "is X alive / stalled / idle?" for free (no model call); the semantic "what is X actually DOING?"
+/// answer is the fork-for-query path (a fork's model summarizes itself). A supervisor or the concierge
+/// reads this to route: cheap liveness here, spin a fork only when the semantic story is wanted.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct StatusSnapshot {
+    /// Derived liveness state (see [`SessionState`]).
+    pub state: SessionState,
+    /// Total events on the log — a coarse progress proxy.
+    pub event_count: u64,
+    /// The tip event's variant name (`"EffectResult"`, `"Dispatched"`, `"Inbound"`, …) — what it last did.
+    pub last_event_kind: &'static str,
+    /// Dispatched-but-unsettled effects (the §16c-S1 open-obligation set) — what the session is WAITING on.
+    pub in_flight: Vec<InFlight>,
+    /// Count of armed-but-unfired timers (§16c-S5).
+    pub armed_timers: u32,
+    /// The session's OWN published view: its KV entries under the `public/` prefix (a semantic status the
+    /// session CHOSE to expose — §4b tier-1). The full KV is NOT here (higher-privilege access); only what
+    /// the session published for observers. Empty if it published nothing (the structural fields still apply).
+    pub published: std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+}
+
+/// A session's derived liveness state (§4b tier-2 — a structural fact, not something the session writes).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SessionState {
+    /// Closed (a `Closed` event is on the log) — carries no more work.
+    Closed,
+    /// An in-flight effect has been outstanding longer than the stall threshold — LIKELY WEDGED (the
+    /// wedge-detection triad as one structural fact: in-flight since T with now − T > threshold).
+    Stalled,
+    /// Has un-settled work (in-flight effects and/or armed timers) — actively doing something.
+    Active,
+    /// No in-flight effects, no armed timers, not closed — idle, awaiting input.
+    Quiescent,
+}
+
+/// One dispatched-but-unsettled effect in a [`StatusSnapshot`] — what a session is blocked/waiting on.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct InFlight {
+    /// The effect kind (`"Http"`, `"Model"`, `"Shell"`, …).
+    pub kind: &'static str,
+    /// The effect's resolved target (URL / model id / command) — what it's waiting on.
+    pub target: String,
+}
+
 /// Does the reducer FOLD this event body? This defines the set of "observable" events; `replay`
 /// consults it directly, and the live `drive` path folds the SAME set by construction — it only ever
 /// calls `fold_tip` at append sites for observable events (Inbound tip, EffectResult, TimerFired,
@@ -734,6 +867,33 @@ pub struct Snapshot {
 /// OUTCOMES — inbound messages, effect results, timer fires, authorization denials (a denial is recovery
 /// feedback, §9d) — but NOT the kernel's internal bookkeeping (`Dispatched`/`TimerArmed` exist only to
 /// drive the crash-recovery obligation sets) nor `Genesis` (session setup, not a fold input).
+/// The variant name of an event body, for a [`StatusSnapshot`]'s human-readable "last event kind" (a
+/// debug label, not a wire tag — `event_ast`/`event` own the canonical encodings).
+fn event_body_name(body: &EventBody) -> &'static str {
+    match body {
+        EventBody::Genesis { .. } => "Genesis",
+        EventBody::Inbound { .. } => "Inbound",
+        EventBody::Dispatched { .. } => "Dispatched",
+        EventBody::EffectResult { .. } => "EffectResult",
+        EventBody::TimerArmed { .. } => "TimerArmed",
+        EventBody::TimerFired { .. } => "TimerFired",
+        EventBody::AuthzDenied { .. } => "AuthzDenied",
+        EventBody::Closed { .. } => "Closed",
+    }
+}
+
+/// The variant name of an effect kind, for a [`StatusSnapshot`]'s in-flight report (a debug label).
+fn effect_kind_name(kind: &EffectKind) -> &'static str {
+    match kind {
+        EffectKind::Shell => "Shell",
+        EffectKind::Http => "Http",
+        EffectKind::Model => "Model",
+        EffectKind::Now => "Now",
+        EffectKind::Timer => "Timer",
+        EffectKind::Emit => "Emit",
+    }
+}
+
 fn observable(body: &EventBody) -> bool {
     match body {
         EventBody::Inbound { .. }
@@ -763,4 +923,103 @@ fn idempotency_key_for(id: EffectId, req: &EffectRequest) -> Hash {
     });
     buf.extend_from_slice(req.target.as_bytes());
     Hash::of(&buf)
+}
+
+#[cfg(test)]
+mod status_snapshot_tests {
+    use super::*;
+    use crate::authz::Authorizer;
+    use crate::effect::{Capability, EffectKind, EffectRequest, ResourcePredicate, Timeliness};
+    use crate::event::{ContentType, EventBody};
+    use crate::executor::RecordingExecutor;
+    use crate::reducer::{FoldOutput, Reducer};
+
+    // A reducer that, on an inbound message, publishes a semantic status to `public/` and arms a Timer
+    // (an open obligation that stays unsettled — no executor call — so the session reads as Active).
+    struct StatusReducer;
+    impl Reducer for StatusReducer {
+        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    kv.put(b"public/status".to_vec(), b"investigating auth".to_vec());
+                    kv.put(b"private/secret".to_vec(), b"nope".to_vec());
+                    FoldOutput::with_effects(vec![crate::reducer::Effect {
+                        request: EffectRequest {
+                            kind: EffectKind::Timer,
+                            target: "1000".into(), // absolute deadline ms
+                            payload: None,
+                            timeliness: Timeliness::Interactive,
+                        },
+                        token: None,
+                    }])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    fn timer_cap() -> Authorizer {
+        Authorizer::new(vec![Capability {
+            kind: EffectKind::Timer,
+            predicate: ResourcePredicate::Any,
+        }])
+    }
+
+    fn inbound() -> EventBody {
+        EventBody::Inbound {
+            content_type: ContentType {
+                family: "message".into(),
+                version: 1,
+            },
+            payload: crate::effect::Payload::Inline(b"go".to_vec().into()),
+        }
+    }
+
+    #[test]
+    fn fresh_session_is_quiescent_with_no_published_view() {
+        let s = Session::genesis(Hash::of(b"r"));
+        let snap = s.status_snapshot(Some(0), 300_000);
+        assert_eq!(snap.state, SessionState::Quiescent);
+        assert_eq!(snap.event_count, 1); // just genesis
+        assert_eq!(snap.last_event_kind, "Genesis");
+        assert!(snap.in_flight.is_empty());
+        assert_eq!(snap.armed_timers, 0);
+        assert!(snap.published.is_empty());
+    }
+
+    #[test]
+    fn active_session_reports_armed_timer_and_only_the_public_kv() {
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"status-v1"));
+        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+            .unwrap();
+
+        let snap = s.status_snapshot(Some(500), 300_000); // now=500ms, well within the 5min threshold
+                                                          // Active: the armed-but-unfired timer is un-settled work.
+        assert_eq!(snap.state, SessionState::Active);
+        assert_eq!(snap.armed_timers, 1);
+        // The published view surfaces ONLY the `public/` key, NOT the private one (higher-privilege).
+        assert_eq!(
+            snap.published
+                .get(b"public/status".as_slice())
+                .map(|v| &v[..]),
+            Some(&b"investigating auth"[..])
+        );
+        assert!(!snap.published.contains_key(b"private/secret".as_slice()));
+    }
+
+    #[test]
+    fn closed_session_reports_closed() {
+        let mut s = Session::genesis(Hash::of(b"r"));
+        // Append a Closed event directly (a session that shut down).
+        s.append(
+            EventBody::Closed {
+                outcome: crate::effect::Payload::Inline(b"".to_vec().into()),
+            },
+            None,
+        );
+        let snap = s.status_snapshot(Some(0), 300_000);
+        assert_eq!(snap.state, SessionState::Closed);
+        assert_eq!(snap.last_event_kind, "Closed");
+    }
 }
