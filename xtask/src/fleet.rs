@@ -692,6 +692,28 @@ pub enum FleetCmd {
         #[arg(long, default_value = "unknown")]
         agent: String,
     },
+    /// DISPATCH a merge-request as a CI-gated candidate PR (I3, operator-greenlit 2026-08-02): re-parent
+    /// the `--ref` commit onto `origin/main` in a detached scratch worktree, push `cand/<agent>-<sha>`,
+    /// `gh pr create --base main`, arm `gh pr merge --squash --auto`, and record the MR↔PR mapping in
+    /// `.claude/fleet/ci-dispatch/<mr-file>.json`. GitHub auto-merges on green; the reaper (I4) observes.
+    /// DRY by default (prints the plan + the exact commands, no side-effects); pass `--execute` to
+    /// actually push + open the PR. Idempotent: refuses to re-dispatch an MR already in flight. See
+    /// `fleet/CI-GATED-LANES-DESIGN.md`.
+    PublishCandidate {
+        /// The merge-request commit sha to dispatch as a candidate.
+        #[arg(value_name = "REF")]
+        r#ref: String,
+        /// The sending agent (names the candidate branch `cand/<agent>-<sha>` + the ci-dispatch record).
+        #[arg(long, default_value = "unknown")]
+        agent: String,
+        /// The merge-request inbox filename (the ci-dispatch record key). Defaults to a synthesized name.
+        #[arg(long, default_value = "")]
+        mr_file: String,
+        /// Actually push + open the PR. Without this the command is a DRY preview (no side-effects) —
+        /// the safe default so a mis-fire can't dispatch. The live scheduler (I4) passes `--execute`.
+        #[arg(long)]
+        execute: bool,
+    },
     /// Preview one I4 SCHEDULER pass: read the queued merge-requests + in-flight `ci-dispatch` state
     /// and print which MRs would be dispatched next (honoring the in-flight cap + per-lane
     /// serialization), WITHOUT side-effects. See `fleet/CI-GATED-LANES-DESIGN.md`.
@@ -931,6 +953,12 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
         FleetCmd::CiStatus { target } => ci_status(&target),
         FleetCmd::LaneOf { r#ref } => lane_of_cmd(&r#ref),
         FleetCmd::DispatchPlan { r#ref, agent } => dispatch_plan(&fleet, &r#ref, &agent),
+        FleetCmd::PublishCandidate {
+            r#ref,
+            agent,
+            mr_file,
+            execute,
+        } => publish_candidate(&fleet, &r#ref, &agent, &mr_file, execute),
         FleetCmd::SchedulePlan { cap } => schedule_plan(&fleet, cap),
         FleetCmd::MrStatus { query } => mr_status(&fleet, &query),
         FleetCmd::BatchStage { refs } => batch_stage(&fleet, &refs),
@@ -7640,6 +7668,175 @@ fn dispatch_plan(fleet: &Fleet, r#ref: &str, agent: &str) {
         ),
         None => println!("  in-flight   : no — safe to dispatch"),
     }
+}
+
+/// Write (or overwrite) the in-flight `CiDispatch` record for a candidate at
+/// `.claude/fleet/ci-dispatch/<mr-file>.json`. The MR↔PR mapping I3 writes + I4's reaper reads. The
+/// `mr_file` basename (already `<...>.json`) is the record key + filename, matching pr-sync's convention.
+fn write_ci_dispatch(fleet: &Fleet, d: &CiDispatch) -> std::io::Result<()> {
+    let dir = ci_dispatch_dir(fleet);
+    std::fs::create_dir_all(&dir)?;
+    let name = if d.mr_file.ends_with(".json") {
+        d.mr_file.clone()
+    } else {
+        format!("{}.json", d.mr_file)
+    };
+    let json = serde_json::to_string_pretty(d).expect("serialize CiDispatch");
+    // Atomic write (tmp + rename) so a concurrent reader never sees a half-written record.
+    let tmp = dir.join(format!(".{name}.tmp"));
+    std::fs::write(&tmp, json.as_bytes())?;
+    std::fs::rename(&tmp, dir.join(&name))
+}
+
+/// I3 — `fleet publish-candidate <ref>`: dispatch a merge-request as a CI-gated candidate PR
+/// (operator-greenlit 2026-08-02). DRY by default (preview + the exact commands, no side-effects);
+/// `execute=true` runs the live push + PR. The mechanical half of the executor pr-sync currently does
+/// by hand each MR. Idempotent: refuses to re-dispatch a ref already in flight.
+///
+/// Live path (execute), following the pilot-validated recipe (`fleet/CI-GATED-LANES-DESIGN.md`):
+///
+/// 1. `git worktree add --detach <scratch> origin/main` — a throwaway worktree at the published tip.
+/// 2. `git cherry-pick <ref>` there — re-parent the SINGLE MR commit onto origin/main.
+/// 3. `candidate_dispatch_argv` (push cand branch / gh pr create --base main / gh pr merge --squash --auto).
+/// 4. scrape the PR number, write the `CiDispatch` record, remove the scratch worktree.
+///
+/// Any step failing aborts + cleans up the scratch worktree; nothing partial is recorded.
+fn publish_candidate(fleet: &Fleet, r#ref: &str, agent: &str, mr_file: &str, execute: bool) {
+    // Idempotency: never re-dispatch a ref/agent already in flight (the reaper owns concluding it).
+    if let Some(d) = read_ci_dispatches(fleet)
+        .into_iter()
+        .find(|d| d.r#ref == r#ref || (d.agent == agent && !agent.is_empty() && agent != "unknown"))
+    {
+        eprintln!(
+            "publish-candidate: '{agent}' @ {ref} is ALREADY in flight as PR #{} (branch {}) — refusing to re-dispatch.",
+            d.pr_number, d.cand_branch
+        );
+        return;
+    }
+    let branch = candidate_branch(agent, r#ref);
+    let lane = lane_label_for_ref(r#ref);
+    let argv = candidate_dispatch_argv(&branch);
+    let key = if mr_file.is_empty() {
+        format!(
+            "publish-{agent}-{}",
+            &r#ref.chars().take(12).collect::<String>()
+        )
+    } else {
+        mr_file.to_string()
+    };
+
+    if !execute {
+        println!(
+            "publish-candidate DRY for {agent} @ {ref} (lane {lane}) — pass --execute to dispatch:"
+        );
+        println!("  0. git worktree add --detach <scratch> origin/main  (+ git cherry-pick {ref})");
+        for (i, cmd) in argv.iter().enumerate() {
+            println!("  {}. {}", i + 1, cmd.join(" "));
+        }
+        println!("  → would record .claude/fleet/ci-dispatch/{key}");
+        return;
+    }
+
+    // ── LIVE dispatch ──
+    // Scratch worktree at a unique path (ref-derived; no clock — keep it deterministic per ref).
+    let scratch = fleet
+        .repo
+        .join("target")
+        .join(format!("cand-scratch-{}", branch.replace('/', "-")));
+    let scratch_s = scratch.to_string_lossy().to_string();
+    // Clean any stale scratch from a prior aborted run first.
+    let _ = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["worktree", "remove", "--force", &scratch_s])
+        .output();
+    let cleanup = |repo: &std::path::Path, s: &str| {
+        let _ = Command::new("git")
+            .current_dir(repo)
+            .args(["worktree", "remove", "--force", s])
+            .output();
+    };
+    // 1. Fresh detached worktree at the published tip.
+    let add = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["worktree", "add", "--detach", &scratch_s, "origin/main"])
+        .output();
+    if !matches!(add, Ok(ref o) if o.status.success()) {
+        eprintln!(
+            "publish-candidate: `git worktree add --detach {scratch_s} origin/main` FAILED — aborting (did you `git fetch` origin first?)."
+        );
+        cleanup(&fleet.repo, &scratch_s);
+        return;
+    }
+    // 2. Re-parent the single MR commit onto origin/main.
+    let pick = Command::new("git")
+        .current_dir(&scratch)
+        .args(["cherry-pick", r#ref])
+        .output();
+    if !matches!(pick, Ok(ref o) if o.status.success()) {
+        eprintln!(
+            "publish-candidate: `git cherry-pick {ref}` onto origin/main CONFLICTS — this MR needs a rebase; NOT dispatching. (reject the sender with a stale-base note.)"
+        );
+        cleanup(&fleet.repo, &scratch_s);
+        return;
+    }
+    let cand_sha = Command::new("git")
+        .current_dir(&scratch)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    // 3. push cand branch → gh pr create → gh pr merge --auto, each from the scratch worktree.
+    for (i, cmd) in argv.iter().enumerate() {
+        let out = Command::new(&cmd[0])
+            .current_dir(&scratch)
+            .args(&cmd[1..])
+            .output();
+        let ok = matches!(out, Ok(ref o) if o.status.success());
+        if !ok {
+            eprintln!(
+                "publish-candidate: step {} FAILED: `{}` — aborting + cleaning up. stderr:\n{}",
+                i + 1,
+                cmd.join(" "),
+                out.as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
+                    .unwrap_or_default()
+            );
+            cleanup(&fleet.repo, &scratch_s);
+            return;
+        }
+        // The `gh pr create` step (index 1) prints the PR URL — scrape the trailing number.
+        if i == 1
+            && let Ok(o) = out
+        {
+            let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let pr_number = url
+                .rsplit('/')
+                .next()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            let d = CiDispatch {
+                mr_file: key.clone(),
+                agent: agent.to_string(),
+                r#ref: r#ref.to_string(),
+                cand_branch: branch.clone(),
+                cand_sha: cand_sha.clone(),
+                pr_number,
+                lane: lane.clone(),
+                status: dispatch_status_in_flight(),
+            };
+            if let Err(e) = write_ci_dispatch(fleet, &d) {
+                eprintln!(
+                    "publish-candidate: PR #{pr_number} opened but FAILED to write the ci-dispatch record ({e}) — the reaper won't track it; record by hand: {key}"
+                );
+            }
+            println!(
+                "publish-candidate: dispatched {agent} @ {ref} → PR #{pr_number} (branch {branch}, lane {lane}); auto-merge armed, ci-dispatch recorded."
+            );
+        }
+    }
+    cleanup(&fleet.repo, &scratch_s);
 }
 
 /// The lane label for a queued merge-request, computed from its `--ref`'s changed paths (same source
