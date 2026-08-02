@@ -502,6 +502,20 @@ fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
         "the reducer's continuation token must reach the durable Dispatched frame (§19e)"
     );
 
+    // §19b/§19e (B): the token RIDES the EffectResult too — the kernel copies it from the Dispatched
+    // frame onto the result event when it records the result, so a wasm reducer's fold can read it back
+    // as the guest's `resumes` without touching the log/map. The executor here returned Ok, so a result
+    // was recorded; its token must equal the dispatch's token (derived from the durable frame).
+    let result_token = session.log().iter().find_map(|e| match &e.body {
+        EventBody::EffectResult { token, .. } => Some(token.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        result_token,
+        Some(Some(b"guest-cont-42".to_vec())),
+        "the EffectResult must carry the same token as its Dispatched frame (§19e (B) — rides the result)"
+    );
+
     // Control: a token-free reducer (the common Rust path via FoldOutput::with) records token None.
     let mut exec2 = RecordingExecutor::new();
     let mut s2 = Session::genesis(Hash::of(b"notoken-v1"));

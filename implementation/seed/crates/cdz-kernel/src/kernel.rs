@@ -444,10 +444,22 @@ impl Session {
             // Already settled (e.g. timed out earlier) — drop the late result. No double-resume.
             return Vec::new();
         }
+        // (B) The token RIDES the result: copy it from id's DURABLE Dispatched frame (§19b/§19e) so the
+        // reducer's fold reads `resumes` off the event, never the log/map (fold stays pure). Derived from
+        // the authoritative frame → replay-deterministic. A missing frame is a kernel invariant violation
+        // (every result has a prior dispatch — record_result is only reached after appending Dispatched);
+        // trap loudly rather than silently emit a None-token result that would misroute the guest resume.
+        let token = self.dispatch_token_of(id).unwrap_or_else(|| {
+            panic!(
+                "cdz-kernel invariant violated: EffectResult for {id:?} has no Dispatched frame to \
+                 derive its continuation token from (§19b/§19e (B))"
+            )
+        });
         let result_hash = self.append(
             EventBody::EffectResult {
                 id,
                 result: outcome,
+                token,
             },
             Some(dispatch_hash),
         );
@@ -505,6 +517,20 @@ impl Session {
             .iter()
             .find(|e| matches!(&e.body, EventBody::Dispatched { id: d, .. } if *d == id))
             .map(|e| e.hash())
+    }
+
+    /// The reducer continuation token that effect `id`'s `Dispatched` frame carried (§19b/§19e (B)):
+    /// `Some(Some(token))` = a token was recorded, `Some(None)` = a token-free dispatch, `None` = no
+    /// Dispatched frame for `id` (an invariant violation — every result has a prior dispatch). Derived
+    /// from the DURABLE frame (the authoritative record), so it's replay-deterministic: the same result
+    /// gets the same token whether built live or reconstructed on replay. This is how the token "rides
+    /// the EffectResult" — [`record_result`] copies it onto the result event so a wasm reducer's fold can
+    /// read it back as the guest's `resumes` without fold ever touching the log/map (fold stays pure).
+    fn dispatch_token_of(&self, id: EffectId) -> Option<Option<Vec<u8>>> {
+        self.log.iter().find_map(|e| match &e.body {
+            EventBody::Dispatched { id: d, token, .. } if *d == id => Some(token.clone()),
+            _ => None,
+        })
     }
 
     /// Hash of the current tip (last log event) — the `cause` for effects its fold emits.

@@ -134,6 +134,7 @@ mod tests {
         let result = EventBody::EffectResult {
             id: EffectId(7),
             result: EffectOutcome::Ok(None),
+            token: None,
         };
         let timer = EventBody::TimerFired {
             id: EffectId(9),

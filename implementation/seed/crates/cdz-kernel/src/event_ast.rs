@@ -19,15 +19,16 @@
 //! - body is one of:
 //!   `(genesis <hash>)` ·
 //!   `(inbound <family:str> <version:int> <payload>)` ·
-//!   `(dispatched <id:int> <kind> <target:str> <idem:hash> <deadline>)` ·
-//!   `(effect-result <id:int> <outcome>)` ·
+//!   `(dispatched <id:int> <kind> <target:str> <idem:hash> <deadline> <token>)` ·
+//!   `(effect-result <id:int> <outcome> <token>)` ·
 //!   `(timer-armed <id:int> <deadline_ms:int>)` ·
 //!   `(timer-fired <id:int> <fired_ms:int>)` ·
 //!   `(authz-denied <id:int> <reason:str>)` ·
 //!   `(closed <payload>)`
 //! - `<kind>` a `Name` atom (shell/http/model/now/timer/emit); `<deadline>` = `(none)` | `(ms <int>)`;
 //!   `<payload>` = `(inline <bytes>)` | `(blob <hash>)`; `<outcome>` = `(ok <payload-opt>)` |
-//!   `(err <str>)` | `(timed-out)`; `<payload-opt>` = `(none)` | `(some <payload>)`.
+//!   `(err <str>)` | `(timed-out)`; `<payload-opt>` = `(none)` | `(some <payload>)`; `<token>` =
+//!   `(none)` | `(token <bytes>)`.
 //!
 //! Hashes + inline payloads ride as `Leaf::Bytes` (arbitrary bytes, not necessarily UTF-8 — the right
 //! value form). u64 ids/versions/deadlines ride as `Leaf::Int` (a `BigInt`, decoded back with a range
@@ -212,11 +213,12 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             let tok = opt_bytes_form(b, token.as_deref());
             b.list(vec![head, idv, k, t, idem, dl, tok])
         }
-        EventBody::EffectResult { id, result } => {
+        EventBody::EffectResult { id, result, token } => {
             let head = b.name("effect-result");
             let idv = u64_leaf(b, id.0);
             let o = outcome_form(b, result);
-            b.list(vec![head, idv, o])
+            let tok = opt_bytes_form(b, token.as_deref());
+            b.list(vec![head, idv, o, tok])
         }
         EventBody::TimerArmed { id, deadline_ms } => {
             let head = b.name("timer-armed");
@@ -445,12 +447,13 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
             }
         }
         "effect-result" => {
-            let [idv, o] = form(a, id, "effect-result")? else {
+            let [idv, o, tok] = form(a, id, "effect-result")? else {
                 return Err(shape("effect-result arity"));
             };
             EventBody::EffectResult {
                 id: EffectId(read_u64(a, *idv)?),
                 result: read_outcome(a, *o)?,
+                token: read_opt_bytes(a, *tok)?,
             }
         }
         "timer-armed" => {
@@ -570,6 +573,7 @@ mod tests {
                 body: EventBody::EffectResult {
                     id: EffectId(7),
                     result: EffectOutcome::Ok(Some(Payload::Inline(b"body".to_vec()))),
+                    token: Some(b"resume-tok".to_vec()),
                 },
             },
             Event {
@@ -578,6 +582,7 @@ mod tests {
                 body: EventBody::EffectResult {
                     id: EffectId(8),
                     result: EffectOutcome::Ok(None),
+                    token: None,
                 },
             },
             Event {
@@ -586,6 +591,7 @@ mod tests {
                 body: EventBody::EffectResult {
                     id: EffectId(9),
                     result: EffectOutcome::Err("boom".into()),
+                    token: None,
                 },
             },
             Event {
@@ -594,6 +600,7 @@ mod tests {
                 body: EventBody::EffectResult {
                     id: EffectId(9),
                     result: EffectOutcome::TimedOut,
+                    token: None,
                 },
             },
             Event {
