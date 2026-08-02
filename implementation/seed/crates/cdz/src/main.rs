@@ -1134,7 +1134,7 @@ fn chor_no_actors_reason(bundle: &str, is_sexp: bool) -> String {
         "the file is not a readable protocol s-expr (check for balanced parens and a known head: `seq`, `comm`, `choice`, `branch`, `rec`, `var`, `done`)".to_string()
     } else if let Some(role) = b.strip_prefix("not-projectable: ") {
         format!(
-            "role `{role}` lacks knowledge of a choice — have the deciding role send `{role}` a distinct selection message as its first action in every branch it participates in"
+            "role `{role}` lacks knowledge of a choice — have the deciding role send `{role}` a distinct selection message as its first action in every branch it participates in, or make `{role}`'s behaviour identical in all branches"
         )
     } else if b == "not-well-formed" {
         "the protocol is not well-formed (undeclared/self comm, undeclared chooser, non-branch in a choice, or an unbound rec-var)".to_string()
@@ -9931,9 +9931,15 @@ mod tests {
             !r.contains("export"),
             "the .sexp not-a-protocol case must not mention exports"
         );
-        // not-projectable: names the role AND the selection-message fix.
+        // not-projectable: names the role AND BOTH valid fixes — the selection-message notification and the
+        // rule-(b) escape hatch (make the role's behaviour identical in all branches), matching the package's
+        // own `chor-diag` diagnostic so the shipping CLI message is at parity.
         let r = chor_no_actors_reason("not-projectable: Shipper", true);
         assert!(r.contains("Shipper") && r.contains("selection message"));
+        assert!(
+            r.contains("identical in all branches"),
+            "the not-projectable message must also offer the rule-(b) fix (identical behaviour in all branches)"
+        );
         // not-well-formed: lists the concrete wf failure modes.
         let r = chor_no_actors_reason("not-well-formed", false);
         assert!(r.contains("not well-formed") && r.contains("self comm"));
