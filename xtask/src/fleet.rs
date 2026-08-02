@@ -6882,10 +6882,31 @@ struct CiDispatch {
     r#ref: String,
     /// The candidate branch pushed to GitHub (`cand/<agent>-<sha>`).
     cand_branch: String,
+    /// The RE-PARENTED candidate commit sha (the ref cherry-picked onto `origin/main` in the scratch
+    /// worktree — what the PR actually contains). `#[serde(default)]` so a record written before this
+    /// field existed still parses. Matches pr-sync's live schema.
+    #[serde(default)]
+    cand_sha: String,
     /// The candidate PR number, once `gh pr create` returned it.
     pr_number: u64,
     /// The collision-risk lane (`lane_of` label) — the scheduler's grouping key for parallel-vs-serial.
     lane: String,
+    /// Lifecycle status: `in-flight` while gating, resolved to `merged`/`rejected` on reap. The reaper
+    /// skips a record that is no longer `in-flight` (idempotent — a re-run doesn't re-ack). Defaults to
+    /// `in-flight` for a record written without it. Matches pr-sync's live schema.
+    #[serde(default = "dispatch_status_in_flight")]
+    status: String,
+}
+
+/// Default `CiDispatch::status` — a record without an explicit status is assumed still in flight.
+fn dispatch_status_in_flight() -> String {
+    "in-flight".to_string()
+}
+
+/// Whether a dispatch record is still IN FLIGHT (not yet reaped to merged/rejected). The reaper only
+/// acts on in-flight records, so a resolved one is skipped — idempotent across scheduler passes.
+fn dispatch_is_in_flight(d: &CiDispatch) -> bool {
+    d.status == "in-flight"
 }
 
 /// The `.claude/fleet/ci-dispatch/` directory holding the in-flight MR↔PR state records.
@@ -7096,7 +7117,11 @@ fn pr_merged_and_verdict(pr: u64) -> (bool, CiVerdict) {
 /// queued MRs it WOULD dispatch next (via the pure [`schedule_dispatch`]), honoring the cap + per-lane
 /// serialization. The read-only preview for pr-sync + humans; skips MRs already in flight.
 fn schedule_plan(fleet: &Fleet, cap: usize) {
-    let dispatched = read_ci_dispatches(fleet);
+    // Only IN-FLIGHT records count — a resolved (merged/rejected) record is done, not occupying a slot.
+    let dispatched: Vec<CiDispatch> = read_ci_dispatches(fleet)
+        .into_iter()
+        .filter(dispatch_is_in_flight)
+        .collect();
     // ── REAP preview: what each in-flight candidate PR resolves to right now. ──
     if !dispatched.is_empty() {
         println!("in-flight ({}):", dispatched.len());
@@ -11380,8 +11405,10 @@ mod tests {
             agent: "v-fleet-tooling".into(),
             r#ref: "55c9f407c002".into(),
             cand_branch: "cand/v-fleet-tooling-55c9f407c002".into(),
+            cand_sha: "05c046544".into(),
             pr_number: 1042,
             lane: "fleet-tooling".into(),
+            status: "in-flight".into(),
         };
         let json = serde_json::to_string(&d).unwrap();
         let back: CiDispatch = serde_json::from_str(&json).unwrap();
@@ -11389,6 +11416,26 @@ mod tests {
         // The `ref` field serializes as "ref" (r#ref raw-identifier → plain key), so a hand-written /
         // pr-sync-written record with "ref" round-trips too.
         assert!(json.contains("\"ref\":\"55c9f407c002\""));
+    }
+
+    #[test]
+    fn ci_dispatch_parses_pr_syncs_live_schema_and_defaults_missing_fields() {
+        // A record in pr-sync's EXACT live on-disk shape (verified against .claude/fleet/ci-dispatch/).
+        let live = r#"{"cand_branch":"cand/v-syntax-ce8ec7b75","pr_number":1052,"agent":"v-syntax","ref":"ce8ec7b75","cand_sha":"05c046544","lane":"code","mr_file":"000000019917-2200450-merge-request.json","status":"in-flight"}"#;
+        let d: CiDispatch = serde_json::from_str(live).expect("pr-sync's live schema must parse");
+        assert_eq!(d.pr_number, 1052);
+        assert_eq!(d.cand_sha, "05c046544");
+        assert_eq!(d.lane, "code");
+        assert!(dispatch_is_in_flight(&d));
+        // A legacy record missing cand_sha/status still parses; status defaults to in-flight.
+        let legacy = r#"{"mr_file":"m.json","agent":"a","ref":"r","cand_branch":"b","pr_number":9,"lane":"docs"}"#;
+        let d2: CiDispatch = serde_json::from_str(legacy).expect("legacy record must parse");
+        assert_eq!(d2.cand_sha, "");
+        assert!(dispatch_is_in_flight(&d2)); // defaulted to in-flight
+        // A resolved record is NOT in flight (reaper skips it → idempotent).
+        let done = r#"{"mr_file":"m.json","agent":"a","ref":"r","cand_branch":"b","pr_number":9,"lane":"docs","status":"merged"}"#;
+        let d3: CiDispatch = serde_json::from_str(done).unwrap();
+        assert!(!dispatch_is_in_flight(&d3));
     }
 
     #[test]
