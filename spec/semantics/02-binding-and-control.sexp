@@ -1386,6 +1386,41 @@
   (call   main (: false Bool) (: true Bool) (: 0 Int64))
   (output (: 0 Int64)))
 
+; The short-circuit shield must survive OPTIMIZATION, not just naive evaluation. When a trapping
+; runtime subexpression appears TWICE inside a short-circuited operand, a common-subexpression
+; elimination (CSE) pass may compute it once and hoist that single evaluation ABOVE the connective —
+; and if the CSE frontier treats an `and`/`or` right operand as unconditionally reached (rather than
+; guarded by the left), the hoisted divide runs even on the short-circuit path, resurrecting the very
+; trap the connective shields (adv-55: a wasm CSE hoisted `(/ 10 d)` out of the `and` rhs, so
+; `main(false, 0)` spuriously trapped divide-by-zero at O0..O3 while the rust backend stayed correct).
+; The single-division cases above cannot catch this: the bug needs the divide REPEATED so CSE has two
+; occurrences to coalesce. Each case pins that the connective's laziness binds the OPTIMIZER — the
+; shielded operand's trap must not fire on the skip path no matter how the duplicate is folded.
+
+(case "a repeated trapping divide in a short-circuited and's right operand stays shielded (CSE must not hoist it past the connective)"
+  (doc    "`(and b (= (/ 10 d) (/ 10 d)))` with `b`=false short-circuits, so the right operand — and BOTH
+           of its `(/ 10 d)` divides — must not be evaluated: `main(false, 0)` is 0, NOT a divide-by-zero
+           trap (core-semantics.md #Boolean Connectives Short-Circuit). With `b`=true the right runs and
+           `(= (/ 10 5) (/ 10 5))` is true → 1. The divide is DUPLICATED so a common-subexpression pass has
+           two occurrences to coalesce; a CSE that treats the `and` rhs as unconditionally reached would
+           hoist the shared divide above the connective and trap on the false-left skip path (adv-55). Pins
+           that CSE respects the short-circuit frontier — the companion to the single-division `and` case,
+           at the OPTIMIZER level.")
+  (input  (do (def (main (: b Bool) (: d Int64)) (if (and b (= (/ 10 d) (/ 10 d))) 1 0)) (export main)))
+  (call   main (: false Bool) (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: true Bool)  (: 5 Int64)) (output (: 1 Int64)))
+
+(case "a repeated trapping divide in a short-circuited or's right operand stays shielded (CSE must not hoist it past the connective)"
+  (doc    "The `or` twin of the CSE-hoist shield above: `(or (= x 0) (= (/ 100 x) (/ 100 x)))` with `x`=0
+           short-circuits on the true left, so the right operand's duplicated `(/ 100 x)` divides must not
+           run — `main(0)` is 1, not a divide-by-zero trap. With `x`=5 the left is false, the right runs, and
+           `(= (/ 100 5) (/ 100 5))` is true → 1. Both connectives lower to one `Core::And` node, so the
+           and-case pins the mechanism and this is belt-and-suspenders that the same CSE-frontier fix holds
+           for the disjunction spelling too (adv-55 or-twin).")
+  (input  (do (def (main (: x Int64)) (if (or (= x 0) (= (/ 100 x) (/ 100 x))) 1 0)) (export main)))
+  (call   main (: 0 Int64)) (output (: 1 Int64))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
+
 (case "a sequencing block yields the value of its last form"
   (doc    "Witnesses core-semantics.md #A Sequencing Block Evaluates Its Forms In Order (2nd sentence:
            a block evaluates to its last form's value). The earlier forms are pure here, so the block's

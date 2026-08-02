@@ -5531,3 +5531,5 @@ pass	a computed (runtime-branched) label operand to Record.with is rejected — 
 pass	a host op returning Bool crosses the boundary and drives a branch
 pass	the compare walk recurses list-of-sums-of-lists with discriminant-first at depth
 pass	a List.update at depth-3 RRB path-copies one spine and shares the rest
+pass	a repeated trapping divide in a short-circuited and's right operand stays shielded (CSE must not hoist it past the connective)
+pass	a repeated trapping divide in a short-circuited or's right operand stays shielded (CSE must not hoist it past the connective)
