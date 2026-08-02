@@ -14333,6 +14333,27 @@
             (_ 300)))
   (output (: 200 Int64)))
 
+(case "a guarded map arm over a PARTIAL-CONST map resolves its value binder in both the guard and the body"
+  (doc    "A guarded map arm whose looked-up key's value is a compile-time CONSTANT while the map as a whole
+           is RUNTIME (another key holds a dynamic value) — `(Map.insert (Map.insert Map.empty 1 5) 2 n)`,
+           key 1 = const 5, key 2 = runtime n — with the guard cond AND the body BOTH reading the value
+           binder `v`. This partial-const shape makes the guard-fold speculatively RE-MATERIALIZE the arm
+           (an eval-minted clone); before, the clone's reused guard/body `v` — a `MapField` whose resolution
+           ASCENDS to the enclosing `(map …)` pattern — re-resolved UNBOUND once the runtime-map desugar
+           wrapped them in its presence-test `(if …)` chain (whose ancestry no longer reaches the arm),
+           leaking CDZ0101 + an invalid module (accept + garbage-emit, both backends). The fix resolves the
+           reused body+guard against the still-intact arm BEFORE the desugar re-parents them (the map twin of
+           the list desugar's orig_match_parent re-resolve). `main 9` → map {1:5, 2:9}; v=5 at key 1, guard
+           `(> 5 3)` holds → body `v` = 5. Pins that a partial-const guarded map arm resolves its binder on
+           both the guard and body paths.")
+  (input  (do
+            (def (main (: n Int64))
+              (match (Map.insert (Map.insert (Map.empty) 1 5) 2 n)
+                ((guard (map (1 v) .. r) (> v 3)) v)
+                (_ -1)))
+            (export main)))
+  (call   main (: 9 Int64)) (output (: 5 Int64)))
+
 ; ── An un-projected element / un-referenced field is UNOBSERVED, so its trap is not raised ──────────
 ; core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed: a trap occurs when the
 ; computation that would raise it is observed — its value flowing to the result, a host call, or an

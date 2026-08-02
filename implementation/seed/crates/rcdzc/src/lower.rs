@@ -7351,6 +7351,22 @@ fn desugar_runtime_map_match(
             _ => (pat, None),
         };
         let (entries, _rest) = crate::resolve::map_pattern_of(db, inner)?;
+        // RESOLVE the reused body + guard cond NOW, while they are still parented under the intact
+        // `(guard (map …) cond)` arm — BEFORE the `push_list` below re-parents them into the synthesized
+        // `(if guard body <else>)` chain, whose ancestry no longer reaches the `(map …)` arm. A map
+        // value/rest binder resolves via `binder_in` Case M / `guard_cond_map_binds`, both of which ASCEND
+        // to the enclosing `(map …)` pattern to recover the scrutinee — a PARENT-STRUCTURE-DEPENDENT
+        // resolution. On the ORIGINAL match the arm's binders were already resolved+memoized before this
+        // desugar, so reuse-verbatim works; but on an EVAL-MINTED CLONE of the match (a partial-const map —
+        // looked-up key const, another key runtime — makes the guard-fold speculatively re-materialize the
+        // arm) the clone's body/guard are FRESH, UNMEMOIZED nodes. Once wrapped in the if-chain their ascent
+        // no longer finds the `(map …)` arm, so `v`/`rest` re-resolve UNBOUND → CDZ0101 → invalid module.
+        // Populating the memo here (against the still-intact arm) fixes the clone; it is a no-op on the
+        // original (already memoized). The map twin of the list desugar's orig_match_parent re-resolve.
+        crate::resolve::resolve_subtree(db, body);
+        if let Some(g) = guard {
+            crate::resolve::resolve_subtree(db, g);
+        }
         // The taken-branch body: reuse verbatim, then wrap a guard `(if guard body <else>)` (a false guard
         // falls through to the same else as a missing key).
         let mut taken = body;
