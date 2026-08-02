@@ -1613,16 +1613,39 @@ fn lambda_of(db: &mut Db, id: StructId) -> Option<(std::rc::Rc<[StructId]>, Stru
         // A type annotation is transparent to the value — `(: (fn …) (-> A B))` is the lambda.
         Resolved::Annot { expr, .. } => lambda_of(db, expr),
         Resolved::Apply { head, args } => {
-            // Reduce the inner application to a value, then see if THAT is a lambda. This reduction is
-            // itself a β-reduction, so run it UNDER THE DEPTH GUARD: a self-referential nullary call
-            // `(def (f) (f))` resolves `f` to a `Ref` at the body `(f)`, so reducing THIS application
-            // re-enters `lambda_of` on the same body — an unbounded loop that would overflow the native
-            // stack. Past `REDUCE_DEPTH_LIMIT` the guard denies entry and this yields `None` (not a
-            // lambda / can't be reduced here), matching how a too-deep β-reduction declines elsewhere.
-            let mut guard = db.enter_reduction()?;
-            let g = guard.db();
-            let reduced = apply_lambda(g, head, &args).ok().flatten()?;
-            lambda_of(g, reduced)
+            // Reduce the application to a value, then see if THAT is a lambda. Each reduction is a
+            // β-reduction, so run it UNDER THE DEPTH GUARD: a self-referential nullary call `(def (f) (f))`
+            // resolves `f` to a `Ref` at the body `(f)`, so reducing THIS application re-enters `lambda_of`
+            // on the same body — an unbounded loop that would overflow the native stack. Past
+            // `REDUCE_DEPTH_LIMIT` the guard denies entry and this yields `None`.
+            //
+            // A CURRIED SPINE `((((f a) b) c) …)` is a chain of nested `Apply`s — its `head` is itself an
+            // `Apply`. Reducing it head-first RECURSIVELY (reduce `head` to a lambda via `lambda_of`, then
+            // apply `args`) holds one guard ALIVE per level, so an N-deep spine nests N guards and trips
+            // `REDUCE_DEPTH_LIMIT=32` at N≈32 — a LEGITIMATELY terminating program (each level consumes one
+            // arg) wrongly declined CDZ0999 (breaker + v-compiler-perf, the REDUCE_DEPTH_LIMIT wall). Fix:
+            // FLATTEN the spine (a structural walk, no reduction/guard) into the innermost head + its ordered
+            // arg-groups, then reduce LEFT-TO-RIGHT in a LOOP where each step's guard DROPS before the next
+            // — so the guard depth stays ~1 (sequential β-reductions, not a deep nest), while a genuinely
+            // divergent term still trips the bound within a single step. Each intermediate `current` is a
+            // reduced value (a concrete lambda / constant), so `apply_lambda(current, group)`'s internal
+            // `lambda_of(current)` is O(1), never re-descending a spine.
+            let mut groups: Vec<std::rc::Rc<[StructId]>> = vec![args];
+            let mut inner = head;
+            while let Resolved::Apply { head: h2, args: a2 } = resolved_of(db, inner) {
+                groups.push(a2);
+                inner = h2;
+            }
+            groups.reverse(); // innermost-first application order
+            let mut current = inner;
+            for group in groups {
+                let mut guard = db.enter_reduction()?;
+                let g = guard.db();
+                current = apply_lambda(g, current, &group).ok().flatten()?;
+                // `guard` drops here (end of iteration) → `reduce_depth` decrements before the next step,
+                // keeping the spine's cumulative guard depth O(1) instead of O(spine length).
+            }
+            lambda_of(db, current)
         }
         // A lambda produced by a `let` BODY, capturing the let's bindings — `(let ((y 3)) (fn (x) (+ x
         // y)))`. The lambda ESCAPES the let (it is bound elsewhere and applied later), so its captured
