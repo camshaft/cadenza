@@ -159,6 +159,97 @@
   (call   main (: 2 Int64)) (output (: 31 Int64))
   (call   main (: 9 Int64)) (output (: -1 Int64)))
 
+; A CAPTURING closure whose HANDLE both ESCAPES WHOLE (stored into a heap collection / sum payload) AND is
+; ALSO DIRECTLY CALLED — the "call BOTH ways" shape. The pinned idioms above call a stored closure via
+; LOOKUP/select (`List.at`/`Map.lookup`) or a `match` extract — never ALSO directly — so they fold or
+; `call_indirect` on ONE path. When the SAME binding is used both ways, the store LIFTS the closure
+; (materializing its capture env), while the direct call would β-FOLD it inline — reusing the SAME captured
+; occurrence, now an env-read in the enclosing ENV-LESS scope: an INVALID artifact on BOTH backends (wasm
+; `invalid component … wasm[0]::function[N]`, rust `error[E0425]: cannot find value __cap0`), a reject-don't-
+; miscompile violation at the artifact level (breaker adv-50). The fix FORCE-KEEPS such a binding as ONE
+; materialized runtime closure and routes the direct call through it via `call_indirect`, so no fold reuses
+; the capture occurrence. `k` = 100, `f1 v = k + v`; `main 5` inserts/stores `f1` (result discarded) then
+; calls `f1 5` = 105. The store is not CHAMP-specific — list / set / map / sum-payload all share the boxed-
+; cell rep and all miscompiled the same way; a TUPLE/RECORD element (fixed-shape unboxed) always survived.
+
+(case "a capturing closure stored in a map and also called directly emits a valid artifact"
+  (doc    "A capturing `f1 = (fn (v) (+ k v))` inserted into a `Map` (result DISCARDED) AND called directly
+           `(f1 d)`. The store lifts `f1`; the direct call must NOT re-fold it and reuse the lifted capture
+           occurrence (which produced an invalid module / rust `__cap0`) — it force-keeps the closure and
+           `call_indirect`s it. `main 5` → discarded insert, then `f1 5 = 105`.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((k 100))
+                (let ((f1 (fn ((: v Int64)) (+ k v))))
+                  (do (Map.insert Map.empty 1 f1)
+                      (f1 d)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64)))
+
+(case "a capturing closure stored in a list and also called directly emits a valid artifact"
+  (doc    "The list-container companion of the map case — same root (the collection-element boxed-fn
+           materialization vs the direct-call fold), same fix (force-keep + `call_indirect`). `main 5` →
+           discarded `(list f1)`, then `f1 5 = 105`.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((k 100))
+                (let ((f1 (fn ((: v Int64)) (+ k v))))
+                  (do (list f1)
+                      (f1 d)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64)))
+
+(case "a capturing closure stored in a sum payload and also called directly emits a valid artifact"
+  (doc    "The SUM-PAYLOAD companion (`(Some f1)`, boxed-cell rep like the collections) — confirms the root
+           is the boxed/descriptor rep, not collection-specific. `main 5` → discarded `(Some f1)`, then
+           `f1 5 = 105`.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((k 100))
+                (let ((f1 (fn ((: v Int64)) (+ k v))))
+                  (do (Some f1)
+                      (f1 d)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64)))
+
+(case "a capturing closure whose surviving map store and direct call both feed the result"
+  (doc    "The store SURVIVES to the result (its `Map.len` is added), not merely discarded — so the lifted
+           closure and the directly-called one are the SAME force-kept cell used both ways in ONE
+           expression. `main 5` → `(f1 5) + (Map.len (Map.insert Map.empty 1 f1))` = 105 + 1 = 106.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((k 100))
+                (let ((f1 (fn ((: v Int64)) (+ k v))))
+                  (+ (f1 d) ((. Map len) (Map.insert Map.empty 1 f1))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 106 Int64)))
+
+(case "a capturing closure stored in a tuple and also called directly folds through its capture"
+  (doc    "The SURVIVOR control: a TUPLE element is a fixed-shape UNBOXED rep, so storing `f1` there needs
+           no boxed-cell materialization and the direct call folds cleanly (this always compiled). Pins that
+           the force-keep does NOT over-fire on the tuple/record shapes — they stay on the fold path. `main
+           5` → discarded `(tuple f1 9)`, then `f1 5 = 105`.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((k 100))
+                (let ((f1 (fn ((: v Int64)) (+ k v))))
+                  (do (tuple f1 9)
+                      (f1 d)))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64)))
+
+(case "a non-capturing closure stored and also called directly emits a valid artifact"
+  (doc    "The non-capturing control: `f1 = (fn (v) (+ 1 v))` closes over nothing, so it needs no env cell
+           and was never subject to the capture-occurrence poison — it stays on its existing path. Pins that
+           the force-keep is scoped to CAPTURING closures. `main 5` → discarded insert, then `f1 5 = 6`.")
+  (input  (do
+            (def (main (: d Int64))
+              (let ((f1 (fn ((: v Int64)) (+ 1 v))))
+                (do (Map.insert Map.empty 1 f1)
+                    (f1 d))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 6 Int64)))
+
 ; A lambda that references an ENCLOSING binding and is applied INSIDE that binding's scope — the capture
 ; is a free variable bound further out, not inside the lambda's own body. core-semantics.md §A Function
 ; Value Captures The Bindings In Scope Where It Is Created: `(+ x k)` reads `k` from the enclosing `let`.

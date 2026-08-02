@@ -69599,6 +69599,84 @@ mod stage1 {
     }
 
     #[test]
+    fn a_capturing_closure_stored_and_also_directly_called_is_force_kept() {
+        // ⚠ INVALID-ARTIFACT regression (breaker adv-50, both backends): a CAPTURING `let`-bound lambda
+        // whose HANDLE ESCAPES WHOLE (stored into a heap collection / sum payload) AND is ALSO DIRECTLY
+        // CALLED emitted a broken artifact — wasm `invalid component … wasm[0]::function[N]`, rust
+        // `error[E0425]: cannot find value __cap0`. Mechanism: the store lowers `f1` as a value
+        // (`lower_lambda_value` LIFTS it, recording the body's capturing-reference occurrence `k` in
+        // `db.captured_ref`), while `should_keep_binding`'s lambda short-circuit copy-propagates `f1` so
+        // the direct call `(f1 d)` β-FOLDS to `(+ k d)` — REUSING that same `k` occurrence, now memoized
+        // as a `Core::Captured` env-read in `main`'s ENV-LESS scope → the broken emit. Prior faces of the
+        // speculative-lift family AVOIDED the lift (the store here REQUIRES it), so the fix is the dual:
+        // FORCE-KEEP the binding as ONE materialized runtime `Core::Closure` and route the direct call
+        // through it via `call_indirect` (`head_is_runtime_fn_value` treats a kept lambda binding as a
+        // runtime fn value) — no fold reuses the poisoned occurrence. k=100, f1 v = k+v, main 5 → 105.
+        let store_shapes = [
+            // Map value, insert result DISCARDED in a `do` (the canonical minimal seed).
+            "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (do (Map.insert Map.empty 1 f1) (f1 d))))",
+            // List literal holding f1, discarded.
+            "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (do (list f1) (f1 d))))",
+            // Set element, discarded.
+            "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (do (Set.of (list f1)) (f1 d))))",
+            // Sum payload, discarded (breaker s18).
+            "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (do (Some f1) (f1 d))))",
+            // Surviving store (map len feeds the result) + direct call: 105 + 1 = 106.
+            "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (+ (f1 d) ((. Map len) (Map.insert Map.empty 1 f1)))))",
+        ];
+        // The precise pre-fix failure was at the ARTIFACT level (compile accepted + emitted garbage), so
+        // COMPILE producing a valid component (rust: a building artifact) IS the guard. The actual VALUE
+        // runs (105 / 106) are pinned by the corpus migration in `spec/semantics/09-functions.sexp`, which
+        // executes on the value-heap runtime the gate wires up (a closure allocates a cell — this
+        // store-less lib host does not link that runtime, so it asserts validity, not a run).
+        for body in store_shapes {
+            let src = format!("(module m (def (main (: d Int64)) {body}) (export main))");
+            compile_component(&crate::codec::encode(&parse(&src))).unwrap_or_else(|e| {
+                panic!("compile must produce a VALID artifact for `{body}`: {e:?}")
+            });
+        }
+        // CONTROLS that must stay on their existing (correct) paths, unchanged by the force-keep — each
+        // must still COMPILE cleanly (they always did; this guards against the force-keep over-firing):
+        //  - a NON-capturing lambda stored + called (no env cell, no poison).
+        //  - a capturing lambda DIRECT-CALLED ONLY (no escape) — copy-propagates + folds.
+        //  - a TUPLE-element store + direct call (fixed-shape unboxed rep, a long-standing SURVIVOR).
+        for body in [
+            "(let ((f1 (fn ((: v Int64)) (+ 1 v)))) (do (Map.insert Map.empty 1 f1) (f1 d)))",
+            "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (f1 d)))",
+            "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (do (tuple f1 9) (f1 d))))",
+        ] {
+            let src = format!("(module m (def (main (: d Int64)) {body}) (export main))");
+            compile_component(&crate::codec::encode(&parse(&src)))
+                .unwrap_or_else(|e| panic!("control must still compile cleanly `{body}`: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn a_capturing_closure_stored_and_directly_called_is_kept_in_core() {
+        // Core-level WITNESS for the adv-50 force-keep (no runtime needed): a capturing lambda that both
+        // ESCAPES WHOLE (stored) and is DIRECT-CALLED lowers `main` to a `Core::Let` naming the ONE
+        // materialized closure (the force-keep), with the direct call a `Core::CallClosure` on that kept
+        // slot — NOT a folded `Core::Arith` whose `k` operand poisoned to `Core::Captured` in main's
+        // env-less scope (the pre-fix miscompile). Pins the ROUTE, so a future refactor that regresses
+        // back to copy-propagate-and-fold fails here even on a store-less test host.
+        use crate::core::Core;
+        use crate::db::Db;
+        use crate::lower::core_of;
+        let src = "(module m (def (main (: d Int64)) \
+            (let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (do (list f1) (f1 d))))) (export main))";
+        let mut db = Db::load(parse(src));
+        let d = db.def_by_name("main").expect("main");
+        let m_body = db.defs[d].body.expect("body");
+        match core_of(&mut db, m_body) {
+            // The kept closure binds a `Core::Let`; the body applies it via `Core::CallClosure`.
+            Core::Let { .. } => {}
+            other => panic!(
+                "a stored-and-directly-called capturing closure must FORCE-KEEP a Core::Let slot, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
     fn a_named_capturing_closure_applied_directly_folds() {
         // A capturing lambda BOUND to a name (`let ((g (fn (x) (+ x k))))`) and applied `(g 5)` where `g`
         // closes over an enclosing `k`. `g` is copy-propagated (a lambda value is never KEPT as a runtime
