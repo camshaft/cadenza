@@ -1136,8 +1136,10 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // dead overflow guard — e.g. `(if (< a 100) (+ a 1) 0)` elides the `+ a 1` guard in the then
             // branch. Without this the rust backend saw no refinement (wasm did), keeping a guard wasm
             // elides — a correct-but-divergent decision this closes. Symmetric push/pop around EACH branch.
-            let t = with_branch_refinement(db, cond, true, |db| emit_branch(db, then_, id, env, ctx))?;
-            let e = with_branch_refinement(db, cond, false, |db| emit_branch(db, else_, id, env, ctx))?;
+            let t =
+                with_branch_refinement(db, cond, true, |db| emit_branch(db, then_, id, env, ctx))?;
+            let e =
+                with_branch_refinement(db, cond, false, |db| emit_branch(db, else_, id, env, ctx))?;
             let bare = format!("if {c} {{ {t} }} else {{ {e} }}");
             // ANNOTATE the `if` result when it is a GENERIC SUM (`Option<…>`/`Result<…>`/a user generic
             // enum). A branch that is a bare nullary generic variant (`Option::None`) carries no type
@@ -1233,8 +1235,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // walk. `=`/`≠` do NOT reach here (equality routes to the structural `ValueEq`); only the four
         // ordering ops, so `compare_sym` always yields a relational operator.
         Core::StrCmp { op, lhs, rhs } => {
-            let sym =
-                compare_sym(op).ok_or_else(|| Reject::decline("StrCmp carries a non-compare prim"))?;
+            let sym = compare_sym(op)
+                .ok_or_else(|| Reject::decline("StrCmp carries a non-compare prim"))?;
             if arith_operand_diverges(db, lhs) {
                 return emit(db, lhs, env, ctx);
             }
@@ -1254,7 +1256,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         // (`if x.is_nan() { CANON_NAN_BITS } else { x.to_bits() }`), then compare the bit patterns with
         // integer `==`. Must be byte-identical to the wasm backend's `select`-based bit compare (the
         // differential sweep checks this). Equality only — float ordering is a separate ruling.
-        Core::FloatCompare { op, lhs, rhs, width } => {
+        Core::FloatCompare {
+            op,
+            lhs,
+            rhs,
+            width,
+        } => {
             // Both operands share the op's float type, but a bare-literal operand's OWN solved type defaults
             // to Float64 when unpinned (`(= x 1.5)` with `x: Float32`), so it must be GROUNDED to the op's
             // `width` — else the f64 literal's low 32 bits feed the f32 equality compare (always false) or a
@@ -1362,9 +1369,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                         _ => 64,
                     };
                     let shift = storage_bits - width;
-                    Ok(format!(
-                        "((({operand_s} as {rty}) << {shift}) >> {shift})"
-                    ))
+                    Ok(format!("((({operand_s} as {rty}) << {shift}) >> {shift})"))
                 } else {
                     // An UNSIGNED unusual width keeps the low N bits (`(UInt 4).wrap 17` = `17 & 0xF` = 1). The
                     // mask literal is written in the storage type `rty`; `2^N - 1` fits it (N ≤ storage width).
@@ -1794,7 +1799,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let k = emit(db, key, env, ctx)?;
             let k = wrap_ord_key(k, &kt);
             let v = emit(db, val, env, ctx)?;
-            Ok(format!("{{ let mut __m = {m}; __m.insert({k}, {v}); __m }}"))
+            Ok(format!(
+                "{{ let mut __m = {m}; __m.insert({k}, {v}); __m }}"
+            ))
         }
         // `Map.lookup` → the fallible keyed read → Rust's own `Option`: `BTreeMap::get` borrows, returns
         // `Option<&V>`; `.cloned()` gives an owned `Option<V>` (the harness renders a native Option).
@@ -2096,7 +2103,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let a = emit(db, lhs, env, ctx)?;
             let b = emit(db, rhs, env, ctx)?;
             if matches!(type_of(db, id).strip_nominal(), Ty::String) {
-                Ok(format!("{{ let mut __b = {a}; __b.push_str(&({b})); __b }}"))
+                Ok(format!(
+                    "{{ let mut __b = {a}; __b.push_str(&({b})); __b }}"
+                ))
             } else {
                 Ok(format!("{{ let mut __b = {a}; __b.extend({b}); __b }}"))
             }
@@ -2264,7 +2273,10 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 1 => Ok(format!("{path}({})", wrap(args[0].clone()))),
                 // A MULTI-payload variant carries ONE TUPLE (matching the enum decl's `V((T0, T1))` and the
                 // core's single-`Ty::Tuple` payload model, which the match side reads as one indexed value).
-                _ => Ok(format!("{path}({})", wrap(format!("({})", args.join(", "))))),
+                _ => Ok(format!(
+                    "{path}({})",
+                    wrap(format!("({})", args.join(", ")))
+                )),
             }
         }
         // A poison reaching selection is a fault the collector surfaces before emission; reaching here
@@ -2355,7 +2367,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // CLONED into each call — the closure is an `Fn` (callable repeatedly), so it may NOT MOVE a
             // captured variable out on a call (rustc E0507); cloning gives each invocation its own value
             // and leaves the capture intact for the next call. A Copy capture's `.clone()` is a plain copy.
-            let mut call_args: Vec<String> = cap_names.iter().map(|c| format!("{c}.clone()")).collect();
+            let mut call_args: Vec<String> =
+                cap_names.iter().map(|c| format!("{c}.clone()")).collect();
             call_args.extend(params.iter().cloned());
             // Coerce EXPLICITLY to the `Rc<dyn Fn(…) -> …>` trait-object type when the node's solved
             // function type maps concretely (an `as` cast triggers the unsizing coercion). Without it,
@@ -2460,7 +2473,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // UNSIGNED. For an Int64 operand it is `as i64` (a no-op, elided). This is the `BigInt.of` twin of
             // the BinIntRead cast; both target the same u64-carried-as-i64 sign-extension. (corpus-bugfix
             // finding #4, wasm oracle 817; rust/rust-async sign-extended to -799.)
-            let opt = types::rust_type(&Ty::Int(int_ty_of(db, value))).unwrap_or_else(|| "i64".to_string());
+            let opt = types::rust_type(&Ty::Int(int_ty_of(db, value)))
+                .unwrap_or_else(|| "i64".to_string());
             let widened = if opt == "i64" {
                 format!("({v}) as i128")
             } else {
@@ -2787,7 +2801,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // 2^63+1 (the true unsigned value), so `% 1000` runs unsigned → 809, and `Int64.of` narrows a
             // genuine `u64`. A narrower/signed segment already solves to `Int64`, so its cast is `as i64` —
             // a no-op elided here (keeps the common case byte-identical + dodges the `unnecessary_cast` lint).
-            let rt = types::rust_type(&Ty::Int(int_ty_of(db, id))).unwrap_or_else(|| "i64".to_string());
+            let rt =
+                types::rust_type(&Ty::Int(int_ty_of(db, id))).unwrap_or_else(|| "i64".to_string());
             if rt == "i64" {
                 body.push_str("__acc }");
             } else {
@@ -2892,12 +2907,24 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Ok(format!("{{ {bindings}{marshalled} }}"))
             }
         }
-        // A sequencing block only ever holds a host-call statement today; rendered in a later increment.
-        | Core::Seq { .. }
+        // A SEQUENCING block — evaluate each `stmt` FOR ITS SIDE EFFECT (discarding its value), then `tail`
+        // as the block's value. Produced when a `do`'s non-final statement reaches a side effect selection
+        // must emit (a host call whose result is discarded). Emit a Rust block `{ let _ = <stmt0>; …; <tail>
+        // }`: `let _ = …` evaluates + drops each statement (a Unit host call leaves `()`; a value-returning
+        // one is dropped), and the statements emit in written order so the host calls are observed in exactly
+        // the order the program made them (the sequencing invariant the wasm backend also holds).
+        Core::Seq { stmts, tail } => {
+            let mut body = String::new();
+            for &s in &stmts {
+                let sv = emit(db, s, env, ctx)?;
+                body.push_str(&format!("let _ = {sv}; "));
+            }
+            let t = emit(db, tail, env, ctx)?;
+            Ok(format!("{{ {body}{t} }}"))
+        }
         // The `?`/try boundary block + break are the wasm backend's `block`/`br` shape (BRICK 3); the
         // Rust backend renders them in a later brick, so it declines for now.
-        | Core::Block { .. }
-        | Core::Break { .. } => Err(Reject::decline(
+        Core::Block { .. } | Core::Break { .. } => Err(Reject::decline(
             "the Rust backend does not yet render this compound value",
         )),
         // Runtime structural equality over a COMPOUND value. On the wasm backend this is a value-heap
@@ -2922,7 +2949,9 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // because no value of the phantom type ever flows — see `enums::ground_free_for_eq`.
                 let l = emit(db, lhs, env, ctx)?;
                 let r = emit(db, rhs, env, ctx)?;
-                Ok(format!("{{ let __eq_l: {rust_ty} = {l}; (__eq_l == {r}) }}"))
+                Ok(format!(
+                    "{{ let __eq_l: {rust_ty} = {l}; (__eq_l == {r}) }}"
+                ))
             } else if ty_float_walkable(db, &ty) {
                 // The type is NOT native-`Eq` only because it carries a FLOAT leaf (`f64`/`f32` is
                 // `PartialEq` not `Eq`, and `==` gives the WRONG NaN/-0.0 answer), but every leaf is either
@@ -2969,7 +2998,8 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let sym = if is_compare {
                 "" // unused for Compare (nested-if built below)
             } else {
-                compare_sym(op).ok_or_else(|| Reject::decline("ValueCmp carries a non-compare prim"))?
+                compare_sym(op)
+                    .ok_or_else(|| Reject::decline("ValueCmp carries a non-compare prim"))?
             };
             if arith_operand_diverges(db, lhs) {
                 return emit(db, lhs, env, ctx);
