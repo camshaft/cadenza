@@ -302,10 +302,10 @@ def dd-root-unbound-var-declines() =
 /// compared shallowly by kind (no covered-subset program produces a fn root here; a full TFn structural compare
 /// is unneeded until an NApp/fn-value producer lands).
 def typed-exact-eq(a: Typed, b: Typed) = match a with
-  | Typed.TIntW(sa, wa) => (match b with | Typed.TIntW(sb, wb) => ((if sa then sb else (if sb then false else true)) and (wa == wb)) | _ => false)
+  | Typed.TIntW(sa, wa) => (match b with | Typed.TIntW(sb, wb) => ((sa == sb) and (wa == wb)) | _ => false)
   | Typed.TBool => (match b with | Typed.TBool => true | _ => false)
   | Typed.TErr => (match b with | Typed.TErr => true | _ => false)
-  | Typed.TSum(da) => (match b with | Typed.TSum(db2) => (da == db2) | _ => false)
+  | Typed.TSum(da) => (match b with | Typed.TSum(declB) => (da == declB) | _ => false)
   | Typed.TFn(_, _) => (match b with | Typed.TFn(_, _) => true | _ => false)
 
 /// demand-typed-root's grounded root type vs typed-of-db's — agree iff EXACTLY equal (full width/sign/sum, not a
