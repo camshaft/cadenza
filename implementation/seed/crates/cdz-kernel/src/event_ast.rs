@@ -121,14 +121,10 @@ fn opt_payload_form(b: &mut Builder, p: &Option<Payload>) -> StructId {
 }
 
 fn kind_atom(b: &mut Builder, kind: &EffectKind) -> StructId {
-    b.name(match kind {
-        EffectKind::Shell => "shell",
-        EffectKind::Http => "http",
-        EffectKind::Model => "model",
-        EffectKind::Now => "now",
-        EffectKind::Timer => "timer",
-        EffectKind::Emit => "emit",
-    })
+    // The canonical family string (crate::effect::effect_ct) — one source of truth shared with the
+    // executor router + Cedar action-map, so the wire name can't drift from them. Byte-identical to the
+    // previous hardcoded strings (the golden round-trip test pins the bytes).
+    b.name(kind.family())
 }
 
 fn outcome_form(b: &mut Builder, o: &EffectOutcome) -> StructId {
@@ -373,15 +369,10 @@ fn read_opt_payload(a: &Arenas, id: StructId) -> Result<Option<Payload>, EventAs
 }
 
 fn read_kind(a: &Arenas, id: StructId) -> Result<EffectKind, EventAstError> {
-    match a.as_name(id).ok_or(shape("expected kind name"))? {
-        "shell" => Ok(EffectKind::Shell),
-        "http" => Ok(EffectKind::Http),
-        "model" => Ok(EffectKind::Model),
-        "now" => Ok(EffectKind::Now),
-        "timer" => Ok(EffectKind::Timer),
-        "emit" => Ok(EffectKind::Emit),
-        _ => Err(shape("unknown effect kind")),
-    }
+    let family = a.as_name(id).ok_or(shape("expected kind name"))?;
+    // Route through the canonical family map (crate::effect::EffectKind::from_family) — one source of
+    // truth with the encoder + router + Cedar action-map. An unknown family is a decode shape error.
+    EffectKind::from_family(family).ok_or(shape("unknown effect kind"))
 }
 
 fn read_outcome(a: &Arenas, id: StructId) -> Result<EffectOutcome, EventAstError> {
