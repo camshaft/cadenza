@@ -640,6 +640,70 @@ fn lsp_editing_a_transitive_dependency_re_lints_the_indirect_importer() {
 }
 
 #[test]
+fn lsp_closing_an_open_library_reverts_its_importers_to_the_on_disk_version() {
+    // Reverse-dep invalidation on CLOSE (the symmetric counterpart to the didChange revdep test): the
+    // on-disk lib exports `helper` (importer clean). Open both, then didChange the OPEN lib to DROP the
+    // export — the importer goes red against the live overlay. Now didClose the lib: the overlay is gone,
+    // so the importer must revert to the ON-DISK lib (which still exports `helper`) and be re-linted CLEAN.
+    // This pins the lsp.rs didClose→republish_importers_of path (closing a library re-lints its importers
+    // against the on-disk version), which the buffer-drop/clear test does not exercise.
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-closerevdep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let lib_path = dir.join("lib.sexp");
+    // On disk: exports helper (so an importer is clean against the on-disk version).
+    std::fs::write(
+        &lib_path,
+        "(module lib (def (helper x) (+ x 1)) (export helper))",
+    )
+    .expect("write lib");
+    let main_path = dir.join("main.sexp");
+    let main_text = "(do (import \"lib\" (helper)) (def (main) (helper 41)) (export main))";
+    std::fs::write(&main_path, main_text).expect("write main");
+    let lib_uri = format!("file://{}", lib_path.display());
+    let main_uri = format!("file://{}", main_path.display());
+    let lib_no_export = "(module lib (def (helper x) (+ x 1)))"; // live overlay drops (export helper)
+
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":lib_uri,"languageId":"cadenza","version":1,"text":"(module lib (def (helper x) (+ x 1)) (export helper))"}}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":main_uri,"languageId":"cadenza","version":1,"text":main_text}}}),
+        // Live-edit the OPEN lib to drop the export — the importer goes red against the overlay.
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":lib_uri,"version":2},"contentChanges":[{"text":lib_no_export}]}}),
+        // Close the lib — the overlay is gone; the importer must revert to the on-disk (exporting) version.
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":lib_uri}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let pushes = diagnostic_pushes_by_uri(&msgs);
+    // The LAST push for main.sexp (after the lib CLOSE) must be EMPTY — the importer reverted to the
+    // on-disk lib, which still exports `helper`, so the earlier dropped-export error is cleared.
+    let last_main = pushes
+        .iter()
+        .rev()
+        .find(|(u, _)| u.ends_with("main.sexp"))
+        .map(|(_, d)| d.clone())
+        .expect("a diagnostics push for the importer");
+    assert!(
+        last_main.is_empty(),
+        "closing the open lib must revert the importer to the on-disk (exporting) version and re-lint it \
+         clean; got {last_main:?}"
+    );
+    // And there must be MORE than one main.sexp push (open + at least the re-lint triggered by the close),
+    // proving the close actually re-published the importer rather than leaving a stale red squiggle.
+    let main_pushes = pushes
+        .iter()
+        .filter(|(u, _)| u.ends_with("main.sexp"))
+        .count();
+    assert!(
+        main_pushes >= 2,
+        "the importer should be re-published after the lib close (>=2 main pushes), got {main_pushes}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn lsp_goto_definition_jumps_across_files_to_an_imported_def() {
     // Cross-file go-to-definition: from the `helper` USE in main.sexp, jump to its DEFINITION in
     // lib.sexp — the target Location is in the OTHER file. Before this increment definition was
