@@ -7,12 +7,16 @@
 //! in the log, not the executor). This is the "reads-are-effects" pattern the design leans on for the
 //! clock: the executor is non-deterministic, the *recorded outcome* makes the session replayable.
 //!
-//! The result payload is the nanoseconds since the Unix epoch as a **u64 little-endian 8-byte integer**
-//! (`ns.to_le_bytes()`) — the shape the kernel's monotonic clamp reads (it clamps the raw reading to
-//! `max(raw, last_now+1ns)` and records the clamped value, so the recorded `Now` sequence is strictly
-//! increasing and replay-deterministic — operator binary-ns directive). A reducer decodes it with
-//! `u64::from_le_bytes(bytes.try_into()?)`. (`Now`'s target is empty; a capability gates it by kind,
-//! e.g. `Capability { kind: Now, predicate: Any }`.)
+//! This executor EMITS the raw reading as nanoseconds since the Unix epoch, a **u64 little-endian 8-byte
+//! integer** (`ns.to_le_bytes()`) — the operator's binary-ns directive, and the exact shape the kernel's
+//! Now-clamp reads. **Monotonicity is the KERNEL's job, not this executor's:** the kernel's
+//! `clamp_now_outcome` clamps a Now result to `max(raw, last_now+1ns)` and records the clamped value, so
+//! the RECORDED `Now` sequence is strictly increasing and replay-deterministic. This executor just hands
+//! over the raw clock read in the clamp-compatible 8-byte LE shape; two successive raw reads here may be
+//! equal or (under an NTP step) even go backwards — that's fine, the kernel clamp is what makes the
+//! recorded sequence monotonic. A reducer decodes the recorded value with
+//! `u64::from_le_bytes(bytes.try_into()?)`. (`Now`'s target is empty; a capability gates it by kind, e.g.
+//! `Capability { kind: Now, predicate: Any }`.)
 
 use crate::retry;
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
@@ -126,12 +130,22 @@ mod tests {
     }
 
     #[test]
-    fn now_is_monotonic_across_two_reads() {
-        // Two successive reads must not go backwards (wall clock is non-decreasing over a test's span).
+    fn two_reads_both_return_sane_epoch_nanos() {
+        // This executor emits the RAW wall-clock read — it does NOT enforce monotonicity (that's the
+        // kernel clamp's job). So two successive reads must NOT be asserted b >= a: the wall clock isn't
+        // monotonic (an NTP step can move it backwards mid-test), which would be a latent CI flake. Assert
+        // only what this executor guarantees — each read is a sane epoch-nanos value.
         let mut exec = ClockExecutor::new();
         let a = decode_ns(exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k")));
         let b = decode_ns(exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k")));
-        assert!(b >= a, "second read {b} must not precede the first {a}");
+        assert!(
+            a > 1_577_836_800_000_000_000,
+            "first read is a real epoch nanos: {a}"
+        );
+        assert!(
+            b > 1_577_836_800_000_000_000,
+            "second read is a real epoch nanos: {b}"
+        );
     }
 
     #[test]
