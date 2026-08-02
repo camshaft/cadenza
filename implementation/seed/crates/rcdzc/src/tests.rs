@@ -59420,6 +59420,22 @@ mod stage1 {
             .contains(&"CDZ0202".to_string()),
             "comparing two maps with abstract VALUES must reject CDZ0202 (eq walks the value spine)"
         );
+        // RECORD FIELD holding an abstract type, compared via (=) → CDZ0202. `key_ty_contains_abstract_at`
+        // recurses into `Ty::Record` fields (the same walk that covers tuple/list/map arms), and built-in
+        // record comparison walks the whole field spine, observing the abstract field's private rep. Pins
+        // the record arm of the recursion — previously the tuple/list/map routes were witnessed but a
+        // record with an abstract FIELD was not, though the walk already covered it.
+        assert!(
+            codes_for("(if (= (record (t (mk k))) (record (t (mk k)))) 1 0)")
+                .contains(&"CDZ0202".to_string()),
+            "comparing two records with an abstract FIELD must reject CDZ0202 (eq walks the record spine)"
+        );
+        // CONTROL: a concrete-only record compared stays legal (no over-reject through the record recursion).
+        assert!(
+            !codes_for("(if (= (record (t k)) (record (t k))) 1 0)")
+                .contains(&"CDZ0202".to_string()),
+            "comparing concrete-only records stays legal (no CDZ0202)"
+        );
     }
 
     #[test]
