@@ -5178,8 +5178,9 @@ fn a_recursive_fn_holding_a_borrowed_heap_payload_sum_param_leaks_one_cell_known
         return;
     };
     // The finding's minimal repro (bind-only, no probe machinery): `walk` recurses on scalar `n`, holding a
-    // BigInt-payload sum `w` as a BORROWED param, and only at the base matches `(Mk x)` to read it. `main`
-    // recurses once (`walk 1`). VALUE = `Int64.of 3` = 3.
+    // BigInt-payload sum `w` as a BORROWED param, and only at the base matches `(Mk x)` to read it. With
+    // guard `(>= n 0)`, `main (walk 1 …)` recurses TWICE — `walk 1 → walk 0 → walk -1` — then the base
+    // `match` fires at `n < 0`. VALUE = `Int64.of 3` = 3.
     let src = "(module m \
                  (type W (Mk BigInt)) \
                  (def (mk (: k Int64)) (Mk (BigInt.of k))) \
@@ -5196,14 +5197,69 @@ fn a_recursive_fn_holding_a_borrowed_heap_payload_sum_param_leaks_one_cell_known
         "Int64.of the BigInt payload of a borrowed heap-sum recursion param = 3 (value-correct + NO UAF)"
     );
     // KNOWN LEAK (pinned, not yet fixed): the borrowed heap-payload sum is retained-but-not-dropped once as
-    // the recursion unwinds. The finding measured exactly 1; assert PRESENT + BOUNDED so a WORSENING
-    // regression (or a 0-via-double-free that the value assert above would already have caught) still fails.
+    // the recursion unwinds. The count is DETERMINISTIC — measured EXACTLY 1 (not allocator/backend-sensitive
+    // like the reclaim batteries) — so the bound is TIGHT (`<= 2`, a single cell of headroom) rather than
+    // loose: a 2-cell regression fails here, and a `== 0` (spurious double-free) is already caught by the
+    // value assert above. When the node-keyed payload-escape fix lands, flip to `assert_eq!(live, 0, …)`.
     let live = rt.live_objects();
     assert!(
-        live > 0 && live <= 16,
+        live > 0 && live <= 2,
         "borrowed-heap-sum-recursion-param leak: expected the KNOWN 1-cell unwind residual pending the \
-         node-keyed payload-escape fix — got {live}. If 0, the fix may have landed (flip to == 0); if far \
-         above 1, a NEW leak compounded it."
+         node-keyed payload-escape fix — got {live}. If 0, the fix may have landed (flip to == 0); if \
+         above 2, a NEW leak compounded it."
+    );
+}
+
+/// STRING-payload sibling of `a_recursive_fn_holding_a_borrowed_heap_payload_sum_param_leaks_one_cell_known_gap`.
+/// The corpus-bugfix finding isolated the leak as HEAP-payload-specific but payload-TYPE-INDEPENDENT: a
+/// self-recursive fn holding a sum with a BigInt payload OR a String payload as a BORROWED param leaks the
+/// SAME 1 cell as the recursion unwinds (an Int64 SCALAR payload nets 0 — the differentiator is heap-ness,
+/// not which heap type). The BigInt face is pinned by the sibling above; this pins the STRING face so a fix
+/// (or a regression) that treats the two heap payloads differently is caught on BOTH. Same root: the borrowed
+/// heap-payload sum shell is retained-but-not-dropped once on unwind (the general Perceus recursion-param
+/// ownership gap; deep-backlog node-keyed payload-escape pass). VALUE-CORRECT (no UAF) → not corpus-gate-
+/// visible, so this `live_objects()` witness is the only durable pin.
+///
+/// Asserts value-correct + leak PRESENT + BOUNDED (`<= 2`, tight — the count is the deterministic 1). Flip to
+/// `== 0` when the payload-escape fix lands. `#[ignore]` — needs the debug-counters store (`cargo xtask build`).
+#[test]
+#[ignore = "needs the debug-counters store (cargo xtask build)"]
+fn a_recursive_fn_holding_a_borrowed_string_payload_sum_param_leaks_one_cell_known_gap() {
+    use crate::testkit::parse;
+    use wasmtime::component::Val;
+    let Some(runtime_bytes) = find_debug_runtime_wasm() else {
+        eprintln!(
+            "debug-counters runtime not in the store (run `cargo xtask build`); skipping borrowed-STRING-sum-recursion-param leak witness"
+        );
+        return;
+    };
+    // Identical shape to the BigInt sibling, payload swapped to a runtime STRING: `mk` wraps a `String.concat`
+    // (a genuinely runtime rope, opaque to the fold), `walk` holds the `(Mk String)` sum as a BORROWED param
+    // recursing on scalar `n`, and the base `match` reads its scalar length. With guard `(>= n 0)`,
+    // `main (walk 1 …)` recurses TWICE (`walk 1 → walk 0 → walk -1`), base `match` at `n < 0`. VALUE =
+    // scalar-len of "ab" = 2.
+    let src = "(module m \
+                 (type W (Mk String)) \
+                 (def (mk (: s String)) (Mk ((. String concat) s \"b\"))) \
+                 (def (walk (: n Int64) (: w W)) \
+                    (if (>= n 0) (walk (- n 1) w) (match w ((Mk x) ((. String scalar-len) x))))) \
+                 (def (main (: n Int64)) (walk n (mk \"a\"))) (export main))";
+    let program = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let mut rt = ComposedRuntime::new(&program, &runtime_bytes);
+    // VALUE-CORRECT: the borrowed String-payload sum is read AFTER the recursion → scalar-len("ab") = 2. A
+    // UAF would trap/corrupt before returning; proves the leak is NON-OOB and value-safe.
+    assert_eq!(
+        rt.call("main", &[Val::S64(1)]),
+        Val::S64(2),
+        "String.scalar-len of the String payload of a borrowed heap-sum recursion param = 2 (value-correct + NO UAF)"
+    );
+    // KNOWN LEAK (same deterministic 1-cell unwind residual as the BigInt sibling): tight bound `<= 2`.
+    let live = rt.live_objects();
+    assert!(
+        live > 0 && live <= 2,
+        "borrowed-STRING-sum-recursion-param leak: expected the KNOWN 1-cell unwind residual (payload-type-\
+         independent with the BigInt sibling) pending the node-keyed payload-escape fix — got {live}. If 0, \
+         the fix may have landed (flip to == 0); if above 2, a NEW leak compounded it."
     );
 }
 
