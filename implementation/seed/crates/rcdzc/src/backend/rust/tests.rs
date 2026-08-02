@@ -7184,3 +7184,18 @@ fn rustc_host_call_narrow_int_result_casts_the_shim_i64_to_the_declared_width() 
         "a UInt8-result host op casts the shim's i64 to u8 (the declared width):\n{rs}"
     );
 }
+
+#[test]
+fn rustc_host_call_bool_result_reads_the_shim_i64_truthiness() {
+    // H2 host-call emit: a delegated BOOL-result host op (`Param.mirror -> Unit Bool`, from an
+    // `@param(widget: toggle) mirror : Bool`) emits `(crate::__cdz_host_<key>() != 0)` — the runner's shim
+    // returns the recorded scalar as `i64` (a `true`/`false` response normalized to `1`/`0`), and the emit
+    // reads its truthiness (matching the wasm boundary's i32→bool). Pins the bool arm of the result marshal.
+    let src = "(module m (effect Param (op mirror (-> Unit Bool))) \
+        (def (main) (host (Param) (Param.mirror))) (export main))";
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("crate::__cdz_host_param_mirror() != 0"),
+        "a Bool-result host op reads the shim's i64 truthiness (!= 0):\n{rs}"
+    );
+}

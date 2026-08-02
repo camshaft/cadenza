@@ -1565,9 +1565,15 @@ fn build_rust_host_shims(module: &str, host_responses: &[(String, String)]) -> S
     for fn_name in &referenced {
         match by_ident.get(fn_name) {
             Some((op, values)) => {
+                // Normalize each recorded scalar to an `i64` literal: a BOOL response (`true`/`false`) → `1`/
+                // `0` (the shim returns i64; a bool-result op's emit reads `!= 0`), an integer passes through.
                 let arr = values
                     .iter()
-                    .map(|v| v.trim().to_string())
+                    .map(|v| match v.trim() {
+                        "true" => "1".to_string(),
+                        "false" => "0".to_string(),
+                        other => other.to_string(),
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 let n = values.len();
