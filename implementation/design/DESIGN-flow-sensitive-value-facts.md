@@ -456,18 +456,30 @@ honest as-built record, including where reality diverged from the plan.
   dropped retain; the fix is a `core_of`-free `resolved_of` consult), and (ii) a compile-time **~O(N^1.5)
   superlinearity** in `lower_match_sum`'s per-level `const_at_path` walk on deep same-scrutinee nests (a
   `lower_match_sum` concern, memoizable — v-patterns' territory).
-- **Slice 4 (`len_range` / collection-bounds)** — DEFERRED. Finding: the canonical `(if (< i (List.len xs))
-  (List.at xs i) …)` bounds pattern is RELATIONAL (index vs a runtime length — two runtime values), which
-  §2/D2 deliberately excludes from the foundation. A constant-list + constant-index `List.at` already folds
-  in `lower`. So a non-relational `len_range` facet covers only a thin residual (runtime index into a
-  const-length list, const-bounded) — its real payoff is gated on the relational facet below.
+- **Slice 4 (`len_range` / collection-bounds)** — initially DEFERRED as a non-relational facet (the canonical
+  `(if (< i (List.len xs)) (List.at xs i) …)` bounds pattern is RELATIONAL — index vs a runtime length, two
+  runtime values — which §2/D2 excludes from the foundation; a non-relational `len_range` covers only the thin
+  residual of a runtime index into a const-length list). **SUPERSEDED + LANDED as the bounded index<len facet**
+  (`510d04929`, operator-greenlit): rather than a general `len_range`, the shipped facet is a BOUNDED RELATIONAL
+  fact `below_len[i] = xs` (a single identity-keyed bit per var — the "index-vs-length-only" bounded shape named
+  under PENDING below), established by an enclosing `(< i (List.len xs))` guard and consulted at the `List.at`
+  emit so the access sheds its OWN `index < len` check (identity-keyed: a guard on a DIFFERENT list never
+  elides — that would be OOB). Live in `ValueFact.below_len` / `refined_below_len` (db.rs), `index_provably_below_len`
+  (lower.rs), the diverge.rs establisher, and the `Core::ListAt` emit consult; gated by the rcdzc unit
+  `a_below_len_guard_elides_the_matching_list_ats_own_bounds_check_but_not_a_different_lists` + 02-binding corpus.
+  So the high-value bounds-elision prize IS delivered — as a bounded relational bit, not a full relational domain.
 
 **PENDING (operator-gated):**
-- **Relational facet (design (B) / §2 "later ADD-ON")** — the high-value unlock (both `(< i len)` bounds
-  elision AND general `x<y` overflow elision). Operator deferred it as its own future slice ("the real prize
-  later, greenlight on request") because a FULL relational domain is O(vars²)-join. Open question routed to
-  v-compiler-perf: can a BOUNDED relational facet (fixed-cap pair set / index-vs-length-only / known-below
-  map) stay per-var-cheap enough to pass the join guardrail? Awaiting their cost read + the operator greenlight.
+- **Relational facet (design (B) / §2 "later ADD-ON")** — the two halves of the "real prize" have now split:
+  - **`(< i len)` bounds elision — DELIVERED** as the bounded `below_len` bit (`510d04929`, see the Slice 4
+    entry above). This is the "index-vs-length-only" bounded shape, and it stays per-var-O(1)/O(vars)-join with
+    ZERO guardrail risk — confirmed by a v-compiler-perf cost read (2026-08-02): shape (2) index-vs-length is
+    "cleanly affordable, the same shape as the point/interval facets".
+  - **General `x<y` overflow elision — STILL DEFERRED** (operator-gated). The cost read banked two more shapes:
+    (1) a fixed-cap pair-set is affordable per-frame (O(K)) but needs a DETERMINISTIC (non-oldest) eviction key
+    or elision becomes traversal-order-dependent; (3) a general known-below map is the trap (alloc churn +
+    transitive-closure creep → O(vars²)) — SKIP. So a future general-`x<y` slice would use shape (1) with a
+    stable eviction key; lower-value than bounds was, greenlight on request.
 - **Reachability WARNING (§3.1b, CDZ0308)** — v-diagnostics landed the CDZ0308 scaffold; the emit is
   fork-blocked (the dead branch is folded away before a post-hoc pass can see it → capture must be at the
   fold site). Routed to the operator (concierge) as a follow-on; the flagship elision itself ships regardless.
