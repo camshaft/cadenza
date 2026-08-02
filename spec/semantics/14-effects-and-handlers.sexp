@@ -6702,3 +6702,27 @@
   (host-responses (respond io.get (: 3 Int64)))
   (host-calls (call io.get))
   (call   main (: 7 Int64)) (output (: 73 Int64)))
+
+(case "an abortive perform in a fused-match arm carries the payload binder out and abandons the rest"
+  (doc    "The abortive face of the fused-clone seam: the match scrutinee is a CALL result (fusion
+           candidate), one arm's body performs `(Bail.bail (* h 10))` — the abort ARGUMENT reads the
+           arm's SumPayload binder — abandoning a PENDING outer addition (+1000), while the other arm
+           returns normally through it: k=7 → 70 (the +1000 abandoned); k=2 → 200+1000 = 1200. The
+           fused clones must keep the abort's br-out-of-block correct in BOTH branch copies and route
+           the payload binder into the abort argument (a clone that resumed the pending add with the
+           arm value is the adv-52 class; a mis-bound payload reads garbage into the abort). NOTE this
+           is a NON-TAIL abort (the arm feeds a pending +): the match-arm lowering handles what the
+           if-branch non-tail abort doc note still defers.")
+  (input  (do
+            (effect Bail (op bail (-> Int64 Int64)))
+            (type Sz (Hi Int64) (Lo Int64))
+            (def (mk x) (if (> x 5) (Hi x) (Lo x)))
+            (def (main (: k Int64))
+              (handle Bail 0 ((bail (n) s n))
+                (+ (match (mk k)
+                     ((Hi h) (Bail.bail (* h 10)))
+                     ((Lo w) (* w 100)))
+                   1000)))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 70 Int64))
+  (call   main (: 2 Int64)) (output (: 1200 Int64)))
