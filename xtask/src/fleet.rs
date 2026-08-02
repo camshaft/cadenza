@@ -12063,45 +12063,46 @@ mod tests {
     }
 
     #[test]
-    fn schedule_dispatch_reserves_lanes_for_an_older_multi_file_mr() {
-        // RESERVE-IN-ORDER starvation fix (pr-sync): the OLDEST MR touches TWO hot files
-        // (rcdzc-tests + baseline). Younger MRs each touch ONE of those. Without reservation the
-        // younger single-file ones dispatch and perpetually re-occupy one of the older MR's files, so
-        // it never gets both free → starves. With reservation, the older MR CLAIMS both files, holding
-        // the younger same-file ones back.
-        let cand = |file: &str, files: &[&str]| SchedCandidate {
-            mr_file: file.into(),
-            lane: "mixed".into(),
+    fn schedule_dispatch_reserves_files_for_an_older_multi_file_mr() {
+        // RESERVE-IN-ORDER starvation fix (pr-sync): schedule_dispatch reserves by FILE, not lane (the
+        // `lane` field is metadata only — collision is file-level). The OLDEST MR touches TWO hot FILES
+        // (rcdzc-tests + baseline). Younger MRs each touch ONE of those. Without reservation the younger
+        // single-file ones dispatch and perpetually re-occupy one of the older MR's files, so it never
+        // gets both free → starves. With reservation, the older MR CLAIMS both files, holding the
+        // younger same-file ones back.
+        let cand = |mr: &str, files: &[&str]| SchedCandidate {
+            mr_file: mr.into(),
+            lane: "mixed".into(), // metadata only; schedule_dispatch keys off `files`
             files: files.iter().map(|s| s.to_string()).collect(),
         };
         let none: std::collections::HashSet<String> = std::collections::HashSet::new();
         let tests_rs = "implementation/seed/crates/rcdzc/src/tests.rs";
         let baseline = "spec/semantics/.gate-baseline";
-        // in_flight_files contains tests.rs (an in-flight candidate holds it) → the oldest 2-file MR is
+        // in_flight_files contains tests.rs (an in-flight candidate holds it) → the oldest 2-FILE MR is
         // blocked on tests.rs THIS pass, but it reserves BOTH files, so the younger baseline-only MR
-        // (which would otherwise be dispatchable) is HELD — no lane-jump past the older MR.
+        // (which would otherwise be dispatchable) is HELD — no file-jump past the older MR.
         let inflight: std::collections::HashSet<String> =
             [tests_rs.to_string()].into_iter().collect();
         let q = vec![
-            cand("old-2lane", &[tests_rs, baseline]), // oldest, needs BOTH; blocked on in-flight tests.rs
+            cand("old-2file", &[tests_rs, baseline]), // oldest, needs BOTH; blocked on in-flight tests.rs
             cand("young-baseline", &[baseline]), // younger, would be free — but older reserves baseline
             cand("young-disjoint", &["guide/x.md"]), // truly disjoint → still dispatches
         ];
         assert_eq!(
             schedule_dispatch(&q, &inflight, 9, 1),
-            vec!["young-disjoint"], // only the disjoint younger MR; baseline reserved for the older 2-lane MR
+            vec!["young-disjoint"], // only the disjoint younger MR; baseline reserved for the older 2-file MR
         );
 
         // When NOTHING is in flight, the oldest 2-file MR dispatches first and its files are taken;
         // the younger same-file one is then blocked by the pick, the disjoint one still goes.
         let q2 = vec![
-            cand("old-2lane", &[tests_rs, baseline]),
+            cand("old-2file", &[tests_rs, baseline]),
             cand("young-baseline", &[baseline]),
             cand("young-disjoint", &["guide/x.md"]),
         ];
         assert_eq!(
             schedule_dispatch(&q2, &none, 9, 0),
-            vec!["old-2lane", "young-disjoint"],
+            vec!["old-2file", "young-disjoint"],
         );
     }
 
