@@ -86,14 +86,16 @@ fn a_fold_that_exceeds_its_fuel_budget_is_aborted_as_fuel_exhausted() {
         family: "message".to_string(),
         version: 1,
     };
+    // `apply` returns the KV alongside the error (so `fold` restores it without cloning); the
+    // fuel-exhaustion classification is unchanged.
     match reducer.apply(Kv::new(), ct, Some(b"hello".to_vec()), None) {
-        Err(ComponentError::FuelExhausted { budget }) => {
+        Err((ComponentError::FuelExhausted { budget }, _kv)) => {
             assert_eq!(
                 budget, 1,
                 "the reported budget is the one that was exhausted"
             );
         }
-        Err(other) => panic!("expected FuelExhausted, got {other:?}"),
+        Err((other, _kv)) => panic!("expected FuelExhausted, got {other:?}"),
         Ok(_) => panic!("a 1-fuel budget must not let the fold complete"),
     }
 }
@@ -174,4 +176,66 @@ fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatched_fr
         Some(Some(b"step-1".to_vec())),
         "the wasm guest's correlation token must reach the Dispatched frame through the adapter"
     );
+}
+
+/// PR#1076/#1150 perf + error-atomicity through the real `Reducer::fold` path. `fold` moves the KV
+/// into the guest WITHOUT cloning (a `BTreeMap` deep-copy every event would be O(KV size)), and the
+/// guest's writes go through a TRANSACTIONAL overlay that commits on success / discards on failure.
+/// This test pins BOTH ends via the real guest:
+/// - SUCCESS: a normal fold commits the guest's `count` write AND leaves pre-existing keys intact
+///   (commit MERGES into the base, it doesn't replace it).
+/// - FAILURE: a fuel-starved fold leaves a pre-populated KV byte-for-byte intact (restored, not
+///   emptied — guarding the `mem::take`). (The write-then-discard atomicity itself is pinned at the
+///   host-overlay unit level in `host_kv_writes_are_discarded_without_commit`, which is deterministic;
+///   the fuel path can't reliably write-then-trap without brittle budget calibration.)
+#[test]
+fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
+    use cdz_kernel::event::{ContentType as KContentType, EventBody};
+    use cdz_kernel::reducer::Reducer;
+
+    let inbound = |kv: &mut Kv, reducer: &ComponentReducer| {
+        reducer.fold(
+            &cdz_kernel::event::Event {
+                seq: 1,
+                cause: None,
+                body: EventBody::Inbound {
+                    content_type: KContentType {
+                        family: "message".into(),
+                        version: 1,
+                    },
+                    payload: cdz_kernel::effect::Payload::Inline(b"hello".to_vec()),
+                },
+            },
+            kv,
+        )
+    };
+
+    // SUCCESS path: default budget. Pre-populate an unrelated key; the fold bumps "count".
+    let ok_reducer =
+        ComponentReducer::from_component_bytes(GUEST).expect("valid reducer component");
+    let mut kv = Kv::new();
+    kv.put(b"unrelated".to_vec(), b"keep".to_vec());
+    let out = inbound(&mut kv, &ok_reducer);
+    assert_eq!(out.effects.len(), 1, "the successful fold emits its effect");
+    // Commit MERGED: the guest's new "count" AND the pre-existing "unrelated" both present.
+    assert_eq!(kv.get(b"count"), Some(&[1u8][..]), "guest write committed");
+    assert_eq!(
+        kv.get(b"unrelated"),
+        Some(&b"keep"[..]),
+        "commit merges into the base — pre-existing keys survive"
+    );
+
+    // FAILURE path: 1-fuel budget → the fold fails. A pre-populated KV must be restored intact, not
+    // left empty by the `mem::take`.
+    let fail_reducer = ComponentReducer::from_component_bytes(GUEST)
+        .expect("valid reducer component")
+        .with_fuel_budget(1);
+    let mut kv2 = Kv::new();
+    kv2.put(b"a".to_vec(), b"1".to_vec());
+    kv2.put(b"b".to_vec(), b"2".to_vec());
+    let out2 = inbound(&mut kv2, &fail_reducer);
+    assert!(out2.effects.is_empty(), "a failed fold emits no effects");
+    assert_eq!(kv2.len(), 2, "a failed fold must not shrink the KV");
+    assert_eq!(kv2.get(b"a"), Some(&b"1"[..]));
+    assert_eq!(kv2.get(b"b"), Some(&b"2"[..]));
 }

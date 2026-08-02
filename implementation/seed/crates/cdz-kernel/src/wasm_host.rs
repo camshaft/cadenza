@@ -31,19 +31,52 @@ pub use self::cadenza::agent_kernel::types::{ContentType, EffectKind, EffectRequ
 /// The host state a reducer component runs against: its session KV (the `kv` import is served from
 /// here) plus room for the fold's output. One per fold invocation (the guest is stateless between
 /// events — §4 — so the host owns the KV and hands the guest a view for the call).
+///
+/// TRANSACTIONAL (error-atomicity, PR#1076/#1150): the guest mutates its KV THROUGH this host via the
+/// `kv.put`/`kv.delete` import, so a naive host that wrote straight to the base map would leave PARTIAL
+/// mutations behind if the fold traps or exhausts its fuel mid-way. Instead every write is buffered in
+/// an `overlay` and the `base` is NOT touched until [`ReducerHost::commit`]. A fold that succeeds
+/// commits (mutations become the session's derived state, §4); a fold that fails is dropped WITHOUT
+/// committing, so the base is byte-for-byte the pre-fold state — true all-or-nothing. And it's cheap:
+/// only the WRITE-SET is buffered (O(writes)), never a full-KV clone (which would be O(KV size) per
+/// fold — the perf trap PR#1076 flagged). Reads see the guest's own uncommitted writes (read-your-writes
+/// within the fold): the overlay shadows the base.
 pub struct ReducerHost {
-    kv: Kv,
+    /// The committed KV, moved in at fold start and left UNTOUCHED until `commit` — so discarding the
+    /// host (an errored fold) yields exactly the pre-fold state.
+    base: Kv,
+    /// Writes buffered during THIS fold: `Some(v)` = a put, `None` = a delete tombstone. Applied to
+    /// `base` only on `commit`; discarded on error. `BTreeMap` so `prefix_scan`'s merge stays ordered.
+    overlay: std::collections::BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
 impl ReducerHost {
     pub fn new(kv: Kv) -> Self {
-        ReducerHost { kv }
+        ReducerHost {
+            base: kv,
+            overlay: std::collections::BTreeMap::new(),
+        }
     }
 
-    /// Take the (possibly mutated) KV back after a fold — the host persists it as the session's derived
-    /// state (KV mutations are the deterministic side output of folding, §4).
+    /// Commit the fold's buffered writes into the base KV. Called by [`ComponentReducer::apply`] ONLY on
+    /// a successful fold — the transactional boundary. After this the overlay is empty and `base` carries
+    /// the fold's mutations. NOT called on an errored fold (the writes are discarded → base untouched).
+    pub fn commit(&mut self) {
+        for (key, write) in std::mem::take(&mut self.overlay) {
+            match write {
+                Some(value) => self.base.put(key, value),
+                None => {
+                    self.base.delete(&key);
+                }
+            }
+        }
+    }
+
+    /// Take the base KV back after a fold. If [`ReducerHost::commit`] ran (success path), this carries
+    /// the fold's mutations; if not (error path), it's the pre-fold state verbatim — which is what makes
+    /// a failed fold atomic. Uncommitted overlay writes are dropped here.
     pub fn into_kv(self) -> Kv {
-        self.kv
+        self.base
     }
 }
 
@@ -54,25 +87,58 @@ impl self::cadenza::agent_kernel::types::Host for ReducerHost {}
 
 // Host implementation of the `kv` import the guest calls DIRECTLY during a fold (§4b — NOT an effect).
 // Backed by the kernel's persistent-map KV; keys/values are opaque bytes (the guest defines the schema).
+// Reads/writes go through the transactional overlay (see [`ReducerHost`]): writes buffer, reads shadow.
 impl self::cadenza::agent_kernel::kv::Host for ReducerHost {
     fn get(&mut self, key: Vec<u8>) -> Option<Vec<u8>> {
-        self.kv.get(&key).map(|v| v.to_vec())
+        // Overlay shadows base (read-your-writes): a buffered put wins, a buffered tombstone hides base.
+        match self.overlay.get(&key) {
+            Some(Some(value)) => Some(value.clone()),
+            Some(None) => None,
+            None => self.base.get(&key).map(|v| v.to_vec()),
+        }
     }
 
     fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        self.kv.put(key, value);
+        self.overlay.insert(key, Some(value));
     }
 
     fn delete(&mut self, key: Vec<u8>) -> bool {
-        self.kv.delete(&key)
+        // Return whether the key existed BEFORE this delete (matching `Kv::delete`), reading through the
+        // overlay, then record the tombstone.
+        let existed = match self.overlay.get(&key) {
+            Some(Some(_)) => true,
+            Some(None) => false,
+            None => self.base.get(&key).is_some(),
+        };
+        self.overlay.insert(key, None);
+        existed
     }
 
     fn prefix_scan(&mut self, prefix: Vec<u8>) -> Vec<(Vec<u8>, Vec<u8>)> {
-        self.kv
+        // Merge base entries under the prefix with the overlay's buffered writes/tombstones under it, in
+        // canonical key order (§16c-S8 determinism): start from base, then apply overlay so the guest
+        // sees its own uncommitted writes.
+        let mut merged: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = self
+            .base
             .prefix_scan(&prefix)
             .into_iter()
             .map(|(k, v)| (k.to_vec(), v.to_vec()))
-            .collect()
+            .collect();
+        for (key, write) in self
+            .overlay
+            .range(prefix.clone()..)
+            .take_while(|(k, _)| k.starts_with(&prefix))
+        {
+            match write {
+                Some(value) => {
+                    merged.insert(key.clone(), value.clone());
+                }
+                None => {
+                    merged.remove(key);
+                }
+            }
+        }
+        merged.into_iter().collect()
     }
 }
 
@@ -308,28 +374,45 @@ impl ComponentReducer {
     /// the guest never sees the kernel's internal effect id). Errors on instantiation failure or a
     /// guest trap (totality is the guest's contract, but a trap is surfaced as a fold failure the
     /// driver handles — §16c gap A).
+    ///
+    /// TRANSACTIONAL + no full-KV clone: `apply` takes `kv` BY VALUE (moved, not cloned — `fold`
+    /// hands it in via `mem::take`) and returns it in BOTH arms. The guest's writes go to the host's
+    /// [`ReducerHost`] OVERLAY, not the base; `apply` COMMITS the overlay into the base ONLY on a
+    /// successful fold. So `Ok((effects, kv))` carries the fold's mutations, while `Err((error, kv))`
+    /// hands back the base VERBATIM — a trapped / fuel-exhausted / instantiate-failed fold leaves the
+    /// KV exactly as it was (all-or-nothing atomicity), because its uncommitted overlay writes are
+    /// discarded when the host drops. Only the write-set is buffered (O(writes)), never an O(KV size)
+    /// full copy (the PR#1076 perf trap).
     pub fn apply(
         &self,
         kv: Kv,
         content_type: ContentType,
         payload: Option<Vec<u8>>,
         resumes: Option<Vec<u8>>,
-    ) -> Result<(Vec<EffectRequest>, Kv), ComponentError> {
+    ) -> Result<(Vec<EffectRequest>, Kv), (ComponentError, Kv)> {
         let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
         // Fuel metering is enabled on the engine (§22d). Instantiation isn't the DoS surface — a
         // reactive fold guest's runaway risk is in its `fold.apply` body, not its (structure-bounded)
         // instantiation — so give instantiation ample headroom, then reset fuel to the per-fold budget
         // right before the call. That way the budget bounds the FOLD precisely, and an exhausted budget
         // is unambiguously the guest's fold looping (not load cost). set_fuel can't fail with metering
-        // on, but surface any error rather than unwrap.
-        store
-            .set_fuel(u64::MAX)
-            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
-        let instance = Reducer::instantiate(&mut store, &self.component, &self.linker)
-            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
-        store
-            .set_fuel(self.fuel_budget)
-            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+        // on, but surface any error rather than unwrap. On any error, hand the base KV back (the overlay
+        // is discarded, so it's the untouched pre-fold state) so the caller can keep it.
+        if let Err(e) = store.set_fuel(u64::MAX) {
+            let kv = store.into_data().into_kv();
+            return Err((ComponentError::Instantiate(e.to_string()), kv));
+        }
+        let instance = match Reducer::instantiate(&mut store, &self.component, &self.linker) {
+            Ok(i) => i,
+            Err(e) => {
+                let kv = store.into_data().into_kv();
+                return Err((ComponentError::Instantiate(e.to_string()), kv));
+            }
+        };
+        if let Err(e) = store.set_fuel(self.fuel_budget) {
+            let kv = store.into_data().into_kv();
+            return Err((ComponentError::Trap(e.to_string()), kv));
+        }
         let effects = match instance.cadenza_agent_kernel_fold().call_apply(
             &mut store,
             &content_type,
@@ -340,16 +423,25 @@ impl ComponentReducer {
             Err(e) => {
                 // Distinguish a runaway guest (fuel exhausted) from a semantic guest trap: a fold that
                 // consumed its whole budget is a resource-exhaustion outcome the driver handles
-                // differently (§22d / PR#1009). `Trap::OutOfFuel` is carried in the error chain.
+                // differently (§22d / PR#1009). `Trap::OutOfFuel` is carried in the error chain. The KV
+                // handed back is the base with its overlay DISCARDED — the guest's partial writes (which
+                // only ever touched the overlay) vanish, so the fold is atomic.
+                let kv = store.into_data().into_kv();
                 if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
-                    return Err(ComponentError::FuelExhausted {
-                        budget: self.fuel_budget,
-                    });
+                    return Err((
+                        ComponentError::FuelExhausted {
+                            budget: self.fuel_budget,
+                        },
+                        kv,
+                    ));
                 }
-                return Err(ComponentError::Trap(e.to_string()));
+                return Err((ComponentError::Trap(e.to_string()), kv));
             }
         };
-        let kv = store.into_data().into_kv();
+        // Success: COMMIT the overlay into the base (the transactional boundary), then hand the KV back.
+        let mut host = store.into_data();
+        host.commit();
+        let kv = host.into_kv();
         Ok((effects, kv))
     }
 }
@@ -380,9 +472,15 @@ impl crate::reducer::Reducer for ComponentReducer {
         // Map the kernel event → the guest's (content_type, payload, resumes) inputs.
         let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
 
-        // Run the guest fold against a COPY of kv (apply takes kv by value + returns the mutated kv);
-        // write the result back so the guest's KV writes land in the session's derived state (§4).
-        match self.apply(kv.clone(), content_type, payload, resumes) {
+        // Move the session KV into the fold WITHOUT cloning (PR#1076 perf): `Kv` is a `BTreeMap`, so a
+        // `clone()` would deep-copy the whole session state every event → O(KV size) per fold. `mem::take`
+        // swaps in an empty KV (O(1)) and hands the real one to `apply`, which returns it in BOTH arms.
+        // On Ok we install the guest's committed mutations; on error we restore the base `apply` handed
+        // back — which is byte-for-byte the pre-fold state (the guest's writes were buffered in an overlay
+        // that `apply` discarded), so a trapped/fuel-exhausted fold leaves the session KV ATOMICALLY
+        // untouched (PR#1076/#1150 error-atomicity — now a real guarantee, not just a comment).
+        let taken = std::mem::take(kv);
+        match self.apply(taken, content_type, payload, resumes) {
             Ok((guest_effects, new_kv)) => {
                 *kv = new_kv;
                 let effects = guest_effects
@@ -400,9 +498,15 @@ impl crate::reducer::Reducer for ComponentReducer {
                     .collect();
                 crate::reducer::FoldOutput::with_effects(effects)
             }
-            // Trap / fuel-exhausted / instantiate failure → fail safe: no effects, KV untouched. The
-            // guest's contract is totality; a violation can't brick the loop (§17).
-            Err(_) => crate::reducer::FoldOutput::none(),
+            // Trap / fuel-exhausted / instantiate failure → fail safe: no effects, and RESTORE the base
+            // KV `apply` handed back (mandatory: we `mem::take`-d `kv` out above, so a missing restore
+            // would leave it empty). Because `apply` discarded the guest's overlay, this base is the
+            // exact pre-fold state — the failed fold is atomic. The guest's contract is totality; a
+            // violation can't brick the loop (§17).
+            Err((_err, restored_kv)) => {
+                *kv = restored_kv;
+                crate::reducer::FoldOutput::none()
+            }
         }
     }
 }
@@ -499,15 +603,15 @@ fn guest_kind_to_kernel(k: &EffectKind) -> crate::effect::EffectKind {
 mod tests {
     use super::*;
 
-    // The bindings compile and the host `kv` import is backed by the kernel KV: exercise it directly
-    // (a guest-less unit test of the host side — the end-to-end guest fold is the next slice).
+    // The host `kv` import is backed by the kernel KV THROUGH the transactional overlay: reads see the
+    // guest's own uncommitted writes (read-your-writes), but the base isn't mutated until `commit`.
     #[test]
     fn host_kv_import_is_backed_by_the_kernel_kv() {
         use self::cadenza::agent_kernel::kv::Host;
         let mut host = ReducerHost::new(Kv::new());
         assert_eq!(host.get(b"k".to_vec()), None);
         host.put(b"k".to_vec(), b"v".to_vec());
-        assert_eq!(host.get(b"k".to_vec()), Some(b"v".to_vec()));
+        assert_eq!(host.get(b"k".to_vec()), Some(b"v".to_vec())); // read-your-writes via overlay
         host.put(b"pending/1".to_vec(), b"a".to_vec());
         host.put(b"pending/2".to_vec(), b"b".to_vec());
         let scan = host.prefix_scan(b"pending/".to_vec());
@@ -518,10 +622,32 @@ mod tests {
                 (b"pending/2".to_vec(), b"b".to_vec()),
             ]
         );
-        assert!(host.delete(b"k".to_vec()));
-        assert_eq!(host.get(b"k".to_vec()), None);
-        // KV comes back out for the host to persist as derived state.
+        assert!(host.delete(b"k".to_vec())); // existed (via overlay) → true
+        assert_eq!(host.get(b"k".to_vec()), None); // tombstone hides it
+        assert!(!host.delete(b"k".to_vec())); // already tombstoned → false
+                                              // COMMIT persists the overlay into the base; only the two live puts survive (k was deleted).
+        host.commit();
         assert_eq!(host.into_kv().len(), 2);
+    }
+
+    // Transactional atomicity at the host level: writes buffered in the overlay do NOT reach the base
+    // KV unless `commit` runs. A host dropped WITHOUT commit (the errored-fold path) yields the exact
+    // pre-fold base — this is what makes a trapped fold atomic (PR#1076/#1150).
+    #[test]
+    fn host_kv_writes_are_discarded_without_commit() {
+        use self::cadenza::agent_kernel::kv::Host;
+        let mut base = Kv::new();
+        base.put(b"keep".to_vec(), b"1".to_vec());
+        let mut host = ReducerHost::new(base);
+        // The guest writes + deletes through the import...
+        host.put(b"new".to_vec(), b"2".to_vec());
+        assert!(host.delete(b"keep".to_vec()));
+        assert_eq!(host.get(b"keep".to_vec()), None); // overlay shows the tombstone
+                                                      // ...but WITHOUT commit, into_kv returns the untouched base: "new" absent, "keep" intact.
+        let out = host.into_kv();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out.get(b"keep"), Some(&b"1"[..]));
+        assert_eq!(out.get(b"new"), None);
     }
 
     // The ComponentReducer CONSTRUCTION path wires up (Engine + Component + Linker + the generated
