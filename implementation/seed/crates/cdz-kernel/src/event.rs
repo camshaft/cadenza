@@ -23,6 +23,33 @@ pub struct ContentType {
     pub version: u32,
 }
 
+impl ContentType {
+    /// The well-known **"report" content-type** (v1) — the fork-for-query summarize protocol contract
+    /// (operator ruling (a), fork-for-query design). An ephemeral query fork ([`crate::kernel::Session::fork_for_query`])
+    /// delivers an `Inbound` carrying THIS content-type; the reducer recognizes it (via [`ContentType::is_report`])
+    /// and describes its own state — from local KV/goal/progress where it can (no model call, the operator's
+    /// preference), or via a scoped model call where it must. The kernel never interprets it (§9b: content-type
+    /// is a routing HINT, not a trusted assertion); it's the AGREED family string reducers key off, so a debug
+    /// query means the same thing to every reducer.
+    pub const REPORT_FAMILY: &'static str = "report";
+
+    /// Construct the well-known report content-type (`{family: "report", version: 1}`) — see
+    /// [`ContentType::REPORT_FAMILY`]. Use this to build the summarize-query message a fork is delivered.
+    pub fn report() -> Self {
+        ContentType {
+            family: Self::REPORT_FAMILY.to_string(),
+            version: 1,
+        }
+    }
+
+    /// Is this the fork-for-query "report" family? Matches on `family` ONLY (version-tolerant per §9b —
+    /// a reducer accepts any report version it understands, range-checking `version` itself if it cares),
+    /// so a reducer's fold can branch a summarize-query cheaply: `if event_ct.is_report() { …describe self… }`.
+    pub fn is_report(&self) -> bool {
+        self.family == Self::REPORT_FAMILY
+    }
+}
+
 /// The event body — what actually happened. This is the v0 vocabulary; it grows as features land.
 /// Crucially it distinguishes the three obligation-bearing kinds the review (S1) said must be durable
 /// LOG events, not ephemeral kernel metadata: `Dispatched`, `EffectResult`, and `TimerArmed`.
@@ -609,6 +636,32 @@ mod tests {
     #[test]
     fn event_hash_is_deterministic() {
         assert_eq!(genesis().hash(), genesis().hash());
+    }
+
+    #[test]
+    fn report_content_type_is_the_well_known_report_family() {
+        let ct = ContentType::report();
+        assert_eq!(ct.family, "report");
+        assert_eq!(ct.family, ContentType::REPORT_FAMILY);
+        assert_eq!(ct.version, 1);
+        assert!(ct.is_report());
+    }
+
+    #[test]
+    fn is_report_matches_family_only_and_rejects_other_families() {
+        // Version-tolerant (§9b): a different report version is still "a report" — the reducer
+        // range-checks version itself if it cares.
+        let other_version = ContentType {
+            family: "report".into(),
+            version: 7,
+        };
+        assert!(other_version.is_report());
+        // A different family is NOT a report.
+        let message = ContentType {
+            family: "message".into(),
+            version: 1,
+        };
+        assert!(!message.is_report());
     }
 
     // A FULLY-FIXED event (every field a literal, no Hash::of indirection) whose encoded bytes are
