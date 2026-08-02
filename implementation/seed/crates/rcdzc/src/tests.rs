@@ -58117,12 +58117,12 @@ mod stage1 {
             "(module m (def (f (: a (Int 7))) a) (export f))",
             "(module m (def (f (: a Type) (: x (Int a))) x) (export f))",
         ] {
+            let ok_diags = diags(ok);
             assert!(
-                diags(ok)
+                ok_diags
                     .iter()
                     .all(|d| d.severity != crate::abi::Severity::Error),
-                "a valid width form checks clean: {ok} → {:?}",
-                diags(ok)
+                "a valid width form checks clean: {ok} → {ok_diags:?}"
             );
         }
         let over = diags("(module m (def (f (: a (UInt 65))) a) (export f))");
