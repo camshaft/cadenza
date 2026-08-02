@@ -7816,6 +7816,17 @@ pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
     // So bounding to `user_node_count` never drops a reportable fault, and skips the built-in-node bulk that a
     // unit-free program (the common case — e.g. the whole ML compiler) would otherwise walk for nothing
     // (~6% of a large real compile: this pass had inclusive-time dominance on `emit-db.cdz`, which uses no units).
+    //
+    // ADVERSARIAL WITNESS (PR#1101 review, corpus-bugfix-confirmed): could an `eval` reconstruction GRAFT a
+    // fresh synth `(Unit.of #"zorks")` node (id ≥ `user_node_count`, so skipped) with NO in-range user origin?
+    // No — `(eval (quote (Qty.of 5 (Unit.of #"zorks"))))` declines CDZ0101 up front, because `eval` refuses to
+    // reconstruct ANY quote carrying a `#"…"` SYMBOL literal (strings/ints/floats reconstruct; a bare symbol
+    // does not — verified `(eval (quote #"hi"))` → CDZ0101 vs `(eval (quote "hi"))`/`(quote 42)` clean). A
+    // `Unit.of` REQUIRES a symbol arg, so a quoted `Unit.of` trips that decline BEFORE any runnable synth
+    // `Unit.of` node is built — the "escaping synth node" never materializes. And the quoted `Unit.of`'s own
+    // `#"zorks"` still gets CDZ0201'd as an in-range user literal. Pinned by the eval-quoted assertion in
+    // `check_unknown_units_scans_only_user_nodes_not_the_prelude` + a corpus tripwire (the CDZ0101 decline)
+    // that flips the day `eval` learns to reconstruct symbol literals — at which point re-examine this bound.
     let node_count = db.user_node_count();
     #[cfg(test)]
     crate::db::CHECK_UNKNOWN_UNITS_SCAN_NODES.with(|c| c.set(c.get() + node_count as u64));
