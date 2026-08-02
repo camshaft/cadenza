@@ -21,7 +21,14 @@ pub struct EffectId(pub u64);
 
 /// The kind of effect — the coarse verb. Target/args live in [`EffectRequest`]. This is deliberately a
 /// small, explicit enum for v0 (design §15b: a handful of local effects); it grows as executors land.
-/// `Hash` so it can key a by-kind executor router ([`crate::executor::CompositeExecutor`]).
+/// `Hash` so it can key a by-kind executor router ([`crate::executor::AsyncCompositeExecutor`]).
+///
+/// Migration note (extensible content-typed effects, operator seq-39): each kind has a canonical
+/// lowercase FAMILY string ([`EffectKind::family`] / [`effect_ct`]) — the same string the codec
+/// (event_ast) already writes and the Cedar authorizer's action-name uses. That family is the seam the
+/// effect model migrates onto: routing/authz key on the family string (so a NEW effect type is added
+/// without growing this enum + a kernel edit), and this enum stays the canonical family source until the
+/// migration replaces it with a raw content-type tag.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum EffectKind {
     /// Run a shell command. Target = the program + args (see `EffectRequest::target`).
@@ -37,6 +44,50 @@ pub enum EffectKind {
     Timer,
     /// Send a signal to a peer session's inbox (§5). Target = the session id.
     Emit,
+}
+
+/// The canonical lowercase FAMILY strings for the well-known effect kinds — the extensible-effects vocab
+/// (operator seq-39). These are the SINGLE source of truth for the family names the codec writes
+/// (event_ast `kind_atom`/`read_kind`), the executor router keys on, and the Cedar authorizer maps to a
+/// policy ACTION — so they can't drift on a typo across those sites. A new effect type is a NEW family
+/// string here (routed to a handler by string), never a new [`EffectKind`] variant + a kernel recompile.
+pub mod effect_ct {
+    pub const SHELL: &str = "shell";
+    pub const HTTP: &str = "http";
+    pub const MODEL: &str = "model";
+    pub const NOW: &str = "now";
+    pub const TIMER: &str = "timer";
+    pub const EMIT: &str = "emit";
+}
+
+impl EffectKind {
+    /// The canonical lowercase family string for this kind (see [`effect_ct`]) — the string the codec
+    /// writes, the router keys on, and Cedar uses as the action. One source of truth for the wire name.
+    pub fn family(&self) -> &'static str {
+        match self {
+            EffectKind::Shell => effect_ct::SHELL,
+            EffectKind::Http => effect_ct::HTTP,
+            EffectKind::Model => effect_ct::MODEL,
+            EffectKind::Now => effect_ct::NOW,
+            EffectKind::Timer => effect_ct::TIMER,
+            EffectKind::Emit => effect_ct::EMIT,
+        }
+    }
+
+    /// Parse a family string back to a well-known [`EffectKind`], or `None` for an unrecognized family
+    /// (a future/extension effect type that this kernel version has no built-in variant for). The inverse
+    /// of [`EffectKind::family`]; the codec's `read_kind` and any string-keyed router share this mapping.
+    pub fn from_family(family: &str) -> Option<EffectKind> {
+        match family {
+            effect_ct::SHELL => Some(EffectKind::Shell),
+            effect_ct::HTTP => Some(EffectKind::Http),
+            effect_ct::MODEL => Some(EffectKind::Model),
+            effect_ct::NOW => Some(EffectKind::Now),
+            effect_ct::TIMER => Some(EffectKind::Timer),
+            effect_ct::EMIT => Some(EffectKind::Emit),
+            _ => None,
+        }
+    }
 }
 
 /// A concrete effect the reducer wants performed: a kind plus its *resolved* target argument and
@@ -194,6 +245,28 @@ mod tests {
             payload: None,
             timeliness: Timeliness::Interactive,
         }
+    }
+
+    #[test]
+    fn effect_kind_family_round_trips_and_matches_the_canonical_consts() {
+        // Every well-known kind maps to its canonical family string and back — the vocab the codec,
+        // router, and Cedar action-map all share (extensible-effects seam, seq-39).
+        for kind in [
+            EffectKind::Shell,
+            EffectKind::Http,
+            EffectKind::Model,
+            EffectKind::Now,
+            EffectKind::Timer,
+            EffectKind::Emit,
+        ] {
+            assert_eq!(EffectKind::from_family(kind.family()), Some(kind.clone()));
+        }
+        // The consts are the exact lowercase names (byte-for-byte — the codec/authz depend on these).
+        assert_eq!(EffectKind::Http.family(), effect_ct::HTTP);
+        assert_eq!(EffectKind::Http.family(), "http");
+        // An unrecognized family (a future/extension effect type) → None, not a panic.
+        assert_eq!(EffectKind::from_family("summary"), None);
+        assert_eq!(EffectKind::from_family("not-a-kind"), None);
     }
 
     #[test]
