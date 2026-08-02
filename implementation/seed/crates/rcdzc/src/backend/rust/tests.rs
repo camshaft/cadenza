@@ -7257,3 +7257,22 @@ fn rustc_host_call_seq_emits_statements_in_source_order() {
         "the first host call binds before the tail:\n{rs}"
     );
 }
+
+#[test]
+fn rustc_host_seq_elides_a_discarded_pure_statement_no_spurious_trap() {
+    // adv-56 (breaker): the Core::Seq emit must NOT run a DISCARDED non-final statement that reaches no host
+    // call — its value is dropped and its trap is unobserved (dead-init ruling §283). `(do (/ 100 d)
+    // (io.put 1) 42)` inside `(host (io) …)`: `(/ 100 d)` is pure + discarded → ELIDED entirely (not emitted
+    // as `let _ = …`), so at d=0 it does NOT div-by-zero; only the host-call statement is kept. Emitted:
+    // `{ let _ = { … __cdz_host_io_put(__ha0) … }; (42u64 as i64) }` — the io.put shim call present, NO
+    // division of the discarded pure item.
+    let src = "(module m (effect io (op put (-> Int64 Int64))) \
+        (def (main (: d Int64)) (host (io) (do (/ 100 d) (io.put 1) 42))) (export main))";
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("crate::__cdz_host_io_put") && !rs.contains("100u64"),
+        "the discarded pure `(/ 100 d)` (100u64) is elided from the Seq; only the host-call stmt kept:\n{rs}"
+    );
+    // (Runtime behavior — main(0) = 42, no spurious trap — is verified by the corpus gate case adv-56;
+    // the lib-test `rustc_run` can't execute a host-delegating program, so this pins the EMIT only.)
+}
