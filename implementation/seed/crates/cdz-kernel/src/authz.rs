@@ -9,55 +9,26 @@
 
 use crate::effect::{Capability, EffectRequest};
 
-/// The authorization SEAM (§1/§12c): the kernel gates every effect through this, and takes it as
-/// `&dyn Authorize` so the decision engine is swappable WITHOUT touching the kernel core — a Cedar
-/// policy component (§20b), a delegation/attenuation authorizer (§12f), or the v0 [`Authorizer`] below
-/// all satisfy it. The design's "the authorizer is a swappable component" is this trait; making it real
-/// (kernel takes `&dyn Authorize`, not the concrete struct) is what lets the swap happen later with no
-/// kernel change.
+/// The authorization SEAM (§1/§12c): the kernel gates every effect through this, taken as
+/// `&dyn AsyncAuthorize` so the decision engine is swappable WITHOUT touching the kernel core — a Cedar
+/// policy component (§20b), a delegation/attenuation authorizer (§12f), or the v0 [`Authorizer`] below all
+/// satisfy it. There is ONE authorizer trait, and it is async (operator ruling: "one async trait only").
 ///
-/// Contract: total + PURE — it inspects the request and the held policy, performs no I/O and no
-/// mutation, and returns a decision. `Ok(())` to permit; `Err(reason)` to deny (the reason is logged in
-/// the `AuthzDenied` event, §10). It must not panic (§17).
-pub trait Authorize {
-    /// Is this request permitted? `Ok(())` to proceed to dispatch; `Err(reason)` to deny — the denied
-    /// request never reaches an executor and the reason is recorded.
-    fn authorize(&self, req: &EffectRequest) -> Result<(), String>;
-}
-
-/// The ASYNC authorization seam — the async counterpart of [`Authorize`] (operator all-async directive).
+/// Contract: total + PURE — it inspects the request and the held policy, performs no mutation, and returns
+/// a decision. `Ok(())` to permit; `Err(reason)` to deny (logged in the `AuthzDenied` event, §10). Must not
+/// panic (§17). A wasm-component authorizer ([`crate::wasm_host::ComponentAuthorizer`], Cedar-as-wasm) may
+/// `.await` a fuel-yielding policy evaluation internally; an in-kernel check like [`Authorizer`] just
+/// returns (an `async fn` with no `.await`).
 ///
-/// A wasm-component authorizer ([`crate::wasm_host::ComponentAuthorizer`], Cedar-as-wasm) evaluates a
-/// policy by instantiating + calling a wasm guest — a call that, on the all-async engine, can cooperatively
-/// yield. So the authz gate becomes awaitable too (no residual sync interface — the operator's "all async,
-/// no sync at all"). Introduced ADDITIVELY alongside sync [`Authorize`] (nothing in the kernel loop
-/// consumes it yet; the async drive loop switches to it in the same follow-up slice as the async executor,
-/// once the authorizer impls are migrated). Removed with the sync path at the end.
-///
-/// **Object-safe via `async-trait`.** The kernel gates through `&dyn Authorize`, so the async trait stays
+/// **Object-safe via `async-trait`.** The kernel gates through `&dyn AsyncAuthorize`, so the trait stays
 /// dyn-compatible via `#[async_trait(?Send)]`; `?Send` for the single-threaded kernel (a ComponentAuthorizer
-/// holds a non-`Send` wasmtime store). **Every sync [`Authorize`] is an `AsyncAuthorize`** via the blanket
-/// impl below (no wrapper) — coherence-safe because a genuinely-async authorizer (a wasm ComponentAuthorizer
-/// whose eval awaits) drops its sync `Authorize` impl and writes a NATIVE `AsyncAuthorize`, so it never
-/// overlaps the blanket.
+/// holds a non-`Send` wasmtime store).
 #[async_trait::async_trait(?Send)]
 pub trait AsyncAuthorize {
-    /// Is this request permitted? Async counterpart of [`Authorize::authorize`] — same total/pure contract
-    /// (`Ok(())` permit, `Err(reason)` deny, no panic); may `.await` a wasm policy evaluation internally.
+    /// Is this request permitted? `Ok(())` to proceed to dispatch; `Err(reason)` to deny — the denied
+    /// request never reaches an executor and the reason is recorded. Total + pure; may `.await` a wasm
+    /// policy evaluation internally.
     async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String>;
-}
-
-// BLANKET: every sync `Authorize` IS an `AsyncAuthorize` (authorize_async runs the sync authorize — no
-// await point). Lets ANY sync authorizer (concrete `Authorizer` OR `&dyn Authorize`, hence `?Sized`) gate
-// the async loop UNCHANGED during the migration — no call site wraps. Coherence-SAFE (like the executor
-// blanket, unlike the reducer adapter): a genuinely-async authorizer (a wasm `ComponentAuthorizer` whose
-// eval awaits) drops its sync `Authorize` impl and writes a NATIVE `AsyncAuthorize`, so it never collides
-// with this blanket. Removed with the sync `Authorize` trait at the end of the migration.
-#[async_trait::async_trait(?Send)]
-impl<A: Authorize + ?Sized> AsyncAuthorize for A {
-    async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String> {
-        self.authorize(req)
-    }
 }
 
 /// Decides whether a requested effect may be performed. The result is logged either way (§10): a
@@ -82,9 +53,11 @@ impl Authorizer {
     }
 }
 
-impl Authorize for Authorizer {
-    /// SEC-F1: permission requires a capability whose predicate admits the *resolved target*.
-    fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
+#[async_trait::async_trait(?Send)]
+impl AsyncAuthorize for Authorizer {
+    /// SEC-F1: permission requires a capability whose predicate admits the *resolved target*. Native async
+    /// (no `.await` — a flat capability-set check does no I/O).
+    async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String> {
         if self.caps.iter().any(|c| c.permits(req)) {
             Ok(())
         } else {
@@ -110,52 +83,39 @@ mod tests {
         }
     }
 
-    #[test]
-    fn permits_only_scoped_targets() {
-        let authz = Authorizer::new(vec![Capability {
-            kind: EffectKind::Http,
-            predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
-        }]);
-        assert!(authz
-            .authorize(&req(EffectKind::Http, "https://ok.host/x"))
-            .is_ok());
-        assert!(authz
-            .authorize(&req(EffectKind::Http, "https://evil.host/x"))
-            .is_err());
-    }
-
-    #[test]
-    fn deny_all_denies_everything() {
-        let authz = Authorizer::deny_all();
-        assert!(authz.authorize(&req(EffectKind::Now, "")).is_err());
-    }
-
     #[tokio::test(flavor = "current_thread")]
-    async fn sync_authorizer_gates_via_async_trait_through_the_blanket() {
-        // A sync Authorize is an AsyncAuthorize via the blanket impl — gates through &dyn AsyncAuthorize
-        // (object-safety), no wrapper needed.
+    async fn permits_only_scoped_targets() {
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Http,
             predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
         }]);
-        let dyn_authz: &dyn AsyncAuthorize = &authz;
-        assert!(dyn_authz
+        assert!(authz
             .authorize_async(&req(EffectKind::Http, "https://ok.host/x"))
             .await
             .is_ok());
-        assert!(dyn_authz
+        assert!(authz
             .authorize_async(&req(EffectKind::Http, "https://evil.host/x"))
             .await
             .is_err());
     }
 
-    #[test]
-    fn a_custom_authorize_impl_satisfies_the_seam() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn deny_all_denies_everything() {
+        let authz = Authorizer::deny_all();
+        assert!(authz
+            .authorize_async(&req(EffectKind::Now, ""))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_custom_authorize_impl_satisfies_the_seam() {
         // The point of the trait (§1 swap seam): a NON-Authorizer decision engine drops in as
-        // `&dyn Authorize` with no kernel change. A trivial policy — permit only `Now` — proves it.
+        // `&dyn AsyncAuthorize` with no kernel change. A trivial policy — permit only `Now` — proves it.
         struct OnlyNow;
-        impl Authorize for OnlyNow {
-            fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
+        #[async_trait::async_trait(?Send)]
+        impl AsyncAuthorize for OnlyNow {
+            async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String> {
                 if req.kind == EffectKind::Now {
                     Ok(())
                 } else {
@@ -163,10 +123,14 @@ mod tests {
                 }
             }
         }
-        let authz: &dyn Authorize = &OnlyNow;
-        assert!(authz.authorize(&req(EffectKind::Now, "")).is_ok());
+        let authz: &dyn AsyncAuthorize = &OnlyNow;
         assert!(authz
-            .authorize(&req(EffectKind::Http, "https://ok.host/x"))
+            .authorize_async(&req(EffectKind::Now, ""))
+            .await
+            .is_ok());
+        assert!(authz
+            .authorize_async(&req(EffectKind::Http, "https://ok.host/x"))
+            .await
             .is_err());
     }
 }

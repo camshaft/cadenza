@@ -22,13 +22,13 @@
 //! The KV is rebuilt by folding the log (it IS derived state — §4); a snapshot is `(seq, kv.root_hash,
 //! reducer_hash)`.
 
-use crate::authz::{AsyncAuthorize, Authorize};
+use crate::authz::AsyncAuthorize;
 use crate::effect::{EffectId, EffectKind, EffectRequest};
 use crate::event::{EffectOutcome, Event, EventBody};
-use crate::executor::{AsyncExecutor, Executor};
+use crate::executor::AsyncExecutor;
 use crate::hash::Hash;
 use crate::kv::Kv;
-use crate::reducer::{AsyncReducer, Effect, Reducer};
+use crate::reducer::{AsyncReducer, Effect};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
@@ -311,22 +311,6 @@ impl Session {
         }
     }
 
-    /// Deliver an inbound event and run the fold→dispatch cycle to quiescence: fold the event, perform
-    /// each requested (and authorized) effect, fold its result, repeat until no new effects. This is
-    /// the reactive step (§9d): appending the inbound event is what drives the reducer.
-    pub fn deliver(
-        &mut self,
-        body: EventBody,
-        cause: Option<Hash>,
-        reducer: &dyn Reducer,
-        authz: &dyn Authorize,
-        executor: &mut dyn Executor,
-    ) -> Result<(), KernelError> {
-        self.append(body, cause);
-        self.drive(reducer, authz, executor);
-        Ok(())
-    }
-
     /// Deliver an inbound event and drive the fold→authorize→dispatch→fold-result loop to quiescence,
     /// awaiting the reducer's fold via [`AsyncReducer`] — the async form of [`Session::deliver`]. Appends
     /// `body` (cause-linked to `cause`), then folds it through `reducer`; each effect the fold emits is
@@ -381,52 +365,6 @@ impl Session {
                 None,
             );
             self.drive_async(reducer, authz, executor).await;
-        }
-        due.len()
-    }
-
-    /// Fire every armed timer whose absolute deadline has passed `now_ms`, injecting a `TimerFired`
-    /// (§9c) and driving the reducer for each — the kernel, not an executor, is what wakes a timer. The
-    /// driver calls this with the current wall clock (e.g. on a scheduler tick); the reducer stays
-    /// clock-free because it only ever sees the recorded `fired_ms`. Returns how many fired.
-    ///
-    /// Determinism (§9c): the FIRED time recorded is the timer's own `deadline_ms`, not `now_ms` — so a
-    /// timer that fires 5ms or 5s late still records the same frozen fact, and replay reconstructs
-    /// identically regardless of when `fire_due_timers` happened to run. Fires in deadline order so a
-    /// batch of overdue timers wakes the reducer oldest-first.
-    pub fn fire_due_timers(
-        &mut self,
-        now_ms: u64,
-        reducer: &dyn Reducer,
-        authz: &dyn Authorize,
-        executor: &mut dyn Executor,
-    ) -> usize {
-        // Collect due (id, deadline) in deadline order; drain from the table happens in `append` when
-        // the `TimerFired` lands.
-        let mut due: Vec<(u64, u64)> = self
-            .armed_timers
-            .iter()
-            .filter(|(_, &deadline)| deadline <= now_ms)
-            .map(|(&id, &deadline)| (deadline, id))
-            .collect();
-        due.sort_unstable();
-        for (deadline, id) in &due {
-            // Copy the reducer's continuation token from the durable `TimerArmed` frame onto the fire
-            // event (§19e slice 2b-iii, the timer analogue of `record_result`'s dispatch→result copy): a
-            // wasm `ComponentReducer` reads it back as the guest's `resumes` on the timer. Derived from
-            // the durable frame so it's identical live and on replay; `None` if armed token-free.
-            let token = self.timer_armed_token_of(EffectId(*id)).unwrap_or(None);
-            self.append(
-                EventBody::TimerFired {
-                    id: EffectId(*id),
-                    fired_ms: *deadline,
-                    token,
-                },
-                None,
-            );
-            // Firing wakes the reducer (a timer is a reactive trigger, §9d) — drive to quiescence,
-            // which may itself arm more timers or dispatch effects.
-            self.drive(reducer, authz, executor);
         }
         due.len()
     }
@@ -490,20 +428,6 @@ impl Session {
         hash
     }
 
-    /// Run the reducer over the just-appended tip and process the effects it emits until quiescent.
-    ///
-    /// Causal DAG (§5): every effect is `cause`-linked to the event that unlocked it — the reducer
-    /// output of folding event E is caused by E. So the chain threads
-    /// trigger → dispatch → result → (next dispatch caused by that result) → …, which is exactly the
-    /// provenance audit / blast-radius (§9f) / on-behalf-of (§12f) traversals need.
-    fn drive(&mut self, reducer: &dyn Reducer, authz: &dyn Authorize, executor: &mut dyn Executor) {
-        // Worklist of (request, cause) — cause is the hash of the event whose fold emitted the request.
-        // The initial batch is caused by the just-appended tip.
-        let trigger = self.tip_hash();
-        let initial = self.fold_tip(reducer, trigger);
-        self.drive_worklist(initial, reducer, authz, executor);
-    }
-
     /// The ASYNC twin of [`Session::drive`] — same fold→authorize→dispatch→fold-result loop, but the
     /// reducer folds are `.await`ed (via [`AsyncReducer`]) so a long wasm fold cooperatively yields. The
     /// authorize/executor/append mechanics are IDENTICAL to the sync path — only the fold calls await.
@@ -517,148 +441,6 @@ impl Session {
         let initial = self.fold_tip_async(reducer, trigger).await;
         self.drive_worklist_async(initial, reducer, authz, executor)
             .await;
-    }
-
-    /// Process a worklist of `(request, cause)` effects to quiescence — the shared core of `drive` (which
-    /// seeds it by folding the tip) and `time_out_effect` (which seeds it with a timeout continuation's
-    /// effects). Kept as one method so every entry point runs the IDENTICAL authorize → durable-dispatch
-    /// → execute → fold-result loop (no second, drifting copy).
-    fn drive_worklist(
-        &mut self,
-        mut to_process: Vec<(Effect, Hash)>,
-        reducer: &dyn Reducer,
-        authz: &dyn Authorize,
-        executor: &mut dyn Executor,
-    ) {
-        while let Some((effect, cause)) = to_process.pop() {
-            let Effect {
-                request: req,
-                token,
-            } = effect;
-            let id = EffectId(self.next_effect_id);
-            self.next_effect_id += 1;
-
-            // SEC-F1: authorize against the resolved target, not just the kind. The denial is caused
-            // by the event that requested the effect.
-            if let Err(reason) = authz.authorize(&req) {
-                // A denial is an OBSERVABLE outcome (§9d recovery): the reducer folds it in BOTH the
-                // live and replay paths, so live-kv == replayed-kv (PR#990 finding #1 — the denial was
-                // appended but not folded live, while replay folds it → divergence). Folding may emit
-                // recovery effects, which join the worklist. The reducer's continuation token rides the
-                // denial (§19e slice 2b-iii): moved straight from the requesting `Effect` — there is no
-                // prior durable frame (the effect never dispatched), so the token can't be copied later.
-                let denial_hash =
-                    self.append(EventBody::AuthzDenied { id, reason, token }, Some(cause));
-                for pair in self.fold_tip(reducer, denial_hash) {
-                    to_process.push(pair);
-                }
-                continue;
-            }
-
-            // Timers are NOT executor calls (§9c): a `Timer` effect arms a deadline the KERNEL fires
-            // later (`fire_due_timers`), keeping the reducer clock-free. Its target is the absolute
-            // wall-clock deadline in ms (§16c-S5). Arm it (an open obligation) and move on — no
-            // executor, no synchronous result.
-            if req.kind == EffectKind::Timer {
-                match req.target.parse::<u64>() {
-                    Ok(deadline_ms) => {
-                        // Record the reducer's continuation token in the durable arming frame (§19e slice
-                        // 2b-iii): `fire_due_timers` copies it onto the `TimerFired` so the guest resumes
-                        // on the timer by its own token. Moved from the requesting `Effect`.
-                        self.append(
-                            EventBody::TimerArmed {
-                                id,
-                                deadline_ms,
-                                token,
-                            },
-                            Some(cause),
-                        );
-                    }
-                    Err(_) => {
-                        // A malformed deadline is a request error, surfaced like a denial (audit) rather
-                        // than panicking (totality, §17). Observable → folded in both paths (finding #1).
-                        // The token rides the denial (§19e slice 2b-iii), moved from the requesting effect.
-                        let denial_hash = self.append(
-                            EventBody::AuthzDenied {
-                                id,
-                                reason: format!("timer deadline not a u64 ms: {:?}", req.target),
-                                token,
-                            },
-                            Some(cause),
-                        );
-                        for pair in self.fold_tip(reducer, denial_hash) {
-                            to_process.push(pair);
-                        }
-                    }
-                }
-                continue;
-            }
-
-            let idempotency_key = idempotency_key_for(id, &req);
-
-            // S1: append the DURABLE dispatch record BEFORE routing to the executor. Caused by the
-            // requesting event; its result (below) is in turn caused by the dispatch.
-            let dispatch_hash = self.append(
-                EventBody::Dispatched {
-                    id,
-                    kind: req.kind.clone(),
-                    target: req.target.clone(),
-                    idempotency_key,
-                    deadline_ms: None,
-                    // Thread the reducer's continuation token (§19e) into the durable frame: `None` for a
-                    // Rust reducer (correlates by EffectId), the guest's `correlation` for a wasm
-                    // `ComponentReducer`. Recording it here is what lets recovery rebuild the
-                    // EffectId↔token map from the log (slice-1 guard). MOVED, not cloned: `token` is owned
-                    // (destructured off the worklist `Effect`) and unused after this — only `req` is
-                    // (`executor.perform(&req)`), which is why `req.kind/target` clone but the token needn't.
-                    token,
-                },
-                Some(cause),
-            );
-
-            // S1 latch-check BEFORE routing (concierge ruling, tier B): if persisting THIS Dispatched
-            // frame failed, the dispatch is NOT durable — so we must NOT route the effect, because an
-            // executor may perform an irreversible external side-effect (e.g. ShellExecutor spawns a
-            // process) that a crash-recovery would then re-drive with no record it already ran. Instead
-            // of performing, record the effect as failed-undurable (an observable outcome the reducer
-            // folds, live == replay) and move on. The latch stays set (surfaced to the driver via
-            // take_persist_error); subsequent dispatches short-circuit here too. This is the tier-B
-            // durable-before-route guarantee at the actual danger point (an un-doable route on an
-            // un-durable dispatch); tier A (strict fallible-abort of the whole drive) is the tracked
-            // hardening for when external routing goes live in anger.
-            if self.persist_error.is_some() {
-                let outcome = EffectOutcome::Err(
-                    "dispatch not durably logged (persist failure) — effect NOT routed (S1)"
-                        .to_string(),
-                );
-                let more = self.record_result(id, outcome, reducer, dispatch_hash);
-                for pair in more {
-                    to_process.push(pair);
-                }
-                continue;
-            }
-
-            // Route + execute. (In v0 this is synchronous; the async path preserves the ordering: the
-            // Dispatched record is already durable, so a crash here recovers via replay.)
-            let outcome = executor.perform(&req, idempotency_key);
-
-            // MONOTONIC `now` (operator ruling): the executor reads the RAW wall clock (kernel stays
-            // clock-free, §9c); the kernel CLAMPS a `Now` result to be strictly increasing before it's
-            // recorded, so successive `now()`s never repeat/regress. Clamp the value that gets LOGGED, so
-            // replay re-folds the same monotonic sequence (deterministic). Only `Now` results are clamped.
-            let outcome = if req.kind == EffectKind::Now {
-                clamp_now_outcome(outcome, &mut self.last_now)
-            } else {
-                outcome
-            };
-
-            // Fold the result back (S4: correlated by id), caused by its dispatch. Any further effects
-            // the reducer emits when it folds the result are caused by the RESULT event (the new tip).
-            let more = self.record_result(id, outcome, reducer, dispatch_hash);
-            for pair in more {
-                to_process.push(pair);
-            }
-        }
     }
 
     /// The ASYNC twin of [`Session::drive_worklist`] — structurally identical (authorize → durable
@@ -774,34 +556,6 @@ impl Session {
         }
     }
 
-    /// Fold the current tip event through the reducer, applying its KV writes and returning its
-    /// requested effects each paired with `cause` (the tip's hash — what unlocked them). Reversed so a
-    /// `pop`-driven worklist yields them in emission order.
-    fn fold_tip(&mut self, reducer: &dyn Reducer, cause: Hash) -> Vec<(Effect, Hash)> {
-        let tip = self.log.last().expect("log always has genesis").clone();
-        let out = reducer.fold(&tip, &mut self.kv);
-        // Error-resilience (§17 / supervision): if the fold FAILED (a wasm guest trap / fuel-exhaustion /
-        // instantiate failure — surfaced as `out.failure`, never a panic), CAPTURE it as a first-class
-        // `FoldFailed` log event instead of letting it vanish into a silent empty fold. `caused_event` =
-        // the tip whose fold failed, so a supervisor reading the log sees WHAT the reducer choked on. We
-        // do NOT fold the FoldFailed event (no recursion — a fold that failed can't be re-handed to the
-        // same failing reducer); a supervisor reacting to it is a later slice. A failed fold emits no
-        // effects, so nothing joins the worklist.
-        if let Some(reason) = out.failure {
-            self.append(
-                EventBody::FoldFailed {
-                    reason,
-                    caused_event: cause,
-                },
-                Some(cause),
-            );
-            return Vec::new();
-        }
-        let mut v: Vec<(Effect, Hash)> = out.effects.into_iter().map(|e| (e, cause)).collect();
-        v.reverse();
-        v
-    }
-
     /// The ASYNC twin of [`Session::fold_tip`] — folds the tip through an [`AsyncReducer`] (`.await`),
     /// same FoldFailed capture + effect-reversal. This is the ONE place the reducer actually awaits.
     async fn fold_tip_async(
@@ -826,42 +580,6 @@ impl Session {
         let mut v: Vec<(Effect, Hash)> = out.effects.into_iter().map(|e| (e, cause)).collect();
         v.reverse();
         v
-    }
-
-    /// Record an effect result, honoring timeout-cancels (§16c-S4): a result for an already-settled id
-    /// is dropped. The result event is `cause`-linked to its dispatch (`dispatch_hash`), and any
-    /// further effects the reducer emits folding the result are caused by the result event itself.
-    fn record_result(
-        &mut self,
-        id: EffectId,
-        outcome: EffectOutcome,
-        reducer: &dyn Reducer,
-        dispatch_hash: Hash,
-    ) -> Vec<(Effect, Hash)> {
-        if self.settled.contains(&id.0) {
-            // Already settled (e.g. timed out earlier) — drop the late result. No double-resume.
-            return Vec::new();
-        }
-        // (B) The token RIDES the result: copy it from id's DURABLE Dispatched frame (§19b/§19e) so the
-        // reducer's fold reads `resumes` off the event, never the log/map (fold stays pure). Derived from
-        // the authoritative frame → replay-deterministic. A missing frame is a kernel invariant violation
-        // (every result has a prior dispatch — record_result is only reached after appending Dispatched);
-        // trap loudly rather than silently emit a None-token result that would misroute the guest resume.
-        let token = self.dispatch_token_of(id).unwrap_or_else(|| {
-            panic!(
-                "cdz-kernel invariant violated: EffectResult for {id:?} has no Dispatched frame to \
-                 derive its continuation token from (§19b/§19e (B))"
-            )
-        });
-        let result_hash = self.append(
-            EventBody::EffectResult {
-                id,
-                result: outcome,
-                token,
-            },
-            Some(dispatch_hash),
-        );
-        self.fold_tip(reducer, result_hash)
     }
 
     /// The ASYNC twin of [`Session::record_result`] — same timeout-cancels (drop a late result for a
@@ -909,12 +627,12 @@ impl Session {
     ///
     /// The result event is `cause`-linked to the original `Dispatched` (found in the log), preserving the
     /// causal DAG (§5): trigger → dispatch → (timeout) result, exactly as a real result would link.
-    pub fn time_out_effect(
+    pub async fn time_out_effect(
         &mut self,
         id: EffectId,
-        reducer: &dyn Reducer,
-        authz: &dyn Authorize,
-        executor: &mut dyn Executor,
+        reducer: &dyn AsyncReducer,
+        authz: &(impl AsyncAuthorize + ?Sized),
+        executor: &mut (impl AsyncExecutor + ?Sized),
     ) -> bool {
         // Idempotent: only an OPEN id can be timed out. Settled (or never-dispatched) → no-op, so a late
         // real result and a timeout can't both settle one id (§16c-S4 at-most-once).
@@ -922,17 +640,20 @@ impl Session {
             return false;
         }
         // `open` holds BOTH dispatched-effect ids AND armed-timer ids — but only a DISPATCHED effect can
-        // be timed out (a timer isn't a hung external call; it fires via `fire_due_timers`). A timer id
-        // has no `Dispatched` event, so `dispatch_hash_of` is None → return false (Copilot PR#1016: the
+        // be timed out (a timer isn't a hung external call; it fires via `fire_due_timers_async`). A timer
+        // id has no `Dispatched` event, so `dispatch_hash_of` is None → return false (Copilot PR#1016: the
         // old code panicked here, contradicting the "never dispatched → false" contract). Timing out a
         // timer is a no-op, not a crash.
         let Some(dispatch_hash) = self.dispatch_hash_of(id) else {
             return false;
         };
         // Link the timeout result to the dispatch that opened it (causal DAG §5), like a real result.
-        let more = self.record_result(id, EffectOutcome::TimedOut, reducer, dispatch_hash);
+        let more = self
+            .record_result_async(id, EffectOutcome::TimedOut, reducer, dispatch_hash)
+            .await;
         // The reducer's timeout continuation may emit further effects — drive them to quiescence.
-        self.drive_worklist(more, reducer, authz, executor);
+        self.drive_worklist_async(more, reducer, authz, executor)
+            .await;
         true
     }
 
@@ -997,87 +718,6 @@ impl Session {
     /// Hash of the current tip (last log event) — the `cause` for effects its fold emits.
     fn tip_hash(&self) -> Hash {
         self.log.last().expect("log always has genesis").hash()
-    }
-
-    /// Replay a log to reconstruct KV + counters + the open-obligation set (§16c-S1 recovery). This is
-    /// the recovery path: given a persisted log, rebuild derived state deterministically. Effects are
-    /// NOT re-executed during replay (§17) — only their recorded results are re-folded.
-    pub fn replay(log: Vec<Event>, reducer: &dyn Reducer) -> Result<Session, KernelError> {
-        match log.first().map(|e| &e.body) {
-            Some(EventBody::Genesis { .. }) => {}
-            _ => return Err(KernelError::MissingGenesis),
-        }
-        let mut s = Session {
-            log: Vec::new(),
-            kv: Kv::new(),
-            next_effect_id: 0,
-            settled: BTreeSet::new(),
-            open: BTreeSet::new(),
-            armed_timers: BTreeMap::new(),
-            last_now: 0,
-            store: None,
-            persist_error: None,
-        };
-        for (i, event) in log.into_iter().enumerate() {
-            if event.seq != i as u64 {
-                return Err(KernelError::NonContiguousSeq {
-                    expected: i as u64,
-                    got: event.seq,
-                });
-            }
-            // Reconstruct the obligation sets + armed-timer table + id counter from the log (§16c-S1/S5).
-            match &event.body {
-                EventBody::Dispatched { id, .. } => {
-                    s.open.insert(id.0);
-                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
-                }
-                EventBody::TimerArmed {
-                    id, deadline_ms, ..
-                } => {
-                    s.open.insert(id.0);
-                    s.armed_timers.insert(id.0, *deadline_ms);
-                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
-                }
-                EventBody::EffectResult { id, result, .. } => {
-                    s.open.remove(&id.0);
-                    s.settled.insert(id.0);
-                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
-                    // Rebuild `last_now` from the RECORDED (already-clamped) `Now` results so the
-                    // monotonic high-water mark is replay-deterministic (the live path clamped these
-                    // values before recording; replay just re-derives the same `last_now`, never
-                    // re-clamps). A result is a `Now` one iff its dispatch's kind was `Now` — the
-                    // `Dispatched` frame precedes this result in the log we've built so far.
-                    if s.dispatch_kind_of(*id) == Some(EffectKind::Now) {
-                        if let EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes))) =
-                            result
-                        {
-                            if let Ok(arr) = <[u8; 8]>::try_from(&bytes[..]) {
-                                s.last_now = s.last_now.max(u64::from_le_bytes(arr));
-                            }
-                        }
-                    }
-                }
-                EventBody::TimerFired { id, .. } => {
-                    s.open.remove(&id.0);
-                    s.armed_timers.remove(&id.0);
-                    s.settled.insert(id.0);
-                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
-                }
-                EventBody::AuthzDenied { id, .. } => {
-                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
-                }
-                _ => {}
-            }
-            // Re-fold OBSERVABLE events to rebuild KV — the SAME set the live `drive` path folds, so
-            // replayed-kv == live-kv (PR#990 finding #1). Kernel-internal bookkeeping events
-            // (Dispatched, TimerArmed) are NOT folded in either path; effects emitted during replay are
-            // IGNORED — their results are already in the log (§17 "replay re-folds with no live effect").
-            if observable(&event.body) {
-                let _ = reducer.fold(&event, &mut s.kv);
-            }
-            s.log.push(event);
-        }
-        Ok(s)
     }
 
     /// The ASYNC twin of [`Session::replay`] (operator all-async directive) — reconstruct a session from a
@@ -1183,16 +823,18 @@ impl Session {
     /// good-prefix + open-effects and DECIDES whether to proceed or halt — `report.kind` /
     /// `report.is_corrupt()` is the signal. An empty log (no file yet) is NOT recoverable as a session
     /// — the caller must `genesis()` a new one — reported as [`RecoverError::EmptyLog`].
-    pub fn recover(
+    pub async fn recover(
         path: impl AsRef<std::path::Path>,
-        reducer: &dyn Reducer,
+        reducer: &dyn AsyncReducer,
     ) -> Result<(Session, RecoveryReport), RecoverError> {
         let recovered = crate::log_store::LogStore::recover(path).map_err(RecoverError::Io)?;
         if recovered.events.is_empty() {
             return Err(RecoverError::EmptyLog);
         }
         let kind = recovered.kind;
-        let session = Session::replay(recovered.events, reducer).map_err(RecoverError::Replay)?;
+        let session = Session::replay_async(recovered.events, reducer)
+            .await
+            .map_err(RecoverError::Replay)?;
         let report = RecoveryReport {
             kind,
             open_effects: session.open_effect_ids(),
@@ -1405,13 +1047,14 @@ mod status_snapshot_tests {
     use crate::effect::{Capability, EffectKind, EffectRequest, ResourcePredicate, Timeliness};
     use crate::event::{ContentType, EventBody};
     use crate::executor::RecordingExecutor;
-    use crate::reducer::{FoldOutput, Reducer};
+    use crate::reducer::{AsyncReducer, FoldOutput};
 
     // A reducer that, on an inbound message, publishes a semantic status to `public/` and arms a Timer
     // (an open obligation that stays unsettled — no executor call — so the session reads as Active).
     struct StatusReducer;
-    impl Reducer for StatusReducer {
-        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for StatusReducer {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     kv.put(b"public/status".to_vec(), b"investigating auth".to_vec());
@@ -1436,8 +1079,9 @@ mod status_snapshot_tests {
     // from LOCAL STATE (no model call — the operator's preferred path) by writing a summary to `public/`.
     // This is the generic-reducer shape a query fold uses: `if ct.is_report() { …summarize… }`.
     struct ReportingReducer;
-    impl Reducer for ReportingReducer {
-        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for ReportingReducer {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
                     // Summarize from local KV alone — read the goal it recorded, describe progress.
@@ -1484,8 +1128,8 @@ mod status_snapshot_tests {
         }
     }
 
-    #[test]
-    fn fresh_session_is_quiescent_with_no_published_view() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn fresh_session_is_quiescent_with_no_published_view() {
         let s = Session::genesis(Hash::of(b"r"));
         let snap = s.status_snapshot(Some(0), 300_000);
         assert_eq!(snap.state, SessionState::Quiescent);
@@ -1496,11 +1140,12 @@ mod status_snapshot_tests {
         assert!(snap.published.is_empty());
     }
 
-    #[test]
-    fn active_session_reports_armed_timer_and_only_the_public_kv() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn active_session_reports_armed_timer_and_only_the_public_kv() {
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"status-v1"));
-        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+        s.deliver_async(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+            .await
             .unwrap();
 
         let snap = s.status_snapshot(Some(500), 300_000); // now=500ms, well within the 5min threshold
@@ -1517,11 +1162,12 @@ mod status_snapshot_tests {
         assert!(!snap.published.contains_key(b"private/secret".as_slice()));
     }
 
-    #[test]
-    fn fork_for_query_clones_state_without_touching_the_original() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn fork_for_query_clones_state_without_touching_the_original() {
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"status-v1"));
-        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+        s.deliver_async(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+            .await
             .unwrap();
 
         // The parent is Active with one armed timer and its published status set.
@@ -1565,18 +1211,18 @@ mod status_snapshot_tests {
         // cooperative yield; it changes no observable behavior). Build BOTH — a sync-delivered session and
         // an async-delivered one — and assert they match on the KV ROOT HASH (the whole KV, not one key),
         // the log length, and the derived status. A deliver/deliver_async drift fails loudly HERE.
-        use crate::reducer::SyncAsAsync;
 
         let mut sync_exec = RecordingExecutor::new();
         let mut sync_s = Session::genesis(Hash::of(b"status-v1"));
         sync_s
-            .deliver(
+            .deliver_async(
                 inbound(),
                 None,
                 &StatusReducer,
                 &timer_cap(),
                 &mut sync_exec,
             )
+            .await
             .unwrap();
 
         let mut async_exec = RecordingExecutor::new();
@@ -1585,7 +1231,7 @@ mod status_snapshot_tests {
             .deliver_async(
                 inbound(),
                 None,
-                &SyncAsAsync(StatusReducer),
+                &StatusReducer,
                 &timer_cap(),
                 &mut async_exec,
             )
@@ -1622,8 +1268,9 @@ mod status_snapshot_tests {
     // A reducer that arms a timer on an inbound message and, when that timer FIRES, publishes a marker —
     // so a test can prove fire_due_timers_async actually wakes the reducer (not just drains the table).
     struct TimerThenPublishReducer;
-    impl Reducer for TimerThenPublishReducer {
-        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for TimerThenPublishReducer {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with_effects(vec![crate::reducer::Effect {
@@ -1651,8 +1298,7 @@ mod status_snapshot_tests {
         // assert (a) it returns 1 (one timer fired), (b) the reducer WOKE (its TimerFired fold ran, writing
         // the marker), (c) the armed-timer + open-obligation sets drained (the timer settled). Same
         // determinism as the sync path — recorded fired_ms is the deadline, so replay is stable.
-        use crate::reducer::SyncAsAsync;
-        let reducer = SyncAsAsync(TimerThenPublishReducer);
+        let reducer = TimerThenPublishReducer;
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"timer-v1"));
         s.deliver_async(inbound(), None, &reducer, &timer_cap(), &mut exec)
@@ -1674,25 +1320,27 @@ mod status_snapshot_tests {
         assert_eq!(s.open_effects(), 0);
     }
 
-    #[test]
-    fn fork_query_runs_a_summarize_fold_without_disturbing_the_parent() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn fork_query_runs_a_summarize_fold_without_disturbing_the_parent() {
         // End-to-end shape of fork-for-query: fork, deliver a query message, the fork folds it (arming its
         // OWN timer here — a stand-in for the reducer's summarize work), and the parent is still untouched.
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"status-v1"));
-        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+        s.deliver_async(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+            .await
             .unwrap();
         let parent_events = s.log().len();
 
         let mut fork = s.fork_for_query();
         let mut fork_exec = RecordingExecutor::new();
-        fork.deliver(
+        fork.deliver_async(
             inbound(),
             None,
             &StatusReducer,
             &timer_cap(),
             &mut fork_exec,
         )
+        .await
         .unwrap();
         // The fork folded the query and did work in its OWN log.
         assert!(fork.log().len() > 1);
@@ -1702,8 +1350,8 @@ mod status_snapshot_tests {
         assert_eq!(s.log().len(), parent_events);
     }
 
-    #[test]
-    fn fork_query_summarizes_from_local_state_via_the_report_content_type() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn fork_query_summarizes_from_local_state_via_the_report_content_type() {
         // END-TO-END fork-for-query, all three landed pieces together (fork_for_query + the `report`
         // content-type + a report-aware reducer): a live session does work, then a DEBUG query forks it,
         // delivers a `report()` message, and the fork summarizes ITSELF from local state — with the
@@ -1711,7 +1359,8 @@ mod status_snapshot_tests {
         let mut exec = RecordingExecutor::new();
         let mut live = Session::genesis(Hash::of(b"reporting-v1"));
         // The live session does ordinary work: records a private goal + public status.
-        live.deliver(inbound(), None, &ReportingReducer, &timer_cap(), &mut exec)
+        live.deliver_async(inbound(), None, &ReportingReducer, &timer_cap(), &mut exec)
+            .await
             .unwrap();
         let live_events_before = live.log().len();
         assert_eq!(
@@ -1722,13 +1371,14 @@ mod status_snapshot_tests {
         // Operator asks "what is this session doing?" → fork it and deliver a report query.
         let mut fork = live.fork_for_query();
         let mut fork_exec = RecordingExecutor::new();
-        fork.deliver(
+        fork.deliver_async(
             report_inbound(),
             None,
             &ReportingReducer,
             &timer_cap(),
             &mut fork_exec,
         )
+        .await
         .unwrap();
 
         // The fork summarized itself FROM LOCAL STATE — no effects at all. ASSERT it (not just narrate):
@@ -1757,8 +1407,8 @@ mod status_snapshot_tests {
         assert!(live.kv().get(b"public/summary").is_none());
     }
 
-    #[test]
-    fn closed_session_reports_closed() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn closed_session_reports_closed() {
         let mut s = Session::genesis(Hash::of(b"r"));
         // Append a Closed event directly (a session that shut down).
         s.append(
@@ -1781,13 +1431,12 @@ mod monotonic_now_tests {
         Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
     };
     use crate::event::{ContentType, EffectOutcome, EventBody};
-    use crate::executor::Executor;
-    use crate::reducer::{Effect, FoldOutput, Reducer};
+    use crate::reducer::{AsyncReducer, Effect, FoldOutput};
 
     // The clamp helper directly: a fresh reading above the floor passes through (and raises last_now);
     // a reading <= last_now is clamped UP to last_now+1 (strictly increasing).
-    #[test]
-    fn clamp_now_is_strictly_increasing() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn clamp_now_is_strictly_increasing() {
         let mut last = 0u64;
         let mk =
             |ns: u64| EffectOutcome::Ok(Some(Payload::Inline(ns.to_le_bytes().to_vec().into())));
@@ -1817,8 +1466,8 @@ mod monotonic_now_tests {
 
     // OVERFLOW edge (PR#1253): at last_now == u64::MAX there's no strictly-greater value — clamp must
     // fail LOUD (a PERMANENT Err), not silently return u64::MAX again (which would break the invariant).
-    #[test]
-    fn clamp_now_at_u64_max_errors_instead_of_silently_repeating() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn clamp_now_at_u64_max_errors_instead_of_silently_repeating() {
         let mut last = u64::MAX;
         let reading = EffectOutcome::Ok(Some(Payload::Inline(
             u64::MAX.to_le_bytes().to_vec().into(),
@@ -1839,8 +1488,8 @@ mod monotonic_now_tests {
 
     // A non-Now / malformed outcome passes through untouched (defensive — never corrupt an outcome the
     // kernel can't interpret as a u64-ns Now reading).
-    #[test]
-    fn clamp_now_passes_through_non_now_shapes() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn clamp_now_passes_through_non_now_shapes() {
         let mut last = 42u64;
         // An Err passes through, last unchanged.
         let e = clamp_now_outcome(EffectOutcome::Err("boom".into()), &mut last);
@@ -1856,8 +1505,9 @@ mod monotonic_now_tests {
     // A reducer that requests a Now on every event, recording each returned ns into KV under a running
     // index so we can read the sequence back.
     struct NowReducer;
-    impl Reducer for NowReducer {
-        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for NowReducer {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } | EventBody::EffectResult { .. } => {
                     // On a Now result, stash it; then (up to 3 total) ask again to build a sequence.
@@ -1890,8 +1540,9 @@ mod monotonic_now_tests {
     // An executor that returns the SAME raw ns for every Now (simulating a coarse clock) — the kernel's
     // clamp must still make the recorded sequence strictly increasing.
     struct StuckClock(u64);
-    impl Executor for StuckClock {
-        fn perform(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncExecutor for StuckClock {
+        async fn perform_async(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
             assert_eq!(req.kind, EffectKind::Now);
             EffectOutcome::Ok(Some(Payload::Inline(self.0.to_le_bytes().to_vec().into())))
         }
@@ -1922,11 +1573,12 @@ mod monotonic_now_tests {
             .collect()
     }
 
-    #[test]
-    fn now_sequence_is_strictly_increasing_even_from_a_stuck_clock() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn now_sequence_is_strictly_increasing_even_from_a_stuck_clock() {
         let mut exec = StuckClock(1000); // same raw reading every time
         let mut s = Session::genesis(Hash::of(b"now-v1"));
-        s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+        s.deliver_async(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+            .await
             .unwrap();
         let seq = recorded_now_sequence(&s);
         assert_eq!(seq.len(), 3, "three Now readings recorded");
@@ -1938,11 +1590,12 @@ mod monotonic_now_tests {
         assert_eq!(seq, vec![1000, 1001, 1002]);
     }
 
-    #[test]
-    fn replay_reconstructs_the_same_last_now_and_sequence() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_reconstructs_the_same_last_now_and_sequence() {
         let mut exec = StuckClock(1000);
         let mut s = Session::genesis(Hash::of(b"now-v1"));
-        s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+        s.deliver_async(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+            .await
             .unwrap();
         let live_seq = recorded_now_sequence(&s);
         let live_last_now = s.last_now;
@@ -1950,7 +1603,9 @@ mod monotonic_now_tests {
         // Replay the log: the recorded (already-clamped) Now results must rebuild the SAME last_now +
         // the SAME sequence — replay never re-clamps, it re-derives (determinism).
         let log = s.log().to_vec();
-        let replayed = Session::replay(log, &NowReducer).expect("replay");
+        let replayed = Session::replay_async(log, &NowReducer)
+            .await
+            .expect("replay");
         assert_eq!(recorded_now_sequence(&replayed), live_seq);
         assert_eq!(replayed.last_now, live_last_now);
         assert_eq!(replayed.last_now, 1002);
@@ -1962,15 +1617,17 @@ mod monotonic_now_tests {
         // to sync `replay` — the additive-migration invariant (replay's re-fold only awaits; it changes no
         // reconstruction). Build a session, then replay the SAME log both ways and compare KV root + last_now
         // + open set + log length. A replay/replay_async drift fails loudly HERE.
-        use crate::reducer::SyncAsAsync;
         let mut exec = StuckClock(1000);
         let mut s = Session::genesis(Hash::of(b"now-v1"));
-        s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+        s.deliver_async(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+            .await
             .unwrap();
         let log = s.log().to_vec();
 
-        let sync_replayed = Session::replay(log.clone(), &NowReducer).expect("sync replay");
-        let async_replayed = Session::replay_async(log, &SyncAsAsync(NowReducer))
+        let sync_replayed = Session::replay_async(log.clone(), &NowReducer)
+            .await
+            .expect("sync replay");
+        let async_replayed = Session::replay_async(log, &NowReducer)
             .await
             .expect("async replay");
 

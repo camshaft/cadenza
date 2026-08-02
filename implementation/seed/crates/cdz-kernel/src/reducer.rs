@@ -100,73 +100,37 @@ impl FoldOutput {
     }
 }
 
-/// The reducer interface. Implementors are pure folds (see module docs).
-pub trait Reducer {
-    /// Fold one event into the KV, returning requested effects. Called once per event, in log order,
-    /// on a fresh conceptual instance (no cross-call state outside `kv`).
-    ///
-    /// Totality (§17 "can't-brick"): this must not panic for any input. A well-behaved reducer that
-    /// sees an event it doesn't understand should ignore it (return `FoldOutput::none()`), not crash.
-    /// The kernel treats a panic as a fold failure (a future ABI concern, §16c-A); v0 trait impls are
-    /// expected to be total.
-    fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput;
-}
-
-/// The ASYNC reducer interface — the cooperative-gas-yield form of [`Reducer`] (operator async directive).
+/// The reducer interface — a pure ASYNC fold (see module docs). There is ONE reducer trait, and it is
+/// async (operator ruling: "one async trait only; no reason to use sync at all"). A reducer that does no
+/// I/O simply writes an `async fn fold_async` with no `.await` (the empty-await is accepted); a wasm
+/// reducer ([`crate::wasm_host::ComponentReducer`]/[`crate::wasm_host::AsyncComponentReducer`]) awaits its
+/// fuel-yielding component call so a long fold cooperatively YIELDS (wasmtime `fuel_async_yield_interval`)
+/// instead of blocking the single-threaded host loop.
 ///
-/// A wasm fold can run arbitrarily long; to let a long fold cooperatively YIELD (wasmtime
-/// `fuel_async_yield_interval` on an async store) instead of blocking the single-threaded host loop, the
-/// fold must be awaitable. This trait is the async counterpart of [`Reducer::fold`]. It is introduced
-/// ADDITIVELY (alongside the sync trait, not replacing it) so the migration never breaks a build: the
-/// kernel gains async driver methods (`Session::deliver_async`, a follow-up slice) that call this, and the
-/// host switches to it in its own change — neither crate goes red in between (there is no atomic two-crate
-/// co-land in the candidate-PR model, so a breaking flip couldn't land at all).
-///
-/// **Object-safe via `async-trait`.** The kernel takes `&dyn` reducers and the host holds
-/// `Box<dyn Reducer>`, so the trait MUST stay dyn-compatible — native `async fn` in a trait is not, so
-/// this uses `#[async_trait(?Send)]` (`Pin<Box<dyn Future>>` desugaring). `?Send` because the kernel is
-/// single-threaded by design (§15b determinism is a sequential per-session fold) and a `ComponentReducer`
-/// fold holds a non-`Send` wasmtime store — requiring `Send` futures would exclude exactly the reducer the
-/// async path exists for.
-///
-/// **A sync [`Reducer`] is driven async by WRAPPING it in [`SyncAsAsync`]** — NOT by a blanket
-/// `impl<R: Reducer> AsyncReducer for R`. A blanket impl would be a coherence TRAP: it would make Rust
-/// forbid ANY concrete `Reducer` (notably the wasm [`crate::wasm_host::ComponentReducer`]) from writing
-/// its OWN `AsyncReducer` impl — the two would overlap — so the reducer that the whole cooperative-yield
-/// arc exists for (the one that genuinely `.await`s a fuel-yielding wasm fold) could never provide a
-/// yielding `fold_async`. The explicit [`SyncAsAsync`] adapter keeps the two worlds disjoint: pure
-/// in-process reducers opt in via the wrapper (their `fold_async` just runs `fold`, no await point), while
-/// `ComponentReducer` writes a NATIVE `impl AsyncReducer` (its async apply, a follow-up slice) with no
-/// conflict.
+/// **Object-safe via `async-trait`.** The kernel takes `&dyn AsyncReducer` and the host holds
+/// `Box<dyn AsyncReducer>`, so the trait MUST stay dyn-compatible — native `async fn` in a trait is not,
+/// so this uses `#[async_trait(?Send)]` (`Pin<Box<dyn Future>>` desugaring). `?Send` because the kernel is
+/// single-threaded by design (§15b determinism is a sequential per-session fold) and a wasm reducer's fold
+/// holds a non-`Send` wasmtime store — requiring `Send` futures would exclude exactly that reducer.
 #[async_trait::async_trait(?Send)]
 pub trait AsyncReducer {
-    /// Fold one event into the KV, returning requested effects — the async counterpart of
-    /// [`Reducer::fold`]. Same totality contract (§17): must not panic; an unrecognized event returns
-    /// [`FoldOutput::none`]. A long-running implementation (a wasm fold) may `.await` internally so the
-    /// host loop can interleave other sessions while it yields on fuel.
+    /// Fold one event into the KV, returning requested effects. Called once per event, in log order, on a
+    /// fresh conceptual instance (no cross-call state outside `kv`).
+    ///
+    /// Totality (§17 "can't-brick"): this must not panic for any input — a reducer that sees an event it
+    /// doesn't understand returns [`FoldOutput::none`], not a crash. A long-running implementation (a wasm
+    /// fold) may `.await` internally so the host loop can interleave other sessions while it yields on fuel.
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput;
 }
 
-/// Adapt any sync [`Reducer`] into an [`AsyncReducer`] (its `fold_async` runs the sync `fold` to
-/// completion — no await point, correct for a pure in-process reducer that never blocks). This is the
-/// EXPLICIT alternative to a blanket impl (see [`AsyncReducer`]'s docs for why the blanket would forbid a
-/// native async `ComponentReducer`). Wrap a sync reducer — `SyncAsAsync(MyReducer)` — to drive it through
-/// the async kernel loop; a genuinely-async reducer skips the wrapper and impls [`AsyncReducer`] directly.
-pub struct SyncAsAsync<R>(pub R);
-
-#[async_trait::async_trait(?Send)]
-impl<R: Reducer> AsyncReducer for SyncAsAsync<R> {
-    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
-        self.0.fold(event, kv)
-    }
-}
-
 /// A trivial reducer used by kernel-loop tests: it ignores everything and emits nothing. Real reducers
-/// (Rust-wasm first, Cadenza-native later) implement domain behavior.
+/// (Rust-wasm first, Cadenza-native later) implement domain behavior. Native async (no `.await` — a pure
+/// in-process reducer never blocks).
 pub struct InertReducer;
 
-impl Reducer for InertReducer {
-    fn fold(&self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
+#[async_trait::async_trait(?Send)]
+impl AsyncReducer for InertReducer {
+    async fn fold_async(&self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
         FoldOutput::none()
     }
 }
@@ -200,12 +164,11 @@ mod tests {
     use crate::effect::{EffectId, Payload};
     use crate::event::EffectOutcome;
 
-    // A sync reducer wrapped in `SyncAsAsync` is drivable via the async path (its `fold_async` runs the
-    // sync `fold`). Prove it through `&dyn AsyncReducer` so object-safety is exercised (the whole reason
-    // for async-trait) — and via the ADAPTER, not a blanket impl (so the test doesn't force keeping one).
+    // The native `AsyncReducer` (InertReducer) is drivable through `&dyn AsyncReducer` — proving
+    // object-safety holds (the whole reason for async-trait), which the kernel + host rely on.
     #[test]
-    fn sync_reducer_wrapped_in_adapter_is_an_async_reducer() {
-        let reducer = SyncAsAsync(InertReducer);
+    fn inert_reducer_is_object_safe_as_dyn_async_reducer() {
+        let reducer = InertReducer;
         let event = Event {
             seq: 0,
             cause: None,
