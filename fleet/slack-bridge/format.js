@@ -58,7 +58,13 @@ function parseOperatorMessage(text, defaultTo) {
   }
 
   const firstLine = rest.split("\n", 1)[0].trim();
-  const subject = firstLine.length > 120 ? firstLine.slice(0, 117) + "…" : firstLine || "(from Slack)";
+  // Cap the subject by CODE POINTS, not UTF-16 code units: `firstLine.length`/`slice` count UTF-16
+  // units, so `slice(0, 117)` can cut mid-surrogate-pair (an astral char, e.g. an emoji) into a lone
+  // surrogate = an ill-formed subject written to the fleet inbox, AND disagree with the Rust
+  // `cap_subject` (which counts Unicode scalars via chars()). Iterate as code points so JS and Rust
+  // cap identically — the same PR #405 fix the render path already got, in this sibling path.
+  const cp = [...firstLine];
+  const subject = cp.length > 120 ? cp.slice(0, 117).join("") + "…" : firstLine || "(from Slack)";
   return { to, kind, subject, body: rest };
 }
 

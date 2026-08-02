@@ -232,6 +232,22 @@ mod tests {
     }
 
     #[test]
+    fn subject_cap_is_by_scalar_no_astral_split() {
+        // Parity with the Node side: capping the subject by Unicode scalars (chars()), NOT UTF-16
+        // units, so an astral char (emoji = a surrogate pair in UTF-16) is never split. `chars()`
+        // yields whole scalars, so this pins the count + that the last kept char is a whole emoji.
+        let i = parse_operator_message(&"👍".repeat(200), "concierge");
+        let cps: Vec<char> = i.subject.chars().collect();
+        assert!(cps.len() <= 120, "capped by scalar: {}", cps.len());
+        assert!(i.subject.ends_with('…'), "capped subject is elided");
+        assert_eq!(
+            cps[cps.len() - 2],
+            '👍',
+            "the char before the ellipsis is a whole emoji"
+        );
+    }
+
+    #[test]
     fn emptyish_yields_placeholder_subject() {
         let i = parse_operator_message("@concierge   ", "concierge");
         assert!(!i.subject.is_empty());
