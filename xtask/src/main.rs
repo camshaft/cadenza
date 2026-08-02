@@ -3728,17 +3728,23 @@ fn check_baseline(paths: &Paths, verdicts: &[(String, Verdict)], target: GateTar
         return 3;
     }
     if benign_dups > 0 {
-        // Benign same-verdict dups (a union-merge artifact) — auto-dedup the file in place and carry on,
-        // rather than hard-failing the fleet's gate over a harmless duplicate line. `save_baseline`'s
-        // canonical (sorted, unique) writer does the dedup; the verdict map is unchanged.
+        // Benign same-verdict dups (a `merge=union` artifact — both merge sides append their copy) are
+        // HARMLESS: the description-keyed `base` map has already collapsed them (same verdict, so no
+        // masking), and the regression compare below reads only that map. So `--check` DEDUPES IN MEMORY
+        // and does NOT touch the file — `--check` must be READ-ONLY.
+        //
+        // It used to REWRITE the baseline clean here (via `save_baseline`). That left a DIRTY worktree
+        // every run a union-merge dup existed, which then blocked `fleet sync` ("worktree is DIRTY —
+        // refusing to reset") for EVERY agent that runs `gate --check` + `sync` each tick — a recurring
+        // fleet-wide churn (+ a source of the drain-stalls the watchdog was waking agents from).
+        // Dedup-on-disk is `gate --save`'s job (its canonical sorted+unique writer); `--check` only
+        // OBSERVES. (concierge-greenlit fix (a), 2026-08-02.)
         eprintln!(
-            "xtask gate --check: auto-deduped {benign_dups} benign (same-verdict) duplicate line(s) in \
-             {} — a merge=union artifact, harmless; rewrote the baseline clean.",
+            "xtask gate --check: {benign_dups} benign (same-verdict) duplicate line(s) in {} — a \
+             merge=union artifact, harmless (deduped in memory for the compare). Run `cargo xtask gate \
+             --save` to rewrite the file clean; `--check` leaves it untouched.",
             path.display()
         );
-        let verdicts_now: Vec<(String, Verdict)> =
-            base.iter().map(|(d, v)| (d.clone(), *v)).collect();
-        save_baseline(paths, &verdicts_now, target);
     }
 
     let now: std::collections::HashMap<&str, Verdict> =
