@@ -1888,6 +1888,19 @@
   (call   main (: 0 UInt8)) (output (: 0 Int64))
   (call   main (: 4 UInt8)) (output (: 25 Int64)))
 
+(case "a repeated trapping division in a guarded arm stays shielded — a CSE class must not hoist past the branch"
+  (doc    "`(if (= d 0) 0 (+ (/ 100 d) (/ 100 d)))` — the else arm repeats `(/ 100 d)` TWICE, forming a
+           common-subexpression class. A CSE that hoists the shared division to the body root (above the
+           branch) would trap at d = 0, defeating the guard; the sharing must stay INSIDE the arm (or not
+           fire). d = 0 → 0 (the guard shields the ÷0); d = 5 → 20+20 = 40. The REPEATED-occurrence
+           companion of the single-division select-ification pin above: the single-div case guards
+           select-ification, this guards the CSE hoist — a distinct pass with the same trap-safety
+           obligation (adv-55 found the and/or-rhs face of this failing; this pins the if-arm face that
+           holds).")
+  (input  (do (def (main (: d Int64)) (if (= d 0) 0 (+ (/ 100 d) (/ 100 d)))) (export main)))
+  (call   main (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: 5 Int64)) (output (: 40 Int64)))
+
 (case "a conditional's condition may itself be a conditional"
   (doc    "`(if (if true false true) 1 2)`: the condition is an `if` that evaluates to `false`, so the
            outer conditional selects its else-branch, yielding 2. Pins that the condition position

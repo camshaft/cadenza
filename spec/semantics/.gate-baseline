@@ -635,6 +635,7 @@ pass	a List.push of a checked-arith element behind a recursive-call list is disj
 pass	a List.update at a checked-arith element behind a recursive-call list is disjoint-slotted
 pass	a List.update at a second-RRB-node index on a large runtime list lands there and preserves the rest
 pass	a List.update at a third-level RRB index lands and preserves persistence and siblings
+pass	a List.update at depth-3 RRB path-copies one spine and shares the rest
 pass	a MAP MERGE folds one map's entries into another, summing values on key collision
 pass	a MAP argument to an effect op is looked up inside the arm at the handler's own state
 pass	a MAP built from generated pairs is equal regardless of insertion order (the Map analogue of set convergence)
@@ -2688,6 +2689,7 @@ pass	a repeated condition inside a branch propagates the known truth value
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
 pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator
+pass	a repeated trapping division in a guarded arm stays shielded — a CSE class must not hoist past the branch
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
 pass	a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves
 pass	a resume outside any handler arm is rejected
@@ -5085,6 +5087,7 @@ pass	the byte length of a run-time multibyte string exceeds its scalar length
 pass	the byte length of a run-time-selected string reads the actual handle
 pass	the byte length of a runtime string equals the length of its encoded bytes
 pass	the byte-len of a multi-byte String.slice exceeds its scalar-len (the two measures diverge)
+pass	the compare walk recurses list-of-sums-of-lists with discriminant-first at depth
 pass	the complement laws fold x-and-not-x to zero and x-or-not-x to all-ones on a signed runtime value
 pass	the compound comparator drives a full INSERTION SORT over runtime tuples
 pass	the decode error's kind is matchable
