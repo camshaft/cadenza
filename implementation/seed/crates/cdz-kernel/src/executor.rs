@@ -36,9 +36,12 @@ pub trait Executor {
 /// is single-threaded by design and a real transport future (holding a non-`Send` client / wasmtime store)
 /// needn't cross threads.
 ///
-/// **A sync [`Executor`] is driven async by wrapping it in [`SyncExecutorAsAsync`]** — NOT a blanket impl
-/// (same coherence reason as [`crate::reducer::SyncAsAsync`]: a blanket would forbid a genuinely-async
-/// executor, e.g. a real Bedrock/HTTP one, from writing its own `AsyncExecutor`).
+/// **Every sync [`Executor`] is an `AsyncExecutor`** via the blanket impl below (its `perform_async` just
+/// runs the sync `perform`), so any existing executor drives the async loop UNCHANGED during the migration.
+/// A blanket is coherence-SAFE here (unlike the reducer's [`crate::reducer::SyncAsAsync`] adapter): a
+/// genuinely-async executor (a real Bedrock/HTTP one that awaits its transport) does NOT impl sync
+/// [`Executor`] — it writes a NATIVE `AsyncExecutor` — so it never overlaps the blanket. (`ComponentReducer`
+/// KEEPS its sync `Reducer`, which is why reducers needed an explicit wrapper instead.)
 #[async_trait::async_trait(?Send)]
 pub trait AsyncExecutor {
     /// Perform `req` asynchronously — the async counterpart of [`Executor::perform`]. Same idempotency
@@ -46,17 +49,18 @@ pub trait AsyncExecutor {
     async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome;
 }
 
-/// Adapt any sync [`Executor`] into an [`AsyncExecutor`] (its `perform_async` runs the sync `perform` to
-/// completion — no await point, correct for an in-memory/test executor that never blocks). The explicit
-/// alternative to a blanket impl (so a genuinely-async executor writes its own [`AsyncExecutor`] without a
-/// coherence collision). Wrap a sync executor — `SyncExecutorAsAsync(MyExecutor)` — to drive it through the
-/// async kernel loop; a real I/O executor skips the wrapper and impls [`AsyncExecutor`] directly.
-pub struct SyncExecutorAsAsync<E>(pub E);
-
+// BLANKET: every sync `Executor` IS an `AsyncExecutor` (perform_async runs the sync perform — no await
+// point). This lets ANY sync executor (concrete `RecordingExecutor`/`CompositeExecutor`/… OR a
+// `&mut dyn Executor`, hence `?Sized`) drive the async loop UNCHANGED during the migration, so no
+// call site needs a wrapper. Coherence-SAFE here (unlike the reducer's `SyncAsAsync` adapter): a
+// genuinely-async executor (a real Bedrock/HTTP one, step 5) does NOT impl sync `Executor` — it drops the
+// sync impl and writes a NATIVE `AsyncExecutor` — so it never collides with this blanket (whereas
+// `ComponentReducer` KEEPS its sync `Reducer` impl, which is why reducers needed the explicit adapter).
+// Removed with the sync `Executor` trait at the end of the migration.
 #[async_trait::async_trait(?Send)]
-impl<E: Executor> AsyncExecutor for SyncExecutorAsAsync<E> {
+impl<E: Executor + ?Sized> AsyncExecutor for E {
     async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
-        self.0.perform(req, idempotency_key)
+        self.perform(req, idempotency_key)
     }
 }
 
@@ -108,13 +112,16 @@ impl Executor for CompositeExecutor {
     }
 }
 
+// (CompositeExecutor is an `AsyncExecutor` via the blanket `impl<E: Executor> AsyncExecutor for E` above —
+// no explicit impl needed.)
+
 /// The ASYNC by-kind router — the async twin of [`CompositeExecutor`] (operator all-async directive).
 /// Holds `Box<dyn AsyncExecutor>` per kind and routes `perform_async` to the registered executor, awaiting
 /// it. This is what a session's async drive loop routes through once effects go async: a NATIVE-async
 /// executor (a real Bedrock/HTTP one that awaits its transport) registers here directly; a sync executor
-/// registers wrapped in [`SyncExecutorAsAsync`]. Separate from [`CompositeExecutor`] because an
-/// `AsyncExecutor` can't be a sync `Executor` (perform can't await) — both coexist during the sync→async
-/// migration; the sync one is removed once every caller is async.
+/// registers as-is (it's an `AsyncExecutor` via the blanket impl). Separate from [`CompositeExecutor`]
+/// because a native-async executor can't be a sync `Executor` (perform can't await) — both routers coexist
+/// during the sync→async migration; the sync one is removed once every caller is async.
 ///
 /// Same routing contract as the sync router: an unroutable kind returns an OBSERVABLE [`EffectOutcome::Err`]
 /// (the reducer folds it — §9d anti-stuck), never a panic or silent drop; `idempotency_key` passes through.
@@ -266,12 +273,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn sync_executor_wrapped_in_adapter_performs_via_async_trait() {
-        // A sync Executor wrapped in SyncExecutorAsAsync is drivable via the async path (perform_async runs
-        // the sync perform). Exercise through &mut dyn AsyncExecutor so object-safety holds (the reason for
-        // async-trait) — and via the ADAPTER, not a blanket impl.
-        let mut adapted = SyncExecutorAsAsync(TagExecutor(b"async-ran"));
-        let dyn_exec: &mut dyn AsyncExecutor = &mut adapted;
+    async fn sync_executor_performs_via_async_trait_through_the_blanket() {
+        // A sync Executor is an AsyncExecutor via the blanket impl — drivable through &mut dyn AsyncExecutor
+        // (object-safety, the reason for async-trait), no wrapper needed.
+        let mut tagged = TagExecutor(b"async-ran");
+        let dyn_exec: &mut dyn AsyncExecutor = &mut tagged;
         let out = dyn_exec
             .perform_async(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k"))
             .await;
@@ -284,17 +290,11 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn async_composite_routes_each_kind_and_errors_on_unroutable() {
         // The async router mirrors the sync one: route by kind (awaiting the inner async executor), and an
-        // unroutable kind is an OBSERVABLE Err, not a panic/drop. Register sync TagExecutors via the
-        // SyncExecutorAsAsync adapter (proving a sync executor plugs into the async router during transition).
+        // unroutable kind is an OBSERVABLE Err, not a panic/drop. Register sync TagExecutors directly —
+        // they're AsyncExecutor via the blanket impl (a sync executor plugs into the async router as-is).
         let mut exec = AsyncCompositeExecutor::new()
-            .with(
-                EffectKind::Http,
-                Box::new(SyncExecutorAsAsync(TagExecutor(b"http-ran"))),
-            )
-            .with(
-                EffectKind::Model,
-                Box::new(SyncExecutorAsAsync(TagExecutor(b"model-ran"))),
-            );
+            .with(EffectKind::Http, Box::new(TagExecutor(b"http-ran")))
+            .with(EffectKind::Model, Box::new(TagExecutor(b"model-ran")));
         assert!(exec.handles(&EffectKind::Http));
         assert_eq!(
             exec.perform_async(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k"))

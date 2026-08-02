@@ -22,10 +22,10 @@
 //! The KV is rebuilt by folding the log (it IS derived state — §4); a snapshot is `(seq, kv.root_hash,
 //! reducer_hash)`.
 
-use crate::authz::Authorize;
+use crate::authz::{AsyncAuthorize, Authorize};
 use crate::effect::{EffectId, EffectKind, EffectRequest};
 use crate::event::{EffectOutcome, Event, EventBody};
-use crate::executor::Executor;
+use crate::executor::{AsyncExecutor, Executor};
 use crate::hash::Hash;
 use crate::kv::Kv;
 use crate::reducer::{AsyncReducer, Effect, Reducer};
@@ -345,8 +345,8 @@ impl Session {
         body: EventBody,
         cause: Option<Hash>,
         reducer: &dyn AsyncReducer,
-        authz: &dyn Authorize,
-        executor: &mut dyn Executor,
+        authz: &(impl AsyncAuthorize + ?Sized),
+        executor: &mut (impl AsyncExecutor + ?Sized),
     ) -> Result<(), KernelError> {
         self.append(body, cause);
         self.drive_async(reducer, authz, executor).await;
@@ -360,8 +360,8 @@ impl Session {
         &mut self,
         now_ms: u64,
         reducer: &dyn AsyncReducer,
-        authz: &dyn Authorize,
-        executor: &mut dyn Executor,
+        authz: &(impl AsyncAuthorize + ?Sized),
+        executor: &mut (impl AsyncExecutor + ?Sized),
     ) -> usize {
         let mut due: Vec<(u64, u64)> = self
             .armed_timers
@@ -510,8 +510,8 @@ impl Session {
     async fn drive_async(
         &mut self,
         reducer: &dyn AsyncReducer,
-        authz: &dyn Authorize,
-        executor: &mut dyn Executor,
+        authz: &(impl AsyncAuthorize + ?Sized),
+        executor: &mut (impl AsyncExecutor + ?Sized),
     ) {
         let trigger = self.tip_hash();
         let initial = self.fold_tip_async(reducer, trigger).await;
@@ -672,8 +672,8 @@ impl Session {
         &mut self,
         mut to_process: Vec<(Effect, Hash)>,
         reducer: &dyn AsyncReducer,
-        authz: &dyn Authorize,
-        executor: &mut dyn Executor,
+        authz: &(impl AsyncAuthorize + ?Sized),
+        executor: &mut (impl AsyncExecutor + ?Sized),
     ) {
         while let Some((effect, cause)) = to_process.pop() {
             let Effect {
@@ -683,8 +683,8 @@ impl Session {
             let id = EffectId(self.next_effect_id);
             self.next_effect_id += 1;
 
-            // SEC-F1: authorize against the resolved target (same as sync path).
-            if let Err(reason) = authz.authorize(&req) {
+            // SEC-F1: authorize against the resolved target (same as sync path), awaiting the async gate.
+            if let Err(reason) = authz.authorize_async(&req).await {
                 let denial_hash =
                     self.append(EventBody::AuthzDenied { id, reason, token }, Some(cause));
                 for pair in self.fold_tip_async(reducer, denial_hash).await {
@@ -753,9 +753,10 @@ impl Session {
                 continue;
             }
 
-            // Route + execute. The executor stays SYNC this slice (async executor is a later step of the
-            // async arc); the Dispatched record is already durable, so ordering is preserved.
-            let outcome = executor.perform(&req, idempotency_key);
+            // Route + execute — awaiting the async executor (a real I/O executor yields here without
+            // blocking the single-threaded loop). The Dispatched record is already durable, so ordering
+            // is preserved across the await.
+            let outcome = executor.perform_async(&req, idempotency_key).await;
 
             // MONOTONIC `now` clamp (operator ruling) — same as sync path; only `Now` results are clamped.
             let outcome = if req.kind == EffectKind::Now {
