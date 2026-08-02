@@ -2422,6 +2422,7 @@ pass	a plain quote does not evaluate a quasiquote's unquote nested inside it
 pass	a plain record compared to a nominal record of the same shape is a type error
 pass	a plain-sum recursive CONSTANT BigInt literal probe matches its own constructor
 pass	a plural family-unit spelling names the same unit as its singular
+pass	a point fact flows through a let binding into a compare fold — the point-fact composition face
 pass	a positional tuple access out of the tuple's static arity is a type error
 pass	a possibly-out-of-range runtime integer conversion still declines (checked emit pending)
 pass	a post-order effectful walk draws each node's id AFTER both children (SSA reg-alloc shape)

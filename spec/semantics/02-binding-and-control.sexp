@@ -530,6 +530,23 @@
   (call   below (: -3 Int64)) (output (: 2 Int64))
   (call   below (: 0 Int64))  (output (: 0 Int64)))
 
+(case "a point fact flows through a let binding into a compare fold — the point-fact composition face"
+  (doc    "The COMPOSITION face of the point fact: the refinement must survive through a kept `let` binding
+           and an arith op into a downstream compare fold. `value_range` threads a `LocalRef` to its
+           initializer's range and composes arith ranges, so inside `(if (= n 5) (let ((y (+ n 1))) …) …)` the
+           refinement `n ∈ [5, 5]` flows into `y = (+ n 1)` (arith range `[6, 6]`), and the inner `(> y 3)`
+           folds TRUE — even though the compared variable `y` is a let-bound DERIVATIVE of the refined `n`, not
+           `n` itself. n=5 → the then computes y=6, `> y 3` holds → 1; any other n → outer else → 0. Pins the
+           point-fact ⇄ let-binding ⇄ arith-range ⇄ compare-fold composition on both backends (each piece is
+           pinned individually above; their composition through a `let` was not). The rcdzc Lir counterpart is
+           `a_point_fact_flows_through_a_let_binding_into_an_arm_body_compare_fold`.")
+  (input  (do
+            (def (f (: n Int64)) (if (= n 5) (let ((y (+ n 1))) (if (> y 3) 1 2)) 0))
+            (export f)))
+  ; n==5 → y = n+1 = 6, so (> y 3) folds TRUE → 1 (the 2 arm is dead); the fact flowed n→y through the let+arith.
+  (call   f (: 5 Int64)) (output (: 1 Int64))
+  (call   f (: 4 Int64)) (output (: 0 Int64)))
+
 (case "a literal match arm pins the scrutinee to a point, folding an arm-body compare and shedding an arith guard — the match-arm face of the point fact"
   (doc    "The PATTERN-MATCH face of the point fact: a literal `Int` probe over a variable scrutinee means the
            scrutinee EQUALS that literal in the arm BODY, so `refined_frame_for_match_arm` (select.rs; the rust
