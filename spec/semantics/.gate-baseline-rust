@@ -4479,6 +4479,8 @@ pass	re-wrapping the intermediate with Qty.of makes a two-step conversion well-f
 pass	reaching an effect neither handled nor delegated is rejected at compile time
 pass	read classifies a lone punctuation token as an Ast.Name and it round-trips
 pass	read normalizes numeric token spellings to canonical float values
+pass	read of a leading-'+' BEYOND-i64 integer token is an Ast.Name too (both sides of the boundary)
+pass	read of a leading-'+' integer token is an Ast.Name, not an Ast.Int (within i64)
 todo	read of malformed text is a coded reject, not a wrong value
 pass	read of text that is not a well-formed s-expression declines
 pass	read of text with trailing content after the first s-expression declines

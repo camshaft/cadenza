@@ -3094,6 +3094,15 @@ impl<'a> SexprReader<'a> {
         match tok {
             "true" => Some(SNode::Bool(true)),
             "false" => Some(SNode::Bool(false)),
+            // A leading `+` is NEVER part of a numeric literal: the front-end lexer (cadenza-syntax
+            // lexer.rs) makes `+` an operator (`Kind::Plus`) always, begins a number ONLY on an ASCII
+            // digit, and folds `-` into a number only when a digit follows. `read` mirrors that reader, so
+            // a `+`-prefixed token (`+5`, `+<beyond-i64>`, `+1.5`, or bare `+`) is a NAME, not an Int/Float.
+            // Without this guard `str::parse::<i64>`/`parse::<f64>` would silently ACCEPT the `+` (so `+5`
+            // read as an `Ast.Int` while `+<beyond-i64>` fell through the bignum path — which strips only
+            // `-` — to a `Name`: an i64-boundary inconsistency). `-` is still accepted below (print emits a
+            // leading `-` for a negative Int/Float, so it must round-trip). (v-syntax ruling A.)
+            _ if tok.starts_with('+') => Some(SNode::Name(tok.to_string())),
             _ => match tok.parse::<i64>() {
                 Ok(n) => Some(SNode::Int(IntValue::from_i64(n))),
                 Err(_) => {
@@ -26497,5 +26506,34 @@ mod tests {
         assert_eq!(parse_bigint_decimal("1e10"), None);
         assert_eq!(parse_bigint_decimal("12a"), None);
         assert_eq!(parse_bigint_decimal("x1"), None);
+
+        // A leading `+` is not part of a numeric literal (v-syntax ruling A) — this fn strips only `-`, so
+        // a `+`-prefixed token declines HERE at every magnitude, and `read_node`'s guard classifies it as
+        // an `Ast.Name`. Pinning both sides of i64 witnesses the uniformity the ruling requires.
+        assert_eq!(parse_bigint_decimal("+5"), None);
+        assert_eq!(parse_bigint_decimal("+99999999999999999999999999"), None);
+    }
+
+    #[test]
+    fn read_classifies_a_leading_plus_token_as_a_name_at_every_magnitude() {
+        // The `read_node` guard (v-syntax ruling A): a `+`-prefixed token is a Name, not an Int/Float, so
+        // the i64-boundary inconsistency (`+5`→Int via the i64 fast path, `+<huge>`→Name via the bignum
+        // path) is gone. Drive the tokenizer directly and assert the SNode variant on both sides of i64.
+        let name_of = |tok: &str| match SexprReader::new(tok).read_node() {
+            Some(SNode::Name(s)) => Some(s),
+            _ => None,
+        };
+        assert_eq!(name_of("+5").as_deref(), Some("+5"));
+        assert_eq!(
+            name_of("+99999999999999999999999999").as_deref(),
+            Some("+99999999999999999999999999")
+        );
+        assert_eq!(name_of("+").as_deref(), Some("+"));
+        assert_eq!(name_of("+1.5").as_deref(), Some("+1.5"));
+        // The `-` sign is still a number (print emits it for a negative), so it must NOT become a Name.
+        assert!(matches!(
+            SexprReader::new("-5").read_node(),
+            Some(SNode::Int(_))
+        ));
     }
 }

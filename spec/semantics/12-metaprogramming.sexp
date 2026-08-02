@@ -1181,6 +1181,31 @@
             (_             0)))
   (output (: 1 Int64)))
 
+(case "read of a leading-'+' integer token is an Ast.Name, not an Ast.Int (within i64)"
+  (doc    "A leading `+` is NEVER part of a numeric literal in Cadenza: the front-end lexer makes `+` an
+           operator (Kind::Plus) always and begins a number only on a digit, so `read` — the printer's
+           inverse and a mirror of that reader — classifies `+5` as an `Ast.Name`, not an `Ast.Int 5`.
+           (`print` never emits a leading `+`, so this is not a round-trip case; it pins the reader's sign
+           handling directly.) Without the guard `str::parse::<i64>` would accept the `+` and mis-read it as
+           an integer. Matched via the Name arm. (v-syntax ruling A.)")
+  (input  (match (read "+5")
+            ((Ast.Name _) 1)
+            ((Ast.Int _)  2)
+            (_            0)))
+  (output (: 1 Int64)))
+
+(case "read of a leading-'+' BEYOND-i64 integer token is an Ast.Name too (both sides of the boundary)"
+  (doc    "The beyond-i64 companion of the leading-`+` case: a `+`-prefixed 26-digit token is ALSO an
+           `Ast.Name`, not an `Ast.Int`. This is the exact spot the pre-ruling inconsistency lived — `+5`
+           read as an Ast.Int (i64 fast path accepts `+`) while `+<beyond-i64>` fell through the
+           arbitrary-precision path (which strips only `-`) to a Name. Pinning BOTH sides of i64 witnesses
+           that the leading-`+`→Name classification is now uniform across the boundary. (v-syntax ruling A.)")
+  (input  (match (read "+99999999999999999999999999")
+            ((Ast.Name _) 1)
+            ((Ast.Int _)  2)
+            (_            0)))
+  (output (: 1 Int64)))
+
 ; The keyword companion of the digit-led boundary: `true`/`false` are BOOLEAN literals in the grammar, not
 ; identifiers, so the same text-round-trip scoping applies. `print (Ast.Name "true")` emits the bare word
 ; `true`, which `read` classifies as `Ast.Bool` (the reader's keyword arm) — not the original `Ast.Name`.
