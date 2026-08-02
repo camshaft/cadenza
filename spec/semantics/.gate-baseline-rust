@@ -306,6 +306,7 @@ pass	Set.to-list enumerates the FULL interior order, not just the smallest eleme
 pass	Set.to-list enumerates the elements as a List in canonical (sorted) order
 pass	Set.to-list length is the set's cardinality (deduped)
 pass	Set.to-list of a runtime-empty but element-typed set is the empty list
+pass	Set.to-list orders (Int,Bytes) tuples with the Bytes component as the tie-breaker
 pass	Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order
 pass	Set.to-list orders a set of COMPOUND (tuple) elements lexicographically
 pass	Set.to-list orders a set of RECORD elements canonically
