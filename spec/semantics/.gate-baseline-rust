@@ -5474,7 +5474,7 @@ todo	Set.of over runtime lists at two different element types declines pending t
 todo	Type is a first-class value
 todo	a DRAINED set compares equal to the literal empty set — removal restores the canonical empty rep
 todo	a Float64 closure captures a Float64 build-time host effect result
-todo	a Float64-inner Qty host result crosses as its float magnitude
+pass	a Float64-inner Qty host result crosses as its float magnitude
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a closure captures the result of a build-time host op called with an argument
@@ -5494,7 +5494,7 @@ todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
-todo	an @param of a Float64 type generates a Float64-typed accessor
+pass	an @param of a Float64 type generates a Float64-typed accessor
 todo	an Ast as a MAP key looks up by structural content
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	an entrypoint delegation lets a program reach its host function

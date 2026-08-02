@@ -2870,16 +2870,18 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 call_args.push(format!("__ha{i}"));
             }
             let call = format!("crate::{shim}({})", call_args.join(", "));
-            // The runner's shim yields the recorded scalar as `i64`. Marshal it to the op's declared result:
-            // a fixed-width INTEGER casts to that width (`as u8`/…); a BOOL reads truthiness (`!= 0`, the
-            // recorded response is `0`/`1`, matching the wasm boundary's i32→bool). Any other result
-            // (float/string/bytes/compound) needs its own boundary form → a later increment, decline.
+            // Marshal the shim's return to the op's declared result. The shim's OWN return type is chosen by
+            // the runner to match the result kind (the gate driver keys it on the response value text): an
+            // INTEGER/BOOL result → the shim returns `i64` (int casts to width; bool reads `!= 0`); a FLOAT
+            // result → the shim returns `f64` directly, cast to the declared float width (`as f32`/`as f64`).
+            // Any other result (string/bytes/compound) needs its own boundary form → a later increment.
             let marshalled = match types::rust_type(&result) {
                 Some(t) if int_rust_ty(&t) => format!("({call} as {t})"),
                 Some(t) if t == "bool" => format!("({call} != 0)"),
+                Some(t) if t == "f32" || t == "f64" => format!("({call} as {t})"),
                 _ => {
                     return Err(Reject::decline(
-                        "the Rust backend does not yet render a host call whose result is not a fixed-width integer or bool (later increment)",
+                        "the Rust backend does not yet render a host call whose result is not a fixed-width integer, bool, or float (later increment)",
                     ));
                 }
             };
