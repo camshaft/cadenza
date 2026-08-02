@@ -32,8 +32,9 @@ pub fn is_mirrored_kind(kind: &str) -> bool {
 /// Upper bound on how many mirrored threads the map retains. The bridge is a LONG-LIVED daemon (the
 /// fleet's reliability backbone — it runs for weeks), and `record` is called for every mirrored
 /// `ask`/`backlog`, so without a bound `slack-threads.json` grows forever: an unbounded memory + disk
-/// leak, and — because the outbound loop `load`s (parse) and `save`s (serialize) the WHOLE map every
-/// couple of seconds — a per-tick cost that grows with history. Capping keeps both O(1)-ish.
+/// leak, and — because the outbound loop `load`s (parse) the WHOLE map every tick (~couple of seconds)
+/// and `save`s (serialize) it after every successful mirror post — a per-tick cost that grows with
+/// history. Capping keeps both O(1)-ish.
 ///
 /// Pruning the OLDEST threads is safe: `by_thread` is keyed by the Slack `thread_ts` (a `<epoch>.<frac>`
 /// string that sorts chronologically), so the first keys are the oldest, and any still-pending concierge
@@ -103,15 +104,24 @@ impl ThreadMap {
     /// `by_key` entries that point at them, keeping the two indices consistent (a leftover `by_key` row
     /// pointing at an evicted thread would merely miss the dedup — a harmless re-mirror — but we keep them
     /// in lockstep so the map stays a faithful bijection). Cheap and a no-op under the cap.
+    ///
+    /// Evict ALL excess threads first, then do a SINGLE `by_key.retain` pass — so pruning is O(n) over
+    /// `by_key`, not O(k·n) (a full `by_key` scan per evicted thread). Matters if a large map is loaded and
+    /// pruned in one go.
     fn prune(&mut self) {
-        while self.by_thread.len() > MAX_THREADS {
-            // First key = oldest thread_ts.
-            let Some(oldest) = self.by_thread.keys().next().cloned() else {
-                break;
-            };
-            self.by_thread.remove(&oldest);
-            self.by_key.retain(|_, ts| *ts != oldest);
+        let len = self.by_thread.len();
+        if len <= MAX_THREADS {
+            return; // common case: nothing to evict.
         }
+        // The first `len - MAX_THREADS` keys are the oldest thread_ts (BTreeMap iterates sorted).
+        let evict: std::collections::BTreeSet<String> = self
+            .by_thread
+            .keys()
+            .take(len - MAX_THREADS)
+            .cloned()
+            .collect();
+        self.by_thread.retain(|ts, _| !evict.contains(ts));
+        self.by_key.retain(|_, ts| !evict.contains(ts));
     }
 
     /// The asker to route an `answer` to, given a Slack thread the operator replied in.
@@ -314,7 +324,7 @@ mod tests {
         let mut map = ThreadMap::default();
         let over = MAX_THREADS + 250;
         for i in 0..over {
-            // thread_ts as a chronologically-sortable "<epoch>.<frac>"; monotically increasing i keeps
+            // thread_ts as a chronologically-sortable "<epoch>.<frac>"; monotonically increasing i keeps
             // insertion == chronological order, so the oldest are the first-inserted.
             map.record(
                 format!("17000{:06}.0001", i),
@@ -367,6 +377,47 @@ mod tests {
         let loaded = ThreadMap::load(&dir);
         assert_eq!(loaded, map, "bounded map round-trips through disk");
         assert_eq!(loaded.by_thread.len(), MAX_THREADS);
+    }
+
+    #[test]
+    fn bulk_over_cap_prune_evicts_exactly_the_oldest_and_keeps_bijection() {
+        // Pins the single-retain-pass prune (O(n), not O(k·n)): a big over-cap insert must evict EXACTLY
+        // the oldest excess, retain exactly the newest MAX_THREADS, and keep by_key a faithful bijection.
+        let mut map = ThreadMap::default();
+        let excess = 500;
+        let total = MAX_THREADS + excess;
+        for i in 0..total {
+            map.record(
+                format!("17000{:06}.0001", i),
+                format!("{:012}-1-ask.json", i),
+                MirroredAsk {
+                    asker: format!("v-{i}"),
+                    kind: "ask".into(),
+                    subject: "s".into(),
+                },
+            );
+        }
+        assert_eq!(map.by_thread.len(), MAX_THREADS);
+        assert_eq!(map.by_key.len(), MAX_THREADS, "indices stay in lockstep");
+        // Exactly the first `excess` thread_ts were evicted, and everything from `excess` on is retained.
+        for i in 0..excess {
+            assert!(
+                map.asker_for_thread(&format!("17000{:06}.0001", i))
+                    .is_none(),
+                "oldest #{i} evicted"
+            );
+        }
+        for i in excess..total {
+            assert!(
+                map.asker_for_thread(&format!("17000{:06}.0001", i))
+                    .is_some(),
+                "newest #{i} retained"
+            );
+        }
+        // Every surviving by_key row still points at a live by_thread entry (bijection).
+        for ts in map.by_key.values() {
+            assert!(map.by_thread.contains_key(ts), "dangling by_key → {ts}");
+        }
     }
 
     #[test]
