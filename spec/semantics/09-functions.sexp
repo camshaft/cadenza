@@ -6848,3 +6848,22 @@
             (export main)))
   (call   main (: 1 Int64)) (output (: 43 Int64))
   (call   main (: 0 Int64)) (output (: 101 Int64)))
+
+(case "a closure built in a fused-match arm captures the payload binder and reads it after the match"
+  (doc    "The DEFERRED-read face of the fused-clone seam: each arm of a match on a CALL result builds
+           a closure capturing that arm's SumPayload binder, and the closure is invoked only AFTER the
+           match completes — the env must capture the CLONED binder (re-resolved against the branch
+           value), not the original now-detached switch. k=7 → Hi arm's fn(+10h) → 73; k=2 → Lo arm's
+           fn(+100w) → 203. The escaping-closure companion of the direct-read fused pins (a capture of
+           the detached original reads garbage or CDZ0101s only on the deferred path).")
+  (input  (do
+            (type Sz (Hi Int64) (Lo Int64))
+            (def (mk x) (if (> x 5) (Hi x) (Lo x)))
+            (def (main (: k Int64))
+              (let ((f (match (mk k)
+                         ((Hi h) (fn ((: d Int64)) (+ (* 10 h) d)))
+                         ((Lo w) (fn ((: d Int64)) (+ (* 100 w) d))))))
+                (f 3)))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 73 Int64))
+  (call   main (: 2 Int64)) (output (: 203 Int64)))

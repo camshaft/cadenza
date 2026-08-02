@@ -5505,3 +5505,5 @@ pass	a stateful perform inside the arm of a fused match on a call result threads
 pass	Int64.of over a runtime Float64 operand rejects — no float-to-int narrowing is blessed
 pass	the bitwise-AND-with-zero annihilator does not swallow a COMPILE-PROVABLE overflow in the discarded operand
 pass	the bitwise-AND-with-zero annihilator folds to zero when the discarded constant operand is total
+pass	a closure built in a fused-match arm captures the payload binder and reads it after the match
+todo	host calls issue only from the TAKEN arm of a fused match and in arm order
