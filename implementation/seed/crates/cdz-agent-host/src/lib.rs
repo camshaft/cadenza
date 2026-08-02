@@ -23,6 +23,11 @@
 //!   `live-net`, a stub drives the default gate. The URL's host is gated by the kernel's SEC-F1 `HostIn`
 //!   capability (the SSRF/exfil guard) before dispatch, so this executor does not re-authorize.
 //!
+//! And [`AgentHost`] (see [`host`]) is what ASSEMBLES those pieces into a process that actually RUNS
+//! agents: a registry of live kernel `Session`s keyed by id, each driven by its reducer + a
+//! `CompositeExecutor` of the real executors + an authorizer. Delivering an inbound event runs one turn
+//! of the reactive loop (deliver → fold → authorize → dispatch → fold-result) — an agent, running.
+//!
 //! All executor errors are RECOVERABLE + classified for the kernel's supervision tree (see [`retry`]):
 //! an `EffectOutcome::Err` reason leads with a `RETRYABLE:`/`PERMANENT:` token so a supervisor decides
 //! backoff-retry vs give-up — never a panic, never a silent drop (the operator's error-resilience floor).
@@ -30,11 +35,13 @@
 //! The shared surface with `cdz-kernel` is ONLY the trait signatures; this crate never edits kernel src.
 
 pub mod clock;
+pub mod host;
 pub mod http;
 pub mod model;
 pub mod retry;
 
 pub use clock::ClockExecutor;
+pub use host::{AgentHost, HostedSession, SessionId};
 pub use http::{HttpExecutor, HttpTransport};
 pub use model::{ModelExecutor, ModelTransport};
 pub use retry::{classify, permanent, retryable, Retryability};
