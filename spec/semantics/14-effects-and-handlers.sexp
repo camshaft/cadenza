@@ -1624,6 +1624,37 @@
               (handle St 0 ((tick (u) s (+ 100 (resume s (+ s 1))))) (let ((x (St.tick))) (+ (* 1000 (+ x 1)) (St.tick))))) (export main)))
   (output (: 1201 Int64)))
 
+(case "a NON-tail state-advancing arm threads the advance through a perform in a match SCRUTINEE and its arm body"
+  (doc    "The match-scrutinee companion of the if-condition + let-init distribution cases above — the third
+           strict-first seam. Same non-tail state-advancing arm `(tick (u) s (+ 100 (resume s (+ s 1))))`,
+           body `(match (St.tick) (0 111) (_ (+ 1 (St.tick))))`, seed 5. The scrutinee tick reads 5, its
+           continuation `C = (match [] (0 111) (_ (+ 1 (St.tick))))`; `(resume 5 6)` re-reduces `C[5]` under
+           state 6 — 5 is not the `0` literal so the `_` arm `(+ 1 (St.tick))` runs: the inner tick reads 6
+           (the ADVANCED state), resumes into its own continuation `(+ 1 [])` = 7, its arm yields
+           `(+ 100 7)` = 107, so `C[5]` = 107; the outer arm then yields `(+ 100 107)` = 207. Pins that the
+           `(+ s 1)` advance reaches the arm-body tick across the scrutinee re-reduction — a constant-state
+           arm `(resume s s)` (advance dropped) would read the arm-body tick at 5 and compute 206, not 207.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (main)
+              (handle St 5 ((tick (u) s (+ 100 (resume s (+ s 1))))) (match (St.tick) (0 111) (_ (+ 1 (St.tick)))))) (export main)))
+  (output (: 207 Int64)))
+
+(case "a NON-tail state-advancing arm threads the advance through a perform in a matched literal arm reached via the scrutinee"
+  (doc    "The literal-arm face of the match-scrutinee case above: the scrutinee dispatch selects a SCALAR
+           LITERAL arm that itself performs (not the wildcard). Same arm `(tick (u) s (+ 100 (resume s
+           (+ s 1))))`, body `(match (St.tick) (0 (+ 7 (St.tick))) (_ 222))`, seed 0. The scrutinee tick
+           reads 0, `C = (match [] (0 (+ 7 (St.tick))) (_ 222))`; `(resume 0 1)` re-reduces `C[0]` under
+           state 1 — 0 matches the `0` literal arm `(+ 7 (St.tick))`: the inner tick reads 1 (advanced),
+           resumes into `(+ 7 [])` = 8, its arm yields `(+ 100 8)` = 108, so `C[0]` = 108; the outer arm
+           yields `(+ 100 108)` = 208. Pins the advance reaching a performing LITERAL arm (not just the
+           wildcard) selected by the re-reduced scrutinee.")
+  (input  (do
+            (effect St (op tick (-> Unit Int64)))
+            (def (main)
+              (handle St 0 ((tick (u) s (+ 100 (resume s (+ s 1))))) (match (St.tick) (0 (+ 7 (St.tick))) (_ 222)))) (export main)))
+  (output (: 208 Int64)))
+
 (case "a MULTI-shot handler arm folds a two-hole body by re-reducing per resume"
   (doc    "The re-reducing fold extends to a MULTI-shot arm — one that resumes more than once — when the
            body's performs are all discharged BY THIS handler (no effect escapes to be re-issued). The fold

@@ -61860,6 +61860,48 @@ mod stage1 {
     }
 
     #[test]
+    fn a_non_tail_state_advancing_arm_threads_the_advance_through_a_match_scrutinee() {
+        // The match-scrutinee distribution seam (the third strict-first seam, beside if-cond + let-init):
+        // the non-tail state-advancing arm `(+ 100 (resume s (+ s 1)))` with the leading perform in a match
+        // SCRUTINEE and a SECOND perform in the taken arm body. The advance must reach the arm-body tick
+        // across the scrutinee re-reduction. Seed 5, body `(match (St.tick) (0 111) (_ (+ 1 (St.tick))))`:
+        // scrutinee tick reads 5, `C = (match [] (0 111) (_ (+ 1 (St.tick))))`, `C[5]` under state 6 takes
+        // the `_` arm — its tick reads 6 (advanced), resumes into `(+ 1 [])` = 7, arm `(+ 100 7)` = 107, so
+        // `C[5]` = 107 and the outer arm yields `(+ 100 107)` = 207. A constant-state arm (advance dropped)
+        // would read the arm-body tick at 5 and compute 206 — 207 is the discriminating witness.
+        let wildcard_src = "(do (effect St (op tick (-> Unit Int64))) \
+                   (def (main) (handle St 5 ((tick (u) s (+ 100 (resume s (+ s 1))))) \
+                   (match (St.tick) (0 111) (_ (+ 1 (St.tick)))))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(wildcard_src))).expect(
+                    "a non-tail state-advancing arm folds through a match-scrutinee perform"
+                ),
+                "main"
+            ),
+            207,
+            "the advance must reach the arm-body tick across the scrutinee re-reduction (a state-drop gives 206)"
+        );
+        // The literal-arm face: the re-reduced scrutinee selects a SCALAR LITERAL arm that itself performs
+        // (not the wildcard). Seed 0, body `(match (St.tick) (0 (+ 7 (St.tick))) (_ 222))`: scrutinee tick
+        // reads 0 → the `0` arm `(+ 7 (St.tick))` runs under state 1 — its tick reads 1, resumes into
+        // `(+ 7 [])` = 8, arm `(+ 100 8)` = 108, so `C[0]` = 108 and the outer arm yields `(+ 100 108)` = 208.
+        let literal_src = "(do (effect St (op tick (-> Unit Int64))) \
+                   (def (main) (handle St 0 ((tick (u) s (+ 100 (resume s (+ s 1))))) \
+                   (match (St.tick) (0 (+ 7 (St.tick))) (_ 222)))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(literal_src))).expect(
+                    "a non-tail state-advancing arm folds through a performing matched literal arm"
+                ),
+                "main"
+            ),
+            208,
+            "the advance must reach a performing literal arm selected by the re-reduced scrutinee"
+        );
+    }
+
+    #[test]
     fn a_cross_function_perform_is_discharged_by_the_callers_handler() {
         // E1c-3 (the inline trigger): a perform in a CALLEE `gen` is discharged by the handler enclosing
         // `gen`'s CALL — `(handle … (gen))`. The fold inlines `gen` into the handled region (β-reduces
