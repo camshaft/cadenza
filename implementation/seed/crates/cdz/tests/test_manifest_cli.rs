@@ -230,6 +230,34 @@ fn a_test_referencing_an_undefined_name_fails_the_run_not_a_false_green() {
     );
 }
 
+#[test]
+fn a_nonexistent_file_target_reds_the_run_with_a_read_error_not_a_false_green() {
+    // Error-path coverage: `cdz test <path>` on a file that does not exist. The check-gate's `check_one`
+    // reports the READ failure as an error-severity fault, so the run REDS (non-zero) with a `reading …:
+    // No such file` message and the gate note — NOT a silent exit 0 / green summary. The gate note is
+    // ACCURATE for this class: it names the read-failure case alongside parse/resolve (the note used to
+    // explain only "a def that fails to parse is silently absent", misleading for a missing file that has
+    // no def at all). No store needed — nothing runs.
+    let (ok, stdout, stderr) = run(&["test", "/no/such/cdz/file/definitely-absent.cdz"]);
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        !ok,
+        "a nonexistent file target must FAIL the run (non-zero exit): {combined}"
+    );
+    assert!(
+        combined.contains("reading") && combined.contains("definitely-absent.cdz"),
+        "the read failure names the unreadable path: {combined}"
+    );
+    assert!(
+        stderr.contains("NOT running the suite") && stderr.contains("fails to read"),
+        "the gate note is shown and accurately names the read-failure class: {stderr}"
+    );
+    assert!(
+        !stdout.contains("passed,"),
+        "must NOT report a green `N passed` summary for an unreadable target: {stdout}"
+    );
+}
+
 /// A single explicit `cdz test <file>` that contributes ZERO tests must PRINT a "0 tests found" hint, not
 /// exit silently — otherwise a file whose only marker is an UNRECOGNIZED test-ish annotation (`@property`,
 /// which is silently stripped, so its def is NOT a `@test`) is dead + "green" by omission (breaker's

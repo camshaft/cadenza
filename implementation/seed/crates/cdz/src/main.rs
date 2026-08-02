@@ -4379,8 +4379,9 @@ fn run_test(args: &TestArgs) -> ExitCode {
         if check_failed {
             eprintln!(
                 "{PROG} test: the project has parse/check errors (above) — NOT running the suite. A def \
-                 that fails to parse is silently absent, so a green summary would be a lie; fix the errors \
-                 (or run `cdz check` to see them) first."
+                 that fails to parse (silently absent), fails to resolve/type-check, or a file that fails \
+                 to read leaves a suite whose green would be a lie; fix the errors (or run `cdz check` to \
+                 see them) first."
             );
             return ExitCode::FAILURE;
         }
