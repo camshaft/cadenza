@@ -25,7 +25,9 @@ function FormulaView({ formula }: { formula: Formula }) {
       return (
         <span className="my-2 inline-flex items-baseline gap-1 text-base text-cadenza-200" data-testid="formula">
           <span className="font-mono">{formula.value}</span>
-          <span className="text-slate-400">{formula.unit}</span>
+          {/* A dimensionless quantity (Unit.one) has an empty unit — omit the unit span (and its flex gap)
+              so it renders as just the value, not the value followed by an empty gap. */}
+          {formula.unit && <span className="text-slate-400">{formula.unit}</span>}
         </span>
       );
     case "plain":
