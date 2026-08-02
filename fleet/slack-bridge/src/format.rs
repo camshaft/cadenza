@@ -352,6 +352,31 @@ mod tests {
         assert!(h.contains("!kind"));
     }
 
+    #[test]
+    fn known_kinds_is_exactly_the_fleet_protocol_set() {
+        // The `!kind` prefix is honored only for a fleet message kind (AGENTS-fleet.md's protocol
+        // table). This pins the EXACT set so (a) the Rust and Node `KNOWN_KINDS` can't silently drift
+        // apart — an operator's `!newkind` would then be honored on one parser and mis-kinded to `note`
+        // on the other — and (b) adding/removing a fleet kind forces a deliberate update here. The Node
+        // side pins the identical set in smoke.test.js; keep the two edits together.
+        let mut got = KNOWN_KINDS.to_vec();
+        got.sort_unstable();
+        let mut want = [
+            "answer",
+            "ask",
+            "assign",
+            "backlog",
+            "issue",
+            "merge-request",
+            "merged",
+            "note",
+            "reject",
+            "status",
+        ];
+        want.sort_unstable();
+        assert_eq!(got, want, "KNOWN_KINDS drifted from the fleet protocol set");
+    }
+
     // ── SECURITY: a `@..`-style retarget must not parse as a traversal agent name (PR #391) ─────────
 
     #[test]
