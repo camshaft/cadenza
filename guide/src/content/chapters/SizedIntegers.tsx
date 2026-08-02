@@ -61,6 +61,34 @@ export default function SizedIntegers() {
         not a thing that happens to you.
       </P>
 
+      <H2>Why isn't <C>Int</C> a type?</H2>
+      <P>
+        A newcomer's first reflex is to annotate with a bare <C>Int</C>, the way most languages name their
+        integer type. In Cadenza <C>Int</C>, <C>UInt</C>, and <C>Float</C> are not types at all: they're{" "}
+        <em>value constructors</em> that <em>build</em> a sized type from a bit width. <C>(Int 64)</C> is{" "}
+        <C>Int64</C>, <C>(UInt 8)</C> is <C>UInt8</C>, <C>(Float 32)</C> is <C>Float32</C>. So writing a
+        bare <C>Int</C> where a type belongs uses a value where a type is required, and the compiler says so:
+      </P>
+      <Note>
+        This one is <strong>meant to be refused</strong>: <C>Int</C> on its own is a value, not a type, so
+        the annotation has nothing to stand on. The diagnostic names the concrete width you almost certainly
+        meant.
+      </Note>
+      <Runnable source={`(def (f (: a Int)) a)`} expect="error" />
+      <P>
+        The fix is to name a concrete width, so <C>Int64</C> for the everyday integer, or <C>Int32</C>,{" "}
+        <C>UInt8</C>, and the rest for a fixed size. The compound form <C>(Int 64)</C> is itself a perfectly
+        good type, exactly equal to <C>Int64</C>, so this compiles and runs, and <C>(add1 41)</C> is{" "}
+        <C>42</C>:
+      </P>
+      <Runnable source={`(do (def (add1 (: n (Int 64))) (+ n 1))
+    (def (main) (add1 41))
+    (export main))`} />
+      <P>
+        Only the <em>bare</em> name is the mistake, since <C>(Int 64)</C> and <C>Int64</C> are the same type
+        written two ways. Reach for the width name and the reflex costs you nothing.
+      </P>
+
       <H2>Arithmetic stays inside the width</H2>
       <P>
         The width isn't just checked at conversion, since it's enforced in arithmetic too. Two{" "}
