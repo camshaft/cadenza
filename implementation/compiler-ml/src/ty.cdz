@@ -197,39 +197,37 @@ def ty-bool-not-int() =
   else
     if is-ground-int(Ty.TyBool) then trap("Bool not ground-int") else unit
 
-/// Test helper: extract a ground int type's `(signed?, width)` — bind-then-match per level (flat), returning
-/// `(is-signed 1|0, width)`; `(−1, −1)` for a non-int or non-fixed axis. Avoids deep-nested patterns.
+/// Test helper: extract a ground int type's `(Sign, width)`, or `None` for a non-int or non-fixed-width axis.
+/// Returns the `Sign` SUM directly (not a 1|0|-1 int projection) and models "not a ground fixed int" as typed
+/// absence — no in-band `-1` sentinel on either axis. A `WFixed(n)` carries any sign (Signed/Unsigned/SignDef,
+/// the third resolved by `ground-default` before this is read); `WidthDef` / non-int → `None`.
 def int-parts(t: Ty) = match t with
   | Ty.TyInt(it) => (match it with
-    | IntType.IntType(s, w) => match w with
-      | Width.WFixed(n) => (
-        match s with
-          | Sign.Signed => 1
-          | Sign.Unsigned => 0
-          | Sign.SignDef => -1,
-        n
-      )
-      | Width.WidthDef => (-1, -1)
-  )
-  | _ => (-1, -1)
+    | IntType.IntType(s, w) => (match w with
+      | Width.WFixed(n) => Option.Some((s, n))
+      | Width.WidthDef => Option.None(unit)))
+  | _ => Option.None(unit)
 
 @test
 def ty-ground-default-deferred-to-int64() =
   // grounding a fully-deferred literal → Int64 (signed, 64) — the default.
   match int-parts(ground-default(ty-deferred-int())) with
-    | (sg, w) => if sg == 1 and w == 64 then unit else trap("deferred grounds to Int64")
+    | Option.Some((sg, w)) => (match sg with | Sign.Signed => (if w == 64 then unit else trap("deferred grounds to Int64 width 64")) | _ => trap("deferred grounds to SIGNED"))
+    | Option.None(_) => trap("deferred grounds to a fixed int")
 
 @test
 def ty-ground-default-keeps-fixed() =
   // grounding a fixed type is the identity: UInt8 stays (unsigned, 8).
   match int-parts(ground-default(ty-fixed-int(false, 8))) with
-    | (sg, w) => if sg == 0 and w == 8 then unit else trap("fixed UInt8 unchanged")
+    | Option.Some((sg, w)) => (match sg with | Sign.Unsigned => (if w == 8 then unit else trap("fixed UInt8 width 8")) | _ => trap("fixed UInt8 stays UNSIGNED"))
+    | Option.None(_) => trap("a fixed int has int-parts")
 
 @test
 def ty-ground-default-partial-deferred-sign() =
   // a deferred SIGN with a fixed width grounds the sign to Signed, keeps the width (orthogonal axes).
   match int-parts(ground-default(Ty.TyInt(IntType.IntType(Sign.SignDef, Width.WFixed(16))))) with
-    | (sg, w) => if sg == 1 and w == 16 then unit else trap("deferred-sign→Signed, width 16 kept")
+    | Option.Some((sg, w)) => (match sg with | Sign.Signed => (if w == 16 then unit else trap("deferred-sign keeps width 16")) | _ => trap("deferred-sign→Signed"))
+    | Option.None(_) => trap("a fixed-width int has int-parts")
 
 // ---- ty-eq tests (structural type equality — the convergence primitive) ----
 @test
