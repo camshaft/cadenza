@@ -7453,17 +7453,19 @@ fn schedule_plan(fleet: &Fleet, cap: usize) {
         queued.len()
     );
     if picks.is_empty() {
-        if in_flight_unknown {
-            println!(
-                "  → dispatch nothing this pass: an in-flight candidate's changed files can't be \
-                 resolved, so no queued MR can be proven collision-free (conservative)."
-            );
+        // Name the ACTUAL reason (PR #1340 review) — the 3 empty-picks causes read very differently to
+        // an operator, so don't collapse them into "collision".
+        let reason = if in_flight_unknown {
+            "an in-flight candidate's changed files can't be resolved, so no queued MR can be proven \
+             collision-free (conservative)"
+        } else if queued.is_empty() {
+            "no queued merge-requests (nothing to dispatch)"
+        } else if dispatched.len() >= cap {
+            "at the in-flight cap (no free capacity — throttled, not blocked)"
         } else {
-            println!(
-                "  → dispatch nothing this pass (cap full, or every queued MR file-collides with an \
-                 in-flight candidate)."
-            );
-        }
+            "every queued MR file-collides with an in-flight (or already-picked) candidate"
+        };
+        println!("  → dispatch nothing this pass: {reason}.");
         return;
     }
     println!("  → would dispatch {} candidate(s):", picks.len());
