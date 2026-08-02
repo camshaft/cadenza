@@ -16666,6 +16666,56 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_point_fact_flows_through_a_let_binding_into_an_arm_body_compare_fold() {
+        // COMPOSITION face: a point fact must survive through a kept `let` binding + an arith op into a
+        // downstream compare fold. `value_range` threads a `LocalRef` to its initializer's range and composes
+        // arith ranges, so inside `(if (= n 5) (let ((y (+ n 1))) (if (> y 3) …)) …)` the refinement n∈[5,5]
+        // flows: y = (+ n 1) has arith_range [6,6] (reading n's refined point), so `(> y 3)` folds TRUE and its
+        // dead arm is eliminated — even though the compared variable `y` is a let-bound derivative of the
+        // refined `n`, not `n` itself. Pins the point-fact ⇄ let-binding ⇄ arith_range ⇄ compare-fold
+        // composition (the pieces are each tested, their COMPOSITION through a let was not).
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        // Under n==5, y = n+1 = [6,6], so `(> y 3)` is decided TRUE → its else `2` arm is dead. The only
+        // comparison remaining is the outer `= 5` (the inner `> y 3` folded away).
+        let code = select(
+            "(module m (def (f (: n Int64)) (if (= n 5) (let ((y (+ n 1))) (if (> y 3) 1 2)) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert!(
+            !code.contains(&Lir::ConstI64(2)),
+            "the point fact flows n->y through the let+arith, folding `> y 3` true and killing the `2` arm, got: {code:?}"
+        );
+        // VALUE parity: only n=5 enters the then; there y=6 and `> y 3` holds → 1. Any other n → outer else → 0.
+        let s = "(if (= n 5) (let ((y (+ n 1))) (if (> y 3) 1 2)) 0)";
+        assert_eq!(run::<i64>("(: n Int64)", s, &[Val::S64(5)]), 1);
+        assert_eq!(run::<i64>("(: n Int64)", s, &[Val::S64(4)]), 0);
+    }
+
+    #[test]
     fn a_below_len_guard_elides_the_matching_list_ats_own_bounds_check_but_not_a_different_lists() {
         // BOUNDED-INDEX (below-len) FACET — operator-greenlit bounds-elision. Inside the then-branch of
         // `(< i (List.len xs))`, the index `i` is flow-known `< len(xs)`, so a `List.at xs i` there can shed
