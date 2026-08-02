@@ -1770,6 +1770,85 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             .at(map_pat),
         ));
     }
+    // Case Lmr: `form` is a MATCH ARM whose pattern is a `(list …)` with a MALFORMED `..` rest binding
+    // `name` at an EXTRA position after `..` (`(list a .. b c)` — `c`). `lower_match_list` already faults
+    // the shape (CDZ0201 at the pattern), but `find_rest_binder_in_list_pattern` recognizes only the single
+    // `dd + 1` binder, so a body reference to a SURPLUS binder (`c`) fell through to a MISLEADING CDZ0101
+    // "unbound name" that masks the rest-shape fault. Resolve it to the SAME coded rest-shape decline the
+    // list matcher emits, SUPPRESSING the unbound cascade — the list twin of Case Mmr. Co-anchor at the
+    // offending `(list …)` PATTERN node so it lands on the SAME node the matcher's reject does and the
+    // same-node dedup collapses the two into ONE primary diagnostic.
+    if let Some(list_pat) = match_arm_malformed_list_binds(db, form, from, name) {
+        return Some(Resolved::Poison(
+            Reject::coded(
+                crate::diag::Code::Malformed,
+                "a list rest pattern is `(list p… .. rest)` — exactly one binder after `..`",
+            )
+            .at(list_pat),
+        ));
+    }
+    None
+}
+
+/// The `(list …)` PATTERN node when `form` is a MATCH ARM `(pattern body)` (ascended from its BODY, or a
+/// guarded arm's guard cond) whose pattern is a `(list …)` form with a MALFORMED `..` rest
+/// ([`list_form_is_malformed_rest`]) that binds `name` at a SURPLUS position after `..`; `None` otherwise.
+/// The list twin of [`match_arm_malformed_map_binds`]: it lets `binder_in` resolve such a body/guard
+/// reference to the clear rest-shape decline (co-anchored at the returned node) instead of leaking an
+/// unbound name. Searches the arm pattern DIRECTLY and through nested tuple/variant/list payloads (a nested
+/// malformed-rest list `(Wrap (list a .. b c))` reads the same way), mirroring the map companion.
+fn match_arm_malformed_list_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<StructId> {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 {
+        return None;
+    }
+    // Peel a `(guard <pattern> <cond>)` wrapper — a guard-cond reference binds the same names.
+    let (arm_pat, guard_cond) = match db.ast.as_form(pb[0], "guard") {
+        Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+        _ => (pb[0], None),
+    };
+    if from != pb[1] && Some(from) != guard_cond {
+        return None;
+    }
+    // Must be a genuine match arm (parent is `(match scrutinee arm…)`, `form` an arm, not the scrutinee).
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    match mtail.first() {
+        Some(&scrutinee) if scrutinee != form => {}
+        _ => return None,
+    }
+    // Find a MALFORMED-rest `(list …)` binding `name` at a surplus position — DIRECTLY or NESTED.
+    find_malformed_list_binding_name(db, arm_pat, name)
+}
+
+/// The MALFORMED-rest `(list …)` sub-pattern of `pattern` that binds `name` at a SURPLUS post-`..` position,
+/// searched DIRECTLY and through nested tuple/variant/list payloads; `None` if none. Companion of
+/// [`match_arm_malformed_list_binds`] — lets a body reference to a nested malformed-list surplus binder
+/// resolve to the rest-shape decline (not a leaked unbound name), the list twin of
+/// [`find_malformed_map_binding_name`].
+fn find_malformed_list_binding_name(db: &Db, pattern: StructId, name: &str) -> Option<StructId> {
+    // A `(list …)` here: if its rest is malformed AND it binds `name` at a surplus position, this is it.
+    if list_form_is_malformed_rest(db, pattern) && list_form_binds_post_rest_name(db, pattern, name)
+    {
+        return Some(pattern);
+    }
+    // Descend a compound pattern's element/payload positions (a well-formed list sub-pattern is handled by
+    // the ordinary Case 6l/6r; only a malformed one reaches here). Bounded by the arena's tree depth.
+    let Struct::List(children) = db.ast.get(pattern) else {
+        return None;
+    };
+    for &child in children {
+        if let Some(found) = find_malformed_list_binding_name(db, child, name) {
+            return Some(found);
+        }
+    }
     None
 }
 
@@ -3353,6 +3432,57 @@ fn map_form_binds_name(db: &Db, pat: StructId, name: &str) -> bool {
         }
     }
     false
+}
+
+/// Whether `pat` is a `(list …)` FORM whose `..` rest is MALFORMED — a `..` marker NOT followed by exactly
+/// one binder (`(list a .. b c)` — extra binders after the rest; `(list a .. b .. c)` — two `..`). The list
+/// twin of [`map_form_is_malformed_rest`]. `lower_match_list` already emits the clear rest-shape CDZ0201 at
+/// the pattern, but a body reference to one of the EXTRA post-`..` binders (`c` in `(list a .. b c)`) fell
+/// through to `resolve_name` → a misleading `CDZ0101 unbound c` cascade on top of the real fault — the same
+/// class the map twin fixed (v-diagnostics note 2026-07-16). This predicate re-detects the shape so
+/// [`match_arm_malformed_list_binds`] can resolve such a reference to the SAME coded rest-shape decline,
+/// suppressing the cascade. (`find_rest_binder_in_list_pattern` recognizes ONLY the single binder at
+/// `dd + 1`, so the extras are neither a valid binder nor otherwise classified.)
+fn list_form_is_malformed_rest(db: &Db, pat: StructId) -> bool {
+    let Some(elems) = db
+        .ast
+        .as_ctor_form(pat, "list")
+        .or_else(|| db.ast.as_form(pat, "list"))
+    else {
+        return false;
+    };
+    match elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+        // A `..` present but not followed by EXACTLY one trailing binder — the malformed rest shape.
+        Some(i) => i + 2 != elems.len(),
+        None => false,
+    }
+}
+
+/// Whether the MALFORMED-rest `(list …)` FORM `pat` binds `name` at one of the EXTRA positions AFTER the
+/// `..` (position `dd + 2` onward) — the binders `find_rest_binder_in_list_pattern` (which only recognizes
+/// the single `dd + 1` rest binder) leaves unclassified, so a body reference to them leaked unbound. Only
+/// bare-name items are counted (`_` binds nothing; a nested sub-pattern after `..` is a separate decline).
+/// The `dd + 1` position is deliberately EXCLUDED — it is the legitimate rest binder, already resolved by
+/// Case 6r / kept inert by `is_list_pattern_element_occurrence`; this covers strictly the surplus.
+fn list_form_binds_post_rest_name(db: &Db, pat: StructId, name: &str) -> bool {
+    if name == "_" || name == ".." {
+        return false;
+    }
+    let Some(elems) = db
+        .ast
+        .as_ctor_form(pat, "list")
+        .or_else(|| db.ast.as_form(pat, "list"))
+    else {
+        return false;
+    };
+    let Some(dd) = elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) else {
+        return false;
+    };
+    // The surplus positions are `dd + 2 ..`; `dd + 1` is the legitimate rest binder (handled elsewhere).
+    elems
+        .iter()
+        .skip(dd + 2)
+        .any(|&e| db.ast.as_name(e) == Some(name))
 }
 
 /// Whether `id` is a BINDER occurrence of a map PATTERN — a VALUE binder (the `v` in a `(k v)` entry) or

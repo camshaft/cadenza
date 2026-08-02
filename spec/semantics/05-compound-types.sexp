@@ -16007,6 +16007,23 @@
               (export f)))
   (error CDZ0201))
 
+(case "a list match pattern with a malformed rest names the shape, not an unbound surplus binder (CDZ0201)"
+  (doc    "The LIST twin of the malformed-map-rest case above: a `(list …)` pattern whose `..` is followed
+           by MORE than one binder — `(list a .. b c)` — reports the clear rest-shape CDZ0201 ('a list rest
+           pattern is `(list p… .. rest)` — exactly one binder after `..`') with NO misleading `unbound name
+           c`. `lower_match_list` always faulted the shape, but `find_rest_binder_in_list_pattern` recognizes
+           ONLY the single `dd+1` rest binder, so a body reference to a SURPLUS binder (`c`) fell through to
+           `resolve_name` → a spurious CDZ0101 cascade layered on the real fault (the same class the map twin
+           fixed, v-diagnostics note 2026-07-16). The resolver now resolves such a reference to the SAME
+           coded rest-shape decline (Case Lmr / `match_arm_malformed_list_binds`), co-anchored at the list
+           pattern so the same-node dedup collapses it into ONE primary diagnostic. Pins the CODED CDZ0201 on
+           a parameterized body reading the surplus binder, and that NO unbound-name cascade accompanies it.
+           Sibling of the top-level map-rest case; the body reads `c` (the surplus after the rest binder `b`).")
+  (input  (do (def (f (: xs (List Int64)))
+                (match xs ((list a .. b c) c) (_ 0)))
+              (export f)))
+  (error CDZ0201))
+
 ; --- Consumed loop-invariant heap extractions: the per-kind family ----------------------------------
 ; Two same-day fixes closed this family (aac1b72bc: LICM refuses a heap-typed Proj hoist root;
 ; 50f64b3ae: a consumed sum-payload child retains while its scrutinee lives — my filed SumExpect
