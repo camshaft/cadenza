@@ -2110,6 +2110,36 @@
             (export main)))
   (call   main (: 1100 Int64)) (output (: 604450 Int64)))
 
+; --- Large multi-level CHAMP SET membership (the set companion of the deep RRB read + deep CHAMP-map key) --
+; The push/read RRB cases above exercise a deep VECTOR spine; this exercises a deep CHAMP SET trie. At n=1100
+; (> 32*32 = 1024) the hash-array-mapped trie is a THREE-level structure, so a `Set.contains` probe descends
+; multiple hash-prefix levels — the membership path no small-set case (the ≤5-element cases in 19-sets) reaches.
+(case "a 1100-element runtime set resolves every member through a multi-level CHAMP trie and rejects non-members"
+  (doc    "The MEMBERSHIP companion of the 1100-element multi-level RRB read case above. `build` inserts 0..n
+           into a CHAMP set; at n=1100 the trie is three levels deep, so `Set.contains` descends several
+           hash-prefix levels. `sum-present` sums i for every i in 0..n the set contains (all present → Sigma i
+           for i in 0..=1099 = 604450); `sum-absent` adds a 1000000 penalty for any j in n..n+50 wrongly
+           reported present (must stay 0 — a multi-level CHAMP must not false-positive a key that hashes into a
+           populated branch). checksum = present - absent = 604450 EXACTLY. A member not found, or a non-member
+           found, breaks the total. Pins large-set membership across the deep CHAMP descent.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: s (Set Int64)))
+              (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
+            (def (sum-present (: i Int64) (: n Int64) (: s (Set Int64)) (: acc Int64))
+              (if (< i n)
+                (sum-present (+ i 1) n s (if (Set.contains s i) (+ acc i) acc))
+                acc))
+            (def (sum-absent (: j Int64) (: hi Int64) (: s (Set Int64)) (: acc Int64))
+              (if (< j hi)
+                (sum-absent (+ j 1) hi s (if (Set.contains s j) (+ acc 1000000) acc))
+                acc))
+            (def (main (: n Int64))
+              (let ((s (build 0 n (Set.of (list)))))
+                (- (sum-present 0 n s 0)
+                   (sum-absent n (+ n 50) s 0))))
+            (export main)))
+  (call   main (: 1100 Int64)) (output (: 604450 Int64)))
+
 (case "a map inserted-into in one recursive sub-call is unchanged for a sibling sub-call's read"
   (doc    "`Map.insert` is persistent — it must leave its operand map unchanged. `h` recurses with a depth
            counter: at depth>0 it sums `(h (Map.insert env \"x\" 2) 0)` (insert x=2, read it back → 2) and
