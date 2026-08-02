@@ -1167,6 +1167,110 @@ mod tests {
     /// print∘read is stable: reading printed text yields a structurally-equal arena, and printing
     /// it again is byte-identical (the s-expr surface is its own canonical form).
     #[test]
+    fn every_leaf_variant_round_trips_through_the_sexpr_printer() {
+        // A systematic per-`Leaf`-variant pin of the s-expr PRINTER round-trip: for each leaf kind, build
+        // an arena atom of it, `print` (flat s-expr), `read` it back, and assert structural equality — so
+        // `print_leaf`'s rendering of EVERY variant re-reads to the same leaf. The existing pins are
+        // scattered (char/symbol/bad-escape/bytes each in their own test, several via the codec not the
+        // s-expr printer) and `print_reads_back` covers only Int/Str/Bool/Name/Bytes; no single sweep
+        // exercised `print_leaf` over the whole variant space. A future escape-set change on any one arm
+        // (e.g. a Sym `#"…"` quote-escape drift, a Bytes `\xNN` regression, a Char control-name change)
+        // would then silently break that leaf's round-trip with nothing to catch it. This is the
+        // s-expr-printer analogue of `cadenza-ast`'s codec `gen_leaf` sweep.
+        //
+        // NOTE the ONE variant that is NOT round-trippable BARE: `Suffixed` (`100N`). The s-expr reader
+        // DELIBERATELY desugars a suffixed token to the annotation `(: <Suffixed> BigInt)` (a suffix IS a
+        // terse annotation — see `classify_word_nonname`), so a bare `Suffixed` atom is a shape the reader
+        // NEVER produces; printing one re-reads to the `(:  …)` wrapper, not a bare atom. So `Suffixed` is
+        // pinned in its REAL desugared context below, not bare.
+        let bare: Vec<(&str, Leaf)> = vec![
+            (
+                "Int-dec-neg",
+                Leaf::Int {
+                    value: BigInt::from(-42),
+                    radix: Radix::Dec,
+                },
+            ),
+            (
+                "Int-hex",
+                Leaf::Int {
+                    value: BigInt::from(255),
+                    radix: Radix::Hex,
+                },
+            ),
+            (
+                "Int-bin",
+                Leaf::Int {
+                    value: BigInt::from(10),
+                    radix: Radix::Bin,
+                },
+            ),
+            (
+                "Int-zero",
+                Leaf::Int {
+                    value: BigInt::from(0),
+                    radix: Radix::Dec,
+                },
+            ),
+            (
+                "Float-neg",
+                Leaf::Float(Decimal {
+                    negative: true,
+                    significand: BigInt::from(125),
+                    exponent: -2,
+                }),
+            ),
+            ("Str-empty", Leaf::Str(String::new())),
+            ("Str-escapes", Leaf::Str("a\nb\t\"c\\d".to_string())),
+            ("Str-unicode", Leaf::Str("λ中🎉".to_string())),
+            (
+                "Bytes-high",
+                Leaf::Bytes(vec![0x89, b'P', b'N', b'G', 0x00, 0xff]),
+            ),
+            ("Bytes-empty", Leaf::Bytes(vec![])),
+            ("Bool-true", Leaf::Bool(true)),
+            ("Bool-false", Leaf::Bool(false)),
+            ("Name", Leaf::Name("foo-bar".to_string())),
+            ("Name-op", Leaf::Name("+".to_string())),
+            ("Sym", Leaf::Sym("meter".to_string())),
+            ("Sym-quote", Leaf::Sym("has\"quote".to_string())),
+            ("Char", Leaf::Char('é')),
+            ("Char-ctrl", Leaf::Char('\n')),
+            ("Char-emoji", Leaf::Char('🎉')),
+            ("BadEscape", Leaf::BadEscape('q')),
+            ("BadChar", Leaf::BadChar("u+D800".to_string())),
+        ];
+        for (label, leaf) in bare {
+            let mut b = Builder::new();
+            let id = b.leaf(leaf.clone());
+            let root = b.atom(id);
+            let a = b.finish(root);
+            let printed = print(&a);
+            let back = read(&printed).unwrap_or_else(|e| {
+                panic!("[{label}] printed {printed:?} did not re-read: {}", e.0)
+            });
+            assert!(
+                a.structurally_eq(&back),
+                "[{label}] {leaf:?} printed {printed:?} did not round-trip through the s-expr printer"
+            );
+        }
+
+        // `Suffixed` in its REAL context: a suffixed source token reads to `(: <Suffixed> Type)`. Print
+        // THAT arena and assert it round-trips (the `Suffixed` atom rides inside, printed back as `100N`).
+        for src in ["100N", "0.5R", "0xFFN", "12e2R"] {
+            let a = read(src).unwrap_or_else(|e| panic!("suffixed {src:?} reads: {}", e.0));
+            let printed = print(&a);
+            let back = read(&printed).unwrap_or_else(|e| {
+                panic!("suffixed {src:?} reprint {printed:?} re-reads: {}", e.0)
+            });
+            assert!(
+                a.structurally_eq(&back),
+                "suffixed {src:?} did not round-trip (printed {printed:?})"
+            );
+        }
+    }
+
+    #[test]
     fn print_reads_back() {
         for src in [
             "(+ 1 2)",
