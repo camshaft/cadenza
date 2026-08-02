@@ -96,13 +96,14 @@ fn agent_loop_runs_end_to_end_through_the_real_clock_executor() {
         .kv()
         .get(b"started_at")
         .expect("started_at recorded");
-    let ms: u128 = String::from_utf8(started.to_vec())
-        .unwrap()
-        .parse()
-        .expect("recorded instant parses as millis");
+    // The Now payload is a u64 LE 8-byte nanoseconds-since-epoch integer (the ClockExecutor spec).
+    let arr: [u8; 8] = started
+        .try_into()
+        .expect("started_at is 8 bytes (u64 LE nanos)");
+    let ns = u64::from_le_bytes(arr);
     assert!(
-        ms > 1_577_836_800_000,
-        "a real epoch instant was recorded: {ms}"
+        ns > 1_577_836_800_000_000_000,
+        "a real epoch instant (nanos) was recorded: {ns}"
     );
     // Every effect settled; the agent is idle awaiting its next input (reactive, §9d).
     assert_eq!(session.open_effects(), 0);

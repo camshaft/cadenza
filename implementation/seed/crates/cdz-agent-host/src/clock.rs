@@ -7,9 +7,12 @@
 //! in the log, not the executor). This is the "reads-are-effects" pattern the design leans on for the
 //! clock: the executor is non-deterministic, the *recorded outcome* makes the session replayable.
 //!
-//! The result payload is the milliseconds since the Unix epoch as ASCII decimal — a stable,
-//! self-describing, endianness-free representation a reducer parses with `str::parse`. (`Now`'s target
-//! is empty; a capability gates it by kind, e.g. `Capability { kind: Now, predicate: Any }`.)
+//! The result payload is the nanoseconds since the Unix epoch as a **u64 little-endian 8-byte integer**
+//! (`ns.to_le_bytes()`) — the shape the kernel's monotonic clamp reads (it clamps the raw reading to
+//! `max(raw, last_now+1ns)` and records the clamped value, so the recorded `Now` sequence is strictly
+//! increasing and replay-deterministic — operator binary-ns directive). A reducer decodes it with
+//! `u64::from_le_bytes(bytes.try_into()?)`. (`Now`'s target is empty; a capability gates it by kind,
+//! e.g. `Capability { kind: Now, predicate: Any }`.)
 
 use crate::retry;
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
@@ -45,16 +48,19 @@ impl Executor for ClockExecutor {
                 req.kind
             )));
         }
-        // Milliseconds since the Unix epoch, as ASCII decimal. A clock set before the epoch is not a
-        // panic (§17 totality) — surface it as an observable Err the reducer folds.
+        // Nanoseconds since the Unix epoch as a u64 LITTLE-ENDIAN 8-byte integer (operator binary-ns
+        // directive + the kernel monotonic-clamp payload spec): the kernel's clamp reads exactly this
+        // 8-byte LE u64, clamps to max(raw, last_now+1ns), and records the clamped value (so the recorded
+        // Now sequence is strictly increasing + replay-deterministic). A clock set before the epoch is a
+        // host misconfiguration, not a transient blip — surfaced as a PERMANENT Err (never a panic, §17).
+        //
+        // `as u64` truncates ns from the `u128` duration; u64 ns overflows only past ~year 2554, far
+        // beyond any real deadline, so the cast is safe for every meaningful clock reading.
         match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(dur) => {
-                let ms = dur.as_millis();
-                // Freeze the ASCII-decimal `Vec<u8>` into the kernel's ref-counted `Payload::Inline`
-                // (`bytes::Bytes`) via `From<Vec<u8>>` — a move, no copy.
-                EffectOutcome::Ok(Some(Payload::Inline(ms.to_string().into_bytes().into())))
+                let ns = dur.as_nanos() as u64;
+                EffectOutcome::Ok(Some(Payload::Inline(ns.to_le_bytes().to_vec().into())))
             }
-            // A pre-epoch clock is a host misconfiguration, not a transient blip — PERMANENT.
             Err(e) => EffectOutcome::Err(retry::permanent(format!(
                 "system clock is before the Unix epoch: {e}"
             ))),
@@ -76,22 +82,46 @@ mod tests {
         }
     }
 
+    /// Decode a `Now` Ok payload as the u64 LE nanos the executor emits (the spec the kernel clamp reads).
+    fn decode_ns(outcome: EffectOutcome) -> u64 {
+        match outcome {
+            EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
+                let arr: [u8; 8] = bytes
+                    .as_ref()
+                    .try_into()
+                    .expect("Now payload is exactly 8 bytes");
+                u64::from_le_bytes(arr)
+            }
+            other => panic!("expected Ok(Inline(8-byte LE u64 nanos)), got {other:?}"),
+        }
+    }
+
     #[test]
-    fn now_returns_a_parseable_millis_timestamp() {
+    fn now_returns_an_8_byte_le_u64_nanos_timestamp() {
+        let mut exec = ClockExecutor::new();
+        let ns = decode_ns(exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k")));
+        // A sane lower bound: well after 2020 (1_577_836_800_000_000_000 ns = 2020-01-01) — proves it's a
+        // real epoch timestamp in NANOSECONDS, not ms/zero/garbage.
+        assert!(
+            ns > 1_577_836_800_000_000_000,
+            "clock reads a real epoch time in nanos: {ns}"
+        );
+    }
+
+    #[test]
+    fn now_payload_is_exactly_8_bytes() {
+        // The kernel clamp only clamps an 8-byte LE u64 (anything else passes through un-clamped), so the
+        // width is load-bearing for the monotonic guarantee.
         let mut exec = ClockExecutor::new();
         match exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k")) {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
-                // `.to_vec()` copies the `Bytes` payload into an owned `Vec<u8>` for `from_utf8`.
-                let text = String::from_utf8(bytes.to_vec()).expect("ascii decimal");
-                let ms: u128 = text.parse().expect("parses as millis");
-                // A sane lower bound: well after 2020 (1_577_836_800_000 ms = 2020-01-01) — proves it's a
-                // real epoch timestamp, not a zero/garbage value.
-                assert!(
-                    ms > 1_577_836_800_000,
-                    "clock reads a real epoch time: {ms}"
-                );
+                assert_eq!(
+                    bytes.len(),
+                    8,
+                    "Now payload must be exactly 8 bytes (u64 LE nanos)"
+                )
             }
-            other => panic!("expected Ok(Inline(millis)), got {other:?}"),
+            other => panic!("expected Ok(Inline), got {other:?}"),
         }
     }
 
@@ -99,16 +129,8 @@ mod tests {
     fn now_is_monotonic_across_two_reads() {
         // Two successive reads must not go backwards (wall clock is non-decreasing over a test's span).
         let mut exec = ClockExecutor::new();
-        let read = |e: &mut ClockExecutor| -> u128 {
-            match e.perform(&req(EffectKind::Now, ""), Hash::of(b"k")) {
-                EffectOutcome::Ok(Some(Payload::Inline(b))) => {
-                    String::from_utf8(b.to_vec()).unwrap().parse().unwrap()
-                }
-                other => panic!("expected Ok millis, got {other:?}"),
-            }
-        };
-        let a = read(&mut exec);
-        let b = read(&mut exec);
+        let a = decode_ns(exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k")));
+        let b = decode_ns(exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k")));
         assert!(b >= a, "second read {b} must not precede the first {a}");
     }
 
