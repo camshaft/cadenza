@@ -283,3 +283,64 @@ fn fmt_is_idempotent_a_second_pass_is_a_byte_stable_fixed_point() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Run `cdz fmt <args…>` with `stdin` piped in, returning (exit_ok, stdout, stderr). Exercises the real
+/// `std::io::stdin()` disposition path — not in-process unit-testable from cadenza-syntax, so this is the
+/// e2e complement of that crate's `emits_to_stdout` predicate unit test.
+fn fmt_stdin(stdin: &str, args: &[&str]) -> (bool, String, String) {
+    use std::io::Write;
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let mut a = vec!["fmt"];
+    a.extend_from_slice(args);
+    let mut child = std::process::Command::new(exe)
+        .args(&a)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn cdz fmt (stdin)");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait cdz");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn fmt_stdin_check_reds_on_unformatted_and_passes_on_formatted() {
+    // The stdin disposition bug (found probing `cdz`, fixed by v-syntax in cadenza-syntax cli.rs PR #1127
+    // 0c7a0e134): `fmt - --check` used to hit the stdout-emit branch UNCONDITIONALLY (there's no file to
+    // edit on stdin), so it printed the formatted program and exited 0 — SILENTLY IGNORING --check even for
+    // UNFORMATTED input. A CI pipe (`… | cdz fmt - --from ml --check`) then got a FALSE PASS. The fix honors
+    // --check on stdin. Pin it end-to-end over the REAL stdin pipe (the syntax crate can only unit-test the
+    // disposition predicate in-process): unformatted stdin REDS + prints `not formatted: <stdin>`; already-
+    // formatted stdin is clean (exit 0). No store — fmt is a pure text pass.
+    let (ok, out, err) = fmt_stdin("def  f( )->Int64=  1\n", &["-", "--from", "ml", "--check"]);
+    assert!(
+        !ok,
+        "fmt - --check must RED on unformatted stdin (not a silent exit-0):\nstdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.contains("not formatted") && out.contains("<stdin>"),
+        "the --check report names the stdin source as not-formatted:\nstdout:\n{out}\nstderr:\n{err}"
+    );
+
+    // Already-formatted stdin: --check is clean → exit 0, and it must NOT re-emit the program (that's the
+    // implicit stdout mode only WITHOUT --check).
+    let (ok2, out2, err2) = fmt_stdin("def f() -> Int64 = 1\n", &["-", "--from", "ml", "--check"]);
+    assert!(
+        ok2,
+        "fmt - --check exits 0 on already-formatted stdin:\nstdout:\n{out2}\nstderr:\n{err2}"
+    );
+    assert!(
+        out2.trim().is_empty(),
+        "fmt - --check writes nothing for already-formatted stdin (it inspects, doesn't emit):\nstdout:\n{out2}"
+    );
+}
