@@ -941,6 +941,19 @@ pub const HANDLER_NOT_REDUCIBLE_DECLINE: &str = "this handler is not yet reducib
 /// emit path then declines the same body through SEVERAL of these paths at once (a 4-error cascade for one
 /// root cause). Shared as consts so `dedup_faults` drops them whenever that CDZ0201 is present, keeping the
 /// ONE coded, actionable reject. A non-export use of such a value (no CDZ0201) keeps its honest decline.
+/// The coded CDZ0201 shape reject for a list pattern whose `..` rest slot holds anything other than a bare
+/// name or `_` — a nested `(list …)`/`(tuple …)`/ctor sub-pattern OR a literal. SHARED by two paths that
+/// must agree byte-for-byte so their same-node reports dedup into ONE diagnostic: (a) resolve's `Case 6mr`
+/// (`binder_in`), reached when the arm BODY references an inner binder of the nested rest pattern; and (b)
+/// lowering (`lower_match_list` / the binding-position check), reached STRUCTURALLY regardless of the body —
+/// which is why lowering uses a CODED reject here (not a reachability-gated decline), so the invalid shape
+/// surfaces even when the body ignores the inner binders (the body-dependent gap v-guide flagged). The rule:
+/// core-semantics.md:149 grants nested patterns to ELEMENT positions only; :135 a binding position holds an
+/// irrefutable pattern (a nested list rest is refutable on the empty tail), so the rest binder is name/`_`.
+pub const LIST_REST_BINDER_NAME_ONLY: &str = "the rest binder of a list pattern must be a name or `_` (it binds the whole tail sublist) — \
+     a nested pattern or literal is not allowed here; bind the tail to a name and destructure it \
+     in a nested `match` (e.g. `(list a .. rest)`, then `(match rest …)`)";
+
 pub const TYPE_VALUE_NO_RUNTIME_DECLINE: &str = "a type value has no runtime form";
 pub const NULLARY_LAMBDA_NO_CLOSURE_DECLINE: &str = "a nullary lambda has no runtime closure form";
 pub const PRIM_AS_VALUE_DECLINE: &str =

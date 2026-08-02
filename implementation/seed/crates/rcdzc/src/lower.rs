@@ -6742,11 +6742,21 @@ fn lower_match_list(db: &mut Db, scrutinee: StructId, arms: &[(StructId, StructI
                             );
                         }
                         // The rest binder itself must be a bare name / `_` (it binds the tail SUBLIST — a
-                        // nested pattern over the rest is a further increment).
+                        // nested pattern or literal is not allowed there). A CODED Malformed (not a decline)
+                        // so it surfaces UNCONDITIONALLY as a well-formedness fault, even when the arm body
+                        // does not reference the nested pattern's inner binders (a decline is
+                        // reachability-gated, so `cdz check` on such an arm reported NOTHING — v-diagnostics
+                        // via v-guide). Byte-identical to the resolve `Case 6mr` message + anchored at the
+                        // same `pat`, so when the body DOES reference an inner binder both fire at this node
+                        // and same-node dedup collapses them into ONE diagnostic.
                         if db.ast.as_name(es[i + 1]).is_none() {
-                            return Core::Poison(Reject::decline(
-                                "a list rest binder must be a name or `_` (a nested rest pattern is not yet supported)",
-                            ));
+                            return Core::Poison(
+                                Reject::coded(
+                                    Code::Malformed,
+                                    crate::diag::LIST_REST_BINDER_NAME_ONLY,
+                                )
+                                .at(pat),
+                            );
                         }
                         // Each LEADING element sub-pattern must be IRREFUTABLE (composes to any depth); a
                         // refutable/unsupported one declines.
@@ -8521,9 +8531,9 @@ pub(crate) fn check_binding_pattern(
             .at(pat));
         }
         if db.ast.as_name(elems[dd + 1]).is_none() {
-            return Err(Reject::decline(
-                "a list rest binder must be a name or `_` (a nested rest pattern is not yet supported)",
-            ));
+            return Err(
+                Reject::coded(Code::Malformed, crate::diag::LIST_REST_BINDER_NAME_ONLY).at(pat),
+            );
         }
         // ONLY the ZERO-LEADING rest form `(list .. rest)` is IRREFUTABLE — it matches EVERY list (the
         // empty list included), binding `rest` to the whole list. A LEADING-element rest `(list a .. rest)`

@@ -1545,9 +1545,7 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
         return Some(Resolved::Poison(
             Reject::coded(
                 crate::diag::Code::Malformed,
-                "the rest binder of a list pattern must be a name or `_` (it binds the whole tail sublist) — \
-                 a nested pattern or literal is not allowed here; bind the tail to a name and destructure it \
-                 in a nested `match` (e.g. `(list a .. rest)`, then `(match rest …)`)",
+                crate::diag::LIST_REST_BINDER_NAME_ONLY,
             )
             .at(list_pat),
         ));
