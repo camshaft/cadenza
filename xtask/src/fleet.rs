@@ -2244,14 +2244,24 @@ fn ref_landed_on_trunk(fleet: &Fleet, r#ref: &str) -> bool {
 const STALE_QUEUED_MR_SECS: u64 = 30 * 60;
 
 /// Whether a queued merge-request is STALE-QUEUED: it has waited `age_secs` in pr-sync's inbox, is NOT
-/// in flight (no candidate PR), is NOT already landed, and the wait exceeds `threshold`. Pure so the
-/// predicate is unit-tested without fs/clock. This catches the silent-no-reject class the drain-order
-/// investigation traced to pr-sync's tick discipline (the tooling drain re-scans oldest-first, so a
-/// genuinely stale-queued MR means it isn't being re-picked-up) — a watchdog/audit net, not a fix of
-/// the loop itself. A parallel-lane MR should dispatch within a slot or two; a serialized-lane one may
-/// legitimately wait behind its lane's in-flight candidate, but not for 30+ minutes.
-fn mr_is_stale_queued(age_secs: u64, in_flight: bool, landed: bool, threshold: u64) -> bool {
-    !in_flight && !landed && age_secs > threshold
+/// in flight (no candidate PR), is NOT already landed, is NOT legitimately held by its own serialized
+/// lane (`lane_blocked` — a serialized lane whose in-flight candidate it's correctly waiting behind),
+/// and the wait exceeds `threshold`. Pure so the predicate is unit-tested without fs/clock.
+///
+/// This catches the silent-no-reject class the drain-order investigation traced to pr-sync's tick
+/// discipline (the tooling drain re-scans oldest-first, so a DISPATCHABLE stale-queued MR means it
+/// isn't being re-picked-up). The `lane_blocked` guard is the precision fix: on the live fleet 8 of 9
+/// initially-flagged MRs were serialized-lane (mixed/baseline/code/…) legitimately waiting behind a
+/// lane-mate — NOT stuck. Only a DISPATCHABLE MR (parallel lane, or a serialized lane with no in-flight
+/// member) waiting 30+ min is a real silent delay.
+fn mr_is_stale_queued(
+    age_secs: u64,
+    in_flight: bool,
+    landed: bool,
+    lane_blocked: bool,
+    threshold: u64,
+) -> bool {
+    !in_flight && !landed && !lane_blocked && age_secs > threshold
 }
 
 fn find_queued_but_landed(
@@ -2289,10 +2299,18 @@ fn find_queued_but_landed(
 /// age_secs)` for each, so the audit/watchdog can surface a silent no-reject delay (concierge report).
 /// Uses the file mtime as the wait clock (delivery stamps it; it's not rewritten while queued).
 fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String, u64)> {
-    let in_flight_refs: std::collections::HashSet<String> = read_ci_dispatches(fleet)
+    let dispatches: Vec<CiDispatch> = read_ci_dispatches(fleet)
         .into_iter()
         .filter(dispatch_is_in_flight)
-        .map(|d| d.r#ref)
+        .collect();
+    let in_flight_refs: std::collections::HashSet<String> =
+        dispatches.iter().map(|d| d.r#ref.clone()).collect();
+    // SERIALIZED lanes currently occupied by an in-flight candidate — a queued MR in one of these is
+    // legitimately waiting its turn (≤1 in flight per serialized lane), NOT stuck.
+    let blocked_serialized_lanes: std::collections::HashSet<String> = dispatches
+        .iter()
+        .filter(|d| !lane_is_parallel(&d.lane))
+        .map(|d| d.lane.clone())
         .collect();
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(fleet.inbox("pr-sync")) else {
@@ -2322,7 +2340,10 @@ fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String
             a.starts_with(&b) || b.starts_with(&a)
         });
         let landed = ref_landed_on_trunk(fleet, &mr.r#ref);
-        if mr_is_stale_queued(age, in_flight, landed, STALE_QUEUED_MR_SECS) {
+        // Legitimately held if its (serialized) lane already has an in-flight candidate.
+        let lane = lane_label_for_ref(&mr.r#ref);
+        let lane_blocked = blocked_serialized_lanes.contains(&lane);
+        if mr_is_stale_queued(age, in_flight, landed, lane_blocked, STALE_QUEUED_MR_SECS) {
             out.push((fname, mr.from.clone(), mr.r#ref.clone(), age));
         }
     }
@@ -11968,15 +11989,18 @@ mod tests {
     #[test]
     fn mr_is_stale_queued_only_when_waited_and_not_in_flight_or_landed() {
         let t = STALE_QUEUED_MR_SECS;
-        // Waited past threshold, not in flight, not landed → STALE.
-        assert!(mr_is_stale_queued(t + 1, false, false, t));
+        // Waited past threshold, not in flight, not landed, lane not blocked → STALE (dispatchable).
+        assert!(mr_is_stale_queued(t + 1, false, false, false, t));
         // In flight (a candidate PR exists) → never stale, however long (it's progressing).
-        assert!(!mr_is_stale_queued(t + 9999, true, false, t));
+        assert!(!mr_is_stale_queued(t + 9999, true, false, false, t));
         // Already landed (by patch-id) → not stale (it's the queued-but-landed case, handled separately).
-        assert!(!mr_is_stale_queued(t + 9999, false, true, t));
+        assert!(!mr_is_stale_queued(t + 9999, false, true, false, t));
+        // LANE BLOCKED — its serialized lane already has an in-flight candidate → legitimately waiting
+        // its turn, NOT stuck (the precision fix: 8/9 live-flagged MRs were this, not a real delay).
+        assert!(!mr_is_stale_queued(t + 9999, false, false, true, t));
         // Within the threshold → a healthy queued MR waiting its turn for a slot, not stale.
-        assert!(!mr_is_stale_queued(t, false, false, t)); // exactly at threshold is NOT past it (strict >)
-        assert!(!mr_is_stale_queued(t - 1, false, false, t));
+        assert!(!mr_is_stale_queued(t, false, false, false, t)); // exactly at threshold is NOT past it (strict >)
+        assert!(!mr_is_stale_queued(t - 1, false, false, false, t));
     }
 
     #[test]
