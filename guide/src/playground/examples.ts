@@ -18,14 +18,16 @@ export interface Example {
   theme: "basics" | "algorithms" | "data-and-collections" | "numbers";
   surface: Surface;
   source: string;
-  /// Optional pinned result, as the runner renders it in this example's authored `surface`. When set,
-  /// the check-examples gate asserts the program runs to exactly this value — turning the example into a
-  /// regression test rather than a mere "it runs" check. BOTH scalars (bare number/bool) AND compound
-  /// values are pinnable here: a playground example has no in-browser Check (it's loaded and Run), and
-  /// the gate asserts its value only in the authored s-expr surface (the ML-toggle pass skips the value
-  /// check), so an s-expr-canonical compound like `(: (list 1 2 3) (List Int64))` is stable to pin. (This
-  /// is the playground-only exemption; a graded chapter EXERCISE is compared in the reader's live surface,
-  /// where a compound renders differently in ML vs s-expr, so those stay scalar-only — see check-examples.)
+  /// Optional pinned result, in the S-EXPR canonical render. When set, the check-examples gate asserts the
+  /// program runs to exactly this value — turning the example into a regression test rather than a mere
+  /// "it runs" check. BOTH scalars (bare number/bool) AND compound values are pinnable: a playground
+  /// example has no in-browser Check (it's loaded and Run), so an s-expr-canonical compound like
+  /// `(: (list 1 2 3) (List Int64))` is stable to pin. IMPORTANT: the gate asserts `expected` ONLY on the
+  /// s-expr pass (the ML-toggle pass compiles+runs but does NOT compare it), so a pin is only meaningful on
+  /// a `surface: "sexpr"` example — all playground examples are, and check-examples FAILS LOUDLY if an
+  /// `expected` is ever set on a non-sexpr example (a pin that would silently never be checked). (A graded
+  /// chapter EXERCISE differs: it's compared in the reader's LIVE surface, where a compound renders
+  /// differently in ML vs s-expr, so exercise pins stay scalar-only — see check-examples.)
   expected?: string;
 }
 

@@ -452,9 +452,17 @@ try {
     // THAT value, not merely "to some value", so a future compiler change that flips e.g. Collatz from
     // 111 to 42 is caught instead of silently accepted (a true regression test). A playground example
     // may pin EITHER a scalar OR a compound value: it has no in-browser Check (unlike a graded exercise),
-    // and the harness asserts its value only in the authored s-expr surface (the ML pass skips the value
-    // check below), so an s-expr-canonical compound like `(: (list 1 2 3) (List Int64))` is stable to
-    // pin — see the `isPlayground` exemption in `checkProgram`.
+    // so an s-expr-canonical compound like `(: (list 1 2 3) (List Int64))` is stable to pin. But the
+    // value assertion runs ONLY on the s-expr pass (`checkProgram`'s `if (surface === "sexpr")` block —
+    // the ML-toggle pass compiles+runs but does NOT compare `expected`), so a pin is only meaningful on a
+    // SEXPR-authored example. Guard that invariant loudly: an `expected` on a non-sexpr example would
+    // SILENTLY never be asserted (a decorative, false-safety pin) — fail the gate instead of shipping it.
+    if (p.expected != null && p.surface !== "sexpr")
+      throw new Error(
+        `playground example "${p.id}" pins \`expected\` but is authored surface="${p.surface}"; ` +
+          `check-examples only asserts \`expected\` on the s-expr pass, so a non-sexpr pin is never checked. ` +
+          `Author it in s-expr (all playground examples are), or drop the \`expected\`.`,
+      );
     examples.push({
       file: "src/playground/examples.ts",
       kind: "Runnable",
