@@ -2990,4 +2990,47 @@ mod tests {
             .is_empty()
         );
     }
+
+    /// A `@test` over an EMPTY `(Tuple)` (and, symmetrically, an empty `(Record)`) param gets a DECLINING
+    /// wrapper: `classify_ty_at`'s zero-slot/zero-field guards (`tup_tail.is_empty()`/`rec_tail.is_empty()`
+    /// → `None`) make the compound un-generatable, so `plan_for_item`'s `None if is_compound_form` arm
+    /// synthesizes a trapping nullary `-gen` (neutralizing the original) rather than letting the empty
+    /// compound reach the export boundary and abort the whole `cdz test` file. Pins these two decline guards
+    /// (previously untested, unlike the recursive-sum / multi-payload / non-generatable-leaf siblings): an
+    /// empty tuple/record has nothing to draw, so a per-test `FAIL NAME-gen` is the correct clean decline.
+    #[test]
+    fn an_empty_tuple_or_record_compound_gets_a_declining_wrapper() {
+        for (src, wrapper) in [
+            ("(do (@ test (def (e (: t (Tuple)))) (def (o) 1)))", "e-gen"),
+            (
+                "(do (@ test (def (r (: v (Record)))) (def (o) 1)))",
+                "r-gen",
+            ),
+        ] {
+            let mut ast = crate::testkit::parse(src);
+            super::synthesize(&mut ast);
+            let db = Db::load(ast);
+            let orig = wrapper.trim_end_matches("-gen").to_string();
+            let test_names: Vec<String> = db
+                .test_defs()
+                .into_iter()
+                .map(|i| db.defs[i].name.clone())
+                .collect();
+            assert!(
+                test_names.iter().any(|n| n == wrapper) && !test_names.iter().any(|n| n == &orig),
+                "an empty-compound param gets a DECLINING wrapper ({wrapper}), original {orig} \
+                 neutralized: {test_names:?}"
+            );
+            let gen_def = db
+                .defs
+                .iter()
+                .find(|d| d.name == wrapper)
+                .unwrap_or_else(|| panic!("{wrapper} def exists"));
+            assert!(
+                gen_def.params.is_empty(),
+                "the declining wrapper is nullary (neutralizes the empty-compound param → never hits the \
+                 boundary)"
+            );
+        }
+    }
 }
