@@ -1911,6 +1911,36 @@
             (export main)))
   (call   main (: 100 Int64)) (output (: 50500 Int64)))
 
+(case "a 200-element runtime Set resolves every member through a multi-level CHAMP trie and rejects non-members"
+  (doc    "The SET analog of the 100-key deep-CHAMP-map checksum: `build` inserts 0..n into a Set (`Set.insert`
+           appends persistently), and at n=200 the CHAMP grows past a single leaf into a multi-level trie
+           (32-way branching → a second level past 32 entries, hash-collision chains where they occur). Then
+           `probe` scores membership over TWO disjoint ranges to catch both failure directions: every i in
+           0..n MUST be a member (+1 each) and every j in n..n+50 MUST NOT be (a false-positive subtracts a
+           large penalty). checksum = (# present in 0..n) with any MISS or any false-positive poisoning it:
+           a member lost/misrouted down a wrong trie branch drops a +1; a non-member wrongly found subtracts
+           1000. Expected = n = 200 (all 200 present, none of the 50 absentees found). Runtime n keeps the
+           whole build out of the const-fold, exercising the real heap CHAMP membership path. The Set/member
+           companion of the deep-CHAMP-map key checksum and the multi-level RRB list checksum. The empty-set
+           seed is `(Set.of (list))` — the Set module offers no `Set.empty`; a bare `(set)` cannot infer its
+           element type here.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: s (Set Int64)))
+              (if (< i n) (build (+ i 1) n (Set.insert s i)) s))
+            (def (present (: i Int64) (: n Int64) (: s (Set Int64)) (: acc Int64))
+              (if (< i n)
+                (present (+ i 1) n s (+ acc (if (Set.contains s i) 1 0)))
+                acc))
+            (def (absent (: j Int64) (: hi Int64) (: s (Set Int64)) (: acc Int64))
+              (if (< j hi)
+                (absent (+ j 1) hi s (+ acc (if (Set.contains s j) 1000 0)))
+                acc))
+            (def (main (: n Int64))
+              (let ((s (build 0 n (Set.of (list)))))
+                (- (present 0 n s 0) (absent n (+ n 50) s 0))))
+            (export main)))
+  (call   main (: 200 Int64)) (output (: 200 Int64)))
+
 (case "an overwrite-churn runtime map holds one entry with the last value winning"
   (doc    "`churn` inserts the SAME key 7 fifty times with values n..1 (the last insert is value 1). The
            map must hold exactly ONE entry (an overwrite replaces, never accumulates — a length that grew
@@ -1995,6 +2025,54 @@
   (input  (do
             (def (build (: i Int64) (: n Int64) (: out (List Int64)))
               (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (readsum (: i Int64) (: xs (List Int64)) (: acc Int64))
+              (if (< i 0) acc
+                (readsum (- i 1) xs (+ acc (match (List.at xs i) ((Some v) v) ((None u) -1000000))))))
+            (def (main (: n Int64))
+              (readsum (- n 1) (build 0 n (list)) 0))
+            (export main)))
+  (call   main (: 1100 Int64)) (output (: 604450 Int64)))
+
+(case "a multi-level RRB list persistently updates deep interior-level indices leaving the original intact"
+  (doc    "The WRITE-PATH analog of the 1100-element multi-level RRB read case. `build` pushes 0..n into an
+           RRB vector (value at index i is i), and at n=1100 the vector is a THREE-level trie (32*32 = 1024
+           single-interior-level cap exceeded → root split). `List.update` must path-COPY the interior spine
+           down to the touched leaf and leave the ORIGINAL list unchanged (persistence), NOT FBIP-mutate a
+           shared ancestor. `orig` = the pristine 1100-list. `upd` updates THREE indices that live in
+           DIFFERENT level-2 subtrees — 40 (first interior subtree), 1050 (past the 1024 boundary, deep in the
+           split-off subtree), and 1099 (the last element) — each to value+1000000. The check reads all three
+           updated indices from `upd` (must be i+1000000) AND the SAME three indices from `orig` (must still be
+           the pristine i): if `List.update` mutated the shared spine in place, `orig`'s reads would see the
+           new values. sum = (40+1050+1099 + 3*1000000)  -  (40+1050+1099)  =  3000000 exactly, isolating the
+           persistence delta. A None on any read poisons by -9. Runtime n keeps it out of the const-fold, so
+           it exercises the real heap RRB path-copy. Expected: 3000000.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.push out i)) out))
+            (def (get (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i) ((Some v) v) ((None u) -9)))
+            (def (main (: n Int64))
+              (do
+                (def orig (build 0 n (list)))
+                (def upd (List.update (List.update (List.update orig 40 (+ 40 1000000)) 1050 (+ 1050 1000000)) 1099 (+ 1099 1000000)))
+                (- (+ (+ (get upd 40) (get upd 1050)) (get upd 1099))
+                   (+ (+ (get orig 40) (get orig 1050)) (get orig 1099)))))
+            (export main)))
+  (call   main (: 1100 Int64)) (output (: 3000000 Int64)))
+
+(case "a 1100-element prepend-built runtime list reads every index through a multi-level RRB front-spine"
+  (doc    "`build` prepends i for i in 0..n via `List.prepend`, so after prepending 0,1,...,n-1 the list is
+           [n-1, n-2, ..., 1, 0] (each new element goes to the FRONT). At n=1100 the RRB vector is a 3-level
+           trie grown from the FRONT — a distinct path from the push-built (right-growth) read case, stressing
+           the left-spine + the index shift every prepend forces. `readsum` reads EVERY index i = n-1..0 with
+           `List.at`; value at index i is (n-1-i), so Sigma over i in 0..=1099 of (1099-i) = Sigma k in
+           0..=1099 of k = 604450 (same total as the push case, but reached through front-growth). Any miss
+           poisons by -1000000. A prepend that mis-shifted the front boundary or a vec-get that mis-navigated
+           the left interior digit loses/misroutes an element and breaks the checksum. The FRONT-growth
+           companion of the push-built multi-level RRB read case. Expected: 604450.")
+  (input  (do
+            (def (build (: i Int64) (: n Int64) (: out (List Int64)))
+              (if (< i n) (build (+ i 1) n (List.prepend out i)) out))
             (def (readsum (: i Int64) (: xs (List Int64)) (: acc Int64))
               (if (< i 0) acc
                 (readsum (- i 1) xs (+ acc (match (List.at xs i) ((Some v) v) ((None u) -1000000))))))
