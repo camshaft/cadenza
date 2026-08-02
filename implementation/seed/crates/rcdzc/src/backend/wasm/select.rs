@@ -10929,8 +10929,14 @@ fn emit(
                     db, id, op, m, lhs, rhs, slots, base, high, scratch_ty, layout, out,
                 ),
                 // WRAPPING arithmetic — the RAW machine `add`/`sub`/`mul`, NO overflow guard (wasm's op
-                // already wraps modulo the slot). At a NARROW width the result is masked to the width by the
-                // ordinary operand/consumer normalization, exactly as a bitwise op's is.
+                // wraps modulo the SLOT). At a NARROW width the slot (i32/i64) is WIDER than the type, so the
+                // raw op wraps mod 2^slot, NOT mod 2^width — the un-wrapped wide result is then OBSERVABLE (a
+                // widening read `Int64.of`, an `=`-compare at the narrow width): `UInt8.wrapping-add 250 10`
+                // must be `4` (mod 256), but the raw i32 add yields `260`. Nothing downstream re-masks (the
+                // earlier "masked by ordinary consumer normalization" claim was FALSE — adv-57 miscompile), so
+                // RE-NORMALIZE the result to `m.width` here, exactly as `emit_wrap` does for a narrowing wrap:
+                // mask to the low `width` bits (unsigned), plus sign-extend from bit `width-1` (signed). A
+                // FULL-width op needs nothing (the slot IS the width — the raw op already wraps modulo it).
                 Prim::WrappingAdd | Prim::WrappingSub | Prim::WrappingMul => {
                     let ot = IntTy::fixed(m.signed, m.width);
                     emit_operand(db, lhs, ot, slots, base, high, scratch_ty, layout, out)?;
@@ -10940,6 +10946,26 @@ fn emit(
                         Prim::WrappingSub => m.sub(),
                         _ => m.mul(),
                     });
+                    // Re-normalize a NARROW result to its width (the raw op wrapped mod the wider slot). The
+                    // same mask/sign-extend `emit_wrap` step 3 applies; a full-width result is already the
+                    // slot's modulus so it is left alone.
+                    if m.narrow() {
+                        let slot_bits = m.slot_bits();
+                        if m.signed {
+                            // Sign-extend from bit width-1: `(x << (M-N)) >> (M-N)` (arithmetic shr masks the
+                            // high bits out AND sign-fills). `m.shr()` is arithmetic for a signed machine.
+                            let shift = (slot_bits - m.width) as i64;
+                            out.push(m.konst(shift));
+                            out.push(m.shl());
+                            out.push(m.konst(shift));
+                            out.push(m.shr());
+                        } else {
+                            // Zero-fill: mask to the low `width` bits.
+                            let mask = (1i64 << m.width) - 1;
+                            out.push(m.konst(mask));
+                            out.push(m.and());
+                        }
+                    }
                     Ok(())
                 }
                 Prim::BitAnd | Prim::BitOr | Prim::BitXor => {
