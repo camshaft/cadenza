@@ -92,17 +92,29 @@ fn type_at_an_offset_inside_a_multibyte_char_does_not_panic() {
     // would panic at a non-char boundary — a hard crash for an editor/AI caller passing a live cursor). The
     // offset resolver must be byte-boundary safe: resolve to the enclosing node (a clean result) or "no
     // node" — never panic. Pin it with a name holding a 2-byte `é`: put the cursor on the SECOND byte of the
-    // `é` (its interior), which is not a char boundary. The run must exit cleanly (success with a node, or a
-    // non-zero "no node") and must NOT crash — assert stderr carries no Rust panic marker either way.
+    // `é` (its interior), which is not a char boundary.
     let src = "(module m (def (gr\u{e9}et (: n Int64)) (+ n 1)) (export gr\u{e9}et))";
     let (dir, file, _src) = temp_src("multibyte", src);
     // Byte offset of the `é` in the first `gréet`, +1 → the interior (second) byte of the 2-byte char.
     let e_byte = src.find('\u{e9}').expect("é in source");
     let off = (e_byte + 1).to_string();
     let (ok, out, err) = run(&["type-at", &file, &off]);
+    // Assert the POSITIVE contract, not just the absence of a panic marker: `!err.contains("panicked")` is
+    // ALSO satisfied by an EMPTY stderr, so a SILENT crash (SIGABRT / segfault — no "panicked" text) would
+    // slip through. Require one of the two legitimate outcomes: (a) SUCCESS with a resolved node (stdout
+    // carries the `@ <file>:` span the renderer always prints), or (b) a CLEAN non-zero "no node at byte
+    // offset". A silent crash is NEITHER (a byte-boundary panic aborts before any output), so it now fails.
+    let resolved_a_node = ok && out.contains(&format!("@ {file}:"));
+    let clean_no_node = !ok && err.contains("no node at byte offset");
+    assert!(
+        resolved_a_node || clean_no_node,
+        "a mid-multibyte offset must resolve cleanly (node or `no node`), never silently crash: \
+         exit_ok={ok}\nstdout:\n{out}\nstderr:\n{err}"
+    );
+    // Belt-and-suspenders: also assert no explicit Rust panic marker (a caught panic that still exits).
     assert!(
         !err.contains("panicked") && !err.contains("RUST_BACKTRACE"),
-        "a mid-multibyte offset must not panic (byte-boundary-safe resolution): exit_ok={ok} out={out} err={err}"
+        "no Rust panic marker on a mid-multibyte offset: {err}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
