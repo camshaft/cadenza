@@ -631,11 +631,12 @@ pub enum FleetCmd {
         #[arg(value_name = "PR_OR_BRANCH")]
         target: String,
     },
-    /// Print the collision-risk LANE a candidate commit belongs to (docs | corpus | fleet-tooling |
-    /// code | mixed) + whether that lane lands in parallel. The categorizer for the CI-gated parallel
-    /// integration model (operator directive 2026-08-02: "multiple PRs … categorized by the likelihood
-    /// of causing issues"). Folds the ref's changed-path set via `lane_of`. See
-    /// `fleet/CI-GATED-LANES-DESIGN.md`.
+    /// Print the collision-risk LANE a candidate commit belongs to + whether that lane lands in
+    /// parallel. Lanes are DATA-DRIVEN (the `LANE_RULES` table — e.g. docs, corpus, code, per-subsystem
+    /// leaves like cad/music/compiler-ml, the shared hot-file lanes, mixed) and extensible, so the set is
+    /// not fixed. The categorizer for the CI-gated parallel integration model (operator directive
+    /// 2026-08-02: "multiple PRs … categorized by the likelihood of causing issues"). Folds the ref's
+    /// changed-path set via `lane_of`. See `fleet/CI-GATED-LANES-DESIGN.md`.
     LaneOf {
         /// The commit-ish (sha / branch) whose changed paths determine its lane.
         #[arg(value_name = "REF")]
