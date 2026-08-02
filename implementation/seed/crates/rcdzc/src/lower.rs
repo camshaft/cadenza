@@ -2898,33 +2898,27 @@ fn parse_bigint_decimal(tok: &str) -> Option<IntValue> {
         Some(rest) => (true, rest),
         None => (false, tok),
     };
-    if digits.is_empty() {
+    // Validate first (cheap, allocation-free): this fn is the `Err(_)` arm of `str::parse::<i64>()`, so
+    // it's reached for ANY non-i64 token — floats, names, `+`-led — NOT only >i64 integers. A non-digit
+    // (or empty) token must fast-return `None` WITHOUT touching the bignum table below, so the common
+    // decline path (a float/name that `read` then re-classifies) stays allocation-free.
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    // Precompute `ten` and the 0..=9 digit values ONCE, then accumulate in a SINGLE pass that both
-    // validates (a non-digit byte returns None mid-loop) and folds `acc = acc*10 + d` — no separate
-    // `.all()` validation scan, and no fresh `IntValue::from_i64` allocation per digit (only these 11
-    // values are ever built, regardless of token length). This fn runs only when `str::parse::<i64>`
-    // already overflowed, i.e. on ≥19-digit tokens, so the reuse is a clear win with no small-input cost.
-    let ten = IntValue::from_i64(10);
-    let digit_values: [IntValue; 10] = [
-        IntValue::from_i64(0),
-        IntValue::from_i64(1),
-        IntValue::from_i64(2),
-        IntValue::from_i64(3),
-        IntValue::from_i64(4),
-        IntValue::from_i64(5),
-        IntValue::from_i64(6),
-        IntValue::from_i64(7),
-        IntValue::from_i64(8),
-        IntValue::from_i64(9),
-    ];
+    // `ten` and the 0..=9 digit `IntValue`s are constants; build them ONCE per process (a `OnceLock`,
+    // the crate's existing cache idiom) rather than per call — the prior per-call array setup ran on
+    // every non-integer token even though only genuine >i64 integer tokens reach the accumulation loop.
+    // Then accumulate `acc = acc*10 + d` reusing the table (no fresh `from_i64` per digit).
+    static TABLE: std::sync::OnceLock<(IntValue, [IntValue; 10])> = std::sync::OnceLock::new();
+    let (ten, digit_values) = TABLE.get_or_init(|| {
+        (
+            IntValue::from_i64(10),
+            std::array::from_fn(|i| IntValue::from_i64(i as i64)),
+        )
+    });
     let mut acc = IntValue::zero();
     for b in digits.bytes() {
-        if !b.is_ascii_digit() {
-            return None;
-        }
-        acc = acc.mul(&ten).add(&digit_values[(b - b'0') as usize]);
+        acc = acc.mul(ten).add(&digit_values[(b - b'0') as usize]);
     }
     Some(if negative { acc.neg() } else { acc })
 }
