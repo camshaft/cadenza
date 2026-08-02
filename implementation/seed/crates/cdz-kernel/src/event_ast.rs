@@ -713,4 +713,67 @@ mod tests {
             other => panic!("a valid non-event AST should be Shape, got {other:?}"),
         }
     }
+
+    #[test]
+    fn an_unknown_effect_family_decodes_to_shape_never_panics() {
+        // The extensible-effects forward-compat seam (read_kind → EffectKind::from_family): a Dispatched
+        // frame whose effect family is one this kernel version has NO built-in `EffectKind` variant for
+        // (a future/extension effect type, or a corrupt family atom) must decode to a clean Shape error,
+        // NEVER a panic — a newer peer's log entry can't brick an older reader (§17 totality). We build a
+        // structurally-valid `dispatched` event AST by hand, identical to what `body_form` emits, but put
+        // an unknown family name where `kind_atom` would write a canonical `effect_ct` string.
+        let mut b = Builder::new();
+        let head = b.name("dispatched");
+        let idv = u64_leaf(&mut b, 7);
+        let unknown_kind = b.name("summary"); // NOT a known effect_ct family → from_family returns None
+        let target = str_leaf(&mut b, "s3://bucket/key");
+        let idem = hash_form(&mut b, &Hash::of(b"idem"));
+        let dl = opt_ms_form(&mut b, None);
+        let tok = opt_bytes_form(&mut b, None);
+        let body = b.list(vec![head, idv, unknown_kind, target, idem, dl, tok]);
+        // Wrap in the top-level `(event <seq> <cause> <body>)` shape so only the family is off.
+        let ev_head = b.name("event");
+        let seq = u64_leaf(&mut b, 0);
+        let no_cause = {
+            let h = b.name("none");
+            b.list(vec![h])
+        };
+        let root = b.list(vec![ev_head, seq, no_cause, body]);
+        let bytes = codec::encode(&b.finish(root));
+
+        // The unknown family is corruption to THIS reader (a shape error), surfaced as data — not a panic.
+        match decode(&bytes) {
+            Err(EventAstError::Shape(_)) => {}
+            other => panic!("an unknown effect family must be a Shape error, got {other:?}"),
+        }
+
+        // Control: the SAME structure with a KNOWN family (http) decodes cleanly to that kind — proving
+        // the test's frame is otherwise valid, so the failure above is the family alone, not the shape.
+        let mut b2 = Builder::new();
+        let head = b2.name("dispatched");
+        let idv = u64_leaf(&mut b2, 7);
+        let known_kind = b2.name(crate::effect::effect_ct::HTTP);
+        let target = str_leaf(&mut b2, "s3://bucket/key");
+        let idem = hash_form(&mut b2, &Hash::of(b"idem"));
+        let dl = opt_ms_form(&mut b2, None);
+        let tok = opt_bytes_form(&mut b2, None);
+        let body = b2.list(vec![head, idv, known_kind, target, idem, dl, tok]);
+        let ev_head = b2.name("event");
+        let seq = u64_leaf(&mut b2, 0);
+        let no_cause = {
+            let h = b2.name("none");
+            b2.list(vec![h])
+        };
+        let root = b2.list(vec![ev_head, seq, no_cause, body]);
+        let ok_bytes = codec::encode(&b2.finish(root));
+        match decode(&ok_bytes) {
+            Ok(Event {
+                body: EventBody::Dispatched { kind, .. },
+                ..
+            }) => assert_eq!(kind, EffectKind::Http),
+            other => {
+                panic!("the known-family control must decode to Dispatched(Http), got {other:?}")
+            }
+        }
+    }
 }
