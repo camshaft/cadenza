@@ -1715,6 +1715,47 @@ fn cse_keeps_a_trapping_rhs_inside_a_short_circuit_or_at_the_lir_level() {
     // fix removed the SPURIOUS trap without suppressing a real one; a real divide only runs at x!=0).
 }
 
+/// CSE must not hoist a repeated trapping subexpr out of a conditionally-selected MATCH ARM (the match
+/// sibling of the short-circuit-`and`/`or` cases above + the `if`-arm witness). `(match k (0 100) (_ (+
+/// (/ 10 d) (/ 10 d))))`: the wildcard arm's repeated `(/ 10 d)` is a CSE class, but a match runs ONLY the
+/// selected arm — the frontier walk descends only the SCRUTINEE (`k`), not the arm bodies, so an arm-local
+/// candidate is never in the frontier a hoist targets. At `main(0, 0)` the `k=0` arm is taken → the
+/// division-arm never runs → result 100, no trap. Pins the `Core::Match` conditional-position frontier arm
+/// (analogous to `If`-cond and `And`-lhs): a future frontier change dropping the Match arm would re-regress
+/// exactly as the missing And arm did in adv-55 — this witness catches it. The last un-witnessed
+/// conditional position (And/Or have the witnesses above; the if-arm has the cont.101 select.rs witness).
+#[test]
+fn cse_does_not_hoist_a_trapping_subexpr_out_of_a_match_arm() {
+    use crate::testkit::parse;
+    let src = "(module m \
+                 (def (main (: k Int64) (: d Int64)) \
+                   (match k (0 100) (_ (+ (/ 10 d) (/ 10 d))))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    // k=0 selects the constant arm; the wildcard arm's `(/ 10 d)` never runs, so d=0 must NOT trap.
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["0".to_string(), "0".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(v) => assert_eq!(
+            v, "100",
+            "k=0 selects the constant arm; the other arm's trapping `(/ 10 d)` must not run — expected 100"
+        ),
+        cdz_run::Outcome::Trap(t) => panic!(
+            "CSE hoisted the match-arm-local `(/ 10 d)` above the match → spurious trap at d=0 on the \
+             k=0 path; the frontier must descend only the Match scrutinee, not the arm bodies. Got trap: {t}"
+        ),
+    }
+}
+
 /// The common-constructor sink also fires for a MATCH whose every (unguarded) arm builds the same
 /// constructor: `(match k (0 (Some 10)) (1 (Some 20)) (_ (Some 30)))` builds `Some` ONCE and sinks the
 /// payload into a per-position `match` (a scalar decision tree), instead of DUPLICATING the `sum-new`
