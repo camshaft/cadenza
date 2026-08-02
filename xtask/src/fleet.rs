@@ -6629,6 +6629,13 @@ impl Lane {
 struct LaneRule {
     lane: &'static str,
     parallel: bool,
+    /// EXACT full-path matches (checked before prefixes/suffixes). The real collision unit is a set of
+    /// shared HOT FILES, not a directory (pr-sync pilot evidence): 6 agents each append to
+    /// `rcdzc/src/tests.rs` and edit the 3 `.gate-baseline*` files, so those files are their own
+    /// SERIALIZED lanes — distinct from the broader `code`/`corpus` dir lanes, so a non-tests.rs code
+    /// change or a `.sexp`-only corpus change still runs in PARALLEL with them (folding them in would
+    /// false-serialize). The finer the accurate lane cut, the more parallelism.
+    exacts: &'static [&'static str],
     prefixes: &'static [&'static str],
     suffixes: &'static [&'static str],
 }
@@ -6638,11 +6645,34 @@ struct LaneRule {
 /// can't collide with each other), while the shared compiler/runtime core and the fleet tooling
 /// serialize (many candidates touch the same files). Add a subsystem = add a row.
 const LANE_RULES: &[LaneRule] = &[
-    // ── Corpus/spec cases: independent, land in parallel. Checked FIRST so a `.sexp`/baseline under any
-    //    directory reads as corpus rather than falling into a code/docs lane. ──
+    // ── SHARED HOT-FILE lanes (exact-file match, checked FIRST). These specific files are edited by
+    //    ~6 agents each, so they genuinely collide and must SERIALIZE — but as their OWN lanes, NOT
+    //    folded into corpus/code, so a `.sexp`-only or non-tests.rs change stays PARALLEL with them
+    //    (pr-sync pilot evidence: folding false-serializes disjoint work). ──
+    LaneRule {
+        lane: "baseline",
+        parallel: false,
+        exacts: &[
+            "spec/semantics/.gate-baseline",
+            "spec/semantics/.gate-baseline-rust",
+            "spec/semantics/.gate-baseline-rust-async",
+        ],
+        prefixes: &[],
+        suffixes: &[],
+    },
+    LaneRule {
+        lane: "rcdzc-tests",
+        parallel: false,
+        exacts: &["implementation/seed/crates/rcdzc/src/tests.rs"],
+        prefixes: &[],
+        suffixes: &[],
+    },
+    // ── Corpus/spec cases: independent, land in parallel. A `.sexp`/`spec/` change that ISN'T a
+    //    baseline file (caught above) reads as corpus. ──
     LaneRule {
         lane: "corpus",
         parallel: true,
+        exacts: &[],
         prefixes: &["spec/"],
         suffixes: &[".sexp"],
     },
@@ -6651,36 +6681,42 @@ const LANE_RULES: &[LaneRule] = &[
     LaneRule {
         lane: "cad",
         parallel: true,
+        exacts: &[],
         prefixes: &["implementation/cad/"],
         suffixes: &[],
     },
     LaneRule {
         lane: "music",
         parallel: true,
+        exacts: &[],
         prefixes: &["implementation/music/"],
         suffixes: &[],
     },
     LaneRule {
         lane: "des",
         parallel: true,
+        exacts: &[],
         prefixes: &["implementation/des/"],
         suffixes: &[],
     },
     LaneRule {
         lane: "choreography",
         parallel: true,
+        exacts: &[],
         prefixes: &["implementation/choreography/"],
         suffixes: &[],
     },
     LaneRule {
         lane: "iterators",
         parallel: true,
+        exacts: &[],
         prefixes: &["implementation/iterators/"],
         suffixes: &[],
     },
     LaneRule {
         lane: "compiler-ml",
         parallel: true,
+        exacts: &[],
         prefixes: &["implementation/compiler-ml/"],
         suffixes: &[],
     },
@@ -6690,6 +6726,7 @@ const LANE_RULES: &[LaneRule] = &[
     LaneRule {
         lane: "fleet-tooling",
         parallel: false,
+        exacts: &[],
         prefixes: &["xtask/"],
         suffixes: &[],
     },
@@ -6697,6 +6734,7 @@ const LANE_RULES: &[LaneRule] = &[
     LaneRule {
         lane: "docs",
         parallel: true,
+        exacts: &[],
         prefixes: &["guide/", "playground/", "skills/", "templates/", "design/"],
         suffixes: &[".md"],
     },
@@ -6707,6 +6745,7 @@ const LANE_RULES: &[LaneRule] = &[
     LaneRule {
         lane: "code",
         parallel: false,
+        exacts: &[],
         prefixes: &["implementation/"],
         suffixes: &[],
     },
@@ -6715,6 +6754,7 @@ const LANE_RULES: &[LaneRule] = &[
     LaneRule {
         lane: "fleet-tooling",
         parallel: false,
+        exacts: &[],
         prefixes: &["fleet/"],
         suffixes: &[],
     },
@@ -6726,7 +6766,8 @@ const LANE_RULES: &[LaneRule] = &[
 fn lane_of_path(path: &str) -> Lane {
     let p = path.trim();
     for rule in LANE_RULES {
-        let hit = rule.prefixes.iter().any(|pre| p.starts_with(pre))
+        let hit = rule.exacts.contains(&p)
+            || rule.prefixes.iter().any(|pre| p.starts_with(pre))
             || rule.suffixes.iter().any(|suf| p.ends_with(suf));
         if hit {
             return Lane {
@@ -11203,7 +11244,25 @@ mod tests {
     #[test]
     fn lane_of_path_classifies_each_territory() {
         let lane = |p: &str| lane_of_path(p);
-        // Corpus is checked before docs: a `.sexp`/spec path is corpus even if nested oddly.
+        // SHARED HOT-FILE lanes (exact match, checked FIRST, serialized) — distinct from corpus/code so
+        // disjoint work stays parallel (pr-sync pilot evidence).
+        assert_eq!(lane("spec/semantics/.gate-baseline").label(), "baseline");
+        assert_eq!(
+            lane("spec/semantics/.gate-baseline-rust").label(),
+            "baseline"
+        );
+        assert_eq!(
+            lane("spec/semantics/.gate-baseline-rust-async").label(),
+            "baseline"
+        );
+        assert!(!lane("spec/semantics/.gate-baseline").lands_in_parallel());
+        assert_eq!(
+            lane("implementation/seed/crates/rcdzc/src/tests.rs").label(),
+            "rcdzc-tests"
+        );
+        assert!(!lane("implementation/seed/crates/rcdzc/src/tests.rs").lands_in_parallel());
+        // Corpus is checked before docs: a `.sexp`/spec path is corpus even if nested oddly — but a
+        // `.sexp`-only change is NOT a baseline (the exact-file lane above), so they stay disjoint.
         assert_eq!(lane("spec/semantics/12-foo.sexp").label(), "corpus");
         assert_eq!(lane("some/dir/case.sexp").label(), "corpus");
         assert_eq!(lane("spec/anything").label(), "corpus");
@@ -11252,6 +11311,24 @@ mod tests {
         assert_eq!(
             name(&["implementation/cad/a.cdz", "implementation/cad/b.cdz"]),
             "cad"
+        );
+        // The whole point of the hot-file split (pr-sync pilot): a baseline change and a `.sexp`-only
+        // corpus change are DIFFERENT lanes (both parallel-eligible on their own), and an rcdzc
+        // tests.rs change vs a non-test code file are different lanes — so they DON'T false-serialize.
+        assert_eq!(name(&["spec/semantics/.gate-baseline-rust"]), "baseline");
+        assert_eq!(
+            name(&["implementation/seed/crates/rcdzc/src/tests.rs"]),
+            "rcdzc-tests"
+        );
+        assert_eq!(
+            name(&["implementation/seed/crates/rcdzc/src/lower.rs"]),
+            "code"
+        );
+        // (A candidate that touches BOTH a baseline and a .sexp spans two lanes → mixed, correctly —
+        // it really does contend with both a baseline MR and a corpus MR.)
+        assert_eq!(
+            name(&["spec/semantics/.gate-baseline", "spec/semantics/9.sexp"]),
+            "mixed"
         );
         // A candidate spanning two DIFFERENT lanes → mixed (serialized globally, the safe default) —
         // even two different PARALLEL leaf lanes (cad + music) span territory → mixed.
@@ -11320,8 +11397,15 @@ mod tests {
         for l in ["docs", "corpus", "cad", "music", "compiler-ml"] {
             assert!(lane_is_parallel(l), "{l} should be a parallel lane");
         }
-        // Serialized lanes + the reserved mixed + an unknown label.
-        for l in ["fleet-tooling", "code", "mixed", "totally-unknown-lane"] {
+        // Serialized lanes (incl. the shared hot-file lanes) + reserved mixed + an unknown label.
+        for l in [
+            "fleet-tooling",
+            "code",
+            "baseline",
+            "rcdzc-tests",
+            "mixed",
+            "totally-unknown-lane",
+        ] {
             assert!(!lane_is_parallel(l), "{l} should serialize");
         }
     }
