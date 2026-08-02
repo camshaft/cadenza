@@ -17,12 +17,12 @@
 //! v0 is synchronous + single-threaded (the kernel loop is; §15b). The async/multi-session-scheduler
 //! layer is a later slice that preserves this shape — a tokio task per session driving the same loop.
 
-use cdz_kernel::authz::AsyncAuthorize;
+use cdz_kernel::authz::Authorize;
 use cdz_kernel::event::EventBody;
-use cdz_kernel::executor::AsyncCompositeExecutor;
+use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::{KernelError, Session};
-use cdz_kernel::reducer::AsyncReducer;
+use cdz_kernel::reducer::Reducer;
 use std::collections::HashMap;
 
 /// A session's identity in the host registry. A short opaque string the operator/driver assigns (e.g.
@@ -31,9 +31,9 @@ use std::collections::HashMap;
 //
 // The host drives sessions through the kernel's ASYNC loop (`Session::deliver_async`) so a long fold can
 // cooperatively yield and sessions interleave (§15b). A reducer is therefore held as a `Box<dyn
-// AsyncReducer>` — the SINGLE reducer trait (operator "one async trait only"): a pure-Rust reducer writes
-// a native `impl AsyncReducer` (its `fold_async` runs to completion with no await point), and a wasm
-// reducer uses `AsyncComponentReducer`. Both box directly as `Box<dyn AsyncReducer>` — no wrapper.
+// Reducer>` — the SINGLE reducer trait (operator "one async trait only"): a pure-Rust reducer writes
+// a native `impl Reducer` (its `fold_async` runs to completion with no await point), and a wasm
+// reducer uses `AsyncComponentReducer`. Both box directly as `Box<dyn Reducer>` — no wrapper.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct SessionId(pub String);
 
@@ -51,9 +51,9 @@ impl SessionId {
 /// borrows reducer/authz/executor per call; bundling them here is what lets the host re-supply them).
 pub struct HostedSession {
     session: Session,
-    reducer: Box<dyn AsyncReducer>,
-    authz: Box<dyn AsyncAuthorize>,
-    executor: AsyncCompositeExecutor,
+    reducer: Box<dyn Reducer>,
+    authz: Box<dyn Authorize>,
+    executor: CompositeExecutor,
 }
 
 impl HostedSession {
@@ -62,13 +62,13 @@ impl HostedSession {
     /// `authz` gates them (SEC-F1). This is the assembly point — real executors (Now/Model/Http) go into
     /// `executor`, a real policy into `authz`.
     ///
-    /// `reducer` is a `Box<dyn AsyncReducer>`: a pure-Rust reducer is passed as
+    /// `reducer` is a `Box<dyn Reducer>`: a pure-Rust reducer is passed as
     /// `Box::new(my_reducer)`, a wasm reducer as `Box::new(AsyncComponentReducer::…)`.
     pub fn genesis(
         reducer_hash: Hash,
-        reducer: Box<dyn AsyncReducer>,
-        authz: Box<dyn AsyncAuthorize>,
-        executor: AsyncCompositeExecutor,
+        reducer: Box<dyn Reducer>,
+        authz: Box<dyn Authorize>,
+        executor: CompositeExecutor,
     ) -> Self {
         HostedSession {
             session: Session::genesis(reducer_hash),
@@ -130,16 +130,16 @@ impl HostedSession {
     /// `public/summary` KV — then DROPS the fork (never persisted). The parent is provably untouched (the
     /// fork is a separate `Session`; this method takes `&self`).
     ///
-    /// The caller supplies the fork's `reducer` (the same logic the session runs — a `Box<dyn AsyncReducer>`
-    /// can't be cloned out of this `HostedSession`, so the caller re-provides it as a `&dyn AsyncReducer`),
+    /// The caller supplies the fork's `reducer` (the same logic the session runs — a `Box<dyn Reducer>`
+    /// can't be cloned out of this `HostedSession`, so the caller re-provides it as a `&dyn Reducer`),
     /// a MODEL-ONLY `authz` (a scoped capability so a summarize-fold can call the model but CANNOT take
     /// world-actions — SEC-F1), and an `executor` to serve that model call. Returns `Some(summary_bytes)`
     /// if the reducer published `public/summary`, else `None` (it summarized elsewhere / didn't, or erred).
     pub async fn fork_for_query(
         &self,
-        reducer: &dyn AsyncReducer,
-        authz: &dyn AsyncAuthorize,
-        executor: &mut AsyncCompositeExecutor,
+        reducer: &dyn Reducer,
+        authz: &dyn Authorize,
+        executor: &mut CompositeExecutor,
     ) -> Option<Vec<u8>> {
         let mut fork = self.session.fork_for_query();
         // Deliver a `report` inbound so a report-aware reducer (branching on ct.is_report()) summarizes
@@ -260,12 +260,12 @@ mod tests {
     };
     use cdz_kernel::event::{ContentType, EffectOutcome, Event};
     use cdz_kernel::kv::Kv;
-    use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
+    use cdz_kernel::reducer::{FoldOutput, Reducer};
 
     /// A tiny agent: on inbound "go" it asks the clock; when the time comes back it records "ran".
     struct ClockAgent;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for ClockAgent {
+    impl Reducer for ClockAgent {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
@@ -298,7 +298,7 @@ mod tests {
 
     fn now_host() -> HostedSession {
         let executor =
-            AsyncCompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
+            CompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Now,
             predicate: ResourcePredicate::Any,
@@ -317,7 +317,7 @@ mod tests {
         deadline_ms: u64,
     }
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for TimerAgent {
+    impl Reducer for TimerAgent {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
@@ -345,7 +345,7 @@ mod tests {
             Hash::of(b"timer-agent-v1"),
             Box::new(TimerAgent { deadline_ms }),
             Box::new(authz),
-            AsyncCompositeExecutor::new(),
+            CompositeExecutor::new(),
         )
     }
 
@@ -567,7 +567,7 @@ mod tests {
     /// summarizes itself from that local KV into `public/summary` (no model call — the cheap tier-1 path).
     struct ReportingAgent;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for ReportingAgent {
+    impl Reducer for ReportingAgent {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
@@ -598,7 +598,7 @@ mod tests {
                 Hash::of(b"reporting-v1"),
                 Box::new(ReportingAgent),
                 Box::new(Authorizer::deny_all()), // the live session takes no effects here
-                AsyncCompositeExecutor::new(),
+                CompositeExecutor::new(),
             ),
         );
         // Advance the live session so it has state to summarize (phase=working).
@@ -609,9 +609,9 @@ mod tests {
         assert_eq!(hosted.session().kv().get(b"public/summary"), None);
         let live_event_count = hosted.session().log().len();
 
-        // Fork-for-query it: caller supplies the same (native AsyncReducer) reducer + a model-only authz
+        // Fork-for-query it: caller supplies the same (native Reducer) reducer + a model-only authz
         // (deny_all here — the summarize fold takes no effects) + an executor. Returns the published summary.
-        let mut exec = AsyncCompositeExecutor::new();
+        let mut exec = CompositeExecutor::new();
         let summary = hosted
             .fork_for_query(&ReportingAgent, &Authorizer::deny_all(), &mut exec)
             .await;

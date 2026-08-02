@@ -21,7 +21,7 @@ use crate::retry;
 use bytes::Bytes;
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
-use cdz_kernel::executor::AsyncExecutor;
+use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
 
 /// The I/O half of model invocation, factored out so the executor's logic is hermetically testable.
@@ -40,7 +40,7 @@ use cdz_kernel::hash::Hash;
 /// (400/auth/malformed) as [`crate::retry::permanent`]. An unprefixed reason is treated PERMANENT
 /// (fail-closed), so forgetting the prefix means "not retried," never "retried forever."
 /// `#[async_trait(?Send)]` — the invoke is async (a real Bedrock call awaits the socket) and not `Send`
-/// (single-threaded host, no cross-thread futures; §15b), matching the kernel's `AsyncExecutor`/`AsyncReducer`.
+/// (single-threaded host, no cross-thread futures; §15b), matching the kernel's `Executor`/`Reducer`.
 #[async_trait::async_trait(?Send)]
 pub trait ModelTransport {
     /// Invoke `model_id` with the opaque request `body`, returning the raw response bytes. The
@@ -68,7 +68,7 @@ impl<T: ModelTransport> ModelExecutor<T> {
 }
 
 #[async_trait::async_trait(?Send)]
-impl<T: ModelTransport> AsyncExecutor for ModelExecutor<T> {
+impl<T: ModelTransport> Executor for ModelExecutor<T> {
     async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         // These are structural request errors — retrying can't fix them, so they're PERMANENT (§17
         // totality: an observable Err, never a panic).

@@ -17,11 +17,11 @@ use cdz_kernel::effect::{
     Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
 };
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
-use cdz_kernel::executor::AsyncCompositeExecutor;
+use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
+use cdz_kernel::reducer::{FoldOutput, Reducer};
 
 /// A stub model transport: returns a canned completion, so the agent loop is hermetic. The real Bedrock
 /// transport implements this same trait behind `live-net`.
@@ -48,7 +48,7 @@ impl ModelTransport for StubModel {
 /// executor (here a stub transport) — the shape a Bedrock-backed agent runs verbatim.
 struct ModelAgent;
 #[async_trait::async_trait(?Send)]
-impl AsyncReducer for ModelAgent {
+impl Reducer for ModelAgent {
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
@@ -94,8 +94,8 @@ fn model_cap() -> Authorizer {
 #[tokio::test]
 async fn agent_loop_runs_end_to_end_through_the_model_executor() {
     let reducer = ModelAgent;
-    let mut exec = AsyncCompositeExecutor::new()
-        .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
+    let mut exec =
+        CompositeExecutor::new().with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
     let mut session = Session::genesis(Hash::of(b"model-agent-v1"));
 
     session
@@ -132,7 +132,7 @@ async fn one_composite_routes_both_now_and_model_for_one_agent() {
     // its own real executor. This proves the compose path v-agent-harness confirmed (with(kind, exec)).
     struct ClockThenModel;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for ClockThenModel {
+    impl Reducer for ClockThenModel {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 // Step 1: ask for the time.
@@ -183,7 +183,7 @@ async fn one_composite_routes_both_now_and_model_for_one_agent() {
             predicate: ResourcePredicate::Exact("claude-test".into()),
         },
     ]);
-    let mut exec = AsyncCompositeExecutor::new()
+    let mut exec = CompositeExecutor::new()
         .with(EffectKind::Now, Box::new(ClockExecutor::new()))
         .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
     let mut session = Session::genesis(Hash::of(b"clock-then-model-v1"));
@@ -218,7 +218,7 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
     }
     struct WrongModelAgent;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for WrongModelAgent {
+    impl Reducer for WrongModelAgent {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest {
@@ -232,8 +232,8 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
             }
         }
     }
-    let mut exec = AsyncCompositeExecutor::new()
-        .with(EffectKind::Model, Box::new(ModelExecutor::new(MustNotCall)));
+    let mut exec =
+        CompositeExecutor::new().with(EffectKind::Model, Box::new(ModelExecutor::new(MustNotCall)));
     let mut session = Session::genesis(Hash::of(b"wrong-model-v1"));
     session
         .deliver_async(

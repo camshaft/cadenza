@@ -174,14 +174,14 @@ mod tests {
     use cdz_kernel::event::{ContentType, Event, EventBody};
     use cdz_kernel::hash::Hash;
     use cdz_kernel::kv::Kv;
-    use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
+    use cdz_kernel::reducer::{FoldOutput, Reducer};
 
     /// An agent that, on "go", publishes a status under `public/` and arms a far-future TIMER. A timer is
     /// a kernel-internal open obligation (it needs no executor), so it stays armed → the session reads
     /// `Active` with a published view — the state this test asserts the status render exposes.
     struct PublishAndTime;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for PublishAndTime {
+    impl Reducer for PublishAndTime {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
@@ -211,7 +211,7 @@ mod tests {
 
     fn timer_host() -> HostedSession {
         // Timer effects are kernel-internal (no executor needed); a ClockExecutor is registered but unused.
-        let executor = cdz_kernel::executor::AsyncCompositeExecutor::new()
+        let executor = cdz_kernel::executor::CompositeExecutor::new()
             .with(EffectKind::Now, Box::new(ClockExecutor::new()));
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Timer,
@@ -257,7 +257,7 @@ mod tests {
         // `state` has no errored variant, so the host surfaces `errored:true` + the reason.
         struct Faulter;
         #[async_trait::async_trait(?Send)]
-        impl AsyncReducer for Faulter {
+        impl Reducer for Faulter {
             async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
                 if matches!(event.body, EventBody::Inbound { .. }) {
                     FoldOutput::failed("guest trap: divide by zero")
@@ -266,7 +266,7 @@ mod tests {
                 }
             }
         }
-        let executor = cdz_kernel::executor::AsyncCompositeExecutor::new();
+        let executor = cdz_kernel::executor::CompositeExecutor::new();
         let mut host = AgentHost::new();
         let id = SessionId::new("boom");
         host.spawn(
@@ -317,7 +317,7 @@ mod tests {
         // Drive a clock agent to completion → Quiescent, empty in_flight.
         struct ClockOnce;
         #[async_trait::async_trait(?Send)]
-        impl AsyncReducer for ClockOnce {
+        impl Reducer for ClockOnce {
             async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
                 if matches!(event.body, EventBody::Inbound { .. }) {
                     FoldOutput::with(vec![EffectRequest {
@@ -331,7 +331,7 @@ mod tests {
                 }
             }
         }
-        let executor = cdz_kernel::executor::AsyncCompositeExecutor::new()
+        let executor = cdz_kernel::executor::CompositeExecutor::new()
             .with(EffectKind::Now, Box::new(ClockExecutor::new()));
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Now,

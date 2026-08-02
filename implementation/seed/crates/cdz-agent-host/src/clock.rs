@@ -21,7 +21,7 @@
 use crate::retry;
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
-use cdz_kernel::executor::AsyncExecutor;
+use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,13 +42,13 @@ impl ClockExecutor {
     }
 }
 
-// Native `AsyncExecutor` (not driven via the `SyncExecutorAsAsync` blanket): the async kernel loop calls
+// Native `Executor` (not driven via the `SyncExecutorAsAsync` blanket): the async kernel loop calls
 // `perform_async`. Reading the clock is synchronous (no `.await` point) — an executor that touches real
 // I/O (Model/Http) awaits its transport, but the clock read is instantaneous — so `perform_async` here
-// has no await. It impls `AsyncExecutor` directly (dropping the old sync `Executor` impl) so it can sit in
-// an `AsyncCompositeExecutor` and not overlap the blanket (§ all-async, step-5).
+// has no await. It impls `Executor` directly (dropping the old sync `Executor` impl) so it can sit in
+// an `CompositeExecutor` and not overlap the blanket (§ all-async, step-5).
 #[async_trait::async_trait(?Send)]
-impl AsyncExecutor for ClockExecutor {
+impl Executor for ClockExecutor {
     async fn perform_async(
         &mut self,
         req: &EffectRequest,
