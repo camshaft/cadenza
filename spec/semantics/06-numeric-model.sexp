@@ -4146,6 +4146,34 @@
   (call   ctwo)
   (output (: 7 Int64)))
 
+(case "a CONSTANT match on the Int64.min/max boundary decides its literal patterns exactly"
+  (doc    "The SIGNED-boundary companion of the wide-UInt64 const MATCH-fold: a fully-constant `match` on an
+           Int64 scalar at the extremes (Int64.min = -2^63 = the 0x8000… top-bit pattern, Int64.max = 2^63-1)
+           folds at compile time, and the pattern-equality against each literal arm must be EXACT at the
+           boundary. `(match Int64.min (Int64.min => 1) (_ => 0))` folds to 1 (the min scrutinee equals the
+           min pattern — the exact 0x8000… bit pattern, not an off-by-one or a wrong-width materialization);
+           `(match Int64.min (Int64.min+1 => 1) (_ => 0))` folds to 0 (min != min+1, the adjacent boundary
+           value); `(match Int64.max (Int64.max => 7) (_ => 0))` folds to 7. Pins that the const match-fold
+           materializes the boundary constants as their exact bit patterns for the dispatch (a folded-to-wrong-
+           width or off-by-one at the sign boundary would misdispatch — the guard-clause `match n with
+           Int64.min => …` saturation idiom relies on this). The runtime boundary-equality face is pinned at
+           :3436; this pins the compile-time MATCH-fold face. Nullary defs so the scrutinee is a compile-time
+           constant — the fold path. Value-only, both backends fold each body to a literal constant.")
+  (input  (do
+            (def (mhit)  (match (: -9223372036854775808 Int64) (-9223372036854775808 1) (_ 0)))
+            (def (mnear) (match (: -9223372036854775808 Int64) (-9223372036854775807 1) (_ 0)))
+            (def (mmax)  (match (: 9223372036854775807 Int64) (9223372036854775807 7) (_ 0)))
+            (export mhit)
+            (export mnear)
+            (export mmax)))
+  ; Int64.min matches the min arm → 1; Int64.min does NOT match the (min+1) arm → 0; Int64.max matches → 7.
+  (call   mhit)
+  (output (: 1 Int64))
+  (call   mnear)
+  (output (: 0 Int64))
+  (call   mmax)
+  (output (: 7 Int64)))
+
 (case "a CONSTANT algebraic identity over a high-bit UInt64 operand folds to the operand, not a spurious CDZ0304 decline"
   (doc    "The COMPILE-TIME const-operand face of the full-width unsigned family (rcdzc lower 819f5c2e3). The
            runtime cases above pass UInt64.max as an ARGUMENT; this pins a both-CONSTANT algebraic identity
