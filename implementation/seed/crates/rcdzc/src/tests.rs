@@ -59113,6 +59113,20 @@ mod stage1 {
             !codes_for("(if (= (tuple k 1) (tuple k 1)) 1 0)").contains(&"CDZ0202".to_string()),
             "comparing concrete-only tuples stays legal (no CDZ0202)"
         );
+        // VALUE-POSITION via direct-eq: comparing two MAPS with abstract VALUES under CONCRETE keys →
+        // CDZ0202. This is the exact COMPLEMENT of the "holding an abstract value is legal" boundary
+        // (the map/set-key construction gate reads only the KEY, ignoring the value, so building/holding
+        // such a map compiles clean). But a direct `(=)` on two whole maps walks BOTH keys and values via
+        // champ_eq, observing the abstract VALUE's private rep — so it must reject. `key_ty_contains_abstract_at`
+        // walks `Ty::Map`'s value arm (not just the key), and the direct-eq site passes the whole operand
+        // type, so this is caught. Pins that HOLDING is legal but COMPARING is not — value-position opacity.
+        assert!(
+            codes_for(
+                "(if (= (Map.insert Map.empty k (mk k)) (Map.insert Map.empty k (mk k))) 1 0)"
+            )
+            .contains(&"CDZ0202".to_string()),
+            "comparing two maps with abstract VALUES must reject CDZ0202 (eq walks the value spine)"
+        );
     }
 
     #[test]
