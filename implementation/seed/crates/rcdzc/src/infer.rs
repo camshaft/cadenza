@@ -11537,6 +11537,28 @@ fn map_duplicate_const_key(db: &mut Db, entries: &[(StructId, StructId)]) -> Opt
     None
 }
 
+/// Walk the subtree at `node` for the FIRST leaf kind that quote's reifier cannot turn into an `Ast`
+/// value — a `#"…"` symbol (`Sym`), a `#\c` char (`Char`), or a `b"…"` bytes literal (`Bytes`) — since
+/// the `Ast` sum has variants only for Int/Float/Bool/Str/Name/List. `quote`'s reify bails (`_ => None`,
+/// `quote.rs`) on any such leaf, so the WHOLE `(quote …)` declines and an enclosing `(eval …)` then falls
+/// through as an unbound `eval` name. Returns a human phrase naming the offending literal kind (for the
+/// `eval` diagnostic below), or `None` if every leaf is reifiable (the ordinary "nothing to reconstruct"
+/// runtime/non-constant case). A pre-order walk: the first non-reifiable leaf found is the one to name.
+fn first_non_reifiable_leaf(db: &Db, node: crate::ast::StructId) -> Option<&'static str> {
+    match db.ast.get(node) {
+        crate::ast::Struct::Atom(l) => match db.ast.leaf(*l) {
+            crate::ast::Leaf::Sym(_) => Some("a `#\"…\"` symbol literal"),
+            crate::ast::Leaf::Char(_) => Some("a `#\\…` char literal"),
+            crate::ast::Leaf::Bytes(_) => Some("a `b\"…\"` bytes literal"),
+            _ => None,
+        },
+        crate::ast::Struct::List(kids) => {
+            let kids = kids.clone();
+            kids.iter().find_map(|&k| first_non_reifiable_leaf(db, k))
+        }
+    }
+}
+
 /// Enrich a bare UNBOUND-name reject (`resolve_name` emits `unbound name \`x\``, no suggestion) with the
 /// rustc-gold "did you mean?" — the nearest in-scope name + a heuristic replace fix — at the ONE site
 /// that surfaces an unbound name as a user fault. The nearest-name search is an O(names-in-scope)
@@ -11558,14 +11580,36 @@ fn enrich_unbound(db: &mut Db, id: crate::ast::StructId, r: Reject) -> Reject {
     // that — the metaprogramming analogue of the top-level `import`/`pragma` recognized-but-not-modeled
     // messages (`compile::collect_faults`). Fires only when `id` heads a `(eval …)` form (so a bare `eval`
     // reference elsewhere still gets the ordinary unbound path).
-    if name == "eval"
-        && db
-            .parent_of(id)
-            .and_then(|p| db.ast.as_form(p, "eval").map(|t| (t, p)))
-            .is_some_and(|(_, p)| {
-                matches!(db.ast.get(p), crate::ast::Struct::List(kids) if kids.first() == Some(&id))
-            })
+    if let Some(eval_args) = db
+        .parent_of(id)
+        .filter(|&p| {
+            matches!(db.ast.get(p), crate::ast::Struct::List(kids) if kids.first() == Some(&id))
+        })
+        .and_then(|p| db.ast.as_form(p, "eval").map(<[_]>::to_vec))
+        .filter(|_| name == "eval")
     {
+        // A `(quote …)` argument IS compile-time-visible, so "nothing to reconstruct" is the WRONG
+        // reason when it declined because it carries a leaf kind the `Ast` sum has no variant for — a
+        // `#"…"` symbol, a `#\c` char, or a `b"…"` bytes literal (`quote`'s reify bails on those, so the
+        // whole quote — and the enclosing `eval` — declines). Name the actual offending literal instead
+        // of the misleading runtime/non-constant phrasing. (These reify once the corresponding `Ast`
+        // variant lands — e.g. `Ast.Symbol` with the symbols vertical.)
+        if let Some(kind) = eval_args
+            .iter()
+            .find_map(|&a| first_non_reifiable_leaf(db, a))
+        {
+            return Reject::coded(
+                Code::Unbound,
+                format!(
+                    "`eval` reconstructs a compile-time-visible AST to source, but this one contains \
+                     {kind}, which has no `Ast` leaf variant to reconstruct (the `Ast` sum covers \
+                     integers, floats, booleans, strings, names, and lists). `quote` cannot reify such \
+                     a literal, so the whole `(quote …)` — and this `eval` — declines. Use a reifiable \
+                     literal, or compute the value outside `quote`."
+                ),
+            )
+            .at(id);
+        }
         return Reject::coded(
             Code::Unbound,
             "`eval` executes only a COMPILE-TIME-VISIBLE AST construction (a `(quote …)` or literal \

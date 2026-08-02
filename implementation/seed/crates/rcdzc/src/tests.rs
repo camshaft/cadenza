@@ -45050,6 +45050,52 @@ mod match_engine {
     }
 
     #[test]
+    fn eval_of_a_quote_with_a_non_reifiable_leaf_names_the_literal_not_nothing_to_reconstruct() {
+        // A `(quote …)` IS compile-time-visible, so the generic "nothing to reconstruct" (runtime / non-
+        // constant) phrasing is WRONG when the quote declined only because it carries a leaf the `Ast` sum
+        // has no variant for: a `#"…"` symbol, a `#\c` char, or a `b"…"` bytes literal. The message must
+        // NAME the offending literal kind so the author knows WHY, not imply a runtime argument. (v-diag /
+        // concierge routed this; the root — no `Ast.Symbol`/`Ast.Char`/`Ast.Bytes` variant — is intended
+        // until the symbols vertical, so the fix is the DIAGNOSTIC, not the decline.)
+        let msg = |src: &str| -> String {
+            crate::diagnostics(&mut crate::db::Db::load(parse(src)))
+                .into_iter()
+                .find(|d| d.code.as_deref() == Some("CDZ0101"))
+                .unwrap_or_else(|| panic!("expected CDZ0101 for {src}"))
+                .message
+        };
+        // A symbol literal inside the quote (the reported `Unit.of #"meter"` shape, plus a bare symbol).
+        for (src, phrase) in [
+            (
+                "(module m (def (main) (eval (quote (Unit.of #\"meter\")))) (export main))",
+                "symbol literal",
+            ),
+            (
+                "(module m (def (main) (eval (quote #\"m\"))) (export main))",
+                "symbol literal",
+            ),
+        ] {
+            let m = msg(src);
+            assert!(
+                m.contains(phrase) && m.contains("no `Ast` leaf variant"),
+                "eval of a quote carrying a non-reifiable leaf names the literal: {m}"
+            );
+            assert!(
+                !m.contains("nothing to reconstruct"),
+                "the misleading runtime/non-constant phrasing must NOT be used for a compile-time quote \
+                 that declined on a non-reifiable leaf: {m}"
+            );
+        }
+        // NO REGRESSION: a genuinely runtime/non-Ast eval argument STILL gets the "nothing to reconstruct"
+        // message (there is no non-reifiable leaf to name — the argument simply is not a constant AST).
+        assert!(
+            msg("(module m (def (f (: a Ast)) (eval a)) (export f))")
+                .contains("nothing to reconstruct"),
+            "a runtime Ast argument keeps the reconstruct-nothing message"
+        );
+    }
+
+    #[test]
     fn eval_of_a_quasiquote_splices_a_compile_time_known_value() {
         use crate::testkit::parse;
         // 12-metaprogramming §Eval Is Optional / §Quasiquote: eval a quasiquoted form whose unquote splices
