@@ -159,6 +159,16 @@ pub(crate) fn collect_dominating_frontier(
         Core::Match { scrutinee, .. }
         | Core::MatchList { scrutinee, .. }
         | Core::MatchSum { scrutinee, .. } => vec![scrutinee],
+        // A SHORT-CIRCUITING connective (`and`/`or`, `Core::And { is_and }`) evaluates its LEFT operand
+        // unconditionally but SHIELDS its RIGHT operand exactly as a conditional's unselected branch:
+        // `and` = `if lhs then rhs else false`, `or` = `if lhs then true else rhs` (core.rs Core::And doc;
+        // core-semantics.md #Boolean Connectives Short-Circuit). So only `lhs` is in the dominating frontier
+        // — `rhs` runs only on the non-short-circuiting path. WITHOUT this arm, `rhs` fell through to
+        // `licm_children` (which returns both operands) and entered the frontier, so a repeated TRAPPING
+        // `rhs` subexpression (`(and b (= (/ 10 d) (/ 10 d)))`) was CSE-hoisted to the body root and ran
+        // unconditionally → a spurious divide-by-zero trap at `d=0` even when `b` is false (adv-55, a wasm
+        // soundness miscompile via the always-on select.rs CSE; the O2 Core CSE shares this frontier too).
+        Core::And { lhs, .. } => vec![lhs],
         // Everything else `licm_children` enumerates evaluates ALL its children unconditionally (a pure
         // operator's operands, a `let`'s bindings + body, a call's args, a compound's elements).
         _ => licm_children(db, id),
