@@ -7708,8 +7708,19 @@ pub(crate) fn check_unknown_units(db: &mut Db, out: &mut Vec<Reject>) {
     // when a first candidate `(Unit.of …)` is actually found — so a program with NO unit applications (the
     // common case) never allocates it.
     let mut known: Option<Vec<String>> = None;
-    let node_count = db.ast.structure.len();
-    for id in (0..node_count as u32).map(StructId) {
+    // Scan only USER nodes, not the full structure (which appends the O(prelude) built-in bindings + every
+    // evaluator-synthesized β-copy). A genuine unknown-unit `(Unit.of #"zorks")` fault is reported `.at(id)`,
+    // and a fault must anchor at a USER node to carry a source span — a prelude / synthesized anchor has none
+    // and is nulled (or relocated to its user origin) by `compile::sanitize_origin`. The prelude never applies
+    // `Unit.of` to an UNKNOWN unit (it DEFINES the known families), and a β-copy of a user `(Unit.of …)` still
+    // has its ORIGINAL user occurrence in-range (which this scan covers); `dedup_faults` collapses any copy.
+    // So bounding to `user_node_count` never drops a reportable fault, and skips the built-in-node bulk that a
+    // unit-free program (the common case — e.g. the whole ML compiler) would otherwise walk for nothing
+    // (~6% of a large real compile: this pass had inclusive-time dominance on `emit-db.cdz`, which uses no units).
+    let node_count = db.user_node_count();
+    #[cfg(test)]
+    crate::db::CHECK_UNKNOWN_UNITS_SCAN_NODES.with(|c| c.set(c.get() + node_count as u64));
+    for id in (0..node_count).map(StructId) {
         // A `(Unit.of #"name")` application whose name is a symbol/string literal. Dispatch through
         // `resolved_ref` (a BORROW, not a `resolved_of` clone): this scans EVERY node of every program, and
         // the vast majority are not `Apply`, so cloning the whole `Resolved` per node just to test the

@@ -202,6 +202,17 @@ thread_local! {
     /// `a_tagged_template_free_program_skips_the_expand_node_scan`.
     pub(crate) static TAGGED_TEMPLATE_SCAN_NODES: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+
+    /// Test-only: total nodes the `infer::check_unknown_units` per-node scan enumerated since the last
+    /// reset — the O(N) `(Unit.of …)`-head probe (`resolved_ref` + `meta_apply_of`) over the program.
+    /// The pass runs at EVERY compile/check, but a genuine unknown-unit fault can only ever anchor at a
+    /// USER node (a prelude / evaluator-synthesized node has no source span, so a fault reported there is
+    /// nulled by `sanitize_origin`; a β-copy relocates to its user origin, which the scan already covers).
+    /// So the scan is bounded to `user_node_count` — it never touches the O(prelude) built-in nodes that
+    /// a full-structure walk would. This counter pins that bound: it stays ≤ `user_node_count`, never the
+    /// full structure length. See `check_unknown_units_scans_only_user_nodes_not_the_prelude`.
+    pub(crate) static CHECK_UNKNOWN_UNITS_SCAN_NODES: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A top-level definition located by the one cheap top-level scan: its name, its parameter
@@ -3310,6 +3321,14 @@ impl Db {
     /// this so a synthesized/prelude id is dropped (reported as unanchored) rather than mis-mapped.
     pub fn is_user_node(&self, id: StructId) -> bool {
         id.0 < self.user_node_count
+    }
+
+    /// The number of USER-PROGRAM nodes — the `[0, user_node_count)` `StructId` range the decoded program
+    /// contained, below the appended prelude + evaluator-synthesized nodes. A whole-program check that can
+    /// only report a fault at a user node (its origin needs a source span) scans this range, not the full
+    /// `ast.structure.len()`, so it skips the built-in bulk. See [`Db::is_user_node`].
+    pub(crate) fn user_node_count(&self) -> u32 {
+        self.user_node_count
     }
 
     /// The USER (source) node a synthesized node ultimately traces to, or `None` if there is no recorded
