@@ -100,8 +100,7 @@ pub struct ComponentReducer {
     // The per-fold fuel budget (§22d): the hard instruction ceiling one `apply` may consume before the
     // guest is aborted with [`ComponentError::FuelExhausted`]. A runaway/looping reducer can't hang the
     // kernel (Copilot PR#1009 DoS gap). Enforced by wasmtime's fuel metering (engine `consume_fuel` +
-    // `Store::set_fuel` per fold). This is the interim, sync first-step toward full gas (§22a); the
-    // budget is uniform per fold today — per-session gas accounting arrives with the async substrate.
+    // `Store::set_fuel` per fold). The budget is a uniform per-fold ceiling.
     fuel_budget: u64,
 }
 
@@ -118,7 +117,11 @@ pub enum ComponentError {
     InvalidComponent(String),
     /// Host-import linking failed (the `kv` import couldn't be registered).
     Link(String),
-    /// Instantiating the component against the host failed.
+    /// Engine/host setup or instantiating the component against the host failed. This is a
+    /// platform/host-config condition (e.g. `Engine::new` with the given `Config` failed, or
+    /// instantiation against the linker failed) — NOT a statement about the component bytes (that's
+    /// [`ComponentError::InvalidComponent`]). A caller reads this as "the host couldn't run it," not
+    /// "your component is malformed."
     Instantiate(String),
     /// The guest trapped during `fold.apply` (a totality-contract violation — §16c gap A: the driver
     /// treats this as a fold failure, distinct from a clean empty-effect return).
@@ -222,8 +225,11 @@ impl ComponentReducer {
         // charged in `apply` via `Store::set_fuel`; here we just turn metering on.
         let mut config = wasmtime::Config::new();
         config.consume_fuel(true);
+        // `Engine::new` failing is a config/platform/host-setup condition, NOT a malformed component
+        // (the bytes haven't even been read yet) — classify it as `Instantiate` (host-side), same as
+        // the `set_fuel` host-setup failures in `apply`. Only `Component::new` below is about the bytes.
         let engine = wasmtime::Engine::new(&config)
-            .map_err(|e| ComponentError::InvalidComponent(e.to_string()))?;
+            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
         let component = wasmtime::component::Component::new(&engine, bytes)
             .map_err(|e| ComponentError::InvalidComponent(e.to_string()))?;
         let mut linker = wasmtime::component::Linker::<ReducerHost>::new(&engine);
@@ -541,10 +547,14 @@ mod tests {
 
     #[test]
     fn component_reducer_rejects_invalid_bytes() {
+        // Garbage bytes are a MALFORMED-COMPONENT condition → `InvalidComponent`, and it must be that
+        // variant SPECIFICALLY: the classification is about the bytes (the `Component::new` check), not
+        // a host/engine-setup failure (which is `Instantiate` — `Engine::new` succeeds here). Pins the
+        // C1 distinction so a future refactor can't collapse "bad bytes" into "host couldn't run it."
         // (Ok variant isn't Debug, so match rather than .unwrap_err().)
         match ComponentReducer::from_component_bytes(b"not a wasm component") {
             Err(ComponentError::InvalidComponent(_)) => {}
-            Err(other) => panic!("expected InvalidComponent, got {other:?}"),
+            Err(other) => panic!("expected InvalidComponent (bad bytes), got {other:?}"),
             Ok(_) => panic!("garbage bytes must not build a component"),
         }
     }
