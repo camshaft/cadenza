@@ -740,6 +740,53 @@ fn warm_only_populates_the_cache_so_a_later_per_file_sweep_hits() {
 }
 
 #[test]
+fn warm_only_skips_the_check_gate_but_a_real_run_still_reds_a_broken_suite() {
+    // PERF + PROTECTION-PRESERVED: `--warm-only` runs NO `@test` (it warms the provider cache + exits), so the
+    // `cdz check` clean-gate — which re-type-checks each file's WHOLE import closure (the dominant warm-once
+    // residual once the emit is cached) — is pure waste there and is SKIPPED. The false-green protection the
+    // gate provides is NOT lost: it's preserved exactly where a suite actually runs — the per-file `cdz test`
+    // sweep that CONSUMES the warm cache runs its own check-gate. Pin BOTH directions so a future edit can't
+    // (a) re-add the expensive check to warm-only, nor (b) drop the real-run protection: on a parse-broken
+    // suite, `--warm-only` SUCCEEDS (exit 0, skips the check) while a plain `cdz test` still REDS (exit 1).
+    let dir = std::env::temp_dir().join(format!("cdz-warm-nocheck-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A good @test beside a parse-broken sibling (unclosed paren — the reader recovers it as <error> nodes).
+    std::fs::write(
+        dir.join("good.cdz"),
+        "@test\ndef g() =\n  if 1 == 1 then unit else trap(\"g\")\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("broken.cdz"), "def broken() -> Int64 = (1 + 2\n").unwrap();
+    let cache = std::env::temp_dir().join(format!("cdz-warm-nocheck-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+
+    // --warm-only: SKIPS the check-gate → exits 0 even though `broken.cdz` fails to parse (no suite runs, so no
+    // false-green risk; it just warms whatever closures it can). No runtime store needed — it emits, not runs.
+    let warm = Command::new(cdz())
+        .args(["test", "--warm-only", dir.to_str().unwrap()])
+        .env("CDZ_PROVIDER_CACHE", &cache)
+        .output()
+        .expect("spawn cdz test --warm-only");
+    assert!(
+        warm.status.success(),
+        "--warm-only skips the check-gate → exits 0 on a parse-broken suite (no suite runs):\nstdout:{}\nstderr:{}",
+        String::from_utf8_lossy(&warm.stdout),
+        String::from_utf8_lossy(&warm.stderr)
+    );
+
+    // A REAL `cdz test` (no --warm-only) on the SAME broken suite still REDS — the check-gate runs where a
+    // suite actually executes, so the protection is preserved, just moved off the warm path.
+    let (ok, _out) = run_test(&dir);
+    assert!(
+        !ok,
+        "a real `cdz test` on a parse-broken suite still fails (check-gate protection preserved off the warm path)"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
+#[test]
 fn warm_only_report_time_emits_both_precompile_and_provider_jit_phases() {
     // Regression guard for the EMIT-vs-JIT split (4feac9a35): `cdz test --warm-only --report-time <dir>` must
     // print BOTH ⏱ phase lines so a WARMING run reveals where its time went. Before this slice, the provider-JIT

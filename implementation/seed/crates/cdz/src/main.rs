@@ -4383,7 +4383,15 @@ fn run_test(args: &TestArgs) -> ExitCode {
     // import closure; run it over the SAME resolved files here and FAIL RED if any has an error, rather than
     // run a suite whose green is a lie. Dedup by canonical path (mirror `run_check`): `check_one` checks a
     // file's whole closure, so a module pulled into an earlier target's closure needn't be re-checked.
-    {
+    //
+    // SKIP the check-gate in `--warm-only` mode: a warm pass runs NO `@test` (it emits+JITs the shared-closure
+    // provider into the cache, then exits), so the "green suite is a lie" risk this gate guards against cannot
+    // arise — there is no suite. The check itself is expensive (each `check_one` type-checks the file's WHOLE
+    // import closure — for a large self-host suite that's the ~570-def closure re-checked, the dominant residual
+    // of a warm-once now that the emit is cached), so re-checking here just to immediately exit is pure waste.
+    // The ACTUAL per-file `cdz test` sweep that later CONSUMES this warm cache runs its OWN check-gate (this
+    // same block, `warm_only=false`), so the false-green protection is preserved exactly where a suite runs.
+    if !args.warm_only {
         let canon = |p: &str| {
             std::fs::canonicalize(p)
                 .map(|c| c.to_string_lossy().into_owned())
