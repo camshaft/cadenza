@@ -16,7 +16,7 @@
 
 use crate::inbox::{Drained, Message};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -105,16 +105,17 @@ impl ThreadMap {
     /// pointing at an evicted thread would merely miss the dedup — a harmless re-mirror — but we keep them
     /// in lockstep so the map stays a faithful bijection). Cheap and a no-op under the cap.
     ///
-    /// Evict ALL excess threads first, then do a SINGLE `by_key.retain` pass — so pruning is O(n) over
-    /// `by_key`, not O(k·n) (a full `by_key` scan per evicted thread). Matters if a large map is loaded and
-    /// pruned in one go.
+    /// Collect the oldest-excess `thread_ts` into a `HashSet` once, then do a SINGLE `retain` pass over
+    /// each index against O(1) set membership — amortized O(n + k) total, not O(k·n) (a full `by_key`
+    /// scan per evicted thread). A `HashSet` (not a `BTreeSet`) so `contains` is O(1), keeping the retain
+    /// passes genuinely linear rather than O(n·log k). Matters if a large map is loaded and pruned at once.
     fn prune(&mut self) {
         let len = self.by_thread.len();
         if len <= MAX_THREADS {
             return; // common case: nothing to evict.
         }
         // The first `len - MAX_THREADS` keys are the oldest thread_ts (BTreeMap iterates sorted).
-        let evict: std::collections::BTreeSet<String> = self
+        let evict: HashSet<String> = self
             .by_thread
             .keys()
             .take(len - MAX_THREADS)
@@ -381,8 +382,9 @@ mod tests {
 
     #[test]
     fn bulk_over_cap_prune_evicts_exactly_the_oldest_and_keeps_bijection() {
-        // Pins the single-retain-pass prune (O(n), not O(k·n)): a big over-cap insert must evict EXACTLY
-        // the oldest excess, retain exactly the newest MAX_THREADS, and keep by_key a faithful bijection.
+        // Behavioral contract of the single-retain-pass prune: a big over-cap insert must evict EXACTLY
+        // the oldest excess threads, retain exactly the newest MAX_THREADS, and keep by_key a faithful
+        // bijection with by_thread (no dangling rows). (A test can't assert big-O; this pins the result.)
         let mut map = ThreadMap::default();
         let excess = 500;
         let total = MAX_THREADS + excess;
