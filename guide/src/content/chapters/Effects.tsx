@@ -149,9 +149,62 @@ export default function Effects() {
         and not one line of <C>deposit</C> changes.
       </P>
 
+      <H2>Doing work after resume</H2>
+      <P>
+        Every handler so far has <C>resume</C>d as its <em>last</em> act: it hands a value back and steps
+        aside, and whatever the performing code computes flows straight out. But an arm can do work{" "}
+        <em>after</em> the resumption returns. <C>resume</C> is an ordinary expression, so its result, the
+        value the rest of the body eventually produces, is something the arm can keep computing with:
+      </P>
+      <Runnable
+        source={`(effect Amb (op flip (-> Unit Int64)))
+(def (main)
+  (handle Amb 0
+    ((flip (u) s (+ 1 (resume 10 s))))
+    (Amb.flip)))`}
+      />
+      <P>
+        The arm resumes the performer with <C>10</C>, and here the body <em>is</em> that performance, so it
+        reduces to <C>10</C>; then the arm's own <C>+ 1</C> wraps that result, and the answer is <C>11</C>.
+        The <C>resume</C> plugs a value into the hole where <C>Amb.flip</C> was, and the arm gets to act on
+        what comes back.
+      </P>
+      <P>
+        That hole can have work around it too. If the body is <C>(+ 100 (Amb.flip))</C>, the resumption
+        re-runs <em>the whole rest of the body</em> with <C>10</C> in the hole, giving <C>110</C>, and only
+        then does the arm's <C>+ 1</C> apply:
+      </P>
+      <Runnable
+        source={`(effect Amb (op flip (-> Unit Int64)))
+(def (main)
+  (handle Amb 0
+    ((flip (u) s (+ 1 (resume 10 s))))
+    (+ 100 (Amb.flip))))`}
+      />
+      <P>
+        The result is <C>111</C>: <C>100 + 10</C> from re-reducing the body, then <C>+ 1</C> from the arm on
+        the way out. This is what lets a handler <em>post-process</em> or <em>aggregate</em> a whole
+        computation, logging a total, accumulating, transforming a result, rather than only feeding a value
+        in. And it composes with state: each performance resumes with the advanced state, and the arm's
+        surrounding work wraps every re-reduction:
+      </P>
+      <Runnable
+        source={`(effect St (op tick (-> Unit Int64)))
+(def (main)
+  (handle St 0
+    ((tick (u) s (+ 100 (resume s (+ s 1)))))
+    (+ (St.tick) (St.tick))))`}
+      />
+      <P>
+        Two <C>tick</C>s, each reading the advanced state and each wrapped by the arm's <C>+ 100</C>, add up
+        to <C>201</C>. Tail resume answers and steps aside; non-tail resume answers, then acts on what came
+        back.
+      </P>
+
       <H2>A handler that doesn't resume: bailing out</H2>
       <P>
-        A handler doesn't have to <C>resume</C>. If an arm just returns a value, the whole <C>handle</C>{" "}
+        A handler can also <em>not</em> resume at all. If an arm just returns a value, the whole{" "}
+        <C>handle</C>{" "}
         expression becomes that value and the rest of the body is abandoned: an early exit, no exceptions
         required. Here <C>Bail.bail</C> hands its argument straight out, so the <C>+ 100</C> never runs:
       </P>
