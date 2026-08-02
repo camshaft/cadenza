@@ -1536,11 +1536,14 @@ fn build_rust_host_shims(module: &str, host_responses: &[(String, String)]) -> S
         std::collections::BTreeMap::new();
     for (op, value) in host_responses {
         let ident = host_shim_ident_from_key(op);
-        let (eff, opname) = op.split_once('.').unwrap_or(("", op.as_str()));
-        let canonical = format!("{}.{}", kebab_effect(eff), opname);
         by_ident
             .entry(ident)
-            .or_insert_with(|| (canonical, Vec::new()))
+            // Compute the canonical key LAZILY — only on first insert per op (repeated calls to the same op
+            // reuse the entry), so a multi-call op doesn't re-format/re-allocate the key each iteration.
+            .or_insert_with(|| {
+                let (eff, opname) = op.split_once('.').unwrap_or(("", op.as_str()));
+                (format!("{}.{}", kebab_effect(eff), opname), Vec::new())
+            })
             .1
             .push(value.clone());
     }
