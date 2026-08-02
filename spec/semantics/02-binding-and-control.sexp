@@ -504,6 +504,40 @@
   (call   pinned  (: 5 Int64)) (output (: 1 Int64))
   (call   pinned  (: 7 Int64)) (output (: 0 Int64)))
 
+(case "a literal match arm pins the scrutinee to a point, folding an arm-body compare and shedding an arith guard — the match-arm face of the point fact"
+  (doc    "The PATTERN-MATCH face of the point fact: a literal `Int` probe over a variable scrutinee means the
+           scrutinee EQUALS that literal in the arm BODY, so `refined_frame_for_match_arm` (select.rs; the rust
+           backend mirrors it) pins it to the tightest `[c, c]` — the match-arm analogue of the `(if (= x c) …)`
+           if-guard point fact pinned above. Two faces in the `(5 …)` arm, where `n` is known `== 5`:
+             `fold`: `(match n (5 (if (> n 3) 1 2) …) …)` — the arm-body `(> n 3)` is decided TRUE by the
+                     `[5,5]` point and folds to 1 (the `2` arm is dead). n=5 → 1.
+             `shed`: `(match n (5 (: (+ n 1) Int8) …) …)` on Int8 — under `n == 5`, `(+ n 1) = 6` provably fits
+                     Int8, so its overflow guard is dropped (value 6).
+           SOUNDNESS: the WILDCARD arm is NOT refined (n is unknown there), so its own `(+ n 1)` on Int8 must
+           still TRAP at n = 127 — the twin proving the elision is licensed by the arm's point fact, not by luck.
+           The wasm-Lir guard-drop is unit-pinned in rcdzc
+           `a_scalar_match_literal_arm_refines_the_scrutinee_to_the_matched_value`; this corpus case pins the
+           value + trap + fold parity on BOTH backends (the unit test is wasm-Lir only). Distinct from the
+           if-guard point-fact cases above (this is the match-arm face).")
+  (input  (do
+            (def (fold (: n Int64)) (match n (5 (if (> n 3) 1 2)) (_ 0)))
+            (def (shed (: n Int8))  (match n (5 (: (+ n 1) Int8)) (_ 0)))
+            (def (raw  (: n Int8))  (match n (5 0) (_ (: (+ n 1) Int8))))
+            (export fold)
+            (export shed)
+            (export raw)))
+  ; fold: the (5 …) arm knows n==5, so (> n 3) folds TRUE → 1; the 2 arm is dead. Any other n → wildcard → 0.
+  (call   fold (: 5 Int64)) (output (: 1 Int64))
+  (call   fold (: 8 Int64)) (output (: 0 Int64))
+  ; shed: n==5 in the arm → (+ n 1) = 6 sheds its Int8 overflow guard (value unchanged).
+  (call   shed (: 5 Int8))  (output (: 6 Int64))
+  (call   shed (: 9 Int8))  (output (: 0 Int64))
+  ; raw: the WILDCARD (+ n 1) is unrefined — value-correct for small n...
+  (call   raw  (: 3 Int8))  (output (: 4 Int64))
+  ; ...and MUST still trap at n = 127 (Int8 overflow) — the trap the arm-point elision must NOT have dropped.
+  (call   raw  (: 127 Int8))
+  (trap   "integer overflow"))
+
 (case "an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type"
   (doc    "The operator's motivating value-facts example (`if x > 0` ⇒ `x - 1` cannot underflow) on an
            UNSIGNED type, which value-facts slice 2 (GAP-A) newly enables — before it, the unsigned `(> x 0)`
