@@ -3745,6 +3745,69 @@ mod tests {
     use crate::{parser, sexpr};
 
     #[test]
+    fn every_reserved_word_used_as_a_bare_name_backtick_round_trips_to_a_name() {
+        // A NAME leaf whose text collides with a keyword or word-operator (`let`, `if`, `match`, `and`,
+        // `or`, …) MUST print backtick-quoted (`` `let` ``) so it re-reads as that NAME, not as the
+        // reserved word — otherwise `def main() = let` would re-parse as a broken `let` form (a silent
+        // corruption of the author's identifier). `name_is_bare_safe` gates this via `token::is_reserved`,
+        // but no test swept the WHOLE reserved set through the printer→parser round-trip. Pin it here so a
+        // new keyword added to `token::keyword` (or a drift in the escape predicate) can't quietly make a
+        // bare name matching it re-lex as the keyword. Each reserved word is placed as a def body (an
+        // expression-position Name); the round-trip must yield the identical arena.
+        //
+        // The reserved set = every `token::keyword` + every `token::word_op`. Kept in lockstep with those
+        // tables by the assertion below (each listed word IS reserved, and the count matches), so a word
+        // added to `keyword`/`word_op` but not here fails the count check rather than going unpinned.
+        let reserved = [
+            "let", "in", "if", "then", "else", "fn", "def", "type", "match", "with", "module",
+            "import", "export", "effect", "handle", "host", "as", "forall", // token::keyword
+            "and", "or", // token::word_op
+        ];
+        for w in reserved {
+            assert!(
+                token::is_reserved(w),
+                "{w:?} is listed here but token::is_reserved says it is NOT reserved — the printer would \
+                 print it BARE and it would re-lex as an identifier or (if a new keyword) the keyword"
+            );
+            // Build `(def (main) <w-as-Name>)` directly in the arena so we don't lean on the ML parser to
+            // construct the input (the parser would reject a bare reserved word in body position).
+            let mut b = Builder::new();
+            let main_head = b.name("main");
+            let main_sig = b.list(vec![main_head]);
+            let def_head = b.name("def");
+            let body = b.name(w); // the reserved word AS A BARE NAME leaf
+            let root = b.list(vec![def_head, main_sig, body]);
+            let a = b.finish(root);
+
+            let ml = print(&a, 80);
+            // The printer MUST have backtick-quoted it (a bare `w` would re-lex as the reserved word).
+            assert!(
+                ml.contains(&format!("`{w}`")),
+                "reserved name {w:?} must print backtick-quoted, got ML: {ml:?}"
+            );
+            let back = parser::read_ml(&ml);
+            assert!(
+                back.ok(),
+                "backtick-quoted reserved name {w:?} must re-parse clean, got {:?} for ML {ml:?}",
+                back.errors
+            );
+            assert!(
+                a.structurally_eq(&back.arenas),
+                "reserved name {w:?} did not round-trip faithfully; ML was {ml:?}"
+            );
+        }
+        // Guard the set against `token::keyword`/`word_op` drift: a new reserved word not listed above
+        // would go unpinned. `token` exposes no iterator over the reserved set, so pin the COUNT (18
+        // keywords + 2 word-ops = 20) — adding a keyword bumps the real count and fails this, prompting an
+        // addition here. (A crude but effective lockstep, mirroring `INFIX_HEADS`/`every_infix_head_*`.)
+        assert_eq!(
+            reserved.len(),
+            20,
+            "reserved-word count changed — add the new keyword/word-op to this round-trip sweep"
+        );
+    }
+
+    #[test]
     fn ml_print_is_depth_guarded_not_a_stack_overflow_on_a_deep_arena() {
         // The ML printer is a mutually-recursive machine (`expr`→`list`→shape helpers→`expr`), one native
         // frame per level; `print` runs on arenas from ANY source, including a decoded binary AST that
