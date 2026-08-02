@@ -20084,7 +20084,7 @@ mod runtime_ops {
 // recursion terminates. (The corpus's UNANNOTATED recursive functions stay `todo` until the connected
 // parameter solve, A2; an annotated signature is determined by absorption — see `infer::def_scheme`.)
 mod recursion {
-    use super::{run_returns, run_returns_with};
+    use super::{call_traps, run_returns, run_returns_with};
     use crate::compile::compile_component;
     use crate::testkit::parse;
 
@@ -21167,6 +21167,75 @@ mod recursion {
             run_returns_with::<i64>(&bytes, "f", &[Val::S64(0)]),
             0,
             "n=0 runs zero iterations and does not trap"
+        );
+    }
+
+    #[test]
+    fn a_repeated_trapping_node_inside_one_if_arm_is_not_hoisted_past_the_branch() {
+        // The CSE DUAL of the LICM frontier restriction: a repeated possibly-trapping node that lives ONLY
+        // inside a conditional arm must NOT be computed up-front. `(if c (+ (/ a b) (/ a b)) 5)` uses the
+        // checked `(/ a b)` TWICE — but only on the THEN path. The straight-line CSE is gated to a
+        // body with NO `if`/`match` (so every shared node is unconditionally reached), so a body WITH an
+        // `if` is ineligible: `(/ a b)` stays inside the then-arm, NOT hoisted to the function top. If it
+        // were speculatively hoisted, `c=false, b=0` would trap on a division the taken `5` arm never runs.
+        // Pins the correctness gate end-to-end: the trap fires IFF the then-arm is taken.
+        use crate::backend::wasm::lir::Lir;
+        use crate::backend::wasm::select::select_function_of;
+        let src = "(module m \
+                     (def (f (: c Bool) (: a Int64) (: b Int64)) (if c (+ (/ a b) (/ a b)) 5)) \
+                     (export f))";
+        let mut db = crate::db::Db::load(crate::testkit::parse(src));
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("f");
+        let ps: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let bb = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (bb, crate::infer::type_of(&mut db, bb))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        let code = select_function_of(&mut db, body, &ps, &layout, Some(d))
+            .expect("select")
+            .code;
+        // The `(/ a b)` divide stays INSIDE the `if` — it must appear AT OR AFTER the branch, never before
+        // it. (An `if` over a non-select-ifiable trapping body keeps a real `Lir::If`.)
+        let if_ix = code
+            .iter()
+            .position(|i| matches!(i, Lir::If(_)))
+            .expect("the trapping-arm body keeps a real if");
+        let div_before = code[..if_ix]
+            .iter()
+            .filter(|i| matches!(i, Lir::I64DivS))
+            .count();
+        assert_eq!(
+            div_before, 0,
+            "no `(/ a b)` may be hoisted before the branch (would speculate its trap): {code:?}"
+        );
+        // TRAP + VALUE PARITY: c=false takes `5` and must NOT evaluate the then-arm's division (b=0 safe);
+        // c=true with b=0 traps on the taken division; c=true with b!=0 computes (a/b)+(a/b).
+        use wasmtime::component::Val;
+        let bytes =
+            compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::Bool(false), Val::S64(9), Val::S64(0)]),
+            5,
+            "c=false → 5; the untaken (/ a 0) must NOT be speculated (no trap)"
+        );
+        assert_eq!(
+            run_returns_with::<i64>(&bytes, "f", &[Val::Bool(true), Val::S64(20), Val::S64(4)]),
+            10,
+            "c=true → (20/4)+(20/4) = 10"
+        );
+        assert!(
+            call_traps(&bytes, "f", &[Val::Bool(true), Val::S64(9), Val::S64(0)]),
+            "c=true with b=0: the TAKEN (/ a 0) divides by zero → must trap"
         );
     }
 
