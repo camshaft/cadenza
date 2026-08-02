@@ -19,6 +19,21 @@ fn run(args: &[&str]) -> (bool, String, String) {
     )
 }
 
+/// Write `bytes` to a child's stdin, TOLERATING a `BrokenPipe`: `cdz` may report an error and EXIT before
+/// it reads stdin (e.g. a missing `--from`), closing the read end — the write then races that close and can
+/// return `BrokenPipe`. That's benign (the point of the test is cdz's exit + stderr, checked after), but it
+/// makes the write flaky on a slow runner, so swallow ONLY `BrokenPipe` and panic on any other write error.
+fn write_stdin_tolerant(mut stdin: std::process::ChildStdin, bytes: &[u8]) {
+    use std::io::Write;
+    if let Err(e) = stdin.write_all(bytes) {
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "unexpected stdin write error (not the benign BrokenPipe race): {e}"
+        );
+    }
+}
+
 /// Write `src` to a unique temp file with the given name; returns (dir, path).
 fn temp(tag: &str, name: &str, src: &str) -> (std::path::PathBuf, String) {
     let dir = std::env::temp_dir().join(format!("cdz-convert-{tag}-{}", std::process::id()));
@@ -66,7 +81,6 @@ fn convert_round_trips_sexpr_through_ml_via_the_cli() {
     let (ok1, ml, err1) = run(&["convert", &file, "--to", "ml"]);
     assert!(ok1, "sexpr→ml: {err1}");
     // Feed the ml back in via stdin with an explicit --from, convert back to sexpr.
-    use std::io::Write;
     let exe = env!("CARGO_BIN_EXE_cdz");
     let mut child = Command::new(exe)
         .args(["convert", "-", "--from", "ml", "--to", "sexpr"])
@@ -75,12 +89,7 @@ fn convert_round_trips_sexpr_through_ml_via_the_cli() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn cdz convert (stdin)");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(ml.as_bytes())
-        .expect("write stdin");
+    write_stdin_tolerant(child.stdin.take().unwrap(), ml.as_bytes());
     let out = child.wait_with_output().expect("wait cdz");
     let back = String::from_utf8_lossy(&out.stdout).trim().to_string();
     assert!(
@@ -95,7 +104,6 @@ fn convert_round_trips_sexpr_through_ml_via_the_cli() {
 fn convert_reading_stdin_requires_from() {
     // stdin has no extension to infer the surface, so `--from` is mandatory — a missing one is a clean,
     // actionable error (not a guess or a panic).
-    use std::io::Write;
     let exe = env!("CARGO_BIN_EXE_cdz");
     let mut child = Command::new(exe)
         .args(["convert", "-", "--to", "ml"])
@@ -104,12 +112,8 @@ fn convert_reading_stdin_requires_from() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn cdz convert (stdin)");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(SEXPR.as_bytes())
-        .expect("write stdin");
+    // cdz errors on the missing --from and EXITS before reading stdin, so this write races the pipe close.
+    write_stdin_tolerant(child.stdin.take().unwrap(), SEXPR.as_bytes());
     let out = child.wait_with_output().expect("wait cdz");
     assert!(!out.status.success(), "stdin without --from must fail");
     assert!(

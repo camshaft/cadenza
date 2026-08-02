@@ -299,12 +299,15 @@ fn fmt_stdin(stdin: &str, args: &[&str]) -> (bool, String, String) {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn cdz fmt (stdin)");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .expect("write stdin");
+    // Tolerate a BrokenPipe: cdz may error + exit (e.g. a usage mistake) before reading stdin, closing the
+    // read end so this write races the close — benign (the verdict is cdz's exit + stderr, checked below).
+    if let Err(e) = child.stdin.take().unwrap().write_all(stdin.as_bytes()) {
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "unexpected stdin write error (not the benign BrokenPipe race): {e}"
+        );
+    }
     let out = child.wait_with_output().expect("wait cdz");
     (
         out.status.success(),
