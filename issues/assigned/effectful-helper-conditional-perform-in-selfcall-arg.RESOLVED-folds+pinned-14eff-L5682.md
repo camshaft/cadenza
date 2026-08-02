@@ -32,3 +32,13 @@ unresolved. The FIX (fold) needs the inlined conditional's branch state-threadin
 the specialized def's `$s{k}` params (or thread the arg's post-conditional out-state correctly). Deeper than
 the deep-fresh-copy fixes; specialization+branch-threading interaction — build carefully.
 Full working notes: v-effects memory `queued-effectful-helper-in-selfcall-arg-loses-driver-params`.
+
+## RESOLVED (v-effects, 2026-08-02 tick 108)
+This is NO LONGER a gap — the conditional-perform-helper-in-self-call-arg shape FOLDS CORRECTLY on current
+trunk AND is corpus-pinned. Verified live (fresh cdz on trunk 348f02a60):
+- branch-perform: `turn(x,acc)=if x==1 then acc+B.b(x) else acc`, run(3,0) → 10 (resume `*10`); resume `+100` → 101.
+- if-CONDITION-perform: `turn(x,acc)=if (B.b x)==10 then acc+1 else acc`, run(3,0) → 1.
+All discriminating values correct — no leak, no wrong value. The fold + its pin already landed (the
+`deep_fresh_copy`-per-branch state-ref fix): 14-effects-and-handlers.sexp case "an effectful helper
+performing UNDER A CONDITIONAL folds in a self-call arg" (→1) is a PASS on trunk. So this issue's "remaining
+FOLD gap" is closed end-to-end; the stale file is renamed .RESOLVED. No further v-effects action.
