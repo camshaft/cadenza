@@ -6968,10 +6968,14 @@ fn combine_lanes(lanes: Vec<Lane>) -> Lane {
             if names.contains("baseline")
                 && names.iter().all(|n| *n == "baseline" || *n == "corpus")
             {
-                return Lane {
-                    name: "baseline".to_string(),
-                    parallel: false,
-                };
+                // Return the EXISTING baseline Lane from the set (not a fresh `Lane { … }`) so baseline's
+                // metadata lives in exactly ONE place (`LANE_RULES`) — a rebuilt literal here would
+                // silently drift if the baseline rule changes or the struct gains a field (PR #1160
+                // review). The `.contains("baseline")` guard guarantees the `find` succeeds.
+                return lanes
+                    .into_iter()
+                    .find(|l| l.name == "baseline")
+                    .expect("baseline present per the guard above");
             }
             Lane::mixed()
         }
