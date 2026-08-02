@@ -144,3 +144,57 @@ test("the differentiators-recap scan finds links (guards against a broken scan)"
   const found = differentiators.filter((slug) => linked.has(slug)).length;
   assert.ok(found >= 5, `expected the closer to link many differentiators, found ${found}`);
 });
+
+/// slug → its chapter TSX filename, from the registry's lazy import (same regex as links/pillarBridge
+/// tests). Lets the platform-recap test resolve its closer's file from the REGISTRY rather than a
+/// hard-coded name, so a reorder that changes the last platform chapter is tracked automatically.
+function fileForSlug(): Map<string, string> {
+  const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
+  const re = /slug:\s*"([^"]+)"[\s\S]*?import\("\.\/chapters\/([^"]+)"\)/g;
+  const m = new Map<string, string>();
+  for (let x = re.exec(registrySrc); x; x = re.exec(registrySrc)) m.set(x[1], x[2]);
+  return m;
+}
+
+// The PLATFORM pillar's last chapter closes with a "Where this leaves you" recap that links back to the
+// earlier platform chapters — the reader's final map of the kernel model, exactly as WhatsNext is for the
+// language differentiators (test above). The same drift applies: add a new platform concept chapter
+// BEFORE the closer and, unless it's woven into that recap, the closer silently drops it and the reader
+// finishes with an incomplete picture — and nothing else notices (arc pins order; links pins non-dead;
+// neither pins COMPLETE). Pin the platform recap the same way. Derives the closer (LAST platform chapter)
+// and the expected set (every EARLIER platform chapter) from the registry, so it holds as the pillar grows.
+test("the platform pillar's closer recaps every earlier platform chapter", () => {
+  const platform = CHAPTERS.filter((c) => pillarOf(c) === "platform");
+  // Only meaningful once the pillar has a closer AND at least one earlier chapter to recap.
+  if (platform.length < 2) return;
+
+  const closer = platform[platform.length - 1];
+  const earlier = platform.slice(0, -1).map((c) => c.slug);
+
+  const file = fileForSlug().get(closer.slug);
+  assert.ok(file, `no source file mapped for the platform closer "${closer.slug}"`);
+  const src = readFileSync(join(here, "chapters", file!), "utf8");
+  const linked = new Set([...src.matchAll(/to="\/([a-z0-9-]+)"/g)].map((m) => m[1]));
+
+  const missing = earlier.filter((slug) => !linked.has(slug));
+  assert.equal(
+    missing.length,
+    0,
+    `the platform closer "${closer.slug}" (${file}) does not recap these earlier platform chapter(s): ${missing.join(", ")} — every platform concept needs a place in the reader's final map`,
+  );
+});
+
+test("the platform-recap scan resolves the closer + finds links (guards a vacuous pass)", () => {
+  // A broken resolver/scan would make the recap-completeness test pass vacuously (0 missing of 0). Assert
+  // the pillar split is real and the closer links its earlier chapters, so a regex/file-move break trips
+  // here instead of hiding.
+  const platform = CHAPTERS.filter((c) => pillarOf(c) === "platform");
+  assert.ok(platform.length >= 2, `expected a platform pillar with a closer + earlier chapters, got ${platform.length}`);
+  const closer = platform[platform.length - 1];
+  const file = fileForSlug().get(closer.slug);
+  assert.ok(file, `no source file mapped for the platform closer "${closer.slug}"`);
+  const linked = new Set([...readFileSync(join(here, "chapters", file!), "utf8").matchAll(/to="\/([a-z0-9-]+)"/g)].map((m) => m[1]));
+  const earlier = platform.slice(0, -1).map((c) => c.slug);
+  const found = earlier.filter((slug) => linked.has(slug)).length;
+  assert.ok(found >= 1, `expected the platform closer to link at least one earlier platform chapter, found ${found}`);
+});
