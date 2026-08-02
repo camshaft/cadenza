@@ -2148,6 +2148,61 @@ fn a_runtime_string_to_bytes_encodes_a_recursively_built_string() {
     }
 }
 
+/// adv-54 REGRESSION (breaker tick 1117, HIGH wasm-only soundness — fix landed as PR #1445): a
+/// `let`-bound `String.to-bytes` of a RUNTIME `String.slice`, read MORE THAN ONCE via `Bytes.at`, must
+/// see the correct bytes on EVERY read. The bug: `is_runtime_computation` (lower.rs) omitted
+/// `Core::StrSlice`/`Core::StrToBytes`, so the let-bound `b` was COPY-PROPAGATED — the slice+to-bytes was
+/// RECOMPUTED at each `Bytes.at` site rather than named once. Each recompute CONSUMES the (borrowed)
+/// source, so the 2nd read walked a freed/advanced buffer → 0 (or an OOB trap in the inline 3-read form).
+/// `s` = "ab"++"cdé" (a runtime concat, opaque to the fold); `tail` = slice(s, 3, 5) = "dé" = bytes
+/// [100, 0xC3, 0xA9]; `b[0]+b[1]` = 100 + 195 = 295. NOT multibyte-specific — an ASCII RUNTIME slice
+/// failed too (the breaker's "ASCII OK" used a CONSTANT slice, which const-folds so there is no runtime
+/// recompute); the multibyte form is the breaker's minimal repro. Pins the fix (both ops now KEPT) at the
+/// unit tier so a future lower.rs change that drops either op from `is_runtime_computation` fails HERE,
+/// not just in the corpus.
+#[test]
+fn adv54_runtime_sliced_to_bytes_read_twice_sees_both_bytes() {
+    use crate::testkit::parse;
+    // Runtime concat keeps `s` opaque to the fold; the slice VIEW's to-bytes is let-bound and read TWICE.
+    // Pre-fix wasm returned 100 (b[1] read 0); the fix names `b` once so both reads hit the same buffer.
+    let src = "(module m \
+                 (def (main (: k Int64)) \
+                   (let ((s (String.concat \"ab\" \"cdé\"))) \
+                     (match (String.slice s 3 5) \
+                       ((Some tail) \
+                         (let ((b (String.to-bytes tail))) \
+                           (+ (Int64.of (Option.expect (Bytes.at b 0) \"b0\")) \
+                              (Int64.of (Option.expect (Bytes.at b 1) \"b1\"))))) \
+                       ((None _u) -1)))) \
+                 (export main))";
+    let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+    assert!(
+        cdz_run::required_runtime(&bytes).expect("valid").is_some(),
+        "a runtime String.slice + to-bytes must import the value-heap runtime (not a fold)"
+    );
+    let Some(runtime) = find_runtime_wasm() else {
+        eprintln!("runtime wasm not found (run `cargo xtask build`); skipping composed run");
+        return;
+    };
+    let opts = cdz_run::RunOpts {
+        export: Some("main".to_string()),
+        args: vec!["0".to_string()],
+        runtime: Some(runtime),
+        runtime_cache_dir: None,
+        host_responses: Vec::new(),
+    };
+    match cdz_run::run(&bytes, &opts).expect("run") {
+        cdz_run::Outcome::Value(s) => assert_eq!(
+            s, "295",
+            "both reads of a let-bound to-bytes-of-a-runtime-slice must see the right bytes \
+             (100 + 195); a value of 100 is adv-54 — the 2nd read saw a consumed buffer"
+        ),
+        cdz_run::Outcome::Trap(t) => {
+            panic!("adv-54 repro trapped (the inline OOB form; the fix must make it total): {t}")
+        }
+    }
+}
+
 /// A FIELD read on a RUNTIME record (one whose value is not a compile-time-visible literal) projects
 /// like a tuple element: a record at run time IS a positional heap array in SORTED-KEY order, so
 /// `(. rec field)` is an `arr-get` at the field's sorted index. The record is written OUT of sorted

@@ -4608,8 +4608,8 @@ fn ty_is_non_copy(ty: &Ty) -> bool {
         // A `Symbol` maps to Rust's `String` (types::rust_type — a Symbol value IS its text; the
         // `Symbol.of`/`Symbol.to-string` retag is the identity on the `String`), so it is likewise
         // move-only and MUST clone-on-read. Missing this arm regressed adv-54's rust-async landing:
-        // a Symbol-typed binding read more than once (e.g. `back = Symbol.to-string (Symbol.of s)`,
-        // then compared `= (Symbol.of back) sym`) emitted a bare move on the first read and E0382'd
+        // a Symbol-typed binding read more than once (e.g. `(def back (Symbol.to-string (Symbol.of s)))`,
+        // then compared `(= (Symbol.of back) sym)`) emitted a bare move on the first read and E0382'd
         // (`borrow of moved value`) on the second — the exact failure the wasm StrSlice/StrToBytes
         // keep-binding fix exposed on the rust backend.
         | Ty::Symbol
