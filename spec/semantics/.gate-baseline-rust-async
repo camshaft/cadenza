@@ -1664,6 +1664,7 @@ pass	a guard-elided signed division by a provably-non-neg-one divisor computes i
 pass	a guard-nested BARE pattern on a withheld constructor is also rejected (encapsulation soundness, guard-desugar route)
 pass	a guarded arm among same-constructor match arms keeps first-match-wins
 pass	a guarded arm is selected when its guard holds
+pass	a guarded bin arm with a CONST leading segment reads a binder from a LATER segment
 pass	a guarded bin-match arm over a CONSTANT scrutinee folds the guard and selects the arm
 pass	a guarded bin-match arm over a CONSTANT scrutinee whose guard fails falls to the next arm
 pass	a guarded bin-match arm reads its decoded binder and falls through when the guard fails
