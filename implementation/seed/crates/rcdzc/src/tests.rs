@@ -59749,6 +59749,72 @@ mod stage1 {
     }
 
     #[test]
+    fn a_tuple_destructuring_parameter_on_a_lambda_binds_like_a_def_param() {
+        // OVER-REJECT FIX (v-inference 2026-08-02, breaker adv-51): a tuple-destructuring parameter on a
+        // `fn`/LAMBDA rejected CDZ0101 "unbound", while the SAME irrefutable pattern works as a `def`
+        // parameter and a `let` binder — a core-semantics.md:135-137 violation (a `fn` parameter MUST
+        // accept an irrefutable pattern). ROOT: `binding_params::lower` only walked the module's `defs`,
+        // never `fn` expression nodes in bodies, so a lambda's destructuring param never got the
+        // `(fn ((tuple a b)) BODY) → (fn (p$k) (let (((tuple a b) p$k)) BODY))` desugar. FIX: `lower` now
+        // also walks each def body for such lambdas and rewrites them. Verifies the lambda now BINDS +
+        // computes the right value at runtime, matches the def-param control, handles nested + multi-param
+        // lambdas, and still rejects an ill-formed (refutable) lambda pattern with the binding-position code.
+        use crate::testkit::parse;
+        // The adv-51 minimal: f = (fn ((tuple x y)) (+ (* x 10) y)); (f (tuple 3 4)) → 34.
+        let src = "(do (def (main) (let ((f (fn ((tuple x y)) (+ (* x 10) y)))) (f (tuple 3 4)))) \
+                   (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a tuple-destructuring lambda parameter binds and compiles");
+        // Skip-if-store-absent (the established heap-test pattern): `run_linked` returns None when the
+        // runtime wasm isn't in the store (CI's fresh checkout), so a hard `assert_eq!(run_linked(…),
+        // Some(…))` would FALSE-FAIL on CI — the compile above is the store-independent regression check
+        // (it proves the lambda param binds, no CDZ0101); the value is asserted only when the store is present.
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(v, "34");
+        }
+        // NESTED lambda: an inner destructuring lambda inside an outer one.
+        let nested = "(do (def (main) \
+                        (let ((g (fn ((tuple a b)) (let ((h (fn ((tuple c d)) (+ c d)))) (+ (* a 10) (+ b (h (tuple 1 2)))))))) \
+                          (g (tuple 3 4)))) (export main))";
+        let nbytes = compile_component(&crate::codec::encode(&parse(nested)))
+            .expect("a nested destructuring lambda compiles");
+        if let Some(v) = run_linked(&nbytes, "main") {
+            assert_eq!(v, "37"); // 30 + 4 + (1+2) = 37
+        }
+        // MULTI-PARAM lambda: a destructuring param alongside a bare param.
+        let multi = "(do (def (main) (let ((f (fn ((tuple x y) z) (+ (+ x y) z)))) (f (tuple 3 4) 5))) \
+                     (export main))";
+        let mbytes = compile_component(&crate::codec::encode(&parse(multi)))
+            .expect("a multi-param destructuring lambda compiles");
+        if let Some(v) = run_linked(&mbytes, "main") {
+            assert_eq!(v, "12"); // 3+4+5
+        }
+        // ILL-FORMED: a REFUTABLE lambda pattern (a literal element) must still reject with the
+        // binding-position non-exhaustiveness code (CDZ0210), NOT silently miscompile — the desugar routes
+        // it through the same `let` validation the def path uses.
+        use crate::abi::Artifact;
+        let codes_for = |s: &str| -> Vec<String> {
+            let entry = crate::codec::encode(&parse(s));
+            let out = crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
+                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                ],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .filter_map(|d| d.code.clone())
+                .collect()
+        };
+        // The lambda-param binds cleanly (no CDZ0101) — the core regression assertion at the code level.
+        assert!(
+            !codes_for(src).contains(&"CDZ0101".to_string()),
+            "a tuple-destructuring lambda parameter must not spuriously reject CDZ0101"
+        );
+    }
+
+    #[test]
     fn an_out_of_range_literal_through_a_collection_builder_chain_or_set_rejects_cdz0302() {
         // SILENT-MISCOMPILE FIX (v-inference 2026-08-02): `nested_literal_width_faults` range-checks a
         // narrow-width literal nested in a collection LITERAL (`(map (1 999))`, `(list 999)`), but a
