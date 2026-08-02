@@ -5539,3 +5539,8 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
+pass	a runtime UInt8 wrapping-add overflow wraps modulo 256 (the result is re-masked to width)
+pass	a runtime Int8 wrapping-add overflow wraps with sign-extension (127 + 1 = -128)
+pass	a runtime Int8 wrapping-mul overflow wraps with sign-extension (-128 * -1 = -128)
+pass	a runtime Int16 wrapping-add overflow wraps with sign-extension (32767 + 1 = -32768)
+pass	chained runtime UInt8 wrapping ops each re-normalize to width (250+10 then *2 = 8)

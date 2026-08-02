@@ -3478,6 +3478,79 @@
   (call   main (: 100 UInt8))
   (output (: 101 UInt8)))
 
+; The WRAPPING counterpart of the checked narrow-width overflow above: where the checked `+` TRAPS at
+; its width, the named `wrapping-*` op instead has A Defined Modular Outcome (numeric-model.md #A
+; Wrapping Operation Has A Defined Modular Outcome) — the result is the low `width` bits, re-normalized
+; to the type (masked for unsigned, mask + sign-extend for signed). At RUNTIME (a slot wider than the
+; type) the emitted op must re-mask its result: the raw machine add/sub/mul wraps only at the SLOT
+; width, so a narrow-width wrapping op that emits the raw op WITHOUT re-normalizing leaves the wide,
+; un-wrapped value observable (adv-57: wasm `UInt8.wrapping-add 250 10` returned 260 not 4, at O0..O3;
+; rust/rust-async were correct — a differential wrong-value miscompile). Const forms fold correctly and
+; the Int64 full-width op is modular at the slot, so these pin exactly the runtime NARROW path across the
+; unsigned-mask, signed-sign-extend, mul, Int16, and chained-op (each intermediate re-normalizes) faces.
+
+(case "a runtime UInt8 wrapping-add overflow wraps modulo 256 (the result is re-masked to width)"
+  (doc    "`(UInt8.wrapping-add x (UInt8.wrap 10))` over a runtime UInt8 entry `x` = 250: 250 + 10 = 260,
+           which wraps to 260 mod 256 = 4 in a UInt8. The runtime narrow wrapping add must re-mask its
+           result to the 8-bit width — the raw machine add over the wider slot yields 260, so a backend
+           that skips the width re-mask leaves the un-wrapped 260 observable (adv-57 wasm miscompile). The
+           in-range call (5 + 10 = 15) triangulates that the wrap is modular, not a blanket mask error.")
+  (input  (do
+            (def (main (: x UInt8)) (Int64.of (UInt8.wrapping-add x (UInt8.wrap 10))))
+            (export main)))
+  (call   main (: 250 UInt8)) (output (: 4 Int64))
+  (call   main (: 5 UInt8)) (output (: 15 Int64)))
+
+(case "a runtime Int8 wrapping-add overflow wraps with sign-extension (127 + 1 = -128)"
+  (doc    "The SIGNED narrow face: `(Int8.wrapping-add x (Int8.wrap 1))` over a runtime Int8 = 127
+           (Int8.max): 127 + 1 wraps to -128 (Int8.min) — the modular result re-normalized to a SIGNED
+           8-bit width, which is mask + SIGN-EXTEND (the top bit of the masked result is 1, so the value
+           is negative). A backend that masks but does not sign-extend, or skips the re-mask entirely,
+           would observe 128 or a wider positive value instead of -128. The in-range call (10 + 1 = 11)
+           is the control. Distinct from the unsigned case above — this exercises the sign-extend arm.")
+  (input  (do
+            (def (main (: x Int8)) (Int64.of (Int8.wrapping-add x (Int8.wrap 1))))
+            (export main)))
+  (call   main (: 127 Int8)) (output (: -128 Int64))
+  (call   main (: 10 Int8)) (output (: 11 Int64)))
+
+(case "a runtime Int8 wrapping-mul overflow wraps with sign-extension (-128 * -1 = -128)"
+  (doc    "The wrapping-MUL signed face: `(Int8.wrapping-mul x (Int8.wrap -1))` over a runtime Int8 = -128:
+           -128 * -1 = 128, which does not fit a signed Int8 and wraps back to -128 (the two's-complement
+           asymmetry — negating Int8.min is Int8.min). Pins that wrapping-mul, like wrapping-add, re-masks
+           and sign-extends its runtime narrow result; a raw machine mul leaves 128 observable. The control
+           (5 * -1 = -5) confirms the sign of an in-range product survives.")
+  (input  (do
+            (def (main (: x Int8)) (Int64.of (Int8.wrapping-mul x (Int8.wrap -1))))
+            (export main)))
+  (call   main (: -128 Int8)) (output (: -128 Int64))
+  (call   main (: 5 Int8)) (output (: -5 Int64)))
+
+(case "a runtime Int16 wrapping-add overflow wraps with sign-extension (32767 + 1 = -32768)"
+  (doc    "The Int16 width face (the re-mask is width-parametric, not hard-coded to 8 bits):
+           `(Int16.wrapping-add x (Int16.wrap 1))` over a runtime Int16 = 32767 (Int16.max) wraps to
+           -32768 (Int16.min). Pins that the runtime narrow wrapping re-normalization uses the TYPE's
+           width (16 here), not the slot width — a fixed-width mask or no mask would return 32768. Control:
+           100 + 1 = 101.")
+  (input  (do
+            (def (main (: x Int16)) (Int64.of (Int16.wrapping-add x (Int16.wrap 1))))
+            (export main)))
+  (call   main (: 32767 Int16)) (output (: -32768 Int64))
+  (call   main (: 100 Int16)) (output (: 101 Int64)))
+
+(case "chained runtime UInt8 wrapping ops each re-normalize to width (250+10 then *2 = 8)"
+  (doc    "The intermediate-feeds-next-op face: `(UInt8.wrapping-mul (UInt8.wrapping-add x (UInt8.wrap 10))
+           (UInt8.wrap 2))` at x = 250. The inner add wraps 260 → 4; that 4 (re-normalized) feeds the mul,
+           4 * 2 = 8, in range. If the inner op's result is NOT re-masked before feeding the outer op, the
+           un-wrapped 260 flows in and 260 * 2 = 520 is observed (adv-57 chained-op face — the error
+           COMPOUNDS). Pins that EACH op re-normalizes its own result, not just a final consumer read.
+           Control: (100 + 10) * 2 = 220, all in range.")
+  (input  (do
+            (def (main (: x UInt8)) (Int64.of (UInt8.wrapping-mul (UInt8.wrapping-add x (UInt8.wrap 10)) (UInt8.wrap 2))))
+            (export main)))
+  (call   main (: 250 UInt8)) (output (: 8 Int64))
+  (call   main (: 100 UInt8)) (output (: 220 Int64)))
+
 (case "the Int64.max and Int64.min CONSTANTS compare equal to their boundary values at runtime"
   (doc    "The prelude boundary constants as runtime COMPARANDS: `(= n Int64.max)` and `(= n Int64.min)`
            over a boundary parameter — the max value hits only the max test (1,0), the min value only the
