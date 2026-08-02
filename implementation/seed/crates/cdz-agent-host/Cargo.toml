@@ -29,3 +29,10 @@ live-net = []
 # The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the
 # workspace boundary (both are their own workspaces). We CONSUME these traits; we never edit its src.
 cdz-kernel = { path = "../cdz-kernel" }
+# bytes — ref-counted, O(1)-clone byte buffers. Operator perf directive (2026-08-02, relayed by concierge
+# + v-agent-harness): use `bytes::Bytes` instead of `Vec<u8>` for effect payloads / bodies / any buffer
+# that is cloned or shared, so a clone is a refcount bump + slice, not a deep memcpy. This crate is NEW,
+# so we build Bytes-first (no migration) — the hot path is a model completion body. `Bytes: From<Vec<u8>>`
+# and the reflexive `From` keep our `Payload::Inline(x.into())` sites compiling whether the kernel's
+# `Payload::Inline` inner type is still `Vec<u8>` (today) or `Bytes` (after v-agent-harness's flip).
+bytes = "1"

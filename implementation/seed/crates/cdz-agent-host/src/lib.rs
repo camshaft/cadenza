@@ -14,11 +14,17 @@
 //!   and no credentials, and its result is RECORDED in the log, so replay reuses the frozen instant
 //!   (§9c reads-are-effects — the reducer never reads the clock directly; determinism lives in the log,
 //!   not the executor).
-//! - a Bedrock `Model` executor + a real `Http` client land behind the `live-net` feature (they need
-//!   egress / the operator's Bedrock cred-broker), so a CI runner without egress still gates the crate.
+//! - [`ModelExecutor`] — `Model` → a model completion, the headline: when a reducer's `Model` effect
+//!   reaches a model and the completion folds back, an agent loops end-to-end. It is GENERIC over a
+//!   [`ModelTransport`] so its effect-mapping logic is hermetically testable; the real Bedrock transport
+//!   (SigV4 + the cred-broker) lands behind `live-net`, a stub drives the default gate.
+//! - a real `Http` client lands behind the `live-net` feature too (it needs egress), so a CI runner
+//!   without egress still gates the crate.
 //!
 //! The shared surface with `cdz-kernel` is ONLY the trait signatures; this crate never edits kernel src.
 
 pub mod clock;
+pub mod model;
 
 pub use clock::ClockExecutor;
+pub use model::{ModelExecutor, ModelTransport};
