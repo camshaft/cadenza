@@ -17,18 +17,92 @@ function head(n: Node): string | null {
 }
 
 /// Render a value node for human display. Atoms show bare (a rational `5/2`, a number, a symbol; a
-/// "quoted string" loses its quotes). A `(quantity <value> <unit>)` shows as `<value> <unit>`. Any other
-/// compound (list/tuple/record) falls back to the compact canonical render (the shape renderers own those).
-/// Exported so table CELLS render the same friendly form (a quantity in a table shows `5 meter`, not
-/// `(quantity 5 meter)`) — one display path shared with the value/formula renderers.
+/// "quoted string" loses its quotes). A quantity `(Qty.of <value> <unit>)` shows as `<value> <unit>`
+/// (`5 meter`, `5/2 meter`, `9 meter/(second^2)`) — the concise unit surface, matching the compiler's
+/// display render for the shapes a notebook produces. A dimensionless quantity (`Unit.one`) shows just
+/// its value. Any other compound (list/tuple/record) falls back to the compact canonical render (the
+/// shape renderers own those). Exported so table CELLS render the same friendly form (a quantity in a
+/// table shows `5 meter`, not the raw `(Qty.of 5 (Unit.base # meter))`) — one display path shared with
+/// the value/formula renderers.
+///
+/// 🔑 The RUNTIME renders a quantity as `(Qty.of <value> <unit>)` (spec 18-units case 72), NOT
+/// `(quantity …)` — the notebook runs + renders output in the canonical s-expr surface, so this friendly
+/// path is what turns `(Qty.of 5 (Unit.base #"meter"))` into `5 meter`. The legacy `quantity`-head branch
+/// is kept as a harmless fallback but the runtime never emits it.
 export function displayNode(n: Node): string {
   if (isAtom(n)) return displayAtom(n.atom);
-  if (head(n) === "quantity") {
-    // (quantity <value> <unit>) → "<value> <unit>"; be lenient about extra/missing fields.
+  const h = head(n);
+  if (h === "Qty.of") {
+    // (Qty.of <value> <unit>) → "<value> <unit>"; a dimensionless (Unit.one) unit renders empty → value only.
+    const list = (n as { list: Node[] }).list;
+    if (list.length === 3) {
+      const value = displayNode(list[1]);
+      const unit = displayUnit(list[2]);
+      return unit ? `${value} ${unit}` : value;
+    }
+    // Unexpected arity — fall through to the compact render rather than mangling.
+  }
+  if (h === "quantity") {
+    // Legacy shape (the runtime emits `Qty.of`, not this) — kept as a lenient fallback.
     const parts = (n as { list: Node[] }).list.slice(1).map(displayNode);
     return parts.join(" ");
   }
   return compact(n);
+}
+
+/// The name a unit-symbol node carries (`(Unit.base #"meter")` tokenizes to `[Unit.base, #, "meter"]` — the
+/// `#"…"` symbol is two atoms), unquoted, or null if the node isn't a `#"…"`-named unit. Used by
+/// `displayUnit` to pull `meter` out of a base unit.
+function unitSymbolName(list: Node[]): string | null {
+  // The last atom of a unit builder is the quoted symbol name (`(Unit.base # "meter")`).
+  const last = list[list.length - 1];
+  if (last !== undefined && isAtom(last)) {
+    const s = last.atom;
+    if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) return unquoteAtom(s);
+  }
+  return null;
+}
+
+/// Pretty-print a unit node into the concise unit surface (`meter`, `meter/second`, `meter^2`,
+/// `meter/(second^2)`). Handles the algebraic combinators the notebook produces — `Unit.base`, the
+/// dimensionless identity `Unit.one`, product `Unit.*`, quotient `Unit./`, and integer power `Unit.^`.
+/// A compound sub-unit is PARENTHESIZED so the result is unambiguous (`meter/(second^2)`, `(a^2)*b`),
+/// matching the compiler's nested display; a base unit / power stays bare. Any unrecognized unit shape
+/// (e.g. the `Unit.of`/`Unit.prefix` family/scale layer, which the compiler itself renders as a raw call)
+/// falls back to the compact canonical render, so a value with an unusual unit is still shown, never lost.
+/// Returns "" for the dimensionless identity so a dimensionless quantity renders as just its value.
+function displayUnit(n: Node): string {
+  if (isAtom(n)) {
+    if (n.atom === "Unit.one") return "";
+    return n.atom;
+  }
+  const list = n.list;
+  const h = list.length > 0 && isAtom(list[0]) ? list[0].atom : null;
+  switch (h) {
+    case "Unit.base":
+      return unitSymbolName(list) ?? compact(n);
+    case "Unit.*":
+      if (list.length === 3) return `${wrapUnit(list[1])}*${wrapUnit(list[2])}`;
+      break;
+    case "Unit./":
+      if (list.length === 3) return `${wrapUnit(list[1])}/${wrapUnit(list[2])}`;
+      break;
+    case "Unit.^":
+      // (Unit.^ <unit> <n>) → "<unit>^<n>"; the base is wrapped if compound so `(a/b)^2` reads `(a/b)^2`.
+      if (list.length === 3) return `${wrapUnit(list[1])}^${displayNode(list[2])}`;
+      break;
+  }
+  return compact(n);
+}
+
+/// A unit sub-expression, parenthesized when it is a compound (product/quotient/power) so the surrounding
+/// operator is unambiguous; a base unit or the dimensionless identity stays bare.
+function wrapUnit(n: Node): string {
+  const s = displayUnit(n);
+  if (isAtom(n)) return s;
+  const h = isList(n) && n.list.length > 0 && isAtom(n.list[0]) ? n.list[0].atom : null;
+  if (h === "Unit.base") return s;
+  return `(${s})`;
 }
 
 /// Render a single atom for friendly display: unquote a string, and collapse a WHOLE-valued rational

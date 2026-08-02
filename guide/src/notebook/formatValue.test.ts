@@ -42,7 +42,50 @@ test("a string loses its quotes", () => {
   assert.equal(formatValue('(: "a \\"q\\" b" String)'), 'a "q" b');
 });
 
-test("a quantity renders as `<value> <unit>`", () => {
+// The RUNTIME renders a quantity as `(Qty.of <value> <unit>)` (spec 18-units-of-measure case 72), NOT
+// `(quantity …)`. These pin the friendly display against the shape the notebook ACTUALLY runs against
+// (verified against the compiler's own `render_syntax_display`) — a base unit, a dimensionless value, and
+// the algebraic combinators (product / quotient / integer power) it can produce.
+test("a runtime quantity `(Qty.of value unit)` renders as `<value> <unit>` (base unit)", () => {
+  // `#"meter"` tokenizes to two atoms `#` + `"meter"` — displayUnit pulls the unquoted symbol name.
+  assert.equal(formatValue('(: (Qty.of 5 (Unit.base #"meter")) (Qty Int64 (Unit.base #"meter")))'), "5 meter");
+  assert.equal(formatValue('(: (Qty.of 2192 (Unit.base #"meter")) T)'), "2192 meter");
+  assert.equal(formatValue('(: (Qty.of 5/2 (Unit.base #"second")) T)'), "5/2 second");
+  // a whole-valued rational magnitude still collapses `n/1` → n
+  assert.equal(formatValue('(: (Qty.of 4/1 (Unit.base #"meter")) T)'), "4 meter");
+});
+
+test("a dimensionless runtime quantity (Unit.one) renders as just its value", () => {
+  assert.equal(formatValue("(: (Qty.of 5 Unit.one) T)"), "5");
+  assert.equal(formatValue("(: (Qty.of 3/2 Unit.one) T)"), "3/2");
+});
+
+test("a derived-unit runtime quantity renders the concise unit surface", () => {
+  assert.equal(
+    formatValue('(: (Qty.of 5 (Unit./ (Unit.base #"meter") (Unit.base #"second"))) T)'),
+    "5 meter/second",
+  );
+  assert.equal(
+    formatValue('(: (Qty.of 5 (Unit.* (Unit.base #"newton") (Unit.base #"meter"))) T)'),
+    "5 newton*meter",
+  );
+  assert.equal(formatValue('(: (Qty.of 5 (Unit.^ (Unit.base #"meter") 2)) T)'), "5 meter^2");
+  // a compound sub-unit is parenthesized so the result is unambiguous (matches the compiler's nesting)
+  assert.equal(
+    formatValue('(: (Qty.of 9 (Unit./ (Unit.base #"meter") (Unit.^ (Unit.base #"second") 2))) T)'),
+    "9 meter/(second^2)",
+  );
+});
+
+test("an unrecognized unit shape falls back to a compact render (value never lost)", () => {
+  // The Unit.of/Unit.prefix family layer isn't specialized (the compiler itself renders it as a raw call);
+  // show the value + a compact unit rather than dropping it.
+  const out = formatValue('(: (Qty.of 5 (Unit.of #"inch")) T)');
+  assert.ok(out.startsWith("5 "), `expected a "5 …" render, got ${JSON.stringify(out)}`);
+});
+
+// Legacy `(quantity …)` shape — the runtime never emits it, but the friendly path still handles it.
+test("a legacy `(quantity value unit)` shape renders as `<value> <unit>`", () => {
   assert.equal(formatValue("(: (quantity 2192 meter) (Quantity Int64))"), "2192 meter");
   assert.equal(formatValue("(: (quantity 5/2 second) T)"), "5/2 second");
 });
