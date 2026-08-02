@@ -60583,6 +60583,55 @@ mod stage1 {
     }
 
     #[test]
+    fn binding_position_irrefutability_holds_across_all_lambda_positions() {
+        // COVERAGE-HARDENING (v-inference 2026-08-02, at-rest sweep): the binding-position irrefutability
+        // rule (core-semantics.md:135-139 — a `fn` parameter MUST accept an irrefutable pattern; a refutable
+        // one is CDZ0210) must hold UNIFORMLY across every lambda position, not just the let-bound one the
+        // recent fixes (adv-51 / refutable-lambda-body / nested-gap) directly exercised. Pins that a
+        // destructuring param BINDS and a refutable param REJECTS whether the lambda is a HOF ARGUMENT or
+        // IMMEDIATELY-APPLIED — guarding these positions against a future regression in the desugar/walk.
+        use crate::abi::Artifact;
+        let codes_for = |s: &str| -> Vec<String> {
+            let entry = crate::codec::encode(&parse(s));
+            let out = crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
+                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                ],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .filter_map(|d| d.code.clone())
+                .collect()
+        };
+        // A destructuring tuple param on a lambda passed as a HOF ARGUMENT binds cleanly.
+        assert!(
+            !codes_for("(do (def (ap (: f (-> (Tuple Int64 Int64) Int64)) (: p (Tuple Int64 Int64))) (f p)) (def (main) (ap (fn ((tuple a b)) (+ a b)) (tuple 3 4))) (export main))")
+                .contains(&"CDZ0210".to_string()),
+            "an irrefutable tuple param on a HOF-argument lambda binds (no CDZ0210)"
+        );
+        // A REFUTABLE param on a HOF-argument lambda rejects CDZ0210.
+        assert!(
+            codes_for("(do (def (ap (: f (-> (Option Int64) Int64)) (: o (Option Int64))) (f o)) (def (main) (ap (fn ((Some x)) x) (Some 3))) (export main))")
+                .contains(&"CDZ0210".to_string()),
+            "a refutable param on a HOF-argument lambda rejects CDZ0210"
+        );
+        // A destructuring param on an IMMEDIATELY-APPLIED lambda binds cleanly.
+        assert!(
+            !codes_for("(do (def (main) ((fn ((tuple a b)) (+ a b)) (tuple 3 4))) (export main))")
+                .contains(&"CDZ0210".to_string()),
+            "an irrefutable tuple param on an immediately-applied lambda binds (no CDZ0210)"
+        );
+        // A REFUTABLE param on an IMMEDIATELY-APPLIED lambda rejects CDZ0210.
+        assert!(
+            codes_for("(do (def (main) ((fn ((Some x)) x) (Some 3))) (export main))")
+                .contains(&"CDZ0210".to_string()),
+            "a refutable param on an immediately-applied lambda rejects CDZ0210"
+        );
+    }
+
+    #[test]
     fn a_deep_curried_application_spine_reduces_without_tripping_the_reduce_depth_limit() {
         // FIX (v-inference 2026-08-02, co-diagnosed w/ v-compiler-perf): a curried application spine
         // `((((f 0) 1) 2)…)` over an N-param def declined CDZ0999 at N≈32 — `lambda_of`'s Apply arm reduced
