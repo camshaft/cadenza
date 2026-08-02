@@ -1464,6 +1464,49 @@ fn an_empty_tuple_compound_test_declines_with_the_empty_compound_reason() {
     );
 }
 
+/// A `@test` over a USER-SUM param the generator can't produce (`type T = A(Char) | B` — a non-generatable
+/// `Char` payload) DECLINES CLEANLY PER-TEST and does NOT abort the whole file — a SIBLING test still runs.
+/// Before this, a bare user-sum NAME whose `classify_sum` returned None (non-generatable payload, recursive
+/// sum, multi-payload variant, or a mixed nullary+payload sum) fell through to the export boundary and
+/// produced a file-level compile error (`a T sum crosses the host boundary only as a single nullary
+/// export's result`, exit 1) that killed every sibling. The `name_resolves_to_user_type` guard now routes
+/// such a param to a DECLINING wrapper (a trapping nullary def) so the runner reports a per-test `FAIL
+/// p-gen` while the sibling PASSES — the user-sum counterpart to the non-generatable-leaf compound decline
+/// above. (A GENERATABLE sum still runs as a real property; an UNRESOLVABLE name still keeps its CDZ0101.)
+#[test]
+fn a_user_sum_with_a_nongeneratable_payload_declines_cleanly_and_siblings_run() {
+    let d = dir("user-sum-nongeneratable-payload-decline");
+    let f = write(
+        &d,
+        "m.cdz",
+        "type T =\n | A(Char)\n | B\n\
+         @test def p(x: T) = unit\n\
+         @test def sibling_runs() = if 1 == 1 then unit else trap(\"sibling should run\")\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f]);
+    assert!(
+        !ok,
+        "the non-generatable user-sum test declines → non-zero exit: {stdout}{stderr}"
+    );
+    // Must NOT be a file-level boundary abort (the declining wrapper intercepts before the boundary).
+    assert!(
+        !stdout.contains("crosses the host boundary")
+            && !stderr.contains("crosses the host boundary"),
+        "the user-sum param must NOT abort the file at the boundary (declining wrapper intercepts): \
+         {stdout}{stderr}"
+    );
+    // Test isolation: the sibling still RUNS and passes.
+    assert!(
+        stdout.contains("PASS sibling_runs"),
+        "a sibling test still runs despite the non-generatable user-sum test: {stdout}"
+    );
+    // The user-sum test declines with an actionable per-test FAIL, not a silent drop or a file abort.
+    assert!(
+        stdout.contains("FAIL p-gen") && stdout.contains("not property-testable"),
+        "the non-generatable user-sum test declines with an ACTIONABLE per-test FAIL: {stdout}"
+    );
+}
+
 /// The counterexample-VALUE render covers a user SUM parameter: a failing property over a `(type Res (Ok
 /// Int64) (Err Int64))` reports the concrete failing VALUE (`never_ok(Ok(0))` — the variant name + its
 /// decoded payload) rather than the raw driver ints. The runner classifies the wrapper's param via
