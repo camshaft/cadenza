@@ -21,7 +21,7 @@ use crate::retry;
 use bytes::Bytes;
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
-use cdz_kernel::executor::Executor;
+use cdz_kernel::executor::AsyncExecutor;
 use cdz_kernel::hash::Hash;
 
 /// The I/O half of an HTTP request, factored out so the executor's logic is hermetically testable. An
@@ -38,8 +38,10 @@ use cdz_kernel::hash::Hash;
 /// retryability token — a transient failure (5xx, timeout, connection reset) as
 /// [`crate::retry::retryable`], a permanent one (4xx client error, DNS failure, malformed URL) as
 /// [`crate::retry::permanent`]. Unprefixed reasons are treated PERMANENT (fail-closed).
+/// `#[async_trait(?Send)]` — a real HTTP request awaits the socket; not `Send` (single-threaded host).
+#[async_trait::async_trait(?Send)]
 pub trait HttpTransport {
-    fn request(
+    async fn request(
         &self,
         url: &str,
         body: Option<&[u8]>,
@@ -60,8 +62,9 @@ impl<T: HttpTransport> HttpExecutor<T> {
     }
 }
 
-impl<T: HttpTransport> Executor for HttpExecutor<T> {
-    fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+#[async_trait::async_trait(?Send)]
+impl<T: HttpTransport> AsyncExecutor for HttpExecutor<T> {
+    async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         if req.kind != EffectKind::Http {
             // Structural — PERMANENT, a supervisor must not retry it (§17: observable Err, never a panic).
             return EffectOutcome::Err(retry::permanent(format!(
@@ -82,7 +85,11 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
             }
             None => None,
         };
-        match self.transport.request(&req.target, body, idempotency_key) {
+        match self
+            .transport
+            .request(&req.target, body, idempotency_key)
+            .await
+        {
             // The transport's `Bytes` response body moves straight into `Payload::Inline` (ref-counted
             // `Bytes`) — no copy. The transport's Err reason already carries its retryability token, so
             // pass it through unchanged.
@@ -102,8 +109,14 @@ mod tests {
         expect_body: Option<Vec<u8>>,
         response: Bytes,
     }
+    #[async_trait::async_trait(?Send)]
     impl HttpTransport for StubHttp {
-        fn request(&self, url: &str, body: Option<&[u8]>, _key: Hash) -> Result<Bytes, String> {
+        async fn request(
+            &self,
+            url: &str,
+            body: Option<&[u8]>,
+            _key: Hash,
+        ) -> Result<Bytes, String> {
             assert_eq!(url, "https://ok.host/x");
             assert_eq!(body.map(|b| b.to_vec()), self.expect_body);
             Ok(self.response.clone()) // Bytes clone = O(1) refcount bump, not a deep copy
@@ -119,13 +132,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_get_has_no_body_and_returns_the_response() {
+    #[tokio::test]
+    async fn a_get_has_no_body_and_returns_the_response() {
         let mut exec = HttpExecutor::new(StubHttp {
             expect_body: None,
             response: Bytes::from_static(b"response body"),
         });
-        match exec.perform(&http_req(None), Hash::of(b"k")) {
+        match exec.perform_async(&http_req(None), Hash::of(b"k")).await {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
                 assert_eq!(&bytes[..], b"response body")
             }
@@ -133,32 +146,38 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_inline_payload_is_the_request_body() {
+    #[tokio::test]
+    async fn an_inline_payload_is_the_request_body() {
         let mut exec = HttpExecutor::new(StubHttp {
             expect_body: Some(b"post this".to_vec()),
             response: Bytes::from_static(b"ok"),
         });
         // The stub asserts it received exactly the inline payload as the request body.
-        match exec.perform(
-            &http_req(Some(Payload::Inline(b"post this".to_vec().into()))),
-            Hash::of(b"k"),
-        ) {
+        match exec
+            .perform_async(
+                &http_req(Some(Payload::Inline(b"post this".to_vec().into()))),
+                Hash::of(b"k"),
+            )
+            .await
+        {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => assert_eq!(&bytes[..], b"ok"),
             other => panic!("expected Ok, got {other:?}"),
         }
     }
 
-    #[test]
-    fn a_blob_body_is_a_permanent_err_no_blob_store_access() {
+    #[tokio::test]
+    async fn a_blob_body_is_a_permanent_err_no_blob_store_access() {
         let mut exec = HttpExecutor::new(StubHttp {
             expect_body: None,
             response: Bytes::new(),
         });
-        match exec.perform(
-            &http_req(Some(Payload::Blob(Hash::of(b"big")))),
-            Hash::of(b"k"),
-        ) {
+        match exec
+            .perform_async(
+                &http_req(Some(Payload::Blob(Hash::of(b"big")))),
+                Hash::of(b"k"),
+            )
+            .await
+        {
             EffectOutcome::Err(msg) => {
                 // Rejected because this executor has no blob-store access (an invariant, not a "yet").
                 assert!(msg.contains("no blob-store access"), "{msg}");
@@ -172,18 +191,24 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_transient_transport_failure_stays_retryable_through_the_executor() {
+    #[tokio::test]
+    async fn a_transient_transport_failure_stays_retryable_through_the_executor() {
         // A transient transport failure (connection reset) carries RETRYABLE; the executor passes it
         // through, so it reaches the supervisor still classified retryable.
         struct FlakyHttp;
+        #[async_trait::async_trait(?Send)]
         impl HttpTransport for FlakyHttp {
-            fn request(&self, _u: &str, _b: Option<&[u8]>, _k: Hash) -> Result<Bytes, String> {
+            async fn request(
+                &self,
+                _u: &str,
+                _b: Option<&[u8]>,
+                _k: Hash,
+            ) -> Result<Bytes, String> {
                 Err(retry::retryable("connection refused"))
             }
         }
         let mut exec = HttpExecutor::new(FlakyHttp);
-        match exec.perform(&http_req(None), Hash::of(b"k")) {
+        match exec.perform_async(&http_req(None), Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("connection refused"), "{msg}");
                 assert_eq!(
@@ -196,11 +221,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn non_http_kind_is_a_permanent_err() {
+    #[tokio::test]
+    async fn non_http_kind_is_a_permanent_err() {
         struct NeverCalled;
+        #[async_trait::async_trait(?Send)]
         impl HttpTransport for NeverCalled {
-            fn request(&self, _u: &str, _b: Option<&[u8]>, _k: Hash) -> Result<Bytes, String> {
+            async fn request(
+                &self,
+                _u: &str,
+                _b: Option<&[u8]>,
+                _k: Hash,
+            ) -> Result<Bytes, String> {
                 panic!("transport must not be called for a non-Http kind");
             }
         }
@@ -211,7 +242,7 @@ mod tests {
             payload: None,
             timeliness: Timeliness::Interactive,
         };
-        match exec.perform(&req, Hash::of(b"k")) {
+        match exec.perform_async(&req, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("Http"), "err names the handled kind: {msg}");
                 assert_eq!(

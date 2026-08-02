@@ -15,7 +15,7 @@
 use cdz_agent_host::{ModelExecutor, ModelTransport};
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload, Timeliness};
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
-use cdz_kernel::executor::CompositeExecutor;
+use cdz_kernel::executor::AsyncCompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
@@ -37,8 +37,14 @@ fn policy_component_bytes() -> Option<Vec<u8>> {
 /// A stub model transport (the Model executor's I/O half) — the agent's Model effect that gets AUTHORIZED
 /// reaches this; a canned completion keeps the loop hermetic. (An unauthorized effect never gets here.)
 struct StubModel;
+#[async_trait::async_trait(?Send)]
 impl ModelTransport for StubModel {
-    fn invoke(&self, _model_id: &str, _body: &[u8], _key: Hash) -> Result<bytes::Bytes, String> {
+    async fn invoke(
+        &self,
+        _model_id: &str,
+        _body: &[u8],
+        _key: Hash,
+    ) -> Result<bytes::Bytes, String> {
         Ok(bytes::Bytes::from_static(b"a completion"))
     }
 }
@@ -110,7 +116,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
     // result folds back → the agent records "permitted".
     {
         let reducer = SyncAsAsync(PolicyProbe);
-        let mut exec = CompositeExecutor::new()
+        let mut exec = AsyncCompositeExecutor::new()
             .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
         let mut session = Session::genesis(Hash::of(b"cedar-permit-v1"));
         session
@@ -136,7 +142,7 @@ async fn a_real_agent_is_gated_by_a_real_cedar_decision() {
         let reducer = SyncAsAsync(PolicyProbe);
         // A Model executor is registered, but the Http effect is denied before any executor runs; an
         // Http executor isn't even needed to prove the deny (the gate stops it first).
-        let mut exec = CompositeExecutor::new()
+        let mut exec = AsyncCompositeExecutor::new()
             .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
         let mut session = Session::genesis(Hash::of(b"cedar-deny-v1"));
         session

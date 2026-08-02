@@ -21,7 +21,7 @@ use crate::retry;
 use bytes::Bytes;
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
-use cdz_kernel::executor::Executor;
+use cdz_kernel::executor::AsyncExecutor;
 use cdz_kernel::hash::Hash;
 
 /// The I/O half of model invocation, factored out so the executor's logic is hermetically testable.
@@ -39,11 +39,19 @@ use cdz_kernel::hash::Hash;
 /// (Bedrock 429/5xx/timeout, throttle, connection reset) as [`crate::retry::retryable`], a permanent one
 /// (400/auth/malformed) as [`crate::retry::permanent`]. An unprefixed reason is treated PERMANENT
 /// (fail-closed), so forgetting the prefix means "not retried," never "retried forever."
+/// `#[async_trait(?Send)]` — the invoke is async (a real Bedrock call awaits the socket) and not `Send`
+/// (single-threaded host, no cross-thread futures; §15b), matching the kernel's `AsyncExecutor`/`AsyncReducer`.
+#[async_trait::async_trait(?Send)]
 pub trait ModelTransport {
     /// Invoke `model_id` with the opaque request `body`, returning the raw response bytes. The
     /// `idempotency_key` lets a side-effecting transport dedup a crash-re-driven dispatch (§16c-S1/D) —
     /// so a supervisor's retry of a RETRYABLE failure re-drives with the same key and doesn't double-charge.
-    fn invoke(&self, model_id: &str, body: &[u8], idempotency_key: Hash) -> Result<Bytes, String>;
+    async fn invoke(
+        &self,
+        model_id: &str,
+        body: &[u8],
+        idempotency_key: Hash,
+    ) -> Result<Bytes, String>;
 }
 
 /// Performs `Model` effects by delegating the network call to a [`ModelTransport`]. Single-KIND: a
@@ -59,8 +67,9 @@ impl<T: ModelTransport> ModelExecutor<T> {
     }
 }
 
-impl<T: ModelTransport> Executor for ModelExecutor<T> {
-    fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+#[async_trait::async_trait(?Send)]
+impl<T: ModelTransport> AsyncExecutor for ModelExecutor<T> {
+    async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         // These are structural request errors — retrying can't fix them, so they're PERMANENT (§17
         // totality: an observable Err, never a panic).
         if req.kind != EffectKind::Model {
@@ -85,7 +94,11 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
                 ));
             }
         };
-        match self.transport.invoke(&req.target, body, idempotency_key) {
+        match self
+            .transport
+            .invoke(&req.target, body, idempotency_key)
+            .await
+        {
             // The transport's `Bytes` completion moves straight into `Payload::Inline` (ref-counted
             // `Bytes`) — no copy. The transport's Err reason already carries its own retryability token
             // (RETRYABLE:/PERMANENT:, per the trait contract), so pass it through unchanged.
@@ -105,8 +118,9 @@ mod tests {
     struct StubTransport {
         response: Bytes,
     }
+    #[async_trait::async_trait(?Send)]
     impl ModelTransport for StubTransport {
-        fn invoke(&self, model_id: &str, body: &[u8], _key: Hash) -> Result<Bytes, String> {
+        async fn invoke(&self, model_id: &str, body: &[u8], _key: Hash) -> Result<Bytes, String> {
             // Prove the executor passed the model id (target) + the request body (payload) through.
             assert_eq!(model_id, "test-model");
             assert_eq!(body, b"prompt");
@@ -123,15 +137,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn invokes_the_model_and_returns_the_completion() {
+    #[tokio::test]
+    async fn invokes_the_model_and_returns_the_completion() {
         let mut exec = ModelExecutor::new(StubTransport {
             response: Bytes::from_static(b"a completion"),
         });
-        match exec.perform(
-            &model_req(Some(Payload::Inline(b"prompt".to_vec().into()))),
-            Hash::of(b"k"),
-        ) {
+        match exec
+            .perform_async(
+                &model_req(Some(Payload::Inline(b"prompt".to_vec().into()))),
+                Hash::of(b"k"),
+            )
+            .await
+        {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
                 assert_eq!(&bytes[..], b"a completion");
             }
@@ -139,12 +156,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_missing_payload_is_an_observable_err() {
+    #[tokio::test]
+    async fn a_missing_payload_is_an_observable_err() {
         let mut exec = ModelExecutor::new(StubTransport {
             response: Bytes::new(),
         });
-        match exec.perform(&model_req(None), Hash::of(b"k")) {
+        match exec.perform_async(&model_req(None), Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("requires a request payload"), "{msg}");
                 // A structural request error is PERMANENT — a supervisor must not retry it.
@@ -158,15 +175,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_blob_payload_is_a_permanent_err_no_blob_store_access() {
+    #[tokio::test]
+    async fn a_blob_payload_is_a_permanent_err_no_blob_store_access() {
         let mut exec = ModelExecutor::new(StubTransport {
             response: Bytes::new(),
         });
-        match exec.perform(
-            &model_req(Some(Payload::Blob(Hash::of(b"big-body")))),
-            Hash::of(b"k"),
-        ) {
+        match exec
+            .perform_async(
+                &model_req(Some(Payload::Blob(Hash::of(b"big-body")))),
+                Hash::of(b"k"),
+            )
+            .await
+        {
             EffectOutcome::Err(msg) => {
                 // Rejected because this executor has no blob-store access (an invariant, not a "yet").
                 assert!(msg.contains("no blob-store access"), "{msg}");
@@ -180,21 +200,25 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_transient_transport_failure_stays_retryable_through_the_executor() {
+    #[tokio::test]
+    async fn a_transient_transport_failure_stays_retryable_through_the_executor() {
         // A transport classifies its own error; the executor passes the reason through unchanged, so a
         // RETRYABLE transport failure (e.g. a Bedrock throttle) reaches the supervisor still RETRYABLE.
         struct ThrottledTransport;
+        #[async_trait::async_trait(?Send)]
         impl ModelTransport for ThrottledTransport {
-            fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<Bytes, String> {
+            async fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<Bytes, String> {
                 Err(retry::retryable("bedrock throttled (429)"))
             }
         }
         let mut exec = ModelExecutor::new(ThrottledTransport);
-        match exec.perform(
-            &model_req(Some(Payload::Inline(b"prompt".to_vec().into()))),
-            Hash::of(b"k"),
-        ) {
+        match exec
+            .perform_async(
+                &model_req(Some(Payload::Inline(b"prompt".to_vec().into()))),
+                Hash::of(b"k"),
+            )
+            .await
+        {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("throttled"), "{msg}");
                 assert_eq!(
@@ -207,11 +231,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn non_model_kind_is_a_permanent_err() {
+    #[tokio::test]
+    async fn non_model_kind_is_a_permanent_err() {
         struct NeverCalled;
+        #[async_trait::async_trait(?Send)]
         impl ModelTransport for NeverCalled {
-            fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<Bytes, String> {
+            async fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<Bytes, String> {
                 panic!("transport must not be called for a non-Model kind");
             }
         }
@@ -222,7 +247,7 @@ mod tests {
             payload: Some(Payload::Inline(b"x".to_vec().into())),
             timeliness: Timeliness::Interactive,
         };
-        match exec.perform(&req, Hash::of(b"k")) {
+        match exec.perform_async(&req, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("Model"), "err names the handled kind: {msg}");
                 assert_eq!(

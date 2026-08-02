@@ -17,7 +17,7 @@ use cdz_kernel::effect::{
     Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
 };
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
-use cdz_kernel::executor::CompositeExecutor;
+use cdz_kernel::executor::AsyncCompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
@@ -26,8 +26,14 @@ use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
 /// A stub model transport: returns a canned completion, so the agent loop is hermetic. The real Bedrock
 /// transport implements this same trait behind `live-net`.
 struct StubModel;
+#[async_trait::async_trait(?Send)]
 impl ModelTransport for StubModel {
-    fn invoke(&self, model_id: &str, body: &[u8], _key: Hash) -> Result<bytes::Bytes, String> {
+    async fn invoke(
+        &self,
+        model_id: &str,
+        body: &[u8],
+        _key: Hash,
+    ) -> Result<bytes::Bytes, String> {
         // Echo enough that the test can prove the executor threaded the model id + prompt through.
         Ok(
             format!("{model_id} says: {}", String::from_utf8_lossy(body))
@@ -87,8 +93,8 @@ fn model_cap() -> Authorizer {
 #[tokio::test]
 async fn agent_loop_runs_end_to_end_through_the_model_executor() {
     let reducer = ModelAgent;
-    let mut exec =
-        CompositeExecutor::new().with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
+    let mut exec = AsyncCompositeExecutor::new()
+        .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
     let mut session = Session::genesis(Hash::of(b"model-agent-v1"));
 
     session
@@ -179,7 +185,7 @@ async fn one_composite_routes_both_now_and_model_for_one_agent() {
             predicate: ResourcePredicate::Exact("claude-test".into()),
         },
     ]);
-    let mut exec = CompositeExecutor::new()
+    let mut exec = AsyncCompositeExecutor::new()
         .with(EffectKind::Now, Box::new(ClockExecutor::new()))
         .with(EffectKind::Model, Box::new(ModelExecutor::new(StubModel)));
     let mut session = Session::genesis(Hash::of(b"clock-then-model-v1"));
@@ -212,8 +218,9 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
     // is denied at the gate — the transport (a paid call) is never reached. A transport that panics if
     // called proves the executor was never consulted.
     struct MustNotCall;
+    #[async_trait::async_trait(?Send)]
     impl ModelTransport for MustNotCall {
-        fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<bytes::Bytes, String> {
+        async fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<bytes::Bytes, String> {
             panic!("a denied Model effect must never reach the transport");
         }
     }
@@ -232,8 +239,8 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
             }
         }
     }
-    let mut exec =
-        CompositeExecutor::new().with(EffectKind::Model, Box::new(ModelExecutor::new(MustNotCall)));
+    let mut exec = AsyncCompositeExecutor::new()
+        .with(EffectKind::Model, Box::new(ModelExecutor::new(MustNotCall)));
     let mut session = Session::genesis(Hash::of(b"wrong-model-v1"));
     session
         .deliver_async(
