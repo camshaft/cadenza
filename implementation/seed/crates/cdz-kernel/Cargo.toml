@@ -69,9 +69,14 @@ url = "2"
 # wasmtime — the CORE reactive-wasm engine (component host in wasm_host.rs binds wit/reducer.wit + runs
 # reducer components). Same version + minimal feature set cdz-run uses (runtime + cranelift +
 # component-model), so the whole tree agrees on one wasmtime. NOT optional — it's the kernel's engine.
-wasmtime = { version = "37", default-features = false, features = ["runtime", "cranelift", "component-model"] }
+wasmtime = { version = "37", default-features = false, features = ["runtime", "cranelift", "component-model", "async"] }
 
 [dev-dependencies]
 # `wat` (WebAssembly text → bytes) — authors tiny component fixtures in the wasm-host tests (the
 # reference component-WAT assembler cdz-run uses). Dev-only + small.
 wat = "1"
+# tokio (current-thread only) — drives the async reducer tests (`AsyncComponentReducer::fold_async` is a
+# real async wasmtime call that may yield on fuel, so it needs a real executor to poll to completion, not
+# a one-shot poll). `rt` + `macros` = a single-threaded runtime + `#[tokio::test]`; NO multi-thread/net/fs
+# features (the kernel is single-threaded / no-Send by design — matches the runtime we test under).
+tokio = { version = "1", features = ["rt", "macros"] }
