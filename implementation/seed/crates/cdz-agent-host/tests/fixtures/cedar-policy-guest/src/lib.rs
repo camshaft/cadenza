@@ -10,8 +10,10 @@
 //!
 //! **Totality (host is fail-closed):** the kernel treats a trap / instantiate-failure as a DENY, so a
 //! broken policy can never accidentally PERMIT. This guest therefore never traps on a normal decision —
-//! any parse/build problem degrades to a `deny` with a reason, not a panic. (A malformed embedded policy
-//! is caught by the fixture's own build-time test, not at authorize time.)
+//! any parse/build problem degrades to a `deny` with a reason, not a panic. (The fixture's own unit test
+//! below asserts the embedded policy parses + decides as intended; note this fixture crate is EXCLUDED
+//! from the workspace, so that test runs only when this fixture is built directly — the cdz-agent-host CI
+//! job builds it — not in a normal `cargo test` of the parent crate.)
 
 wit_bindgen::generate!({
     world: "authorizer-world",
@@ -68,18 +70,41 @@ impl Guest for Guest0 {
     }
 }
 
+/// Escape an id for Cedar's double-quoted string syntax: backslash and double-quote must be escaped so
+/// the id can't break out of (or malform) the `Type::"id"` entity-uid literal. This is CEDAR escaping —
+/// NOT Rust `{:?}` Debug escaping, which only incidentally quotes bare strings and would turn any id with
+/// a quote/backslash/control char into MALFORMED Cedar → a silent parse-error DENY (PR#1295). Escaping
+/// here keeps a special-char principal/action/target a VALID literal, so the policy decides it for real.
+fn cedar_escape(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    for c in id.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Evaluate the embedded policy set for the request. `Ok(true)` = allow, `Ok(false)` = deny, `Err` = a
 /// request/policy build error (mapped to a reasoned deny by the caller).
 fn decide(request: &AuthRequest) -> Result<bool, String> {
     let policies = PolicySet::from_str(POLICY_SRC).map_err(|e| format!("policy parse: {e}"))?;
     // Build the Cedar PARC triple from the request strings. principal = the session identity, action =
-    // Action::"<kind>", resource = Resource::"<target>". Cedar entity-uid syntax: Type::"id".
-    let principal: EntityUid = EntityUid::from_str(&format!("Principal::{:?}", request.principal))
-        .map_err(|e| format!("principal uid: {e}"))?;
-    let action: EntityUid = EntityUid::from_str(&format!("Action::{:?}", request.action))
-        .map_err(|e| format!("action uid: {e}"))?;
-    let resource: EntityUid = EntityUid::from_str(&format!("Resource::{:?}", request.target))
-        .map_err(|e| format!("resource uid: {e}"))?;
+    // Action::"<kind>", resource = Resource::"<target>". Cedar entity-uid syntax: `Type::"id"`, with the
+    // id CEDAR-escaped (not Rust `{:?}`) so a quote/backslash in it can't malform the literal.
+    let principal: EntityUid = EntityUid::from_str(&format!(
+        "Principal::\"{}\"",
+        cedar_escape(&request.principal)
+    ))
+    .map_err(|e| format!("principal uid: {e}"))?;
+    let action: EntityUid =
+        EntityUid::from_str(&format!("Action::\"{}\"", cedar_escape(&request.action)))
+            .map_err(|e| format!("action uid: {e}"))?;
+    let resource: EntityUid =
+        EntityUid::from_str(&format!("Resource::\"{}\"", cedar_escape(&request.target)))
+            .map_err(|e| format!("resource uid: {e}"))?;
     let req = Request::new(principal, action, resource, Context::empty(), None)
         .map_err(|e| format!("request: {e}"))?;
     let answer = Authorizer::new().is_authorized(&req, &policies, &Entities::empty());
@@ -90,11 +115,12 @@ export!(Guest0);
 
 #[cfg(test)]
 mod tests {
-    // NOTE: this test runs on the NATIVE host (cargo test in this fixture dir), not in wasm — it exercises
-    // the `decide` policy logic directly (cedar-policy compiles native too). It's a build-time guard that
-    // the embedded POLICY_SET parses and expresses the intended decisions, so a malformed policy is caught
-    // here rather than degrading to a runtime deny. The wit-bindgen generated types aren't constructed
-    // here; we call `decide` with a hand-built AuthRequest-shaped input via a small local mirror.
+    // NOTE: this test runs on the NATIVE host (a direct `cargo test` in this fixture dir — the fixture
+    // crate is workspace-excluded, so it does NOT run in a normal `cargo test` of cdz-agent-host; the
+    // cdz-agent-host CI job builds this fixture and this runs there). It exercises the `decide` policy
+    // logic directly (cedar-policy compiles native too) — a guard that the embedded POLICY_SET parses and
+    // expresses the intended decisions, so a malformed policy is caught rather than degrading to a runtime
+    // deny. We call `decide` with a hand-built AuthRequest.
     use super::*;
 
     fn req(principal: &str, action: &str, target: &str) -> AuthRequest {
@@ -124,5 +150,28 @@ mod tests {
         // default-deny: a model id outside the allow-list, and an unmodelled action.
         assert_eq!(decide(&req("agent", "model", "other-model")), Ok(false));
         assert_eq!(decide(&req("agent", "shell", "rm -rf /")), Ok(false));
+    }
+
+    #[test]
+    fn special_char_ids_decide_via_the_policy_not_a_parse_error_deny() {
+        // PR#1295: a principal/target with a quote or backslash must build a VALID Cedar entity via
+        // cedar_escape (not `{:?}` Debug quoting, which would malform the literal → a silent parse-error
+        // deny). So a special-char id still reaches a real policy DECISION (`Ok(_)`), not `Err`.
+        // A quote-containing target under the broad http permit → still ALLOWED (it's a valid, non-IMDS
+        // resource once escaped), proving the escape kept the literal valid rather than erroring.
+        assert_eq!(
+            decide(&req("agent", "http", "https://ok.host/a\"b")),
+            Ok(true),
+            "a quote in the target must escape into a valid Cedar literal + decide, not Err"
+        );
+        // A backslash in the principal likewise builds a valid entity and decides (http still permitted).
+        assert_eq!(
+            decide(&req("agent\\x", "http", "https://ok.host/x")),
+            Ok(true)
+        );
+        // Directly assert cedar_escape's contract.
+        assert_eq!(cedar_escape(r#"a"b"#), r#"a\"b"#);
+        assert_eq!(cedar_escape(r"a\b"), r"a\\b");
+        assert_eq!(cedar_escape("plain"), "plain");
     }
 }

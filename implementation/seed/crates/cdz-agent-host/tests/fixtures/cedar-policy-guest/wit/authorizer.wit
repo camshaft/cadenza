@@ -1,8 +1,11 @@
-// The authorizer world — the LOCKED WIT contract (v-agent-harness, queued cdz-kernel `bf44d95e6`) that
-// this Cedar policy guest exports and the kernel's ComponentAuthorizer instantiates. Vendored here so
-// the guest fixture (a separate crate from cdz-kernel) builds against the exact same shape; it is
-// byte-identical to the kernel's canonical wit/authorizer.wit — keep them in lockstep (if v-agent-harness
-// changes the world, update this copy).
+// The authorizer world — the LOCKED WIT contract (v-agent-harness, cdz-kernel `bf44d95e6`) that this
+// Cedar policy guest exports and the kernel's ComponentAuthorizer instantiates. Vendored here because the
+// guest fixture is a SEPARATE crate from cdz-kernel (a cross-crate relative bind to
+// `../../../../../cdz-kernel/wit/authorizer.wit` would be fragile), so this copy carries the same
+// INTERFACE SHAPE as the canonical `cdz-kernel/wit/authorizer.wit` — the world/interface/record
+// definitions match exactly (only comments differ). Keep them in lockstep: if v-agent-harness changes the
+// world, update this copy. The cdz-agent-host CI job's `wasm-tools component new` + `validate` step
+// catches a guest that no longer produces a valid authorizer component if the shape drifts.
 package cadenza:agent-kernel-authz;
 
 interface types {
