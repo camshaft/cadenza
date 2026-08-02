@@ -1529,6 +1529,29 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
             heads: vec![].into(),
         });
     }
+    // Case 6mr: `form` is a MATCH ARM whose pattern is a `(list p… .. <nested-pattern>)` — the rest slot
+    // after `..` holds a NESTED pattern, not a bare name/`_`, binding `name` (an inner binder like `b`/`r`
+    // in `(list a .. (list b .. r))`). RULED (v-inference 2026-08-02): a list rest binder admits only a
+    // name or wildcard (core-semantics.md:149 grants nested patterns to ELEMENT positions only; :135 a
+    // binding position holds an irrefutable pattern, and a nested list pattern is refutable on empty rest —
+    // the same name-only rule the map rest binder has). So the REJECT is correct, but WITHOUT this the inner
+    // binder falls through to scoping → a MISLEADING CDZ0101 "unbound name `b`" that masks the real
+    // rest-shape fault. Resolve it to a coded SHAPE decline naming the rest form, SUPPRESSING the unbound
+    // cascade — the list twin of Case Mmr (malformed map rest). ANCHOR at the offending `(list …)` PATTERN
+    // node (same node the list matcher's own shape reject lands on — `lower.rs`), so same-node dedup collapses
+    // the two into ONE primary diagnostic (the in-pattern binder occurrences already inert via
+    // `is_list_pattern_element_occurrence`, so only these body references reach here).
+    if let Some(list_pat) = match_arm_nested_list_rest_binds(db, form, from, name) {
+        return Some(Resolved::Poison(
+            Reject::coded(
+                crate::diag::Code::Malformed,
+                "the rest binder of a list pattern must be a name or `_`, not a nested pattern — bind the \
+                 tail to a name and destructure it in a nested `match` (e.g. `(list a .. rest)`, then \
+                 `(match rest …)`)",
+            )
+            .at(list_pat),
+        ));
+    }
     // Case 6g: `form` is a GUARD `(guard <variant-pattern> <cond>)`, ascended from `<cond>` → a payload
     // binder of the variant pattern is in scope in the guard cond (`(guard (Some x) (> x 0))` — the guard
     // `(> x 0)` reads the payload binder `x`). Like Case 5g but the binder nests in a VARIANT pattern, so
@@ -3145,6 +3168,120 @@ fn list_pattern_rest_binds(
         return None;
     }
     Some((scrutinee, dd)) // `dd` = number of leading binders = the rest sublist's start index
+}
+
+/// Whether the `(list …)` FORM `pat` has a NESTED-PATTERN rest slot — a `..` marker followed by EXACTLY one
+/// element that is NOT a bare name / `_` (a `(list …)` / `(tuple …)` / `(Mk …)` sub-pattern). A list rest
+/// binder admits only a name or wildcard (RULED v-inference 2026-08-02: core-semantics.md:149/:135 — a
+/// binding position holds an irrefutable pattern, and a nested list pattern is refutable on empty rest), so
+/// this shape is invalid; its inner binders must resolve to the rest-shape decline (Case 6mr) rather than
+/// leaking a misleading unbound name. The list twin of [`map_form_is_malformed_rest`]. A well-formed
+/// name/`_` rest, or a `..` not followed by exactly one element (a different malformed shape the lowering
+/// arity check owns), returns `false`.
+fn list_form_has_nested_rest(db: &Db, pat: StructId) -> bool {
+    let Some(elems) = db
+        .ast
+        .as_ctor_form(pat, "list")
+        .or_else(|| db.ast.as_form(pat, "list"))
+    else {
+        return false;
+    };
+    match elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
+        // Exactly one element after `..`, and it is a COMPOUND (not a bare name / `_`) — the nested-rest shape.
+        Some(i) if i + 2 == elems.len() => db.ast.as_name(elems[i + 1]).is_none(),
+        _ => false,
+    }
+}
+
+/// Whether the NESTED-REST slot of `pat` (a `(list …)` form with [`list_form_has_nested_rest`]) binds
+/// `name` ANYWHERE inside its rest sub-pattern — a leading element (`b` in `(list b .. r)`), the sub-
+/// pattern's own rest binder (`r`), or deeper. Uses the form-independent `find_binder_in_*` walkers (the
+/// same ones the body-resolution cases use), so it recognizes exactly the names a body reference would
+/// otherwise resolve unbound. `name`/`_`/`..` bind nothing. Companion of [`list_form_has_nested_rest`].
+fn nested_rest_slot_binds_name(db: &Db, pat: StructId, name: &str) -> bool {
+    if name == "_" || name == ".." {
+        return false;
+    }
+    let Some(elems) = db
+        .ast
+        .as_ctor_form(pat, "list")
+        .or_else(|| db.ast.as_form(pat, "list"))
+    else {
+        return false;
+    };
+    let Some(i) = elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) else {
+        return false;
+    };
+    let Some(&rest_pat) = elems.get(i + 1) else {
+        return false;
+    };
+    let (mut path, mut heads) = (Vec::new(), Vec::new());
+    if is_tuple_pattern(db, rest_pat) {
+        find_binder_in_tuple(db, rest_pat, name, &mut path, &mut heads)
+    } else if is_list_pattern(db, rest_pat) {
+        find_binder_in_list(db, rest_pat, name, &mut path, &mut heads)
+    } else {
+        find_binder_in_pattern(db, rest_pat, name, &mut path, &mut heads)
+    }
+}
+
+/// The `(list …)` PATTERN node when `form` is a MATCH ARM `(pattern body)` (ascended from its BODY, or a
+/// guarded arm's guard cond) whose pattern is — DIRECTLY or NESTED inside a tuple/variant/list payload — a
+/// `(list …)` with a NESTED-PATTERN rest slot ([`list_form_has_nested_rest`]) that binds `name`; `None`
+/// otherwise. The list twin of [`match_arm_malformed_map_binds`]: it lets `binder_in` (Case 6mr) resolve
+/// such a body/guard reference to the clear rest-shape decline (co-anchored at the returned node) instead
+/// of leaking an unbound name.
+fn match_arm_nested_list_rest_binds(
+    db: &Db,
+    form: StructId,
+    from: StructId,
+    name: &str,
+) -> Option<StructId> {
+    let Struct::List(pb) = db.ast.get(form) else {
+        return None;
+    };
+    if pb.len() != 2 {
+        return None;
+    }
+    // Peel a `(guard <pattern> <cond>)` wrapper — a guard-cond reference binds the same names.
+    let (arm_pat, guard_cond) = match db.ast.as_form(pb[0], "guard") {
+        Some(g) if g.len() == 2 => (g[0], Some(g[1])),
+        _ => (pb[0], None),
+    };
+    if from != pb[1] && Some(from) != guard_cond {
+        return None;
+    }
+    // Must be a genuine match arm (parent is `(match scrutinee arm…)`, `form` an arm, not the scrutinee).
+    let parent = db.parent_of(form)?;
+    let mtail = db.ast.as_form(parent, "match")?;
+    match mtail.first() {
+        Some(&scrutinee) if scrutinee != form => {}
+        _ => return None,
+    }
+    find_nested_list_rest_binding_name(db, arm_pat, name)
+}
+
+/// The NESTED-REST `(list …)` sub-pattern of `pattern` that binds `name` in its rest slot, searched
+/// DIRECTLY and through nested tuple/variant/list payloads; `None` if none. Companion of
+/// [`match_arm_nested_list_rest_binds`] — lets a body reference to a nested-rest inner binder resolve to
+/// the rest-shape decline (not a leaked unbound name), including when the offending `(list …)` is itself
+/// nested inside another compound pattern.
+fn find_nested_list_rest_binding_name(db: &Db, pattern: StructId, name: &str) -> Option<StructId> {
+    // A `(list …)` here whose rest slot is a nested pattern AND binds `name`: this is the node.
+    if list_form_has_nested_rest(db, pattern) && nested_rest_slot_binds_name(db, pattern, name) {
+        return Some(pattern);
+    }
+    // Descend a compound pattern's children (including the invalid nested-rest sub-pattern itself, so a
+    // doubly-nested rest is caught). Bounded by the arena's tree depth.
+    let Struct::List(children) = db.ast.get(pattern) else {
+        return None;
+    };
+    for &child in children {
+        if let Some(found) = find_nested_list_rest_binding_name(db, child, name) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Whether `id` is a NAME occurrence that is a `(list …)` match-pattern binder in the PATTERN position — a
