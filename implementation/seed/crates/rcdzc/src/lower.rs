@@ -11864,10 +11864,13 @@ fn inline_cost_threshold() -> u32 {
     // FAIL-FAST on a PRESENT-but-invalid value (unset → default is fine): a typo'd
     // `CDZ_INLINE_COST_THRESHOLD=4O` must NOT silently measure the default while the sweeper believes it
     // swept 40 — that yields misleading sweep data (the whole point of this knob is a trustworthy sweep).
-    // Unset → default (byte-identical codegen); present-but-unparseable → panic naming the knob.
+    // ONLY `NotPresent` (genuinely unset) takes the default → byte-identical codegen; a present-but-
+    // unparseable value panics, and `NotUnicode` (present but not valid UTF-8) is ALSO present-but-invalid
+    // → panic, not the default (a set-but-garbage var must never masquerade as unset).
     *CACHE.get_or_init(|| match std::env::var("CDZ_INLINE_COST_THRESHOLD") {
         Ok(v) => v.parse().expect("CDZ_INLINE_COST_THRESHOLD must be a u32"),
-        Err(_) => INLINE_COST_THRESHOLD_DEFAULT,
+        Err(std::env::VarError::NotPresent) => INLINE_COST_THRESHOLD_DEFAULT,
+        Err(e) => panic!("CDZ_INLINE_COST_THRESHOLD is set but invalid: {e}"),
     })
 }
 
@@ -11875,11 +11878,13 @@ fn inline_cost_threshold() -> u32 {
 /// overrides it for the same set-widening co-measure sweep; UNSET → 2 → byte-identical.
 fn inline_min_callers() -> usize {
     static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    // FAIL-FAST on a PRESENT-but-invalid value (unset → default), the sibling of `inline_cost_threshold`'s
-    // guard: a typo'd `CDZ_INLINE_MIN_CALLERS` must not silently sweep the default.
+    // FAIL-FAST on a PRESENT-but-invalid value (only a genuinely-UNSET var → default), the sibling of
+    // `inline_cost_threshold`'s guard: a typo'd `CDZ_INLINE_MIN_CALLERS` must not silently sweep the default,
+    // and a present-but-non-UTF-8 (`NotUnicode`) value is present-but-invalid → panic, not the default.
     *CACHE.get_or_init(|| match std::env::var("CDZ_INLINE_MIN_CALLERS") {
         Ok(v) => v.parse().expect("CDZ_INLINE_MIN_CALLERS must be a usize"),
-        Err(_) => INLINE_MIN_CALLERS_DEFAULT,
+        Err(std::env::VarError::NotPresent) => INLINE_MIN_CALLERS_DEFAULT,
+        Err(e) => panic!("CDZ_INLINE_MIN_CALLERS is set but invalid: {e}"),
     })
 }
 
