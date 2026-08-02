@@ -245,8 +245,11 @@ fn a_nonexistent_file_target_reds_the_run_with_a_read_error_not_a_false_green() 
     let d = dir("nonexistent-target");
     let missing = d.join("definitely-absent.cdz");
     assert!(!missing.exists(), "the target must genuinely not exist");
-    let missing = missing.to_str().expect("utf-8 temp path");
-    let (ok, stdout, stderr) = run(&["test", missing]);
+    // `to_string_lossy().into_owned()` (the idiom `write()` above uses), NOT `to_str().expect()`: a temp
+    // path can be non-UTF-8 on some platforms/filesystems, and `.expect()` would turn this read-error test
+    // into a spurious PANIC. The lossy form never panics; the owned String lives across the `run()` call.
+    let missing = missing.to_string_lossy().into_owned();
+    let (ok, stdout, stderr) = run(&["test", &missing]);
     let combined = format!("{stdout}{stderr}");
     assert!(
         !ok,
