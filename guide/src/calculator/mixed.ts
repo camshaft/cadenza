@@ -33,6 +33,10 @@ export function toMixed(display: string): string {
 
   const n = BigInt(m[1]);
   const d = BigInt(m[2]);
+  // A zero denominator is not a rational the compiler ever emits (a rational is in lowest terms with a
+  // positive denominator), but `toMixed` is exported and called from scripts/tests on arbitrary strings,
+  // so stay TOTAL: pass `n/0` through unchanged rather than dividing by zero.
+  if (d === 0n) return display;
   // A whole rational (`5/1`) or a proper fraction (|n| < d, e.g. `1/3`) is already in its clearest form.
   // (In lowest terms d only divides n when d === 1, so the d === 1 guard also covers the whole case.)
   const abs = n < 0n ? -n : n;
