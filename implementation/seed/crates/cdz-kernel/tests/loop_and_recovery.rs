@@ -1181,6 +1181,7 @@ async fn live_shell_denied_command_never_executes() {
             &authz,
             &mut exec,
         )
+        .await
         .unwrap();
 
     // Denied at the gate → a denial is logged and nothing ran.
