@@ -1,0 +1,79 @@
+/// giter-chain.cdz — DIRECT coverage for the `chain` combiner (iterator concatenation), split into its
+  /// own small module.
+  ///
+  /// WHY A SEPARATE MODULE. `chain : GIter(a) -> GIter(a) -> GIter(a)` is `flatten`'s per-inner combiner
+  /// (see giter-flat.cdz), but there it is only ever exercised TRANSITIVELY through `flatten` — a `chain`
+  /// regression that still happens to compose under `flatten` would slip past. These tests pin `chain`'s
+  /// three invariants at its OWN arm. They cannot live in giter-flat.cdz: that module sits at the
+  /// per-module monomorphizer instantiation-PRESSURE ceiling (measured — a direct `chain@Int64` call there
+  /// collides with its String `flatten` path, re-resolving the monomorphic `digit-from`), so a direct
+  /// `chain` test destabilizes its global solve. A SMALL dedicated module keeps `chain`'s Int64
+  /// instantiation isolated (per-module compilation isolates the pressure), the SAME "isolate the heavy
+  /// instantiation in its own module" pattern giter-flat.cdz documents for `flatten`.
+  ///
+  /// The generic pull-iterator (same cons-cell shape as giter.cdz / giter-flat.cdz; re-declared here so
+  /// this module is self-contained — each src/*.cdz is its own namespace).
+  type GIter =
+  | Nil
+  | Cons(a, GIter(a))
+
+/// `from-list(xs)` — the base generic producer (an iterator over `xs : List(a)`), self-recursive so its
+/// result element ties to the argument.
+def from-list(xs) = match xs with
+  | [] => GIter.Nil(unit)
+  | [h, .. t] => GIter.Cons(h, from-list(t))
+
+/// `chain(a, b)` — concatenate two iterators (all of `a`, then all of `b`). Self-recursive over `a`; the
+/// `Nil` base returns `b` unchanged, so the result element ties to the inputs'. The unit under test.
+def chain(a, b) = match a with
+  | GIter.Nil(_) => b
+  | GIter.Cons(h, rest) => GIter.Cons(h, chain(rest, b))
+
+/// `count(it)` — number of elements, driving the pull to exhaustion (cardinality witness).
+def count(it) = match it with
+  | GIter.Nil(_) => 0
+  | GIter.Cons(_, rest) => 1 + count(rest)
+
+/// `digits(it)` — fold a `GIter(Int64)` of single digits into one base-10 number (`acc*10 + h`), so the
+/// result is ORDER- AND VALUE-sensitive: `[1, 2, 3]` → 123. A reorder/drop/dup that preserves cardinality
+/// would slip past a `count` check, so the ordering tests fold with `digits` (a thin seed of `digit-from`
+/// at `acc = 0`, empty → 0).
+def digits(it) = digit-from(it, 0)
+
+/// `digit-from(it, acc)` — the tail-recursive base-10 accumulator worker for `digits`.
+def digit-from(it, acc) = match it with
+  | GIter.Nil(_) => acc
+  | GIter.Cons(h, rest) => digit-from(rest, acc * 10 + h)
+
+/// TESTS ----------------------------------------------------------------------------------------------
+/// `chain`'s core invariant, pinned DIRECTLY (giter-flat only exercises it transitively through `flatten`):
+/// it concatenates left-then-right IN ORDER — folded with `digits` so order AND values are checked, not
+/// just cardinality (a reorder/drop/dup preserving element count would slip past a `count` check). A
+/// three-input associativity check pins that `chain(chain(a, b), c)` and `chain(a, chain(b, c))` agree, so
+/// the recursion nests correctly. The EMPTY base cases (`chain` with a `Nil` operand) are NOT tested here:
+/// a bare `from-list([])` leaves its result element var untied (the documented empty-producer CDZ0201 gap),
+/// and this module has no `take`/typed-empty idiom to pin it; that base-case coverage stays in
+/// giter-flat.cdz, which pins empties by nesting them in a homogeneous outer list beside a non-empty sibling.
+@test
+def chain-concatenates-left-then-right-in-order() =
+  if digits(chain(from-list([1, 2]), from-list([3, 4]))) == 1234 then
+    unit
+  else
+    trap("chain concatenates left then right in order: [1,2]++[3,4] = 1234")
+
+@test
+def chain-preserves-count() =
+  if count(chain(from-list([1, 2]), from-list([3, 4, 5]))) == 5 then
+    unit
+  else
+    trap("chain total length is the sum of both sides: 2 + 3 = 5")
+
+@test
+def chain-is-associative() =
+  if digits(chain(chain(from-list([1, 2]), from-list([3])), from-list([4, 5])))
+     == digits(chain(from-list([1, 2]), chain(from-list([3]), from-list([4, 5])))) then
+    unit
+  else
+    trap("chain is associative: (a++b)++c == a++(b++c)")
+
+export { GIter.* }
