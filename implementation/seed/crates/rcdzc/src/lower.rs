@@ -19786,6 +19786,25 @@ fn lower_runtime_compare(
     }
 }
 
+/// Read a constant float operand's f64-bit payload DEMOTED to the operand's own float width, so a
+/// `Float32`-typed constant compares at binary32 precision — mirroring `lower_float_arith`'s width==32
+/// `f64::from_bits(bits) as f32 as f64` round, the `ConstFloat` emit (`… as f32`), and the runtime
+/// `FloatCompare`/`FEq` grounding. Without this, a `Float32` const fold compares the UN-demoted f64
+/// payloads: `(= (: 0.30000001192092896 Float32) (: 0.3 Float32))` folds FALSE though both operands
+/// demote to the SAME binary32 (`0x3E99999A`) and the runtime path folds TRUE (adv-61). A `Float64`
+/// operand (or an unpinned default-width one) returns the bits unchanged.
+fn const_float_bits_at_operand_width(db: &mut Db, operand: StructId, bits: u64) -> u64 {
+    let width = match crate::infer::type_of(db, operand) {
+        crate::ty::Ty::Float(ft) => ft.ground_width(),
+        _ => crate::ty::DEFAULT_FLOAT_WIDTH,
+    };
+    if width == 32 {
+        (f64::from_bits(bits) as f32 as f64).to_bits()
+    } else {
+        bits
+    }
+}
+
 fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
     if args.len() != 2 {
         return Core::Poison(binop_arity_reject(op, args));
@@ -19956,7 +19975,11 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
         // an unordered pair (a NaN — but a bare `nan` constant is `ConstFloatNan`, handled above, so this
         // arm's operands are finite) folds to false. Only the fold — no float runtime for a Bool result.
         (Core::ConstFloat(a), Core::ConstFloat(b)) => {
-            let (ba, bb) = (a.to_f64_bits(), b.to_f64_bits());
+            // Demote each payload to the operand's own float width BEFORE comparing — a `Float32` pair
+            // compares at binary32 (matching the runtime `FEq`/ordering + the `ConstFloat` emit), not at
+            // the un-demoted f64 payload the reader parsed (adv-61).
+            let ba = const_float_bits_at_operand_width(db, args[0], a.to_f64_bits());
+            let bb = const_float_bits_at_operand_width(db, args[1], b.to_f64_bits());
             if matches!(op, Prim::Eq) {
                 let r = ba == bb;
                 trace!(target: "rcdzc::fold", op = intrinsic_name(op), result = r, "folded constant float equality (by canonical bits)");
@@ -21256,7 +21279,13 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
         // Two floats: equal iff their canonical Float64 BITS match — so a nested `-0.0` is distinct from
         // `0.0` (`(= (tuple -0.0) (tuple 0.0))` → false). By-bits, NOT `f64` `==`, precisely so `-0.0`/
         // `0.0` differ — the structural byte-form rule.
-        (Core::ConstFloat(x), Core::ConstFloat(y)) => Some(x.to_f64_bits() == y.to_f64_bits()),
+        (Core::ConstFloat(x), Core::ConstFloat(y)) => {
+            // Demote each to the operand's own float width first — a nested `Float32` pair compares at
+            // binary32, not at the un-demoted f64 payload (adv-61; mirrors the scalar `=` fold).
+            let bx = const_float_bits_at_operand_width(db, a, x.to_f64_bits());
+            let by = const_float_bits_at_operand_width(db, b, y.to_f64_bits());
+            Some(bx == by)
+        }
         // A nested NaN under the canonical byte form: every NaN equals every NaN (`(= (tuple nan) (tuple
         // nan))` → true, `(= (Some nan) (Some nan))` → true), and `nan` is unequal to any finite float —
         // the SAME rule the scalar `=` fold applies, recursed through a compound.
