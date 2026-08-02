@@ -530,8 +530,10 @@ def tok-at(ts: List(Tok), i: Int64) = match List.at(ts, i) with
   | Option.Some(t) => t
   | Option.None(_) => Tok.TEnd
 
-/// The op code of a token if it is `TOp op` (else -1).
-def op-code(t: Tok) = match t with | Tok.TOp(op) => op | _ => -1
+/// The op code of a token if it is `TOp op`, else `None` (not an operator token). Typed absence, not an
+/// in-band `-1`: each caller matches `Some(op)` to dispatch on the operator and `None` to stop (no operator
+/// here), so a non-operator can never be mistaken for a real op code.
+def op-code(t: Tok) = match t with | Tok.TOp(op) => Option.Some(op) | _ => Option.None(unit)
 
 /// parse-factor: an Int literal, a boolean literal, a variable reference, or a parenthesized expression. A
 /// paren nests the FULL grammar (`parse-any`, so `(let x = 1 in x)` parses). Returns `(nodeId, nextIndex, tree')`.
@@ -559,10 +561,12 @@ def parse-term(ts: List(Tok), i: Int64, tree: Tree) =
   (match parse-factor(ts, i, tree) with | (lhs, j, t1) => parse-term-tail(ts, j, lhs, t1))
 
 def parse-term-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree) =
-  (let op = op-code(tok-at(ts, i)) in
-   if (op == 42) then mul-tail-add(ts, i, lhs, tree, 42)
-   else (if (op == 47) then mul-tail-add(ts, i, lhs, tree, 47)
-   else (if (op == 37) then mul-tail-add(ts, i, lhs, tree, 37) else (lhs, i, tree))))
+  (match op-code(tok-at(ts, i)) with
+   | Option.None(_) => (lhs, i, tree)
+   | Option.Some(op) =>
+     (if (op == 42) then mul-tail-add(ts, i, lhs, tree, 42)
+      else (if (op == 47) then mul-tail-add(ts, i, lhs, tree, 47)
+      else (if (op == 37) then mul-tail-add(ts, i, lhs, tree, 37) else (lhs, i, tree)))))
 
 def mul-tail-add(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
   (match parse-factor(ts, i + 1, tree) with | (rhs, j, t1) =>
@@ -573,9 +577,11 @@ def parse-expr(ts: List(Tok), i: Int64, tree: Tree) =
   (match parse-term(ts, i, tree) with | (lhs, j, t1) => parse-expr-tail(ts, j, lhs, t1))
 
 def parse-expr-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree) =
-  (let op = op-code(tok-at(ts, i)) in
-   if op == 43 then add-tail(ts, i, lhs, tree, 43)
-   else (if op == 45 then add-tail(ts, i, lhs, tree, 45) else (lhs, i, tree)))
+  (match op-code(tok-at(ts, i)) with
+   | Option.None(_) => (lhs, i, tree)
+   | Option.Some(op) =>
+     (if op == 43 then add-tail(ts, i, lhs, tree, 43)
+      else (if op == 45 then add-tail(ts, i, lhs, tree, 45) else (lhs, i, tree))))
 
 def add-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
   (match parse-term(ts, i + 1, tree) with | (rhs, j, t1) =>
@@ -608,8 +614,10 @@ def parse-if(ts: List(Tok), i: Int64, tree: Tree) =
 /// four new relational ops is just more op codes in THIS existing layer — no new grammar function (SCC-safe).
 def parse-cmp(ts: List(Tok), i: Int64, tree: Tree) =
   (match parse-expr(ts, i, tree) with | (lhs, j, t1) =>
-    (let op = op-code(tok-at(ts, j)) in
-     if (op >= 60) then (if (op <= 65) then cmp-tail(ts, j, lhs, t1, op) else (lhs, j, t1)) else (lhs, j, t1)))
+    (match op-code(tok-at(ts, j)) with
+     | Option.None(_) => (lhs, j, t1)
+     | Option.Some(op) =>
+       (if (op >= 60) then (if (op <= 65) then cmp-tail(ts, j, lhs, t1, op) else (lhs, j, t1)) else (lhs, j, t1))))
 
 def cmp-tail(ts: List(Tok), i: Int64, lhs: Int64, tree: Tree, op: Int64) =
   (match parse-expr(ts, i + 1, tree) with | (rhs, j, t1) =>
