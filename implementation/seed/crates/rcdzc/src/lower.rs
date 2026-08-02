@@ -2898,13 +2898,33 @@ fn parse_bigint_decimal(tok: &str) -> Option<IntValue> {
         Some(rest) => (true, rest),
         None => (false, tok),
     };
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+    if digits.is_empty() {
         return None;
     }
+    // Precompute `ten` and the 0..=9 digit values ONCE, then accumulate in a SINGLE pass that both
+    // validates (a non-digit byte returns None mid-loop) and folds `acc = acc*10 + d` — no separate
+    // `.all()` validation scan, and no fresh `IntValue::from_i64` allocation per digit (only these 11
+    // values are ever built, regardless of token length). This fn runs only when `str::parse::<i64>`
+    // already overflowed, i.e. on ≥19-digit tokens, so the reuse is a clear win with no small-input cost.
     let ten = IntValue::from_i64(10);
-    let mut acc = IntValue::from_i64(0);
+    let digit_values: [IntValue; 10] = [
+        IntValue::from_i64(0),
+        IntValue::from_i64(1),
+        IntValue::from_i64(2),
+        IntValue::from_i64(3),
+        IntValue::from_i64(4),
+        IntValue::from_i64(5),
+        IntValue::from_i64(6),
+        IntValue::from_i64(7),
+        IntValue::from_i64(8),
+        IntValue::from_i64(9),
+    ];
+    let mut acc = IntValue::zero();
     for b in digits.bytes() {
-        acc = acc.mul(&ten).add(&IntValue::from_i64((b - b'0') as i64));
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        acc = acc.mul(&ten).add(&digit_values[(b - b'0') as usize]);
     }
     Some(if negative { acc.neg() } else { acc })
 }
