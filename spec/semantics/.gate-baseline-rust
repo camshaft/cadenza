@@ -1719,6 +1719,132 @@ pass	a fitting cross-function match projection computes at the narrow width
 pass	a fitting handler arm resume value computes under a narrow annotation
 pass	a fitting payload projected through Option.expect computes
 pass	a fitting recursive annotated result computes at the narrow width
+pass	a float divide by zero takes the DIVIDEND's sign into the infinity
+pass	a float literal compared against a Float32 param computes at the narrow width
+pass	a full-width UInt64 comparison over a HIGH-BIT operand is unsigned
+pass	a function with two SAME-NAMED parameters is a non-linear binding rejection
+pass	a guard runs a NESTED MATCH on the quote-bound subtree — value-dependent rewriting
+pass	a handler STATE that is a recursive sum GROWS one constructor per operation
+pass	a handler arm computes its NEXT-STATE with a recursive pure helper
+pass	a handler arm computes its RESUME VALUE with a deeply RECURSIVE pure helper
+todo	a host-delegated result SEEDS an in-program handler's initial state
+pass	a host-op argument COMPUTED by guest arithmetic crosses the boundary evaluated
+pass	a large value in a NON-projected tuple slot does not trip the projection width check
+pass	a let record pattern destructures a helper CALL's runtime record result
+pass	a let tuple pattern destructures a helper CALL's runtime tuple result
+pass	a linear index-of search returns the POSITION of a runtime key, or -1 past the end
+pass	a literal just past the Float32 finite max overflows in a runtime branch
+pass	a literal one past the Int8 min rejects in a runtime branch
+pass	a magnitude literal that overflows the annotated Qty INNER width is rejected
+pass	a map of lists of tuples of RECORDS: a four-level mixed query reads a named leaf
+pass	a narrow-width overflow in a RECURSIVE function's annotated result is rejected
+pass	a narrow-width overflow in a handler arm resume value under a narrow annotation is rejected
+pass	a narrow-width overflow projected through Option.expect over a runtime branch is rejected
+pass	a narrow-width overflow projected through Result.expect over a runtime branch is rejected
+pass	a narrow-width overflow reached ACROSS a function boundary through a match projection is rejected
+pass	a narrow-width overflow reached through a MATCH projection of a runtime sum is rejected
+pass	a narrow-width overflow reached through a TUPLE-field projection of a runtime branch is rejected
+pass	a negative literal under an UNSIGNED width rejects in a runtime branch
+pass	a one-node Ast rewrite over a runtime leaf computes per call
+pass	a perform BETWEEN two `?`s advances state that survives the second's cut
+pass	a perform in the scrutinee fires exactly ONCE whichever of three arms is selected
+pass	a performing closure called TWICE observes the state advance between its calls
+pass	a prepend-built list drains in order through head-tail matching
+pass	a quantity in a TUPLE inside a LIST element renders scaled (nested composition)
+pass	a quantity in an OPTION inside a MAP value renders scaled (nested composition)
+pass	a quantity read from a map COMBINES with a fresh same-dimension quantity
+pass	a read-modify-write of a List value in a Map grows the entry and leaves the original map unchanged
+pass	a record MATCH pattern with a LITERAL field sub-pattern dispatches on the field value
+pass	a record field built by a RUNTIME BRANCH holds a user-sum, projected then matched
+pass	a record key with a float-bearing TUPLE field keys by content
+pass	a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive
+pass	a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them
+pass	a recursive combinator applies a captured closure a RUNTIME number of times
+pass	a recursive fold SUMS a list of same-unit quantities threading a Qty accumulator
+pass	a recursive fold over a runtime Peano spine recovers its depth
+pass	a recursive fold returns a MIXED-representation tuple destructured at the caller
+pass	a recursive parser drains a STREAM of length-prefixed frames to the empty base case
+pass	a recursive scalar-walk classifies characters across a multibyte String entry arg
+pass	a recursive scalar-walk over a guest-built rope classifies characters on every backend
+pass	a recursive walk over a runtime-SHAPED tree dispatches per call
+pass	a reframed packet with a TRANSFORMED header compares byte-equal to its independent twin
+pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
+pass	a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves
+pass	a rewrite-then-eval pipeline over a runtime tree preserves meaning through the rewrite
+pass	a NONZERO BigInt literal probe in a recursive quasiquote-pattern simp matches its own constructor
+pass	a rope accumulates across perform/resume boundaries and content-checks at the exit
+pass	a runtime multibyte rope matches a MULTIBYTE string-literal arm by content
+pass	a runtime-built BigInt sum-payload literal probe matches its constructor
+pass	a runtime-built BigInt sum-payload literal probe falls through on a non-matching payload
+pass	a plain-sum recursive CONSTANT BigInt literal probe matches its own constructor
+pass	a right shift of a negative by a RUNTIME amount stays arithmetic
+pass	a rope built before a perform survives the resume and the arm's own heap does not leak into it
+pass	a rope threads TWO chained if-selects, each operand multi-use, and every length stays live
+pass	a row-op pipeline — merge then without then two projections — over runtime values
+pass	a runtime = on a RECURSIVE-through-List sum walks runtime-built trees on every backend
+pass	a runtime = on a sum recursive through a RECORD-of-TUPLE payload walks structurally
+pass	a runtime = over MUTUALLY-recursive sums walks across the type cycle
+pass	a runtime BEYOND-64-bit BigInt map key looks up by exact multi-limb value
+pass	a runtime BRANCH selects between two named functions and the selected one applies
+pass	a runtime LIST argument to an effect op is WALKED by a recursive fold inside the arm
+pass	a runtime String.slice STORED as a map key is found by a flat probe
+pass	a runtime String.slice probing a flat-keyed map hits by content
+pass	a runtime branch selects between two ANONYMOUS closures fed to the iterate combinator
+pass	a runtime hole woven into a compound Ast is read back by a nested match
+pass	a runtime same-dimension multiply derives the SQUARED dimension and computes the area
+pass	a runtime slice VIEW crosses a helper-function boundary intact
+pass	a runtime zero denominator PRODUCED BY ARITHMETIC traps at construction
+pass	a runtime-PARAMETERIZED recursive sum renders per-call depths from one export
+pass	a runtime-constructed Ast equals its quoted twin by structural content
+pass	a runtime-index List.update LOOP rewrites every 100th slot of a 1000-element list
+pass	a runtime-key swap-then-take chain threads both value-yields and the shrinking map
+pass	a runtime-payload `?` result feeds a SECOND runtime-payload `?` in sequence
+pass	a runtime-woven Ast compares structurally equal to an equivalent quote
+pass	a scalar Ast.Int built in a helper from a runtime param compares = a constant Ast.Int
+pass	a scalar slice spanning a width TRANSITION carries its multibyte content exactly
+pass	a select between a base map and its derived generation frees the loser but not shared nodes
+pass	a separator JOIN over a runtime parts list handles first-vs-rest and the empty list
+pass	a shift by a RUNTIME amount computes (both operands off the fold)
+pass	a signed zero survives a TUPLE round-trip and its sign still steers arithmetic after unboxing
+pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
+pass	a slice OF a seam-spanning slice re-offsets into the logical bytes of the parent view
+pass	a slice OF a slice composes the offsets at runtime bounds
+pass	a slice at a RUNTIME start re-bases indexing per call
+pass	a slice of a runtime-start SLICE composes both offsets
+pass	a slice reads correctly after its parent binding's last direct use
+pass	a slice returned from a helper OUTLIVES the helper's local parent
+pass	a slice window spanning MANY seams of a built rope reads the logical bytes
+pass	a slice-view SET element dedups against its flat twin in a Set.of batch build
+pass	a subnormal-range tiny literal under Float32 computes in a runtime branch
+pass	a success `?` unwraps a RUNTIME Ok payload under a Result boundary
+pass	a success `?` unwraps a RUNTIME payload (static ctor, per-call value)
+pass	a sum-typed STATE MACHINE steps through transitions with an ABSORBING terminal state
+pass	a tag DISPATCHES ON CHUNK TEXT to weave different operator spines around runtime holes
+pass	a tag function INTROSPECTS its chunk and hole counts and returns both
+pass	a tail-recursive HEAP accumulator builds and folds a 10000-deep spine in constant stack
+pass	a third-generation overwrite path-copies away from both ancestors and all three read true
+pass	a tuple key mixing int, rope, and float hashes and matches by all three leaf kinds
+pass	a tuple key whose element is itself a float-bearing tuple keys by content
+pass	a tuple key with a RUNTIME Rational leaf hits and misses by canonical content
+pass	a tuple key with an ARITH-built BigInt leaf hits and misses by content
+pass	a tuple mixing an int, a runtime ROPE, and a FLOAT compares whole by per-kind leaf walks
+pass	a tuple of two branch-built Options matches all four Some/None quadrants jointly
+pass	a tuple with a Qty leaf as a map key hits by magnitude-and-unit content
+pass	a tuple with a Symbol leaf as a SET element dedups and membership-checks by content
+pass	a tuple-destructuring fn (lambda) parameter binds its parts
+pass	a two-level UPDATE of a map-of-maps rebuilds the inner and leaves the old outer intact
+pass	a type-valued parameter threads through TWO relay layers beside a runtime operand
+pass	a user sum named Ast renders BARE with RUNTIME payloads through one compiled body
+pass	a user-sum variant value as a Map KEY keys by variant and payload
+pass	a user-written EUCLID gcd loops on remainder and certifies divisibility of both operands
+pass	a user-written FILTER combinator keeps elements passing a captured predicate
+pass	a user-written FRACTION ADD over tuples reduces by gcd and agrees with the built-in Rational
+pass	a user-written MAP combinator builds a transformed list through its fn parameter
+pass	a user-written ZIP walks two lists in lockstep, truncating at the shorter
+pass	a utf8 segment sized by a CONSTANT LITERAL decodes a fixed-width string
+pass	a constant-size utf8 segment over ill-formed UTF-8 is a non-match, not a trap
+pass	a bytes segment sized by a CONSTANT LITERAL binds a fixed number of bytes then composes
+pass	a final unquote-splice binds the remaining elements as a list
 pass	a fixed-arity list binding pattern is refutable and rejected
 pass	a fixed-shape Tuple ARG with a Bytes RESULT crosses the direct-call boundary
 pass	a fixed-shape Tuple ARG with a List RESULT crosses the direct-call boundary
@@ -4101,6 +4227,7 @@ pass	an integer width from runtime data is rejected, keeping widths non-dependen
 pass	an interleaved insert-remove build leaves exactly the surviving keys
 pass	an internally ill-typed unselected match arm body is a type error
 pass	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
+pass	an interposing handler TRANSFORMS the host response before resuming (offset adapter)
 pass	an iterative fibonacci swaps two accumulators through the tail call
 pass	an octal-prefixed token is a malformed literal, not an unbound name
 pass	an offered ordering is total and deterministic
@@ -5668,6 +5795,12 @@ todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a delegated effect performed in a closure passed to a HOF is reached and fires
 todo	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
 todo	a host call's response is an ordinary value that feeds a LATER host call
+pass	a delegated host effect composes with the value-heap runtime
+pass	a genuinely-runtime MULTIPLY on an unusual signed width traps on overflow rather than wrapping to storage
+pass	a host call's response is an ordinary value that feeds a LATER host call
+pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name
+pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
+pass	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 todo	a host op with a String parameter composes with the value-heap runtime
 todo	a host-delegated result SEEDS an in-program handler's initial state
 todo	a host-op argument COMPUTED by guest arithmetic crosses the boundary evaluated

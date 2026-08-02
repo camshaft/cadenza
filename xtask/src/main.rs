@@ -1547,22 +1547,40 @@ fn build_rust_host_shims(module: &str, host_responses: &[(String, String)]) -> S
             .1
             .push(value.clone());
     }
-    // Every `crate::__cdz_host_<ident>()` the module references (dedup, ordered).
-    let mut referenced: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // Every `crate::__cdz_host_<ident>(<args>)` the module references, with its ARG COUNT (the shim's fn
+    // arity must match every call site or rustc E0061s). The backend emits args as simple `__ha0, __ha1, …`
+    // idents (H3), so counting the `__ha` tokens in the call's paren group gives the arity reliably (no
+    // nested-paren ambiguity). A no-arg call `X()` → 0. Dedup by ident (an op is called at one arity).
+    let mut referenced: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
     let mut rest = module;
     while let Some(pos) = rest.find("crate::__cdz_host_") {
         let after = &rest[pos + "crate::".len()..];
         let end = after
             .find(|c: char| !(c == '_' || c.is_ascii_alphanumeric()))
             .unwrap_or(after.len());
-        referenced.insert(after[..end].to_string());
+        let ident = after[..end].to_string();
+        // The arg list is the parenthesized group immediately after the ident: `(__ha0, __ha1)` or `()`.
+        let arity = after[end..]
+            .strip_prefix('(')
+            .and_then(|s| s.find(')').map(|c| &s[..c]))
+            .map(|argstr| argstr.matches("__ha").count())
+            .unwrap_or(0);
+        referenced.entry(ident).or_insert(arity);
         rest = &after[end..];
     }
     if referenced.is_empty() {
         return String::new();
     }
     let mut out = String::new();
-    for fn_name in &referenced {
+    for (fn_name, &arity) in &referenced {
+        // The shim's params: N ignored `i64`s (the arg values crossed the boundary but do not select the
+        // response — host_responses is keyed per-op, arg-independent). `_a<i>: i64` so a call at this arity
+        // type-checks; each is unused.
+        let params = (0..arity)
+            .map(|i| format!("_a{i}: i64"))
+            .collect::<Vec<_>>()
+            .join(", ");
         match by_ident.get(fn_name) {
             Some((op, values)) => {
                 // Normalize each recorded scalar to an `i64` literal: a BOOL response (`true`/`false`) → `1`/
@@ -1578,7 +1596,7 @@ fn build_rust_host_shims(module: &str, host_responses: &[(String, String)]) -> S
                     .join(", ");
                 let n = values.len();
                 out.push_str(&format!(
-                    "#[allow(unused, non_snake_case)]\nfn {fn_name}() -> i64 {{ \
+                    "#[allow(unused, non_snake_case)]\nfn {fn_name}({params}) -> i64 {{ \
                      use std::sync::atomic::{{AtomicUsize, Ordering}}; \
                      static __I: AtomicUsize = AtomicUsize::new(0); \
                      static __V: [i64; {n}] = [{arr}]; \
@@ -1588,7 +1606,7 @@ fn build_rust_host_shims(module: &str, host_responses: &[(String, String)]) -> S
                 ));
             }
             None => out.push_str(&format!(
-                "#[allow(unused, non_snake_case)]\nfn {fn_name}() -> i64 {{ panic!(\"unexercised host op {fn_name}\") }}\n"
+                "#[allow(unused, non_snake_case)]\nfn {fn_name}({params}) -> i64 {{ panic!(\"unexercised host op {fn_name}\") }}\n"
             )),
         }
     }

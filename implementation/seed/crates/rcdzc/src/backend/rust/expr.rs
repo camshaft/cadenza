@@ -2846,22 +2846,48 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             args,
             result,
         } => {
-            if !args.is_empty() {
-                return Err(Reject::decline(
-                    "the Rust backend does not yet render a host call WITH ARGUMENTS (later increment)",
-                ));
-            }
             let shim = host_shim_ident(&crate::effects::canonical_host_op_key(&effect, &op));
+            // ARGUMENTS (H3): the op's args cross the boundary EVALUATED, in source LEFT-TO-RIGHT order (the
+            // host-call sequence the wasm oracle records; the arg VALUES themselves are not compared — the
+            // corpus host_calls key is the op name only). Bind each arg to a `let __ha<i>` in order so a
+            // multi-arg call (or an arg that is itself a host call) evaluates strictly left-to-right, then
+            // pass them. Each arg must be a fixed-width INTEGER guest value (marshalled `as i64` to the shim's
+            // i64 param); a non-integer arg (float/string/bytes/compound) is a later increment → decline.
+            let mut bindings = String::new();
+            let mut call_args = Vec::with_capacity(args.len());
+            for (i, &a) in args.iter().enumerate() {
+                let a_ty = type_of(db, a);
+                // The arg must be a fixed-width integer (marshalled `as i64` to the shim's i64 param); the
+                // exact width is not needed (the `as i64` widens/narrows uniformly), only that it IS one.
+                if !types::rust_type(&a_ty).is_some_and(|t| int_rust_ty(&t)) {
+                    return Err(Reject::decline(
+                        "the Rust backend does not yet render a host call with a non-integer ARGUMENT (later increment)",
+                    ));
+                }
+                let av = emit(db, a, env, ctx)?;
+                // Cast to i64 (the shim's param type). A `let` per arg pins the eval order.
+                bindings.push_str(&format!("let __ha{i} = ({av}) as i64; "));
+                call_args.push(format!("__ha{i}"));
+            }
+            let call = format!("crate::{shim}({})", call_args.join(", "));
             // The runner's shim yields the recorded scalar as `i64`. Marshal it to the op's declared result:
             // a fixed-width INTEGER casts to that width (`as u8`/…); a BOOL reads truthiness (`!= 0`, the
             // recorded response is `0`/`1`, matching the wasm boundary's i32→bool). Any other result
             // (float/string/bytes/compound) needs its own boundary form → a later increment, decline.
-            match types::rust_type(&result) {
-                Some(t) if int_rust_ty(&t) => Ok(format!("(crate::{shim}() as {t})")),
-                Some(t) if t == "bool" => Ok(format!("(crate::{shim}() != 0)")),
-                _ => Err(Reject::decline(
-                    "the Rust backend does not yet render a host call whose result is not a fixed-width integer or bool (later increment)",
-                )),
+            let marshalled = match types::rust_type(&result) {
+                Some(t) if int_rust_ty(&t) => format!("({call} as {t})"),
+                Some(t) if t == "bool" => format!("({call} != 0)"),
+                _ => {
+                    return Err(Reject::decline(
+                        "the Rust backend does not yet render a host call whose result is not a fixed-width integer or bool (later increment)",
+                    ));
+                }
+            };
+            if bindings.is_empty() {
+                Ok(marshalled)
+            } else {
+                // Wrap the arg-bindings + the call in a block so it's a single expression.
+                Ok(format!("{{ {bindings}{marshalled} }}"))
             }
         }
         // A sequencing block only ever holds a host-call statement today; rendered in a later increment.
