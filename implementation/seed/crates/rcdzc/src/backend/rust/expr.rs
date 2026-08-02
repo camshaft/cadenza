@@ -2892,8 +2892,21 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Ok(format!("{{ {bindings}{marshalled} }}"))
             }
         }
-        // A sequencing block only ever holds a host-call statement today; rendered in a later increment.
-        | Core::Seq { .. }
+        // A SEQUENCING block — evaluate each `stmt` FOR ITS SIDE EFFECT (discarding its value), then `tail`
+        // as the block's value. Produced when a `do`'s non-final statement reaches a side effect selection
+        // must emit (a host call whose result is discarded). Emit a Rust block `{ let _ = <stmt0>; …; <tail>
+        // }`: `let _ = …` evaluates + drops each statement (a Unit host call leaves `()`; a value-returning
+        // one is dropped), and the statements emit in written order so the host calls are observed in exactly
+        // the order the program made them (the sequencing invariant the wasm backend also holds).
+        Core::Seq { stmts, tail } => {
+            let mut body = String::new();
+            for &s in &stmts {
+                let sv = emit(db, s, env, ctx)?;
+                body.push_str(&format!("let _ = {sv}; "));
+            }
+            let t = emit(db, tail, env, ctx)?;
+            Ok(format!("{{ {body}{t} }}"))
+        }
         // The `?`/try boundary block + break are the wasm backend's `block`/`br` shape (BRICK 3); the
         // Rust backend renders them in a later brick, so it declines for now.
         | Core::Block { .. }
