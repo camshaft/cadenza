@@ -49388,6 +49388,28 @@ mod match_engine {
         );
         assert_eq!(run_returns_with::<i64>(&bs, "f", &[Val::S64(2000)]), 30);
         assert_eq!(run_returns_with::<i64>(&bs, "f", &[Val::S64(7)]), 99); // default (not a covered slot)
+
+        // DUPLICATE-LITERAL fallback: a repeated probe literal disqualifies the table even when the match
+        // is otherwise DENSE. `(match k (0 …) (1 …) (1 …) (2 …) (_ …))` has span 3 / 4 int-arms (dense by
+        // ratio), but the two `1` arms collide on one table slot — a jump table maps a slot to ONE arm and
+        // so cannot honor the source's FIRST-WINS order for the duplicate. `try_emit_scalar_br_table`
+        // detects the slot collision (`arm_at[slot].is_some()`) and falls back to the probe chain, which
+        // tests arms in order and naturally takes the first `1`. A distinct gate from the density ratio.
+        let dup = code(
+            "(module m (def (f (: k Int64)) (match k (0 10) (1 20) (1 30) (2 40) (_ 99))) (def (main) 0) (export main))",
+        );
+        assert!(
+            !has_br_table(&dup),
+            "a duplicate-literal match falls back to the probe chain (no br_table), got: {dup:?}"
+        );
+        // VALUE PARITY + FIRST-WINS: the chain fallback preserves source order, so the FIRST `1` arm (20)
+        // wins over the shadowed second (30) — the redundant arm never fires.
+        let bdup = component(
+            "(module m (def (f (: k Int64)) (match k (0 10) (1 20) (1 30) (2 40) (_ 99))) (export f))",
+        );
+        assert_eq!(run_returns_with::<i64>(&bdup, "f", &[Val::S64(1)]), 20); // first `1` wins, not 30
+        assert_eq!(run_returns_with::<i64>(&bdup, "f", &[Val::S64(2)]), 40);
+        assert_eq!(run_returns_with::<i64>(&bdup, "f", &[Val::S64(7)]), 99); // default
     }
 
     #[test]
