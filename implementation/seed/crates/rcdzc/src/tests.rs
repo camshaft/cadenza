@@ -8675,6 +8675,74 @@ fn a_branchless_select_computes_the_if_value() {
     );
 }
 
+/// A POSSIBLY-TRAPPING arm blocks select-ification: a wasm `select` evaluates BOTH arms unconditionally
+/// (it picks between two already-computed values), so an `if` whose arm contains a trapping op — e.g. a
+/// checked `/` (divide-by-zero / MIN/-1 overflow) — must STAY an `if` (which evaluates only the taken
+/// arm). `select_arm_convertible` gates on `is_trap_free`, so `(if c (/ a b) a)` keeps a `Lir::If` and
+/// emits NO `Lir::Select` — otherwise `c=false, b=0` would wrongly trap on the untaken `(/ a b)`. A
+/// trap-FREE arm of the same shape (`(& a 7)`) DOES select-ify — the contrast proves the block is the
+/// trap-freedom check, not the arm shape. This is a correctness invariant of the branchless transform.
+#[test]
+fn a_possibly_trapping_if_arm_is_not_select_ified() {
+    use crate::backend::wasm::lir::Lir;
+    use crate::db::Db;
+    let lir = |body: &str| -> Vec<Lir> {
+        let ast = crate::testkit::parse(&format!(
+            "(module m (def (f (: c Bool) (: a Int64) (: b Int64)) {body}) (def (main) 0) (export main))"
+        ));
+        let mut db = Db::load(ast);
+        let layout = crate::layout::compute(&mut db).expect("layout");
+        let d = db.def_by_name("f").expect("def f");
+        let params: Vec<_> = db.defs[d]
+            .params
+            .clone()
+            .into_iter()
+            .map(|p| {
+                let bb = db
+                    .ast
+                    .as_form(p, ":")
+                    .and_then(|t| t.first().copied())
+                    .unwrap_or(p);
+                (bb, crate::infer::type_of(&mut db, bb))
+            })
+            .collect();
+        let body = db.defs[d].body.expect("body");
+        crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+            .expect("select")
+            .code
+    };
+    // TRAPPING arm `(/ a b)` → stays an `if`, NO `select` (both-arm eval would trap on the untaken div).
+    let trapping = lir("(if c (/ a b) a)");
+    assert!(
+        trapping.iter().any(|i| matches!(i, Lir::If(_))) && !trapping.contains(&Lir::Select),
+        "a possibly-trapping `/` arm must keep the `if`, not select-ify, got: {trapping:?}"
+    );
+    // TRAP-FREE arm `(& a 7)` of the same 2-arm shape → DOES select-ify (proves the block is trap-freedom,
+    // not the shape). `(& a 7)` is a total bitwise op.
+    let trap_free = lir("(if c (& a 7) a)");
+    assert!(
+        trap_free.contains(&Lir::Select) && !trap_free.iter().any(|i| matches!(i, Lir::If(_))),
+        "a trap-free `(& a 7)` arm select-ifies (no `if`), got: {trap_free:?}"
+    );
+    // VALUE + TRAP PARITY: the `if` form evaluates only the taken arm — `c=false` must NOT trap on `b=0`.
+    use wasmtime::component::Val;
+    let src = "(module m (def (f (: c Bool) (: a Int64) (: b Int64)) (if c (/ a b) a)) (export f))";
+    let bytes =
+        compile_component(&crate::codec::encode(&crate::testkit::parse(src))).expect("compile");
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "f", &[Val::Bool(true), Val::S64(20), Val::S64(4)]),
+        5
+    ); // c=true → 20/4=5
+    assert_eq!(
+        run_returns_with::<i64>(&bytes, "f", &[Val::Bool(false), Val::S64(20), Val::S64(0)]),
+        20
+    ); // c=false → a=20; the untaken (/ a 0) must NOT be evaluated (no trap)
+    assert!(
+        call_traps(&bytes, "f", &[Val::Bool(true), Val::S64(20), Val::S64(0)]),
+        "c=true with b=0: the TAKEN (/ a 0) divides by zero → must trap"
+    );
+}
+
 /// CONDITIONAL CONSTANT PROPAGATION on a REPEATED condition: within a branch the enclosing condition is
 /// known, so a directly-nested `if` on the SAME condition collapses to its taken arm. `(if c (if c 1 2)
 /// 3)` → `(if c 1 3)` (inner `c` is true in the then-branch, so the inner `if` takes `1`); `(if c 1 (if
