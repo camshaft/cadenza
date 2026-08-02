@@ -8,12 +8,13 @@
 /// sound alike because they contain the same intervals" (Z-related sets share a vector), and it grounds
 /// consonance/dissonance profiling (ic5 = fourths/fifths, ic6 = tritones, ic1 = semitones).
 ///
-/// Pure pitch-class arithmetic over Int64, total, no imports beyond the pitch-class fold. Input note
-/// numbers are folded to pitch classes and DEDUPED first (a pitch class appearing in two octaves is one
-/// set member) so the vector counts SET pairs, matching the set-theoretic definition. The six counts are
-/// returned as a dedicated `Icv` value (a single-constructor type holding the six counts positionally) read
-/// through accessor helpers — `icv-count(v, k)` for interval class `k`, `ic-tritone(v)` for the common ic6
-/// — NOT a bare `List(Int64)` a caller would index by a magic position.
+/// Pure pitch-class arithmetic over Int64, total. Input note numbers are folded to a canonical pitch-class
+/// SET first — via the shared `pc-set` primitive (`pc-set.cdz`) — so a pitch class appearing in two octaves
+/// is one set member and the vector counts SET pairs, matching the set-theoretic definition. The six counts
+/// are returned as a dedicated `Icv` value (a single-constructor type holding the six counts positionally)
+/// read through accessor helpers — `icv-count(v, k)` for interval class `k`, `ic-tritone(v)` for the common
+/// ic6 — NOT a bare `List(Int64)` a caller would index by a magic position.
+import { pc-of, pc-set } from "pc-set"
 
 // ---- the interval-class vector -----------------------------------------------------------------------
 
@@ -23,33 +24,12 @@
 type Icv =
   | Icv(Int64, Int64, Int64, Int64, Int64, Int64)
 
-/// Floored pitch class `0..11` of a note number (matches analysis.cdz / chord.cdz `pc-of`).
-def pc-of(n: Int64) =
-  let r = n % 12 in
-  if r < 0 then r + 12 else r
-
 /// The INTERVAL CLASS of two pitch classes: the octave- and inversion-folded distance, in `1..6` (or 0
 /// when the two pitch classes are equal). `ic(0,7) = ic(0,5) = 5` (a fifth and its inverted fourth share
-/// an interval class); `ic(0,6) = 6` (the self-inverting tritone).
+/// an interval class); `ic(0,6) = 6` (the self-inverting tritone). Uses the shared `pc-of` fold.
 def interval-class(a: Int64, b: Int64) =
   let d = pc-of(a - b) in
   if d < 12 - d then d else 12 - d
-
-/// Insert `x` into a sorted ascending list, keeping it sorted and DEDUPED (mirrors analysis.cdz's
-/// `insert-sorted`). Used to fold note numbers into a canonical pitch-class SET. Recursive, annotated.
-def insert-sorted(xs: List(Int64), x: Int64) = match xs with
-  | [] => [x]
-  | [h, .. t] =>
-    if x == h then xs
-    else if x < h then List.prepend(xs, x) else List.prepend(insert-sorted(t, x), h)
-
-/// Fold a note list into its sorted, deduped pitch-class SET. Recursive driver threading the sorted set.
-def pc-set-go(notes: List(Int64), acc: List(Int64)) = match notes with
-  | [] => acc
-  | [h, .. t] => pc-set-go(t, insert-sorted(acc, pc-of(h)))
-
-/// The sorted, deduped set of pitch classes of a note list.
-def pc-set(notes: List(Int64)) = pc-set-go(notes, [])
 
 /// Add 1 to the count of `v` selected by interval class `ic` (1..6); ic 0 (same pitch class) is a no-op.
 /// The interval class chooses which of the six positional counts to increment (rebuilding the Icv), never
@@ -83,8 +63,8 @@ def interval-class-vector(notes: List(Int64)) = icv-go(pc-set(notes), Icv.Icv(0,
 // ---- count accessors ---------------------------------------------------------------------------------
 
 /// The count of interval class `k` (1..6) in a vector — the accessor a caller uses instead of destructuring
-/// the Icv or reaching into a raw list. ic0 or out-of-range traps (a caller should ask only for 1..6; there
-/// is no interval class outside that range).
+/// the Icv or reaching into a raw list. A `k` of 0 (the unison — not an interval class) or otherwise out of
+/// `1..6` traps: a caller should ask only for `k` in `1..6`, since there is no interval class outside it.
 def icv-count(v: Icv, k: Int64) = match v with
   | Icv.Icv(c1, c2, c3, c4, c5, c6) =>
     if k == 1 then c1

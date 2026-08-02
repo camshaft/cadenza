@@ -9,37 +9,17 @@
 /// an interval-class vector — though the converse can fail for Z-related sets, which is why this is a
 /// distinct, sharper test than vector-equality).
 ///
-/// Pure pitch-class arithmetic over Int64, total, self-contained (its own pc-set fold, mirroring the other
-/// modules' local `pc-of`). Note lists are folded to sorted, deduped pitch-class SETS first, so the test
-/// is octave-, order-, and doubling-invariant. `transpose-pc-set` returns the canonical transposed set;
-/// `same-transposition-class` answers the equivalence; `transposition-between` reports the interval that
-/// maps one to the other as `Option` (typed absence — `None` when they are NOT T-equivalent, never a
-/// sentinel interval).
+/// Pure pitch-class arithmetic over Int64, total. Note lists are folded to sorted, deduped pitch-class SETS
+/// first — via the shared `pc-set` primitive (`pc-set.cdz`) — so the test is octave-, order-, and
+/// doubling-invariant. `transpose-pc-set` returns the canonical transposed set; `same-transposition-class`
+/// answers the equivalence; `transposition-between` reports the interval that maps one to the other as
+/// `Option` (typed absence — `None` when they are NOT T-equivalent, never a sentinel interval).
+import { pc-of, insert-sorted, pc-set } from "pc-set"
 
-// ---- pitch-class set canonicalization ----------------------------------------------------------------
-
-/// Floored pitch class `0..11` of a note number (matches the other modules' `pc-of`).
-def pc-of(n: Int64) =
-  let r = n % 12 in
-  if r < 0 then r + 12 else r
-
-/// Insert `x` into a sorted ascending list, keeping it sorted and DEDUPED. Recursive, annotated.
-def insert-sorted(xs: List(Int64), x: Int64) = match xs with
-  | [] => [x]
-  | [h, .. t] =>
-    if x == h then xs
-    else if x < h then List.prepend(xs, x) else List.prepend(insert-sorted(t, x), h)
-
-/// Fold a note list into its sorted, deduped pitch-class SET. Recursive driver.
-def pc-set-go(notes: List(Int64), acc: List(Int64)) = match notes with
-  | [] => acc
-  | [h, .. t] => pc-set-go(t, insert-sorted(acc, pc-of(h)))
-
-/// The sorted, deduped set of pitch classes of a note list.
-def pc-set(notes: List(Int64)) = pc-set-go(notes, [])
+// ---- pitch-class set transposition -------------------------------------------------------------------
 
 /// Transpose a pitch-class SET up by `t` semitones (mod 12), returning a fresh canonical sorted set (the
-/// shift can reorder members, so re-sort via insert). Recursive driver, annotated.
+/// shift can reorder members, so re-sort via the shared `insert-sorted`). Recursive driver, annotated.
 def transpose-set-go(pcs: List(Int64), t: Int64, acc: List(Int64)) = match pcs with
   | [] => acc
   | [h, .. rest] => transpose-set-go(rest, t, insert-sorted(acc, pc-of(h + t)))
