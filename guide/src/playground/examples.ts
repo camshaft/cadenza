@@ -606,6 +606,39 @@ export const EXAMPLES: Example[] = [
     expected: "(: (list 1 2 3 4 5 6 7 8 9) (List Int64))",
   },
   {
+    // Shows off: binary search over a SORTED list, halving the range each step. The result is an honest
+    // (Some index) when found and (None) when absent — never a -1 "not found" sentinel flowing in-band.
+    // Find 11 => (Some 5); find 8 (absent) => (None). The pair shows both outcomes side by side.
+    id: "binary-search",
+    name: "Binary search",
+    theme: "algorithms",
+    surface: "sexpr",
+    source: `(do
+  ; Bounds-checked read: bsearch only probes in-range indices, so a miss is an invariant violation.
+  (def (at (: xs (List Int64)) (: i Int64))
+    (match (List.at xs i) ((Some v) v) ((None) (trap "bsearch: index out of range"))))
+  ; Binary search over a SORTED list. Returns (Some index) if found, (None) if absent —
+  ; an honest "not found", never a -1 sentinel flowing in-band.
+  (def (go xs target lo hi)
+    (if (> lo hi)
+        (: (None) (Option Int64))
+        (let ((mid (/ (+ lo hi) 2))
+              (v (at xs mid)))
+          (if (= v target)
+              (Some mid)
+              (if (< v target)
+                  (go xs target (+ mid 1) hi)
+                  (go xs target lo (- mid 1)))))))
+  (def (bsearch (: xs (List Int64)) (: target Int64))
+    (go xs target 0 (- (List.len xs) 1)))
+  (def (main)
+    ; A sorted list; find 11 -> (Some 5), then confirm 8 is absent -> (None).
+    (let ((xs (list 1 3 5 7 9 11 13 15 17 19)))
+      (tuple (bsearch xs 11) (bsearch xs 8))))
+  (export main))`,
+    expected: "(: (tuple (Some 5) (None unit)) (Tuple (Option Int64) (Option Int64)))",
+  },
+  {
     // Shows off: string work via bytes — check a word reads the same forwards and backwards by comparing
     // the i-th and (n-1-i)-th UTF-8 bytes moving inward. "racecar" -> 1 (true).
     id: "palindrome-check",
