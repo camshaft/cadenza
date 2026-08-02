@@ -52352,12 +52352,14 @@ mod diagnostics {
         // NO false alarm: a WELL-FORMED list rest pattern (one binder after `..`, body reads it) checks clean.
         let ok = "(module m (def (f (: xs (List Int64))) \
                   (match xs ((list x .. rest) (List.len rest)) (_ 0))) (export f))";
+        // Bind once — `diags_of` recompiles the module, so evaluating it in both the predicate and the
+        // failure message would double the compile cost (PR #1167 review).
+        let ok_diags = diags_of(ok);
         assert!(
-            diags_of(ok)
+            ok_diags
                 .iter()
                 .all(|d| d.severity != crate::abi::Severity::Error),
-            "a well-formed list rest pattern still checks clean: {:?}",
-            diags_of(ok)
+            "a well-formed list rest pattern still checks clean: {ok_diags:?}"
         );
         // NESTED: a malformed-rest list INSIDE a variant payload (`(Wrap (list a .. b c))`) whose body reads
         // the surplus `c` is a CODED rest-shape CDZ0201 (the nested `pattern_constraints` path phrases it as
