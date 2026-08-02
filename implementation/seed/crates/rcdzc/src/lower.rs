@@ -8555,8 +8555,9 @@ pub(crate) fn check_binding_pattern(
             return Err(Reject::coded(
                 Code::NonExhaustive,
                 "a fixed-arity list pattern is refutable — it matches only lists of that exact length, \
-                 not every list, so it cannot appear in a binding position (use `(list p… .. rest)`, \
-                 which matches any length, or a `match`)",
+                 not every list, so it cannot appear in a binding position (use the ZERO-LEADING \
+                 `(list .. rest)`, the only rest form that matches EVERY list including the empty one — a \
+                 leading-element `(list a .. rest)` is itself refutable here — or a `match`)",
             )
             .at(pat));
         };
