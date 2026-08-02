@@ -249,3 +249,37 @@ fn fmt_a_manifest_with_no_source_errors() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn fmt_is_idempotent_a_second_pass_is_a_byte_stable_fixed_point() {
+    // Core formatter invariant: `fmt` is a FIXED POINT — formatting an already-formatted file changes
+    // nothing. A non-idempotent formatter churns files, defeats `fmt --check` in CI (a file it just wrote
+    // would re-flag), and creates spurious diffs. Format an ugly-but-valid source with irregular spacing +
+    // nested lets + a comment, capture the once-formatted bytes, format AGAIN, and assert byte-equality —
+    // AND that the second pass reports `--check`-clean. Pins the fixed point so a future fmt/reader change
+    // that introduces oscillation is caught. No runtime store needed (fmt is a pure text pass).
+    let (dir, file) = temp_cdz(
+        "idem",
+        "// leading\ndef  add(a:Int64,b:Int64)->Int64=a+b\n\
+         def nested()->Int64= let x=(1+2) in let y=x*3 in y\n",
+    );
+    // First format pass — record the result.
+    let (ok1, _o1, e1) = run_in(&dir, &["fmt", &file]);
+    assert!(ok1, "first fmt pass failed: {e1}");
+    let once = std::fs::read_to_string(&file).expect("read after first fmt");
+    // Second format pass — must not change a single byte.
+    let (ok2, _o2, e2) = run_in(&dir, &["fmt", &file]);
+    assert!(ok2, "second fmt pass failed: {e2}");
+    let twice = std::fs::read_to_string(&file).expect("read after second fmt");
+    assert_eq!(
+        once, twice,
+        "fmt must be idempotent — a second pass changed the bytes:\n--- once ---\n{once}\n--- twice ---\n{twice}"
+    );
+    // And the formatted file is `--check`-clean (the fixed point is what `--check` accepts).
+    let (cok, cout, cerr) = run_in(&dir, &["fmt", &file, "--check"]);
+    assert!(
+        cok,
+        "an already-formatted file must pass fmt --check: out={cout} err={cerr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
