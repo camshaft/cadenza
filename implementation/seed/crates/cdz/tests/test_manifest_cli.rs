@@ -238,7 +238,15 @@ fn a_nonexistent_file_target_reds_the_run_with_a_read_error_not_a_false_green() 
     // ACCURATE for this class: it names the read-failure case alongside parse/resolve (the note used to
     // explain only "a def that fails to parse is silently absent", misleading for a missing file that has
     // no def at all). No store needed — nothing runs.
-    let (ok, stdout, stderr) = run(&["test", "/no/such/cdz/file/definitely-absent.cdz"]);
+    //
+    // Build the missing path UNDER a fresh per-process temp dir (`dir()` creates it empty) rather than a
+    // hard-coded absolute `/no/such/…`: a guaranteed-absent file inside a real, writable, platform-correct
+    // temp dir — an absolute literal could in principle exist or resolve differently across platforms.
+    let d = dir("nonexistent-target");
+    let missing = d.join("definitely-absent.cdz");
+    assert!(!missing.exists(), "the target must genuinely not exist");
+    let missing = missing.to_str().expect("utf-8 temp path");
+    let (ok, stdout, stderr) = run(&["test", missing]);
     let combined = format!("{stdout}{stderr}");
     assert!(
         !ok,
@@ -249,7 +257,7 @@ fn a_nonexistent_file_target_reds_the_run_with_a_read_error_not_a_false_green() 
         "the read failure names the unreadable path: {combined}"
     );
     assert!(
-        stderr.contains("NOT running the suite") && stderr.contains("fails to read"),
+        stderr.contains("NOT running the suite") && stderr.contains("fails to READ"),
         "the gate note is shown and accurately names the read-failure class: {stderr}"
     );
     assert!(
