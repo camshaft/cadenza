@@ -835,6 +835,104 @@ mod tests {
     }
 
     #[test]
+    fn suffixed_leaf_round_trips_every_kind_and_body_shape() {
+        // The `Suffixed` leaf is a 2×2 space — {BigInt, Rational} suffix × {Int, Float} body — yet the
+        // fixtures only exercise (BigInt, Int) (`radix_sample`). The other three corners
+        // (Rational-suffixed, and any Float body) go through decode/encode arms no test reaches, so a
+        // future change to the suffix-byte or body-shape-byte layout could silently break them and still
+        // pass the whole suite. Pin all four corners through encode → decode → structurally-equal + a
+        // byte-identical re-encode (encode canonicalizes, so the round-trip contract is `structurally_eq`;
+        // determinism is the re-encode of the decoded canonical arena).
+        for kind in [SuffixKind::BigInt, SuffixKind::Rational] {
+            for body in [
+                SuffixBody::Int {
+                    value: BigInt::from(-255),
+                    radix: Radix::Hex,
+                },
+                SuffixBody::Float(Decimal {
+                    negative: true,
+                    significand: BigInt::from(15),
+                    exponent: -1,
+                }),
+            ] {
+                let mut b = Builder::new();
+                let leaf = b.atom_leaf(Leaf::Suffixed {
+                    value: body.clone(),
+                    kind,
+                });
+                let root = b.list(vec![leaf]);
+                let a = b.finish(root);
+                let bytes = encode(&a);
+                let back = decode(&bytes)
+                    .unwrap_or_else(|| panic!("decode of a suffixed leaf ({kind:?}, {body:?})"));
+                assert!(
+                    a.structurally_eq(&back),
+                    "suffixed leaf not preserved through the codec ({kind:?}, {body:?}): {a:?} vs {back:?}"
+                );
+                assert_eq!(
+                    bytes,
+                    encode(&back),
+                    "re-encode of the decoded suffixed leaf ({kind:?}, {body:?}) is not byte-identical"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn suffixed_leaf_rejects_a_present_but_invalid_sub_discriminant() {
+        // The `KIND_SUFFIXED` decode arm reads THREE inner discriminant bytes after the kind byte — the
+        // suffix byte ({BigInt, Rational}), the body-shape byte ({Int, Float}), and (for an Int body) the
+        // nested int-kind byte. Each is a present-but-invalid tag → `BadTag`, exactly like the top-level
+        // leaf-kind and structure-tag bytes the sibling test pins. But those inner bytes have no reject
+        // test, so a decode that accidentally accepted a bogus inner tag (widening the byte form beyond
+        // the encoder's output — a bijection break) would go uncaught. Pin all three, each a `Suffixed`
+        // leaf truncated right after the offending byte (`Truncated` past that would be a DIFFERENT
+        // variant, so we assert the exact `BadTag` at the discriminant, not a later short read).
+
+        // (1) A bogus SUFFIX byte (neither SUFFIX_BIGINT=0 nor SUFFIX_RATIONAL=1).
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 1); // leaf_count = 1
+            b.push(KIND_SUFFIXED);
+            b.push(0x7f); // not a valid suffix kind
+            assert_eq!(
+                decode_detailed(&b),
+                Err(DecodeError::BadTag),
+                "an unknown suffix-kind byte is corruption, not truncation"
+            );
+        }
+
+        // (2) A valid suffix byte, then a bogus BODY-SHAPE byte (neither BODY_INT=0 nor BODY_FLOAT=1).
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 1); // leaf_count = 1
+            b.push(KIND_SUFFIXED);
+            b.push(SUFFIX_BIGINT);
+            b.push(0x7f); // not a valid body shape
+            assert_eq!(
+                decode_detailed(&b),
+                Err(DecodeError::BadTag),
+                "an unknown suffixed body-shape byte is corruption, not truncation"
+            );
+        }
+
+        // (3) A valid suffix + Int body, then a bogus NESTED INT-KIND byte (> KIND_INT_NEG_BIN=5).
+        {
+            let mut b = SCHEMA_HEADER.to_vec();
+            leb128::write_u64(&mut b, 1); // leaf_count = 1
+            b.push(KIND_SUFFIXED);
+            b.push(SUFFIX_RATIONAL);
+            b.push(BODY_INT);
+            b.push(0x7f); // not a valid int-kind tag (int_kind_parts rejects it)
+            assert_eq!(
+                decode_detailed(&b),
+                Err(DecodeError::BadTag),
+                "an unknown nested int-kind byte in a suffixed Int body is corruption, not truncation"
+            );
+        }
+    }
+
+    #[test]
     fn decode_and_decode_detailed_agree_on_every_input() {
         // `decode` IS `decode_detailed(_).ok()`, so for ANY bytes they must agree on accept/reject and
         // on the decoded arena. Sweep random byte soup (with and without a valid header prefix) to pin
