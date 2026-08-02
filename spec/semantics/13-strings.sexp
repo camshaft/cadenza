@@ -2538,6 +2538,29 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 6 Int64)))
 
+(case "to-bytes of a sliced multibyte string is read twice and both reads see the right bytes"
+  (doc    "The `String.slice`/`to-bytes` member of the consuming-op-double-read family (the sibling the
+           from-bytes case above names): the to-bytes buffer of a String.slice VIEW must be independently
+           readable N times. `tail` = slice(concat 'ab' 'cdé', 3, 5) = 'dé' (bytes [100, 0xC3, 0xA9]);
+           `b = to-bytes tail`; `(Bytes.at b 0) + (Bytes.at b 1)` = 100 + 195 = 295. A slice is a rope VIEW
+           (not a fresh owned string), so its to-bytes must materialize an independently-readable buffer,
+           NOT a borrow the first read consumes — before the fix (adv-54, runtime StrSlice/StrToBytes
+           binding kept, trunk c7a7861b4) wasm returned 100 (b[1] read 0 — the buffer was consumed by the
+           first read); rust/rust-async were correct. MULTIBYTE + slice-VIEW + read-more-than-once is the
+           trigger (an ASCII slice and a concat-owned source were always fine). Expected 295 on all three
+           backends now.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((s (String.concat "ab" "cdé")))
+                (match (String.slice s 3 5)
+                  ((Some tail)
+                    (let ((b (String.to-bytes tail)))
+                      (+ (Int64.of (Option.expect (Bytes.at b 0) "b0"))
+                         (Int64.of (Option.expect (Bytes.at b 1) "b1")))))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 295 Int64)))
+
 (case "decoding ill-formed UTF-8 bytes yields none, not a trap"
   (doc    "`(String.from-bytes (Bytes.of (list 255)))` is given 0xFF, which is not a well-formed UTF-8
            sequence (0xFF never appears in valid UTF-8), so the decode yields `None` — NOT a trap and NOT
