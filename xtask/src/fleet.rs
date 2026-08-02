@@ -2351,9 +2351,11 @@ fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String
         if in_flight {
             continue;
         }
-        // Already landed (git cherry) → can never be stale-queued; skip BEFORE the `git show` that the
-        // file-collision test needs (one subprocess, not two, for a landed MR).
-        if ref_landed_on_trunk(fleet, &mr.r#ref) {
+        // Already landed → can never be stale-queued; skip BEFORE the `git show` that the file-collision
+        // test needs (skips the additional file-collision `git show` for a landed MR — the landed check
+        // itself may run `--is-ancestor` and `git cherry`, see `ref_landed_on_trunk`).
+        let landed = ref_landed_on_trunk(fleet, &mr.r#ref);
+        if landed {
             continue;
         }
         // Last gate: file-blocked behind an in-flight candidate (git show). Blocked if (a) some in-flight
@@ -2365,8 +2367,10 @@ fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String
                 Some(files) => files_collide(&files, &in_flight_files),
                 None => true, // this MR unresolvable → conservatively blocked
             };
-        // age>threshold + not-in-flight + not-landed already established above; this is the file gate.
-        if mr_is_stale_queued(age, false, false, file_blocked, STALE_QUEUED_MR_SECS) {
+        // Pass the REAL predicates (not hard-coded false): the early-continues above already guarantee
+        // `in_flight`/`landed` are false here, but passing the live values keeps the call self-documenting
+        // and robust if the short-circuits are ever reordered.
+        if mr_is_stale_queued(age, in_flight, landed, file_blocked, STALE_QUEUED_MR_SECS) {
             out.push((fname, mr.from.clone(), mr.r#ref.clone(), age));
         }
     }
