@@ -3493,6 +3493,41 @@ pub fn int_width_fault(db: &mut Db, id: StructId) -> Option<IntWidthFault> {
     }
 }
 
+/// If the type expression at `id` is a WIDTH constructor `(Int W)`/`(UInt W)`/`(Float W)` whose single
+/// width argument `W` is an UNBOUND NAME (resolves to `Poison(Unbound)`), return that argument's node.
+/// This is the width-position analogue of an unbound TYPE name: `(: a (Int hello))` is the newcomer reflex
+/// of putting a name where a width literal belongs, but unlike `(List hello)` (a type position, caught by
+/// the nested-type-var walk) the WIDTH position is not a type, so it slips past both that walk and
+/// `int_width_fault` — `read_width` reads an unbound name as `WidthRead::NotConst` (indistinguishable from
+/// a legitimately BOUND width variable like `(Int a)` in a generic), and the fault classifier returns
+/// `None`, so the annotation silently reduces to the sentinel `Int0` and `cdz check` exits 0. Here we
+/// separate the two: only a `Poison(Unbound)` arg is a fault; a `Resolved::Param`/`Ref` (a bound width
+/// var) is a VALID generic width and returns `None`. Keyed on the ctor prim; a compound `(Int 64)` literal
+/// width or a valid type never matches. Consumed by the annotation checks to surface a width-specific
+/// CDZ0101 instead of nothing.
+pub fn unbound_width_arg(db: &mut Db, id: StructId) -> Option<(StructId, &'static str)> {
+    let Resolved::Apply { head, args } = resolved_of(db, id) else {
+        return None;
+    };
+    // The ctor-appropriate sized-type EXAMPLE for the diagnostic — a `Float` width names `Float64`, not the
+    // misleading `Int64`.
+    let example = match meta_apply_of(db, head) {
+        Some(Prim::IntCtor) => "Int64",
+        Some(Prim::UIntCtor) => "UInt64",
+        Some(Prim::FloatCtor) => "Float64",
+        _ => return None,
+    };
+    if args.len() != 1 {
+        return None;
+    }
+    match resolved_of(db, args[0]) {
+        Resolved::Poison(reject) if reject.code == Some(crate::diag::Code::Unbound) => {
+            Some((args[0], example))
+        }
+        _ => None,
+    }
+}
+
 /// If the type expression at `id` is a `(Float W)` with a CONCRETE width OUTSIDE the admitted IEEE set
 /// `{32, 64}` — a `(Float 8)` / `(Float 16)` / `(Float 128)`, or a non-natural width `(Float -8)` /
 /// `(Float true)` — return `true`. The float analogue of `int_width_fault`, but the admitted set is a
