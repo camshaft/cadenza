@@ -151,6 +151,7 @@ pass	WAVE reorder alternates <= and >= by index parity through a carried-element
 pass	a 1000-step UPSERT fold builds a 7-bucket histogram — persistent-map churn under real load
 pass	a 1100-element prepend-built runtime list reads every index through a multi-level RRB front-spine
 pass	a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without
+pass	a 200-element runtime Set of BYTES resolves every member through a multi-level CHAMP over the blessed byte order
 pass	a 200-element runtime Set resolves every member through a multi-level CHAMP trie and rejects non-members
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
 pass	a 2x2 matrix MULTIPLY composes row extraction, column extraction, and a zipped dot product
