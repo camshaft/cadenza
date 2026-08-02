@@ -2510,18 +2510,24 @@
            (design §10.2: 'establish/preserve reuse b4c's denotation + b3's discharge, unchanged').")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Le) (Ge) (Conj))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       (type Thm (Seq (List Term) Term))
+      (def (op-eq (: a HeadOp) (: b HeadOp))
+        (match a
+          ((HeadOp.Le)   (match b ((HeadOp.Le)   true) (_ false)))
+          ((HeadOp.Ge)   (match b ((HeadOp.Ge)   true) (_ false)))
+          ((HeadOp.Conj) (match b ((HeadOp.Conj) true) (_ false)))))
       (def (term-eq (: a Term) (: b Term))
         (match a
           ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
           ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
-          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Head o)   (match b ((Term.Head p) (op-eq o p)) (_ false)))
           ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
-      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
-      (def (ge  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 2) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Le) a) b))
+      (def (ge  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Ge) a) b))
       ; `conj` mirrors the surface `and` — the invariant `(and P Q)` denotes to `(conj P Q)`.
-      (def (conj (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 3) a) b))
+      (def (conj (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Conj) a) b))
       (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
       (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
       ; establish: from the two precondition facts, mint the invariant CONJUNCTION carrying both as hyps.
@@ -2533,10 +2539,11 @@
       (def (licenses (: thm Thm) (: obligation Term) (: pre (List Term)))
         (and (term-eq (concl thm) obligation) (hyps-subset (hyps thm) pre)))
       (export (. Term *))
+      (export (. HeadOp *))
       (export Thm)
-      (export term-eq le ge conj concl hyps establish licenses)))
+      (export op-eq term-eq le ge conj concl hyps establish licenses)))
   (input  (do
-            (import "bounds" (Term Thm term-eq le ge conj concl hyps establish licenses))
+            (import "bounds" (HeadOp Term Thm term-eq le ge conj concl hyps establish licenses))
             (def (main)
               (let ((v    (Term.Var 0))
                     (zero (Term.Num 0))
@@ -2613,16 +2620,21 @@
            obligation on producers and a proof gift to consumers').")
   (module "bounds"
     (do
-      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Const Int64))
+      (type HeadOp (Sub) (Le))
+      (type Term (Var Int64) (Num Int64) (Comb Term Term) (Head HeadOp))
       (type Thm (Seq (List Term) Term))
+      (def (op-eq (: a HeadOp) (: b HeadOp))
+        (match a
+          ((HeadOp.Sub) (match b ((HeadOp.Sub) true) (_ false)))
+          ((HeadOp.Le)  (match b ((HeadOp.Le)  true) (_ false)))))
       (def (term-eq (: a Term) (: b Term))
         (match a
           ((Term.Var n)    (match b ((Term.Var m) (= n m)) (_ false)))
           ((Term.Num n)    (match b ((Term.Num m) (= n m)) (_ false)))
-          ((Term.Const c)  (match b ((Term.Const d) (= c d)) (_ false)))
+          ((Term.Head o)   (match b ((Term.Head p) (op-eq o p)) (_ false)))
           ((Term.Comb x y) (match b ((Term.Comb p q) (and (term-eq x p) (term-eq y q))) (_ false)))))
-      (def (sub (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 4) a) b))
-      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Const 1) a) b))
+      (def (sub (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Sub) a) b))
+      (def (le  (: a Term) (: b Term)) (Term.Comb (Term.Comb (Term.Head HeadOp.Le) a) b))
       (def (concl (: th Thm)) (match th ((Thm.Seq _ c) c)))
       (def (hyps  (: th Thm)) (match th ((Thm.Seq h _) h)))
       (def (assume (: p Term)) (Thm.Seq (list p) p))
@@ -2630,7 +2642,7 @@
       ; (dec never raises the value, so the upper bound is preserved). Hyps carried unchanged (the input gift).
       (def (dec-le (: th Thm))
         (match (concl th)
-          ((Term.Comb (Term.Comb (Term.Const 1) x) c)
+          ((Term.Comb (Term.Comb (Term.Head HeadOp.Le) x) c)
             (Option.Some (Thm.Seq (hyps th) (le (sub x (Term.Num 1)) c))))
           (_ (Option.None))))
       (def (mem (: q Term) (: ps (List Term)))
@@ -2640,10 +2652,11 @@
       (def (licenses (: thm Thm) (: obligation Term) (: pre (List Term)))
         (and (term-eq (concl thm) obligation) (hyps-subset (hyps thm) pre)))
       (export (. Term *))
+      (export (. HeadOp *))
       (export Thm)
-      (export term-eq sub le concl hyps assume dec-le licenses)))
+      (export op-eq term-eq sub le concl hyps assume dec-le licenses)))
   (input  (do
-            (import "bounds" (Term Thm term-eq sub le concl hyps assume dec-le licenses))
+            (import "bounds" (HeadOp Term Thm term-eq sub le concl hyps assume dec-le licenses))
             (def (main)
               (let ((in   (Term.Var 0))
                     (c100 (Term.Num 100)))
