@@ -28,7 +28,9 @@ pub const DEFAULT_STALL_AFTER_MS: u64 = 300_000;
 /// ```json
 /// {
 ///   "session_id": "agent-1",
-///   "state": "Active",              // Closed | Stalled | Active | Quiescent
+///   "state": "Active",              // Closed | Stalled | Active | Quiescent (kernel-derived)
+///   "errored": false,               // true if the tip event is a FoldFailed (a reducer fault)
+///   "error_reason": "guest trap: …",// present ONLY when errored:true — the FoldFailed reason
 ///   "event_count": 5,
 ///   "last_event_kind": "Dispatched",
 ///   "armed_timers": 0,
@@ -36,14 +38,34 @@ pub const DEFAULT_STALL_AFTER_MS: u64 = 300_000;
 ///   "published": {"public/phase": "prompting"}   // the session's own published/ KV view
 /// }
 /// ```
+/// `errored`/`error_reason` are the host's OWN derivation (the kernel `state` has no errored variant): a
+/// faulted-then-idle session would read `Quiescent`, so this flag is what tells a supervisor it faulted.
 pub fn session_status_json(
     id: &SessionId,
     hosted: &HostedSession,
     now_ms: Option<u64>,
     stall_after_ms: u64,
 ) -> String {
-    let snap = hosted.session().status_snapshot(now_ms, stall_after_ms);
-    render(id, &snap)
+    let session = hosted.session();
+    let snap = session.status_snapshot(now_ms, stall_after_ms);
+    render(id, &snap, errored_reason(session))
+}
+
+/// Whether the session most-recently FAULTED — its tip event is a `FoldFailed` (a reducer trapped /
+/// exhausted fuel / failed to instantiate; §17 the kernel CAPTURES it as a first-class log event rather
+/// than a silent stall). The kernel's derived [`SessionState`] has NO "errored" variant (a just-faulted
+/// session with no in-flight work reads `Quiescent`, masking the fault), so the host surfaces it here for
+/// the supervisor/concierge: `Some(reason)` = errored, `None` = not. Only the TIP is checked — a
+/// `FoldFailed` followed by later progress means the session moved on; the freshest signal is what a
+/// "what is X doing?" query wants. Reads the log tip only (cheap, out-of-band).
+fn errored_reason(session: &cdz_kernel::kernel::Session) -> Option<String> {
+    match session.log().last() {
+        Some(e) => match &e.body {
+            cdz_kernel::event::EventBody::FoldFailed { reason, .. } => Some(reason.clone()),
+            _ => None,
+        },
+        None => None,
+    }
 }
 
 /// Look up `id` in the host and render its status JSON, or `None` if no such session (the caller emits an
@@ -67,10 +89,21 @@ fn state_str(state: SessionState) -> &'static str {
     }
 }
 
-fn render(id: &SessionId, snap: &StatusSnapshot) -> String {
+fn render(id: &SessionId, snap: &StatusSnapshot, errored: Option<String>) -> String {
     let mut out = String::from("{");
     out.push_str(&format!("\"session_id\":{},", escape(id.as_str())));
     out.push_str(&format!("\"state\":{},", escape(state_str(snap.state))));
+    // A just-faulted session (tip = FoldFailed) is `errored:true` with the trap reason — the kernel's
+    // structural `state` can't express this (no Errored variant), so a supervisor/concierge reads this
+    // flag to distinguish "errored" from a benign Quiescent/Active. `error_reason` is present only when
+    // errored (omitted otherwise to keep the common object small).
+    match &errored {
+        Some(reason) => {
+            out.push_str("\"errored\":true,");
+            out.push_str(&format!("\"error_reason\":{},", escape(reason)));
+        }
+        None => out.push_str("\"errored\":false,"),
+    }
     out.push_str(&format!("\"event_count\":{},", snap.event_count));
     out.push_str(&format!(
         "\"last_event_kind\":{},",
@@ -143,10 +176,9 @@ mod tests {
     use cdz_kernel::kv::Kv;
     use cdz_kernel::reducer::{FoldOutput, Reducer};
 
-    /// An agent that, on "go", publishes a status under `public/` and asks the clock (leaving an in-flight
-    /// effect if the executor doesn't answer). Here we DON'T register an executor, so the Now effect... is
-    /// actually answered by nothing — so use a real ClockExecutor and it completes to Quiescent. For the
-    /// in-flight case we test with a reducer that arms a timer.
+    /// An agent that, on "go", publishes a status under `public/` and arms a far-future TIMER. A timer is
+    /// a kernel-internal open obligation (it needs no executor), so it stays armed → the session reads
+    /// `Active` with a published view — the state this test asserts the status render exposes.
     struct PublishAndTime;
     impl Reducer for PublishAndTime {
         fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
@@ -208,6 +240,53 @@ mod tests {
         assert!(
             json.contains("\"public/phase\":\"working\""),
             "published view exposed: {json}"
+        );
+        // A healthy session is NOT errored, and no reason field appears.
+        assert!(json.contains("\"errored\":false"), "{json}");
+        assert!(
+            !json.contains("error_reason"),
+            "no reason when not errored: {json}"
+        );
+    }
+
+    #[test]
+    fn a_faulted_session_reports_errored_with_the_reason() {
+        // A reducer whose fold FAILS (FoldOutput::failed — the Rust analogue of a wasm guest trap) makes
+        // the kernel record a FoldFailed log event (§17: captured, never a panic). The kernel's structural
+        // `state` has no errored variant, so the host surfaces `errored:true` + the reason.
+        struct Faulter;
+        impl Reducer for Faulter {
+            fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+                if matches!(event.body, EventBody::Inbound { .. }) {
+                    FoldOutput::failed("guest trap: divide by zero")
+                } else {
+                    FoldOutput::none()
+                }
+            }
+        }
+        let executor = cdz_kernel::executor::CompositeExecutor::new();
+        let mut host = AgentHost::new();
+        let id = SessionId::new("boom");
+        host.spawn(
+            id.clone(),
+            HostedSession::genesis(
+                Hash::of(b"faulter"),
+                Box::new(Faulter),
+                Box::new(Authorizer::deny_all()),
+                executor,
+            ),
+        );
+        host.deliver(&id, inbound_go(), None);
+
+        let json = host_session_status_json(&host, &id, Some(0), DEFAULT_STALL_AFTER_MS).unwrap();
+        assert!(json.contains("\"errored\":true"), "{json}");
+        assert!(
+            json.contains("\"error_reason\":\"guest trap: divide by zero\""),
+            "the FoldFailed reason is surfaced: {json}"
+        );
+        assert!(
+            json.contains("\"last_event_kind\":\"FoldFailed\""),
+            "{json}"
         );
     }
 
