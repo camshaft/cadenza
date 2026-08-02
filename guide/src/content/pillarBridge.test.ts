@@ -40,9 +40,10 @@ const languageChapters: Chapter[] = CHAPTERS.filter((c) => pillarOf(c) === "lang
 const platformChapters: Chapter[] = CHAPTERS.filter((c) => pillarOf(c) === "platform");
 
 test("the language pillar's closer bridges FORWARD into the platform pillar's opener", () => {
-  // Only meaningful once a platform pillar exists; if it's ever emptied, there is no seam to pin.
-  if (platformChapters.length === 0) return;
-
+  // The two-pillar seam is the whole point of this file: assert both pillars exist rather than
+  // returning early on an empty platform pillar (a silent skip would hide the more specific failure —
+  // the guard test below asserts platformChapters.length >= 1, so an empty pillar is a real defect here).
+  assert.ok(platformChapters.length > 0, "expected a non-empty platform pillar (the seam has no target otherwise)");
   assert.ok(languageChapters.length > 0, "expected a non-empty language pillar");
   const closer = languageChapters[languageChapters.length - 1];
   const opener = platformChapters[0];
@@ -70,6 +71,7 @@ test("the bridge scan resolves the registry + reads the closer (guards a vacuous
 
   // The <Ch> link scan finds a healthy number of targets in the closer (the recap links every
   // differentiator), so a broken regex can't silently make the bridge test vacuous.
-  const closerFile = files.get(languageChapters[languageChapters.length - 1].slug)!;
+  const closerFile = files.get(languageChapters[languageChapters.length - 1].slug);
+  assert.ok(closerFile, "expected the language closer to have a mapped source file");
   assert.ok(chLinkTargets(closerFile).size >= 5, "expected the language closer to link many chapters");
 });
