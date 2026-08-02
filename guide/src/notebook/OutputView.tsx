@@ -25,9 +25,11 @@ function FormulaView({ formula }: { formula: Formula }) {
       return (
         <span className="my-2 inline-flex items-baseline gap-1 text-base text-cadenza-200" data-testid="formula">
           <span className="font-mono">{formula.value}</span>
-          {/* A dimensionless quantity (Unit.one) has an empty unit — omit the unit span (and its flex gap)
-              so it renders as just the value, not the value followed by an empty gap. */}
-          {formula.unit && <span className="text-slate-400">{formula.unit}</span>}
+          {/* A dimensionless quantity (Unit.one) has an empty unit — render nothing (not even the span) so
+              it shows as just its value. Use an explicit `!== "" ? … : null`, NOT `unit && …`: the latter
+              evaluates to the STRING "" for a dimensionless unit, which React renders as an empty text node
+              (a flex item that keeps the `gap-1`) — only false/null/undefined render nothing (PR #1183). */}
+          {formula.unit !== "" ? <span className="text-slate-400">{formula.unit}</span> : null}
         </span>
       );
     case "plain":
