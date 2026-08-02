@@ -15991,6 +15991,93 @@ mod runtime_ops {
     }
 
     #[test]
+    fn an_equality_point_fact_folds_an_inner_range_comparison() {
+        // COMPARISON-FOLD face of the equality point fact (refine_from_comparison Eq arm, diverge.rs): an
+        // `(= x c)` guard pins `x ∈ [c, c]`, and a single-point range decides EVERY ordinary comparison of
+        // `x` against a constant — so an inner `(if (> x k) …)` folds to a constant and its dead arm is
+        // eliminated. Point-fact analogue of the inclusive-ordering fold above, but the interval is one point
+        // so it decides the compare in BOTH directions:
+        //   HI: `(if (= x 5) (if (> x 3) 1 2) 0)` — `5 > 3` always TRUE → inner folds to the THEN arm (2 dead).
+        //   LO: `(if (= x 5) (if (> x 5) 1 2) 0)` — `5 > 5` always FALSE → inner folds to the ELSE arm (1 dead).
+        // The LO face is the [c,c]-tightness discriminator: a broken point fact seeding `[5,MAX]` would leave
+        // `> 5` undecided and NOT fold it, keeping two compares — so LO's single-compare count proves the fact
+        // is the tight point, not a half-open lower bound. Sibling of
+        // `an_equality_point_fact_elides_the_then_branch_arith_overflow_guard`; corpus counterpart is the
+        // 02-binding-and-control "folds an inner range comparison, both directions" case.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |code: &[Lir]| {
+            code.iter()
+                .filter(|i| {
+                    matches!(
+                        i,
+                        Lir::I64GtS | Lir::I64GeS | Lir::I64LtS | Lir::I64LeS | Lir::I64Eq
+                    )
+                })
+                .count()
+        };
+        // HI: `x == 5` decides `x > 3` true → inner folds; only the OUTER `= 5` compare remains, `2` gone.
+        let hi = select(
+            "(module m (def (f (: n Int64)) (if (= n 5) (if (> n 3) 1 2) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&hi),
+            1,
+            "`x==5` should decide `x>3` true and fold the inner compare, got: {hi:?}"
+        );
+        assert!(
+            !hi.contains(&Lir::ConstI64(2)),
+            "the dead inner branch `2` is eliminated by the point-fact fold, got: {hi:?}"
+        );
+        // LO: `x == 5` decides `x > 5` FALSE → inner folds the other way; only the outer compare remains, `1`
+        // gone. The single-compare count is the [5,5]-tightness discriminator (a `[5,MAX]` seed keeps two).
+        let lo = select(
+            "(module m (def (f (: n Int64)) (if (= n 5) (if (> n 5) 1 2) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&lo),
+            1,
+            "`x==5` should decide `x>5` false and fold the inner compare — a non-point seed keeps two, got: {lo:?}"
+        );
+        assert!(
+            !lo.contains(&Lir::ConstI64(1)),
+            "the dead inner branch `1` is eliminated by the point-fact fold, got: {lo:?}"
+        );
+        // VALUE parity on both faces: the guarded x=5 takes the folded arm, any other x takes the outer else.
+        let hi_s = "(if (= n 5) (if (> n 3) 1 2) 0)";
+        assert_eq!(run::<i64>("(: n Int64)", hi_s, &[Val::S64(5)]), 1);
+        assert_eq!(run::<i64>("(: n Int64)", hi_s, &[Val::S64(4)]), 0);
+        let lo_s = "(if (= n 5) (if (> n 5) 1 2) 0)";
+        assert_eq!(run::<i64>("(: n Int64)", lo_s, &[Val::S64(5)]), 2);
+        assert_eq!(run::<i64>("(: n Int64)", lo_s, &[Val::S64(9)]), 0);
+    }
+
+    #[test]
     fn a_below_len_guard_elides_the_matching_list_ats_own_bounds_check_but_not_a_different_lists() {
         // BOUNDED-INDEX (below-len) FACET — operator-greenlit bounds-elision. Inside the then-branch of
         // `(< i (List.len xs))`, the index `i` is flow-known `< len(xs)`, so a `List.at xs i` there can shed

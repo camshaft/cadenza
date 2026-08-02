@@ -417,6 +417,35 @@
   (call   raw (: 127 Int8))
   (trap   "integer overflow"))
 
+(case "an equality point fact folds an inner range comparison, both directions — the point-fact analogue of the ordering fold"
+  (doc    "The COMPARISON-FOLD face of the equality point fact: an `(= x c)` guard pins `x ∈ [c, c]`, and a
+           point range decides EVERY ordinary comparison of `x` against a constant — so an inner `(if (> x k) …)`
+           folds to a constant and its dead arm is eliminated. This is the point-fact analogue of the ORDERING
+           `fold`/`implied` cases above (`x <= 5 ⇒ x < 6`), but the interval is a single point so it decides
+           the compare in BOTH directions, which the two faces pin:
+             `hi`: `(if (= x 5) (if (> x 3) 1 2) 0)` — under `x == 5`, `5 > 3` is always TRUE, so the inner
+                   compare folds to the THEN arm and the `2` arm is dead (x=5 → 1; any other x → outer else → 0).
+             `lo`: `(if (= x 5) (if (> x 5) 1 2) 0)` — under `x == 5`, `5 > 5` is always FALSE, so the inner
+                   compare folds to the ELSE arm and the `1` arm is dead (x=5 → 2; any other x → 0).
+           The `lo` face is the SOUNDNESS discriminator: a broken point fact that seeded `[5, MAX]` instead of
+           `[5, 5]` would leave `> 5` undecided (or wrongly fold it true) and return 1 at x=5 — so the x=5 →
+           2 output is what proves the fact is the tight POINT, not a half-open lower bound. Both Int64 scalar
+           (gates on both backends). The rcdzc Lir counterpart is
+           `an_equality_point_fact_folds_an_inner_range_comparison`. Distinct from the arith-guard elision above
+           (this folds a COMPARE, not an arithmetic overflow guard) and from the Eq-else known-false pin (that
+           refines the SAME test in its else; this decides a DIFFERENT ordering test in the then).")
+  (input  (do
+            (def (hi (: x Int64)) (if (= x 5) (if (> x 3) 1 2) 0))
+            (def (lo (: x Int64)) (if (= x 5) (if (> x 5) 1 2) 0))
+            (export hi)
+            (export lo)))
+  ; hi: x == 5 ⇒ (> x 3) always TRUE → inner folds to 1, the 2 arm is dead.
+  (call   hi (: 5 Int64)) (output (: 1 Int64))
+  (call   hi (: 4 Int64)) (output (: 0 Int64))
+  ; lo: x == 5 ⇒ (> x 5) always FALSE → inner folds to 2, the 1 arm is dead (the [5,5]-tightness discriminator).
+  (call   lo (: 5 Int64)) (output (: 2 Int64))
+  (call   lo (: 9 Int64)) (output (: 0 Int64)))
+
 (case "an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type"
   (doc    "The operator's motivating value-facts example (`if x > 0` ⇒ `x - 1` cannot underflow) on an
            UNSIGNED type, which value-facts slice 2 (GAP-A) newly enables — before it, the unsigned `(> x 0)`
