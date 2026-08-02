@@ -168,6 +168,55 @@ impl Session {
         }
     }
 
+    /// Fork this session into a fresh, EPHEMERAL query session over its CURRENT materialized state — the
+    /// kernel half of the operator's fork-for-query session-debug mechanism (the semantic complement to the
+    /// structural [`Session::status_snapshot`]). The fork is a brand-new session with its OWN genesis and
+    /// id-space, seeded with a CLONE of this session's current KV and the SAME reducer-hash, so it's ready
+    /// to fold a "summarize yourself" inbound message WITHOUT replaying history (fork-from-snapshot, not
+    /// full-replay — the materialized KV *is* the snapshot at the current seq). The caller then
+    /// [`Session::deliver`]s a report/summarize message, runs to quiescence, reads the reducer's answer
+    /// (its `public/` view or a model result), and DISCARDS the fork — it is never persisted.
+    ///
+    /// NON-INTERFERENCE by construction: this reads `self` immutably (a KV clone + the reducer-hash) and
+    /// returns a SEPARATE session; the query events land in the fork's log only. The original's log, KV,
+    /// open obligations, and armed timers are untouched — it never sees the query, never folds it, never
+    /// forks its train of thought. That's the whole point of forking rather than injecting into the live
+    /// session.
+    ///
+    /// The fork starts with NO in-flight obligations (empty open/settled/armed-timer sets, `next_effect_id`
+    /// reset): it doesn't inherit the parent's pending effects — it's a clean reactive session over the
+    /// materialized state whose only job is to answer the query. It carries the parent's monotonic clock
+    /// floor (`last_now`) so a `Now` read in the fork can't observe time earlier than the parent already
+    /// did. It attaches NO log store (ephemeral — a query artifact, never durable) and clears any latched
+    /// persist error.
+    ///
+    /// AUTHZ (host obligation, not enforced here): the fork should be driven with a MODEL-ONLY capability
+    /// so a query fold can't take world-actions (no Http/Shell/Emit leaking from a debug query) — the
+    /// kernel supplies the mechanism (a clean isolated session); the caller supplies the scoped `Authorize`.
+    pub fn fork_for_query(&self) -> Session {
+        let mut fork = Session {
+            log: Vec::new(),
+            kv: self.kv.clone(),
+            next_effect_id: 0,
+            settled: BTreeSet::new(),
+            open: BTreeSet::new(),
+            armed_timers: BTreeMap::new(),
+            last_now: self.last_now,
+            store: None,
+            persist_error: None,
+        };
+        // Own genesis naming the SAME reducer — the fork folds with the identical logic, and its snapshot
+        // descriptor reports the parent's reducer-hash.
+        fork.log.push(Event {
+            seq: 0,
+            cause: None,
+            body: EventBody::Genesis {
+                reducer: self.reducer_hash(),
+            },
+        });
+        fork
+    }
+
     /// The reducer this session was created with (from genesis). FAILS LOUDLY on a log whose first
     /// event isn't Genesis (PR#990 finding #2): both `genesis()` and `replay()` guarantee a Genesis
     /// first event, so a missing one is corruption, not a normal state — masking it with a bogus
@@ -1119,6 +1168,75 @@ mod status_snapshot_tests {
             Some(&b"investigating auth"[..])
         );
         assert!(!snap.published.contains_key(b"private/secret".as_slice()));
+    }
+
+    #[test]
+    fn fork_for_query_clones_state_without_touching_the_original() {
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"status-v1"));
+        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+            .unwrap();
+
+        // The parent is Active with one armed timer and its published status set.
+        let parent_events_before = s.log().len();
+        let parent_snap_before = s.status_snapshot(Some(500), 300_000);
+        assert_eq!(parent_snap_before.state, SessionState::Active);
+        assert_eq!(parent_snap_before.armed_timers, 1);
+
+        // Fork it: the fork inherits the materialized KV (incl. the `public/` status) but starts as a
+        // clean reactive session — its own genesis, NO inherited in-flight obligations or armed timers.
+        let fork = s.fork_for_query();
+        assert_eq!(fork.log().len(), 1); // just the fork's own genesis
+        assert_eq!(fork.open_effects(), 0); // did NOT inherit the parent's open timer obligation
+        assert_eq!(fork.next_timer_deadline(), None);
+        // Same reducer-hash (folds identically) — the snapshot descriptor proves it.
+        assert_eq!(fork.snapshot().reducer, s.snapshot().reducer);
+        // The KV came across: the fork can read what the parent published.
+        assert_eq!(
+            fork.kv().get(b"public/status"),
+            Some(&b"investigating auth"[..])
+        );
+        // And the private key too (the fork is a full-privilege clone of the materialized state; scoping
+        // is the caller's capability concern, not the KV's — the fork just has the same KV).
+        assert_eq!(fork.kv().get(b"private/secret"), Some(&b"nope"[..]));
+
+        // NON-INTERFERENCE: forking read the parent immutably — its log, timers, and state are unchanged.
+        assert_eq!(s.log().len(), parent_events_before);
+        let parent_snap_after = s.status_snapshot(Some(500), 300_000);
+        assert_eq!(parent_snap_after.state, SessionState::Active);
+        assert_eq!(parent_snap_after.armed_timers, 1);
+        assert_eq!(
+            parent_snap_after.event_count,
+            parent_snap_before.event_count
+        );
+    }
+
+    #[test]
+    fn fork_query_runs_a_summarize_fold_without_disturbing_the_parent() {
+        // End-to-end shape of fork-for-query: fork, deliver a query message, the fork folds it (arming its
+        // OWN timer here — a stand-in for the reducer's summarize work), and the parent is still untouched.
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"status-v1"));
+        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+            .unwrap();
+        let parent_events = s.log().len();
+
+        let mut fork = s.fork_for_query();
+        let mut fork_exec = RecordingExecutor::new();
+        fork.deliver(
+            inbound(),
+            None,
+            &StatusReducer,
+            &timer_cap(),
+            &mut fork_exec,
+        )
+        .unwrap();
+        // The fork folded the query and did work in its OWN log.
+        assert!(fork.log().len() > 1);
+        assert_eq!(fork.status_snapshot(Some(0), 300_000).armed_timers, 1);
+
+        // The parent's log length is untouched by anything the fork did.
+        assert_eq!(s.log().len(), parent_events);
     }
 
     #[test]
