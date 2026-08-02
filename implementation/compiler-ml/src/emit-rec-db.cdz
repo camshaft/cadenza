@@ -41,7 +41,7 @@ def can-call-args(args: List(Core), i: Int64, defidx: Map(Int64, Int64)) =
   (if i == List.len(args) then true
    else (match List.at(args, i) with
      | Option.Some(a) => (if can-emit-d(a, defidx) then can-call-args(args, i + 1, defidx) else false)
-     | Option.None(_) => can-call-args(args, i + 1, defidx)))
+     | Option.None(_) => false))   // in-bounds i so unreachable; but for an emit-subset predicate a missing arg = NOT emittable (decline), never an optimistic pass
 
 /// Is EVERY def-env entry's BODY in the emit subset (under `fmap`)? `emit-recursive-module` must gate on this,
 /// not just main: `recursive-bodies` emits each def body via `emit-def-body-d` unconditionally, so a def whose
@@ -53,7 +53,7 @@ def all-defs-emittable(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i:
    else (match List.at(entries, i) with
      | Option.Some(e) => (match e with | (_, pb) => (match pb with | (_, body) =>
          (if can-emit-d(body, fmap) then all-defs-emittable(entries, i + 1, fmap) else false)))
-     | Option.None(_) => all-defs-emittable(entries, i + 1, fmap)))
+     | Option.None(_) => false))   // in-bounds i so unreachable; but this GATES emit-vs-decline — a missing entry = NOT emittable (safe default), never an optimistic pass
 
 /// The TYPE-SECTION functypes for a recursive module — `functype-bytes(len params)` per def-env entry (in
 /// order), then `functype-bytes(0)` for the nullary main. Position = typeidx.
