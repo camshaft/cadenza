@@ -21,7 +21,7 @@ pub struct EffectId(pub u64);
 
 /// The kind of effect — the coarse verb. Target/args live in [`EffectRequest`]. This is deliberately a
 /// small, explicit enum for v0 (design §15b: a handful of local effects); it grows as executors land.
-/// `Hash` so it can key a by-kind executor router ([`crate::executor::AsyncCompositeExecutor`]).
+/// `Hash` so it can key a by-kind executor router ([`crate::executor::CompositeExecutor`]).
 ///
 /// Migration note (extensible content-typed effects, operator seq-39): each kind has a canonical
 /// lowercase FAMILY string ([`EffectKind::family`] / [`effect_ct`]) — the same string the codec

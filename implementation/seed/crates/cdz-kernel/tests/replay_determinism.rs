@@ -20,7 +20,7 @@ use cdz_kernel::executor::RecordingExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
+use cdz_kernel::reducer::{FoldOutput, Reducer};
 
 /// A reducer that exercises varied KV shapes and the effect chain. On an inbound message it writes a
 /// per-key counter, appends to a running list under a scanned prefix, and (for some inputs) emits an
@@ -29,7 +29,7 @@ use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
 struct BusyReducer;
 
 #[async_trait::async_trait(?Send)]
-impl AsyncReducer for BusyReducer {
+impl Reducer for BusyReducer {
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { payload, .. } => {
@@ -200,7 +200,7 @@ async fn different_sequences_generally_produce_different_roots() {
 /// a log whose events arrived in a different internal order would diverge.
 struct ScanOrderReducer;
 #[async_trait::async_trait(?Send)]
-impl AsyncReducer for ScanOrderReducer {
+impl Reducer for ScanOrderReducer {
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         if let EventBody::Inbound { payload, .. } = &event.body {
             let byte = match payload {

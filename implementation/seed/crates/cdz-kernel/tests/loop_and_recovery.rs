@@ -11,11 +11,11 @@ use cdz_kernel::effect::{
     Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
 };
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
-use cdz_kernel::executor::{AsyncExecutor, RecordingExecutor};
+use cdz_kernel::executor::{Executor, RecordingExecutor};
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{AsyncReducer, Effect, FoldOutput};
+use cdz_kernel::reducer::{Effect, FoldOutput, Reducer};
 
 /// A small but realistic reducer: on an inbound "go" message it performs an Http fetch; when the
 /// fetch RESULT arrives it records "done" in KV and performs a second Http call (a step-2). This is
@@ -24,7 +24,7 @@ use cdz_kernel::reducer::{AsyncReducer, Effect, FoldOutput};
 struct TwoStepReducer;
 
 #[async_trait::async_trait(?Send)]
-impl AsyncReducer for TwoStepReducer {
+impl Reducer for TwoStepReducer {
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
@@ -169,7 +169,7 @@ async fn denied_effect_is_logged_and_never_executed() {
     // A reducer that tries to reach a host outside its capability (the SEC-F1 attack).
     struct Exfil;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for Exfil {
+    impl Reducer for Exfil {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest {
@@ -265,7 +265,7 @@ async fn timeout_cancels_so_a_late_result_is_dropped() {
     // A reducer that counts how many times it folds an EffectResult::Ok into KV.
     struct CountResumes;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for CountResumes {
+    impl Reducer for CountResumes {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 return FoldOutput::with(vec![EffectRequest {
@@ -290,7 +290,7 @@ async fn timeout_cancels_so_a_late_result_is_dropped() {
     // An executor that always TIMES OUT the effect (models a hung call the deadline fired on).
     struct TimeoutExecutor;
     #[async_trait::async_trait(?Send)]
-    impl AsyncExecutor for TimeoutExecutor {
+    impl Executor for TimeoutExecutor {
         async fn perform_async(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
             EffectOutcome::TimedOut
         }
@@ -321,7 +321,7 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
     // anti-stuck continuation). It reacts to TimedOut specifically — the timeout is a real fold input.
     struct GiveUpOnTimeout;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for GiveUpOnTimeout {
+    impl Reducer for GiveUpOnTimeout {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
@@ -513,7 +513,7 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
     // effect WITH a token → the logged Dispatched carries it; one WITHOUT → token None.
     struct TokenReducer;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for TokenReducer {
+    impl Reducer for TokenReducer {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with_effects(vec![Effect {
@@ -589,7 +589,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     // channels so a wasm ComponentReducer reads its own `resumes` back on a timer wake / a denial.
     struct TokenTimerAndDenyReducer;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for TokenTimerAndDenyReducer {
+    impl Reducer for TokenTimerAndDenyReducer {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 // Inbound: arm a timer WITH a continuation token.
@@ -652,7 +652,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     // the AuthzDenied event (moved from the request; no prior durable frame exists for a denied effect).
     struct DenyTokenReducer;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for DenyTokenReducer {
+    impl Reducer for DenyTokenReducer {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with_effects(vec![Effect {
@@ -714,7 +714,7 @@ async fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_pers
     // A reducer that dispatches one Http effect on inbound.
     struct OneShot;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for OneShot {
+    impl Reducer for OneShot {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest {
@@ -921,7 +921,7 @@ struct TimerReducer {
     deadline_ms: u64,
 }
 #[async_trait::async_trait(?Send)]
-impl AsyncReducer for TimerReducer {
+impl Reducer for TimerReducer {
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
@@ -1052,7 +1052,7 @@ async fn malformed_timer_deadline_is_rejected_not_panicked() {
     // Totality (§17): a non-numeric timer target must be surfaced (as a denial), never panic.
     struct BadTimer;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for BadTimer {
+    impl Reducer for BadTimer {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest {
@@ -1092,7 +1092,7 @@ async fn live_shell_executor_runs_a_real_command_end_to_end() {
     // Reducer: on "go", run `echo hi`; on the result, stash whether it succeeded + the stdout.
     struct ShellReducer;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for ShellReducer {
+    impl Reducer for ShellReducer {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
@@ -1150,7 +1150,7 @@ async fn live_shell_denied_command_never_executes() {
 
     struct DeniedShell(String);
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for DeniedShell {
+    impl Reducer for DeniedShell {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest {
@@ -1211,7 +1211,7 @@ async fn live_shell_no_injection_via_metacharacters() {
 
     struct Injector(String);
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for Injector {
+    impl Reducer for Injector {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
@@ -1265,7 +1265,7 @@ async fn authz_denied_is_folded_live_so_replay_matches() {
     // replay-equivalence (the core invariant) is broken.
     struct DenialCounter;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for DenialCounter {
+    impl Reducer for DenialCounter {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
@@ -1319,7 +1319,7 @@ async fn replay_rejects_a_genesis_less_log_loudly() {
     // is exactly why reducer_hash's now-panicking invariant is unreachable in practice.
     struct Inert;
     #[async_trait::async_trait(?Send)]
-    impl AsyncReducer for Inert {
+    impl Reducer for Inert {
         async fn fold_async(&self, _e: &Event, _kv: &mut Kv) -> FoldOutput {
             FoldOutput::none()
         }

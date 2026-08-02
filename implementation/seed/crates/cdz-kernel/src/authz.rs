@@ -10,7 +10,7 @@
 use crate::effect::{Capability, EffectRequest};
 
 /// The authorization SEAM (§1/§12c): the kernel gates every effect through this, taken as
-/// `&dyn AsyncAuthorize` so the decision engine is swappable WITHOUT touching the kernel core — a Cedar
+/// `&dyn Authorize` so the decision engine is swappable WITHOUT touching the kernel core — a Cedar
 /// policy component (§20b), a delegation/attenuation authorizer (§12f), or the v0 [`Authorizer`] below all
 /// satisfy it. There is ONE authorizer trait, and it is async (operator ruling: "one async trait only").
 ///
@@ -20,16 +20,24 @@ use crate::effect::{Capability, EffectRequest};
 /// `.await` a fuel-yielding policy evaluation internally; an in-kernel check like [`Authorizer`] just
 /// returns (an `async fn` with no `.await`).
 ///
-/// **Object-safe via `async-trait`.** The kernel gates through `&dyn AsyncAuthorize`, so the trait stays
+/// **Object-safe via `async-trait`.** The kernel gates through `&dyn Authorize`, so the trait stays
 /// dyn-compatible via `#[async_trait(?Send)]`; `?Send` for the single-threaded kernel (a ComponentAuthorizer
 /// holds a non-`Send` wasmtime store).
 #[async_trait::async_trait(?Send)]
-pub trait AsyncAuthorize {
+pub trait Authorize {
     /// Is this request permitted? `Ok(())` to proceed to dispatch; `Err(reason)` to deny — the denied
     /// request never reaches an executor and the reason is recorded. Total + pure; may `.await` a wasm
     /// policy evaluation internally.
     async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String>;
 }
+
+// Transitional alias for `Authorize` — the redundant `Async` prefix was dropped now there is exactly ONE
+// (async) authorize trait (operator directive 2026-08-02). A `pub use` re-export (NOT a `type` alias) so
+// `impl AsyncAuthorize for X` and `dyn AsyncAuthorize` in the downstream `cdz-agent-host` crate keep
+// compiling verbatim across the rename (alias-bridge beat 1); removed once its impls migrate to the bare
+// name (beat 3). Do not use in new code — write `Authorize`.
+#[doc(hidden)]
+pub use self::Authorize as AsyncAuthorize;
 
 /// Decides whether a requested effect may be performed. The result is logged either way (§10): a
 /// permitted effect proceeds to dispatch; a denied one becomes an `AuthzDenied` event and never runs.
@@ -54,7 +62,7 @@ impl Authorizer {
 }
 
 #[async_trait::async_trait(?Send)]
-impl AsyncAuthorize for Authorizer {
+impl Authorize for Authorizer {
     /// SEC-F1: permission requires a capability whose predicate admits the *resolved target*. Native async
     /// (no `.await` — a flat capability-set check does no I/O).
     async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String> {
@@ -111,10 +119,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_custom_authorize_impl_satisfies_the_seam() {
         // The point of the trait (§1 swap seam): a NON-Authorizer decision engine drops in as
-        // `&dyn AsyncAuthorize` with no kernel change. A trivial policy — permit only `Now` — proves it.
+        // `&dyn Authorize` with no kernel change. A trivial policy — permit only `Now` — proves it.
         struct OnlyNow;
         #[async_trait::async_trait(?Send)]
-        impl AsyncAuthorize for OnlyNow {
+        impl Authorize for OnlyNow {
             async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String> {
                 if req.kind == EffectKind::Now {
                     Ok(())
@@ -123,7 +131,7 @@ mod tests {
                 }
             }
         }
-        let authz: &dyn AsyncAuthorize = &OnlyNow;
+        let authz: &dyn Authorize = &OnlyNow;
         assert!(authz
             .authorize_async(&req(EffectKind::Now, ""))
             .await
