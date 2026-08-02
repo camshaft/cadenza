@@ -3837,6 +3837,22 @@
               (export main)))
   (output (: 7 Int64)))
 
+(case "a tuple-destructuring fn (lambda) parameter binds its parts"
+  (doc    "The `fn` (lambda) face of the destructuring parameter: core-semantics.md #A Binding Position
+           Accepts An Irrefutable Pattern names \"a `let` binder, a function or `fn` parameter\" — so a `fn`
+           parameter accepts an irrefutable tuple pattern exactly as a `def` parameter does (the case above)
+           and a `let` binder does. `(fn ((tuple x y)) (+ (* x 10) y))` binds `x`/`y` from the tuple argument;
+           `(f (tuple 3 4))` = 3*10+4 = 34. Before the lambda-param desugar reached this position the fn face
+           rejected CDZ0101 (the pattern's names fell through to scoping, unbound) while the def-param + let
+           faces worked — this pins the fn face now binds, closing the binding-position family across all three
+           positions the spec names (v-inference lambda-param desugar).")
+  (input  (do
+            (def (main (: a Int64))
+              (let ((f (fn ((tuple x y)) (+ (* x 10) y))))
+                (f (tuple a 4))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 34 Int64)))
+
 (case "a record binding pattern naming an absent field is rejected"
   (doc    "The contrast: a record binding pattern that names a field the bound value's record type does NOT
            have is a type mismatch (CDZ0203), not a silent miss. `(let (((record (nope a)) (record (x 3) (y
