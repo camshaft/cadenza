@@ -1,0 +1,109 @@
+/// giter-stepby.cdz — DIRECT empty + exhaust-mid-stride coverage for the `step-by` combinator, split into
+/// its own small module.
+///
+/// WHY A SEPARATE MODULE. `step-by(it, n)` keeps index 0 then every n-th element, driven by a reset
+/// countdown (`step-from(it, n, i)`: yield when `i <= 0` and reset `i` to `n - 1`, else skip and decrement).
+/// giter.cdz pins step-by 2 / 3 (on lengths that HAPPEN to end on a kept element), step-by 1 = identity,
+/// and step-by 0 = identity (n <= 0 degenerates). It does NOT pin:
+///   - EMPTY input (the top `Nil` arm);
+///   - a length that EXHAUSTS MID-STRIDE — i.e. the sequence's last kept element is NOT the last element,
+///     so the pull runs out while `i > 0` (skipping) rather than right after a yield. e.g. step-by 2 over
+///     4 elements keeps [0th, 2nd] = indices 0,2 and then skips index 3 into `Nil`. An off-by-one in the
+///     skip/reset arm that mishandled the trailing skipped run would slip past every giter.cdz case whose
+///     length lands a kept element last.
+///   - step-by n LARGER than the input keeps ONLY the first element (one yield, then it skips to the end).
+/// It lives in its own module because giter.cdz sits at the per-module monomorphizer instantiation-pressure
+/// ceiling its header documents; a fresh module isolates the added instantiation (the same "isolate the
+/// heavy instantiation" pattern giter-flat/chain/scan/spanwhile/zipstop/interleave use).
+///
+/// The generic pull-iterator (same cons-cell shape as the sibling modules; re-declared here so this module
+/// is self-contained — each src/*.cdz is its own namespace).
+type GIter =
+  | Nil
+  | Cons(a, GIter(a))
+
+/// `from-list(xs)` — the base generic producer over `xs : List(a)`, self-recursive so its result element
+/// ties to the argument.
+def from-list(xs) = match xs with
+  | [] => GIter.Nil(unit)
+  | [h, .. t] => GIter.Cons(h, from-list(t))
+
+/// `step-from(it, n, i)` — the countdown worker: yield the head when `i` has counted down to 0 (resetting
+/// `i` to `n - 1`), otherwise skip it and decrement `i`. The unit under test (via `step-by`).
+def step-from(it, n, i) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => if i <= 0 then
+    GIter.Cons(h, step-from(rest, n, n - 1))
+  else
+    step-from(rest, n, i - 1)
+
+/// `step-by(it, n)` — keep index 0 then every n-th element.
+def step-by(it, n) = step-from(it, n, 0)
+
+/// `take(it, k)` — the first `k` elements. Used ONLY to build a TYPED empty iterator
+/// (`take(from-list([x]), 0)`) so the empty-input test pins the element type: a bare `from-list([])` leaves
+/// its result element var untied (the documented empty-producer CDZ0201 gap), while `take` of a non-empty
+/// source at count 0 is an empty iterator whose element type is pinned by the source's `[x]`.
+def take(it, k) =
+  if k <= 0 then
+    GIter.Nil(unit)
+  else
+    match it with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, k - 1))
+
+/// `count(it)` — number of emitted values, driving the pull to exhaustion.
+def count(it) = match it with
+  | GIter.Nil(_) => 0
+  | GIter.Cons(_, rest) => 1 + count(rest)
+
+/// `collect(it)` — reify the iterator back to a `List(a)` so a test can assert the exact emitted sequence.
+def collect(it) = match it with
+  | GIter.Nil(_) => []
+  | GIter.Cons(h, rest) => List.concat([h], collect(rest))
+
+/// `int-list-eq(xs, ys)` — structural equality on `List(Int64)` for the sequence assertions.
+def int-list-eq(xs, ys) = match xs with
+  | [] => (match ys with
+    | [] => true
+    | _ => false
+  )
+  | [x, .. xr] => match ys with
+    | [] => false
+    | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
+
+/// TESTS ----------------------------------------------------------------------------------------------
+/// empty input: the top Nil arm yields nothing regardless of the stride.
+@test
+def step-by-of-empty-is-empty() =
+  if count(step-by(take(from-list([1]), 0), 2)) == 0 then
+    unit
+  else
+    trap("step-by of an empty iterator is empty")
+
+/// exhaust MID-STRIDE: step-by 2 over 4 elements keeps indices 0,2 = [1,3] and then SKIPS index 3 into
+/// Nil — the pull runs out while i > 0 (the skip arm), not right after a yield.
+@test
+def step-by-exhausts-mid-stride() =
+  if int-list-eq(collect(step-by(from-list([1, 2, 3, 4]), 2)), [1, 3]) then
+    unit
+  else
+    trap("step-by 2 over 4 elements keeps [1,3] and exhausts in the trailing skip: [1,3]")
+
+/// another mid-stride shape: step-by 3 over 5 keeps indices 0,3 = [1,4], then skips index 4.
+@test
+def step-by-three-over-five-keeps-first-and-fourth() =
+  if int-list-eq(collect(step-by(from-list([1, 2, 3, 4, 5]), 3)), [1, 4]) then
+    unit
+  else
+    trap("step-by 3 over 5 keeps indices 0,3 = [1,4]")
+
+/// stride LARGER than the input keeps only the first element (one yield, then skips to exhaustion).
+@test
+def step-by-stride-larger-than-input-keeps-first-only() =
+  if int-list-eq(collect(step-by(from-list([1, 2, 3]), 9)), [1]) then
+    unit
+  else
+    trap("step-by with a stride larger than the input keeps only the first element: [1]")
+
+export { GIter.* }
