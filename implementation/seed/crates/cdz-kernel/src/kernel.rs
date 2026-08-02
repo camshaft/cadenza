@@ -28,7 +28,7 @@ use crate::event::{EffectOutcome, Event, EventBody};
 use crate::executor::Executor;
 use crate::hash::Hash;
 use crate::kv::Kv;
-use crate::reducer::{Effect, Reducer};
+use crate::reducer::{AsyncReducer, Effect, Reducer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
@@ -327,6 +327,61 @@ impl Session {
         Ok(())
     }
 
+    /// The ASYNC twin of [`Session::deliver`] (operator all-async directive) — deliver an inbound event
+    /// and run the fold→dispatch cycle to quiescence, but folding through an [`AsyncReducer`] so a long
+    /// wasm fold cooperatively YIELDS (fuel_async_yield) instead of blocking the single-threaded host loop.
+    /// Additive alongside the sync `deliver` during the migration; the sync path is removed once every
+    /// caller (incl. the host's async loop) is on the async path (the operator's "no sync remains").
+    ///
+    /// The EXECUTOR stays sync here (`&mut dyn Executor`): only the REDUCER fold is the long-running wasm
+    /// that needs to yield; a real async executor (Bedrock/HTTP) is a later step of the async arc. The
+    /// guest-facing ABI stays blocking (operator seq-42): the async is purely host-side Rust — the guest's
+    /// `fold.apply` is a plain sync WIT function that the host drives asynchronously.
+    pub async fn deliver_async(
+        &mut self,
+        body: EventBody,
+        cause: Option<Hash>,
+        reducer: &dyn AsyncReducer,
+        authz: &dyn Authorize,
+        executor: &mut dyn Executor,
+    ) -> Result<(), KernelError> {
+        self.append(body, cause);
+        self.drive_async(reducer, authz, executor).await;
+        Ok(())
+    }
+
+    /// The ASYNC twin of [`Session::fire_due_timers`] — fire every armed timer past `now_ms`, driving the
+    /// [`AsyncReducer`] for each. Same determinism (§9c): the FIRED time is the timer's own deadline, not
+    /// `now_ms`, so replay reconstructs identically. Additive alongside the sync `fire_due_timers`.
+    pub async fn fire_due_timers_async(
+        &mut self,
+        now_ms: u64,
+        reducer: &dyn AsyncReducer,
+        authz: &dyn Authorize,
+        executor: &mut dyn Executor,
+    ) -> usize {
+        let mut due: Vec<(u64, u64)> = self
+            .armed_timers
+            .iter()
+            .filter(|(_, &deadline)| deadline <= now_ms)
+            .map(|(&id, &deadline)| (deadline, id))
+            .collect();
+        due.sort_unstable();
+        for (deadline, id) in &due {
+            let token = self.timer_armed_token_of(EffectId(*id)).unwrap_or(None);
+            self.append(
+                EventBody::TimerFired {
+                    id: EffectId(*id),
+                    fired_ms: *deadline,
+                    token,
+                },
+                None,
+            );
+            self.drive_async(reducer, authz, executor).await;
+        }
+        due.len()
+    }
+
     /// Fire every armed timer whose absolute deadline has passed `now_ms`, injecting a `TimerFired`
     /// (§9c) and driving the reducer for each — the kernel, not an executor, is what wakes a timer. The
     /// driver calls this with the current wall clock (e.g. on a scheduler tick); the reducer stays
@@ -444,6 +499,21 @@ impl Session {
         let trigger = self.tip_hash();
         let initial = self.fold_tip(reducer, trigger);
         self.drive_worklist(initial, reducer, authz, executor);
+    }
+
+    /// The ASYNC twin of [`Session::drive`] — same fold→authorize→dispatch→fold-result loop, but the
+    /// reducer folds are `.await`ed (via [`AsyncReducer`]) so a long wasm fold cooperatively yields. The
+    /// authorize/executor/append mechanics are IDENTICAL to the sync path — only the fold calls await.
+    async fn drive_async(
+        &mut self,
+        reducer: &dyn AsyncReducer,
+        authz: &dyn Authorize,
+        executor: &mut dyn Executor,
+    ) {
+        let trigger = self.tip_hash();
+        let initial = self.fold_tip_async(reducer, trigger).await;
+        self.drive_worklist_async(initial, reducer, authz, executor)
+            .await;
     }
 
     /// Process a worklist of `(request, cause)` effects to quiescence — the shared core of `drive` (which
@@ -588,6 +658,118 @@ impl Session {
         }
     }
 
+    /// The ASYNC twin of [`Session::drive_worklist`] — structurally identical (authorize → durable
+    /// dispatch → execute → fold-result), but the reducer folds (`fold_tip_async`/`record_result_async`)
+    /// are `.await`ed. The executor call stays SYNC (only the reducer fold yields this slice); the
+    /// authorize/timer/append/S1-latch logic is byte-identical to the sync path. Kept as a parallel copy
+    /// because the fold-call interleaving (which mutates `to_process` mid-loop) can't be factored behind a
+    /// sync/async-agnostic helper without threading a closure per fold point — the duplication is the
+    /// never-red migration cost, removed with the sync path at step 6.
+    async fn drive_worklist_async(
+        &mut self,
+        mut to_process: Vec<(Effect, Hash)>,
+        reducer: &dyn AsyncReducer,
+        authz: &dyn Authorize,
+        executor: &mut dyn Executor,
+    ) {
+        while let Some((effect, cause)) = to_process.pop() {
+            let Effect {
+                request: req,
+                token,
+            } = effect;
+            let id = EffectId(self.next_effect_id);
+            self.next_effect_id += 1;
+
+            // SEC-F1: authorize against the resolved target (same as sync path).
+            if let Err(reason) = authz.authorize(&req) {
+                let denial_hash =
+                    self.append(EventBody::AuthzDenied { id, reason, token }, Some(cause));
+                for pair in self.fold_tip_async(reducer, denial_hash).await {
+                    to_process.push(pair);
+                }
+                continue;
+            }
+
+            // Timers arm a kernel-fired deadline (§9c), not an executor call — same as sync path.
+            if req.kind == EffectKind::Timer {
+                match req.target.parse::<u64>() {
+                    Ok(deadline_ms) => {
+                        self.append(
+                            EventBody::TimerArmed {
+                                id,
+                                deadline_ms,
+                                token,
+                            },
+                            Some(cause),
+                        );
+                    }
+                    Err(_) => {
+                        let denial_hash = self.append(
+                            EventBody::AuthzDenied {
+                                id,
+                                reason: format!("timer deadline not a u64 ms: {:?}", req.target),
+                                token,
+                            },
+                            Some(cause),
+                        );
+                        for pair in self.fold_tip_async(reducer, denial_hash).await {
+                            to_process.push(pair);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let idempotency_key = idempotency_key_for(id, &req);
+
+            // S1: durable dispatch record BEFORE routing (same as sync path).
+            let dispatch_hash = self.append(
+                EventBody::Dispatched {
+                    id,
+                    kind: req.kind.clone(),
+                    target: req.target.clone(),
+                    idempotency_key,
+                    deadline_ms: None,
+                    token,
+                },
+                Some(cause),
+            );
+
+            // S1 latch-check BEFORE routing (tier B): an un-durable dispatch is NOT routed (same as sync).
+            if self.persist_error.is_some() {
+                let outcome = EffectOutcome::Err(
+                    "dispatch not durably logged (persist failure) — effect NOT routed (S1)"
+                        .to_string(),
+                );
+                let more = self
+                    .record_result_async(id, outcome, reducer, dispatch_hash)
+                    .await;
+                for pair in more {
+                    to_process.push(pair);
+                }
+                continue;
+            }
+
+            // Route + execute. The executor stays SYNC this slice (async executor is a later step of the
+            // async arc); the Dispatched record is already durable, so ordering is preserved.
+            let outcome = executor.perform(&req, idempotency_key);
+
+            // MONOTONIC `now` clamp (operator ruling) — same as sync path; only `Now` results are clamped.
+            let outcome = if req.kind == EffectKind::Now {
+                clamp_now_outcome(outcome, &mut self.last_now)
+            } else {
+                outcome
+            };
+
+            let more = self
+                .record_result_async(id, outcome, reducer, dispatch_hash)
+                .await;
+            for pair in more {
+                to_process.push(pair);
+            }
+        }
+    }
+
     /// Fold the current tip event through the reducer, applying its KV writes and returning its
     /// requested effects each paired with `cause` (the tip's hash — what unlocked them). Reversed so a
     /// `pop`-driven worklist yields them in emission order.
@@ -601,6 +783,32 @@ impl Session {
         // do NOT fold the FoldFailed event (no recursion — a fold that failed can't be re-handed to the
         // same failing reducer); a supervisor reacting to it is a later slice. A failed fold emits no
         // effects, so nothing joins the worklist.
+        if let Some(reason) = out.failure {
+            self.append(
+                EventBody::FoldFailed {
+                    reason,
+                    caused_event: cause,
+                },
+                Some(cause),
+            );
+            return Vec::new();
+        }
+        let mut v: Vec<(Effect, Hash)> = out.effects.into_iter().map(|e| (e, cause)).collect();
+        v.reverse();
+        v
+    }
+
+    /// The ASYNC twin of [`Session::fold_tip`] — folds the tip through an [`AsyncReducer`] (`.await`),
+    /// same FoldFailed capture + effect-reversal. This is the ONE place the reducer actually awaits.
+    async fn fold_tip_async(
+        &mut self,
+        reducer: &dyn AsyncReducer,
+        cause: Hash,
+    ) -> Vec<(Effect, Hash)> {
+        let tip = self.log.last().expect("log always has genesis").clone();
+        let out = reducer.fold_async(&tip, &mut self.kv).await;
+        // Error-resilience (§17): a failed fold is captured as a FoldFailed log event, not folded further
+        // — identical to the sync `fold_tip`.
         if let Some(reason) = out.failure {
             self.append(
                 EventBody::FoldFailed {
@@ -650,6 +858,36 @@ impl Session {
             Some(dispatch_hash),
         );
         self.fold_tip(reducer, result_hash)
+    }
+
+    /// The ASYNC twin of [`Session::record_result`] — same timeout-cancels (drop a late result for a
+    /// settled id) + token-copy-from-Dispatched-frame invariant, but folds the result through an
+    /// [`AsyncReducer`] (`.await`).
+    async fn record_result_async(
+        &mut self,
+        id: EffectId,
+        outcome: EffectOutcome,
+        reducer: &dyn AsyncReducer,
+        dispatch_hash: Hash,
+    ) -> Vec<(Effect, Hash)> {
+        if self.settled.contains(&id.0) {
+            return Vec::new();
+        }
+        let token = self.dispatch_token_of(id).unwrap_or_else(|| {
+            panic!(
+                "cdz-kernel invariant violated: EffectResult for {id:?} has no Dispatched frame to \
+                 derive its continuation token from (§19b/§19e (B))"
+            )
+        });
+        let result_hash = self.append(
+            EventBody::EffectResult {
+                id,
+                result: outcome,
+                token,
+            },
+            Some(dispatch_hash),
+        );
+        self.fold_tip_async(reducer, result_hash).await
     }
 
     /// Time out an open (dispatched-but-unsettled) effect — the missing half of the S4 recovery
@@ -1233,6 +1471,37 @@ mod status_snapshot_tests {
             parent_snap_after.event_count,
             parent_snap_before.event_count
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliver_async_drives_the_loop_identically_to_sync_deliver() {
+        // The async driver (deliver_async) must produce the SAME result as sync deliver for a sync-bodied
+        // reducer wrapped in SyncAsAsync — the additive-migration invariant (the async path is behavior-
+        // preserving; it only adds cooperative yield for a long wasm fold). Drive StatusReducer via the
+        // async loop and assert the same Active state + armed timer + published-only-public KV.
+        use crate::reducer::SyncAsAsync;
+        let mut exec = RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"status-v1"));
+        s.deliver_async(
+            inbound(),
+            None,
+            &SyncAsAsync(StatusReducer),
+            &timer_cap(),
+            &mut exec,
+        )
+        .await
+        .unwrap();
+
+        let snap = s.status_snapshot(Some(500), 300_000);
+        assert_eq!(snap.state, SessionState::Active);
+        assert_eq!(snap.armed_timers, 1);
+        assert_eq!(
+            snap.published
+                .get(b"public/status".as_slice())
+                .map(|v| &v[..]),
+            Some(&b"investigating auth"[..])
+        );
+        assert!(!snap.published.contains_key(b"private/secret".as_slice()));
     }
 
     #[test]
