@@ -111,4 +111,27 @@ def different-seeds-differ-in-child-count() =
   let s2 = roll(seed-state((2 : Int64)), (1 : Int64), (1000 : Int64)) in
   if s1 == s2 then trap("seeds 1 and 2 should differ") else unit
 
+@test
+def the-inline-lcg-is-the-minstd-known-answer() =
+  // This showcase ships its OWN inline MINSTD LCG (`lcg-next`) — a SEPARATE copy from prng.cdz, so pinning
+  // prng.cdz does NOT protect it. Pin BOTH constants via known-answers the determinism/seeds-differ tests
+  // above can't catch (a wrong multiplier/modulus stays deterministic AND still differs across seeds):
+  //   • lcg-next(1) = 16807·1 mod (2^31−1) = 16807 — the canonical MINSTD acceptance value; pins the
+  //     MULTIPLIER (a wrong one changes 16807). But 16807 < the modulus, so this alone never exercises the mod.
+  //   • lcg-next(200000) = 16807·200000 = 3_361_400_000, which EXCEEDS 2^31−1, so the modulo reduces it to
+  //     1213916353. A modulus off by one (2147483646) gives 1213916354 → this pins the MODULUS.
+  if lcg-next(1 : Int64) == (16807 : Int64) then
+    (if lcg-next(200000 : Int64) == (1213916353 : Int64) then unit
+     else trap("inline LCG lcg-next(200000) must be 1213916353 (pins modulus = 2^31-1; product exceeds it)"))
+  else trap("inline LCG lcg-next(1) must be exactly 16807 (pins multiplier = 16807)")
+
+@test
+def a-degenerate-roll-range-is-the-single-point() =
+  // roll(s, k, k) is a zero-WIDTH draw: lo + (lcg-next(s) % ((hi-lo)+1)) = k + (x % 1) = k. This pins the
+  // `+1` in roll's modulus — WITH it, `% 1` = 0 so roll = lo = k; WITHOUT it, `% 0` (divide by zero → trap).
+  // The 25..75 / 30..70 splay/offset draws elsewhere can't catch a dropped +1 (a narrower range still lands
+  // in-range). A degenerate zero-width range makes the off-by-one a hard failure.
+  if roll(seed-state(7 : Int64), (5 : Int64), (5 : Int64)) == (5 : Int64) then unit
+  else trap("roll(s, k, k) on a zero-width range must be exactly k")
+
 export { main }
