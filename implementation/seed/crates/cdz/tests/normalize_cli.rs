@@ -6,6 +6,9 @@
 
 use std::process::Command;
 
+mod common;
+use common::write_stdin_tolerating_broken_pipe;
+
 /// Run `cdz normalize <args…>`, returning (exit_ok, stdout, stderr).
 fn normalize(args: &[&str]) -> (bool, String, String) {
     let exe = env!("CARGO_BIN_EXE_cdz");
@@ -127,7 +130,6 @@ fn check_exits_nonzero_when_a_file_would_be_normalized() {
 /// stdin (`-`) disposition path, which reads real `std::io::stdin()` (not in-process unit-testable from
 /// cadenza-syntax) — the end-to-end complement of that crate's `emits_to_stdout` unit test.
 fn normalize_stdin(stdin: &str, args: &[&str]) -> (bool, String, String) {
-    use std::io::Write;
     let exe = env!("CARGO_BIN_EXE_cdz");
     let mut a = vec!["normalize"];
     a.extend_from_slice(args);
@@ -138,15 +140,7 @@ fn normalize_stdin(stdin: &str, args: &[&str]) -> (bool, String, String) {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn cdz normalize (stdin)");
-    // Tolerate a BrokenPipe: cdz may error + exit (e.g. a usage mistake) before reading stdin, closing the
-    // read end so this write races the close — benign (the verdict is cdz's exit + stderr, checked below).
-    if let Err(e) = child.stdin.take().unwrap().write_all(stdin.as_bytes()) {
-        assert_eq!(
-            e.kind(),
-            std::io::ErrorKind::BrokenPipe,
-            "unexpected stdin write error (not the benign BrokenPipe race): {e}"
-        );
-    }
+    write_stdin_tolerating_broken_pipe(child.stdin.take().unwrap(), stdin.as_bytes());
     let out = child.wait_with_output().expect("wait cdz");
     (
         out.status.success(),

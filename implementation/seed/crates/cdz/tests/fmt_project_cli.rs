@@ -7,6 +7,9 @@
 
 use std::process::Command;
 
+mod common;
+use common::write_stdin_tolerating_broken_pipe;
+
 /// Run `cdz <args…>` from `cwd`, returning (exit_ok, stdout, stderr).
 fn run_in(cwd: &std::path::Path, args: &[&str]) -> (bool, String, String) {
     let exe = env!("CARGO_BIN_EXE_cdz");
@@ -288,7 +291,6 @@ fn fmt_is_idempotent_a_second_pass_is_a_byte_stable_fixed_point() {
 /// `std::io::stdin()` disposition path — not in-process unit-testable from cadenza-syntax, so this is the
 /// e2e complement of that crate's `emits_to_stdout` predicate unit test.
 fn fmt_stdin(stdin: &str, args: &[&str]) -> (bool, String, String) {
-    use std::io::Write;
     let exe = env!("CARGO_BIN_EXE_cdz");
     let mut a = vec!["fmt"];
     a.extend_from_slice(args);
@@ -299,15 +301,7 @@ fn fmt_stdin(stdin: &str, args: &[&str]) -> (bool, String, String) {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn cdz fmt (stdin)");
-    // Tolerate a BrokenPipe: cdz may error + exit (e.g. a usage mistake) before reading stdin, closing the
-    // read end so this write races the close — benign (the verdict is cdz's exit + stderr, checked below).
-    if let Err(e) = child.stdin.take().unwrap().write_all(stdin.as_bytes()) {
-        assert_eq!(
-            e.kind(),
-            std::io::ErrorKind::BrokenPipe,
-            "unexpected stdin write error (not the benign BrokenPipe race): {e}"
-        );
-    }
+    write_stdin_tolerating_broken_pipe(child.stdin.take().unwrap(), stdin.as_bytes());
     let out = child.wait_with_output().expect("wait cdz");
     (
         out.status.success(),

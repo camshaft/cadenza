@@ -5,8 +5,10 @@
 //! `query` module's unit tests, proving the CLI wiring (arg parsing, format resolution, the
 //! validated-transaction rewrite, exit codes) end-to-end.
 
-use std::io::Write;
 use std::process::{Command, Stdio};
+
+mod common;
+use common::write_stdin_tolerating_broken_pipe;
 
 /// Run `cdz <args…>` feeding `stdin`, returning (exit_ok, stdout, stderr).
 fn run(args: &[&str], stdin: &str) -> (bool, String, String) {
@@ -18,15 +20,7 @@ fn run(args: &[&str], stdin: &str) -> (bool, String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn cdz");
-    // Write stdin, tolerating a broken pipe: a command that rejects its args (e.g. a bad pattern)
-    // exits and closes its stdin BEFORE we finish writing, so `write_all` races against that exit.
-    // On a slower runner that surfaces as `BrokenPipe` — benign here, since the assertions check the
-    // exit status and stderr, not that every byte was consumed.
-    if let Err(e) = child.stdin.take().unwrap().write_all(stdin.as_bytes())
-        && e.kind() != std::io::ErrorKind::BrokenPipe
-    {
-        panic!("write stdin to cdz: {e}");
-    }
+    write_stdin_tolerating_broken_pipe(child.stdin.take().unwrap(), stdin.as_bytes());
     let out = child.wait_with_output().expect("wait");
     (
         out.status.success(),
