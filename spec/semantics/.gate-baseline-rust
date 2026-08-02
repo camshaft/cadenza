@@ -163,8 +163,8 @@ pass	a 33-VARIANT sum dispatches across the discriminant range with a payload va
 pass	a 5000-deep recursive-sum spine builds, walks, and compares — the eq walk survives depth
 pass	a @ensures postcondition over a HEAP result checks at exit and returns the live collection
 pass	a @ensures relating the RESULT to a PARAMETER enforces the relation at exit
-todo	a @param positions a slice window over a guest-built byte rope
-todo	a @param value SEEDS an in-program handler's state
+pass	a @param positions a slice window over a guest-built byte rope
+pass	a @param value SEEDS an in-program handler's state
 pass	a @requires predicate over a HEAP collection is enforced at entry and value-transparent when satisfied
 pass	a BASE-N conversion round-trips one value through three runtime radices
 pass	a BIGINT handler state multiplies per perform and each resume reads the prior product
@@ -318,9 +318,9 @@ pass	a 2000-entry built map answers first, middle, and last keys through deep CH
 pass	a 2000-entry map fully drains to empty and regrows on the emptied trie
 pass	a 500-iteration Bytes.concat loop measures exactly and indexes both extremes
 pass	a 5000-element pushed list reads head, middle, and last through the deeper trie
-todo	a @param drives a recursive fold's iteration count
-todo	a @param selects a match arm and a SECOND param feeds the selected body
-todo	a @param value crosses into a closure capture and applies
+pass	a @param drives a recursive fold's iteration count
+pass	a @param selects a match arm and a SECOND param feeds the selected body
+pass	a @param value crosses into a closure capture and applies
 pass	a Bytes.slice into the to-bytes output decodes at a scalar boundary and rejects mid-scalar
 pass	a BINARY SEARCH halves a lo/hi window over a sorted list read by List.at
 pass	a CONST-FOLDED taken branch with a Float32-overflowing literal is rejected, not folded past the check
@@ -382,7 +382,7 @@ pass	a handler arm RECURSES through a named helper before resuming
 pass	a handler arm applies a closure capturing a heap map and the map outlives the handle
 pass	a handler threads a TUPLE of two heaps as state with different ops touching different halves
 pass	a helper returns the shorter of two borrowed ropes and both caller handles stay live
-todo	a host response SIZES a guest-built collection which is then folded and keyed
+pass	a host response SIZES a guest-built collection which is then folded and keyed
 pass	a length-prefixed frame built FRESH from a runtime payload round-trips through its own parser
 pass	a list of closure-carrying variants interprets as a command pipeline over an accumulator
 pass	a literal pattern at MID-SPINE depth gates the arm while deeper binders still bind
@@ -632,7 +632,7 @@ pass	a 3-FIELD Tuple ARG among scalars crosses the direct-call boundary
 pass	a 32-bit-float closure crosses the host boundary
 pass	a 32-bit-integer closure crosses the host boundary
 pass	a 64-bit-unsigned closure crosses the host boundary
-todo	a @param value drives a CHAMP map lookup as the KEY
+pass	a @param value drives a CHAMP map lookup as the KEY
 pass	a @requires on a UNIT-returning def is enforced — the precondition traps before the unit body
 pass	a @requires on a recursive def is re-checked at every entry including self-calls
 pass	a @requires precondition is enforced for a genuinely-runtime argument
@@ -3403,7 +3403,7 @@ pass	dropping a set derived by insert must not free members shared with the surv
 pass	eval of a quasiquote with TWO unquotes splices a bound and a computed value in one form
 pass	graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list
 pass	modular exponentiation by SQUARING halves the exponent and branches on parity
-todo	one @param read bound ONCE fans out to a map key, a set probe, and arithmetic
+pass	one @param read bound ONCE fans out to a map key, a set probe, and arithmetic
 pass	one staged partial application fans out to TWO second stages sharing the first capture
 pass	string REVERSE walks scalars back-to-front and anti-commutes with concatenation
 pass	structural equality of two Ast.Int wider than Int64 compares by full value
@@ -4369,7 +4369,7 @@ pass	nested quasiquote: a level-2 deferred unquote is INDEPENDENT of the enclosi
 pass	nested quasiquote: an inner unquote at level 2 is deferred, not spliced (exact structure)
 pass	nested-Option equality observes the OUTER variant and matches identical nesting
 pass	nullary constructor patterns are uniform with unary
-todo	one @param accessor performed TWICE consumes two host responses in order
+pass	one @param accessor performed TWICE consumes two host responses in order
 pass	one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers
 pass	one encode-decode cycle is byte-stable
 pass	one entrypoint's host authority is not reachable by another that does not delegate it
@@ -4951,7 +4951,7 @@ pass	tuple keys differing only in the FLOAT component stay distinct and look up
 pass	tuple set elements order by string content across reps then the scalar tiebreak
 pass	tuples are deconstructed by pattern matching
 pass	two @param sites with the same name are rejected as a duplicate effect operation
-todo	two @params seed two NESTED handlers independently
+pass	two @params seed two NESTED handlers independently
 pass	two BigInt accumulators co-threaded through recursion compute a fibonacci
 pass	two BigInts differing only PAST BIT 64 stay distinct as set elements
 pass	two LEXICALLY-NESTED handlers of the same effect partition the performs by region
@@ -5117,13 +5117,13 @@ pass	wrapping-sub wraps a boundary-crossing runtime Int64 at the min boundary
 pass	α-equivalence (aconv) recognizes (λx.x) and (λy.y) as the same term up to bound-variable renaming
 pass	α-equivalence handles nesting and distinguishes a bound variable from a same-numbered free variable
 todo	Type is a first-class value
-todo	a @param accessor splices into a quasiquote and the eval computes with the host value
-todo	a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)
-todo	a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)
+pass	a @param accessor splices into a quasiquote and the eval computes with the host value
+pass	a @param of type (Qty Rational unit) desugars to num/den scalars + a guest Qty.of with the unit (#13 B2)
+pass	a @param of type Rational desugars to two scalar num/den accessors the guest recombines (#13)
 todo	a Float64 closure captures a Float64 build-time host effect result
-todo	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
+pass	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 pass	a RUNTIME Ast structural equality compares by value (Ast.Int scalar leaf and Ast.List compound)
-todo	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
+pass	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
 todo	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a closure captures the result of a build-time host op called with an argument
 todo	a closure capturing a build-time host effect preserves the order of two host calls
@@ -5131,39 +5131,39 @@ todo	a closure that performs a delegated effect cannot cross the host boundary
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
 todo	a delegated effect performed in a closure passed to a HOF is reached and fires
-todo	a delegated effect performed inside an intra-program handler
+pass	a delegated effect performed inside an intra-program handler
 todo	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
-todo	a delegated host effect composes with the value-heap runtime
+pass	a delegated host effect composes with the value-heap runtime
 pass	a genuinely-runtime MULTIPLY on an unusual signed width traps on overflow rather than wrapping to storage
 todo	a host call's response is an ordinary value that feeds a LATER host call
-todo	a host effect with a non-kebab NAME crosses under a normalized interface extern name
-todo	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
-todo	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
+pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name
+pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
+pass	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 todo	a host op with a String parameter composes with the value-heap runtime
 pass	a multi-argument closure returning a COMPOUND round-trips — flat arrow spelling
 pass	a multi-argument closure with COMPOUND args round-trips — flat arrow spelling
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a program that makes a host call has that call in its observable behavior
-todo	a program uses a response-returning delegated host function's return value
+pass	a program uses a response-returning delegated host function's return value
 pass	a rational built from a RUNTIME zero denominator traps rather than being a value
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 pass	a recursive evaluator destructures a built Ast by quote patterns and recurses
-todo	a run's result is a deterministic function of a host call's recorded response
+pass	a run's result is a deterministic function of a host call's recorded response
 pass	a runtime structural = on a sum with List and Float payloads walks it (value-eq-shaped over a Sum)
 todo	an @param of a Bool type generates a Bool-typed accessor
 todo	an @param of a Float64 type generates a Float64-typed accessor
-todo	an @param site generates a Param accessor a host delegation reads at run time
-todo	an @param with no widget config still generates its typed accessor
-todo	an abortive handler abandons a host call in the path it discards
-todo	an effectful host arg flowing into a compound then a destructuring match is evaluated ONCE
-todo	an effectful host arg to a multi-use function parameter is evaluated ONCE, not re-performed per use
+pass	an @param site generates a Param accessor a host delegation reads at run time
+pass	an @param with no widget config still generates its typed accessor
+pass	an abortive handler abandons a host call in the path it discards
+pass	an effectful host arg flowing into a compound then a destructuring match is evaluated ONCE
+pass	an effectful host arg to a multi-use function parameter is evaluated ONCE, not re-performed per use
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
-todo	an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)
-todo	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
+pass	an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)
+pass	an intra-program handler interposes on a delegated effect, counts it, and forwards to the boundary
 todo	and performs the right operand's effect when the left is true
-todo	two same-unit Qty host results combine guest-side as a same-dimension add
+pass	two same-unit Qty host results combine guest-side as a same-dimension add
 todo	and short-circuit does not perform the right operand's effect
 todo	binary operator operands are evaluated left to right
 pass	distinct-sig round-trip: TWO byte-rope consumers of different signatures — the Bool one
@@ -5207,16 +5207,16 @@ todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED
 pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the byte-rope one
 pass	round-trip: a scalar consumer and a byte-rope consumer of the same closure — the scalar one
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
-todo	the generated Param accessor carries the @param's declared type into arithmetic
+pass	the generated Param accessor carries the @param's declared type into arithmetic
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the same conditional delegation makes no host call when the branch is not taken
-todo	the same declared effect is handled in-program by one entrypoint and delegated by another
-todo	the same program with a different response gives a different deterministic result
+pass	the same declared effect is handled in-program by one entrypoint and delegated by another
+pass	the same program with a different response gives a different deterministic result
 todo	tuple elements are evaluated left to right
-todo	two @param sites generate two accessors under one Param effect
+pass	two @param sites generate two accessors under one Param effect
 pass	zero divided by a runtime value folds to zero but keeps the zero-divisor guard
-todo	two host calls consume their responses in order
-todo	two host responses combine in call order through a non-commutative operator
+pass	two host calls consume their responses in order
+pass	two host responses combine in call order through a non-commutative operator
 pass	a NEGATIVE prefixed quantity carries its sign through the reference scale-fold
 pass	a narrow-width quantity whose reference-scaled magnitude overflows its inner type is rejected
 pass	a scaled derived quantity displays with BOTH scales folded into the magnitude
@@ -5463,9 +5463,9 @@ pass	nullary variants of a payload-carrying sum order by discriminant
 pass	runtime Bools order false below true with compare and equality agreeing
 pass	a nested all-nullary sum renders the correct variant across the boundary (render half, v-runtime f9f8717c)
 pass	an abstract-typed value used as a CHAMP map key is rejected (opacity — the key path invokes the forbidden structural comparison)
-todo	two @params seeding nested handlers in the WRONG order is caught by an asymmetric row
-todo	a @param slice window at an interior cut reads the non-straddling bytes
-todo	a @param slice window whose length exceeds the remaining bytes yields None
+pass	two @params seeding nested handlers in the WRONG order is caught by an asymmetric row
+pass	a @param slice window at an interior cut reads the non-straddling bytes
+pass	a @param slice window whose length exceeds the remaining bytes yields None
 pass	Qty arithmetic INLINE in a handler resume VALUE slot keeps the state binder's Qty type (#44 fix)
 pass	a Map keyed by a COMPOUND containing an abstract type is rejected (opacity — the key path compares the abstract leaf)
 pass	Set.to-list over Option elements enumerates Some-first per the declared order
@@ -5479,7 +5479,7 @@ pass	the same without-extend chain on a LIST-borne record computes
 pass	single row ops on a map-borne record compute — without alone and extend alone
 pass	the without-extend chain on a NESTED-map-borne record computes (boundary — double lookup materializes fresh)
 pass	a without-extend re-wrap inside a sum payload keeps the map-borne record's new field value
-todo	two @param accessors INTERLEAVED (a b a) consume per-op response queues in perform order
+pass	two @param accessors INTERLEAVED (a b a) consume per-op response queues in perform order
 pass	two closure handles swap parameter slots through repeated tail calls
 pass	two heap-list accumulators swap slots through every tail call
 pass	two runtime-selected splices keep their operand ORDER in a non-commutative form
