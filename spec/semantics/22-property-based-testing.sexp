@@ -188,8 +188,8 @@
   (doc    "The SUM cases above use `Result (Ok Int64) (Err Int64)` — every variant PAYLOADED. This one
            witnesses the shape the property-test generator gained bare-name-nullary support for: a MIXED sum
            whose variants are two PAYLOADED (`Circle Int64` / `Square Int64`) plus one NULLARY (`Point`, a
-           bare-name variant). A seed-derived selector `(% (& (next s) 3) …)` — expressed here as nested
-           `if`s over the low bits — picks the constructor; a masked int is the payload for the payloaded
+           bare-name variant). A seed-derived selector `(& (next s) 3)` (the low 2 bits mask directly to
+           0..3) — expressed here as nested `if`s — picks the constructor; a masked int is the payload for the payloaded
            arms, and the nullary arm carries none. `(= (gen seed) (gen seed))` re-draws the SAME tagged value
            and the compound `=` walks the discriminant AND (for a payloaded arm) the carried Int64 — so a
            sum that MIXES arities compares correctly (a nullary draw equals a nullary draw; a payloaded draw
