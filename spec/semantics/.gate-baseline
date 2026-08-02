@@ -1007,6 +1007,7 @@ pass	a bin pattern over a String scrutinee is a type error
 pass	a bin pattern over a runtime non-Bytes scrutinee is a type error
 pass	a bin pattern over an Int64 scrutinee is a type error
 pass	a bin tag-dispatch over a RUNTIME-START slice reads the re-based window per call
+pass	a bin-arm guard cond that traps at the decoded binder TRAPS the match — it does not fall through
 pass	a bin-decoded frame body drives per-byte performs through a recursive walk
 pass	a binary form whose bit-fields do not close a byte is ill-formed
 pass	a binary integer literal
@@ -1497,6 +1498,7 @@ pass	a factorial that overflows the integer type traps through the recursion
 pass	a factory RETURNS a closure capturing the def's SCALAR parameter
 pass	a factory RETURNS a closure that captures a let-bound inner closure
 pass	a factory-returned closure over its list parameter keeps the capture live across two applications
+pass	a failed multi-segment bin guard falls through and the NEXT arm re-decodes its own binders
 pass	a failing guard falls through to a later arm
 pass	a failing payload-binder guard falls to a later arm re-binding the payload
 pass	a failing tuple guard falls to a later arm re-binding the elements

@@ -947,6 +947,44 @@
   (call   main (: 0 Int64))
   (output (: -1 Int64)))
 
+(case "a bin-arm guard cond that traps at the decoded binder TRAPS the match — it does not fall through"
+  (doc    "The TRAP face of bin-guard evaluation, closing the guard-outcome triple (true → select, false →
+           fall through, TRAP → trap): the guard `(> n (/ 12 (- n 9)))` divides by `(- n 9)`, which is 0
+           exactly when the decoded second byte n = 9. A guard is an EVALUATED expression, not a refutable
+           probe — its trap is observed, so the match must TRAP at n = 9, not treat the failure as a
+           guard-miss and fall to the `(* 100 m)` arm (which would yield 900) or the wildcard. k = 0 →
+           bytes [5, 9] → n = 9 → the guard divides by zero → trap; k = 3 → bytes [5, 12] → guard
+           `12 > 12/3 = 4` holds → the arm body reads n = 12. The bin analogue of the scalar
+           observed-trap rule (a demanded trapping computation fires; only a DISCARDED one is elided).")
+  (input  (do
+            (def (main (: k UInt8))
+              (match (Bytes.of (list (UInt8.wrap 5) (UInt8.wrap (+ 9 k))))
+                ((guard (bin (u8 5) (u8 n)) (> n (/ 12 (- n 9)))) n)
+                ((bin (u8 5) (u8 m)) (* 100 m))
+                (_ -1)))
+            (export main)))
+  (call   main (: 0 UInt8)) (trap "division by zero")
+  (call   main (: 3 UInt8)) (output (: 12 Int64)))
+
+(case "a failed multi-segment bin guard falls through and the NEXT arm re-decodes its own binders"
+  (doc    "The MULTI-SEGMENT fall-through companion: three arms probe the same tag `(u8 5)` and decode TWO
+           binder segments each under different guards. A failed guard must fall through with the next
+           arm's binders decoding cleanly from the same materialized scrutinee — distinct binder NAMES per
+           arm (n/p, a/b, x/y) pin that each arm's decode is its own scope, not a reuse of the failed
+           arm's slots. k = 60 → bytes [5, 60, 61]: arm 1's guard `60 > 50` holds → n + p = 121. k = 7 →
+           bytes [5, 7, 8]: arm 1 fails (7 ≤ 50), arm 2's guard `8 > 7` holds → 10·(7+8) = 150 (the
+           unguarded arm 3, 100·15 = 1500, must NOT be reached).")
+  (input  (do
+            (def (main (: k UInt8))
+              (match (Bytes.of (list (UInt8.wrap 5) (UInt8.wrap k) (UInt8.wrap (+ k 1))))
+                ((guard (bin (u8 5) (u8 n) (u8 p)) (> n 50)) (+ n p))
+                ((guard (bin (u8 5) (u8 a) (u8 b)) (> b a)) (* 10 (+ a b)))
+                ((bin (u8 5) (u8 x) (u8 y)) (* 100 (+ x y)))
+                (_ -1)))
+            (export main)))
+  (call   main (: 60 UInt8)) (output (: 121 Int64))
+  (call   main (: 7 UInt8)) (output (: 150 Int64)))
+
 (case "a runtime bin match dispatches on a literal tag across arms"
   (doc    "A multi-arm `bin` match over a RUNTIME scrutinee: a leading LITERAL tag segment selects the arm
            (tag 1 vs tag 2), and a runtime `u16` field fills the payload. The construction takes a `UInt8`
