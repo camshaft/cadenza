@@ -37,6 +37,7 @@ pass	ACKERMANN evaluates — a recursive call in the ARGUMENT of a recursive cal
 pass	a 1100-element prepend-built runtime list reads every index through a multi-level RRB front-spine
 pass	a 200-element runtime Set of BYTES resolves every member through a multi-level CHAMP over the blessed byte order
 pass	a 200-element runtime Set resolves every member through a multi-level CHAMP trie and rejects non-members
+pass	a 2000-deep runtime Bytes.concat rope flattens iteratively and reads its content stack-safe
 pass	a Map keyed by a (Bytes, Int64) tuple is looked up by content through the compound key descent
 pass	a Set of (Int64, Bytes) tuples orders by int then Bytes lexicographically and dedups by content
 pass	a multi-level RRB list persistently updates deep interior-level indices leaving the original intact
