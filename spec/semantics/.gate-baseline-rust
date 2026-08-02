@@ -149,6 +149,7 @@ pass	TWO Bytes fields project from a record and re-concat into a frame (the pack
 pass	TWO closures capture DIFFERENT generations of one shadowed name and each sees its own
 pass	TWO closures capture the SAME heap map and the map outlives both applications
 pass	TWO distinct nonzero BigInt literal probes dispatch in one recursive fn
+pass	TWO guarded map arms over a PARTIAL-CONST map fall through, each re-resolving its value binder
 pass	TWO loop-carried ropes each rebind to derived strings every recursion step
 pass	TWO match inits in one let SEQUENCE - the second scrutinizes the first's binding
 pass	TWO sequential inner handles seed from the outer's ADVANCING state
