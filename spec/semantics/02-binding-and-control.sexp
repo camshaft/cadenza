@@ -2483,6 +2483,24 @@
   (call   main (: 50 Int64))
   (output (: 0 Int64)))
 
+(case "a bare-binder guard over a STRING (heap) param scrutinee in a helper binds and evaluates"
+  (doc    "The HEAP-param face of the bare-binder guard: the scalar cases above guard an Int64 scrutinee;
+           this guards a `String` (heap-typed) parameter in a NON-entry helper. `(match s ((guard t (< t
+           \"m\")) 1) (_ 3))` with `s : String` a helper param must bind `t` to the scrutinee and run the
+           guard — \"apple\" < \"m\" → 1 (core-semantics.md #A Binding Position Accepts An Irrefutable
+           Pattern; the guard closes over the bound `t`). Formerly all 3 targets over-rejected CDZ0101 (the
+           guard binder orphaned): the finding-#46 fix wrapped the guarded-SCALAR desugar in a binder let,
+           but the sibling runtime-STRING-match desugar built the arm's then-branch WITHOUT that let-wrap,
+           so `t` never bound → the extracted `if` severed it from its `(guard …)` ancestor. This pins the
+           heap/string face now binds (v-inference lambda/guard-desugar fix), the String companion of the
+           Int64 guarded-scalar cases.")
+  (input  (do
+            (def (band (: s String)) (match s ((guard t (< t "m")) 1) (_ 3)))
+            (def (main (: k Int64)) (band "apple"))
+            (export main)))
+  (call   main (: 0 Int64))
+  (output (: 1 Int64)))
+
 (case "a guard reads a binding from the enclosing scope, not only its pattern's"
   (doc    "A guard is an ordinary expression evaluated in the arm's full scope, so it reads names from the
            ENCLOSING scope too, not only the ones its pattern binds: `classify` guards `v if v < limit`
