@@ -61,6 +61,14 @@ pub struct Session {
     /// time. Rebuilt from `TimerArmed` events on replay; drained when the timer fires. The kernel — not
     /// an executor — injects `TimerFired` once `now_ms` reaches the deadline (see `fire_due_timers`).
     armed_timers: BTreeMap<u64, u64>,
+    /// The last `Now`-effect timestamp this session HANDED BACK, in binary nanoseconds since epoch —
+    /// the monotonicity high-water mark (operator ruling). The `Now` clock effect must be strictly
+    /// increasing: a raw wall-clock reading `<= last_now` is clamped up to `last_now + 1` before it's
+    /// recorded, so successive `now()`s never repeat or go backwards (wall-clock resolution / NTP steps
+    /// can't break log ordering). The kernel stays CLOCK-FREE (§9c) — the executor reads the raw clock;
+    /// this only CLAMPS the value handed to it. Rebuilt from the log's recorded (already-clamped) `Now`
+    /// results on replay so `last_now` is replay-deterministic (like `next_effect_id`/`armed_timers`).
+    last_now: u64,
     /// The durable log this session writes THROUGH as it appends (§16c-S1), if attached via
     /// [`Session::attach_log`]. When present, every appended event is persisted (append + flush) before
     /// `append` returns — so the S1 "Dispatched durable before its effect routes" ordering is enforced
@@ -94,6 +102,7 @@ impl Session {
             settled: BTreeSet::new(),
             open: BTreeSet::new(),
             armed_timers: BTreeMap::new(),
+            last_now: 0,
             store: None,
             persist_error: None,
         };
@@ -523,6 +532,16 @@ impl Session {
             // Dispatched record is already durable, so a crash here recovers via replay.)
             let outcome = executor.perform(&req, idempotency_key);
 
+            // MONOTONIC `now` (operator ruling): the executor reads the RAW wall clock (kernel stays
+            // clock-free, §9c); the kernel CLAMPS a `Now` result to be strictly increasing before it's
+            // recorded, so successive `now()`s never repeat/regress. Clamp the value that gets LOGGED, so
+            // replay re-folds the same monotonic sequence (deterministic). Only `Now` results are clamped.
+            let outcome = if req.kind == EffectKind::Now {
+                clamp_now_outcome(outcome, &mut self.last_now)
+            } else {
+                outcome
+            };
+
             // Fold the result back (S4: correlated by id), caused by its dispatch. Any further effects
             // the reducer emits when it folds the result are caused by the RESULT event (the new tip).
             let more = self.record_result(id, outcome, reducer, dispatch_hash);
@@ -663,6 +682,17 @@ impl Session {
         })
     }
 
+    /// The effect KIND that dispatch `id`'s `Dispatched` frame recorded, or `None` if `id` has no
+    /// `Dispatched` frame (e.g. a timer, opened by `TimerArmed`). Used on replay to tell a `Now`
+    /// result apart (so `last_now` rebuilds only from `Now` results). Reads the durable frame, so it's
+    /// replay-deterministic.
+    fn dispatch_kind_of(&self, id: EffectId) -> Option<EffectKind> {
+        self.log.iter().find_map(|e| match &e.body {
+            EventBody::Dispatched { id: d, kind, .. } if *d == id => Some(kind.clone()),
+            _ => None,
+        })
+    }
+
     /// The reducer continuation token that timer `id`'s `TimerArmed` frame carried (§19e slice 2b-iii),
     /// the timer analogue of [`dispatch_token_of`]: `Some(Some(token))` = a token was armed, `Some(None)`
     /// = a token-free timer, `None` = no `TimerArmed` frame for `id`. Derived from the DURABLE arming
@@ -696,6 +726,7 @@ impl Session {
             settled: BTreeSet::new(),
             open: BTreeSet::new(),
             armed_timers: BTreeMap::new(),
+            last_now: 0,
             store: None,
             persist_error: None,
         };
@@ -719,10 +750,24 @@ impl Session {
                     s.armed_timers.insert(id.0, *deadline_ms);
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
                 }
-                EventBody::EffectResult { id, .. } => {
+                EventBody::EffectResult { id, result, .. } => {
                     s.open.remove(&id.0);
                     s.settled.insert(id.0);
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
+                    // Rebuild `last_now` from the RECORDED (already-clamped) `Now` results so the
+                    // monotonic high-water mark is replay-deterministic (the live path clamped these
+                    // values before recording; replay just re-derives the same `last_now`, never
+                    // re-clamps). A result is a `Now` one iff its dispatch's kind was `Now` — the
+                    // `Dispatched` frame precedes this result in the log we've built so far.
+                    if s.dispatch_kind_of(*id) == Some(EffectKind::Now) {
+                        if let EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes))) =
+                            result
+                        {
+                            if let Ok(arr) = <[u8; 8]>::try_from(&bytes[..]) {
+                                s.last_now = s.last_now.max(u64::from_le_bytes(arr));
+                            }
+                        }
+                    }
                 }
                 EventBody::TimerFired { id, .. } => {
                     s.open.remove(&id.0);
@@ -900,6 +945,30 @@ fn event_body_name(body: &EventBody) -> &'static str {
     }
 }
 
+/// Clamp a `Now` effect's result to be strictly greater than `last_now` (monotonic clock, operator
+/// ruling), updating `last_now` to the value handed back. The `Now` payload is a binary `u64` LE
+/// nanoseconds-since-epoch reading; the executor produced it from the RAW wall clock (kernel stays
+/// clock-free). If the raw reading `r <= last_now` (wall-clock resolution repeats, an NTP step back),
+/// hand back `last_now + 1` instead — so successive `now()`s are strictly increasing and the log's time
+/// ordering can't regress. The clamped value is what gets RECORDED, so replay re-derives the same
+/// sequence. Only the `Ok(Some(Inline(8-byte u64)))` shape is clamped; any other outcome (Err/TimedOut,
+/// a malformed non-8-byte payload) passes through untouched (defensive — never corrupt an outcome the
+/// kernel can't interpret; a malformed Now reading is the executor's bug, surfaced as-is, not silently
+/// rewritten). `last_now` still advances to the clamp floor even when the reading is used, via `max`.
+fn clamp_now_outcome(outcome: EffectOutcome, last_now: &mut u64) -> EffectOutcome {
+    if let EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes))) = &outcome {
+        if let Ok(arr) = <[u8; 8]>::try_from(&bytes[..]) {
+            let raw = u64::from_le_bytes(arr);
+            let clamped = raw.max(last_now.saturating_add(1));
+            *last_now = clamped;
+            return EffectOutcome::Ok(Some(crate::effect::Payload::Inline(
+                clamped.to_le_bytes().to_vec().into(),
+            )));
+        }
+    }
+    outcome
+}
+
 /// The variant name of an effect kind, for a [`StatusSnapshot`]'s in-flight report (a debug label).
 fn effect_kind_name(kind: &EffectKind) -> &'static str {
     match kind {
@@ -1042,5 +1111,167 @@ mod status_snapshot_tests {
         let snap = s.status_snapshot(Some(0), 300_000);
         assert_eq!(snap.state, SessionState::Closed);
         assert_eq!(snap.last_event_kind, "Closed");
+    }
+}
+
+#[cfg(test)]
+mod monotonic_now_tests {
+    use super::*;
+    use crate::authz::Authorizer;
+    use crate::effect::{
+        Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
+    };
+    use crate::event::{ContentType, EffectOutcome, EventBody};
+    use crate::executor::Executor;
+    use crate::reducer::{Effect, FoldOutput, Reducer};
+
+    // The clamp helper directly: a fresh reading above the floor passes through (and raises last_now);
+    // a reading <= last_now is clamped UP to last_now+1 (strictly increasing).
+    #[test]
+    fn clamp_now_is_strictly_increasing() {
+        let mut last = 0u64;
+        let mk =
+            |ns: u64| EffectOutcome::Ok(Some(Payload::Inline(ns.to_le_bytes().to_vec().into())));
+        let read = |o: &EffectOutcome| match o {
+            EffectOutcome::Ok(Some(Payload::Inline(b))) => {
+                u64::from_le_bytes(<[u8; 8]>::try_from(&b[..]).unwrap())
+            }
+            _ => panic!("expected Now payload"),
+        };
+        // 1000 > 0 → passes through, last=1000.
+        let a = clamp_now_outcome(mk(1000), &mut last);
+        assert_eq!(read(&a), 1000);
+        assert_eq!(last, 1000);
+        // 1000 again (clock resolution repeat) → clamped to 1001.
+        let b = clamp_now_outcome(mk(1000), &mut last);
+        assert_eq!(read(&b), 1001);
+        assert_eq!(last, 1001);
+        // 500 (clock stepped BACKWARD, e.g. NTP) → clamped to 1002, never regresses.
+        let c = clamp_now_outcome(mk(500), &mut last);
+        assert_eq!(read(&c), 1002);
+        assert_eq!(last, 1002);
+        // 5000 (real advance) → passes through, last=5000.
+        let d = clamp_now_outcome(mk(5000), &mut last);
+        assert_eq!(read(&d), 5000);
+        assert_eq!(last, 5000);
+    }
+
+    // A non-Now / malformed outcome passes through untouched (defensive — never corrupt an outcome the
+    // kernel can't interpret as a u64-ns Now reading).
+    #[test]
+    fn clamp_now_passes_through_non_now_shapes() {
+        let mut last = 42u64;
+        // An Err passes through, last unchanged.
+        let e = clamp_now_outcome(EffectOutcome::Err("boom".into()), &mut last);
+        assert!(matches!(e, EffectOutcome::Err(_)));
+        assert_eq!(last, 42);
+        // A non-8-byte Inline payload (not a u64 ns) passes through untouched.
+        let weird = EffectOutcome::Ok(Some(Payload::Inline(b"not-8".to_vec().into())));
+        let out = clamp_now_outcome(weird, &mut last);
+        assert!(matches!(out, EffectOutcome::Ok(Some(Payload::Inline(_)))));
+        assert_eq!(last, 42);
+    }
+
+    // A reducer that requests a Now on every event, recording each returned ns into KV under a running
+    // index so we can read the sequence back.
+    struct NowReducer;
+    impl Reducer for NowReducer {
+        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } | EventBody::EffectResult { .. } => {
+                    // On a Now result, stash it; then (up to 3 total) ask again to build a sequence.
+                    if let EventBody::EffectResult {
+                        result: EffectOutcome::Ok(Some(Payload::Inline(b))),
+                        ..
+                    } = &event.body
+                    {
+                        let n = kv.prefix_scan(b"t/").len();
+                        kv.put(format!("t/{n}").into_bytes(), b.to_vec());
+                        if n + 1 >= 3 {
+                            return FoldOutput::none();
+                        }
+                    }
+                    FoldOutput::with_effects(vec![Effect {
+                        request: EffectRequest {
+                            kind: EffectKind::Now,
+                            target: String::new(),
+                            payload: None,
+                            timeliness: Timeliness::Interactive,
+                        },
+                        token: None,
+                    }])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    // An executor that returns the SAME raw ns for every Now (simulating a coarse clock) — the kernel's
+    // clamp must still make the recorded sequence strictly increasing.
+    struct StuckClock(u64);
+    impl Executor for StuckClock {
+        fn perform(&mut self, req: &EffectRequest, _key: Hash) -> EffectOutcome {
+            assert_eq!(req.kind, EffectKind::Now);
+            EffectOutcome::Ok(Some(Payload::Inline(self.0.to_le_bytes().to_vec().into())))
+        }
+    }
+
+    fn now_cap() -> Authorizer {
+        Authorizer::new(vec![Capability {
+            kind: EffectKind::Now,
+            predicate: ResourcePredicate::Any,
+        }])
+    }
+
+    fn inbound() -> EventBody {
+        EventBody::Inbound {
+            content_type: ContentType {
+                family: "message".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(b"go".to_vec().into()),
+        }
+    }
+
+    fn recorded_now_sequence(s: &Session) -> Vec<u64> {
+        s.kv()
+            .prefix_scan(b"t/")
+            .into_iter()
+            .map(|(_, v)| u64::from_le_bytes(<[u8; 8]>::try_from(v).unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn now_sequence_is_strictly_increasing_even_from_a_stuck_clock() {
+        let mut exec = StuckClock(1000); // same raw reading every time
+        let mut s = Session::genesis(Hash::of(b"now-v1"));
+        s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+            .unwrap();
+        let seq = recorded_now_sequence(&s);
+        assert_eq!(seq.len(), 3, "three Now readings recorded");
+        // Despite the stuck 1000 clock, the kernel clamped to 1000, 1001, 1002 — strictly increasing.
+        assert!(
+            seq.windows(2).all(|w| w[1] > w[0]),
+            "Now sequence must be strictly increasing, got {seq:?}"
+        );
+        assert_eq!(seq, vec![1000, 1001, 1002]);
+    }
+
+    #[test]
+    fn replay_reconstructs_the_same_last_now_and_sequence() {
+        let mut exec = StuckClock(1000);
+        let mut s = Session::genesis(Hash::of(b"now-v1"));
+        s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+            .unwrap();
+        let live_seq = recorded_now_sequence(&s);
+        let live_last_now = s.last_now;
+
+        // Replay the log: the recorded (already-clamped) Now results must rebuild the SAME last_now +
+        // the SAME sequence — replay never re-clamps, it re-derives (determinism).
+        let log = s.log().to_vec();
+        let replayed = Session::replay(log, &NowReducer).expect("replay");
+        assert_eq!(recorded_now_sequence(&replayed), live_seq);
+        assert_eq!(replayed.last_now, live_last_now);
+        assert_eq!(replayed.last_now, 1002);
     }
 }
