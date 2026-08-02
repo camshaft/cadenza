@@ -87,6 +87,27 @@ fn type_at_an_offset_with_no_node_reports_no_node_and_fails() {
 }
 
 #[test]
+fn type_at_an_offset_inside_a_multibyte_char_does_not_panic() {
+    // An editor cursor byte offset can land INSIDE a multibyte UTF-8 character (a naive `&src[off..]` slice
+    // would panic at a non-char boundary — a hard crash for an editor/AI caller passing a live cursor). The
+    // offset resolver must be byte-boundary safe: resolve to the enclosing node (a clean result) or "no
+    // node" — never panic. Pin it with a name holding a 2-byte `é`: put the cursor on the SECOND byte of the
+    // `é` (its interior), which is not a char boundary. The run must exit cleanly (success with a node, or a
+    // non-zero "no node") and must NOT crash — assert stderr carries no Rust panic marker either way.
+    let src = "(module m (def (gr\u{e9}et (: n Int64)) (+ n 1)) (export gr\u{e9}et))";
+    let (dir, file, _src) = temp_src("multibyte", src);
+    // Byte offset of the `é` in the first `gréet`, +1 → the interior (second) byte of the 2-byte char.
+    let e_byte = src.find('\u{e9}').expect("é in source");
+    let off = (e_byte + 1).to_string();
+    let (ok, out, err) = run(&["type-at", &file, &off]);
+    assert!(
+        !err.contains("panicked") && !err.contains("RUST_BACKTRACE"),
+        "a mid-multibyte offset must not panic (byte-boundary-safe resolution): exit_ok={ok} out={out} err={err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn type_at_on_a_missing_file_errors_with_the_cdz_prog_name() {
     let (ok, _out, err) = run(&["type-at", "/no/such/file.sexp", "5"]);
     assert!(!ok, "a missing file should fail");
