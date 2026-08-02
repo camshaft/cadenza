@@ -685,6 +685,7 @@ pass	a NARROW-width effect op parameter grounds a fitting perform argument
 pass	a NEGATIVE Float32-overflowing literal in a runtime branch is rejected
 pass	a NEGATIVE large-magnitude float renders its full expansion with its sign
 pass	a NEGATIVE prefixed quantity carries its sign through the reference scale-fold
+pass	a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin
 pass	a NESTED Record ARG (a record containing a record) crosses the direct-call boundary
 pass	a NESTED Record ARG with a LIST result crosses the direct-call boundary
 pass	a NESTED Tuple ARG (a tuple containing a tuple) crosses the direct-call boundary
@@ -964,7 +965,6 @@ pass	a bare (map) pattern with no keys matches a non-empty map, not just the emp
 pass	a bare TUPLE of quantities renders each element scaled to its reference (mixed inner types)
 pass	a bare UInt8 literal-match (no newtype) is the width template
 pass	a bare arithmetic keyword is rejected, not a crash
-pass	a bare-binder guard over a STRING (heap) param scrutinee in a helper binds and evaluates
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare built-in constructor Some is passed as a first-class function
 pass	a bare conditional keyword is rejected, not a crash
@@ -988,6 +988,7 @@ pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare type-name-colliding variant name constructs as the local variant
 pass	a bare user constructor is passed as a first-class function to a higher-order function
 pass	a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant
+pass	a bare-binder guard over a STRING (heap) param scrutinee in a helper binds and evaluates
 pass	a bare-literal-arm float match under Float32 emits valid f32 across the select and probe-chain paths
 pass	a bare-scalar if guarding a MIN/-1 overflow is not select-ified
 pass	a bare-scalar if guarding a div-by-zero is not select-ified — the divisor guard shields the trap
@@ -3601,7 +3602,6 @@ pass	an EMPTY splice mid-list closes the gap, a singleton fills it, and two spli
 pass	an EQUALITY test refines the same test in its own else to known-false
 pass	an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state
 pass	an EXPORT naming an unbound definition is rejected
-pass	a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
 pass	an IEC-prefixed quantity displays scaled to its reference over Int64
