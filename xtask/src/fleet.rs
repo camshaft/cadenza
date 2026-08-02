@@ -7392,18 +7392,31 @@ fn schedule_plan(fleet: &Fleet, cap: usize) {
         .filter_map(|d| changed_files_of(&d.r#ref))
         .flatten()
         .collect();
-    // Queued MRs NOT already in flight, oldest-first, each tagged with its lane + changed files. If a
-    // ref's files can't be computed (None), fall back to a single sentinel path unique to the ref so it
-    // is treated as its OWN territory — never accidentally file-disjoint-from-everything (which would
-    // let it dispatch past a real collision). Conservative: an unknown-files candidate blocks/serializes.
+    // Queued MRs NOT already in flight, oldest-first, each tagged with its lane + changed files.
+    // Compute `changed_files_of` ONCE per MR and derive BOTH the files and the lane label from that
+    // single result (PR #1260 review — avoid a 2nd `git show` via lane_label_for_ref). If a ref's files
+    // can't be computed (None), fall back to a single sentinel path unique to the ref so it is treated
+    // as its OWN territory — never accidentally file-disjoint-from-everything (which would let it
+    // dispatch past a real collision), and label it `mixed` (conservative/serialized).
     let queued: Vec<SchedCandidate> = queued_merge_requests(fleet)
         .into_iter()
         .filter(|mr| !in_flight_refs.contains(mr.r#ref.as_str()))
-        .map(|mr| SchedCandidate {
-            lane: lane_label_for_ref(&mr.r#ref),
-            files: changed_files_of(&mr.r#ref)
-                .unwrap_or_else(|| vec![format!("<unresolved-ref:{}>", mr.r#ref)]),
-            mr_file: mr.file,
+        .map(|mr| {
+            let (files, lane) = match changed_files_of(&mr.r#ref) {
+                Some(files) => {
+                    let lane = lane_of(&files).label().to_string();
+                    (files, lane)
+                }
+                None => (
+                    vec![format!("<unresolved-ref:{}>", mr.r#ref)],
+                    Lane::mixed().label().to_string(),
+                ),
+            };
+            SchedCandidate {
+                lane,
+                files,
+                mr_file: mr.file,
+            }
         })
         .collect();
     let picks = schedule_dispatch(&queued, &in_flight_files, cap, dispatched.len());
@@ -7414,7 +7427,8 @@ fn schedule_plan(fleet: &Fleet, cap: usize) {
     );
     if picks.is_empty() {
         println!(
-            "  → dispatch nothing this pass (cap full, or all queued lanes serialized-and-busy)."
+            "  → dispatch nothing this pass (cap full, or every queued MR file-collides with an \
+             in-flight candidate)."
         );
         return;
     }
