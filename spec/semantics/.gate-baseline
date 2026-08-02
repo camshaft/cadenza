@@ -2692,6 +2692,8 @@ pass	a repeated condition inside a branch propagates the known truth value
 pass	a repeated let binding shadows the earlier one for what follows
 pass	a repeated runtime checked-multiply is computed once and still traps on overflow
 pass	a repeated runtime subexpression is computed once (CSE) and reused across an operator
+pass	a repeated trapping divide in a short-circuited and's right operand stays shielded (CSE must not hoist it past the connective)
+pass	a repeated trapping divide in a short-circuited or's right operand stays shielded (CSE must not hoist it past the connective)
 pass	a repeated trapping division in a guarded arm stays shielded — a CSE class must not hoist past the branch
 pass	a rest-binder over a runtime-start slice measures the SLICE length, not the parent's
 pass	a rest-pattern head binder read inside an inlined match-arg callee's scrutinee resolves
@@ -5534,7 +5536,3 @@ todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	read of malformed text is a coded reject, not a wrong value
 todo	two runtime String entry args compare by content including multibyte
-pass	the compare walk recurses list-of-sums-of-lists with discriminant-first at depth
-pass	a List.update at depth-3 RRB path-copies one spine and shares the rest
-pass	a repeated trapping divide in a short-circuited and's right operand stays shielded (CSE must not hoist it past the connective)
-pass	a repeated trapping divide in a short-circuited or's right operand stays shielded (CSE must not hoist it past the connective)
