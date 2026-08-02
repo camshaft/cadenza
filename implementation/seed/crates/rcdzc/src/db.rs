@@ -209,8 +209,12 @@ thread_local! {
     /// USER node (a prelude / evaluator-synthesized node has no source span, so a fault reported there is
     /// nulled by `sanitize_origin`; a β-copy relocates to its user origin, which the scan already covers).
     /// So the scan is bounded to `user_node_count` — it never touches the O(prelude) built-in nodes that
-    /// a full-structure walk would. This counter pins that bound: it stays ≤ `user_node_count`, never the
-    /// full structure length. See `check_unknown_units_scans_only_user_nodes_not_the_prelude`.
+    /// a full-structure walk would. This counter pins that bound: ONE `check_unknown_units` invocation adds
+    /// exactly `user_node_count` (never the full structure length). It is CUMULATIVE-since-reset (like the
+    /// sibling scan counters), so a test that reads it MUST reset it to 0 immediately before the single
+    /// `diagnostics()`/compile it measures — repeated compiles on the same thread without a reset legitimately
+    /// sum past `user_node_count` (the per-`Db`/thread_local metric-contamination discipline). See
+    /// `check_unknown_units_scans_only_user_nodes_not_the_prelude`.
     pub(crate) static CHECK_UNKNOWN_UNITS_SCAN_NODES: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
 }

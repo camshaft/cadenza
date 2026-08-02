@@ -66561,6 +66561,28 @@ mod stage1 {
                 .any(|d| d.message.contains("unknown unit `zorks`")),
             "a user `(Unit.of #\"zorks\")` must still report the unknown-unit CDZ0201 under the bounded scan"
         );
+
+        // COVERAGE for the PR #1101 review concern (Copilot): a `(Unit.of #"zorks")` inside an
+        // `(eval (quote …))` — where reconstruction GRAFTS synthesized nodes at ids >= user_node_count —
+        // must STILL report CDZ0201. It does, because the `Unit.of #"zorks"` occurrence lives in the
+        // QUOTED SOURCE (a USER node, in-range of the bounded scan); the reconstructed splice is a COPY of
+        // that user node (a synth-only `Unit.of` with no user original never arises — `eval` reconstructs
+        // only from a compile-time-visible `Ast`/quote argument, which itself carries the `Unit.of` as a
+        // user node). So the user-bound scan never drops this fault. Pin it so the bound can't later be
+        // narrowed in a way that would.
+        let eval_quoted =
+            "(module m (def (main) (eval (quote (Qty.of 5 (Unit.of #\"zorks\"))))) (export main))";
+        let eval_diags = crate::host::run_with_compiler_stack(|| {
+            crate::diagnostics(&mut crate::db::Db::load(parse(eval_quoted)))
+        });
+        assert!(
+            eval_diags
+                .iter()
+                .any(|d| d.message.contains("unknown unit `zorks`")),
+            "a `(Unit.of #\"zorks\")` inside `(eval (quote …))` must still report CDZ0201 — its quoted-source \
+             occurrence is a user node the bounded scan covers (the reconstruction splice is a copy, not a \
+             synth-only original)"
+        );
     }
 
     #[test]
