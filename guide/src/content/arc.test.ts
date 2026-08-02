@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { CHAPTERS, pillarOf, type Chapter, type Pillar } from "./chapters.ts";
+import { fileForSlug } from "./registryFiles.ts";
 
 const here = dirname(fileURLToPath(import.meta.url)); // src/content
 const DIFFERENTIATORS_SECTION = "What makes Cadenza different";
@@ -144,22 +145,6 @@ test("the differentiators-recap scan finds links (guards against a broken scan)"
   const found = differentiators.filter((slug) => linked.has(slug)).length;
   assert.ok(found >= 5, `expected the closer to link many differentiators, found ${found}`);
 });
-
-/// slug → its chapter TSX filename, from the registry's lazy import (same regex as links/pillarBridge
-/// tests). Lets the platform-recap test resolve its closer's file from the REGISTRY rather than a
-/// hard-coded name, so a reorder that changes the last platform chapter is tracked automatically.
-function fileForSlug(): Map<string, string> {
-  const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
-  // The slug→import gap is BOUNDED ({0,500}?, not unbounded [\s\S]*?): a slug with no following import
-  // otherwise makes the lazy star backtrack the whole remaining file per exec (catastrophic on a
-  // malformed registry). Every real entry's gap is < 320 chars (the longest, platform-safety, is 316),
-  // so 500 is behavior-preserving with margin. (The sibling links/pillarBridge/forwardRefs tests still
-  // carry the unbounded copy — flagged to the fleet for a consistent sweep.)
-  const re = /slug:\s*"([^"]+)"[\s\S]{0,500}?import\("\.\/chapters\/([^"]+)"\)/g;
-  const m = new Map<string, string>();
-  for (let x = re.exec(registrySrc); x; x = re.exec(registrySrc)) m.set(x[1], x[2]);
-  return m;
-}
 
 // The PLATFORM pillar's last chapter closes with a "Where this leaves you" recap that links back to the
 // earlier platform chapters — the reader's final map of the kernel model, exactly as WhatsNext is for the

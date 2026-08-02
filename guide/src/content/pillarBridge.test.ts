@@ -17,18 +17,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { CHAPTERS, pillarOf, type Chapter } from "./chapters.ts";
+import { fileForSlug } from "./registryFiles.ts";
 
 const here = dirname(fileURLToPath(import.meta.url)); // src/content
 const chaptersDir = join(here, "chapters");
-
-/// slug → its chapter TSX filename, from the registry's lazy import (same regex as links/forwardRefs tests).
-function fileForSlug(): Map<string, string> {
-  const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
-  const re = /slug:\s*"([^"]+)"[\s\S]*?import\("\.\/chapters\/([^"]+)"\)/g;
-  const m = new Map<string, string>();
-  for (let x = re.exec(registrySrc); x; x = re.exec(registrySrc)) m.set(x[1], x[2]);
-  return m;
-}
 
 /// Every `<Ch to="/slug">` target in a chapter's source.
 function chLinkTargets(file: string): Set<string> {

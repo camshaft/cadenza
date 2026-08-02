@@ -11,6 +11,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { CHAPTERS } from "./chapters.ts";
+import { fileForSlug } from "./registryFiles.ts";
 
 const here = dirname(fileURLToPath(import.meta.url)); // src/content
 const chaptersDir = join(here, "chapters");
@@ -94,12 +95,8 @@ test("every internal to=\"/…\" link points at a real route (chapter slug or ap
 // chapter rename that lands a link on its own new slug, introduces silently. The "real route" test can't
 // catch it (a self-slug IS a real route); this pins that a chapter's chapter-links always point elsewhere.
 test("no chapter's prose links to its OWN slug (a self-link is a dead-end cross-reference)", () => {
-  const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
-  const entryRe = /slug:\s*"([^"]+)"[\s\S]*?import\("\.\/chapters\/([^"]+)"\)/g;
-  const fileForSlug = new Map<string, string>();
-  for (let m = entryRe.exec(registrySrc); m; m = entryRe.exec(registrySrc)) fileForSlug.set(m[1], m[2]);
   const selfLinks: string[] = [];
-  for (const [slug, file] of fileForSlug) {
+  for (const [slug, file] of fileForSlug()) {
     // A chapter-slug link back to `/${slug}` is a self-reference; an app-route link (/cad) never is.
     for (const { href, line } of internalLinks(readFileSync(join(chaptersDir, file), "utf8"))) {
       if (href === `/${slug}`) selfLinks.push(`${file}:${line} → /${slug} (its own chapter)`);
@@ -130,11 +127,7 @@ test("the link scan actually found links (guards against a broken regex silently
 test("the Example-applications gallery links every standalone app route the router declares", () => {
   const gallery = CHAPTERS.find((c) => c.section === "Example applications");
   assert.ok(gallery, "no chapter in the 'Example applications' section — the gallery is missing");
-  const entryRe = /slug:\s*"([^"]+)"[\s\S]*?import\("\.\/chapters\/([^"]+)"\)/g;
-  const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
-  const fileForSlug = new Map<string, string>();
-  for (let m = entryRe.exec(registrySrc); m; m = entryRe.exec(registrySrc)) fileForSlug.set(m[1], m[2]);
-  const file = fileForSlug.get(gallery!.slug);
+  const file = fileForSlug().get(gallery!.slug);
   assert.ok(file, `no TSX import found for the gallery chapter slug ${gallery!.slug}`);
   const linked = new Set(internalLinks(readFileSync(join(chaptersDir, file!), "utf8")).map((l) => l.href));
   const missing = appRoutes().filter((r) => !linked.has(r));
