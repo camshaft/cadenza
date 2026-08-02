@@ -33618,6 +33618,26 @@ mod match_engine {
                 && !d.message.contains("not a unit name here")),
             "an ordinary unbound name is not redirected to the unit message"
         );
+        // A `#`-PREFIXED bare identifier — `(Unit.of #meter)` — is the author typing the symbol SIGIL but
+        // forgetting the quotes (the reader reads `#meter` as an identifier). The suggestion + fix must
+        // STRIP the leading `#` → `#"meter"`, NOT keep it as `#"#meter"` (which fails again as unknown unit
+        // `#meter` — the message's own advice would loop). Round-trips: `#"meter"` is a known unit.
+        let d = find("(module m (def (main) (Qty.of 1.0 (Unit.of #meter))) (export main))")
+            .expect("a `#`-prefixed unit name is flagged");
+        assert!(
+            d.message.contains("Write `#\"meter\"`") && !d.message.contains("#\"#meter\""),
+            "the suggestion strips the stray leading `#` (not `#\"#meter\"`): {}",
+            d.message
+        );
+        let f = d
+            .fix
+            .as_ref()
+            .expect("carries the stripped `#\"meter\"` fix");
+        assert_eq!(
+            f.replacement, "#\"meter\"",
+            "the fix strips the leading `#`: {}",
+            f.replacement
+        );
     }
 
     #[test]

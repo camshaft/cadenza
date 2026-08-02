@@ -11693,15 +11693,21 @@ fn enrich_unbound(db: &mut Db, id: crate::ast::StructId, r: Reject) -> Reject {
             )
         )
     {
+        // The SYMBOL name to suggest: strip a single leading `#`. A user who writes `#meter` typed the
+        // symbol SIGIL but forgot the quotes — the reader read `#meter` as an identifier, so `name` carries
+        // the `#`. Suggesting `#"#meter"` (keeping the stray `#`) is wrong: it fails again as unknown unit
+        // `#meter`. Strip it so the suggestion + fix are `#"meter"` — the unit the author meant. A bare
+        // `meter` (no sigil) is unaffected.
+        let sym_name = name.strip_prefix('#').unwrap_or(&name);
         return Reject::coded(
             Code::Malformed,
             format!(
                 "`{name}` is not a unit name here — a unit builder names its unit with a SYMBOL, not a \
-                 bare identifier. Write `#\"{name}\"` (a `#\"…\"` symbol literal)"
+                 bare identifier. Write `#\"{sym_name}\"` (a `#\"…\"` symbol literal)"
             ),
         )
         .at(id)
-        .with_fix(Fix::replace_heuristic(id, format!("#\"{name}\"")));
+        .with_fix(Fix::replace_heuristic(id, format!("#\"{sym_name}\"")));
     }
     match crate::resolve::nearest_unbound_suggestion(db, id, &name) {
         Some(candidate) => Reject::coded(
