@@ -35,6 +35,17 @@ const PINS = [
     code: "CDZ0203",
     phrases: ["width constructor", "Int64"],
   },
+  {
+    name: "missing match arm → CDZ0210 non-exhaustive",
+    // Ordering.tsx quotes the EXACT string "non-exhaustive match: pattern `Greater` not covered"; PatternMatching.tsx
+    // leans on "non-exhaustive match" too. A reworded exhaustiveness message would silently drift that prose.
+    chapter: "Ordering.tsx — 'The Ordering value' / PatternMatching.tsx",
+    snippet: `(match (compare 3 9)
+  ((Less _) 1)
+  ((Equal _) 0))`,
+    code: "CDZ0210",
+    phrases: ["non-exhaustive match", "not covered"],
+  },
 ];
 
 // Vacuous-pass floor: this gate's whole job is to pin diagnostics, so a run with ZERO pins (a botched edit
