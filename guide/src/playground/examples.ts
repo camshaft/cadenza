@@ -251,6 +251,30 @@ export const EXAMPLES: Example[] = [
     expected: "(: (list (tuple 1 2) (tuple 2 1) (tuple 3 3)) (List (Tuple Int64 Int64)))",
   },
   {
+    // Shows off: Bytes as a Map KEY. Bytes carries a total order (lexicographic over unsigned bytes),
+    // so a byte string can index a Map directly — no hashing it to an Int first. Here we tally how
+    // often each word (as UTF-8 bytes) occurs: "red" 3x, "blue" 1x => ((Some 3), (Some 1)).
+    id: "bytes-map-key",
+    name: "Bytes as a Map key",
+    theme: "data-and-collections",
+    surface: "sexpr",
+    source: `(do
+  ; Bump the count for a Bytes key (0 if absent), then re-insert. Bytes has a total order,
+  ; so a byte string can be a Map KEY directly — no need to hash it to an Int first.
+  (def (bump (: m (Map Bytes Int64)) (: k Bytes))
+    (match (Map.lookup m k)
+      ((Some c) (Map.insert m k (+ c 1)))
+      ((None) (Map.insert m k 1))))
+  (def (main)
+    ; Tally how often each word (as UTF-8 bytes) occurs, keyed by the bytes themselves.
+    (let ((red (String.to-bytes "red"))
+          (blue (String.to-bytes "blue")))
+      (let ((m (bump (bump (bump (bump (Map.empty) red) blue) red) red)))
+        (tuple (Map.lookup m red) (Map.lookup m blue)))))
+  (export main))`,
+    expected: "(: (tuple (Some 3) (Some 1)) (Tuple (Option Int64) (Option Int64)))",
+  },
+  {
     // Shows off: EXACT rational arithmetic — 1/2 + 1/3 + 1/6 is EXACTLY 1, with no floating-point
     // drift. The `(pragma default-fraction Rational)` directive makes every bare literal in scope an
     // exact fraction; compare with Float64, where 0.1 + 0.2 famously isn't 0.3.
