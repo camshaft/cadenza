@@ -25431,6 +25431,8 @@ fn orderable_leaf_or_compound(
         // float, composes soundly INSIDE a compound. The runtime's `compare_scalar_leaf`/`value_cmp_shaped`
         // Bytes arms (over the flattened `raw` slice) realize this order; they MUST stay in lockstep with
         // this guard (the orderable-guard/shape_of divergence trap).
+        //= spec/capabilities/core-semantics.md#ordering-where-offered-is-total
+        //# A `Bytes` value MUST offer a total order that is lexicographic over its unsigned byte values: comparing bytes from the first, the first differing byte is decisive under the numeric order of the two bytes taken as unsigned, and a byte sequence that is a proper prefix of another MUST compare less than that longer sequence.
         Ty::Int(_)
         | Ty::Bool
         | Ty::Unit
