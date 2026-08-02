@@ -1971,6 +1971,35 @@ fn audit(fleet: &Fleet, verbose: bool, strict: bool) {
         }
     }
 
+    // STALE-QUEUED MRs — a merge-request that has sat in pr-sync's LIVE inbox past
+    // `STALE_QUEUED_MR_SECS` without being dispatched (no ci-dispatch record), landed, or rejected.
+    // This is the silent-no-reject class the concierge flagged (an MR skipped 5+ ticks behind newer
+    // same-tier ones): the tooling drain re-scans oldest-first with no cursor, so a genuinely
+    // stale-queued MR means pr-sync isn't re-picking it up — worth surfacing, since it silently
+    // delays a peer's work with no reject. The cheap fix is a same-ref re-send (idempotent); the root
+    // is pr-sync's tick discipline.
+    let stale_queued = find_stale_queued_mrs(fleet, now_unix());
+    if !stale_queued.is_empty() {
+        eprintln!(
+            "\n  ⚠ STALE-QUEUED MERGE-REQUEST(S) — sat in pr-sync's inbox > {}min without dispatch/land/reject \
+             (silent no-reject delay):",
+            STALE_QUEUED_MR_SECS / 60
+        );
+        for (fname, from, ref_sha, age) in &stale_queued {
+            eprintln!(
+                "    • {fname}  (from '{from}', ref {ref_sha}) — queued {}min, not in flight",
+                age / 60
+            );
+        }
+        eprintln!(
+            "  pr-sync: re-scan your inbox oldest-first + dispatch it; sender can nudge with an \
+             idempotent same-ref re-send (`fleet mr-status <ref>` shows where it stands).\n"
+        );
+        if strict {
+            std::process::exit(1);
+        }
+    }
+
     // Third check — STRANDED DEAD-LETTERS: ACTIONABLE mail queued in the inbox of a STOPPED agent. A
     // stopped agent's `/loop` has EXITED, so it will never run step-2 inbox-drain again — any
     // assign/issue/reject/merge-request sitting there is a permanent dead-letter (the sender's routed
@@ -2208,6 +2237,23 @@ fn ref_landed_on_trunk(fleet: &Fleet, r#ref: &str) -> bool {
     matches!(cherry, Ok(o) if o.status.success() && cherry_says_landed(&String::from_utf8_lossy(&o.stdout)))
 }
 
+/// Seconds after which a merge-request that is STILL QUEUED in pr-sync's inbox — neither dispatched as
+/// a candidate PR nor landed nor rejected — is "stale-queued": a silent no-reject delay worth
+/// surfacing (concierge report 2026-08-02: an MR sat 5+ ticks behind newer same-tier ones). Generous
+/// (well past a normal cap-bound wait for a slot) so a healthy queued MR waiting its turn never flags.
+const STALE_QUEUED_MR_SECS: u64 = 30 * 60;
+
+/// Whether a queued merge-request is STALE-QUEUED: it has waited `age_secs` in pr-sync's inbox, is NOT
+/// in flight (no candidate PR), is NOT already landed, and the wait exceeds `threshold`. Pure so the
+/// predicate is unit-tested without fs/clock. This catches the silent-no-reject class the drain-order
+/// investigation traced to pr-sync's tick discipline (the tooling drain re-scans oldest-first, so a
+/// genuinely stale-queued MR means it isn't being re-picked-up) — a watchdog/audit net, not a fix of
+/// the loop itself. A parallel-lane MR should dispatch within a slot or two; a serialized-lane one may
+/// legitimately wait behind its lane's in-flight candidate, but not for 30+ minutes.
+fn mr_is_stale_queued(age_secs: u64, in_flight: bool, landed: bool, threshold: u64) -> bool {
+    !in_flight && !landed && age_secs > threshold
+}
+
 fn find_queued_but_landed(
     fleet: &Fleet,
     active: &std::collections::HashSet<String>,
@@ -2233,6 +2279,51 @@ fn find_queued_but_landed(
         }
         if ref_landed_on_trunk(fleet, &mr.r#ref) {
             out.push((fname, mr.from.clone(), mr.r#ref.clone()));
+        }
+    }
+    out
+}
+
+/// Find merge-requests STALE-QUEUED in pr-sync's inbox: waited > `STALE_QUEUED_MR_SECS`, not in flight
+/// (no `ci-dispatch` record for the ref), not already landed on trunk. Returns `(filename, sender, ref,
+/// age_secs)` for each, so the audit/watchdog can surface a silent no-reject delay (concierge report).
+/// Uses the file mtime as the wait clock (delivery stamps it; it's not rewritten while queued).
+fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String, u64)> {
+    let in_flight_refs: std::collections::HashSet<String> = read_ci_dispatches(fleet)
+        .into_iter()
+        .filter(dispatch_is_in_flight)
+        .map(|d| d.r#ref)
+        .collect();
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(fleet.inbox("pr-sync")) else {
+        return out;
+    };
+    for entry in rd.filter_map(Result::ok) {
+        let p = entry.path();
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if !p.is_file() || !fname.ends_with("merge-request.json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let Ok(mr) = serde_json::from_str::<Message>(&text) else {
+            continue;
+        };
+        if merge_request_ref_is_missing(&mr.r#ref) {
+            continue;
+        }
+        let age = file_mtime_unix(&p)
+            .map(|m| now.saturating_sub(m))
+            .unwrap_or(0);
+        // In flight if a live ci-dispatch record names this ref (prefix-tolerant, git shas).
+        let in_flight = in_flight_refs.iter().any(|r| {
+            let (a, b) = (r.to_ascii_lowercase(), mr.r#ref.to_ascii_lowercase());
+            a.starts_with(&b) || b.starts_with(&a)
+        });
+        let landed = ref_landed_on_trunk(fleet, &mr.r#ref);
+        if mr_is_stale_queued(age, in_flight, landed, STALE_QUEUED_MR_SECS) {
+            out.push((fname, mr.from.clone(), mr.r#ref.clone(), age));
         }
     }
     out
@@ -11872,6 +11963,20 @@ mod tests {
             MrStatus::NotPending
         );
         assert_eq!(mr_status_of("", &dispatches, &queued), MrStatus::NotPending);
+    }
+
+    #[test]
+    fn mr_is_stale_queued_only_when_waited_and_not_in_flight_or_landed() {
+        let t = STALE_QUEUED_MR_SECS;
+        // Waited past threshold, not in flight, not landed → STALE.
+        assert!(mr_is_stale_queued(t + 1, false, false, t));
+        // In flight (a candidate PR exists) → never stale, however long (it's progressing).
+        assert!(!mr_is_stale_queued(t + 9999, true, false, t));
+        // Already landed (by patch-id) → not stale (it's the queued-but-landed case, handled separately).
+        assert!(!mr_is_stale_queued(t + 9999, false, true, t));
+        // Within the threshold → a healthy queued MR waiting its turn for a slot, not stale.
+        assert!(!mr_is_stale_queued(t, false, false, t)); // exactly at threshold is NOT past it (strict >)
+        assert!(!mr_is_stale_queued(t - 1, false, false, t));
     }
 
     #[test]
