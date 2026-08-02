@@ -1822,6 +1822,33 @@
             (export main)))
   (output (: 8 Int64)))
 
+(case "grafting through a DAG-shared user-sum subtree rebuilds one path and leaves the shared original intact"
+  (doc    "The USER-SUM DAG face of persistence: `shared` is a two-leaf subtree referenced TWICE in
+           `t = (Node shared shared)` (a heap DAG — one payload, refcount 2). `graft` rebuilds along the
+           LEFT spine only (replaces the leftmost leaf with `(Leaf 100)`), so the grafted `g` reads
+           100+6+5+6 = 117 while `t` — including the doubly-shared subtree the graft descended INTO —
+           still sums 5+6+5+6 = 22, giving 117 + 1000·22 = 22117. A Perceus reuse that treated the shared
+           subtree as uniquely owned at the rebuild (missing the second reference's dup) would mutate
+           both `t`'s arms in place. The collection DAG pins cover RRB/CHAMP spines; this is the
+           user-declared recursive-sum analogue.")
+  (input  (do
+            (type Tree (Leaf Int64) (Node Tree Tree))
+            (def (sum (: t Tree))
+              (match t
+                ((Leaf v) v)
+                ((Node l r) (+ (sum l) (sum r)))))
+            (def (graft (: t Tree) (: sub Tree))
+              (match t
+                ((Leaf _v) sub)
+                ((Node l r) (Node (graft l sub) r))))
+            (def (main (: k Int64))
+              (let ((shared (Node (Leaf k) (Leaf (+ k 1)))))
+                (let ((t (Node shared shared)))
+                  (let ((g (graft t (Leaf 100))))
+                    (+ (sum g) (* 1000 (sum t)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 22117 Int64)))
+
 (case "a list PROJECTED from a shared aggregate, consumed then read, is unchanged (persistence via the child)"
   (doc    "The PROJECTION face of the still-live-binding family: the shared value is not the let-binding
            itself but a nested-compound PROJECTION of it. `t = (build …) : (Tuple (List Int64) Int64)` with
