@@ -22,6 +22,44 @@ pub trait Executor {
     fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome;
 }
 
+/// The ASYNC executor interface — the async counterpart of [`Executor`] (operator all-async directive).
+///
+/// A real executor performs I/O (a Bedrock model call, an HTTP request): to run it without blocking the
+/// single-threaded kernel loop, `perform` must be awaitable. This is introduced ADDITIVELY alongside the
+/// sync [`Executor`] (nothing in the kernel loop consumes it yet — the async drive loop switches to it in
+/// a follow-up slice, once the host's executors are migrated to this trait). The sync path is removed once
+/// every executor + caller is async (the operator's "no sync remains").
+///
+/// **Object-safe via `async-trait`.** The kernel routes effects through `&mut dyn Executor` (see
+/// [`CompositeExecutor`], which holds `Box<dyn Executor>`), so the async trait MUST stay dyn-compatible —
+/// native `async fn` in a trait is not, so this uses `#[async_trait(?Send)]`. `?Send` because the kernel
+/// is single-threaded by design and a real transport future (holding a non-`Send` client / wasmtime store)
+/// needn't cross threads.
+///
+/// **A sync [`Executor`] is driven async by wrapping it in [`SyncExecutorAsAsync`]** — NOT a blanket impl
+/// (same coherence reason as [`crate::reducer::SyncAsAsync`]: a blanket would forbid a genuinely-async
+/// executor, e.g. a real Bedrock/HTTP one, from writing its own `AsyncExecutor`).
+#[async_trait::async_trait(?Send)]
+pub trait AsyncExecutor {
+    /// Perform `req` asynchronously — the async counterpart of [`Executor::perform`]. Same idempotency
+    /// contract (`idempotency_key` dedups a re-driven dispatch); may `.await` real I/O internally.
+    async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome;
+}
+
+/// Adapt any sync [`Executor`] into an [`AsyncExecutor`] (its `perform_async` runs the sync `perform` to
+/// completion — no await point, correct for an in-memory/test executor that never blocks). The explicit
+/// alternative to a blanket impl (so a genuinely-async executor writes its own [`AsyncExecutor`] without a
+/// coherence collision). Wrap a sync executor — `SyncExecutorAsAsync(MyExecutor)` — to drive it through the
+/// async kernel loop; a real I/O executor skips the wrapper and impls [`AsyncExecutor`] directly.
+pub struct SyncExecutorAsAsync<E>(pub E);
+
+#[async_trait::async_trait(?Send)]
+impl<E: Executor> AsyncExecutor for SyncExecutorAsAsync<E> {
+    async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+        self.0.perform(req, idempotency_key)
+    }
+}
+
 /// Routes each effect to a per-KIND executor (§2 "the kernel routes, doesn't distinguish"). Until now
 /// a session wired exactly ONE `&mut dyn Executor`, so a reducer that emits more than one effect kind
 /// (e.g. an agent that does both `Http` and `Shell`) couldn't be served — a single-kind executor like
@@ -177,6 +215,22 @@ mod tests {
         fn perform(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
             EffectOutcome::Ok(Some(Payload::Inline(self.0.to_vec().into())))
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn sync_executor_wrapped_in_adapter_performs_via_async_trait() {
+        // A sync Executor wrapped in SyncExecutorAsAsync is drivable via the async path (perform_async runs
+        // the sync perform). Exercise through &mut dyn AsyncExecutor so object-safety holds (the reason for
+        // async-trait) — and via the ADAPTER, not a blanket impl.
+        let mut adapted = SyncExecutorAsAsync(TagExecutor(b"async-ran"));
+        let dyn_exec: &mut dyn AsyncExecutor = &mut adapted;
+        let out = dyn_exec
+            .perform_async(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k"))
+            .await;
+        assert_eq!(
+            out,
+            EffectOutcome::Ok(Some(Payload::Inline(b"async-ran".to_vec().into())))
+        );
     }
 
     #[test]
