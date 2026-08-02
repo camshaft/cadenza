@@ -3955,6 +3955,28 @@
   (input  (do (def (main) (* (* (: 100 UInt64) (: 2 UInt64)) (: 0 UInt64))) (export main)))
   (output (: 0 UInt64)))
 
+(case "the bitwise-AND-with-zero annihilator does not swallow a COMPILE-PROVABLE overflow in the discarded operand"
+  (doc    "The bitwise companion of the `* 0` compile-provable-overflow case above (a distinct fold ARM —
+           `& 0` folds via the bitwise annihilator, not the multiplicative one, so it needs its own pin, just
+           as the runtime `& 0` and `* 0` div-trap cases at :3844 are pinned separately). When the discarded
+           operand of `x & 0 → 0` is a CONSTANT whose evaluation is a compile-provable OVERFLOW, the fold must
+           NOT swallow it: `(& (* (: UInt64.max UInt64) (: 2 UInt64)) (: 0 UInt64))` — the inner `(* UInt64.max
+           2)` = 2^65-2 overflows the u64 width, so the operand's evaluation is a compile-provable trap that is
+           OBSERVED (the annihilator drops the VALUE, never the evaluation) → reject CDZ0304, exactly as the
+           bare overflow would. A fold applying `& 0 → 0` before checking the operand would silently drop the
+           overflow. The trap-free control `(& (* 100 2) 0)` = 0 is pinned just below.")
+  (input  (do (def (main) (& (* (: 18446744073709551615 UInt64) (: 2 UInt64)) (: 0 UInt64))) (export main)))
+  (error  CDZ0304))
+
+(case "the bitwise-AND-with-zero annihilator folds to zero when the discarded constant operand is total"
+  (doc    "The trap-free control for the `& 0` compile-provable-overflow case above: `(& (* (: 100 UInt64) (: 2
+           UInt64)) (: 0 UInt64))` — the inner `(* 100 2)` = 200 does not overflow, so the discarded operand is
+           total and the `x & 0` annihilator applies, folding to a trap-free 0. Pins that the overflow-
+           preservation does not over-suppress the bitwise annihilator on a total operand — the `& 0` dual of
+           the `* 0` control above.")
+  (input  (do (def (main) (& (* (: 100 UInt64) (: 2 UInt64)) (: 0 UInt64))) (export main)))
+  (output (: 0 UInt64)))
+
 (case "multiply-by-zero is NOT an annihilator for FLOAT — nan * 0.0 is nan, not 0.0"
   (doc    "The `x * 0` annihilator above folds to the constant 0 for INTEGER `x` (the operand is discarded,
            value-wise). For FLOAT it MUST NOT: `x * 0.0` is 0.0 only for a FINITE `x` — `nan * 0.0` = nan
