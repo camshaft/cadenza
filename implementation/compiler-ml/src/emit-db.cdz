@@ -149,7 +149,7 @@ def wasm-op(op: Int64) = match op with
   | 42 => 126        // i64.mul   0x7e
   | 47 => 127        // i64.div_s 0x7f
   | 37 => 129        // i64.rem_s 0x81
-  | _ => 0           // non-arith (unreachable; gated by is-arith-op)
+  | _ => trap("wasm-op: non-arith op reached opcode mapping (corrupt lowering)")   // gated by is-arith-op; a miss would emit a bogus 0x00 opcode
 
 /// The wasm i64 RELATIONAL opcode for a Core comparison op-code (W3). i64.eq=0x51, ne=0x52, lt_s=0x53,
 /// gt_s=0x55, le_s=0x57, ge_s=0x59. Each yields an i32 0/1; the emitter appends `i64.extend_i32_u` (0xad)
@@ -162,7 +162,7 @@ def cmp-op(op: Int64) = match op with
   | 63 => 87         // <= i64.le_s 0x57
   | 64 => 89         // >= i64.ge_s 0x59
   | 65 => 82         // != i64.ne   0x52
-  | _ => 0           // non-comparison (unreachable; gated by is-cmp-op)
+  | _ => trap("cmp-op: non-comparison op reached relational-opcode mapping (corrupt lowering)")   // gated by is-cmp-op; a miss would emit a bogus 0x00 opcode
 
 /// Whether `op` is an ARITHMETIC op (result already i64, no extend needed).
 def is-arith-op(op: Int64) = (op == 43) or (op == 45) or (op == 42) or (op == 47) or (op == 37)
