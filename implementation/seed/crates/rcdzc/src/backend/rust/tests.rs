@@ -6734,3 +6734,48 @@ fn a_symbol_literal_payload_probe_inside_a_recursive_fn_matches_by_content() {
         assert_eq!(out, "-1", "a non-#\"go\" symbol falls to the wildcard arm");
     }
 }
+
+#[test]
+fn rustc_roundtrip_recursive_option_carrying_sum_compare_recurses_through_a_list_element() {
+    // Companion to `rustc_roundtrip_recursive_option_carrying_sum_compare_terminates_via_helper` (PR#890):
+    // that one pins the BOX-recursive back-edge; this pins the LIST-ELEMENT one. `emit_sum_cmp_walk` must
+    // route a sum that recurses through a `(List Self)` element through a `__cmp_<Ident>` helper (seen-guard
+    // + call-indirection) — NOT the Box-only `variant_is_recursive` path (which a List-element self-reference
+    // does NOT trip) and NOT an inline expansion (unbounded codegen on the self-referential type). This
+    // mirrors the equality walk's List-recursion case (a) in
+    // `runtime_equality_over_a_recursive_sum_emits_a_recursive_helper_fn`, closing the cmp/eq coverage gap:
+    // before, only the eq side witnessed the List-element recursion route on the compare-family walk.
+    //
+    // Fixture: `Ast = (Leaf (Option Int64)) | (Node (List Ast))` — the self-reference is a `List Ast`
+    // ELEMENT, and the `Option Int64` payload forces the value-cmp walk (not native `.cmp()`). A green
+    // compile proves the helper routing terminates; the answer proves the Option payload orders Some<None.
+    let src = "(module m \
+        (type Ast (Leaf (Option Int64)) (Node (List Ast))) \
+        (def (go (: k Int64)) \
+          (match (compare (Ast.Node (list (Ast.Leaf (Some k)))) \
+                          (Ast.Node (list (Ast.Leaf (: (None unit) (Option Int64)))))) \
+            ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+        (export go))";
+    match compile_rust_result(src) {
+        // A clean decline is acceptable — the invariant is NO unbounded codegen. If it emits, it MUST
+        // route through the helper and compute the declared-order answer.
+        Err(_) => {}
+        Ok(_) => {
+            let rs = compile_rust(src);
+            assert!(
+                rs.contains("fn __cmp_"),
+                "a List-element-recursive Option-carrying sum compare must route through a __cmp_ helper \
+                 (not inline, not the Box-only path):\n{rs}"
+            );
+            if let Some(out) = rustc_run(&rs, "go(5)") {
+                // Node [Leaf (Some 5)] vs Node [Leaf None]: same variant Node → compare the List payloads
+                // element-wise → Leaf (Some 5) vs Leaf None → Option field Some 5 < None (Cadenza declared
+                // order) → Less (1).
+                assert_eq!(
+                    out, "1",
+                    "a List-recursive Option-carrying sum orders its Option payload Some<None → Less:\n{rs}"
+                );
+            }
+        }
+    }
+}
