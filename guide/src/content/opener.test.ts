@@ -15,15 +15,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { CHAPTERS, pillarOf } from "./chapters.ts";
+import { CHAPTERS, NON_TEACHING_SECTIONS, pillarOf } from "./chapters.ts";
 
 const here = dirname(fileURLToPath(import.meta.url)); // src/content
 const chaptersDir = join(here, "chapters");
 const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
 
-/// Sections whose chapters are NOT expected to open with a concept-hook <Lede> — same rationale (and same
-/// set) as tenets.test.ts's tenet-box exemption: these wrap up or showcase rather than introduce a concept.
-const NON_TEACHING_SECTIONS = new Set(["Wrapping up", "Example applications"]);
+// NON_TEACHING_SECTIONS (the sections exempt from the <Lede>/<Runnable> teaching-chapter invariants) is
+// imported from chapters.ts — a single source of truth shared with tenets.test.ts, so the two gates can't
+// drift on which sections count as teaching.
 
 /// slug → TSX filename, parsed from the registry (same idiom as chapters.test.ts / tenets.test.ts).
 function fileForSlug(): Map<string, string> {

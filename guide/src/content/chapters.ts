@@ -38,6 +38,13 @@ export function pillarOf(c: Chapter): Pillar {
   return c.pillar ?? "language";
 }
 
+/// Sections whose chapters are NOT "teaching" chapters — they wrap up or showcase rather than introduce a
+/// concept, so the teaching-chapter invariants (opener.test's <Lede>/<Runnable>, tenets.test's <Why> box)
+/// deliberately exempt them. SINGLE SOURCE OF TRUTH: both test files import this — a copy in each would let
+/// a newly-added non-teaching section be exempted by one gate but not the other, silently mis-scoping it.
+/// (Language-pillar section names; the platform pillar is exempted separately by `pillarOf`.)
+export const NON_TEACHING_SECTIONS: ReadonlySet<string> = new Set(["Wrapping up", "Example applications"]);
+
 export const CHAPTERS: Chapter[] = [
   {
     slug: "welcome",
