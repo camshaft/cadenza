@@ -409,6 +409,60 @@ mod tests {
     }
 
     #[test]
+    fn is_kebab_word_pins_the_wasmparser_kebabstr_grammar_directly() {
+        // `is_kebab_word` documents that it mirrors `wasmparser`'s `KebabStr` state machine EXACTLY — a
+        // name it accepts loads under wasmtime, one it rejects does not. Yet every other test exercises it
+        // only INDIRECTLY (composed inside `kebab_extern_name(…)` / `is_valid_interface_name`), so its own
+        // boundary grammar has no direct pin. Pin it here so a state-machine drift (a reset bug, an
+        // edge-`-` slip, a case-mixing regression) is caught at the function itself, independent of any
+        // caller. The grammar: a `-`-separated run of alphanumeric words, each word SAME-CASE-LED
+        // (`[a-z][a-z0-9]*` OR `[A-Z][A-Z0-9]*`), non-empty, no leading/trailing/doubled `-`.
+
+        // ACCEPTED — the well-formed shapes.
+        for w in [
+            "a",
+            "abc",
+            "a-b",
+            "a-b-c", // lowercase words, single and hyphenated
+            "foo2",
+            "a1",
+            "call0",
+            "leb128", // a digit EXTENDS a word (after a letter)
+            "HTTP",
+            "A",
+            "A1",
+            "HTTP-V2", // an uppercase word is a valid segment (wasmparser allows it)
+            "parse-json",
+            "sum-to", // realistic multi-word names
+        ] {
+            assert!(is_kebab_word(w), "`{w}` is a valid kebab word");
+        }
+
+        // REJECTED — every boundary the state machine must refuse.
+        for w in [
+            "",       // empty is not a word
+            "-",      // a lone separator
+            "-a",     // leading separator
+            "a-",     // trailing separator
+            "a--b",   // doubled separator (empty inner segment)
+            "1",      // digit-led (a word can't START with a digit)
+            "1a",     // digit-led with a trailing letter
+            "0-a",    // a digit-led first segment
+            "a-0",    // a digit-led LATER segment (the declined separator-before-digit class)
+            "HTTP-2", // a digit-led segment is rejected even after an UPPERCASE word (case doesn't help)
+            "aB",     // case MIX within a word (lower then upper)
+            "Ab",     // case mix within a word (upper then lower)
+            "a_b",    // underscore is not in the kebab alphabet
+            "a b",    // space
+            "a.b",    // dot
+            "café",   // non-ASCII letter
+            "π",      // non-ASCII
+        ] {
+            assert!(!is_kebab_word(w), "`{w}` is NOT a valid kebab word");
+        }
+    }
+
+    #[test]
     fn well_formed_interface_names_are_accepted() {
         for n in [
             "cadenza:math/api",
