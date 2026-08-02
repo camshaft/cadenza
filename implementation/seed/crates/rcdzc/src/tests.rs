@@ -52586,8 +52586,10 @@ mod diagnostics {
     /// reference an inner binder, both paths anchor at the same `(list …)` node and dedup to ONE diagnostic.
     #[test]
     fn a_nested_list_rest_shape_rejects_regardless_of_whether_the_body_uses_the_inner_binders() {
-        let rejects_shape = |src: &str| {
-            diags_of(src).iter().any(|d| {
+        // `diags_of` recompiles the module, so each site computes it ONCE into a local and checks that
+        // local twice (predicate + failure message) rather than re-evaluating (cf. #1167/#1206/#1293 review).
+        let rejects_shape = |diags: &[crate::abi::Diagnostic]| {
+            diags.iter().any(|d| {
                 d.code.as_deref() == Some("CDZ0201")
                     && d.message
                         .contains("rest binder of a list pattern must be a name or `_`")
@@ -52596,26 +52598,26 @@ mod diagnostics {
         // BODY IGNORES the inner binders (`b`/`r`) — reads only the leading `a`. This was the silent gap.
         let body_ignores = "(module m (def (f (: xs (List Int64))) \
                             (match xs ((list a .. (list b .. r)) a) (_ 0))) (export f))";
+        let body_ignores_diags = diags_of(body_ignores);
         assert!(
-            rejects_shape(body_ignores),
-            "the invalid nested-rest shape rejects even when the body ignores the inner binders: {:?}",
-            diags_of(body_ignores)
+            rejects_shape(&body_ignores_diags),
+            "the invalid nested-rest shape rejects even when the body ignores the inner binders: {body_ignores_diags:?}"
         );
         // NESTED rest sub-pattern that binds NOTHING (`(list)`) — no inner binder exists to reference at all.
         let no_inner = "(module m (def (f (: xs (List Int64))) \
                         (match xs ((list a .. (list)) a) (_ 0))) (export f))";
+        let no_inner_diags = diags_of(no_inner);
         assert!(
-            rejects_shape(no_inner),
-            "a nested-rest sub-pattern binding nothing still rejects the shape: {:?}",
-            diags_of(no_inner)
+            rejects_shape(&no_inner_diags),
+            "a nested-rest sub-pattern binding nothing still rejects the shape: {no_inner_diags:?}"
         );
         // A LITERAL in the rest slot (`(list a .. 5)`) — binds nothing, but is still a non-name rest.
         let literal_rest = "(module m (def (f (: xs (List Int64))) \
                             (match xs ((list a .. 5) a) (_ 0))) (export f))";
+        let literal_rest_diags = diags_of(literal_rest);
         assert!(
-            rejects_shape(literal_rest),
-            "a literal in the rest slot rejects the shape (the broadened `not a name or _` wording): {:?}",
-            diags_of(literal_rest)
+            rejects_shape(&literal_rest_diags),
+            "a literal in the rest slot rejects the shape (the broadened `not a name or _` wording): {literal_rest_diags:?}"
         );
         // DEDUP: when the body DOES reference the inner binders, resolve's Case 6mr AND the lowering check
         // both fire at the same `(list …)` node — the fault set must carry EXACTLY ONE rest-shape CDZ0201,
