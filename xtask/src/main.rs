@@ -1821,14 +1821,11 @@ fn run_program_rust(
     // an ordinary export keeps its `ret_ty` unchanged.
     let is_factory =
         call.is_some() && rust_factory_param_count(&module, &export, async_mode).is_some();
-    // H1 SCOPE GUARD: a host call composed with a FACTORY export (a def whose body performs the host op then
-    // returns a closure) is a later increment — the factory-application driver path re-evaluates the export
-    // body in a way that double-counts the host-call responses (a build-time-host-in-a-closure-capture case).
-    // Decline (stay `todo`) rather than fail, until that composition is built. A host-delegating NON-factory
-    // export (the H1 target) is unaffected.
-    if is_factory && !host_responses.is_empty() {
-        return Ran::Declined { code: None };
-    }
+    // (The H1 factory+host_responses scope-guard was REMOVED once the closure-capture double-emit was fixed:
+    // a let-bound host-call value captured by a returned closure used to be RE-EMITTED at the closure build
+    // site — a second host call → double-counted responses. The `Core::Closure` capture emit now references
+    // the enclosing `let` binding instead of re-emitting, so a factory whose build-time host result a
+    // returned closure captures fires the host op exactly once, and these cases pass.)
     // A CLOSURE-PARAMETER CONSUMER export (takes a closure param, supplied by a producer sibling). Its own
     // RESULT crosses the host boundary the SAME way a factory's does — a String/Bytes result is serialized
     // as `list<u8>` and the corpus records the bare byte-int list `(104 105)`, NOT the quoted `"hi"` form.
