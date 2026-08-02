@@ -150,7 +150,12 @@ test("the differentiators-recap scan finds links (guards against a broken scan)"
 /// hard-coded name, so a reorder that changes the last platform chapter is tracked automatically.
 function fileForSlug(): Map<string, string> {
   const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
-  const re = /slug:\s*"([^"]+)"[\s\S]*?import\("\.\/chapters\/([^"]+)"\)/g;
+  // The slug→import gap is BOUNDED ({0,500}?, not unbounded [\s\S]*?): a slug with no following import
+  // otherwise makes the lazy star backtrack the whole remaining file per exec (catastrophic on a
+  // malformed registry). Every real entry's gap is < 320 chars (the longest, platform-safety, is 316),
+  // so 500 is behavior-preserving with margin. (The sibling links/pillarBridge/forwardRefs tests still
+  // carry the unbounded copy — flagged to the fleet for a consistent sweep.)
+  const re = /slug:\s*"([^"]+)"[\s\S]{0,500}?import\("\.\/chapters\/([^"]+)"\)/g;
   const m = new Map<string, string>();
   for (let x = re.exec(registrySrc); x; x = re.exec(registrySrc)) m.set(x[1], x[2]);
   return m;
