@@ -60360,6 +60360,61 @@ mod stage1 {
     }
 
     #[test]
+    fn a_deep_curried_application_spine_reduces_without_tripping_the_reduce_depth_limit() {
+        // FIX (v-inference 2026-08-02, co-diagnosed w/ v-compiler-perf): a curried application spine
+        // `((((f 0) 1) 2)…)` over an N-param def declined CDZ0999 at N≈32 — `lambda_of`'s Apply arm reduced
+        // the spine HEAD-FIRST recursively, holding one `enter_reduction` guard alive per level, so an N-deep
+        // spine nested N guards and tripped `REDUCE_DEPTH_LIMIT=32`, wrongly declining a legitimately
+        // terminating program. FIX: flatten the spine + reduce left-to-right in a loop that drops the guard
+        // per step, keeping guard depth ~1. Verifies a deep spine now COMPILES + computes the right value,
+        // AND that a genuinely divergent term still declines (the divergence guard is preserved).
+        use crate::abi::Artifact;
+        use crate::testkit::parse;
+        let build = |n: usize| -> String {
+            let params: String = (0..n)
+                .map(|k| format!("(: p{k} Int64)"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut body = format!("p{}", n - 1);
+            for k in (0..n - 1).rev() {
+                body = format!("(+ p{k} {body})");
+            }
+            let mut spine = String::from("f");
+            for k in 0..n {
+                spine = format!("({spine} {k})");
+            }
+            format!("(do (def (f {params}) {body}) (def (main) {spine}) (export main))")
+        };
+        // A 50-arg curried spine compiles + computes 0+1+…+49 = 1225 (was CDZ0999 at N≈32).
+        let bytes = compile_component(&crate::codec::encode(&parse(&build(50))))
+            .expect("a 50-arg curried spine reduces without tripping REDUCE_DEPTH_LIMIT");
+        if let Some(v) = run_linked(&bytes, "main") {
+            assert_eq!(v, "1225");
+        }
+        // DIVERGENCE GUARD PRESERVED: a self-applying term must STILL decline CDZ0999 (not loop / overflow).
+        let div = {
+            let entry = crate::codec::encode(&parse(
+                "(do (def (main) (let ((w (fn (v) (v (v v))))) (w w))) (export main))",
+            ));
+            let out = crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
+                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                ],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .filter_map(|d| d.code.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            div.contains(&"CDZ0999".to_string()),
+            "a self-applying divergent term must still decline CDZ0999 (guard preserved)"
+        );
+    }
+
+    #[test]
     fn a_refutable_binding_pattern_inside_an_inline_lambda_rejects_cdz0210() {
         // OVER-ACCEPT FIX (v-inference 2026-08-02): a REFUTABLE let-binding pattern (or a refutable
         // destructuring PARAM, which the desugar moves into a body `let`) inside an INLINE/let-bound LAMBDA
