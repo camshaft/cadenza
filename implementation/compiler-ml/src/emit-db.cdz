@@ -197,12 +197,14 @@ def can-emit(c: Core) = match c with
   | Core.CMatchEnum(_, _, _, _) => false
       // ii-c2b-2 enum-disc deconstruct is EVAL-ONLY for now (emit(B) = a MatchSum on a bare i32 disc, deferred).
 
-/// The position of `x` in `xs` (0-based), or -1 if absent. Used to map a CLet binder node-id to its wasm
-/// LOCAL INDEX (index = order of the binder in the pre-order binder list). Scalar-only (List Int64), so no
-/// heap value crosses the recursion.
+/// The position of `x` in `xs` (0-based). Used to map a CLet binder node-id to its wasm LOCAL INDEX
+/// (index = order of the binder in the pre-order binder list). Scalar-only (List Int64), so no heap value
+/// crosses the recursion. A MISS is impossible by construction — every `CVar`/`CLet` binder emitted here
+/// comes from the SAME `collect-binders` walk that built `binders`, so an absent `x` = corrupt lowering, a
+/// compiler bug → `trap` (a checked-get that cannot legitimately fail), never an in-band `-1` sentinel.
 def index-of(xs: List(Int64), x: Int64) = index-of-go(xs, x, 0)
 def index-of-go(xs: List(Int64), x: Int64, i: Int64) = match xs with
-  | [] => -1
+  | [] => trap("index-of: binder absent from the collect-binders list (corrupt lowering)")
   | [h, .. t] => (if h == x then i else index-of-go(t, x, i + 1))
 
 /// Collect every `CLet` binder node-id in `c`, in PRE-ORDER — this list's positions ARE the wasm local
@@ -470,8 +472,10 @@ def emit-src-bytes(s: String) = match emit-src(s) with
 /// W1 verifies the emitted bytes STRUCTURALLY in-Cadenza (no host wasmtime yet — that gate is W4).
 /// W1 verifies the emitted bytes STRUCTURALLY in-Cadenza (no host wasmtime yet — that gate is W4).
 
-/// Byte `i` of `b`, or -1 if out of range (so a test can assert a fixed offset totally).
-def byte-of(b: Bytes, i: Int64) = match Bytes.at(b, i) with | Option.Some(x) => x | Option.None(_) => -1
+/// Byte `i` of `b`. Every caller reads a KNOWN-in-bounds offset of a module the compiler JUST emitted (the
+/// structural byte-asserts + `contains-byte-go`, which guards `i == len` before calling), so an out-of-range
+/// read = a compiler bug → `trap`, never an in-band `-1` sentinel (a checked-get that cannot legitimately miss).
+def byte-of(b: Bytes, i: Int64) = match Bytes.at(b, i) with | Option.Some(x) => x | Option.None(_) => trap("byte-of: index out of range (compiler bug)")
 
 /// Does `b` contain the byte `x` anywhere? (a test helper for opcode-presence checks). Fuel = the buffer
 /// length, walked by index.
@@ -699,6 +703,17 @@ def em-nested-clet-two-locals() =
   (match emit-module(Core.CLet(1, cnum64(1), Core.CLet(2, cnum64(2), Core.CBin(43, true, 64, Core.CVar(1), Core.CVar(2))))) with
     | Option.Some(_) => unit
     | Option.None(_) => trap("nested CLet emits a module"))
+
+@test
+def em-index-of-maps-binder-to-position() =
+  // Pins the binder→local-index contract index-of enforces: a PRESENT element returns its 0-based position,
+  // order-sensitively (the i-th binder gets local i), so a CVar for the 2nd binder emits `local.get 1`. A
+  // miss is impossible by construction (a binder always comes from the same collect-binders list) → the `[]`
+  // arm traps rather than returning an in-band -1; this witnesses only the legitimate present-lookup path.
+  (let binders = List.push(List.push([], 7), 8) in       // [7, 8]: binder 7 at index 0, binder 8 at index 1
+   (if (index-of(binders, 7) == 0) then
+     (if (index-of(binders, 8) == 1) then unit else trap("binder 8 is local index 1"))
+    else trap("binder 7 is local index 0")))
 
 /// W3 -------------------------------------------------------------------------------------------------
 
