@@ -58906,6 +58906,30 @@ mod stage1 {
             !codes_for("(Set.size (Set.of (list (tuple k k))))").contains(&"CDZ0202".to_string()),
             "a tuple key of concrete Int64s stays legal (no CDZ0202)"
         );
+        // DEPTH: a DEEPLY-nested compound key — the abstract `Temp` leaf sits TWO tuples deep in
+        // `(tuple (tuple (mk k) k) k)`. `key_ty_contains_abstract_at` must recurse to ANY depth, not
+        // just the outermost structural level — CHAMP key eq/hash walks the whole spine to the leaf.
+        // Pins the recursion against a future shallow-walk (top-level-elems-only) regression that would
+        // silently COMPILE + observe the abstract leaf — a soundness hole.
+        assert!(
+            codes_for("(Set.size (Set.of (list (tuple (tuple (mk k) k) k))))")
+                .contains(&"CDZ0202".to_string()),
+            "a deeply-nested compound key with an abstract leaf 2 tuples deep must reject CDZ0202"
+        );
+        // NEGATIVE BOUNDARY (value position): opacity rejects only the KEY-comparison observation, NOT
+        // holding an abstract VALUE. A Map keyed by a CONCRETE `Int64` whose VALUE is the abstract `Temp`
+        // is LEGAL — the value spine is never compared (only the concrete key is), so the private rep is
+        // never observed. The bound `_v` holds but never inspects it. Guards the reject from creeping into
+        // value positions (an over-reach that rejected an abstract type in ANY collection slot would break
+        // this legitimate hold-don't-compare use).
+        let value_codes = codes_for(
+            "(match (Map.lookup (Map.insert Map.empty k (mk k)) k) ((Some _v) 1) ((None _u) 0))",
+        );
+        assert!(
+            value_codes.is_empty(),
+            "an abstract VALUE under a concrete key is legal — value-holding never triggers any \
+             diagnostic (opacity rejects only KEY comparison); got {value_codes:?}"
+        );
     }
 
     #[test]
