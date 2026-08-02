@@ -704,6 +704,65 @@ fn lsp_closing_an_open_library_reverts_its_importers_to_the_on_disk_version() {
 }
 
 #[test]
+fn lsp_opening_a_library_re_lints_an_already_open_importer() {
+    // Third leg of the reverse-dep family (didChange ✓, didClose ✓): the didOpen path. The importer is
+    // opened FIRST while the on-disk lib does NOT export `helper` — so it is RED (CDZ0201 does-not-export).
+    // Then we open the LIB buffer WITH the export: opening a library must refresh the diagnostics of every
+    // already-open importer (its live buffer now overlays the on-disk version), re-linting the importer
+    // CLEAN. This pins the lsp.rs didOpen->republish_importers_of path; the overlay test opens the lib
+    // FIRST (so the importer's own open reads the overlay) and does not exercise the open-order where the
+    // importer was already red and must be re-published by the LIB's open.
+    let dir = std::env::temp_dir().join(format!("cdz-lsp-openrevdep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    // On DISK: helper is defined but NOT exported — an importer opened against disk faults.
+    let lib_path = dir.join("lib.sexp");
+    std::fs::write(&lib_path, "(module lib (def (helper x) (+ x 1)))").expect("write lib");
+    let main_path = dir.join("main.sexp");
+    let main_text = "(do (import \"lib\" (helper)) (def (main) (helper 41)) (export main))";
+    std::fs::write(&main_path, main_text).expect("write main");
+    let lib_uri = format!("file://{}", lib_path.display());
+    let main_uri = format!("file://{}", main_path.display());
+    // The OPEN lib buffer DOES export helper (the unsaved edit not yet on disk).
+    let lib_open_text = "(module lib (def (helper x) (+ x 1)) (export helper))";
+
+    let msgs = drive_messages(&[
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+        // Open the IMPORTER first — against the on-disk lib (no export) it is RED.
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":main_uri,"languageId":"cadenza","version":1,"text":main_text}}}),
+        // Now open the LIB buffer WITH the export — the already-open importer must be re-linted CLEAN.
+        serde_json::json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":lib_uri,"languageId":"cadenza","version":1,"text":lib_open_text}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":99,"method":"shutdown","params":null}),
+        serde_json::json!({"jsonrpc":"2.0","method":"exit","params":null}),
+    ]);
+    let pushes = diagnostic_pushes_by_uri(&msgs);
+    // The LAST push for main.sexp (after the lib open) must be EMPTY — the live lib overlay resolved the
+    // import; the importer's earlier red (from the disk-only read) is cleared.
+    let last_main = pushes
+        .iter()
+        .rev()
+        .find(|(u, _)| u.ends_with("main.sexp"))
+        .map(|(_, d)| d.clone())
+        .expect("a diagnostics push for the importer");
+    assert!(
+        last_main.is_empty(),
+        "opening the lib (with the export) must re-lint the already-open importer clean; got {last_main:?}"
+    );
+    // And there must be ≥2 main pushes (its own open → red; the lib open → re-lint clean), proving the lib
+    // open actually re-published the importer rather than leaving a stale red squiggle.
+    let main_pushes = pushes
+        .iter()
+        .filter(|(u, _)| u.ends_with("main.sexp"))
+        .count();
+    assert!(
+        main_pushes >= 2,
+        "the importer should be re-published after the lib open (>=2 main pushes), got {main_pushes}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn lsp_goto_definition_jumps_across_files_to_an_imported_def() {
     // Cross-file go-to-definition: from the `helper` USE in main.sexp, jump to its DEFINITION in
     // lib.sexp — the target Location is in the OTHER file. Before this increment definition was
