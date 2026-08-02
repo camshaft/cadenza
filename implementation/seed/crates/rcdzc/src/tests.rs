@@ -58109,6 +58109,16 @@ mod stage1 {
                     .contains("a width must be a compile-time integer literal")),
             "a nested unbound width is caught: {nested:?}"
         );
+        // DOUBLY-NESTED, in a NON-FIRST type-argument position: `(Map Int64 (UInt zzz))` — the unbound width
+        // sits in the map's VALUE slot, past a well-formed key. Pins that the descent visits every arg
+        // position (not just the first) and names the UInt-appropriate example.
+        let deep = diags("(module m (def (f (: a (Map Int64 (UInt zzz)))) a) (export f))");
+        assert!(
+            deep.iter().any(|d| d.code.as_deref() == Some("CDZ0101")
+                && d.message.contains("unbound name `zzz`")
+                && d.message.contains("`UInt64`")),
+            "a doubly-nested unbound width in a later arg position is caught + named: {deep:?}"
+        );
         // CONTROLS — must NOT trip this reject:
         // a concrete width `(Int 64)`, an odd width `(Int 7)`, and a BOUND width variable `(Int a)` (a `Type`
         // parameter used as a generic width) all check clean; an over-ceiling `(UInt 65)` keeps its CDZ0302.
