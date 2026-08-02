@@ -178,6 +178,28 @@
   (input  (eval (quote (- 3 10))))
   (output (: -7 Int64)))
 
+(case "eval of a quoted multiplication folds through the compile-time evaluator"
+  (doc    "The multiplicative companion of the `+`/`-` eval cases (which are the only arithmetic operators
+           the eval-fold path witnessed): `(eval (quote (* 6 7)))` = 42. Pins that eval's arithmetic
+           reduction dispatches the `*` head, not just the additive `+`/`-` heads — a folder that hard-coded
+           only add/sub would pass every prior arithmetic case yet decline or miscompute here.")
+  (input  (eval (quote (* 6 7))))
+  (output (: 42 Int64)))
+
+(case "eval of a quoted division folds through the compile-time evaluator"
+  (doc    "The `/` companion of the multiplication case: `(eval (quote (/ 20 4)))` = 5. Pins that eval's
+           arithmetic reduction dispatches integer division (distinct primitive from `*`), completing the
+           four-operator arithmetic-eval family alongside `+`/`-`/`*`.")
+  (input  (eval (quote (/ 20 4))))
+  (output (: 5 Int64)))
+
+(case "eval of a quoted remainder folds through the compile-time evaluator"
+  (doc    "The `%` companion completing the arithmetic-eval operator set: `(eval (quote (% 17 5)))` = 2.
+           Pins that eval's reduction dispatches the remainder head (yet another distinct primitive), so
+           the whole `+`/`-`/`*`/`/`/`%` family is witnessed through the eval-fold path, not just addition.")
+  (input  (eval (quote (% 17 5))))
+  (output (: 2 Int64)))
+
 (case "eval of a quasiquote splicing a compile-time-known value"
   (doc    "The core macro idiom (metaprogramming.md #Eval Is Optional / #Quasiquote Constructs AST With
            Selective Evaluation): eval a quasiquoted form whose unquote splices a compile-time-known VALUE,
