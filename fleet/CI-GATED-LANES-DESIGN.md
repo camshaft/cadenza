@@ -138,14 +138,16 @@ was gated against a trunk that no longer exists). Handling, cheapest first:
 Landing is still a **fast-forward / clean `--no-ff` merge only** — never a conflict resolution by
 pr-sync (that stays the author's job, same as today's reject-on-conflict).
 
-**Reap edge case — a CLOSED-but-not-merged PR.** `reap_action(merged, verdict)` today resolves
-merged→land, not-merged+red→reject, else→wait. But a candidate PR can also be **CLOSED without
-merging and without a red CI** (manually closed, superseded, or its branch deleted) — that reads
-`merged=false` + a pending/green verdict → `KeepWaiting` FOREVER, a stuck in-flight slot. I4 must add
-the PR `state` as a third reap input: `CLOSED && !MERGED` → treat as a `Reject`-equivalent (ack the MR
-so its sender can resend, drop the `ci-dispatch` record, free the slot). `pr_merged_and_verdict`
-already fetches `state` via `gh pr view` — extend it to return the closed-not-merged case. (Deferred to
-the I4 executor build, not the read-only preview; noted so it isn't lost.)
+**Reap edge case — a CLOSED-but-not-merged PR.** ✅ DECISION-LAYER DONE (landed additively ahead of the
+I4 executor). A candidate PR can be **CLOSED without merging and without a red CI** (manually closed,
+superseded, or its branch deleted) — under the old two-input `reap_action(merged, verdict)` that read
+`merged=false` + a pending/green verdict → `KeepWaiting` FOREVER, a stuck in-flight slot. FIXED: reap
+now takes a `PrState {Merged, Closed, Open}` (via `parse_pr_state` on `gh pr view --json state`, pure +
+unit-tested) instead of a bare `merged` bool, and `reap_action(state, verdict)` resolves
+`Closed → Reject` regardless of the stale CI verdict (ack the MR so its sender can resend + free the
+slot). `pr_state_and_verdict` fails safe to `(Open, NoChecks)` on a gh error — an error manufactures
+neither a land nor a reject. The read-only `schedule-plan` preview already surfaces this (distinct
+"PR closed unmerged → free slot" REJECT reason). The I4 executor consumes the same primitive when it lands.
   - **Closed-WHILE-polling race** (PR #1160 review): beyond a PR closed between passes, the poll loop
     must also handle a PR closed/merged DURING a single poll cycle — re-fetch `state` on each poll rather
     than caching it, and treat a mid-poll `CLOSED`/`MERGED` as terminal so the poller never waits forever

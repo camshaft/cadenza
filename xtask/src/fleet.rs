@@ -7385,23 +7385,40 @@ enum ReapAction {
     KeepWaiting,
 }
 
-/// Decide the reap action for one in-flight candidate. `merged` = GitHub reports the PR already
-/// squash-merged (auto-merge fired on green). `verdict` = its current CI verdict. Precedence:
-///   1. `merged` → `LandMerged` (GitHub only auto-merges on green, so a merged PR is authoritative —
+/// A candidate PR's terminal-ish GitHub state, from `gh pr view --json state`. Distinguishing CLOSED
+/// (without merging) from still-OPEN is what lets [`reap_action`] free a stuck slot: a PR manually
+/// closed / superseded / branch-deleted reads `merged=false` with a non-red verdict, which the old
+/// two-input `reap_action` mapped to `KeepWaiting` FOREVER (design doc I4 edge case). `gh` reports
+/// exactly `MERGED` / `CLOSED` / `OPEN`; anything unrecognized (gh error, new state) is treated as
+/// `Open` — conservative, since Open → KeepWaiting never advances or drops trunk on a bad read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrState {
+    Merged,
+    Closed,
+    Open,
+}
+
+/// Decide the reap action for one in-flight candidate from its GitHub [`PrState`] + current CI verdict.
+/// Precedence:
+///   1. `Merged` → `LandMerged` (GitHub only auto-merges on green, so a merged PR is authoritative —
 ///      land it even if a straggler check bucket still reads pending in a racy poll).
-///   2. else `Red` → `Reject` (a failed check; auto-merge will never fire, so stop waiting).
-///   3. else (`Green` but not yet merged, `Pending`, `NoChecks`) → `KeepWaiting` (auto-merge hasn't
+///   2. `Closed` (without merging) → `Reject` — a PR manually closed / superseded / branch-deleted will
+///      NEVER merge, so stop waiting: ack the sender so it can resend + free the in-flight slot. Without
+///      this it would sit `KeepWaiting` forever (the stuck-slot bug the design doc's I4 flagged).
+///   3. else `Open` + `Red` CI → `Reject` (a failed check; auto-merge will never fire).
+///   4. else `Open` + (green-not-yet-merged / pending / no-checks) → `KeepWaiting` (auto-merge hasn't
 ///      completed yet, or CI is still running — never advance trunk off an unmerged PR ourselves;
 ///      GitHub owns the merge, we only observe it).
 ///
 /// Pure over its two inputs.
-fn reap_action(merged: bool, verdict: CiVerdict) -> ReapAction {
-    if merged {
-        ReapAction::LandMerged
-    } else if verdict == CiVerdict::Red {
-        ReapAction::Reject
-    } else {
-        ReapAction::KeepWaiting
+fn reap_action(state: PrState, verdict: CiVerdict) -> ReapAction {
+    match state {
+        PrState::Merged => ReapAction::LandMerged,
+        // Closed-not-merged is terminal: it can't merge, so reject (free the slot) regardless of the
+        // last CI verdict — a closed PR's checks are moot.
+        PrState::Closed => ReapAction::Reject,
+        PrState::Open if verdict == CiVerdict::Red => ReapAction::Reject,
+        PrState::Open => ReapAction::KeepWaiting,
     }
 }
 
@@ -7519,19 +7536,33 @@ fn files_collide(a: &[String], b: &std::collections::HashSet<String>) -> bool {
     a.iter().any(|f| b.contains(f))
 }
 
-/// Query GitHub for a candidate PR's `(merged?, CI verdict)` — the two inputs [`reap_action`] needs.
-/// `gh pr view <n> --json state` gives the merge state (we check for `"MERGED"`); `gh pr checks` gives
-/// the buckets. A gh error is reported as `(false, NoChecks)` (→ `KeepWaiting`), never a false
-/// `merged`/`Green`.
-fn pr_merged_and_verdict(pr: u64) -> (bool, CiVerdict) {
+/// Map the `gh pr view --json state` output to a [`PrState`]. Pure so the parse is unit-tested without
+/// gh. `gh` reports exactly `"MERGED"` / `"CLOSED"` / `"OPEN"` in the JSON; MERGED wins if somehow both
+/// appear, and anything unrecognized (empty on a gh error, or a future state) is `Open` — the
+/// conservative default (Open → KeepWaiting never advances or drops trunk on a bad read).
+fn parse_pr_state(gh_state_json: &str) -> PrState {
+    if gh_state_json.contains("\"MERGED\"") {
+        PrState::Merged
+    } else if gh_state_json.contains("\"CLOSED\"") {
+        PrState::Closed
+    } else {
+        PrState::Open
+    }
+}
+
+/// Query GitHub for a candidate PR's `(state, CI verdict)` — the two inputs [`reap_action`] needs.
+/// `gh pr view <n> --json state` gives the merge/close state (parsed by [`parse_pr_state`]); `gh pr
+/// checks` gives the buckets. A gh error → `(Open, NoChecks)` (→ `KeepWaiting`), never a false
+/// `Merged`/`Green`/`Closed` (an error must not manufacture a land OR a reject).
+fn pr_state_and_verdict(pr: u64) -> (PrState, CiVerdict) {
     let n = pr.to_string();
-    let merged = Command::new("gh")
+    let state = Command::new("gh")
         .args(["pr", "view", &n, "--json", "state"])
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains("\"MERGED\""))
-        .unwrap_or(false);
+        .map(|o| parse_pr_state(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or(PrState::Open);
     let checks_out = Command::new("gh")
         .args(["pr", "checks", &n, "--json", "bucket,name,state"])
         .output()
@@ -7543,7 +7574,7 @@ fn pr_merged_and_verdict(pr: u64) -> (bool, CiVerdict) {
             .iter()
             .map(|(b, _, _)| b.as_str()),
     );
-    (merged, verdict)
+    (state, verdict)
 }
 
 /// `fleet schedule-plan [--cap N]`: read the queued merge-requests + the in-flight `ci-dispatch` state
@@ -7561,9 +7592,12 @@ fn schedule_plan(fleet: &Fleet, cap: usize) {
     if !dispatched.is_empty() {
         println!("in-flight ({}):", dispatched.len());
         for d in &dispatched {
-            let (merged, verdict) = pr_merged_and_verdict(d.pr_number);
-            let action = match reap_action(merged, verdict) {
+            let (state, verdict) = pr_state_and_verdict(d.pr_number);
+            let action = match reap_action(state, verdict) {
                 ReapAction::LandMerged => "LAND (merged → FF trunk + ack merged)",
+                ReapAction::Reject if state == PrState::Closed => {
+                    "REJECT (PR closed unmerged → ack reject + free slot)"
+                }
                 ReapAction::Reject => "REJECT (CI red → ack reject + close)",
                 ReapAction::KeepWaiting => "wait (CI pending / not merged)",
             };
@@ -12404,18 +12438,44 @@ mod tests {
     }
 
     #[test]
-    fn reap_action_lands_merged_rejects_red_else_waits() {
+    fn reap_action_lands_merged_rejects_red_or_closed_else_waits() {
         use CiVerdict::*;
-        // merged (auto-merge fired on green) → LAND, regardless of a racy straggler verdict.
-        assert_eq!(reap_action(true, Green), ReapAction::LandMerged);
-        assert_eq!(reap_action(true, Pending), ReapAction::LandMerged);
-        assert_eq!(reap_action(true, Red), ReapAction::LandMerged); // merged wins (shouldn't happen, but merged is authoritative)
-        // not merged + red CI → REJECT (auto-merge will never fire).
-        assert_eq!(reap_action(false, Red), ReapAction::Reject);
-        // not merged + still running / green-but-not-yet-merged / no checks → keep waiting (GitHub owns the merge).
-        assert_eq!(reap_action(false, Pending), ReapAction::KeepWaiting);
-        assert_eq!(reap_action(false, Green), ReapAction::KeepWaiting);
-        assert_eq!(reap_action(false, NoChecks), ReapAction::KeepWaiting);
+        use PrState::*;
+        // MERGED (auto-merge fired on green) → LAND, regardless of a racy straggler verdict.
+        assert_eq!(reap_action(Merged, Green), ReapAction::LandMerged);
+        assert_eq!(reap_action(Merged, Pending), ReapAction::LandMerged);
+        assert_eq!(reap_action(Merged, Red), ReapAction::LandMerged); // merged wins (shouldn't happen, but merged is authoritative)
+        // OPEN + red CI → REJECT (auto-merge will never fire).
+        assert_eq!(reap_action(Open, Red), ReapAction::Reject);
+        // OPEN + still running / green-but-not-yet-merged / no checks → keep waiting (GitHub owns the merge).
+        assert_eq!(reap_action(Open, Pending), ReapAction::KeepWaiting);
+        assert_eq!(reap_action(Open, Green), ReapAction::KeepWaiting);
+        assert_eq!(reap_action(Open, NoChecks), ReapAction::KeepWaiting);
+        // CLOSED-not-merged → REJECT regardless of the last CI verdict (the design-doc I4 stuck-slot
+        // fix: a manually-closed/superseded PR can never merge, so free the slot instead of KeepWaiting
+        // forever). Even a stale GREEN or Pending on a closed PR must reject, not wait.
+        assert_eq!(reap_action(Closed, Green), ReapAction::Reject);
+        assert_eq!(reap_action(Closed, Pending), ReapAction::Reject);
+        assert_eq!(reap_action(Closed, Red), ReapAction::Reject);
+        assert_eq!(reap_action(Closed, NoChecks), ReapAction::Reject);
+    }
+
+    #[test]
+    fn parse_pr_state_maps_gh_json_merged_closed_open_defaulting_open() {
+        // gh emits exactly one of these tokens in the --json state output.
+        assert_eq!(parse_pr_state(r#"{"state":"MERGED"}"#), PrState::Merged);
+        assert_eq!(parse_pr_state(r#"{"state":"CLOSED"}"#), PrState::Closed);
+        assert_eq!(parse_pr_state(r#"{"state":"OPEN"}"#), PrState::Open);
+        // MERGED wins if both somehow appear (a merged PR is authoritative — never drop it as closed).
+        assert_eq!(
+            parse_pr_state(r#"{"state":"MERGED","x":"CLOSED"}"#),
+            PrState::Merged
+        );
+        // Unrecognized / empty (gh error → empty stdout, or a future state) → Open, the conservative
+        // default: Open never advances OR drops trunk (→ KeepWaiting), so a bad read can't manufacture a
+        // land or a reject.
+        assert_eq!(parse_pr_state(""), PrState::Open);
+        assert_eq!(parse_pr_state(r#"{"state":"DRAFT"}"#), PrState::Open);
     }
 
     #[test]
