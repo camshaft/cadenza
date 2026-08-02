@@ -6726,3 +6726,20 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 70 Int64))
   (call   main (: 2 Int64)) (output (: 1200 Int64)))
+
+(case "a host op returning Bool crosses the boundary and drives a branch"
+  (doc    "The BOOL-result host boundary (H2, rcdzc 2ded4a5a9): a `(-> Unit Bool)` delegated host op
+           crosses as its i32/i64 truthiness — the host supplies `true`, the guest reads it back and
+           drives `(if (Env.flag) 100 200)` → 100. wasm reads i32→bool at the boundary; the rust
+           backend emits `(crate::__cdz_host_<key>() != 0)`. The bool companion of the int-result host
+           pins. Note the (host-calls …) fixture names the effect LOWERCASE (`env.flag`). Computes on
+           wasm + rust; rust-async declines (H2 not yet on that target).")
+  (input  (do
+            (effect Env (op flag (-> Unit Bool)))
+            (def (main)
+              (host (Env)
+                (if (Env.flag) 100 200)))
+            (export main)))
+  (host-responses (respond env.flag (: true Bool)))
+  (host-calls (call env.flag))
+  (output (: 100 Int64)))

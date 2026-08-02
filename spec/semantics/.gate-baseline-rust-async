@@ -5714,3 +5714,5 @@ todo	two host responses combine in call order through a non-commutative operator
 todo	two nested recursive const-closure drivers (filter under fold) emit valid wasm and compute correctly
 todo	two same-unit Qty host results combine guest-side as a same-dimension add
 todo	two specializations of one driver on different closures do not collide in the spec memo
+pass	a computed (runtime-branched) label operand to Record.with is rejected — labels are static
+todo	a host op returning Bool crosses the boundary and drives a branch
