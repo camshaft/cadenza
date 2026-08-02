@@ -2517,6 +2517,27 @@
   (input  (= (String.from-bytes (Bytes.of (list))) (Some "")))
   (output (: true Bool)))
 
+(case "a runtime String.from-bytes result is read twice and both reads see the decoded string"
+  (doc    "The decode cases above feed a CONSTANT byte sequence (const-folds, no runtime path) and read the
+           result once. This pins the RUNTIME + read-twice face: `String.from-bytes` is a source-CONSUMING
+           runtime op (it takes ownership of the Bytes and yields a fresh owned String leaf), so its
+           `let`/match-bound result read MORE THAN ONCE must be NAMED (decoded once, the handle read by each
+           use), not copy-propagated + recomputed — recomputing a consuming op re-consumes its (already-moved)
+           source. The bytes are built by recursion (`rep` appends 65='A' three times) so nothing folds; the
+           decoded `s` is read by BOTH `String.byte-len` and `String.scalar-len` → 3 + 3 = 6. This is the
+           `String.from-bytes` member of the same consuming-op-double-read family as adv-54 (String.slice/
+           to-bytes): a copy-propagation that recomputed the decode would re-consume the bytes and the second
+           read would see a freed/garbled leaf. Expected: 6.")
+  (input  (do
+            (def (rep (: acc Bytes) (: n Int64))
+              (if (< n 1) acc (rep (Bytes.concat acc (Bytes.of (list 65))) (- n 1))))
+            (def (main (: k Int64))
+              (match (String.from-bytes (rep (Bytes.of (list)) 3))
+                ((Some s) (+ (String.byte-len s) (String.scalar-len s)))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 6 Int64)))
+
 (case "decoding ill-formed UTF-8 bytes yields none, not a trap"
   (doc    "`(String.from-bytes (Bytes.of (list 255)))` is given 0xFF, which is not a well-formed UTF-8
            sequence (0xFF never appears in valid UTF-8), so the decode yields `None` — NOT a trap and NOT
