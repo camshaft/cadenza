@@ -76,7 +76,10 @@ export default function ExampleApps() {
         with runnable Cadenza code cells and interactive widgets. Drag a slider and every dependent cell
         recomputes, so a compound-interest model or a data table stays live. It's the reactive, run-the-outside-world
         side of the language, the same "perform an operation, let the surrounding context decide what it
-        means" idea you met in <Ch to="/effects">effects &amp; handlers</Ch>, turned into a document.
+        means" idea you met in <Ch to="/effects">effects &amp; handlers</Ch>, turned into a document. A cell
+        that computes a dimensioned quantity displays it in the same concise surface as the{" "}
+        <Ch to="/units">units of measure</Ch> chapter, <C>5 meter</C> rather than the raw value form, so a
+        table of results reads like a table of measurements.
       </P>
 
       <H2>Music theory</H2>
