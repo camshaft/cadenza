@@ -106,6 +106,36 @@ export default function Ordering() {
 (def (main) (order-sign "apple" "banana"))`}
       />
 
+      <H2>Ordered types can be keys</H2>
+      <P>
+        <C>Bytes</C> is ordered too, lexicographically over its <em>unsigned</em> byte values, the same way
+        text compares by character. So <C>(list 1 2)</C> comes before <C>(list 1 3)</C>, decided at the
+        first byte that differs:
+      </P>
+      <Runnable source={`(< (Bytes.of (list 1 2)) (Bytes.of (list 1 3)))`} />
+      <P>
+        Watch the <em>unsigned</em> part: a byte holding <C>128</C> is <em>greater</em> than one holding{" "}
+        <C>127</C>, not less, because the bytes are compared as 0–255, never as signed numbers:
+      </P>
+      <Runnable source={`(> (Bytes.of (list 128)) (Bytes.of (list 127)))`} />
+      <P>
+        The reason a total order matters beyond sorting is that it's exactly what a <C>Map</C> key or a{" "}
+        <C>Set</C> element needs: to look a value up, the collection has to be able to order it. Because{" "}
+        <C>Bytes</C> now has one, a byte string can be a key directly, no hashing to an <C>Int</C> first.
+        Here a <C>Map</C> keyed by <C>Bytes</C> finds its entry:
+      </P>
+      <Runnable
+        source={`(do (def (main)
+      (Map.lookup
+        (Map.insert (Map.empty) (Bytes.of (list 1 2)) 42)
+        (Bytes.of (list 1 2))))
+    (export main))`}
+      />
+      <P>
+        The lookup returns <C>(Some 42)</C>: the second <C>Bytes</C> value compares equal to the key that
+        was inserted, so the <C>Map</C> finds it. A value you can order is a value you can organize.
+      </P>
+
       <Why tenet="A total order is a three-way answer">
         Returning <C>-1 / 0 / 1</C> works, but it leans on a convention and can't be enforced. Cadenza's{" "}
         <C>compare</C> yields the <C>Ordering</C> sum of <em>less</em>, <em>equal</em>, and <em>greater</em>,
