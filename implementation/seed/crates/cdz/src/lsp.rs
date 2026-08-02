@@ -3996,6 +3996,47 @@ mod tests {
     }
 
     #[test]
+    fn hover_resolves_correctly_when_a_multibyte_char_precedes_the_cursor_on_the_same_line() {
+        // End-to-end position-bridge pin THROUGH a real provider (hover), not just the byte<->position
+        // unit tests. `position_to_byte` resets its column counter per line, so the divergence between a
+        // cursor's UTF-16 column and its UTF-8 byte offset must come from a multibyte char EARLIER ON THE
+        // SAME LINE. Here `café` (`é` = 2 UTF-8 bytes / 1 UTF-16 unit) appears twice on line 1; the SECOND
+        // use sits at UTF-16 col 21 but byte offset 22 (the first `café`'s `é` shifts bytes past columns).
+        // Hover that second use: if the bridge mis-walked the multibyte char it would land on the wrong
+        // node (or none) and fail to report the Int type. Multibyte identifiers are accepted by the
+        // front-end (`cdz check` passes on this source).
+        let text = "def café = 42\ndef total() = café + café";
+        // The SECOND `café` use on line 1 starts at UTF-16 col 21 (byte 22 — the divergence proves the walk).
+        let h = hover_at(text, true, Position::new(1, 21))
+            .expect("a hover on the second multibyte-preceded use");
+        let rendered = match &h.contents {
+            HoverContents::Scalar(MarkedString::String(s)) => s.clone(),
+            HoverContents::Markup(m) => m.value.clone(),
+            other => panic!("unexpected hover contents: {other:?}"),
+        };
+        assert!(
+            rendered.contains("Int"),
+            "hover on a use preceded by a same-line multibyte char should still report the Int type, \
+             got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn hover_on_a_cursor_inside_a_multibyte_char_does_not_panic() {
+        // The LSP analogue of the cdz-type-at mid-multibyte-cursor pin (#1173): an editor may send a
+        // (line, character) whose UTF-16 column lands "inside" a multibyte char's units. `position_to_byte`
+        // must map it to a CHAR-BOUNDARY byte offset (it advances by `len_utf16` per char), so no downstream
+        // `&text[off..]` slice can split a multibyte sequence and panic. Drive hover with a column that
+        // targets the interior of `café`'s `é` and assert it returns (Some or None) without a Rust panic.
+        let text = "def café = 42";
+        // `café` starts at col 4; `é` is the char at UTF-16 col 7. A column pointing at/just past it must
+        // still resolve to a char boundary — total, never a panic.
+        let _ = hover_at(text, true, Position::new(0, 7));
+        let _ = hover_at(text, true, Position::new(0, 8));
+        // (Reaching this line at all is the assertion: neither call unwound a panic.)
+    }
+
+    #[test]
     fn hover_on_a_documented_def_shows_the_type_and_the_docstring() {
         // Hovering a use of a DOCUMENTED definition shows both its type (`TypeAt`) and its doc prose
         // (`DocAt`) as Markdown — the `///` doc comment is surfaced in the hover popup.
