@@ -740,6 +740,80 @@ fn warm_only_populates_the_cache_so_a_later_per_file_sweep_hits() {
 }
 
 #[test]
+fn warm_only_report_time_emits_both_precompile_and_provider_jit_phases() {
+    // Regression guard for the EMIT-vs-JIT split (4feac9a35): `cdz test --warm-only --report-time <dir>` must
+    // print BOTH ⏱ phase lines so a WARMING run reveals where its time went. Before this slice, the provider-JIT
+    // line printed AFTER the `--warm-only` early-return (invisible in a warm run) and there was NO timing on the
+    // PRECOMPILE/EMIT phase at all — so the gate's stubborn ~270s warm-once couldn't be attributed to the emit
+    // (`.provider.wasm` miss) vs the JIT (`.cwasm` miss). Assert both `⏱ precompile:` and `⏱ provider JIT:` show
+    // up under --warm-only, AND that neither prints without --report-time (the flag stays opt-in in warm mode too).
+    let dir = std::env::temp_dir().join(format!("cdz-warm-rt-{}", std::process::id()));
+    let cache = std::env::temp_dir().join(format!("cdz-warm-rt-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A recursive shared closure (stays standalone → a real cross-edge → a real provider to emit + JIT) imported
+    // by two @test files — the shape that produces a non-empty `providers` + `jit_providers` set to time.
+    std::fs::write(
+        dir.join("shared.cdz"),
+        "def sumto(n: Int64) =\n  if n == 0 then 0 else n + sumto(n - 1)\nexport { sumto }\n",
+    )
+    .unwrap();
+    for (f, k) in [("ta", 5), ("tb", 4)] {
+        let want = (0..=k).sum::<i64>();
+        std::fs::write(
+            dir.join(format!("{f}.cdz")),
+            format!(
+                "import {{ sumto }} from \"shared\"\n@test\ndef t_{f}() =\n  if sumto({k}) == {want} then unit else trap(\"{f}\")\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let warm = |report_time: bool| -> (bool, String) {
+        let mut args = vec!["test".to_string(), "--warm-only".to_string()];
+        if report_time {
+            args.push("--report-time".to_string());
+        }
+        args.push(dir.to_str().unwrap().to_string());
+        let out = Command::new(cdz())
+            .args(&args)
+            .env("CDZ_PROVIDER_CACHE", &cache)
+            .output()
+            .expect("spawn cdz test --warm-only [--report-time]");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        )
+    };
+
+    // WITH --report-time: a warming run prints BOTH phase lines (the split pr-sync needs), still exits 0, still
+    // runs NO tests (warm-only). This is the crux — the provider-JIT line used to be UNREACHABLE in warm mode.
+    let (ok, out) = warm(true);
+    assert!(ok, "warm-only --report-time exits 0:\n{out}");
+    assert!(
+        out.contains("⏱ precompile:"),
+        "the PRECOMPILE/EMIT phase is timed under --warm-only (was untimed before 4feac9a35):\n{out}"
+    );
+    assert!(
+        out.contains("⏱ provider JIT:"),
+        "the provider-JIT phase is VISIBLE under --warm-only (was printed after the early-return before):\n{out}"
+    );
+    assert!(
+        !out.contains("PASS "),
+        "warm-only still runs NO tests even with --report-time (warms the cache, exits):\n{out}"
+    );
+
+    // WITHOUT the flag: a warming run prints NEITHER ⏱ line — the timing stays opt-in in warm mode too.
+    let (ok2, out2) = warm(false);
+    assert!(ok2, "warm-only exits 0:\n{out2}");
+    assert!(
+        !out2.contains("⏱"),
+        "no ⏱ timing lines under --warm-only without --report-time (opt-in preserved):\n{out2}"
+    );
+}
+
+#[test]
 fn report_time_emits_per_step_and_per_test_timings_and_is_off_by_default() {
     // `--report-time` (operator ask: "emit how long each step takes; tests should include how long they run"):
     // per-STEP (provider JIT once + per-file compose/run) + per-TEST durations, like `cargo test --report-time`.
