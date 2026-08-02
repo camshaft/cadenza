@@ -2244,24 +2244,25 @@ fn ref_landed_on_trunk(fleet: &Fleet, r#ref: &str) -> bool {
 const STALE_QUEUED_MR_SECS: u64 = 30 * 60;
 
 /// Whether a queued merge-request is STALE-QUEUED: it has waited `age_secs` in pr-sync's inbox, is NOT
-/// in flight (no candidate PR), is NOT already landed, is NOT legitimately held by its own serialized
-/// lane (`lane_blocked` — a serialized lane whose in-flight candidate it's correctly waiting behind),
-/// and the wait exceeds `threshold`. Pure so the predicate is unit-tested without fs/clock.
+/// in flight (no candidate PR), is NOT already landed, does NOT collide with an in-flight candidate at
+/// the FILE level (`file_blocked` — shares a changed file, so it's correctly serialized behind it), and
+/// the wait exceeds `threshold`. Pure so the predicate is unit-tested without fs/clock.
 ///
 /// This catches the silent-no-reject class the drain-order investigation traced to pr-sync's tick
-/// discipline (the tooling drain re-scans oldest-first, so a DISPATCHABLE stale-queued MR means it
-/// isn't being re-picked-up). The `lane_blocked` guard is the precision fix: on the live fleet 8 of 9
-/// initially-flagged MRs were serialized-lane (mixed/baseline/code/…) legitimately waiting behind a
-/// lane-mate — NOT stuck. Only a DISPATCHABLE MR (parallel lane, or a serialized lane with no in-flight
-/// member) waiting 30+ min is a real silent delay.
+/// discipline (the drain re-scans oldest-first, so a DISPATCHABLE stale-queued MR isn't being
+/// re-picked-up). `file_blocked` is the precision guard — and it must be FILE-LEVEL, not lane-LABEL:
+/// pr-sync showed a `mixed` MR collides through its COMPONENT hot files (`.gate-baseline*`,
+/// `rcdzc/src/tests.rs`, a shared source) each independently in flight, even when no other
+/// `mixed`-labelled MR is — dispatching it would conflict on re-parent. Only a genuinely DISPATCHABLE
+/// MR (shares no file with any in-flight candidate) waiting 30+ min is a real silent delay.
 fn mr_is_stale_queued(
     age_secs: u64,
     in_flight: bool,
     landed: bool,
-    lane_blocked: bool,
+    file_blocked: bool,
     threshold: u64,
 ) -> bool {
-    !in_flight && !landed && !lane_blocked && age_secs > threshold
+    !in_flight && !landed && !file_blocked && age_secs > threshold
 }
 
 fn find_queued_but_landed(
@@ -2295,9 +2296,11 @@ fn find_queued_but_landed(
 }
 
 /// Find merge-requests STALE-QUEUED in pr-sync's inbox: waited > `STALE_QUEUED_MR_SECS`, not in flight
-/// (no `ci-dispatch` record for the ref), not already landed on trunk. Returns `(filename, sender, ref,
-/// age_secs)` for each, so the audit/watchdog can surface a silent no-reject delay (concierge report).
-/// Uses the file mtime as the wait clock (delivery stamps it; it's not rewritten while queued).
+/// (no `ci-dispatch` record for the ref), not already landed on trunk, AND file-disjoint from every
+/// in-flight candidate (doesn't share a changed file → not correctly serialized behind one). Returns
+/// `(filename, sender, ref, age_secs)`, so the audit/watchdog can surface a silent no-reject delay
+/// (concierge report). Uses the file mtime as the wait clock (delivery stamps it; not rewritten while
+/// queued). File-level (not lane-label) blocking per pr-sync's dispatch model — see `files_collide`.
 fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String, u64)> {
     let dispatches: Vec<CiDispatch> = read_ci_dispatches(fleet)
         .into_iter()
@@ -2305,12 +2308,12 @@ fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String
         .collect();
     let in_flight_refs: std::collections::HashSet<String> =
         dispatches.iter().map(|d| d.r#ref.clone()).collect();
-    // SERIALIZED lanes currently occupied by an in-flight candidate — a queued MR in one of these is
-    // legitimately waiting its turn (≤1 in flight per serialized lane), NOT stuck.
-    let blocked_serialized_lanes: std::collections::HashSet<String> = dispatches
+    // The union of files changed by every in-flight candidate — a queued MR that touches ANY of these
+    // is correctly serialized behind that candidate (dispatching it would conflict on re-parent), so
+    // it is NOT stuck. This is pr-sync's file-level disjointness test, stricter than a lane-label match.
+    let in_flight_files: std::collections::HashSet<String> = dispatches
         .iter()
-        .filter(|d| !lane_is_parallel(&d.lane))
-        .map(|d| d.lane.clone())
+        .flat_map(|d| changed_files_of(&d.r#ref))
         .collect();
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(fleet.inbox("pr-sync")) else {
@@ -2340,10 +2343,9 @@ fn find_stale_queued_mrs(fleet: &Fleet, now: u64) -> Vec<(String, String, String
             a.starts_with(&b) || b.starts_with(&a)
         });
         let landed = ref_landed_on_trunk(fleet, &mr.r#ref);
-        // Legitimately held if its (serialized) lane already has an in-flight candidate.
-        let lane = lane_label_for_ref(&mr.r#ref);
-        let lane_blocked = blocked_serialized_lanes.contains(&lane);
-        if mr_is_stale_queued(age, in_flight, landed, lane_blocked, STALE_QUEUED_MR_SECS) {
+        // FILE-blocked if it shares any changed file with an in-flight candidate (correctly serialized).
+        let file_blocked = files_collide(&changed_files_of(&mr.r#ref), &in_flight_files);
+        if mr_is_stale_queued(age, in_flight, landed, file_blocked, STALE_QUEUED_MR_SECS) {
             out.push((fname, mr.from.clone(), mr.r#ref.clone(), age));
         }
     }
@@ -7244,7 +7246,14 @@ fn dispatch_plan(fleet: &Fleet, r#ref: &str, agent: &str) {
 /// The lane label for a queued merge-request, computed from its `--ref`'s changed paths (same source
 /// as `lane-of`). An unresolvable ref → `mixed` (conservative, serialized). Shells one `git show`.
 fn lane_label_for_ref(r#ref: &str) -> String {
-    let paths: Vec<String> = Command::new("git")
+    lane_of(&changed_files_of(r#ref)).label().to_string()
+}
+
+/// The changed file paths of a commit-ish (`git show --name-only`), trimmed + non-empty, or empty on
+/// an unresolvable ref / git error. The shared source for lane classification AND file-level collision
+/// checks (the two callers must see the SAME file set, so they share this helper).
+fn changed_files_of(r#ref: &str) -> Vec<String> {
+    Command::new("git")
         .args(["show", "--name-only", "--format=", r#ref])
         .output()
         .ok()
@@ -7256,8 +7265,17 @@ fn lane_label_for_ref(r#ref: &str) -> String {
                 .filter(|l| !l.is_empty())
                 .collect()
         })
-        .unwrap_or_default();
-    lane_of(&paths).label().to_string()
+        .unwrap_or_default()
+}
+
+/// Whether two commits COLLIDE — share at least one changed file — the file-level disjointness test
+/// pr-sync dispatches by (2026-08-02): a candidate is blocked iff it touches ANY file an in-flight
+/// candidate also touches. This is STRICTER + more correct than a lane-LABEL match: a `mixed` MR
+/// collides through its COMPONENT hot files (`.gate-baseline*`, `rcdzc/src/tests.rs`, a shared source),
+/// each of which can independently be in flight even when no OTHER `mixed`-labelled MR is. Pure over the
+/// two file sets. `b` is pre-collected into a set by the caller when checked against many candidates.
+fn files_collide(a: &[String], b: &std::collections::HashSet<String>) -> bool {
+    a.iter().any(|f| b.contains(f))
 }
 
 /// Query GitHub for a candidate PR's `(merged?, CI verdict)` — the two inputs [`reap_action`] needs.
@@ -11989,18 +12007,52 @@ mod tests {
     #[test]
     fn mr_is_stale_queued_only_when_waited_and_not_in_flight_or_landed() {
         let t = STALE_QUEUED_MR_SECS;
-        // Waited past threshold, not in flight, not landed, lane not blocked → STALE (dispatchable).
+        // Waited past threshold, not in flight, not landed, file-disjoint → STALE (dispatchable).
         assert!(mr_is_stale_queued(t + 1, false, false, false, t));
         // In flight (a candidate PR exists) → never stale, however long (it's progressing).
         assert!(!mr_is_stale_queued(t + 9999, true, false, false, t));
         // Already landed (by patch-id) → not stale (it's the queued-but-landed case, handled separately).
         assert!(!mr_is_stale_queued(t + 9999, false, true, false, t));
-        // LANE BLOCKED — its serialized lane already has an in-flight candidate → legitimately waiting
-        // its turn, NOT stuck (the precision fix: 8/9 live-flagged MRs were this, not a real delay).
+        // FILE-BLOCKED — shares a changed file with an in-flight candidate → legitimately serialized
+        // behind it, NOT stuck (dispatching would conflict on re-parent). pr-sync's file-level model:
+        // a `mixed` MR is blocked through its COMPONENT hot files even with no same-lane-label in flight.
         assert!(!mr_is_stale_queued(t + 9999, false, false, true, t));
         // Within the threshold → a healthy queued MR waiting its turn for a slot, not stale.
         assert!(!mr_is_stale_queued(t, false, false, false, t)); // exactly at threshold is NOT past it (strict >)
         assert!(!mr_is_stale_queued(t - 1, false, false, false, t));
+    }
+
+    #[test]
+    fn files_collide_is_any_shared_path() {
+        let inflight: std::collections::HashSet<String> = [
+            "spec/semantics/.gate-baseline",
+            "implementation/seed/crates/rcdzc/src/tests.rs",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        // A `mixed` MR touching a component hot file that's in flight → collides (blocked), even though
+        // no other `mixed`-labelled MR is in flight (the exact pr-sync correction).
+        assert!(files_collide(
+            &[
+                "implementation/seed/crates/rcdzc/src/tests.rs".into(),
+                "cdz/x.rs".into()
+            ],
+            &inflight
+        ));
+        assert!(files_collide(
+            &["spec/semantics/.gate-baseline".into()],
+            &inflight
+        ));
+        // Genuinely disjoint files → no collision (dispatchable).
+        assert!(!files_collide(
+            &[
+                "guide/src/intro.tsx".into(),
+                "implementation/cad/x.cdz".into()
+            ],
+            &inflight
+        ));
+        assert!(!files_collide(&[], &inflight)); // empty change set never collides
     }
 
     #[test]
