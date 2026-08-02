@@ -36,8 +36,10 @@ pub trait Authorize {
 ///
 /// **Object-safe via `async-trait`.** The kernel gates through `&dyn Authorize`, so the async trait stays
 /// dyn-compatible via `#[async_trait(?Send)]`; `?Send` for the single-threaded kernel (a ComponentAuthorizer
-/// holds a non-`Send` wasmtime store). A sync [`Authorize`] wraps in [`SyncAuthorizeAsAsync`] (explicit
-/// adapter, not a blanket — same coherence reason as [`crate::reducer::SyncAsAsync`]).
+/// holds a non-`Send` wasmtime store). **Every sync [`Authorize`] is an `AsyncAuthorize`** via the blanket
+/// impl below (no wrapper) — coherence-safe because a genuinely-async authorizer (a wasm ComponentAuthorizer
+/// whose eval awaits) drops its sync `Authorize` impl and writes a NATIVE `AsyncAuthorize`, so it never
+/// overlaps the blanket.
 #[async_trait::async_trait(?Send)]
 pub trait AsyncAuthorize {
     /// Is this request permitted? Async counterpart of [`Authorize::authorize`] — same total/pure contract
@@ -45,17 +47,16 @@ pub trait AsyncAuthorize {
     async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String>;
 }
 
-/// Adapt any sync [`Authorize`] into an [`AsyncAuthorize`] (its `authorize_async` runs the sync `authorize`
-/// — no await point, correct for the in-kernel capability check). The explicit alternative to a blanket
-/// impl (so a genuinely-async authorizer, e.g. a wasm ComponentAuthorizer, writes its own `AsyncAuthorize`
-/// without a coherence collision). Wrap a sync authorizer — `SyncAuthorizeAsAsync(MyAuthorizer)` — to gate
-/// through the async kernel loop.
-pub struct SyncAuthorizeAsAsync<A>(pub A);
-
+// BLANKET: every sync `Authorize` IS an `AsyncAuthorize` (authorize_async runs the sync authorize — no
+// await point). Lets ANY sync authorizer (concrete `Authorizer` OR `&dyn Authorize`, hence `?Sized`) gate
+// the async loop UNCHANGED during the migration — no call site wraps. Coherence-SAFE (like the executor
+// blanket, unlike the reducer adapter): a genuinely-async authorizer (a wasm `ComponentAuthorizer` whose
+// eval awaits) drops its sync `Authorize` impl and writes a NATIVE `AsyncAuthorize`, so it never collides
+// with this blanket. Removed with the sync `Authorize` trait at the end of the migration.
 #[async_trait::async_trait(?Send)]
-impl<A: Authorize> AsyncAuthorize for SyncAuthorizeAsAsync<A> {
+impl<A: Authorize + ?Sized> AsyncAuthorize for A {
     async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String> {
-        self.0.authorize(req)
+        self.authorize(req)
     }
 }
 
@@ -130,13 +131,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn sync_authorizer_wrapped_in_adapter_gates_via_async_trait() {
-        // A sync Authorize wrapped in SyncAuthorizeAsAsync gates via the async path (authorize_async runs
-        // the sync authorize). Exercise through &dyn AsyncAuthorize (object-safety) — via the adapter.
-        let authz = SyncAuthorizeAsAsync(Authorizer::new(vec![Capability {
+    async fn sync_authorizer_gates_via_async_trait_through_the_blanket() {
+        // A sync Authorize is an AsyncAuthorize via the blanket impl — gates through &dyn AsyncAuthorize
+        // (object-safety), no wrapper needed.
+        let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Http,
             predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
-        }]));
+        }]);
         let dyn_authz: &dyn AsyncAuthorize = &authz;
         assert!(dyn_authz
             .authorize_async(&req(EffectKind::Http, "https://ok.host/x"))
