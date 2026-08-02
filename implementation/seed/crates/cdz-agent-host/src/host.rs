@@ -31,10 +31,9 @@ use std::collections::HashMap;
 //
 // The host drives sessions through the kernel's ASYNC loop (`Session::deliver_async`) so a long fold can
 // cooperatively yield and sessions interleave (§15b). A reducer is therefore held as a `Box<dyn
-// AsyncReducer>`: a pure-Rust reducer is wrapped by the caller as `SyncAsAsync(r)` (its `fold_async` just
-// runs the sync `fold`, no await point), and a wasm reducer uses `AsyncComponentReducer` (native
-// `AsyncReducer`, no wrap). The wrap is the caller's because only they know if their reducer is sync or
-// natively async — and `SyncAsAsync<R>` needs a concrete `R: Reducer`, which a `Box<dyn Reducer>` isn't.
+// AsyncReducer>` — the SINGLE reducer trait (operator "one async trait only"): a pure-Rust reducer writes
+// a native `impl AsyncReducer` (its `fold_async` runs to completion with no await point), and a wasm
+// reducer uses `AsyncComponentReducer`. Both box directly as `Box<dyn AsyncReducer>` — no wrapper.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct SessionId(pub String);
 
@@ -64,7 +63,7 @@ impl HostedSession {
     /// `executor`, a real policy into `authz`.
     ///
     /// `reducer` is a `Box<dyn AsyncReducer>`: a pure-Rust reducer is passed as
-    /// `Box::new(SyncAsAsync(my_reducer))`, a wasm reducer as `Box::new(AsyncComponentReducer::…)`.
+    /// `Box::new(my_reducer)`, a wasm reducer as `Box::new(AsyncComponentReducer::…)`.
     pub fn genesis(
         reducer_hash: Hash,
         reducer: Box<dyn AsyncReducer>,
@@ -261,12 +260,13 @@ mod tests {
     };
     use cdz_kernel::event::{ContentType, EffectOutcome, Event};
     use cdz_kernel::kv::Kv;
-    use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
+    use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
 
     /// A tiny agent: on inbound "go" it asks the clock; when the time comes back it records "ran".
     struct ClockAgent;
-    impl Reducer for ClockAgent {
-        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for ClockAgent {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
                     kind: EffectKind::Now,
@@ -305,7 +305,7 @@ mod tests {
         }]);
         HostedSession::genesis(
             Hash::of(b"clock-agent-v1"),
-            Box::new(SyncAsAsync(ClockAgent)),
+            Box::new(ClockAgent),
             Box::new(authz),
             executor,
         )
@@ -316,8 +316,9 @@ mod tests {
     struct TimerAgent {
         deadline_ms: u64,
     }
-    impl Reducer for TimerAgent {
-        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for TimerAgent {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
                     kind: EffectKind::Timer,
@@ -342,7 +343,7 @@ mod tests {
         }]);
         HostedSession::genesis(
             Hash::of(b"timer-agent-v1"),
-            Box::new(SyncAsAsync(TimerAgent { deadline_ms })),
+            Box::new(TimerAgent { deadline_ms }),
             Box::new(authz),
             AsyncCompositeExecutor::new(),
         )
@@ -565,8 +566,9 @@ mod tests {
     /// A report-aware agent: on a normal inbound it records live work in KV; on a `report` inbound it
     /// summarizes itself from that local KV into `public/summary` (no model call — the cheap tier-1 path).
     struct ReportingAgent;
-    impl Reducer for ReportingAgent {
-        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for ReportingAgent {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
                     // Summarize from local KV — here, echo the recorded phase into the published summary.
@@ -594,7 +596,7 @@ mod tests {
             id.clone(),
             HostedSession::genesis(
                 Hash::of(b"reporting-v1"),
-                Box::new(SyncAsAsync(ReportingAgent)),
+                Box::new(ReportingAgent),
                 Box::new(Authorizer::deny_all()), // the live session takes no effects here
                 AsyncCompositeExecutor::new(),
             ),
@@ -607,16 +609,11 @@ mod tests {
         assert_eq!(hosted.session().kv().get(b"public/summary"), None);
         let live_event_count = hosted.session().log().len();
 
-        // Fork-for-query it: caller supplies the same reducer (wrapped SyncAsAsync — it's a sync reducer)
-        // + a model-only authz (deny_all here — the summarize fold takes no effects) + an executor.
-        // Returns the fork's published summary.
+        // Fork-for-query it: caller supplies the same (native AsyncReducer) reducer + a model-only authz
+        // (deny_all here — the summarize fold takes no effects) + an executor. Returns the published summary.
         let mut exec = AsyncCompositeExecutor::new();
         let summary = hosted
-            .fork_for_query(
-                &SyncAsAsync(ReportingAgent),
-                &Authorizer::deny_all(),
-                &mut exec,
-            )
+            .fork_for_query(&ReportingAgent, &Authorizer::deny_all(), &mut exec)
             .await;
         assert_eq!(
             summary.as_deref(),

@@ -174,14 +174,15 @@ mod tests {
     use cdz_kernel::event::{ContentType, Event, EventBody};
     use cdz_kernel::hash::Hash;
     use cdz_kernel::kv::Kv;
-    use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
+    use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
 
     /// An agent that, on "go", publishes a status under `public/` and arms a far-future TIMER. A timer is
     /// a kernel-internal open obligation (it needs no executor), so it stays armed → the session reads
     /// `Active` with a published view — the state this test asserts the status render exposes.
     struct PublishAndTime;
-    impl Reducer for PublishAndTime {
-        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for PublishAndTime {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     kv.put(b"public/phase".to_vec(), b"working".to_vec());
@@ -218,7 +219,7 @@ mod tests {
         }]);
         HostedSession::genesis(
             Hash::of(b"publish-time-v1"),
-            Box::new(SyncAsAsync(PublishAndTime)),
+            Box::new(PublishAndTime),
             Box::new(authz),
             executor,
         )
@@ -255,8 +256,9 @@ mod tests {
         // the kernel record a FoldFailed log event (§17: captured, never a panic). The kernel's structural
         // `state` has no errored variant, so the host surfaces `errored:true` + the reason.
         struct Faulter;
-        impl Reducer for Faulter {
-            fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        #[async_trait::async_trait(?Send)]
+        impl AsyncReducer for Faulter {
+            async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
                 if matches!(event.body, EventBody::Inbound { .. }) {
                     FoldOutput::failed("guest trap: divide by zero")
                 } else {
@@ -271,7 +273,7 @@ mod tests {
             id.clone(),
             HostedSession::genesis(
                 Hash::of(b"faulter"),
-                Box::new(SyncAsAsync(Faulter)),
+                Box::new(Faulter),
                 Box::new(Authorizer::deny_all()),
                 executor,
             ),
@@ -314,8 +316,9 @@ mod tests {
     async fn a_quiescent_session_reports_no_in_flight() {
         // Drive a clock agent to completion → Quiescent, empty in_flight.
         struct ClockOnce;
-        impl Reducer for ClockOnce {
-            fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        #[async_trait::async_trait(?Send)]
+        impl AsyncReducer for ClockOnce {
+            async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
                 if matches!(event.body, EventBody::Inbound { .. }) {
                     FoldOutput::with(vec![EffectRequest {
                         kind: EffectKind::Now,
@@ -340,7 +343,7 @@ mod tests {
             id.clone(),
             HostedSession::genesis(
                 Hash::of(b"clock-once"),
-                Box::new(SyncAsAsync(ClockOnce)),
+                Box::new(ClockOnce),
                 Box::new(authz),
                 executor,
             ),

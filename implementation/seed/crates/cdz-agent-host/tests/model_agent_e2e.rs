@@ -21,7 +21,7 @@ use cdz_kernel::executor::AsyncCompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
-use cdz_kernel::reducer::{FoldOutput, Reducer, SyncAsAsync};
+use cdz_kernel::reducer::{AsyncReducer, FoldOutput};
 
 /// A stub model transport: returns a canned completion, so the agent loop is hermetic. The real Bedrock
 /// transport implements this same trait behind `live-net`.
@@ -47,8 +47,9 @@ impl ModelTransport for StubModel {
 /// completion comes back it records it and marks itself `answered`. The loop closes through a real
 /// executor (here a stub transport) — the shape a Bedrock-backed agent runs verbatim.
 struct ModelAgent;
-impl Reducer for ModelAgent {
-    fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+#[async_trait::async_trait(?Send)]
+impl AsyncReducer for ModelAgent {
+    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"prompting".to_vec());
@@ -98,13 +99,7 @@ async fn agent_loop_runs_end_to_end_through_the_model_executor() {
     let mut session = Session::genesis(Hash::of(b"model-agent-v1"));
 
     session
-        .deliver_async(
-            inbound_go(),
-            None,
-            &SyncAsAsync(ModelAgent),
-            &model_cap(),
-            &mut exec,
-        )
+        .deliver_async(inbound_go(), None, &ModelAgent, &model_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -124,7 +119,9 @@ async fn agent_loop_runs_end_to_end_through_the_model_executor() {
 
     // Replay-equivalence: the completion is recorded, so replay reconstructs the identical KV without
     // ever calling the transport again (a paid model call happens once; replay is free).
-    let replayed = Session::replay(session.log().to_vec(), &reducer).unwrap();
+    let replayed = Session::replay_async(session.log().to_vec(), &reducer)
+        .await
+        .unwrap();
     assert_eq!(replayed.kv().get(b"phase"), Some(&b"answered"[..]));
     assert_eq!(replayed.snapshot().kv_root, session.snapshot().kv_root);
 }
@@ -134,8 +131,9 @@ async fn one_composite_routes_both_now_and_model_for_one_agent() {
     // A real agent both reads the clock AND calls a model — the CompositeExecutor routes each kind to
     // its own real executor. This proves the compose path v-agent-harness confirmed (with(kind, exec)).
     struct ClockThenModel;
-    impl Reducer for ClockThenModel {
-        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for ClockThenModel {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 // Step 1: ask for the time.
                 EventBody::Inbound { .. } => {
@@ -191,13 +189,7 @@ async fn one_composite_routes_both_now_and_model_for_one_agent() {
     let mut session = Session::genesis(Hash::of(b"clock-then-model-v1"));
 
     session
-        .deliver_async(
-            inbound_go(),
-            None,
-            &SyncAsAsync(ClockThenModel),
-            &authz,
-            &mut exec,
-        )
+        .deliver_async(inbound_go(), None, &ClockThenModel, &authz, &mut exec)
         .await
         .unwrap();
 
@@ -225,8 +217,9 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
         }
     }
     struct WrongModelAgent;
-    impl Reducer for WrongModelAgent {
-        fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+    #[async_trait::async_trait(?Send)]
+    impl AsyncReducer for WrongModelAgent {
+        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest {
                     kind: EffectKind::Model,
@@ -246,7 +239,7 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
         .deliver_async(
             inbound_go(),
             None,
-            &SyncAsAsync(WrongModelAgent),
+            &WrongModelAgent,
             &model_cap(),
             &mut exec,
         )
