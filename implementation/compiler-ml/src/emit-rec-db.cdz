@@ -175,11 +175,15 @@ def er-nonrecursive-not-in-defenv-declines-ccall() =
 
 @test
 def er-recursive-types-puts-main-last() =
-  // The funcidx/typeidx ORDERING invariant: recursive-types appends main's functype (nullary, functype-bytes(0))
-  // LAST — defs take typeidx 0..k-1, main = k — so export-section-idx(k) names main. A peer reordering the
-  // push (main first) would silently export the WRONG function; this pins main-is-last structurally. For a
-  // 1-def entry (fac, 1 param): types = [functype-bytes(1), functype-bytes(0)] — index 0 is the 1-param def
-  // (5 bytes: 60 01 7e 01 7e), the LAST is nullary main (4 bytes: 60 00 01 7e). Discriminate by Bytes.len.
+  // The TYPEIDX ORDERING invariant: recursive-types must list functypes in the SAME order as the function
+  // section (defs 0..k-1, main = k), because a wasm function at funcidx i takes the type at typeidx i — the two
+  // lists are index-aligned. recursive-types keeps them aligned by appending main's functype (nullary,
+  // functype-bytes(0)) LAST, matching main's funcidx k. A peer reordering this type list (e.g. main first)
+  // would DESYNC typeidx==funcidx — each function would be declared with the wrong signature (a validation /
+  // type mismatch), NOT a wrong export (the export names a FUNCTION index, independent of type order). This
+  // pins main-is-last structurally. For a 1-def entry (fac, 1 param): types = [functype-bytes(1),
+  // functype-bytes(0)] — index 0 is the 1-param def (5 bytes: 60 01 7e 01 7e), the LAST is nullary main
+  // (4 bytes: 60 00 01 7e). Discriminate by Bytes.len.
   (let entries = List.push(([] : List(Tuple(Int64, Tuple(List(Int64), Core)))), (900, (List.push([], 7), Core.CNum(1, true, 64)))) in
    (let types = recursive-types(entries) in
     (match List.at(types, List.len(types) - 1) with        // the LAST functype must be main's (nullary, 4 bytes)
