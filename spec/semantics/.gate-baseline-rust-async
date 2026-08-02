@@ -4747,6 +4747,7 @@ pass	the nullary-first if returns the None arm on the base path
 pass	the number of elements counts distinct elements
 pass	the other parity of a mutually-recursive pair
 pass	the outer discriminant is decisive over any inner content for nested sums
+pass	the per-key linear-scan model oracle has DISCRIMINATING power — a value-forgetting model diverges at every present key
 pass	the permutation-invariance property has discriminating power — an order-dependent fold fails it
 pass	the pipeline operator splices the value as a call's first argument
 pass	the pipeline operator threads a value into a named function
