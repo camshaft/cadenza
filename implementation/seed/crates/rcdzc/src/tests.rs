@@ -52054,6 +52054,72 @@ mod diagnostics {
         );
     }
 
+    /// The LIST twin of the map malformed-rest case above: a `(list …)` pattern whose `..` is followed by
+    /// MORE than one binder (`(list a .. b c)`) reports the clear rest-shape CDZ0201 and — when the body
+    /// references one of the SURPLUS post-`..` binders (`c`) — does NOT also leak a misleading CDZ0101
+    /// "unbound name". `lower_match_list` always faulted the shape, but `find_rest_binder_in_list_pattern`
+    /// recognizes ONLY the single `dd + 1` rest binder, so a body ref to `c` fell through to `resolve_name`
+    /// → a spurious unbound cascade on top of the real fault (the same class the map twin fixed,
+    /// v-diagnostics note 2026-07-16). The resolver now resolves such a reference to the SAME coded
+    /// rest-shape decline (Case Lmr / `match_arm_malformed_list_binds`), co-anchored at the list pattern so
+    /// the same-node dedup collapses it into ONE primary diagnostic.
+    #[test]
+    fn a_malformed_list_rest_pattern_names_the_shape_not_an_unbound_surplus_binder() {
+        // Body references the SURPLUS binder `c` (the extra after the legitimate rest binder `b`).
+        let surplus = "(module m (def (f (: xs (List Int64))) \
+                        (match xs ((list a .. b c) c) (_ 0))) (export f))";
+        let all = diags_of(surplus);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("list rest pattern is")
+                && d.message.contains("exactly one binder after")),
+            "the malformed list rest reports the clear rest-shape CDZ0201: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no misleading 'unbound name' for a surplus binder after `..`: {all:?}"
+        );
+        // TWO surplus binders both referenced (`c` and `d`) — neither leaks; still one clean rest-shape reject.
+        let two_surplus = "(module m (def (f (: xs (List Int64))) \
+                            (match xs ((list a .. b c d) (+ c d)) (_ 0))) (export f))";
+        let all = diags_of(two_surplus);
+        assert!(
+            all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+                && d.message.contains("list rest pattern is")),
+            "two surplus binders report the rest-shape CDZ0201: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no unbound-name leak for either surplus binder: {all:?}"
+        );
+        // NO false alarm: a WELL-FORMED list rest pattern (one binder after `..`, body reads it) checks clean.
+        let ok = "(module m (def (f (: xs (List Int64))) \
+                  (match xs ((list x .. rest) (List.len rest)) (_ 0))) (export f))";
+        assert!(
+            diags_of(ok)
+                .iter()
+                .all(|d| d.severity != crate::abi::Severity::Error),
+            "a well-formed list rest pattern still checks clean: {:?}",
+            diags_of(ok)
+        );
+        // NESTED: a malformed-rest list INSIDE a variant payload (`(Wrap (list a .. b c))`) whose body reads
+        // the surplus `c` is a CODED rest-shape CDZ0201 (the nested `pattern_constraints` path phrases it as
+        // "`.. rest` must be the final element") with NO unbound leak — the surplus binder does not surface a
+        // spurious CDZ0101 through the nested payload either.
+        let nested = "(module m (type W (Wrap (List Int64))) \
+                      (def (f (: w W)) (match w ((Wrap (list a .. b c)) c) (_ 0))) (export f))";
+        let all = diags_of(nested);
+        assert!(
+            all.iter()
+                .any(|d| d.code.as_deref() == Some("CDZ0201") && d.message.contains("rest")),
+            "a nested malformed-rest list gets a coded rest-shape CDZ0201: {all:?}"
+        );
+        assert!(
+            all.iter().all(|d| d.code.as_deref() != Some("CDZ0101")),
+            "no misleading 'unbound name' for a nested malformed-list surplus binder: {all:?}"
+        );
+    }
+
     /// A malformed match PATTERN's CDZ0201 anchors at the OFFENDING PATTERN node (`(tuple a b c)`,
     /// `(list … .. …)`), not the enclosing `(match …)`. The pattern-shape rejects in `pattern_constraints`
     /// / `lower_match_list` carry the faulting `pat` node explicitly (`.at(pat)`); without it,
