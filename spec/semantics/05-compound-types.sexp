@@ -17416,3 +17416,22 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 11 Int64))
   (call   main (: 5 Int64)) (output (: 11 Int64)))
+
+(case "tuple elements holding a remove-reached set and a drained map equal the direct tuple"
+  (doc    "The tuple face of cross-domain edit canonicalization (the whole-LIST walk over map/set
+           elements declines — the tuple walk DOES descend into CHAMP elements): a tuple holding a
+           remove-reached set {a} and a fully-drained map must equal the tuple built with the direct
+           singleton set and the Map.empty literal (tens digit), and the drained-map element alone
+           must equal a tuple-wrapped Map.empty (ones digit) → 11 ∀a. Pins that the tuple equality
+           walk sees canonicalized post-edit CHAMP structure at BOTH element positions.")
+  (input  (do
+            (def (sv (: a Int64)) (Set.remove (Set.of (list a 9)) 9))
+            (def (dm (: a Int64))
+              (Map.remove (Map.remove (Map.insert (Map.insert Map.empty 1 a) 2 20) 1) 2))
+            (def (main (: a Int64))
+              (+ (* 10 (if (= (tuple (sv a) (dm a))
+                             (tuple (Set.of (list a)) Map.empty)) 1 0))
+                 (if (= (tuple (dm a)) (tuple Map.empty)) 1 0)))
+            (export main)))
+  (call   main (: 4 Int64)) (output (: 11 Int64))
+  (call   main (: 7 Int64)) (output (: 11 Int64)))

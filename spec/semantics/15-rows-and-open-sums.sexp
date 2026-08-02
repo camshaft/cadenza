@@ -1515,3 +1515,27 @@
                  (if (= (Record.extend (record (a n)) #"b" 2) (record (a n) (b 2))) 1 0)))
             (export main)))
   (call   main (: 7 Int64)) (output (: 11 Int64)))
+
+; --- Cross-domain composition: an EDIT-REACHED collection nested INSIDE a record field. The
+; remove-path canonicalization pins (05-compound-types) compare whole maps at top level; this one
+; drops the via-remove map ONE level down, where the record-equality walk must descend into the
+; CHAMP field and see the same canonical structure direct construction gives. ---
+
+(case "a record field holding a via-remove map equals the direct-field record"
+  (doc    "Cross-domain composition of remove-path canonicalization: the edit-reached collection sits
+           INSIDE another compound — a record whose field `m` holds a map reached via insert-then-remove
+           must equal the record built with the directly-constructed map in that field (tens digit, ∀a),
+           while a decoy record differing only in the OTHER field stays unequal (ones digit) → 10. The
+           record-equality walk descends into the CHAMP field; a remove that left non-canonical structure
+           one level down would flip the tens digit while top-level fields still agree.")
+  (input  (do
+            (def (via (: a Int64)) (Map.remove (Map.insert (Map.insert Map.empty 1 a) 2 20) 2))
+            (def (main (: a Int64))
+              (let ((recv (record (m (via a)) (t 1)))
+                    (recd (record (m (Map.insert Map.empty 1 a)) (t 1)))
+                    (decoy (record (m (Map.insert Map.empty 1 a)) (t 2))))
+                (+ (* 10 (if (= recv recd) 1 0))
+                   (if (= recv decoy) 1 0))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 10 Int64))
+  (call   main (: 7 Int64)) (output (: 10 Int64)))

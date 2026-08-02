@@ -5442,3 +5442,5 @@ pass	unit arithmetic on a map-extracted quantity re-enters the map typed
 pass	a guard binder resolves over a COMPUTED scrutinee inside a helper fn
 pass	a guard binder resolves over a raw param scrutinee inside a helper fn
 pass	without- and with-REACHED records with runtime leaves equal the directly-built record
+pass	a record field holding a via-remove map equals the direct-field record
+pass	tuple elements holding a remove-reached set and a drained map equal the direct tuple
