@@ -48749,6 +48749,25 @@ mod match_engine {
             !gdead.contains(&Lir::ConstI64(111)),
             "the dead guarded arm body is dropped, got: {gdead:?}"
         );
+        // …and the guard COMPARISON OP itself is gone, not just its constants. `(> x 0)` lowers to an
+        // `I64GtS`, and `>` appears ONLY in a guard here (probes are `I64Eq`, `&` is `I64And`), so its
+        // absence proves the guard body was eliminated whole — evaluating a never-run guard (which could
+        // have a side effect) would be wrong. Without this the const-absence checks alone can't
+        // distinguish "guard dropped" from "guard kept but its literals folded away".
+        assert!(
+            !gdead.contains(&Lir::I64GtS),
+            "the dead guarded arm's guard comparison `(> x 0)` is dropped, got: {gdead:?}"
+        );
+        // POSITIVE CONTROL that makes the negative assertion meaningful (not vacuous): a LIVE in-range
+        // guarded arm's `(> x 100)` guard IS emitted as `I64GtS` — so `I64GtS` genuinely tracks guard
+        // survival, and its absence above is real elimination rather than the op never being produced.
+        let glive = code(
+            "(module m (def (f (: x Int64)) (match (: (& x 7) Int64) ((guard 7 (> x 100)) 111) (100 222) (_ 333))) (def (main) 0) (export main))",
+        );
+        assert!(
+            glive.contains(&Lir::I64GtS),
+            "the LIVE guarded arm's guard comparison `(> x 100)` is emitted, got: {glive:?}"
+        );
         // A LIVE guarded arm is KEPT and its guard still gates it: `(guard 7 (> x 100))` over `(& x 7)`
         // fires only when x&7==7 AND x>100. x=127 (127&7=7, 127>100) → 111; x=7 (7&7=7 but 7>100 false) →
         // falls through to the wildcard 333. The guard is NOT dropped for a LIVE in-range probe.
