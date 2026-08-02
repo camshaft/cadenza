@@ -49323,6 +49323,74 @@ mod match_engine {
     }
 
     #[test]
+    fn a_scalar_match_uses_a_br_table_only_when_dense_else_the_probe_chain() {
+        // The scalar `br_table` fast path (`try_emit_scalar_br_table`) fires ONLY for a DENSE ≥3-int-arm
+        // match (+ wildcard default): `span <= 2 * count` AND `span <= 256`. A SPARSE match (values spread
+        // so the jump table would be mostly-empty slots) must FALL BACK to the linear `if (== k)` probe
+        // chain — building a 100k-slot table for 4 arms would be absurd. This pins the density GATE at the
+        // Lir level (`Lir::BrTable` present iff dense), the emit-quality invariant the runtime-dispatch
+        // tests don't observe (they'd pass either way). Both are the SAME arm count + shape — only the
+        // literal SPREAD differs — so the presence/absence is attributable to density alone.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let code = |src: &str| -> Vec<Lir> {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name("f").expect("def f");
+            let ps: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            let body = db.defs[d].body.expect("body");
+            crate::backend::wasm::select::select_function(&mut db, body, &ps, &layout)
+                .expect("select")
+                .code
+        };
+        let has_br_table = |code: &[Lir]| code.iter().any(|l| matches!(l, Lir::BrTable(..)));
+        // DENSE: 4 contiguous int arms `0..3` (span 4, count 4 → span <= 2*count, <= 256) → br_table.
+        let dense = code(
+            "(module m (def (f (: k Int64)) (match k (0 10) (1 20) (2 30) (3 40) (_ 99))) (def (main) 0) (export main))",
+        );
+        assert!(
+            has_br_table(&dense),
+            "a dense 4-arm 0..3 match must use a br_table, got: {dense:?}"
+        );
+        // SPARSE: the SAME 4 arms + wildcard, but values spread to `0,1000,2000,3000` (span 3001, count 4
+        // → span > 2*count AND > 256) → the table is ineligible, falls back to the probe chain (NO
+        // br_table). Same arm count/shape as `dense` — only the spread differs, so the flip is density.
+        let sparse = code(
+            "(module m (def (f (: k Int64)) (match k (0 10) (1000 20) (2000 30) (3000 40) (_ 99))) (def (main) 0) (export main))",
+        );
+        assert!(
+            !has_br_table(&sparse),
+            "a sparse 4-arm match (span 3001) must fall back to the probe chain, not a br_table, got: {sparse:?}"
+        );
+        // VALUE PARITY both ways: dense + sparse dispatch identically to their arms (the density choice is
+        // an emit detail, never an observable-value change).
+        use wasmtime::component::Val;
+        let bd = component(
+            "(module m (def (f (: k Int64)) (match k (0 10) (1 20) (2 30) (3 40) (_ 99))) (export f))",
+        );
+        assert_eq!(run_returns_with::<i64>(&bd, "f", &[Val::S64(2)]), 30);
+        assert_eq!(run_returns_with::<i64>(&bd, "f", &[Val::S64(7)]), 99); // default
+        let bs = component(
+            "(module m (def (f (: k Int64)) (match k (0 10) (1000 20) (2000 30) (3000 40) (_ 99))) (export f))",
+        );
+        assert_eq!(run_returns_with::<i64>(&bs, "f", &[Val::S64(2000)]), 30);
+        assert_eq!(run_returns_with::<i64>(&bs, "f", &[Val::S64(7)]), 99); // default (not a covered slot)
+    }
+
+    #[test]
     fn a_binder_pattern_binds_the_scrutinee() {
         // A bare-name arm `k` binds the whole scrutinee for its body — the exhaustive tail (like `_`,
         // but named). `(match n (0 100) (k (+ k 1)))`: f(0)=100 (literal arm wins), f(41)=42 (k binds
