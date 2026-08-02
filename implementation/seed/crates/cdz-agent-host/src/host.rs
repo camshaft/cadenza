@@ -12,7 +12,7 @@
 //! kernel loop needs (`&dyn Reducer`, `&dyn Authorize`, `&mut dyn Executor`), so the host owns them for
 //! the session's lifetime and the registry can drive any session by id without the caller re-threading
 //! them. This is the substrate the `session-status` query (a read over the registry) and later
-//! fork-query build on.
+//! fork-for-query build on.
 //!
 //! v0 is synchronous + single-threaded (the kernel loop is; §15b). The async/multi-session-scheduler
 //! layer is a later slice that preserves this shape — a tokio task per session driving the same loop.
@@ -118,7 +118,7 @@ impl HostedSession {
     /// (a scoped capability so a summarize-fold can call the model but CANNOT take world-actions —
     /// SEC-F1), and an `executor` to serve that model call. Returns `Some(summary_bytes)` if the reducer
     /// published `public/summary`, else `None` (it summarized elsewhere / didn't, or the fork erred).
-    pub fn fork_query(
+    pub fn fork_for_query(
         &self,
         reducer: &dyn Reducer,
         authz: &dyn Authorize,
@@ -493,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_query_summarizes_a_copy_without_touching_the_live_session() {
+    fn fork_for_query_summarizes_a_copy_without_touching_the_live_session() {
         // §4b tier-1: fork-for-query asks a COPY to summarize itself; the live session is untouched.
         let mut host = AgentHost::new();
         let id = SessionId::new("worker");
@@ -517,7 +517,7 @@ mod tests {
         // Fork-query it: caller supplies the same reducer + a model-only authz (deny_all here — the
         // summarize fold takes no effects) + an executor. Returns the fork's published summary.
         let mut exec = CompositeExecutor::new();
-        let summary = hosted.fork_query(&ReportingAgent, &Authorizer::deny_all(), &mut exec);
+        let summary = hosted.fork_for_query(&ReportingAgent, &Authorizer::deny_all(), &mut exec);
         assert_eq!(
             summary.as_deref(),
             Some(&b"phase=working"[..]),
@@ -525,7 +525,7 @@ mod tests {
         );
 
         // NON-INTERFERENCE: the live session is byte-for-byte unchanged — no summary appeared on it, and
-        // its log didn't grow (the fork is a separate Session; fork_query took &self).
+        // its log didn't grow (the fork is a separate Session; fork_for_query took &self).
         let hosted = host.get(&id).unwrap();
         assert_eq!(hosted.session().kv().get(b"public/summary"), None);
         assert_eq!(hosted.session().log().len(), live_event_count);
