@@ -220,23 +220,34 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             let tok = opt_bytes_form(b, token.as_deref());
             b.list(vec![head, idv, o, tok])
         }
-        EventBody::TimerArmed { id, deadline_ms } => {
+        EventBody::TimerArmed {
+            id,
+            deadline_ms,
+            token,
+        } => {
             let head = b.name("timer-armed");
             let idv = u64_leaf(b, id.0);
             let dl = u64_leaf(b, *deadline_ms);
-            b.list(vec![head, idv, dl])
+            let tok = opt_bytes_form(b, token.as_deref());
+            b.list(vec![head, idv, dl, tok])
         }
-        EventBody::TimerFired { id, fired_ms } => {
+        EventBody::TimerFired {
+            id,
+            fired_ms,
+            token,
+        } => {
             let head = b.name("timer-fired");
             let idv = u64_leaf(b, id.0);
             let fm = u64_leaf(b, *fired_ms);
-            b.list(vec![head, idv, fm])
+            let tok = opt_bytes_form(b, token.as_deref());
+            b.list(vec![head, idv, fm, tok])
         }
-        EventBody::AuthzDenied { id, reason } => {
+        EventBody::AuthzDenied { id, reason, token } => {
             let head = b.name("authz-denied");
             let idv = u64_leaf(b, id.0);
             let r = str_leaf(b, reason);
-            b.list(vec![head, idv, r])
+            let tok = opt_bytes_form(b, token.as_deref());
+            b.list(vec![head, idv, r, tok])
         }
         EventBody::Closed { outcome } => {
             let head = b.name("closed");
@@ -457,30 +468,33 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
             }
         }
         "timer-armed" => {
-            let [idv, dl] = form(a, id, "timer-armed")? else {
+            let [idv, dl, tok] = form(a, id, "timer-armed")? else {
                 return Err(shape("timer-armed arity"));
             };
             EventBody::TimerArmed {
                 id: EffectId(read_u64(a, *idv)?),
                 deadline_ms: read_u64(a, *dl)?,
+                token: read_opt_bytes(a, *tok)?,
             }
         }
         "timer-fired" => {
-            let [idv, fm] = form(a, id, "timer-fired")? else {
+            let [idv, fm, tok] = form(a, id, "timer-fired")? else {
                 return Err(shape("timer-fired arity"));
             };
             EventBody::TimerFired {
                 id: EffectId(read_u64(a, *idv)?),
                 fired_ms: read_u64(a, *fm)?,
+                token: read_opt_bytes(a, *tok)?,
             }
         }
         "authz-denied" => {
-            let [idv, r] = form(a, id, "authz-denied")? else {
+            let [idv, r, tok] = form(a, id, "authz-denied")? else {
                 return Err(shape("authz-denied arity"));
             };
             EventBody::AuthzDenied {
                 id: EffectId(read_u64(a, *idv)?),
                 reason: read_str(a, *r)?,
+                token: read_opt_bytes(a, *tok)?,
             }
         }
         "closed" => {
@@ -609,6 +623,7 @@ mod tests {
                 body: EventBody::TimerArmed {
                     id: EffectId(10),
                     deadline_ms: 999,
+                    token: Some(b"timer-tok".to_vec()),
                 },
             },
             Event {
@@ -617,6 +632,7 @@ mod tests {
                 body: EventBody::TimerFired {
                     id: EffectId(10),
                     fired_ms: 1000,
+                    token: Some(b"timer-tok".to_vec()),
                 },
             },
             Event {
@@ -625,6 +641,7 @@ mod tests {
                 body: EventBody::AuthzDenied {
                     id: EffectId(11),
                     reason: "no capability".into(),
+                    token: Some(b"denied-tok".to_vec()),
                 },
             },
             Event {

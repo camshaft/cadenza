@@ -222,10 +222,16 @@ impl Session {
             .collect();
         due.sort_unstable();
         for (deadline, id) in &due {
+            // Copy the reducer's continuation token from the durable `TimerArmed` frame onto the fire
+            // event (§19e slice 2b-iii, the timer analogue of `record_result`'s dispatch→result copy): a
+            // wasm `ComponentReducer` reads it back as the guest's `resumes` on the timer. Derived from
+            // the durable frame so it's identical live and on replay; `None` if armed token-free.
+            let token = self.timer_armed_token_of(EffectId(*id)).unwrap_or(None);
             self.append(
                 EventBody::TimerFired {
                     id: EffectId(*id),
                     fired_ms: *deadline,
+                    token,
                 },
                 None,
             );
@@ -261,7 +267,9 @@ impl Session {
             EventBody::Dispatched { id, .. } => {
                 self.open.insert(id.0);
             }
-            EventBody::TimerArmed { id, deadline_ms } => {
+            EventBody::TimerArmed {
+                id, deadline_ms, ..
+            } => {
                 self.open.insert(id.0);
                 self.armed_timers.insert(id.0, *deadline_ms);
             }
@@ -332,8 +340,11 @@ impl Session {
                 // A denial is an OBSERVABLE outcome (§9d recovery): the reducer folds it in BOTH the
                 // live and replay paths, so live-kv == replayed-kv (PR#990 finding #1 — the denial was
                 // appended but not folded live, while replay folds it → divergence). Folding may emit
-                // recovery effects, which join the worklist.
-                let denial_hash = self.append(EventBody::AuthzDenied { id, reason }, Some(cause));
+                // recovery effects, which join the worklist. The reducer's continuation token rides the
+                // denial (§19e slice 2b-iii): moved straight from the requesting `Effect` — there is no
+                // prior durable frame (the effect never dispatched), so the token can't be copied later.
+                let denial_hash =
+                    self.append(EventBody::AuthzDenied { id, reason, token }, Some(cause));
                 for pair in self.fold_tip(reducer, denial_hash) {
                     to_process.push(pair);
                 }
@@ -347,15 +358,27 @@ impl Session {
             if req.kind == EffectKind::Timer {
                 match req.target.parse::<u64>() {
                     Ok(deadline_ms) => {
-                        self.append(EventBody::TimerArmed { id, deadline_ms }, Some(cause));
+                        // Record the reducer's continuation token in the durable arming frame (§19e slice
+                        // 2b-iii): `fire_due_timers` copies it onto the `TimerFired` so the guest resumes
+                        // on the timer by its own token. Moved from the requesting `Effect`.
+                        self.append(
+                            EventBody::TimerArmed {
+                                id,
+                                deadline_ms,
+                                token,
+                            },
+                            Some(cause),
+                        );
                     }
                     Err(_) => {
                         // A malformed deadline is a request error, surfaced like a denial (audit) rather
                         // than panicking (totality, §17). Observable → folded in both paths (finding #1).
+                        // The token rides the denial (§19e slice 2b-iii), moved from the requesting effect.
                         let denial_hash = self.append(
                             EventBody::AuthzDenied {
                                 id,
                                 reason: format!("timer deadline not a u64 ms: {:?}", req.target),
+                                token,
                             },
                             Some(cause),
                         );
@@ -538,6 +561,19 @@ impl Session {
         })
     }
 
+    /// The reducer continuation token that timer `id`'s `TimerArmed` frame carried (§19e slice 2b-iii),
+    /// the timer analogue of [`dispatch_token_of`]: `Some(Some(token))` = a token was armed, `Some(None)`
+    /// = a token-free timer, `None` = no `TimerArmed` frame for `id`. Derived from the DURABLE arming
+    /// frame so it's replay-deterministic — the same fire gets the same token live or reconstructed. This
+    /// is how the token "rides the TimerFired": [`fire_due_timers`] copies it onto the fire event so a
+    /// wasm reducer's fold reads it back as the guest's `resumes` without fold ever touching the log/map.
+    fn timer_armed_token_of(&self, id: EffectId) -> Option<Option<Vec<u8>>> {
+        self.log.iter().find_map(|e| match &e.body {
+            EventBody::TimerArmed { id: a, token, .. } if *a == id => Some(token.clone()),
+            _ => None,
+        })
+    }
+
     /// Hash of the current tip (last log event) — the `cause` for effects its fold emits.
     fn tip_hash(&self) -> Hash {
         self.log.last().expect("log always has genesis").hash()
@@ -574,7 +610,9 @@ impl Session {
                     s.open.insert(id.0);
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
                 }
-                EventBody::TimerArmed { id, deadline_ms } => {
+                EventBody::TimerArmed {
+                    id, deadline_ms, ..
+                } => {
                     s.open.insert(id.0);
                     s.armed_timers.insert(id.0, *deadline_ms);
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
