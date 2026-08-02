@@ -7236,6 +7236,44 @@ fn candidate_refspec(branch: &str) -> String {
     format!("HEAD:refs/heads/{branch}")
 }
 
+/// The three commands that DISPATCH a candidate `branch`, as argv vectors (program + args), in order:
+///
+/// 1. `git push origin HEAD:refs/heads/<branch>` — push the re-parented commit as the cand branch.
+/// 2. `gh pr create --base main --head <branch> --fill` — open the PR against main.
+/// 3. `gh pr merge <branch> --squash --auto --delete-branch` — arm GitHub auto-merge (fires on green)
+///    and clean up the branch on merge.
+///
+/// A PURE function (no execution) so it is the SINGLE SOURCE OF TRUTH for both the read-only
+/// `dispatch-plan` preview (which prints them) and the live `publish-candidate` executor (which will
+/// run them) — the two can never drift. Unit-tested against the pilot-validated command shapes
+/// (full refspec form, `--base main`, squash-auto-merge). Returns argv (not a shell string) so a
+/// branch name never needs shell-quoting and can't be mis-split.
+fn candidate_dispatch_argv(branch: &str) -> [Vec<String>; 3] {
+    let refspec = candidate_refspec(branch);
+    [
+        vec!["git".into(), "push".into(), "origin".into(), refspec],
+        vec![
+            "gh".into(),
+            "pr".into(),
+            "create".into(),
+            "--base".into(),
+            "main".into(),
+            "--head".into(),
+            branch.into(),
+            "--fill".into(),
+        ],
+        vec![
+            "gh".into(),
+            "pr".into(),
+            "merge".into(),
+            branch.into(),
+            "--squash".into(),
+            "--auto".into(),
+            "--delete-branch".into(),
+        ],
+    ]
+}
+
 /// The durable in-flight state record mapping a merge-request to the candidate PR pr-sync dispatched
 /// for it, written to `.claude/fleet/ci-dispatch/<mr-file>.json` (the convention pr-sync adopted). A
 /// scheduler pass reads these to: (a) not double-dispatch an MR already in flight, (b) map a
@@ -7430,7 +7468,6 @@ fn reap_action(state: PrState, verdict: CiVerdict) -> ReapAction {
 /// push+PR (`publish-candidate`) is a separate command, kept out of this so planning is always safe.
 fn dispatch_plan(fleet: &Fleet, r#ref: &str, agent: &str) {
     let branch = candidate_branch(agent, r#ref);
-    let refspec = candidate_refspec(&branch);
     // Lane from the ref's changed paths (same source as `lane-of`).
     let paths: Vec<String> = Command::new("git")
         .args(["show", "--name-only", "--format=", r#ref])
@@ -7449,10 +7486,14 @@ fn dispatch_plan(fleet: &Fleet, r#ref: &str, agent: &str) {
     let already = read_ci_dispatches(fleet)
         .into_iter()
         .find(|d| d.r#ref == r#ref || d.agent == agent);
+    // Print the EXACT commands `publish-candidate` will run (shared source of truth), so the preview
+    // can never drift from the executor.
+    let [push, create, merge] = candidate_dispatch_argv(&branch);
     println!("dispatch-plan for {agent} @ {ref}:");
     println!("  cand branch : {branch}");
-    println!("  push refspec: git push origin {refspec}");
-    println!("  gh pr create: --base main --head {branch}");
+    println!("  1. {}", push.join(" "));
+    println!("  2. {}", create.join(" "));
+    println!("  3. {}", merge.join(" "));
     println!(
         "  lane        : {} ({})",
         lane.label(),
@@ -12209,6 +12250,54 @@ mod tests {
         assert_eq!(
             candidate_refspec("cand/v-fleet-tooling-55c9f407c002"),
             "HEAD:refs/heads/cand/v-fleet-tooling-55c9f407c002"
+        );
+    }
+
+    #[test]
+    fn candidate_dispatch_argv_matches_the_pilot_validated_command_shapes() {
+        // The 3 dispatch commands, shared by `dispatch-plan` (prints) and `publish-candidate` (runs) so
+        // they can never drift. Pins the pilot-validated shapes: full-refspec push, `--base main`,
+        // squash-auto-merge with branch cleanup.
+        let [push, create, merge] = candidate_dispatch_argv("cand/v-fleet-tooling-55c9f407c002");
+        assert_eq!(
+            push,
+            vec![
+                "git",
+                "push",
+                "origin",
+                "HEAD:refs/heads/cand/v-fleet-tooling-55c9f407c002"
+            ]
+        );
+        assert_eq!(
+            create,
+            vec![
+                "gh",
+                "pr",
+                "create",
+                "--base",
+                "main",
+                "--head",
+                "cand/v-fleet-tooling-55c9f407c002",
+                "--fill"
+            ]
+        );
+        assert_eq!(
+            merge,
+            vec![
+                "gh",
+                "pr",
+                "merge",
+                "cand/v-fleet-tooling-55c9f407c002",
+                "--squash",
+                "--auto",
+                "--delete-branch"
+            ]
+        );
+        // The push refspec inside argv is EXACTLY candidate_refspec (single source of truth — the plan
+        // preview and the executor share this, so a drift here is impossible).
+        assert_eq!(
+            push[3],
+            candidate_refspec("cand/v-fleet-tooling-55c9f407c002")
         );
     }
 
