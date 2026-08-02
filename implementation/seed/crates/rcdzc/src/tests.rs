@@ -60390,6 +60390,19 @@ mod stage1 {
             codes_for("(do (def (main) (let ((id (fn (x) x))) (id 5))) (export main))").is_empty(),
             "a generic bare-param inline lambda compiles clean (no spurious fault)"
         );
+        // NESTED: a refutable binding TWO inline-lambda levels deep also rejects (reviewer gap — the
+        // shape-only walk recurses INTO nested inline lambdas, not stopping at fn, since it's safe at depth).
+        assert!(
+            codes_for("(module m (def (main) (let ((outer (fn (x) (let ((inner (fn (z) (let ((5 y)) y)))) 3)))) 9)) (export main))")
+                .contains(&"CDZ0210".to_string()),
+            "a refutable let nested two inline-lambda levels deep must reject CDZ0210"
+        );
+        // CONTROL: a GENERIC nested inline lambda (no refutable binding) stays clean at depth.
+        assert!(
+            codes_for("(do (def (main) (let ((outer (fn (x) (let ((inner (fn (z) z))) (inner x))))) (outer 5))) (export main))")
+                .is_empty(),
+            "a generic nested inline lambda compiles clean (no spurious fault at depth)"
+        );
     }
 
     #[test]

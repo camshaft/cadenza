@@ -14618,11 +14618,14 @@ fn inline_lambda_binding_pattern_faults(db: &mut Db, node: StructId, out: &mut V
             }
         }
     }
-    // Recurse into children, but STOP at a nested `fn` (a nested lambda is validated by its own
-    // `collect_node` Lambda-arm entry — descending here would double-report + risk its generic body).
-    if db.ast.as_form(node, "fn").is_none()
-        && let crate::ast::Struct::List(children) = db.ast.get(node)
-    {
+    // Recurse into ALL children, INCLUDING a nested `fn`. A lambda nested inside an inline lambda's body
+    // is itself INLINE (never a registered def body), so `collect_node`'s Lambda arm never descends it (it
+    // full-collects only a named-def / applied-try body) — stopping at `fn` here would leave a refutable
+    // binding one level deeper UNCHECKED (reviewer-found gap in the single-level #1428 fix). Since this
+    // walk is SHAPE-ONLY (irrefutability is independent of the value type — safe on a generic/uninstantiated
+    // body at ANY depth), recursing into nested-lambda bodies is sound; `dedup_faults` collapses any overlap
+    // with a full-collect of a named-def body reached separately.
+    if let crate::ast::Struct::List(children) = db.ast.get(node) {
         for child in children.clone() {
             inline_lambda_binding_pattern_faults(db, child, out);
         }
