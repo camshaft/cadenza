@@ -43,6 +43,18 @@ def can-call-args(args: List(Core), i: Int64, defidx: Map(Int64, Int64)) =
      | Option.Some(a) => (if can-emit-d(a, defidx) then can-call-args(args, i + 1, defidx) else false)
      | Option.None(_) => can-call-args(args, i + 1, defidx)))
 
+/// Is EVERY def-env entry's BODY in the emit subset (under `fmap`)? `emit-recursive-module` must gate on this,
+/// not just main: `recursive-bodies` emits each def body via `emit-def-body-d` unconditionally, so a def whose
+/// body holds an out-of-subset form (e.g. a CMatchSum/CCtor, eval-only) would otherwise emit a malformed body
+/// instead of the module cleanly declining to `None`. Index recursion over the entries; `true` iff all bodies
+/// pass `can-emit-d`. (main is checked separately at the call site.)
+def all-defs-emittable(entries: List(Tuple(Int64, Tuple(List(Int64), Core))), i: Int64, fmap: Map(Int64, Int64)) =
+  (if i == List.len(entries) then true
+   else (match List.at(entries, i) with
+     | Option.Some(e) => (match e with | (_, pb) => (match pb with | (_, body) =>
+         (if can-emit-d(body, fmap) then all-defs-emittable(entries, i + 1, fmap) else false)))
+     | Option.None(_) => all-defs-emittable(entries, i + 1, fmap)))
+
 /// The TYPE-SECTION functypes for a recursive module — `functype-bytes(len params)` per def-env entry (in
 /// order), then `functype-bytes(0)` for the nullary main. Position = typeidx.
 def recursive-types(entries: List(Tuple(Int64, Tuple(List(Int64), Core)))) =
@@ -95,7 +107,7 @@ def emit-recursive-module(mainCore: Core, tree: Tree) =
   (let entries = Map.to-list(lower-def-env(tree)) in
    (let k = List.len(entries) in
     (let fmap = defenv-funcidx-map(entries) in
-      (if can-emit-d(mainCore, fmap) and has-value-d(mainCore, entries)
+      (if can-emit-d(mainCore, fmap) and all-defs-emittable(entries, 0, fmap) and has-value-d(mainCore, entries)
        then Option.Some(Bytes.concat(preamble(),
               Bytes.concat(type-section-multi(recursive-types(entries)),
                 Bytes.concat(func-section-multi(range-list(k)),
@@ -160,6 +172,22 @@ def er-nonrecursive-not-in-defenv-declines-ccall() =
   // sanity: can-emit-d on a plain arith is fine (no CCall).
   (if can-emit-d(Core.CBin(43, true, 64, Core.CNum(1, true, 64), Core.CNum(2, true, 64)), (Map.empty : Map(Int64, Int64))) then unit
    else trap("arith emits under empty def-env"))
+
+@test
+def er-all-defs-emittable-gates-out-of-subset-body() =
+  // The def-body emit gate: all-defs-emittable is TRUE iff EVERY entry's body is in the emit subset. A def
+  // whose body is an out-of-subset form (CMatchSum — eval-only, not emit-subset) must make it FALSE so
+  // emit-recursive-module declines rather than emitting a malformed body. Pins the gap emit-recursive-module's
+  // main-only gate previously missed. Two entries: one arith body (emittable), one CMatchSum body (not).
+  (let fmap = (Map.empty : Map(Int64, Int64)) in
+   (let arithBody = Core.CBin(43, true, 64, Core.CNum(1, true, 64), Core.CNum(2, true, 64)) in
+    (let sumBody = Core.CMatchSum(Core.CNum(0, true, 64), 1, ([] : List(Int64)), Core.CNum(1, true, 64), Core.CNum(2, true, 64)) in
+     (let okEntries = List.push(([] : List(Tuple(Int64, Tuple(List(Int64), Core)))), (900, (([] : List(Int64)), arithBody))) in
+      (let badEntries = List.push(okEntries, (901, (([] : List(Int64)), sumBody))) in
+       (if all-defs-emittable(okEntries, 0, fmap) then
+         (if all-defs-emittable(badEntries, 0, fmap) then trap("a CMatchSum def body is NOT emit-subset → all-defs-emittable must be false")
+          else unit)
+        else trap("an arith def body IS emit-subset → all-defs-emittable true")))))))
 
 @test
 def er-def-env-empty-detects-single-main() =
