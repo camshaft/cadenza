@@ -477,6 +477,33 @@
   (call   anded (: 5 Int64)) (output (: 2 Int64))
   (call   anded (: 6 Int64)) (output (: 3 Int64)))
 
+(case "an equality point fact decides a DIFFERENT equality test in the then branch — the point-fact eq-fold face"
+  (doc    "The EQUALITY-FOLD face of the point fact: inside the then-branch of `(if (= x 5) …)` the fact pins
+           `x` to `[5, 5]`, and `refined_comparison_const` (lower.rs) folds an inner `(= x k)` — TRUE when the
+           range PINS x to {k} (k == 5), FALSE when k is OUTSIDE [5, 5] (k != 5). Two faces:
+             `outside`: `(if (= x 5) (if (= x 3) 1 2) 0)` — under x == 5 the inner `(= x 3)` is decided FALSE
+                        (3 ∉ [5,5]) → inner folds to its else, the `1` arm is dead. x=5 → 2; x=3 fails the outer
+                        `= 5` → 0.
+             `pinned`:  `(if (= x 5) (if (= x 5) 1 2) 0)` — under x == 5 the repeated `(= x 5)` is decided TRUE
+                        (pins to {5}) → inner folds to its then, the `2` arm is dead. x=5 → 1; x=7 → 0.
+           Distinct from the Eq-else known-false pin above (which refines the SAME `(= x 5)` in its OWN else via
+           the negation — x ≠ 5 there); here the point in the THEN decides a DIFFERENT-constant equality (the
+           `outside` face) and confirms the same-constant re-test (the `pinned` face). The compiler has NO
+           `Prim::Ne` (Lt/Gt/Le/Ge/Eq only), so a `!=` desugars to `(not (= …))` and its not-equal fold rides
+           the SAME Eq arm — the `outside` leg covers it. Both Int64 scalar (both backends). The rcdzc Lir
+           counterpart is `a_point_fact_decides_a_different_equality_test_in_the_then_branch`.")
+  (input  (do
+            (def (outside (: x Int64)) (if (= x 5) (if (= x 3) 1 2) 0))
+            (def (pinned  (: x Int64)) (if (= x 5) (if (= x 5) 1 2) 0))
+            (export outside)
+            (export pinned)))
+  ; outside: under x==5 the inner (= x 3) is FALSE → inner else (2); the 1 arm is dead.
+  (call   outside (: 5 Int64)) (output (: 2 Int64))
+  (call   outside (: 3 Int64)) (output (: 0 Int64))
+  ; pinned: under x==5 the repeated (= x 5) is TRUE → inner then (1); the 2 arm is dead.
+  (call   pinned  (: 5 Int64)) (output (: 1 Int64))
+  (call   pinned  (: 7 Int64)) (output (: 0 Int64)))
+
 (case "an unsigned branch refinement elides an underflow guard — the operator's if x>0 example on an unsigned type"
   (doc    "The operator's motivating value-facts example (`if x > 0` ⇒ `x - 1` cannot underflow) on an
            UNSIGNED type, which value-facts slice 2 (GAP-A) newly enables — before it, the unsigned `(> x 0)`
