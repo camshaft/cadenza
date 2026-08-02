@@ -23,12 +23,18 @@
 //!   `live-net`, a stub drives the default gate. The URL's host is gated by the kernel's SEC-F1 `HostIn`
 //!   capability (the SSRF/exfil guard) before dispatch, so this executor does not re-authorize.
 //!
+//! All executor errors are RECOVERABLE + classified for the kernel's supervision tree (see [`retry`]):
+//! an `EffectOutcome::Err` reason leads with a `RETRYABLE:`/`PERMANENT:` token so a supervisor decides
+//! backoff-retry vs give-up — never a panic, never a silent drop (the operator's error-resilience floor).
+//!
 //! The shared surface with `cdz-kernel` is ONLY the trait signatures; this crate never edits kernel src.
 
 pub mod clock;
 pub mod http;
 pub mod model;
+pub mod retry;
 
 pub use clock::ClockExecutor;
 pub use http::{HttpExecutor, HttpTransport};
 pub use model::{ModelExecutor, ModelTransport};
+pub use retry::{classify, permanent, retryable, Retryability};

@@ -13,7 +13,9 @@
 
 use cdz_agent_host::{ClockExecutor, ModelExecutor, ModelTransport};
 use cdz_kernel::authz::Authorizer;
-use cdz_kernel::effect::{Capability, EffectKind, EffectRequest, Payload, ResourcePredicate};
+use cdz_kernel::effect::{
+    Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
+};
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
 use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
@@ -48,6 +50,7 @@ impl Reducer for ModelAgent {
                     kind: EffectKind::Model,
                     target: "claude-test".into(), // the model id
                     payload: Some(Payload::Inline(b"hello".to_vec().into())),
+                    timeliness: Timeliness::Interactive,
                 }])
             }
             EventBody::EffectResult {
@@ -128,6 +131,7 @@ fn one_composite_routes_both_now_and_model_for_one_agent() {
                         kind: EffectKind::Now,
                         target: String::new(),
                         payload: None,
+                        timeliness: Timeliness::Interactive,
                     }])
                 }
                 EventBody::EffectResult {
@@ -142,6 +146,7 @@ fn one_composite_routes_both_now_and_model_for_one_agent() {
                             kind: EffectKind::Model,
                             target: "claude-test".into(),
                             payload: Some(Payload::Inline(b"hi".to_vec().into())),
+                            timeliness: Timeliness::Interactive,
                         }])
                     }
                     // Step 3: got the completion → done.
@@ -206,6 +211,7 @@ fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
                     kind: EffectKind::Model,
                     target: "expensive-other-model".into(), // outside the grant
                     payload: Some(Payload::Inline(b"hi".to_vec().into())),
+                    timeliness: Timeliness::Interactive,
                 }])
             } else {
                 FoldOutput::none()

@@ -16,7 +16,9 @@
 
 use cdz_agent_host::ClockExecutor;
 use cdz_kernel::authz::Authorizer;
-use cdz_kernel::effect::{Capability, EffectKind, EffectRequest, Payload, ResourcePredicate};
+use cdz_kernel::effect::{
+    Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
+};
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
 use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
@@ -39,6 +41,7 @@ impl Reducer for ClockAgent {
                     kind: EffectKind::Now,
                     target: String::new(), // Now takes no target; the capability gates it by kind
                     payload: None,
+                    timeliness: Timeliness::Interactive,
                 }])
             }
             EventBody::EffectResult {

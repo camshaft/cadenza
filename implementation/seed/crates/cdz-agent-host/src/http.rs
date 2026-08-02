@@ -17,6 +17,7 @@
 //! a deep copy. **Trust boundary:** the kernel already gated the resolved URL's host (SEC-F1) before
 //! dispatch; this executor does not re-authorize.
 
+use crate::retry;
 use bytes::Bytes;
 use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
@@ -32,6 +33,11 @@ use cdz_kernel::hash::Hash;
 /// PUT). The response body is returned as [`Bytes`] (the hot-path buffer). The `idempotency_key` lets a
 /// side-effecting transport dedup a crash-re-driven request (§16c-S1/D) — relevant for a non-idempotent
 /// method; a GET is naturally idempotent and can ignore it.
+///
+/// **Error classification (supervision, [`crate::retry`]):** an `Err(reason)` MUST lead with a
+/// retryability token — a transient failure (5xx, timeout, connection reset) as
+/// [`crate::retry::retryable`], a permanent one (4xx client error, DNS failure, malformed URL) as
+/// [`crate::retry::permanent`]. Unprefixed reasons are treated PERMANENT (fail-closed).
 pub trait HttpTransport {
     fn request(
         &self,
@@ -57,28 +63,29 @@ impl<T: HttpTransport> HttpExecutor<T> {
 impl<T: HttpTransport> Executor for HttpExecutor<T> {
     fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         if req.kind != EffectKind::Http {
-            return EffectOutcome::Err(format!(
+            // Structural — PERMANENT, a supervisor must not retry it (§17: observable Err, never a panic).
+            return EffectOutcome::Err(retry::permanent(format!(
                 "HttpExecutor only handles Http effects, got {:?}",
                 req.kind
-            ));
+            )));
         }
         // The request body: an inline payload IS the body (a POST/PUT); no payload is a bodyless request
-        // (a GET). A blob-ref body isn't supported yet (the transport would fetch it from the blob store
-        // — a later slice); surface it as an observable Err, never a panic (§17).
+        // (a GET). A blob-ref body is rejected because this executor has no blob-store handle to resolve
+        // it (structural → PERMANENT; observable Err, never a panic).
         let body: Option<&[u8]> = match &req.payload {
-            // `&bytes[..]` borrows the payload as a slice — works whether `Inline` holds `Vec<u8>` or
-            // (post-flip) `bytes::Bytes` (both `Deref<Target = [u8]>`; `Bytes` has no `as_slice`).
+            // `&bytes[..]` borrows the inline `Bytes` payload as a slice (`Bytes` derefs to `[u8]`).
             Some(Payload::Inline(bytes)) => Some(&bytes[..]),
             Some(Payload::Blob(_)) => {
-                return EffectOutcome::Err(
-                    "HttpExecutor: blob-ref request body not supported yet (inline it)".to_string(),
-                );
+                return EffectOutcome::Err(retry::permanent(
+                    "HttpExecutor: blob-ref request body unsupported — this executor has no blob-store access; inline it",
+                ));
             }
             None => None,
         };
         match self.transport.request(&req.target, body, idempotency_key) {
             // The transport's `Bytes` response body moves straight into `Payload::Inline` (ref-counted
-            // `Bytes` after the kernel's perf-directive flip) — no copy, no conversion.
+            // `Bytes`) — no copy. The transport's Err reason already carries its retryability token, so
+            // pass it through unchanged.
             Ok(response) => EffectOutcome::Ok(Some(Payload::Inline(response))),
             Err(reason) => EffectOutcome::Err(reason),
         }
@@ -88,6 +95,7 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cdz_kernel::effect::Timeliness;
 
     /// A stub transport that asserts what it was asked to fetch and returns a canned response body.
     struct StubHttp {
@@ -107,6 +115,7 @@ mod tests {
             kind: EffectKind::Http,
             target: "https://ok.host/x".to_string(),
             payload,
+            timeliness: Timeliness::Interactive,
         }
     }
 
@@ -141,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn a_blob_body_is_an_observable_err_for_now() {
+    fn a_blob_body_is_a_permanent_err_no_blob_store_access() {
         let mut exec = HttpExecutor::new(StubHttp {
             expect_body: None,
             response: Bytes::new(),
@@ -151,29 +160,44 @@ mod tests {
             Hash::of(b"k"),
         ) {
             EffectOutcome::Err(msg) => {
-                assert!(msg.contains("blob-ref request body not supported"), "{msg}")
+                // Rejected because this executor has no blob-store access (an invariant, not a "yet").
+                assert!(msg.contains("no blob-store access"), "{msg}");
+                assert_eq!(
+                    retry::classify(&msg),
+                    retry::Retryability::Permanent,
+                    "{msg}"
+                );
             }
             other => panic!("expected Err for a blob-ref body, got {other:?}"),
         }
     }
 
     #[test]
-    fn a_transport_failure_folds_as_an_err_not_a_panic() {
-        struct FailingHttp;
-        impl HttpTransport for FailingHttp {
+    fn a_transient_transport_failure_stays_retryable_through_the_executor() {
+        // A transient transport failure (connection reset) carries RETRYABLE; the executor passes it
+        // through, so it reaches the supervisor still classified retryable.
+        struct FlakyHttp;
+        impl HttpTransport for FlakyHttp {
             fn request(&self, _u: &str, _b: Option<&[u8]>, _k: Hash) -> Result<Bytes, String> {
-                Err("connection refused".to_string())
+                Err(retry::retryable("connection refused"))
             }
         }
-        let mut exec = HttpExecutor::new(FailingHttp);
+        let mut exec = HttpExecutor::new(FlakyHttp);
         match exec.perform(&http_req(None), Hash::of(b"k")) {
-            EffectOutcome::Err(msg) => assert!(msg.contains("connection refused"), "{msg}"),
+            EffectOutcome::Err(msg) => {
+                assert!(msg.contains("connection refused"), "{msg}");
+                assert_eq!(
+                    retry::classify(&msg),
+                    retry::Retryability::Retryable,
+                    "{msg}"
+                );
+            }
             other => panic!("expected the transport error to fold as Err, got {other:?}"),
         }
     }
 
     #[test]
-    fn non_http_kind_is_an_observable_err() {
+    fn non_http_kind_is_a_permanent_err() {
         struct NeverCalled;
         impl HttpTransport for NeverCalled {
             fn request(&self, _u: &str, _b: Option<&[u8]>, _k: Hash) -> Result<Bytes, String> {
@@ -185,10 +209,16 @@ mod tests {
             kind: EffectKind::Model,
             target: "m".to_string(),
             payload: None,
+            timeliness: Timeliness::Interactive,
         };
         match exec.perform(&req, Hash::of(b"k")) {
             EffectOutcome::Err(msg) => {
-                assert!(msg.contains("Http"), "err names the handled kind: {msg}")
+                assert!(msg.contains("Http"), "err names the handled kind: {msg}");
+                assert_eq!(
+                    retry::classify(&msg),
+                    retry::Retryability::Permanent,
+                    "{msg}"
+                );
             }
             other => panic!("expected Err for a non-Http kind, got {other:?}"),
         }
