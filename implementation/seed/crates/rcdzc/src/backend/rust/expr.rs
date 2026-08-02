@@ -2574,8 +2574,13 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::RationalOfInts { num, den } => {
             let n = emit_int_as_big(db, num, env, ctx)?;
             let d = emit_int_as_big(db, den, env, ctx)?;
+            // Bind the NUMERATOR before the denominator so the two operands EVALUATE in source order
+            // (num-then-den). This matters when an operand has an observable side effect — a host call
+            // (`(Rational.of (Env.rate-num) (Env.rate-den))`): the host-call sequence must be num-then-den
+            // (the wasm oracle's + source order). Binding `__d` first would fire the denominator's host call
+            // before the numerator's, reversing the observed sequence.
             Ok(format!(
-                "{{ let __d = {d}; if __d.is_zero() {{ panic!(\"unreachable\") }} cdz_num::Rational::new({n}, __d) }}"
+                "{{ let __n = {n}; let __d = {d}; if __d.is_zero() {{ panic!(\"unreachable\") }} cdz_num::Rational::new(__n, __d) }}"
             ))
         }
         Core::RationalOfIntWiden { value } => {
@@ -2826,10 +2831,36 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 "{{ let __bytes = {v}; let __start = {byte_offset}usize + {off_expr}; let __n = ({n}) as usize; __bytes[__start..__start + __n].to_vec() }}"
             ))
         }
-        // A host call OR a cross-component call crosses a component boundary — the Rust backend emits no
-        // component imports, so it declines (the wasm backend is the boundary target). A sequencing block
-        // only ever holds a host-call statement today, so the Rust backend declines it too.
-        | Core::HostCall { .. }
+        // A host call crosses the host boundary. The wasm backend routes it to a component import; the Rust
+        // backend (a standalone binary, no component model) emits a CALL to a crate-root shim fn the RUNNER
+        // supplies (the gate driver generates it from the case's recorded host-responses; a real embedder
+        // implements the same fns). The shim name derives from the CANONICAL host-op key
+        // (`canonical_host_op_key` — kebab-normalized effect + verbatim op) → a Rust ident, and the driver
+        // derives the SAME ident from the recorded response key (also kebab-normalizing the effect), so the
+        // emitted `crate::<ident>()` names EXACTLY the generated fn regardless of the corpus key's casing.
+        // H1 slice: a NO-ARG, fixed-width-INTEGER-result op (`ask.ask -> Int64`); ARGS or a non-integer
+        // result is a later increment and DECLINES cleanly (reject-don't-miscompile).
+        Core::HostCall {
+            effect,
+            op,
+            args,
+            result,
+        } => {
+            if !args.is_empty() {
+                return Err(Reject::decline(
+                    "the Rust backend does not yet render a host call WITH ARGUMENTS (later increment)",
+                ));
+            }
+            let Some(res_ty) = types::rust_type(&result).filter(|t| int_rust_ty(t)) else {
+                return Err(Reject::decline(
+                    "the Rust backend does not yet render a host call whose result is not a fixed-width integer (later increment)",
+                ));
+            };
+            let shim = host_shim_ident(&crate::effects::canonical_host_op_key(&effect, &op));
+            // The shim yields the recorded scalar as `i64`; cast to the op's declared integer width.
+            Ok(format!("(crate::{shim}() as {res_ty})"))
+        }
+        // A sequencing block only ever holds a host-call statement today; rendered in a later increment.
         | Core::Seq { .. }
         // The `?`/try boundary block + break are the wasm backend's `block`/`br` shape (BRICK 3); the
         // Rust backend renders them in a later brick, so it declines for now.
@@ -3626,6 +3657,34 @@ fn cmp_helper_name(enum_ty: &str) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+/// The crate-root shim fn ident a `Core::HostCall` emits a call to, derived from the CANONICAL host-op key
+/// (`effects::canonical_host_op_key` — kebab-normalized effect + verbatim op). The gate driver derives the
+/// SAME ident from the recorded response key (kebab-normalizing its effect part), so the emitted
+/// `crate::<ident>()` names exactly the generated fn — no casing drift. `__cdz_host_` prefixes the reserved
+/// generated-helper namespace; the key's `.`/`-`/other non-ident chars map to `_` for a valid Rust ident.
+pub(crate) fn host_shim_ident(op_key: &str) -> String {
+    let mut s = String::with_capacity(op_key.len() + 11);
+    s.push_str("__cdz_host_");
+    for c in op_key.chars() {
+        if c == '_' || c.is_ascii_alphanumeric() {
+            s.push(c);
+        } else {
+            s.push('_');
+        }
+    }
+    s
+}
+
+/// Whether a rendered Rust type is a FIXED-WIDTH INTEGER — the only host-call result the H1 slice renders
+/// (the shim returns `i64`, cast to this width). A bool/float/string/bytes/compound result declines (a later
+/// host-call increment).
+fn int_rust_ty(rust_ty: &str) -> bool {
+    matches!(
+        rust_ty,
+        "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
+    )
 }
 
 /// Whether a runtime `(= a b)` over type `ty` can emit a native Rust `==` — the operand type maps to a

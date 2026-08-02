@@ -947,11 +947,15 @@ fn run_program(
         GateTarget::Wasm => {
             run_program_wasm(tools, store, program, modules, call, host_responses, None)
         }
-        // The Rust backend has no host-boundary path — a host-delegating case declines there (Todo).
-        GateTarget::Rust if !host_responses.is_empty() => Ran::Declined { code: None },
+        // The ASYNC Rust backend has no host-boundary path yet — a host-delegating case declines (Todo). The
+        // SYNC Rust backend renders a no-arg integer-result host call (H1): the emitted `mod prog` calls
+        // `crate::__cdz_host_<key>()` and `run_program_rust` generates those shim fns from `host_responses`
+        // (a non-host case passes an empty slice → byte-identical to before).
         GateTarget::RustAsync if !host_responses.is_empty() => Ran::Declined { code: None },
-        GateTarget::Rust => run_program_rust(tools, program, modules, call, false, None),
-        GateTarget::RustAsync => run_program_rust(tools, program, modules, call, true, None),
+        GateTarget::Rust => {
+            run_program_rust(tools, program, modules, call, false, None, host_responses)
+        }
+        GateTarget::RustAsync => run_program_rust(tools, program, modules, call, true, None, &[]),
         // The ML compiler has no package/host path today — a multi-file or host-delegating case is
         // simply not-yet-supported there, which is a decline (coverage-not-yet), never a disagreement.
         GateTarget::CadenzaMl if !modules.is_empty() || !host_responses.is_empty() => {
@@ -1469,6 +1473,112 @@ fn emit_rust_package(
 /// args written verbatim as Rust literals) and prints the result, so the value crosses on stdout exactly
 /// as cdz-run emits it. Scalar-only today: a compound result declines in the Rust backend (→ `Declined`
 /// → Todo), so no `(: value type)` rendering is needed here.
+/// Kebab-normalize an effect name to its component-extern form — MUST match the rust backend's
+/// `crate::backend::common::export_name::kebab_extern_name` (camelCase→kebab, `_`→`-`, lowercased): `Env`→
+/// `env`, `Log`→`log`, `Param`→`param`, `E`→`e`. So the driver can normalize a recorded response key's
+/// effect part the same way the backend does, yielding the same shim ident regardless of the corpus key's
+/// casing (the corpus records `env.width` normalized but `Param.width` in source case — both normalize equal).
+fn kebab_effect(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for c in name.chars() {
+        if c.is_ascii_uppercase() {
+            if !out.is_empty() && !out.ends_with('-') {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else if c == '_' || c == '-' {
+            if !out.is_empty() && !out.ends_with('-') {
+                out.push('-');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// Derive the crate-root host-call shim fn ident from a recorded response key (`effect.op`) — kebab-normalize
+/// the EFFECT part (matching the backend's `canonical_host_op_key`), keep the op verbatim, then map the
+/// dotted key's non-ident chars → `_`. MUST equal the backend's emitted `host_shim_ident` for the same op.
+fn host_shim_ident_from_key(op_key: &str) -> String {
+    let (eff, op) = op_key.split_once('.').unwrap_or(("", op_key));
+    let canonical = format!("{}.{}", kebab_effect(eff), op);
+    let mut s = String::with_capacity(canonical.len() + 11);
+    s.push_str("__cdz_host_");
+    for c in canonical.chars() {
+        if c == '_' || c.is_ascii_alphanumeric() {
+            s.push(c);
+        } else {
+            s.push('_');
+        }
+    }
+    s
+}
+
+/// Generate the crate-root host-call shim fns the emitted `mod prog` references (`crate::__cdz_host_<id>()`).
+/// A shim is generated for EVERY distinct `__cdz_host_*` symbol the module names — including UNEXERCISED
+/// defs (a `delegated` def beside the called `handled` one) — since every referenced symbol must be DEFINED
+/// or rustc E0425s at link. A symbol matched to recorded responses (by the driver-derived ident, which
+/// kebab-normalizes the response-key effect to agree with the backend) returns them in order + prints
+/// `host-call\t<recorded-op>`; an unmatched symbol gets a `panic!` stub (never reached on a passing trial,
+/// loud on a real mismatch). H1: fixed-width-INTEGER responses (`i64`; backend casts to width).
+fn build_rust_host_shims(module: &str, host_responses: &[(String, String)]) -> String {
+    // Map recorded op key → (its dotted key for the host-call print, values in order), by shim ident.
+    let mut by_ident: std::collections::BTreeMap<String, (String, Vec<String>)> =
+        std::collections::BTreeMap::new();
+    for (op, value) in host_responses {
+        let ident = host_shim_ident_from_key(op);
+        by_ident
+            .entry(ident)
+            .or_insert_with(|| (op.clone(), Vec::new()))
+            .1
+            .push(value.clone());
+    }
+    // Every `crate::__cdz_host_<ident>()` the module references (dedup, ordered).
+    let mut referenced: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut rest = module;
+    while let Some(pos) = rest.find("crate::__cdz_host_") {
+        let after = &rest[pos + "crate::".len()..];
+        let end = after
+            .find(|c: char| !(c == '_' || c.is_ascii_alphanumeric()))
+            .unwrap_or(after.len());
+        referenced.insert(after[..end].to_string());
+        rest = &after[end..];
+    }
+    if referenced.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for fn_name in &referenced {
+        match by_ident.get(fn_name) {
+            Some((op, values)) => {
+                let arr = values
+                    .iter()
+                    .map(|v| v.trim().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let n = values.len();
+                out.push_str(&format!(
+                    "#[allow(unused, non_snake_case)]\nfn {fn_name}() -> i64 {{ \
+                     use std::sync::atomic::{{AtomicUsize, Ordering}}; \
+                     static __I: AtomicUsize = AtomicUsize::new(0); \
+                     static __V: [i64; {n}] = [{arr}]; \
+                     eprintln!(\"host-call\\t{op}\"); \
+                     let __k = __I.fetch_add(1, Ordering::Relaxed); \
+                     __V[__k] }}\n"
+                ));
+            }
+            None => out.push_str(&format!(
+                "#[allow(unused, non_snake_case)]\nfn {fn_name}() -> i64 {{ panic!(\"unexercised host op {fn_name}\") }}\n"
+            )),
+        }
+    }
+    out
+}
+
 fn run_program_rust(
     tools: &Tools,
     program: &str,
@@ -1476,6 +1586,10 @@ fn run_program_rust(
     call: Option<&Call>,
     async_mode: bool,
     opt_level: Option<&str>,
+    // Recorded host responses (`effect.op` key → value text), consumed IN CALL ORDER. For a host-delegating
+    // case the emitted `mod prog` calls `crate::__cdz_host_<id>()`; we generate those shim fns here. Empty
+    // for a non-host case (no shims → byte-identical driver to before).
+    host_responses: &[(String, String)],
 ) -> Ran {
     use std::process::Command;
 
@@ -1649,6 +1763,14 @@ fn run_program_rust(
     // an ordinary export keeps its `ret_ty` unchanged.
     let is_factory =
         call.is_some() && rust_factory_param_count(&module, &export, async_mode).is_some();
+    // H1 SCOPE GUARD: a host call composed with a FACTORY export (a def whose body performs the host op then
+    // returns a closure) is a later increment — the factory-application driver path re-evaluates the export
+    // body in a way that double-counts the host-call responses (a build-time-host-in-a-closure-capture case).
+    // Decline (stay `todo`) rather than fail, until that composition is built. A host-delegating NON-factory
+    // export (the H1 target) is unaffected.
+    if is_factory && !host_responses.is_empty() {
+        return Ran::Declined { code: None };
+    }
     // A CLOSURE-PARAMETER CONSUMER export (takes a closure param, supplied by a producer sibling). Its own
     // RESULT crosses the host boundary the SAME way a factory's does — a String/Bytes result is serialized
     // as `list<u8>` and the corpus records the bare byte-int list `(104 105)`, NOT the quoted `"hi"` form.
@@ -1820,12 +1942,15 @@ fn run_program_rust(
             None => format!("fn main() {{ println!(\"{{}}\", {call_or_await}); }}\n"),
         }
     };
+    // HOST-CALL SHIMS (H1): generate the crate-root `__cdz_host_*` fns the emitted `mod prog` references,
+    // from the recorded responses (empty for a non-host case → no shims).
+    let host_shims = build_rust_host_shims(&module, host_responses);
     // In async mode the driver needs an `Env` impl (a no-limit gas meter — the gate checks ANSWERS, not
     // fuel bounds) and a tiny `block_on` executor, plus `let mut env = …` before the call.
     let full = if async_mode {
-        format!("mod prog {{\n{module}\n}}\n{ASYNC_GATE_HARNESS}\n{body}")
+        format!("mod prog {{\n{module}\n}}\n{host_shims}{ASYNC_GATE_HARNESS}\n{body}")
     } else {
-        format!("mod prog {{\n{module}\n}}\n{body}")
+        format!("mod prog {{\n{module}\n}}\n{host_shims}{body}")
     };
     // `body` above referenced `env` in async mode; the harness defines it via a `let` inside `main`, so
     // splice that in. (Kept simple: the harness provides a `gate_env()` and `block_on`, and `main` binds
@@ -1916,11 +2041,12 @@ fn run_program_rust(
         }
     };
     if run.status.success() {
-        // The Rust backend has no host-boundary path — a host-delegating case declines before reaching
-        // here — so the observed-host-call list is always empty.
+        // A host-delegating case's shim fns print `host-call\t<op>` to stderr in call order (H1); parse them
+        // for the `(host-calls …)` check, exactly as the wasm path does. Empty for a non-host program.
+        let observed = observed_host_calls(&run.stderr);
         Ran::Value(
             String::from_utf8_lossy(&run.stdout).trim().to_string(),
-            Vec::new(),
+            observed,
         )
     } else {
         Ran::Trap(rust_panic_message(&run.stderr))
@@ -2780,11 +2906,26 @@ fn sweep_one_case(
                 Ran::Declined { code: None }
             }
             GateTarget::Rust => {
-                run_program_rust(tools, &rec.program, &rec.modules, call, false, Some(lvl))
+                // Host cases declined above (level-independent) → no responses reach here → `&[]`.
+                run_program_rust(
+                    tools,
+                    &rec.program,
+                    &rec.modules,
+                    call,
+                    false,
+                    Some(lvl),
+                    &[],
+                )
             }
-            GateTarget::RustAsync => {
-                run_program_rust(tools, &rec.program, &rec.modules, call, true, Some(lvl))
-            }
+            GateTarget::RustAsync => run_program_rust(
+                tools,
+                &rec.program,
+                &rec.modules,
+                call,
+                true,
+                Some(lvl),
+                &[],
+            ),
             // Rejected up front in `gate_opt_sweep`; unreachable here.
             GateTarget::CadenzaMl => Ran::Declined { code: None },
         }
