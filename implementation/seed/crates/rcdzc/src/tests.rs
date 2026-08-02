@@ -63536,6 +63536,52 @@ mod stage1 {
     }
 
     #[test]
+    fn an_abortive_recursive_callee_with_a_pending_handle_body_continuation_declines_not_miscompiles()
+     {
+        // adv-52 (breaker, HIGH soundness). The recursive callee `go` is itself TAIL-recursive and bails at
+        // the base, so the `recursive_self_calls_all_tail` guard PASSES — but `go` is called at a NON-TAIL
+        // position in the handle body: `(+ (go 2) 999999)`. The abort must ABANDON the pending `(+ _ 999999)`
+        // (bail's arm value 500 → the handle's value, +7 outside → 507). The specialized `go#ctx` returns 500
+        // as an ORDINARY return, which the pending `+ 999999` consumes → 500+999999+7 = 1000506, a silent
+        // wrong value on ALL backends. Abandoning past a pending continuation at the OUTER call site needs the
+        // br-out-of-handle non-local-exit convention (a later vertical); until then this MUST decline cleanly.
+        // The fix: `call_reaches_conditional_abortive` now FOLLOWS a recursive callee's body (it stopped at
+        // `is_recursive` before), so `body_has_unsound_abortive_perform` denies the non-tail operand
+        // capturable-tail and `reduce_handle` declines. (The zero-recursion `(go 0)` shape miscompiled too —
+        // it is a compile-time shape mis-specialization, not a runtime-depth bug.)
+        let src = "(do (effect Mx (op bail (-> Int64 Int64))) \
+                   (def (go (: n Int64)) (if (= n 0) (Mx.bail 5) (go (- n 1)))) \
+                   (def (main) (+ (handle Mx 0 ((bail (v) s (* v 100))) (+ (go 2) 999999)) 7)) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(src))).is_err(),
+            "an abortive recursive callee feeding a pending handle-body continuation must decline, not miscompile to 1000506"
+        );
+        // The zero-dynamic-recursion shape `(go 0)` (base case hit immediately) must ALSO decline — the
+        // trigger is the static self-recursive SHAPE, not actual recursion depth.
+        let zero = "(do (effect Mx (op bail (-> Int64 Int64))) \
+                   (def (go (: n Int64)) (if (= n 0) (Mx.bail 5) (go (- n 1)))) \
+                   (def (main) (+ (handle Mx 0 ((bail (v) s (* v 100))) (+ (go 0) 999999)) 7)) (export main))";
+        assert!(
+            compile_component(&crate::codec::encode(&parse(zero))).is_err(),
+            "the zero-recursion (go 0) shape must decline too (compile-time shape mis-specialization)"
+        );
+        // CONTRAST — the sound cases must still FOLD (the guard must not over-decline): the same recursive
+        // abortive callee as the handle body's TAIL (no pending continuation) folds to 500.
+        let tail_ok = "(do (effect Mx (op bail (-> Int64 Int64))) \
+                   (def (go (: n Int64)) (if (= n 0) (Mx.bail 5) (go (- n 1)))) \
+                   (def (main) (handle Mx 0 ((bail (v) s (* v 100))) (go 2))) (export main))";
+        assert_eq!(
+            run_returns::<i64>(
+                &compile_component(&crate::codec::encode(&parse(tail_ok)))
+                    .expect("a recursive abortive callee as the handle-body tail folds"),
+                "main"
+            ),
+            500,
+            "the recursive abortive callee as the handle-body tail must still fold to 500 (no over-decline)"
+        );
+    }
+
+    #[test]
     fn a_mutually_recursive_effectful_group_specializes_under_a_state_handler() {
         // E3 extended to MUTUAL recursion: `ev`/`od` call each other, and the effect (`Ctr.tick`) is reached
         // by `ev` only THROUGH its partner `od`. The fix: `body_reaches_discharged` now follows RECURSIVE

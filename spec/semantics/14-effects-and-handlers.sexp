@@ -4376,6 +4376,26 @@
               (handle Bail 0 ((bail (n) s n)) (walk 3))) (export main)))
   (output (: 99 Int64)))
 
+(case "an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it"
+  (doc    "The soundness companion of the tail-walk-bail above (which is the handle body's TAIL, no pending
+           work). Here the recursive-abortive callee's result feeds a PENDING continuation in the handle
+           body: `(+ (go 2) 999999)` where `(go n)` tail-recurses and bails at zero. The abort MUST abandon
+           the `(+ _ 999999)` — bail's arm value 500 becomes the handle's value, +7 outside → 507. It must
+           NOT flow 500 INTO the pending `+ 999999` (the adv-52 miscompile: 500+999999+7 = 1000506, a silent
+           wrong value that appeared on all backends). Abandoning past a pending continuation at the OUTER
+           call site needs the br-out-of-handle non-local-exit convention (a later vertical); until then the
+           compiler DECLINES this shape cleanly (a Todo) rather than emit the wrong value — so this case pins
+           the DECLINE as the safe floor. A value-recorded case that declines grades Todo, so recording the
+           correct 507 guards that the fold, if it ever serves this shape, MUST yield 507, never 1000506.
+           (breaker adv-52; the mutual-recursion and pending-inside-the-callee neighbors already decline.)")
+  (input  (do
+            (effect Mx (op bail (-> Int64 Int64)))
+            (def (go (: n Int64))
+              (if (= n 0) (Mx.bail 5) (go (- n 1))))
+            (def (main)
+              (+ (handle Mx 0 ((bail (v) s (* v 100))) (+ (go 2) 999999)) 7)) (export main)))
+  (output (: 507 Int64)))
+
 (case "a RUNTIME branch selects between an abortive perform and a plain value per call"
   (doc    "The per-call abort selection (the branch-abort pins use const conditions): `(if (> n 0)
            (+ (Bail.out n) 999) (- 0 n))` — n=4 takes the abortive path (the arm multiplies, the +999

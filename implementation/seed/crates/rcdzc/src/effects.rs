@@ -3034,9 +3034,18 @@ fn call_reaches_conditional_abortive(db: &mut Db, head: StructId, ctx: &HandlerC
     else {
         return false;
     };
-    if crate::eval::is_recursive(db, body) {
-        return false; // a recursive callee is not inlined — not this arm's concern
-    }
+    // A RECURSIVE callee is not inlined but IS specialized (`specialize_recursive`), and that path returns
+    // the callee's value as an ordinary return — so an abortive op inside a SELF-recursive callee, reached
+    // through a NON-tail position in the handle body, has its abort value flow into the PENDING continuation
+    // instead of abandoning it (`(+ (go 2) 999999)` where `go` bails → 500+999999 not 500 — adv-52, a silent
+    // wrong value on all backends). The `specialize_recursive` abortive guard only refuses NON-tail
+    // *recursion*; a TAIL-recursive callee like `go` passes it, so the unsoundness must be caught HERE: an
+    // abortive op inside a recursive callee's body is opaque to the syntactic hoist exactly as a non-recursive
+    // one is, so it is flagged the same way (denying the enclosing operand capturable-tail → `reduce_handle`
+    // declines to the safe floor; a full fold needs the br-out-of-handle non-local-exit convention). We still
+    // walk the body ONCE for a conditional abort (the self-call inside it is just another `Apply` node the
+    // structural walk descends past — `subtree_has_conditional_abortive` never re-enters this fn, so a
+    // recursive body is not a non-termination risk).
     subtree_has_conditional_abortive(db, body, ctx, false)
 }
 
