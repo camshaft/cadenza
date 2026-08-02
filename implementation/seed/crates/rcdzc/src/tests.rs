@@ -67216,14 +67216,16 @@ mod stage1 {
             "a user `(Unit.of #\"zorks\")` must still report the unknown-unit CDZ0201 under the bounded scan"
         );
 
-        // COVERAGE for the PR #1101 review concern (Copilot): a `(Unit.of #"zorks")` inside an
-        // `(eval (quote …))` — where reconstruction GRAFTS synthesized nodes at ids >= user_node_count —
-        // must STILL report CDZ0201. It does, because the `Unit.of #"zorks"` occurrence lives in the
-        // QUOTED SOURCE (a USER node, in-range of the bounded scan); the reconstructed splice is a COPY of
-        // that user node (a synth-only `Unit.of` with no user original never arises — `eval` reconstructs
-        // only from a compile-time-visible `Ast`/quote argument, which itself carries the `Unit.of` as a
-        // user node). So the user-bound scan never drops this fault. Pin it so the bound can't later be
-        // narrowed in a way that would.
+        // COVERAGE for the PR #1101 review concern (Copilot), corpus-bugfix-confirmed against trunk: a
+        // `(Unit.of #"zorks")` inside an `(eval (quote …))` — where reconstruction could GRAFT synthesized
+        // nodes at ids >= user_node_count — must STILL report CDZ0201. It does, and the "escaping synth node"
+        // never materializes: `eval` refuses to reconstruct ANY quote carrying a `#"…"` SYMBOL literal (a bare
+        // symbol does NOT reconstruct, unlike a string/int/float), so a quoted `Unit.of` (which requires a
+        // symbol arg) declines CDZ0101 BEFORE a runnable synth `Unit.of` node is built. Meanwhile the quoted
+        // `Unit.of`'s own `#"zorks"` is an in-range USER literal the bounded scan still CDZ0201's. So the
+        // user-bound scan drops no reportable fault. Pin it so the bound can't later be narrowed in a way that
+        // would (and see the corpus CDZ0101-decline tripwire, which flips if `eval` learns to reconstruct
+        // symbol literals — at which point the synth-node path becomes reachable and this bound needs re-review).
         let eval_quoted =
             "(module m (def (main) (eval (quote (Qty.of 5 (Unit.of #\"zorks\"))))) (export main))";
         let eval_diags = crate::host::run_with_compiler_stack(|| {
