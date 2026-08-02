@@ -18,10 +18,14 @@ export interface Example {
   theme: "basics" | "algorithms" | "data-and-collections" | "numbers";
   surface: Surface;
   source: string;
-  /// Optional pinned SCALAR result (bare number or bool, as the runner renders it). When set, the
-  /// check-examples gate asserts the program runs to exactly this value — turning the example into a
-  /// regression test rather than a mere "it runs" check. Only scalars are pinned (a compound value
-  /// renders differently across the s-expr/ML surfaces); compound-returning examples leave it unset.
+  /// Optional pinned result, as the runner renders it in this example's authored `surface`. When set,
+  /// the check-examples gate asserts the program runs to exactly this value — turning the example into a
+  /// regression test rather than a mere "it runs" check. BOTH scalars (bare number/bool) AND compound
+  /// values are pinnable here: a playground example has no in-browser Check (it's loaded and Run), and
+  /// the gate asserts its value only in the authored s-expr surface (the ML-toggle pass skips the value
+  /// check), so an s-expr-canonical compound like `(: (list 1 2 3) (List Int64))` is stable to pin. (This
+  /// is the playground-only exemption; a graded chapter EXERCISE is compared in the reader's live surface,
+  /// where a compound renders differently in ML vs s-expr, so those stay scalar-only — see check-examples.)
   expected?: string;
 }
 
