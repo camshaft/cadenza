@@ -42565,6 +42565,65 @@ mod match_engine {
     }
 
     #[test]
+    fn a_narrow_width_wrapping_arith_re_masks_the_runtime_result_to_the_width() {
+        // adv-57 (breaker, wasm wrong-value miscompile): a NARROW-width wrapping op over RUNTIME operands
+        // emits the raw machine add/sub/mul at the wider SLOT (i32/i64), so it wraps mod 2^slot, NOT mod
+        // 2^width — the un-wrapped wide result was OBSERVABLE (a widening read / an `=`-compare at the
+        // narrow width). `UInt8.wrapping-add 250 10` ran to 260, spec = 4 (mod 256; numeric-model.md §A
+        // Wrapping Operation Has A Defined Modular Outcome). The const-fold path already masked (the test
+        // above); this pins the RUNTIME path re-normalizes too — mask (unsigned), mask + sign-extend
+        // (signed). The const-fold witness above does NOT exercise the runtime emit; RUST/rust-async were
+        // already correct, so this was a wasm-emit differential.
+        use wasmtime::component::Val;
+        // UInt8 add: 250 + 10 = 260 ≡ 4 (mod 256). Read back via Int64.of so the u8 result widens to i64
+        // — the wide un-masked 260 would surface here if the result were not re-masked.
+        let ua = "(module m (def (f (: x UInt8)) (Int64.of (UInt8.wrapping-add x (UInt8.wrap 10)))) (export f))";
+        assert_eq!(
+            run_returns_with::<i64>(&component(ua), "f", &[Val::U8(250)]),
+            4,
+            "UInt8 wrapping-add 250+10 must wrap to 4 (mod 256), not the raw-slot 260"
+        );
+        // Signed narrow ADD wrapping with SIGN-EXTEND: Int8 127 + 1 = 128, low 8 bits = 0x80 → -128.
+        let ia = "(module m (def (f (: x Int8)) (Int64.of (Int8.wrapping-add x (Int8.wrap 1)))) (export f))";
+        assert_eq!(
+            run_returns_with::<i64>(&component(ia), "f", &[Val::S8(127)]),
+            -128,
+            "Int8 wrapping-add 127+1 wraps to -128 (mask + sign-extend), not the raw 128"
+        );
+        // Signed narrow MUL: Int8 -128 * -1 = 128 ≡ -128 (mod 256, sign-extended). The mul face.
+        let im = "(module m (def (f (: x Int8)) (Int64.of (Int8.wrapping-mul x (Int8.wrap -1)))) (export f))";
+        assert_eq!(
+            run_returns_with::<i64>(&component(im), "f", &[Val::S8(-128)]),
+            -128,
+            "Int8 wrapping-mul -128*-1 wraps to -128, not the raw 128"
+        );
+        // Int16 add: 32767 + 1 = 32768 ≡ -32768 (mod 2^16, sign-extended) — a wider narrow width still masks.
+        let i16a = "(module m (def (f (: x Int16)) (Int64.of (Int16.wrapping-add x (Int16.wrap 1)))) (export f))";
+        assert_eq!(
+            run_returns_with::<i64>(&component(i16a), "f", &[Val::S16(32767)]),
+            -32768,
+            "Int16 wrapping-add 32767+1 wraps to -32768, not the raw 32768"
+        );
+        // =-COMPARE FACE (not just the widen read): the re-masked result must compare EQUAL to its true
+        // modular value AND NOT equal the un-masked wide value. `(= (UInt8.wrapping-add x 10) 4)` at UInt8
+        // width — x=250 → 4, so this is true; the pre-fix wide 260 would make it false. Proves the fix is
+        // in the wrapping op, not the widening read.
+        let cmp = "(module m (def (f (: x UInt8)) (= (UInt8.wrapping-add x (UInt8.wrap 10)) (UInt8.wrap 4))) (export f))";
+        assert!(
+            run_returns_with::<bool>(&component(cmp), "f", &[Val::U8(250)]),
+            "the re-masked UInt8 result compares equal to 4 at the narrow width (not the wide 260)"
+        );
+        // FULL-WIDTH control: Int64 wrapping is correct WITHOUT a re-mask (the raw i64 op IS modular at the
+        // slot width) — the fix must not perturb it. Int64.max + 1 → MIN.
+        let full = "(module m (def (f (: x Int64)) (Int64.wrapping-add x 1)) (export f))";
+        assert_eq!(
+            run_returns_with::<i64>(&component(full), "f", &[Val::S64(i64::MAX)]),
+            i64::MIN,
+            "full-width Int64 wrapping is the raw modular op — unchanged by the narrow re-mask"
+        );
+    }
+
+    #[test]
     fn checked_integer_conversion_folds_in_range_and_rejects_out_of_range_constants() {
         // `T.of` — the CHECKED (range-checked) integer conversion (numeric-model.md §A Conversion Between
         // Integer Types Is Explicit): a constant IN RANGE folds to the value at the target type; a
