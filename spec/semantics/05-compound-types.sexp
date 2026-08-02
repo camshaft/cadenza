@@ -1913,7 +1913,7 @@
 
 (case "a 200-element runtime Set resolves every member through a multi-level CHAMP trie and rejects non-members"
   (doc    "The SET analog of the 100-key deep-CHAMP-map checksum: `build` inserts 0..n into a Set (`Set.insert`
-           appends persistently), and at n=200 the CHAMP grows past a single leaf into a multi-level trie
+           is a persistent insert, returning a new set), and at n=200 the CHAMP grows past a single leaf into a multi-level trie
            (32-way branching → a second level past 32 entries, hash-collision chains where they occur). Then
            `probe` scores membership over TWO disjoint ranges to catch both failure directions: every i in
            0..n MUST be a member (+1 each) and every j in n..n+50 MUST NOT be (a false-positive subtracts a
