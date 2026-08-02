@@ -573,6 +573,39 @@ export const EXAMPLES: Example[] = [
     expected: "(: (list (tuple 1 3) (tuple 2 1) (tuple 3 2)) (List (Tuple Int64 Int64)))",
   },
   {
+    // Shows off: quicksort as a divide-and-conquer recursion. Pivot on the head, partition the rest
+    // into elements below and at-or-above the pivot, sort each side, and concat lows ++ [pivot] ++ highs.
+    // [5 3 8 1 9 2 7 4 6] => [1 2 3 4 5 6 7 8 9]. Returns the sorted LIST, not just a count.
+    id: "quicksort",
+    name: "Quicksort",
+    theme: "algorithms",
+    surface: "sexpr",
+    source: `(do
+  ; Bounds-checked read: qsort only reads in-range indices, so a miss is an invariant violation.
+  (def (at (: xs (List Int64)) (: i Int64))
+    (match (List.at xs i) ((Some v) v) ((None) (trap "qsort: index out of range"))))
+  ; Partition xs[i..n) into (lows, highs) relative to pivot: < pivot goes low, >= goes high.
+  (def (part xs i n pivot lows highs)
+    (if (= i n)
+        (tuple lows highs)
+        (let ((x (at xs i)))
+          (if (< x pivot)
+              (part xs (+ i 1) n pivot (List.push lows x) highs)
+              (part xs (+ i 1) n pivot lows (List.push highs x))))))
+  ; Empty/singleton is already sorted; else pivot on the head and recurse on each side.
+  (def (qsort (: xs (List Int64)))
+    (if (< (List.len xs) 2)
+        xs
+        (let ((pivot (at xs 0)))
+          (match (part xs 1 (List.len xs) pivot (: (list) (List Int64)) (: (list) (List Int64)))
+            ((tuple lows highs)
+             (List.concat (List.concat (qsort lows) (list pivot)) (qsort highs)))))))
+  (def (main)
+    (qsort (list 5 3 8 1 9 2 7 4 6)))
+  (export main))`,
+    expected: "(: (list 1 2 3 4 5 6 7 8 9) (List Int64))",
+  },
+  {
     // Shows off: string work via bytes — check a word reads the same forwards and backwards by comparing
     // the i-th and (n-1-i)-th UTF-8 bytes moving inward. "racecar" -> 1 (true).
     id: "palindrome-check",
