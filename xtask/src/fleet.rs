@@ -7283,8 +7283,9 @@ fn files_collide(a: &[String], b: &std::collections::HashSet<String>) -> bool {
 }
 
 /// Query GitHub for a candidate PR's `(merged?, CI verdict)` — the two inputs [`reap_action`] needs.
-/// `gh pr view <n> --json state,mergedAt` gives the merge state; `gh pr checks` gives the buckets. A
-/// gh error is reported as `(false, NoChecks)` (→ `KeepWaiting`), never a false `merged`/`Green`.
+/// `gh pr view <n> --json state` gives the merge state (we check for `"MERGED"`); `gh pr checks` gives
+/// the buckets. A gh error is reported as `(false, NoChecks)` (→ `KeepWaiting`), never a false
+/// `merged`/`Green`.
 fn pr_merged_and_verdict(pr: u64) -> (bool, CiVerdict) {
     let n = pr.to_string();
     let merged = Command::new("gh")
