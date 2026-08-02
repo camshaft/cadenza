@@ -183,6 +183,20 @@ def collapse-never-moves-a-note-more-than-a-semitone-below-in-a-diatonic-scale()
     (if note(pitch(61)) - note(collapse-to-scale(cmaj, pitch(61))) == 1 then unit else trap("C# moves one"))
   else trap("F# moves one")
 
+@test
+def collapse-works-in-a-transposed-mode-not-just-c-major() =
+  // Collapse must respect the mode's ROOT, not assume C major. In D major (pcs {2,4,6,7,9,11,1}) note
+  // C5 (72, pc 0) is foreign and floor-snaps down to B4 (71, pc 11, an in-mode degree); C#5 (73, pc 1)
+  // is already a D-major degree and is unchanged. Pins that the C-major-only collapse tests above aren't
+  // silently relying on root==0.
+  let dmaj = major(2) in
+  let snapped = collapse-to-scale(dmaj, pitch(72)) in
+  if in-scale(dmaj, snapped) then
+    (if note(snapped) == 71 then
+      (if note(collapse-to-scale(dmaj, pitch(73))) == 73 then unit else trap("C#5 is already in D major"))
+     else trap("C5 floor-snaps to B4 in D major"))
+  else trap("collapsed note is a D-major degree")
+
 // ---- test helpers -----------------------------------------------------------------------------------
 
 /// Every note in `base .. base+n-1` collapses to a pitch in the scale (recursive, annotated).

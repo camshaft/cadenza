@@ -94,7 +94,32 @@ def the-bass-carries-the-progression-roots() =
   else
     trap("C")
 
+@test
+def the-two-parts-live-on-their-own-channels() =
+  // The piece is two voices: the arpeggiated accompaniment on channel 0 and the bass on channel 1.
+  // Every note sits on one of those two channels (no stray channel), and there are exactly 4 bass notes
+  // (one root per bar) and 12 accompaniment notes (3 arpeggio tones * 4 bars) — 16 in all.
+  if count-on-chan(progression, 1) == 4 then
+    if count-on-chan(progression, 0) == 12 then
+      if all-on-chan-0-or-1(progression) then unit else trap("no note strays off channels 0/1")
+    else
+      trap("twelve accompaniment notes on channel 0")
+  else
+    trap("four bass notes on channel 1")
+
 // ---- test helpers -----------------------------------------------------------------------------------
+/// How many notes are on channel `c`? Recursive, annotated.
+def count-on-chan(notes: List(Note), c: Int64) = match notes with
+  | [] => 0
+  | [h, .. rest] => (if note-chan(h) == c then 1 else 0) + count-on-chan(rest, c)
+
+/// Is every note on channel 0 or channel 1 (the two voices)? Recursive, annotated.
+def all-on-chan-0-or-1(notes: List(Note)) = match notes with
+  | [] => true
+  | [h, .. rest] =>
+    let c = note-chan(h) in
+    if c == 0 then all-on-chan-0-or-1(rest) else if c == 1 then all-on-chan-0-or-1(rest) else false
+
 /// The note number of a note — via the exported accessors, NOT a nested `Note.Note(Pitch.Pitch(k),…)`
 /// destructure (a nested match on the imported boxed `Pitch` traps at runtime; issue-9927 family).
 def note-num(n: Note) = note(note-pitch(n))
