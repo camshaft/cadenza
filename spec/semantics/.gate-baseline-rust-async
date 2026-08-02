@@ -679,6 +679,7 @@ pass	a NEGATIVE Float32-overflowing literal in a runtime branch is rejected
 pass	a NEGATIVE large-magnitude float renders its full expansion with its sign
 pass	a NEGATIVE prefixed quantity carries its sign through the reference scale-fold
 pass	a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin
+pass	a RUNTIME erased Qty add is still CHECKED at the inner width (overflow traps at run time)
 pass	a bin-arm guard cond that traps at the decoded binder TRAPS the match — it does not fall through
 pass	a failed multi-segment bin guard falls through and the NEXT arm re-decodes its own binders
 pass	a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)

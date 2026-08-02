@@ -2275,6 +2275,22 @@
                         (Qty.of (Int8.of 100) (Unit.base #"meter")))))
   (error  CDZ0304))
 
+(case "a RUNTIME erased Qty add is still CHECKED at the inner width (overflow traps at run time)"
+  (doc    "The RUNTIME twin of the compile-time CDZ0304 quantity-overflow pins around it, closing the
+           'constant and runtime paths agree' claim (§overflow policy) with an actual runtime witness:
+           `(+ q q)` over a runtime-magnitude `(Qty Int64 meter)` erases to a bare Int64 add, and that
+           erased add must still be the CHECKED `+` — at v = 2^62 the sum 2^63 overflows Int64 and TRAPS
+           'integer overflow' (a backend that emitted a wrapping add for the erased quantity would return
+           Int64.min silently). v = 21 → 42, the in-range control. Pins that unit ERASURE does not erase
+           the inner type's overflow discipline on the runtime path.")
+  (input  (do
+            (def (main (: v Int64))
+              (let ((q (Qty.of v (Unit.base #"meter"))))
+                (Qty.value (+ q q))))
+            (export main)))
+  (call   main (: 4611686018427387904 Int64)) (trap "integer overflow")
+  (call   main (: 21 Int64)) (output (: 42 Int64)))
+
 (case "a narrow-width Int quantity add that fits the inner width runs normally"
   (doc    "`(+ (Qty.of (Int8.of 50) meter) (Qty.of (Int8.of 50) meter))` = 100, which FITS Int8 — the
            control beside the overflowing case: a narrow-width quantity arithmetic whose result is in
