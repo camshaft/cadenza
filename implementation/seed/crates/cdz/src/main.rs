@@ -968,9 +968,9 @@ fn run_chor(args: &ChorArgs) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // 5b. WARN on recursion degradation. `render-compilable` cannot yet emit a `def main` back-jump for a
-    // recursive protocol (LRecT/LVarT), so it emits a `-- rec/var: unsupported` marker inside an otherwise
-    // valid, COMPILABLE stub actor (the loop body is dropped). Without this warning the emitted actor
+    // 5b. WARN on recursion degradation. `render-compilable` does not yet emit a `def main` back-jump for a
+    // recursive protocol (LRecT/LVarT), so it emits a `-- rec: unsupported` (LRecT) or `-- var: unsupported`
+    // (LVarT) marker inside an otherwise valid, COMPILABLE stub actor (the loop body is dropped). Without this warning the emitted actor
     // compiles+runs fine but silently does NOT loop, so a user could believe a recursive protocol shredded
     // correctly. Name every affected role so the degradation is visible, not buried in a comment.
     let degraded: Vec<&str> = actors
@@ -1142,7 +1142,7 @@ fn split_actor_bundle(bundle: &str) -> Vec<(String, String)> {
     actors
 }
 
-/// Does an emitted actor module carry the recursion-degradation marker? `render-compilable` cannot yet emit
+/// Does an emitted actor module carry the recursion-degradation marker? `render-compilable` does not yet emit
 /// a `def main` back-jump for a recursive protocol (LRecT/LVarT), so it leaves a `-- rec: unsupported` /
 /// `-- var: unsupported` marker in an otherwise-compilable stub whose loop body is dropped. `cdz chor` uses
 /// this to WARN (the stub compiles but does not loop, so the degradation must be surfaced, not buried).
