@@ -99,7 +99,41 @@ def a-whole-chromatic-run-collapses-into-major() =
     note-at(pitch(70), 0, 100, 1000, 100), note-at(pitch(71), 0, 100, 1100, 100)] in
   if all-in-major(collapse-piece(cmaj, chromatic-run)) then unit else trap("every collapsed note is a C-major degree")
 
+@test
+def collapse-is-idempotent-on-an-in-mode-piece() =
+  // The defining property of a quantizer: collapsing a piece that is ALREADY in the mode changes
+  // nothing — a second collapse is a no-op. Feed a C-major piece (all white keys), collapse it into C
+  // major, and every note number is unchanged.
+  let cmaj = major(0) in
+  let in-mode = [
+    note-at(pitch(60), 0, 100, 0, 240), note-at(pitch(64), 0, 100, 240, 240),
+    note-at(pitch(67), 0, 100, 480, 240), note-at(pitch(71), 0, 100, 720, 240)] in
+  if same-numbers(in-mode, collapse-piece(cmaj, in-mode)) then unit else trap("collapse fixes an in-mode piece")
+
+@test
+def the-pipeline-is-empty-on-an-empty-piece() =
+  // Every transform's recursive base case (`[] => out`, out seeded `[]`): no input notes → no output,
+  // for collapse, the full pipeline, and quantize-and-shift alike.
+  let cmaj = major(0) in
+  if List.len(collapse-piece(cmaj, [])) == 0 then
+    if List.len(pipeline(cmaj, 7, 9, [])) == 0 then
+      if List.len(quantize-and-shift(cmaj, 2, [])) == 0 then unit else trap("empty quantize-and-shift")
+    else
+      trap("empty pipeline")
+  else
+    trap("empty collapse")
+
 // ---- test helpers -----------------------------------------------------------------------------------
+
+/// Do two pieces carry the same note numbers in the same order? Recursive, annotated.
+def same-numbers(xs: List(Note), ys: List(Note)) =
+  match xs with
+    | [] => (match ys with | [] => true | _ => false)
+    | [x, .. xt] =>
+      (match ys with
+        | [] => false
+        | [y, .. yt] =>
+          if note(note-pitch(x)) == note(note-pitch(y)) then same-numbers(xt, yt) else false)
 
 /// Every note's pitch class is a C-major degree (0,2,4,5,7,9,11). Recursive, annotated.
 def all-in-major(notes: List(Note)) =
