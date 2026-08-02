@@ -61,12 +61,13 @@ def list-eq(a: List(Int64), b: List(Int64)) = match a with
 /// Search transpositions of set `a` for one equal to set `b`, starting at amount `t` and stepping `t` up
 /// by one MOD 12 (`pc-of(t + 1)` wraps 11 back to 0) each recursion, for up to `fuel` steps. Returns the
 /// first matching `t` as `Some(t)`, or `None` when `fuel` is exhausted with no match. Called with `t = 0`
-/// and `fuel = 12` it covers all twelve transpositions 0..11 exactly once (the wrap only matters if a
-/// caller starts at a nonzero `t`); the mod keeps `t` a valid pitch-class amount either way. Typed
-/// absence — no sentinel interval flows out.
+/// and `fuel = 12` it covers all twelve transpositions 0..11 exactly once. On a match the returned amount
+/// is CANONICALIZED to `0..11` via `pc-of` (so even a caller that starts at a nonzero or ≥12 `t` gets a
+/// valid pitch-class interval back, matching `transposition-between`'s documented range). Typed absence —
+/// no sentinel interval flows out.
 def find-transposition(a: List(Int64), b: List(Int64), t: Int64, fuel: Int64) =
   if fuel <= 0 then Option.None(unit)
-  else if list-eq(transpose-set-go(a, t, []), b) then Option.Some(t)
+  else if list-eq(transpose-set-go(a, t, []), b) then Option.Some(pc-of(t))
   else find-transposition(a, b, pc-of(t + 1), fuel - 1)
 
 /// The transposition interval `0..11` mapping the pitch-class set of `xs` onto that of `ys`, as
