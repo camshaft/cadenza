@@ -3752,6 +3752,7 @@ pass	an equality point fact decides a DIFFERENT equality test in the then branch
 pass	a literal match arm pins the scrutinee to a point, folding an arm-body compare and shedding an arith guard — the match-arm face of the point fact
 pass	an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state
 pass	an EXPORT naming an unbound definition is rejected
+pass	a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
 pass	an IEC-prefixed quantity displays scaled to its reference over Int64

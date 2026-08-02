@@ -16541,6 +16541,88 @@ mod runtime_ops {
     }
 
     #[test]
+    fn a_negative_constant_point_fact_folds_an_inner_comparison_with_the_correct_sign() {
+        // NEGATIVE-CONSTANT face of the point fact: all the point-fact pins above use a POSITIVE constant
+        // ([5,5]); this pins that a NEGATIVE `(= x -3)` refines `x` to `[-3,-3]` (refine_from_comparison's Eq
+        // arm sets `ec = c` with `c` already the i64 from `to_i64()` — no magnitude/clamp mishandling) and
+        // that `refined_comparison_const` folds an inner compare with the CORRECT sign. The negative ORDERING
+        // refinement is pinned (02-binding "SIGNED branch refinement over NEGATIVE bounds"); this is the
+        // negative-POINT twin — a sign bug (comparing magnitudes, or seeding an inverted bound) would mis-fold.
+        use crate::backend::wasm::lir::Lir;
+        use crate::db::Db;
+        let select = |src: &str, name: &str| {
+            let ast = crate::testkit::parse(src);
+            let mut db = Db::load(ast);
+            let layout = crate::layout::compute(&mut db).expect("layout");
+            let d = db.def_by_name(name).expect("def");
+            let body = db.defs[d].body.expect("body");
+            let params: Vec<_> = db.defs[d]
+                .params
+                .clone()
+                .into_iter()
+                .map(|p| {
+                    let b = db
+                        .ast
+                        .as_form(p, ":")
+                        .and_then(|t| t.first().copied())
+                        .unwrap_or(p);
+                    (b, crate::infer::type_of(&mut db, b))
+                })
+                .collect();
+            crate::backend::wasm::select::select_function(&mut db, body, &params, &layout)
+                .expect("select")
+                .code
+        };
+        let cmps = |code: &[Lir]| {
+            code.iter()
+                .filter(|i| {
+                    matches!(
+                        i,
+                        Lir::I64GtS | Lir::I64GeS | Lir::I64LtS | Lir::I64LeS | Lir::I64Eq
+                    )
+                })
+                .count()
+        };
+        // ABOVE: `(if (= x -3) (if (> x -5) 1 2) 0)` — under x==-3 the point [-3,-3] decides `-3 > -5` TRUE
+        // (a signed compare: -3 is ABOVE -5) → inner folds to 1, the `2` arm dead. Only the outer `= -3` stays.
+        let above = select(
+            "(module m (def (f (: n Int64)) (if (= n -3) (if (> n -5) 1 2) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&above),
+            1,
+            "x==-3 pins [-3,-3]; `-3 > -5` folds TRUE (signed), inner compare gone, got: {above:?}"
+        );
+        assert!(
+            !above.contains(&Lir::ConstI64(2)),
+            "the `> -5` false-arm `2` is dead under the [-3,-3] point, got: {above:?}"
+        );
+        // BELOW: `(if (= x -3) (if (> x -1) 1 2) 0)` — under x==-3, `-3 > -1` is FALSE → inner folds to 2, the
+        // `1` arm dead. The sign DISCRIMINATOR: a magnitude bug (|−3|=3 > |−1|=1) would wrongly fold this TRUE.
+        let below = select(
+            "(module m (def (f (: n Int64)) (if (= n -3) (if (> n -1) 1 2) 0)) (def (main) 0) (export main))",
+            "f",
+        );
+        assert_eq!(
+            cmps(&below),
+            1,
+            "x==-3 pins [-3,-3]; `-3 > -1` folds FALSE (signed), inner compare gone, got: {below:?}"
+        );
+        assert!(
+            !below.contains(&Lir::ConstI64(1)),
+            "the `> -1` true-arm `1` is dead under the [-3,-3] point (signed, not magnitude), got: {below:?}"
+        );
+        // VALUE parity: only x=-3 enters the then; `> -5` true (→1), `> -1` false (→2).
+        let above_s = "(if (= n -3) (if (> n -5) 1 2) 0)";
+        assert_eq!(run::<i64>("(: n Int64)", above_s, &[Val::S64(-3)]), 1);
+        assert_eq!(run::<i64>("(: n Int64)", above_s, &[Val::S64(-2)]), 0); // fails outer = -3
+        let below_s = "(if (= n -3) (if (> n -1) 1 2) 0)";
+        assert_eq!(run::<i64>("(: n Int64)", below_s, &[Val::S64(-3)]), 2);
+        assert_eq!(run::<i64>("(: n Int64)", below_s, &[Val::S64(0)]), 0);
+    }
+
+    #[test]
     fn a_below_len_guard_elides_the_matching_list_ats_own_bounds_check_but_not_a_different_lists() {
         // BOUNDED-INDEX (below-len) FACET — operator-greenlit bounds-elision. Inside the then-branch of
         // `(< i (List.len xs))`, the index `i` is flow-known `< len(xs)`, so a `List.at xs i` there can shed

@@ -504,6 +504,32 @@
   (call   pinned  (: 5 Int64)) (output (: 1 Int64))
   (call   pinned  (: 7 Int64)) (output (: 0 Int64)))
 
+(case "a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin"
+  (doc    "The NEGATIVE-constant face of the point fact: every point-fact case above pins a POSITIVE constant
+           (`[5,5]`); this pins that a NEGATIVE `(= x -3)` refines `x` to the exact point `[-3,-3]`
+           (refine_from_comparison's Eq arm uses the i64 constant directly — no magnitude/clamp mishandling)
+           and that the inner compare folds with the CORRECT SIGNED ordering. Two faces:
+             `above`: `(if (= x -3) (if (> x -5) 1 2) 0)` — under x == -3, `-3 > -5` is TRUE (signed: -3 is
+                      ABOVE -5) → inner folds to 1, the `2` arm is dead. x=-3 → 1; x=-2 fails the outer → 0.
+             `below`: `(if (= x -3) (if (> x -1) 1 2) 0)` — under x == -3, `-3 > -1` is FALSE → inner folds to
+                      2, the `1` arm is dead. x=-3 → 2; x=0 → 0.
+           The `below` face is the SIGN DISCRIMINATOR: a magnitude bug (treating |-3|=3 > |-1|=1) would wrongly
+           fold `below` to 1 at x = -3 — so the x=-3 → 2 output proves the point fact carries the signed value,
+           not its magnitude. Companion of the SIGNED-negative ORDERING refinement case above (this is the
+           negative-POINT twin). Int64 scalar (both backends). The rcdzc Lir counterpart is
+           `a_negative_constant_point_fact_folds_an_inner_comparison_with_the_correct_sign`.")
+  (input  (do
+            (def (above (: x Int64)) (if (= x -3) (if (> x -5) 1 2) 0))
+            (def (below (: x Int64)) (if (= x -3) (if (> x -1) 1 2) 0))
+            (export above)
+            (export below)))
+  ; above: under x==-3 the point [-3,-3] decides -3 > -5 TRUE → inner then (1); the 2 arm is dead.
+  (call   above (: -3 Int64)) (output (: 1 Int64))
+  (call   above (: -2 Int64)) (output (: 0 Int64))
+  ; below: under x==-3, -3 > -1 is FALSE → inner else (2); the 1 arm is dead (the signed-vs-magnitude discriminator).
+  (call   below (: -3 Int64)) (output (: 2 Int64))
+  (call   below (: 0 Int64))  (output (: 0 Int64)))
+
 (case "a literal match arm pins the scrutinee to a point, folding an arm-body compare and shedding an arith guard — the match-arm face of the point fact"
   (doc    "The PATTERN-MATCH face of the point fact: a literal `Int` probe over a variable scrutinee means the
            scrutinee EQUALS that literal in the arm BODY, so `refined_frame_for_match_arm` (select.rs; the rust
