@@ -3956,9 +3956,9 @@
   (output (: 0 UInt64)))
 
 (case "the bitwise-AND-with-zero annihilator does not swallow a COMPILE-PROVABLE overflow in the discarded operand"
-  (doc    "The bitwise companion of the `* 0` compile-provable-overflow case above (a distinct fold ARM —
+  (doc    "The bitwise companion of the `* 0` compile-provable-overflow case above (a distinct fold arm —
            `& 0` folds via the bitwise annihilator, not the multiplicative one, so it needs its own pin, just
-           as the runtime `& 0` and `* 0` div-trap cases at :3844 are pinned separately). When the discarded
+           as the runtime `& 0` and `* 0` annihilator div-trap cases above are pinned separately). When the discarded
            operand of `x & 0 → 0` is a CONSTANT whose evaluation is a compile-provable OVERFLOW, the fold must
            NOT swallow it: `(& (* (: UInt64.max UInt64) (: 2 UInt64)) (: 0 UInt64))` — the inner `(* UInt64.max
            2)` = 2^65-2 overflows the u64 width, so the operand's evaluation is a compile-provable trap that is
@@ -4248,9 +4248,10 @@
            value); `(match Int64.max (Int64.max => 7) (_ => 0))` folds to 7. Pins that the const match-fold
            materializes the boundary constants as their exact bit patterns for the dispatch (a folded-to-wrong-
            width or off-by-one at the sign boundary would misdispatch — the guard-clause `match n with
-           Int64.min => …` saturation idiom relies on this). The runtime boundary-equality face is pinned at
-           :3436; this pins the compile-time MATCH-fold face. Nullary defs so the scrutinee is a compile-time
-           constant — the fold path. Value-only, both backends fold each body to a literal constant.")
+           Int64.min => …` saturation idiom relies on this). The runtime boundary-equality face is pinned by
+           the Int64.max/Int64.min-constants-compare-equal case above; this pins the compile-time MATCH-fold
+           face. Nullary defs so the scrutinee is a compile-time constant — the fold path. Value-only, both
+           backends fold each body to a literal constant.")
   (input  (do
             (def (mhit)  (match (: -9223372036854775808 Int64) (-9223372036854775808 1) (_ 0)))
             (def (mnear) (match (: -9223372036854775808 Int64) (-9223372036854775807 1) (_ 0)))
