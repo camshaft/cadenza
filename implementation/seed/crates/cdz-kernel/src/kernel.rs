@@ -1080,6 +1080,87 @@ impl Session {
         Ok(s)
     }
 
+    /// The ASYNC twin of [`Session::replay`] (operator all-async directive) — reconstruct a session from a
+    /// persisted log, folding each observable event through an [`AsyncReducer`] (`.await`). Identical
+    /// reconstruction of the obligation sets / armed-timer table / `next_effect_id` / `last_now` high-water
+    /// mark; only the re-fold awaits. Additive alongside the sync [`Session::replay`] during the migration;
+    /// the sync one is removed once every reducer is `AsyncReducer` (the operator's "one async trait only").
+    ///
+    /// Effects emitted during replay are IGNORED (§17 "replay re-folds with no live effect" — the results
+    /// are already in the log), exactly as the sync path; so replayed-kv == live-kv (PR#990 finding #1).
+    pub async fn replay_async(
+        log: Vec<Event>,
+        reducer: &dyn AsyncReducer,
+    ) -> Result<Session, KernelError> {
+        match log.first().map(|e| &e.body) {
+            Some(EventBody::Genesis { .. }) => {}
+            _ => return Err(KernelError::MissingGenesis),
+        }
+        let mut s = Session {
+            log: Vec::new(),
+            kv: Kv::new(),
+            next_effect_id: 0,
+            settled: BTreeSet::new(),
+            open: BTreeSet::new(),
+            armed_timers: BTreeMap::new(),
+            last_now: 0,
+            store: None,
+            persist_error: None,
+        };
+        for (i, event) in log.into_iter().enumerate() {
+            if event.seq != i as u64 {
+                return Err(KernelError::NonContiguousSeq {
+                    expected: i as u64,
+                    got: event.seq,
+                });
+            }
+            // Reconstruct the obligation sets + armed-timer table + id counter from the log (§16c-S1/S5) —
+            // IDENTICAL to the sync `replay`; only the re-fold below awaits.
+            match &event.body {
+                EventBody::Dispatched { id, .. } => {
+                    s.open.insert(id.0);
+                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
+                }
+                EventBody::TimerArmed {
+                    id, deadline_ms, ..
+                } => {
+                    s.open.insert(id.0);
+                    s.armed_timers.insert(id.0, *deadline_ms);
+                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
+                }
+                EventBody::EffectResult { id, result, .. } => {
+                    s.open.remove(&id.0);
+                    s.settled.insert(id.0);
+                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
+                    if s.dispatch_kind_of(*id) == Some(EffectKind::Now) {
+                        if let EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes))) =
+                            result
+                        {
+                            if let Ok(arr) = <[u8; 8]>::try_from(&bytes[..]) {
+                                s.last_now = s.last_now.max(u64::from_le_bytes(arr));
+                            }
+                        }
+                    }
+                }
+                EventBody::TimerFired { id, .. } => {
+                    s.open.remove(&id.0);
+                    s.armed_timers.remove(&id.0);
+                    s.settled.insert(id.0);
+                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
+                }
+                EventBody::AuthzDenied { id, .. } => {
+                    s.next_effect_id = s.next_effect_id.max(id.0 + 1);
+                }
+                _ => {}
+            }
+            if observable(&event.body) {
+                let _ = reducer.fold_async(&event, &mut s.kv).await;
+            }
+            s.log.push(event);
+        }
+        Ok(s)
+    }
+
     /// The set of open (dispatched-but-unsettled) effect ids after recovery — what a driver must
     /// re-drive or time out (§16c-S1). Exposed for the recovery driver + tests.
     pub fn open_effect_ids(&self) -> Vec<EffectId> {
@@ -1873,5 +1954,37 @@ mod monotonic_now_tests {
         assert_eq!(recorded_now_sequence(&replayed), live_seq);
         assert_eq!(replayed.last_now, live_last_now);
         assert_eq!(replayed.last_now, 1002);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_async_reconstructs_identically_to_sync_replay() {
+        // The async twin `replay_async` (driving an AsyncReducer) must reconstruct a session BYTE-IDENTICAL
+        // to sync `replay` — the additive-migration invariant (replay's re-fold only awaits; it changes no
+        // reconstruction). Build a session, then replay the SAME log both ways and compare KV root + last_now
+        // + open set + log length. A replay/replay_async drift fails loudly HERE.
+        use crate::reducer::SyncAsAsync;
+        let mut exec = StuckClock(1000);
+        let mut s = Session::genesis(Hash::of(b"now-v1"));
+        s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+            .unwrap();
+        let log = s.log().to_vec();
+
+        let sync_replayed = Session::replay(log.clone(), &NowReducer).expect("sync replay");
+        let async_replayed = Session::replay_async(log, &SyncAsAsync(NowReducer))
+            .await
+            .expect("async replay");
+
+        assert_eq!(
+            async_replayed.snapshot().kv_root,
+            sync_replayed.snapshot().kv_root,
+            "async replay KV root must equal sync replay KV root"
+        );
+        assert_eq!(async_replayed.last_now, sync_replayed.last_now);
+        assert_eq!(async_replayed.last_now, 1002);
+        assert_eq!(async_replayed.log().len(), sync_replayed.log().len());
+        assert_eq!(
+            recorded_now_sequence(&async_replayed),
+            recorded_now_sequence(&sync_replayed)
+        );
     }
 }
