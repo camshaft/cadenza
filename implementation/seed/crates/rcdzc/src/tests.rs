@@ -70083,10 +70083,16 @@ mod stage1 {
         //  - a NON-capturing lambda stored + called (no env cell, no poison).
         //  - a capturing lambda DIRECT-CALLED ONLY (no escape) — copy-propagates + folds.
         //  - a TUPLE-element store + direct call (fixed-shape unboxed rep, a long-standing SURVIVOR).
+        //  - a `(do …)` in PROJECTION-OPERAND position whose TAIL is the tuple binding `r` — the `(do)`
+        //    special-case in `collect_binding_uses` threads the caller's `proj_operand` to the tail form
+        //    (PR #1245 Copilot), so the tail `Ref r` is a piece-read (`.0` projects it), NOT a whole-value
+        //    escape that would spuriously mark `r` `escapes_whole` and flip its keep/copy decision. The
+        //    NON-final `(Map.insert …)` stays `proj_operand=false` (sequenced, value discarded).
         for body in [
             "(let ((f1 (fn ((: v Int64)) (+ 1 v)))) (do (Map.insert Map.empty 1 f1) (f1 d)))",
             "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (f1 d)))",
             "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (do (tuple f1 9) (f1 d))))",
+            "(let ((r (tuple (fn ((: v Int64)) (+ d v)) 9))) ((. (do (Map.insert Map.empty 1 2) r) 0) 10))",
         ] {
             let src = format!("(module m (def (main (: d Int64)) {body}) (export main))");
             compile_component(&crate::codec::encode(&parse(&src)))
