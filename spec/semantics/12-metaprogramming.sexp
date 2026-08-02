@@ -881,7 +881,7 @@
   (input  (quote #"hi"))
   (declines))
 
-(case "eval of a quote carrying a symbol literal declines CDZ0101 — the reify bail as a perf-bound tripwire"
+(case "eval of a quote carrying a symbol literal is rejected CDZ0101 — the reify bail as a perf-bound tripwire"
   (doc    "`(eval (quote (Qty.of 5 (Unit.of #\"zorks\"))))` is rejected CDZ0101. The decline is at the QUOTE
            (reify), NOT eval's reconstructor: `Unit.of` takes a `#\"…\"` symbol argument, and quote's reify has
            no `Ast.Symbol` variant to build (the minimal-root case above), so the whole quote bails before eval
