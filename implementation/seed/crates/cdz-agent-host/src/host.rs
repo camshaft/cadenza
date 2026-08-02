@@ -183,6 +183,16 @@ impl AgentHost {
             .map(|s| s.fire_due_timers(now_ms))
             .sum()
     }
+
+    /// The EARLIEST armed-timer deadline across all registered sessions, or `None` if no session has an
+    /// armed timer. The async host loop uses this as its timer wheel — it sleeps until this deadline,
+    /// then calls [`AgentHost::fire_due_timers`]. `None` means the loop only wakes on inbound events.
+    pub fn next_timer_deadline_across_sessions(&self) -> Option<u64> {
+        self.sessions
+            .values()
+            .filter_map(|s| s.next_timer_deadline())
+            .min()
+    }
 }
 
 #[cfg(test)]

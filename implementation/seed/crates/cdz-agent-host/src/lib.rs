@@ -27,6 +27,10 @@
 //! agents: a registry of live kernel `Session`s keyed by id, each driven by its reducer + a
 //! `CompositeExecutor` of the real executors + an authorizer. Delivering an inbound event runs one turn
 //! of the reactive loop (deliver → fold → authorize → dispatch → fold-result) — an agent, running.
+//! [`AsyncAgentHost`] (see [`async_host`]) wraps that registry in a SINGLE-THREADED async event loop that
+//! interleaves MANY sessions on one task (a `select!` over a shared inbox + a cross-session timer wheel +
+//! shutdown) — the multi-session daemon, built so v-agent-harness's kernel-async conversion swaps the
+//! in-place `deliver` for `.await` with no reshape (single-threaded, no `Send`).
 //!
 //! All executor errors are RECOVERABLE + classified for the kernel's supervision tree (see [`retry`]):
 //! an `EffectOutcome::Err` reason leads with a `RETRYABLE:`/`PERMANENT:` token so a supervisor decides
@@ -34,6 +38,7 @@
 //!
 //! The shared surface with `cdz-kernel` is ONLY the trait signatures; this crate never edits kernel src.
 
+pub mod async_host;
 pub mod clock;
 pub mod host;
 pub mod http;
@@ -41,6 +46,7 @@ pub mod model;
 pub mod retry;
 pub mod status;
 
+pub use async_host::{AsyncAgentHost, Inbound, Inbox};
 pub use clock::ClockExecutor;
 pub use host::{AgentHost, HostedSession, SessionId};
 pub use http::{HttpExecutor, HttpTransport};

@@ -36,3 +36,11 @@ cdz-kernel = { path = "../cdz-kernel" }
 # and the reflexive `From` keep our `Payload::Inline(x.into())` sites compiling whether the kernel's
 # `Payload::Inline` inner type is still `Vec<u8>` (today) or `Bytes` (after v-agent-harness's flip).
 bytes = "1"
+# tokio — the async runtime for the single-threaded multi-session host loop (AsyncAgentHost). Operator
+# async directive (session multiplexing + cooperative gas-yield). SINGLE-THREADED by design: sessions
+# hold non-Send kernel trait objects (Reducer/Authorize/Executor aren't `: Send`) + wasmtime types, so
+# the host runs ONE task with a `select!` over all sessions' inbound channels + a timer — interleaving
+# sessions cooperatively (§15b determinism is single-threaded; agents are I/O-bound so parallelism isn't
+# the win). v-agent-harness's kernel-async lands on the SAME single-threaded assumption, so the blocking
+# `deliver` here becomes `.await` with no reshape. Minimal feature set (no multi-thread runtime needed).
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
