@@ -1,0 +1,135 @@
+/// giter-spanwhile.cdz — DIRECT boundary + complementarity coverage for the `take-while` / `drop-while`
+/// pair, split into its own small module.
+///
+/// WHY A SEPARATE MODULE. giter.cdz pins the HAPPY PATH of each (a non-trivial leading run: take-while
+/// keeps it, drop-while skips it) but NOT the three boundaries where an off-by-one hides, nor the
+/// PARTITION invariant that ties the two together:
+///   - EMPTY input: both must yield empty (the `Nil` base arm).
+///   - ALL-TRUE predicate: take-while keeps EVERYTHING (never hits its `else GIter.Nil`), drop-while
+///     drops everything down to empty.
+///   - FIRST element FAILS: take-while yields empty immediately, and drop-while yields the WHOLE rest
+///     UNCHANGED — that `else GIter.Cons(h, rest)` arm returns `h` PREPENDED to the untouched tail, so an
+///     off-by-one that dropped `h` (or re-recursed) would still pass a happy-path test whose leading run
+///     is non-empty. This is the subtle one.
+///   - COMPLEMENTARITY: for any predicate, `collect(take-while) ++ collect(drop-while)` reconstructs the
+///     original sequence — take-while's kept prefix and drop-while's returned suffix partition the input.
+/// It lives in its own module because giter.cdz sits at the per-module monomorphizer
+/// instantiation-pressure ceiling its header documents; a fresh module isolates the added instantiation
+/// (the same "isolate the heavy instantiation" pattern giter-flat / giter-chain / giter-scan follow).
+///
+/// The generic pull-iterator (same cons-cell shape as the sibling modules; re-declared here so this
+/// module is self-contained — each src/*.cdz is its own namespace).
+type GIter =
+  | Nil
+  | Cons(a, GIter(a))
+
+/// `from-list(xs)` — the base generic producer over `xs : List(a)`, self-recursive so its result element
+/// ties to the argument.
+def from-list(xs) = match xs with
+  | [] => GIter.Nil(unit)
+  | [h, .. t] => GIter.Cons(h, from-list(t))
+
+/// `take-while(it, p)` — yield the leading run satisfying `p`, then stop at the first failure. The unit
+/// under test.
+def take-while(it, p) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => if p(h) then GIter.Cons(h, take-while(rest, p)) else GIter.Nil(unit)
+
+/// `drop-while(it, p)` — skip the leading run satisfying `p`, then yield the rest UNCHANGED (the
+/// `else GIter.Cons(h, rest)` arm returns `h` prepended to the untouched tail). The unit under test.
+def drop-while(it, p) = match it with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(h, rest) => if p(h) then drop-while(rest, p) else GIter.Cons(h, rest)
+
+/// `take(it, n)` — the first `n` elements. Used ONLY to build a TYPED empty iterator
+/// (`take(from-list([x]), 0)`) so the empty-input tests pin the element type: a bare `from-list([])`
+/// leaves its result element var untied (the documented empty-producer CDZ0201 gap), while `take` of a
+/// non-empty source at count 0 is an empty iterator whose element type is pinned by the source's `[x]`.
+def take(it, n) =
+  if n <= 0 then
+    GIter.Nil(unit)
+  else
+    match it with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1))
+
+/// `count(it)` — number of emitted values, driving the pull to exhaustion.
+def count(it) = match it with
+  | GIter.Nil(_) => 0
+  | GIter.Cons(_, rest) => 1 + count(rest)
+
+/// `collect(it)` — reify the iterator back to a `List(a)` so a test can assert the exact emitted sequence.
+def collect(it) = match it with
+  | GIter.Nil(_) => []
+  | GIter.Cons(h, rest) => List.concat([h], collect(rest))
+
+/// `int-list-eq(xs, ys)` — structural equality on `List(Int64)` for the sequence assertions.
+def int-list-eq(xs, ys) = match xs with
+  | [] => (match ys with
+    | [] => true
+    | _ => false
+  )
+  | [x, .. xr] => match ys with
+    | [] => false
+    | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
+
+/// TESTS ----------------------------------------------------------------------------------------------
+/// take-while boundaries: empty input, all-true keeps everything, first-fails yields empty.
+@test
+def take-while-of-empty-is-empty() =
+  if count(take-while(take(from-list([1]), 0), fn(x) => x < 3)) == 0 then
+    unit
+  else
+    trap("take-while of an empty iterator is empty")
+
+@test
+def take-while-all-true-keeps-everything() =
+  if int-list-eq(collect(take-while(from-list([1, 2, 1]), fn(x) => x < 9)), [1, 2, 1]) then
+    unit
+  else
+    trap("take-while with an always-true predicate keeps every element: [1,2,1]")
+
+@test
+def take-while-first-fails-is-empty() =
+  if count(take-while(from-list([5, 1, 2]), fn(x) => x < 3)) == 0 then
+    unit
+  else
+    trap("take-while stops before the first failing element: []")
+
+/// drop-while boundaries: empty input, all-true drops everything, first-fails yields the whole rest.
+@test
+def drop-while-of-empty-is-empty() =
+  if count(drop-while(take(from-list([1]), 0), fn(x) => x < 3)) == 0 then
+    unit
+  else
+    trap("drop-while of an empty iterator is empty")
+
+@test
+def drop-while-all-true-is-empty() =
+  if count(drop-while(from-list([1, 2, 1]), fn(x) => x < 9)) == 0 then
+    unit
+  else
+    trap("drop-while with an always-true predicate drops every element: []")
+
+@test
+def drop-while-first-fails-yields-whole-rest() =
+  if int-list-eq(collect(drop-while(from-list([5, 1, 2]), fn(x) => x < 3)), [5, 1, 2]) then
+    unit
+  else
+    trap("drop-while whose first element fails yields the whole iterator unchanged: [5,1,2]")
+
+/// COMPLEMENTARITY: take-while's kept prefix and drop-while's returned suffix partition the input.
+@test
+def take-while-and-drop-while-partition-the-input() =
+  if int-list-eq(
+      List.concat(
+        collect(take-while(from-list([1, 2, 5, 4]), fn(x) => x < 3)),
+        collect(drop-while(from-list([1, 2, 5, 4]), fn(x) => x < 3))
+      ),
+      [1, 2, 5, 4]
+    ) then
+    unit
+  else
+    trap("take-while prefix ++ drop-while suffix reconstructs the original: [1,2,5,4]")
+
+export { GIter.* }
