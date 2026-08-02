@@ -966,6 +966,22 @@ def falselit() = Tok.TBoolTok(0)
 def parse-of(ts: List(Tok)) = parse-tokens(ts)
 
 @test
+def id-param-name-of-is-option() =
+  // Pins param-name-of's Option contract (the B9 sentinel-elimination invariant): an NVar param node yields
+  // Some(nameId), any non-NVar node yields None — never a -1. The linearity check (def-params-nonlinear)
+  // collects only the Some names, so a name-less param can't spuriously collide; this guards that a future
+  // change can't re-introduce a -1 that names-have-dup would have to special-case again.
+  (match add-node(empty-tree(), Node.NVar(99)) with | (varId, t1) =>
+    (match add-node(t1, Node.NLit(5)) with | (litId, t2) =>
+      (match param-name-of(t2, varId) with
+        | Option.Some(nm) => (if (nm == 99) then
+            (match param-name-of(t2, litId) with    // a literal node is not a param NVar
+              | Option.None(_) => unit
+              | Option.Some(_) => trap("a non-NVar node has no param-name (None)"))
+          else trap("param-name-of an NVar(99) = Some(99)"))
+        | Option.None(_) => trap("param-name-of an NVar node is Some(nameId)"))))
+
+@test
 def id-literal-is-int() =
   // "5" → the literal node is TInt; the program is well-typed.
   (match parse-of([n(5)]) with | (root, tree) =>
