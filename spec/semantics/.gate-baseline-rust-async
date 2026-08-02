@@ -1145,6 +1145,7 @@ pass	a bare (map) pattern with no keys matches a non-empty map, not just the emp
 pass	a bare TUPLE of quantities renders each element scaled to its reference (mixed inner types)
 pass	a bare UInt8 literal-match (no newtype) is the width template
 pass	a bare arithmetic keyword is rejected, not a crash
+pass	a bare-binder guard over a STRING (heap) param scrutinee in a helper binds and evaluates
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare built-in constructor Some is passed as a first-class function
 pass	a bare conditional keyword is rejected, not a crash
