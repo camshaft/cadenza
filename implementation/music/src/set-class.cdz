@@ -58,9 +58,12 @@ def list-eq(a: List(Int64), b: List(Int64)) = match a with
 
 // ---- transpositional equivalence ---------------------------------------------------------------------
 
-/// Search transpositions `t .. 11` of set `a` for one equal to set `b`; return the first matching `t` as
-/// `Some(t)`, or `None` if none matches. Recursive over the transposition amount (bounded by fuel = the
-/// remaining amounts to try). Typed absence — no sentinel interval flows out.
+/// Search transpositions of set `a` for one equal to set `b`, starting at amount `t` and stepping `t` up
+/// by one MOD 12 (`pc-of(t + 1)` wraps 11 back to 0) each recursion, for up to `fuel` steps. Returns the
+/// first matching `t` as `Some(t)`, or `None` when `fuel` is exhausted with no match. Called with `t = 0`
+/// and `fuel = 12` it covers all twelve transpositions 0..11 exactly once (the wrap only matters if a
+/// caller starts at a nonzero `t`); the mod keeps `t` a valid pitch-class amount either way. Typed
+/// absence — no sentinel interval flows out.
 def find-transposition(a: List(Int64), b: List(Int64), t: Int64, fuel: Int64) =
   if fuel <= 0 then Option.None(unit)
   else if list-eq(transpose-set-go(a, t, []), b) then Option.Some(t)
