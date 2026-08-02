@@ -2458,6 +2458,16 @@ mod tests {
                 "ls",
                 "ls-gen",
             ),
+            // A sum whose variant PAYLOADS are themselves COMPOUNDS (a `(Tuple …)` and a `(List …)`), mixed
+            // with a bare-name NULLARY variant — classify_sum recurses through each payload into the nested
+            // compound (depth-bounded) AND accepts the nullary. A common real shape (a tagged message union);
+            // exercises payload-recursion + mixed-arity together, beyond the scalar-payload cases above.
+            (
+                "(do (type Msg (Pair (Tuple Int64 Bool)) (Items (List Int64)) Empty) \
+                   (@ test (def (m (: v Msg)) 0)) (def (o) 1))",
+                "m",
+                "m-gen",
+            ),
         ] {
             let db = Db::load(crate::testkit::parse(src));
             let names: Vec<String> = db
