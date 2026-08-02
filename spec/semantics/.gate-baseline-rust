@@ -1553,6 +1553,7 @@ pass	a tuple mixing an int, a runtime ROPE, and a FLOAT compares whole by per-ki
 pass	a tuple of two branch-built Options matches all four Some/None quadrants jointly
 pass	a tuple with a Qty leaf as a map key hits by magnitude-and-unit content
 pass	a tuple with a Symbol leaf as a SET element dedups and membership-checks by content
+pass	a tuple-destructuring fn (lambda) parameter binds its parts
 pass	a two-level UPDATE of a map-of-maps rebuilds the inner and leaves the old outer intact
 pass	a type-valued parameter threads through TWO relay layers beside a runtime operand
 pass	a user sum named Ast renders BARE with RUNTIME payloads through one compiled body
