@@ -64,9 +64,14 @@ pub struct Session {
     /// The durable log this session writes THROUGH as it appends (§16c-S1), if attached via
     /// [`Session::attach_log`]. When present, every appended event is persisted (append + flush) before
     /// `append` returns — so the S1 "Dispatched durable before its effect routes" ordering is enforced
-    /// IN-KERNEL, not left to a driver mirroring events by hand. `None` = an in-memory-only session
-    /// (tests, or a caller that persists separately). Persistence lives here, next to the in-memory log
-    /// it shadows, so the two never diverge.
+    /// IN-KERNEL, not left to a driver mirroring events by hand — UNLESS a prior persist failure is
+    /// latched (durability tier B): `append` records the first `store` error into `persist_error`
+    /// (first-error-wins), then returns the hash and SKIPS further writes, so after a failure the S1
+    /// guarantee holds only while [`Session::take_persist_error`] is `None` (which the driver MUST
+    /// check). Past a failure the on-disk log stops at the last good frame and recovery heals the tail
+    /// (`truncate_to`). `None` = an in-memory-only session (tests, or a caller that persists
+    /// separately). Persistence lives here, next to the in-memory log it shadows, so the two never
+    /// diverge while durable.
     store: Option<Box<dyn crate::log_store::LogSink>>,
     /// The first persistence error hit while writing through `store`, latched here (§16c-S1, tier B —
     /// see [`Session::attach_log`]). The in-memory log + fold always succeed, so `append`/`drive` stay

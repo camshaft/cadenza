@@ -448,8 +448,8 @@ fn attached_log_persists_through_on_append_no_manual_mirroring() {
     // No persistence error was latched — every event reached disk.
     assert!(session.take_persist_error().is_none());
 
-    // Recover from the FILE ONLY (drop the session's store handle first by ending its scope isn't
-    // needed — recover opens the path independently). The reconstructed session matches the live one.
+    // Recover from the FILE ONLY — `recover` opens the path independently (it does not attach a live
+    // store to the reconstructed session). The reconstructed session matches the live one.
     let (restored, report) =
         Session::recover(&path, &reducer).expect("recover from written-through log");
     assert_eq!(report.kind, cdz_kernel::log_store::RecoveryKind::Clean);
@@ -458,6 +458,11 @@ fn attached_log_persists_through_on_append_no_manual_mirroring() {
     assert_eq!(restored.open_effects(), 0);
     assert_eq!(restored.log().len(), session.log().len());
 
+    // Drop `session` (which holds the attached LogStore's open File) BEFORE unlinking: POSIX unlinks
+    // an open file fine, but Windows refuses to remove a file with a live handle — the swallowed
+    // remove_file error would then leak the temp. `restored` holds no handle (recover opened + closed
+    // the path), so only `session` needs dropping.
+    drop(session);
     let _ = std::fs::remove_file(&path);
 }
 
