@@ -102,7 +102,11 @@
             export HOME="$TMPDIR/home"
             mkdir -p "$HOME"
             cd implementation/seed/crates/cdz-runtime
-            cargo component build --release --target wasm32-unknown-unknown
+            # --locked: honor the COMMITTED Cargo.lock exactly (the runtime's lock IS committed +
+            # pins deps). Without it `cargo` may re-resolve to different dep versions and rewrite the
+            # lock, which would (a) undermine this FOD's determinism and (b) waste a network fetch
+            # before the output-hash check fails. --locked fails LOUDLY on a stale lock instead.
+            cargo component build --release --target wasm32-unknown-unknown --locked
             runHook postBuild
           '';
 
@@ -119,7 +123,10 @@
       in
       {
         # N1: the value-heap release runtime component, content-addressed. `nix build .#runtime`
-        # realizes it into a store path whose hash is REQUIRED_RUNTIME_HASH — a drift fails to build.
+        # realizes the stripped runtime; because this is a fixed-output derivation, Nix checks the
+        # output's CONTENT hash (sha256 of the file bytes) == REQUIRED_RUNTIME_HASH and fails the
+        # build on any drift. (The nix STORE-PATH hash is a different, derivation-derived hash — do
+        # NOT locate the artifact by REQUIRED_RUNTIME_HASH; the content hash is what's enforced.)
         packages.runtime = runtime;
 
         devShells.default = pkgs.mkShell {
