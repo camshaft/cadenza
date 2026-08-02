@@ -2916,6 +2916,17 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
         Core::Seq { stmts, tail } => {
             let mut body = String::new();
             for &s in &stmts {
+                // DROP a non-final statement that reaches NO host call. `lower` only produces a `Seq`
+                // (rather than folding to `tail`) because SOME statement reaches a side effect the backend
+                // must emit (a host call). A statement whose value is DISCARDED and which reaches no host
+                // call is DEAD — per the dead-init ruling (§283) its computation (incl. any trap, e.g. a
+                // `(/ 100 0)` div-by-zero) is UNOBSERVED and must be elided, NOT emitted as `let _ = …`
+                // (which would run it and spuriously trap — adv-56). Only a statement that reaches a host
+                // call is kept, for its boundary-crossing observable effect. (A perform is a host call at
+                // this tier; a handled perform folded away, so "reaches a host call" is the right test.)
+                if !reaches_host_call(db, s) {
+                    continue;
+                }
                 let sv = emit(db, s, env, ctx)?;
                 body.push_str(&format!("let _ = {sv}; "));
             }
@@ -3719,6 +3730,19 @@ fn cmp_helper_name(enum_ty: &str) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+/// Whether the sub-tree at `id` reaches an OBSERVABLE side effect — a `Core::HostCall`, OR a `Core::Call`
+/// (a callee might itself perform a host call, which the shallow host-import walk doesn't descend into). Used
+/// by the `Core::Seq` emit to decide whether a DISCARDED non-final statement must be run: a statement that
+/// reaches no host call and makes no call is DEAD (its value is discarded, its trap unobserved per the
+/// dead-init ruling §283) and is ELIDED rather than emitted `let _ = …` (which would run it and spuriously
+/// trap — adv-56). CONSERVATIVE: a statement with any call is KEPT (it might perform), so only a provably
+/// pure+callless statement (e.g. `(/ 100 d)`) is dropped — exactly the dead-init shape.
+fn reaches_host_call(db: &mut Db, id: StructId) -> bool {
+    let mut imports = Vec::new();
+    crate::backend::wasm::host::collect_host_imports(db, id, &mut imports);
+    !imports.is_empty() || crate::layout::body_has_call(db, id)
 }
 
 /// The crate-root shim fn ident a `Core::HostCall` emits a call to, derived from the CANONICAL host-op key
