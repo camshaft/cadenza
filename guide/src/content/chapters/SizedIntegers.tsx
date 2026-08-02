@@ -65,14 +65,14 @@ export default function SizedIntegers() {
       <P>
         A newcomer's first reflex is to annotate with a bare <C>Int</C>, the way most languages name their
         integer type. In Cadenza <C>Int</C>, <C>UInt</C>, and <C>Float</C> are not types at all: they're{" "}
-        <em>value constructors</em> that <em>build</em> a sized type from a bit width. <C>(Int 64)</C> is{" "}
+        <em>width constructors</em> that <em>build</em> a sized type from a bit width. <C>(Int 64)</C> is{" "}
         <C>Int64</C>, <C>(UInt 8)</C> is <C>UInt8</C>, <C>(Float 32)</C> is <C>Float32</C>. So writing a
         bare <C>Int</C> where a type belongs uses a value where a type is required, and the compiler says so:
       </P>
       <Note>
-        This one is <strong>meant to be refused</strong>: <C>Int</C> on its own is a value, not a type, so
-        the annotation has nothing to stand on. The diagnostic suggests a concrete width (e.g. <C>Int64</C>)
-        and reminds you that <C>Int</C> is a value, not a type.
+        This one is <strong>meant to be refused</strong>: <C>Int</C> is a width constructor, not a type, so
+        the annotation has nothing to stand on. The diagnostic names the sized default <C>Int64</C> (and
+        offers a one-click fix to it), and points you at the other widths if you meant one of those.
       </Note>
       <Runnable source={`(def (f (: a Int)) a)`} expect="error" />
       <P>

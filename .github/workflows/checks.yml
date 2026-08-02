@@ -373,6 +373,11 @@ jobs:
           # <Runnable> code; a fake API named in prose — like the property-testing @property that once
           # shipped — would otherwise slip). Fast text scan, no wasm.
           npm run check:prose
+          # Pin the EXACT compiler diagnostics the guide PROSE quotes (e.g. SizedIntegers leans on the
+          # bare-Int CDZ0203 "width constructor … use Int64" wording). expect="error" Runnables assert only
+          # THAT a snippet declines, not WHAT it says, so a diagnostic reword can silently drift chapter
+          # prose (it did, 4x). This asserts the pinned messages still contain their load-bearing phrases.
+          npm run check:diagnostics
           npm run check:examples
           npm run check:calculator
           # Compiler-conformance guards that a per-example check can't cover, each catching a fleet-wide
