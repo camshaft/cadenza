@@ -56,6 +56,13 @@ pub struct FoldOutput {
     /// and appends a durable `Dispatched` event before routing (§16c-S1). Each carries its optional
     /// continuation token (§19e — see [`Effect`]).
     pub effects: Vec<Effect>,
+    /// Set when the fold FAILED rather than completing — a WASM guest trap / fuel-exhaustion /
+    /// instantiate failure (§17 totality: the kernel can't let a bad reducer panic the loop, so a
+    /// failure is surfaced as data, not a crash). `None` = a normal fold. When `Some(reason)`, the
+    /// kernel records a first-class [`crate::event::EventBody::FoldFailed`] LOG event (the error-
+    /// resilience / supervision direction — a failure is CAPTURED on the log for a supervisor to see,
+    /// NOT silently swallowed into an empty fold "into the void"). A failed fold carries no effects.
+    pub failure: Option<String>,
 }
 
 impl FoldOutput {
@@ -68,13 +75,28 @@ impl FoldOutput {
     pub fn with(effects: Vec<EffectRequest>) -> Self {
         FoldOutput {
             effects: effects.into_iter().map(Effect::new).collect(),
+            failure: None,
         }
     }
 
     /// Build from fully-specified effects (each with its own token) — the path a WASM `ComponentReducer`
     /// adapter uses to carry the guest's per-effect correlation token.
     pub fn with_effects(effects: Vec<Effect>) -> Self {
-        FoldOutput { effects }
+        FoldOutput {
+            effects,
+            failure: None,
+        }
+    }
+
+    /// A FAILED fold (§17 / error-resilience): no effects, carrying the reason the fold couldn't run
+    /// (guest trap / fuel-exhaustion / instantiate failure). The kernel records it as a `FoldFailed`
+    /// log event so a supervisor can observe the failure rather than it vanishing into a silent empty
+    /// fold.
+    pub fn failed(reason: impl Into<String>) -> Self {
+        FoldOutput {
+            effects: Vec::new(),
+            failure: Some(reason.into()),
+        }
     }
 }
 

@@ -235,7 +235,70 @@ fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
     kv2.put(b"b".to_vec(), b"2".to_vec());
     let out2 = inbound(&mut kv2, &fail_reducer);
     assert!(out2.effects.is_empty(), "a failed fold emits no effects");
+    // The failure is CAPTURED (not a silent empty fold) — error-resilience direction.
+    assert!(
+        out2.failure.is_some(),
+        "a failed fold surfaces a failure reason, not a silent none"
+    );
     assert_eq!(kv2.len(), 2, "a failed fold must not shrink the KV");
     assert_eq!(kv2.get(b"a"), Some(&b"1"[..]));
     assert_eq!(kv2.get(b"b"), Some(&b"2"[..]));
+}
+
+/// Error-resilience / supervision (§17): a fold that FAILS (wasm guest trap / fuel-exhaustion) is
+/// CAPTURED as a first-class `FoldFailed` LOG event — driven through the real kernel loop — rather than
+/// vanishing into a silent empty fold ("errors into the void"). A supervisor reading the log sees the
+/// failure + which event caused it. The session doesn't die: the loop continues (§17 can't-brick).
+#[test]
+fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
+    use cdz_kernel::authz::Authorizer;
+    use cdz_kernel::effect::{Capability, EffectKind as KKind, Payload, ResourcePredicate};
+    use cdz_kernel::event::{ContentType as KContentType, EventBody};
+    use cdz_kernel::executor::RecordingExecutor;
+    use cdz_kernel::hash::Hash;
+    use cdz_kernel::kernel::Session;
+
+    // A 1-fuel budget guarantees the guest fold traps (OutOfFuel) mid-apply.
+    let reducer = ComponentReducer::from_component_bytes(GUEST)
+        .expect("valid reducer component")
+        .with_fuel_budget(1);
+    let authz = Authorizer::new(vec![Capability {
+        kind: KKind::Http,
+        predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
+    }]);
+    let mut exec = RecordingExecutor::new();
+    let mut session = Session::genesis(Hash::of(b"foldfail-v1"));
+
+    // Deliver an inbound message — the guest's fold traps on 1 fuel. deliver() must NOT panic (§17).
+    session
+        .deliver(
+            EventBody::Inbound {
+                content_type: KContentType {
+                    family: "message".into(),
+                    version: 1,
+                },
+                payload: Payload::Inline(b"hello".to_vec().into()),
+            },
+            None,
+            &reducer,
+            &authz,
+            &mut exec,
+        )
+        .expect("deliver does not error on a trapped fold");
+
+    // A FoldFailed event is on the log (the failure was CAPTURED, not swallowed) — with a reason.
+    let fold_failed = session.log().iter().find_map(|e| match &e.body {
+        EventBody::FoldFailed { reason, .. } => Some(reason.clone()),
+        _ => None,
+    });
+    assert!(
+        fold_failed.is_some(),
+        "a trapped wasm fold must record a FoldFailed event, not vanish into a silent empty fold"
+    );
+    assert!(
+        !fold_failed.unwrap().is_empty(),
+        "the FoldFailed event carries a non-empty failure reason for a supervisor to read"
+    );
+    // The guest never dispatched an effect (it trapped before returning), so the executor saw nothing.
+    assert_eq!(exec.seen.len(), 0);
 }

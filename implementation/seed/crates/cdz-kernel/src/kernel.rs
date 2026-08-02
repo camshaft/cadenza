@@ -538,6 +538,23 @@ impl Session {
     fn fold_tip(&mut self, reducer: &dyn Reducer, cause: Hash) -> Vec<(Effect, Hash)> {
         let tip = self.log.last().expect("log always has genesis").clone();
         let out = reducer.fold(&tip, &mut self.kv);
+        // Error-resilience (§17 / supervision): if the fold FAILED (a wasm guest trap / fuel-exhaustion /
+        // instantiate failure — surfaced as `out.failure`, never a panic), CAPTURE it as a first-class
+        // `FoldFailed` log event instead of letting it vanish into a silent empty fold. `caused_event` =
+        // the tip whose fold failed, so a supervisor reading the log sees WHAT the reducer choked on. We
+        // do NOT fold the FoldFailed event (no recursion — a fold that failed can't be re-handed to the
+        // same failing reducer); a supervisor reacting to it is a later slice. A failed fold emits no
+        // effects, so nothing joins the worklist.
+        if let Some(reason) = out.failure {
+            self.append(
+                EventBody::FoldFailed {
+                    reason,
+                    caused_event: cause,
+                },
+                Some(cause),
+            );
+            return Vec::new();
+        }
         let mut v: Vec<(Effect, Hash)> = out.effects.into_iter().map(|e| (e, cause)).collect();
         v.reverse();
         v
@@ -877,6 +894,7 @@ fn event_body_name(body: &EventBody) -> &'static str {
         EventBody::EffectResult { .. } => "EffectResult",
         EventBody::TimerArmed { .. } => "TimerArmed",
         EventBody::TimerFired { .. } => "TimerFired",
+        EventBody::FoldFailed { .. } => "FoldFailed",
         EventBody::AuthzDenied { .. } => "AuthzDenied",
         EventBody::Closed { .. } => "Closed",
     }
@@ -901,9 +919,12 @@ fn observable(body: &EventBody) -> bool {
         | EventBody::TimerFired { .. }
         | EventBody::AuthzDenied { .. }
         | EventBody::Closed { .. } => true,
-        EventBody::Genesis { .. } | EventBody::Dispatched { .. } | EventBody::TimerArmed { .. } => {
-            false
-        }
+        // FoldFailed is NOT folded (v0 records it for a supervisor to observe, but re-handing a failed
+        // fold to the same failing reducer would recurse — a supervisor reacting is a later slice).
+        EventBody::Genesis { .. }
+        | EventBody::Dispatched { .. }
+        | EventBody::TimerArmed { .. }
+        | EventBody::FoldFailed { .. } => false,
     }
 }
 
