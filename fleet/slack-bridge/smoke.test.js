@@ -22,7 +22,7 @@ const path = require("node:path");
 // there — that's exactly what was done for isTransientSocketModeFault. Verify locally the CI way:
 // `mv node_modules aside && node smoke.test.js` must still pass.
 const { deliver, drain, markProcessed, inboxDir, isValidAgentName } = require("./inbox.js");
-const { parseOperatorMessage, renderFleetMessage, helpText, isTransientSocketModeFault } = require("./format.js");
+const { parseOperatorMessage, renderFleetMessage, helpText, isTransientSocketModeFault, KNOWN_KINDS } = require("./format.js");
 
 let passed = 0;
 function test(name, fn) {
@@ -153,6 +153,19 @@ test("a !kind matches the whole word, not a prefix (parity with the Rust side)",
   // Sanity: the exact word IS honored, with or without following text.
   assert.strictEqual(parseOperatorMessage("!status", "concierge").kind, "status");
   assert.strictEqual(parseOperatorMessage("!status ping", "concierge").kind, "status");
+});
+
+test("KNOWN_KINDS is exactly the fleet protocol set (parity with the Rust side)", () => {
+  // The `!kind` prefix is honored only for a fleet message kind (AGENTS-fleet.md's protocol table).
+  // Pin the EXACT set so the Node and Rust `KNOWN_KINDS` can't silently drift apart — a `!newkind`
+  // honored on one parser but mis-kinded to `note` on the other — and so adding/removing a fleet kind
+  // forces a deliberate update on BOTH sides. The Rust side pins the identical set in format.rs.
+  const got = [...KNOWN_KINDS].sort();
+  const want = [
+    "answer", "ask", "assign", "backlog", "issue",
+    "merge-request", "merged", "note", "reject", "status",
+  ].sort();
+  assert.deepStrictEqual(got, want, "KNOWN_KINDS drifted from the fleet protocol set");
 });
 
 test("subject is the first line, capped; body keeps the whole text", () => {
