@@ -6822,3 +6822,63 @@ fn rustc_roundtrip_list_of_option_compare_is_lexicographic_with_some_before_none
         }
     }
 }
+
+#[test]
+fn rustc_roundtrip_record_with_option_field_compare_is_lexicographic_in_sorted_key_order() {
+    // Pins the RECORD cmp walk (expr.rs `emit_value_cmp_walk_seen` Ty::Record arm) COMPOSED with the Option
+    // Some<None flip. A record compares its fields lexicographically in SORTED-KEY order (the arm iterates
+    // `fields.values()`, which are keyed in sorted order) via a `.then_with` chain, and an Option-typed field
+    // is ordered by the Cadenza declared order Some k < None — NOT std's derived `Option` Ord (None < Some).
+    // The bare-Option compare and the tuple-leaf-Option compare were each witnessed alone, but the Record
+    // arm's sorted-field lexicographic chain composed with the flip had no rust-backend witness. Verified
+    // NON-VACUOUS: this emits `__cmp_Option(&x.0, &y.0).then_with(|| x.1.cmp(&y.1))` — the record erases to a
+    // `(Option<i64>, i64)` tuple, so the pin guards the Record→sorted-field lowering fused with the flip
+    // helper. A future change to the field ordering / `.then_with` chain or the Option flip would flip a case.
+    //
+    // Fields are `a` (Option Int64) and `b` Int64 — `a` sorts before `b`, so the Option field DECIDES first;
+    // `b` only breaks a tie when the `a` fields are equal. Pins BOTH Some<None at the deciding field AND that
+    // the sorted-key tiebreak reaches the second field only on an equal first.
+    let src = "(module m \
+        (def (mk-a (: k Int64) (: y Int64)) \
+          (: (record (a (Some k)) (b y)) (Record (a (Option Int64)) (b Int64)))) \
+        (def (mk-n (: y Int64)) \
+          (: (record (a (: (None unit) (Option Int64))) (b y)) (Record (a (Option Int64)) (b Int64)))) \
+        (def (cmp3 (: x (Record (a (Option Int64)) (b Int64))) (: y (Record (a (Option Int64)) (b Int64)))) \
+          (match (compare x y) ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
+        (def (p1) (cmp3 (mk-a 1 9) (mk-n 0))) \
+        (def (p2) (cmp3 (mk-n 0) (mk-a 1 9))) \
+        (def (p3) (cmp3 (mk-a 1 5) (mk-a 1 7))) \
+        (def (p4) (cmp3 (mk-a 1 5) (mk-a 1 5))) \
+        (export p1) (export p2) (export p3) (export p4))";
+    // A record-with-Option-field IS representable on rust (verified — erases to a `(Option<i64>, i64)` tuple
+    // and emits `__cmp_Option(&x.0,&y.0).then_with(|| x.1.cmp(&y.1))`), so a DECLINE is a real emit
+    // regression: `compile_rust` HARD-FAILS on decline (an `Err(_) => {}` arm would silently mask the pin).
+    // Compiled ONCE; all four probes assert against the single artifact.
+    let rs = compile_rust(src);
+    // {a: Some 1, b: 9} vs {a: None, b: 0}: field `a` sorts first and differs → Some 1 < None → Less (1).
+    // (`b` 9 > 0 would say Greater if `b` decided — it must NOT; `a` decides first.)
+    if let Some(out) = rustc_run(&rs, "p1()") {
+        assert_eq!(
+            out, "1",
+            "record field `a` (Option) decides first: Some 1 < None → Less (NOT b's 9>0):\n{rs}"
+        );
+    }
+    // symmetric: {a: None, b: 0} vs {a: Some 1, b: 9}: None > Some 1 → Greater (3).
+    if let Some(out) = rustc_run(&rs, "p2()") {
+        assert_eq!(
+            out, "3",
+            "symmetric — None follows Some at the deciding field:\n{rs}"
+        );
+    }
+    // {a: Some 1, b: 5} vs {a: Some 1, b: 7}: field `a` equal, tiebreak on `b` → 5 < 7 → Less (1).
+    if let Some(out) = rustc_run(&rs, "p3()") {
+        assert_eq!(
+            out, "1",
+            "equal Option field falls through to the `b` tiebreak (5<7):\n{rs}"
+        );
+    }
+    // identical records → Equal (2).
+    if let Some(out) = rustc_run(&rs, "p4()") {
+        assert_eq!(out, "2", "identical records compare Equal:\n{rs}");
+    }
+}
