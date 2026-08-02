@@ -78,7 +78,7 @@ export default function ExampleApps() {
         side of the language, the same "perform an operation, let the surrounding context decide what it
         means" idea you met in <Ch to="/effects">effects &amp; handlers</Ch>, turned into a document. A cell
         that computes a dimensioned quantity displays it in the same concise surface as the{" "}
-        <Ch to="/units">units of measure</Ch> chapter, <C>5 meter</C> rather than the raw value form, so a
+        <Ch to="/units">units of measure</Ch> chapter, <C>5.0 meter</C> rather than the raw value form, so a
         table of results reads like a table of measurements.
       </P>
 
