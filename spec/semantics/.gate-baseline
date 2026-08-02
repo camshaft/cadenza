@@ -4470,10 +4470,15 @@ pass	print then read an Ast.Float at full 17-significant-digit precision round-t
 pass	print then read an Ast.Float at the maximum finite magnitude round-trips
 pass	print then read an Ast.Float at the smallest subnormal round-trips
 pass	print then read an Ast.Int at i64::MIN round-trips (text-path two's-complement boundary)
+pass	print then read of a BEYOND-i64 Ast.Int round-trips (text path is arbitrary-precision)
+pass	print then read of a BEYOND-i64 NEGATIVE Ast.Int round-trips (sign survives at arbitrary precision)
+pass	print then read of a LIST carrying a beyond-i64 Ast.Int round-trips (bignum token bounded by parens)
 pass	print then read of a NEGATIVE Ast.Int round-trips (sign survives the text path)
 pass	print then read of a digit-led Ast.Name reclassifies it per the number/identifier boundary
 pass	print then read of a keyword-spelled Ast.Name reclassifies it as the boolean literal
 pass	print then read of a string-spelled Ast.Name reclassifies it as an Ast.Str
+pass	print then read of an Ast.Int at i64::MAX+1 round-trips (the exact reader handoff seam)
+pass	print then read of an Ast.Int at i64::MIN-1 round-trips (the negative reader handoff seam)
 pass	print/read is IDEMPOTENT after one trip and read normalizes whitespace to one canonical tree
 pass	print/read round-trips a 12-deep nest and a 25-wide list
 pass	print/read round-trips escape-laden, multibyte, and empty string leaves

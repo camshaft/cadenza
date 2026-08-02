@@ -2752,7 +2752,10 @@ fn print_ast_value(db: &mut Db, node: StructId, disc: &AstDiscs, out: &mut Strin
         let Core::ConstInt(v) = core_of(db, payloads[0]) else {
             return None;
         };
-        out.push_str(&v.to_i64()?.to_string());
+        // `Ast.Int`'s payload is arbitrary-precision `BigInt` (the non-lossy quote/read storage), so render
+        // it with `to_decimal_string` (total over any magnitude) rather than `to_i64` — a beyond-i64 literal
+        // would make `to_i64()` return None and DECLINE the print of an otherwise fully-constant Ast.
+        out.push_str(&v.to_decimal_string());
         Some(())
     } else if d == disc.float && payloads.len() == 1 {
         // A float LITERAL renders as the shortest round-tripping decimal (`float_text`) — always carrying
@@ -2884,8 +2887,30 @@ fn lower_read(db: &mut Db, str_val: StructId) -> Core {
 
 /// A parsed s-expression over the `Ast`-value subset: an integer, a bare atom (name), or a list. The
 /// minimal grammar `read` accepts — exactly the shapes `print_ast_value` emits, so the two round-trip.
+/// Parse an all-ASCII-digits token (with an optional leading `-`) into an arbitrary-precision [`IntValue`],
+/// or `None` if it is not a well-formed decimal integer (empty, sign-only, or containing a non-digit). Used
+/// by `read` at the >i64 boundary where `str::parse::<i64>` overflows but the token IS an integer literal —
+/// accumulates digit-by-digit (`acc*10 + d`) via `IntValue`'s bignum arithmetic, mirroring the
+/// `rational_from_literal` idiom, so a beyond-i64 literal reads back as an `Ast.Int` not a misclassified
+/// `Ast.Name`. A single `-0`/`0…` reads as zero (canonicalized by `IntValue`).
+fn parse_bigint_decimal(tok: &str) -> Option<IntValue> {
+    let (negative, digits) = match tok.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, tok),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let ten = IntValue::from_i64(10);
+    let mut acc = IntValue::from_i64(0);
+    for b in digits.bytes() {
+        acc = acc.mul(&ten).add(&IntValue::from_i64((b - b'0') as i64));
+    }
+    Some(if negative { acc.neg() } else { acc })
+}
+
 enum SNode {
-    Int(i64),
+    Int(IntValue),
     Float(f64),
     Bool(bool),
     Str(String),
@@ -2906,11 +2931,7 @@ fn reify_read_ast(db: &mut Db, node: &SNode, disc: &AstDiscs) -> Core {
             // where the equality lowering commits to two different reps → wasm invalid-module / rust E0308.
             // (The `IntValue` is already arbitrary-precision; only the static type widens — matching the
             // `decode_ast_value` retype and the reify grounding.)
-            let payload = synth_core(
-                db,
-                Core::ConstInt(IntValue::from_i64(*n)),
-                crate::ty::Ty::BigInt,
-            );
+            let payload = synth_core(db, Core::ConstInt(n.clone()), crate::ty::Ty::BigInt);
             Core::SumNew {
                 disc: disc.int,
                 payloads: vec![payload],
@@ -3074,8 +3095,16 @@ impl<'a> SexprReader<'a> {
             "true" => Some(SNode::Bool(true)),
             "false" => Some(SNode::Bool(false)),
             _ => match tok.parse::<i64>() {
-                Ok(n) => Some(SNode::Int(n)),
+                Ok(n) => Some(SNode::Int(IntValue::from_i64(n))),
                 Err(_) => {
+                    // An i64 parse fails at the 64-bit boundary too, not only on non-numeric tokens. An
+                    // all-digits (optionally sign-led) token IS an integer literal at any magnitude, so try
+                    // an arbitrary-precision decimal parse BEFORE the float/Name fallback — else a >i64
+                    // literal would silently misclassify as an `Ast.Name`, breaking `read(print v) == v`
+                    // for the bignum `Ast.Int` the non-lossy feature stores. (`Ast.Int`'s payload is BigInt.)
+                    if let Some(big) = parse_bigint_decimal(tok) {
+                        return Some(SNode::Int(big));
+                    }
                     let looks_float = tok.contains('.') || tok.contains('e') || tok.contains('E');
                     match tok.parse::<f64>() {
                         Ok(f) if looks_float && f.is_finite() => Some(SNode::Float(f)),
@@ -26403,5 +26432,65 @@ mod tests {
             wrap2, pred2,
             "wrapper == predicate while the stub is false (full-range case)"
         );
+    }
+
+    #[test]
+    fn parse_bigint_decimal_covers_the_i64_boundary_and_beyond() {
+        // In-i64 tokens still parse (the `read` fast path handles these via `str::parse::<i64>`, but
+        // the bignum path must agree so the two never diverge at the seam).
+        assert_eq!(parse_bigint_decimal("0"), Some(IntValue::from_i64(0)));
+        assert_eq!(parse_bigint_decimal("-0"), Some(IntValue::from_i64(0)));
+        assert_eq!(parse_bigint_decimal("42"), Some(IntValue::from_i64(42)));
+        assert_eq!(parse_bigint_decimal("-7"), Some(IntValue::from_i64(-7)));
+        assert_eq!(
+            parse_bigint_decimal("9223372036854775807"),
+            Some(IntValue::from_i64(i64::MAX))
+        );
+        assert_eq!(
+            parse_bigint_decimal("-9223372036854775808"),
+            Some(IntValue::from_i64(i64::MIN))
+        );
+
+        // The EXACT handoff seam: `i64::MAX + 1` and `i64::MIN - 1` are the first magnitudes where
+        // `str::parse::<i64>` overflows (Pos/NegOverflow), so `read` hands off to this bignum path HERE —
+        // an off-by-one in the accumulation (or a signed-magnitude flaw at the two's-complement extreme,
+        // where |i64::MIN| is not i64-representable) would first surface at these two values, not at a
+        // comfortably-large 26-digit literal. Build the expected values by `IntValue` arithmetic off the
+        // i64 extremes so the assertion pins the value independently of `parse_bigint_decimal`'s own logic.
+        assert_eq!(
+            parse_bigint_decimal("9223372036854775808"),
+            Some(IntValue::from_i64(i64::MAX).add(&IntValue::from_i64(1)))
+        );
+        assert_eq!(
+            parse_bigint_decimal("-9223372036854775809"),
+            Some(IntValue::from_i64(i64::MIN).add(&IntValue::from_i64(-1)))
+        );
+
+        // Beyond i64: the point of the bignum path — a 26-digit literal `str::parse::<i64>` would reject
+        // reads as an exact `IntValue`, positive and negative, matching the `12-metaprogramming.sexp`
+        // print→read round-trip pins. Build the expected value by the SAME digit-accumulation so the
+        // assertion pins the value, not just non-None.
+        let mut expected = IntValue::from_i64(0);
+        let ten = IntValue::from_i64(10);
+        for _ in 0..26 {
+            expected = expected.mul(&ten).add(&IntValue::from_i64(9));
+        }
+        assert_eq!(
+            parse_bigint_decimal("99999999999999999999999999"),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            parse_bigint_decimal("-99999999999999999999999999"),
+            Some(expected.neg())
+        );
+
+        // Non-integer tokens decline so `read` falls through to the float/Name classification — a bare
+        // sign, an empty string, a float, and a name-with-digits must NOT be misread as an `Ast.Int`.
+        assert_eq!(parse_bigint_decimal(""), None);
+        assert_eq!(parse_bigint_decimal("-"), None);
+        assert_eq!(parse_bigint_decimal("1.5"), None);
+        assert_eq!(parse_bigint_decimal("1e10"), None);
+        assert_eq!(parse_bigint_decimal("12a"), None);
+        assert_eq!(parse_bigint_decimal("x1"), None);
     }
 }
