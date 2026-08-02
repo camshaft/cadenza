@@ -146,11 +146,13 @@ impl self::cadenza::agent_kernel::kv::Host for ReducerHost {
 /// the wasmtime `Engine` + the compiled `Component` + a `Linker` with the host `kv` import registered;
 /// each fold instantiates the component fresh (the guest is stateless between events — §4 — and the KV
 /// state lives host-side, threaded in per call). This is the component-model path that will REPLACE the
-/// in-process Rust [`crate::reducer::Reducer`] trait. `apply` (below) drives a fold; what remains for
-/// end-to-end use is a compiled guest FIXTURE that exports `fold.apply` (a wit-bindgen Rust guest —
-/// concierge-ruled Option A) + wiring `apply` into the kernel's fold loop. Until that fixture lands,
-/// `apply` is exercised only against a guest in tests (next slice); the Rust `Reducer` trait stays the
-/// working path meanwhile.
+/// in-process Rust [`crate::reducer::Reducer`] trait. `apply` (below) drives a fold, and
+/// `ComponentReducer` implements `Reducer` so a wasm guest folds on the SAME kernel loop as a Rust one
+/// — exercised end-to-end against a committed wit-bindgen guest fixture (see `tests/
+/// component_reducer_e2e.rs`; concierge-ruled Option A). The Rust `Reducer` trait stays a working
+/// interim path alongside it. What remains for a reducer that declares component DEPENDENCIES is
+/// composing their resolved bytes into the linker (§23 dep-compose — see `deps`/`resolve_deps`); a
+/// dependency-free reducer (like the fixture) runs today.
 pub struct ComponentReducer {
     engine: wasmtime::Engine,
     // The instantiation inputs `apply` reads each fold: instantiate `component` against `linker` (which
@@ -651,12 +653,12 @@ mod tests {
     }
 
     // The ComponentReducer CONSTRUCTION path wires up (Engine + Component + Linker + the generated
-    // kv-import registration) on a real — if trivial — component. The `apply` fold + a guest that
-    // exports fold.apply is the next slice (pending the guest-fixture toolchain decision).
+    // kv-import registration) on a real — if trivial — component. The `apply` fold against a real
+    // fold-exporting guest is covered end-to-end in `tests/component_reducer_e2e.rs`.
     #[test]
     fn component_reducer_builds_engine_component_and_registers_kv_import() {
         // A valid, minimal component (exports nothing — enough to prove Component::new + the linker's
-        // kv-import registration succeed; a fold-exporting guest is the next slice).
+        // kv-import registration succeed; the fold against a real fold-exporting guest is the e2e test).
         let bytes = wat::parse_str("(component)").expect("assemble empty component");
         // (ComponentReducer holds wasmtime types that aren't Debug, so match rather than .expect().)
         let reducer = match ComponentReducer::from_component_bytes(&bytes) {
