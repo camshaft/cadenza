@@ -1,0 +1,98 @@
+/// giter-interleave.cdz — DIRECT empty + uneven-DIRECTION coverage for the `interleave` combinator, split
+/// into its own small module.
+///
+/// WHY A SEPARATE MODULE. `interleave(a, b)` alternates by SWAPPING roles each step
+/// (`Cons(h, interleave(b, rest))`), and its base arm `Nil => b` returns the ENTIRE other operand. That
+/// makes two things subtle:
+///   - the `Nil => b` arm flushes whichever operand is left when the other runs out — so "which side is
+///     longer" is not symmetric in the code even though the result is;
+///   - an empty operand exercises the base arm at the TOP (empty-left returns b whole) or after one step
+///     (empty-right: `interleave(a=Cons, b=Nil)` → `Cons(ha, interleave(Nil, ra))` → `Cons(ha, ra)`).
+/// giter.cdz pins alternates-even, an uneven case where the LEFT operand is the LONGER one
+/// (`[1,3,5]` vs `[2]`), and a String case. It does NOT pin: empty-left (the `Nil => b` arm at the top),
+/// empty-right, or the mirror uneven case where the RIGHT operand is longer (its tail flushes through the
+/// swap). A swapped base arm or an off-by-one in the alternation would slip past the existing tests.
+/// It lives in its own module because giter.cdz sits at the per-module monomorphizer
+/// instantiation-pressure ceiling its header documents; a fresh module isolates the added instantiation
+/// (the same "isolate the heavy instantiation" pattern giter-flat/chain/scan/spanwhile/zipstop use).
+///
+/// The generic pull-iterator (same cons-cell shape as the sibling modules; re-declared here so this
+/// module is self-contained — each src/*.cdz is its own namespace).
+type GIter =
+  | Nil
+  | Cons(a, GIter(a))
+
+/// `from-list(xs)` — the base generic producer over `xs : List(a)`, self-recursive so its result element
+/// ties to the argument.
+def from-list(xs) = match xs with
+  | [] => GIter.Nil(unit)
+  | [h, .. t] => GIter.Cons(h, from-list(t))
+
+/// `interleave(a, b)` — alternate elements of `a` and `b`, flushing the longer operand's tail. Alternates
+/// by swapping roles each step; the `Nil => b` arm returns the whole remaining operand. The unit under test.
+def interleave(a, b) = match a with
+  | GIter.Nil(_) => b
+  | GIter.Cons(h, rest) => GIter.Cons(h, interleave(b, rest))
+
+/// `take(it, n)` — the first `n` elements. Used ONLY to build a TYPED empty iterator
+/// (`take(from-list([x]), 0)`) so the empty-operand tests pin the element type: a bare `from-list([])`
+/// leaves its result element var untied (the documented empty-producer CDZ0201 gap), while `take` of a
+/// non-empty source at count 0 is an empty iterator whose element type is pinned by the source's `[x]`.
+def take(it, n) =
+  if n <= 0 then
+    GIter.Nil(unit)
+  else
+    match it with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1))
+
+/// `collect(it)` — reify the iterator back to a `List(a)` so a test can assert the exact emitted sequence.
+def collect(it) = match it with
+  | GIter.Nil(_) => []
+  | GIter.Cons(h, rest) => List.concat([h], collect(rest))
+
+/// `int-list-eq(xs, ys)` — structural equality on `List(Int64)` for the sequence assertions.
+def int-list-eq(xs, ys) = match xs with
+  | [] => (match ys with
+    | [] => true
+    | _ => false
+  )
+  | [x, .. xr] => match ys with
+    | [] => false
+    | [y, .. yr] => if x == y then int-list-eq(xr, yr) else false
+
+/// TESTS ----------------------------------------------------------------------------------------------
+/// empty edges: empty-left returns the right operand whole (the `Nil => b` arm at the top); empty-right
+/// returns the left operand whole (the base arm reached after one step through the swap).
+@test
+def interleave-empty-left-returns-right-whole() =
+  if int-list-eq(collect(interleave(take(from-list([1]), 0), from-list([2, 4, 6]))), [2, 4, 6]) then
+    unit
+  else
+    trap("interleave with an empty LEFT returns the right operand whole: [2,4,6]")
+
+@test
+def interleave-empty-right-returns-left-whole() =
+  if int-list-eq(collect(interleave(from-list([1, 3, 5]), take(from-list([2]), 0))), [1, 3, 5]) then
+    unit
+  else
+    trap("interleave with an empty RIGHT returns the left operand whole: [1,3,5]")
+
+/// uneven with the RIGHT operand longer — the mirror of giter.cdz's left-longer case. b's tail flushes
+/// through the role swap.
+@test
+def interleave-right-longer-flushes-its-tail() =
+  if int-list-eq(collect(interleave(from-list([1]), from-list([2, 4, 6]))), [1, 2, 4, 6]) then
+    unit
+  else
+    trap("interleave with the RIGHT operand longer flushes its remainder: [1,2,4,6]")
+
+/// both empty is empty (both base arms compose to Nil).
+@test
+def interleave-both-empty-is-empty() =
+  if int-list-eq(collect(interleave(take(from-list([1]), 0), take(from-list([2]), 0))), []) then
+    unit
+  else
+    trap("interleave of two empty operands is empty")
+
+export { GIter.* }
