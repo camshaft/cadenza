@@ -1665,24 +1665,20 @@
             (export main)))
   (output (: 100 Int64)))
 
-(case "Type.of grounds a function stored as a runtime Map KEY"
-  (doc    "The KEY-position companion of the runtime-Map value case above (coverage companion to the
-           reflected_ty (Map k v) grounding fix, which grounds BOTH key and value). A function is a
-           reachable Map key — `(Map.insert Map.empty f 1)` compiles and runs — so its domain must be
-           grounded in the reflected KEY type just like the value. `f x = x + 1` (`Int64 -> Int64`) vs
-           `g b = if b 0 1` (`Bool -> Int64`): the maps' KEY types differ → `Type.eq` false; `f` vs `f2`
-           (both `Int64 -> Int64`) → equal. `0 + 100 = 100`. Before the fix the key domain leaked `Any`
-           exactly as the value did, so distinct-domain key functions reflected the same map type.")
+(case "a function stored as a runtime Map KEY is rejected (CDZ0216 — a function is not equatable/orderable)"
+  (doc    "A FUNCTION cannot be a Map KEY: a closure has no canonical identity, so it is neither equatable
+           nor orderable, and structural key membership needs equality (collections-and-text §A Set Is A
+           Collection Of Unique Elements). `(Map.insert Map.empty f 1)` keys the map by the function `f` →
+           CDZ0216 (NotEquatable). Distinct from CDZ0202 (the abstract/nominal-BOUNDARY opacity code): this
+           is INTRINSIC non-comparability, not a boundary issue (v-inference ruling, concierge-confirmed).
+           (Formerly this case tested `Type.of` grounding of the key fn's DOMAIN and expected 100 — but a
+           function key is now an outright reject, so key-domain reflection is moot; the VALUE-position
+           companion above still pins the reflected_ty (Map k v) grounding for a legal fn Map VALUE.)")
   (input  (do
             (def (f x) (+ x 1))
-            (def (f2 z) (+ z 9))
-            (def (g b) (if b 0 1))
-            (def (main) (+ (if (Type.eq (Type.of (Map.insert Map.empty f 1))
-                                        (Type.of (Map.insert Map.empty g 1))) 1 0)
-                           (if (Type.eq (Type.of (Map.insert Map.empty f 1))
-                                        (Type.of (Map.insert Map.empty f2 1))) 100 0)))
+            (def (main) (Map.len (Map.insert Map.empty f 1)))
             (export main)))
-  (output (: 100 Int64)))
+  (error  CDZ0216))
 
 (case "Type.of grounds a Map-value function nested inside a tuple"
   (doc    "The compounding facet: a runtime-Map-value function wrapped in an outer container —

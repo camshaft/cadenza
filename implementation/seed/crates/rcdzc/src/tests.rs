@@ -60161,6 +60161,63 @@ mod stage1 {
     }
 
     #[test]
+    fn a_function_typed_map_set_key_or_comparison_rejects_cdz0216() {
+        // RULING (v-inference, concierge-confirmed 2026-08-02): a FUNCTION-typed Map key / Set element /
+        // direct-(=) operand rejects CDZ0216 (NotEquatable) — a closure has no canonical identity, so it is
+        // neither equatable nor orderable AT ALL. Distinct from CDZ0202 (abstract/nominal-BOUNDARY opacity):
+        // this is INTRINSIC non-comparability, not a boundary issue. Previously wasm MISCOMPILED (invented a
+        // closure identity) while rust E0277'd — now a uniform compile-time reject.
+        use crate::abi::Artifact;
+        let codes_for = |s: &str| -> Vec<String> {
+            let entry = crate::codec::encode(&parse(s));
+            let out = crate::compile::compile(
+                &[
+                    Artifact::new(Artifact::KIND_AST, "app", entry.clone()),
+                    Artifact::new(crate::link::KIND_ENTRY, "entry", b"app".to_vec()),
+                ],
+                &[crate::backend::Target::Wasm],
+            );
+            out.diagnostics
+                .iter()
+                .filter_map(|d| d.code.clone())
+                .collect()
+        };
+        // A Set of functions — a function ELEMENT rejects CDZ0216.
+        assert!(
+            codes_for("(do (def (main) (Set.len (Set.of (list (fn (x) (+ x 1)))))) (export main))")
+                .contains(&"CDZ0216".to_string()),
+            "a Set of functions must reject CDZ0216"
+        );
+        // A Map keyed by a function rejects CDZ0216.
+        assert!(
+            codes_for(
+                "(do (def (main) (Map.len (Map.insert Map.empty (fn (x) x) 1))) (export main))"
+            )
+            .contains(&"CDZ0216".to_string()),
+            "a Map keyed by a function must reject CDZ0216"
+        );
+        // A direct (=) on two functions is rejected too, but by the pre-existing CDZ0203 fn-operand arm
+        // ("this operation is not defined on a function value") — that path owns the operator-operand case
+        // and is more precise (forgot-to-apply hint), so CDZ0216 is scoped to the KEY position, not eq.
+        assert!(
+            codes_for("(do (def (main) (if (= (fn (x) x) (fn (x) x)) 1 0)) (export main))")
+                .contains(&"CDZ0203".to_string()),
+            "comparing two functions rejects (CDZ0203, the fn-operand arm)"
+        );
+        // CONTROL: a value-typed (Int64) Set/Map key stays legal (no over-reject).
+        assert!(
+            !codes_for("(do (def (main) (Set.len (Set.of (list 1 2 3)))) (export main))")
+                .contains(&"CDZ0216".to_string()),
+            "an Int64 Set element stays legal (no CDZ0216)"
+        );
+        assert!(
+            !codes_for("(do (def (main) (Map.len (Map.insert Map.empty 1 2))) (export main))")
+                .contains(&"CDZ0216".to_string()),
+            "an Int64 Map key stays legal (no CDZ0216)"
+        );
+    }
+
+    #[test]
     fn a_tuple_destructuring_parameter_on_a_lambda_binds_like_a_def_param() {
         // OVER-REJECT FIX (v-inference 2026-08-02, breaker adv-51): a tuple-destructuring parameter on a
         // `fn`/LAMBDA rejected CDZ0101 "unbound", while the SAME irrefutable pattern works as a `def`
@@ -70516,8 +70573,10 @@ mod stage1 {
             "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (do (Map.insert Map.empty 1 f1) (f1 d))))",
             // List literal holding f1, discarded.
             "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (do (list f1) (f1 d))))",
-            // Set element, discarded.
-            "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (do (Set.of (list f1)) (f1 d))))",
+            // (A Set-of-f1 store-shape was here; removed 2026-08-02 — a function-typed Set ELEMENT now
+            // rejects CDZ0216 (a function has no equality/order, so it can't be a Set element; v-inference
+            // ruling, concierge-confirmed). The List store above covers the collection-literal force-keep
+            // path identically; a Set adds nothing here except the now-illegal fn-element.)
             // Sum payload, discarded (breaker s18).
             "(let ((k 100)) (let ((f1 (fn ((: v Int64)) (+ k v)))) (do (Some f1) (f1 d))))",
             // Surviving store (map len feeds the result) + direct call: 105 + 1 = 106.

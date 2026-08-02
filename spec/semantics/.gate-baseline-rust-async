@@ -589,7 +589,7 @@ pass	Type.of grounds a Map-value function nested inside a tuple
 pass	Type.of grounds a RETURNED function's domain — a closure whose result is a function
 pass	Type.of grounds a function nested TWO containers deep — a sum payload inside a list
 pass	Type.of grounds a function nested TWO containers deep — a tuple inside a sum payload
-pass	Type.of grounds a function stored as a runtime Map KEY
+pass	a function stored as a runtime Map KEY is rejected (CDZ0216 — a function is not equatable/orderable)
 pass	Type.of grounds a function stored as a runtime Map value
 pass	Type.of grounds a function stored in a RECORD FIELD
 pass	Type.of grounds a function stored inside a SUM VARIANT payload

@@ -8378,6 +8378,27 @@ fn check_application(
                 );
                 return;
             }
+            // A FUNCTION-typed key (or one containing a function at a comparable-spine position) — CDZ0216.
+            // A closure has no canonical identity, so it is neither equatable nor orderable at all; keying a
+            // Map/Set by it (or comparing it) can't satisfy structural membership. Distinct from the abstract
+            // case above: not a boundary/opacity issue but intrinsic non-comparability. Currently wasm
+            // MISCOMPILES (invents a closure identity) while rust E0277s — a uniform compile-time reject.
+            if let Some(fn_ty) = key_ty_contains_fn(k) {
+                trace!(target: "rcdzc::infer", head = head.0, "fault: function-typed map/set key (CDZ0216)");
+                out.push(
+                    Reject::coded(
+                        Code::NotEquatable,
+                        format!(
+                            "a value of function type `{}` cannot be a map/set key — a function has no \
+                             canonical identity, so it is neither equatable nor orderable; key the \
+                             collection by a value type (or by a field the closure captures)",
+                            fn_ty.render_name()
+                        ),
+                    )
+                    .at(head),
+                );
+                return;
+            }
         }
     }
     // `(trap MESSAGE)` — the abort primitive `trap : ∀a. String → a`. Its message MUST be a String; a
@@ -8781,6 +8802,13 @@ fn check_application(
             );
             return;
         }
+        // NOTE: a direct `(=)`/`<`/`compare` whose operand is a bare FUNCTION value is ALREADY rejected
+        // below (the `Ty::Fn` operand arm → CDZ0203 "this operation is not defined on a function value",
+        // with a forgot-to-apply hint). That path is more precise (distinguishes a partial application from
+        // a genuine fn) and owns the direct-comparison-operand case, so CDZ0216 is NOT re-emitted here —
+        // it is scoped to the Map/Set KEY position (above), where no operator-operand arm applies. (A fn
+        // NESTED in a compound compared by `=` is a rare edge the CDZ0203 arm's top-level check doesn't
+        // walk; left to that arm's evolution rather than duplicating the walk under a second code.)
         // Comparing a SYMBOL to the plain STRING it wraps is a comparison ACROSS THE NOMINAL BOUNDARY —
         // CDZ0202 (17-symbols "a string compared to a symbol is a type error"). A Symbol is a nominal over
         // String; a nominal value never silently compares equal to the untagged shape it was declared
@@ -11256,6 +11284,29 @@ fn key_ty_contains_abstract_at(db: &Db, at: StructId, ty: &Ty) -> Option<Ty> {
         Ty::Sum { args, .. } | Ty::Nominal { args, .. } => args
             .iter()
             .find_map(|a| key_ty_contains_abstract_at(db, at, a)),
+        _ => None,
+    }
+}
+
+/// The FUNCTION-typed sibling of [`key_ty_contains_abstract_at`]: does `ty` contain a `Ty::Fn`/`Cont` at a
+/// comparable-key/equality spine position? A function/closure has NO canonical identity — it is neither
+/// equatable nor orderable AT ALL (unlike an abstract type, which is comparable-but-opaque; that is
+/// CDZ0202). So a Map/Set keyed by a function (or a direct `(=)`/order over one), including a function
+/// NESTED in a compound key (`(Tuple Fn Int64)` — built-in comparison walks the whole spine to the arrow),
+/// cannot be compared → CDZ0216. Walks the SAME comparable structure as the abstract check (tuple/list/set/
+/// map/record/Qty/sum-or-nominal args); an arrow found at any of those positions flags. Returns the first
+/// function type found (for the message). Unlike the abstract check this is site-INDEPENDENT (a function is
+/// never comparable, regardless of `at`), so it takes no `db`/`at`. `Ty::Cont` (a continuation) is likewise
+/// an un-comparable arrow-like value.
+fn key_ty_contains_fn(ty: &Ty) -> Option<Ty> {
+    match ty {
+        Ty::Fn(_, _) | Ty::Cont { .. } => Some(ty.clone()),
+        Ty::Tuple(elems) => elems.iter().find_map(key_ty_contains_fn),
+        Ty::List(e) | Ty::Set(e) => key_ty_contains_fn(e),
+        Ty::Map(k, v) => key_ty_contains_fn(k).or_else(|| key_ty_contains_fn(v)),
+        Ty::Record(fields) => fields.values().find_map(key_ty_contains_fn),
+        Ty::Qty { inner, .. } => key_ty_contains_fn(inner),
+        Ty::Sum { args, .. } | Ty::Nominal { args, .. } => args.iter().find_map(key_ty_contains_fn),
         _ => None,
     }
 }

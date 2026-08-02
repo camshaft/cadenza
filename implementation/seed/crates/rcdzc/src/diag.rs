@@ -163,6 +163,14 @@ pub enum Code {
     /// to the NAME-INTRODUCTION operand of extend/with ONLY — the READ/DROP ops (`.`/pop/without/project)
     /// legitimately take a bare label and stay valid. (Concierge ruling on breaker's Record.extend pun.)
     RecordFieldNameNotLabel,
+    /// A value of FUNCTION type is used where equality/order is required — a Map/Set KEY, a Set element,
+    /// or a direct `(=)`/`compare` operand. A function/closure has no canonical value identity, so it is
+    /// neither equatable nor orderable at ALL (unlike an abstract type, which COULD be compared but must
+    /// not be across its boundary — that is `NominalMismatch`/CDZ0202). This is an INTRINSIC
+    /// non-comparability, independent of any module boundary: a function is never a valid key/operand even
+    /// inside its own module. Distinct code so the message names the real issue ("functions aren't
+    /// comparable") rather than CDZ0202's boundary phrasing. (v-inference ruling, concierge-confirmed.)
+    NotEquatable,
     /// A computation the compiler PROVES would trap (`ConstTrap`'s outcome) was ELIMINATED because its
     /// value is unobserved — an unprojected tuple/record element, an unreferenced `let` binding, an
     /// argument bound to an unused parameter. NOT a rejection: the build succeeds (the dead computation
@@ -367,6 +375,7 @@ impl Code {
             Code::RedundantArm => "CDZ0213",
             Code::AbstractCtor => "CDZ0214",
             Code::RecordFieldNameNotLabel => "CDZ0215",
+            Code::NotEquatable => "CDZ0216",
             Code::TryNoBoundary => "CDZ0230",
             Code::EffectNoHome => "CDZ0401",
             Code::HandlerUndeclaredOp => "CDZ0403",
