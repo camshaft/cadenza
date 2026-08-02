@@ -5506,6 +5506,67 @@ fn rustc_roundtrip_structural_eq_over_a_compound_with_a_float_leaf() {
 }
 
 #[test]
+fn rustc_roundtrip_structural_eq_over_a_list_of_floats_is_elementwise_construction_independent() {
+    // Pins the Ty::List arm of emit_value_eq_walk with a FLOAT element (expr.rs comment "Two lists ... equal
+    // ... independent of how each was constructed"). A `(List Float64)` equality can't use `Vec`'s derived
+    // PartialEq (f64 is PartialEq not Eq, and it gives the WRONG NaN/-0.0 answer) — the backend emits an
+    // element-wise walk: `l.len()==r.len() && l.iter().zip(r.iter()).all(|(le,re)| <canonical-byte float eq>)`.
+    // The float-leaf eq walk was witnessed for TUPLES/RECORDS but NOT for a LIST element on the rust backend.
+    // Verified NON-VACUOUS: emits `.len()==.len() && .iter().zip().all(|..| ({...is_nan()...to_bits()...}))`.
+    // A concat-built list is compared against a push-built list to also pin construction-independence.
+    let m = compile_rust(
+        "(module m \
+           (def (mk-cat (: a Float64) (: b Float64)) (List.concat (list a) (list b))) \
+           (def (mk-push (: a Float64) (: b Float64)) (List.push (list a) b)) \
+           (def (run (: a Float64) (: b Float64)) (if (= (mk-cat a b) (mk-push a b)) 1 0)) \
+         (export run))",
+    );
+    // Element compare is the canonical byte form, NOT Vec's derived PartialEq.
+    assert!(
+        m.contains("is_nan()") && m.contains("to_bits()") && m.contains(".zip("),
+        "a list-of-float eq walks element-wise by the canonical byte form:\n{m}"
+    );
+    // equal floats, differently constructed → equal (construction-independent).
+    if let Some(out) = rustc_run(&m, "run(1.5, 2.5)") {
+        assert_eq!(
+            out, "1",
+            "concat-built [1.5,2.5] == push-built [1.5,2.5]:\n{m}"
+        );
+    }
+    // NaN element: canonical-byte NaN==NaN → the lists compare equal (Vec's derived PartialEq gives NaN!=NaN).
+    if let Some(out) = rustc_run(&m, "run(f64::NAN, 2.5)") {
+        assert_eq!(
+            out, "1",
+            "a NaN element compares equal under canonical bytes (NOT Vec's NaN!=NaN):\n{m}"
+        );
+    }
+    // A length-differing pair must be unequal — pin the `.len()` short-circuit of the List arm.
+    let len = compile_rust(
+        "(module m \
+           (def (run (: a Float64)) (if (= (list a) (List.push (list a) a)) 1 0)) \
+         (export run))",
+    );
+    if let Some(out) = rustc_run(&len, "run(1.5)") {
+        assert_eq!(
+            out, "0",
+            "a length mismatch decides immediately (unequal):\n{len}"
+        );
+    }
+    // -0.0 vs +0.0 as elements stay DISTINCT under the canonical byte form (Vec's PartialEq treats them equal).
+    let zero = compile_rust(
+        "(module m \
+           (def (run (: a Float64) (: b Float64)) (if (= (list a) (list b)) 1 0)) \
+         (export run))",
+    );
+    if let Some(out) = rustc_run(&zero, "run(-0.0, 0.0)") {
+        assert_eq!(
+            out, "0",
+            "-0.0 stays distinct from +0.0 as a list element (canonical bytes, NOT Vec PartialEq):\n{zero}"
+        );
+    }
+}
+
+#[test]
 fn rustc_roundtrip_runtime_bin_construction_and_match() {
     // A runtime `(bin …)` of fixed-width INT segments builds a Vec<u8> (range-checked, big-endian by
     // default, `le` reversed) and a `bin` pattern decodes it back — was a whole-family decline ("the Rust
