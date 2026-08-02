@@ -46,3 +46,10 @@ test("toMixed: arbitrary-precision numerators keep every digit (BigInt, not i64)
   // 100000000000000000001 / 3 = 33333333333333333333 + 2/3 — a numerator well past 2^63.
   assert.equal(toMixed("100000000000000000001/3"), "33333333333333333333 + 2/3");
 });
+
+test("toMixed: a zero denominator passes through — total, never divides by zero", () => {
+  // The compiler never emits `n/0`, but toMixed is exported/called on arbitrary strings, so it must not
+  // throw on one. BARE_RATIONAL matches `1/0`; without the guard, `n / d` would be a BigInt div-by-zero.
+  assert.equal(toMixed("1/0"), "1/0");
+  assert.equal(toMixed("-5/0"), "-5/0");
+});
