@@ -1,8 +1,10 @@
 # Scoping: move the build/test pipeline to a Nix flake
 
-Status: FEASIBILITY READ (v-fleet-tooling, 2026-08-02). Owner: `v-fleet-tooling` (owns gate/CI/build
-pipeline). Trigger: operator idea relayed by concierge (note seq 32/33) — a Nix flake that builds +
-wires *everything*, with incremental test-skipping, no committed-wasm, and a shared cache.
+Status: COMMITTED DIRECTION — N0 DONE, N1+ held for CI-lanes cutover (v-fleet-tooling, 2026-08-02;
+see the Status section at the bottom for the resolved operator decisions). Owner: `v-fleet-tooling`
+(owns gate/CI/build pipeline). Trigger: operator idea relayed by concierge (note seq 32/33) — a Nix
+flake that builds + wires *everything*, with incremental test-skipping, no committed-wasm, and a
+shared cache.
 
 This is a FEASIBILITY + INCREMENTAL-PATH read, not a commitment. The CI-gated parallel-lanes rewire
 (`fleet/CI-GATED-LANES-DESIGN.md`) remains priority #1; this is evaluated alongside, not instead.
@@ -30,8 +32,9 @@ not the merit of the idea:
    but that whole `reference/` subsystem, its flake, and its cachix wiring were **removed**. So we are
    NOT extending a live flake; we would be **re-introducing** one from scratch. The upside: there's a
    known-good prior-art commit to crib from (`7815edccb`, `0d625573a`) for the cachix + flake shape,
-   and the `camshaft` cachix cache name/keys may still be provisioned on cachix.org (needs a check —
-   raised as an ask below). Net effort is HIGHER than "extend what's wired" but the pattern is proven.
+   and the `camshaft` cachix cache is CONFIRMED to still exist (operator) — so N1+ just wires its push
+   token, no new-cache provisioning. Net effort is HIGHER than "extend what's wired" but the pattern is
+   proven.
 
 2. **The committed-wasm problem is SMALL today, but real and growing.** Exactly ONE committed built
    `.wasm` in the tree: `implementation/seed/crates/cdz-kernel/tests/fixtures/reducer_guest.component.wasm`
@@ -106,13 +109,34 @@ absorbs one-offs incrementally, retiring hand-wired steps only after the flake p
   pipeline changes in flight at once — exactly the risk the single-writer trunk model exists to avoid.
   N0 (the additive spike) can proceed in parallel since it changes nothing live; N1+ waits for lanes.
 
+## Design principles (operator directives, 2026-08-02)
+
+- **Tightly-scoped derivations = fine-grained cache invalidation** (operator, verbatim: "we want to
+  make sure each derivation is tightly scoped to just what the package needs … really fine
+  granularity around cache invalidation"). Every derivation declares EXACTLY its package's inputs —
+  no over-broad input closures, no monolithic everything-depends-on-everything graph. Per-crate /
+  per-package derivations with minimal declared inputs, so a change invalidates only the truly-affected
+  derivations (this IS the incremental-skip win). N0's devShell already follows this: the shared shell
+  carries only the toolchain + wasm-tools; anything a specific later derivation needs goes in THAT
+  derivation's inputs (N1+), not the shared shell.
+- **Cachix: local cache now, cachix-on-CI later** (operator, verbatim: "I can provide the token on the
+  fleet machine later. Shared caching isn't the immediate need on the fleet anyway. It'll share the
+  cache locally which is great. The CI just benefits more from cachix right now cause it's running a
+  bunch of things in parallel with no sharing and no dedup"). So: the cachix push-token is NOT a
+  blocker — the fleet host already wins from the LOCAL nix cache (shared across agents on the one host,
+  no cachix needed). Cachix's shared-cache payoff is on CI (parallel jobs, currently no sharing/dedup),
+  so wiring cachix into the CI runners is the priority target — and the operator supplies the token on
+  the fleet machine then. The `camshaft` cachix cache is CONFIRMED to still exist (operator), so N1+
+  just wires its push token, no new-cache provisioning.
+
 ## Risks / unknowns (call out before committing)
 
 - **CI runner Nix availability + cold-cache latency.** GitHub runners need `install-nix-action`; a
   cold cachix miss can be SLOWER than today's cargo build until the cache warms. The pilot already
   found runner-concurrency is the bottleneck (design finding 8) — a flake that lets cachix serve
   prebuilt store/guest derivations could REDUCE job time, but only once the cache is warm. Measure N1
-  before promising a speed win.
+  before promising a speed win. (Cachix on CI is where the shared-cache payoff lands — see the cachix
+  design principle above; the fleet host itself needs only the local cache.)
 - **`REQUIRED_RUNTIME_HASH` coupling.** The store hash is frozen and gate-critical. N1 must prove the
   Nix derivation reproduces the EXACT recorded hash (aarch64) or the whole gate goes red. This is the
   single most fragile step — treat it as a hard parity gate.
@@ -123,22 +147,25 @@ absorbs one-offs incrementally, retiring hand-wired steps only after the flake p
   pin the same arch for the hash-bearing derivation or provide per-arch outputs.
 - **Two-large-changes-in-flight.** Mitigated by the sequencing above (N0 parallel, N1+ after lanes).
 
-## Recommendation
+## Status (operator decisions RESOLVED, 2026-08-02)
 
-1. **Proceed with N0 now** (additive spike, zero live risk) to de-risk the "does cachix still exist +
-   does the store build reproduce as a derivation" unknowns — the two facts that decide whether the
-   whole idea is cheap or expensive.
-2. **Hold N1–N4 behind the CI-lanes I4/I5 cutover** (priority #1, nearly drained).
-3. **Raise the two operator decisions below via `ask`** (cachix account/creds + prioritization),
-   because they gate real effort and only the operator can answer them.
+The two open questions below were answered by the operator (relayed by concierge) — recorded here so
+the doc reflects the committed state, not the original open questions:
 
-## Asks for the operator (raised via concierge)
+1. **✅ GO — the full Nix pipeline is the committed direction**, not a maybe-explore. Operator: "It
+   doesn't matter how long it will take. That's where we should be going. No shortcuts." Build it out
+   fully, staged for parity, never sole-gate until proven.
+2. **✅ Toolchain/creds resolved.** Nix is INSTALLED on the fleet host (Determinate Nix 2.34.8, flakes
+   on, covers the whole fleet — single shared host). The `camshaft` cachix cache still EXISTS (so N1+
+   wires the push token, no new-cache provisioning); the operator provides the token on the fleet
+   machine when the CI-integration stage needs it.
+3. **✅ Sequencing kept:** N0 now, N1+ after the CI-lanes I4/I5 cutover (operator did NOT invert the
+   CI-lanes priority-#1).
 
-- **Cachix account + creds.** Does the `camshaft` cachix cache (from the removed flake, `0d625573a`)
-  still exist and do we have a push auth token in CI secrets? If not, provisioning it is a prerequisite
-  and a human step. (The "already wired" premise is stale — see correction 1.)
-- **Prioritization.** Confirm this is N0-spike-now / N1+-after-CI-lanes-cutover, and NOT a
-  drop-everything migration. The pitch reads as "explore," and the CI-lanes rewire is the standing
-  priority #1 — confirming we don't invert that.
+**Progress:** 🏁 **N0 DONE** — `flake.nix` + `flake.lock` landed (PR #1363), devShell verified
+reproducing the CI toolchain (rustc 1.95.0 exact pin, cargo 1.95.0, wasm-tools 1.254.0, wasm32 target,
+rust-src). N1+ HELD behind the CI-lanes cutover. When N1 starts, loop in `v-agent-harness-host` (the
+flake moots the Cedar-3.3 MB commit-vs-CI-build fixture decision). Host-config gotchas for using nix
+here (the `nixbld` group + `NIX_REMOTE=daemon`) are recorded in the fleet-tooling memory + the N0 recipe.
 
 See `fleet/CI-GATED-LANES-DESIGN.md` (the priority-#1 rewire this composes with).
