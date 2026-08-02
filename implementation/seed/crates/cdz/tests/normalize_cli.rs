@@ -123,6 +123,74 @@ fn check_exits_nonzero_when_a_file_would_be_normalized() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Run `cdz normalize <args…>` with `stdin` piped in, returning (exit_ok, stdout, stderr). For the
+/// stdin (`-`) disposition path, which reads real `std::io::stdin()` (not in-process unit-testable from
+/// cadenza-syntax) — the end-to-end complement of that crate's `emits_to_stdout` unit test.
+fn normalize_stdin(stdin: &str, args: &[&str]) -> (bool, String, String) {
+    use std::io::Write;
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let mut a = vec!["normalize"];
+    a.extend_from_slice(args);
+    let mut child = Command::new(exe)
+        .args(&a)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn cdz normalize (stdin)");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .expect("write stdin");
+    let out = child.wait_with_output().expect("wait cdz");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn stdin_check_reds_when_input_would_normalize_and_is_clean_otherwise() {
+    // The stdin disposition bug (found probing `cdz`, fixed by v-syntax in cadenza-syntax cli.rs PR #1127
+    // 0c7a0e134): `normalize - --check` used to hit the stdout-emit branch UNCONDITIONALLY (there's no file
+    // to edit), so it printed the transformed program and exited 0 — SILENTLY IGNORING --check even when the
+    // input would normalize. A CI pipe (`… | cdz normalize - --match-to-let --check`) then got a FALSE PASS.
+    // The fix honors --check on stdin. Pin it end-to-end over the REAL stdin pipe (not unit-testable from the
+    // syntax crate): a would-normalize input REDS (exit non-zero) + names `<stdin>`, an already-normal input
+    // is clean (exit 0). No store — a pure text disposition.
+    // Would-normalize: a single-clause irrefutable match → --check must RED, NOT silently print + exit 0.
+    let (ok, out, err) = normalize_stdin(
+        "def f(x: Int64) -> Int64 = match x with | y => y + 1\n",
+        &["-", "--from", "ml", "--match-to-let", "--check"],
+    );
+    assert!(
+        !ok,
+        "normalize - --check must RED when stdin would normalize (not a silent exit-0):\nstdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(
+        out.contains("would normalize") && out.contains("<stdin>"),
+        "the --check report names the stdin source as would-normalize:\nstdout:\n{out}\nstderr:\n{err}"
+    );
+    // The lowered `let` must NOT be emitted under --check (it inspects, never writes/prints the transform).
+    assert!(
+        !out.contains("let y ="),
+        "--check must not print the transformed program (that's the --stdout mode):\nstdout:\n{out}"
+    );
+
+    // Already-normal (no single-clause match to lower): --check is clean → exit 0.
+    let (ok2, _out2, err2) = normalize_stdin(
+        "def f(x: Int64) -> Int64 = x + 1\n",
+        &["-", "--from", "ml", "--match-to-let", "--check"],
+    );
+    assert!(
+        ok2,
+        "normalize - --check exits 0 when stdin is already normal:\nstderr:\n{err2}"
+    );
+}
+
 #[test]
 fn single_variant_sum_ctor_lowers_but_multi_variant_stays() {
     // Type-aware: a ctor pattern on a SINGLE-variant sum is irrefutable → lowers; a multi-variant
