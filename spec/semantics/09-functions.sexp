@@ -6867,3 +6867,39 @@
             (export main)))
   (call   main (: 7 Int64)) (output (: 73 Int64))
   (call   main (: 2 Int64)) (output (: 203 Int64)))
+
+(case "two adapter records with different state types drive a take-while fold in one program"
+  (doc    "The {state, step} iterator-adapter protocol at the corpus tier (the v-iterators giter
+           modules pin it in-library only): TWO adapters with DIFFERENT state types — an Int64
+           counter (yields s, next s+1) and a tuple fib-state (yields a, next (b, a+b)) — each driven
+           by a generic take-while fold (the stepf param is a closure returning Option(tuple elem
+           state)). Counter from 1 while <4 → 1+2+3 = 6; fib from (1,1) while <=3 → 1+1+2+3 = 7 →
+           67. Per-instantiation monomorphization of the generic state param is the seam (a shared
+           emit mistypes one state). wasm computes; rust targets todo (higher-order closure-param
+           family).")
+  (input  (do
+            (def (sum-while (: st Int64) stepf (: lim Int64) (: acc Int64) (: fuel Int64))
+              (if (= fuel 0)
+                acc
+                (match (stepf st)
+                  ((Some p) (match p
+                              ((tuple e s2) (if (< e lim)
+                                              (sum-while s2 stepf lim (+ acc e) (- fuel 1))
+                                              acc))))
+                  ((None u) acc))))
+            (def (sum-while-t st stepf (: lim Int64) (: acc Int64) (: fuel Int64))
+              (if (= fuel 0)
+                acc
+                (match (stepf st)
+                  ((Some p) (match p
+                              ((tuple e s2) (if (<= e lim)
+                                              (sum-while-t s2 stepf lim (+ acc e) (- fuel 1))
+                                              acc))))
+                  ((None u) acc))))
+            (def (main)
+              (+ (* 10 (sum-while 1 (fn ((: s Int64)) (Some (tuple s (+ s 1)))) 4 0 20))
+                 (sum-while-t (tuple 1 1)
+                              (fn (p) (match p ((tuple a b) (Some (tuple a (tuple b (+ a b)))))))
+                              3 0 20)))
+            (export main)))
+  (output (: 67 Int64)))

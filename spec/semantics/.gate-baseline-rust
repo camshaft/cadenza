@@ -5509,3 +5509,5 @@ pass	the bitwise-AND-with-zero annihilator does not swallow a COMPILE-PROVABLE o
 pass	the bitwise-AND-with-zero annihilator folds to zero when the discarded constant operand is total
 pass	a closure built in a fused-match arm captures the payload binder and reads it after the match
 pass	host calls issue only from the TAKEN arm of a fused match and in arm order
+todo	two adapter records with different state types drive a take-while fold in one program
+pass	pure guards on fused-match arms read the payload binder and an enclosing capture
