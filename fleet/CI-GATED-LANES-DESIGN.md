@@ -146,6 +146,11 @@ the PR `state` as a third reap input: `CLOSED && !MERGED` → treat as a `Reject
 so its sender can resend, drop the `ci-dispatch` record, free the slot). `pr_merged_and_verdict`
 already fetches `state` via `gh pr view` — extend it to return the closed-not-merged case. (Deferred to
 the I4 executor build, not the read-only preview; noted so it isn't lost.)
+  - **Closed-WHILE-polling race** (PR #1160 review): beyond a PR closed between passes, the poll loop
+    must also handle a PR closed/merged DURING a single poll cycle — re-fetch `state` on each poll rather
+    than caching it, and treat a mid-poll `CLOSED`/`MERGED` as terminal so the poller never waits forever
+    on a PR that vanished under it. I4 requirement: each reap poll reads fresh `(state, checks)`; no
+    per-candidate poll caches the pre-poll state.
 
 ## Pilot learnings (pr-sync's manual validation, 2026-08-02 — bake these into I3/I4)
 
