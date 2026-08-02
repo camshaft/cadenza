@@ -3402,6 +3402,7 @@ pass	an abortive handler arm with a runtime perform argument yields that runtime
 pass	an abortive perform deep in a call chain unwinds every intervening frame to the top handler
 pass	an abortive perform in a conditional let binding abandons the computation
 pass	an abortive perform in a connective that is an if-condition abandons the computation when the connective reaches it
+todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 pass	an abortive perform in a short-circuit connective's right operand abandons the computation
 pass	an abortive perform in an if condition abandons the computation before branching
 pass	an abortive perform in the NON-taken if branch is never evaluated (no speculation)
