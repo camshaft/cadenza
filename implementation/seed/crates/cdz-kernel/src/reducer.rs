@@ -139,12 +139,14 @@ mod tests {
         let timer = EventBody::TimerFired {
             id: EffectId(9),
             fired_ms: 1,
+            token: None,
         };
         // A DENIAL is the terminal outcome of a requested effect too — the reducer's continuation for
         // that id must resume, or its flow strands on the denied effect (§9d anti-stuck).
         let denied = EventBody::AuthzDenied {
             id: EffectId(11),
             reason: "no capability".into(),
+            token: None,
         };
         let closed = EventBody::Closed {
             outcome: Payload::Inline(vec![]),

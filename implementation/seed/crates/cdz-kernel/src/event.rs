@@ -80,16 +80,46 @@ pub enum EventBody {
 
     /// A timer was armed. Durable (§16c-S1/S5) with an ABSOLUTE deadline so any node can compute the
     /// remaining time after failover. The kernel injects a `TimerFired` at the deadline.
-    TimerArmed { id: EffectId, deadline_ms: u64 },
+    TimerArmed {
+        id: EffectId,
+        deadline_ms: u64,
+        /// The reducer's OWN opaque continuation token for the timer effect (§19e), recorded here in the
+        /// durable arming frame — the timer analogue of `Dispatched.token`. When the timer fires, the
+        /// kernel copies this onto the `TimerFired` event so a WASM `ComponentReducer` reads it back as
+        /// the guest's `resumes` (slice 2b-iii). `None` = a token-free reducer (the in-process Rust
+        /// `Reducer`, which correlates by `EffectId`). Recording it in the durable frame (not a volatile
+        /// map) is the same §19e recovery guard as `Dispatched.token`.
+        token: Option<Vec<u8>>,
+    },
 
     /// A timer fired (or an effect deadline elapsed). Carries the recorded fire time so replay reads a
     /// frozen fact and never consults a clock (§9c).
-    TimerFired { id: EffectId, fired_ms: u64 },
+    TimerFired {
+        id: EffectId,
+        fired_ms: u64,
+        /// The reducer's continuation token for the timer (§19b/§19e (B)), COPIED from `id`'s
+        /// `TimerArmed` frame when the fire is recorded — the timer analogue of `EffectResult.token`. It
+        /// rides the fire event so a WASM `ComponentReducer`'s `fold` reads it back as the guest's
+        /// `resumes` without touching the log/map (fold stays pure). `None` = the timer was armed
+        /// token-free. Derived from the durable arming frame, so it's the same live and on replay.
+        token: Option<Vec<u8>>,
+    },
 
     /// An authorization decision the kernel made about a requested effect — logged so an audit can
     /// replay not just what happened but whether it was permitted (§10). `denied` requests never reach
     /// an executor.
-    AuthzDenied { id: EffectId, reason: String },
+    AuthzDenied {
+        id: EffectId,
+        reason: String,
+        /// The reducer's continuation token for the DENIED effect (§19b/§19e (B)), moved from the
+        /// effect request the reducer emitted. A denial is a terminal outcome the reducer resumes on
+        /// (`resumes_effect` recognizes it), so the token rides the denial event exactly as it rides an
+        /// `EffectResult` — the guest's `fold` reads it back as `resumes` to run its denial branch.
+        /// Unlike a dispatch/timer, there is NO prior durable frame to copy from (a denial is recorded
+        /// BEFORE any `Dispatched`/`TimerArmed` — the effect never ran), so the token comes straight from
+        /// the requesting `Effect`. `None` = a token-free reducer.
+        token: Option<Vec<u8>>,
+    },
 
     /// The session closed. `outcome` is opaque; if the session had a parent, the kernel delivers a
     /// completion signal to it (§6 supervision).
@@ -284,14 +314,17 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
         4 => EventBody::TimerArmed {
             id: EffectId(c.u64()?),
             deadline_ms: c.u64()?,
+            token: decode_opt_bytes(c)?,
         },
         5 => EventBody::TimerFired {
             id: EffectId(c.u64()?),
             fired_ms: c.u64()?,
+            token: decode_opt_bytes(c)?,
         },
         6 => EventBody::AuthzDenied {
             id: EffectId(c.u64()?),
             reason: c.string()?,
+            token: decode_opt_bytes(c)?,
         },
         7 => EventBody::Closed {
             outcome: decode_payload(c)?,
@@ -430,20 +463,31 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
             encode_outcome(result, out);
             encode_opt_bytes(token.as_deref(), out);
         }
-        EventBody::TimerArmed { id, deadline_ms } => {
+        EventBody::TimerArmed {
+            id,
+            deadline_ms,
+            token,
+        } => {
             out.push(4);
             out.extend_from_slice(&id.0.to_le_bytes());
             out.extend_from_slice(&deadline_ms.to_le_bytes());
+            encode_opt_bytes(token.as_deref(), out);
         }
-        EventBody::TimerFired { id, fired_ms } => {
+        EventBody::TimerFired {
+            id,
+            fired_ms,
+            token,
+        } => {
             out.push(5);
             out.extend_from_slice(&id.0.to_le_bytes());
             out.extend_from_slice(&fired_ms.to_le_bytes());
+            encode_opt_bytes(token.as_deref(), out);
         }
-        EventBody::AuthzDenied { id, reason } => {
+        EventBody::AuthzDenied { id, reason, token } => {
             out.push(6);
             out.extend_from_slice(&id.0.to_le_bytes());
             encode_str(reason, out);
+            encode_opt_bytes(token.as_deref(), out);
         }
         EventBody::Closed { outcome } => {
             out.push(7);
@@ -632,6 +676,7 @@ mod tests {
             body: EventBody::TimerFired {
                 id: EffectId(1),
                 fired_ms: 100,
+                token: None,
             },
         };
         let b = Event {
@@ -640,6 +685,7 @@ mod tests {
             body: EventBody::TimerFired {
                 id: EffectId(1),
                 fired_ms: 101,
+                token: None,
             },
         };
         assert_ne!(a.hash(), b.hash());
@@ -749,9 +795,11 @@ mod tests {
             Event {
                 seq: 9,
                 cause: None,
+                // Some(token): exercise the §19e slice-2b-iii token codec on the arming frame.
                 body: EventBody::TimerArmed {
                     id: EffectId(10),
                     deadline_ms: 999,
+                    token: Some(b"timer-tok".to_vec()),
                 },
             },
             Event {
@@ -760,14 +808,17 @@ mod tests {
                 body: EventBody::TimerFired {
                     id: EffectId(10),
                     fired_ms: 1000,
+                    token: Some(b"timer-tok".to_vec()),
                 },
             },
             Event {
                 seq: 11,
                 cause: None,
+                // Some(token) on a denial too: a denied effect's continuation token rides the denial.
                 body: EventBody::AuthzDenied {
                     id: EffectId(11),
                     reason: "no capability".into(),
+                    token: Some(b"denied-tok".to_vec()),
                 },
             },
             Event {

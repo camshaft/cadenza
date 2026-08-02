@@ -538,6 +538,113 @@ fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
 }
 
 #[test]
+fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
+    // §19b/§19e slice 2b-iii: the continuation token must ride ALL THREE terminal outcomes a guest
+    // resumes on, not just EffectResult. A TIMER token is recorded in the durable TimerArmed frame and
+    // COPIED onto TimerFired when the kernel fires it; a DENIED effect's token is MOVED onto the
+    // AuthzDenied event (a denial has no prior durable frame — the effect never ran). This proves both
+    // channels so a wasm ComponentReducer reads its own `resumes` back on a timer wake / a denial.
+    struct TokenTimerAndDenyReducer;
+    impl Reducer for TokenTimerAndDenyReducer {
+        fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                // Inbound: arm a timer WITH a continuation token.
+                EventBody::Inbound { .. } => FoldOutput::with_effects(vec![Effect {
+                    request: EffectRequest {
+                        kind: EffectKind::Timer,
+                        target: "1000".into(), // absolute deadline ms
+                        payload: None,
+                    },
+                    token: Some(b"timer-cont-7".to_vec()),
+                }]),
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    let mut exec = RecordingExecutor::new();
+    let mut session = Session::genesis(Hash::of(b"token-timer-v1"));
+    session
+        .deliver(
+            inbound_go(),
+            None,
+            &TokenTimerAndDenyReducer,
+            &timer_cap(),
+            &mut exec,
+        )
+        .unwrap();
+
+    // The token reached the durable TimerArmed frame (the arming analogue of Dispatched.token).
+    let armed_token = session.log().iter().find_map(|e| match &e.body {
+        EventBody::TimerArmed { token, .. } => Some(token.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        armed_token,
+        Some(Some(b"timer-cont-7".to_vec())),
+        "the reducer's continuation token must reach the durable TimerArmed frame (§19e 2b-iii)"
+    );
+
+    // Fire the timer: the kernel copies the token from TimerArmed onto TimerFired (rides the fire).
+    assert_eq!(
+        session.fire_due_timers(1000, &TokenTimerAndDenyReducer, &timer_cap(), &mut exec),
+        1
+    );
+    let fired_token = session.log().iter().find_map(|e| match &e.body {
+        EventBody::TimerFired { token, .. } => Some(token.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        fired_token,
+        Some(Some(b"timer-cont-7".to_vec())),
+        "the TimerFired must carry the same token as its TimerArmed frame (§19e (B) — rides the fire)"
+    );
+
+    // DENIAL channel: a reducer emits a token-bearing effect the authorizer DENIES → the token rides
+    // the AuthzDenied event (moved from the request; no prior durable frame exists for a denied effect).
+    struct DenyTokenReducer;
+    impl Reducer for DenyTokenReducer {
+        fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            if matches!(event.body, EventBody::Inbound { .. }) {
+                FoldOutput::with_effects(vec![Effect {
+                    request: EffectRequest {
+                        kind: EffectKind::Http,
+                        target: "https://denied.host/x".into(),
+                        payload: None,
+                    },
+                    token: Some(b"denied-cont-9".to_vec()),
+                }])
+            } else {
+                FoldOutput::none()
+            }
+        }
+    }
+    // A capability that authorizes Timer but NOT Http → the Http effect is denied.
+    let mut exec2 = RecordingExecutor::new();
+    let mut s2 = Session::genesis(Hash::of(b"token-deny-v1"));
+    s2.deliver(
+        inbound_go(),
+        None,
+        &DenyTokenReducer,
+        &timer_cap(),
+        &mut exec2,
+    )
+    .unwrap();
+    // The effect never reached the executor (denied)...
+    assert_eq!(exec2.seen.len(), 0);
+    // ...and its continuation token rode the AuthzDenied event.
+    let denied_token = s2.log().iter().find_map(|e| match &e.body {
+        EventBody::AuthzDenied { token, .. } => Some(token.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        denied_token,
+        Some(Some(b"denied-cont-9".to_vec())),
+        "the AuthzDenied must carry the denied effect's token (§19e 2b-iii — rides the denial)"
+    );
+}
+
+#[test]
 fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_persist() {
     // §16c-S1 tier-B route-guard (concierge ruling): if the Dispatched frame fails to PERSIST, the
     // kernel must NOT route the effect (an irreversible executor call on an un-durable dispatch is the

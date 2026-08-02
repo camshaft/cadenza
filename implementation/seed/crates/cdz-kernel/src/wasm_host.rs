@@ -362,10 +362,13 @@ impl ComponentReducer {
 /// trait uses — the operator's §19b real boundary, wired in.
 ///
 /// CORRELATION (§19e, ruling B — kernel-owns): the guest never sees the kernel `EffectId`. On a
-/// result/timer/denial event, `resumes` = the event's `token` — which slice-2b-i copied onto the event
-/// FROM the originating `Dispatched` frame (so `fold` reads it straight off `event`, staying PURE: no
-/// log/map access). On an effect the guest emits, its `correlation` becomes the `Effect.token` the drive
-/// loop records into the new `Dispatched` frame. The loop closes: emit token → Dispatched → Result →
+/// result/timer/denial event, `resumes` = the event's `token`, which the kernel put there from the
+/// event's origin — copied from the originating `Dispatched` frame for an `EffectResult` (slice 2b-i)
+/// or `TimerArmed` frame for a `TimerFired` (slice 2b-iii), or moved straight from the requesting effect
+/// for an `AuthzDenied` (which has no prior durable frame — the effect never ran). Either way `fold`
+/// reads it straight off `event`, staying PURE (no log/map access). On an effect the guest emits, its
+/// `correlation` becomes the `Effect.token` the drive loop records into the new `Dispatched` (or
+/// `TimerArmed`) frame. The loop closes: emit token → Dispatched/TimerArmed → Result/Fired/Denial →
 /// resumes.
 ///
 /// TOTALITY (§17): a guest trap / fuel-exhaustion / instantiation failure is surfaced as NO effects
@@ -432,20 +435,22 @@ fn event_to_guest_inputs(body: &EventBody) -> (ContentType, Option<Vec<u8>>, Opt
             token.clone(),
         ),
         // TimerFired / AuthzDenied are ALSO terminal outcomes a guest resumes on (resumes_effect
-        // recognizes all three) — so a full bridge would carry their token too, via the same (B)
-        // mechanism (copy from the originating TimerArmed / Dispatched frame). v0 wires the common
-        // effect→result→resume cycle (EffectResult, above) and passes resumes=None here; extending
-        // token-riding to timer-fired + denial events is the follow-up slice 2b-iii. The guest still
-        // gets the event (family + payload) so it can react; it just doesn't get its token back YET.
-        EventBody::TimerFired { fired_ms, .. } => (
+        // recognizes all three), so they carry the guest's continuation token too, via the same (B)
+        // mechanism as EffectResult (slice 2b-iii): a timer's token is copied from its originating
+        // `TimerArmed` frame when it fires; a denial's token is moved from the requesting effect (a
+        // denial has no prior durable frame). `fold` reads it straight off the event as `resumes`,
+        // staying pure. The full effect→result / timer→fire / request→denial resume cycle is now wired.
+        EventBody::TimerFired {
+            fired_ms, token, ..
+        } => (
             synthetic("timer-fired"),
             Some(fired_ms.to_le_bytes().to_vec()),
-            None,
+            token.clone(),
         ),
-        EventBody::AuthzDenied { reason, .. } => (
+        EventBody::AuthzDenied { reason, token, .. } => (
             synthetic("authz-denied"),
             Some(reason.clone().into_bytes()),
-            None,
+            token.clone(),
         ),
         // Genesis / Dispatched / TimerArmed / Closed are not folded by the reducer (they're kernel
         // bookkeeping or setup — see the kernel's `observable()` predicate); the loop never calls fold
