@@ -676,7 +676,10 @@ impl Session {
     /// the EffectResult" — [`record_result`] copies it onto the result event so a wasm reducer's fold can
     /// read it back as the guest's `resumes` without fold ever touching the log/map (fold stays pure).
     fn dispatch_token_of(&self, id: EffectId) -> Option<Option<Vec<u8>>> {
-        self.log.iter().find_map(|e| match &e.body {
+        // Scan from the END (rev): at most ONE matching frame per id, and a result/fire event is
+        // near its dispatch/arm, so the reverse scan finds it fast — avoids an O(log^2) replay hot
+        // path where a front scan re-walks the whole prefix for every EffectResult (PR#1253 review).
+        self.log.iter().rev().find_map(|e| match &e.body {
             EventBody::Dispatched { id: d, token, .. } if *d == id => Some(token.clone()),
             _ => None,
         })
@@ -687,7 +690,10 @@ impl Session {
     /// result apart (so `last_now` rebuilds only from `Now` results). Reads the durable frame, so it's
     /// replay-deterministic.
     fn dispatch_kind_of(&self, id: EffectId) -> Option<EffectKind> {
-        self.log.iter().find_map(|e| match &e.body {
+        // Scan from the END (rev): at most ONE matching frame per id, and a result/fire event is
+        // near its dispatch/arm, so the reverse scan finds it fast — avoids an O(log^2) replay hot
+        // path where a front scan re-walks the whole prefix for every EffectResult (PR#1253 review).
+        self.log.iter().rev().find_map(|e| match &e.body {
             EventBody::Dispatched { id: d, kind, .. } if *d == id => Some(kind.clone()),
             _ => None,
         })
@@ -700,7 +706,10 @@ impl Session {
     /// is how the token "rides the TimerFired": [`fire_due_timers`] copies it onto the fire event so a
     /// wasm reducer's fold reads it back as the guest's `resumes` without fold ever touching the log/map.
     fn timer_armed_token_of(&self, id: EffectId) -> Option<Option<Vec<u8>>> {
-        self.log.iter().find_map(|e| match &e.body {
+        // Scan from the END (rev): at most ONE matching frame per id, and a result/fire event is
+        // near its dispatch/arm, so the reverse scan finds it fast — avoids an O(log^2) replay hot
+        // path where a front scan re-walks the whole prefix for every EffectResult (PR#1253 review).
+        self.log.iter().rev().find_map(|e| match &e.body {
             EventBody::TimerArmed { id: a, token, .. } if *a == id => Some(token.clone()),
             _ => None,
         })
@@ -955,11 +964,25 @@ fn event_body_name(body: &EventBody) -> &'static str {
 /// a malformed non-8-byte payload) passes through untouched (defensive — never corrupt an outcome the
 /// kernel can't interpret; a malformed Now reading is the executor's bug, surfaced as-is, not silently
 /// rewritten). `last_now` still advances to the clamp floor even when the reading is used, via `max`.
+///
+/// OVERFLOW (PR#1253 review): the strictly-increasing floor is `last_now + 1`. At the astronomically
+/// unreachable edge `last_now == u64::MAX` (year ~2554 in ns, AND the clock clamped up to there), there
+/// is no larger value — `saturating_add` would return `u64::MAX` again, SILENTLY breaking the documented
+/// strictly-increasing invariant. So we `checked_add(1)` and, on overflow, surface a fail-LOUD
+/// `EffectOutcome::Err` (retry-classified `PERMANENT:` — the clock is genuinely exhausted, no retry
+/// helps) rather than hand back a non-increasing value. Fail-loud on the impossible edge beats a silent
+/// invariant break on a durable-clock path.
 fn clamp_now_outcome(outcome: EffectOutcome, last_now: &mut u64) -> EffectOutcome {
     if let EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes))) = &outcome {
         if let Ok(arr) = <[u8; 8]>::try_from(&bytes[..]) {
             let raw = u64::from_le_bytes(arr);
-            let clamped = raw.max(last_now.saturating_add(1));
+            let Some(floor) = last_now.checked_add(1) else {
+                // last_now == u64::MAX: no strictly-greater value exists. Fail loud, don't regress.
+                return EffectOutcome::Err(
+                    "PERMANENT: monotonic clock exhausted (last_now at u64::MAX ns)".to_string(),
+                );
+            };
+            let clamped = raw.max(floor);
             *last_now = clamped;
             return EffectOutcome::Ok(Some(crate::effect::Payload::Inline(
                 clamped.to_le_bytes().to_vec().into(),
@@ -1154,6 +1177,28 @@ mod monotonic_now_tests {
         let d = clamp_now_outcome(mk(5000), &mut last);
         assert_eq!(read(&d), 5000);
         assert_eq!(last, 5000);
+    }
+
+    // OVERFLOW edge (PR#1253): at last_now == u64::MAX there's no strictly-greater value — clamp must
+    // fail LOUD (a PERMANENT Err), not silently return u64::MAX again (which would break the invariant).
+    #[test]
+    fn clamp_now_at_u64_max_errors_instead_of_silently_repeating() {
+        let mut last = u64::MAX;
+        let reading = EffectOutcome::Ok(Some(Payload::Inline(
+            u64::MAX.to_le_bytes().to_vec().into(),
+        )));
+        match clamp_now_outcome(reading, &mut last) {
+            EffectOutcome::Err(msg) => {
+                assert!(
+                    msg.starts_with("PERMANENT:"),
+                    "clock-exhausted is a PERMANENT error: {msg}"
+                );
+                assert!(msg.contains("monotonic clock exhausted"));
+            }
+            other => panic!("expected a fail-loud Err at u64::MAX, got {other:?}"),
+        }
+        // last_now is NOT advanced (there's nowhere to go) — it stays u64::MAX, not silently reused.
+        assert_eq!(last, u64::MAX);
     }
 
     // A non-Now / malformed outcome passes through untouched (defensive — never corrupt an outcome the
