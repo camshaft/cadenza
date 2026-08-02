@@ -630,8 +630,9 @@
   (doc    "The BUILDER-CHAIN twin of the `(map …)` literal cases above: the width fit-check must descend
            through `Map.insert Map.empty 1 200` under a `(Map Int64 Int8)` annotation and ground the
            inserted VALUE literal `200` to the declared `Int8` — `200` overflows Int8 (max 127) → CDZ0302.
-           Before `03976fd5b` the check descended into a `(map …)` LITERAL but NOT a builder chain, so the
-           insert escaped and silently truncated (200 → -56). Pins the descent reaches a Map.insert value.")
+           The fit-check must reach a literal supplied through a builder chain, not only one written as a
+           `(map …)` LITERAL; an insert whose value escaped the check would silently truncate (200 → -56).
+           Pins the descent reaches a Map.insert value.")
   (input  (: (Map.insert Map.empty 1 200) (Map Int64 Int8)))
   (error  CDZ0302))
 
@@ -644,9 +645,9 @@
 
 (case "an out-of-range literal SET element via Set.of is rejected"
   (doc    "The Set face of the collection width fit-check: `Set.of (list 200)` under `(Set Int8)` grounds the
-           element literal `200` to `Int8` → overflow → CDZ0302. Before `03976fd5b` the entire `Ty::Set` arm
-           was absent, so a Set element under a narrow annotation escaped the check. Pins the descent reaches
-           a Set.of element.")
+           element literal `200` to `Int8` → overflow → CDZ0302. The fit-check must cover a Set element as it
+           does a Map key/value; a Set element under a narrow annotation that escaped the check would silently
+           truncate. Pins the descent reaches a Set.of element.")
   (input  (: (Set.of (list 200)) (Set Int8)))
   (error  CDZ0302))
 
