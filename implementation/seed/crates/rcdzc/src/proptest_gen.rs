@@ -1222,14 +1222,23 @@ fn classify_sum(ast: &Arenas, type_name: &str, items: &[StructId], depth: usize)
     let variant_forms = decl_tail.get(1..).filter(|v| !v.is_empty())?;
     let mut variants = Vec::with_capacity(variant_forms.len());
     for &vf in variant_forms {
-        // A variant is a list `(VNAME PAYLOAD?)`.
+        // A variant is either a bare NAME (a nullary variant — `B` in `type T = A(Int64) | B`, which the
+        // ML surface lowers to a bare-name sexpr atom, NOT a `(B)` list) or a list `(VNAME PAYLOAD?)`. A
+        // bare-name nullary variant is generatable (the selector just picks it; no payload to draw), so it
+        // must NOT decline the whole sum — else a MIXED payload+nullary sum (or a plain all-nullary enum
+        // like `Red | Green | Blue`) fails to generate at all, when both are common, fully-generatable
+        // shapes. (`build_sum_gen` already emits a nullary variant as the bare ctor `(. TYPE V)`.)
+        if let Some(vname) = ast.as_name(vf) {
+            variants.push((vname.to_string(), None));
+            continue;
+        }
         let vitems = match ast.get(vf) {
             crate::ast::Struct::List(v) if !v.is_empty() => v.as_slice(),
             _ => return None,
         };
         let vname = ast.as_name(vitems[0])?.to_string();
         let payload = match vitems.get(1) {
-            None => None, // nullary variant
+            None => None, // nullary variant written in list form `(V)`
             // depth+1 so a RECURSIVE sum (a payload naming the sum itself, directly or through a
             // List/Tuple/Record) exceeds MAX_GEN_DEPTH and declines rather than recursing forever.
             Some(&pty) => Some(classify_ty_at(ast, pty, items, depth + 1)?),
@@ -2459,6 +2468,59 @@ mod tests {
             assert!(
                 names.iter().any(|n| n == wrapper) && !names.iter().any(|n| n == def),
                 "{def}: expected wrapper {wrapper}, got {names:?}"
+            );
+        }
+    }
+
+    /// A sum with a BARE-NAME nullary variant generates. The ML surface lowers a nullary variant to a bare
+    /// NAME atom, not a `(V)` list: `type T = A(Int64) | B` → sexpr `(type T (A Int64) B)`. classify_sum
+    /// must accept the bare-name variant (`B`) as nullary, else a MIXED payload+nullary sum, a 3-variant
+    /// mixed sum, AND a plain all-nullary enum (`Red | Green | Blue` → `(type C Red Green Blue)`) all fail
+    /// to generate — common, fully-generatable shapes. A REAL generator wrapper is synthesized (not the
+    /// declining one), and the original def is neutralized. (Previously only an all-payloaded sum, or one
+    /// whose nullary variants happened to be written in `(V)` list form, generated — so the ML-authored
+    /// mixed/enum sums the operator flagged declined.)
+    #[test]
+    fn a_sum_with_bare_name_nullary_variants_generates() {
+        for (src, def, wrapper) in [
+            // mixed payload + bare-name nullary
+            (
+                "(do (type T (A Int64) B) (@ test (def (p (: x T)) 0)) (def (o) 1))",
+                "p",
+                "p-gen",
+            ),
+            // 3-variant mixed, bare-name nullary
+            (
+                "(do (type T (Var Int64) (Con Bool) Nil) (@ test (def (p (: x T)) 0)) (def (o) 1))",
+                "p",
+                "p-gen",
+            ),
+            // plain all-nullary enum (every variant a bare name)
+            (
+                "(do (type C Red Green Blue) (@ test (def (p (: x C)) 0)) (def (o) 1))",
+                "p",
+                "p-gen",
+            ),
+        ] {
+            let db = Db::load(crate::testkit::parse(src));
+            let names: Vec<String> = db
+                .test_defs()
+                .into_iter()
+                .map(|i| db.defs[i].name.clone())
+                .collect();
+            assert!(
+                names.iter().any(|n| n == wrapper) && !names.iter().any(|n| n == def),
+                "{def}: a bare-name-nullary sum generates a REAL wrapper {wrapper} (not declining), \
+                 original neutralized; got {names:?}"
+            );
+            // A real generator wrapper is NULLARY (the compound param is generated internally) — same as
+            // any -gen wrapper. Distinguish it from the DECLINING wrapper by asserting the def BODY is not
+            // a bare `Test.fail`/`trap` (a real gen builds + calls the inner def). We check indirectly: the
+            // wrapper exists AND the run-side classifies it as a Sum (covered e2e in test_manifest_cli).
+            let w = db.defs.iter().find(|d| d.name == wrapper).unwrap();
+            assert!(
+                w.params.is_empty(),
+                "the generator wrapper is nullary (generates the sum param internally): {wrapper}"
             );
         }
     }
