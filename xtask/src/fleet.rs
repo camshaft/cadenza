@@ -93,6 +93,37 @@ const SAT_NOTIFY_GRACE: u64 = 1800;
 /// watchdog sweeps every ~4 min, so this permits at most one restart per agent per ~10 min.
 const WEDGE_RESTART_GRACE: u64 = 600;
 
+/// The watchdog's drain-stall signal only counts ACTIONABLE mail (`message_kind_is_actionable` —
+/// informational note/merged/backlog/status/reply are deliberately excluded, since a note is
+/// fire-and-forget and need not be replied to). That leaves a BLIND SPOT (found live 2026-08-02:
+/// pr-sync had 9 notes from multiple agents piling up for 3+ hrs while it drained MRs — the drain-stall
+/// watchdog saw MRs moving and called it healthy, so the note backlog was silent). An agent that has
+/// STOPPED draining notes entirely can silently drop coordination that DOES matter (an `ask` relayed as
+/// a note, a stale-MR heads-up). These two bounds gate a SEPARATE, report-only "note-backlog" signal —
+/// deliberately HIGH so a handful of recent FYI notes never trips it; only a genuinely-abandoned note
+/// inbox (many, and old) flags. Report-only (never a nudge/restart): notes may be intentionally
+/// deprioritized, so this INFORMS the concierge, it doesn't act.
+const INFORMATIONAL_BACKLOG_COUNT: usize = 6;
+/// Age (seconds) the OLDEST informational message must exceed for the note-backlog signal — 1hr, well
+/// past normal note churn, so a burst of fresh FYIs an agent will drain next tick never flags; only an
+/// inbox where old notes sit undrained does.
+const INFORMATIONAL_BACKLOG_AGE: u64 = 3600;
+
+/// Should the watchdog surface an agent's INFORMATIONAL (note/merged/backlog/status/reply) backlog as a
+/// "stopped draining notes" signal? True only when BOTH the count is high (`>= count_threshold`) AND the
+/// oldest has aged past `age_threshold` — an inbox that's both DEEP and STALE in informational mail,
+/// i.e. the agent has stopped note-draining, not just accumulated a few recent FYIs. Pure so the gate is
+/// unit-tested without fs. Report-only by design (see the constants' doc): the caller emits a concierge
+/// note, never a nudge — notes can be legitimately deprioritized.
+fn informational_backlog_is_stale(
+    count: usize,
+    oldest_age_secs: u64,
+    count_threshold: usize,
+    age_threshold: u64,
+) -> bool {
+    count >= count_threshold && oldest_age_secs >= age_threshold
+}
+
 /// Short recheck window (seconds) for a drain-nudge that DIDN'T stick: if the SAME flagged message is
 /// still unconsumed this long after we auto-nudged, re-nudge (and flag loudly) rather than waiting out
 /// the full `--drain-nudge-grace` anti-churn window. Two ticks of a typical vertical (30m interval is
@@ -2843,6 +2874,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
     let mut saturated = 0usize;
     let mut wedge_escalations = 0usize;
     let mut wedge_restarts = 0usize;
+    let mut note_backlogs = 0usize;
     for a in &reg.agents {
         // Only ACTIVE agents with no stop-file are candidates — a stopped/removed agent SHOULD be idle.
         if a.status != "active" || fleet.stopfile(&a.name).exists() {
@@ -3271,6 +3303,69 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
             }
         }
 
+        // ── NOTE-BACKLOG signal (report-only) — the selective-drain blind spot the actionable
+        // drain-stall misses. An agent draining MRs but NOT notes (found live: pr-sync, 9 notes / 3+hrs)
+        // looks healthy to the actionable stall check (informational mail isn't counted). Flag when the
+        // informational inbox is BOTH deep AND stale → the agent has stopped note-draining, which can
+        // silently drop coordination (an `ask` relayed as a note). Runs for EVERY active agent regardless
+        // of heartbeat freshness (a fast-ticking agent can still ignore notes). Report-only + rate-limited
+        // like the saturation escalation — notes may be intentionally deprioritized, so we INFORM, never
+        // nudge/restart.
+        let note_depth = informational_inbox_depth(&fleet.inbox(&a.name));
+        if let Some(oldest_age) = oldest_informational_age_secs(fleet, &a.name, now)
+            && informational_backlog_is_stale(
+                note_depth,
+                oldest_age,
+                INFORMATIONAL_BACKLOG_COUNT,
+                INFORMATIONAL_BACKLOG_AGE,
+            )
+        {
+            note_backlogs += 1;
+            let mins = oldest_age / 60;
+            eprintln!(
+                "  ✉ '{}' has {note_depth} INFORMATIONAL message(s) undrained, oldest {mins}min old — \
+                 draining actionable mail but not notes (coordination may be silently dropped).",
+                a.name
+            );
+            // Rate-limit the concierge note like the saturation escalation (reuse the sat-notify marker
+            // family via a distinct key), so a persistently note-ignoring agent generates one note per
+            // grace window, not one every ~4-min sweep.
+            let key = format!("{}.note-backlog", a.name);
+            let notified_recently =
+                sat_notify_age_secs(fleet, &key, now).is_some_and(|s| s < SAT_NOTIFY_GRACE);
+            if !dry_run && !notified_recently {
+                deliver(
+                    fleet,
+                    &Message {
+                        from: "watchdog".to_string(),
+                        to: "concierge".to_string(),
+                        kind: "note".to_string(),
+                        subject: format!(
+                            "note-backlog: '{}' has {note_depth} undrained notes (oldest {mins}min) — draining MRs but not notes",
+                            a.name
+                        ),
+                        body: format!(
+                            "'{}' is processing actionable mail but its INFORMATIONAL inbox (note/merged/\
+                             backlog/status/reply) has {note_depth} messages, oldest {mins}min old — it has \
+                             stopped note-draining. The actionable drain-stall watchdog can't see this (it \
+                             ignores informational mail by design), so coordination notes can silently pile \
+                             up + get dropped. Consider nudging '{}' to take a note-drain pass. Report-only + \
+                             rate-limited (one per ~30min); notes may be intentionally deprioritized.",
+                            a.name, a.name
+                        ),
+                        seq: next_seq(),
+                        r#ref: String::new(),
+                        in_reply_to: String::new(),
+                    },
+                );
+                stamp_sat_notify(fleet, &key);
+                println!(
+                    "  + escalated '{}' note-backlog ({note_depth} notes, oldest {mins}min) to concierge (rate-limited)",
+                    a.name
+                );
+            }
+        }
+
         if hb_age.is_some() && age <= stale_after {
             continue; // ticked recently — healthy.
         }
@@ -3606,6 +3701,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 queued_but_landed: landed_queued.len(),
                 wedge_escalations,
                 wedge_restarts,
+                note_backlogs,
                 leases_reaped,
                 stranded_agents,
                 dead_letters_reaped,
@@ -3668,6 +3764,11 @@ struct WatchdogCounts {
     /// wedge without an operator. Persistently >0 across sweeps means agents keep hitting the wall (the
     /// self-compact discipline is failing upstream), worth a deeper fix than the restart papering over it.
     wedge_restarts: usize,
+    /// Active agents flagged this sweep for a stale INFORMATIONAL backlog (deep + old note/merged/…
+    /// inbox — the agent has stopped note-draining while still processing actionable mail). The
+    /// selective-drain signal the actionable drain-stall misses by design; persistently >0 for the same
+    /// agent means notes are being dropped, worth a nudge. Report-only.
+    note_backlogs: usize,
     leases_reaped: usize,
     /// STOPPED agents holding stranded (permanently-undrained) actionable dead-letters this sweep. A
     /// standing anomaly (unlike the transient re-arm/reap counts) — persistently >0 across sweeps is the
@@ -3706,6 +3807,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         && c.queued_but_landed == 0
         && c.wedge_escalations == 0
         && c.wedge_restarts == 0
+        && c.note_backlogs == 0
         && c.leases_reaped == 0
         && c.stranded_agents == 0
         && c.dead_letters_reaped == 0
@@ -3721,7 +3823,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         format!("\treissued_agents={}", c.reissued_agents.join(","))
     };
     Some(format!(
-        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\twedge_restarts={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}{reissued_agents}",
+        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\twedge_restarts={}\tnote_backlogs={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}{reissued_agents}",
         c.rearmed,
         c.reissued,
         c.reaped,
@@ -3731,6 +3833,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         c.queued_but_landed,
         c.wedge_escalations,
         c.wedge_restarts,
+        c.note_backlogs,
         c.leases_reaped,
         c.stranded_agents,
         c.dead_letters_reaped,
@@ -6207,6 +6310,33 @@ fn actionable_inbox_depth(dir: &Path) -> usize {
     count_dir(dir, |f| {
         message_kind_from_filename(f).is_some_and(message_kind_is_actionable)
     })
+}
+
+/// Count immediate INFORMATIONAL messages (note/merged/backlog/status/reply — the complement of
+/// `actionable_inbox_depth`) in `dir`. The count half of the note-backlog signal (see
+/// `informational_backlog_is_stale`).
+fn informational_inbox_depth(dir: &Path) -> usize {
+    count_dir(dir, |f| {
+        message_kind_from_filename(f).is_some_and(|k| !message_kind_is_actionable(k))
+    })
+}
+
+/// Age in seconds of the OLDEST informational message in `name`'s inbox (by delivery-seq filename sort,
+/// same ordering the drain uses), or `None` if there are no informational messages / the inbox is
+/// unreadable. The age half of the note-backlog signal — measured from the file mtime (delivery time).
+fn oldest_informational_age_secs(fleet: &Fleet, name: &str, now: u64) -> Option<u64> {
+    let dir = fleet.inbox(name);
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|f| f.ends_with(".json"))
+        .filter(|f| message_kind_from_filename(f).is_some_and(|k| !message_kind_is_actionable(k)))
+        .collect();
+    sort_inbox_filenames(&mut names);
+    let oldest = names.into_iter().next()?;
+    file_mtime_unix(&dir.join(oldest)).map(|m| now.saturating_sub(m))
 }
 
 /// Count immediate entries in `dir` whose file name passes `keep` (non-recursive; ignores subdirs
@@ -10621,6 +10751,7 @@ mod tests {
                     queued_but_landed: 5,
                     wedge_escalations: 1,
                     wedge_restarts: 2,
+                    note_backlogs: 8,
                     leases_reaped: 4,
                     stranded_agents: 6,
                     dead_letters_reaped: 7,
@@ -10631,7 +10762,7 @@ mod tests {
                 }
             ),
             Some(
-                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tdrain_stall_escalations=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\twedge_restarts=2\tleases_reaped=4\tstranded_agents=6\tdead_letters_reaped=7"
+                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tdrain_stall_escalations=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\twedge_restarts=2\tnote_backlogs=8\tleases_reaped=4\tstranded_agents=6\tdead_letters_reaped=7"
                     .to_string()
             )
         );
@@ -11663,7 +11794,34 @@ mod tests {
             3,
             "a stray non-bus file must not be counted"
         );
+        // informational_inbox_depth is the exact COMPLEMENT (note + merged; not the 3 actionable).
+        assert_eq!(
+            informational_inbox_depth(&tmp),
+            2,
+            "informational = note + merged only"
+        );
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn informational_backlog_is_stale_needs_both_deep_and_old() {
+        // The note-backlog signal (report-only) fires ONLY when the informational inbox is BOTH deep
+        // (>= count threshold) AND stale (oldest >= age threshold) — an agent that stopped note-draining,
+        // not one with a few recent FYIs. Using count=6, age=3600 (the real thresholds).
+        let c = INFORMATIONAL_BACKLOG_COUNT; // 6
+        let a = INFORMATIONAL_BACKLOG_AGE; // 3600
+        // Deep AND old → flag (the live pr-sync case: 9 notes, 3+ hrs).
+        assert!(informational_backlog_is_stale(9, 4 * 3600, c, a));
+        assert!(informational_backlog_is_stale(c, a, c, a)); // exactly at both thresholds → flag
+        // Deep but FRESH → don't flag (a burst of recent notes the agent will drain next tick).
+        assert!(!informational_backlog_is_stale(20, 60, c, a));
+        // Old but SHALLOW → don't flag (one stale FYI nobody needs to act on isn't a drain failure).
+        assert!(!informational_backlog_is_stale(1, 10 * 3600, c, a));
+        // Just under either bound → quiet (no false alarm at the edges).
+        assert!(!informational_backlog_is_stale(c - 1, a, c, a));
+        assert!(!informational_backlog_is_stale(c, a - 1, c, a));
+        // Empty inbox → never.
+        assert!(!informational_backlog_is_stale(0, 0, c, a));
     }
 
     #[test]
