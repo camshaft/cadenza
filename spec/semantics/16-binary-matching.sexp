@@ -925,6 +925,28 @@
             (_ 300)))
   (output (: 200 Int64)))
 
+(case "a guarded bin arm with a CONST leading segment reads a binder from a LATER segment"
+  (doc    "The existing guarded-bin cases all read a binder from a SINGLE-segment `(bin (u8 n))`. This pins
+           the LITERAL-TAG-THEN-BINDER shape: `(guard (bin (u8 5) (u8 n)) (> n 3))` — a CONST leading
+           segment `(u8 5)` (a literal probe, not a binder) followed by a binder segment `(u8 n)`, over a
+           RUNTIME bin whose first byte is 5. The literal segment must PROBE (match only when byte 0 == 5)
+           while `n` decodes from the SECOND segment and is in scope for BOTH the guard cond `(> n 3)` AND
+           the body — the bin analogue of the partial-const guarded-map arm (a const-vs-runtime mix must not
+           disturb the later segment's binder resolution). `g 9` → bin[5, 9]: byte 0 == 5 probes true, n=9,
+           guard `9 > 3` holds → body reads n = 9; a first byte != 5 (the `(bin (u8 9) (u8 9))` witness in the
+           second call) fails the literal probe → falls to the wildcard → -1.")
+  (input  (do (def (f (: b Bytes))
+                (match b
+                  ((guard (bin (u8 5) (u8 n)) (> n 3)) n)
+                  (_ -1)))
+              (def (main (: v Int64))
+                (if (> v 0) (f (bin (u8 5) (u8 (UInt8.wrap v)))) (f (bin (u8 9) (u8 9)))))
+              (export main)))
+  (call   main (: 9 Int64))
+  (output (: 9 Int64))
+  (call   main (: 0 Int64))
+  (output (: -1 Int64)))
+
 (case "a runtime bin match dispatches on a literal tag across arms"
   (doc    "A multi-arm `bin` match over a RUNTIME scrutinee: a leading LITERAL tag segment selects the arm
            (tag 1 vs tag 2), and a runtime `u16` field fills the payload. The construction takes a `UInt8`
