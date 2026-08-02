@@ -106,9 +106,10 @@ impl ThreadMap {
     /// in lockstep so the map stays a faithful bijection). Cheap and a no-op under the cap.
     ///
     /// Collect the oldest-excess `thread_ts` into a `HashSet` once, then do a SINGLE `retain` pass over
-    /// each index against O(1) set membership — amortized O(n + k) total, not O(k·n) (a full `by_key`
-    /// scan per evicted thread). A `HashSet` (not a `BTreeSet`) so `contains` is O(1), keeping the retain
-    /// passes genuinely linear rather than O(n·log k). Matters if a large map is loaded and pruned at once.
+    /// each index against expected-O(1) set membership — expected O(n + k) total, not O(k·n) (a full
+    /// `by_key` scan per evicted thread). A `HashSet` (not a `BTreeSet`) so `contains` is expected/amortized
+    /// O(1) (worst-case degrades), keeping the retain passes expected-linear rather than O(n·log k). Matters
+    /// if a large map is loaded and pruned at once.
     fn prune(&mut self) {
         let len = self.by_thread.len();
         if len <= MAX_THREADS {
