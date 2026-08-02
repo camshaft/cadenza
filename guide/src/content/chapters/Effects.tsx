@@ -196,9 +196,9 @@ export default function Effects() {
     (+ (St.tick) (St.tick))))`}
       />
       <P>
-        Two <C>tick</C>s, each reading the advanced state and each wrapped by the arm's <C>+ 100</C>, add up
-        to <C>201</C>. Tail resume answers and steps aside; non-tail resume answers, then acts on what came
-        back.
+        The first <C>tick</C> reads the initial state <C>0</C> and the second reads the advanced <C>1</C>;
+        each is wrapped by the arm's <C>+ 100</C>, so they add up to <C>201</C>. Tail resume answers and steps
+        aside; non-tail resume answers, then acts on what came back.
       </P>
 
       <H2>A handler that doesn't resume: bailing out</H2>
