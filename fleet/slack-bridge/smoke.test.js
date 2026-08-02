@@ -141,6 +141,20 @@ test("an unknown !kind is left as literal note text (not silently mis-kinded)", 
   assert.ok(i.body.startsWith("!frobnicate"), "the !word stays in the text");
 });
 
+test("a !kind matches the whole word, not a prefix (parity with the Rust side)", () => {
+  // `!statusfoo`/`!status-x` merely START with (or hyphen-extend) a known kind — they are NOT `status`
+  // and must fall through to a literal note, else the operator's text is silently mis-kinded. Pins the
+  // word-boundary contract so a future change to the !kind boundary-finding can't break it.
+  for (const text of ["!statusfoo do", "!status-x do", "!asks it"]) {
+    const i = parseOperatorMessage(text, "concierge");
+    assert.strictEqual(i.kind, "note", `${text} is not a known kind → note`);
+    assert.ok(i.body.startsWith("!"), `the !word stays literal in ${text}`);
+  }
+  // Sanity: the exact word IS honored, with or without following text.
+  assert.strictEqual(parseOperatorMessage("!status", "concierge").kind, "status");
+  assert.strictEqual(parseOperatorMessage("!status ping", "concierge").kind, "status");
+});
+
 test("subject is the first line, capped; body keeps the whole text", () => {
   const long = "x".repeat(200);
   const i = parseOperatorMessage(`${long}\nsecond line`, "concierge");

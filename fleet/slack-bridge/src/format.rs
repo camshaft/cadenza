@@ -215,6 +215,31 @@ mod tests {
     }
 
     #[test]
+    fn bang_kind_matches_the_whole_word_not_a_prefix() {
+        // A `!kind` is honored only when the WHOLE alphabetic-and-hyphen word is a known kind. A word
+        // that merely STARTS with a known kind (`!statusfoo`) or extends it with a hyphen (`!status-x`)
+        // is NOT `status` — it must fall through to a literal `note`, else the operator's text is
+        // silently mis-kinded. Pins the word-boundary contract (must stay in parity with Node).
+        for text in ["!statusfoo do", "!status-x do", "!asks it"] {
+            let i = parse_operator_message(text, "concierge");
+            assert_eq!(i.kind, "note", "{text:?} is not a known kind → note");
+            assert!(
+                i.body.starts_with('!'),
+                "the !word stays literal in {text:?}"
+            );
+        }
+        // Sanity: the exact word IS honored, with or without following text.
+        assert_eq!(
+            parse_operator_message("!status", "concierge").kind,
+            "status"
+        );
+        assert_eq!(
+            parse_operator_message("!status ping", "concierge").kind,
+            "status"
+        );
+    }
+
+    #[test]
     fn subject_is_capped_body_is_whole() {
         let long = "x".repeat(200);
         let i = parse_operator_message(&format!("{long}\nsecond line"), "concierge");
