@@ -92,7 +92,7 @@ impl RecordingExecutor {
 impl Executor for RecordingExecutor {
     fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         self.seen.push((req.clone(), idempotency_key));
-        EffectOutcome::Ok(Some(Payload::Inline(b"ok".to_vec())))
+        EffectOutcome::Ok(Some(Payload::Inline(b"ok".to_vec().into())))
     }
 }
 
@@ -144,7 +144,9 @@ impl Executor for ShellExecutor {
         let args: Vec<&str> = parts.collect();
         let output = std::process::Command::new(program).args(&args).output();
         match output {
-            Ok(out) if out.status.success() => EffectOutcome::Ok(Some(Payload::Inline(out.stdout))),
+            Ok(out) if out.status.success() => {
+                EffectOutcome::Ok(Some(Payload::Inline(out.stdout.into())))
+            }
             Ok(out) => EffectOutcome::Err(format!(
                 "exit {}: {}",
                 out.status.code().unwrap_or(-1),
@@ -172,7 +174,7 @@ mod tests {
     struct TagExecutor(&'static [u8]);
     impl Executor for TagExecutor {
         fn perform(&mut self, _req: &EffectRequest, _key: Hash) -> EffectOutcome {
-            EffectOutcome::Ok(Some(Payload::Inline(self.0.to_vec())))
+            EffectOutcome::Ok(Some(Payload::Inline(self.0.to_vec().into())))
         }
     }
 
@@ -187,11 +189,11 @@ mod tests {
         // Each kind reaches its own executor — the multi-kind session the single-executor wiring couldn't serve.
         assert_eq!(
             exec.perform(&req(EffectKind::Http, "https://ok/x"), Hash::of(b"k")),
-            EffectOutcome::Ok(Some(Payload::Inline(b"http-ran".to_vec())))
+            EffectOutcome::Ok(Some(Payload::Inline(b"http-ran".to_vec().into())))
         );
         assert_eq!(
             exec.perform(&req(EffectKind::Shell, "echo hi"), Hash::of(b"k")),
-            EffectOutcome::Ok(Some(Payload::Inline(b"shell-ran".to_vec())))
+            EffectOutcome::Ok(Some(Payload::Inline(b"shell-ran".to_vec().into())))
         );
     }
 
@@ -221,7 +223,7 @@ mod tests {
             .with(EffectKind::Http, Box::new(TagExecutor(b"second")));
         assert_eq!(
             exec.perform(&req(EffectKind::Http, "x"), Hash::of(b"k")),
-            EffectOutcome::Ok(Some(Payload::Inline(b"second".to_vec())))
+            EffectOutcome::Ok(Some(Payload::Inline(b"second".to_vec().into())))
         );
     }
 
@@ -232,14 +234,14 @@ mod tests {
         struct KeyEcho;
         impl Executor for KeyEcho {
             fn perform(&mut self, _req: &EffectRequest, key: Hash) -> EffectOutcome {
-                EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec())))
+                EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec().into())))
             }
         }
         let mut exec = CompositeExecutor::new().with(EffectKind::Http, Box::new(KeyEcho));
         let key = Hash::of(b"the-key");
         assert_eq!(
             exec.perform(&req(EffectKind::Http, "x"), key),
-            EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec())))
+            EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec().into())))
         );
     }
 }

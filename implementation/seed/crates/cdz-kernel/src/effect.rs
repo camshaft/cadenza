@@ -54,9 +54,17 @@ pub struct EffectRequest {
 
 /// An effect payload or result body: either inlined small bytes or a reference to a stored blob.
 /// Keeps the log/KV thin (§4) — big transcripts/diffs live in the blob store by hash.
+///
+/// `Inline` holds ref-counted [`bytes::Bytes`] (operator perf directive): a payload is CLONED as it
+/// crosses fold→dispatch→execute→result (and a large model-completion body is exactly the hot path), so
+/// a `Bytes` clone is an O(1) refcount bump, not a deep memcpy of the whole body. Build ergonomics are
+/// preserved via `Bytes: From<Vec<u8>>` — code that assembles a `Vec<u8>` freezes it with `.into()`,
+/// and a reader borrows `&[u8]` (Bytes derefs to a slice), so a producer/consumer needn't care which it
+/// was built from. This is what lets the executor peer (`cdz-agent-host`) keep constructing
+/// `Payload::Inline(v.into())` unchanged across the flip.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Payload {
-    Inline(Vec<u8>),
+    Inline(bytes::Bytes),
     Blob(Hash),
 }
 

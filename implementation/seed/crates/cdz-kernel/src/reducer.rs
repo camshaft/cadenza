@@ -149,7 +149,7 @@ mod tests {
             token: None,
         };
         let closed = EventBody::Closed {
-            outcome: Payload::Inline(vec![]),
+            outcome: Payload::Inline(vec![].into()),
         };
         assert_eq!(resumes_effect(&result), Some(EffectId(7)));
         assert_eq!(resumes_effect(&timer), Some(EffectId(9)));

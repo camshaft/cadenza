@@ -338,7 +338,7 @@ fn read_payload(a: &Arenas, id: StructId) -> Result<Payload, EventAstError> {
             let [v] = form(a, id, "inline")? else {
                 return Err(shape("inline arity"));
             };
-            Ok(Payload::Inline(read_bytes(a, *v)?))
+            Ok(Payload::Inline(read_bytes(a, *v)?.into()))
         }
         "blob" => {
             let [h] = form(a, id, "blob")? else {
@@ -546,7 +546,7 @@ mod tests {
                 cause: Some(h),
                 body: EventBody::Inbound {
                     content_type: ct.clone(),
-                    payload: Payload::Inline(b"hello".to_vec()),
+                    payload: Payload::Inline(b"hello".to_vec().into()),
                 },
             },
             Event {
@@ -586,7 +586,7 @@ mod tests {
                 cause: None,
                 body: EventBody::EffectResult {
                     id: EffectId(7),
-                    result: EffectOutcome::Ok(Some(Payload::Inline(b"body".to_vec()))),
+                    result: EffectOutcome::Ok(Some(Payload::Inline(b"body".to_vec().into()))),
                     token: Some(b"resume-tok".to_vec()),
                 },
             },
@@ -648,7 +648,7 @@ mod tests {
                 seq: 12,
                 cause: None,
                 body: EventBody::Closed {
-                    outcome: Payload::Inline(vec![]),
+                    outcome: Payload::Inline(vec![].into()),
                 },
             },
         ]

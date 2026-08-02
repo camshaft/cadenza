@@ -270,7 +270,7 @@ mod tests {
                     family: "m".into(),
                     version: 1,
                 },
-                payload: Payload::Inline(vec![seq as u8]),
+                payload: Payload::Inline(vec![seq as u8].into()),
             },
         }
     }

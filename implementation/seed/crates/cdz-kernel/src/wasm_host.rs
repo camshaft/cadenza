@@ -626,8 +626,10 @@ impl crate::reducer::Reducer for ComponentReducer {
                         request: crate::effect::EffectRequest {
                             kind: guest_kind_to_kernel(&g.kind),
                             target: g.target,
-                            // The guest's payload is opaque bytes → an Inline kernel payload; None stays None.
-                            payload: g.payload.map(crate::effect::Payload::Inline),
+                            // The guest's payload is opaque bytes → an Inline kernel payload; None stays
+                            // None. `g.payload` is a Vec<u8> from the guest; freeze it into `Bytes` (the
+                            // ref-counted Inline body) via `.into()`.
+                            payload: g.payload.map(|p| crate::effect::Payload::Inline(p.into())),
                         },
                         // The guest's continuation token rides into the kernel Effect (→ Dispatched frame).
                         token: g.correlation,
@@ -707,7 +709,7 @@ fn event_to_guest_inputs(body: &EventBody) -> (ContentType, Option<Vec<u8>>, Opt
 /// the guest resolves the blob via its own means, out of scope for v0's fold-input mapping).
 fn payload_bytes(p: &crate::effect::Payload) -> Vec<u8> {
     match p {
-        crate::effect::Payload::Inline(b) => b.clone(),
+        crate::effect::Payload::Inline(b) => b.to_vec(),
         crate::effect::Payload::Blob(h) => h.as_bytes().to_vec(),
     }
 }

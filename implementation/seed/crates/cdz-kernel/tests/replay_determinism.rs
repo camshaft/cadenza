@@ -114,7 +114,7 @@ fn run_sequence(seed: u64, len: usize) -> Session {
                 family: "m".into(),
                 version: 1,
             },
-            payload: Payload::Inline(vec![byte]),
+            payload: Payload::Inline(vec![byte].into()),
         };
         session
             .deliver(body, None, &reducer, &authz, &mut exec)
@@ -225,7 +225,7 @@ fn scan_order_dependent_reducer_still_replays_identically() {
                     family: "m".into(),
                     version: 1,
                 },
-                payload: Payload::Inline(vec![rng.byte()]),
+                payload: Payload::Inline(vec![rng.byte()].into()),
             };
             session
                 .deliver(body, None, &reducer, &authz, &mut exec)
