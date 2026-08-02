@@ -12,20 +12,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { CHAPTERS } from "./chapters.ts";
+import { fileForSlug } from "./registryFiles.ts";
 
 const here = dirname(fileURLToPath(import.meta.url)); // src/content
-const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
-
-/// Map each chapter slug to its TSX filename by parsing the registry (same approach chapters.test.ts
-/// uses): each `slug: "x"` is followed by a `lazy(() => import("./chapters/File.tsx"))`.
-function fileForSlug(): Map<string, string> {
-  const entryRe = /slug:\s*"([^"]+)"[\s\S]*?import\("\.\/chapters\/([^"]+)"\)/g;
-  const map = new Map<string, string>();
-  for (let m = entryRe.exec(registrySrc); m; m = entryRe.exec(registrySrc)) {
-    map.set(m[1], m[2]);
-  }
-  return map;
-}
 
 /// Every `id="…"` passed to an <Exercise> in a chapter file, in source order.
 function exerciseIds(tsx: string): string[] {

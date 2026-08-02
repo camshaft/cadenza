@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { CHAPTERS, chapterAt } from "./chapters.ts";
+import { fileForSlug } from "./registryFiles.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -72,15 +73,9 @@ test("chapterAt resolves a known slug (with its index) and returns null for an u
 // registry source (the import path lives inside a `lazy(() => import("./chapters/X.tsx"))` closure),
 // then count <Exercise in each file.
 test("each chapter's declared `exercises` equals the <Exercise> count in its TSX", () => {
-  const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
-  // Map each `slug: "x"` to the nearest following `import("./chapters/File.tsx")`.
-  const entryRe = /slug:\s*"([^"]+)"[\s\S]*?import\("\.\/chapters\/([^"]+)"\)/g;
-  const fileForSlug = new Map<string, string>();
-  for (let m = entryRe.exec(registrySrc); m; m = entryRe.exec(registrySrc)) {
-    fileForSlug.set(m[1], m[2]);
-  }
+  const files = fileForSlug(); // slug→file map, from the shared registry parse (registryFiles.ts)
   for (const c of CHAPTERS) {
-    const file = fileForSlug.get(c.slug);
+    const file = files.get(c.slug);
     assert.ok(file, `no TSX import found for slug ${c.slug}`);
     const tsx = readFileSync(join(here, "chapters", file!), "utf8");
     const exerciseCount = (tsx.match(/<Exercise\b/g) ?? []).length;

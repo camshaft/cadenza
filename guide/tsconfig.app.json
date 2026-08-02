@@ -23,6 +23,8 @@
   },
   "include": ["src", "src/wasm/pkg/cdz_wasm.d.ts"],
   // Unit tests (`*.test.ts`) run under `node --test` (which strips types + provides `node:*` types);
-  // they are not part of the app bundle, so keep them out of the app typecheck/build.
-  "exclude": ["src/**/*.test.ts"]
+  // they are not part of the app bundle, so keep them out of the app typecheck/build. `registryFiles.ts`
+  // is test-only support (a shared `node:fs` registry parse imported by those tests, NOT the app), so it's
+  // excluded for the same reason — it uses `node:*`, which the app's `vite/client`-only types don't carry.
+  "exclude": ["src/**/*.test.ts", "src/content/registryFiles.ts"]
 }

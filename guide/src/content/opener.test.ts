@@ -16,22 +16,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { CHAPTERS, NON_TEACHING_SECTIONS, pillarOf } from "./chapters.ts";
+import { fileForSlug } from "./registryFiles.ts";
 
 const here = dirname(fileURLToPath(import.meta.url)); // src/content
 const chaptersDir = join(here, "chapters");
-const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
 
-// NON_TEACHING_SECTIONS (the sections exempt from the <Lede>/<Runnable> teaching-chapter invariants) is
-// imported from chapters.ts — a single source of truth shared with tenets.test.ts, so the two gates can't
-// drift on which sections count as teaching.
-
-/// slug → TSX filename, parsed from the registry (same idiom as chapters.test.ts / tenets.test.ts).
-function fileForSlug(): Map<string, string> {
-  const entryRe = /slug:\s*"([^"]+)"[\s\S]*?import\("\.\/chapters\/([^"]+)"\)/g;
-  const map = new Map<string, string>();
-  for (let m = entryRe.exec(registrySrc); m; m = entryRe.exec(registrySrc)) map.set(m[1], m[2]);
-  return map;
-}
+// NON_TEACHING_SECTIONS (the sections exempt from the <Lede>/<Runnable> teaching-chapter invariants) and
+// fileForSlug (the slug→file registry parse) are imported from single sources of truth (chapters.ts /
+// registryFiles.ts) shared across the content tests, so the gates can't drift on either.
 
 test("every chapter carries an <H1> title", () => {
   const map = fileForSlug();

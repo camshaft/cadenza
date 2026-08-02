@@ -22,6 +22,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { CHAPTERS } from "./chapters.ts";
+import { fileForSlug } from "./registryFiles.ts";
 
 const here = dirname(fileURLToPath(import.meta.url)); // src/content
 const chaptersDir = join(here, "chapters");
@@ -53,15 +54,6 @@ function titleMentionsOnLine(line: string): string[] {
     if (slug != null) out.push(slug);
   }
   return out;
-}
-
-/// slug → its chapter TSX filename, from the registry's lazy import (same regex as links.test.ts).
-function fileForSlug(): Map<string, string> {
-  const registrySrc = readFileSync(join(here, "chapters.ts"), "utf8");
-  const re = /slug:\s*"([^"]+)"[\s\S]*?import\("\.\/chapters\/([^"]+)"\)/g;
-  const m = new Map<string, string>();
-  for (let x = re.exec(registrySrc); x; x = re.exec(registrySrc)) m.set(x[1], x[2]);
-  return m;
 }
 
 /// Retrospective phrasing: prose that presents a referenced chapter as ALREADY-SEEN. Kept deliberately
