@@ -5480,12 +5480,12 @@ todo	Ast values key a map across quote and Ast.* construction routes
 todo	Set.of over runtime lists at two different element types declines pending the recursive-generic tie
 todo	Type is a first-class value
 todo	a DRAINED set compares equal to the literal empty set — removal restores the canonical empty rep
-todo	a Float64 closure captures a Float64 build-time host effect result
+pass	a Float64 closure captures a Float64 build-time host effect result
 pass	a Float64-inner Qty host result crosses as its float magnitude
-todo	a build-time delegated effect whose result a returned closure captures does not escape
+pass	a build-time delegated effect whose result a returned closure captures does not escape
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
-todo	a closure captures the result of a build-time host op called with an argument
-todo	a closure capturing a build-time host effect preserves the order of two host calls
+pass	a closure captures the result of a build-time host op called with an argument
+pass	a closure capturing a build-time host effect preserves the order of two host calls
 todo	a closure that performs a delegated effect cannot cross the host boundary
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then

@@ -1181,7 +1181,14 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 let name = local_name(db, *binder, &extended);
                 let v = emit(db, *value, &extended, ctx)?;
                 lines.push_str(&format!("let {name} = {v}; "));
-                extended.insert(*binder, name);
+                extended.insert(*binder, name.clone());
+                // ALSO map the VALUE node → this binding's name. A closure that captures a let-bound value
+                // records the capture as the VALUE node itself (lowering inlines the value into
+                // `Core::Closure.captures`, NOT a `LocalRef` to the binder), so the closure build-site would
+                // RE-EMIT the value — a second host call / recomputation (the double-emit bug) — unless it
+                // can see the value is already bound. Keying the value node lets the capture emit reference
+                // `name` instead of re-emitting (see the `Core::Closure` arm's `env.get(&c)` check).
+                extended.insert(*value, name);
             }
             let b = emit(db, body, &extended, ctx)?;
             Ok(format!("{{ {lines}{b} }}"))
@@ -2357,7 +2364,22 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let mut cap_lets = String::new();
             let mut cap_names = Vec::with_capacity(captures.len());
             for (j, &c) in captures.iter().enumerate() {
-                let cv = emit(db, c, env, ctx)?;
+                // If this capture node is ALREADY BOUND in scope (an enclosing `let` mapped its value node
+                // → a Rust name; see the `Core::Let` arm), REFERENCE that binding rather than re-emitting the
+                // value. Lowering inlines a let-bound value into `captures` as the VALUE node itself, so a
+                // naive `emit(c)` re-runs it — a SECOND host call / recomputation (the double-emit bug: a
+                // build-time host result captured by a returned closure fired the host op twice). Referencing
+                // the binding evaluates it ONCE (at the `let`). Clone for a non-Copy captured value (the
+                // closure moves it in; the binding may be read elsewhere too).
+                let cv = if let Some(bound) = env.get(&c).cloned() {
+                    if needs_clone_on_read(db, c) {
+                        format!("{bound}.clone()")
+                    } else {
+                        bound
+                    }
+                } else {
+                    emit(db, c, env, ctx)?
+                };
                 let cn = format!("__c{j}");
                 cap_lets.push_str(&format!("let {cn} = {cv}; "));
                 cap_names.push(cn);

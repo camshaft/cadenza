@@ -7276,3 +7276,29 @@ fn rustc_host_seq_elides_a_discarded_pure_statement_no_spurious_trap() {
     // (Runtime behavior — main(0) = 42, no spurious trap — is verified by the corpus gate case adv-56;
     // the lib-test `rustc_run` can't execute a host-delegating program, so this pins the EMIT only.)
 }
+
+#[test]
+fn rustc_closure_capturing_a_let_bound_host_call_emits_it_once() {
+    // H6: a returned closure that captures a LET-BOUND host-call result must fire the host op ONCE, not
+    // twice. `(host (ask) (let ((v (ask.ask))) (fn (x) (+ x v))))` — lowering inlines the `(ask.ask)` value
+    // into `Core::Closure.captures` (the capture node IS the host-call node, not a `LocalRef` to `v`), so a
+    // naive capture emit re-ran it → 2 host calls / 1 recorded response → OOB (the factory-host double-emit
+    // bug). The `Core::Let` arm now maps the value node → its binding name, and the `Core::Closure` capture
+    // references that binding instead of re-emitting. Pin: exactly ONE `__cdz_host_ask_ask` call site.
+    let src = "(module m (effect ask (op ask (-> Unit Int64))) \
+        (def (main) (host (ask) (let ((v (ask.ask))) (fn ((: x Int64)) (+ x v))))) (export main))";
+    let rs = compile_rust(src);
+    assert_eq!(
+        rs.matches("crate::__cdz_host_ask_ask").count(),
+        1,
+        "a let-bound host call captured by a returned closure must be emitted exactly ONCE:\n{rs}"
+    );
+    // A non-closure double-use already dedups via the let binding — pin it stays 1 (regression guard).
+    let twouse = "(module m (effect ask (op ask (-> Unit Int64))) \
+        (def (main) (host (ask) (let ((v (ask.ask))) (+ v v)))) (export main))";
+    assert_eq!(
+        compile_rust(twouse).matches("crate::__cdz_host_ask_ask").count(),
+        1,
+        "a let-bound host call used twice in a non-closure body stays a single call site"
+    );
+}
