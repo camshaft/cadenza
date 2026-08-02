@@ -43,7 +43,7 @@ pub fn is_mirrored_kind(kind: &str) -> bool {
 /// `by_key` entry can at worst re-mirror an ask that is STILL sitting unprocessed in the concierge inbox
 /// after this many newer asks arrived, which is a harmless idempotent duplicate (`DESIGN.md`: asks are
 /// idempotent by ask-id, whichever channel answers first wins). 1000 is generous (weeks of asks) yet
-/// keeps the file small (~150 KB) so the every-2s load/save stays cheap.
+/// keeps the file small (~150 KB) so the per-tick load (and the on-post save) stays cheap.
 pub const MAX_THREADS: usize = 1000;
 
 /// A stable identity for a concierge inbox message, so we mirror it exactly once even though the concierge
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn record_bounds_the_map_to_max_threads() {
         // A long-lived daemon records one entry per mirrored ask forever; the map MUST stay bounded so
-        // slack-threads.json can't leak memory/disk and the every-2s load/save stays cheap.
+        // slack-threads.json can't leak memory/disk and the per-tick load (and on-post save) stays cheap.
         let mut map = ThreadMap::default();
         let over = MAX_THREADS + 250;
         for i in 0..over {
