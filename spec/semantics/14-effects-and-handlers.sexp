@@ -2644,6 +2644,38 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 112 Int64)))
 
+; The do-discarded family above concerns non-final FOREIGN PERFORMS (which the handle-body fold must
+; preserve). Its complement: a discarded non-final PURE item in a host do-body is ELIDED per the
+; §283 dead-init ruling (core-semantics.md §A Trap Occurs Only Where Its Computation Is Observed) —
+; a discarded pure computation is unobserved, so its trap does not fire, EVEN when the do also makes a
+; host call (the foreign-perform exception preserves performs, not pure siblings). adv-56: the rust
+; backend's Core::Seq emit rendered every non-final statement as `let _ = <stmt>;`, which EVALUATES it,
+; so a discarded pure `(/ 100 d)` beside an `io.put` host call spuriously trapped div-by-zero at d=0
+; on rust — the fix (rcdzc, trunk fb078ac35) elides a discarded pure non-final Seq statement. wasm /
+; rust-async currently DECLINE this host-delegated shape (todo, no cross-backend value split); the pin
+; pass-grades rust (where the fix landed) and tracks the wasm/rust-async decline.
+(case "a discarded pure trapping item in a host do-body is elided beside a host call (dead-init ruling)"
+  (doc    "`(host (io) (do (/ 100 d) (io.put 1) 42))` at d = 0: the non-final `(/ 100 d)` is a discarded
+           PURE item — its value flows nowhere, so per the dead-init ruling it is unobserved and its
+           divide-by-zero trap does NOT fire; the do makes a host call (`io.put 1`) and yields its last
+           form, 42. The foreign-perform exception preserves the PERFORM (`io.put` still runs, host-call
+           recorded), not the pure discarded sibling. Pins that the Core::Seq emit ELIDES a discarded pure
+           non-final statement rather than force-evaluating it (adv-56 rust miscompile — `let _ = <stmt>;`
+           ran the trap). The pure-only dead-init twin (02-binding-and-control) elides the same way with no
+           host call; this is the host-call face. Rust passes (the fix landed there); wasm / rust-async
+           decline this host-delegated shape (todo).")
+  (input  (do
+            (effect io (op put (-> Int64 Int64)))
+            (def (main (: d Int64))
+              (host (io)
+                (do (/ 100 d)
+                    (io.put 1)
+                    42)))
+            (export main)))
+  (host-responses (respond io.put (: 0 Int64)))
+  (host-calls (call io.put))
+  (call   main (: 0 Int64)) (output (: 42 Int64)))
+
 (case "a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom"
   (doc    "The `Result` companion of the Option-result case: an operation whose declared result is a
            `(Result Int64 Int64)`, resumed with an `Ok` or `Err` chosen by the arm, and the body dispatches
