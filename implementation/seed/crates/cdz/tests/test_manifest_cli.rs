@@ -1389,10 +1389,10 @@ fn a_nongeneratable_leaf_compound_test_declines_cleanly_and_siblings_run() {
 /// A `@test` over an EMPTY `(Tuple)` param declines CLEANLY PER-TEST (sibling survives) AND names the
 /// EMPTY-COMPOUND cause — distinct from the non-generatable-LEAF path above. An empty tuple/record has no
 /// leaf at all; it is un-generatable because it is EMPTY (nothing to draw), so `classify_ty_at`'s zero-slot
-/// guard declines and the wrapper's reason string must NOT point the author at leaf types (`Char/…`) that
-/// aren't the problem. Pins the broadened decline message ("…or an empty (Tuple)/(Record) with nothing to
-/// generate…") so the empty-compound author gets an accurate hint. No store needed (declining wrapper traps
-/// before any heap use).
+/// guard declines. The single decline message covers BOTH causes — it keeps the leaf-type list AND adds an
+/// empty-`(Tuple)`/`(Record)` clause — so this test pins that the empty-compound clause is present (the
+/// assertion below checks `contains("empty (Tuple)/(Record)")`), which is what makes the hint accurate for
+/// an empty-compound author. No store needed (declining wrapper traps before any heap use).
 #[test]
 fn an_empty_tuple_compound_test_declines_with_the_empty_compound_reason() {
     let d = dir("empty-tuple-decline");
