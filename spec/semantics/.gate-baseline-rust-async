@@ -5481,3 +5481,4 @@ pass	an inlined helper matching a sum built FROM the fused binder plus an enclos
 pass	a CONSTANT match on a high-bit UInt64 scalar decides its literal patterns unsigned
 pass	a generic tuple-wrapper referenced mid-solve in a recursive group then at a second type
 pass	two mutually-recursive functions instantiate one generic chooser at different types
+pass	a CONSTANT match on the Int64.min/max boundary decides its literal patterns exactly
