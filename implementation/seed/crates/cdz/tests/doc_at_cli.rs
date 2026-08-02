@@ -28,7 +28,16 @@ fn temp_src(tag: &str, src: &str) -> (std::path::PathBuf, String, String) {
     std::fs::create_dir_all(&dir).expect("mkdir");
     let path = dir.join("m.sexp");
     std::fs::write(&path, src).expect("write test file");
-    (dir, path.to_string_lossy().into_owned(), src.to_string())
+    // `.expect`, NOT `to_string_lossy`: the path is passed as a `&str` CLI arg, so it MUST be UTF-8 — a loud
+    // fail-fast on a non-UTF-8 temp dir beats lossy U+FFFD corruption surfacing later as a confusing "missing
+    // file".
+    (
+        dir,
+        path.to_str()
+            .expect("temp path must be valid UTF-8")
+            .to_string(),
+        src.to_string(),
+    )
 }
 
 /// `inc` carries a `(doc …)`; `main` does not. `main` REFERENCES `inc`, so a cursor on that reference must
