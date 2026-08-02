@@ -149,7 +149,9 @@ pass	TWO-SUM finds a complement pair via a seen-set built during one walk
 pass	Type.of over a PERFORM result reflects the op's declared result type
 pass	WAVE reorder alternates <= and >= by index parity through a carried-element walk
 pass	a 1000-step UPSERT fold builds a 7-bucket histogram — persistent-map churn under real load
+pass	a 1100-element prepend-built runtime list reads every index through a multi-level RRB front-spine
 pass	a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without
+pass	a 200-element runtime Set resolves every member through a multi-level CHAMP trie and rejects non-members
 pass	a 2x2 MATRIX POWER by squaring recovers fibonacci and satisfies the determinant identity
 pass	a 2x2 matrix MULTIPLY composes row extraction, column extraction, and a zipped dot product
 pass	a 3-arg effect op binds its operands POSITIONALLY — an argument-order swap is caught
@@ -337,6 +339,7 @@ pass	a PURE closure iterated by a recursive combinator composes with a perform i
 pass	a RUNTIME branch selects between an abortive perform and a plain value per call
 pass	a RUNTIME-count generated batch insorts fully time-ordered, verified by a sortedness walk
 pass	a Rational ARITHMETIC result probes a map key by its reduced canonical value
+pass	a multi-level RRB list persistently updates deep interior-level indices leaving the original intact
 todo	a Rational ENTRY parameter crosses the boundary and reduces per call
 pass	a Result-of-Option threads both wrappers through one runtime match
 pass	a STABLE DEDUP keeps first occurrences in input order via a seen-Set threaded through the fold
