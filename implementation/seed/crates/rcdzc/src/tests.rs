@@ -2310,6 +2310,51 @@ fn record_extend_with_a_bare_field_name_rejects_cdz0215_but_read_drop_ops_keep_b
     }
 }
 
+/// The CDZ0215 bare-field-name reject NAMES THE CORRECT SYMBOL SYNTAX and carries an applyable fix. Two
+/// diagnostic-quality points: (1) the message's example must be the QUOTED form `#"z"` — a bare `#z` is NOT
+/// symbol syntax (the reader reads it as an identifier and it hits this same reject), so an author copying a
+/// `#z` example would loop; (2) when the offending operand is a bare IDENTIFIER (`Record.with r x 5`), the
+/// near-certain intent is that name's field label, so a heuristic `x` → `#"x"` Replace fix makes the repair
+/// one-shot. Round-trips: applying the fix (`x` → `#"x"`) clears the reject.
+#[test]
+fn a_bare_record_field_name_names_the_quoted_symbol_syntax_and_carries_a_fix() {
+    use crate::testkit::parse;
+    let diags = |src: &str| crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+    let src = "(module m (def (f (: r (Record (x Int64)))) (Record.with r x 5)) (export f))";
+    let ds = diags(src);
+    let d = ds
+        .iter()
+        .find(|d| d.code.as_deref() == Some("CDZ0215"))
+        .unwrap_or_else(|| panic!("a bare field name rejects CDZ0215: {ds:?}"));
+    // The message names the QUOTED symbol form, NOT a bare `#z` (which would re-trigger the same error).
+    assert!(
+        d.message.contains("#\"field\"") && d.message.contains("#\"z\""),
+        "the message names the quoted `#\"z\"` symbol syntax, not a bare `#z`: {}",
+        d.message
+    );
+    assert!(
+        !d.message.contains("`#z`") && !d.message.contains("`#field`"),
+        "the misleading bare-`#z` example is gone (it is not valid symbol syntax): {}",
+        d.message
+    );
+    // The fix rewrites the bare identifier to the field-label symbol.
+    let fix = d
+        .fix
+        .as_ref()
+        .expect("a bare identifier carries the `#\"x\"` fix");
+    assert_eq!(fix.kind, crate::abi::FixKind::Replace);
+    assert_eq!(fix.replacement, "#\"x\"");
+    // ROUND-TRIP: applying the fix (`x` → `#"x"`) clears the reject — the annotation checks clean.
+    let fixed = "(module m (def (f (: r (Record (x Int64)))) (Record.with r #\"x\" 5)) (export f))";
+    assert!(
+        diags(fixed)
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "applying the `x` → `#\"x\"` fix type-checks clean: {:?}",
+        diags(fixed)
+    );
+}
+
 #[test]
 fn record_project_and_without_over_a_runtime_record_build_from_projections_materialize_once() {
     use crate::testkit::parse;

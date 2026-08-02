@@ -13155,15 +13155,25 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                     db.ast.as_sym(args[1]).is_some() || db.ast.as_form(args[1], "meta").is_some();
                 if !field_name_is_label {
                     collect(db, args[2], out); // still descend the value operand for its own faults
-                    out.push(
-                        Reject::coded(
-                            Code::RecordFieldNameNotLabel,
-                            "the field name introduced by `Record.extend`/`Record.with` must be a static \
-                             `#field` label (e.g. `#z`), not a bare identifier or a runtime value — a record \
-                             field name is a compile-time label, not a value",
-                        )
-                        .at(args[1]),
-                    );
+                    // A symbol literal is written `#"z"` (QUOTED) — a bare `#z` is NOT symbol syntax (the
+                    // reader reads it as an identifier), so the example must be the quoted form or a user
+                    // who copies it hits this same reject again. When the offending operand is a BARE
+                    // IDENTIFIER (`Record.with r x 5`), the near-certain intent is the field label of that
+                    // name, so carry a heuristic `x` → `#"x"` Replace fix (the actionable route). A non-name
+                    // operand (a literal, a compound) has no single obvious label, so it gets the message
+                    // alone.
+                    let mut reject = Reject::coded(
+                        Code::RecordFieldNameNotLabel,
+                        "the field name introduced by `Record.extend`/`Record.with` must be a static \
+                         `#\"field\"` symbol label (e.g. `#\"z\"`), not a bare identifier or a runtime \
+                         value — a record field name is a compile-time label, not a value",
+                    )
+                    .at(args[1]);
+                    if let Some(name) = db.ast.as_name(args[1]) {
+                        reject = reject
+                            .with_fix(Fix::replace_heuristic(args[1], format!("#\"{name}\"")));
+                    }
+                    out.push(reject);
                 } else {
                     match (
                         type_of(db, args[0]),
