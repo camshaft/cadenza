@@ -882,7 +882,7 @@
   (declines))
 
 (case "eval of a quote carrying a symbol literal is rejected CDZ0101 — the reify bail as a perf-bound tripwire"
-  (doc    "`(eval (quote (Qty.of 5 (Unit.of #\"zorks\"))))` is rejected CDZ0101. The decline is at the QUOTE
+  (doc    "`(eval (quote (Qty.of 5 (Unit.of #\"zorks\"))))` is rejected CDZ0101. The rejection is at the QUOTE
            (reify), NOT eval's reconstructor: `Unit.of` takes a `#\"…\"` symbol argument, and quote's reify has
            no `Ast.Symbol` variant to build (the minimal-root case above), so the whole quote bails before eval
            sees a node. A CODED tripwire (not merely a missing feature): the reify bail is the boundary that
@@ -891,8 +891,8 @@
            reifies the symbol, this flips to a value (a running `(Qty.of 5 (Unit.of #\"zorks\"))`, which would
            then surface the unknown-unit CDZ0201 the direct form already reports, 18-units-of-measure) and trips
            the gate, flagging that the node-count bound now needs re-examining. Companion to the
-           no-runtime-AST-interpreter decline above: both are the quote/eval reconstruction boundary, different
-           non-reifiable entry point.")
+           no-runtime-AST-interpreter rejection above (also a coded CDZ0101): both are the quote/eval
+           reconstruction boundary, different non-reifiable entry point.")
   (input  (eval (quote (Qty.of 5 (Unit.of #"zorks")))))
   (error  CDZ0101))
 
