@@ -932,9 +932,9 @@
            RUNTIME bin whose first byte is 5. The literal segment must PROBE (match only when byte 0 == 5)
            while `n` decodes from the SECOND segment and is in scope for BOTH the guard cond `(> n 3)` AND
            the body — the bin analogue of the partial-const guarded-map arm (a const-vs-runtime mix must not
-           disturb the later segment's binder resolution). `g 9` → bin[5, 9]: byte 0 == 5 probes true, n=9,
-           guard `9 > 3` holds → body reads n = 9; a first byte != 5 (the `(bin (u8 9) (u8 9))` witness in the
-           second call) fails the literal probe → falls to the wildcard → -1.")
+           disturb the later segment's binder resolution). `main 9` calls `f` on `bin[5, 9]`: byte 0 == 5
+           probes true, n=9, guard `9 > 3` holds → body reads n = 9; `main 0` calls `f` on the `(bin (u8 9)
+           (u8 9))` witness whose first byte != 5, so the literal probe fails → falls to the wildcard → -1.")
   (input  (do (def (f (: b Bytes))
                 (match b
                   ((guard (bin (u8 5) (u8 n)) (> n 3)) n)
