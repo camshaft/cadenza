@@ -9631,6 +9631,78 @@ mod tests {
     }
 
     #[test]
+    fn drain_sees_every_delivered_mr_fresh_oldest_first_incl_a_late_arrival() {
+        // The DURABLE-CONTRACT regression the concierge asked for (mid-tick-delivery missed-wake
+        // recurrence): prove the TOOLING can't lose a merge-request delivered between drains. `deliver`
+        // writes tmp+rename (atomic — a readdir never sees a partial file), and `queued_merge_requests`
+        // reads the dir FRESH each call with NO cursor. So a message delivered AFTER an earlier drain
+        // is fully visible on the NEXT drain, oldest-first. (If the bug recurs, it's pr-sync caching a
+        // snapshot in its own loop — NOT this drain, which this test pins.)
+        let root = std::env::temp_dir().join(format!("cdz-drain-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let fleet = Fleet {
+            root: root.clone(),
+            worktrees: root.join("worktrees"),
+            repo: PathBuf::from("/hub"),
+            src: PathBuf::from("/wt/fleet"),
+        };
+        let mr = |from: &str, r#ref: &str| Message {
+            from: from.into(),
+            to: "pr-sync".into(),
+            kind: "merge-request".into(),
+            subject: "fleet/x".into(),
+            r#ref: r#ref.into(),
+            body: String::new(),
+            seq: 1,
+            in_reply_to: String::new(),
+        };
+
+        // Deliver one MR (arrived while idle), drain: seen.
+        deliver(&fleet, &mr("v-a", "aaaa1111"));
+        let d1 = queued_merge_requests(&fleet);
+        assert_eq!(
+            d1.len(),
+            1,
+            "first delivered MR is visible on the fresh drain"
+        );
+
+        // Deliver a SECOND MR AFTER the first drain (the "mid-tick / late arrival" case) — then drain
+        // AGAIN. Both must be present, oldest-first (delivery-seq order), with no cursor skipping the
+        // earlier one and no listing race dropping the later one.
+        deliver(&fleet, &mr("v-b", "bbbb2222"));
+        let d2 = queued_merge_requests(&fleet);
+        assert_eq!(
+            d2.len(),
+            2,
+            "a late-delivered MR is picked up on the very next fresh drain"
+        );
+        assert_eq!(
+            d2[0].r#ref, "aaaa1111",
+            "oldest-first: the earlier delivery sorts first"
+        );
+        assert_eq!(
+            d2[1].r#ref, "bbbb2222",
+            "the later delivery sorts second — never skipped"
+        );
+
+        // A stray in-progress tmp (`.<fname>.tmp`) is NEVER listed as an MR (excluded by the
+        // `-merge-request.json` suffix filter) — so a readdir mid-rename can't surface a partial file.
+        std::fs::write(
+            root.join("inbox/pr-sync/.999-0-merge-request.json.tmp"),
+            "{",
+        )
+        .unwrap();
+        assert_eq!(
+            queued_merge_requests(&fleet).len(),
+            2,
+            "an in-progress .tmp is not counted as a queued MR (atomic-rename delivery)"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn trunk_reflog_clobber_flags_only_the_origin_main_reset() {
         // The clobber signature: a reset moving trunk backward to origin/main (a non-pr-sync writer).
         assert!(trunk_reflog_entry_is_clobber(
