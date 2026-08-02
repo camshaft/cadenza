@@ -47,7 +47,7 @@ impl Reducer for ClockAgent {
             } => {
                 // The recorded instant arrived — record it and advance. The reducer never read the clock
                 // itself; it only sees the result the kernel folded back.
-                kv.put(b"started_at".to_vec(), bytes.clone());
+                kv.put(b"started_at".to_vec(), bytes.to_vec());
                 kv.put(b"phase".to_vec(), b"running".to_vec());
                 FoldOutput::none()
             }
@@ -62,7 +62,7 @@ fn inbound_go() -> EventBody {
             family: "message".into(),
             version: 1,
         },
-        payload: Payload::Inline(b"go".to_vec()),
+        payload: Payload::Inline(b"go".to_vec().into()),
     }
 }
 

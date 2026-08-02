@@ -76,10 +76,9 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
             }
         };
         match self.transport.invoke(&req.target, body, idempotency_key) {
-            // `.into()` on the ref-counted `Bytes` builds the kernel's `Payload::Inline`: today its inner
-            // type is `Vec<u8>` (a zero-copy move out of a unique Bytes) and after v-agent-harness's
-            // Inline->Bytes flip it's a pure refcount move — the same call site works for both.
-            Ok(response) => EffectOutcome::Ok(Some(Payload::Inline(response.into()))),
+            // The transport's `Bytes` completion moves straight into `Payload::Inline` (now ref-counted
+            // `Bytes` after the kernel's perf-directive flip) — no copy, no conversion.
+            Ok(response) => EffectOutcome::Ok(Some(Payload::Inline(response))),
             Err(reason) => EffectOutcome::Err(reason),
         }
     }
@@ -117,11 +116,11 @@ mod tests {
             response: Bytes::from_static(b"a completion"),
         });
         match exec.perform(
-            &model_req(Some(Payload::Inline(b"prompt".to_vec()))),
+            &model_req(Some(Payload::Inline(b"prompt".to_vec().into()))),
             Hash::of(b"k"),
         ) {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
-                assert_eq!(bytes, b"a completion");
+                assert_eq!(&bytes[..], b"a completion");
             }
             other => panic!("expected Ok(Inline(completion)), got {other:?}"),
         }
@@ -164,7 +163,7 @@ mod tests {
         }
         let mut exec = ModelExecutor::new(FailingTransport);
         match exec.perform(
-            &model_req(Some(Payload::Inline(b"prompt".to_vec()))),
+            &model_req(Some(Payload::Inline(b"prompt".to_vec().into()))),
             Hash::of(b"k"),
         ) {
             EffectOutcome::Err(msg) => assert!(msg.contains("throttled"), "{msg}"),
@@ -184,7 +183,7 @@ mod tests {
         let req = EffectRequest {
             kind: EffectKind::Http,
             target: "https://x/".to_string(),
-            payload: Some(Payload::Inline(b"x".to_vec())),
+            payload: Some(Payload::Inline(b"x".to_vec().into())),
         };
         match exec.perform(&req, Hash::of(b"k")) {
             EffectOutcome::Err(msg) => {
