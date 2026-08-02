@@ -694,16 +694,18 @@
   (output (: 16 Int64)))
 
 (case "the per-key linear-scan model oracle has DISCRIMINATING power — a value-forgetting model diverges at every present key"
-  (doc    "The vacuity guard for the per-key model oracle above: a model that MISREADS a value does NOT
-           agree with the real structure at a present key, so the per-key oracle catches it. Same generated
-           workload (30 seeded inserts over the 16-key masked domain) drives the SAME real `Map.insert`, but
-           the model here is a BROKEN value-forgetting scan that returns a constant 0 for EVERY key instead
-           of the map's stored value. `drive` inserts value `n` (the countdown 30..1 — ALWAYS >= 1, never
-           0), so every PRESENT key's real `Map.lookup` returns >= 1, which never equals the model's 0 →
-           `verify` diverges (-999) at the first present key (>= 1 key is always present after 30 inserts).
-           Two seeds return -999. Pins that the STRONGEST oracle (per-key agreement) genuinely detects a
-           value-level real-vs-model disagreement, not a tautology — the discriminating counterpart the
-           count-model family (line 643) has but the exhaustive per-key family lacked.")
+  (doc    "The vacuity guard for the per-key model oracle above: a model that MISREADS the stored value does
+           NOT agree with the real structure, so the per-key oracle catches it. Same generated workload (30
+           seeded inserts over the 16-key masked domain) drives the SAME real `Map.insert`, but the model
+           here is a BROKEN value-forgetting scan that returns a constant 0 for EVERY key (ignoring both the
+           to-list and the key) instead of the map's stored value. The real per-key answer is `Map.lookup`'s
+           value at a PRESENT key and -1 at a MISSING key (the `(None u) -1` arm), and `drive` inserts value
+           `n` (the countdown 30..1 — ALWAYS >= 1, never 0). So the model's constant 0 disagrees with the
+           real answer at EITHER kind of key (>= 1 at a present key, -1 at a missing key), and `verify`
+           diverges (-999) at the FIRST key it checks (key 0), present or missing. Two seeds return -999.
+           Pins that the STRONGEST oracle (per-key agreement) genuinely detects a value-level real-vs-model
+           disagreement, not a tautology — the discriminating counterpart the count-model family (line 643)
+           has but the exhaustive per-key family lacked.")
   (input  (do
             (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
             (def (broken-scan (: ps (List (Tuple Int64 Int64))) (: k Int64)) 0)
