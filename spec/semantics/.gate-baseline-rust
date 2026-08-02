@@ -1622,6 +1622,7 @@ pass	a function-typed parameter annotation is not silently discarded in the body
 pass	a function-typed parameter annotation's result type is checked against the argument
 pass	a function-typed parameter with a matching Bool-returning argument is accepted
 pass	a general recursive-sum recursion (Nil|Cons count) reads the right payload through the fold
+pass	a generated MIXED payload+nullary SUM value is reproducible from its seed (a 3-variant sum with a bare-name nullary variant)
 pass	a generated RECORD value is reproducible from its seed (compound = walks the record fields)
 pass	a generated Rational's equality is INDEPENDENT of sign placement (n/d = -n/-d)
 pass	a generated SUM value is reproducible from its seed (compound = walks the variant tag and its payload)

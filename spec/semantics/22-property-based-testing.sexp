@@ -184,6 +184,29 @@
   (call   main (: 12345 Int64)) (output (: true Bool))
   (call   main (: -7 Int64)) (output (: true Bool)))
 
+(case "a generated MIXED payload+nullary SUM value is reproducible from its seed (a 3-variant sum with a bare-name nullary variant)"
+  (doc    "The SUM cases above use `Result (Ok Int64) (Err Int64)` — every variant PAYLOADED. This one
+           witnesses the shape the property-test generator gained bare-name-nullary support for: a MIXED sum
+           whose variants are two PAYLOADED (`Circle Int64` / `Square Int64`) plus one NULLARY (`Point`, a
+           bare-name variant). A seed-derived selector `(% (& (next s) 3) …)` — expressed here as nested
+           `if`s over the low bits — picks the constructor; a masked int is the payload for the payloaded
+           arms, and the nullary arm carries none. `(= (gen seed) (gen seed))` re-draws the SAME tagged value
+           and the compound `=` walks the discriminant AND (for a payloaded arm) the carried Int64 — so a
+           sum that MIXES arities compares correctly (a nullary draw equals a nullary draw; a payloaded draw
+           equals the same-tag same-payload draw). Runs at the boundary so the constructor selection + tagged
+           compare are real instructions. Pins mixed payload+nullary sum generation (the class the generator
+           previously declined for a bare-name nullary variant) as a reproducible, storeless-graded witness.")
+  (input  (do (type Shape (Circle Int64) (Square Int64) (Point))
+              (def (next (: s Int64)) (Int64.wrapping-add (Int64.wrapping-mul s 6364136223846793005) 1442695040888963407))
+              (def (gen (: s Int64))
+                (let ((sel (& (next s) 3)))
+                  (if (= sel 0) (Circle (& (next (next s)) 255))
+                    (if (= sel 1) (Square (& (next (next s)) 255)) Point))))
+              (def (main (: seed Int64)) (= (gen seed) (gen seed)))
+              (export main)))
+  (call   main (: 12345 Int64)) (output (: true Bool))
+  (call   main (: 777 Int64)) (output (: true Bool)))
+
 (case "a generated RECORD value is reproducible from its seed (compound = walks the record fields)"
   (doc    "Witnesses §Generation Is Seeded And Reproducible for a generator that produces a RECORD — the
            other named product container beside the tuple. The doc of the tuple case promises structural
