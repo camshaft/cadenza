@@ -12187,8 +12187,10 @@ mod tests {
     fn in_flight_file_set_flags_an_unresolvable_ref() {
         // PR #1330: an in-flight ref whose files can't be computed must set `any_unresolved` (so the
         // caller forces collision), NOT silently vanish from the file set. A bogus ref won't resolve
-        // via `git show` → None → any_unresolved. (Uses a ref that can't exist so the git call fails
-        // deterministically regardless of the test's cwd/repo state.)
+        // via `git show` → None → any_unresolved. (Uses a syntactically-INVALID revspec — the
+        // peel-to-type `^{...}` with a non-type — so `git show` can NEVER resolve it regardless of the
+        // test's cwd/local refs; PR #1367 review: a plausible-looking ref NAME could accidentally match
+        // a real branch/tag and flip the test, whereas an invalid peel type is a hard parse error.)
         let disp = |r: &str| CiDispatch {
             mr_file: "m.json".into(),
             agent: "a".into(),
@@ -12200,7 +12202,7 @@ mod tests {
             status: "in-flight".into(),
         };
         let (_files, any_unresolved) =
-            in_flight_file_set(&[disp("0000000000000000000000000000000000000000-not-a-ref")]);
+            in_flight_file_set(&[disp("HEAD^{definitely-not-an-object-type}")]);
         assert!(
             any_unresolved,
             "an unresolvable in-flight ref must set any_unresolved (→ caller forces collision), not vanish"
