@@ -30,6 +30,9 @@ pub mod eval;
 
 // The per-node rung forms (each an entry of a column keyed by AST `StructId`).
 pub mod core;
+// Backend-agnostic Core-IR analysis primitives shared by the wasm Lir-level LICM/CSE realization and
+// the backend-independent Core optimization passes (a pure move out of `backend/wasm/select.rs`).
+pub(crate) mod core_analysis;
 pub mod resolved;
 
 // The prelude — the one map of built-in bindings, installed as ordinary AST records at load. A
