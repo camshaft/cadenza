@@ -6640,11 +6640,13 @@ fn ci_status(target: &str) {
     // since it could authorize a trunk advance off a tree CI never approved (PR #1071 review). NB
     // `gh pr checks` also exits NON-ZERO on a legitimately RED/PENDING run (exit 8 = pending) but DOES
     // emit the checks array then — so distinguish "gh errored" from "gh reported red/pending" by whether
-    // stdout is a JSON array, not by the exit code alone (else a real red/pending would misread as NO-CHECKS).
-    let stdout = match &out {
+    // stdout PARSES as a real checks array (a genuine `serde_json` array with ≥1 check), NOT merely a
+    // `[`-prefix (a `[`-led non-JSON error line must not masquerade as checks output — PR #1179 review).
+    let checks = match &out {
         Ok(o) => {
             let s = String::from_utf8_lossy(&o.stdout).into_owned();
-            if !o.status.success() && !s.trim_start().starts_with('[') {
+            let checks = parse_gh_checks(&s); // empty unless stdout is a real JSON array of check rows
+            if !o.status.success() && checks.is_empty() {
                 eprintln!(
                     "ci-status: `gh pr checks {target}` failed ({}) with no checks output — NO-CHECKS.\n{}",
                     o.status,
@@ -6653,7 +6655,7 @@ fn ci_status(target: &str) {
                 println!("NO-CHECKS");
                 std::process::exit(2);
             }
-            s
+            checks
         }
         Err(e) => {
             eprintln!(
@@ -6663,7 +6665,6 @@ fn ci_status(target: &str) {
             std::process::exit(2);
         }
     };
-    let checks = parse_gh_checks(&stdout);
     let verdict = ci_verdict_from_buckets(checks.iter().map(|(b, _, _)| b.as_str()));
     for (bucket, name, state) in &checks {
         println!("  {bucket:<9} {state:<10} {name}");
