@@ -1515,6 +1515,51 @@ fn a_user_sum_with_a_nongeneratable_payload_declines_cleanly_and_siblings_run() 
     );
 }
 
+/// Positive coverage for sum-type GENERATION (operator directive: sum types must be generated, not
+/// declined): a `@test` over a MIXED payload+nullary sum (`Shape = Circle(Int64) | Square(Int64) | Point`)
+/// AND a plain ALL-NULLARY enum (`Color = Red | Green | Blue`) each get a REAL synthesized generator and
+/// RUN a property (100 trials). The ML surface lowers a nullary variant to a bare NAME (`Point`, `Red`…),
+/// and classify_sum accepts bare-name nullary variants, so both shapes generate — pinning the whole class
+/// as WORKING (not declining). The property bodies just `match` every variant and return unit (a `@test`
+/// passes by returning), so a PASS witnesses the generator actually produced in-domain sum values across
+/// all variants over 100 trials. Guards the sum-generation feature end-to-end at the CLI.
+#[test]
+fn a_mixed_sum_and_an_all_nullary_enum_property_both_generate_and_run() {
+    let d = dir("sum-gen-positive-coverage");
+    let f = write(
+        &d,
+        "m.cdz",
+        "type Shape = Circle(Int64) | Square(Int64) | Point\n\
+         type Color = Red | Green | Blue\n\
+         @test def shape_matches_a_variant(s: Shape) =\n\
+         \x20 match s with\n\
+         \x20 | Circle(r) => unit\n\
+         \x20 | Square(w) => unit\n\
+         \x20 | Point => unit\n\
+         @test def color_matches_a_variant(c: Color) =\n\
+         \x20 match c with\n\
+         \x20 | Red => unit\n\
+         \x20 | Green => unit\n\
+         \x20 | Blue => unit\n",
+    );
+    let (ok, stdout, stderr) = run(&["test", &f]);
+    assert!(
+        ok,
+        "both sum-generated property tests should PASS: {stdout}{stderr}"
+    );
+    // Each is driven by a REAL synthesized generator over 100 trials (a declining wrapper would report
+    // `FAIL …-gen: not property-testable` instead). A mixed payload+nullary sum AND an all-nullary enum.
+    assert!(
+        stdout.contains("PASS shape_matches_a_variant-gen")
+            && stdout.contains("PASS color_matches_a_variant-gen"),
+        "a mixed sum and an all-nullary enum each generate + run a real property (100 trials): {stdout}"
+    );
+    assert!(
+        !stdout.contains("not property-testable"),
+        "neither sum should decline — both must generate: {stdout}"
+    );
+}
+
 /// The counterexample-VALUE render covers a user SUM parameter: a failing property over a `(type Res (Ok
 /// Int64) (Err Int64))` reports the concrete failing VALUE (`never_ok(Ok(0))` — the variant name + its
 /// decoded payload) rather than the raw driver ints. The runner classifies the wrapper's param via
