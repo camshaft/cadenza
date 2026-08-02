@@ -165,6 +165,13 @@ pub struct ComponentReducer {
     // Empty = a dependency-free reducer (e.g. the interim Rust guest). The linker-compose of resolved
     // dep bytes is the next slice; construction records the declared set so `apply` knows.
     deps: Vec<ComponentDep>,
+    // Resolved dependency component bytes (§23), paired with the import name each satisfies, ready to
+    // COMPOSE into the per-fold linker before instantiate (see `apply` + `compose_dep_into_linker`).
+    // Populated by `with_resolved_deps` from `resolve_deps`' CAS lookup; EMPTY for a dependency-free
+    // reducer (which instantiates directly against `self.linker`). Held as bytes (not live instances)
+    // because a dep instance must live in the SAME per-fold `Store` as the consumer — so composition
+    // happens per fold, from these bytes, not once at construction.
+    resolved_deps: Vec<(String, Vec<u8>)>,
     // The per-fold fuel budget (§22d): the hard instruction ceiling one `apply` may consume before the
     // guest is aborted with [`ComponentError::FuelExhausted`]. A runaway/looping reducer can't hang the
     // kernel (Copilot PR#1009 DoS gap). Enforced by wasmtime's fuel metering (engine `consume_fuel` +
@@ -207,6 +214,12 @@ pub enum ComponentError {
     /// The blob store errored while resolving a declared dependency (I/O, corruption). DISTINCT from
     /// [`ComponentError::DepMissing`] — the dep may well exist; the store failed to serve it.
     DepStoreError { hash: Hash, source: String },
+    /// Composing a resolved dependency component into the linker failed (§23): its bytes didn't compile,
+    /// it didn't export the interface the consumer imports under that name, or the linker rejected the
+    /// binding. DISTINCT from [`ComponentError::DepMissing`]/[`ComponentError::DepStoreError`] (those are about
+    /// FETCHING the dep) — this is about WIRING a fetched dep, so a caller can tell "couldn't get the
+    /// dep" from "the dep doesn't fit the import it's meant to satisfy."
+    Compose { import_name: String, reason: String },
 }
 
 /// A component DEPENDENCY a reducer declares by content hash (operator §23 — the kernel is
@@ -274,6 +287,91 @@ fn resolve_dep_bytes(
     }
 }
 
+/// Compose a resolved dependency COMPONENT into `linker` so a consumer that imports `import_name` can
+/// instantiate against it (§23 — the runtime-agnostic dep-compose the kernel does uniformly for EVERY
+/// declared dep, the value-heap runtime being just one). Mirrors the sibling `cdz-run::run_with_peers`
+/// composition: instantiate the dep in the SHARED `store`, read the func names off its exported
+/// interface `import_name`, extract each `Func` from the instance, and forward it into `linker` under
+/// `import_name` via a raw dynamic closure that calls the dep func + its `post_return`. It's runtime
+/// LINKER composition (host-side wiring of one component's exports into another's imports), NOT
+/// bytes-level pre-composition — so no wac/wasm-compose dependency. The dep runs in the same store as
+/// the consumer, so a value handle it returns is intelligible to the consumer (component-abi.md §A
+/// Runtime Value Crosses As An Opaque Handle). Errors (as [`ComponentError::Compose`]) if the dep bytes
+/// don't compile, don't export `import_name` as an interface, or the linker rejects the binding.
+///
+/// `T` is the store data type (the reducer host); the dep's funcs don't touch it — they're pure
+/// component-to-component calls forwarded verbatim — so this is generic over the store type.
+fn compose_dep_into_linker<T: 'static>(
+    engine: &wasmtime::Engine,
+    store: &mut wasmtime::Store<T>,
+    linker: &mut wasmtime::component::Linker<T>,
+    import_name: &str,
+    dep_bytes: &[u8],
+) -> Result<(), ComponentError> {
+    use wasmtime::component::types::ComponentItem;
+    use wasmtime::component::Component;
+    let compose_err = |reason: String| ComponentError::Compose {
+        import_name: import_name.to_string(),
+        reason,
+    };
+    let dep = Component::new(engine, dep_bytes)
+        .map_err(|e| compose_err(format!("dependency bytes are not a valid component: {e}")))?;
+    // The func names the dep exports under `import_name` (its exported interface must match the name the
+    // consumer imports it under). Read them off the component TYPE, not a live instance, so a dep that
+    // exports the wrong shape is caught with a clear message rather than an opaque trap at call time.
+    let func_names: Vec<String> = dep
+        .component_type()
+        .exports(engine)
+        .find(|(n, _)| *n == import_name)
+        .and_then(|(_, item)| match item {
+            ComponentItem::ComponentInstance(inst) => Some(
+                inst.exports(engine)
+                    .filter_map(|(fname, i)| {
+                        matches!(i, ComponentItem::ComponentFunc(_)).then(|| fname.to_string())
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            compose_err(format!(
+                "dependency does not export the interface {import_name:?} the consumer imports"
+            ))
+        })?;
+    // Instantiate the dep in the shared store (a dep is dependency-free here; a dep-of-dep chain is a
+    // later hardening slice — see the §23 plan). A fresh linker: the dep declares no host imports we
+    // serve (it's a pure value/logic component).
+    let dep_linker = wasmtime::component::Linker::<T>::new(engine);
+    let dep_instance = dep_linker
+        .instantiate(&mut *store, &dep)
+        .map_err(|e| compose_err(format!("instantiating the dependency failed: {e}")))?;
+    let iface_idx = dep_instance
+        .get_export_index(&mut *store, None, import_name)
+        .ok_or_else(|| {
+            compose_err("dependency instance is missing its exported interface".into())
+        })?;
+    // Forward each dep func into the consumer's linker under `import_name`.
+    let mut iface = linker
+        .instance(import_name)
+        .map_err(|e| compose_err(format!("linker.instance({import_name:?}): {e}")))?;
+    for fname in &func_names {
+        let fidx = dep_instance
+            .get_export_index(&mut *store, Some(&iface_idx), fname)
+            .ok_or_else(|| compose_err(format!("dependency missing exported func {fname:?}")))?;
+        let f = dep_instance
+            .get_func(&mut *store, fidx)
+            .ok_or_else(|| compose_err(format!("dependency export {fname:?} is not a func")))?;
+        iface
+            .func_new(fname, move |mut ctx, params, results| {
+                f.call(&mut ctx, params, results)?;
+                f.post_return(&mut ctx)?;
+                Ok(())
+            })
+            .map_err(|e| compose_err(format!("binding dep func {fname:?} into the linker: {e}")))?;
+    }
+    Ok(())
+}
+
 /// Parse a component dependency's `+<hash>` content-address build-metadata into a [`Hash`]. Delegates
 /// to [`Hash::from_hex`] — the single home for the canonical-lowercase-hex rule (PR#1013 #4) — rather
 /// than reimplementing it here (this used to carry its own copy of the length/lowercase checks).
@@ -319,8 +417,23 @@ impl ComponentReducer {
             component,
             linker,
             deps,
+            resolved_deps: Vec::new(),
             fuel_budget: DEFAULT_FOLD_FUEL,
         })
+    }
+
+    /// Attach the resolved bytes of this reducer's declared dependencies (§23), so `apply` COMPOSES each
+    /// into the per-fold linker before instantiating the guest (via `compose_dep_into_linker`). Pair
+    /// this with [`ComponentReducer::resolve_deps`], which fetches the bytes from CAS: resolve, then
+    /// attach. A dependency-free reducer never needs this (its `deps` are empty). Idempotent-replacing:
+    /// the last call's set is what `apply` composes. The kernel stays runtime-AGNOSTIC — it composes the
+    /// value-heap runtime, if present, exactly as any other content-addressed dep.
+    pub fn with_resolved_deps(mut self, resolved: Vec<(ComponentDep, Vec<u8>)>) -> Self {
+        self.resolved_deps = resolved
+            .into_iter()
+            .map(|(dep, bytes)| (dep.import_name, bytes))
+            .collect();
+        self
     }
 
     /// Override the per-fold fuel budget (§22d). Use a smaller ceiling for untrusted/low-trust reducers
@@ -404,7 +517,29 @@ impl ComponentReducer {
             let kv = store.into_data().into_kv();
             return Err((ComponentError::Instantiate(e.to_string()), kv));
         }
-        let instance = match Reducer::instantiate(&mut store, &self.component, &self.linker) {
+        // Compose this reducer's resolved dependency components into the linker BEFORE instantiate (§23):
+        // each dep instance must live in THIS fold's `store`, so composition is per-fold. A
+        // dependency-free reducer (empty `resolved_deps`) instantiates directly against `self.linker`
+        // (no clone). With deps, clone the base linker (carrying the `kv` host import) and compose each
+        // dep into the clone under its import name. `bindgen`'s generated `Reducer::instantiate` uses the
+        // linker, so composing into it is what satisfies the guest's dep imports.
+        let composed_linker;
+        let linker = if self.resolved_deps.is_empty() {
+            &self.linker
+        } else {
+            let mut l = self.linker.clone();
+            for (import_name, bytes) in &self.resolved_deps {
+                if let Err(e) =
+                    compose_dep_into_linker(&self.engine, &mut store, &mut l, import_name, bytes)
+                {
+                    let kv = store.into_data().into_kv();
+                    return Err((e, kv));
+                }
+            }
+            composed_linker = l;
+            &composed_linker
+        };
+        let instance = match Reducer::instantiate(&mut store, &self.component, linker) {
             Ok(i) => i,
             Err(e) => {
                 let kv = store.into_data().into_kv();
@@ -712,6 +847,107 @@ mod tests {
         let bytes = wat::parse_str("(component)").expect("empty component");
         let component = wasmtime::component::Component::new(&engine, &bytes).unwrap();
         assert!(declared_deps(&component, &engine).unwrap().is_empty());
+    }
+
+    // §23 dep-compose (slice ii): a dependency COMPONENT composed into a consumer's linker satisfies the
+    // consumer's like-named interface import, and a call through the consumer reaches the dep — proving
+    // the runtime-agnostic linker-composition mechanism (mirrors cdz-run::run_with_peers). Synthetic
+    // components (wat), so no wit-bindgen fixture toolchain needed.
+    #[test]
+    fn a_dependency_component_composed_into_the_linker_satisfies_a_consumer_import() {
+        // Dep: exports interface `test:dep/api` with `answer: func() -> u32` returning 42.
+        let dep_bytes = wat::parse_str(
+            r#"(component
+                 (core module $m (func (export "answer") (result i32) i32.const 42))
+                 (core instance $i (instantiate $m))
+                 (func $answer (result u32) (canon lift (core func $i "answer")))
+                 (instance $api (export "answer" (func $answer)))
+                 (export "test:dep/api" (instance $api)))"#,
+        )
+        .expect("assemble dep component");
+
+        // Consumer: IMPORTS `test:dep/api` (answer: () -> u32) and EXPORTS `run: () -> u32` = answer()+1.
+        let consumer_bytes = wat::parse_str(
+            r#"(component
+                 (import "test:dep/api" (instance $api (export "answer" (func (result u32)))))
+                 (core module $m
+                   (import "" "answer" (func $answer (result i32)))
+                   (func (export "run") (result i32)
+                     (i32.add (call $answer) (i32.const 1))))
+                 (core func $answer_core (canon lower (func $api "answer")))
+                 (core instance $shim (export "answer" (func $answer_core)))
+                 (core instance $i (instantiate $m (with "" (instance $shim))))
+                 (func $run (result u32) (canon lift (core func $i "run")))
+                 (export "run" (func $run)))"#,
+        )
+        .expect("assemble consumer component");
+
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let mut linker = wasmtime::component::Linker::<()>::new(&engine);
+
+        // Compose the dep into the linker under the interface name the consumer imports.
+        compose_dep_into_linker(&engine, &mut store, &mut linker, "test:dep/api", &dep_bytes)
+            .expect("compose dep into linker");
+
+        // The consumer now instantiates (its import is satisfied) and `run()` reaches the dep → 43.
+        let consumer = wasmtime::component::Component::new(&engine, &consumer_bytes)
+            .expect("valid consumer component");
+        let instance = linker
+            .instantiate(&mut store, &consumer)
+            .expect("consumer instantiates against the composed dep");
+        let run = {
+            let idx = instance
+                .get_export_index(&mut store, None, "run")
+                .expect("consumer exports run");
+            instance.get_func(&mut store, idx).expect("run is a func")
+        };
+        let mut results = [wasmtime::component::Val::U32(0)];
+        run.call(&mut store, &[], &mut results).expect("call run");
+        assert_eq!(
+            results[0],
+            wasmtime::component::Val::U32(43),
+            "run() = dep.answer()(42) + 1 — the call crossed the composed boundary"
+        );
+    }
+
+    // §23 dep-compose: composing bytes that DON'T export the imported interface fails with a clear
+    // `Compose` error naming the interface — not an opaque instantiate trap later.
+    #[test]
+    fn composing_a_dep_that_lacks_the_imported_interface_errors_clearly() {
+        let engine = wasmtime::Engine::default();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let mut linker = wasmtime::component::Linker::<()>::new(&engine);
+        // An empty component exports nothing → can't satisfy `test:dep/api`.
+        let empty = wat::parse_str("(component)").expect("empty component");
+        match compose_dep_into_linker(&engine, &mut store, &mut linker, "test:dep/api", &empty) {
+            Err(ComponentError::Compose { import_name, .. }) => {
+                assert_eq!(import_name, "test:dep/api");
+            }
+            other => panic!("expected Compose error naming the interface, got {other:?}"),
+        }
+    }
+
+    // §23: `with_resolved_deps` attaches resolved dep bytes (import_name + bytes) that `apply` composes
+    // per-fold. Pins the resolve→attach handoff: the builder records exactly what `resolve_deps` yields.
+    #[test]
+    fn with_resolved_deps_records_the_import_name_and_bytes_apply_will_compose() {
+        // A dependency-free reducer (empty component) — we only exercise the builder plumbing here; the
+        // compose-through-apply path is proven by the linker-composition test above.
+        let bytes = wat::parse_str("(component)").expect("empty component");
+        let reducer = match ComponentReducer::from_component_bytes(&bytes) {
+            Ok(r) => r,
+            Err(e) => panic!("valid component: {e:?}"),
+        };
+        assert!(reducer.resolved_deps.is_empty(), "none attached yet");
+        let dep = ComponentDep {
+            import_name: "cadenza:runtime/heap@0.0.0+abc".to_string(),
+            hash: Hash::of(b"a dep"),
+        };
+        let reducer = reducer.with_resolved_deps(vec![(dep, b"dep-bytes".to_vec())]);
+        assert_eq!(reducer.resolved_deps.len(), 1);
+        assert_eq!(reducer.resolved_deps[0].0, "cadenza:runtime/heap@0.0.0+abc");
+        assert_eq!(reducer.resolved_deps[0].1, b"dep-bytes".to_vec());
     }
 
     #[test]
