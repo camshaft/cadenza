@@ -157,6 +157,25 @@ export default function Metaprogramming() {
   ((Err _) (quote nil)))`}
       />
 
+      <P>
+        There's a text round-trip too: <C>print</C> renders a tree as source text and <C>read</C> parses
+        text back into a tree. This one survives at <em>arbitrary precision</em>, an <C>Ast.Int</C> holds a
+        full <C>BigInt</C>, so a 26-digit literal that no 64-bit integer could carry prints its whole decimal
+        and reads back to the exact same node, not a truncated or misread one. Here the round-tripped value
+        equals the original, so this is <C>true</C>:
+      </P>
+      <Runnable
+        source={`(match (read (print (Ast.Int (: 99999999999999999999999999 BigInt))))
+  ((Ast.Int n) (= n (: 99999999999999999999999999 BigInt)))
+  (_           false))`}
+      />
+      <P>
+        <C>read</C> is careful about what counts as a number: an all-digits token (with an optional leading{" "}
+        <C>-</C>) becomes an <C>Ast.Int</C> at any magnitude, while anything else, a name, a decimal point,
+        stays the variant it should be. So <C>read</C> and <C>print</C> compose into an identity on trees,
+        the same guarantee as the binary codec above, along the human-readable path.
+      </P>
+
       <H2>Interpolating a computed subtree</H2>
       <P>
         The point of a template is a hole you fill at run time. Here the argument isn't written out; it's
