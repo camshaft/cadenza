@@ -52,6 +52,30 @@ test("rational coordinates evaluate to numbers (n/d)", () => {
   assert.deepEqual(r.series[0].points, [{ x: 0.5, y: 0.75 }]);
 });
 
+test("a quantity coordinate plots by its magnitude (`(Qty.of v unit)` — the runtime's shape)", () => {
+  // A chart point can carry a quantity (a projectile's height in meters over time); plot the magnitude,
+  // dropping the unit. The runtime renders a quantity as `(Qty.of <magnitude> <unit>)`, not `(quantity …)`.
+  const tuples = extractChart('(: (list (tuple 0 (Qty.of 0 (Unit.base #"meter"))) (tuple 1 (Qty.of 5 (Unit.base #"meter")))) T)');
+  assert.ok(tuples.ok);
+  assert.deepEqual(tuples.series[0].points, [{ x: 0, y: 0 }, { x: 1, y: 5 }]);
+  // a bare list of quantity magnitudes → (index, magnitude)
+  const bare = extractChart('(: (list (Qty.of 1 (Unit.base #"meter")) (Qty.of 4 (Unit.base #"meter"))) T)');
+  assert.ok(bare.ok);
+  assert.deepEqual(bare.series[0].points, [{ x: 0, y: 1 }, { x: 1, y: 4 }]);
+  // a rational-magnitude quantity evaluates n/d; the legacy `(quantity …)` shape works too
+  const rat = extractChart('(: (list (Qty.of 5/2 (Unit.base #"meter"))) T)');
+  assert.ok(rat.ok);
+  assert.deepEqual(rat.series[0].points, [{ x: 0, y: 2.5 }]);
+  const legacy = extractChart("(: (list (quantity 3 meter) (quantity 7 meter)) T)");
+  assert.ok(legacy.ok);
+  assert.deepEqual(legacy.series[0].points, [{ x: 0, y: 3 }, { x: 1, y: 7 }]);
+});
+
+test("a quantity with a non-numeric magnitude is not chartable (typed fallback, never throws)", () => {
+  const r = extractChart('(: (list (Qty.of "oops" (Unit.base #"meter"))) T)');
+  assert.equal(r.ok, false);
+});
+
 test("an empty list → no series (empty chart, not an error)", () => {
   const r = extractChart("(: (list) (List Int64))");
   assert.ok(r.ok);
