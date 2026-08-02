@@ -123,6 +123,19 @@ def yes-no() =
     Chor.Branch("Yes", Chor.Comm("Buyer", "Seller", "Yes")),
     Chor.Branch("No", Chor.Comm("Buyer", "Seller", "No"))])
 
+/// A DIVERGENT choice: Buyer chooses and tells Seller the selection first in EACH branch, then the branches
+/// diverge with DISTINCT multi-step continuations — Ship: Seller replies Tracking; Cancel: Seller replies
+/// Refund. Unlike `yes-no` (one symmetric comm per branch), each branch has a different reply label, so the
+/// matcher must collect send/recv obligations across branches whose continuations genuinely differ.
+def diverg() =
+  Chor.Choice("Buyer", [
+    Chor.Branch("Ship",
+      Chor.Seq(Chor.Comm("Buyer", "Seller", "Ship"),
+        Chor.Comm("Seller", "Buyer", "Tracking"))),
+    Chor.Branch("Cancel",
+      Chor.Seq(Chor.Comm("Buyer", "Seller", "Cancel"),
+        Chor.Comm("Seller", "Buyer", "Refund")))])
+
 @test
 def deadlock-free-linear-purchase() =
   if deadlock-free(parties(), purchase-linear()) then unit
@@ -142,6 +155,18 @@ def deadlock-free-choice() =
 def deadlock-free-done() =
   if deadlock-free(parties(), Chor.Done) then unit
   else trap("the empty protocol is trivially deadlock-free")
+
+@test
+def deadlock-free-divergent-choice() =
+  // COVERAGE PIN: the only choice witnessed for deadlock-free so far was `yes-no` (one symmetric comm per
+  // branch). A DIVERGENT choice — each branch a distinct multi-step exchange (Ship→Tracking / Cancel→Refund)
+  // — drives the `sends-branches`/`recvs-branches` branch-UNION over continuations with DIFFERENT labels per
+  // branch: Seller's projection sends {Tracking, Refund} across the two branches and each must find its
+  // mirror recv in Buyer's projection (and vice-versa for the selection sends). This is the branch-union
+  // matching the module's own header calls out (the union of obligations across choice branches) — it was
+  // pinned at projection + mock-run in earlier slices, but never at the deadlock-free layer until now.
+  if deadlock-free(["Buyer", "Seller"], diverg()) then unit
+  else trap("a projectable divergent-branch choice is deadlock-free (branch-union matched I/O)")
 
 @test
 def sends-are-collected() =
