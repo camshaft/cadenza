@@ -47,14 +47,14 @@ impl Reducer for ModelAgent {
                 FoldOutput::with(vec![EffectRequest {
                     kind: EffectKind::Model,
                     target: "claude-test".into(), // the model id
-                    payload: Some(Payload::Inline(b"hello".to_vec())),
+                    payload: Some(Payload::Inline(b"hello".to_vec().into())),
                 }])
             }
             EventBody::EffectResult {
                 result: EffectOutcome::Ok(Some(Payload::Inline(completion))),
                 ..
             } => {
-                kv.put(b"completion".to_vec(), completion.clone());
+                kv.put(b"completion".to_vec(), completion.to_vec());
                 kv.put(b"phase".to_vec(), b"answered".to_vec());
                 FoldOutput::none()
             }
@@ -69,7 +69,7 @@ fn inbound_go() -> EventBody {
             family: "message".into(),
             version: 1,
         },
-        payload: Payload::Inline(b"go".to_vec()),
+        payload: Payload::Inline(b"go".to_vec().into()),
     }
 }
 
@@ -136,17 +136,17 @@ fn one_composite_routes_both_now_and_model_for_one_agent() {
                 } => match kv.get(b"phase") {
                     // Step 2: got the time → now prompt the model.
                     Some(b"timing") => {
-                        kv.put(b"at".to_vec(), bytes.clone());
+                        kv.put(b"at".to_vec(), bytes.to_vec());
                         kv.put(b"phase".to_vec(), b"prompting".to_vec());
                         FoldOutput::with(vec![EffectRequest {
                             kind: EffectKind::Model,
                             target: "claude-test".into(),
-                            payload: Some(Payload::Inline(b"hi".to_vec())),
+                            payload: Some(Payload::Inline(b"hi".to_vec().into())),
                         }])
                     }
                     // Step 3: got the completion → done.
                     Some(b"prompting") => {
-                        kv.put(b"completion".to_vec(), bytes.clone());
+                        kv.put(b"completion".to_vec(), bytes.to_vec());
                         kv.put(b"phase".to_vec(), b"done".to_vec());
                         FoldOutput::none()
                     }
@@ -205,7 +205,7 @@ fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
                 FoldOutput::with(vec![EffectRequest {
                     kind: EffectKind::Model,
                     target: "expensive-other-model".into(), // outside the grant
-                    payload: Some(Payload::Inline(b"hi".to_vec())),
+                    payload: Some(Payload::Inline(b"hi".to_vec().into())),
                 }])
             } else {
                 FoldOutput::none()

@@ -47,7 +47,10 @@ impl Executor for ClockExecutor {
         match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(dur) => {
                 let ms = dur.as_millis();
-                EffectOutcome::Ok(Some(Payload::Inline(ms.to_string().into_bytes())))
+                // `.into()` builds the kernel's `Payload::Inline`: identity for a `Vec<u8>` inner and the
+                // `From<Vec<u8>>` freeze once the kernel flipped `Inline` to ref-counted `bytes::Bytes`
+                // (operator perf directive) — so this one call site compiles across the flip.
+                EffectOutcome::Ok(Some(Payload::Inline(ms.to_string().into_bytes().into())))
             }
             Err(e) => EffectOutcome::Err(format!("system clock is before the Unix epoch: {e}")),
         }
@@ -71,7 +74,9 @@ mod tests {
         let mut exec = ClockExecutor::new();
         match exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k")) {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
-                let text = String::from_utf8(bytes).expect("ascii decimal");
+                // `.to_vec()` copies the payload's bytes into an owned `Vec<u8>` for `from_utf8` — works
+                // whether `Inline` holds a `Vec<u8>` or (post-flip) `bytes::Bytes` (both deref to `&[u8]`).
+                let text = String::from_utf8(bytes.to_vec()).expect("ascii decimal");
                 let ms: u128 = text.parse().expect("parses as millis");
                 // A sane lower bound: well after 2020 (1_577_836_800_000 ms = 2020-01-01) — proves it's a
                 // real epoch timestamp, not a zero/garbage value.
@@ -91,7 +96,7 @@ mod tests {
         let read = |e: &mut ClockExecutor| -> u128 {
             match e.perform(&req(EffectKind::Now, ""), Hash::of(b"k")) {
                 EffectOutcome::Ok(Some(Payload::Inline(b))) => {
-                    String::from_utf8(b).unwrap().parse().unwrap()
+                    String::from_utf8(b.to_vec()).unwrap().parse().unwrap()
                 }
                 other => panic!("expected Ok millis, got {other:?}"),
             }

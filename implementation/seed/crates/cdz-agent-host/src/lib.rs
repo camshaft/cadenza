@@ -18,13 +18,17 @@
 //!   reaches a model and the completion folds back, an agent loops end-to-end. It is GENERIC over a
 //!   [`ModelTransport`] so its effect-mapping logic is hermetically testable; the real Bedrock transport
 //!   (SigV4 + the cred-broker) lands behind `live-net`, a stub drives the default gate.
-//! - a real `Http` client lands behind the `live-net` feature too (it needs egress), so a CI runner
-//!   without egress still gates the crate.
+//! - [`HttpExecutor`] — `Http` → an HTTP response, for an agent that fetches a URL. Same transport-seam
+//!   shape as the model executor (generic over an [`HttpTransport`]); the real client lands behind
+//!   `live-net`, a stub drives the default gate. The URL's host is gated by the kernel's SEC-F1 `HostIn`
+//!   capability (the SSRF/exfil guard) before dispatch, so this executor does not re-authorize.
 //!
 //! The shared surface with `cdz-kernel` is ONLY the trait signatures; this crate never edits kernel src.
 
 pub mod clock;
+pub mod http;
 pub mod model;
 
 pub use clock::ClockExecutor;
+pub use http::{HttpExecutor, HttpTransport};
 pub use model::{ModelExecutor, ModelTransport};
