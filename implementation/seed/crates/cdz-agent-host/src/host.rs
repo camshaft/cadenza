@@ -398,6 +398,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_under_an_existing_id_replaces_the_session_restart_semantics() {
+        // spawn() documents that re-spawning an existing id REPLACES the session (a restart — the old one
+        // is dropped), not a no-op or a panic. A caller restarting a stuck agent relies on this. Drive the
+        // first session to a known state, re-spawn a FRESH session under the same id, and assert the state
+        // was reset (old dropped) + the registry didn't grow.
+        let mut host = AgentHost::new();
+        let id = SessionId::new("worker");
+        host.spawn(id.clone(), now_host());
+        // Drive the first instance to completion → it recorded "ran".
+        host.deliver(&id, inbound_go(), None).await;
+        assert_eq!(
+            host.get(&id).unwrap().session().kv().get(b"status"),
+            Some(&b"ran"[..])
+        );
+        assert_eq!(host.len(), 1);
+
+        // Re-spawn a FRESH session under the SAME id (a restart). The old one is dropped, not kept.
+        host.spawn(id.clone(), now_host());
+        assert_eq!(
+            host.len(),
+            1,
+            "replace, not add — the registry did not grow"
+        );
+        assert_eq!(
+            host.get(&id).unwrap().session().kv().get(b"status"),
+            None,
+            "the replacement is a FRESH session — the prior 'ran' state was dropped"
+        );
+    }
+
+    #[tokio::test]
     async fn two_sessions_run_independently() {
         let mut host = AgentHost::new();
         host.spawn(SessionId::new("a"), now_host());
