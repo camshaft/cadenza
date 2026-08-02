@@ -6832,27 +6832,24 @@ fn rustc_roundtrip_recursive_option_carrying_sum_compare_recurses_through_a_list
                           (Ast.Node (list (Ast.Leaf (: (None unit) (Option Int64)))))) \
             ((Ordering.Less) 1) ((Ordering.Equal) 2) ((Ordering.Greater) 3))) \
         (export go))";
-    match compile_rust_result(src) {
-        // A clean decline is acceptable — the invariant is NO unbounded codegen. If it emits, it MUST
-        // route through the helper and compute the declared-order answer.
-        Err(_) => {}
-        Ok(_) => {
-            let rs = compile_rust(src);
-            assert!(
-                rs.contains("fn __cmp_"),
-                "a List-element-recursive Option-carrying sum compare must route through a __cmp_ helper \
-                 (not inline, not the Box-only path):\n{rs}"
-            );
-            if let Some(out) = rustc_run(&rs, "go(5)") {
-                // Node [Leaf (Some 5)] vs Node [Leaf None]: same variant Node → compare the List payloads
-                // element-wise → Leaf (Some 5) vs Leaf None → Option field Some 5 < None (Cadenza declared
-                // order) → Less (1).
-                assert_eq!(
-                    out, "1",
-                    "a List-recursive Option-carrying sum orders its Option payload Some<None → Less:\n{rs}"
-                );
-            }
-        }
+    // This type IS representable on the rust backend (verified — the generic/nested-Option value-op emit arc
+    // is closed, so a List-element-recursive Option-carrying sum compare EMITS via the `__cmp_` helper), so a
+    // DECLINE here is a real emit regression: `compile_rust` HARD-FAILS on decline rather than tolerating it
+    // (an `Err(_) => {}` arm masked the pin — it stayed green even if the backend stopped emitting).
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("fn __cmp_"),
+        "a List-element-recursive Option-carrying sum compare must route through a __cmp_ helper \
+         (not inline, not the Box-only path):\n{rs}"
+    );
+    if let Some(out) = rustc_run(&rs, "go(5)") {
+        // Node [Leaf (Some 5)] vs Node [Leaf None]: same variant Node → compare the List payloads
+        // element-wise → Leaf (Some 5) vs Leaf None → Option field Some 5 < None (Cadenza declared
+        // order) → Less (1).
+        assert_eq!(
+            out, "1",
+            "a List-recursive Option-carrying sum orders its Option payload Some<None → Less:\n{rs}"
+        );
     }
 }
 
@@ -6873,29 +6870,26 @@ fn rustc_roundtrip_list_of_option_compare_is_lexicographic_with_some_before_none
         (def (p3) (cmp2 (list (: (None unit) (Option Int64))) (list (Some 1)))) \
         (def (p4) (cmp2 (list (Some 1) (Some 2)) (list (Some 1) (Some 2)))) \
         (export p1) (export p2) (export p3) (export p4))";
-    match compile_rust_result(src) {
-        // A clean decline is acceptable — the invariant is: if it emits, it must order Some<None
-        // lexicographically, never std's None<Some.
-        Err(_) => {}
-        Ok(_) => {
-            let rs = compile_rust(src);
-            // [Some 1] vs [None]: first element Some 1 < None → Less (1).
-            if let Some(out) = rustc_run(&rs, "p1()") {
-                assert_eq!(out, "1", "[Some 1] < [None] — Some precedes None:\n{rs}");
-            }
-            // [Some 1] vs [Some 1, Some 2]: equal prefix, shorter is Less (1).
-            if let Some(out) = rustc_run(&rs, "p2()") {
-                assert_eq!(out, "1", "a proper prefix is Less (length tiebreak):\n{rs}");
-            }
-            // [None] vs [Some 1]: first element None > Some 1 → Greater (3).
-            if let Some(out) = rustc_run(&rs, "p3()") {
-                assert_eq!(out, "3", "[None] > [Some 1] — None follows Some:\n{rs}");
-            }
-            // identical lists → Equal (2).
-            if let Some(out) = rustc_run(&rs, "p4()") {
-                assert_eq!(out, "2", "identical option-lists compare Equal:\n{rs}");
-            }
-        }
+    // `(List (Option Int64))` compare IS representable on the rust backend (verified — it emits the
+    // zip/find/length walk nesting the Option flip), so a DECLINE is a real emit regression: `compile_rust`
+    // HARD-FAILS on decline (an `Err(_) => {}` arm masked the pin — it stayed green even if the backend
+    // stopped emitting). Compiled ONCE; all four probes assert against the single artifact.
+    let rs = compile_rust(src);
+    // [Some 1] vs [None]: first element Some 1 < None → Less (1).
+    if let Some(out) = rustc_run(&rs, "p1()") {
+        assert_eq!(out, "1", "[Some 1] < [None] — Some precedes None:\n{rs}");
+    }
+    // [Some 1] vs [Some 1, Some 2]: equal prefix, shorter is Less (1).
+    if let Some(out) = rustc_run(&rs, "p2()") {
+        assert_eq!(out, "1", "a proper prefix is Less (length tiebreak):\n{rs}");
+    }
+    // [None] vs [Some 1]: first element None > Some 1 → Greater (3).
+    if let Some(out) = rustc_run(&rs, "p3()") {
+        assert_eq!(out, "3", "[None] > [Some 1] — None follows Some:\n{rs}");
+    }
+    // identical lists → Equal (2).
+    if let Some(out) = rustc_run(&rs, "p4()") {
+        assert_eq!(out, "2", "identical option-lists compare Equal:\n{rs}");
     }
 }
 
