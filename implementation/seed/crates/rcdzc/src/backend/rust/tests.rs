@@ -7218,3 +7218,19 @@ fn rustc_host_call_with_int_arg_emits_left_to_right_bound_args() {
         "a host call with a non-integer (String) arg declines (later increment):\n{strarg:?}"
     );
 }
+
+#[test]
+fn rustc_host_call_float_result_reads_the_shim_f64() {
+    // H4 host-call emit: a delegated FLOAT-result host op (`Param.ratio -> Unit Float64`, from an
+    // `@param(widget: slider) ratio : Float64`) emits `(crate::__cdz_host_<key>() as f64)` — the runner's
+    // shim returns the recorded scalar as `f64` (the gate driver keys the shim's return type on the response
+    // value text: a `.`-bearing value → an f64 shim), and the emit casts to the declared float width. Pins
+    // the float arm of the result marshal (distinct from the int `as <width>` / bool `!= 0` arms).
+    let src = "(module m (effect Param (op ratio (-> Unit Float64))) \
+        (def (main) (host (Param) (Param.ratio))) (export main))";
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("crate::__cdz_host_param_ratio() as f64"),
+        "a Float64-result host op reads the shim as f64:\n{rs}"
+    );
+}
