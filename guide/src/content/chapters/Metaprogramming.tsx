@@ -175,6 +175,16 @@ export default function Metaprogramming() {
         stays the variant it should be. So <C>read</C> and <C>print</C> compose into an identity on trees,
         the same guarantee as the binary codec above, along the human-readable path.
       </P>
+      <P>
+        The sign rule is worth pinning down, since it mirrors the lexer: a leading <C>-</C> is part of a
+        number, but a leading <C>+</C> is an ordinary operator name, so <C>read</C> classifies <C>"+5"</C> as
+        an <C>Ast.Name</C>, not an <C>Ast.Int</C>. This checks both, returning <C>true</C> only if{" "}
+        <C>"+5"</C> read as a name and <C>"-5"</C> read as an integer:
+      </P>
+      <Runnable
+        source={`(and (match (read "+5") ((Ast.Name _n) true) (_ false))
+     (match (read "-5") ((Ast.Int _n)  true) (_ false)))`}
+      />
 
       <H2>Interpolating a computed subtree</H2>
       <P>
