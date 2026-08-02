@@ -7234,3 +7234,26 @@ fn rustc_host_call_float_result_reads_the_shim_f64() {
         "a Float64-result host op reads the shim as f64:\n{rs}"
     );
 }
+
+#[test]
+fn rustc_host_call_seq_emits_statements_in_source_order() {
+    // H5 host-call emit: a Core::Seq (a `do` whose non-final statements reach a side effect — here two
+    // host calls, the first's result discarded) emits a Rust block `{ let _ = <stmt0>; <tail> }`. The
+    // statements emit in WRITTEN order, so the host calls are observed in exactly the order the program made
+    // them (the sequencing invariant). Pins that Seq renders (was "does not yet render this compound value").
+    let src = "(module m (effect out (op put (-> Int64 Int64))) \
+        (def (main) (host (out) (do (out.put 1) (out.put 2)))) (export main))";
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("let _ = ") && rs.matches("crate::__cdz_host_out_put").count() >= 2,
+        "a Seq of two host calls binds the first with `let _ =` then the tail, both calling the shim:\n{rs}"
+    );
+    // The first (discarded) put must appear BEFORE the second (the block's value) — source order.
+    let first = rs
+        .find("let _ = { let __ha0 = (1u64")
+        .or_else(|| rs.find("let _ = "));
+    assert!(
+        first.is_some(),
+        "the first host call binds before the tail:\n{rs}"
+    );
+}
