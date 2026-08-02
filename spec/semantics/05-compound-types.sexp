@@ -5312,6 +5312,22 @@
             (def (main) (head-of-first (list (list 7 9) (list 8)))) (export main)))
   (output (: 7 Int64)))
 
+(case "a nested-list-rest arm reads BOTH the inner rest and the outer rest binders"
+  (doc    "The companion of the head-only nested-rest case above: the SAME `(list (list a .. r1) .. r2)`
+           pattern, but the body reads all THREE binders — the inner head `a`, the INNER rest `r1` (the tail
+           of the first sublist, a `RestFrom` step NESTED inside `Elem(0)` of the outer list), AND the OUTER
+           rest `r2` (the tail of the outer list, a top-level `RestFrom`). The existing cases only read `a`;
+           this pins that the nested inner-rest binder resolves + reads its sublist value (not just that the
+           pattern binds structurally). `f (list (list 7 8 8) (list 9) (list 1))`: a=7, r1=[8,8] (len 2),
+           r2=[(list 9) (list 1)] (len 2) → 7 + 2 + 2 = 11.")
+  (input  (do
+            (def (f (: xss (List (List Int64))))
+              (match xss
+                ((list (list a .. r1) .. r2) (+ a (+ (List.len r1) (List.len r2))))
+                (_ -1)))
+            (def (main) (f (list (list 7 8 8) (list 9) (list 1)))) (export main)))
+  (output (: 11 Int64)))
+
 (case "a list match arm may carry a guard on its element binders"
   (doc    "A list-pattern arm MAY carry a `(guard <list-pattern> <cond>)` guard, exactly as a scalar or sum
            arm does (`core-semantics.md` §Matching Is Exhaustive Or Rejected: a guard is a boolean the arm's
