@@ -52274,7 +52274,8 @@ mod diagnostics {
             all.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
                 && d.message
                     .contains("rest binder of a list pattern must be a name or `_`")
-                && d.message.contains("not a nested pattern")),
+                && d.message
+                    .contains("a nested pattern or literal is not allowed here")),
             "a nested list-rest pattern reports the clear rest-shape CDZ0201: {all:?}"
         );
         assert!(
@@ -52315,33 +52316,33 @@ mod diagnostics {
         // NO false alarm: a WELL-FORMED name rest (`.. rest`) and a wildcard rest (`.. _`) still check clean.
         let name_rest = "(module m (def (f (: xs (List Int64))) \
                          (match xs ((list a .. rest) (+ a (List.len rest))) ((list) 0))) (export f))";
+        let name_rest_diags = diags_of(name_rest);
         assert!(
-            diags_of(name_rest)
+            name_rest_diags
                 .iter()
                 .all(|d| d.severity != crate::abi::Severity::Error),
-            "a well-formed name rest pattern still checks clean: {:?}",
-            diags_of(name_rest)
+            "a well-formed name rest pattern still checks clean: {name_rest_diags:?}"
         );
         let wildcard_rest = "(module m (def (f (: xs (List Int64))) \
                              (match xs ((list a .. _) a) ((list) 0))) (export f))";
+        let wildcard_rest_diags = diags_of(wildcard_rest);
         assert!(
-            diags_of(wildcard_rest)
+            wildcard_rest_diags
                 .iter()
                 .all(|d| d.severity != crate::abi::Severity::Error),
-            "a wildcard rest pattern still checks clean: {:?}",
-            diags_of(wildcard_rest)
+            "a wildcard rest pattern still checks clean: {wildcard_rest_diags:?}"
         );
         // A LEADING nested pattern (a nested list/tuple in an ELEMENT position, NOT the rest slot) is VALID
         // (core-semantics.md:149 grants nested patterns to element positions) — it must NOT trip this reject.
         let leading_nested = "(module m (def (f (: xs (List (List Int64)))) \
                               (match xs ((list (list a b) .. rest) (+ a b)) ((list) 0))) (export f))";
+        let leading_nested_diags = diags_of(leading_nested);
         assert!(
-            diags_of(leading_nested)
+            leading_nested_diags
                 .iter()
                 .all(|d| d.code.as_deref() != Some("CDZ0201")
                     || !d.message.contains("rest binder of a list pattern")),
-            "a nested pattern in a LEADING element position is valid, not a rest-shape error: {:?}",
-            diags_of(leading_nested)
+            "a nested pattern in a LEADING element position is valid, not a rest-shape error: {leading_nested_diags:?}"
         );
     }
 

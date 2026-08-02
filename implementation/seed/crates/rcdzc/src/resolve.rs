@@ -1545,9 +1545,9 @@ fn binder_in(db: &Db, form: StructId, from: StructId, name: &str) -> Option<Reso
         return Some(Resolved::Poison(
             Reject::coded(
                 crate::diag::Code::Malformed,
-                "the rest binder of a list pattern must be a name or `_`, not a nested pattern — bind the \
-                 tail to a name and destructure it in a nested `match` (e.g. `(list a .. rest)`, then \
-                 `(match rest …)`)",
+                "the rest binder of a list pattern must be a name or `_` (it binds the whole tail sublist) — \
+                 a nested pattern or literal is not allowed here; bind the tail to a name and destructure it \
+                 in a nested `match` (e.g. `(list a .. rest)`, then `(match rest …)`)",
             )
             .at(list_pat),
         ));
@@ -3170,14 +3170,16 @@ fn list_pattern_rest_binds(
     Some((scrutinee, dd)) // `dd` = number of leading binders = the rest sublist's start index
 }
 
-/// Whether the `(list …)` FORM `pat` has a NESTED-PATTERN rest slot — a `..` marker followed by EXACTLY one
-/// element that is NOT a bare name / `_` (a `(list …)` / `(tuple …)` / `(Mk …)` sub-pattern). A list rest
-/// binder admits only a name or wildcard (RULED v-inference 2026-08-02: core-semantics.md:149/:135 — a
-/// binding position holds an irrefutable pattern, and a nested list pattern is refutable on empty rest), so
-/// this shape is invalid; its inner binders must resolve to the rest-shape decline (Case 6mr) rather than
-/// leaking a misleading unbound name. The list twin of [`map_form_is_malformed_rest`]. A well-formed
-/// name/`_` rest, or a `..` not followed by exactly one element (a different malformed shape the lowering
-/// arity check owns), returns `false`.
+/// Whether the `(list …)` FORM `pat` has a NON-NAME rest slot — a `..` marker followed by EXACTLY one
+/// element that is NOT a bare name / `_`: a nested `(list …)` / `(tuple …)` / `(Mk …)` sub-pattern OR a
+/// literal (`(list a .. 5)`). A list rest binder admits only a name or wildcard (RULED v-inference
+/// 2026-08-02: core-semantics.md:149/:135 — a binding position holds an irrefutable pattern, and a nested
+/// list pattern is refutable on empty rest; a literal binds nothing), so ANY non-name/`_` rest is invalid;
+/// its inner binders (if any) must resolve to the rest-shape decline (Case 6mr) rather than leaking a
+/// misleading unbound name. The list twin of [`map_form_is_malformed_rest`]. A well-formed name/`_` rest,
+/// or a `..` not followed by exactly one element (a different malformed shape the lowering arity check
+/// owns), returns `false`. (The predicate keys on `as_name(...).is_none()`, so it covers literals as well
+/// as compound sub-patterns — the comment and the message both say "name or `_`", not "nested", to match.)
 fn list_form_has_nested_rest(db: &Db, pat: StructId) -> bool {
     let Some(elems) = db
         .ast
@@ -3187,7 +3189,8 @@ fn list_form_has_nested_rest(db: &Db, pat: StructId) -> bool {
         return false;
     };
     match elems.iter().position(|&e| db.ast.as_name(e) == Some("..")) {
-        // Exactly one element after `..`, and it is a COMPOUND (not a bare name / `_`) — the nested-rest shape.
+        // Exactly one element after `..`, and it is NOT a bare name / `_` (a compound sub-pattern OR a
+        // literal) — the invalid non-name rest shape (`as_name` is `None` for both).
         Some(i) if i + 2 == elems.len() => db.ast.as_name(elems[i + 1]).is_none(),
         _ => false,
     }
