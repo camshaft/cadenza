@@ -5207,7 +5207,7 @@ todo	the generated Param accessor carries the @param's declared type into arithm
 todo	the program manifest is the union of its entrypoints' delegations
 pass	the round trip tracks the produced closure's captured value
 todo	the same conditional delegation makes no host call when the branch is not taken
-todo	the same declared effect is handled in-program by one entrypoint and delegated by another
+pass	the same declared effect is handled in-program by one entrypoint and delegated by another
 todo	the same program with a different response gives a different deterministic result
 todo	tuple elements are evaluated left to right
 todo	two @param sites generate two accessors under one Param effect
