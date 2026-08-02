@@ -4088,6 +4088,37 @@
   (call   eqm)
   (output (: 1 Int64)))
 
+(case "a CONSTANT comparison over a FOLDED wide-UInt64 subexpression carries the folded value unsigned"
+  (doc    "The COMPOSE-fold face: a wide-UInt64 arith/shift/bitwise fold FEEDING a wide-UInt64 comparison
+           fold, both at the top-bit boundary. The direct-literal-operand compare is pinned just above; this
+           pins that the FOLDED intermediate (itself a wide u64 value produced by the arith/shift/bitwise
+           fold slices) is carried into the comparison fold UNSIGNED, not re-narrowed through a signed i64.
+           `(< (<< 1u64 63) u64max)` folds `1<<63`=2^63 then compares 2^63 < 2^64-1 → 1; `(> (>> u64max 1) 1)`
+           folds `u64max>>1`=2^63-1 then 2^63-1 > 1 → 1; `(= (+ 2^63 5) 2^63+5)` folds the wide add then
+           compares equal → 1; `(< (& u64max 255) 2^63)` folds `u64max & 0xFF`=255 then 255 < 2^63 → 1. If the
+           folded intermediate were re-narrowed to a signed i64 before the compare (the recurring u64-top-bit
+           carrier trap), the 2^63 / 2^63-1 / all-bits values would read negative and flip shl_lt / and_lt /
+           shr_gt. Nullary defs so all operands are compile-time constants — the fold path. Value-only, both
+           backends (each body folds to a literal constant).")
+  (input  (do
+            (def (shl_lt) (if (< (<< (: 1 UInt64) (: 63 UInt64)) (: 18446744073709551615 UInt64)) 1 0))
+            (def (shr_gt) (if (> (>> (: 18446744073709551615 UInt64) (: 1 UInt64)) (: 1 UInt64)) 1 0))
+            (def (add_eq) (if (= (+ (: 9223372036854775808 UInt64) (: 5 UInt64)) (: 9223372036854775813 UInt64)) 1 0))
+            (def (and_lt) (if (< (& (: 18446744073709551615 UInt64) (: 255 UInt64)) (: 9223372036854775808 UInt64)) 1 0))
+            (export shl_lt)
+            (export shr_gt)
+            (export add_eq)
+            (export and_lt)))
+  ; 2^63 < 2^64-1 → 1; 2^63-1 > 1 → 1; (2^63+5) = (2^63+5) → 1; 255 < 2^63 → 1 (each folded intermediate unsigned).
+  (call   shl_lt)
+  (output (: 1 Int64))
+  (call   shr_gt)
+  (output (: 1 Int64))
+  (call   add_eq)
+  (output (: 1 Int64))
+  (call   and_lt)
+  (output (: 1 Int64)))
+
 (case "a CONSTANT algebraic identity over a high-bit UInt64 operand folds to the operand, not a spurious CDZ0304 decline"
   (doc    "The COMPILE-TIME const-operand face of the full-width unsigned family (rcdzc lower 819f5c2e3). The
            runtime cases above pass UInt64.max as an ARGUMENT; this pins a both-CONSTANT algebraic identity
