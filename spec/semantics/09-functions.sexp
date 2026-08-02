@@ -6717,3 +6717,43 @@
         (export main)))
   (call   main (: 5 Int64)) (output (: 56 Int64))
   (call   main (: 0 Int64)) (output (: 1 Int64)))
+
+; --- Emit-once memoization under MID-SOLVE schemes: the per-callee emit-once eligibility decision is
+; memoized (perf), but MUST NOT memoize while the callee's scheme is still solving — a poisoned memo
+; keys the emit to the first (incomplete) instantiation and mis-types a later one. These pin the seam
+; from the outside at its two hardest shapes. ---
+
+(case "a generic tuple-wrapper referenced mid-solve in a recursive group then at a second type"
+  (doc    "`wrap` (generic, tuple-building) is FIRST referenced inside recursive `go`'s body — while
+           go's scheme is mid-solve — then instantiated OUTSIDE at String. A memoized emit-once
+           decision taken during the mid-solve sighting would key wrap's emit to the Int64
+           instantiation and mis-emit the String one (or vice versa). go 3 = 3+2+1 = 6, byte-len
+           \"ab\" = 2 → 62. The corpus-tier witness of the don't-memoize-mid-solve rule (its lib
+           lock-in is in rcdzc tests; this pins the observable value).")
+  (input  (do
+            (def (wrap x) (tuple x x))
+            (def (go (: n Int64) (: acc Int64))
+              (if (= n 0) acc (go (- n 1) (+ acc (. (wrap n) 0)))))
+            (def (main)
+              (+ (* (go 3 0) 10)
+                 (String.byte-len (. (wrap "ab") 1))))
+            (export main)))
+  (output (: 62 Int64)))
+
+(case "two mutually-recursive functions instantiate one generic chooser at different types"
+  (doc    "The mutual-recursion face: `ev` and `od` co-solve as one recursive group, and BOTH call the
+           generic `pick2` — ev at Int64, od at String — while the group's schemes are still open. A
+           memo poisoned by either sighting leaks one instantiation into the other (a String byte-len
+           read of an Int64-keyed emit, or a numeric add of a String-keyed one). Runtime flag defeats
+           folding: f=1 → ev 4 = 4·? … chain gives 40+3=43; f=0 → 10·10+1=101.")
+  (input  (do
+            (def (pick2 (: f Int64) a b) (if (> f 0) a b))
+            (def (ev (: f Int64) (: n Int64))
+              (if (= n 0) 0 (+ (od f (- n 1)) (pick2 f 2 5))))
+            (def (od (: f Int64) (: n Int64))
+              (if (= n 0) (String.byte-len (pick2 f "xyz" "q")) (ev f (- n 1))))
+            (def (main (: f Int64))
+              (+ (* (ev f 4) 10) (od f 0)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 43 Int64))
+  (call   main (: 0 Int64)) (output (: 101 Int64)))
