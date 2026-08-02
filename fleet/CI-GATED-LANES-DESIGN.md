@@ -171,6 +171,12 @@ auto-merge-armed, gating in parallel; my base landed via #1038). Hard-won gotcha
 5. **In-flight cap = 8–10** (operator ruling: "fine with a max of 8-10 PRs in parallel, especially if
    there's no collision risk"). I4 default 8–10, flag-tunable; dynamic: up to the cap when lanes are
    disjoint, throttle when candidates contend. pr-sync piloted at the floor (4) pending the ruling.
+   The cap is a **DISPATCH THROTTLE, never a cancel** (operator 2026-08-02): it only bounds how many
+   NEW candidates launch — it NEVER cancels an already-dispatched candidate to get back under the cap,
+   because GitHub Actions runs a cancelled PR's CI jobs anyway (cancelling wastes the in-flight work +
+   delays that MR for zero runner savings). In-flight candidates always run to completion (green→land /
+   red→reject). `schedule_dispatch` encodes this: `slots = cap.saturating_sub(current_in_flight)` → at
+   or over the cap, 0 new dispatches, and it only ever returns NEW picks (never touches in-flight).
 6. **`gh` account = `camshaft`; no branch protection / no native merge-queue on `main`; auto-merge
    works.** So `gh pr merge --squash --auto` is the merge mechanism (no merge-queue to integrate with).
 7. **State convention adopted:** `.claude/fleet/ci-dispatch/<mr-file>.json` (pr-sync is already

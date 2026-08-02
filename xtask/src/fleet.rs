@@ -7146,6 +7146,13 @@ fn schedule_dispatch(
     current_in_flight: usize,
 ) -> Vec<String> {
     let mut picked = Vec::new();
+    // The cap is a DISPATCH THROTTLE, never a cancel (operator 2026-08-02): it only bounds how many NEW
+    // candidates we launch — it NEVER cancels an already-dispatched one to get back under the cap.
+    // GitHub Actions runs a cancelled PR's CI jobs ANYWAY, so cancelling wastes the in-flight work +
+    // delays that MR for zero runner savings. `saturating_sub` encodes this: if we're already AT or OVER
+    // the cap (current_in_flight >= cap), slots == 0 → we dispatch NOTHING new this pass, and the
+    // function returns only NEW picks (never touches in-flight). In-flight candidates always run to
+    // completion (green→land / red→reject), reaped separately.
     let mut slots = cap.saturating_sub(current_in_flight);
     // The FILE collision universe: every file touched by an in-flight candidate PLUS every file
     // touched by a candidate we PICK this pass. A queued MR sharing any of these is blocked — those
@@ -12049,6 +12056,25 @@ mod tests {
             schedule_dispatch(&q2, &none, 9, 0),
             vec!["old-2lane", "young-disjoint"],
         );
+    }
+
+    #[test]
+    fn schedule_dispatch_cap_is_a_throttle_never_a_cancel() {
+        // Operator invariant: the cap only gates NEW launches; it never cancels in-flight candidates.
+        let cand = |file: &str| SchedCandidate {
+            mr_file: file.into(),
+            lane: "docs".into(),
+            files: vec![format!("guide/{file}.md")], // all disjoint
+        };
+        let none: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let q = vec![cand("a"), cand("b"), cand("c")];
+        // AT the cap (current_in_flight == cap) → dispatch NOTHING new (but never a negative/cancel).
+        assert!(schedule_dispatch(&q, &none, 2, 2).is_empty());
+        // OVER the cap (current_in_flight > cap, e.g. cap was lowered) → still dispatch nothing new,
+        // saturating_sub floors slots at 0 — we do NOT cancel the extra in-flight ones.
+        assert!(schedule_dispatch(&q, &none, 2, 5).is_empty());
+        // UNDER the cap → launch exactly the free slots' worth of NEW candidates, no more.
+        assert_eq!(schedule_dispatch(&q, &none, 5, 3), vec!["a", "b"]); // 5-3 = 2 slots
     }
 
     #[test]
