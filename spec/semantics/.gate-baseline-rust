@@ -5851,3 +5851,5 @@ todo	the program manifest is the union of its entrypoints' delegations
 todo	the same conditional delegation makes no host call when the branch is not taken
 todo	tuple elements are evaluated left to right
 todo	two adapter records with different state types drive a take-while fold in one program
+pass	a computed (runtime-branched) label operand to Record.with is rejected — labels are static
+pass	a host op returning Bool crosses the boundary and drives a branch
