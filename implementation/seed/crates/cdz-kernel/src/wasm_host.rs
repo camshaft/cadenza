@@ -645,9 +645,13 @@ impl crate::reducer::Reducer for ComponentReducer {
             // would leave it empty). Because `apply` discarded the guest's overlay, this base is the
             // exact pre-fold state — the failed fold is atomic. The guest's contract is totality; a
             // violation can't brick the loop (§17).
-            Err((_err, restored_kv)) => {
+            // A guest trap / fuel-exhaustion / instantiate failure is a FOLD FAILURE — surface it as a
+            // first-class `FoldOutput::failed(reason)` so the kernel records a `FoldFailed` log event a
+            // supervisor can observe (error-resilience: NOT a silent empty fold "into the void"). The KV
+            // is still restored to the pre-fold state (atomic); no effects are emitted (§17 can't-brick).
+            Err((err, restored_kv)) => {
                 *kv = restored_kv;
-                crate::reducer::FoldOutput::none()
+                crate::reducer::FoldOutput::failed(format!("wasm reducer fold failed: {err:?}"))
             }
         }
     }
@@ -705,6 +709,9 @@ fn event_to_guest_inputs(body: &EventBody) -> (ContentType, Option<Vec<u8>>, Opt
         EventBody::Dispatched { .. } => (synthetic("dispatched"), None, None),
         EventBody::TimerArmed { .. } => (synthetic("timer-armed"), None, None),
         EventBody::Closed { .. } => (synthetic("closed"), None, None),
+        // FoldFailed is a kernel-recorded failure event, not a fold input (the loop never folds it —
+        // `observable()` excludes it); map defensively rather than panic.
+        EventBody::FoldFailed { .. } => (synthetic("fold-failed"), None, None),
     }
 }
 

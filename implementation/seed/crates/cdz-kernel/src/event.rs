@@ -121,6 +121,17 @@ pub enum EventBody {
         token: Option<Vec<u8>>,
     },
 
+    /// A FOLD FAILED — the reducer trapped / exhausted fuel / failed to instantiate while folding an
+    /// event (error-resilience / supervision direction). §17 totality means a bad reducer can NEVER
+    /// panic the kernel loop; instead the failure is CAPTURED as this first-class log event rather than
+    /// vanishing into a silent empty fold ("errors into the void"). `reason` is a human/diagnostic string
+    /// (the guest trap message / fuel-exhaustion / instantiate error). `caused_event` is the hash of the
+    /// event whose fold failed (so a supervisor can see WHAT the reducer choked on). v0 RECORDS it (a
+    /// supervisor reading the log sees the failure); it is NOT itself folded (no recursion — a fold that
+    /// fails can't be handed back to the same failing reducer). A future supervision slice lets a parent
+    /// react (restart/retry/escalate) to a child's FoldFailed.
+    FoldFailed { reason: String, caused_event: Hash },
+
     /// The session closed. `outcome` is opaque; if the session had a parent, the kernel delivers a
     /// completion signal to it (§6 supervision).
     Closed { outcome: Payload },
@@ -329,6 +340,10 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
         7 => EventBody::Closed {
             outcome: decode_payload(c)?,
         },
+        8 => EventBody::FoldFailed {
+            reason: c.string()?,
+            caused_event: Hash::from_bytes(c.hash()?),
+        },
         t => {
             return Err(DecodeError::BadTag {
                 field: "body",
@@ -492,6 +507,14 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
         EventBody::Closed { outcome } => {
             out.push(7);
             encode_payload(outcome, out);
+        }
+        EventBody::FoldFailed {
+            reason,
+            caused_event,
+        } => {
+            out.push(8);
+            encode_str(reason, out);
+            out.extend_from_slice(caused_event.as_bytes());
         }
     }
 }
@@ -836,6 +859,14 @@ mod tests {
                 cause: None,
                 body: EventBody::Closed {
                     outcome: Payload::Inline(vec![].into()),
+                },
+            },
+            Event {
+                seq: 13,
+                cause: None,
+                body: EventBody::FoldFailed {
+                    reason: "wasm reducer trapped: unreachable".to_string(),
+                    caused_event: Hash::of(b"the event whose fold failed"),
                 },
             },
         ]

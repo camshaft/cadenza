@@ -254,6 +254,15 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             let pf = payload_form(b, outcome);
             b.list(vec![head, pf])
         }
+        EventBody::FoldFailed {
+            reason,
+            caused_event,
+        } => {
+            let head = b.name("fold-failed");
+            let r = str_leaf(b, reason);
+            let ce = hash_form(b, caused_event);
+            b.list(vec![head, r, ce])
+        }
     }
 }
 
@@ -505,6 +514,15 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
                 outcome: read_payload(a, *pf)?,
             }
         }
+        "fold-failed" => {
+            let [r, ce] = form(a, id, "fold-failed")? else {
+                return Err(shape("fold-failed arity"));
+            };
+            EventBody::FoldFailed {
+                reason: read_str(a, *r)?,
+                caused_event: read_hash(a, *ce)?,
+            }
+        }
         _ => return Err(shape("unknown event body tag")),
     })
 }
@@ -649,6 +667,14 @@ mod tests {
                 cause: None,
                 body: EventBody::Closed {
                     outcome: Payload::Inline(vec![].into()),
+                },
+            },
+            Event {
+                seq: 13,
+                cause: None,
+                body: EventBody::FoldFailed {
+                    reason: "wasm reducer trapped: unreachable".to_string(),
+                    caused_event: Hash::of(b"the event whose fold failed"),
                 },
             },
         ]
