@@ -1479,6 +1479,27 @@
                           ((None u) -1))) (export main)))
   (output (: 1 Int64)))
 
+(case "Set.to-list orders (Int,Bytes) tuples with the Bytes component as the tie-breaker"
+  (doc    "The tuple case above decides order on the FIRST (Int) component; this pins that when the first
+           component TIES, the SECOND component — a `Bytes` leaf — breaks the tie by canonical unsigned-
+           lexicographic byte order (the same total order a bare Bytes set gets). `{(1,[98]),(1,[97]),
+           (2,[0])}`: both `(1,·)` elements share first component 1, so their Bytes leaf decides — [97] < [98]
+           — giving canonical order `(1,[97]),(1,[98]),(2,[0])`. Index 0 is `(1,[97])`, weighted `100*1 + 97
+           = 197`. Pins `value_cmp_shaped` DESCENDING into a compound's Bytes component as a secondary key
+           (the Int-Int tuple case never exercises a Bytes sub-key, and the bare-Bytes set case is not a
+           compound) — a Bytes tie-breaker that compared by handle identity or rope shape rather than
+           content-order would mis-order the two `(1,·)` elements. Runtime Bytes leaves (nothing folds).
+           Expected: 197.")
+  (input  (do
+            (def (main (: k Int64))
+              (match (List.at (Set.to-list (Set.of (list (tuple 1 (Bytes.of (list 98)))
+                                                         (tuple 1 (Bytes.of (list 97)))
+                                                         (tuple 2 (Bytes.of (list 0)))))) 0)
+                ((Some t) (match (Bytes.at (. t 1) 0) ((Some v) (+ (* 100 (. t 0)) v)) ((None u) -1)))
+                ((None u) -1)))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 197 Int64)))
+
 (case "Set.to-list orders a set of RECORD elements canonically"
   (doc    "The record companion of the tuple-element case: records order by comparing field values in the
            record's canonical (sorted) field order, so `{⟨x3,y a⟩, ⟨x1,y2⟩, ⟨x2,y0⟩}` enumerates with
