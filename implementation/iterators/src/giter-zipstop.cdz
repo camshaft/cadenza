@@ -1,0 +1,118 @@
+/// giter-zipstop.cdz — DIRECT exhaustion-DIRECTION coverage for the `zip` / `zip-with` / `zip3` family,
+/// split into its own small module.
+///
+/// WHY A SEPARATE MODULE. Each zipper stops as soon as ANY operand runs out — that is several distinct
+/// `Nil` arms in a nested match (zip has two: `a` empty, or `a=Cons` but `b` empty; zip3 has three).
+/// giter.cdz pins zip's happy path plus `zip-empty-left` and a `stops-at-shorter` case where the LEFT
+/// operand is the LONGER one (`[1,2,3]` vs `[10,20]`, so it stops because the RIGHT ran out). It does NOT
+/// pin the mirror directions, where a swapped or off-by-one `Nil` arm hides:
+///   - SHORTER-LEFT: `a` exhausts first while `b` still has elements — zip must stop at `a`'s length and
+///     NOT over-run into `b`'s remainder.
+///   - EMPTY-RIGHT: `a` non-empty but `b` empty at the very first step — the inner `b`-Nil arm, distinct
+///     from the outer `a`-Nil arm the left-empty test covers.
+///   - zip3: the shortest operand can be the FIRST, SECOND, or THIRD — each is a different `Nil` arm; a
+///     test that only shortens the middle operand leaves the other two arms unexercised.
+/// The result length is `min` of the operand lengths regardless of which one is shortest — these pin
+/// that `min` symmetry directly. It lives in its own module because giter.cdz sits at the per-module
+/// monomorphizer instantiation-pressure ceiling its header documents; a fresh module isolates the added
+/// instantiation (the same "isolate the heavy instantiation" pattern giter-flat/chain/scan/spanwhile use).
+///
+/// The generic pull-iterator (same cons-cell shape as the sibling modules; re-declared here so this
+/// module is self-contained — each src/*.cdz is its own namespace).
+type GIter =
+  | Nil
+  | Cons(a, GIter(a))
+
+/// `from-list(xs)` — the base generic producer over `xs : List(a)`, self-recursive so its result element
+/// ties to the argument.
+def from-list(xs) = match xs with
+  | [] => GIter.Nil(unit)
+  | [h, .. t] => GIter.Cons(h, from-list(t))
+
+/// `zip(a, b)` — pair elements positionally, stopping at the shorter operand. The unit under test.
+def zip(a, b) = match a with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(ha, ra) => match b with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(hb, rb) => GIter.Cons((ha, hb), zip(ra, rb))
+
+/// `zip-with(a, b, f)` — like `zip` but fuse each pair through `f`. Threads `f`.
+def zip-with(a, b, f) = match a with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(ha, ra) => match b with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(hb, rb) => GIter.Cons(f(ha, hb), zip-with(ra, rb, f))
+
+/// `zip3(a, b, c)` — positional triples, stopping at the shortest of the three operands.
+def zip3(a, b, c) = match a with
+  | GIter.Nil(_) => GIter.Nil(unit)
+  | GIter.Cons(ha, ra) => match b with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(hb, rb) => match c with
+      | GIter.Nil(_) => GIter.Nil(unit)
+      | GIter.Cons(hc, rc) => GIter.Cons((ha, hb, hc), zip3(ra, rb, rc))
+
+/// `count(it)` — number of emitted values, driving the pull to exhaustion.
+def count(it) = match it with
+  | GIter.Nil(_) => 0
+  | GIter.Cons(_, rest) => 1 + count(rest)
+
+/// `take(it, n)` — the first `n` elements. Used ONLY to build a TYPED empty iterator
+/// (`take(from-list([x]), 0)`) so the empty-operand test pins the element type: a bare `from-list([])`
+/// leaves its result element var untied (the documented empty-producer CDZ0201 gap), while `take` of a
+/// non-empty source at count 0 is an empty iterator whose element type is pinned by the source's `[x]`.
+def take(it, n) =
+  if n <= 0 then
+    GIter.Nil(unit)
+  else
+    match it with
+    | GIter.Nil(_) => GIter.Nil(unit)
+    | GIter.Cons(h, rest) => GIter.Cons(h, take(rest, n - 1))
+
+/// TESTS ----------------------------------------------------------------------------------------------
+/// zip exhaustion directions: shorter-left (the mirror of giter.cdz's shorter-right case) and
+/// empty-right (the inner b-Nil arm, distinct from the outer a-Nil arm the left-empty test covers).
+@test
+def zip-stops-at-shorter-left() =
+  if count(zip(from-list([1, 2]), from-list([10, 20, 30]))) == 2 then
+    unit
+  else
+    trap("zip stops at the shorter LEFT operand and does not over-run into the right remainder: 2")
+
+@test
+def zip-empty-right-is-empty() =
+  if count(zip(from-list([1, 2, 3]), take(from-list([9]), 0))) == 0 then
+    unit
+  else
+    trap("zip with a non-empty left but empty right is empty (the inner b-Nil arm)")
+
+@test
+def zip-with-stops-at-shorter-left() =
+  if count(zip-with(from-list([1, 2]), from-list([10, 20, 30, 40]), fn(x, y) => x + y)) == 2 then
+    unit
+  else
+    trap("zip-with stops at the shorter LEFT operand: 2")
+
+/// zip3: the shortest can be in any of the three positions — pin each Nil arm separately.
+@test
+def zip3-stops-when-first-is-shortest() =
+  if count(zip3(from-list([1]), from-list([4, 5, 6]), from-list([7, 8, 9]))) == 1 then
+    unit
+  else
+    trap("zip3 stops when the FIRST operand is shortest: 1")
+
+@test
+def zip3-stops-when-second-is-shortest() =
+  if count(zip3(from-list([1, 2, 3]), from-list([4]), from-list([7, 8, 9]))) == 1 then
+    unit
+  else
+    trap("zip3 stops when the SECOND operand is shortest: 1")
+
+@test
+def zip3-stops-when-third-is-shortest() =
+  if count(zip3(from-list([1, 2, 3]), from-list([4, 5, 6]), from-list([7]))) == 1 then
+    unit
+  else
+    trap("zip3 stops when the THIRD operand is shortest: 1")
+
+export { GIter.* }
