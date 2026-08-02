@@ -1090,6 +1090,24 @@ def read-source(s: String) =
     else (match read-form(s, 0, empty-tree()) with | (root, _, tree) => (root, tree))))
 
 @test
+def sr-op-code-of-is-option() =
+  // Pins op-code-of's Option contract (the B5 sentinel-elimination invariant): an operator symbol yields
+  // Some(code), a plain NAME yields None — never a -1. read-app-or-bin's None arm is the CALL path (a
+  // nullary def application), Some(op) the binary-form path; this guards that discriminator against a future
+  // change re-introducing a magic miss value that would be treated as a real operator code.
+  (match op-code-of("+") with
+    | Option.Some(c) => (if (c == 43) then
+        (match op-code-of("==") with
+          | Option.Some(c2) => (if (c2 == 61) then
+              (match op-code-of("foo") with       // a plain name is NOT an operator
+                | Option.None(_) => unit
+                | Option.Some(_) => trap("a plain name has no op-code-of (None)"))
+            else trap("op-code-of(==) = Some(61)"))
+          | Option.None(_) => trap("op-code-of(==) is Some"))
+      else trap("op-code-of(+) = Some(43)"))
+    | Option.None(_) => trap("op-code-of(+) is Some(43)"))
+
+@test
 def sr-int-literal() =
   // "42" → one NLit(42), root is it.
   (match read-source("42") with | (root, tree) =>
