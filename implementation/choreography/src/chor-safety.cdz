@@ -136,6 +136,22 @@ def diverg() =
       Chor.Seq(Chor.Comm("Buyer", "Seller", "Cancel"),
         Chor.Comm("Seller", "Buyer", "Refund")))])
 
+/// A THIRD-PARTY-CHOOSER coordinator protocol: `C` decides and tells BOTH `A` and `B` the selection (first
+/// action in each branch), then in the `Go` branch ONLY, `A` and `B` exchange `Data`. Distinct from
+/// `diverg` in two ways: (1) the chooser `C` is NOT one of the exchanging pair (it only sends selections),
+/// and (2) the intra-branch `A -> B` comm exists in ONE branch but not the other — so the matcher meets a
+/// send/recv obligation present in SOME-but-not-all branches (the branch-union must still match it under
+/// the selection that carries it, and must not demand it under the branch that omits it).
+def coordinator() =
+  Chor.Choice("C", [
+    Chor.Branch("Go",
+      Chor.Seq(Chor.Comm("C", "A", "Go"),
+        Chor.Seq(Chor.Comm("C", "B", "Go"),
+          Chor.Comm("A", "B", "Data")))),
+    Chor.Branch("Halt",
+      Chor.Seq(Chor.Comm("C", "A", "Halt"),
+        Chor.Comm("C", "B", "Halt")))])
+
 @test
 def deadlock-free-linear-purchase() =
   if deadlock-free(parties(), purchase-linear()) then unit
@@ -167,6 +183,17 @@ def deadlock-free-divergent-choice() =
   // pinned at projection + mock-run in earlier slices, but never at the deadlock-free layer until now.
   if deadlock-free(["Buyer", "Seller"], diverg()) then unit
   else trap("a projectable divergent-branch choice is deadlock-free (branch-union matched I/O)")
+
+@test
+def deadlock-free-third-party-chooser-coordinator() =
+  // COVERAGE PIN: a THIRD-PARTY chooser (`C` decides but isn't one of the exchanging pair) plus an
+  // intra-branch `A -> B : Data` comm present in the `Go` branch ONLY. This drives the branch-union matcher
+  // on an obligation existing in some-but-not-all branches: A's send of Data (under Go) must find its mirror
+  // recv in B (also under Go), while the Halt branch carries neither — the union must match the present half
+  // without demanding the absent one. Prior deadlock-free choice pins (`yes-no`, `diverg`) had every
+  // branch's obligations mirrored within that same branch; this is the first with a comm confined to one arm.
+  if deadlock-free(["A", "B", "C"], coordinator()) then unit
+  else trap("a projectable third-party-chooser coordinator (intra-branch comm in one arm) is deadlock-free")
 
 @test
 def sends-are-collected() =
