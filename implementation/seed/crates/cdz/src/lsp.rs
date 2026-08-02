@@ -4056,10 +4056,9 @@ mod tests {
         // (None or a valid range) — a silent crash would abort before returning and fail these asserts.
         let text = "def café = 42";
         // Col 7 is the `é` inside the `café` NAME — hover must resolve the def and report its type.
-        let on_name =
-            hover_at(text, true, Position::new(0, 7)).expect("hover on the café name resolves");
-        assert_hover_is_well_formed(text, &Some(on_name.clone()));
-        let rendered = match &on_name.contents {
+        let on_name = hover_at(text, true, Position::new(0, 7));
+        assert_hover_is_well_formed(text, &on_name);
+        let rendered = match &on_name.expect("hover on the café name resolves").contents {
             HoverContents::Scalar(MarkedString::String(s)) => s.clone(),
             HoverContents::Markup(m) => m.value.clone(),
             other => panic!("unexpected hover contents: {other:?}"),
@@ -4068,7 +4067,8 @@ mod tests {
             rendered.contains("Int"),
             "hover on the multibyte name must report the Int type, got: {rendered}"
         );
-        // Col 8 is just past `café` (on the space/`=`) — total: whatever it returns must be well-formed.
+        // Col 8 is the SPACE right after `café` (byte 9; the `=` is col 9) — total: whatever it returns
+        // must be well-formed.
         assert_hover_is_well_formed(text, &hover_at(text, true, Position::new(0, 8)));
     }
 
