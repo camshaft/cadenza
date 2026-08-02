@@ -2355,6 +2355,35 @@ fn a_bare_record_field_name_names_the_quoted_symbol_syntax_and_carries_a_fix() {
     );
 }
 
+/// The old 2-operand `Record.with r (z v)` pair form's MIGRATION hint names the QUOTED symbol syntax
+/// `r #"z" v` — not a bare `r #z v` (which is not symbol syntax and would fail again). Companion of the
+/// CDZ0215 wording fix: every field-label EXAMPLE in the record-op messages is the quoted `#"…"` form, so
+/// following any of them compiles. Round-trips: the suggested 3-operand `#"x"` form checks clean.
+#[test]
+fn the_record_with_migration_hint_names_the_quoted_symbol_syntax() {
+    use crate::testkit::parse;
+    let diags = |src: &str| crate::diagnostics(&mut crate::db::Db::load(parse(src)));
+    // The old pair form `(Record.with r (x 5))` → migration hint.
+    let ds =
+        diags("(module m (def (f (: r (Record (x Int64)))) (Record.with r (x 5))) (export f))");
+    let d = ds
+        .iter()
+        .find(|d| d.message.contains("now takes three operands"))
+        .unwrap_or_else(|| panic!("the pair form gets the migration hint: {ds:?}"));
+    assert!(
+        d.message.contains("#\"x\"") && !d.message.contains("`r #x v`"),
+        "the migration hint names the quoted `#\"x\"` form, not a bare `#x`: {}",
+        d.message
+    );
+    // ROUND-TRIP: the suggested 3-operand `#"x"` form checks clean.
+    assert!(
+        diags("(module m (def (f (: r (Record (x Int64)))) (Record.with r #\"x\" 5)) (export f))")
+            .iter()
+            .all(|d| d.severity != crate::abi::Severity::Error),
+        "the migrated `r #\"x\" v` form the hint suggests type-checks clean"
+    );
+}
+
 #[test]
 fn record_project_and_without_over_a_runtime_record_build_from_projections_materialize_once() {
     use crate::testkit::parse;

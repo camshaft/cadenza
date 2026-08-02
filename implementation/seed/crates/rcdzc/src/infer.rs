@@ -13317,7 +13317,9 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         }
                         (_, None) => out.push(Reject::coded(
                             Code::Malformed,
-                            "the second operand is a `#field` label, e.g. `#z`",
+                            // The example must be the QUOTED symbol form `#"z"` — a bare `#z` is not symbol
+                            // syntax (it reads as an identifier), matching the corrected CDZ0215 wording.
+                            "the second operand is a `#\"field\"` symbol label, e.g. `#\"z\"`",
                         )),
                         _ => {}
                     }
@@ -13343,7 +13345,7 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         Reject::coded(
                             Code::Malformed,
                             format!(
-                                "`{op}` now takes three operands `r #{} v` — replace the `(name value)` pair with a `#field` label and a value",
+                                "`{op}` now takes three operands `r #\"{}\" v` — replace the `(name value)` pair with a `#\"field\"` symbol label and a value",
                                 label.name
                             ),
                         )
