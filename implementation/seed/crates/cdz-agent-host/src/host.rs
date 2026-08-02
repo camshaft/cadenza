@@ -245,6 +245,43 @@ mod tests {
         )
     }
 
+    /// An agent that arms a timer for `deadline_ms` on inbound "go", and records "woke" in KV when the
+    /// timer FIRES (a `TimerFired` event) — so a test can prove the host's timer sweep actually woke it.
+    struct TimerAgent {
+        deadline_ms: u64,
+    }
+    impl Reducer for TimerAgent {
+        fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
+                    kind: EffectKind::Timer,
+                    target: self.deadline_ms.to_string(),
+                    payload: None,
+                    timeliness: Timeliness::Interactive,
+                }]),
+                EventBody::TimerFired { .. } => {
+                    kv.put(b"woke".to_vec(), b"1".to_vec());
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    fn timer_host(deadline_ms: u64) -> HostedSession {
+        // Timers are kernel-internal (no executor); the authorizer must permit Timer.
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Timer,
+            predicate: ResourcePredicate::Any,
+        }]);
+        HostedSession::genesis(
+            Hash::of(b"timer-agent-v1"),
+            Box::new(TimerAgent { deadline_ms }),
+            Box::new(authz),
+            CompositeExecutor::new(),
+        )
+    }
+
     #[test]
     fn host_spawns_and_drives_a_session_through_a_real_executor() {
         let mut host = AgentHost::new();
@@ -317,5 +354,76 @@ mod tests {
                 .get(b"status"),
             None
         );
+    }
+
+    #[test]
+    fn hosted_session_fires_its_due_timer_on_a_tick() {
+        // A HostedSession arms a timer on inbound; the host's fire_due_timers wakes it once the clock
+        // reaches the deadline (the reactive-timer path, driven by the host's scheduler tick, not an
+        // executor).
+        let mut host = AgentHost::new();
+        let id = SessionId::new("timed");
+        host.spawn(id.clone(), timer_host(1000));
+        host.deliver(&id, inbound_go(), None);
+
+        // Armed but not yet fired: one open obligation (the timer), not yet woken.
+        let hosted = host.get(&id).unwrap();
+        assert_eq!(hosted.open_effects(), 1);
+        assert_eq!(hosted.next_timer_deadline(), Some(1000));
+        assert_eq!(hosted.session().kv().get(b"woke"), None);
+
+        // A tick before the deadline fires nothing; a tick at the deadline fires it (wakes the reducer).
+        assert_eq!(host.fire_due_timers(999), 0);
+        assert_eq!(host.fire_due_timers(1000), 1);
+        let hosted = host.get(&id).unwrap();
+        assert_eq!(hosted.session().kv().get(b"woke"), Some(&b"1"[..]));
+        assert_eq!(hosted.open_effects(), 0);
+    }
+
+    #[test]
+    fn host_fire_due_timers_sweeps_all_sessions_and_sums_fired() {
+        // The all-session scheduler sweep: fire_due_timers(now) fires EVERY session's due timers and
+        // returns the total count. Two sessions with different deadlines → a tick between them fires only
+        // the earlier one; a later tick fires the other. A session with no timer contributes 0 (not woken).
+        let mut host = AgentHost::new();
+        host.spawn(SessionId::new("early"), timer_host(1000));
+        host.spawn(SessionId::new("late"), timer_host(5000));
+        host.spawn(SessionId::new("no-timer"), now_host()); // arms no timer
+        host.deliver(&SessionId::new("early"), inbound_go(), None);
+        host.deliver(&SessionId::new("late"), inbound_go(), None);
+        // no-timer session gets no inbound → no armed timer.
+
+        // Tick at 1000: only "early" is due → 1 fired total.
+        assert_eq!(host.fire_due_timers(1000), 1);
+        assert_eq!(
+            host.get(&SessionId::new("early"))
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"woke"),
+            Some(&b"1"[..])
+        );
+        assert_eq!(
+            host.get(&SessionId::new("late"))
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"woke"),
+            None,
+            "the later timer has not fired yet"
+        );
+
+        // Tick at 5000: "late" now due (and "early" already fired) → 1 more fired.
+        assert_eq!(host.fire_due_timers(5000), 1);
+        assert_eq!(
+            host.get(&SessionId::new("late"))
+                .unwrap()
+                .session()
+                .kv()
+                .get(b"woke"),
+            Some(&b"1"[..])
+        );
+        // A further tick fires nothing (all timers settled).
+        assert_eq!(host.fire_due_timers(9999), 0);
     }
 }
