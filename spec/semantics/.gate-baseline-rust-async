@@ -5494,3 +5494,5 @@ pass	a shared CHAMP map survives per-level path-copied inserts that are read or 
 pass	a shared runtime rope survives per-level extension ropes that are read or dropped
 pass	the multiply-by-zero annihilator does not swallow a COMPILE-PROVABLE overflow in the discarded operand
 pass	the multiply-by-zero annihilator folds to zero when the discarded constant operand is total
+pass	a stateful perform inside the arm of a fused match on a call result threads state once
+pass	Int64.of over a runtime Float64 operand rejects — no float-to-int narrowing is blessed

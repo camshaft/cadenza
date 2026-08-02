@@ -8043,3 +8043,17 @@
                  (if (= (/ (Rational.of n 4) (Rational.of 3 2)) (Rational.of 1 2)) 1 0)))
             (export main)))
   (call   main (: 3 Int64)) (output (: 11 Int64)))
+
+(case "Int64.of over a runtime Float64 operand rejects — no float-to-int narrowing is blessed"
+  (doc    "The float→int narrowing boundary: `(Int64.of x)` with `x : Float64` rejects CDZ0203 on all
+           targets — the exact integer projections (truncate/floor/ceil/round) exist ONLY on Rational
+           (as derivations over numerator/denominator + the checked narrow); Float has NONE, so no
+           float→int narrowing is blessed anywhere and the C-UB conversion edges (NaN, ±inf, 2^63
+           truncation) are unreachable by construction. Pins the boundary so a future SILENT
+           truncating conversion must arrive as a deliberate spec change (with trap semantics for the
+           edges), never an accident of an `of` overload.")
+  (input  (do
+            (def (main (: x Float64)) (Int64.of x))
+            (export main)))
+  (call   main (: 7.9 Float64))
+  (error  CDZ0203))

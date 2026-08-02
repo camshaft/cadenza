@@ -6610,3 +6610,26 @@
             (def (main) 42)
             (export main)))
   (error  CDZ0201))
+
+(case "a stateful perform inside the arm of a fused match on a call result threads state once"
+  (doc    "The fused-clone seam × handler state: the match scrutinee is a CALL result (`mk` — a
+           fusion candidate whose arms clone into the callee's branches) and BOTH arms perform to a
+           stateful handler, with a final perform reading the count. Exactly ONE arm perform runs
+           (the taken arm's — branches are exclusive) and the value encodes the order: k=7 → Hi arm
+           reads 0 → 70, final reads 1 → 71; k=2 → Lo arm → 200, final → 201. The hazard is the
+           handler-frame threading through the CLONED payload-binder arms — a clone that re-seeded or
+           lost the state advance breaks a digit. The fused companion of the arm-perform pins (whose
+           scrutinees are scalars or performs, never a fused call-result sum).")
+  (input  (do
+            (effect Fresh (op next (-> Unit Int64)))
+            (type Sz (Hi Int64) (Lo Int64))
+            (def (mk x) (if (> x 5) (Hi x) (Lo x)))
+            (def (main (: k Int64))
+              (handle Fresh 0 ((next (u) s (resume s (+ s 1))))
+                (+ (match (mk k)
+                     ((Hi h) (+ (* 10 h) (Fresh.next)))
+                     ((Lo w) (+ (* 100 w) (Fresh.next))))
+                   (Fresh.next))))
+            (export main)))
+  (call   main (: 7 Int64)) (output (: 71 Int64))
+  (call   main (: 2 Int64)) (output (: 201 Int64)))
