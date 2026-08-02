@@ -628,6 +628,16 @@ mod tests {
         //   token=Some("step-1")  → 1, then 6 as u64 LE, then "step-1" (§19e — CONSCIOUS format bump:
         //                            the Dispatched frame now carries the reducer's continuation token
         //                            so the EffectId↔token map rebuilds from the log on recover)
+        //
+        // §19e continuation-token format bumps (ALL deliberate — the §16c-S3 format is PRE-RELEASE, no
+        // durable log stream predates them, so extending body variants in place is an intentional call,
+        // not an accidental break; PR#1132 review): tag 2 (Dispatched) + tag 3 (EffectResult) gained a
+        // trailing opt-bytes `token` in slice 2b-i, and tags 4/5/6 (TimerArmed/TimerFired/AuthzDenied)
+        // gained the same in slice 2b-iii — each is an appended trailing opt-bytes field. If durable-log
+        // persistence ships AND gains a real external consumer before the next such change, a further
+        // bump must instead use a new tag or a version/length framing layer (so old streams can't
+        // desync); until then, in-place extension with this golden pin as the byte-stability tripwire is
+        // the deliberate, documented policy.
         let expected: &[u8] = &[
             42, 0, 0, 0, 0, 0, 0, 0, // seq
             1, // cause: Some

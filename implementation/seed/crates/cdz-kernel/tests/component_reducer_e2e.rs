@@ -86,14 +86,16 @@ fn a_fold_that_exceeds_its_fuel_budget_is_aborted_as_fuel_exhausted() {
         family: "message".to_string(),
         version: 1,
     };
+    // `apply` returns the KV alongside the error now (so `fold` can restore it without cloning); the
+    // fuel-exhaustion classification is unchanged.
     match reducer.apply(Kv::new(), ct, Some(b"hello".to_vec()), None) {
-        Err(ComponentError::FuelExhausted { budget }) => {
+        Err((ComponentError::FuelExhausted { budget }, _kv)) => {
             assert_eq!(
                 budget, 1,
                 "the reported budget is the one that was exhausted"
             );
         }
-        Err(other) => panic!("expected FuelExhausted, got {other:?}"),
+        Err((other, _kv)) => panic!("expected FuelExhausted, got {other:?}"),
         Ok(_) => panic!("a 1-fuel budget must not let the fold complete"),
     }
 }
@@ -174,4 +176,53 @@ fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatched_fr
         Some(Some(b"step-1".to_vec())),
         "the wasm guest's correlation token must reach the Dispatched frame through the adapter"
     );
+}
+
+/// PR#1076 perf + correctness: `fold` moves the session KV into the guest WITHOUT cloning (a `BTreeMap`
+/// deep-copy every event would be O(KV size)), and on a FAILED fold it RESTORES the pre-fold KV rather
+/// than leaving the `mem::take`-d slot empty. This pins the error-atomicity guarantee: a trapped /
+/// fuel-exhausted fold leaves the session's derived state exactly as it was — never half-cleared.
+#[test]
+fn a_failed_fold_leaves_the_session_kv_untouched_not_emptied() {
+    use cdz_kernel::event::{ContentType as KContentType, EventBody};
+    use cdz_kernel::kv::Kv;
+    use cdz_kernel::reducer::Reducer;
+
+    // A 1-fuel budget guarantees the fold exhausts mid-`apply` (as in the fuel test above).
+    let reducer = ComponentReducer::from_component_bytes(GUEST)
+        .expect("valid reducer component")
+        .with_fuel_budget(1);
+
+    // Pre-populate the KV with state the fold must NOT lose on failure.
+    let mut kv = Kv::new();
+    kv.put(b"pre-existing".to_vec(), b"keep-me".to_vec());
+    kv.put(b"another".to_vec(), b"also-keep".to_vec());
+    let before_len = kv.len();
+
+    // Fold an inbound event: the guest starts, exhausts its 1-fuel budget, and the fold fails.
+    let out = reducer.fold(
+        &cdz_kernel::event::Event {
+            seq: 1,
+            cause: None,
+            body: EventBody::Inbound {
+                content_type: KContentType {
+                    family: "message".into(),
+                    version: 1,
+                },
+                payload: cdz_kernel::effect::Payload::Inline(b"hello".to_vec()),
+            },
+        },
+        &mut kv,
+    );
+
+    // Fail-safe (§17): a failed fold emits NO effects...
+    assert!(
+        out.effects.is_empty(),
+        "a fuel-exhausted fold emits no effects (fail-safe)"
+    );
+    // ...and CRUCIALLY the KV is untouched — the pre-existing entries survive, NOT an empty map (which
+    // is what a `mem::take` with no restore-on-error would leave behind).
+    assert_eq!(kv.len(), before_len, "a failed fold must not shrink the KV");
+    assert_eq!(kv.get(b"pre-existing"), Some(&b"keep-me"[..]));
+    assert_eq!(kv.get(b"another"), Some(&b"also-keep"[..]));
 }

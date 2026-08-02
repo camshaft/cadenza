@@ -308,28 +308,44 @@ impl ComponentReducer {
     /// the guest never sees the kernel's internal effect id). Errors on instantiation failure or a
     /// guest trap (totality is the guest's contract, but a trap is surfaced as a fold failure the
     /// driver handles — §16c gap A).
+    ///
+    /// OWNERSHIP: `apply` takes `kv` BY VALUE and hands it back in BOTH arms — `Ok((effects, kv))` with
+    /// the guest's mutations applied, `Err((error, kv))` with the KV as it stood when the fold failed.
+    /// Returning it on the error path (rather than dropping it inside the store) is what lets `fold`
+    /// move the session KV in without cloning and restore it on error — the guest ran against a
+    /// wasm-linear-memory copy of the KV's *entries*, so a trapped fold's partial writes never reach the
+    /// returned `Kv` regardless; the caller decides whether to keep the pre-fold state (error) or the
+    /// mutated state (ok). Error-atomicity is thus the caller's to enforce by which `kv` it keeps.
     pub fn apply(
         &self,
         kv: Kv,
         content_type: ContentType,
         payload: Option<Vec<u8>>,
         resumes: Option<Vec<u8>>,
-    ) -> Result<(Vec<EffectRequest>, Kv), ComponentError> {
+    ) -> Result<(Vec<EffectRequest>, Kv), (ComponentError, Kv)> {
         let mut store = wasmtime::Store::new(&self.engine, ReducerHost::new(kv));
         // Fuel metering is enabled on the engine (§22d). Instantiation isn't the DoS surface — a
         // reactive fold guest's runaway risk is in its `fold.apply` body, not its (structure-bounded)
         // instantiation — so give instantiation ample headroom, then reset fuel to the per-fold budget
         // right before the call. That way the budget bounds the FOLD precisely, and an exhausted budget
         // is unambiguously the guest's fold looping (not load cost). set_fuel can't fail with metering
-        // on, but surface any error rather than unwrap.
-        store
-            .set_fuel(u64::MAX)
-            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
-        let instance = Reducer::instantiate(&mut store, &self.component, &self.linker)
-            .map_err(|e| ComponentError::Instantiate(e.to_string()))?;
-        store
-            .set_fuel(self.fuel_budget)
-            .map_err(|e| ComponentError::Trap(e.to_string()))?;
+        // on, but surface any error rather than unwrap. On any early error, hand the KV back (untouched:
+        // the guest never ran) so the caller can restore it.
+        if let Err(e) = store.set_fuel(u64::MAX) {
+            let kv = store.into_data().into_kv();
+            return Err((ComponentError::Instantiate(e.to_string()), kv));
+        }
+        let instance = match Reducer::instantiate(&mut store, &self.component, &self.linker) {
+            Ok(i) => i,
+            Err(e) => {
+                let kv = store.into_data().into_kv();
+                return Err((ComponentError::Instantiate(e.to_string()), kv));
+            }
+        };
+        if let Err(e) = store.set_fuel(self.fuel_budget) {
+            let kv = store.into_data().into_kv();
+            return Err((ComponentError::Trap(e.to_string()), kv));
+        }
         let effects = match instance.cadenza_agent_kernel_fold().call_apply(
             &mut store,
             &content_type,
@@ -340,13 +356,19 @@ impl ComponentReducer {
             Err(e) => {
                 // Distinguish a runaway guest (fuel exhausted) from a semantic guest trap: a fold that
                 // consumed its whole budget is a resource-exhaustion outcome the driver handles
-                // differently (§22d / PR#1009). `Trap::OutOfFuel` is carried in the error chain.
+                // differently (§22d / PR#1009). `Trap::OutOfFuel` is carried in the error chain. The KV
+                // handed back is the host's copy as it stood — a trapped guest's partial writes to its
+                // own linear memory never reached it — so the caller can restore the pre-fold state.
+                let kv = store.into_data().into_kv();
                 if let Some(wasmtime::Trap::OutOfFuel) = e.downcast_ref::<wasmtime::Trap>() {
-                    return Err(ComponentError::FuelExhausted {
-                        budget: self.fuel_budget,
-                    });
+                    return Err((
+                        ComponentError::FuelExhausted {
+                            budget: self.fuel_budget,
+                        },
+                        kv,
+                    ));
                 }
-                return Err(ComponentError::Trap(e.to_string()));
+                return Err((ComponentError::Trap(e.to_string()), kv));
             }
         };
         let kv = store.into_data().into_kv();
@@ -380,9 +402,14 @@ impl crate::reducer::Reducer for ComponentReducer {
         // Map the kernel event → the guest's (content_type, payload, resumes) inputs.
         let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
 
-        // Run the guest fold against a COPY of kv (apply takes kv by value + returns the mutated kv);
-        // write the result back so the guest's KV writes land in the session's derived state (§4).
-        match self.apply(kv.clone(), content_type, payload, resumes) {
+        // Move the session KV into the fold WITHOUT cloning (PR#1076 perf): `Kv` is a `BTreeMap`, so
+        // `clone()` would deep-copy the whole session state every event → O(KV size) per fold. Instead
+        // `mem::take` swaps in an empty KV (an O(1) pointer move) and hands the real one to `apply`,
+        // which returns it in BOTH arms. On Ok we write the guest's mutated KV back; on error we restore
+        // the exact pre-fold KV `apply` handed back — so a trapped/fuel-exhausted fold leaves the
+        // session KV UNTOUCHED (error-atomicity, PR#1076 correctness), never a half-empty one.
+        let taken = std::mem::take(kv);
+        match self.apply(taken, content_type, payload, resumes) {
             Ok((guest_effects, new_kv)) => {
                 *kv = new_kv;
                 let effects = guest_effects
@@ -400,9 +427,14 @@ impl crate::reducer::Reducer for ComponentReducer {
                     .collect();
                 crate::reducer::FoldOutput::with_effects(effects)
             }
-            // Trap / fuel-exhausted / instantiate failure → fail safe: no effects, KV untouched. The
+            // Trap / fuel-exhausted / instantiate failure → fail safe: no effects, and RESTORE the KV
+            // `apply` handed back so the session state is exactly as before this fold (we `mem::take`-d
+            // it out above, so the restore is mandatory — otherwise the KV would be left empty). The
             // guest's contract is totality; a violation can't brick the loop (§17).
-            Err(_) => crate::reducer::FoldOutput::none(),
+            Err((_err, restored_kv)) => {
+                *kv = restored_kv;
+                crate::reducer::FoldOutput::none()
+            }
         }
     }
 }
