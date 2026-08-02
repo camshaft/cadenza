@@ -52,8 +52,17 @@ export function maxOf(xs: Iterable<number>, seed = -Infinity): number {
   return m;
 }
 
-/// Parse an atom node as a finite number, or null if it isn't one (a rational `n/d` evaluates to n/d).
+/// Parse a node as a finite number, or null if it isn't one. Handles a bare number, a rational `n/d`
+/// (evaluated to n/d), and a QUANTITY — a chart point can carry a quantity magnitude (a projectile's
+/// height in meters over time), which the runtime renders as `(Qty.of <magnitude> <unit>)` (spec 18-units
+/// case 72); plot its magnitude (the unit is dropped — a single series shares one unit). The legacy
+/// `(quantity <magnitude> …)` shape is handled too. A non-numeric magnitude / unrecognized shape → null.
 function asNumber(n: Node): number | null {
+  // A quantity plots by its magnitude — recurse into the value slot of `(Qty.of v unit)` / `(quantity v …)`.
+  const h = head(n);
+  if ((h === "Qty.of" || h === "quantity") && isList(n) && n.list.length >= 2) {
+    return asNumber(n.list[1]);
+  }
   if (!isAtom(n)) return null;
   const a = n.atom;
   const rat = /^(-?\d+)\/(-?\d+)$/.exec(a);
