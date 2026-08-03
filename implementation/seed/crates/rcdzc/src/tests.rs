@@ -2396,20 +2396,26 @@ fn adv54_runtime_sliced_to_bytes_read_twice_sees_both_bytes() {
 /// was NOT in `is_runtime_computation` (lower.rs), so the let-bound `b` was COPY-PROPAGATED — the concat
 /// (and its sliced-view to-bytes operands) RECOMPUTED at each `Bytes.at`, and each recompute CONSUMES the
 /// borrowed slice-view sources, so the 2nd read walked a freed buffer → wasm OOB trap (rust rebuilt
-/// correctly, computing 200). `s` = "ab"++"cdé" (runtime concat, opaque to the fold); `tail` = slice(s,3,5)
-/// = "dé" = bytes [100,0xC3,0xA9]; `b` = concat(to-bytes tail, to-bytes tail) = [100,0xC3,0xA9,100,0xC3,
-/// 0xA9]; `b[0]+b[3]` = 100+100 = 200. Fix: add `BytesConcat` to `is_runtime_computation` so `b` is NAMED
-/// once (the concat evaluated once, the handle read by each `Bytes.at`) — the wasm kept-binding emit (its
-/// mark_binder_dups consume-classification, hardened by adv-66) then dups the view sources correctly so no
-/// read sees a freed buffer. Pins the fix at the unit tier so a future lower.rs change that drops
-/// `BytesConcat` from the keep-list fails HERE, not just in the corpus.
+/// correctly, computing 200). `s` = "ab"++"cdé"; `tail` = slice(s, 3+k, 5+k) — the slice BOUNDS depend on
+/// the runtime param `k` so the slice CANNOT const-fold regardless of whether `String.concat` learns to
+/// fold non-ASCII constants (github-liaison PR#1651 review: make the setup genuinely runtime-dependent, not
+/// reliant on a current fold LIMITATION). At `k=0`: `tail` = slice(s,3,5) = "dé" = bytes [100,0xC3,0xA9];
+/// `b` = concat(to-bytes tail, to-bytes tail) = [100,0xC3,0xA9,100,0xC3,0xA9]; `b[0]+b[3]` = 100+100 = 200.
+/// Fix: add `BytesConcat` to `is_runtime_computation` so `b` is NAMED once (the concat evaluated once, the
+/// handle read by each `Bytes.at`) — the wasm kept-binding emit (its mark_binder_dups consume-
+/// classification, hardened by adv-66) then dups the view sources correctly so no read sees a freed buffer.
+/// Pins the fix at the unit tier so a future lower.rs change that drops `BytesConcat` from the keep-list
+/// fails HERE, not just in the corpus.
 #[test]
 fn adv54b_bytes_concat_of_slice_views_read_twice_sees_the_concatenated_bytes() {
     use crate::testkit::parse;
+    // The slice bounds `(+ 3 k)`/`(+ 5 k)` thread the runtime param `k` in, so the `String.slice` (and thus
+    // the whole Bytes.concat-of-views chain) is RUNTIME-dependent — it can never const-fold to a constant
+    // that would silently drop the adv-54b runtime coverage, whatever `String.concat`'s fold capability.
     let src = "(module m \
                  (def (main (: k Int64)) \
                    (let ((s (String.concat \"ab\" \"cdé\"))) \
-                     (match (String.slice s 3 5) \
+                     (match (String.slice s (+ 3 k) (+ 5 k)) \
                        ((Some tail) \
                          (let ((b (Bytes.concat (String.to-bytes tail) (String.to-bytes tail)))) \
                            (+ (Int64.of (Option.expect (Bytes.at b 0) \"b0\")) \
