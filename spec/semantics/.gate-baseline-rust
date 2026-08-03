@@ -528,6 +528,7 @@ pass	a Bytes ROPE handler state GROWS by bin-append per perform and each resume 
 pass	a Bytes entry argument is marshalled as a Vec<u8>
 pass	a Bytes slice VIEW and a rope compare equal by content in both directions
 pass	a Bytes slice of a slice composes offsets against the VIEW and bounds against its length
+pass	a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)
 pass	a Bytes-compact key and a flat rebuild both hit a rope-keyed map entry; a proper-prefix slice misses
 pass	a Bytes-returning closure alongside a plain export — the closure runs
 pass	a Bytes-returning closure alongside a plain export — the plain runs
@@ -694,6 +695,7 @@ pass	a NEGATIVE Float32-overflowing literal in a runtime branch is rejected
 pass	a NEGATIVE large-magnitude float renders its full expansion with its sign
 pass	a NEGATIVE prefixed quantity carries its sign through the reference scale-fold
 pass	a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin
+pass	a ROPE Bytes arg (recursive concat, uncompacted) crosses the host boundary
 pass	a RUNTIME byte-slice torn mid-scalar is rejected by from-bytes at both tear points
 pass	a RUNTIME erased Qty add is still CHECKED at the inner width (overflow traps at run time)
 pass	a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)
@@ -3618,6 +3620,7 @@ pass	an Ast.Int stores an integer wider than Int64 without loss
 pass	an EFFECTFUL @ensures predicate is value-transparent when SATISFIED — the body's own perform runs first
 pass	an EFFECTFUL @ensures predicate performs under the caller's handler at body-EXIT, after the body's own perform
 pass	an EFFECTFUL @requires predicate performs under the caller's handler and advances its state before the body
+pass	an EMPTY Bytes arg crosses the host boundary
 pass	an EMPTY splice mid-list closes the gap, a singleton fills it, and two splices around a literal both land
 pass	an EQUALITY test refines the same test in its own else to known-false
 pass	an EVENT-SOURCING fold replays a mixed-variant list, a RESET discarding prior state
@@ -4680,6 +4683,9 @@ pass	nested same-direction shifts by constants combine into one shift by the sum
 pass	nested-Option equality observes the OUTER variant and matches identical nesting
 pass	nullary constructor patterns are uniform with unary
 pass	nullary variants of a payload-carrying sum order by discriminant
+pass	odd-width CHECKED arithmetic traps at the odd boundary, not the machine slot (Int24 max + 1)
+pass	odd-width values as Set keys dedupe at their own width (UInt4: wrap 3 = wrap 19)
+pass	odd-width wrap lands exactly at its own boundary (UInt4 16->0, Int24 2^23 -> -2^23)
 pass	one @param accessor performed TWICE consumes two host responses in order
 pass	one @param read bound ONCE fans out to a map key, a set probe, and arithmetic
 pass	one effect's result flows as the ARGUMENT to a DIFFERENT effect's op under nested handlers
@@ -4687,6 +4693,7 @@ pass	one encode-decode cycle is byte-stable
 pass	one entrypoint's host authority is not reachable by another that does not delegate it
 pass	one generic identity instantiated at a scalar, a heap string, and a compound in one program
 pass	one generic sum instantiated at two different types in one program
+pass	one host effect with TWO ops interleaves its calls in program order
 pass	one module's export clause does not affect a same-named member of another module
 pass	one of several same-signature closure exports is made and called by the host
 pass	one of two DIFFERENT-signature closure exports is made and called

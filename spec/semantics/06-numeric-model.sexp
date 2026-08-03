@@ -7634,6 +7634,43 @@
   (call   main (: -9223372036854775808 Int64))
   (output (: 0 UInt8)))
 
+(case "odd-width wrap lands exactly at its own boundary (UInt4 16->0, Int24 2^23 -> -2^23)"
+  (doc    "The BOUNDARY companion of the (UInt 4) wrap pin below: wrap at the odd width's exact edge —
+           (UInt4.wrap 16) = 0 (mod 16, not mod 256) and (Int24.wrap 8388608) = -8388608 (two's
+           complement at 24 bits, not 32). k=0 gives both maxima (15 stays 15... here 8388607+0 and
+           15+0 shapes). A wrap computed at the containing machine width passes the small cases and
+           breaks exactly here.")
+  (input  (do
+            (def (main (: k Int64))
+              (+ (Int64.of ((. (UInt 4) wrap) (+ 15 k)))
+                 (* 100 (Int64.of ((. (Int 24) wrap) (+ 8388607 k))))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: -838860800 Int64))
+  (call   main (: 0 Int64)) (output (: 838860715 Int64)))
+
+(case "odd-width CHECKED arithmetic traps at the odd boundary, not the machine slot (Int24 max + 1)"
+  (doc    "The checked-arith twin: (Int24 max) + (Int24 1) overflows 24 bits and must TRAP there — a
+           checked add that tested the i32/i64 SLOT width would silently compute 8388608 (it fits the
+           slot) and miss the overflow. k=0 control returns the max unharmed. Both backends.")
+  (input  (do
+            (def (main (: k Int64))
+              (Int64.of (+ ((. (Int 24) wrap) 8388607) ((. (Int 24) wrap) k))))
+            (export main)))
+  (call   main (: 1 Int64)) (trap "integer overflow")
+  (call   main (: 0 Int64)) (output (: 8388607 Int64)))
+
+(case "odd-width values as Set keys dedupe at their own width (UInt4: wrap 3 = wrap 19)"
+  (doc    "The CHAMP-key face of odd widths: (UInt4.wrap 3) and (UInt4.wrap 19) are the SAME value
+           (19 mod 16 = 3), so a set of {wrap 3, wrap 19, wrap 4} holds TWO keys — canonical-byte
+           keying respects the DECLARED width, not the storage slot (a slot-width key would hold 3).")
+  (input  (do
+            (def (main (: k Int64))
+              (Set.len (Set.of (list ((. (UInt 4) wrap) k)
+                                     ((. (UInt 4) wrap) (+ k 16))
+                                     ((. (UInt 4) wrap) (+ k 1))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 2 Int64)))
+
 (case "a runtime nibble truncation keeps the low four bits"
   (doc    "`((UInt 4).wrap n)` — wrap at a NON-BYTE width (the width the bin bit-field segments take):
            n = 17 = 0b10001 keeps the low nibble 0b0001 → 1; n = 15 = 0b1111 fits whole → 15. Pins that

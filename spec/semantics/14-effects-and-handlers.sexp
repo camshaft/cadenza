@@ -201,6 +201,71 @@
   (host-calls (call io.get) (call io.get))
   (output (: 18 Int64)))
 
+(case "an EMPTY Bytes arg crosses the host boundary"
+  (doc    "The zero-length edge of the Bytes host-ARG marshal (#1640's wasm face): an empty Bytes
+           value crosses as an empty list<u8> and the op fires normally. (rust-async: todo pending its
+           host-arg path; wasm + rust pin the pass.)")
+  (input  (do
+            (effect io (op sink (-> Bytes Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (io.sink (Bytes.of (list)))))
+            (export main)))
+  (host-responses (respond io.sink (: 42 Int64)))
+  (host-calls (call io.sink))
+  (call   main (: 0 Int64)) (output (: 42 Int64)))
+
+(case "a ROPE Bytes arg (recursive concat, uncompacted) crosses the host boundary"
+  (doc    "The representation edge: a 50-leaf rope built by recursive Bytes.concat crosses the
+           boundary — the marshal must flatten/walk the rope rep, not assume a flat leaf. (rust-async:
+           todo pending; wasm + rust pin.)")
+  (input  (do
+            (effect io (op sink (-> Bytes Int64)))
+            (def (build (: n Int64) (: acc Bytes))
+              (if (> n 0) (build (- n 1) (Bytes.concat acc (Bytes.of (list (UInt8.wrap 65))))) acc))
+            (def (main (: n Int64))
+              (host (io)
+                (io.sink (build n (Bytes.of (list))))))
+            (export main)))
+  (host-responses (respond io.sink (: 42 Int64)))
+  (host-calls (call io.sink))
+  (call   main (: 50 Int64)) (output (: 42 Int64)))
+
+(case "a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)"
+  (doc    "The consuming-op discipline at the ARG site: `b` is passed to io.sink AND re-read by
+           Bytes.len after — the marshal must borrow/copy, not consume (a consuming marshal would
+           leave the later len reading freed memory, the adv-54/66 class at the boundary). 7 + 50.
+           (rust-async: todo pending; wasm + rust pin.)")
+  (input  (do
+            (effect io (op sink (-> Bytes Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (let ((b (String.to-bytes (String.concat "ab" (if (> k 100) "z" "cde")))))
+                  (+ (io.sink b)
+                     (* 10 (Bytes.len b))))))
+            (export main)))
+  (host-responses (respond io.sink (: 7 Int64)))
+  (host-calls (call io.sink))
+  (call   main (: 0 Int64)) (output (: 57 Int64)))
+
+(case "one host effect with TWO ops interleaves its calls in program order"
+  (doc    "The per-run response cursor over a MULTI-OP effect: geta, getb, geta consume rows 1,2,3 in
+           the order made — the cursor is per-RUN, not per-op (a per-op cursor would give the second
+           geta row 2's value... the harness rows are per-call-order). 1 + 20 + 300 = 321. Pins the
+           multi-op single-effect composition the adv-65 fix's lone-op cases don't. (rust-async: todo
+           pending; wasm + rust pin.)")
+  (input  (do
+            (effect AB (op geta (-> Unit Int64)) (op getb (-> Unit Int64)))
+            (def (main (: k Int64))
+              (host (AB)
+                (+ (AB.geta unit)
+                   (+ (* 10 (AB.getb unit))
+                      (* 100 (AB.geta unit))))))
+            (export main)))
+  (host-responses (respond a-b.geta (: 1 Int64)) (respond a-b.getb (: 2 Int64)) (respond a-b.geta (: 3 Int64)))
+  (host-calls (call a-b.geta) (call a-b.getb) (call a-b.geta))
+  (call   main (: 0 Int64)) (output (: 321 Int64)))
+
 (case "a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)"
   (doc    "The String-RESULT boundary face (H7's marshal reached through H9's unit-arg emit): `io.fetch :
            (-> Unit String)` returns the recorded multibyte response \"héllo\" (6 bytes, 5 scalars), which
