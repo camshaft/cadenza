@@ -203,3 +203,49 @@ fn fix_preview_modes_diff_and_dry_run_do_not_mutate_the_file() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn fix_on_a_fault_free_file_is_a_no_op_and_leaves_it_byte_identical() {
+    // DATA-SAFETY floor: `cdz fix` WRITES to the user's source, so on a file with NO faults it must be a
+    // strict no-op — never reformat, re-canonicalize, or report a phantom fix. Pin: a clean program's bytes
+    // are UNCHANGED after a plain `fix`, exit 0, `--json` is `[]`. The preview-safety test proves the preview
+    // modes don't mutate a FIXABLE file; this proves plain `fix` doesn't mutate a FAULT-FREE file — the
+    // complementary safety direction. Both surfaces (a stray reformat could be surface-specific).
+    for (name, src) in [
+        (
+            "clean.sexp",
+            "(module m (def (f (: n Int64)) (+ n 1)) (def (main) (f 5)) (export main))",
+        ),
+        (
+            "clean.cdz",
+            "module m {\n  def f(n: Int64) = n + 1\n\n  def main() = f(5)\n\n  export { main }\n}\n",
+        ),
+    ] {
+        let dir = temp_dir(&format!("noop-{name}"));
+        let f = dir.join(name);
+        std::fs::write(&f, src).unwrap();
+
+        let (ok, _out, err) = run(&["fix", f.to_str().unwrap()]);
+        assert!(ok, "cdz fix on a clean {name} succeeds (exit 0): {err}");
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            src,
+            "a fault-free {name} is left BYTE-IDENTICAL by `fix` (no spurious reformat/rewrite)"
+        );
+
+        // `--json` on a clean file is an empty array — zero fixes applied, not a phantom.
+        let (jok, jout, jerr) = run(&["fix", f.to_str().unwrap(), "--json"]);
+        assert!(jok, "cdz fix --json on a clean {name} succeeds: {jerr}");
+        assert_eq!(
+            jout.trim(),
+            "[]",
+            "no fixes on a fault-free {name} → `[]`, not a phantom fix: {jout}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&f).unwrap(),
+            src,
+            "the --json run also leaves the clean {name} byte-identical"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
