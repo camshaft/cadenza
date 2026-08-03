@@ -917,11 +917,18 @@ mod tests {
     // debug arc; a regression that dropped the gate would re-poison and decline this program at O2.
     #[test]
     fn global_cse_skips_a_body_that_contains_a_nested_capturing_def() {
+        // `inner` CAPTURES the outer sibling local `k` (it reads `k` in `(+ x k)`), so lowering `outer`'s
+        // body lifts `inner` and populates `db.captured_ref` only at lift time. The repeated scalar
+        // `(& (+ x k) 7)` lives INSIDE that capturing nested fn. The eligibility gate must skip `outer`'s
+        // body (it is not pure-scalar — it holds a nested def/capture), else a pre-emit `core_of` over the
+        // capturing body follows the captured `k` ref pre-lift and memo-poisons `db.core` → "parameter
+        // reference has no local slot" at emit. (An earlier version had `inner` read only its own param,
+        // so it wasn't actually capturing — this one genuinely exercises the lambda-lift hazard.)
         let mut db = crate::db::Db::load(crate::testkit::parse(
             "(module m (def (outer (: n Int64)) \
                (do (def k (* n 3)) \
-                   (def (inner (: x Int64)) (+ (& x 7) (& x 7))) \
-                   (inner (+ n k)))) \
+                   (def (inner (: x Int64)) (+ (& (+ x k) 7) (& (+ x k) 7))) \
+                   (inner (+ n 1)))) \
              (export outer))",
         ));
         let d = db.def_by_name("outer").expect("def outer");
@@ -935,27 +942,19 @@ mod tests {
         );
     }
 
-    // SOUNDNESS-GUARD WITNESS: the heap-type exclusion. A repeated HEAP-typed subexpression (here two
-    // identical `(list x x)` builds feeding `List.len`) must NOT be shared into a `Core::Let` — hoisting a
-    // heap handle drifts Perceus refcounts (one prologue dup covers only the first per-use consume; a
-    // shared handle read N× is an FBIP mutate-in-place / loop-carried drift). The `is_cse_candidate` heap
-    // guard (`!is_heap_type` + the `valtype_of` scalar filter) rejects it, so no override is installed —
-    // the two list builds stay distinct. Pins the guard v-wasm-opt flagged as the #1 correctness item.
-    #[test]
-    fn global_cse_does_not_share_a_repeated_heap_typed_subexpression() {
-        let mut db = crate::db::Db::load(crate::testkit::parse(
-            "(module m (def (main (: x Int64)) \
-               (+ (List.len (list x x)) (List.len (list x x)))) \
-             (export main))",
-        ));
-        let d = db.def_by_name("main").expect("def main");
-        let body = db.defs[d].body.expect("main body");
-        let _ = crate::lower::core_of(&mut db, body);
-        cse::GlobalCsePass.run(&mut db);
-        assert!(
-            !db.has_core_overrides(),
-            "a repeated heap-typed subexpression is NOT a CSE candidate (heap-type exclusion) → no \
-             override; sharing a heap handle would drift Perceus refcounts"
-        );
-    }
+    // NOTE on the heap-type exclusion (guard A, `candidate_groups`: `is_heap_type(ty) ||
+    // valtype_of(ty).is_none()` → skip): this guard is NOT unit-tested here by design. A clean pass-level
+    // witness proved impractical to construct — a heap VALUE reaches the pass only through forms that
+    // either fail the pure-scalar ELIGIBILITY gate (a `(list …)` build is `Resolved::List`, rejected; a
+    // `List.len`/`Bytes.at` body doesn't clear eligibility either) or wrap the heap node inside a SCALAR
+    // candidate (`(List.len (. r xs))` — the scalar `List.len` result becomes the maximal shared class,
+    // so a "no override" or "an override" result can't be cleanly attributed to guard A vs the eligibility
+    // gate). An earlier attempt here used `(list x x)` and asserted "no override", but that no-override
+    // came from the ELIGIBILITY gate (List builds are ineligible), NOT guard A — a test that passed for
+    // the wrong reason (github-liaison/Copilot #1652 review, correct). Rather than ship a third contrived
+    // body, guard A is left to its authoritative end-to-end coverage: the `--opt-sweep` level-equivalence
+    // gate over the whole corpus + v-wasm-opt's `tests::recursion` battery (heap-carrying loops where a
+    // wrongly-shared handle drifts Perceus rc into an observable miscompile). Those exercise the real
+    // heap path; a unit body cannot without contortion. The capturing-body gate above IS unit-tested
+    // because it is cleanly reachable (a nested capturing def is a direct, faithful trigger).
 }
