@@ -165,3 +165,31 @@ fn add_refuses_a_self_dependency() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn add_refuses_to_edit_a_scalar_deps_manifest_leaving_it_intact() {
+    // `def deps` READS as accept-both — a bare scalar string coerces to a one-element list (so `metadata`/
+    // `tree` see `["../foo"]`). But `cdz add` EDITS the manifest TEXT by splicing into the `[...]` list,
+    // which a scalar has no brackets for. Rather than corrupt the manifest (e.g. produce `def deps =
+    // "../foo""../bar"`), `add` must REFUSE cleanly — exit non-zero, name the malformed clause, and leave
+    // the manifest byte-for-byte unchanged. This is the data-loss-safety floor of the text-editor: it
+    // never writes an edit it can't do cleanly.
+    let root = workspace("scalar", "def deps = \"../foo\"\n");
+    let app = root.join("app");
+    let before = std::fs::read_to_string(app.join("Project.cdz")).unwrap();
+    let (ok, _o, err) = run(&["add", "../lib1", "--manifest", app.to_str().unwrap()]);
+    assert!(
+        !ok,
+        "add onto a scalar (non-list) deps must be refused: {err}"
+    );
+    assert!(
+        err.contains("malformed `def deps`"),
+        "the refusal names the malformed clause: {err}"
+    );
+    let after = std::fs::read_to_string(app.join("Project.cdz")).unwrap();
+    assert_eq!(
+        before, after,
+        "the manifest is left byte-for-byte unchanged on a refused edit"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
