@@ -4964,18 +4964,31 @@ enum RearmAction {
 /// into that healthy agent the next time it has a slow tick. So a re-armed agent that DID heartbeat
 /// after the re-arm (`hb_age < rearm_age`) is treated as healthy-but-currently-stale → cheap nudge;
 /// escalate only when `hb_age >= rearm_age` (no tick since) or it never heartbeated at all.
+///
+/// DEAD-CRON COLD-START (concierge-agreed option iii, 2026-08-03): the `(never re-armed, NEVER
+/// heartbeated)` case is the fresh-mint whose initial `/loop` cron never armed — reached here only
+/// after the cold-start window + pane-busy + grace guards already passed, so it is genuinely stalled
+/// with no cron. A one-shot `continue` there runs a single inline tick (which stamps a heartbeat) but
+/// arms NO cron, so the very next sweep sees `hb_age < rearm_age` and nudges AGAIN — a perpetual
+/// nudge-loop where the heartbeat the nudge produced MASKS the dead cron (the reviewer/design-host/
+/// v-nix "dead cron" re-issue churn). So escalate straight to `/loop` on first contact to ARM a
+/// self-sustaining cron. This does NOT touch `(never re-armed, HAS heartbeated)`: that's a healthy
+/// agent that looped fine and merely missed a tick → still the cheap nudge.
 fn rearm_action(rearm_age: Option<u64>, hb_age: Option<u64>) -> RearmAction {
-    match rearm_age {
-        // Never re-armed → first-time nudge.
-        None => RearmAction::NudgeContinue,
-        Some(ra) => match hb_age {
-            // Heartbeated more recently than the re-arm ⟹ the nudge worked + it looped since; a fresh
-            // stall is a genuine new one → cheap nudge.
-            Some(hb) if hb < ra => RearmAction::NudgeContinue,
-            // No heartbeat since the re-arm (older-or-equal), or never heartbeated → nudge didn't
-            // stick → escalate to arm a cron.
-            _ => RearmAction::ReissueLoop,
-        },
+    match (rearm_age, hb_age) {
+        // Fresh-mint cold-start: never re-armed AND never heartbeated → its `/loop` cron never armed.
+        // A `continue` would tick once and freeze again (arms no cron) → the masking nudge-loop.
+        // Re-issue `/loop` to establish the recurring cron the one-shot can't.
+        (None, None) => RearmAction::ReissueLoop,
+        // Never re-armed but HAS heartbeated ⟹ a healthy looping agent that merely missed a tick →
+        // cheap first-time nudge.
+        (None, Some(_)) => RearmAction::NudgeContinue,
+        // Re-armed and heartbeated more recently than the re-arm ⟹ the nudge worked + it looped since;
+        // a fresh stall is a genuine new one → cheap nudge.
+        (Some(ra), Some(hb)) if hb < ra => RearmAction::NudgeContinue,
+        // Re-armed with no heartbeat since (older-or-equal), or never heartbeated → nudge didn't
+        // stick → escalate to arm a cron.
+        (Some(_), _) => RearmAction::ReissueLoop,
     }
 }
 
@@ -10399,9 +10412,14 @@ mod tests {
         use RearmAction::*;
         // (rearm_age, hb_age) — both "seconds ago", larger = older, None = never.
 
-        // Never re-armed → first-time cheap nudge, regardless of heartbeat state.
+        // Never re-armed but HAS heartbeated before → a healthy looping agent that merely missed a
+        // tick → first-time cheap nudge.
         assert_eq!(rearm_action(None, Some(900)), NudgeContinue);
-        assert_eq!(rearm_action(None, None), NudgeContinue);
+        // DEAD-CRON COLD-START (option iii): never re-armed AND never heartbeated → the fresh-mint
+        // whose initial `/loop` cron never armed. A `continue` would tick once (stamping a heartbeat
+        // that MASKS the dead cron) then freeze again → perpetual nudge-loop. Escalate straight to
+        // `/loop` on first contact to ARM a self-sustaining cron.
+        assert_eq!(rearm_action(None, None), ReissueLoop);
 
         // Re-armed, and NO heartbeat since (hb older-or-equal than the re-arm) → the nudge didn't stick
         // → escalate to arm a cron. (hb_age 900 ≥ rearm_age 300 ⟹ last tick predates the re-arm.)
