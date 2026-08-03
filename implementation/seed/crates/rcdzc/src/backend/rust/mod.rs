@@ -69,6 +69,26 @@ fn is_capture_scalar(t: &crate::ty::Ty) -> bool {
     )
 }
 
+/// A closure ARG type admitted by the S4-HIGHER-ORDER slice: an `s2_arg_ok` scalar/compound, OR a
+/// closure (`Ty::Fn`) whose own arg/result spine is itself `arg_ok_or_fn` (recursively). A closure whose
+/// arg is itself a closure (`(-> (-> Int64 Int64) Int64)`) is the higher-order round-trip shape — the
+/// consumer applies it to an IN-GUEST-built inner closure (`(g (fn (y) …))`, which the emitter already
+/// lowers), and the higher-order producer (`mk`) is passed by the harness as `Rc::new(mk)`. Distinct from
+/// `s2_arg_ok` (which rejects every `Ty::Fn`) so the base non-higher-order gates keep their exact behavior.
+fn arg_ok_or_fn(t: &crate::ty::Ty) -> bool {
+    if let crate::ty::Ty::Fn(_, _) = t.strip_nominal() {
+        let mut cur = t.strip_nominal();
+        while let crate::ty::Ty::Fn(p, r) = cur {
+            if !arg_ok_or_fn(p) {
+                return false;
+            }
+            cur = r.strip_nominal();
+        }
+        return arg_ok_or_fn(cur);
+    }
+    s2_arg_ok(t)
+}
+
 /// Whether a closure ARG type is OK for the host-closure FACTORY slice: a scalar (Int/Bool/Float — the
 /// harness passes each as a literal), a String/Bytes applied IN-GUEST (a literal the emitter lowers — see
 /// the arm's own comment for the in-guest-vs-host-boundary distinction), or a COMPOUND the harness's
@@ -326,6 +346,12 @@ fn s3_result_ok(t: &crate::ty::Ty) -> bool {
 fn fn_result_renderable(db: &mut Db, ty: &crate::ty::Ty) -> bool {
     let mut cur = ty.strip_nominal();
     while let crate::ty::Ty::Fn(p, r) = cur {
+        // NOTE: a returned closure's ARG stays `s2_arg_ok` (NOT `arg_ok_or_fn`) — a higher-order FACTORY
+        // (a def whose RESULT is a closure whose arg is itself a closure, e.g. `mk`-ALONE returning
+        // `(-> (-> Int64 Int64) Int64)`) has NO consumer sibling to drive it, so the host would have to
+        // supply the inner closure over the boundary — which declines (the "closure-typed closure ARG on
+        // the DIRECT-CALL path is declined" pin). The higher-order ROUND-TRIP cases work via the CONSUMER
+        // path (`app` consumes `mk`), where `mk` is eta-peeled to a consumer — NOT this factory gate.
         if !s2_arg_ok(p) {
             return false;
         }
@@ -830,7 +856,11 @@ fn emit_signature(
         // `s2_arg_ok` returns false for it. (This lands the S3-compound-closure-result consumer shape.)
         let mut cur = t.strip_nominal();
         while let crate::ty::Ty::Fn(p, r) = cur {
-            if !s2_arg_ok(p) {
+            // S4-HIGHER-ORDER: a closure ARG may itself be a closure (`arg_ok_or_fn` admits `Ty::Fn`), so a
+            // consumer taking `g: (-> (-> Int64 Int64) Int64)` is admitted — the inner closure it applies
+            // `g` to is built IN-GUEST (`(g (fn (y) …))`, already lowered), and the harness supplies `g`
+            // from its higher-order producer sibling (`Rc::new(mk)`).
+            if !arg_ok_or_fn(p) {
                 return false;
             }
             cur = r.strip_nominal();
@@ -874,6 +904,36 @@ fn emit_signature(
                 && ep.result.strip_nominal() == closure_ret
         })
     };
+    // S4-HIGHER-ORDER: whether THIS def is itself a PRODUCER for some sibling export's closure param — i.e.
+    // this def's own signature, viewed as a closure `(-> param0 param1 … result)`, MATCHES a `Ty::Fn` param
+    // of another export. In the higher-order round-trip, `mk : (-> (-> Int64 Int64) Int64)` is `app`'s `g`
+    // param's producer; `mk` itself takes a closure param `f : (-> Int64 Int64)` that has NO producer
+    // sibling — but that's fine, because `mk`'s `f` is supplied IN-GUEST by `app` (`(g (fn (y) …))`), never
+    // by the host. So the host NEVER calls `mk` directly with a synthesized `f`; it passes `mk` (as
+    // `Rc::new(mk)`) as `app`'s `g`, and `app`'s body builds the inner closure. Thus a consumer whose
+    // closure param lacks a producer is STILL emittable when the consumer is itself such a producer — its
+    // in-guest-fed closure param needs no host synthesis. Emit it as a plain `pub fn` (rustc compiles it;
+    // the harness drives only the OUTER consumer `app`).
+    let def_is_producer_for_sibling = || -> bool {
+        // Build this def's own closure type: `(-> p0 (-> p1 … result))` (curried), matching how a closure
+        // param's arrow spine is written. A def with NO params can't be a closure producer here.
+        if params.is_empty() {
+            return false;
+        }
+        let mut own_fn = result.clone();
+        for (_, pt) in params.iter().rev() {
+            own_fn = crate::ty::Ty::Fn(Box::new(pt.clone()), Box::new(own_fn));
+        }
+        let own_fn = own_fn.strip_nominal();
+        // Does any OTHER export have a `Ty::Fn` param equal to this def's own closure type?
+        layout.exports.iter().any(|ep| {
+            ep.def != def
+                && ep
+                    .params
+                    .iter()
+                    .any(|(_, pt)| is_fn_ty(pt) && pt.strip_nominal() == own_fn)
+        })
+    };
     // Whether a closure param has a FACTORY producer specifically (a sibling whose RESULT is the closure
     // type) — a STRICTER form of `has_producer_for` (which also accepts a PEELED producer). In ASYNC mode
     // the driver can drive a factory producer through `block_on` (the factory is an `async fn` returning a
@@ -911,12 +971,19 @@ fn emit_signature(
             "`{name}`: an async closure-PARAMETER consumer whose closure has no FACTORY producer sibling is not yet driven by the Rust backend"
         )));
     }
+    // S4-HIGHER-ORDER: a closure param is admissible when it is shape-OK (`closure_param_is_simple`) AND
+    // EITHER it has a producer sibling (`has_producer_for` — the host synthesizes it) OR this def is itself
+    // a producer for a sibling's closure param (`def_is_producer_for_sibling` — the param is fed IN-GUEST by
+    // that sibling, so no host synthesis is needed and the def just emits as a plain `pub fn`). The
+    // `def_is_producer_for_sibling` check is def-wide (not per-param), evaluated once — it says "this whole
+    // def is a producer, so its closure params are guest-internal", which is the higher-order producer case.
+    let is_producer_for_sibling = def_is_producer_for_sibling();
     if public
         && params.iter().any(|(_, t)| is_fn_ty(t))
-        && (!params
-            .iter()
-            .all(|(_, t)| !is_fn_ty(t) || (closure_param_is_simple(t) && has_producer_for(t)))
-            || result_render_unsupported)
+        && (!params.iter().all(|(_, t)| {
+            !is_fn_ty(t)
+                || (closure_param_is_simple(t) && (has_producer_for(t) || is_producer_for_sibling))
+        }) || result_render_unsupported)
     {
         return Err(Reject::decline(format!(
             "`{name}`: this closure-PARAMETER export shape (higher-order / compound arg / Bytes-String result / no producing sibling) does not cross the Rust export boundary yet"

@@ -5542,8 +5542,8 @@ pass	an entrypoint delegation reaches an effect performed in a recursive callee
 pass	and performs the right operand's effect when the left is true
 pass	and short-circuit does not perform the right operand's effect
 pass	binary operator operands are evaluated left to right
-todo	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
-todo	distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another
+pass	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
+pass	distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 pass	function arguments are evaluated left to right
@@ -5554,12 +5554,12 @@ pass	or performs the right operand's effect when the left is false
 pass	or short-circuit does not perform the right operand's effect
 pass	quoted Asts as SET elements dedup by structural content
 todo	read of malformed text is a coded reject, not a wrong value
-todo	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
-todo	round-trip: a HIGHER-ORDER closure — its argument is itself a closure built in-guest
-todo	round-trip: a higher-order closure applied to TWO distinct inner closures
-todo	round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice
-todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
-todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
+pass	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
+pass	round-trip: a HIGHER-ORDER closure — its argument is itself a closure built in-guest
+pass	round-trip: a higher-order closure applied to TWO distinct inner closures
+pass	round-trip: a higher-order closure whose inner closure CAPTURES and is applied twice
+pass	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED compound param
+pass	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 pass	the program manifest is the union of its entrypoints' delegations
 pass	the same conditional delegation makes no host call when the branch is not taken
 pass	tuple elements are evaluated left to right
