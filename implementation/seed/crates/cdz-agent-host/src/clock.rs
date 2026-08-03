@@ -19,7 +19,7 @@
 //! `Capability { kind: Now, predicate: Any }`.)
 
 use crate::retry;
-use cdz_kernel::effect::{effect_ct, EffectKind, EffectRequest, Payload};
+use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
@@ -50,12 +50,17 @@ impl ClockExecutor {
 #[async_trait::async_trait(?Send)]
 impl Executor for ClockExecutor {
     async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
-        if req.kind != EffectKind::Now {
-            // A wrong-kind request is structural — PERMANENT, a supervisor must not retry it (§17: an
+        // Key the guard on the effect FAMILY STRING (seq-39 / effect-schema slice 2), not the EffectKind
+        // enum — the same decision the router and authz make, and the same shape the Model/Http executors
+        // already use. Decouples this executor from the enum ahead of its retirement; matches_family is
+        // the one-source-of-truth family compare.
+        if !req.content_type.matches_family(effect_ct::NOW) {
+            // A wrong-family request is structural — PERMANENT, a supervisor must not retry it (§17: an
             // observable Err, never a panic).
             return EffectOutcome::Err(retry::permanent(format!(
-                "ClockExecutor only handles Now effects, got {:?}",
-                req.kind
+                "ClockExecutor only handles the {} family, got {}",
+                effect_ct::NOW,
+                req.content_type.family
             )));
         }
         // Nanoseconds since the Unix epoch as a u64 LITTLE-ENDIAN 8-byte integer (operator binary-ns
@@ -88,7 +93,7 @@ impl Executor for ClockExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cdz_kernel::effect::Timeliness;
+    use cdz_kernel::effect::{EffectKind, Timeliness};
 
     fn req(kind: EffectKind, target: &str) -> EffectRequest {
         EffectRequest::new(kind, target.to_string(), None, Timeliness::Interactive)
@@ -169,15 +174,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_now_kind_is_an_observable_err_not_a_panic() {
-        // This is a single-kind executor; a wrong kind is an observable Err (§9d), never a panic.
+    async fn a_non_now_family_is_an_observable_err_not_a_panic() {
+        // This is a single-family executor; a wrong family is an observable Err (§9d), never a panic.
         let mut exec = ClockExecutor::new();
         match exec
             .perform(&req(EffectKind::Http, "https://x/"), Hash::of(b"k"))
             .await
         {
             EffectOutcome::Err(msg) => {
-                assert!(msg.contains("Now"), "err names the handled kind: {msg}");
+                assert!(
+                    msg.contains(effect_ct::NOW),
+                    "err names the handled family: {msg}"
+                );
                 assert_eq!(
                     retry::classify(&msg),
                     retry::Retryability::Permanent,
