@@ -15,7 +15,7 @@
 mod common;
 
 use cdz_agent_host::{ModelExecutor, ModelTransport};
-use cdz_kernel::effect::{effect_ct, EffectKind, EffectRequest, Payload, Timeliness};
+use cdz_kernel::effect::{effect_ct, EffectRequest, Payload, Timeliness};
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
 use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
@@ -63,14 +63,14 @@ impl Reducer for PolicyProbe {
                     return FoldOutput::none();
                 };
                 match m.as_ref() {
-                    b"model-ok" => FoldOutput::with(vec![EffectRequest::new(
-                        EffectKind::Model,
+                    b"model-ok" => FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::MODEL,
                         "claude-test",
                         Some(Payload::Inline(b"hi".to_vec().into())),
                         Timeliness::Interactive,
                     )]),
-                    b"http-imds" => FoldOutput::with(vec![EffectRequest::new(
-                        EffectKind::Http,
+                    b"http-imds" => FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::HTTP,
                         "http://169.254.169.254/latest/meta-data/",
                         None,
                         Timeliness::Interactive,

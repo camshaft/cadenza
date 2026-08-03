@@ -175,8 +175,8 @@ mod tests {
     impl Reducer for MarkAgent {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
-                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
-                    EffectKind::Now,
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new_with_family(
+                    effect_ct::NOW,
                     String::new(),
                     None,
                     Timeliness::Interactive,
@@ -290,8 +290,8 @@ mod tests {
     impl Reducer for TimerAgent {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
-                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
-                    EffectKind::Timer,
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new_with_family(
+                    effect_ct::TIMER,
                     self.deadline_ms.to_string(),
                     None,
                     Timeliness::Interactive,

@@ -122,7 +122,7 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cdz_kernel::effect::{EffectKind, Timeliness};
+    use cdz_kernel::effect::Timeliness;
 
     /// A transport that echoes a canned completion, recording what it was asked to invoke so a test can
     /// assert the executor extracted the model id + body correctly.
@@ -140,8 +140,8 @@ mod tests {
     }
 
     fn model_req(payload: Option<Payload>) -> EffectRequest {
-        EffectRequest::new(
-            EffectKind::Model,
+        EffectRequest::new_with_family(
+            effect_ct::MODEL,
             "test-model".to_string(),
             payload,
             Timeliness::Interactive,
@@ -254,8 +254,8 @@ mod tests {
         let mut exec = ModelExecutor::new(NeverCalled);
         // A request in the http family (not model): the guard keys on the family string now, so this is
         // rejected as PERMANENT and the transport is never touched.
-        let req = EffectRequest::new(
-            EffectKind::Http,
+        let req = EffectRequest::new_with_family(
+            effect_ct::HTTP,
             "https://x/".to_string(),
             Some(Payload::Inline(b"x".to_vec().into())),
             Timeliness::Interactive,

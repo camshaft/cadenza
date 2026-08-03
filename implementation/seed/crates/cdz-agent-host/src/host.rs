@@ -306,8 +306,8 @@ mod tests {
     impl Reducer for ClockAgent {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
-                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
-                    EffectKind::Now,
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new_with_family(
+                    effect_ct::NOW,
                     String::new(),
                     None,
                     Timeliness::Interactive,
@@ -358,8 +358,8 @@ mod tests {
     impl Reducer for TimerAgent {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
-                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
-                    EffectKind::Timer,
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new_with_family(
+                    effect_ct::TIMER,
                     self.deadline_ms.to_string(),
                     None,
                     Timeliness::Interactive,
@@ -616,13 +616,13 @@ mod tests {
                     let phase = kv.get(b"phase").map(|v| v.to_vec()).unwrap_or_default();
                     let mut summary = b"phase=".to_vec();
                     summary.extend_from_slice(&phase);
-                    let mut request = EffectRequest::new(
-                        EffectKind::Emit, // kind is irrelevant for a control family; the family drives it
+                    // A control family drives routing directly — register-by-string, no EffectKind.
+                    let request = EffectRequest::new_with_family(
+                        effect_ct::SUMMARY,
                         "self",
                         Some(Payload::Inline(summary.into())),
                         Timeliness::Interactive,
                     );
-                    request.content_type.family = effect_ct::SUMMARY.into();
                     FoldOutput::with(vec![request])
                 }
                 EventBody::Inbound { .. } => {
@@ -684,20 +684,18 @@ mod tests {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
-                    let mut caps = EffectRequest::new(
-                        EffectKind::Emit,
+                    let caps = EffectRequest::new_with_family(
+                        effect_ct::CAPABILITIES,
                         "self",
                         Some(Payload::Inline(b"NOT-the-summary".to_vec().into())),
                         Timeliness::Interactive,
                     );
-                    caps.content_type.family = effect_ct::CAPABILITIES.into();
-                    let mut summary = EffectRequest::new(
-                        EffectKind::Emit,
+                    let summary = EffectRequest::new_with_family(
+                        effect_ct::SUMMARY,
                         "self",
                         Some(Payload::Inline(b"the-real-summary".to_vec().into())),
                         Timeliness::Interactive,
                     );
-                    summary.content_type.family = effect_ct::SUMMARY.into();
                     // capabilities FIRST, summary SECOND — a take-first read would grab the wrong one.
                     FoldOutput::with(vec![caps, summary])
                 }
@@ -786,21 +784,19 @@ mod tests {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
                     // First control/summary: a BLOB payload (no inline bytes to read).
-                    let mut blob = EffectRequest::new(
-                        EffectKind::Emit,
+                    let blob = EffectRequest::new_with_family(
+                        effect_ct::SUMMARY,
                         "self",
                         Some(Payload::Blob(Hash::of(b"summary-blob"))),
                         Timeliness::Interactive,
                     );
-                    blob.content_type.family = effect_ct::SUMMARY.into();
                     // Second control/summary: the real inline bytes.
-                    let mut inline = EffectRequest::new(
-                        EffectKind::Emit,
+                    let inline = EffectRequest::new_with_family(
+                        effect_ct::SUMMARY,
                         "self",
                         Some(Payload::Inline(b"inline-summary".to_vec().into())),
                         Timeliness::Interactive,
                     );
-                    inline.content_type.family = effect_ct::SUMMARY.into();
                     FoldOutput::with(vec![blob, inline])
                 }
                 _ => FoldOutput::none(),
