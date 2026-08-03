@@ -5591,3 +5591,4 @@ pass	a scalar-erased newtype returned directly from a parameterized def renders 
 pass	a CONST narrow wrap folds with sign-extension at the target width, matching the runtime wrap
 pass	a same-name GENERIC ctor CONSTRUCTED AND MATCHED inside an inlined callee resolves (adv-63 b1)
 pass	a same-name GENERIC ctor in an inlined callee resolves with a CONST argument (adv-63 b2)
+pass	a let-bound Bytes.compact result read twice (eq then order-compare) computes without an OOB fault

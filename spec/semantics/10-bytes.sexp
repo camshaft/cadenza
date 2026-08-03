@@ -464,6 +464,33 @@
   (input  (= (Bytes.compact (Bytes.of (list 1 2 3))) (Bytes.of (list 1 2 3))))
   (output (: true Bool)))
 
+; `Bytes.compact` returns the SAME handle it's given (it flattens the operand rope in place), so a
+; let-bound compact result is an ALIAS of its operand — the dup/drop accounting must treat compact as
+; CONSUMING, not borrowing (adv-66). When it was mis-classified as a borrow, a let-bound compact read
+; TWICE — once by a value-`=` against the rope (borrow), then by an order-compare whose LEFT operand
+; re-walks the rope while `Bytes.concat` consumes the alias — FBIP-freed the shared handle before the
+; rope's second deep-walk → wasm OOB (rust computed correctly). This pins the runtime double-read at
+; two lengths so the aliasing consume-classification can't regress; the value is unchanged (compact is
+; value-preserving, above) — the pin guards the OWNERSHIP, not the bytes.
+(case "a let-bound Bytes.compact result read twice (eq then order-compare) computes without an OOB fault"
+  (doc    "adv-66: `rope` is built by recursive `Bytes.concat`; `(let ((flat (Bytes.compact rope))) …)`
+           reads `flat`/`rope` TWICE — `(= rope flat)` (both borrow) then `(< rope (Bytes.concat flat …))`
+           (the concat consumes the alias, the compare re-walks rope). Since compact ALIASES rope, a
+           borrow-misclassification freed the shared handle before rope's second deep-walk → OOB on wasm.
+           Fixed by classifying `Core::BytesCompact` as consuming. Result 11 (eq true=1 + 10·(rope < flat+B
+           true)=10) at BOTH n=2 and n=10; the two lengths exercise the small-rope and larger-rope paths.")
+  (input  (do
+            (def (build-rope (: n Int64) (: acc Bytes))
+              (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of (list (UInt8.wrap 65))))) acc))
+            (def (main (: n Int64))
+              (let ((rope (build-rope n (Bytes.of (list)))))
+                (let ((flat (Bytes.compact rope)))
+                  (+ (if (= rope flat) 1 0)
+                     (* 10 (if (< rope (Bytes.concat flat (Bytes.of (list (UInt8.wrap 66))))) 1 0))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 11 Int64))
+  (call   main (: 2 Int64)) (output (: 11 Int64)))
+
 ; --- Bytes as a RUNTIME value: construct, measure, and concatenate at run time ------------
 ; Every case above builds Bytes from literal integers, so the whole value is compile-time-known and
 ; folds to one baked constant. But the compiler's OWN interface is `compile: list<u8> -> result<list<u8>>`
