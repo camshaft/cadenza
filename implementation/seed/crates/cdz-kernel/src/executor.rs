@@ -285,4 +285,34 @@ mod tests {
             EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec().into())))
         );
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn routing_keys_on_content_type_family_not_the_kind_enum() {
+        // The extensible-effects invariant (seq-39): the router keys on `content_type.family`, NOT the
+        // `EffectKind` enum. Prove it by DIVORCING the two — build a request whose `kind` is Http but whose
+        // `content_type.family` is "model", and show it routes to the MODEL-registered executor. (Via `new`
+        // the two agree by construction; the register-by-string slice will let a family exist with no
+        // matching `EffectKind` at all, and this is the seam that makes that work — so pin it now.)
+        let mut exec = CompositeExecutor::new()
+            .with(EffectKind::Http, Box::new(TagExecutor(b"http-executor")))
+            .with(EffectKind::Model, Box::new(TagExecutor(b"model-executor")));
+        let mut r = req(EffectKind::Http, "x");
+        r.content_type.family = EffectKind::Model.family().to_string();
+        // Routed by family ("model") to the MODEL executor, despite kind == Http.
+        assert_eq!(
+            exec.perform_async(&r, Hash::of(b"k")).await,
+            EffectOutcome::Ok(Some(Payload::Inline(b"model-executor".to_vec().into())))
+        );
+        // And a family with NO registered executor (and no EffectKind variant) is an observable Err naming
+        // that family — the fail-closed seam the register-by-string slice hardens to retry::permanent.
+        let mut ext = req(EffectKind::Http, "x");
+        ext.content_type.family = "embedding".to_string();
+        match exec.perform_async(&ext, Hash::of(b"k")).await {
+            EffectOutcome::Err(msg) => assert!(
+                msg.contains("embedding"),
+                "unroutable extension family named in the err: {msg}"
+            ),
+            other => panic!("an unregistered family must be an observable Err, got {other:?}"),
+        }
+    }
 }

@@ -95,6 +95,29 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn authz_gates_on_content_type_family_not_the_kind_enum() {
+        // The seq-39 seam's authz half: a grant permits by the effect FAMILY string
+        // (Capability.kind.family() vs req.content_type.family), NOT EffectKind enum equality. Prove it by
+        // divorcing kind from family — an Http-kind request whose content_type.family is "model" is NOT
+        // permitted by an Http grant (family mismatch), and IS permitted by a Model grant, regardless of
+        // the enum. (Via `new` they agree; register-by-string will let a family stand alone — pin it now.)
+        let http_grant = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }]);
+        let model_grant = Authorizer::new(vec![Capability {
+            kind: EffectKind::Model,
+            predicate: ResourcePredicate::Any,
+        }]);
+        let mut r = req(EffectKind::Http, "x");
+        r.content_type.family = EffectKind::Model.family().to_string();
+        // The Http grant's family ("http") no longer matches the request's family ("model") → denied...
+        assert!(http_grant.authorize_async(&r).await.is_err());
+        // ...and the Model grant's family ("model") matches → permitted, despite kind == Http.
+        assert!(model_grant.authorize_async(&r).await.is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn deny_all_denies_everything() {
         let authz = Authorizer::deny_all();
         assert!(authz
