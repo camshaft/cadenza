@@ -1,0 +1,29 @@
+// The Cadenza NFC (Unicode Normalization Form C) component interface — FINDING#23, operator ruling
+// option (d) 2026-08-02: NFC lives in a SEPARATE shared component the emitted PROGRAM imports by hash,
+// so the heavy Unicode composition tables are NOT baked into the tagless value-heap runtime (no
+// +124KB in every runtime instance, no fleet-wide REQUIRED_RUNTIME_HASH flip). v-agent-harness's
+// dep-compose host (cdz-kernel §23) detects this as a second content-addressed import beside
+// cadenza:runtime/heap generically (any import whose name carries `+<hash>`) and composes it from CAS.
+//
+// The transform is a PURE, runtime-agnostic value function (fork resolved with v-agent-harness = B): it
+// operates on plain UTF-8 bytes, NOT on the value-heap's opaque rope handles, so the NFC component knows
+// nothing about the runtime's handle ABI and composes independently. The rcdzc emit marshals a String
+// leaf's bytes to `list<u8>`, calls `nfc`, and rebuilds a leaf from the result — at String-typed sites
+// only (String.concat result, String champ-key construction, symbol-intern), preserving the from-bytes
+// DECODE NFC-exemption (collections-and-text.md #Decoding Bytes To A String, L90-94) by construction.
+package cadenza:nfc;
+
+interface normalize {
+  // Normalize a UTF-8 byte sequence to Unicode Normalization Form C. INPUT is assumed well-formed UTF-8
+  // (the compiler only emits this at String-typed sites, whose bytes are already valid UTF-8 — a String
+  // leaf is well-formed by construction, and NFC of well-formed UTF-8 is well-formed UTF-8). Idempotent
+  // (nfc(nfc(x)) == nfc(x)); total (no trap — the emit guarantees valid UTF-8 in, so there is no
+  // error arm; if a future caller could pass unvalidated bytes, this would become
+  // `result<list<u8>, _>`). A pure value function: no host state, no capability, same shape as a
+  // value-heap runtime import (component-abi.md).
+  nfc: func(utf8: list<u8>) -> list<u8>;
+}
+
+world nfc {
+  export normalize;
+}

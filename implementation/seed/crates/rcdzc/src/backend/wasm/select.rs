@@ -259,6 +259,13 @@ const OP_BYTES_COMPACT: &str = "bytes-compact";
 /// re-tagged with no copy), or `NULL` when invalid. CONSUMES `buf`. The compiler wraps the handle-or-NULL
 /// into the `(Option String)` sum (`Some buf` / `None`). Never traps.
 const OP_STR_FROM_BYTES: &str = "str-from-bytes";
+/// `str-nfc-normalize(h) -> handle` — canonicalize a runtime String to NFC (FINDING #23). Emitted ONLY at
+/// String-typed construction sites (a `String.concat` result, a String Map/Set key, a symbol-intern) where
+/// the value's identity requires its NFC-normalized form (collections-and-text.md L33-34/L53-54). CONSUMES
+/// `h` (returns the same handle when already NFC — the ASCII/pre-composed common case, no alloc — else a
+/// fresh normalized leaf with the original dropped). A raw Bytes / `str-from-bytes` decode NEVER calls it
+/// (the decode-exemption, L90-94). Runtime op at WIT index 89.
+const OP_STR_NFC_NORMALIZE: &str = "str-nfc-normalize";
 /// `vec-concat(a, b) -> handle` — concatenate two lists into one.
 const OP_VEC_CONCAT: &str = "vec-concat";
 /// `vec-update(v, index, elem) -> handle` — replace the element at `index` (returns the new list; an
@@ -555,6 +562,11 @@ fn binding_escapes_dup_aware(
         // `String.to-bytes` CONSUMES its string operand (`bytes-compact` transfers the handle out as the
         // Bytes result), so a binding used as the operand escapes into the result.
         Core::StrToBytes { string } => {
+            binding_escapes_dup_aware(db, string, binder, false, dup_sites)
+        }
+        // `str-nfc-normalize` CONSUMES its string operand (returns the same handle when already NFC, else a
+        // fresh leaf with the original dropped), so a binding used as the operand escapes into the result.
+        Core::NfcNormalize { string } => {
             binding_escapes_dup_aware(db, string, binder, false, dup_sites)
         }
         // A constructed tuple/list CONSUMES each element — a binding used as an element escapes into it.
@@ -1274,6 +1286,7 @@ pub fn core_child_ids(db: &mut Db, id: StructId) -> Vec<StructId> {
         | Core::RationalDen { operand }
         | Core::StrFromBytes { bytes: operand, .. }
         | Core::StrToBytes { string: operand }
+        | Core::NfcNormalize { string: operand }
         | Core::Convert { operand, .. }
         | Core::Not { operand } => cs.push(operand),
         // A `BinIntRead`/`BinRestRead` reads `bytes`, plus a `off_plus` size-sum child (§4a dynamic offset).
@@ -1889,6 +1902,8 @@ fn mark_binder_dups_inner(
         Core::StrFromBytes { bytes, .. } => consume(db, bytes, live_after, sites),
         // `String.to-bytes` CONSUMES its string operand (`bytes-compact` transfers it out as the Bytes).
         Core::StrToBytes { string } => consume(db, string, live_after, sites),
+        // `str-nfc-normalize` CONSUMES its string operand (returns it or a fresh normalized leaf).
+        Core::NfcNormalize { string } => consume(db, string, live_after, sites),
         // BigInt/Rational arith/cmp BORROW their handle operands (`tail_borrowed: true` in `binding_escapes`).
         Core::BigIntBinOp { lhs, rhs, .. }
         | Core::BigIntCmp { lhs, rhs, .. }
@@ -3416,6 +3431,13 @@ fn collect_used_ops_into(
         // Bytes result — the total encoding needs no `sum-new`/validation, just the one flatten op.
         Core::StrToBytes { string } => {
             out.insert(OP_BYTES_COMPACT);
+            collect_used_ops_into(db, string, out);
+        }
+        // `str-nfc-normalize` on a runtime String: one runtime op that canonicalizes to NFC. The collect
+        // MUST mirror the emit arm's single `CallImport(OP_STR_NFC_NORMALIZE)` exactly (an import-set that
+        // omits it, or adds an extra, shifts every import index → invalid module), then recurse into `string`.
+        Core::NfcNormalize { string } => {
+            out.insert(OP_STR_NFC_NORMALIZE);
             collect_used_ops_into(db, string, out);
         }
         Core::If { cond, then_, else_ } => {
@@ -9318,6 +9340,15 @@ fn emit(
             out.push(Lir::CallImport(OP_BYTES_COMPACT)); // → [flat Bytes leaf] (consumes string)
             Ok(())
         }
+        // A runtime `str-nfc-normalize(string)` (FINDING #23) — canonicalize a String value to NFC. Emit the
+        // string handle, then the one runtime op (`str-nfc-normalize` flattens + NFC-normalizes, CONSUMES the
+        // handle, transfers it out — the same handle when already NFC, else a fresh normalized leaf). No
+        // `dup` (owned out of the op); the collect twin inserts exactly this one `OP_STR_NFC_NORMALIZE`.
+        Core::NfcNormalize { string } => {
+            emit(db, string, slots, base, high, scratch_ty, layout, out)?; // [string]
+            out.push(Lir::CallImport(OP_STR_NFC_NORMALIZE)); // → [NFC leaf] (consumes string)
+            Ok(())
+        }
         // A runtime `String.from-bytes(bytes)` — the TOTAL UTF-8 decode. Emit the bytes handle,
         // `str-from-bytes` (CONSUMES it; strict UTF-8 validate → the buffer AS a String handle, or NULL when
         // invalid), then build `Some(handle)` / `None`. The returned handle is already OWNED (str-from-bytes
@@ -12520,6 +12551,11 @@ fn heap_operand_ownership(db: &mut Db, id: StructId) -> Result<HandleOwnership, 
         | Core::BytesCompact { .. }
         | Core::StrFromBytes { .. }
         | Core::StrToBytes { .. }
+        // `str-nfc-normalize` (FINDING #23) hands out a FRESH owned String handle: it CONSUMES its operand and
+        // returns either that same handle (already NFC) or a fresh normalized leaf with the original dropped —
+        // either way an owned reference transfers out, exactly like `StrToBytes`/`BytesConcat`. So as a
+        // borrowing-op operand it is Owned and the emit reclaims it after the borrow.
+        | Core::NfcNormalize { .. }
         // A runtime `(bin …)` construction builds a FRESH owned Bytes on the rope heap (`bytes-alloc` +
         // per-segment range-check-and-write, exactly like `BytesOf`), so as a `value-eq` operand it is
         // Owned and the emit drops it after the borrowing compare. WITHOUT this a runtime `(bin …)` result

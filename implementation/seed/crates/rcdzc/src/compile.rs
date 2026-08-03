@@ -4615,6 +4615,7 @@ fn collect_reached_poisons_at(db: &mut Db, id: StructId, out: &mut Vec<Reject>) 
         Core::StrFromBytes { bytes, .. } => collect_reached_poisons(db, bytes, out),
         // `String.to-bytes` unconditionally evaluates its string operand (the runtime flatten reads it) — descend.
         Core::StrToBytes { string } => collect_reached_poisons(db, string, out),
+        Core::NfcNormalize { string } => collect_reached_poisons(db, string, out),
         // A map construction's entry keys AND values are all unconditionally part of the value — descend
         // into each `(key, value)` pair.
         Core::MapNew { entries, .. } => {
