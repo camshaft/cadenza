@@ -3672,6 +3672,32 @@
   (call   main (: 250 UInt8)) (output (: 8 Int64))
   (call   main (: 100 UInt8)) (output (: 220 Int64)))
 
+; The re-masked wrapping result must be what DOWNSTREAM ops see — not just a final consumer read
+; (adv-57 seam faces). These prove the re-normalization (above) is applied at the OP's result, so a
+; wrapped value flowing into a CHECKED op or a COMPARISON carries the masked/sign-extended value:
+(case "a UInt8 wrapping-add result feeds a CHECKED add — the MASKED value is what the checked op sees"
+  (doc    "`(+ (UInt8.wrapping-add x (UInt8.wrap 10)) (: 6 UInt8))`: the wrapping-add re-masks to width
+           FIRST, so the checked `+ 6` sees the wrapped value. x=250: 250+10 wraps to 4, then checked 4+6=10
+           (in range). x=245: 245+10 wraps to 255, then checked 255+6 OVERFLOWS UInt8 and TRAPS — proving
+           the checked op sees the MASKED 255, not an un-wrapped 261 (which would wrongly fit pre-mask).
+           Pins that the wrapping re-mask is applied before the value feeds a checked consumer. Trap reason
+           matches both backends (wasm 'integer overflow', rust 'integer overflow in addition').")
+  (input  (do
+            (def (main (: x UInt8)) (Int64.of (+ (UInt8.wrapping-add x (UInt8.wrap 10)) (: 6 UInt8))))
+            (export main)))
+  (call   main (: 250 UInt8)) (output (: 10 Int64))
+  (call   main (: 245 UInt8)) (trap "overflow"))
+(case "an Int8 wrapping-add result drives a comparison — the SIGN-EXTENDED masked value is compared"
+  (doc    "`(< (Int8.wrapping-add x (Int8.wrap 1)) (: 0 Int8))` at x=127: 127+1 wraps to -128 (Int8.min),
+           and the comparison sees the SIGN-EXTENDED -128, so `< 0` is TRUE → 1. Pins that the signed
+           wrapping re-mask sign-extends before the value drives a branch — a mask-without-sign-extend
+           would compare 128 (positive) and answer 0. Control x=10: 10+1=11, `< 0` false → 0.")
+  (input  (do
+            (def (main (: x Int8)) (if (< (Int8.wrapping-add x (Int8.wrap 1)) (: 0 Int8)) 1 0))
+            (export main)))
+  (call   main (: 127 Int8)) (output (: 1 Int64))
+  (call   main (: 10 Int8)) (output (: 0 Int64)))
+
 (case "the Int64.max and Int64.min CONSTANTS compare equal to their boundary values at runtime"
   (doc    "The prelude boundary constants as runtime COMPARANDS: `(= n Int64.max)` and `(= n Int64.min)`
            over a boundary parameter — the max value hits only the max test (1,0), the min value only the
