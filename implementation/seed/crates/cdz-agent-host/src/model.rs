@@ -124,10 +124,12 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
 /// [`cdz_kernel::executor::CompositeExecutor`], a reducer's `Model` effect reaches Bedrock and the
 /// completion folds back — an agent loops against a real model.
 ///
-/// **Credentials come from the ENVIRONMENT** (operator directive): the SDK's DEFAULT credential provider
-/// chain — env vars (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`), the shared
-/// profile, or IMDS — whatever the ambient environment supplies, plus region from the environment. No
-/// broker, no credential wiring, no Membrain in this repo.
+/// **Credentials come from the ENVIRONMENT** (operator directive): environment variables
+/// (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`) plus region from the environment,
+/// via the SDK's default credential provider. Note the profile / SSO / IMDS credential SOURCES are
+/// `aws-config` feature-gated (`sso` / `credentials-process`) and are NOT enabled here — env-var creds are
+/// the supported source; a deployment needing profile/IMDS enables those features. No broker, no
+/// credential wiring, no Membrain in this repo.
 ///
 /// **Request/response shape.** `invoke`'s `body` is the OPAQUE `InvokeModel` request body (a userspace
 /// agreement — the model's native JSON, e.g. the Anthropic Messages schema); `model_id` is the effect
@@ -203,9 +205,15 @@ fn classify_bedrock_error(
     >,
 ) -> String {
     use aws_sdk_bedrockruntime::error::SdkError;
-    // Dispatch/timeout/IO failures never reached (or didn't complete at) the service → transient.
-    let transient_dispatch = matches!(e, SdkError::TimeoutError(_) | SdkError::DispatchFailure(_));
-    if transient_dispatch {
+    // Transport-level failures that never reached, or didn't cleanly complete at, the service → transient:
+    // a timeout, a dispatch (connect/IO) failure, or a ResponseError (a reply arrived but was unparseable /
+    // truncated — typically a mid-stream drop, worth a retry). All are retryable; only a completed SERVICE
+    // error carries a status we classify below.
+    let transient_transport = matches!(
+        e,
+        SdkError::TimeoutError(_) | SdkError::DispatchFailure(_) | SdkError::ResponseError(_)
+    );
+    if transient_transport {
         return retry::retryable(format!("Bedrock transport failure: {e}"));
     }
     // A completed service error: throttling / 5xx are transient; other 4xx are permanent.
