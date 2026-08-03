@@ -26,6 +26,11 @@ target/
 # Compiled seed compiler binary (regenerable via cargo build)
 implementation/stable
 Cargo.lock
+# ...but TRACK the ROOT workspace lock (operator 2026-08-03: "commit the Cargo.lock, otherwise we don't
+# get determinism"). Anchored `/Cargo.lock` un-ignores ONLY the repo-root lock — nested crate locks stay
+# ignored except where a crate adds its own scoped negation (cdz-runtime/cdz-nfc/the guest fixtures do).
+# The nix seed-compiler build (buildRustPackage) + `--locked` CI both need this tracked to vendor/pin.
+!/Cargo.lock
 
 # `cdz run-ml` / `cdz run-emitted` write a pid-stamped driver into the compiler-ml src dir (imports
 # resolve entry-dir-relative, so it MUST live beside the sources — not a temp dir). They clean up on a
