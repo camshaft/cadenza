@@ -13757,11 +13757,14 @@ fn is_runtime_computation(db: &mut Db, init: StructId) -> bool {
             // the recompute CONSUMES the (borrowed) source, so the 2nd read saw freed
             // bytes → 0 — a wasm-only HIGH soundness miscompile (rust rebuilt correctly). Not multibyte-
             // specific: an ASCII RUNTIME slice fails too; the breaker's "ASCII OK" used a CONSTANT slice (which
-            // const-folds, no runtime recompute). Keeping these two under the >= 2-use rule fixes it. (SCOPED
-            // to these two: the other Bytes/List/Map/Set/BigInt/Rational/Bin heap ops share the SAME latent
-            // copy-propagate shape, but forcing them kept regressed 3 cases [bin-parse invalid-component + a
-            // rope-keyed-map bytes-compact] — their kept-binding EMIT has its own bug to fix first (follow-up)
-            // before widening. Scalar READS — *Len/*Size/BytesAt/*Cmp/Contains/HasKeys — copy-propagate fine.)
+            // const-folds, no runtime recompute). Keeping these two under the >= 2-use rule fixes it. (The
+            // wider Bytes/List/Map/Set/BigInt/Rational/Bin heap ops share the SAME latent copy-propagate
+            // shape; `BytesConcat` is now added below (adv-54b, after adv-66 cleared the kept-binding emit
+            // bug — see its arm). The STILL-DEFERRED ops [List/Map/Set/BigInt/Rational/Bin concat/build]
+            // once regressed 3 cases when forced kept [bin-parse invalid-component + a rope-keyed-map
+            // bytes-compact] — re-test whether adv-66's mark_binder_dups consume-fix cleared those too
+            // before widening further, exactly as it did for BytesConcat. Scalar READS —
+            // *Len/*Size/BytesAt/*Cmp/Contains/HasKeys — copy-propagate fine.)
             | Core::StrToBytes { .. }
             | Core::StrSlice { .. }
             // adv-54b: `Bytes.concat` is the same family — a fresh-leaf-building runtime op that CONSUMES/
