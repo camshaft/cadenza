@@ -24352,6 +24352,38 @@ mod match_engine {
     }
 
     #[test]
+    fn a_record_literal_field_holding_a_user_generic_ctor_projects_and_matches() {
+        // Coverage-hardening: an INLINE record literal whose FIELD VALUE is a user-generic constructor —
+        // `(record (b (Mk 7)))` — projects the field (`(. r b)`) to the generic value and matches through
+        // its ctor. (Inline structural records are the supported form; there is no named-record-TYPE decl —
+        // `(type R (record …))` parses `record` as a SUM variant, a separate parked language question.)
+        // Two faces, each construct + project + match + run:
+        //   (1) field is `(Box Int64)` — `(. (record (b (Mk 7))) b)` → 7;
+        //   (2) field is `(Box (Option Int64))` — nested generic, both arms.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type (Box a) (Mk a)) \
+                       (def (main) (match (. (record (b (Mk 7))) b) ((Mk v) v))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type (Box a) (Mk a)) \
+                       (def (main) (match (. (record (b (Mk (Some 5)))) b) \
+                          ((Mk (Some v)) v) ((Mk (None)) 0))) (export main))"
+                ),
+                "main"
+            ),
+            5
+        );
+    }
+
+    #[test]
     fn a_nested_generic_ctor_pattern_binds_and_computes_through_the_inner_ctor() {
         // Coverage-hardening for match-PATTERN resolution when a user-generic ctor pattern NESTS another
         // ctor pattern (a different resolve path than a type-annotation position): the inner binder must
