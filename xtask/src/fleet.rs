@@ -5189,10 +5189,21 @@ fn archive(fleet: &Fleet, no_commit: bool) {
         println!("  nothing changed — issues/ + roster already up to date.");
         return;
     }
+    // Commit ONLY the archive pathspec — NEVER a bare `git commit` (which commits the WHOLE index).
+    // pr-sync runs this in its `trunk` worktree, and if that worktree/index carries ANY stale or
+    // partially-staged non-archive path (e.g. a `spec/semantics/*.sexp` left stale relative to a pin
+    // that landed one commit earlier, in the reap→archive window), a bare commit sweeps it in and
+    // SILENTLY REVERTS that landed change — with a spurious `merged` already acked to its author
+    // (corpus-bugfix hit exactly this: archive commit ac5f2c580 reverted the adv-54b pin #1670,
+    // 2026-08-03). Scoping the commit to `-- issues fleet/roster.json` makes it STRUCTURALLY unable to
+    // commit anything but the archive, regardless of what else is dirty/staged in the worktree.
     if run_git(&[
         "commit",
         "-m",
         "fleet: mirror the work queue + standing roster into the tracked archive",
+        "--",
+        "issues",
+        "fleet/roster.json",
     ]) {
         println!("  committed the archive update ({synced} standing agent(s) in roster).");
     } else {
