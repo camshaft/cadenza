@@ -286,13 +286,14 @@ pub struct RunOpts {
     /// and a `deserialize` failure falls back to a fresh compile — so a version/config mismatch can
     /// never load an incompatible artifact.
     pub runtime_cache_dir: Option<std::path::PathBuf>,
-    /// The NFC component bytes (FINDING#23) the caller resolved BY CONTENT ADDRESS from the store. The
-    /// value-heap runtime is not a leaf: its world IMPORTS `cadenza:nfc/normalize` (NFC is the runtime's
-    /// dependency — the heavy Unicode tables live there, not in the runtime). So before instantiating the
-    /// runtime, the host must COMPOSE this NFC component into the runtime's linker (the leaves-first
-    /// transitive compose: nfc → runtime → program). Required only when the runtime declares that import;
-    /// `None` is fine for a runtime that imports nothing (older runtime, or a program needing no runtime).
-    pub nfc: Option<Vec<u8>>,
+    // NOTE (FINDING#23): there is deliberately NO `nfc` field. The value-heap runtime imports
+    // `cadenza:nfc/normalize` (its NFC dependency), but the host now SELF-RESOLVES that NFC component from the
+    // store at compose time (`resolve_nfc_from_store`, keyed off `runtime_cache_dir`/`CDZ_STORE`/the default
+    // store + the `runtime.toml` `nfc = "<hash>"` line) rather than the caller threading it through a field.
+    // This is intentional: a required `nfc` field on this struct — constructed by ~190 test literals across
+    // rcdzc/cdz/cdz-calc/cdz-smith — was a livelock magnet (every new literal that omitted it failed to
+    // compile, and a merge-window couldn't stop an in-flight peer from adding one). Self-resolution removes the
+    // field so no literal ever mentions NFC → future RunOpts field-adds can't reintroduce that race.
     /// The HOST-CALL RESPONSES (E2h) — the values the host returns to a program's delegated host calls,
     /// in call order. A program that delegates an effect to the host (`(host (E…) …)`) imports each
     /// operation as a boundary func; when it performs one, the bound host func returns the next response
@@ -1663,14 +1664,21 @@ fn compose_nfc_into_runtime_linker(
     if !imports_nfc {
         return Ok(()); // leaf runtime — nothing to compose
     }
-    let nfc_bytes = opts.nfc.as_deref().ok_or_else(|| {
+    // SELF-RESOLVE the NFC component from the store (FINDING#23 durable fix — no `RunOpts.nfc` field, so a
+    // new caller/test literal can never forget to thread it and hit E0063). The store is `opts.store` if the
+    // caller pinned one, else the `CDZ_STORE` env, else the compiled default; we read the NFC content address
+    // off that store's `runtime.toml` (`nfc = "<hash>"`, written by `xtask build`) and load + verify
+    // `<store>/<hash>.wasm`. This mirrors how the runtime itself is resolved-by-hash — cdz-run needs NO
+    // knowledge of `REQUIRED_NFC_HASH` (it reads the hash from the store manifest), preserving the
+    // runner-has-no-compiler-dep boundary.
+    let nfc_bytes = resolve_nfc_from_store(opts).ok_or_else(|| {
         anyhow!(
-            "the value-heap runtime imports {NFC_IFACE} (its NFC dependency) but no NFC component was \
-             provided (the host resolves it by content address from the store; build it with `cargo xtask \
-             build`)"
+            "the value-heap runtime imports {NFC_IFACE} (its NFC dependency) but the NFC component could not \
+             be resolved from the store (need `runtime.toml`'s `nfc = \"<hash>\"` + `<store>/<hash>.wasm`; \
+             build it with `cargo xtask build`, or set CDZ_STORE to the store dir)"
         )
     })?;
-    let nfc = Component::new(engine, nfc_bytes).map_err(|e| anyhow!("load NFC component: {e}"))?;
+    let nfc = Component::new(engine, &nfc_bytes).map_err(|e| anyhow!("load NFC component: {e}"))?;
     // NFC is a leaf (imports nothing) → instantiate against a fresh empty linker.
     let nfc_linker: Linker<()> = Linker::new(engine);
     let nfc_instance = nfc_linker
@@ -1698,6 +1706,43 @@ fn compose_nfc_into_runtime_linker(
         })?;
     }
     Ok(())
+}
+
+/// Resolve the NFC component's bytes from the value-heap store (FINDING#23 durable fix). The store dir is,
+/// in precedence: `opts.runtime_cache_dir` (the CLI/`cdz` path sets this to the resolved store), else the
+/// `CDZ_STORE` env var, else the compiled default store (`<repo>/target/cadenza-store`). We read the NFC
+/// content address off that store's `runtime.toml` (`nfc = "<hash>"`, written by `xtask build`), then load
+/// `<store>/<hash>.wasm` and VERIFY its content address matches (so a corrupt/substituted entry can't compose
+/// silently — the same integrity check the runtime resolution does). Returns `None` (→ a clear compose
+/// error) if any step fails. Reading the hash from the manifest means cdz-run needs no `REQUIRED_NFC_HASH`
+/// from the compiler — it stays dependency-free of `rcdzc`.
+fn resolve_nfc_from_store(opts: &RunOpts) -> Option<Vec<u8>> {
+    let store = opts
+        .runtime_cache_dir
+        .clone()
+        .or_else(|| std::env::var_os("CDZ_STORE").map(std::path::PathBuf::from))
+        .unwrap_or_else(nfc_default_store);
+    let manifest = std::fs::read_to_string(store.join("runtime.toml")).ok()?;
+    let hash = manifest.lines().find_map(|l| {
+        l.trim()
+            .strip_prefix("nfc")
+            .and_then(|r| r.trim_start().strip_prefix('='))
+            .map(|v| v.trim().trim_matches('"').to_string())
+    })?;
+    let bytes = std::fs::read(store.join(format!("{hash}.wasm"))).ok()?;
+    (crate::cli::content_address(&bytes) == hash).then_some(bytes)
+}
+
+/// The compiled default value-heap store (`<repo>/target/cadenza-store`), resolved from this crate's
+/// manifest location — the fallback when neither `opts.runtime_cache_dir` nor `CDZ_STORE` pins one.
+fn nfc_default_store() -> std::path::PathBuf {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo = manifest
+        .ancestors()
+        .nth(4)
+        .unwrap_or(&manifest)
+        .to_path_buf();
+    repo.join("target/cadenza-store")
 }
 
 /// Forward each already-extracted PEER interface into `linker`, so a component importing `cadenza:pkg/iface`

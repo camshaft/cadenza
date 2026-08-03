@@ -726,7 +726,6 @@ fn run_linked(component_bytes: &[u8], export: &str) -> Option<String> {
         export: Some(export.to_string()),
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -1131,7 +1130,6 @@ fn a_narrow_runtime_tuple_element_crosses_the_heap_boundary() {
         export: Some("pair-sum".to_string()),
         args: vec!["100".to_string(), "50".to_string()],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -1176,7 +1174,6 @@ fn bytes_compact_consumes_its_operand_so_a_later_use_of_the_aliased_source_is_du
             export: Some("main".to_string()),
             args: vec![n.to_string()],
             runtime: Some(runtime.clone()),
-            nfc: find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -1242,7 +1239,6 @@ fn a_common_constructor_hoists_out_of_both_if_arms_building_once() {
             export: Some("main".to_string()),
             args: vec![c.to_string(), a.to_string(), b.to_string()],
             runtime: Some(runtime.clone()),
-            nfc: find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -1545,7 +1541,6 @@ fn a_common_constructor_hoist_covers_records_by_shared_key_set() {
             export: Some("main".to_string()),
             args: vec![c.to_string(), x.to_string(), y.to_string()],
             runtime: Some(runtime.clone()),
-            nfc: find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -1614,7 +1609,6 @@ fn a_common_constructor_hoist_covers_same_length_lists() {
             export: Some("main".to_string()),
             args: vec![c.to_string(), a.to_string(), b.to_string()],
             runtime: Some(runtime.clone()),
-            nfc: find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -1658,7 +1652,6 @@ fn a_trapping_shared_payload_before_the_diff_does_not_preempt_a_trapping_cond() 
         export: Some("main".to_string()),
         args: vec!["0".to_string(), "1".to_string()],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -1707,7 +1700,6 @@ fn cse_does_not_hoist_a_trapping_subexpr_out_of_a_short_circuit_and() {
         export: Some("main".to_string()),
         args: vec!["false".to_string(), "0".to_string()],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -1883,7 +1875,6 @@ fn a_common_constructor_sinks_out_of_all_match_arms() {
             export: Some("main".to_string()),
             args: vec![k.to_string()],
             runtime: Some(runtime.clone()),
-            nfc: find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -1951,7 +1942,6 @@ fn the_build_once_hoists_compose_through_synthesized_differing_positions() {
             export: Some("main".to_string()),
             args: vec![c1.to_string(), c2.to_string(), a.to_string(), b.to_string()],
             runtime: Some(runtime.clone()),
-            nfc: find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -2010,7 +2000,6 @@ fn a_cse_shared_indexed_read_is_refcount_correct_and_leaves_the_list_live() {
         export: Some("main".to_string()),
         args: vec!["4".to_string()],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -2049,7 +2038,6 @@ fn list_len_fold_preserves_a_trapping_element_construction() {
             export: Some("main".to_string()),
             args: vec![d.to_string()],
             runtime: Some(runtime.clone()),
-            nfc: find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -2113,7 +2101,6 @@ fn a_cse_shared_map_lookup_is_refcount_correct_and_leaves_the_map_live() {
         export: Some("main".to_string()),
         args: vec!["4".to_string()],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -2154,7 +2141,6 @@ fn a_runtime_string_concat_and_byte_len_run_on_the_byte_leaf() {
         export: Some("main".to_string()),
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -2193,7 +2179,6 @@ fn a_runtime_string_from_bytes_decodes_a_recursively_built_buffer() {
         export: Some("main".to_string()),
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -2230,7 +2215,6 @@ fn a_runtime_string_from_bytes_of_ill_formed_bytes_takes_the_none_arm() {
         export: Some("main".to_string()),
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -2338,7 +2322,6 @@ fn a_runtime_string_to_bytes_encodes_a_recursively_built_string() {
         export: Some("main".to_string()),
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -2392,7 +2375,6 @@ fn adv54_runtime_sliced_to_bytes_read_twice_sees_both_bytes() {
         export: Some("main".to_string()),
         args: vec!["0".to_string()],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -2445,7 +2427,6 @@ fn a_field_of_a_runtime_record_reads_the_heap_at_its_sorted_index() {
         export: Some("main".to_string()),
         args: vec!["41".to_string()],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -2500,7 +2481,6 @@ fn record_with_over_a_runtime_record_builds_from_projections() {
             export: Some("main".to_string()),
             args: vec!["1".to_string()],
             runtime: Some(runtime.clone()),
-            nfc: find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -2557,7 +2537,6 @@ fn record_with_over_a_runtime_record_materializes_the_operand_once_not_per_prese
         export: Some("main".to_string()),
         args: vec!["1".to_string()],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -2718,7 +2697,6 @@ fn record_project_and_without_over_a_runtime_record_build_from_projections_mater
                 export: Some("main".to_string()),
                 args: vec!["1".to_string()],
                 runtime: Some(rt),
-                nfc: find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -2810,7 +2788,6 @@ fn record_merge_and_pop_over_a_runtime_record_build_from_projections_materialize
             export: Some("main".to_string()),
             args: vec!["1".to_string()],
             runtime: Some(rt.clone()),
-            nfc: find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -2861,7 +2838,6 @@ fn a_projected_bare_parameter_is_constrained_at_the_call_site() {
         export: Some("main".to_string()),
         args: vec!["41".to_string()],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -2927,7 +2903,6 @@ fn a_recursive_runtime_tuple_escapes_to_the_host() {
         export: None, // a resource-escape program exports no bare func — the host takes the escape path
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -2965,7 +2940,6 @@ fn a_recursive_runtime_record_escapes_to_the_host() {
         export: None,
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -3001,7 +2975,6 @@ fn a_nested_runtime_tuple_escapes_to_the_host() {
         export: None,
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -3038,7 +3011,6 @@ fn a_nested_constant_tuple_with_shared_element_occurrences_escapes() {
         export: None,
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -3072,7 +3044,6 @@ fn a_record_with_a_runtime_tuple_field_escapes_to_the_host() {
         export: None,
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -3234,7 +3205,6 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
         export: Some("main".to_string()),
         args: Vec::new(),
         runtime: Some(runtime.clone()),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -3265,7 +3235,6 @@ fn a_composed_call_over_a_record_with_a_checked_arith_field_runs() {
         export: Some("main".to_string()),
         args: Vec::new(),
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -3313,7 +3282,6 @@ fn a_bigint_arith_then_of_arith_collection_element_pair_runs() {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: Some(runtime.clone()),
-            nfc: find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -5918,7 +5886,6 @@ fn compound_equality_over_a_runtime_float_leaf_follows_the_canonical_byte_form()
         export: Some("main".to_string()),
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -5954,7 +5921,6 @@ fn compound_equality_over_a_runtime_rational_leaf_respects_normalization() {
         export: Some("main".to_string()),
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -5995,7 +5961,6 @@ fn a_runtime_list_of_floats_equality_routes_to_value_eq_shaped_and_compiles() {
         export: Some("main".to_string()),
         args: vec!["3.5".to_string()],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -6031,7 +5996,6 @@ fn a_runtime_list_of_floats_equality_treats_nan_as_equal_per_canonical_byte_form
         export: Some("main".to_string()),
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -6065,7 +6029,6 @@ fn a_runtime_list_of_floats_equality_distinguishes_a_differing_element() {
         export: Some("main".to_string()),
         args: vec!["3.5".to_string(), "2.5".to_string()],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -8081,7 +8044,6 @@ fn a_partial_ctor_in_a_runtime_tuple_completes_via_an_eta_closure_lift() {
         export: Some("main".to_string()),
         args: vec![],
         runtime: Some(runtime),
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -9185,7 +9147,6 @@ fn a_float32_record_field_grounds_its_bare_literal_to_f32_not_f64() {
             export: Some(export.to_string()),
             args,
             runtime: find_runtime_wasm(),
-            nfc: find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -10416,7 +10377,6 @@ fn a_let_bound_handle_whose_seed_is_a_caller_runtime_arg_folds_and_runs() {
         export: Some("main".to_string()),
         args: vec!["5".to_string()],
         runtime,
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -10448,7 +10408,6 @@ fn a_let_bound_handle_seed_capture_edges_fold_and_run() {
             export: Some("main".to_string()),
             args: vec![arg.to_string()],
             runtime,
-            nfc: find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -10540,7 +10499,6 @@ fn a_qty_seeded_handler_resuming_with_inline_arith_next_state_folds_and_runs() {
         export: Some("main".to_string()),
         args: vec!["21".to_string()],
         runtime,
-        nfc: find_nfc_wasm(),
         runtime_cache_dir: None,
         host_responses: Vec::new(),
     };
@@ -13989,7 +13947,6 @@ mod runtime_ops {
                 export: Some("main".to_string()),
                 args: vec![x.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -21036,7 +20993,6 @@ mod recursion {
                     export: Some("main".to_string()),
                     args: vec!["3".to_string()],
                     runtime: Some(runtime.clone()),
-                    nfc: super::find_nfc_wasm(),
                     runtime_cache_dir: None,
                     host_responses: Vec::new(),
                 };
@@ -21089,7 +21045,6 @@ mod recursion {
                 export: Some("main".to_string()),
                 args: vec!["3".to_string()],
                 runtime: Some(runtime),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -21694,7 +21649,6 @@ mod recursion {
                     export: Some("main".to_string()),
                     args: vec![mode.to_string()],
                     runtime: Some(runtime.clone()),
-                    nfc: super::find_nfc_wasm(),
                     runtime_cache_dir: None,
                     host_responses: Vec::new(),
                 };
@@ -21782,7 +21736,6 @@ mod recursion {
                 export: Some("main".to_string()),
                 args: vec!["0".to_string()],
                 runtime: Some(runtime),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -21822,7 +21775,6 @@ mod recursion {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -21905,7 +21857,6 @@ mod recursion {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -22262,7 +22213,6 @@ mod match_engine {
             export: Some("main".to_string()),
             args,
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -26501,7 +26451,6 @@ mod match_engine {
             export: None,
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -29930,7 +29879,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: vec![],
                 runtime: Some(runtime),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -29989,7 +29937,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: vec!["7".to_string()],
                 runtime: Some(runtime),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -33953,7 +33900,6 @@ mod match_engine {
             export: None, // a String escape is a RESOURCE component, auto-detected by cdz-run
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -35260,7 +35206,6 @@ mod match_engine {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -35330,7 +35275,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: vec![],
                 runtime: Some(runtime),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -35364,7 +35308,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -35448,7 +35391,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: vec![],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -35637,7 +35579,6 @@ mod match_engine {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -35668,7 +35609,6 @@ mod match_engine {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -35697,7 +35637,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: vec![],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -36635,7 +36574,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: args.iter().map(|s| s.to_string()).collect(),
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -36883,7 +36821,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: args.iter().map(|s| s.to_string()).collect(),
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -36977,7 +36914,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: args.iter().map(|s| s.to_string()).collect(),
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -37060,7 +36996,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: args.iter().map(|s| s.to_string()).collect(),
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -37152,7 +37087,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -37178,7 +37112,6 @@ mod match_engine {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -37224,7 +37157,6 @@ mod match_engine {
             export: Some("main".to_string()),
             args: vec![arg.to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -38720,7 +38652,6 @@ mod match_engine {
             export: None,
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -38799,7 +38730,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: vec![],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -38842,7 +38772,6 @@ mod match_engine {
             export: None, // a resource-escape component (make/encode), not a bare function export
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -43178,7 +43107,6 @@ mod match_engine {
                     export: None,
                     args: vec![arg.to_string()],
                     runtime: Some(runtime.clone()),
-                    nfc: super::find_nfc_wasm(),
                     runtime_cache_dir: None,
                     host_responses: Vec::new(),
                 };
@@ -45054,7 +44982,6 @@ mod match_engine {
                 export: Some("f".to_string()),
                 args: vec![arg.to_string()],
                 runtime: None,
-                nfc: None,
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -46941,7 +46868,6 @@ mod match_engine {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -47007,7 +46933,6 @@ mod match_engine {
                 export: Some("classify".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -47057,7 +46982,6 @@ mod match_engine {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -47142,7 +47066,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: Vec::new(),
                 runtime: Some(runtime),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -47338,7 +47261,6 @@ mod match_engine {
                 export: Some("classify".to_string()),
                 args: vec![arg.to_string()],
                 runtime: None,
-                nfc: None,
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -47448,7 +47370,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -47500,7 +47421,6 @@ mod match_engine {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -47621,7 +47541,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -48220,7 +48139,6 @@ mod match_engine {
             export: None,
             args: vec!["3".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -48254,7 +48172,6 @@ mod match_engine {
                 export: None,
                 args: vec![x.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -50386,7 +50303,6 @@ mod match_engine {
                 export: Some("main".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -55766,7 +55682,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec!["1".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -55804,7 +55719,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -55857,7 +55771,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -55965,7 +55878,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -59012,7 +58924,6 @@ mod stage1 {
             export: Some("eq3".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -66018,7 +65929,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec!["9".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: vec![cdz_run::HostResponse {
                 op: "h".to_string(),
@@ -66064,7 +65974,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             // EXACTLY ONE response: the pre-fix double-fire consumes a second (absent) response → trap.
             host_responses: vec![cdz_run::HostResponse {
@@ -66109,7 +66018,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: vec![cdz_run::HostResponse {
                 op: "io.get".to_string(),
@@ -66160,7 +66068,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec!["65".to_string()], // byte 'A' → a 1-byte runtime string
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: vec![cdz_run::HostResponse {
                 op: "h".to_string(),
@@ -66201,7 +66108,6 @@ mod stage1 {
                 export: Some("main".to_string()),
                 args,
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: vec![cdz_run::HostResponse {
                     op: "h".to_string(),
@@ -67769,7 +67675,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -67861,7 +67766,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -67907,7 +67811,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -70151,7 +70054,6 @@ mod stage1 {
                 export: Some("pick".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -70184,7 +70086,6 @@ mod stage1 {
             export: None,
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -70241,7 +70142,6 @@ mod stage1 {
                 export: Some("main".to_string()),
                 args: vec![],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -70302,7 +70202,6 @@ mod stage1 {
                 export: Some("pick".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -70334,7 +70233,6 @@ mod stage1 {
                 export: Some("main".to_string()),
                 args: vec![],
                 runtime: Some(runtime),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -70374,7 +70272,6 @@ mod stage1 {
                 export: Some("main".to_string()),
                 args: vec![],
                 runtime: Some(runtime),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -70811,7 +70708,6 @@ mod stage1 {
             export: None,
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -70852,7 +70748,6 @@ mod stage1 {
             export: None,
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -70886,7 +70781,6 @@ mod stage1 {
             export: None,
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -71290,7 +71184,6 @@ mod stage1 {
                 export: Some("pick".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -71444,7 +71337,6 @@ mod stage1 {
                 export: Some("main".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -71484,7 +71376,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -71534,7 +71425,6 @@ mod stage1 {
                 export: Some("pick".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -71580,7 +71470,6 @@ mod stage1 {
                 export: Some("build".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -71620,7 +71509,6 @@ mod stage1 {
                 export: Some("code".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -71669,7 +71557,6 @@ mod stage1 {
                 export: Some("code".to_string()),
                 args: vec![k.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -71713,7 +71600,6 @@ mod stage1 {
             export: Some("find".to_string()),
             args: vec!["0".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -71790,7 +71676,6 @@ mod stage1 {
                 export: Some("find".to_string()),
                 args: vec!["0".to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -72361,7 +72246,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -72644,7 +72528,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![arg.to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -72664,7 +72547,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![arg.to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -72683,7 +72565,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -73139,7 +73020,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -73447,7 +73327,6 @@ mod stage1 {
                 export: Some("main".to_string()),
                 args: vec![],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -73534,7 +73413,6 @@ mod stage1 {
                 export: Some("main".to_string()),
                 args: vec![],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
@@ -73574,7 +73452,6 @@ mod stage1 {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -76223,7 +76100,6 @@ mod r2_runtime_resource {
             export: None, // no bare func export → the host takes the resource-escape path
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -76714,7 +76590,6 @@ mod r2_runtime_resource {
             export: None, // resource-escape path: make() then encode(borrow)
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -88710,7 +88585,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: None,
-            nfc: None,
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -89038,7 +88912,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -89174,7 +89047,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: None,
-            nfc: None,
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -89220,7 +89092,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: None,
-            nfc: None,
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -89811,7 +89682,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec![],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -89952,7 +89822,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: None,
-            nfc: None,
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -90090,7 +89959,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: None,
-            nfc: None,
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -90221,7 +90089,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["9".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -90384,7 +90251,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -90447,7 +90313,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["9".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -90527,7 +90392,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["1".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -90644,7 +90508,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec![kind.to_string()],
             runtime: Some(runtime.clone()),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -90723,7 +90586,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -90771,7 +90633,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -90815,7 +90676,6 @@ mod cross_component_oracle {
             args: Vec::new(),
             // No runtime needed: the shape check fails BEFORE the runtime is required.
             runtime: super::find_runtime_wasm(),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -90858,7 +90718,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -90938,7 +90797,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91015,7 +90873,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["6".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91064,7 +90921,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: super::find_runtime_wasm(),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91110,7 +90966,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: super::find_runtime_wasm(),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91158,7 +91013,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: super::find_runtime_wasm(),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91200,7 +91054,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: super::find_runtime_wasm(),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91280,7 +91133,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: super::find_runtime_wasm(),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91400,7 +91252,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["9".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91465,7 +91316,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["4".to_string()],
             runtime: None,
-            nfc: None,
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91576,7 +91426,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["9".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91663,7 +91512,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: None,
-            nfc: None,
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91731,7 +91579,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["9".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91790,7 +91637,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["9".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91861,7 +91707,6 @@ mod cross_component_oracle {
             export: None,
             args: vec!["5".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -91962,7 +91807,6 @@ mod cross_component_oracle {
             export: None,
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92033,7 +91877,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["9".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92090,7 +91933,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92153,7 +91995,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92228,7 +92069,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92301,7 +92141,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92375,7 +92214,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92455,7 +92293,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92522,7 +92359,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92594,7 +92430,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92671,7 +92506,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92737,7 +92571,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92824,7 +92657,6 @@ mod cross_component_oracle {
             export: None, // a resource-escape program exports no bare func — the host takes the escape path
             args: vec!["9".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92885,7 +92717,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["7".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -92957,7 +92788,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["4".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93011,7 +92841,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93048,7 +92877,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: super::find_runtime_wasm(),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93135,7 +92963,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["42".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93193,7 +93020,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["5".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93259,7 +93085,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["7".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93333,7 +93158,6 @@ mod cross_component_oracle {
             export: None,
             args: vec!["7".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93402,7 +93226,6 @@ mod cross_component_oracle {
             export: None,
             args: vec!["7".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93484,7 +93307,6 @@ mod cross_component_oracle {
             export: None,
             args: vec!["5".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93572,7 +93394,6 @@ mod cross_component_oracle {
             export: None,
             args: vec!["1".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93695,7 +93516,6 @@ mod cross_component_oracle {
             export: None, // a resource-escape program exports no bare func — the host takes the escape path
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93771,7 +93591,6 @@ mod cross_component_oracle {
             export: None,
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93849,7 +93668,6 @@ mod cross_component_oracle {
             export: None,
             args: Vec::new(),
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -93926,7 +93744,6 @@ mod cross_component_oracle {
             export: None,
             args: vec!["1".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -94002,7 +93819,6 @@ mod cross_component_oracle {
             export: Some("main".to_string()),
             args: vec!["9".to_string()],
             runtime: Some(runtime),
-            nfc: super::find_nfc_wasm(),
             runtime_cache_dir: None,
             host_responses: Vec::new(),
         };
@@ -94064,7 +93880,6 @@ mod cross_component_oracle {
                 export: Some("main".to_string()),
                 args: vec![arg.to_string()],
                 runtime: Some(runtime.clone()),
-                nfc: super::find_nfc_wasm(),
                 runtime_cache_dir: None,
                 host_responses: Vec::new(),
             };
