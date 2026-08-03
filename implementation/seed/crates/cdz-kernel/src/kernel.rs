@@ -1766,4 +1766,88 @@ mod monotonic_now_tests {
         .expect("deliver (dropping control)");
         assert_eq!(exec2.seen.len(), 0);
     }
+
+    // A reducer that, on one inbound message, emits BOTH a control/summary effect AND a regular effect/emit
+    // effect — to prove the drive loop partitions WITHIN a single fold, not just when a turn is all-control.
+    struct MixedEmitReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for MixedEmitReducer {
+        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    // (1) a control/summary effect — must surface, authz-exempt, unrouted.
+                    let mut control = EffectRequest::new(
+                        EffectKind::Emit,
+                        "self",
+                        Some(crate::effect::Payload::Inline(b"summary".to_vec().into())),
+                        Timeliness::Interactive,
+                    );
+                    control.content_type.family = crate::effect::effect_ct::SUMMARY.into();
+                    // (2) a regular effect/emit effect — must authorize + route to the executor.
+                    let regular = EffectRequest::new(
+                        EffectKind::Emit,
+                        "world",
+                        Some(crate::effect::Payload::Inline(b"action".to_vec().into())),
+                        Timeliness::Interactive,
+                    );
+                    FoldOutput::with_effects(vec![
+                        Effect {
+                            request: control,
+                            token: Some(b"ctl".to_vec()),
+                        },
+                        Effect {
+                            request: regular,
+                            token: None,
+                        },
+                    ])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_mixed_turn_splits_control_from_the_routed_effect() {
+        // The partition discriminates PER-EFFECT within one fold: the control/summary effect surfaces to
+        // the driver (authz-exempt, never routed), while its sibling effect/emit effect is authorized and
+        // routed to the executor in the SAME turn. The single-control test can't catch a drive loop that
+        // e.g. short-circuits the whole turn on the first control family; this pins the split.
+        let mut exec = RecordingExecutor::new();
+        let mut session = Session::genesis(Hash::of(b"mixed-v1"));
+        // Grant the emit family (any resource) so the REGULAR effect authorizes; control is exempt anyway.
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Emit,
+            predicate: crate::effect::ResourcePredicate::Any,
+        }]);
+        let control = session
+            .deliver_async_control(inbound(), None, &MixedEmitReducer, &authz, &mut exec)
+            .await
+            .expect("deliver");
+
+        // Control half: exactly the summary effect surfaced, with its token + payload.
+        assert_eq!(control.len(), 1, "only the control/* effect surfaces");
+        assert_eq!(
+            control[0].request.content_type.family.as_ref(),
+            crate::effect::effect_ct::SUMMARY
+        );
+        assert_eq!(control[0].token.as_deref(), Some(&b"ctl"[..]));
+
+        // Routed half: exactly the regular effect reached the executor (control never did).
+        assert_eq!(exec.seen.len(), 1, "only the effect/* effect routes");
+        assert_eq!(exec.seen[0].0.target.as_ref(), "world");
+        assert_eq!(
+            exec.seen[0].0.content_type.family.as_ref(),
+            crate::effect::effect_ct::EMIT
+        );
+
+        // The regular effect was authorized (granted) → no AuthzDenied event for it, and it produced a
+        // dispatch. (Control being exempt also produces no AuthzDenied — so zero denials total here.)
+        assert!(
+            !session
+                .log()
+                .iter()
+                .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })),
+            "granted regular effect + exempt control → no AuthzDenied"
+        );
+    }
 }
