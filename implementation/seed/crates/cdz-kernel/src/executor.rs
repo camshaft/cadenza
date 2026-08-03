@@ -75,7 +75,7 @@ impl Executor for CompositeExecutor {
     async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         // Route by the request's content-type FAMILY (seq-39): a request whose family has no registered
         // executor is an OBSERVABLE Err (§9d anti-stuck), never a panic/drop.
-        match self.by_family.get_mut(&req.content_type.family) {
+        match self.by_family.get_mut(req.content_type.family.as_ref()) {
             Some(inner) => inner.perform_async(req, idempotency_key).await,
             None => EffectOutcome::Err(format!(
                 "no executor registered for effect family {:?} (target {:?})",
@@ -297,7 +297,7 @@ mod tests {
             .with(EffectKind::Http, Box::new(TagExecutor(b"http-executor")))
             .with(EffectKind::Model, Box::new(TagExecutor(b"model-executor")));
         let mut r = req(EffectKind::Http, "x");
-        r.content_type.family = EffectKind::Model.family().to_string();
+        r.content_type.family = EffectKind::Model.family().into();
         // Routed by family ("model") to the MODEL executor, despite kind == Http.
         assert_eq!(
             exec.perform_async(&r, Hash::of(b"k")).await,
@@ -306,7 +306,7 @@ mod tests {
         // And a family with NO registered executor (and no EffectKind variant) is an observable Err naming
         // that family — the fail-closed seam the register-by-string slice hardens to retry::permanent.
         let mut ext = req(EffectKind::Http, "x");
-        ext.content_type.family = "embedding".to_string();
+        ext.content_type.family = "embedding".into();
         match exec.perform_async(&ext, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => assert!(
                 msg.contains("embedding"),
