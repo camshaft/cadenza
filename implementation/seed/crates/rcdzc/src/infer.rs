@@ -1438,16 +1438,21 @@ fn width_fault_against_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<Rej
         if let Some(v) = v
             && !v.fits_width(it.ground_signed(), w)
         {
-            // Anchor at the offending literal node; no `ty_expr` for a nested payload (the width came from
-            // the enclosing annotation, not a written sub-annotation), so no retype fix — the message names
-            // the range, which is the actionable fact.
-            return Some(int_out_of_range_reject(
-                want,
-                it.ground_signed(),
-                w,
-                &v,
-                value,
-            ));
+            // Anchor at the offending literal node. The width came from a SOLVED element/payload `Ty` (an
+            // enclosing compound annotation, or — via the list arms — a SIBLING literal's annotation), NOT a
+            // written sub-annotation on THIS literal, so there is no type-node to retype. `int_out_of_range_reject`
+            // would attach `Fix::replace_heuristic(<literal>, "Int16")` — rewriting the VALUE `-41` into a TYPE
+            // name (`(list (: 1 UInt64) Int8)`), a source-corrupting suggestion. So build the reject WITHOUT a
+            // fix: the message names the valid range, which is the actionable fact (the direct-annotation
+            // callers `(: v T)` / `((: name T) v)` DO have a type-node and keep their retype fix). See the
+            // `int_out_of_range_reject` doc.
+            return Some(
+                Reject::coded(
+                    Code::IntOutOfRange,
+                    int_out_of_range_message(want, it.ground_signed(), w),
+                )
+                .at(value),
+            );
         }
         return None;
     }
@@ -1504,6 +1509,12 @@ fn nested_width_fault_by_ty(db: &mut Db, value: StructId, want: &Ty) -> Option<R
 /// Heuristic: the retype clears the range fault, but whether the author meant a wider/signed type (vs. a
 /// different literal) is theirs to confirm. Shared by both CDZ0302 literal-range sites (the value
 /// annotation `(: v T)` and the let-binder/param `((: name T) v)`), so both carry the fix.
+///
+/// ⚠ `ty_expr` MUST be a written TYPE node (the annotation being retyped) — the fix replaces its spelling
+/// with a type name. NEVER pass a VALUE node here: a literal whose width came from a solved/inferred `Ty`
+/// (a nested compound payload, or a sibling literal's annotation) has no type-node to retype, and
+/// rewriting the literal into a type name corrupts the source. Those sites build the reject directly
+/// (message + `.at(value)`, no fix) — see `width_fault_against_ty`'s narrow-int arm.
 fn int_out_of_range_reject(
     annot_ty: &Ty,
     signed: bool,
