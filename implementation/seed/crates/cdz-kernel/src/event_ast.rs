@@ -311,6 +311,56 @@ pub fn decode_http_response(
     Ok((status, headers, body))
 }
 
+/// Encode a §4c mutable-name `set(name, hash)` log entry — the PAYLOAD of one append to a name's
+/// append-only value-over-time log (`system/compiler/latest → <hash>` etc.). Shape:
+///   `(name-set (name <str>) (hash <hash>))`
+/// `name` is the full mutable-name string (its PREFIX is what the write-authority parse gates — §4c point
+/// 2); `hash` is the content-address the name now points at. This is the NON-CRYPTO half (concierge
+/// greenlit 2026-08-03): the signature envelope (`producer`/`signature`, §10) rides the EVENT envelope
+/// around this payload, layered once the operator approves the signing scheme — this codec is unchanged by
+/// that (additive: the signed log is these entries + an envelope, not a different payload). Same §9b
+/// shared-codec rationale as the other payload codecs here.
+pub fn encode_name_set(name: &str, hash: &Hash) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("name-set");
+    let name_form = {
+        let h = b.name("name");
+        let v = str_leaf(&mut b, name);
+        b.list(vec![h, v])
+    };
+    let hash_f = {
+        let h = b.name("hash");
+        let hf = hash_form(&mut b, hash);
+        b.list(vec![h, hf])
+    };
+    let root = b.list(vec![head, name_form, hash_f]);
+    codec::encode(&b.finish(root))
+}
+
+/// Decode a §4c `set(name, hash)` log entry encoded by [`encode_name_set`] → `(name, hash)`. Total:
+/// non-conforming bytes are a clean `Shape` error, never a panic (the bytes ride a durable log / an
+/// untrusted store, so a malformed entry must fail cleanly, not crash the resolver).
+pub fn decode_name_set(bytes: &[u8]) -> Result<(String, Hash), EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let [name_f, hash_f] = a
+        .as_form(a.root, "name-set")
+        .ok_or(shape("name-set head"))?
+    else {
+        return Err(shape("name-set arity"));
+    };
+    let name_kids = a.as_form(*name_f, "name").ok_or(shape("name form"))?;
+    let [nv] = name_kids else {
+        return Err(shape("name arity"));
+    };
+    let name = read_str(&a, *nv)?;
+    let hash_kids = a.as_form(*hash_f, "hash").ok_or(shape("hash form"))?;
+    let [hv] = hash_kids else {
+        return Err(shape("hash-wrapper arity"));
+    };
+    let hash = read_hash(&a, *hv)?;
+    Ok((name, hash))
+}
+
 /// Encode a `(none)` | `(some <bytes>)` optional body form (shared by the request encoders).
 fn encode_opt_body(b: &mut Builder, body: Option<&[u8]>) -> StructId {
     match body {
@@ -1242,6 +1292,33 @@ mod tests {
             encode_capability_manifest(&crate::effect::CapabilityManifest { entries: vec![] });
         assert!(decode_http_request(&wrong).is_err());
         assert!(decode_http_response(&wrong).is_err());
+    }
+
+    #[test]
+    fn name_set_payload_round_trips_name_and_hash() {
+        // §4c set(name, hash) log-entry payload (non-crypto half): the full name string + the content
+        // hash it points at round-trip through the shared codec.
+        let h = Hash::of(b"the compiler wasm bytes");
+        let (name, hash) =
+            decode_name_set(&encode_name_set("system/compiler/latest", &h)).expect("round-trips");
+        assert_eq!(name, "system/compiler/latest");
+        assert_eq!(hash, h);
+
+        // A scoped name with a different prefix round-trips identically (the prefix is the resolver's
+        // authority concern, not the codec's — the codec is prefix-agnostic).
+        let (name2, hash2) =
+            decode_name_set(&encode_name_set("session/abc-123/scratch", &Hash::of(b"x"))).unwrap();
+        assert_eq!(name2, "session/abc-123/scratch");
+        assert_eq!(hash2, Hash::of(b"x"));
+    }
+
+    #[test]
+    fn decode_name_set_is_total_on_garbage_and_wrong_shape() {
+        // Non-conforming bytes are a clean Err, never a panic (durable-log / untrusted-store posture).
+        assert!(decode_name_set(b"not a cadenza sexpr").is_err());
+        // A valid AST of the WRONG shape (an http-response) is an Err, not a misread.
+        let wrong = encode_http_response(200, &[], b"");
+        assert!(decode_name_set(&wrong).is_err());
     }
 
     #[test]
