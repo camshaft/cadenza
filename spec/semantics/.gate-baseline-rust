@@ -2501,6 +2501,7 @@ pass	a performing do-def feeding a bin-construction operand under a handler stay
 pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)
 pass	a pipeline chain applies its stages left to right
+pass	a pipeline chain threads handler STATE left-to-right through effectful stages
 pass	a plain number def is unaffected by a following statement (the `as` sugar stays in its statement)
 pass	a plain quote does not evaluate a quasiquote's unquote nested inside it
 pass	a plain record compared to a nominal record of the same shape is a type error
