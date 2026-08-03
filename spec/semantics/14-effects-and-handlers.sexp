@@ -6806,3 +6806,25 @@
   (host-responses (respond io.get (: 21 Int64)))
   (host-calls (call io.get))
   (output (: 2131 Int64)))
+
+(case "two DISTINCT let-bound host calls each captured by its own escaping closure fire once each in order (adv-62)"
+  (doc    "The two-distinct-calls ORDER companion of the adv-62 single-call pin above (breaker escalation):
+           `mk` binds `x = io.a` and `y = io.b` inside `(host (io) …)` and returns `(tuple (fn (n) (+ x n))
+           (fn (n) (* y n)))`; `main` calls both. Each host op must fire EXACTLY ONCE and IN ORDER (io.a
+           then io.b) — the per-closure re-fire bug (fixed #1528) would have fired each per capturing closure
+           and/or lost the order. With io.a=3, io.b=5: `f(10)=3+10=13`, `g(100)=5*100=500`, sum 513, and the
+           (host-calls io.a io.b) fixture pins BOTH the single firing of each AND their order — coverage the
+           single-call pin can't give. rust/rust-async decline the closure-in-tuple-through-host shape (todo),
+           as with the single-call case.")
+  (input  (do
+            (effect io (op a (-> Unit Int64)) (op b (-> Unit Int64)))
+            (def (mk)
+              (host (io)
+                (let ((x (io.a unit)) (y (io.b unit)))
+                  (tuple (fn ((: n Int64)) (+ x n)) (fn ((: n Int64)) (* y n))))))
+            (def (main)
+              (match (mk) ((tuple f g) (+ (f 10) (g 100)))))
+            (export main)))
+  (host-responses (respond io.a (: 3 Int64)) (respond io.b (: 5 Int64)))
+  (host-calls (call io.a) (call io.b))
+  (output (: 513 Int64)))
