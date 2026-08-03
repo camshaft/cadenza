@@ -28,14 +28,25 @@ pub trait Authorize {
     /// Is this request permitted? `Ok(())` to proceed to dispatch; `Err(reason)` to deny — the denied
     /// request never reaches an executor and the reason is recorded. Total + pure; may `.await` a wasm
     /// policy evaluation internally.
-    async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String>;
-
     /// Authorize `req` — the un-suffixed name (the trait is `async`; `_async` is redundant, operator
-    /// cleanup). TRANSITIONAL default forwards to [`authorize_async`] so callers can move to `authorize`
-    /// while existing impls still define `authorize_async` — never-red bridge, dropped once all impls
-    /// define `authorize` (trait-rename beat T1→T3, coordinated with v-agent-harness-host).
+    /// cleanup). This is the TARGET name. During the trait-rename window BOTH `authorize` and
+    /// `authorize_async` carry mutually-forwarding defaults, so an impl provides EXACTLY ONE and the other
+    /// forwards to it — a zero-red migration (no flag-day, no coordinated red window): existing impls keep
+    /// defining `authorize_async`; new/migrated impls define `authorize`; callers always use `authorize`.
+    /// Once ALL impls (kernel + cdz-agent-host) define `authorize`, `authorize_async` is dropped and
+    /// `authorize` becomes required (beat T3).
+    ///
+    /// TRANSITIONAL-WINDOW INVARIANT: every impl must define exactly one of the two. An impl that defines
+    /// NEITHER compiles but infinite-recurses at first call — a known, temporary hazard, guarded by the impl
+    /// set being fixed and enumerated. Do not add a new Authorize impl without defining one method.
     async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
         self.authorize_async(req).await
+    }
+
+    /// Legacy suffixed name — TRANSITIONAL default forwarding to [`authorize`]. Existing impls still define
+    /// this directly; dropped once every impl has migrated to `authorize` (see the window invariant above).
+    async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String> {
+        self.authorize(req).await
     }
 }
 

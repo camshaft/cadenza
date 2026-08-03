@@ -28,15 +28,25 @@ use std::collections::HashMap;
 pub trait Executor {
     /// Perform `req`. `idempotency_key` lets a side-effecting executor dedup a re-driven dispatch after a
     /// crash. Returns the outcome the kernel folds back as an `EffectResult`. May `.await` real I/O.
-    async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome;
-
     /// Perform `req` — the un-suffixed name (the whole trait is `async`, so the `_async` suffix is
-    /// redundant; operator cleanup). TRANSITIONAL default forwards to [`perform_async`] so callers can move
-    /// to `perform` while existing impls (kernel + cdz-agent-host) still define `perform_async` — never-red
-    /// bridge. Once all impls define `perform`, `perform_async` is dropped and this becomes the required
-    /// method (coordinated with v-agent-harness-host; the trait-method rename beat T1→T3).
+    /// redundant; operator cleanup). This is the TARGET name. During the trait-rename window BOTH `perform`
+    /// and `perform_async` carry mutually-forwarding defaults, so an impl provides EXACTLY ONE and the other
+    /// forwards to it — a zero-red migration (no flag-day, no coordinated red window): existing impls keep
+    /// defining `perform_async`; new/migrated impls define `perform`; callers always use `perform`. Once ALL
+    /// impls (kernel + cdz-agent-host) define `perform`, `perform_async` is dropped and `perform` becomes
+    /// required (beat T3).
+    ///
+    /// TRANSITIONAL-WINDOW INVARIANT: every impl must define exactly one of the two. An impl that defines
+    /// NEITHER compiles but infinite-recurses at first call — a known, temporary hazard, guarded by the impl
+    /// set being fixed and enumerated. Do not add a new Executor impl without defining one method.
     async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         self.perform_async(req, idempotency_key).await
+    }
+
+    /// Legacy suffixed name — TRANSITIONAL default forwarding to [`perform`]. Existing impls still define
+    /// this directly; dropped once every impl has migrated to `perform` (see the window invariant above).
+    async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+        self.perform(req, idempotency_key).await
     }
 
     /// Does this executor serve effect `family`? The MECHANISM dimension the capability-manifest
