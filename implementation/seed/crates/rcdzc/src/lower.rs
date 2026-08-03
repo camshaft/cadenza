@@ -17298,10 +17298,19 @@ fn lower_float_of(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
     match core_of(db, args[0]) {
         Core::Poison(r) => Core::Poison(r),
         Core::ConstFloat(d) => {
-            // Round the exact source value to the target width: `as f32 as f64` for a Float32 target
-            // (narrowing rounds to nearest binary32), the f64 value unchanged for a Float64 target
+            // Read the source value AT THE SOURCE OPERAND'S OWN width first — a `Float32` source literal IS
+            // its binary32 value, so demote before converting (else a widen/identity `Float64.of` of a
+            // `Float32` promotes the un-demoted f64 payload the reader parsed, diverging from the runtime
+            // `f32.promote` of the real f32 slot: `(Float64.of (: 0.1 Float32))` → 0.1 instead of
+            // 0.10000000149011612 — the adv-61 fold-precision class, here in the width conversion).
+            let src = f64::from_bits(const_float_bits_at_operand_width(
+                db,
+                args[0],
+                d.to_f64_bits(),
+            ));
+            // Then round the source value to the TARGET width: `as f32 as f64` for a Float32 target
+            // (narrowing rounds to nearest binary32), the value unchanged for a Float64 target
             // (a promote/identity is exact). Rounding once at the target width matches the runtime op.
-            let src = f64::from_bits(d.to_f64_bits());
             let rounded = if width == 32 { src as f32 as f64 } else { src };
             match crate::ast::Decimal::from_f64(rounded) {
                 Some(nd) => {
