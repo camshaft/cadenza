@@ -82,7 +82,8 @@ fn now_cap() -> Authorizer {
 async fn agent_loop_runs_end_to_end_through_the_real_clock_executor() {
     let reducer = ClockAgent;
     let authz = now_cap();
-    // The real executor, wired by kind exactly as the Bedrock Model executor will be alongside it.
+    // The real executor, registered by canonical family string exactly as the Bedrock Model executor
+    // will be alongside it.
     let mut exec =
         CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
     let mut session = Session::genesis(Hash::of(b"clock-agent-v1"));
