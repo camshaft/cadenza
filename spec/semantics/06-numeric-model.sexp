@@ -899,6 +899,32 @@
             (export main)))
   (call   main (: true Bool)) (output (: true Bool)))
 
+(case "runtime Float32 arithmetic computes at f32 precision — 0.1 + 0.2 equals 0.3 exactly at binary32"
+  (doc    "The f32-PRECISION witness on the runtime path: at binary32, `0.1f32 + 0.2f32` ROUNDS to
+           0x3E99999A, which IS `0.3f32` exactly — so the equality is TRUE (1), the opposite of the
+           famous f64 result. The addition must be an f32.add over demoted operands: an emit that
+           widened to f64, added, and compared at f64 would answer 0. Pinned with a runtime factor `x`
+           so nothing folds — this is the runtime CONTROL for the const-fold twin (adv-61, fold-at-f64
+           divergence): whatever the fold does must agree with THIS answer.")
+  (input  (do
+            (def (main (: x Float32))
+              (if (= (+ (: 0.1 Float32) (* x (: 0.2 Float32))) (: 0.3 Float32)) 1 0))
+            (export main)))
+  (call   main (: 1.0 Float32)) (output (: 1 Int64)))
+
+(case "runtime Float32 ordering compares at f32 precision — same-bits literals are not ordered"
+  (doc    "The ORDERING control beside the f32-precision witness: `0.3` and `0.30000001192092896` differ
+           at f64 but demote to the SAME binary32 value (0x3E99999A), so at Float32 neither is `<` the
+           other — the comparison must demote BOTH sides before ordering. The literal pair straddles the
+           f64/f32 rounding boundary in the DISCRIMINATING direction (an f64 compare would answer 1).
+           Runtime-branch scrutinee so the compare executes. The runtime control for adv-61's ordering
+           fold faces.")
+  (input  (do
+            (def (main (: c Bool))
+              (if (< (: (if c 0.3 9.9) Float32) (: 0.30000001192092896 Float32)) 1 0))
+            (export main)))
+  (call   main (: true Bool)) (output (: 0 Int64)))
+
 (case "halving the minimum subnormal flushes to zero while a double-min stays subnormal"
   (doc    "The gradual-underflow BOUNDARY at runtime (the Float32 subnormal pin above is a literal FIT
            check): `(/ a 2.0)` on the minimum positive Float64 subnormal 5.0e-324 has no smaller

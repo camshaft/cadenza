@@ -379,6 +379,7 @@ pass	TWO Tuple args with a fixed-shape COMPOUND result
 pass	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
 pass	TWO closures capture DIFFERENT generations of one shadowed name and each sees its own
 pass	TWO closures capture the SAME heap map and the map outlives both applications
+todo	TWO closures capturing one let-bound host call share ONE firing (in the exported def)
 pass	TWO closures escaping one handle carry DISTINCT captured state reads
 pass	TWO distinct nonzero BigInt literal probes dispatch in one recursive fn
 pass	TWO guarded map arms over a PARTIAL-CONST map fall through, each re-resolving its value binder
@@ -681,7 +682,9 @@ pass	a NEGATIVE prefixed quantity carries its sign through the reference scale-f
 pass	a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin
 pass	a RUNTIME erased Qty add is still CHECKED at the inner width (overflow traps at run time)
 pass	a bin-arm guard cond that traps at the decoded binder TRAPS the match — it does not fall through
+pass	a closure capturing a RUNTIME String.slice→to-bytes VIEW reads it at host-call dispatch
 pass	a failed multi-segment bin guard falls through and the NEXT arm re-decodes its own binders
+pass	a host-called closure capturing a HEAP LIST indexes it at call dispatch
 pass	a list-aliased record read after Record.with sees the ORIGINAL value (no in-place clobber)
 pass	a point fact flows through a let binding into a compare fold — the point-fact composition face
 pass	a NESTED Record ARG (a record containing a record) crosses the direct-call boundary
@@ -2777,6 +2780,7 @@ pass	a runtime String match on a hit arm agrees with its desugared (= s literal)
 pass	a runtime String.from-bytes result is read twice and both reads see the decoded string
 pass	a runtime String.slice STORED as a map key is found by a flat probe
 pass	a runtime String.slice probing a flat-keyed map hits by content
+pass	a runtime UInt64 underflow inside a newtype constructor argument still traps
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin ENCODE lays out le and signed fields byte-exactly
@@ -4425,6 +4429,7 @@ pass	functions are single-arity and curried
 pass	generated FLOAT values are totally ordered (a trichotomy property over two generated floats)
 pass	generated small-alphabet strings dedup in a Set by content across per-draw construction
 pass	generated string keys OVERWRITE by content and the first word's final value is observable
+pass	grafting through a DAG-shared user-sum subtree rebuilds one path and leaves the shared original intact
 pass	graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
@@ -4843,6 +4848,8 @@ pass	runtime BigInt remainder runs on the arbitrary-precision runtime
 pass	runtime Bools order false below true with compare and equality agreeing
 pass	runtime Bytes ordering is content-lexicographic over unsigned bytes — the blessed total order
 pass	runtime Bytes value-equality distinguishes different content
+pass	runtime Float32 arithmetic computes at f32 precision — 0.1 + 0.2 equals 0.3 exactly at binary32
+pass	runtime Float32 ordering compares at f32 precision — same-bits literals are not ordered
 pass	runtime Rational DIVISION inverts the divisor and reduces to lowest terms
 pass	runtime Rational MULTIPLICATION of two parameter-built fractions reduces to lowest terms
 pass	runtime Rational arithmetic adds two parameter-built fractions exactly

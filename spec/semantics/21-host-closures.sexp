@@ -2196,6 +2196,64 @@
   (call   mk (: 3 Int64) (: 100 Int64))
   (output (: 105 Int64)))
 
+(case "a host-called closure capturing a HEAP LIST indexes it at call dispatch"
+  (doc    "The parameterized-make twin of the RUNTIME-BUILT-list capture above: `make(10)` builds
+           `[10,11,12]` in the factory's let, the closure captures the spine, and the host's `call(handle,
+           2)` reads element 2 through the capture cell → 12. Pins the capture-cell dup for a list built
+           DIRECTLY in the factory body (the sibling case builds by recursion) — the minimal
+           heap-capture-crosses-the-boundary shape.")
+  (input  (do
+            (def (make (: k Int64))
+              (let ((xs (list k (+ k 1) (+ k 2))))
+                (fn ((: i Int64))
+                  (match (List.at xs i) ((Some v) v) ((None _u) -1)))))
+            (export make)))
+  (call   make (: 10 Int64) (: 2 Int64))
+  (output (: 12 Int64)))
+
+(case "a closure capturing a RUNTIME String.slice→to-bytes VIEW reads it at host-call dispatch"
+  (doc    "The consuming-op-family capture face (the adv-54 op family × the closure env): the factory
+           slices a RUNTIME rope (String.concat then String.slice — nothing folds), converts the slice
+           view with String.to-bytes, and the returned closure captures the resulting Bytes. The host's
+           `call(handle, 0)` reads byte 0 of \"cdefgh\" → 99 ('c'). Pins that a captured runtime
+           slice/to-bytes result is evaluated ONCE into the capture cell and read back per call — the
+           binding must be KEPT (adv-54's is_runtime_computation discipline) even when its single read
+           is inside a lambda that escapes. The corpus's other guest-built captures use List.push spines
+           and ropes; this is the borrowed-view-producing op family.")
+  (input  (do
+            (def (mk (: k Int64))
+              (let ((s (String.concat "abc" "defgh")))
+                (match (String.slice s k 6)
+                  ((Some t)
+                    (let ((b (String.to-bytes t)))
+                      (fn ((: i Int64))
+                        (match (Bytes.at b i) ((Some v) (Int64.of v)) ((None _u) -1)))))
+                  ((None _u) (fn ((: _i Int64)) -2)))))
+            (export mk)))
+  (call   mk (: 2 Int64) (: 0 Int64))
+  (output (: 99 Int64)))
+
+(case "TWO closures capturing one let-bound host call share ONE firing (in the exported def)"
+  (doc    "The multi-capture sharing invariant at the host boundary: `(let ((v (io.get unit))) …)` binds
+           ONE host response and BOTH closures capture the same `v` — the host call fires exactly ONCE
+           (the recorded host-calls list is the assertion), then `(f 3) + 100·(g 3)` = (7+3) + 100·21 =
+           2110. A per-closure re-fire would consume a second (unsupplied) response and trap. This is the
+           in-exported-def face that HOLDS; the helper-def twin double-fires today (adv-62, filed —
+           v-effects owns) — when that fix lands, this pin is its over-rotation guard: in-body sharing
+           must KEEP firing once.")
+  (input  (do
+            (effect io (op get (-> Unit Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (let ((v (io.get unit)))
+                  (match (tuple (fn ((: x Int64)) (+ v x))
+                                (fn ((: x Int64)) (* v x)))
+                    ((tuple f g) (+ (f k) (* 100 (g k))))))))
+            (export main)))
+  (host-responses (respond io.get (: 7 Int64)))
+  (host-calls (call io.get))
+  (call   main (: 3 Int64)) (output (: 2110 Int64)))
+
 (case "a trap raised inside a host-called closure body reaches the host as a trap"
   (doc    "`mk(100)` captures k=100 and returns `(fn (d) (/ k d))`; the host calls it with d = 0 and the
            division traps INSIDE the closure body — behind the resource `call` dispatch, not in a plain

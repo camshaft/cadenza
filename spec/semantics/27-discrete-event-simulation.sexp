@@ -166,6 +166,22 @@
             (export main)))
   (error  CDZ0203))
 
+(case "a runtime UInt64 underflow inside a newtype constructor argument still traps"
+  (doc    "The trap-preservation face of the nominal-newtype erasure: `(D.D (- k 5))` wraps a CHECKED
+           UInt64 subtraction in a Duration-style constructor. The wrap must not launder the check —
+           at k = 3 the underflow traps 'integer overflow' exactly as the bare `(- k 5)` does; at
+           k = 12 the wrapped 7 destructures back out. Pins that erasure (a newtype IS its rep at run
+           time) erases the TYPE, not the inner operation's overflow discipline — the ctor-argument
+           companion of the scale-constructor pins above (whose arithmetic never underflows).")
+  (input  (do
+            (type D (D UInt64))
+            (def (main (: k UInt64))
+              (match (D.D (- k 5))
+                ((D v) v)))
+            (export main)))
+  (call   main (: 3 UInt64)) (trap "integer overflow")
+  (call   main (: 12 UInt64)) (output (: 7 UInt64)))
+
 ; ────────────────────────────────────────────────────────────────────────────────────────────────
 ; Increment 1 — the time-ordered event queue (priority queue, FIFO same-time tie-break, §3.4, §4.1)
 ; ────────────────────────────────────────────────────────────────────────────────────────────────

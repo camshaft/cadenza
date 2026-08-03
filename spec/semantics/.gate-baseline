@@ -379,6 +379,7 @@ pass	TWO Tuple args with a fixed-shape COMPOUND result
 pass	TWO Tuple args with a scalar BETWEEN them (tuple, scalar, tuple)
 pass	TWO closures capture DIFFERENT generations of one shadowed name and each sees its own
 pass	TWO closures capture the SAME heap map and the map outlives both applications
+pass	TWO closures capturing one let-bound host call share ONE firing (in the exported def)
 pass	TWO closures escaping one handle carry DISTINCT captured state reads
 pass	TWO distinct nonzero BigInt literal probes dispatch in one recursive fn
 pass	TWO guarded map arms over a PARTIAL-CONST map fall through, each re-resolving its value binder
@@ -1159,6 +1160,7 @@ pass	a closure captures the binding in scope where it was created
 pass	a closure captures the param generation BEFORE a shadow and applies after
 pass	a closure captures the result of a build-time host op called with an argument
 pass	a closure capturing THREE scalars is made and called
+pass	a closure capturing a RUNTIME String.slice→to-bytes VIEW reads it at host-call dispatch
 pass	a closure capturing a RUNTIME-BUILT list indexes the captured spine at call time
 pass	a closure capturing a build-time host effect preserves the order of two host calls
 pass	a closure capturing a handler-computed VALUE escapes the handle and applies outside
@@ -1783,6 +1785,7 @@ pass	a host op whose result is a QUANTITY crosses the boundary as its inner scal
 pass	a host op with a String parameter composes with the value-heap runtime
 pass	a host response SIZES a guest-built collection which is then folded and keyed
 pass	a host-called closure applied to a different argument tracks the input
+pass	a host-called closure capturing a HEAP LIST indexes it at call dispatch
 pass	a host-called closure with a different body dispatches the right code
 pass	a host-crossing closure captures a CHAMP map and set and reads both per call
 pass	a host-delegated result SEEDS an in-program handler's initial state
@@ -2812,6 +2815,7 @@ pass	a runtime String match on a hit arm agrees with its desugared (= s literal)
 pass	a runtime String.from-bytes result is read twice and both reads see the decoded string
 pass	a runtime String.slice STORED as a map key is found by a flat probe
 pass	a runtime String.slice probing a flat-keyed map hits by content
+pass	a runtime UInt64 underflow inside a newtype constructor argument still traps
 pass	a runtime Unit.in conversion emits the scale multiply (Int)
 pass	a runtime arithmetic right shift preserves the sign
 pass	a runtime bin ENCODE lays out le and signed fields byte-exactly
@@ -4478,6 +4482,7 @@ pass	generated FLOAT values are totally ordered (a trichotomy property over two 
 pass	generated small-alphabet strings dedup in a Set by content across per-draw construction
 pass	generated string keys OVERWRITE by content and the first word's final value is observable
 pass	generic user-sum values dedupe as set elements and key a map by rope-payload content
+pass	grafting through a DAG-shared user-sum subtree rebuilds one path and leaves the shared original intact
 pass	graph REACHABILITY drains a worklist against a visited-set over a Map adjacency list
 pass	greater-than at the integer extremes is signed
 pass	greater-than comparison
@@ -4911,6 +4916,8 @@ pass	runtime BigInt remainder runs on the arbitrary-precision runtime
 pass	runtime Bools order false below true with compare and equality agreeing
 pass	runtime Bytes ordering is content-lexicographic over unsigned bytes — the blessed total order
 pass	runtime Bytes value-equality distinguishes different content
+pass	runtime Float32 arithmetic computes at f32 precision — 0.1 + 0.2 equals 0.3 exactly at binary32
+pass	runtime Float32 ordering compares at f32 precision — same-bits literals are not ordered
 pass	runtime Rational DIVISION inverts the divisor and reduces to lowest terms
 pass	runtime Rational MULTIPLICATION of two parameter-built fractions reduces to lowest terms
 pass	runtime Rational arithmetic adds two parameter-built fractions exactly
