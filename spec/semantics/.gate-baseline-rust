@@ -648,6 +648,7 @@ pass	a LAZY comparator chain (Ordering + thunk) short-circuits on decisive and f
 pass	a LEB128 final byte is the shifted remainder masked to seven bits
 pass	a LEB128 non-final byte composes mask, continuation bit, and truncation
 pass	a LET shadow of a do-def heap binding closes its scope and the do-def survives
+pass	a LET-bound escaping-effect closure returned from a host block cannot cross the host boundary
 pass	a LET-bound outer perform under an inner handle threads its state advance
 pass	a LIST OF SUMS resumed from a handler feeds an event-sourcing fold in the body
 pass	a LIST built in the handle body from perform results crosses the handle exit live
@@ -1183,6 +1184,7 @@ pass	a checked integer conversion of an out-of-range CONSTANT is rejected at com
 pass	a checked integer conversion that fits succeeds
 pass	a checked result is consumed by matching its Option at run time
 pass	a checked-add over a RUNTIME operand declines pending the Core::CheckedArith runtime emit
+pass	a closure NESTED IN A TUPLE that performs a delegated effect cannot cross the host boundary
 pass	a closure RETURNS its captured map and the alias plus the original both read after
 pass	a closure applied through an unbuilt sibling variant compiles and runs
 pass	a closure argument is another closure's result
