@@ -144,7 +144,9 @@ impl EffectRequest {
     ) -> Self {
         EffectRequest {
             content_type: ContentType {
-                family: kind.family().to_string(),
+                // `family()` is a `&'static str` → `Cow::Borrowed`, ZERO alloc (the per-effect String this
+                // used to build is exactly what the operator's Bytes/cheap-clone directive flagged).
+                family: std::borrow::Cow::Borrowed(kind.family()),
                 version: 1,
             },
             kind,
@@ -313,7 +315,7 @@ pub async fn project_manifest(
             // with no `EffectKind` still probes by family once register-by-string lands.
             let kind = EffectKind::from_family(family).unwrap_or(EffectKind::Emit);
             let mut probe = EffectRequest::new(kind, probe_target, None, Timeliness::Interactive);
-            probe.content_type.family = family.to_string();
+            probe.content_type.family = family.to_string().into();
             match authorizer.authorize_async(&probe).await {
                 Ok(()) => GrantState::Granted,
                 Err(_) => GrantState::Denied,
@@ -392,7 +394,7 @@ mod tests {
             payload: Some(Payload::Inline(b"body".to_vec().into())),
             timeliness: Timeliness::Interactive,
             content_type: ContentType {
-                family: EffectKind::Http.family().to_string(),
+                family: EffectKind::Http.family().into(),
                 version: 1,
             },
         };

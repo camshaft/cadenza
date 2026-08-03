@@ -110,7 +110,7 @@ mod tests {
             predicate: ResourcePredicate::Any,
         }]);
         let mut r = req(EffectKind::Http, "x");
-        r.content_type.family = EffectKind::Model.family().to_string();
+        r.content_type.family = EffectKind::Model.family().into();
         // The Http grant's family ("http") no longer matches the request's family ("model") → denied...
         assert!(http_grant.authorize_async(&r).await.is_err());
         // ...and the Model grant's family ("model") matches → permitted, despite kind == Http.

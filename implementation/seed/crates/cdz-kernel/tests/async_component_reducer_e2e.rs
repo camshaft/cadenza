@@ -22,7 +22,7 @@ async fn real_guest_folds_through_async_apply_end_to_end() {
     };
 
     let ct = ContentType {
-        family: "message".to_string(),
+        family: "message".into(),
         version: 1,
     };
     let (effects, kv) = reducer
@@ -55,7 +55,7 @@ async fn async_reducer_drives_via_the_async_reducer_trait() {
         cause: None,
         body: cdz_kernel::event::EventBody::Inbound {
             content_type: cdz_kernel::event::ContentType {
-                family: "message".to_string(),
+                family: "message".into(),
                 version: 1,
             },
             payload: cdz_kernel::effect::Payload::Inline(b"hello".to_vec().into()),

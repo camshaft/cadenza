@@ -36,7 +36,7 @@ async fn real_guest_component_folds_through_apply_end_to_end() {
 
     // Fold an inbound "message" event through the REAL guest.
     let ct = ContentType {
-        family: "message".to_string(),
+        family: "message".into(),
         version: 1,
     };
     let (effects, kv) = reducer
@@ -56,7 +56,7 @@ async fn real_guest_component_folds_through_apply_end_to_end() {
 
     // A result event (resumes = the echoed correlation token) → the guest emits nothing (it stops).
     let ct2 = ContentType {
-        family: "effect-result".to_string(),
+        family: "effect-result".into(),
         version: 1,
     };
     let (more, _kv) = reducer
@@ -83,7 +83,7 @@ async fn dependency_free_reducer_takes_the_cached_instance_pre_fast_path() {
     );
     // The fast path still folds correctly (same result as the slow path would give).
     let ct = ContentType {
-        family: "message".to_string(),
+        family: "message".into(),
         version: 1,
     };
     let (effects, kv) = reducer
@@ -108,7 +108,7 @@ async fn a_fold_that_exceeds_its_fuel_budget_is_aborted_as_fuel_exhausted() {
     assert_eq!(reducer.fuel_budget(), 1);
 
     let ct = ContentType {
-        family: "message".to_string(),
+        family: "message".into(),
         version: 1,
     };
     // `apply` returns the KV alongside the error (so `fold` restores it without cloning); the
@@ -131,7 +131,7 @@ async fn a_fold_that_exceeds_its_fuel_budget_is_aborted_as_fuel_exhausted() {
 async fn a_normal_fold_completes_within_the_default_fuel_budget() {
     let reducer = ComponentReducer::from_component_bytes(GUEST).expect("valid reducer component");
     let ct = ContentType {
-        family: "message".to_string(),
+        family: "message".into(),
         version: 1,
     };
     let (effects, _kv) = reducer

@@ -17,9 +17,15 @@ pub type SeqNo = u64;
 /// A structured content-type tag (§9b): `family` + `version`, so tolerant readers can match on family
 /// and range-check version. The kernel carries it opaquely for routing/filtering; it is a HINT, never
 /// a trusted type assertion (§9b boundary).
+///
+/// `family` is a `Cow<'static, str>` (operator Bytes/cheap-clone directive): the well-known effect families
+/// are `&'static str` consts ([`crate::effect::effect_ct`]), so a content-type built from a kind holds
+/// `Cow::Borrowed` — ZERO heap allocation on the hot effect path (an effect's `content_type.family` was a
+/// fresh `String` per `EffectRequest::new` before this). A runtime-derived family (a decoded/inbound one)
+/// holds `Cow::Owned`; both compare + deref to `&str` identically, so callers are unaffected.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ContentType {
-    pub family: String,
+    pub family: std::borrow::Cow<'static, str>,
     pub version: u32,
 }
 
@@ -37,7 +43,8 @@ impl ContentType {
     /// [`ContentType::REPORT_FAMILY`]. Use this to build the summarize-query message a fork is delivered.
     pub fn report() -> Self {
         ContentType {
-            family: Self::REPORT_FAMILY.to_string(),
+            // A `&'static str` const → `Cow::Borrowed`, zero-alloc.
+            family: std::borrow::Cow::Borrowed(Self::REPORT_FAMILY),
             version: 1,
         }
     }
@@ -344,7 +351,10 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
             let version = c.u32()?;
             let payload = decode_payload(c)?;
             EventBody::Inbound {
-                content_type: ContentType { family, version },
+                content_type: ContentType {
+                    family: family.into(),
+                    version,
+                },
                 payload,
             }
         }

@@ -438,7 +438,7 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
                 .map_err(|_| shape("content-type version out of u32 range"))?;
             EventBody::Inbound {
                 content_type: ContentType {
-                    family: read_str(a, *fam)?,
+                    family: read_str(a, *fam)?.into(),
                     version,
                 },
                 payload: read_payload(a, *pf)?,

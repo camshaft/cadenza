@@ -1113,7 +1113,9 @@ fn event_to_guest_inputs(body: &EventBody) -> (ContentType, Option<Vec<u8>>, Opt
             payload,
         } => (
             ContentType {
-                family: content_type.family.clone(),
+                // The guest-binding ContentType.family is `String`; the kernel's is now `Cow` — convert
+                // at the host→guest boundary.
+                family: content_type.family.to_string(),
                 version: content_type.version,
             },
             Some(payload_bytes(payload)),
