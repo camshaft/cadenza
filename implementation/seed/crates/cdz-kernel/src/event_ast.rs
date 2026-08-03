@@ -690,6 +690,23 @@ mod tests {
                     token: None,
                 },
             },
+            // A CONTROL / register-by-string dispatch: the family DIVERGES from kind.family() — kind is the
+            // `Emit` placeholder, the authoritative family is `control/capabilities` (the shape the I5 seed +
+            // the inline-answer arm produce). Pins that the codec preserves BOTH the placeholder kind AND the
+            // real family across a round-trip (the durability-fix field is not collapsed back onto the kind).
+            Event {
+                seq: 5,
+                cause: Some(h),
+                body: EventBody::Dispatched {
+                    id: EffectId(9),
+                    kind: EffectKind::Emit,
+                    family: crate::effect::effect_ct::CAPABILITIES.into(),
+                    target: "self".into(),
+                    idempotency_key: h,
+                    deadline_ms: None,
+                    token: None,
+                },
+            },
             Event {
                 seq: 5,
                 cause: None,
