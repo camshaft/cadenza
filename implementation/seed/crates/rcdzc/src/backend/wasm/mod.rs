@@ -888,7 +888,7 @@ pub fn emit(
             .iter()
             .map(|h| envelope::HostFn {
                 op: h.op.clone(),
-                comp_functype: host_op_comp_functype(h),
+                comp_functype: host_op_comp_functype(h, 0),
                 core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
             })
             .collect();
@@ -1328,7 +1328,7 @@ fn collect_cont_host_arg_strings(db: &mut Db, cont: &crate::core::SumCont, out: 
     }
 }
 
-fn host_op_comp_functype(h: &host::HostImport) -> Vec<u8> {
+fn host_op_comp_functype(h: &host::HostImport, list_type_idx: u32) -> Vec<u8> {
     use host::HostParam;
     let mut item = vec![wasm_abi::COMP_FUNCTYPE_FORM];
     let mut param_items = Vec::new();
@@ -1336,10 +1336,18 @@ fn host_op_comp_functype(h: &host::HostImport) -> Vec<u8> {
         let pname = format!("p{i}");
         param_items.extend_from_slice(&(pname.len() as u8).to_le_bytes());
         param_items.extend_from_slice(pname.as_bytes());
-        param_items.push(match p {
-            HostParam::Scalar(v) => v.comp_byte(),
-            HostParam::Str => wasm_abi::COMP_STRING,
-        });
+        match p {
+            // A SCALAR / STRING param is an INLINE primitive valtype byte.
+            HostParam::Scalar(v) => param_items.push(v.comp_byte()),
+            HostParam::Str => param_items.push(wasm_abi::COMP_STRING),
+            // A `list<u8>` (Bytes) param references the shared `(list u8)` DEFINED type by its
+            // instance-type-local INDEX (uleb128), NOT an inline byte — mirrors the export-side
+            // `comp_functype`'s `BoundaryResult::Bytes` result encoding (`envelope::comp_functype`). The
+            // caller prepends `list_u8_defined_type()` to the import instance-type and passes its index as
+            // `list_type_idx`; `0` is a safe placeholder while no host set produces a Bytes param yet
+            // (`collect_host_imports` does not push `HostParam::Bytes` until the emit brick).
+            HostParam::Bytes => encode::uleb128(list_type_idx as u64, &mut param_items),
+        }
     }
     item.extend_from_slice(&encode::wasm_vec(h.params.len(), &param_items));
     match h.result {
@@ -1357,7 +1365,9 @@ fn host_op_comp_functype(h: &host::HostImport) -> Vec<u8> {
 fn host_param_abi(p: &host::HostParam) -> Option<runtime_abi::AbiValType> {
     match p {
         host::HostParam::Scalar(v) => Some(*v),
-        host::HostParam::Str => None,
+        // Str and Bytes both use the `(ptr,len)` shared-memory shape, which has no scalar peer-ABI form —
+        // a String/Bytes-param PEER op declines this increment (the host-arg support is host-only).
+        host::HostParam::Str | host::HostParam::Bytes => None,
     }
 }
 
@@ -2103,7 +2113,7 @@ fn emit_runtime_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi),
+                comp_functype: host_op_comp_functype(hi, 0),
                 core_functype: Vec::new(),
             })
             .collect();
@@ -3883,7 +3893,7 @@ fn emit_closure_host_resource(
         .iter()
         .map(|hi| envelope::HostFn {
             op: hi.op.clone(),
-            comp_functype: host_op_comp_functype(hi),
+            comp_functype: host_op_comp_functype(hi, 0),
             core_functype: Vec::new(),
         })
         .collect();
@@ -7041,7 +7051,7 @@ fn emit_runtime_bytes_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi),
+                comp_functype: host_op_comp_functype(hi, 0),
                 core_functype: Vec::new(),
             })
             .collect();
@@ -7338,7 +7348,7 @@ fn emit_runtime_sum_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi),
+                comp_functype: host_op_comp_functype(hi, 0),
                 core_functype: Vec::new(),
             })
             .collect();
@@ -7590,7 +7600,7 @@ fn emit_recursive_sum_resource(
             .iter()
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
-                comp_functype: host_op_comp_functype(hi),
+                comp_functype: host_op_comp_functype(hi, 0),
                 core_functype: Vec::new(),
             })
             .collect();
