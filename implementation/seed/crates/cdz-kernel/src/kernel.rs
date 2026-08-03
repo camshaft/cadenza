@@ -59,7 +59,7 @@ pub struct Session {
     /// Armed-but-unfired timers: effect id → ABSOLUTE deadline in wall-clock ms (§9c/§16c-S5). The
     /// absolute anchor (not a duration) is what lets a recovered/migrated session compute remaining
     /// time. Rebuilt from `TimerArmed` events on replay; drained when the timer fires. The kernel — not
-    /// an executor — injects `TimerFired` once `now_ms` reaches the deadline (see `fire_due_timers_async`).
+    /// an executor — injects `TimerFired` once `now_ms` reaches the deadline (see `fire_due_timers`).
     armed_timers: BTreeMap<u64, u64>,
     /// The last `Now`-effect timestamp this session HANDED BACK, in binary nanoseconds since epoch —
     /// the monotonicity high-water mark (operator ruling). The `Now` clock effect must be strictly
@@ -84,7 +84,7 @@ pub struct Session {
     /// The first persistence error hit while writing through `store`, latched here (§16c-S1, tier B —
     /// see [`Session::attach_log`]). The in-memory log + fold always succeed, so `append`/`drive` stay
     /// infallible; a disk write failure is recorded (not swallowed, not panicked) and surfaced to the
-    /// driver via [`Session::take_persist_error`], which it MUST check after a `deliver_async`/`fire_due_timers_async`
+    /// driver via [`Session::take_persist_error`], which it MUST check after a `deliver`/`fire_due_timers`
     /// before acting on the run's external effects as durably-logged. Latched (first error wins) so one
     /// failure doesn't spam; once set, further writes are skipped (the on-disk log stopped at the last
     /// good frame, which recovery heals via `truncate_to`).
@@ -141,7 +141,7 @@ impl Session {
     }
 
     /// Take the latched persistence error, if any (§16c-S1 tier B). Call after a
-    /// `deliver_async`/`fire_due_timers_async`/`time_out_effect`; `Some` means a write-through failed mid-run, so the
+    /// `deliver`/`fire_due_timers`/`time_out_effect`; `Some` means a write-through failed mid-run, so the
     /// on-disk log stopped at the last good frame (recovery heals the torn tail via `truncate_to`) —
     /// alert/surface, don't silently proceed. Note the kernel ALREADY prevents the core S1 hazard: an
     /// effect whose `Dispatched` frame didn't persist is NOT routed (its outcome is a failed-undurable
@@ -174,7 +174,7 @@ impl Session {
     /// id-space, seeded with a CLONE of this session's current KV and the SAME reducer-hash, so it's ready
     /// to fold a "summarize yourself" inbound message WITHOUT replaying history (fork-from-snapshot, not
     /// full-replay — the materialized KV *is* the snapshot at the current seq). The caller then
-    /// [`Session::deliver_async`]es a report/summarize message, runs to quiescence, reads the reducer's answer
+    /// [`Session::deliver`]es a report/summarize message, runs to quiescence, reads the reducer's answer
     /// (its `public/` view or a model result), and DISCARDS the fork — it is never persisted.
     ///
     /// NON-INTERFERENCE by construction: this reads `self` immutably (a KV clone + the reducer-hash) and
@@ -233,7 +233,7 @@ impl Session {
     /// the semantic "what is X DOING?" answer is a fork-for-query (a fork's model summarizes itself).
     ///
     /// `now_ms` is passed by the CALLER (the kernel stays clock-free — §9c — it never reads the clock
-    /// itself; see `fire_due_timers_async`): it's used only to derive [`SessionState::Stalled`] from how long an
+    /// itself; see `fire_due_timers`): it's used only to derive [`SessionState::Stalled`] from how long an
     /// in-flight effect has been outstanding. `stall_after_ms` is the staleness threshold (e.g. 5 min); an
     /// in-flight effect whose dispatch is older than it flips the state to `Stalled`. Passing `None` for
     /// `now_ms` skips stall detection (state is Active/Quiescent/Closed only) — for a caller with no clock.
@@ -316,7 +316,7 @@ impl Session {
     /// `body` (cause-linked to `cause`), then folds it through `reducer`; each effect the fold emits is
     /// authorized then handled by kind: an executor-dispatched effect (Http/Model/Shell/Now/Emit) is
     /// durably dispatched, performed by the executor, and its result folded back; a `Timer` effect is
-    /// ARMED (a durable `TimerArmed`, no executor call) and fired later by [`Session::fire_due_timers_async`].
+    /// ARMED (a durable `TimerArmed`, no executor call) and fired later by [`Session::fire_due_timers`].
     /// The loop runs until no new effects remain. Because the fold is `.await`ed, a long-running wasm fold
     /// cooperatively YIELDS at fuel intervals (see [`crate::wasm_host::AsyncComponentReducer`]) rather than
     /// blocking the caller's single-threaded loop.
@@ -324,7 +324,7 @@ impl Session {
     /// The executor is invoked synchronously (`&mut dyn Executor`): only the reducer fold awaits. The
     /// guest-facing WIT ABI is blocking — the async lives entirely in the host-side Rust driving the
     /// component, never in the guest's interface.
-    pub async fn deliver_async(
+    pub async fn deliver(
         &mut self,
         body: EventBody,
         cause: Option<Hash>,
@@ -334,20 +334,36 @@ impl Session {
     ) -> Result<(), KernelError> {
         // The common delivery path DROPS the surfaced control/* effects (a live session turn doesn't
         // consume them by default). A driver that needs them — `fork_for_query`'s summary watch — calls
-        // [`Session::deliver_async_control`] instead. Keeping this `-> Result<(), _>` is the never-red
+        // [`Session::deliver_control`] instead. Keeping this `-> Result<(), _>` is the never-red
         // bridge: the downstream `cdz-agent-host` HostedSession::deliver returns this verbatim, so widening
         // it would break its build; the control-returning variant is ADDITIVE alongside it.
-        self.deliver_async_control(body, cause, reducer, authz, executor)
+        self.deliver_control(body, cause, reducer, authz, executor)
             .await
             .map(|_control| ())
     }
 
-    /// Like [`Session::deliver_async`], but RETURNS the `control/*` effects the reducer emitted this turn
+    /// TRANSITIONAL alias for [`Session::deliver`] — the `_async` suffix is being dropped (operator
+    /// cleanup; the whole method is `async`). `deliver_async` is PUBLIC and called by cdz-agent-host's
+    /// host loop + e2e tests, so this `#[doc(hidden)]` forwarding shim keeps them compiling until the host
+    /// migrates to `deliver` (beat T4 alias-bridge). Removed once the host is off `deliver_async`.
+    #[doc(hidden)]
+    pub async fn deliver_async(
+        &mut self,
+        body: EventBody,
+        cause: Option<Hash>,
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
+    ) -> Result<(), KernelError> {
+        self.deliver(body, cause, reducer, authz, executor).await
+    }
+
+    /// Like [`Session::deliver`], but RETURNS the `control/*` effects the reducer emitted this turn
     /// (control-plane partition, register-by-string): `control/*` families are authz-exempt + not routed —
     /// the kernel collects them and hands them back here for the DRIVER to consume (e.g. `fork_for_query`
-    /// scrapes the `control/summary` effect's `request.payload`). The common [`deliver_async`] path drops
+    /// scrapes the `control/summary` effect's `request.payload`). The common [`deliver`] path drops
     /// them; use this when you need them. See [`crate::effect::ControlEffect`].
-    pub async fn deliver_async_control(
+    pub async fn deliver_control(
         &mut self,
         body: EventBody,
         cause: Option<Hash>,
@@ -358,6 +374,22 @@ impl Session {
         self.append(body, cause).await;
         let control = self.drive(reducer, authz, executor).await;
         Ok(control)
+    }
+
+    /// TRANSITIONAL alias for [`Session::deliver_control`] — the `_async` suffix is being dropped (beat T4
+    /// alias-bridge). `#[doc(hidden)]` forwarding shim keeping cdz-agent-host's callers compiling until it
+    /// migrates to `deliver_control`. Removed once the host is off `deliver_async_control`.
+    #[doc(hidden)]
+    pub async fn deliver_async_control(
+        &mut self,
+        body: EventBody,
+        cause: Option<Hash>,
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
+    ) -> Result<Vec<crate::effect::ControlEffect>, KernelError> {
+        self.deliver_control(body, cause, reducer, authz, executor)
+            .await
     }
 
     /// Genesis-seed the capability manifest (host-capability-discovery I5): fold a synthetic
@@ -373,7 +405,7 @@ impl Session {
     ///
     /// Returns any `ControlEffect`s the fold surfaced (a genesis reducer that reacts to the seed by emitting
     /// a control/* effect); an ordinary genesis reducer emits none, so callers can usually ignore it.
-    pub async fn seed_capabilities_async(
+    pub async fn seed_capabilities(
         &mut self,
         reducer: &dyn Reducer,
         authz: &(impl Authorize + ?Sized),
@@ -416,7 +448,20 @@ impl Session {
             .await
     }
 
-    /// Has this session already been capability-SEEDED (by [`seed_capabilities_async`])? True iff the log
+    /// TRANSITIONAL alias for [`Session::seed_capabilities`] — the `_async` suffix is being dropped (beat T4
+    /// alias-bridge). `#[doc(hidden)]` forwarding shim keeping cdz-agent-host's callers compiling until it
+    /// migrates to `seed_capabilities`. Removed once the host is off `seed_capabilities_async`.
+    #[doc(hidden)]
+    pub async fn seed_capabilities_async(
+        &mut self,
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
+    ) -> Vec<crate::effect::ControlEffect> {
+        self.seed_capabilities(reducer, authz, executor).await
+    }
+
+    /// Has this session already been capability-SEEDED (by [`seed_capabilities`])? True iff the log
     /// carries a `control/capabilities` `Dispatched` whose cause is the GENESIS event — the seed's specific
     /// signature. This deliberately does NOT match a GUEST-issued `control/capabilities` query, which
     /// appends the same `Dispatched{family}` frame but is cause-linked to an `Inbound` fold, not genesis. A
@@ -438,7 +483,7 @@ impl Session {
 
     /// Fire every armed timer past `now_ms`, driving the [`Reducer`] for each. Determinism (§9c): the FIRED
     /// time is the timer's own deadline, not `now_ms`, so replay reconstructs identically.
-    pub async fn fire_due_timers_async(
+    pub async fn fire_due_timers(
         &mut self,
         now_ms: u64,
         reducer: &dyn Reducer,
@@ -466,6 +511,20 @@ impl Session {
             self.drive(reducer, authz, executor).await;
         }
         due.len()
+    }
+
+    /// TRANSITIONAL alias for [`Session::fire_due_timers`] — the `_async` suffix is being dropped (beat T4
+    /// alias-bridge). `#[doc(hidden)]` forwarding shim keeping cdz-agent-host's callers compiling until it
+    /// migrates to `fire_due_timers`. Removed once the host is off `fire_due_timers_async`.
+    #[doc(hidden)]
+    pub async fn fire_due_timers_async(
+        &mut self,
+        now_ms: u64,
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
+    ) -> usize {
+        self.fire_due_timers(now_ms, reducer, authz, executor).await
     }
 
     /// Absolute deadlines of the currently armed-but-unfired timers (§16c-S5), for the driver's
