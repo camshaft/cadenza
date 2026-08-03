@@ -16,8 +16,10 @@
   #         reducer-guest and cdz-agent-host cedar-policy-guest wasm components built from source, same
   #         hash-falls-out shape.
   #   R2  — `packages.store` : every built component assembled into one content-addressed store dir
-  #         (`<derived-hash>.wasm`), mirroring target/cadenza-store but built + addressed by nix. N3
-  #         tests + runtime/harness load-from-store follow. North star: nix builds every component.
+  #         (`<derived-hash>.wasm`), mirroring target/cadenza-store but built + addressed by nix.
+  #   S1  — `packages.seed-compiler` : the NATIVE bootstrap toolchain (cdz + cdz-run binaries) via
+  #         `buildRustPackage` (root Cargo.lock, tracked #1748). S2 cadenza-projects, S3 per-test skip
+  #         follow. North star: nix builds every component + the compiler + projects, deterministically.
   #
   # The Rust toolchain is read DIRECTLY from `rust-toolchain.toml` (the load-bearing pin — the
   # recorded `REQUIRED_RUNTIME_HASH` is only reproducible on that exact rustc). `rust-toolchain.toml`
@@ -59,6 +61,32 @@
           (pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml).override {
             targets = [ "wasm32-unknown-unknown" "wasm32-wasip1" ];
           };
+
+        # ── S1: the SEED COMPILER (native cdz/cdz-run toolchain) AS a derivation ──────────────────
+        #
+        # Operator arc (2026-08-03): after nixifying the wasm components, nix builds the native bootstrap
+        # toolchain itself — the `cdz` unified CLI (compile/run/test/doctor) + the standalone `cdz-run`
+        # runner. These are ordinary NATIVE Rust binaries (host target, NO build-std, NO wasm, no build.rs
+        # / include_bytes!), members of the ROOT workspace (Cargo.toml `members =
+        # ["implementation/seed/crates/*", "xtask"]`, resolver 3). The root Cargo.lock is now TRACKED
+        # (#1748 — committed for determinism), so `rustPlatform.buildRustPackage` can vendor from it. We
+        # bind the platform to the pinned `rustToolchain` (same rustc as CI, not nixpkgs default) and
+        # restrict the build to the two seed-compiler binaries with `cargoBuildFlags`.
+        seedRustPlatform = pkgs.makeRustPlatform {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
+        };
+        seedCompiler = seedRustPlatform.buildRustPackage {
+          pname = "cdz-seed-compiler";
+          version = "0.0.0";
+          src = ./.;
+          cargoLock.lockFile = ./Cargo.lock;
+          # Build only the seed-compiler binaries, not the whole workspace (xtask etc.).
+          cargoBuildFlags = [ "-p" "cdz" "-p" "cdz-run" ];
+          # Tests run in the existing gate/CI, not here — this derivation just BUILDS the toolchain
+          # reproducibly (S1). (S3 will add fine-grained per-test derivations.)
+          doCheck = false;
+        };
 
         # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
         #
@@ -397,6 +425,9 @@
         # R2: the content-addressed component store — every nix-built component as `<derived-hash>.wasm`
         # in one dir (mirrors target/cadenza-store, but built + addressed by nix). `nix build .#store`.
         packages.store = componentStore;
+
+        # S1: the native seed compiler (cdz + cdz-run). `nix build .#seed-compiler` → result/bin/{cdz,cdz-run}.
+        packages.seed-compiler = seedCompiler;
 
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
