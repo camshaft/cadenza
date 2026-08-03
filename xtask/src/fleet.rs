@@ -5200,7 +5200,7 @@ fn archive(fleet: &Fleet, no_commit: bool) {
     if run_git(&[
         "commit",
         "-m",
-        "fleet: mirror the work queue + standing roster into the tracked archive",
+        ARCHIVE_MIRROR_SUBJECT,
         "--",
         "issues",
         "fleet/roster.json",
@@ -5422,7 +5422,28 @@ fn sync(fleet: &Fleet, force: bool) {
 
     // Which local commits are genuinely unlanded (patch-id not upstream)? `git cherry trunk <head>`.
     let cherry = git_stdout(&["cherry", TRUNK, &old_head]);
-    let replay = commits_to_replay(&cherry);
+    let mut replay = commits_to_replay(&cherry);
+
+    // DROP the auto-generated archive-mirror commit from the replay set (v-fleet-tooling + v-syntax +
+    // corpus-bugfix hit this every tick). pr-sync's per-tick `fleet archive` commits a work-queue/roster
+    // SNAPSHOT whose content changes every cycle, so patch-id matching can NEVER mark it landed — once
+    // any agent's branch tip sits on one (from a prior reset), `git cherry` re-flags it as "unlanded"
+    // and the sync would replay a foreign infra commit as the agent's own work (and even hit a
+    // cherry-pick conflict against advanced trunk). It is NEVER any agent's work, and its subject is a
+    // fixed literal emitted from exactly one place (the `archive` fn's `git commit -m`), so dropping it
+    // by subject is a zero-false-positive exclusion — no agent legitimately authors that subject. This
+    // stops the every-tick manual `git reset --hard trunk` the papercut forced on every vertical.
+    let before = replay.len();
+    replay.retain(|sha| {
+        let subj = git_stdout(&["show", "-s", "--format=%s", sha]);
+        !commit_is_archive_mirror(&subj)
+    });
+    if replay.len() < before {
+        println!(
+            "fleet sync: dropped {} auto-generated archive-mirror commit(s) from the replay set (never agent work).",
+            before - replay.len()
+        );
+    }
 
     // RE-PARENT WARNING (breaker's angle b; the trunk-rewind contamination 5 peers hit every tick).
     // If the pre-sync base (`old_head`) is NO LONGER an ancestor of `trunk`, trunk was rebuilt/rewound
@@ -6617,6 +6638,20 @@ fn trunk_reflog_entry_is_clobber(subject: &str) -> bool {
 /// re-applying a now-empty/duplicate cherry-pick). Pure + patch-id-aware so `fleet sync` can never
 /// re-stack an already-landed commit. Returns shas in the order git emits them (oldest-first — the
 /// order they must be cherry-picked). Malformed/blank lines are ignored.
+/// The commit subject the `archive` fn uses for its work-queue/roster mirror commit. A single const so
+/// the emitter (`archive`'s `git commit -m`) and the sync-replay exclusion (`commit_is_archive_mirror`)
+/// can NEVER drift — change the message in one place.
+const ARCHIVE_MIRROR_SUBJECT: &str =
+    "fleet: mirror the work queue + standing roster into the tracked archive";
+
+/// Is a commit the auto-generated archive-mirror (matched by its exact subject)? These are pr-sync's
+/// per-tick work-queue/roster snapshot — never any agent's work, and their content changes every cycle
+/// so patch-id can't drop them from a sync replay. `fleet sync` filters them out of the replay set so
+/// they don't get re-adopted as an agent's "unlanded" commit every tick. Pure so it's unit-testable.
+fn commit_is_archive_mirror(subject: &str) -> bool {
+    subject.trim() == ARCHIVE_MIRROR_SUBJECT
+}
+
 fn commits_to_replay(cherry_output: &str) -> Vec<String> {
     cherry_output
         .lines()
@@ -11193,6 +11228,24 @@ mod tests {
         );
         // A `+ <sha> <subject>` form (some git configs append the subject) keeps just the sha.
         assert_eq!(commits_to_replay("+ 9999 wip: something"), vec!["9999"]);
+    }
+
+    #[test]
+    fn commit_is_archive_mirror_matches_only_the_exact_archive_subject() {
+        // The auto-generated archive-mirror commit — dropped from the sync replay set (never agent work).
+        assert!(commit_is_archive_mirror(ARCHIVE_MIRROR_SUBJECT));
+        // Tolerant of surrounding whitespace (git may pad).
+        assert!(commit_is_archive_mirror(
+            "  fleet: mirror the work queue + standing roster into the tracked archive  "
+        ));
+        // A DIFFERENT fleet commit must NOT be dropped (only the exact snapshot subject is infra-noise).
+        assert!(!commit_is_archive_mirror(
+            "fleet: mirror the work queue into the tracked archive"
+        )); // missing "+ standing roster …"
+        assert!(!commit_is_archive_mirror(
+            "xtask/fleet: archive commits ONLY its own pathspec"
+        ));
+        assert!(!commit_is_archive_mirror("")); // empty subject never matches
     }
 
     #[test]
