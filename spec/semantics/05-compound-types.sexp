@@ -2167,9 +2167,11 @@
 ; vectors is a different operation: it MERGES two multi-node RRB tries into one, which must splice the left
 ; vector's tail against the right's head and (in a relaxed-radix impl) rebalance the seam so indices stay
 ; O(log n)-navigable. A concat that mis-joined the interior spines would corrupt reads NEAR the boundary while
-; leaving the far ends intact — so the read checks straddle the join. The other `List.concat` corpus cases all
-; use SMALL operands (single-/few-element lists, scratch-slot, or reject cases), so none reaches this multi-node
-; merge path; this case is the large-operand companion.
+; leaving the far ends intact — so the read checks straddle the join. What this case UNIQUELY covers is merging
+; two ALREADY-multi-node tries: other `List.concat` cases either use small operands or concat-to-REACH a
+; multi-level list (n>=33 from smaller halves), but none merges two operands that are EACH already multi-node —
+; the seam-of-interiors splice this pins. The even 600+600 split here is complemented by the uneven-merge case
+; below.
 (case "concatenating two large runtime RRB vectors preserves length and every element across the join"
   (doc    "`left` = [0,600) and `right` = [600,1200) each built by a push-loop (each spans >1 RRB node), then
            `(List.concat left right)` must produce the 1200-element vector [0,1200) — length 1200, and value at
@@ -2197,6 +2199,34 @@
                                  (at cat 1199)))))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 3999 Int64)))
+
+; The even 600+600 merge above splits cleanly. An UNEVEN merge — a SMALL left (37 elements, barely over one
+; 32-wide RRB leaf) against a LARGE right (1200, multi-node) — is the rebalance-HEAVY shape: a relaxed-radix
+; concat cannot just adopt the right's spine, it must fold the short left in and rebalance the seam (interior
+; size-table), the path an even split can skip (breaker rc3, 2026-08-05). Result [0,37)++[37,1237) = [0,1237).
+(case "an UNEVEN large-vector RRB concat (short left, multi-node right) rebalances the seam correctly"
+  (doc    "`left` = [0,37) (just over one RRB leaf), `right` = [37,1237) (multi-node), `(List.concat left
+           right)` = [0,1237) — length 1237, value at index i is i. The short-left/long-right shape forces the
+           relaxed-radix rebalance the even 600+600 case skips. Probe indices straddle BOTH the leaf boundary
+           (31/32) and the merge seam (36/37): at {0, 36, 37, 1236} the values are 0+36+37+1236 = 1309, plus
+           1000·(len==1237). Result = 1000·(len ok) + 1309 = 2309. A rebalance that mis-placed the short left's
+           elements or mis-sized an interior node would misread near the seam or report a wrong length.")
+  (input  (do
+            (def (build (: i Int64) (: lo Int64) (: hi Int64) (: out (List Int64)))
+              (if (< (+ lo i) hi) (build (+ i 1) lo hi (List.push out (+ lo i))) out))
+            (def (at (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i) ((Some v) v) ((None u) -1000000)))
+            (def (main (: n Int64))
+              (let ((left (build 0 0 37 (list)))
+                    (right (build 0 37 1237 (list))))
+                (let ((cat (List.concat left right)))
+                  (+ (* 1000 (if (= (List.len cat) 1237) 1 0))
+                     (+ (at cat 0)
+                        (+ (at cat 36)
+                           (+ (at cat 37)
+                              (at cat 1236))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 2309 Int64)))
 
 ; --- Large multi-level CHAMP SET membership (the set companion of the deep RRB read + deep CHAMP-map key) --
 ; The push/read RRB cases above exercise a deep VECTOR spine; this exercises a deep CHAMP SET trie. At n=1100

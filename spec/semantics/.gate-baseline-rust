@@ -459,6 +459,7 @@ pass	a 1000-step UPSERT fold builds a 7-bucket histogram — persistent-map chur
 pass	a 100k-iteration pure tail loop under a handler runs in constant stack
 pass	a 1100-element prepend-built runtime list reads every index through a multi-level RRB front-spine
 pass	concatenating two large runtime RRB vectors preserves length and every element across the join
+pass	an UNEVEN large-vector RRB concat (short left, multi-node right) rebalances the seam correctly
 pass	a 1100-element runtime list resolves every index through a multi-level RRB trie
 pass	a 1100-element runtime set resolves every member through a multi-level CHAMP trie and rejects non-members
 pass	a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without
