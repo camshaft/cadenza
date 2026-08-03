@@ -6981,3 +6981,21 @@
   (host-responses (respond io.sink (: 99 Int64)))
   (host-calls (call io.sink))
   (call   main (: 2 Int64)) (output (: 99 Int64)))
+
+(case "a host op with a Bytes arg AND a scalar arg crosses both parameters (list<u8> beside a scalar)"
+  (doc    "Coverage for the wasm Bytes-host-arg increment's MIXED-ARITY face: a host op `sink2 : (-> Bytes
+           Int64 Int64)` takes a `list<u8>` param AND a scalar `Int64` param. Pins that the import
+           instance-type + core functype handle a `list<u8>` param (a defined-type-index) BESIDE an inline
+           scalar — the func type declares `(p0: list<u8>, p1: s64) -> s64`, and the core marshalling pushes
+           the Bytes `(ptr,len)` then the scalar. `main(k)` passes a 2-byte `Bytes.of` and the scalar 5; the
+           host answers 9. Complements the single-Bytes-arg pin (which has no scalar to prove the mixed
+           layout). rust crosses it too (both scalar+list handle-transport); rust-async declines the shape.")
+  (input  (do
+            (effect io (op sink2 (-> Bytes Int64 Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (io.sink2 (Bytes.of (list ((UInt 8).wrap k) ((UInt 8).wrap 66))) 5)))
+            (export main)))
+  (host-responses (respond io.sink2 (: 9 Int64)))
+  (host-calls (call io.sink2))
+  (call   main (: 65 Int64)) (output (: 9 Int64)))

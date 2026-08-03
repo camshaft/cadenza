@@ -1789,6 +1789,7 @@ pass	a host effect with a non-kebab NAME crosses under a normalized interface ex
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 pass	a host op returning Bool crosses the boundary and drives a branch
 pass	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
+pass	a host op with a Bytes arg AND a scalar arg crosses both parameters (list<u8> beside a scalar)
 pass	a host op with a String parameter composes with the value-heap runtime
 pass	a host response SIZES a guest-built collection which is then folded and keyed
 pass	a host result captured by two closures stored in a RECORD fires the host op once (adv-62b)

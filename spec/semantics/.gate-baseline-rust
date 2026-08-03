@@ -1787,6 +1787,7 @@ pass	a host delegating the same effect twice is rejected
 pass	a host effect with a non-kebab NAME crosses under a normalized interface extern name
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 pass	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
+pass	a host op with a Bytes arg AND a scalar arg crosses both parameters (list<u8> beside a scalar)
 pass	a host response SIZES a guest-built collection which is then folded and keyed
 pass	a host result captured by two closures stored in a RECORD fires the host op once (adv-62b)
 pass	a host-called closure applied to a different argument tracks the input
