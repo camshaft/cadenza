@@ -3135,7 +3135,8 @@
   (doc    "The Map face of the CHAMP collision node: insert 150512886->1 then 59555794->2 (the two keys
            share FNV-1a hash 0x9457bd5f), so the second insert extends the first's collision node rather
            than overwriting it — `Map.len` is 2, and each lookup returns its OWN value (not the sibling's:
-           the values 1 and 2 differ, so a scan matching the wrong entry would return 21 not 12). Result:
+           the values 1 and 2 differ, so a scan matching the wrong entry — swapping m[a]↔m[b] — would give
+           the full result 221 (100·2 + 10·2 + 1), not 212). Result:
            100·len + 10·(m[a]) + m[b] = 100·2 + 10·1 + 2 = 212. A collision node that clobbered on the
            second insert would give len 1; a scan comparing by hash-slot alone would return the wrong value.")
   (input  (do
@@ -3148,3 +3149,23 @@
                       (Option.expect (Map.lookup m b) "b")))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 212 Int64)))
+
+(case "two COMPOUND keys sharing a full hash collide via the nested champ_eq walk in one collision node"
+  (doc    "The compound-key face of the CHAMP collision node: the scalar cases above collide two immediate
+           Int64 keys; here the colliding keys are TUPLES `(tuple 150512886 z)` and `(tuple 59555794 z)`.
+           The shallow-compound `champ_hash` folds each child's `champ_node_raw_hash`, and the first children
+           (150512886 vs 59555794) hash EQUAL (0x9457bd5f) while the second child is the same `z`, so the two
+           tuples share the whole 32-bit hash → one collision node, disambiguated by the NESTED `champ_eq`
+           walk (not the scalar leaf compare). Both tuples are distinct Set elements (len 2), each found by
+           its whole-tuple identity, and a tuple with a DIFFERENT first element (`(tuple (+ a 1) z)`, whose
+           hash almost surely does not collide) is absent. Result: 1000·2 + 100·1 + 10·1 + 0 = 2110. A
+           nested-eq that bottomed out comparing only the shared second child would wrongly fuse the two.")
+  (input  (do
+            (def (main (: z Int64))
+              (let ((s (Set.of (list (tuple (+ 150512886 z) z) (tuple (+ 59555794 z) z)))))
+                (+ (* 1000 (Set.len s))
+                   (+ (* 100 (if (Set.contains s (tuple (+ 150512886 z) z)) 1 0))
+                      (+ (* 10 (if (Set.contains s (tuple (+ 59555794 z) z)) 1 0))
+                         (if (Set.contains s (tuple (+ 150512887 z) z)) 1 0))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 2110 Int64)))
