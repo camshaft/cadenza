@@ -11343,7 +11343,7 @@ pub fn type_errors(db: &mut Db, id: StructId) -> Vec<Reject> {
 /// Returns `(subject, member_word)` where the message is `<subject> has no <member_word> \`key\``. The
 /// `has no <word> \`` shape is the shared DEDUP invariant (`compile::dedup_faults`' `no_field_key` splits on
 /// it), so every category still collapses its infer/emit twin.
-pub(crate) fn member_category(db: &Db, operand: StructId, key: &str) -> (String, &'static str) {
+pub(crate) fn member_category(db: &mut Db, operand: StructId, key: &str) -> (String, &'static str) {
     let _ = key;
     if let Some(name) = db.ast.as_name(operand) {
         if db.effect_decl_by_name(name).is_some() {
@@ -11357,6 +11357,18 @@ pub(crate) fn member_category(db: &Db, operand: StructId, key: &str) -> (String,
         if db.type_decl_by_name(name).is_some() {
             return (format!("the type `{name}`"), "variant");
         }
+    }
+    // A USER `(module m …)` value — a bare `m` OR a nested projection `(. outer inner)` — reduces to the
+    // module's SYNTHESIZED record. Name it "the `m` module has no member `k`" (matching the prelude-module
+    // arm) rather than leaking the internal "record has no field `k`" — a user module is a module, not a
+    // bare record, so an absent-member miss should read as a module miss. Recognized by ORIGIN (the reduced
+    // record IS a module's synth record, `module_name_by_synth_record`), not by name — a nested projection
+    // has no operand name for the `as_name` arms above to catch. Falls through to the record arm below for a
+    // genuine record value (whose reduced record is not a module synth).
+    if let Some(record) = crate::eval::reduce_to_record_id(db, operand)
+        && let Some(mname) = db.module_name_by_synth_record(record)
+    {
+        return (format!("the `{mname}` module"), "member");
     }
     ("record".to_string(), "field")
 }
