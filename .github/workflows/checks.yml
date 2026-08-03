@@ -366,6 +366,41 @@ jobs:
           rustup target add wasm32-wasip1
           cargo build --target wasm32-wasip1
 
+  # ── Nix flake (ADVISORY / NON-REQUIRED — v-fleet-tooling seam answer 2026-08-03) ──────────────
+  # `nix flake check` reproduces the WHOLE build pipeline hermetically: the 5 wasm components
+  # (runtime/debug/nfc/reducer-guest/cedar-guest) built hash-from-bytes + their `-hash-parity` checks
+  # (each derived hash MUST equal the committed REQUIRED_RUNTIME_HASH / DEBUG_RUNTIME_HASH /
+  # REQUIRED_NFC_HASH), the S1 native seed compiler, rcdzc→wasm, and the S2/S3 cadenza-project build +
+  # test derivations. It's the reproducibility backstop for the other jobs: if a source change would
+  # move a component's content hash without the recorded hash being re-blessed, the parity check here
+  # goes red (the same guard `codegen` enforces natively, but end-to-end through nix).
+  #
+  # ADDED NON-REQUIRED first (additive-first — v-fleet-tooling's rec): it runs + reports on every
+  # candidate but does NOT gate auto-merge, so a nix-infra hiccup or a slow run can't red an author's
+  # PR fleet-wide (the cdz-agent-host unfiltered-job class of trap). Promote to REQUIRED in a
+  # deliberate follow-up once it's proven fast + stable across real candidates.
+  #
+  # NO nix-store cache in this first cut (deliberately minimal): a cold `nix flake check` rebuilds
+  # everything (the seed compiler's wasmtime+cranelift tree is the heavy part, ~1-2min), so this job
+  # is EXPECTED to be the slow one. Measuring its real wall-clock across candidates — advisory, so it
+  # can't throttle the lane — is exactly the prerequisite v-fleet-tooling flagged before promoting to
+  # required. Adding a store cache (GitHub-Actions-cache-backed) + the required promotion is the
+  # deliberate FOLLOW-UP once the cost is known.
+  #
+  # ubuntu-24.04-arm (aarch64) for the SAME runtime-hash reason as gate/codegen/guide-examples: the
+  # value-heap runtime's content hash is reproducible only per-arch, and the flake's `*-hash-parity`
+  # checks compare against the aarch64-recorded hash — on x86_64 they would spuriously disagree.
+  nix-flake:
+    name: nix flake check (advisory)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      # DeterminateSystems installer = the standard multi-user nix on a GHA runner (flakes on by
+      # default). Pinned to the current major once confirmed; @main is the documented quickstart ref.
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: nix flake check
+        run: nix flake check --print-build-logs
+
   roundtrip:
     # Every corpus program must round-trip through the syntax surfaces — guards cadenza-syntax
     # independently of the compiler. No runtime needed.
