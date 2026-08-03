@@ -11421,12 +11421,17 @@ fn emit(
                 match at {
                     // A unit argument carries no boundary value.
                     Ty::Unit => continue,
-                    // A STRING argument crosses as `(ptr, len)` into the SHARED host memory (`assemble_host_mem`
-                    // provides it; `set_needs_memory` fires for any String-param op). A CONSTANT string's bytes
-                    // were laid in the data segment at `host_string_offset` — push that ptr + len. A RUNTIME
-                    // string (a value-heap rope) is MARSHALED here: copy its bytes into a fixed scratch region
-                    // of `mem` past the const-string data, then push `(scratch_base, len)`.
-                    Ty::String => match core_of(db, arg) {
+                    // A STRING or BYTES argument crosses as `(ptr, len)` into the SHARED host memory
+                    // (`assemble_host_mem` provides it; `set_needs_memory` fires for any String/Bytes-param
+                    // op). A CONSTANT string's bytes were laid in the data segment at `host_string_offset` —
+                    // push that ptr + len. Everything else (a RUNTIME string rope OR any `Bytes` value, const
+                    // or runtime — a `Bytes.of`/slice-view byte-buffer) is MARSHALED here: copy its logical
+                    // bytes into a fixed scratch region of `mem` via the rep-agnostic `bytes-len`/`bytes-get`
+                    // walk (transparent through a rope OR a slice-view), then push `(scratch_base, len)`. The
+                    // component boundary declares the Bytes param as `list<u8>` (a defined type-index) vs the
+                    // String's inline `string`; the CORE marshalling here is identical. adv-62b sibling: this
+                    // is the wasm side of the Bytes-host-arg reverse-parity gap (rust already crossed it).
+                    Ty::String | Ty::Bytes => match core_of(db, arg) {
                         Core::ConstStr(s) => {
                             let offset = layout.host_string_offset(&s).ok_or_else(|| {
                                 Reject::decline(

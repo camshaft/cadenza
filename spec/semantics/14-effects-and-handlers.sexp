@@ -6958,3 +6958,26 @@
   (host-responses (respond io.get (: 21 Int64)))
   (host-calls (call io.get))
   (output (: 2131 Int64)))
+
+(case "a runtime Bytes value crosses a host op boundary as list<u8> (H-bytes-arg)"
+  (doc    "The wasm host-ARG Bytes path: a runtime `Bytes` argument to a host op crosses the component
+           boundary as `list<u8>` (the (ptr,len) shared-memory shape, same core marshalling as a String arg
+           but a `list<u8>` component type — a DEFINED type referenced by index in the import instance-type,
+           vs String's inline `string`). Previously DECLINED on wasm while the rust backend crossed it — a
+           reverse-parity coverage gap (v-rust-backend flagged, breaker banked the probe). `main(k)` slices a
+           runtime `to-bytes` rope `(Bytes.slice … k 3)` and passes the 3-byte view to `io.sink`; the host
+           answers 99. Pins that a Bytes host arg (a) COMPILES on wasm and (b) the emitted component is valid
+           (`sink: func(p0: list<u8>) -> s64`, wasm-tools-verified) and (c) RUNS. rust already passed it;
+           rust-async declines the multi-def host-do shape (todo). The canon Lower carries Memory(0) (no
+           realloc for an argument — the guest allocates, the host reads).")
+  (input  (do
+            (effect io (op sink (-> Bytes Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (match (Bytes.slice (String.to-bytes (String.concat "abc" "defgh")) k 3)
+                  ((Some cut) (io.sink cut))
+                  ((None _u) -1))))
+            (export main)))
+  (host-responses (respond io.sink (: 99 Int64)))
+  (host-calls (call io.sink))
+  (call   main (: 2 Int64)) (output (: 99 Int64)))

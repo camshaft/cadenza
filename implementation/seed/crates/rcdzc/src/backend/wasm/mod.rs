@@ -889,6 +889,7 @@ pub fn emit(
             .map(|h| envelope::HostFn {
                 op: h.op.clone(),
                 comp_functype: host_op_comp_functype(h, 0),
+                has_list_param: h.params.iter().any(|p| matches!(p, host::HostParam::Bytes)),
                 core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
             })
             .collect();
@@ -971,7 +972,8 @@ pub fn emit(
             .map(|e| envelope::HostFn {
                 op: e.op.clone(),
                 comp_functype: extern_op_comp_functype(e),
-                core_functype: Vec::new(), // unused by the envelope (the core module builds its own)
+                core_functype: Vec::new(),
+                has_list_param: false, // unused by the envelope (the core module builds its own)
             })
             .collect();
         // A consumer that ALSO uses the value-heap runtime (it inspects a compound `value` handle the
@@ -2114,6 +2116,10 @@ fn emit_runtime_resource(
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
                 comp_functype: host_op_comp_functype(hi, 0),
+                has_list_param: hi
+                    .params
+                    .iter()
+                    .any(|p| matches!(p, host::HostParam::Bytes)),
                 core_functype: Vec::new(),
             })
             .collect();
@@ -2221,6 +2227,7 @@ fn emit_runtime_resource(
             op: e.op.clone(),
             comp_functype: extern_op_comp_functype(e),
             core_functype: Vec::new(),
+            has_list_param: false,
         })
         .collect();
     Ok(envelope::assemble_extern_runtime_resource(
@@ -3894,6 +3901,10 @@ fn emit_closure_host_resource(
         .map(|hi| envelope::HostFn {
             op: hi.op.clone(),
             comp_functype: host_op_comp_functype(hi, 0),
+            has_list_param: hi
+                .params
+                .iter()
+                .any(|p| matches!(p, host::HostParam::Bytes)),
             core_functype: Vec::new(),
         })
         .collect();
@@ -7052,6 +7063,10 @@ fn emit_runtime_bytes_resource(
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
                 comp_functype: host_op_comp_functype(hi, 0),
+                has_list_param: hi
+                    .params
+                    .iter()
+                    .any(|p| matches!(p, host::HostParam::Bytes)),
                 core_functype: Vec::new(),
             })
             .collect();
@@ -7169,6 +7184,7 @@ fn emit_runtime_bytes_resource(
             op: e.op.clone(),
             comp_functype: extern_op_comp_functype(e),
             core_functype: Vec::new(),
+            has_list_param: false,
         })
         .collect();
     Ok(
@@ -7349,6 +7365,10 @@ fn emit_runtime_sum_resource(
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
                 comp_functype: host_op_comp_functype(hi, 0),
+                has_list_param: hi
+                    .params
+                    .iter()
+                    .any(|p| matches!(p, host::HostParam::Bytes)),
                 core_functype: Vec::new(),
             })
             .collect();
@@ -7439,6 +7459,7 @@ fn emit_runtime_sum_resource(
             op: e.op.clone(),
             comp_functype: extern_op_comp_functype(e),
             core_functype: Vec::new(),
+            has_list_param: false,
         })
         .collect();
     Ok(envelope::assemble_extern_runtime_resource(
@@ -7601,6 +7622,10 @@ fn emit_recursive_sum_resource(
             .map(|hi| envelope::HostFn {
                 op: hi.op.clone(),
                 comp_functype: host_op_comp_functype(hi, 0),
+                has_list_param: hi
+                    .params
+                    .iter()
+                    .any(|p| matches!(p, host::HostParam::Bytes)),
                 core_functype: Vec::new(),
             })
             .collect();
@@ -7676,6 +7701,7 @@ fn emit_recursive_sum_resource(
             op: e.op.clone(),
             comp_functype: extern_op_comp_functype(e),
             core_functype: Vec::new(),
+            has_list_param: false,
         })
         .collect();
     Ok(envelope::assemble_extern_runtime_resource(
