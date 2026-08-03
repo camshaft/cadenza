@@ -185,8 +185,9 @@
             nativeBuildInputs = [ seedCompiler ];
             buildPhase = ''
               runHook preBuild
-              # `set -o pipefail` is LOAD-BEARING here: without it, `cdz test | tee` returns tee's
-              # exit (always 0), so a FAILING suite would still yield a SUCCESSFUL derivation —
+              # `set -o pipefail` is LOAD-BEARING here: without it, `cdz test | tee` adopts the LAST
+              # command's status (tee — normally 0 for a healthy write), which MASKS an upstream
+              # `cdz test` failure, so a FAILING suite would still yield a SUCCESSFUL derivation —
               # silently defeating the whole point of gating tests through nix (github-liaison #1786).
               # With pipefail, a non-zero `cdz test` propagates through the pipe and fails the build.
               set -o pipefail
