@@ -60,6 +60,31 @@ pub mod effect_ct {
     pub const TIMER: &str = "timer";
     pub const EMIT: &str = "emit";
 
+    /// The `control/*` namespace PREFIX (control-plane / register-by-string design). A family whose string
+    /// starts with this is a CONTROL family: authz-EXEMPT and NEVER routed to an executor — the kernel/host
+    /// answers it in-process (asking "what may I do" is not itself a world-action, and gating it would be
+    /// circular). The well-known EFFECT families above stay BARE (no `effect/` prefix) because they are a
+    /// DURABLE WIRE VALUE (the codec writes `EffectKind::family()` into the log + the Cedar action-map), so
+    /// renaming them would break log compatibility. So the partition is asymmetric: control families carry
+    /// this prefix (they are all new — no wire history), effect families are bare. See [`is_control_family`].
+    pub const CONTROL_PREFIX: &str = "control/";
+
+    /// The well-known `control/capabilities` family — the host-capability-discovery query (a `ControlKernel`
+    /// disposition: the kernel answers it inline via `project_manifest`). The first control family.
+    pub const CAPABILITIES: &str = "control/capabilities";
+
+    /// The well-known `control/summary` family — the fork-for-query summarize control effect (a
+    /// `ControlHostSurfaced` disposition: returned to the driver, captured by the query fork's watch).
+    pub const SUMMARY: &str = "control/summary";
+
+    /// Is `family` in the `control/*` namespace (authz-exempt, host/kernel-answered, never executor-routed)?
+    /// The partition test the drive loop applies BEFORE authorize/route: `true` → control path, `false` →
+    /// the effect path (authorize → executor). A simple prefix check on [`CONTROL_PREFIX`] — one source of
+    /// truth for the split, so the drive loop and the registry can't disagree on what "control" means.
+    pub fn is_control_family(family: &str) -> bool {
+        family.starts_with(CONTROL_PREFIX)
+    }
+
     /// The canonical, finite set of well-known effect families — the SAME set routing/authz/codec key on.
     /// Iterating it is what makes capability-manifest projection complete BY CONSTRUCTION (probe each known
     /// family; there is nothing to miss — see [`super::project_manifest`]). Keep in sync with the consts
@@ -456,6 +481,31 @@ mod tests {
             ),
             EffectRequest::new(EffectKind::Now, "", None, Timeliness::Interactive),
         );
+    }
+
+    #[test]
+    fn control_family_partition_keys_on_the_control_prefix_and_effect_families_stay_bare() {
+        // The control-plane partition (register-by-string design): control/* families are authz-exempt +
+        // host-answered; effect families are bare + executor-routed. is_control_family is the one-source
+        // prefix test the drive loop applies before authorize/route.
+        assert!(effect_ct::is_control_family(effect_ct::CAPABILITIES));
+        assert!(effect_ct::is_control_family(effect_ct::SUMMARY));
+        assert!(effect_ct::is_control_family("control/anything"));
+        // Every well-known EFFECT family stays BARE — NOT in the control namespace (durable-wire constraint:
+        // they can't gain an "effect/" prefix, and must never be misclassified as control).
+        for &fam in effect_ct::ALL {
+            assert!(
+                !effect_ct::is_control_family(fam),
+                "effect family {fam:?} must NOT be control"
+            );
+        }
+        // The control consts actually carry the prefix (byte-for-byte), and CONTROL_PREFIX is "control/".
+        assert_eq!(effect_ct::CONTROL_PREFIX, "control/");
+        assert!(effect_ct::CAPABILITIES.starts_with(effect_ct::CONTROL_PREFIX));
+        assert!(effect_ct::SUMMARY.starts_with(effect_ct::CONTROL_PREFIX));
+        // A bare family that merely CONTAINS "control" but doesn't start with the prefix is NOT control.
+        assert!(!effect_ct::is_control_family("my-control-thing"));
+        assert!(!effect_ct::is_control_family(""));
     }
 
     #[test]
