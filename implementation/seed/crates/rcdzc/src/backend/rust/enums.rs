@@ -746,8 +746,12 @@ pub(super) fn ty_derives_eq(
         // A `List`/`Set` of an `Eq` element → `Vec<T>`/`BTreeSet<T>` is `Eq` (elementwise); a `Map` is `Eq`
         // when both key and value are. Recurse into the element/key/value type (a `List Float64` is NOT Eq,
         // caught by the recursion). `BTreeMap`/`BTreeSet` `==` compares by content, matching value equality.
-        Ty::List(e) | Ty::Set(e) => ty_derives_eq(db, e, visited),
-        Ty::Map(k, v) => ty_derives_eq(db, k, visited) && ty_derives_eq(db, v, visited),
+        // A FREE-VAR element is a special case: an EMPTY collection (`(Set.of (list))`) never constrains its
+        // element type, so it stays `Set(Var _)` — but it emits with a concrete default rep (`BTreeSet<i64>`)
+        // on BOTH sides of a `=`, which unifies and is `Eq`, so treat a free-var leaf as Eq (the drained-set
+        // value-equality case). `ty_leaf_eq_or_free` recurses the same way but admits a bare free var.
+        Ty::List(e) | Ty::Set(e) => ty_leaf_eq_or_free(db, e, visited),
+        Ty::Map(k, v) => ty_leaf_eq_or_free(db, k, visited) && ty_leaf_eq_or_free(db, v, visited),
         // A `Qty` erases to its inner magnitude in `lower` (the unit is compile-time), so a runtime `=` over
         // a quantity IS the `=` over its inner numeric type — Eq-derivable iff the inner is. A `(Qty BigInt …)`
         // / `(Qty Rational …)` / `(Qty Int64 …)` leaf in a compound thus compares by its erased magnitude.
@@ -755,6 +759,29 @@ pub(super) fn ty_derives_eq(
         // A function/closure, a free `Ty::Var`/`Any` — not `Eq`-derivable here (no native rep or not `Eq`).
         // Conservative: an unknown type declines the derive.
         _ => false,
+    }
+}
+
+/// A collection ELEMENT/key/value type for the `Eq` check, admitting an unconstrained free var. Like
+/// `ty_derives_eq` but a bare free `Ty::Var`/`Any` returns `true`: reaching a free-var leaf means the
+/// enclosing collection was never constrained, i.e. it is EMPTY (a non-empty one would have solved the
+/// element from its inserted values). An empty collection emits a concrete default rep (`BTreeSet<i64>`)
+/// identically on both sides of a runtime `=`, so the native `==` type-checks and compares equal — which
+/// is exactly what the value semantics want for a drained/empty collection. Nested collections recurse
+/// (an empty `Set (List ?e)` is still fine). Any OTHER type defers to `ty_derives_eq` (a `List Float64`
+/// still declines — its element is a solved non-Eq float, not a free var).
+fn ty_leaf_eq_or_free(
+    db: &mut Db,
+    ty: &crate::ty::Ty,
+    visited: &mut std::collections::HashSet<crate::ast::StructId>,
+) -> bool {
+    use crate::ty::Ty;
+    match ty {
+        Ty::Var(n) if *n < PARAM_SENTINEL_BASE => true,
+        Ty::Any => true,
+        Ty::List(e) | Ty::Set(e) => ty_leaf_eq_or_free(db, e, visited),
+        Ty::Map(k, v) => ty_leaf_eq_or_free(db, k, visited) && ty_leaf_eq_or_free(db, v, visited),
+        other => ty_derives_eq(db, other, visited),
     }
 }
 
