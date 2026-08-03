@@ -325,7 +325,7 @@ impl NameStore {
 
     /// Drop a `store/set`'s idempotency key from the dedup set once its `EffectResult` is APPENDED to the
     /// in-memory session log (the effect is SETTLED in this session — its dedup entry is no longer needed).
-    /// Boundary, in the log-store's v0 durability terms ([`crate::log_store::LogSink::append`]): "appended"
+    /// Boundary, in the log-store's v0 durability terms ([`crate::log_store::LogStore::append`]): "appended"
     /// here is the in-memory record; ON-DISK durability is the SEPARATE tier-B write-through — the v0
     /// contract is "append + flush to the OS" and a failure LATCHES `persist_error` (the event did not reach
     /// stable storage). So the prune is NOT gated on the EffectResult reaching stable storage. That's still
