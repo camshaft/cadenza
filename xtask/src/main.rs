@@ -440,11 +440,28 @@ fn build(paths: &Paths, store: Option<PathBuf>) {
     std::fs::write(&runtime_stored, &runtime_bytes).expect("store runtime");
     println!("   stored → {}", runtime_stored.display());
 
-    // A small manifest recording both stored runtimes, for the host / verifier to consult.
+    // The NFC component (`cdz-nfc`, FINDING#23 — operator ruling d) — stored in the SAME CAS store by content
+    // address, exactly like the runtime, so the host resolves it by hash (`<store>/<nfc-hash>.wasm`). NFC is a
+    // DEPENDENCY OF THE RUNTIME (loaded + linked like any wasm component dep): the runtime component imports
+    // `cadenza:nfc/normalize` and the host composes this stored NFC component INTO the runtime (transitive
+    // compose). It carries the heavy `unicode-normalization` tables so the core runtime does not — keeping the
+    // runtime bytes light while `str-nfc-normalize` normalizes String values through the linked NFC dep.
+    // Canonicalize (strip `producers`) before hashing/storing so the hash matches `REQUIRED_NFC_HASH` (codegen
+    // hashes the same canonicalized bytes) and is reproducible cross-host.
+    let nfc_wasm = build_component(&sh, &paths.seed, "cdz-nfc", "cdz_nfc");
+    let nfc_bytes = canonicalize_runtime(&nfc_wasm);
+    let nfc_hash = content_address(&nfc_bytes);
+    println!("   nfc component content address: {nfc_hash}");
+    let nfc_stored = store.join(format!("{nfc_hash}.wasm"));
+    std::fs::write(&nfc_stored, &nfc_bytes).expect("store nfc component");
+    println!("   stored → {}", nfc_stored.display());
+
+    // A small manifest recording both stored runtimes + the NFC dependency, for the host / verifier to consult.
     let manifest = format!(
-        "# Cadenza content-addressed store — the value-heap runtime.\n\
+        "# Cadenza content-addressed store — the value-heap runtime + its NFC dependency.\n\
          runtime = \"{runtime_hash}\"\n\
-         debug_runtime = \"{debug_hash}\"\n"
+         debug_runtime = \"{debug_hash}\"\n\
+         nfc = \"{nfc_hash}\"\n"
     );
     std::fs::write(store.join("runtime.toml"), manifest).expect("write runtime.toml");
 
