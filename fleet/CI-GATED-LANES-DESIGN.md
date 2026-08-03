@@ -40,23 +40,39 @@ parallel while higher-risk work (compiler/runtime) is ordered within its lane.
 ## The model
 
 Refined against pr-sync's pilot (it received the same operator directive directly, 2026-08-02, and
-is manually validating the pipeline while draining the ~30-MR backlog). Key mechanic: **GitHub
-auto-merges each candidate on CI-green** — pr-sync does NOT merge on a green poll; it enables
-auto-merge at push time and only polls to detect the merge, then fast-forwards local `trunk`.
+manually validated the pipeline while draining the ~30-MR backlog). The automated executor
+(`cargo xtask fleet schedule-pass --execute`) then replaced the manual loop (cutover 2026-08-03).
+Key mechanic: **GitHub auto-merges each candidate on CI-green** — pr-sync does NOT merge on a green
+poll; it enables auto-merge at push time and only polls to detect the merge, then advances local
+`trunk` by cherry-picking that PR's own squash `mergeCommit.oid`.
+
+**⚠ Trunk advance is a CHERRY-PICK of the PR's `mergeCommit.oid`, NOT a fast-forward from
+`origin/main` (learned in the cutover, 2026-08-03).** `trunk` and `origin/main` are permanently
+TREE-EQUAL but COMMIT-DISTINCT (every candidate is re-parented onto `origin/main` before its PR), so
+a literal FF is impossible and `trunk..origin/main` is `origin/main`'s WHOLE divergent history, not
+this PR. The one correct advance is `git cherry-pick <mergeCommit.oid>` (from
+`gh pr view <n> --json mergeCommit --jq .mergeCommit.oid`) onto `trunk` — its parent's tree == trunk's
+tree, so it applies cleanly and advances trunk by exactly this PR; multi-merge windows are handled by
+reaping each PR separately. The cherry-pick MUST run in the worktree that has `trunk` CHECKED OUT
+(pr-sync's), never the bare hub (no work tree → git fatals, misreported as a false conflict). See the
+smoke-test bug log below.
 
 ```
 MR arrives → categorize into a LANE → re-parent sender --ref onto origin/main in a scratch worktree
           → push cand/<agent>-<sha>, `gh pr create --base main`, `gh pr merge --squash --auto --delete-branch`
           → GitHub Actions gates it IN PARALLEL with every other in-flight candidate
           → GitHub AUTO-MERGES the PR to origin/main the instant its CI is green (no pr-sync action)
-          → pr-sync POLLS (fleet ci-status): PR merged  → FF local `trunk` from origin/main + ack `merged`
-                                             CI red     → ack `reject` (failing job + run-log URL); close PR
+          → pr-sync POLLS (fleet ci-status): PR merged  → cherry-pick its mergeCommit.oid onto `trunk` (in the
+                                                          trunk worktree) + ack `merged` + retire the record
+                                             CI red (merge-REQUIRED job) → ack `reject` (failing job + run URL)
           → NO local gate, NO combined-tree bisect (a red candidate fails its OWN PR alone, blocks nothing)
 ```
 
 pr-sync's tick becomes a **scheduler pass**, not a serial gate loop: reap concluded PRs
-(merged→FF-trunk+ack / red→reject), then top up in-flight capacity by pushing new candidates from
-the queue, respecting per-lane ordering + a global in-flight cap. Dropping the bisect is a direct
+(merged→cherry-pick-mergeCommit.oid-onto-trunk+ack / required-red→reject), then top up in-flight
+capacity by pushing new candidates from the queue, respecting per-lane ordering + a global in-flight
+cap. After the reap it `git remote prune origin` (drops stale cand remote-tracking refs whose branch
+auto-deleted on merge). Dropping the bisect is a direct
 win: today one red MR in a batch forces ~log₂(N) re-gates to isolate; in the new model it just fails
 its own PR in isolation and every other candidate proceeds untouched.
 
@@ -128,15 +144,18 @@ was gated against a trunk that no longer exists). Handling, cheapest first:
 2. **Within a serialized lane**, at most ONE candidate is in flight at a time (the next is pushed
    only after the current lands/rejects) — no intra-lane conflict possible.
 3. **Cross-lane collision on shared files** (e.g. a `mixed` PR and a `code` PR both touch a runtime
-   file): when a green PR is about to land, re-check it still fast-forward-merges onto the CURRENT
-   trunk. If trunk advanced under it since CI started AND the merge no longer FFs cleanly →
+   file): when a green PR is about to land, re-check its `mergeCommit.oid` still cherry-picks CLEANLY
+   onto the CURRENT trunk. If trunk advanced under it since CI started AND the pick now conflicts →
    **re-base the candidate on the new trunk, re-push, re-gate** (its CI re-runs), rather than force a
-   possibly-broken merge. This is the "re-gate if another landed first" the operator described.
+   possibly-broken merge. This is the "re-gate if another landed first" the operator described. (In
+   the executor, a conflicting cherry-pick aborts + leaves the record in-flight for a retry — the
+   fail-safe never corrupts trunk.)
 4. A candidate whose lane predicate says it's disjoint from everything currently in flight skips the
    re-check (provably can't collide).
 
-Landing is still a **fast-forward / clean `--no-ff` merge only** — never a conflict resolution by
-pr-sync (that stays the author's job, same as today's reject-on-conflict).
+Landing is a **clean cherry-pick of the PR's `mergeCommit.oid` onto `trunk` only** — never a conflict
+resolution by pr-sync (that stays the author's job, same as today's reject-on-conflict; a conflicting
+pick aborts and the MR is left for the author to rebase).
 
 **Reap edge case — a CLOSED-but-not-merged PR.** ✅ DECISION-LAYER DONE (landed additively ahead of the
 I4 executor). A candidate PR can be **CLOSED without merging and without a red CI** (manually closed,
@@ -222,16 +241,45 @@ auto-merge-armed, gating in parallel; my base landed via #1038). Hard-won gotcha
   push `cand/<agent>-<sha>`, `gh pr create --base main`, `gh pr merge --squash --auto --delete-branch`
   (GitHub merges on green). Records the in-flight state entry (MR↔PR). Returns the PR handle. No
   trunk move.
-- **I4 — the scheduler executor.** Replace pr-sync's local `gate_subset` land loop with a scheduler
-  pass: reap-concluded (PR merged → FF local `trunk` from `origin/main` + `ack merged`; CI red →
-  `ack reject` with failing job + run URL, close PR) → top-up in-flight per lane under a global cap.
-  Update `fleet/loops/pr-sync.md` + `AGENTS-fleet.md`. (No bisect — a red fails its own PR alone.)
-- **I5 — hardening.** In-flight cap tuning, CI timeout → reject-with-timeout, stale-candidate-branch
-  GC, the housekeeping-publish path for pr-sync's `issues/` archive (finding 9 above), and remove the
-  now-dead local-gate code (`gate_subset`, `gate-batch` bisect) once I4 is proven.
+- **I4 — the scheduler executor.** ✅ LANDED + CUT OVER (2026-08-03). Replaced pr-sync's local
+  `gate_subset` land loop with `schedule_pass_execute`: reap-concluded (PR merged → cherry-pick its
+  `mergeCommit.oid` onto `trunk` in the trunk worktree + `ack merged` + retire the record; merge-REQUIRED
+  CI red or PR CLOSED-unmerged → `ack reject` with failing job + run URL; non-required red → keep
+  waiting) → `git remote prune origin` → top-up in-flight per lane under a global cap. `pr-sync.md` +
+  `AGENTS-fleet.md` updated. (No bisect — a red fails its own PR alone.) Hardened through 4 `--execute`
+  smoke rounds — see the bug log below.
+- **I5 — hardening.** ✅ Landed the reap-correctness set (own mergeCommit.oid #1532, fetch-before-pick
+  #1549, trunk-worktree-not-bare-hub #1591, dispatch mis-count #1597, preview/executor guard-mirror
+  #1600, stale-cand-ref auto-prune #1609) + record auto-retire. Remaining/optional: in-flight cap
+  tuning, CI timeout → reject-with-timeout, removing the now-dead local-gate code (`gate_subset`,
+  `gate-batch` bisect) once fully proven.
 
 Each increment lands as its own merge-request (per-commit cadence). Trunk-safety invariant holds at
-every step: nothing advances trunk except a CI-green candidate.
+every step: nothing advances trunk except a CI-green candidate, and a reap that cannot cleanly advance
+(cherry-pick conflict / gh error) leaves the record in-flight rather than corrupting trunk.
+
+## Executor smoke-test bug log (the cutover, 2026-08-03)
+
+The executor was hardened behind pr-sync's LIVE `schedule-pass --execute` smoke-tests — each bug was
+an ENVIRONMENT bug invisible in a full-stack worktree (unit tests verified the LOGIC; only the
+consumer peer's real environment surfaced the WIRING). Fix-forward one-bug-per-round, zero trunk
+corruption:
+- **BUG-1 / 1a / 1b** — advance-trunk model: a literal FF from `origin/main` is impossible (re-parent
+  model → tree-equal-but-commit-distinct); must cherry-pick the PR's OWN `mergeCommit.oid` (#1532, not
+  `origin/main`'s tip or the range), after `git fetch origin <oid>` so its sequential-squash parent is
+  local (#1549).
+- **BUG-2** — `gh pr create --fill` fails (no local `origin/main..head` range on a fresh cand branch);
+  use explicit `--title`/`--body`.
+- **BUG-3** — the cherry-pick ran in the BARE hub (`fleet.repo`, no work tree) → git fatals "must be
+  run in a work tree", misreported as a false conflict; run the mutating ops in the worktree that has
+  `trunk` checked out (#1591, via `parse_trunk_worktree` over `git worktree list --porcelain`).
+- **Guard + count nits** — the re-dispatch idempotency guard matched agent-alone across all records
+  (blocked a new different-ref MR from the same agent); scope to `dispatch_is_in_flight` + `refs_match`
+  on the ref (#1591). The dispatch counter incremented even when the guard bailed; `publish_candidate`
+  now returns bool, counted only on a real dispatch (#1597). `dispatch_plan` (the preview) must mirror
+  the executor guard exactly or the two diverge (#1600).
+- **Housekeeping** — reaped ci-dispatch records are DELETED after ack (not left resolved-in-place); the
+  reap `git remote prune origin`s stale cand remote-tracking refs after a merge (#1609).
 
 ## Open questions (need an operator ruling — raised via `ask`)
 
