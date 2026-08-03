@@ -361,7 +361,7 @@ impl Session {
     /// Like [`Session::deliver`], but RETURNS the `control/*` effects the reducer emitted this turn
     /// (control-plane partition, register-by-string): `control/*` families are authz-exempt + not routed —
     /// the kernel collects them and hands them back here for the DRIVER to consume (e.g. `fork_for_query`
-    /// scrapes the `control/summary` effect's `request.payload`). The common [`deliver`] path drops
+    /// scrapes the `control/summary` effect's `request.payload`). The common [`Session::deliver`] path drops
     /// them; use this when you need them. See [`crate::effect::ControlEffect`].
     pub async fn deliver_control(
         &mut self,
@@ -395,7 +395,7 @@ impl Session {
     /// Genesis-seed the capability manifest (host-capability-discovery I5): fold a synthetic
     /// `control/capabilities` answer so the guest knows its capabilities without issuing a query. Synthesizes
     /// a `control/capabilities` [`Effect`] and runs it through the same drive path as a guest-issued query
-    /// ([`drive_worklist`]'s inline-answer arm), so there is one manifest shape, one guest decoder, and
+    /// ([`Session::drive_worklist`]'s inline-answer arm), so there is one manifest shape, one guest decoder, and
     /// one replay-safe (logged EffectResult) code path. Call immediately after [`Session::genesis`], before
     /// the first delivery; the seed's dispatch is cause-linked to the genesis event.
     ///
@@ -935,7 +935,7 @@ impl Session {
     /// the timer analogue of [`dispatch_token_of`]: `Some(Some(token))` = a token was armed, `Some(None)`
     /// = a token-free timer, `None` = no `TimerArmed` frame for `id`. Derived from the DURABLE arming
     /// frame so it's replay-deterministic — the same fire gets the same token live or reconstructed. This
-    /// is how the token "rides the TimerFired": [`fire_due_timers_async`] copies it onto the fire event so a
+    /// is how the token "rides the TimerFired": [`fire_due_timers`] copies it onto the fire event so a
     /// wasm reducer's fold reads it back as the guest's `resumes` without fold ever touching the log/map.
     fn timer_armed_token_of(&self, id: EffectId) -> Option<Option<Vec<u8>>> {
         // Scan from the END (rev): at most ONE matching frame per id, and a result/fire event is
