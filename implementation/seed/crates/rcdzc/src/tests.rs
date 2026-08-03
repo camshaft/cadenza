@@ -8714,6 +8714,68 @@ fn a_float32_arith_op_grounds_a_bare_literal_operand_to_f32() {
     assert_eq!(got.to_bits(), 3.5f64.to_bits(), "Float64 unchanged");
 }
 
+/// adv-61 regression: a CONSTANT `Float32` COMPARE must fold at binary32 precision, not at the
+/// un-demoted f64 payload the reader parsed. `(= (: 0.30000001192092896 Float32) (: 0.3 Float32))`
+/// folds TRUE — both operands demote to the SAME binary32 (`0x3E99999A`) — matching the runtime
+/// `FloatCompare`/`FEq` path and the `ConstFloat` emit (both round `as f32`); before the fix the const
+/// fold compared the raw f64 bits and gave FALSE, diverging from the runtime (const-vs-runtime
+/// disagreement on BOTH backends). Scalar eq + arith-then-eq + ordering + a nested-compound face, plus
+/// a genuinely-unequal Float32 control (fold must still say false) and a Float64 control (NOT demoted —
+/// the two f64 payloads differ, so it stays false). All-scalar `if`→`Int64` programs: they import no
+/// value-heap runtime, so the store-free assertion holds and the program ALWAYS runs (guards in clean
+/// CI — never the heap-test `find_runtime_wasm() else skip` pattern that would disable this witness).
+#[test]
+fn a_constant_float32_compare_folds_at_binary32_precision() {
+    use crate::testkit::parse;
+    // (program, expected `main()` result). Each is a fully-constant compare inside an `if`.
+    let cases: &[(&str, i64)] = &[
+        // No-arith: two Float32 literals that render the same binary32 → equal (adv-61 sharpest face).
+        (
+            "(module m (def (main) (if (= (: 0.30000001192092896 Float32) (: 0.3 Float32)) 1 0)) (export main))",
+            1,
+        ),
+        // Arith-then-eq: 0.1f32 + 0.2f32 == 0.3f32 at binary32 (0x3E99999A) → equal.
+        (
+            "(module m (def (main) (if (= (+ (: 0.1 Float32) (: 0.2 Float32)) (: 0.3 Float32)) 1 0)) (export main))",
+            1,
+        ),
+        // Ordering `<`: the sum EQUALS 0.3f32 under binary32, so strictly-less is FALSE.
+        (
+            "(module m (def (main) (if (< (+ (: 0.1 Float32) (: 0.2 Float32)) (: 0.3 Float32)) 1 0)) (export main))",
+            0,
+        ),
+        // Ordering `<=`: equal under binary32 → true.
+        (
+            "(module m (def (main) (if (<= (+ (: 0.1 Float32) (: 0.2 Float32)) (: 0.3 Float32)) 1 0)) (export main))",
+            1,
+        ),
+        // Nested compound (tuple) eq recurses through the demoting float compare.
+        (
+            "(module m (def (main) (if (= (tuple (: 0.30000001192092896 Float32)) (tuple (: 0.3 Float32))) 1 0)) (export main))",
+            1,
+        ),
+        // CONTROL: genuinely-unequal Float32 constants still fold to not-equal.
+        (
+            "(module m (def (main) (if (= (: 0.5 Float32) (: 0.3 Float32)) 1 0)) (export main))",
+            0,
+        ),
+        // CONTROL: the SAME two literals at Float64 are NOT demoted — distinct f64 payloads → not equal.
+        (
+            "(module m (def (main) (if (= (: 0.30000001192092896 Float64) (: 0.3 Float64)) 1 0)) (export main))",
+            0,
+        ),
+    ];
+    for (src, want) in cases {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "an all-scalar const-compare program imports no value-heap runtime: {src}"
+        );
+        let got: i64 = run_returns(&bytes, "main");
+        assert_eq!(got, *want, "const Float32 compare folds at binary32: {src}");
+    }
+}
+
 #[test]
 fn a_float32_if_result_grounds_its_bare_literal_branches_to_f32_not_f64() {
     use crate::testkit::parse;
