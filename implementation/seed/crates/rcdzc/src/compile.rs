@@ -1107,6 +1107,19 @@ pub(crate) fn validate_type_position(
         out.push(Reject::coded(Code::IntOutOfRange, msg).at(node));
         return;
     }
+    // A TYPE CONSTRUCTOR applied at the WRONG ARITY in this payload/op-type position — a user generic sum
+    // `(Box Int64 Bool)` (Box takes 1) or a prelude `(Option Int64 Bool)`. Like the annotation path
+    // (`infer.rs` — `type_ctor_arity_message`), this MUST be checked BEFORE the `typeval_of` early-return
+    // below: a user generic REDUCES to a `Ty::Sum` silently ignoring the extra arg (so `typeval_of`
+    // succeeds and the position is waved through), yet the extra/missing arg is ill-formed. Without this,
+    // a mis-arity payload slipped `cdz check` at the DECLARATION and surfaced only LATER as a confusing
+    // CDZ0201 at a construction site ("payload has declared type Box, but a value of type Box was applied"
+    // — the two render identically because the extra arg was dropped). Emit the SAME CDZ0203 the annotation
+    // path gives, anchored at the offending type expression, so a payload position reads like an annotation.
+    if let Some(msg) = crate::infer::type_ctor_arity_message(db, pos) {
+        out.push(Reject::coded(Code::TypeMismatch, msg).at(pos));
+        return;
+    }
     if crate::eval::typeval_of(db, pos).is_some() {
         return; // denotes a real type (self/mutual/forward refs + nested generics resolve)
     }

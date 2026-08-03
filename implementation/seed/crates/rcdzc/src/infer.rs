@@ -2154,7 +2154,7 @@ fn enrich_nested_lowercase_type_vars(
 /// argument count differs — every other non-type keeps the generic message. Reads the head's ctor
 /// identity via `meta_apply_of` (GENERIC — the prim carries the arity, no hard-coded name match on the
 /// source spelling).
-fn type_ctor_arity_message(db: &mut Db, ty_expr: StructId) -> Option<String> {
+pub(crate) fn type_ctor_arity_message(db: &mut Db, ty_expr: StructId) -> Option<String> {
     // Check THIS node's head first; if it is well-formed, RECURSE into its argument positions so a NESTED
     // wrong-arity ctor is caught too — `(List (Box Int64 Bool))`, `(Tuple Int64 (Map Int64))`, a record
     // field's `(Box Int64 Bool)`. The type-argument positions are the list's children after the head (each

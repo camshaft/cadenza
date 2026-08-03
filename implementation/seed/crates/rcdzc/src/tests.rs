@@ -24232,6 +24232,56 @@ mod match_engine {
     }
 
     #[test]
+    fn a_wrong_arity_generic_in_a_variant_payload_is_cdz0203_at_the_declaration() {
+        // FIX: a type constructor applied at the WRONG ARITY in a VARIANT PAYLOAD position — `(type W (Wrap
+        // (Box Int64 Bool)))` where `(Box a)` takes 1, or a built-in `(Option Int64 Bool)` — was SILENTLY
+        // ACCEPTED at the declaration (a user generic REDUCES to a `Ty::Sum` dropping the extra arg, so
+        // `validate_type_position`'s `typeval_of` early-return waved it through). The mis-arity surfaced only
+        // LATER as a confusing CDZ0201 at a construction site ("payload has declared type Box, but a value of
+        // type Box was applied" — identical renders because the extra arg was dropped). Now
+        // `validate_type_position` runs `type_ctor_arity_message` BEFORE the `typeval_of` return — same as the
+        // annotation path — so the payload rejects CDZ0203 at the DECLARATION with the actionable message.
+        let bad = |src: &str, name: &str| {
+            let e = compile_component(&crate::codec::encode(&parse(src))).expect_err(
+                "a wrong-arity generic in a variant payload must reject at the declaration",
+            );
+            assert_eq!(e.code.as_deref(), Some("CDZ0203"), "got: {}", e.message);
+            assert!(
+                e.message.contains(&format!("`{name}` takes")) && e.message.contains("supplied"),
+                "expected the arity message naming {name}, got: {}",
+                e.message
+            );
+        };
+        // user generic (Box a) given 2 args in a payload.
+        bad(
+            "(module m (type (Box a) (Mk a)) (type W (Wrap (Box Int64 Bool))) (def (main) 0) (export main))",
+            "Box",
+        );
+        // built-in Option given 2 args in a payload.
+        bad(
+            "(module m (type W (Wrap (Option Int64 Bool))) (def (main) 0) (export main))",
+            "Option",
+        );
+        // CONTROLS — a RIGHT-arity payload compiles, AND a PARAM-parameterized payload `(Box a)` (where `a`
+        // is the enclosing type's param) is valid, not a false wrong-arity.
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (type (Box a) (Mk a)) (type W (Wrap (Box Int64))) \
+                   (def (main) (match (Wrap (Mk 5)) ((Wrap b) (match b ((Mk v) v))))) (export main))"
+            )))
+            .is_ok(),
+            "a right-arity payload constructs + matches"
+        );
+        assert!(
+            compile_component(&crate::codec::encode(&parse(
+                "(module m (type (Box a) (Mk a)) (type (Pair a) (P (Box a))) (def (main) 0) (export main))"
+            )))
+            .is_ok(),
+            "a param-parameterized payload `(Box a)` inside another generic is valid, not wrong-arity"
+        );
+    }
+
+    #[test]
     fn a_wrong_arity_generic_type_application_in_an_annotation_is_cdz0203_for_user_and_builtin() {
         // Coverage-hardening for the applied-generic-ctor arity check in a TYPE-ANNOTATION position (the
         // #1683 user-generic-by-name path + the built-in generics). A generic type applied with the WRONG
