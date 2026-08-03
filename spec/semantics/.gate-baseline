@@ -3074,7 +3074,7 @@ pass	a same-dimension annotation preserves the value's own scale through a conve
 pass	a same-dimension quantity annotation whose inner numeric type differs is still an error
 pass	a same-kind symbol-literal payload sub-pattern still dispatches (nested control)
 pass	a same-kind symbol-literal tuple sub-pattern still dispatches (tuple control)
-pass	a same-name GENERIC constructor via a called helper is rejected — the residual harder case
+pass	a same-name GENERIC constructor via a called helper resolves to the constructor (adv-63)
 pass	a same-name generic type applied in a variant payload denotes the type
 pass	a same-name generic type at TWO instantiations in one payload each denotes its type
 pass	a same-name monomorphic constructor in a called helper resolves to the constructor
