@@ -129,12 +129,12 @@ mod tests {
     }
 
     fn model_req(payload: Option<Payload>) -> EffectRequest {
-        EffectRequest {
-            kind: EffectKind::Model,
-            target: "test-model".to_string(),
+        EffectRequest::new(
+            EffectKind::Model,
+            "test-model".to_string(),
             payload,
-            timeliness: Timeliness::Interactive,
-        }
+            Timeliness::Interactive,
+        )
     }
 
     #[tokio::test]
@@ -241,12 +241,12 @@ mod tests {
             }
         }
         let mut exec = ModelExecutor::new(NeverCalled);
-        let req = EffectRequest {
-            kind: EffectKind::Http,
-            target: "https://x/".to_string(),
-            payload: Some(Payload::Inline(b"x".to_vec().into())),
-            timeliness: Timeliness::Interactive,
-        };
+        let req = EffectRequest::new(
+            EffectKind::Http,
+            "https://x/".to_string(),
+            Some(Payload::Inline(b"x".to_vec().into())),
+            Timeliness::Interactive,
+        );
         match exec.perform_async(&req, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
                 assert!(msg.contains("Model"), "err names the handled kind: {msg}");

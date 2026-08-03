@@ -187,12 +187,12 @@ mod tests {
                 EventBody::Inbound { .. } => {
                     kv.put(b"public/phase".to_vec(), b"working".to_vec());
                     // Arm a timer far in the future → stays armed → session is Active.
-                    FoldOutput::with(vec![EffectRequest {
-                        kind: EffectKind::Timer,
-                        target: "999999999".into(),
-                        payload: None,
-                        timeliness: Timeliness::Interactive,
-                    }])
+                    FoldOutput::with(vec![EffectRequest::new(
+                        EffectKind::Timer,
+                        "999999999",
+                        None,
+                        Timeliness::Interactive,
+                    )])
                 }
                 _ => FoldOutput::none(),
             }
@@ -320,12 +320,12 @@ mod tests {
         impl Reducer for ClockOnce {
             async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
                 if matches!(event.body, EventBody::Inbound { .. }) {
-                    FoldOutput::with(vec![EffectRequest {
-                        kind: EffectKind::Now,
-                        target: String::new(),
-                        payload: None,
-                        timeliness: Timeliness::Interactive,
-                    }])
+                    FoldOutput::with(vec![EffectRequest::new(
+                        EffectKind::Now,
+                        String::new(),
+                        None,
+                        Timeliness::Interactive,
+                    )])
                 } else {
                     FoldOutput::none()
                 }

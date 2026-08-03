@@ -44,7 +44,7 @@ bytes = "1"
 # the win). v-agent-harness's kernel-async lands on the SAME single-threaded assumption, so the blocking
 # `deliver` here becomes `.await` with no reshape. Minimal feature set (no multi-thread runtime needed).
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
-# async-trait — object-safe async methods, matching the kernel's `AsyncExecutor`/`AsyncAuthorize`/
-# `AsyncReducer` traits. My `ModelTransport`/`HttpTransport` sub-traits + my native `impl AsyncExecutor`
+# async-trait — object-safe async methods, matching the kernel's `Reducer`/`Executor`/`Authorize` traits
+# (all async, single trait each). My `ModelTransport`/`HttpTransport` sub-traits + my native `impl Executor`
 # for the executors use `#[async_trait(?Send)]` (single-threaded host, non-Send transport futures — §15b).
 async-trait = "0.1"

