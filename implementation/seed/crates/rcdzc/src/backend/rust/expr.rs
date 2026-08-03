@@ -4451,14 +4451,39 @@ fn emit_arith(
             let overflow_possible = crate::lower::divisor_can_be_neg_one(db, rhs)
                 && !crate::lower::value_provably_nonneg(db, lhs);
             let overflow_guard = match types::int_type_is_signed(it) && overflow_possible {
-                // `<T>::MIN` names the value type's minimum (the width `it` fixed the operands to). A
-                // divisor of `-1` only exists for a signed type, so this arm is signed-only.
-                true => match types::rust_type(&Ty::Int(it)) {
-                    Some(t) => format!(
-                        "else if l == {t}::MIN && r == -1 {{ panic!(\"{} overflow\") }} ",
-                        op_name(op)
-                    ),
-                    None => String::new(),
+                // `MIN / -1` overflows the DECLARED width (the quotient +2^(N-1) is out of range). The guard
+                // must test the DECLARED-width minimum, NOT the STORAGE slot's `<T>::MIN`: an odd width
+                // (Int24, Int48) is stored in the next-larger machine prim (i32/i64), so `<slot>::MIN`
+                // (i32::MIN = -2^31) is NOT the type's min (-2^23 for Int24) — a `l == i32::MIN` guard NEVER
+                // fires for an Int24 value, so `MIN(-8388608) / -1` computed the out-of-range +8388608 and it
+                // escaped into downstream unchecked math (adv-67, HIGH differential: rust returned it, wasm
+                // trapped). Compute the declared min `-(1 << (N-1))` from the width `w` and compare against
+                // THAT (as the checked +/-/* unusual-width path already re-checks the declared range). For an
+                // aliased width (8/16/32/64) the declared min == slot min, so this is behavior-identical there.
+                true => match (types::rust_type(&Ty::Int(it)), it.width) {
+                    (Some(t), Width::Fixed(w)) if (1..=64).contains(&w) => {
+                        // The declared minimum as a literal in the storage type `t`. TWO cases:
+                        //  • ALIASED width (8/16/32/64): the slot IS the declared width, so `{t}::MIN` is the
+                        //    exact declared min. MUST use it — the computed `-(1{t} << (w-1))` would OVERFLOW
+                        //    the slot at w==bits (`1i32 << 31` = 2^31 doesn't fit i32 → rustc "arithmetic
+                        //    operation will overflow"). This is the original behavior, preserved for the
+                        //    aliased widths (where it was already correct).
+                        //  • ODD width (Int24, Int48 — stored in the next-larger slot): `{t}::MIN` is the
+                        //    SLOT's min (i32::MIN for Int24), NOT the declared min (-2^23), so the guard would
+                        //    never fire (adv-67). Compute `-(1{t} << (w-1))` — the declared min fits the
+                        //    strictly-wider slot (w < slot bits), no overflow.
+                        let decl_min = if matches!(w, 8 | 16 | 32 | 64) {
+                            format!("{t}::MIN")
+                        } else {
+                            format!("(-(1{t} << {}))", w - 1)
+                        };
+                        format!(
+                            "else if l == {decl_min} && r == -1 {{ panic!(\"{} overflow\") }} ",
+                            op_name(op)
+                        )
+                    }
+                    // No storage type / non-fixed width — no guard (the operand type wasn't a fixed int).
+                    _ => String::new(),
                 },
                 false => String::new(),
             };
