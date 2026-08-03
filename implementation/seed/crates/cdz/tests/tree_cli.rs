@@ -110,6 +110,65 @@ fn tree_of_a_depless_project_is_just_the_root() {
 }
 
 #[test]
+fn tree_terminates_on_a_dependency_cycle() {
+    // A true CYCLE (a → b → a), not just a diamond — the diamond above is a DAG that would terminate even
+    // without the guard (it would merely re-expand), but a cycle would recurse FOREVER without the
+    // visited-set. Pin that the walk terminates (exit 0, in bounded time) and marks the back-edge to `a`
+    // with `(*)` instead of re-expanding it. Guarded by the harness so a regression that dropped the
+    // visited-set (or keyed it wrongly) would HANG here rather than silently loop.
+    let root = workspace("cycle");
+    project(&root, "a", &["../b"]);
+    project(&root, "b", &["../a"]);
+    let (ok, out, err) = run(&["tree", root.join("a").to_str().unwrap()]);
+    assert!(
+        ok,
+        "a cyclic graph still succeeds (does not loop): {out}{err}"
+    );
+    assert!(
+        out.starts_with("a ("),
+        "root line names the entry project: {out}"
+    );
+    assert!(out.contains("b (../b)"), "b is a's dep: {out}");
+    // The back-edge to `a` (under b) is marked `(*)` and not re-expanded — proof the cycle terminated at
+    // the already-visited root rather than descending into a's deps again.
+    assert!(
+        out.contains("a (../a) (*)"),
+        "the back-edge to the root is marked (*) and not re-expanded: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn tree_json_terminates_on_a_dependency_cycle() {
+    // The `--json` counterpart of the text cycle pin: a → b → a must emit a FINITE object, with the
+    // back-edge to `a` marked `repeated: true` and carrying no nested `deps` (not re-expanded). Parsed,
+    // so a malformed / non-terminating object fails loudly rather than substring-matching.
+    let root = workspace("cycle-json");
+    project(&root, "a", &["../b"]);
+    project(&root, "b", &["../a"]);
+    let (ok, out, err) = run(&["tree", root.join("a").to_str().unwrap(), "--json"]);
+    assert!(ok, "a cyclic graph emits JSON without looping: {out}{err}");
+    let v: serde_json::Value =
+        serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("valid JSON ({e}): {out}"));
+    assert_eq!(v["name"], "a", "root name: {out}");
+    // b is the sole dep, expanded once.
+    let b = &v["deps"][0];
+    assert_eq!(b["name"], "b", "b is the dep: {out}");
+    // Under b, the back-edge to a is marked repeated and not re-expanded.
+    let back = &b["deps"][0];
+    assert_eq!(back["path"], "../a", "the back-edge names a's path: {out}");
+    assert_eq!(
+        back["repeated"], true,
+        "the back-edge is marked repeated: {out}"
+    );
+    assert!(
+        back["deps"].is_null(),
+        "the repeated back-edge is not re-expanded: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn tree_json_emits_the_nested_graph() {
     // `--json` emits ONE nested `{name, path, deps: [...]}` object — the shape a tool consumes without
     // parsing the box-drawing connectors. Same graph as the text test: app → mathlib → util, app → util
