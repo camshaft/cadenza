@@ -88733,6 +88733,39 @@ mod closure_host_resource {
         );
     }
 
+    /// adv es1 (v-rust-backend/breaker, LOW diagnostic-parity): an escaping closure NESTED IN A TUPLE —
+    /// `(host (ask) (tuple 1 (fn (x) (+ x (ask.ask)))))` — must reject the SAME CDZ0406 as a bare escaping
+    /// closure, matching the rust backend. Before: the wasm CDZ0406 escaping-closure scan lived only inside
+    /// the individual `emit_*_resource` emitters, and a closure nested in a COMPOUND result routed to a
+    /// compound-escape path that lacked the scan, so it fell through to `select`'s generic "not in the
+    /// host-import set" decline (code None) — a parity gap (rust rejected CDZ0406, wasm declined generically;
+    /// both refuse, so it was diagnostic-only, no wrong value). Fix: hoist the escaping-closure scan to the
+    /// emit dispatch head (BEFORE routing), so every escape face — bare or compound-nested — declines CDZ0406
+    /// uniformly. Pins the tuple-nested face; the build-time-delegated companion below stays COMPILING (the
+    /// scan targets lifted closure BODIES, not a make-time host call in the export body).
+    #[test]
+    fn an_escaping_closure_nested_in_a_tuple_rejects_cdz0406_like_a_bare_one() {
+        use crate::testkit::parse;
+        let src = "(do (effect ask (op ask (-> Unit Int64))) \
+                   (def (main) (host (ask) (tuple 1 (fn ((: x Int64)) (+ x (ask.ask)))))) (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("a closure nested in a tuple that performs an effect must REJECT CDZ0406");
+        assert_eq!(
+            err.code.as_deref(),
+            Some("CDZ0406"),
+            "a tuple-nested escaping closure must reject CDZ0406 (parity with a bare one + the rust \
+             backend), NOT fall through to a generic 'not in the host-import set' decline; got: {:?} / {}",
+            err.code,
+            err.message
+        );
+        assert!(
+            err.message.contains("ask.ask")
+                && err.message.contains("cannot cross the host boundary"),
+            "the rejection should name the escaping op, got: {}",
+            err.message
+        );
+    }
+
     /// A closure export whose BUILD-TIME code delegates a host effect — `(host (ask) (let ((v (ask.ask)))
     /// (fn (x) (+ x v))))` — now COMPILES to a VALID component (brick d: the closure-resource emit composes
     /// the host interface via `multi_closure_resource_core_module_with_host` +
