@@ -385,18 +385,18 @@ impl Session {
         if self.already_seeded_capabilities() {
             return Vec::new();
         }
-        // Synthesize the control/capabilities request the guest would have sent. kind is the `Emit`
-        // placeholder (a control family has no distinguishing EffectKind — the family drives everything);
-        // the durable Dispatched frame records the CONTROL family (the recovery-classification fix), so the
-        // seed is replay-classified as control/capabilities, not a real emit. No continuation token: the
-        // seed is kernel-originated, not a reducer continuation.
-        let mut request = EffectRequest::new(
-            EffectKind::Emit,
+        // Synthesize the control/capabilities request the guest would have sent, via the register-by-string
+        // constructor (effect-schema slice 2): the family drives everything, and it takes the Emit
+        // placeholder kind internally (a control family has no distinguishing EffectKind). The durable
+        // Dispatched frame records the CONTROL family (the recovery-classification fix), so the seed is
+        // replay-classified as control/capabilities, not a real emit. No continuation token: the seed is
+        // kernel-originated, not a reducer continuation.
+        let request = EffectRequest::new_with_family(
+            crate::effect::effect_ct::CAPABILITIES,
             "self",
             None,
             crate::effect::Timeliness::Interactive,
         );
-        request.content_type.family = crate::effect::effect_ct::CAPABILITIES.into();
         // Cause-link the seed to the GENESIS event (session birth) — not the current tip. Conceptually the
         // kernel asks control/capabilities on the guest's behalf at t=0, so genesis is the true cause; and
         // it gives the seed a stable, distinguishing signature (cause==genesis) that a guest-issued query
