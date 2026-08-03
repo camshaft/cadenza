@@ -4522,6 +4522,8 @@ pass	float multiplication uses the arithmetic operator
 pass	float subtraction uses the arithmetic operator
 pass	floating-point uses the fixed rounding mode
 pass	four same-signature closure exports share one resource
+pass	from-bytes decodes a 3-byte scalar split across BOTH seams of a 3-leaf rope
+pass	from-bytes rejects a torn sequence whose invalid continuation sits in the NEXT leaf
 pass	functions are single-arity and curried
 pass	generated FLOAT values are totally ordered (a trichotomy property over two generated floats)
 pass	generated small-alphabet strings dedup in a Set by content across per-draw construction
@@ -5606,7 +5608,7 @@ todo	a host-block scrutinee folding to a multi-arm sum switch fires the host op 
 todo	a host-delegated result SEEDS an in-program handler's initial state
 todo	a host-op argument COMPUTED by guest arithmetic crosses the boundary evaluated
 todo	a let-bound host result captured by two escaping closures fires the host op once (adv-62)
-todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
+pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
 todo	a recursion-driven host-call sequence consumes one response row per iteration in order
