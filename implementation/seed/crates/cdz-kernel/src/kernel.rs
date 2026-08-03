@@ -342,22 +342,6 @@ impl Session {
             .map(|_control| ())
     }
 
-    /// TRANSITIONAL alias for [`Session::deliver`] — the `_async` suffix is being dropped (operator
-    /// cleanup; the whole method is `async`). `deliver_async` is PUBLIC and called by cdz-agent-host's
-    /// host loop + e2e tests, so this `#[doc(hidden)]` forwarding shim keeps them compiling until the host
-    /// migrates to `deliver` (beat T4 alias-bridge). Removed once the host is off `deliver_async`.
-    #[doc(hidden)]
-    pub async fn deliver_async(
-        &mut self,
-        body: EventBody,
-        cause: Option<Hash>,
-        reducer: &dyn Reducer,
-        authz: &(impl Authorize + ?Sized),
-        executor: &mut (impl Executor + ?Sized),
-    ) -> Result<(), KernelError> {
-        self.deliver(body, cause, reducer, authz, executor).await
-    }
-
     /// Like [`Session::deliver`], but RETURNS the `control/*` effects the reducer emitted this turn
     /// (control-plane partition, register-by-string): `control/*` families are authz-exempt + not routed —
     /// the kernel collects them and hands them back here for the DRIVER to consume (e.g. `fork_for_query`
@@ -374,22 +358,6 @@ impl Session {
         self.append(body, cause).await;
         let control = self.drive(reducer, authz, executor).await;
         Ok(control)
-    }
-
-    /// TRANSITIONAL alias for [`Session::deliver_control`] — the `_async` suffix is being dropped (beat T4
-    /// alias-bridge). `#[doc(hidden)]` forwarding shim keeping cdz-agent-host's callers compiling until it
-    /// migrates to `deliver_control`. Removed once the host is off `deliver_async_control`.
-    #[doc(hidden)]
-    pub async fn deliver_async_control(
-        &mut self,
-        body: EventBody,
-        cause: Option<Hash>,
-        reducer: &dyn Reducer,
-        authz: &(impl Authorize + ?Sized),
-        executor: &mut (impl Executor + ?Sized),
-    ) -> Result<Vec<crate::effect::ControlEffect>, KernelError> {
-        self.deliver_control(body, cause, reducer, authz, executor)
-            .await
     }
 
     /// Genesis-seed the capability manifest (host-capability-discovery I5): fold a synthetic
@@ -448,19 +416,6 @@ impl Session {
             .await
     }
 
-    /// TRANSITIONAL alias for [`Session::seed_capabilities`] — the `_async` suffix is being dropped (beat T4
-    /// alias-bridge). `#[doc(hidden)]` forwarding shim keeping cdz-agent-host's callers compiling until it
-    /// migrates to `seed_capabilities`. Removed once the host is off `seed_capabilities_async`.
-    #[doc(hidden)]
-    pub async fn seed_capabilities_async(
-        &mut self,
-        reducer: &dyn Reducer,
-        authz: &(impl Authorize + ?Sized),
-        executor: &mut (impl Executor + ?Sized),
-    ) -> Vec<crate::effect::ControlEffect> {
-        self.seed_capabilities(reducer, authz, executor).await
-    }
-
     /// Has this session already been capability-SEEDED (by [`seed_capabilities`])? True iff the log
     /// carries a `control/capabilities` `Dispatched` whose cause is the GENESIS event — the seed's specific
     /// signature. This deliberately does NOT match a GUEST-issued `control/capabilities` query, which
@@ -511,20 +466,6 @@ impl Session {
             self.drive(reducer, authz, executor).await;
         }
         due.len()
-    }
-
-    /// TRANSITIONAL alias for [`Session::fire_due_timers`] — the `_async` suffix is being dropped (beat T4
-    /// alias-bridge). `#[doc(hidden)]` forwarding shim keeping cdz-agent-host's callers compiling until it
-    /// migrates to `fire_due_timers`. Removed once the host is off `fire_due_timers_async`.
-    #[doc(hidden)]
-    pub async fn fire_due_timers_async(
-        &mut self,
-        now_ms: u64,
-        reducer: &dyn Reducer,
-        authz: &(impl Authorize + ?Sized),
-        executor: &mut (impl Executor + ?Sized),
-    ) -> usize {
-        self.fire_due_timers(now_ms, reducer, authz, executor).await
     }
 
     /// Absolute deadlines of the currently armed-but-unfired timers (§16c-S5), for the driver's
@@ -872,7 +813,7 @@ impl Session {
             return false;
         }
         // `open` holds BOTH dispatched-effect ids AND armed-timer ids — but only a DISPATCHED effect can
-        // be timed out (a timer isn't a hung external call; it fires via `fire_due_timers_async`). A timer
+        // be timed out (a timer isn't a hung external call; it fires via `fire_due_timers`). A timer
         // id has no `Dispatched` event, so `dispatch_hash_of` is None → return false (Copilot PR#1016: the
         // old code panicked here, contradicting the "never dispatched → false" contract). Timing out a
         // timer is a no-op, not a crash.
@@ -1025,19 +966,6 @@ impl Session {
             s.log.push(event);
         }
         Ok(s)
-    }
-
-    /// TRANSITIONAL alias for [`Session::replay`] — the `_async` suffix was dropped (operator cleanup;
-    /// the whole method is `async`), but `replay_async` is a PUBLIC method cdz-agent-host's e2e tests call,
-    /// so this forwarding shim keeps them compiling until v-agent-harness-host migrates to `replay`. Remove
-    /// once the host is off `replay_async` (same never-red bridge as the trait-method renames). This is the
-    /// beat-1 miss: `replay_async` was public + used by the host's TESTS, which the src-only grep didn't see.
-    #[doc(hidden)]
-    pub async fn replay_async(
-        log: Vec<Event>,
-        reducer: &dyn Reducer,
-    ) -> Result<Session, KernelError> {
-        Self::replay(log, reducer).await
     }
 
     /// The set of open (dispatched-but-unsettled) effect ids after recovery — what a driver must
@@ -1465,12 +1393,12 @@ mod status_snapshot_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn deliver_async_is_equivalent_to_sync_deliver() {
-        // The safety property of the async migration: deliver_async must produce a session BYTE-IDENTICAL
-        // to sync deliver for a sync-bodied reducer wrapped in SyncAsAsync (the async path only adds
-        // cooperative yield; it changes no observable behavior). Build BOTH — a sync-delivered session and
-        // an async-delivered one — and assert they match on the KV ROOT HASH (the whole KV, not one key),
-        // the log length, and the derived status. A deliver/deliver_async drift fails loudly HERE.
+    async fn deliver_is_deterministic_same_input_same_state() {
+        // Determinism (§3): `deliver` is a pure function of (input, reducer) — two independent sessions
+        // fed the SAME inbound through the SAME reducer must end BYTE-IDENTICAL. Build two and assert they
+        // match on the KV ROOT HASH (the whole KV, not one key), the log length, and the derived status.
+        // Any nondeterminism in the drive loop fails loudly HERE. (Historically this pinned sync-vs-async
+        // equivalence; post all-async collapse there is one `deliver`, so it now pins delivery determinism.)
 
         let mut sync_exec = RecordingExecutor::new();
         let mut sync_s = Session::genesis(Hash::of(b"status-v1"));
@@ -1526,7 +1454,7 @@ mod status_snapshot_tests {
     }
 
     // A reducer that arms a timer on an inbound message and, when that timer FIRES, publishes a marker —
-    // so a test can prove fire_due_timers_async actually wakes the reducer (not just drains the table).
+    // so a test can prove fire_due_timers actually wakes the reducer (not just drains the table).
     struct TimerThenPublishReducer;
     #[async_trait::async_trait(?Send)]
     impl Reducer for TimerThenPublishReducer {
@@ -1553,8 +1481,8 @@ mod status_snapshot_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn fire_due_timers_async_wakes_the_reducer_and_settles_the_timer() {
-        // fire_due_timers_async is a new public API; pin it: arm a timer via an inbound, then fire it and
+    async fn fire_due_timers_wakes_the_reducer_and_settles_the_timer() {
+        // fire_due_timers is a new public API; pin it: arm a timer via an inbound, then fire it and
         // assert (a) it returns 1 (one timer fired), (b) the reducer WOKE (its TimerFired fold ran, writing
         // the marker), (c) the armed-timer + open-obligation sets drained (the timer settled). Determinism:
         // the recorded fired_ms is the timer's deadline, so replay is stable.
@@ -1973,7 +1901,7 @@ mod monotonic_now_tests {
             "a control/* effect must skip authz entirely — no AuthzDenied"
         );
 
-        // The common deliver_async path drops the control Vec but is otherwise identical (returns ()).
+        // The common deliver path drops the control Vec but is otherwise identical (returns ()).
         let mut exec2 = RecordingExecutor::new();
         let mut s2 = Session::genesis(Hash::of(b"control-v2"));
         s2.deliver(
@@ -2211,7 +2139,7 @@ mod monotonic_now_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn genesis_seed_folds_a_capabilities_manifest_so_the_guest_is_born_knowing() {
         use crate::executor::CompositeExecutor;
-        // I5: right after genesis (which folds nothing), seed_capabilities_async folds a synthetic
+        // I5: right after genesis (which folds nothing), seed_capabilities folds a synthetic
         // capabilities-manifest EffectResult — the guest is born knowing, without issuing a query. Same
         // wire shape + code path as an I4b guest query. Executor serves emit; grant permits emit.
         let mut exec = CompositeExecutor::new().with_effect(
