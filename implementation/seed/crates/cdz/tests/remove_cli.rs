@@ -138,3 +138,30 @@ fn add_then_remove_round_trips_back_to_the_original_deps() {
     );
     let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
+
+#[test]
+fn remove_refuses_to_edit_a_scalar_deps_manifest_leaving_it_intact() {
+    // The inverse of `cdz add`'s scalar-deps refusal: `def deps` READS as accept-both (a bare scalar string
+    // coerces to a one-element list), but `cdz remove` EDITS the `[...]` list a scalar has no brackets for.
+    // Rather than corrupt the manifest, `remove` must REFUSE cleanly — exit non-zero, name the malformed
+    // clause, and leave the manifest byte-for-byte unchanged (the text-editor never writes an edit it can't
+    // do cleanly). Note the scalar `../foo` is the very path being removed, so this isn't a "not a dep"
+    // no-op — the refusal is specifically about the non-list SHAPE.
+    let app = app_with_deps("scalar", "def deps = \"../foo\"\n");
+    let before = std::fs::read_to_string(app.join("Project.cdz")).unwrap();
+    let (ok, _o, err) = run(&["remove", "../foo", "--manifest", app.to_str().unwrap()]);
+    assert!(
+        !ok,
+        "remove on a scalar (non-list) deps must be refused: {err}"
+    );
+    assert!(
+        err.contains("malformed `def deps`"),
+        "the refusal names the malformed clause: {err}"
+    );
+    let after = std::fs::read_to_string(app.join("Project.cdz")).unwrap();
+    assert_eq!(
+        before, after,
+        "the manifest is left byte-for-byte unchanged on a refused edit"
+    );
+    let _ = std::fs::remove_dir_all(app.parent().unwrap());
+}
