@@ -360,27 +360,31 @@ impl Session {
         Ok(control)
     }
 
-    /// GENESIS-SEED the capability manifest (host-capability-discovery I5): right after
-    /// [`Session::genesis`], fold a synthetic `control/capabilities` answer so the guest is BORN KNOWING
-    /// its capabilities — without having to issue a `control/capabilities` query itself. `genesis` carries
-    /// no effects and folds nothing, so it can't be the seed carrier; this is the kernel asking
-    /// `control/capabilities` on the guest's behalf at t=0. It synthesizes a `control/capabilities`
-    /// [`Effect`] and runs it through the SAME drive path as a guest-issued query ([`drive_worklist_async`]'s
-    /// inline-answer arm), so there is ONE manifest shape + ONE guest decoder + one replay-safe (logged
-    /// EffectResult) code path — I5 reuses I4b wholesale, just kernel-triggered. ALWAYS seeds (the cost is
-    /// one projection + one small logged event; the guest is opaque so conditioning on whether it reads the
-    /// seed is impossible, and always-seeding keeps the capabilities populated before the first substantive
-    /// fold, deterministically). The seed's dispatch is cause-linked to the genesis event.
+    /// Genesis-seed the capability manifest (host-capability-discovery I5): fold a synthetic
+    /// `control/capabilities` answer so the guest knows its capabilities without issuing a query. Synthesizes
+    /// a `control/capabilities` [`Effect`] and runs it through the same drive path as a guest-issued query
+    /// ([`drive_worklist_async`]'s inline-answer arm), so there is one manifest shape, one guest decoder, and
+    /// one replay-safe (logged EffectResult) code path. Call immediately after [`Session::genesis`], before
+    /// the first delivery; the seed's dispatch is cause-linked to the genesis event.
+    ///
+    /// IDEMPOTENT: a second (or later) call is a NO-OP returning an empty Vec — the "seed once" contract is
+    /// ENFORCED, not just documented. Without this, a re-call would append a duplicate manifest dispatch/
+    /// result AND cause-link it to the current tip rather than genesis, corrupting the causal provenance.
     ///
     /// Returns any `ControlEffect`s the fold surfaced (a genesis reducer that reacts to the seed by emitting
-    /// a control/* effect); an ordinary genesis reducer emits none, so callers can usually ignore it. Call
-    /// this ONCE, immediately after `genesis`, before delivering the first inbound message.
+    /// a control/* effect); an ordinary genesis reducer emits none, so callers can usually ignore it.
     pub async fn seed_capabilities_async(
         &mut self,
         reducer: &dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> Vec<crate::effect::ControlEffect> {
+        // Enforce seed-once: if the log already carries a control/capabilities dispatch (from a prior seed),
+        // this is a no-op — never a duplicate seed or a mis-cause-linked (tip- rather than genesis-anchored)
+        // second manifest.
+        if self.already_seeded_capabilities() {
+            return Vec::new();
+        }
         // Synthesize the control/capabilities request the guest would have sent. kind is the `Emit`
         // placeholder (a control family has no distinguishing EffectKind — the family drives everything);
         // the durable Dispatched frame records the CONTROL family (the recovery-classification fix), so the
@@ -400,6 +404,21 @@ impl Session {
         };
         self.drive_worklist_async(vec![(seed, cause)], reducer, authz, executor)
             .await
+    }
+
+    /// Has this session already been capability-seeded? True iff the log carries a `control/capabilities`
+    /// `Dispatched` frame — the durable trace [`seed_capabilities_async`] leaves. Keys on the durable
+    /// `family` (the recorded seed identity), so it's correct after recovery too (a recovered seeded session
+    /// won't be re-seeded). The seed is the only source of a `control/capabilities` dispatch that the kernel
+    /// itself originates.
+    fn already_seeded_capabilities(&self) -> bool {
+        self.log.iter().any(|e| {
+            matches!(
+                &e.body,
+                EventBody::Dispatched { family, .. }
+                    if family.as_ref() == crate::effect::effect_ct::CAPABILITIES
+            )
+        })
     }
 
     /// The ASYNC twin of [`Session::fire_due_timers`] — fire every armed timer past `now_ms`, driving the
@@ -2157,6 +2176,60 @@ mod monotonic_now_tests {
                 && a.as_form(e[1], "granted").is_some()
         });
         assert!(emit_granted, "seeded manifest reads emit as granted");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn seed_capabilities_is_idempotent_a_second_call_is_a_noop() {
+        use crate::executor::CompositeExecutor;
+        // The "seed once" contract is ENFORCED (PR #1687 review): a second seed call must be a no-op — no
+        // duplicate manifest dispatch/result, no mis-cause-linked (tip- rather than genesis-anchored) second
+        // seed. Otherwise a double-call corrupts the log's causal provenance.
+        let mut exec = CompositeExecutor::new().with_effect(
+            crate::effect::effect_ct::EMIT,
+            Box::new(RecordingExecutor::new()),
+        );
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Emit,
+            predicate: crate::effect::ResourcePredicate::Any,
+        }]);
+        let mut session = Session::genesis(Hash::of(b"seed-idem-v1"));
+
+        let first = session
+            .seed_capabilities_async(&InertReducer, &authz, &mut exec)
+            .await;
+        assert!(first.is_empty(), "seed answered inline");
+        let after_first = session.log().len();
+        // Exactly one control/capabilities dispatch after the first seed.
+        let cap_dispatches = |s: &Session| {
+            s.log()
+                .iter()
+                .filter(|e| {
+                    matches!(&e.body, EventBody::Dispatched { family, .. }
+                        if family.as_ref() == crate::effect::effect_ct::CAPABILITIES)
+                })
+                .count()
+        };
+        assert_eq!(
+            cap_dispatches(&session),
+            1,
+            "one seed dispatch after first call"
+        );
+
+        // Second call: no-op — empty return, log UNCHANGED, still exactly one seed dispatch.
+        let second = session
+            .seed_capabilities_async(&InertReducer, &authz, &mut exec)
+            .await;
+        assert!(second.is_empty(), "a repeat seed is a no-op");
+        assert_eq!(
+            session.log().len(),
+            after_first,
+            "a repeat seed appends nothing to the log"
+        );
+        assert_eq!(
+            cap_dispatches(&session),
+            1,
+            "still exactly one seed dispatch — never double-seeded"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
