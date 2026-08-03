@@ -360,6 +360,48 @@ impl Session {
         Ok(control)
     }
 
+    /// GENESIS-SEED the capability manifest (host-capability-discovery I5): right after
+    /// [`Session::genesis`], fold a synthetic `control/capabilities` answer so the guest is BORN KNOWING
+    /// its capabilities — without having to issue a `control/capabilities` query itself. `genesis` carries
+    /// no effects and folds nothing, so it can't be the seed carrier; this is the kernel asking
+    /// `control/capabilities` on the guest's behalf at t=0. It synthesizes a `control/capabilities`
+    /// [`Effect`] and runs it through the SAME drive path as a guest-issued query ([`drive_worklist_async`]'s
+    /// inline-answer arm), so there is ONE manifest shape + ONE guest decoder + one replay-safe (logged
+    /// EffectResult) code path — I5 reuses I4b wholesale, just kernel-triggered. ALWAYS seeds (the cost is
+    /// one projection + one small logged event; the guest is opaque so conditioning on whether it reads the
+    /// seed is impossible, and always-seeding keeps the capabilities populated before the first substantive
+    /// fold, deterministically). The seed's dispatch is cause-linked to the genesis event.
+    ///
+    /// Returns any `ControlEffect`s the fold surfaced (a genesis reducer that reacts to the seed by emitting
+    /// a control/* effect); an ordinary genesis reducer emits none, so callers can usually ignore it. Call
+    /// this ONCE, immediately after `genesis`, before delivering the first inbound message.
+    pub async fn seed_capabilities_async(
+        &mut self,
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
+    ) -> Vec<crate::effect::ControlEffect> {
+        // Synthesize the control/capabilities request the guest would have sent. kind is the `Emit`
+        // placeholder (a control family has no distinguishing EffectKind — the family drives everything);
+        // the durable Dispatched frame records the CONTROL family (the recovery-classification fix), so the
+        // seed is replay-classified as control/capabilities, not a real emit. No continuation token: the
+        // seed is kernel-originated, not a reducer continuation.
+        let mut request = EffectRequest::new(
+            EffectKind::Emit,
+            "self",
+            None,
+            crate::effect::Timeliness::Interactive,
+        );
+        request.content_type.family = crate::effect::effect_ct::CAPABILITIES.into();
+        let cause = self.tip_hash();
+        let seed = Effect {
+            request,
+            token: None,
+        };
+        self.drive_worklist_async(vec![(seed, cause)], reducer, authz, executor)
+            .await
+    }
+
     /// The ASYNC twin of [`Session::fire_due_timers`] — fire every armed timer past `now_ms`, driving the
     /// [`Reducer`] for each. Same determinism (§9c): the FIRED time is the timer's own deadline, not
     /// `now_ms`, so replay reconstructs identically. Additive alongside the sync `fire_due_timers`.
@@ -2025,5 +2067,86 @@ mod monotonic_now_tests {
             "absent",
             "shell is not served by this executor → absent (mechanism short-circuits)"
         );
+    }
+
+    // A reducer that folds nothing on any event — the minimal case for the genesis-seed (the seed is
+    // kernel-triggered; the reducer need not react, it just receives the born-knowing manifest result).
+    struct InertReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for InertReducer {
+        async fn fold_async(&self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
+            FoldOutput::none()
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn genesis_seed_folds_a_capabilities_manifest_so_the_guest_is_born_knowing() {
+        use crate::executor::CompositeExecutor;
+        // I5: right after genesis (which folds nothing), seed_capabilities_async folds a synthetic
+        // capabilities-manifest EffectResult — the guest is born knowing, without issuing a query. Same
+        // wire shape + code path as an I4b guest query. Executor serves emit; grant permits emit.
+        let mut exec = CompositeExecutor::new().with_effect(
+            crate::effect::effect_ct::EMIT,
+            Box::new(RecordingExecutor::new()),
+        );
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Emit,
+            predicate: crate::effect::ResourcePredicate::Any,
+        }]);
+        let mut session = Session::genesis(Hash::of(b"seed-v1"));
+        // Precondition: a bare genesis log has exactly the Genesis event, no manifest yet.
+        assert_eq!(session.log().len(), 1);
+
+        let surfaced = session
+            .seed_capabilities_async(&InertReducer, &authz, &mut exec)
+            .await;
+        // The seed answers inline — nothing surfaces to the driver, nothing routed to the executor.
+        assert!(
+            surfaced.is_empty(),
+            "the seed is answered inline, not surfaced"
+        );
+
+        // The seed's durable Dispatched records the control family (recovery-classifiable), cause-linked
+        // to genesis.
+        let dispatched_family = session
+            .log()
+            .iter()
+            .find_map(|e| match &e.body {
+                EventBody::Dispatched { family, .. } => Some(family.clone()),
+                _ => None,
+            })
+            .expect("the seed recorded a Dispatched frame");
+        assert_eq!(
+            dispatched_family.as_ref(),
+            crate::effect::effect_ct::CAPABILITIES,
+            "the seed dispatch is classifiable as control/capabilities on recovery"
+        );
+
+        // Born knowing: a capabilities-manifest EffectResult is in the log after the seed, decodable, with
+        // the served+granted emit family reading granted.
+        let payload = session
+            .log()
+            .iter()
+            .find_map(|e| match &e.body {
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(crate::effect::Payload::Inline(b))),
+                    ..
+                } => Some(b.clone()),
+                _ => None,
+            })
+            .expect("the seed folded a capabilities-manifest EffectResult");
+        let a = cadenza_ast::codec::decode_detailed(&payload).expect("manifest decodes");
+        let root = a
+            .as_form(a.root, "capabilities-manifest")
+            .expect("payload is a capabilities-manifest");
+        let entries = a.as_form(root[1], "entries").expect("entries");
+        assert_eq!(entries.len(), crate::effect::effect_ct::ALL.len());
+        // emit served + granted.
+        let emit_granted = entries.iter().any(|&eid| {
+            let e = a.as_form(eid, "entry").expect("entry");
+            a.as_str(e[0]) == Some(crate::effect::effect_ct::EMIT)
+                && a.as_form(e[1], "granted").is_some()
+        });
+        assert!(emit_granted, "seeded manifest reads emit as granted");
     }
 }
