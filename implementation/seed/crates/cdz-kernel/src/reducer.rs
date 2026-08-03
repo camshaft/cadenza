@@ -184,9 +184,10 @@ mod tests {
         assert_eq!(out, FoldOutput::none());
     }
 
-    // Poll an IMMEDIATELY-READY future once with a no-op waker (the adapter's `fold` wraps a sync
-    // fold, so it never returns Pending). Fail-fast on Pending rather than spin — this helper is only for
-    // known-ready futures; a Pending here is a bug, not something to busy-wait on.
+    // Poll an IMMEDIATELY-READY future once with a no-op waker. `InertReducer::fold` completes
+    // synchronously — it does no real `.await` — so its future is ready on the first poll and never
+    // returns Pending. Fail-fast on Pending rather than spin: this helper is only for known-ready futures,
+    // so a Pending here is a bug (an unexpected await), not something to busy-wait on.
     fn poll_ready<F: std::future::Future>(fut: F) -> F::Output {
         use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
         fn noop_raw() -> RawWaker {
