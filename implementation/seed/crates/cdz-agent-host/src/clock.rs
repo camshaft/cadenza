@@ -19,7 +19,7 @@
 //! `Capability { kind: Now, predicate: Any }`.)
 
 use crate::retry;
-use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
+use cdz_kernel::effect::{effect_ct, EffectKind, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
@@ -79,6 +79,13 @@ impl Executor for ClockExecutor {
                 "system clock is before the Unix epoch: {e}"
             ))),
         }
+    }
+
+    /// This single-kind executor serves exactly the `Now` family — the capability-manifest mechanism
+    /// dimension when it's used bare as a `dyn Executor` (in a `CompositeExecutor` the composite's own
+    /// `by_family` override answers instead). Overrides the trait's fail-safe `false` default.
+    fn handles_family(&self, family: &str) -> bool {
+        family == effect_ct::NOW
     }
 }
 
@@ -183,5 +190,15 @@ mod tests {
             }
             other => panic!("expected Err for a non-Now kind, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handles_only_the_now_family() {
+        // Bare-leaf mechanism dimension: serves Now, nothing else (the trait default false otherwise).
+        let exec = ClockExecutor::new();
+        assert!(exec.handles_family(effect_ct::NOW));
+        assert!(!exec.handles_family(effect_ct::HTTP));
+        assert!(!exec.handles_family(effect_ct::MODEL));
+        assert!(!exec.handles_family("embedding"));
     }
 }

@@ -19,7 +19,7 @@
 
 use crate::retry;
 use bytes::Bytes;
-use cdz_kernel::effect::{EffectKind, EffectRequest, Payload};
+use cdz_kernel::effect::{effect_ct, EffectKind, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
@@ -105,6 +105,13 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
             Ok(response) => EffectOutcome::Ok(Some(Payload::Inline(response))),
             Err(reason) => EffectOutcome::Err(reason),
         }
+    }
+
+    /// This single-kind executor serves exactly the `Model` family — the capability-manifest mechanism
+    /// dimension when it's used bare as a `dyn Executor` (in a `CompositeExecutor` the composite's own
+    /// `by_family` override answers instead). Overrides the trait's fail-safe `false` default.
+    fn handles_family(&self, family: &str) -> bool {
+        family == effect_ct::MODEL
     }
 }
 
@@ -258,5 +265,17 @@ mod tests {
             }
             other => panic!("expected Err for a non-Model kind, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handles_only_the_model_family() {
+        // Bare-leaf mechanism dimension: serves Model, nothing else (the trait default false otherwise).
+        let exec = ModelExecutor::new(StubTransport {
+            response: Bytes::from_static(b""),
+        });
+        assert!(exec.handles_family(effect_ct::MODEL));
+        assert!(!exec.handles_family(effect_ct::NOW));
+        assert!(!exec.handles_family(effect_ct::HTTP));
+        assert!(!exec.handles_family("embedding"));
     }
 }
