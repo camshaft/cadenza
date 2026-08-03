@@ -1665,8 +1665,9 @@ fn compose_nfc_into_runtime_linker(
         return Ok(()); // leaf runtime — nothing to compose
     }
     // SELF-RESOLVE the NFC component from the store (FINDING#23 durable fix — no `RunOpts.nfc` field, so a
-    // new caller/test literal can never forget to thread it and hit E0063). The store is `opts.store` if the
-    // caller pinned one, else the `CDZ_STORE` env, else the compiled default; we read the NFC content address
+    // new caller/test literal can never forget to thread it and hit E0063). The store is `opts.runtime_cache_dir`
+    // if the caller pinned one (the CLI points it at `--store`, incl. when `--runtime` is also given), else the
+    // `CDZ_STORE` env, else the compiled default (see `resolve_nfc_from_store`); we read the NFC content address
     // off that store's `runtime.toml` (`nfc = "<hash>"`, written by `xtask build`) and load + verify
     // `<store>/<hash>.wasm`. This mirrors how the runtime itself is resolved-by-hash — cdz-run needs NO
     // knowledge of `REQUIRED_NFC_HASH` (it reads the hash from the store manifest), preserving the

@@ -127,15 +127,8 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
         None => None,
     };
 
-    // Cache the COMPILED runtime artifact in the store dir (unless the runtime came from a `--runtime`
-    // override, which is a debugging path we don't cache). Compiling the runtime is ~75ms and it is
-    // byte-identical across heap programs, so caching turns every-run recompiles into one compile +
-    // fast deserializes. See `cdz_run::RunOpts::runtime_cache_dir`.
-    let runtime_cache_dir = if runtime.is_some() && cli.runtime.is_none() {
-        Some(cli.store.clone().unwrap_or_else(default_store))
-    } else {
-        None
-    };
+    let runtime_cache_dir =
+        resolve_runtime_cache_dir(runtime.is_some(), cli.runtime.is_some(), cli.store.clone());
 
     // Parse each `--host-response op=value` into a `HostResponse`. A missing `=` takes the whole string
     // as the value with an empty op label (the ordered-consume model does not yet match on the op).
@@ -338,4 +331,77 @@ fn default_store() -> PathBuf {
         .unwrap_or(&manifest)
         .to_path_buf();
     repo.join("target/cadenza-store")
+}
+
+/// Choose the store dir threaded into `RunOpts::runtime_cache_dir`, which serves TWO purposes: caching the
+/// COMPILED runtime artifact (`<hash>.cwasm`) AND self-resolving the runtime's NFC dependency
+/// (`resolve_nfc_from_store` reads `runtime.toml` + `<store>/<hash>.wasm` off it). `has_runtime` = a runtime
+/// will be composed; `explicit_runtime` = `--runtime <path>` was given (a debug override, bypassing the
+/// store's runtime lookup); `store` = the `--store <dir>` value if pinned. Rules:
+///   • no runtime to compose → `None` (nothing to cache or NFC-resolve).
+///   • store-resolved runtime (no `--runtime`) → the pinned `--store` else the default store.
+///   • an EXPLICIT `--store` even WITH `--runtime` → that store, so an explicit store scopes NFC resolution
+///     too (else `--store D --runtime P` would silently resolve NFC from `CDZ_STORE`/default, IGNORING the D
+///     the user pinned — PR #1623 review). Caching the cwasm there is harmless.
+///   • a bare `--runtime` with NO `--store` → `None` (no pinned store: don't cache a debug-override runtime;
+///     NFC falls back to `CDZ_STORE`/default).
+fn resolve_runtime_cache_dir(
+    has_runtime: bool,
+    explicit_runtime: bool,
+    store: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if !has_runtime {
+        None
+    } else if !explicit_runtime {
+        Some(store.unwrap_or_else(default_store))
+    } else {
+        // `--runtime <path>` given: honor an explicit `--store` (scopes NFC), else `None`.
+        store
+    }
+}
+
+#[cfg(test)]
+mod cache_dir_tests {
+    use super::*;
+
+    #[test]
+    fn no_runtime_needs_no_store() {
+        // A scalar/const component composes no runtime → no cache/NFC dir at all.
+        assert_eq!(
+            resolve_runtime_cache_dir(false, false, Some(PathBuf::from("/s"))),
+            None
+        );
+    }
+
+    #[test]
+    fn store_resolved_runtime_uses_the_pinned_store_else_default() {
+        // No `--runtime`: the pinned `--store` is the cache + NFC dir.
+        assert_eq!(
+            resolve_runtime_cache_dir(true, false, Some(PathBuf::from("/pinned"))),
+            Some(PathBuf::from("/pinned"))
+        );
+        // No `--store` either → the compiled default store.
+        assert_eq!(
+            resolve_runtime_cache_dir(true, false, None),
+            Some(default_store())
+        );
+    }
+
+    #[test]
+    fn explicit_store_scopes_nfc_even_with_an_explicit_runtime() {
+        // The PR #1623 review fix: `--store D --runtime P` must resolve NFC from D, NOT CDZ_STORE/default.
+        // So the cache/NFC dir is the pinned store even when `--runtime` overrides the runtime bytes.
+        assert_eq!(
+            resolve_runtime_cache_dir(true, true, Some(PathBuf::from("/pinned"))),
+            Some(PathBuf::from("/pinned")),
+            "an explicit --store must scope NFC resolution even with --runtime"
+        );
+    }
+
+    #[test]
+    fn a_bare_runtime_override_with_no_store_pins_nothing() {
+        // `--runtime P` with NO `--store`: don't cache a debug-override runtime; NFC falls back to
+        // CDZ_STORE/default (handled downstream in resolve_nfc_from_store), so no dir is pinned here.
+        assert_eq!(resolve_runtime_cache_dir(true, true, None), None);
+    }
 }
