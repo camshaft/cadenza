@@ -88,7 +88,7 @@ async fn reactive_two_step_loop_runs_to_completion() {
     let mut session = Session::genesis(Hash::of(b"two-step-v1"));
 
     session
-        .deliver_async(inbound_go(), None, &reducer, &authz, &mut exec)
+        .deliver(inbound_go(), None, &reducer, &authz, &mut exec)
         .await
         .unwrap();
 
@@ -116,7 +116,7 @@ async fn effect_chain_populates_the_causal_dag() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(H::of(b"two-step-v1"));
     session
-        .deliver_async(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -186,7 +186,7 @@ async fn denied_effect_is_logged_and_never_executed() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"exfil"));
     session
-        .deliver_async(inbound_go(), None, &Exfil, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &Exfil, &http_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -214,7 +214,7 @@ async fn crash_after_dispatch_before_result_does_not_double_fire() {
     let authz = http_cap();
     let mut exec = RecordingExecutor::new();
     session
-        .deliver_async(inbound_go(), None, &reducer, &authz, &mut exec)
+        .deliver(inbound_go(), None, &reducer, &authz, &mut exec)
         .await
         .unwrap();
 
@@ -300,7 +300,7 @@ async fn timeout_cancels_so_a_late_result_is_dropped() {
     let mut exec = TimeoutExecutor;
     let mut session = Session::genesis(Hash::of(b"count"));
     session
-        .deliver_async(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -348,7 +348,7 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"giveup-v1"));
     session
-        .deliver_async(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
     let full_log = session.log().to_vec();
@@ -415,7 +415,7 @@ async fn time_out_effect_on_an_armed_timer_id_is_a_noop_not_a_panic() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"timer-v1"));
     session
-        .deliver_async(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
+        .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -442,7 +442,7 @@ async fn time_out_effect_on_an_armed_timer_id_is_a_noop_not_a_panic() {
     assert_eq!(session.open_effect_ids(), vec![armed_id]);
     assert_eq!(session.next_timer_deadline(), Some(5000));
     let fired = session
-        .fire_due_timers_async(5000, &reducer, &timer_cap(), &mut exec2)
+        .fire_due_timers(5000, &reducer, &timer_cap(), &mut exec2)
         .await;
     assert_eq!(fired, 1);
     assert_eq!(session.kv().get(b"woke"), Some(&b"1"[..]));
@@ -479,7 +479,7 @@ async fn attached_log_persists_through_on_append_no_manual_mirroring() {
 
     // Drive the whole two-step loop. NO manual persistence after this point — the session writes through.
     session
-        .deliver_async(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
     assert_eq!(session.kv().get(b"phase"), Some(&b"done"[..]));
@@ -534,7 +534,7 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"token-v1"));
     session
-        .deliver_async(inbound_go(), None, &TokenReducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &TokenReducer, &http_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -566,7 +566,7 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
     // Control: a token-free reducer (the common Rust path via FoldOutput::with) records token None.
     let mut exec2 = RecordingExecutor::new();
     let mut s2 = Session::genesis(Hash::of(b"notoken-v1"));
-    s2.deliver_async(inbound_go(), None, &TwoStepReducer, &http_cap(), &mut exec2)
+    s2.deliver(inbound_go(), None, &TwoStepReducer, &http_cap(), &mut exec2)
         .await
         .unwrap();
     let first_token = s2.log().iter().find_map(|e| match &e.body {
@@ -610,7 +610,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"token-timer-v1"));
     session
-        .deliver_async(
+        .deliver(
             inbound_go(),
             None,
             &TokenTimerAndDenyReducer,
@@ -634,7 +634,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     // Fire the timer: the kernel copies the token from TimerArmed onto TimerFired (rides the fire).
     assert_eq!(
         session
-            .fire_due_timers_async(1000, &TokenTimerAndDenyReducer, &timer_cap(), &mut exec)
+            .fire_due_timers(1000, &TokenTimerAndDenyReducer, &timer_cap(), &mut exec)
             .await,
         1
     );
@@ -672,7 +672,7 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
     // A capability that authorizes Timer but NOT Http → the Http effect is denied.
     let mut exec2 = RecordingExecutor::new();
     let mut s2 = Session::genesis(Hash::of(b"token-deny-v1"));
-    s2.deliver_async(
+    s2.deliver(
         inbound_go(),
         None,
         &DenyTokenReducer,
@@ -735,7 +735,7 @@ async fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_pers
     session.attach_sink(Box::new(FailingSink));
 
     session
-        .deliver_async(inbound_go(), None, &OneShot, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &OneShot, &http_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -778,7 +778,7 @@ async fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"two-step-v1"));
     session
-        .deliver_async(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -834,7 +834,7 @@ async fn session_recover_is_the_one_call_recovery_entry_point() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"two-step-v1"));
     session
-        .deliver_async(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
     let full_log = session.log().to_vec();
@@ -888,7 +888,7 @@ async fn session_recover_from_is_backend_agnostic_no_file_needed() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"two-step-v1"));
     session
-        .deliver_async(inbound_go(), None, &reducer, &http_cap(), &mut exec)
+        .deliver(inbound_go(), None, &reducer, &http_cap(), &mut exec)
         .await
         .unwrap();
     let full_log = session.log().to_vec();
@@ -1003,7 +1003,7 @@ async fn timer_arms_without_executor_then_kernel_fires_on_deadline() {
     let mut session = Session::genesis(Hash::of(b"timer"));
 
     session
-        .deliver_async(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
+        .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -1018,7 +1018,7 @@ async fn timer_arms_without_executor_then_kernel_fires_on_deadline() {
     // Clock hasn't reached the deadline → nothing fires.
     assert_eq!(
         session
-            .fire_due_timers_async(999, &reducer, &timer_cap(), &mut exec)
+            .fire_due_timers(999, &reducer, &timer_cap(), &mut exec)
             .await,
         0
     );
@@ -1027,7 +1027,7 @@ async fn timer_arms_without_executor_then_kernel_fires_on_deadline() {
     // Clock reaches the deadline → the kernel fires it, waking the reducer.
     assert_eq!(
         session
-            .fire_due_timers_async(1000, &reducer, &timer_cap(), &mut exec)
+            .fire_due_timers(1000, &reducer, &timer_cap(), &mut exec)
             .await,
         1
     );
@@ -1045,13 +1045,13 @@ async fn fired_timestamp_is_the_deadline_not_the_wall_clock_that_fired_it() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"timer"));
     session
-        .deliver_async(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
+        .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
         .await
         .unwrap();
 
     // Fire it "late" at now=9999 — the recorded fired_ms must still be the deadline 500.
     session
-        .fire_due_timers_async(9999, &reducer, &timer_cap(), &mut exec)
+        .fire_due_timers(9999, &reducer, &timer_cap(), &mut exec)
         .await;
     let fired = session
         .log()
@@ -1075,7 +1075,7 @@ async fn armed_timer_survives_replay() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"timer"));
     session
-        .deliver_async(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
+        .deliver(inbound_go(), None, &reducer, &timer_cap(), &mut exec)
         .await
         .unwrap();
 
@@ -1090,7 +1090,7 @@ async fn armed_timer_survives_replay() {
     let mut restored = restored;
     assert_eq!(
         restored
-            .fire_due_timers_async(2000, &reducer, &timer_cap(), &mut exec)
+            .fire_due_timers(2000, &reducer, &timer_cap(), &mut exec)
             .await,
         1
     );
@@ -1119,7 +1119,7 @@ async fn malformed_timer_deadline_is_rejected_not_panicked() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"badtimer"));
     session
-        .deliver_async(inbound_go(), None, &BadTimer, &timer_cap(), &mut exec)
+        .deliver(inbound_go(), None, &BadTimer, &timer_cap(), &mut exec)
         .await
         .unwrap();
     // No timer armed, nothing left open, and a denial recorded for audit.
@@ -1175,7 +1175,7 @@ async fn live_shell_executor_runs_a_real_command_end_to_end() {
     let mut exec = ShellExecutor;
     let mut session = Session::genesis(Hash::of(b"shell"));
     session
-        .deliver_async(inbound_go(), None, &ShellReducer, &authz, &mut exec)
+        .deliver(inbound_go(), None, &ShellReducer, &authz, &mut exec)
         .await
         .unwrap();
 
@@ -1224,7 +1224,7 @@ async fn live_shell_denied_command_never_executes() {
     let mut exec = ShellExecutor;
     let mut session = Session::genesis(Hash::of(b"denied"));
     session
-        .deliver_async(
+        .deliver(
             inbound_go(),
             None,
             &DeniedShell(marker.clone()),
@@ -1290,7 +1290,7 @@ async fn live_shell_no_injection_via_metacharacters() {
     let mut session = Session::genesis(Hash::of(b"inject"));
     let payload = format!("echo ok ; touch {marker}");
     session
-        .deliver_async(inbound_go(), None, &Injector(payload), &authz, &mut exec)
+        .deliver(inbound_go(), None, &Injector(payload), &authz, &mut exec)
         .await
         .unwrap();
 
@@ -1342,7 +1342,7 @@ async fn authz_denied_is_folded_live_so_replay_matches() {
     let mut exec = RecordingExecutor::new();
     let mut session = Session::genesis(Hash::of(b"denial"));
     session
-        .deliver_async(inbound_go(), None, &DenialCounter, &authz, &mut exec)
+        .deliver(inbound_go(), None, &DenialCounter, &authz, &mut exec)
         .await
         .unwrap();
 

@@ -1404,7 +1404,7 @@ mod status_snapshot_tests {
     async fn active_session_reports_armed_timer_and_only_the_public_kv() {
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"status-v1"));
-        s.deliver_async(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
 
@@ -1426,7 +1426,7 @@ mod status_snapshot_tests {
     async fn fork_for_query_clones_state_without_touching_the_original() {
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"status-v1"));
-        s.deliver_async(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
 
@@ -1475,7 +1475,7 @@ mod status_snapshot_tests {
         let mut sync_exec = RecordingExecutor::new();
         let mut sync_s = Session::genesis(Hash::of(b"status-v1"));
         sync_s
-            .deliver_async(
+            .deliver(
                 inbound(),
                 None,
                 &StatusReducer,
@@ -1488,7 +1488,7 @@ mod status_snapshot_tests {
         let mut async_exec = RecordingExecutor::new();
         let mut async_s = Session::genesis(Hash::of(b"status-v1"));
         async_s
-            .deliver_async(
+            .deliver(
                 inbound(),
                 None,
                 &StatusReducer,
@@ -1561,7 +1561,7 @@ mod status_snapshot_tests {
         let reducer = TimerThenPublishReducer;
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"timer-v1"));
-        s.deliver_async(inbound(), None, &reducer, &timer_cap(), &mut exec)
+        s.deliver(inbound(), None, &reducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
         // Armed, not yet fired.
@@ -1570,7 +1570,7 @@ mod status_snapshot_tests {
 
         // Fire everything due at now=1500 (past the 1000ms deadline).
         let fired = s
-            .fire_due_timers_async(1500, &reducer, &timer_cap(), &mut exec)
+            .fire_due_timers(1500, &reducer, &timer_cap(), &mut exec)
             .await;
         assert_eq!(fired, 1, "exactly one timer was due and fired");
         // The reducer woke on the TimerFired and published its marker.
@@ -1586,14 +1586,14 @@ mod status_snapshot_tests {
         // OWN timer here — a stand-in for the reducer's summarize work), and the parent is still untouched.
         let mut exec = RecordingExecutor::new();
         let mut s = Session::genesis(Hash::of(b"status-v1"));
-        s.deliver_async(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
+        s.deliver(inbound(), None, &StatusReducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
         let parent_events = s.log().len();
 
         let mut fork = s.fork_for_query();
         let mut fork_exec = RecordingExecutor::new();
-        fork.deliver_async(
+        fork.deliver(
             inbound(),
             None,
             &StatusReducer,
@@ -1619,7 +1619,7 @@ mod status_snapshot_tests {
         let mut exec = RecordingExecutor::new();
         let mut live = Session::genesis(Hash::of(b"reporting-v1"));
         // The live session does ordinary work: records a private goal + public status.
-        live.deliver_async(inbound(), None, &ReportingReducer, &timer_cap(), &mut exec)
+        live.deliver(inbound(), None, &ReportingReducer, &timer_cap(), &mut exec)
             .await
             .unwrap();
         let live_events_before = live.log().len();
@@ -1631,7 +1631,7 @@ mod status_snapshot_tests {
         // Operator asks "what is this session doing?" → fork it and deliver a report query.
         let mut fork = live.fork_for_query();
         let mut fork_exec = RecordingExecutor::new();
-        fork.deliver_async(
+        fork.deliver(
             report_inbound(),
             None,
             &ReportingReducer,
@@ -1841,7 +1841,7 @@ mod monotonic_now_tests {
     async fn now_sequence_is_strictly_increasing_even_from_a_stuck_clock() {
         let mut exec = StuckClock(1000); // same raw reading every time
         let mut s = Session::genesis(Hash::of(b"now-v1"));
-        s.deliver_async(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+        s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
             .await
             .unwrap();
         let seq = recorded_now_sequence(&s);
@@ -1858,7 +1858,7 @@ mod monotonic_now_tests {
     async fn replay_reconstructs_the_same_last_now_and_sequence() {
         let mut exec = StuckClock(1000);
         let mut s = Session::genesis(Hash::of(b"now-v1"));
-        s.deliver_async(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+        s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
             .await
             .unwrap();
         let live_seq = recorded_now_sequence(&s);
@@ -1882,7 +1882,7 @@ mod monotonic_now_tests {
         // dropped the sync twin — so this pins single-replay determinism instead.)
         let mut exec = StuckClock(1000);
         let mut s = Session::genesis(Hash::of(b"now-v1"));
-        s.deliver_async(inbound(), None, &NowReducer, &now_cap(), &mut exec)
+        s.deliver(inbound(), None, &NowReducer, &now_cap(), &mut exec)
             .await
             .unwrap();
         let log = s.log().to_vec();
@@ -1941,7 +1941,7 @@ mod monotonic_now_tests {
         let mut exec = RecordingExecutor::new();
         let mut session = Session::genesis(Hash::of(b"control-v1"));
         let control = session
-            .deliver_async_control(
+            .deliver_control(
                 inbound(),
                 None,
                 &SummaryEmitReducer,
@@ -1976,7 +1976,7 @@ mod monotonic_now_tests {
         // The common deliver_async path drops the control Vec but is otherwise identical (returns ()).
         let mut exec2 = RecordingExecutor::new();
         let mut s2 = Session::genesis(Hash::of(b"control-v2"));
-        s2.deliver_async(
+        s2.deliver(
             inbound(),
             None,
             &SummaryEmitReducer,
@@ -2041,7 +2041,7 @@ mod monotonic_now_tests {
             predicate: crate::effect::ResourcePredicate::Any,
         }]);
         let control = session
-            .deliver_async_control(inbound(), None, &MixedEmitReducer, &authz, &mut exec)
+            .deliver_control(inbound(), None, &MixedEmitReducer, &authz, &mut exec)
             .await
             .expect("deliver");
 
@@ -2120,7 +2120,7 @@ mod monotonic_now_tests {
         }]);
         let mut session = Session::genesis(Hash::of(b"caps-v1"));
         let control = session
-            .deliver_async_control(
+            .deliver_control(
                 inbound(),
                 None,
                 &CapabilitiesQueryReducer,
@@ -2227,7 +2227,7 @@ mod monotonic_now_tests {
         assert_eq!(session.log().len(), 1);
 
         let surfaced = session
-            .seed_capabilities_async(&InertReducer, &authz, &mut exec)
+            .seed_capabilities(&InertReducer, &authz, &mut exec)
             .await;
         // The seed answers inline — nothing surfaces to the driver, nothing routed to the executor.
         assert!(
@@ -2296,7 +2296,7 @@ mod monotonic_now_tests {
         let mut session = Session::genesis(Hash::of(b"seed-idem-v1"));
 
         let first = session
-            .seed_capabilities_async(&InertReducer, &authz, &mut exec)
+            .seed_capabilities(&InertReducer, &authz, &mut exec)
             .await;
         assert!(first.is_empty(), "seed answered inline");
         let after_first = session.log().len();
@@ -2318,7 +2318,7 @@ mod monotonic_now_tests {
 
         // Second call: no-op — empty return, log UNCHANGED, still exactly one seed dispatch.
         let second = session
-            .seed_capabilities_async(&InertReducer, &authz, &mut exec)
+            .seed_capabilities(&InertReducer, &authz, &mut exec)
             .await;
         assert!(second.is_empty(), "a repeat seed is a no-op");
         assert_eq!(
@@ -2352,7 +2352,7 @@ mod monotonic_now_tests {
 
         // Guest issues a control/capabilities query (via an inbound-triggered fold) BEFORE any seed.
         session
-            .deliver_async(
+            .deliver(
                 inbound(),
                 None,
                 &CapabilitiesQueryReducer,
@@ -2378,7 +2378,7 @@ mod monotonic_now_tests {
 
         // Now seed — the guard must NOT be fooled by the guest's frame; the seed must still fire.
         session
-            .seed_capabilities_async(&InertReducer, &authz, &mut exec)
+            .seed_capabilities(&InertReducer, &authz, &mut exec)
             .await;
         assert_eq!(
             cap_dispatches(&session),
@@ -2418,7 +2418,7 @@ mod monotonic_now_tests {
         }]);
         let mut session = Session::genesis(Hash::of(b"seed-replay-v1"));
         session
-            .seed_capabilities_async(&InertReducer, &authz, &mut exec)
+            .seed_capabilities(&InertReducer, &authz, &mut exec)
             .await;
 
         // Precondition: after seeding, the seed dispatch is already settled (result folded), nothing open.
@@ -2488,7 +2488,7 @@ mod monotonic_now_tests {
             predicate: crate::effect::ResourcePredicate::Any,
         }]);
         session
-            .deliver_async(inbound(), None, &TimerByFamilyReducer, &authz, &mut exec)
+            .deliver(inbound(), None, &TimerByFamilyReducer, &authz, &mut exec)
             .await
             .expect("deliver");
 

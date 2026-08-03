@@ -199,7 +199,7 @@ async fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatc
 
     // Deliver an inbound "message" — the guest emits one Http effect with correlation "step-1".
     session
-        .deliver_async(
+        .deliver(
             EventBody::Inbound {
                 content_type: KContentType {
                     family: "message".into(),
@@ -339,7 +339,7 @@ async fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
 
     // Deliver an inbound message — the guest's fold traps on 1 fuel. deliver() must NOT panic (§17).
     session
-        .deliver_async(
+        .deliver(
             EventBody::Inbound {
                 content_type: KContentType {
                     family: "message".into(),
