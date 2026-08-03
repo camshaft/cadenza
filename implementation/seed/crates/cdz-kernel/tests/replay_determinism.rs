@@ -140,7 +140,7 @@ async fn replay_reconstructs_identical_kv_root_over_many_sequences() {
         let log = session.log().to_vec();
 
         // Replay the session's OWN log into a fresh Session and compare KV roots.
-        let replayed = Session::replay_async(log.clone(), &reducer).await.unwrap();
+        let replayed = Session::replay(log.clone(), &reducer).await.unwrap();
         assert_eq!(
             replayed.snapshot().kv_root,
             original_root,
@@ -148,7 +148,7 @@ async fn replay_reconstructs_identical_kv_root_over_many_sequences() {
         );
 
         // Replay must also be idempotent: replaying the replayed session's log again matches.
-        let twice = Session::replay_async(replayed.log().to_vec(), &reducer)
+        let twice = Session::replay(replayed.log().to_vec(), &reducer)
             .await
             .unwrap();
         assert_eq!(
@@ -242,7 +242,7 @@ async fn scan_order_dependent_reducer_still_replays_identically() {
                 .unwrap();
         }
         let original = session.snapshot().kv_root;
-        let replayed = Session::replay_async(session.log().to_vec(), &reducer)
+        let replayed = Session::replay(session.log().to_vec(), &reducer)
             .await
             .unwrap();
         assert_eq!(
