@@ -105,7 +105,13 @@ impl EffectKind {
 pub struct EffectRequest {
     pub kind: EffectKind,
     /// The resolved target the capability predicate gates (SEC-F1). Never trust the kind alone.
-    pub target: String,
+    ///
+    /// `Arc<str>` (operator Bytes/cheap-clone directive): an effect is CLONED as it threads
+    /// dispatch→authz→executor, and a URL/command/session-id target is immutable string data — so an
+    /// `Arc<str>` clone is an O(1) refcount bump, not a fresh heap `String`. It derefs to `&str` (so every
+    /// read/`admits`/transport call is unchanged, incl. downstream `&req.target` via deref-coercion), and
+    /// `EffectRequest::new` takes `impl Into<Arc<str>>` so `&str`/`String` call sites are unaffected.
+    pub target: std::sync::Arc<str>,
     /// Opaque request body. `None` for argument-free effects (e.g. `Now`).
     pub payload: Option<Payload>,
     /// How latency-sensitive this effect is (§ operator timeliness directive). A [`Timeliness::Batchable`]
@@ -138,7 +144,7 @@ impl EffectRequest {
     /// therefore always gets a matching `content_type` — the two can't drift.
     pub fn new(
         kind: EffectKind,
-        target: impl Into<String>,
+        target: impl Into<std::sync::Arc<str>>,
         payload: Option<Payload>,
         timeliness: Timeliness,
     ) -> Self {
@@ -202,13 +208,13 @@ pub enum ResourcePredicate {
     /// the review flagged. Prefer the scoped variants.
     Any,
     /// Target must equal this string exactly (a specific model id, a specific session).
-    Exact(String),
+    Exact(std::sync::Arc<str>),
     /// Target must be one of these exact strings.
-    OneOf(Vec<String>),
+    OneOf(Vec<std::sync::Arc<str>>),
     /// Target (parsed as a URL) must have a host in this allow-list. The SSRF/exfil guard for `Http`.
-    HostIn(Vec<String>),
+    HostIn(Vec<std::sync::Arc<str>>),
     /// Target must start with this prefix (e.g. a command allow-list, a path/repo scope).
-    Prefix(String),
+    Prefix(std::sync::Arc<str>),
 }
 
 impl ResourcePredicate {
@@ -216,8 +222,8 @@ impl ResourcePredicate {
     pub fn admits(&self, target: &str) -> bool {
         match self {
             ResourcePredicate::Any => true,
-            ResourcePredicate::Exact(s) => target == s,
-            ResourcePredicate::OneOf(set) => set.iter().any(|s| s == target),
+            ResourcePredicate::Exact(s) => target == s.as_ref(),
+            ResourcePredicate::OneOf(set) => set.iter().any(|s| s.as_ref() == target),
             ResourcePredicate::HostIn(hosts) => match host_of(target) {
                 // Host comparison is case- and trailing-dot-insensitive (RFC 3986 §3.2.2: host is
                 // case-insensitive; `ok.host.` is the same host as `ok.host`). Exact-string `==` here
@@ -227,7 +233,7 @@ impl ResourcePredicate {
                 Some(h) => hosts.iter().any(|allowed| host_eq(allowed, &h)),
                 None => false, // unparseable target → deny (fail closed)
             },
-            ResourcePredicate::Prefix(p) => target.starts_with(p),
+            ResourcePredicate::Prefix(p) => target.starts_with(p.as_ref()),
         }
     }
 }
@@ -390,7 +396,7 @@ mod tests {
         assert_eq!(via_new.content_type.version, 1);
         let via_literal = EffectRequest {
             kind: EffectKind::Http,
-            target: "https://ok.host/x".to_string(),
+            target: "https://ok.host/x".into(),
             payload: Some(Payload::Inline(b"body".to_vec().into())),
             timeliness: Timeliness::Interactive,
             content_type: ContentType {
