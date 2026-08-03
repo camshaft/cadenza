@@ -24145,6 +24145,48 @@ mod match_engine {
     }
 
     #[test]
+    fn a_parenthesized_head_generic_sum_resolves_by_name_in_a_type_annotation() {
+        // A generic sum declared with the PARENTHESIZED-head spelling `(type (Container a) …)` (name +
+        // params in the head, a corpus-canonical form alongside `(type Box (Mk a))`) must resolve BY NAME in
+        // a TYPE-EXPRESSION position — a parameter annotation `(: b (Container Int64))` / a variant payload
+        // `(Wrap (Container Int64))`. `scan_type_decl` read the name off `tail.first()` as an ATOM, so a
+        // `(Container a)` LIST head gave `as_name = None` → the type registered under the EMPTY name "": it
+        // worked in VALUE position (resolved by its VARIANT names) but was UNRESOLVABLE by name in a type
+        // position — `(: b (Container Int64))` reported CDZ0101 "unbound name `Container`", while the
+        // built-in `(Option Int64)` worked. Now the name is taken from the `(Name …)` head. `(Full 7)`
+        // through `unwrap` = 7.
+        assert_eq!(
+            run_returns_with::<i64>(
+                &component(
+                    "(module m (type (Container a) (Full a)) \
+                       (def (unwrap (: b (Container Int64))) (match b ((Full v) v))) \
+                       (def (main (: k Int64)) (unwrap (Full k))) (export main))"
+                ),
+                "main",
+                &[wasmtime::component::Val::S64(7)],
+            ),
+            7
+        );
+        // A BARE (unapplied) generic name in an annotation now behaves EXACTLY like the built-in `(: b
+        // Option)`: CDZ0203 "`Container` is a type constructor — it needs a type argument here" (a generic
+        // type must be applied). Before the fix it was the WRONG "unknown type `Container`" (name unresolved
+        // entirely); now it resolves as a type constructor and correctly asks for its argument — the same
+        // diagnostic `Option` gives, confirming user generics resolve like built-ins.
+        let msg = compile_component(&crate::codec::encode(&crate::testkit::parse(
+            "(module m (type (Container a) (Full a)) \
+               (def (u (: b Container)) (match b ((Full v) v))) \
+               (def (main (: k Int64)) (u (Full k))) (export main))",
+        )))
+        .expect_err("a bare generic annotation must ask for its type argument")
+        .message;
+        assert!(
+            msg.contains("`Container` is a type constructor")
+                && msg.contains("needs a type argument"),
+            "bare generic annotation asks for its arg like Option, got: {msg}"
+        );
+    }
+
+    #[test]
     fn a_generic_same_name_newtype_constructs_and_matches() {
         // Generic + same-name compose: `(type Box (Box a))` constructs `(Box 42)` by the type name and
         // matches `(Box n)`, erasing to the raw payload. (The head-position rule fires on the USER node;
