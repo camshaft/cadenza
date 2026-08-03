@@ -8803,6 +8803,55 @@ fn a_constant_float32_compare_folds_at_binary32_precision() {
     }
 }
 
+/// adv-61b regression: a float-WIDTH conversion const-fold (`Float64.of`/`Float32.of`) must read the
+/// source operand AT ITS OWN width before rounding to the target — else a widen/identity of a `Float32`
+/// literal promotes the un-demoted f64 payload the reader parsed instead of the source's binary32 value.
+/// `(Float64.of (: 0.1 Float32))` must fold to `0.1f32 as f64` (0.10000000149011612), the SAME value the
+/// runtime `f32.promote` produces — before the fix it folded to the raw f64 `0.1` (a const-vs-runtime
+/// divergence on both backends, sibling of the compare-fold adv-61). Controls: a `Float32.of` of a
+/// Float64 literal (narrowing — the target round already handled it) and a `Float64.of` of a Float64
+/// literal (identity — unchanged) must stay exactly as they were. Bits-compared at f64.
+#[test]
+fn a_float_width_conversion_const_fold_reads_the_source_at_its_own_width() {
+    use crate::testkit::parse;
+    // (program, expected f64 result-by-bits). All fold to a ConstFloat (no runtime import).
+    let cases: &[(&str, f64)] = &[
+        // THE BUG: promote a Float32 literal — must give the binary32 value widened, not the f64 payload.
+        (
+            "(module m (def (main) (Float64.of (: 0.1 Float32))) (export main))",
+            0.1f32 as f64,
+        ),
+        // A second widen face (0.2f32 → f64) — 0.2 is also not representable in binary32.
+        (
+            "(module m (def (main) (Float64.of (: 0.2 Float32))) (export main))",
+            0.2f32 as f64,
+        ),
+        // CONTROL narrowing: Float32.of a Float64 literal rounds to binary32 (the target round; unchanged).
+        (
+            "(module m (def (main) (Float64.of (Float32.of (: 0.1 Float64)))) (export main))",
+            0.1f32 as f64,
+        ),
+        // CONTROL identity: Float64.of a Float64 literal is exact (the un-demoted f64 value is correct here).
+        (
+            "(module m (def (main) (Float64.of (: 0.1 Float64))) (export main))",
+            0.1f64,
+        ),
+    ];
+    for (src, want) in cases {
+        let bytes = compile_component(&crate::codec::encode(&parse(src))).expect("compile");
+        assert!(
+            cdz_run::required_runtime(&bytes).expect("valid").is_none(),
+            "a float-width conversion of a constant folds, importing no runtime: {src}"
+        );
+        let got: f64 = run_returns(&bytes, "main");
+        assert_eq!(
+            got.to_bits(),
+            want.to_bits(),
+            "float-width conversion reads the source at its own width: {src}"
+        );
+    }
+}
+
 #[test]
 fn a_float32_if_result_grounds_its_bare_literal_branches_to_f32_not_f64() {
     use crate::testkit::parse;
