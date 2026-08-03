@@ -119,7 +119,7 @@ Every firing of your `/loop`, in order:
 ### ⚠ Keep your context small — keep turns short; compaction is WATCHDOG-driven, not self-invoked
 A saturated context is the fleet's worst failure mode: at ~100% even `/compact` can't submit — it
 needs headroom the full window no longer has, so it can't run at all — and a fully-wedged agent then
-needs an auto-RESTART, recurring churn across every role that does long turns.
+needs an auto-RESTART — recurring churn across every role that does long turns.
 
 **🔑 You CANNOT self-invoke `/compact`.** It is a built-in CLI slash command, NOT a tool/skill — an
 unattended looping agent has no way to run it (the Skill tool rejects built-ins). So "run `/compact`"
