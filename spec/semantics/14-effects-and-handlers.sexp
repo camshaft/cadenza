@@ -2503,6 +2503,26 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 123 Int64)))
 
+(case "a MODULE-exported NON-recursive performer is homed by the importer's handler (single perform)"
+  (doc    "The base-case sibling of the recursive module-performer above: `once` is a module-exported
+           NON-recursive fn performing `Ctr.next` ONCE, called via `(. m once)` from the importer's handle
+           body. This single-perform module case ALREADY worked (a non-recursive module callee inlines into
+           the handler context at its one call site) — pinning it guards the module-member call → handler-
+           homing path that the recursive fix's `callee_def_index_of` Member arm also serves, so a future
+           change there can't silently regress the non-recursive module perform. Seeded 5, main(5) reads 5 →
+           100+5 = 105. (breaker mo3 bisect witness.)")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (module m
+              (def (once (: k Int64)) (+ k (Ctr.next unit)))
+              (export once))
+            (def (main (: n Int64))
+              (handle Ctr n
+                ((next (u) s (resume s (+ s 1))))
+                ((. m once) 100)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64)))
+
 (case "a performed operation is the scrutinee of a match that dispatches on its result"
   (doc    "Witnesses that an effect operation composes as a match SCRUTINEE, exactly as it composes as an
            `if` condition or an arithmetic operand: `(match (Fresh.next) (0 100) (_ 200))`. The scrutinee is
