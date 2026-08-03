@@ -3626,3 +3626,20 @@
         (export main)))
   (call   main (: 1 Int64)) (output (: -10 Int64))
   (call   main (: 2 Int64)) (output (: 10 Int64)))
+
+(case "a runtime-woven Ast and its quote twin resolve to ONE Map key"
+  (doc    "The KEY face of cross-construction-path Ast identity (structural EQ is pinned above at the
+           runtime-woven-vs-quote case; the Set/Map pins above use quote-built keys on BOTH sides): a Map
+           keyed by the reader-built `(quote (+ 5 2))` is probed by a CONSTRUCTOR-woven tree whose Int leaf
+           is a runtime BigInt (`(Ast.Int (BigInt.of a))` — forcing the live deep hash/eq walk, nothing
+           folds). a=5 → the woven tree is content-identical → 42; a=6 → one leaf differs → -1. A CHAMP
+           hash computed over construction PROVENANCE (or a quote interned to a distinct identity) would
+           miss the a=5 lookup.")
+  (input  (do
+            (def (main (: a Int64))
+              (match (Map.lookup (Map.insert Map.empty (quote (+ 5 2)) 42)
+                                 (Ast.List (list (Ast.Name "+") (Ast.Int (BigInt.of a)) (Ast.Int 2))))
+                ((Some v) v) ((None _u) -1)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 42 Int64))
+  (call   main (: 6 Int64)) (output (: -1 Int64)))

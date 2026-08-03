@@ -313,6 +313,7 @@ pass	Set.to-list orders (Int,Bytes) tuples with the Bytes component as the tie-b
 pass	Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order
 pass	Set.to-list orders a set of COMPOUND (tuple) elements lexicographically
 pass	Set.to-list orders a set of RECORD elements canonically
+pass	Set.to-list orders numerically across the fixnum/boxed representation seam
 pass	Set.to-list orders runtime Bytes elements by unsigned-lexicographic byte order — 0x80 sorts LAST, not as signed -128
 pass	Set.to-list over Float32 elements enumerates by canonical byte order at f32 width
 pass	Set.to-list over Float64 elements enumerates by canonical byte order
@@ -508,6 +509,7 @@ pass	a BOOL-field Tuple closure ARG, false discriminant
 pass	a BOOL-result effect op threads state across two performs on a boolean connective's operands
 pass	a BORROWED runtime Bytes rope map key is compacted at the key site and found by its flat twin
 pass	a BST built by comparison-driven inserts reads back sorted via in-order traversal
+pass	a BigInt computed across the limb boundary keys a Map like its literal twin
 pass	a BigInt factorial accumulator computes 25! exactly
 pass	a BigInt is usable as a map key, matched by its arbitrary-precision value
 pass	a BigInt is usable as a set element, deduplicated by its arbitrary-precision value
@@ -3102,6 +3104,7 @@ pass	a runtime-selected closure survives as a value threaded through a recursive
 pass	a runtime-selected closure survives as a value threaded through a recursive HOF (true branch)
 pass	a runtime-selected function chosen directly at the application head is applied
 pass	a runtime-selected trapping branch with a non-zero divisor computes normally
+pass	a runtime-woven Ast and its quote twin resolve to ONE Map key
 pass	a runtime-woven Ast compares structurally equal to an equivalent quote
 pass	a same-dimension annotation is the identity under its own unit's conversion
 pass	a same-dimension annotation preserves the value's own scale through a conversion

@@ -3288,3 +3288,20 @@
                             (Option.expect (Map.lookup m boxed) "boxed")))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 21112 Int64)))
+
+(case "Set.to-list orders numerically across the fixnum/boxed representation seam"
+  (doc    "The ENUMERATION-order face of the representation seam (the collision pins above cover hash/eq
+           identity across it): a set holding a negative BOXED value, a small FIXNUM, and a positive BOXED
+           value must enumerate in NUMERIC order — negative-boxed, fixnum, positive-boxed → a<b<c and
+           a = the negative element (111). A to-list that ordered by representation TAG (all inline
+           fixnums before all heap-boxed values, or heap-address order within a tag class) would place
+           the small fixnum first and flip the digits.")
+  (input  (do
+            (def (main (: z Int64))
+              (match (Set.to-list (Set.of (list (+ z 536870920) (+ z 100) (- 0 (+ z 536870915)))))
+                ((list a b c) (+ (* 100 (if (< a b) 1 0))
+                                 (+ (* 10 (if (< b c) 1 0))
+                                    (if (= a (- 0 (+ z 536870915))) 1 0))))
+                (_other -1)))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 111 Int64)))

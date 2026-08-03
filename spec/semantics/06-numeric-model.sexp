@@ -8443,3 +8443,20 @@
             (export main)))
   (call   main (: 7.9 Float64))
   (error  CDZ0203))
+
+(case "a BigInt computed across the limb boundary keys a Map like its literal twin"
+  (doc    "The CHAMP-key face of the 1→2-limb representation transition (the arithmetic pins above cover
+           the values; 19-sets pins the handle-interleave emit): `Int64.max × (n+1)` at n=1 GROWS past one
+           limb to 18446744073709551614 and must hit a Map keyed by that value's N-literal twin (7) — the
+           key hash/eq must read the VALUE, not the limb vector's construction path. n=2 (a different
+           2-limb value) must miss (-1). A hash over uncanonicalized limb storage (or a stale spare limb
+           kept from the multiply) would split the computed key from the literal.")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def grown (* (BigInt.of 9223372036854775807) (BigInt.of (+ n 1))))
+                (match (Map.lookup (Map.insert Map.empty 18446744073709551614N 7) grown)
+                  ((Some v) v) ((None _u) -1))))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 7 Int64))
+  (call   main (: 2 Int64)) (output (: -1 Int64)))
