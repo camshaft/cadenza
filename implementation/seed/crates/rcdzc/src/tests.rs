@@ -18337,6 +18337,16 @@ mod runtime_ops {
         check_rejects(
             "(module m (def (g (: x UInt8)) x) (def (f (: n Int64)) (g (match n (0 10000) (_ 0)))) (export f))",
         );
+        // A DIRECT bare-literal argument to a narrow parameter — no `if`/`match` wrapper: `(f 300)` where
+        // `f : UInt8 → …`. The literal's range is checked against the callee's parameter width at the call
+        // site (the range-check reaches the param directly, not only through a runtime conditional).
+        check_rejects("(module m (def (f (: x UInt8)) x) (def (main) (f 300)) (export main))");
+        // TRANSITIVE through a two-call chain: `(f 300)` where `f` passes its arg to `g`, both `UInt8`. The
+        // out-of-range literal is caught against the FIRST narrow param it reaches (the `callee_param_ty`
+        // seeding threads the width across the chain), so a literal too big for the chain's width rejects.
+        check_rejects(
+            "(module m (def (g (: y UInt8)) y) (def (f (: x UInt8)) (g x)) (def (main) (f 300)) (export main))",
+        );
 
         // NO OVER-REJECTION: fitting branch literals, a constant-condition if (folds to its taken branch),
         // both-branches-fit, and a bare if with NO narrow context (stays Int64) must all pass check clean.
@@ -18358,6 +18368,12 @@ mod runtime_ops {
             "(module m (def (f (: n Int64)) (: (match n (0 100) (_ 0)) UInt8)) (export f))",
         );
         check_clean("(module m (def (f (: n Int64)) (match n (0 10000) (_ 0))) (export f))");
+        // IN-RANGE direct + transitive: a fitting literal to a narrow param (direct, and through a two-call
+        // chain) must pass — the range check rejects only genuinely-out-of-range literals, not every arg.
+        check_clean("(module m (def (f (: x UInt8)) x) (def (main) (f 200)) (export main))");
+        check_clean(
+            "(module m (def (g (: y UInt8)) y) (def (f (: x UInt8)) (g x)) (def (main) (f 200)) (export main))",
+        );
     }
 
     #[test]
