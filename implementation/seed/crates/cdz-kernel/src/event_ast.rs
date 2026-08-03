@@ -690,10 +690,9 @@ mod tests {
                     token: None,
                 },
             },
-            // A CONTROL / register-by-string dispatch: the family DIVERGES from kind.family() — kind is the
-            // `Emit` placeholder, the authoritative family is `control/capabilities` (the shape the I5 seed +
-            // the inline-answer arm produce). Pins that the codec preserves BOTH the placeholder kind AND the
-            // real family across a round-trip (the durability-fix field is not collapsed back onto the kind).
+            // A dispatch whose family DIVERGES from kind.family(): kind is the `Emit` placeholder, the
+            // family is `control/capabilities`. Pins that the codec preserves BOTH the kind AND the
+            // separately-recorded family across a round-trip (the family field is not collapsed onto kind).
             Event {
                 seq: 5,
                 cause: Some(h),
@@ -708,7 +707,7 @@ mod tests {
                 },
             },
             Event {
-                seq: 5,
+                seq: 6,
                 cause: None,
                 body: EventBody::EffectResult {
                     id: EffectId(7),
@@ -717,7 +716,7 @@ mod tests {
                 },
             },
             Event {
-                seq: 6,
+                seq: 7,
                 cause: None,
                 body: EventBody::EffectResult {
                     id: EffectId(8),
@@ -726,7 +725,7 @@ mod tests {
                 },
             },
             Event {
-                seq: 7,
+                seq: 8,
                 cause: None,
                 body: EventBody::EffectResult {
                     id: EffectId(9),
@@ -735,7 +734,7 @@ mod tests {
                 },
             },
             Event {
-                seq: 8,
+                seq: 9,
                 cause: None,
                 body: EventBody::EffectResult {
                     id: EffectId(9),
@@ -744,7 +743,7 @@ mod tests {
                 },
             },
             Event {
-                seq: 9,
+                seq: 10,
                 cause: None,
                 body: EventBody::TimerArmed {
                     id: EffectId(10),
@@ -753,7 +752,7 @@ mod tests {
                 },
             },
             Event {
-                seq: 10,
+                seq: 11,
                 cause: None,
                 body: EventBody::TimerFired {
                     id: EffectId(10),
@@ -762,7 +761,7 @@ mod tests {
                 },
             },
             Event {
-                seq: 11,
+                seq: 12,
                 cause: None,
                 body: EventBody::AuthzDenied {
                     id: EffectId(11),
@@ -771,14 +770,14 @@ mod tests {
                 },
             },
             Event {
-                seq: 12,
+                seq: 13,
                 cause: None,
                 body: EventBody::Closed {
                     outcome: Payload::Inline(vec![].into()),
                 },
             },
             Event {
-                seq: 13,
+                seq: 14,
                 cause: None,
                 body: EventBody::FoldFailed {
                     reason: "wasm reducer trapped: unreachable".to_string(),

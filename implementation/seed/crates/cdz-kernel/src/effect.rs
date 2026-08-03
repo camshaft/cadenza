@@ -243,12 +243,21 @@ impl EffectRequest {
         timeliness: Timeliness,
     ) -> Self {
         let family: std::sync::Arc<str> = family.into();
-        let kind = EffectKind::from_family(&family).unwrap_or(EffectKind::Emit);
+        // Canonicalize a well-known family to its `&'static str` const → `Cow::Borrowed`, ZERO alloc (the
+        // same zero-alloc invariant `new` holds via `kind.family()`; #1563 Cow work). Only a genuine
+        // register-by-string EXTENSION family (no built-in kind) owns its string.
+        let (kind, family) = match EffectKind::from_family(&family) {
+            Some(k) => {
+                let borrowed = std::borrow::Cow::Borrowed(k.family());
+                (k, borrowed)
+            }
+            None => (
+                EffectKind::Emit,
+                std::borrow::Cow::Owned(family.to_string()),
+            ),
+        };
         EffectRequest {
-            content_type: ContentType {
-                family: std::borrow::Cow::Owned(family.to_string()),
-                version: 1,
-            },
+            content_type: ContentType { family, version: 1 },
             kind,
             target: target.into(),
             payload,
