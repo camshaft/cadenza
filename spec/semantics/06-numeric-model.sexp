@@ -948,6 +948,58 @@
             (export main)))
   (call   main (: true Bool)) (output (: 0 Int64)))
 
+; The CONST-FOLD companion of the two runtime Float32 controls above (which name adv-61 as their
+; const-fold twin): a Float32 operation over COMPILE-TIME-CONSTANT operands must fold at binary32,
+; agreeing with the runtime f32 answer — NOT compare/compute the un-demoted f64 payloads (adv-61: the
+; const fold read the f64 bits of a `(: lit Float32)`, so `(= (: 0.30000001192092896 Float32) (: 0.3
+; Float32))` folded FALSE though both demote to 0x3E99999A and even render identically — a const-vs-
+; runtime divergence on BOTH backends). Fixed in rcdzc (trunk 7021a0b9a). The bug was OP-INCONSISTENT
+; (some paths demoted, some did not), so these pin the whole comparison matrix (= < > <= >=) plus the
+; arithmetic ops that fold wrong (+ - /) — each in an operand order that DISCRIMINATES the f64 and f32
+; answers (a non-discriminating order would pass by accident). Const-fold is backend-agnostic → uniform.
+(case "a Float32 equality const-folds at f32 (demoted) precision, agreeing with the runtime answer"
+  (doc    "`(= (+ (: 0.1 Float32) (: 0.2 Float32)) (: 0.3 Float32))` folds TRUE at binary32 (0.1f32+0.2f32
+           rounds to 0x3E99999A == 0.3f32) — the const twin of the runtime f32-precision witness above. A
+           fold at un-demoted f64 answers 0 (0.30000000447 != 0.3).")
+  (input  (do (def (main) (if (= (+ (: 0.1 Float32) (: 0.2 Float32)) (: 0.3 Float32)) 1 0)) (export main)))
+  (call   main) (output (: 1 Int64)))
+(case "two Float32 literals that demote to the same bits const-fold equal"
+  (doc    "The sharpest face — no arithmetic: `(= (: 0.30000001192092896 Float32) (: 0.3 Float32))` folds
+           TRUE because both literals demote to 0x3E99999A (and render identically); a fold comparing the
+           un-demoted f64 payloads answers 0.")
+  (input  (do (def (main) (if (= (: 0.30000001192092896 Float32) (: 0.3 Float32)) 1 0)) (export main)))
+  (call   main) (output (: 1 Int64)))
+(case "an ordering < of two same-bits Float32 literals const-folds false"
+  (doc    "Discriminating order: f64 says 0.3 < 0.30000001192092896 (TRUE); at f32 both are 0x3E99999A so
+           neither is less → FALSE (0). Pins the `<` fold demotes before ordering.")
+  (input  (do (def (main) (if (< (: 0.3 Float32) (: 0.30000001192092896 Float32)) 1 0)) (export main)))
+  (call   main) (output (: 0 Int64)))
+(case "an ordering > of two same-bits Float32 literals const-folds false"
+  (doc    "Discriminating order (bigger payload LEFT): f64 says 0.30000001192092896 > 0.3 (TRUE); at f32
+           both are 0x3E99999A so neither is greater → FALSE (0). The mirror of the `<` fold face.")
+  (input  (do (def (main) (if (> (: 0.30000001192092896 Float32) (: 0.3 Float32)) 1 0)) (export main)))
+  (call   main) (output (: 0 Int64)))
+(case "an ordering <= of two same-bits Float32 literals const-folds true"
+  (doc    "f64 says 0.30000001192092896 <= 0.3 is FALSE; at f32 both are 0x3E99999A so <= is TRUE (1). The
+           inclusive-comparison face — a fold that skipped demotion would answer 0.")
+  (input  (do (def (main) (if (<= (: 0.30000001192092896 Float32) (: 0.3 Float32)) 1 0)) (export main)))
+  (call   main) (output (: 1 Int64)))
+(case "an ordering >= of two same-bits Float32 literals const-folds true"
+  (doc    "f64 says 0.3 >= 0.30000001192092896 is FALSE; at f32 both are 0x3E99999A so >= is TRUE (1). The
+           inclusive mirror of the <= face.")
+  (input  (do (def (main) (if (>= (: 0.3 Float32) (: 0.30000001192092896 Float32)) 1 0)) (export main)))
+  (call   main) (output (: 1 Int64)))
+(case "Float32 subtraction const-folds at f32 (0.4f32 - 0.1f32 = 0.3f32)"
+  (doc    "f64 0.4-0.1 = 0.30000000000000004 != 0.3 (would fold FALSE); at f32 0.4f32-0.1f32 rounds to
+           0x3E99999A == 0.3f32 → TRUE (1). Pins the `-` fold rounds to f32.")
+  (input  (do (def (main) (if (= (- (: 0.4 Float32) (: 0.1 Float32)) (: 0.3 Float32)) 1 0)) (export main)))
+  (call   main) (output (: 1 Int64)))
+(case "Float32 division const-folds at f32 (0.3f32 / 3.0f32 = 0.1f32)"
+  (doc    "f64 0.3/3.0 = 0.10000000397.. != 0.1f32 (would fold FALSE); at f32 0.3f32/3.0f32 rounds to
+           0.1f32 → TRUE (1). Pins the `/` fold rounds to f32.")
+  (input  (do (def (main) (if (= (/ (: 0.3 Float32) (: 3.0 Float32)) (: 0.1 Float32)) 1 0)) (export main)))
+  (call   main) (output (: 1 Int64)))
+
 (case "halving the minimum subnormal flushes to zero while a double-min stays subnormal"
   (doc    "The gradual-underflow BOUNDARY at runtime (the Float32 subnormal pin above is a literal FIT
            check): `(/ a 2.0)` on the minimum positive Float64 subnormal 5.0e-324 has no smaller
