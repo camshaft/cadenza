@@ -1018,10 +1018,14 @@ mod tests {
         let entries = a.as_form(root[1], "entries").expect("entries head");
         assert_eq!(entries.len(), 5, "one entry per predicate arm");
 
-        // Pull the `(some <predicate>)` predicate form for entry i, asserting the (some ..) wrapper.
+        // Pull the `(some <predicate>)` predicate form for entry i, asserting the (some ..) wrapper carries
+        // EXACTLY one child. Pinning the arity (not just the head) means an encoder that accidentally
+        // appends a field to (some ...) fails here rather than passing silently — the point of a
+        // wire-contract pin (PR #1653 review).
         let pred_of = |i: usize| {
             let e = a.as_form(entries[i], "entry").expect("entry head");
             let some = a.as_form(e[2], "some").expect("scope must be (some ..)");
+            assert_eq!(some.len(), 1, "(some ..) wraps exactly one predicate");
             some[0]
         };
 
