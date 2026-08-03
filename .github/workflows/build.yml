@@ -44,11 +44,13 @@ jobs:
           cache-key: release-${{ matrix.target }}
 
       # Build the three shipped CLI binaries. Native host target, so no `--target` flag: the
-      # runner's host IS matrix.target (pin verified by the check below). --locked would need a
-      # committed Cargo.lock (gitignored here), so it is omitted deliberately.
+      # runner's host IS matrix.target (pin verified by the check below). `--locked` enforces the
+      # committed root Cargo.lock (tracked as of #1748, the operator's determinism directive): the
+      # build fails if the lock is stale vs any Cargo.toml, so a dep bump must land the updated lock
+      # deliberately rather than silently regenerate one per checkout.
       - name: Build release binaries
         run: |
-          cargo build --release \
+          cargo build --release --locked \
             -p cadenza-syntax --bin cdz-syntax \
             -p rcdzc --bin rcdzc \
             -p cdz-run --bin cdz-run
