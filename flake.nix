@@ -18,8 +18,10 @@
   #   R2  — `packages.store` : every built component assembled into one content-addressed store dir
   #         (`<derived-hash>.wasm`), mirroring target/cadenza-store but built + addressed by nix.
   #   S1  — `packages.seed-compiler` : the NATIVE bootstrap toolchain (cdz + cdz-run binaries) via
-  #         `buildRustPackage` (root Cargo.lock, tracked #1748). S2 cadenza-projects, S3 per-test skip
-  #         follow. North star: nix builds every component + the compiler + projects, deterministically.
+  #         `buildRustPackage` (root Cargo.lock, tracked #1748). S2 cadenza-projects, S3 per-test skip.
+  #   rcdzc-wasm — `packages.rcdzc-wasm` (+ `-hash`) : the compiler as a wasm32-wasip1 module for the
+  #         agent kernel's blob store (v-agent-harness owns the store pointer + compile-effect ABI).
+  #         North star: nix builds every component + the compiler (native + wasm) + projects, deterministically.
   #
   # The Rust toolchain is read DIRECTLY from `rust-toolchain.toml` (the load-bearing pin — the
   # recorded `REQUIRED_RUNTIME_HASH` is only reproducible on that exact rustc). `rust-toolchain.toml`
@@ -76,16 +78,83 @@
           cargo = rustToolchain;
           rustc = rustToolchain;
         };
+        # Scope src to the workspace BUILD INPUTS only (not the whole repo) so unrelated edits — spec
+        # docs, guide, design, issues, fleet — don't bust this derivation's cache (fine-grained
+        # invalidation, PR #1756 review). A workspace `buildRustPackage` needs every member crate present
+        # (Cargo.toml `members = ["implementation/seed/crates/*", "xtask"]` must resolve even for `-p
+        # cdz`), plus the root Cargo.toml/lock, the `.cargo` config, and the toolchain pin.
+        seedSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates
+            ./xtask
+            ./Cargo.toml
+            ./Cargo.lock
+            ./.cargo
+            ./rust-toolchain.toml
+          ];
+        };
         seedCompiler = seedRustPlatform.buildRustPackage {
           pname = "cdz-seed-compiler";
           version = "0.0.0";
-          src = ./.;
+          src = seedSrc;
           cargoLock.lockFile = ./Cargo.lock;
           # Build only the seed-compiler binaries, not the whole workspace (xtask etc.).
           cargoBuildFlags = [ "-p" "cdz" "-p" "cdz-run" ];
           # Tests run in the existing gate/CI, not here — this derivation just BUILDS the toolchain
           # reproducibly (S1). (S3 will add fine-grained per-test derivations.)
           doCheck = false;
+        };
+
+        # ── rcdzc→WASM: the Cadenza COMPILER as a wasm artifact (agent-harness v0.2, operator 2026-08-03) ─
+        #
+        # v-agent-harness needs rcdzc as a content-addressable wasm the kernel loads from its blob store +
+        # invokes on .cdz source → program wasm (operator: "compile rcdzc→wasm, agents compile+call cadenza
+        # programs"). SPLIT (agreed): I own the BUILD (this derivation); they own the kernel store pointer +
+        # the compile-effect ABI. The crate (`implementation/seed/crates/rcdzc-wasm`) is a cdylib built for
+        # wasm32-wasip1 (a plain wasm MODULE, NOT a component — no wit/lift; the raw (ptr,len) export ABI is
+        # theirs). It path-deps a 7-crate closure (rcdzc + cadenza-syntax + cadenza-ast + cdz-run + cdz-rt +
+        # cdz-num), all of which must be in the source. NORMAL cargo build (no build-std) → vendor JUST its
+        # own committed leaf lock via importCargoLock; wasip1 std comes from the toolchain.
+        #   🪤 dontFixup = true: the output is a single wasm FILE; stdenv's fixupPhase runs `strip` on it
+        #      (mis-detecting it as an ELF) and TRUNCATES it to ~54 bytes. Disabling fixup keeps the full
+        #      ~5.3 MB artifact. (Verified: with fixup, out=54B; with dontFixup, out=5309060B.)
+        rcdzcWasmVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./implementation/seed/crates/rcdzc-wasm/Cargo.lock;
+        };
+        rcdzcWasmSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions (map (c: ./implementation/seed/crates + ("/" + c)) [
+            "rcdzc-wasm" "rcdzc" "cadenza-syntax" "cadenza-ast" "cdz-run" "cdz-rt" "cdz-num"
+          ] ++ [ ./rust-toolchain.toml ]);
+        };
+        rcdzcWasm = pkgs.stdenvNoCC.mkDerivation {
+          pname = "rcdzc-wasm";
+          version = "0.0.0";
+          src = rcdzcWasmSrc;
+          nativeBuildInputs = [ rustToolchain ];
+          dontFixup = true; # a single wasm file — fixup's `strip` would truncate it (see note above).
+          buildPhase = ''
+            runHook preBuild
+            export HOME="$TMPDIR/home"
+            export CARGO_HOME="$TMPDIR/cargo"
+            export CARGO_NET_OFFLINE=true
+            mkdir -p "$HOME" "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${rcdzcWasmVendor}"
+            EOF
+            cd implementation/seed/crates/rcdzc-wasm
+            cargo build --release --target wasm32-wasip1 --locked
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            cp target/wasm32-wasip1/release/rcdzc_wasm.wasm "$out"
+            runHook postInstall
+          '';
         };
 
         # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
@@ -428,6 +497,12 @@
 
         # S1: the native seed compiler (cdz + cdz-run). `nix build .#seed-compiler` → result/bin/{cdz,cdz-run}.
         packages.seed-compiler = seedCompiler;
+
+        # rcdzc→wasm: the compiler as a wasm artifact for the agent kernel's blob store. `.#rcdzc-wasm`
+        # is the wasm module; `.#rcdzc-wasm-hash` its derived content address (for v-agent-harness's
+        # compiler-latest store pointer).
+        packages.rcdzc-wasm = rcdzcWasm;
+        packages.rcdzc-wasm-hash = hashOf rcdzcWasm "rcdzc-wasm-hash";
 
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
