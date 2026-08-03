@@ -148,6 +148,87 @@ pub fn encode_capability_manifest(manifest: &crate::effect::CapabilityManifest) 
     codec::encode(&b.finish(root))
 }
 
+/// Encode an HTTP effect request payload — the `{method, body}` an HTTP effect carries, in the shared
+/// cadenza binary-sexpr (§9b one-wire-format; the SAME codec as [`encode_capability_manifest`] and the
+/// event payloads). This lives kernel-side (effect-schema domain) so the ONE impl is shared by the host's
+/// HttpExecutor decode AND any future Cadenza reducer that emits an HTTP effect — neither hand-rolls a
+/// parallel parser (decided with v-agent-harness-host). Shape:
+///   `(http-request (method <name>) (body <payload-opt>))`
+/// `<name>` is a Name atom (`get`/`post`/`put`/`delete`/`patch`/… — Name-headed so a NEW method appends
+/// with no wire break; a tolerant reader maps an unknown method itself). `<payload-opt>` = `(none)` |
+/// `(some <bytes>)` (a bodyless GET is `(none)`; a POST/PUT body rides as `Leaf::Bytes`). Kept minimal —
+/// headers/etc. are additive fields later (open-record posture), not baked in now.
+pub fn encode_http_request(method: &str, body: Option<&[u8]>) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("http-request");
+    let method_form = {
+        let h = b.name("method");
+        let m = b.name(method);
+        b.list(vec![h, m])
+    };
+    let body_form = {
+        let h = b.name("body");
+        let opt = match body {
+            None => {
+                let none = b.name("none");
+                b.list(vec![none])
+            }
+            Some(bytes) => {
+                let some = b.name("some");
+                let v = bytes_leaf(&mut b, bytes);
+                b.list(vec![some, v])
+            }
+        };
+        b.list(vec![h, opt])
+    };
+    let root = b.list(vec![head, method_form, body_form]);
+    codec::encode(&b.finish(root))
+}
+
+/// Decode an HTTP effect request payload encoded by [`encode_http_request`] → `(method, body)`. Total:
+/// any non-conforming bytes are an `Err` (never a panic), same posture as [`decode`]. The method is
+/// returned as a `String` (the caller maps it to its own method enum, with a catch-all for extension
+/// methods — the Name-headed open-sum contract).
+pub fn decode_http_request(bytes: &[u8]) -> Result<(String, Option<Vec<u8>>), EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let root = a
+        .as_form(a.root, "http-request")
+        .ok_or(shape("http-request head"))?;
+    let [method_f, body_f] = root else {
+        return Err(shape("http-request arity"));
+    };
+    // (method <name>)
+    let method_kids = a.as_form(*method_f, "method").ok_or(shape("method form"))?;
+    let [mname] = method_kids else {
+        return Err(shape("method arity"));
+    };
+    let method = a
+        .as_name(*mname)
+        .ok_or(shape("method not a name"))?
+        .to_string();
+    // (body <payload-opt>)
+    let body_kids = a.as_form(*body_f, "body").ok_or(shape("body form"))?;
+    let [opt] = body_kids else {
+        return Err(shape("body arity"));
+    };
+    let body = read_opt_body(&a, *opt)?;
+    Ok((method, body))
+}
+
+/// Decode the `(none)` | `(some <bytes>)` payload-opt used by [`decode_http_request`]'s body field.
+fn read_opt_body(a: &Arenas, id: StructId) -> Result<Option<Vec<u8>>, EventAstError> {
+    match head_of(a, id)? {
+        "none" => Ok(None),
+        "some" => {
+            let [v] = form(a, id, "some")? else {
+                return Err(shape("some arity"));
+            };
+            Ok(Some(read_bytes(a, *v)?))
+        }
+        _ => Err(shape("unknown body-opt tag")),
+    }
+}
+
 // ---- encode (Event → Arenas) ------------------------------------------------------------------------
 
 fn u64_leaf(b: &mut Builder, n: u64) -> StructId {
@@ -931,6 +1012,36 @@ mod tests {
             }
             other => panic!("legacy 6-element dispatched must decode, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn http_request_payload_round_trips_body_and_bodyless() {
+        // The HTTP effect payload codec (shared with cdz-agent-host's HttpExecutor decode, §9b). A body-
+        // bearing method (POST) and a bodyless one (GET) both round-trip method + body exactly.
+        let (m, b) = decode_http_request(&encode_http_request("post", Some(b"{\"k\":1}")))
+            .expect("post round-trips");
+        assert_eq!(m, "post");
+        assert_eq!(b.as_deref(), Some(&b"{\"k\":1}"[..]));
+
+        let (m, b) =
+            decode_http_request(&encode_http_request("get", None)).expect("get round-trips");
+        assert_eq!(m, "get");
+        assert_eq!(b, None);
+
+        // An extension method name survives verbatim (Name-headed open sum — the decoder doesn't reject
+        // an unknown method; the caller maps it, with a catch-all).
+        let (m, _) = decode_http_request(&encode_http_request("propfind", None)).unwrap();
+        assert_eq!(m, "propfind");
+    }
+
+    #[test]
+    fn decode_http_request_is_total_on_garbage() {
+        // Non-conforming bytes are a clean Err, never a panic (same posture as decode()).
+        assert!(decode_http_request(b"not a cadenza sexpr").is_err());
+        // A valid AST of the WRONG shape (a capabilities-manifest) is also an Err, not a misread.
+        let wrong =
+            encode_capability_manifest(&crate::effect::CapabilityManifest { entries: vec![] });
+        assert!(decode_http_request(&wrong).is_err());
     }
 
     #[test]
