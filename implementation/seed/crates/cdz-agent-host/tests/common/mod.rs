@@ -12,9 +12,33 @@
 ///
 /// One source of truth for the skip/read contract, shared by `cedar_authz_e2e` (a real agent gated by a
 /// real decision) and `capability_manifest_e2e` (a capability manifest projected against a real decision).
+///
+/// `#[allow(dead_code)]`: `tests/common/mod.rs` compiles once PER integration-test binary, so a helper used
+/// by only some binaries is "unused" in the others — expected for a shared-helpers module, not real dead
+/// code (would otherwise trip `-D warnings` in the binaries that don't call it).
+#[allow(dead_code)]
 pub fn policy_component_bytes() -> Option<Vec<u8>> {
     let path = std::env::var("CEDAR_POLICY_COMPONENT").ok()?; // unset → skip (None)
     Some(std::fs::read(&path).unwrap_or_else(|e| {
         panic!("CEDAR_POLICY_COMPONENT is set to {path:?} but the component can't be read: {e}")
+    }))
+}
+
+/// Load a real WASM REDUCER component (a `wit/reducer.wit` guest) for the e2es that run a resolved
+/// program end-to-end — the §4c publish→consume demo blob-fetches this + runs it as an
+/// [`AsyncComponentReducer`](cdz_kernel::wasm_host::AsyncComponentReducer). The nix build produces such a
+/// component (e.g. rcdzc→wasm of a tiny reducer); a plain `cargo test` doesn't have one.
+///
+/// Same skip/read contract as [`policy_component_bytes`]: `None` ONLY when `CDZ_LIVE_REDUCER_COMPONENT` is
+/// UNSET (caller SKIPS cleanly); when the var IS set the file MUST read (a missing/corrupt component is a
+/// misconfig — PANIC, never a silent skip that could pass a broken blob green).
+///
+/// `#[allow(dead_code)]` for the same reason as [`policy_component_bytes`]: shared across test binaries,
+/// used by only some.
+#[allow(dead_code)]
+pub fn reducer_component_bytes() -> Option<Vec<u8>> {
+    let path = std::env::var("CDZ_LIVE_REDUCER_COMPONENT").ok()?; // unset → skip (None)
+    Some(std::fs::read(&path).unwrap_or_else(|e| {
+        panic!("CDZ_LIVE_REDUCER_COMPONENT is set to {path:?} but the component can't be read: {e}")
     }))
 }
