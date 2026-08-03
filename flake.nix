@@ -7,10 +7,11 @@
   # SCOPED to exactly its package's inputs (operator directive 2026-08-02: fine-grained cache
   # invalidation), never a monolithic everything-depends-on-everything graph.
   #   N0  — `devShell` reproducing the CI toolchain (rustc pin + wasm-tools + cargo-component).
-  #   N1  — `packages.runtime` + `packages.runtime-debug` : the value-heap RELEASE and
-  #         DEBUG-COUNTERS runtime components, built + stripped as NORMAL (input-addressed)
-  #         derivations; `packages.*-hash` is the content address DERIVED from the built bytes (never
-  #         asserted). `checks.*-hash-parity` verifies it equals the committed REQUIRED_RUNTIME_HASH.
+  #   N1  — `packages.runtime` + `packages.runtime-debug` + `packages.nfc` : the value-heap RELEASE and
+  #         DEBUG-COUNTERS runtimes + the NFC component (cadenza:nfc, imported by the runtime, FINDING#23),
+  #         built + stripped as NORMAL (input-addressed) derivations; `packages.*-hash` is the content
+  #         address DERIVED from the built bytes (never asserted). `checks.*-hash-parity` verifies each
+  #         equals its committed hash (REQUIRED_RUNTIME_HASH / DEBUG_RUNTIME_HASH / REQUIRED_NFC_HASH).
   #   N2  — `packages.reducer-guest` + `packages.cedar-guest` (+ `-hash` each) : the cdz-kernel
   #         reducer-guest and cdz-agent-host cedar-policy-guest wasm components built from source, same
   #         hash-falls-out shape.
@@ -86,7 +87,9 @@
         #     from source, and cargo resolves THEIR deps — e.g. libc — from that second lockfile; a
         #     hermetic sandbox has no `~/.cargo` cache, so this MUST be vendored too).
         # Both vendor dirs are merged (`symlinkJoin`) and wired via a `[source.crates-io]
-        # replace-with` CARGO_HOME config; the build then runs `--offline`.
+        # replace-with` CARGO_HOME config; the build runs with `CARGO_NET_OFFLINE=true` (NOT the
+        # `--offline` flag — see the mkStripComponent buildPhase note on why the flag breaks the NFC WIT
+        # dep resolution).
         #
         # TIGHTLY SCOPED source: only the cdz-runtime crate (+ the workspace pin) — NOT the whole repo
         # — so a change ANYWHERE ELSE does not invalidate these derivations' cache.
@@ -119,14 +122,17 @@
           ];
         };
 
-        # Build the value-heap runtime component as a NORMAL (input-addressed) derivation — the hash is
-        # derived from its output, never asserted. `features` is the cargo `--features` list
-        # (release = [], debug = ["debug-counters"]).
-        mkRuntime = { pname, features }:
+        # Build a build-std wasm component (runtime OR the NFC component) as a NORMAL (input-addressed)
+        # derivation — the hash is derived from its output, never asserted. Parametrized over:
+        #   crateDir : path under implementation/seed/crates (e.g. "cdz-runtime", "cdz-nfc")
+        #   artifact : the produced .wasm stem (e.g. "cdz_runtime", "cdz_nfc")
+        #   src      : the tightly-scoped fileset source for this crate
+        #   vendor   : its merged offline cargo vendor dir (own lock + rust-src build-std lock)
+        #   features : cargo `--features` list (release = [], debug = ["debug-counters"])
+        mkStripComponent = { pname, crateDir, artifact, src, vendor, features ? [ ] }:
           pkgs.stdenvNoCC.mkDerivation {
-            inherit pname;
+            inherit pname src;
             version = "0.0.0";
-            src = runtimeSrc;
 
             nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.cargo-component ];
 
@@ -144,9 +150,9 @@
               [source.crates-io]
               replace-with = "vendored-sources"
               [source.vendored-sources]
-              directory = "${runtimeVendor}"
+              directory = "${vendor}"
               EOF
-              cd implementation/seed/crates/cdz-runtime
+              cd implementation/seed/crates/${crateDir}
               # --locked honors the committed Cargo.lock exactly. Network is blocked by CARGO_NET_OFFLINE
               # (set below) + the sandbox itself — NOT the `--offline` FLAG: the runtime's world imports
               # the NFC component (a `[package.metadata.component.target.dependencies]` WIT path-dep on
@@ -165,10 +171,20 @@
             installPhase = ''
               runHook preInstall
               wasm-tools strip -a \
-                target/wasm32-unknown-unknown/release/cdz_runtime.wasm \
+                target/wasm32-unknown-unknown/release/${artifact}.wasm \
                 -o "$out"
               runHook postInstall
             '';
+          };
+
+        # The value-heap runtime derivations bind mkStripComponent to the cdz-runtime crate.
+        mkRuntime = { pname, features }:
+          mkStripComponent {
+            inherit pname features;
+            crateDir = "cdz-runtime";
+            artifact = "cdz_runtime";
+            src = runtimeSrc;
+            vendor = runtimeVendor;
           };
 
         # The RELEASE runtime — what a shipped program pins (REQUIRED_RUNTIME_HASH).
@@ -182,6 +198,41 @@
         runtimeDebug = mkRuntime {
           pname = "cdz-runtime-component-debug";
           features = [ "debug-counters" ];
+        };
+
+        # ── N1: the NFC component (`cdz-nfc`) AS a content-addressed derivation ───────────────────
+        #
+        # FINDING#23: the runtime's world imports `cadenza:nfc/normalize` by hash, so the heavy Unicode
+        # normalization tables live in a SEPARATE component the runtime composes from the CAS. `xtask
+        # build` stores it beside the runtimes; codegen records its hash as `REQUIRED_NFC_HASH`. It's
+        # RUNTIME-SHAPED (build-std + panic=immediate-abort + canonicalize/strip), so it reuses
+        # mkStripComponent. Its own WIT (`wit/nfc.wit`, `package cadenza:nfc`) is self-contained (no
+        # `[metadata.component.target.dependencies]`), so its fileset is just the cdz-nfc crate. build-std
+        # → the same 2-lockfile vendor as the runtime (its own Cargo.lock + rust-src's).
+        nfcVendor = pkgs.symlinkJoin {
+          name = "cdz-nfc-cargo-vendor";
+          paths = [
+            (pkgs.rustPlatform.importCargoLock {
+              lockFile = ./implementation/seed/crates/cdz-nfc/Cargo.lock;
+            })
+            (pkgs.rustPlatform.importCargoLock {
+              lockFile = "${rustToolchain}/lib/rustlib/src/rust/library/Cargo.lock";
+            })
+          ];
+        };
+        nfcSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates/cdz-nfc
+            ./rust-toolchain.toml
+          ];
+        };
+        nfc = mkStripComponent {
+          pname = "cdz-nfc-component";
+          crateDir = "cdz-nfc";
+          artifact = "cdz_nfc";
+          src = nfcSrc;
+          vendor = nfcVendor;
         };
 
         # ── N2: the reducer-guest wasm COMPONENT as a content-addressed derivation ────────────────
@@ -310,7 +361,7 @@
         componentStore = pkgs.runCommand "cdz-component-store" { } ''
           set -euo pipefail
           mkdir -p "$out"
-          for c in ${runtime} ${runtimeDebug} ${reducerGuest} ${cedarGuest}; do
+          for c in ${runtime} ${runtimeDebug} ${nfc} ${reducerGuest} ${cedarGuest}; do
             h=$(${pkgs.coreutils}/bin/sha256sum "$c" | ${pkgs.coreutils}/bin/cut -d' ' -f1)
             ${pkgs.coreutils}/bin/cp "$c" "$out/$h.wasm"
           done
@@ -326,6 +377,11 @@
         packages.runtime-debug = runtimeDebug;
         packages.runtime-hash = hashOf runtime "cdz-runtime-hash";
         packages.runtime-debug-hash = hashOf runtimeDebug "cdz-runtime-debug-hash";
+
+        # N1: the NFC component (`cdz-nfc`) the runtime imports by hash (REQUIRED_NFC_HASH). `.#nfc` is
+        # the stripped component; `.#nfc-hash` its derived content address.
+        packages.nfc = nfc;
+        packages.nfc-hash = hashOf nfc "cdz-nfc-hash";
 
         # N2: the reducer-guest wasm component, built from source (replaces the committed binary).
         # `.#reducer-guest` is the lifted component; `.#reducer-guest-hash` its derived content address.
@@ -392,6 +448,9 @@
             };
             runtime-debug-hash-parity = parity {
               name = "runtime-debug"; drv = runtimeDebug; constName = "DEBUG_RUNTIME_HASH";
+            };
+            nfc-hash-parity = parity {
+              name = "nfc"; drv = nfc; constName = "REQUIRED_NFC_HASH";
             };
             reducer-guest-valid = validComponent { name = "reducer-guest"; drv = reducerGuest; };
             cedar-guest-valid = validComponent { name = "cedar-guest"; drv = cedarGuest; };
