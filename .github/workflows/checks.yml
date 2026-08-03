@@ -308,9 +308,9 @@ jobs:
           # VALID component (wasm-tools validate). This catches "source no longer produces a valid authorizer
           # component" — NOT staleness of a committed artifact (there is NO committed cedar .component.wasm:
           # it's ~3.3 MB with the Cedar engine embedded, so it's CI-built here, not checked in). Validate,
-          # not a byte-diff: guest dep versions aren't lock-pinned + CI floats toolchains → different-but-
-          # valid bytes (same rationale as reducer-guest, trunk@455dcb7e7). The lifted component's PATH is
-          # handed to the e2e via CEDAR_POLICY_COMPONENT (next step).
+          # not a byte-diff: even with the committed lock (built --locked below), CI floats the toolchain →
+          # different-but-valid bytes (same rationale as reducer-guest, trunk@455dcb7e7). The lifted
+          # component's PATH is handed to the e2e via CEDAR_POLICY_COMPONENT (next step).
           rustup target add wasm32-unknown-unknown
           # --locked: build against the COMMITTED Cargo.lock (#1522). The guest's deps are loose
           # (cedar-policy = "4", wit-bindgen = "0.45"), so without --locked CI floats to a newer

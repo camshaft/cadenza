@@ -5,12 +5,13 @@
 //! (here a STUB transport, so the loop is hermetically gateable), and the response body folds back and
 //! drives the agent's next step. The REAL client drops into the same wiring behind `live-net`.
 
-use cdz_agent_host::{HttpExecutor, HttpTransport};
+use cdz_agent_host::{HttpExecutor, HttpMethod, HttpTransport};
 use cdz_kernel::authz::Authorizer;
 use cdz_kernel::effect::{
     effect_ct, Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
 };
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
+use cdz_kernel::event_ast::encode_http_request;
 use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
@@ -18,16 +19,18 @@ use cdz_kernel::kv::Kv;
 use cdz_kernel::reducer::{FoldOutput, Reducer};
 
 /// A stub HTTP transport: returns a canned response body so the fetch loop is hermetic. The real client
-/// implements this same trait behind `live-net`.
+/// implements this same trait behind `live-net`. Asserts it got the caller-specified GET.
 struct StubHttp;
 #[async_trait::async_trait(?Send)]
 impl HttpTransport for StubHttp {
     async fn request(
         &self,
+        method: HttpMethod,
         url: &str,
         _body: Option<&[u8]>,
         _key: Hash,
     ) -> Result<bytes::Bytes, String> {
+        assert_eq!(method, HttpMethod::Get, "the reducer emitted a GET");
         Ok(format!("fetched {url}").into_bytes().into())
     }
 }
@@ -44,7 +47,8 @@ impl Reducer for FetchAgent {
                 FoldOutput::with(vec![EffectRequest::new_with_family(
                     effect_ct::HTTP,
                     "https://ok.host/data",
-                    None,
+                    // Explicit method in the http-request payload — a GET with no body.
+                    Some(Payload::Inline(encode_http_request("get", None).into())),
                     Timeliness::Interactive,
                 )])
             }
@@ -118,6 +122,7 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
     impl HttpTransport for MustNotCall {
         async fn request(
             &self,
+            _m: HttpMethod,
             _u: &str,
             _b: Option<&[u8]>,
             _k: Hash,

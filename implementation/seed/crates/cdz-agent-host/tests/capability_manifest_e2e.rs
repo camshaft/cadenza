@@ -21,7 +21,9 @@
 mod common;
 
 use bytes::Bytes;
-use cdz_agent_host::{ClockExecutor, HttpExecutor, HttpTransport, ModelExecutor, ModelTransport};
+use cdz_agent_host::{
+    ClockExecutor, HttpExecutor, HttpMethod, HttpTransport, ModelExecutor, ModelTransport,
+};
 use cdz_kernel::effect::{effect_ct, project_manifest, GrantState};
 use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
@@ -35,7 +37,13 @@ use common::policy_component_bytes;
 struct UnusedHttp;
 #[async_trait::async_trait(?Send)]
 impl HttpTransport for UnusedHttp {
-    async fn request(&self, _url: &str, _body: Option<&[u8]>, _key: Hash) -> Result<Bytes, String> {
+    async fn request(
+        &self,
+        _method: HttpMethod,
+        _url: &str,
+        _body: Option<&[u8]>,
+        _key: Hash,
+    ) -> Result<Bytes, String> {
         unreachable!("manifest projection probes policy; it never performs an effect")
     }
 }
