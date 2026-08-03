@@ -716,7 +716,6 @@ pass	a NESTED tuple-of-tuples let pattern destructures a call's runtime result t
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-LAST handler arm whose body is a MATCH round-trips through the ML printer
-todo	a NON-TAIL host call consumes rows on the unwind, deepest frame first
 pass	a NON-TAIL recursion rebinding its rope arg to a slice-concat accumulates after each return
 pass	a NON-identity constant add over a high UInt64 operand still rejects the overflow
 pass	a NON-tail heap-spine build 5000 deep constructs and drains through real frames
@@ -1231,6 +1230,7 @@ pass	a closure whose body calls a top-level helper function
 pass	a closure-payload sum picked by an if-helper, applied by a match-consumer, with a binding reused as both args
 pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
+pass	a collision node holds a FIXNUM immediate and a BOXED Int64 sharing one hash as distinct keys
 pass	a combined left shift that overflows Int64 traps like the single shift it folds to
 pass	a common constructor composes through a hoisted tuple field to build once
 pass	a comparison against a constant outside a masked value's range folds, but an in-range one stays a runtime test
@@ -2577,7 +2577,6 @@ pass	a record-returning closure alongside a parameterized plain export — the c
 pass	a record-returning closure alongside a parameterized plain export — the plain
 pass	a recursion carrying a Bytes parameter does a fallible read in its base arm
 pass	a recursion carrying a List parameter does a fallible read in its base arm
-todo	a recursion-driven host-call sequence consumes one response row per iteration in order
 pass	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 pass	a recursive BigInt fn whose bound result feeds a mod compiles and computes (FINDING)
 pass	a recursive CONSTANT-FOLD pass rewrites int-add subtrees bottom-up and counts folds
@@ -2838,7 +2837,6 @@ pass	a runtime bit-field run spans two bytes and composes with an int segment
 pass	a runtime bitwise AND masks bits
 pass	a runtime bitwise OR combines bits
 pass	a runtime bitwise XOR toggles bits
-todo	a runtime branch selects WHICH host op consumes the first response row
 pass	a runtime branch selects between two ANONYMOUS closures fed to the iterate combinator
 pass	a runtime byte truncation of the sign extremes keeps exactly the low byte
 pass	a runtime bytes value is spliced into a length-prefixed frame
@@ -3504,6 +3502,7 @@ pass	a unit raised to the ZEROTH power is the dimensionless identity Unit.one
 pass	a user Name variant does not capture the Ast sum's Name variant
 pass	a user SUM leaf inside a tuple key discriminates hits by variant AND payload
 pass	a user function may be named quote — its signature is a binding form, not a quote
+pass	a user generic sum named BARE (unapplied) in an annotation needs a type argument
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
 pass	a user sum named Ast renders BARE with RUNTIME payloads through one compiled body
@@ -3511,6 +3510,7 @@ pass	a user sum named Ast with NON-colliding variants renders its ctor heads BAR
 pass	a user sum whose variant name collides with a built-in renders that head QUALIFIED on all backends
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
+pass	a user-declared generic sum resolves by name in a parameter type annotation
 pass	a user-sum variant value as a Map KEY keys by variant and payload
 pass	a user-written EUCLID gcd loops on remainder and certifies divisibility of both operands
 pass	a user-written FILTER combinator keeps elements passing a captured predicate
@@ -5356,12 +5356,6 @@ pass	two `?`s in one boundary both unwrap (nested happy path)
 pass	two adjacent modules declared inside a function body compose
 pass	two bare nullary variants reflect the same undetermined type
 pass	two capturing closures stored as runtime tuple elements keep distinct captures
-pass	two COMPOUND keys sharing a full hash collide via the nested champ_eq walk in one collision node
-pass	a collision node holds a FIXNUM immediate and a BOXED Int64 sharing one hash as distinct keys
-pass	three keys sharing one 32-bit hash build a 3-entry CHAMP collision node (collision_insert append)
-pass	removing from a 3-entry collision node leaves a live 2-entry node; removing to 1 collapses to canonical
-pass	a Map over three full-hash-colliding keys retrieves each value; removing one keeps siblings' values
-pass	set algebra over a 3-entry collision node splits and rebuilds the colliding keys by content
 pass	two capturing closures stored in a LIST are selected at runtime and the capture reads after
 pass	two chars with different scalar values are unequal
 pass	two closure handles swap parameter slots through repeated tail calls
@@ -5542,6 +5536,7 @@ todo	a @param value drives a CHAMP map lookup as the KEY
 todo	a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)
 todo	a Float64 closure captures a Float64 build-time host effect result
 todo	a Float64-inner Qty host result crosses as its float magnitude
+todo	a NON-TAIL host call consumes rows on the unwind, deepest frame first
 todo	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
 todo	a ROPE Bytes arg (recursive concat, uncompacted) crosses the host boundary
 todo	a Rational-MAGNITUDE Quantity host value composes the num/den ops with the unit erasure (#13, B2)
@@ -5576,11 +5571,13 @@ todo	a let-bound host result captured by two escaping closures fires the host op
 todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
+todo	a recursion-driven host-call sequence consumes one response row per iteration in order
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a run's result is a deterministic function of a host call's recorded response
 todo	a runtime Bytes value crosses a host op boundary as list<u8> (H-bytes-arg)
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment
+todo	a runtime branch selects WHICH host op consumes the first response row
 todo	a runtime closure whose body calls a recursive top-level function
 todo	a runtime-DISC `?` inside a stored closure applies per-call once BRICK 3b lands
 todo	a runtime-operand try as a list element declines pending brick 3b
@@ -5608,7 +5605,6 @@ todo	distinct-sig round-trip: a higher-order closure-typed arg on one group + a 
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	function arguments are evaluated left to right
-pass	generic user-sum values dedupe as set elements and key a map by rope-payload content
 todo	host calls are observed in the order they were made
 todo	host calls issue only from the TAKEN arm of a fused match and in arm order
 todo	let bindings' initializers are evaluated in binding order

@@ -1242,6 +1242,7 @@ pass	a closure whose body calls a top-level helper function
 pass	a closure-payload sum picked by an if-helper, applied by a match-consumer, with a binding reused as both args
 pass	a closure-typed closure ARG on the DIRECT-CALL path is declined — host would supply the closure
 pass	a collection-carrying recursion whose base arm does a fallible indexed read compiles
+pass	a collision node holds a FIXNUM immediate and a BOXED Int64 sharing one hash as distinct keys
 pass	a combined left shift that overflows Int64 traps like the single shift it folds to
 pass	a common constructor composes through a hoisted tuple field to build once
 pass	a comparison against a constant outside a masked value's range folds, but an in-range one stays a runtime test
@@ -3543,6 +3544,7 @@ pass	a unit-result host op consumes its response row so the next value op reads 
 pass	a user Name variant does not capture the Ast sum's Name variant
 pass	a user SUM leaf inside a tuple key discriminates hits by variant AND payload
 pass	a user function may be named quote — its signature is a binding form, not a quote
+pass	a user generic sum named BARE (unapplied) in an annotation needs a type argument
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
 pass	a user sum named Ast renders BARE with RUNTIME payloads through one compiled body
@@ -3550,6 +3552,7 @@ pass	a user sum named Ast with NON-colliding variants renders its ctor heads BAR
 pass	a user sum whose variant name collides with a built-in renders that head QUALIFIED on all backends
 pass	a user sum's nullary variant escapes with its bare variant name
 pass	a user sum's payload variant escapes with its bare variant name
+pass	a user-declared generic sum resolves by name in a parameter type annotation
 pass	a user-sum variant value as a Map KEY keys by variant and payload
 pass	a user-written EUCLID gcd loops on remainder and certifies divisibility of both operands
 pass	a user-written FILTER combinator keeps elements passing a captured predicate
@@ -5438,12 +5441,6 @@ pass	two adapter records with different state types drive a take-while fold in o
 pass	two adjacent modules declared inside a function body compose
 pass	two bare nullary variants reflect the same undetermined type
 pass	two capturing closures stored as runtime tuple elements keep distinct captures
-pass	two COMPOUND keys sharing a full hash collide via the nested champ_eq walk in one collision node
-pass	a collision node holds a FIXNUM immediate and a BOXED Int64 sharing one hash as distinct keys
-pass	three keys sharing one 32-bit hash build a 3-entry CHAMP collision node (collision_insert append)
-pass	removing from a 3-entry collision node leaves a live 2-entry node; removing to 1 collapses to canonical
-pass	a Map over three full-hash-colliding keys retrieves each value; removing one keeps siblings' values
-pass	set algebra over a 3-entry collision node splits and rebuilds the colliding keys by content
 pass	two capturing closures stored in a LIST are selected at runtime and the capture reads after
 pass	two chars with different scalar values are unequal
 pass	two closure handles swap parameter slots through repeated tail calls
