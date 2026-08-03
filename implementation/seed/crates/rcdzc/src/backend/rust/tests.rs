@@ -7495,6 +7495,36 @@ fn rustc_closure_that_escapes_an_effect_rejects_cdz0406_not_a_broken_emit() {
 }
 
 #[test]
+fn rustc_an_unreached_effectful_lifted_closure_does_not_spuriously_reject_cdz0406() {
+    // The DUAL of the reject above (and the rust twin of the wasm #1808 fix): the CDZ0406 escaping-closure
+    // scan must fire ONLY for a REACHABLE escaping closure. `layout.lifted` also holds lambdas DEMANDED
+    // during type-checking but built by no reachable `Core::Closure` — emitted as inert never-called STUBS
+    // (gated on `layout.lifted_reached`). A `Core::HostCall` in such a dead/stub body is provably
+    // unreachable, so flagging it would SPURIOUSLY reject a program whose effectful closure can never run.
+    // The rust guard already scans `peeled || reached` slots only (backend/rust/mod.rs), so it never had the
+    // false-reject the wasm side did pre-#1808 — this witness PINS that (a future change dropping the
+    // reached-gate would regress it to a spurious CDZ0406). Same program shape as the wasm witness: the
+    // effectful `Box.Bin` closure is an unreached lift (`pick 0` always takes the `Box.Un` arm), never
+    // invoked by the host — so it must COMPILE, not reject.
+    let src = "(module m (effect ask (op ask (-> Unit Int64))) \
+        (type Box (Bin (-> Int64 Int64 Int64)) (Un (-> Int64 Int64))) \
+        (def (run (: b Box)) (match b ((Box.Bin f) (f 2 3)) ((Box.Un g) (g 9)))) \
+        (def (pick (: which Int64)) \
+          (if (> which 0) \
+            (Box.Bin (fn ((: a Int64) (: x Int64)) (+ a (ask.ask)))) \
+            (Box.Un (fn ((: x Int64)) (+ x 1))))) \
+        (def (main) (host (ask) (run (pick 0)))) \
+        (export main))";
+    let res = try_compile_rust(src);
+    assert!(
+        res.is_ok(),
+        "an UNREACHED effectful lifted closure must NOT spuriously reject CDZ0406 on rust (it can never \
+         run — only a reachable escaping closure rejects): {:?}",
+        res.err()
+    );
+}
+
+#[test]
 fn rustc_host_call_float_result_reads_the_shim_f64() {
     // H4 host-call emit: a delegated FLOAT-result host op (`Param.ratio -> Unit Float64`, from an
     // `@param(widget: slider) ratio : Float64`) emits `(crate::__cdz_host_<key>() as f64)` — the runner's
