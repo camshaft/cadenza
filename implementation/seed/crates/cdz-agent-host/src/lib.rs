@@ -48,6 +48,8 @@ pub mod status;
 
 pub use async_host::{AsyncAgentHost, Inbound, Inbox};
 pub use clock::ClockExecutor;
+#[cfg(feature = "live-net")]
+pub use host::live_executor_set;
 pub use host::{AgentHost, HostedSession, SessionId};
 #[cfg(feature = "live-net")]
 pub use http::ReqwestHttpTransport;
