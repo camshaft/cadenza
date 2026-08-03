@@ -115,11 +115,12 @@ impl CompositeExecutor {
 
 #[async_trait::async_trait(?Send)]
 impl Executor for CompositeExecutor {
-    async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+    // Defines the TARGET unsuffixed `perform` (trait-rename beat T2, kernel-side).
+    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         // Route by the request's content-type FAMILY (seq-39): a request whose family has no registered
         // executor is an OBSERVABLE Err (§9d anti-stuck), never a panic/drop.
         match self.by_family.get_mut(req.content_type.family.as_ref()) {
-            Some(inner) => inner.perform_async(req, idempotency_key).await,
+            Some(inner) => inner.perform(req, idempotency_key).await,
             None => EffectOutcome::Err(format!(
                 "no executor registered for effect family {:?} (target {:?})",
                 req.content_type.family, req.target
@@ -159,7 +160,7 @@ impl RecordingExecutor {
 
 #[async_trait::async_trait(?Send)]
 impl Executor for RecordingExecutor {
-    async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         self.seen.push((req.clone(), idempotency_key));
         EffectOutcome::Ok(Some(Payload::Inline(b"ok".to_vec().into())))
     }
@@ -199,11 +200,8 @@ pub struct ShellExecutor;
 #[cfg(all(feature = "live-exec", unix))]
 #[async_trait::async_trait(?Send)]
 impl Executor for ShellExecutor {
-    async fn perform_async(
-        &mut self,
-        req: &EffectRequest,
-        _idempotency_key: Hash,
-    ) -> EffectOutcome {
+    // Defines the TARGET unsuffixed `perform` (trait-rename beat T2, kernel-side).
+    async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
         use crate::effect::EffectKind;
         if req.kind != EffectKind::Shell {
             return EffectOutcome::Err(format!(

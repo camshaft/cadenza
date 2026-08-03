@@ -459,7 +459,7 @@ pub async fn project_manifest(
             let mut probe =
                 EffectRequest::new(kind, probe_target(family), None, Timeliness::Interactive);
             probe.content_type.family = family.to_string().into();
-            match authorizer.authorize_async(&probe).await {
+            match authorizer.authorize(&probe).await {
                 Ok(()) => GrantState::Granted,
                 Err(_) => GrantState::Denied,
             }

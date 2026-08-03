@@ -149,7 +149,10 @@ pub struct InertReducer;
 
 #[async_trait::async_trait(?Send)]
 impl Reducer for InertReducer {
-    async fn fold_async(&self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
+    // Defines the TARGET unsuffixed `fold` (trait-rename beat T2, kernel-side): the `fold_async` default
+    // now forwards here. The mutual-default bridge stays until every impl (incl. cdz-agent-host's) migrates
+    // and beat T3 drops `fold_async`.
+    async fn fold(&self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
         FoldOutput::none()
     }
 }
