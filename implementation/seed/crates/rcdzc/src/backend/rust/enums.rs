@@ -370,10 +370,63 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
     // consumer of the emitted `.rs` (or the gate's driver) can name the type and its variants. `Clone`
     // so a matched-and-rebuilt value composes; `#[allow(dead_code)]` since a declared-but-unused variant
     // is normal in generated code. Variants are `pub` implicitly (an enum's variants share its visibility).
-    Ok(format!(
+    let enum_decl = format!(
         "#[derive({derives})]\n#[allow(dead_code)]\npub enum {name}{generics} {{ {} }}\n",
         variants.join(", ")
-    ))
+    );
+    // A float-carrying MONOMORPHIC sum (`Ast` — a `Float`+`List Ast` sum) cannot `#[derive(Eq/Ord)]` (f64 is
+    // not `Eq`/`Ord`), so it emits `#[derive(Clone)]` only above. But if it is used as a `BTreeSet`/`BTreeMap`
+    // key/element the collection needs `Ord` (+ `Eq`). For such a sum we emit HAND-WRITTEN
+    // `impl PartialEq/Eq/PartialOrd/Ord` that delegate to `__eq_<Ident>`/`__ord_<Ident>` walk helpers
+    // (float leaf by canonical bits, recursion via the helper's call-indirection — the SAME walks a runtime
+    // `=`/`compare` uses). `sum_is_custom_ord` gates this (monomorphic, float-walkable, no flip-Option). The
+    // helpers are emitted alongside (deduped by name). This makes `BTreeSet<Ast>` instantiable with an order
+    // that agrees byte-for-byte with the wasm value-cmp walk.
+    if crate::backend::rust::expr::sum_is_custom_ord(db, &sentinel_sum_of(&decl)) {
+        let sum_ty = sentinel_sum_of(&decl); // monomorphic → args empty
+        let mut helpers: Vec<String> = Vec::new();
+        // Delegating bodies (also populate `helpers` with the recursive `__eq_`/`__ord_` fns).
+        let eq_body = crate::backend::rust::expr::emit_value_eq_walk(
+            db,
+            &sum_ty,
+            "self",
+            "other",
+            &mut helpers,
+        );
+        let ord_body = crate::backend::rust::expr::emit_value_ord_walk(
+            db,
+            &sum_ty,
+            "self",
+            "other",
+            &mut helpers,
+        );
+        if let (Ok(eq_body), Ok(ord_body)) = (eq_body, ord_body) {
+            let impls = format!(
+                "\n{helpers}\nimpl PartialEq for {name} {{ fn eq(&self, other: &Self) -> bool {{ {eq_body} }} }}\n\
+                 impl Eq for {name} {{}}\n\
+                 impl PartialOrd for {name} {{ fn partial_cmp(&self, other: &Self) -> core::option::Option<core::cmp::Ordering> {{ core::option::Option::Some(self.cmp(other)) }} }}\n\
+                 impl Ord for {name} {{ fn cmp(&self, other: &Self) -> core::cmp::Ordering {{ {ord_body} }} }}\n",
+                helpers = helpers.join("\n"),
+            );
+            return Ok(format!("{enum_decl}{impls}"));
+        }
+        // A walk declined (an unexpected payload shape) — fall back to the plain enum (Clone only); a use as
+        // a key then declines at the construction site, as before (reject-don't-miscompile).
+    }
+    Ok(enum_decl)
+}
+
+/// The monomorphic-or-sentinel `Ty::Sum` for a declaration — `args` are the sentinel params (empty for a
+/// monomorphic sum). Used to query `sum_is_custom_ord` / drive the eq/ord walk generators for the enum's
+/// hand-written impls.
+fn sentinel_sum_of(decl: &crate::db::TypeDecl) -> crate::ty::Ty {
+    crate::ty::Ty::Sum {
+        decl: decl.occ,
+        name: decl.name.clone(),
+        args: (0..decl.params.len())
+            .map(|k| crate::ty::Ty::Var(PARAM_SENTINEL_BASE + k as u32))
+            .collect(),
+    }
 }
 
 /// Whether some USER (source-node) declaration emits the SAME Rust enum ident as `decl` — i.e. a user

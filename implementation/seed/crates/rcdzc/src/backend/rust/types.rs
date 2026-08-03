@@ -336,13 +336,21 @@ pub(super) fn ty_is_ord(db: &mut Db, ty: &Ty) -> bool {
         Ty::Nominal { inner, .. } => ty_is_ord(db, inner),
         Ty::List(e) | Ty::Set(e) => ty_is_ord(db, e),
         Ty::Map(k, v) => ty_is_ord(db, k) && ty_is_ord(db, v),
-        // A SUM/NOMINAL is orderable iff its enum derives `Ord` = iff it derives `Eq` — the Db-aware check
-        // that closes the float-carrying-sum hole (the whole point of this fix).
-        Ty::Sum { .. } => crate::backend::rust::enums::ty_derives_eq(
-            db,
-            ty,
-            &mut std::collections::HashSet::new(),
-        ),
+        // A SUM is orderable if EITHER (a) its enum derives `Ord` (= derives `Eq`; the native path), OR
+        // (b) it is a float-carrying MONOMORPHIC sum we give a hand-written `impl Ord` via a `__ord_<Ident>`
+        // walk (`sum_is_custom_ord` — e.g. `Ast`, a `Float`+`List Ast` sum used as a Set element / Map key).
+        // The custom-impl branch orders the float leaf by canonical bits (matching wasm's value-cmp order),
+        // so the `BTreeSet<Ast>`/`BTreeMap<Ast, _>` is instantiable and its order agrees cross-backend. NOTE:
+        // `sum_is_custom_ord` re-checks `ty_supports_eq` (native path) FIRST and returns false there, so the
+        // two branches are disjoint and there is no double-count; a float-carrying sum with a flip-Option or
+        // generic args still declines (neither branch admits it).
+        Ty::Sum { .. } => {
+            crate::backend::rust::enums::ty_derives_eq(
+                db,
+                ty,
+                &mut std::collections::HashSet::new(),
+            ) || crate::backend::rust::expr::sum_is_custom_ord(db, ty)
+        }
         // Every other representable type (Int/Bool/Unit/Char/String/Bytes and the NUMERIC BigInt/Rational,
         // which have a total order) maps to an `Ord` Rust type. A non-representable type declines earlier.
         _ => true,
