@@ -8053,7 +8053,9 @@ fn publish_candidate(
         println!(
             "publish-candidate DRY for {agent} @ {ref} (lane {lane}) — pass --execute to dispatch:"
         );
-        println!("  0. git worktree add --detach <scratch> origin/main  (+ git cherry-pick {ref})");
+        println!(
+            "  0. git worktree add --detach <scratch> origin/main  (+ git cherry-pick trunk..{ref} — the full range, not just the tip)"
+        );
         for (i, cmd) in argv.iter().enumerate() {
             println!("  {}. {}", i + 1, cmd.join(" "));
         }
@@ -8091,14 +8093,27 @@ fn publish_candidate(
         cleanup(&fleet.repo, &scratch_s);
         return false;
     }
-    // 2. Re-parent the single MR commit onto origin/main.
+    // 2. Re-parent the MR's commits onto origin/main. Cherry-pick the FULL `trunk..ref` RANGE, not just
+    //    the single `ref` commit — an MR `--ref` can name a MULTI-COMMIT tip (parent fix + tip test
+    //    tweak), and `git cherry-pick <ref>` would land ONLY the tip's diff, SILENTLY DROPPING the
+    //    ancestor commits (v-effects #1705: a slot-clobber miscompile fix in the parent was lost while
+    //    only the tip's 6-line test tweak landed). `trunk..ref` is exactly the agent's unlanded commits
+    //    (trunk is tree-equal to origin/main, so the range applies cleanly), replayed oldest-first.
+    //    `--allow-empty` tolerates a commit whose change is already present. If the range is empty
+    //    (ref == trunk, nothing to land) cherry-pick errors → treated as a conflict/no-op below.
+    let range = format!("{TRUNK}..{}", r#ref);
     let pick = Command::new("git")
         .current_dir(&scratch)
-        .args(["cherry-pick", r#ref])
+        .args(["cherry-pick", "--allow-empty", &range])
         .output();
     if !matches!(pick, Ok(ref o) if o.status.success()) {
+        // Abort a partial multi-commit pick so the scratch worktree is clean before removal.
+        let _ = Command::new("git")
+            .current_dir(&scratch)
+            .args(["cherry-pick", "--abort"])
+            .output();
         eprintln!(
-            "publish-candidate: `git cherry-pick {ref}` onto origin/main CONFLICTS — this MR needs a rebase; NOT dispatching. (reject the sender with a stale-base note.)"
+            "publish-candidate: `git cherry-pick {range}` onto origin/main CONFLICTS (or empty range) — this MR needs a rebase; NOT dispatching. (reject the sender with a stale-base note.)"
         );
         cleanup(&fleet.repo, &scratch_s);
         return false;
