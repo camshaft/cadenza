@@ -79,6 +79,21 @@ impl HostedSession {
         }
     }
 
+    /// SEED the capability manifest so this agent is "born knowing" its capabilities — call ONCE right
+    /// after [`HostedSession::genesis`], before the first [`deliver`](Self::deliver) (host-capability-
+    /// discovery I5). The kernel folds a synthetic `control/capabilities` EffectResult (byte-identical to
+    /// an on-demand I4b query answer, same code path), so a capability-aware reducer can record its grants
+    /// up front without issuing a query. Opt-in: seeding is a separate call, so `genesis` stays sync and an
+    /// agent that queries on demand (or doesn't care) needs no change.
+    ///
+    /// Returns any [`ControlEffect`]s the seed turn surfaced; an ordinary reducer emits none, so most
+    /// callers ignore the return.
+    pub async fn seed_capabilities(&mut self) -> Vec<cdz_kernel::effect::ControlEffect> {
+        self.session
+            .seed_capabilities_async(&*self.reducer, &*self.authz, &mut self.executor)
+            .await
+    }
+
     /// Deliver one inbound event and run the reactive loop to quiescence (the kernel drives
     /// fold→dispatch→fold-result until no more effects are pending). This is one turn of the agent. Async
     /// so a long fold cooperatively yields and the host loop can interleave other sessions (§15b).
@@ -823,6 +838,62 @@ mod tests {
             summary.as_deref(),
             Some(&b"inline-summary"[..]),
             "a leading blob-payload control/summary must not mask a later inline one"
+        );
+    }
+
+    /// A capability-aware agent: when it sees a capabilities-manifest `EffectResult` (the answer to a
+    /// `control/capabilities` query — or the I5 born-knowing seed, same wire shape), it records the raw
+    /// manifest bytes into KV under `capabilities`. Lets the seed test assert the guest was born knowing.
+    struct CapabilityAwareAgent;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for CapabilityAwareAgent {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            if let EventBody::EffectResult {
+                result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
+                ..
+            } = &event.body
+            {
+                kv.put(b"capabilities".to_vec(), bytes.to_vec());
+            }
+            FoldOutput::none()
+        }
+    }
+
+    #[tokio::test]
+    async fn seed_capabilities_makes_a_session_born_knowing() {
+        // I5 host adoption: seed_capabilities() right after genesis folds a synthetic capabilities-manifest
+        // EffectResult (same code path as an on-demand control/capabilities query), so a capability-aware
+        // reducer records its grants before the first deliver — without issuing a query.
+        let mut hosted = HostedSession::genesis(
+            Hash::of(b"cap-aware-v1"),
+            Box::new(CapabilityAwareAgent),
+            // Permit emit so the synthetic control/capabilities seed drives to completion; the manifest is
+            // answered inline (the executor is never consulted for the answer).
+            Box::new(Authorizer::new(vec![Capability {
+                kind: EffectKind::Emit,
+                predicate: ResourcePredicate::Any,
+            }])),
+            CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new())),
+        );
+        // Precondition: nothing recorded before the seed.
+        assert_eq!(hosted.session().kv().get(b"capabilities"), None);
+
+        // Seeding surfaces no ControlEffects (answered inline) — an ordinary caller ignores the return.
+        let surfaced = hosted.seed_capabilities().await;
+        assert!(
+            surfaced.is_empty(),
+            "the seed is answered inline, not surfaced"
+        );
+
+        // Born knowing: the capability-aware reducer folded the seeded manifest into KV, before any deliver.
+        let caps = hosted
+            .session()
+            .kv()
+            .get(b"capabilities")
+            .map(|v| v.to_vec());
+        assert!(
+            caps.is_some_and(|b| !b.is_empty()),
+            "the seed folds a capabilities-manifest the reducer records — the guest is born knowing"
         );
     }
 }
