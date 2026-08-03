@@ -11,7 +11,9 @@
   #         DEBUG-COUNTERS runtime components, built + stripped as NORMAL (input-addressed)
   #         derivations; `packages.*-hash` is the content address DERIVED from the built bytes (never
   #         asserted). `checks.*-hash-parity` verifies it equals the committed REQUIRED_RUNTIME_HASH.
-  #         N2 guest-wasm, N3 tests follow. North star: nix builds every component, the hash falls out.
+  #   N2  — `packages.reducer-guest` (+ `-hash`) : the cdz-kernel reducer-guest wasm component built
+  #         from source (replaces the committed binary), same hash-falls-out shape. More guests + N3
+  #         tests follow. North star: nix builds every component, the content hash falls out.
   #
   # The Rust toolchain is read DIRECTLY from `rust-toolchain.toml` (the load-bearing pin — the
   # recorded `REQUIRED_RUNTIME_HASH` is only reproducible on that exact rustc). `rust-toolchain.toml`
@@ -165,6 +167,59 @@
           features = [ "debug-counters" ];
         };
 
+        # ── N2: the reducer-guest wasm COMPONENT as a content-addressed derivation ────────────────
+        #
+        # `cdz-kernel`'s component_reducer_e2e / async_component_reducer_e2e tests load a wasm-component
+        # reducer fixture. Today that's a COMMITTED binary (reducer_guest.component.wasm, `include_bytes!`);
+        # this builds it from source instead (operator "stop committing wasm"), so the committed binary
+        # can be deleted and the test reads the nix-built path (a companion cdz-kernel change wires the
+        # env var). Same normal-derivation, hash-falls-out shape as the runtimes — but SIMPLER:
+        #   - the guest is a plain `cargo build` (NOT `cargo component`, NO build-std), so vendoring is
+        #     just its OWN committed Cargo.lock (one importCargoLock, no rust-src std lock).
+        #   - `wit_bindgen::generate!` reads `../../../wit/reducer.wit` at compile time, so the source
+        #     fileset MUST include `cdz-kernel/wit` alongside the guest crate.
+        #   - the artifact is produced by `wasm-tools component new` (the LIFT of the core module into a
+        #     component) — NOT `strip`; the lifted component IS the content-addressed output.
+        reducerGuestVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile = ./implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest/Cargo.lock;
+        };
+        reducerGuestSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest
+            ./implementation/seed/crates/cdz-kernel/wit
+            ./rust-toolchain.toml
+          ];
+        };
+        reducerGuest = pkgs.stdenvNoCC.mkDerivation {
+          pname = "reducer-guest-component";
+          version = "0.0.0";
+          src = reducerGuestSrc;
+          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
+          buildPhase = ''
+            runHook preBuild
+            export HOME="$TMPDIR/home"
+            export CARGO_HOME="$TMPDIR/cargo"
+            mkdir -p "$HOME" "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${reducerGuestVendor}"
+            EOF
+            cd implementation/seed/crates/cdz-kernel/tests/fixtures/reducer-guest
+            cargo build --release --target wasm32-unknown-unknown --locked --offline
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            wasm-tools component new \
+              target/wasm32-unknown-unknown/release/reducer_guest.wasm \
+              -o "$out"
+            runHook postInstall
+          '';
+        };
+
         # The content address of a built component = sha256 of its (stripped) bytes. DERIVED from the
         # artifact nix built — this is the Cadenza content-address a program pins, falling out of the
         # build rather than being asserted. Exposed as a `packages.*-hash` (a plain-text store file).
@@ -184,6 +239,11 @@
         packages.runtime-debug = runtimeDebug;
         packages.runtime-hash = hashOf runtime "cdz-runtime-hash";
         packages.runtime-debug-hash = hashOf runtimeDebug "cdz-runtime-debug-hash";
+
+        # N2: the reducer-guest wasm component, built from source (replaces the committed binary).
+        # `.#reducer-guest` is the lifted component; `.#reducer-guest-hash` its derived content address.
+        packages.reducer-guest = reducerGuest;
+        packages.reducer-guest-hash = hashOf reducerGuest "reducer-guest-hash";
 
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
