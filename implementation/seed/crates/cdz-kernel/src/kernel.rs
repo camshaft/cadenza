@@ -688,6 +688,13 @@ impl Session {
                 let more = self
                     .record_result(id, outcome, reducer, dispatch_hash)
                     .await;
+                // The EffectResult is now durably recorded → this store effect is SETTLED, so recovery will
+                // not re-drive it and its dedup key is no longer needed. Prune it to BOUND applied_set_keys
+                // to the in-flight window (liaison #1852: it grew monotonically otherwise → memory/DoS). Safe
+                // for a resolve too (its key was never inserted → a no-op).
+                if let Some(store) = self.name_store.as_mut() {
+                    store.forget_applied_key(&idempotency_key);
+                }
                 for pair in more {
                     to_process.push(pair);
                 }
@@ -917,11 +924,16 @@ impl Session {
         // malformed effect (observable Err), not a panic. VALIDATE the payload's embedded name against the
         // effect TARGET: the target is what the authorizer gated (SEC-F1), so a set whose payload names a
         // DIFFERENT name than it was authorized for must be rejected — never silently write the payload name.
+        let is_set = family == crate::effect::effect_ct::STORE_SET;
         let hash = match &req.payload {
             Some(crate::effect::Payload::Inline(bytes)) => {
                 match crate::event_ast::decode_name_set(bytes) {
                     Ok((payload_name, h)) => {
-                        if payload_name != name {
+                        // The name==target check is a store/SET concern only (the target is what authz gated
+                        // for the set); a resolve carries no name-set to validate — apply_effect rejects a
+                        // resolve-with-payload as MalformedStoreEffect below, so don't apply the set-specific
+                        // name-mismatch error to a non-set family.
+                        if is_set && payload_name != name {
                             return EffectOutcome::Err(format!(
                                 "store/set payload name {payload_name:?} != authorized target {name:?} \
                                  — refusing (the target is what authz gated)"
