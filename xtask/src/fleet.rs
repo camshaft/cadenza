@@ -5434,10 +5434,25 @@ fn sync(fleet: &Fleet, force: bool) {
     // by subject is a zero-false-positive exclusion — no agent legitimately authors that subject. This
     // stops the every-tick manual `git reset --hard trunk` the papercut forced on every vertical.
     let before = replay.len();
-    replay.retain(|sha| {
-        let subj = git_stdout(&["show", "-s", "--format=%s", sha]);
-        !commit_is_archive_mirror(&subj)
-    });
+    if !replay.is_empty() {
+        // Read ALL replay-commit subjects in ONE `git show` (not one subprocess per commit — PR #1684
+        // review): `git show -s --format=%s <sha…>` prints one subject line per commit, in the order
+        // given, so we can zip them back to `replay` by index. Falls back to keeping a commit if its
+        // subject line is missing (a short output → never wrongly drop).
+        let mut args: Vec<&str> = vec!["show", "-s", "--format=%s"];
+        args.extend(replay.iter().map(String::as_str));
+        let subjects: Vec<String> = git_stdout(&args).lines().map(str::to_string).collect();
+        replay = replay
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                !subjects
+                    .get(*i)
+                    .is_some_and(|s| commit_is_archive_mirror(s))
+            })
+            .map(|(_, sha)| sha)
+            .collect();
+    }
     if replay.len() < before {
         println!(
             "fleet sync: dropped {} auto-generated archive-mirror commit(s) from the replay set (never agent work).",
