@@ -664,6 +664,7 @@ pass	a MIXED payload+nullary SUM compound = has DISCRIMINATING power (separates 
 pass	a MIXED-endian frame packs big and little fields side by side and round-trips both
 pass	a MIXED-shape compound scales its quantity leaf beside a non-quantity element
 pass	a MODULE-exported NON-recursive performer is homed by the importer's handler (single perform)
+todo	a MODULE-exported closure that performs a delegated effect cannot cross the host boundary
 pass	a MODULE-exported recursive callee performing per step is homed by the importer's handler
 pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
 pass	a MULTI-LEVEL concat-built list SET element (n>=33) is found by a push-built equal element
