@@ -334,11 +334,11 @@ fn declared_deps(
 /// missing-vs-store-error split (PR#1013 #3) lets a caller distinguish "publish the dep" from "the store
 /// broke." The kernel can't run a reducer whose declared dep it can't resolve — surface it, don't run a
 /// half-linked component.
-fn resolve_dep_bytes(
+async fn resolve_dep_bytes(
     dep: &ComponentDep,
     blobs: &dyn crate::blob::BlobStore,
 ) -> Result<Vec<u8>, ComponentError> {
-    match blobs.get(&dep.hash) {
+    match blobs.get(&dep.hash).await {
         Ok(Some(bytes)) => Ok(bytes),
         Ok(None) => Err(ComponentError::DepMissing { hash: dep.hash }),
         Err(e) => Err(ComponentError::DepStoreError {
@@ -563,14 +563,18 @@ impl ComponentReducer {
     /// the two are distinct). Generic: it resolves the Cadenza runtime, if present, exactly as it
     /// resolves any other dep — the kernel never asks "is this the runtime?" (The linker-compose of these
     /// bytes — binding each under its `import_name` — is the next slice.)
-    pub fn resolve_deps(
+    pub async fn resolve_deps(
         &self,
         blobs: &dyn crate::blob::BlobStore,
     ) -> Result<Vec<(ComponentDep, Vec<u8>)>, ComponentError> {
-        self.deps
-            .iter()
-            .map(|dep| resolve_dep_bytes(dep, blobs).map(|bytes| (dep.clone(), bytes)))
-            .collect()
+        // Sequential await (not a .map().collect() — can't await in a map closure): resolve each dep's
+        // bytes from CAS in order, short-circuiting on the first error.
+        let mut out = Vec::with_capacity(self.deps.len());
+        for dep in &self.deps {
+            let bytes = resolve_dep_bytes(dep, blobs).await?;
+            out.push((dep.clone(), bytes));
+        }
+        Ok(out)
     }
 
     /// Fold ONE event through the wasm guest (§19b): instantiate the component against a fresh
@@ -1244,8 +1248,8 @@ mod tests {
     // The ComponentReducer CONSTRUCTION path wires up (Engine + Component + Linker + the generated
     // kv-import registration) on a real — if trivial — component. The `apply` fold against a real
     // fold-exporting guest is covered end-to-end in `tests/component_reducer_e2e.rs`.
-    #[test]
-    fn component_reducer_builds_engine_component_and_registers_kv_import() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn component_reducer_builds_engine_component_and_registers_kv_import() {
         // A valid, minimal component (exports nothing — enough to prove Component::new + the linker's
         // kv-import registration succeed; the fold against a real fold-exporting guest is the e2e test).
         let bytes = wat::parse_str("(component)").expect("assemble empty component");
@@ -1262,6 +1266,7 @@ mod tests {
         assert_eq!(
             reducer
                 .resolve_deps(&crate::blob::MemBlobStore::new())
+                .await
                 .unwrap(),
             vec![]
         );
@@ -1432,24 +1437,27 @@ mod tests {
         assert_eq!(reducer.resolved_deps[0].1, b"dep-bytes".to_vec());
     }
 
-    #[test]
-    fn resolve_dep_bytes_fetches_from_cas_or_splits_missing_vs_store_error() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_dep_bytes_fetches_from_cas_or_splits_missing_vs_store_error() {
         use crate::blob::{BlobStore, MemBlobStore};
         let mut blobs = MemBlobStore::new();
         let dep_bytes = b"pretend a content-addressed dependency component";
-        let hash = blobs.put(dep_bytes).unwrap();
+        let hash = blobs.put(dep_bytes).await.unwrap();
         let dep = ComponentDep {
             import_name: format!("cadenza:runtime/heap@0.0.0+{}", hash.to_hex()),
             hash,
         };
         // Present in CAS → fetched (the kernel resolves it generically — it's just a dep by hash).
-        assert_eq!(resolve_dep_bytes(&dep, &blobs).unwrap(), dep_bytes.to_vec());
+        assert_eq!(
+            resolve_dep_bytes(&dep, &blobs).await.unwrap(),
+            dep_bytes.to_vec()
+        );
         // Absent → DepMissing (PR#1013 #3: distinct from a store error — "publish it" vs "store broke").
         let missing = ComponentDep {
             import_name: "some:iface/x@0.0.0+…".into(),
             hash: Hash::of(b"a dep never stored"),
         };
-        match resolve_dep_bytes(&missing, &blobs) {
+        match resolve_dep_bytes(&missing, &blobs).await {
             Err(ComponentError::DepMissing { hash }) => assert_eq!(hash, missing.hash),
             other => panic!("expected DepMissing, got {other:?}"),
         }

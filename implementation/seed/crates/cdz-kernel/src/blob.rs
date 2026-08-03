@@ -33,19 +33,25 @@ static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// A content-addressable blob store: put bytes (keyed by their content hash), get them back by hash.
 /// Backends are swappable (in-memory, disk, later network). Errors are backend I/O; a missing blob is
 /// `Ok(None)`, not an error (absence is a normal answer — the caller decides if it's fatal).
+/// ASYNC (operator directive): the CAS backend must be `async` so a remote store (S3/Dynamo) drops in
+/// behind the same trait without a sync→async churn — content-addressed blobs are the obvious thing to
+/// put in S3 ("especially this one"). The local `MemBlobStore`/`DiskBlobStore` backends satisfy it with
+/// no real await (in-memory / `std::fs`); a network backend awaits its transport. `?Send` because the
+/// kernel is single-threaded by design (matches the Executor/Reducer/Authorize traits).
+#[async_trait::async_trait(?Send)]
 pub trait BlobStore {
     /// Store `bytes` and return their content hash (the key). Idempotent: storing bytes already
     /// present is a no-op that returns the same hash (content-addressed → the key can't collide with
     /// different content).
-    fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash>;
+    async fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash>;
 
     /// Fetch the bytes for `hash`, or `None` if absent. A backend that can verify integrity SHOULD
     /// (re-hash the bytes, refuse a mismatch) — content-addressing makes tamper-detection free.
-    fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>>;
+    async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>>;
 
     /// Is a blob present without fetching it? Cheap existence check (a disk backend stats the file).
-    fn has(&self, hash: &Hash) -> std::io::Result<bool> {
-        Ok(self.get(hash)?.is_some())
+    async fn has(&self, hash: &Hash) -> std::io::Result<bool> {
+        Ok(self.get(hash).await?.is_some())
     }
 }
 
@@ -71,19 +77,20 @@ impl MemBlobStore {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl BlobStore for MemBlobStore {
-    fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
+    async fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
         let hash = Hash::of(bytes);
         // Idempotent: only insert if absent (content-addressed → an existing key holds identical bytes).
         self.blobs.entry(hash).or_insert_with(|| bytes.to_vec());
         Ok(hash)
     }
 
-    fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>> {
+    async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>> {
         Ok(self.blobs.get(hash).cloned())
     }
 
-    fn has(&self, hash: &Hash) -> std::io::Result<bool> {
+    async fn has(&self, hash: &Hash) -> std::io::Result<bool> {
         Ok(self.blobs.contains_key(hash))
     }
 }
@@ -108,8 +115,9 @@ impl DiskBlobStore {
     }
 }
 
+#[async_trait::async_trait(?Send)]
 impl BlobStore for DiskBlobStore {
-    fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
+    async fn put(&mut self, bytes: &[u8]) -> std::io::Result<Hash> {
         let hash = Hash::of(bytes);
         let path = self.path_for(&hash);
         // Idempotent — BUT don't blindly trust an existing file (PR#1010): a blob that bit-rotted or was
@@ -164,7 +172,7 @@ impl BlobStore for DiskBlobStore {
         Ok(hash)
     }
 
-    fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>> {
+    async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>> {
         let path = self.path_for(hash);
         match std::fs::read(&path) {
             Ok(bytes) => {
@@ -187,7 +195,7 @@ impl BlobStore for DiskBlobStore {
         }
     }
 
-    fn has(&self, hash: &Hash) -> std::io::Result<bool> {
+    async fn has(&self, hash: &Hash) -> std::io::Result<bool> {
         Ok(self.path_for(hash).exists())
     }
 }
@@ -203,91 +211,100 @@ mod tests {
         p
     }
 
-    fn round_trip<S: BlobStore>(store: &mut S) {
-        let h = store.put(b"hello blob").unwrap();
+    async fn round_trip<S: BlobStore>(store: &mut S) {
+        let h = store.put(b"hello blob").await.unwrap();
         // The key is the content hash.
         assert_eq!(h, Hash::of(b"hello blob"));
-        assert_eq!(store.get(&h).unwrap().as_deref(), Some(&b"hello blob"[..]));
-        assert!(store.has(&h).unwrap());
+        assert_eq!(
+            store.get(&h).await.unwrap().as_deref(),
+            Some(&b"hello blob"[..])
+        );
+        assert!(store.has(&h).await.unwrap());
         // Absent blob → None (not an error).
-        assert_eq!(store.get(&Hash::of(b"never stored")).unwrap(), None);
-        assert!(!store.has(&Hash::of(b"never stored")).unwrap());
+        assert_eq!(store.get(&Hash::of(b"never stored")).await.unwrap(), None);
+        assert!(!store.has(&Hash::of(b"never stored")).await.unwrap());
         // Idempotent put: same bytes → same hash, no duplicate.
-        let h2 = store.put(b"hello blob").unwrap();
+        let h2 = store.put(b"hello blob").await.unwrap();
         assert_eq!(h, h2);
     }
 
-    #[test]
-    fn mem_store_round_trips() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn mem_store_round_trips() {
         let mut store = MemBlobStore::new();
-        round_trip(&mut store);
+        round_trip(&mut store).await;
         // idempotent put didn't grow the store beyond the distinct blobs stored.
         assert_eq!(store.len(), 1);
     }
 
-    #[test]
-    fn disk_store_round_trips_and_persists() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn disk_store_round_trips_and_persists() {
         let dir = temp_dir("roundtrip");
         {
             let mut store = DiskBlobStore::open(&dir).unwrap();
-            round_trip(&mut store);
+            round_trip(&mut store).await;
         }
         // Reopen: the blob persisted to disk (durable).
         let store = DiskBlobStore::open(&dir).unwrap();
         let h = Hash::of(b"hello blob");
-        assert_eq!(store.get(&h).unwrap().as_deref(), Some(&b"hello blob"[..]));
+        assert_eq!(
+            store.get(&h).await.unwrap().as_deref(),
+            Some(&b"hello blob"[..])
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn disk_store_refuses_a_corrupt_blob() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn disk_store_refuses_a_corrupt_blob() {
         // A file under a hash name whose CONTENTS don't hash to that name = corruption/tamper; get must
         // refuse it, not serve wrong bytes (content-addressed integrity, free).
         let dir = temp_dir("corrupt");
         let mut store = DiskBlobStore::open(&dir).unwrap();
-        let h = store.put(b"genuine").unwrap();
+        let h = store.put(b"genuine").await.unwrap();
         // Tamper: overwrite the blob file with different bytes under the same (now-wrong) hash name.
         let path = dir.join(h.to_hex());
         std::fs::write(&path, b"tampered").unwrap();
-        let err = store.get(&h).unwrap_err();
+        let err = store.get(&h).await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn disk_put_heals_a_corrupt_existing_blob_instead_of_trusting_it() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn disk_put_heals_a_corrupt_existing_blob_instead_of_trusting_it() {
         // PR#1010: a blob that rotted/was-tampered on disk still sits under the right name. A put of the
         // genuine bytes must NOT skip on mere existence (which would leave the corruption forever); it
         // must verify the existing file and, finding it bad, rewrite the good bytes.
         let dir = temp_dir("heal");
         let mut store = DiskBlobStore::open(&dir).unwrap();
-        let h = store.put(b"genuine").unwrap();
+        let h = store.put(b"genuine").await.unwrap();
         let path = dir.join(h.to_hex());
         // Corrupt the on-disk blob (bytes no longer hash to the name).
         std::fs::write(&path, b"rotted!!").unwrap();
         // A get now refuses it (corrupt).
         assert_eq!(
-            store.get(&h).unwrap_err().kind(),
+            store.get(&h).await.unwrap_err().kind(),
             std::io::ErrorKind::InvalidData
         );
         // Re-put the genuine bytes: put must heal (rewrite), not trust existence.
-        let h2 = store.put(b"genuine").unwrap();
+        let h2 = store.put(b"genuine").await.unwrap();
         assert_eq!(h, h2);
         // Now the blob is good again.
-        assert_eq!(store.get(&h).unwrap().as_deref(), Some(&b"genuine"[..]));
+        assert_eq!(
+            store.get(&h).await.unwrap().as_deref(),
+            Some(&b"genuine"[..])
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn disk_put_uses_unique_temp_names_so_concurrent_puts_dont_collide() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn disk_put_uses_unique_temp_names_so_concurrent_puts_dont_collide() {
         // PR#1011: two concurrent puts of the SAME content must not share a `{hash}.tmp` path (a torn
         // write would then rename a corrupt file into place). We can't easily race threads deterministically
         // here, but we CAN assert the invariant that makes the race safe: temp names are process-unique.
         // Put twice; a leftover `{hash}.tmp` (the OLD shared name) must never exist, and both succeed.
         let dir = temp_dir("tmp-unique");
         let mut store = DiskBlobStore::open(&dir).unwrap();
-        let h1 = store.put(b"same content").unwrap();
-        let h2 = store.put(b"same content").unwrap();
+        let h1 = store.put(b"same content").await.unwrap();
+        let h2 = store.put(b"same content").await.unwrap();
         assert_eq!(h1, h2);
         // The old collision-prone temp name must not be present, and only the final blob file remains.
         let shared_tmp = dir.join(format!("{}.tmp", h1.to_hex()));
@@ -308,11 +325,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn distinct_content_distinct_keys() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn distinct_content_distinct_keys() {
         let mut store = MemBlobStore::new();
-        let a = store.put(b"alpha").unwrap();
-        let b = store.put(b"beta").unwrap();
+        let a = store.put(b"alpha").await.unwrap();
+        let b = store.put(b"beta").await.unwrap();
         assert_ne!(a, b);
         assert_eq!(store.len(), 2);
     }
