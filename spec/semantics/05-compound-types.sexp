@@ -17989,3 +17989,25 @@
                         (Option.expect (List.at ys 5) "s"))))))
             (export main)))
   (output (: -5945 Int64)))
+
+(case "a nested-map BUMP (lookup-inner, insert-inner, reinsert-outer) builds a multimap"
+  (doc    "The nested-map UPDATE idiom (the nested-CHAMP key pins cover map<record<set>> DESCENT; this
+           pins DERIVATION through nesting): `bump` looks up the inner map at the outer key, inserts
+           into it, and reinserts at the outer slot — the None arm bootstrapping a fresh inner. Three
+           bumps across two outer keys: outer key 1 accumulates {10,20} (len 2), key 2 holds {30}
+           (len 1), outer len 2 → 212. Every bump path-copies BOTH the inner map and the outer slot; a
+           reinsert that aliased the old inner (or dropped the outer path-copy) miscounts a lens read.
+           The multimap idiom every indexing structure uses.")
+  (input  (do
+            (def (bump (: outer (Map Int64 (Map Int64 Int64))) (: ok Int64) (: ik Int64))
+              (match (Map.lookup outer ok)
+                ((Some inner) (Map.insert outer ok (Map.insert inner ik 1)))
+                ((None _u) (Map.insert outer ok (Map.insert Map.empty ik 1)))))
+            (def (main (: n Int64))
+              (do
+                (def m0 (bump (bump (bump Map.empty 1 10) 1 20) 2 30))
+                (+ (* 100 (match (Map.lookup m0 1) ((Some i) (Map.len i)) ((None _u) -1)))
+                   (+ (* 10 (match (Map.lookup m0 2) ((Some i) (Map.len i)) ((None _u) -1)))
+                      (Map.len m0)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 212 Int64)))

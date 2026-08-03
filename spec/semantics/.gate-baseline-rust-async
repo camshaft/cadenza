@@ -2322,6 +2322,7 @@ pass	a nested unquote pattern matches a Str sub-AST by shape
 pass	a nested unquote pattern matches a sub-AST by shape
 pass	a nested-let chain that reuses each binding folds to one value
 pass	a nested-list-rest arm reads BOTH the inner rest and the outer rest binders
+pass	a nested-map BUMP (lookup-inner, insert-inner, reinsert-outer) builds a multimap
 pass	a nested-record parameter projects its inner fields through two dot levels
 pass	a neutral and-true keeps both the trap and the value of its left operand
 pass	a newtype match-arm destructure reads the erased scalar back
