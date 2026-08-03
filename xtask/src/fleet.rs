@@ -8549,6 +8549,20 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
             ReapAction::KeepWaiting => {} // still gating — leave it.
         }
     }
+    // ── PRUNE stale cand remote-tracking refs. ── `gh pr merge --delete-branch` (armed at dispatch)
+    // deletes the REMOTE `cand/<agent>-<sha>` branch when a candidate merges, but the LOCAL
+    // remote-tracking ref (`refs/remotes/origin/cand/*`, in the SHARED object store) lingers until a
+    // prune — so they pile up one-per-merged-candidate (568 stale accumulated by 2026-08-03, only 3
+    // live; pr-sync's + v-fleet-tooling's finding). `git remote prune origin` drops exactly the refs
+    // whose remote branch is gone (idempotent, safe — never touches a live branch). Only when this pass
+    // MERGED something (a merge is what deletes a remote branch); skip the network call on a no-merge
+    // pass. Best-effort: a failed prune is cosmetic, never blocks integration.
+    if reaped_merged > 0 {
+        let _ = Command::new("git")
+            .current_dir(&fleet.repo)
+            .args(["remote", "prune", "origin"])
+            .output();
+    }
     // ── TOP-UP DISPATCH ── recompute in-flight AFTER reaping (freed slots count).
     let still_in_flight: Vec<CiDispatch> = read_ci_dispatches(fleet)
         .into_iter()
