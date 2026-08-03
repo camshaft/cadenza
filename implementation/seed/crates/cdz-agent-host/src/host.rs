@@ -162,12 +162,18 @@ impl HostedSession {
             .await
             .ok()?;
         // The summary the reducer emitted for observers (§4b tier-1), read off the control-plane channel
-        // before the fork drops. Filter by family — `control/capabilities` may also be present.
+        // before the fork drops. Scan for the first `control/summary` effect that ACTUALLY carries inline
+        // bytes — folding the inline check into the find (not find-first-by-family THEN check inline), so a
+        // leading `control/summary` with a non-inline (blob) payload doesn't mask a later inline one.
+        // `control/capabilities` and other control families are skipped by the family match.
         controls
             .into_iter()
-            .find(|ce| ce.request.content_type.family.as_ref() == effect_ct::SUMMARY)
-            .and_then(|ce| match ce.request.payload {
-                Some(cdz_kernel::effect::Payload::Inline(bytes)) => Some(bytes.to_vec()),
+            .find_map(|ce| match ce.request.payload {
+                Some(cdz_kernel::effect::Payload::Inline(bytes))
+                    if ce.request.content_type.matches_family(effect_ct::SUMMARY) =>
+                {
+                    Some(bytes.to_vec())
+                }
                 _ => None,
             })
     }
@@ -652,5 +658,171 @@ mod tests {
         let hosted = host.get(&id).unwrap();
         assert_eq!(hosted.session().kv().get(b"phase"), Some(&b"working"[..]));
         assert_eq!(hosted.session().log().len(), live_event_count);
+    }
+
+    /// A report-aware agent that emits control effects on a `report` — but emits `control/capabilities`
+    /// FIRST and `control/summary` SECOND, plus a non-summary payload on the capabilities one. Proves the
+    /// fork reads the summary by FILTERING on family, not by taking the first control effect.
+    struct MultiControlAgent;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for MultiControlAgent {
+        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { content_type, .. } if content_type.is_report() => {
+                    let mut caps = EffectRequest::new(
+                        EffectKind::Emit,
+                        "self",
+                        Some(Payload::Inline(b"NOT-the-summary".to_vec().into())),
+                        Timeliness::Interactive,
+                    );
+                    caps.content_type.family = effect_ct::CAPABILITIES.into();
+                    let mut summary = EffectRequest::new(
+                        EffectKind::Emit,
+                        "self",
+                        Some(Payload::Inline(b"the-real-summary".to_vec().into())),
+                        Timeliness::Interactive,
+                    );
+                    summary.content_type.family = effect_ct::SUMMARY.into();
+                    // capabilities FIRST, summary SECOND — a take-first read would grab the wrong one.
+                    FoldOutput::with(vec![caps, summary])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_for_query_picks_control_summary_by_family_not_the_first_control_effect() {
+        // The reshape FILTERS the returned Vec<ControlEffect> by family == SUMMARY (control/capabilities
+        // also rides this channel until it's kernel-answered). Emit capabilities-then-summary so a
+        // take-first read would return the capabilities payload; assert we get the summary.
+        let mut host = AgentHost::new();
+        let id = SessionId::new("multi");
+        host.spawn(
+            id.clone(),
+            HostedSession::genesis(
+                Hash::of(b"multi-control-v1"),
+                Box::new(MultiControlAgent),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ),
+        );
+        let mut exec = CompositeExecutor::new();
+        let summary = host
+            .get(&id)
+            .unwrap()
+            .fork_for_query(&MultiControlAgent, &Authorizer::deny_all(), &mut exec)
+            .await;
+        assert_eq!(
+            summary.as_deref(),
+            Some(&b"the-real-summary"[..]),
+            "must select control/summary by family, not the first (control/capabilities) control effect"
+        );
+    }
+
+    /// A report-aware agent that never emits a `control/summary` (it does other work on a report but
+    /// publishes no summary) — the fork must return `None`, not panic or return some other effect.
+    struct NoSummaryAgent;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for NoSummaryAgent {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound { content_type, .. } = &event.body {
+                if content_type.is_report() {
+                    // Does local work on the report, but emits NO control/summary effect.
+                    kv.put(b"noted".to_vec(), b"1".to_vec());
+                }
+            }
+            FoldOutput::none()
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_for_query_returns_none_when_no_control_summary_is_emitted() {
+        // The `None` branch: a reducer that summarizes nowhere (emits no control/summary) yields None —
+        // the honest "it didn't summarize" signal, replacing the old public/summary-absent path.
+        let mut host = AgentHost::new();
+        let id = SessionId::new("silent");
+        host.spawn(
+            id.clone(),
+            HostedSession::genesis(
+                Hash::of(b"no-summary-v1"),
+                Box::new(NoSummaryAgent),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ),
+        );
+        let mut exec = CompositeExecutor::new();
+        let summary = host
+            .get(&id)
+            .unwrap()
+            .fork_for_query(&NoSummaryAgent, &Authorizer::deny_all(), &mut exec)
+            .await;
+        assert_eq!(summary, None, "no control/summary emitted → None");
+    }
+
+    /// A report-aware agent that emits TWO `control/summary` effects: the first with a BLOB payload (no
+    /// inline bytes), the second with the real inline summary. Guards the fix for PR #1641's silent-drop
+    /// edge — reading must not stop at the first family match and see a non-inline payload, but scan on to
+    /// the inline one.
+    struct BlobThenInlineSummaryAgent;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for BlobThenInlineSummaryAgent {
+        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { content_type, .. } if content_type.is_report() => {
+                    // First control/summary: a BLOB payload (no inline bytes to read).
+                    let mut blob = EffectRequest::new(
+                        EffectKind::Emit,
+                        "self",
+                        Some(Payload::Blob(Hash::of(b"summary-blob"))),
+                        Timeliness::Interactive,
+                    );
+                    blob.content_type.family = effect_ct::SUMMARY.into();
+                    // Second control/summary: the real inline bytes.
+                    let mut inline = EffectRequest::new(
+                        EffectKind::Emit,
+                        "self",
+                        Some(Payload::Inline(b"inline-summary".to_vec().into())),
+                        Timeliness::Interactive,
+                    );
+                    inline.content_type.family = effect_ct::SUMMARY.into();
+                    FoldOutput::with(vec![blob, inline])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_for_query_skips_a_blob_summary_and_reads_a_later_inline_one() {
+        // PR #1641 fix: the read folds the inline check into the scan (find_map), so a leading
+        // control/summary with a non-inline payload does NOT mask a later inline summary. The old
+        // find-by-family-then-check-inline returned None here.
+        let mut host = AgentHost::new();
+        let id = SessionId::new("blob-then-inline");
+        host.spawn(
+            id.clone(),
+            HostedSession::genesis(
+                Hash::of(b"blob-then-inline-v1"),
+                Box::new(BlobThenInlineSummaryAgent),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ),
+        );
+        let mut exec = CompositeExecutor::new();
+        let summary = host
+            .get(&id)
+            .unwrap()
+            .fork_for_query(
+                &BlobThenInlineSummaryAgent,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await;
+        assert_eq!(
+            summary.as_deref(),
+            Some(&b"inline-summary"[..]),
+            "a leading blob-payload control/summary must not mask a later inline one"
+        );
     }
 }
