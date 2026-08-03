@@ -934,6 +934,7 @@ enum GateTargetArg {
 /// is given, the export is invoked with those runtime arguments (`--call <export> --arg <v>…`) — how a
 /// case exercises a parameterized entrypoint rather than a nullary one; `None` runs the sole export
 /// with no arguments (the common case).
+#[allow(clippy::too_many_arguments)] // host protocol = responses + calls, threaded alongside the pipeline args
 fn run_program(
     tools: &Tools,
     store: &Option<PathBuf>,
@@ -941,6 +942,7 @@ fn run_program(
     modules: &[(String, String)],
     call: Option<&Call>,
     host_responses: &[(String, String)],
+    host_calls: &[String],
     target: GateTarget,
 ) -> Ran {
     match target {
@@ -950,15 +952,30 @@ fn run_program(
         // The ASYNC Rust backend has no host-boundary path yet — a host-delegating case declines (Todo). The
         // SYNC Rust backend renders a no-arg integer-result host call (H1): the emitted `mod prog` calls
         // `crate::__cdz_host_<key>()` and `run_program_rust` generates those shim fns from `host_responses`
-        // (a non-host case passes an empty slice → byte-identical to before).
-        GateTarget::RustAsync if !host_responses.is_empty() => Ran::Declined { code: None },
-        GateTarget::Rust => {
-            run_program_rust(tools, program, modules, call, false, None, host_responses)
+        // (a non-host case passes an empty slice → byte-identical to before). A UNIT-result effect op has no
+        // response but IS in host_calls (H8), so thread host_calls through too — an async host case still
+        // declines (it must have SOME host protocol), keyed on responses-or-calls being non-empty.
+        GateTarget::RustAsync if !host_responses.is_empty() || !host_calls.is_empty() => {
+            Ran::Declined { code: None }
         }
-        GateTarget::RustAsync => run_program_rust(tools, program, modules, call, true, None, &[]),
+        GateTarget::Rust => run_program_rust(
+            tools,
+            program,
+            modules,
+            call,
+            false,
+            None,
+            host_responses,
+            host_calls,
+        ),
+        GateTarget::RustAsync => {
+            run_program_rust(tools, program, modules, call, true, None, &[], &[])
+        }
         // The ML compiler has no package/host path today — a multi-file or host-delegating case is
         // simply not-yet-supported there, which is a decline (coverage-not-yet), never a disagreement.
-        GateTarget::CadenzaMl if !modules.is_empty() || !host_responses.is_empty() => {
+        GateTarget::CadenzaMl
+            if !modules.is_empty() || !host_responses.is_empty() || !host_calls.is_empty() =>
+        {
             Ran::Declined { code: None }
         }
         GateTarget::CadenzaMl => run_program_ml(tools, program, call),
@@ -1525,7 +1542,11 @@ fn host_shim_ident_from_key(op_key: &str) -> String {
 /// kebab-normalizes the response-key effect to agree with the backend) returns them in order + prints
 /// `host-call\t<recorded-op>`; an unmatched symbol gets a `panic!` stub (never reached on a passing trial,
 /// loud on a real mismatch). H1: fixed-width-INTEGER responses (`i64`; backend casts to width).
-fn build_rust_host_shims(module: &str, host_responses: &[(String, String)]) -> String {
+fn build_rust_host_shims(
+    module: &str,
+    host_responses: &[(String, String)],
+    host_calls: &[String],
+) -> String {
     // Map recorded op key → (its CANONICAL dotted key for the host-call print, values in order), by shim
     // ident. The printed `host-call\t<op>` is the CANONICAL key (kebab-normalized effect + verbatim op), NOT
     // the raw recorded key — a case's `(host-calls …)` records the canonical form, and the grader compares
@@ -1546,6 +1567,28 @@ fn build_rust_host_shims(module: &str, host_responses: &[(String, String)]) -> S
             })
             .1
             .push(value.clone());
+    }
+    // UNIT-RESULT ops (H8): a `(host-calls …)` entry whose op has NO `(host-response …)` is a pure
+    // effect op that returns the unit value (it crosses the boundary only to be OBSERVED — e.g. `log.emit`).
+    // It records its call NAME (needed for the observed-sequence check) but no response VALUE. Map its shim
+    // ident → canonical op so the referenced-shim loop below can emit a `()`-returning shim that prints the
+    // op (rather than the panic stub a no-response ident would otherwise get). `host_calls` is already the
+    // canonical dotted form (cdz-run/the corpus record it normalized), but membership is keyed by shim
+    // IDENT — `by_ident`/`response_ops` derive their idents through the same `host_shim_ident_from_key`
+    // mangling, so an op that IS in host_responses but under a source-cased key (`Param.width` vs the
+    // canonical `param.width`) still matches and is NOT mis-treated as unit-result.
+    let response_idents: std::collections::BTreeSet<String> = host_responses
+        .iter()
+        .map(|(op, _)| host_shim_ident_from_key(op))
+        .collect();
+    let mut unit_ops: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for op in host_calls {
+        let ident = host_shim_ident_from_key(op);
+        if response_idents.contains(&ident) {
+            continue; // a VALUE-result op: handled via by_ident above.
+        }
+        unit_ops.insert(ident, op.clone());
     }
     // Every `crate::__cdz_host_<ident>(<args>)` the module references, with its ARG COUNT (the shim's fn
     // arity must match every call site or rustc E0061s). The backend emits args as simple `__ha0, __ha1, …`
@@ -1667,20 +1710,29 @@ fn build_rust_host_shims(module: &str, host_responses: &[(String, String)]) -> S
                     ));
                 }
             }
-            // A referenced shim with NO recorded response. A VALUE-result op always records a response, and
-            // a Unit-result (effect-only) host op still DECLINES in the emit (its op name — needed for the
-            // (host-calls) check — isn't recoverable from host_responses alone; a later increment threads
-            // host_calls). So a no-response referenced shim is an UNEXERCISED def (e.g. an unused `delegated`
-            // def beside the called one): generate a panic stub (never reached on a passing trial) so the
-            // artifact links. Generic + returns i64 (unreached, so the type is irrelevant).
-            None => out.push_str(&format!(
-                "#[allow(unused, non_snake_case)]\nfn {fn_name}{generics}({params}) -> i64 {{ panic!(\"unexercised host op {fn_name}\") }}\n"
-            )),
+            // A referenced shim with NO recorded response. Two sub-cases:
+            //   (a) UNIT-RESULT op (H8): its op appears in the case's `(host-calls …)` but records no
+            //       response value (a pure effect op — `log.emit` — that returns the unit value). Emit a
+            //       `()`-returning shim that prints its canonical op so the observed-sequence check passes.
+            //       No response table: it hands out `()` unconditionally, however many times it's called.
+            //   (b) Otherwise an UNEXERCISED def (e.g. an unused `delegated` def beside the called one, whose
+            //       op is neither responded-to nor called): a panic stub (never reached on a passing trial)
+            //       so the artifact links. Generic + returns i64 (unreached, so the type is irrelevant).
+            None => match unit_ops.get(fn_name) {
+                Some(op) => out.push_str(&format!(
+                    "#[allow(unused, non_snake_case)]\nfn {fn_name}{generics}({params}) {{ \
+                     eprintln!(\"host-call\\t{op}\"); }}\n"
+                )),
+                None => out.push_str(&format!(
+                    "#[allow(unused, non_snake_case)]\nfn {fn_name}{generics}({params}) -> i64 {{ panic!(\"unexercised host op {fn_name}\") }}\n"
+                )),
+            },
         }
     }
     out
 }
 
+#[allow(clippy::too_many_arguments)] // host protocol = responses + calls, threaded alongside the pipeline args
 fn run_program_rust(
     tools: &Tools,
     program: &str,
@@ -1692,6 +1744,10 @@ fn run_program_rust(
     // case the emitted `mod prog` calls `crate::__cdz_host_<id>()`; we generate those shim fns here. Empty
     // for a non-host case (no shims → byte-identical driver to before).
     host_responses: &[(String, String)],
+    // The case's recorded `(host-calls …)` op sequence (canonical dotted form). Used to generate a
+    // `()`-returning shim for a UNIT-RESULT effect op — one that is CALLED but records no response value
+    // (H8). Empty for a non-host case (or one with only value-result ops).
+    host_calls: &[String],
 ) -> Ran {
     use std::process::Command;
 
@@ -2043,7 +2099,7 @@ fn run_program_rust(
     };
     // HOST-CALL SHIMS (H1): generate the crate-root `__cdz_host_*` fns the emitted `mod prog` references,
     // from the recorded responses (empty for a non-host case → no shims).
-    let host_shims = build_rust_host_shims(&module, host_responses);
+    let host_shims = build_rust_host_shims(&module, host_responses, host_calls);
     // In async mode the driver needs an `Env` impl (a no-limit gas meter — the gate checks ANSWERS, not
     // fuel bounds) and a tiny `block_on` executor, plus `let mut env = …` before the call.
     let full = if async_mode {
@@ -2999,13 +3055,17 @@ fn sweep_one_case(
                 &rec.host_responses,
                 Some(lvl),
             ),
-            // The Rust backend has no host-boundary path — a host-delegating case declines there, so it is
-            // level-independent (skipped below, like a default decline). Mirror the normal-gate dispatch.
-            GateTarget::Rust | GateTarget::RustAsync if !rec.host_responses.is_empty() => {
+            // A host-delegating case is level-independent in its host protocol (the opt sweep looks for a
+            // TIER divergence, not a host-boundary regression), so it declines here and is skipped below —
+            // exactly as a default decline is. A case is host-delegating if it records responses OR calls
+            // (a unit-result effect op records a call but no response — H8). Mirror the normal-gate dispatch.
+            GateTarget::Rust | GateTarget::RustAsync
+                if !rec.host_responses.is_empty() || !rec.host_calls.is_empty() =>
+            {
                 Ran::Declined { code: None }
             }
             GateTarget::Rust => {
-                // Host cases declined above (level-independent) → no responses reach here → `&[]`.
+                // Host cases declined above (level-independent) → no responses/calls reach here → `&[]`.
                 run_program_rust(
                     tools,
                     &rec.program,
@@ -3013,6 +3073,7 @@ fn sweep_one_case(
                     call,
                     false,
                     Some(lvl),
+                    &[],
                     &[],
                 )
             }
@@ -3023,6 +3084,7 @@ fn sweep_one_case(
                 call,
                 true,
                 Some(lvl),
+                &[],
                 &[],
             ),
             // Rejected up front in `gate_opt_sweep`; unreachable here.
@@ -3145,6 +3207,7 @@ fn gate_one_case(
                         &rec.modules,
                         t.call.as_ref(),
                         &rec.host_responses,
+                        &rec.host_calls,
                         target,
                     )
                 })
@@ -3344,6 +3407,7 @@ fn grade(tools: &Tools, store: &Option<PathBuf>, rec: &CorpusRecord, target: Gat
                 &rec.modules,
                 t.call.as_ref(),
                 &rec.host_responses,
+                &rec.host_calls,
                 target,
             )
         })
@@ -4472,6 +4536,7 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
                         &rec.modules,
                         call,
                         &rec.host_responses,
+                        &rec.host_calls,
                         GateTarget::CadenzaMl,
                     );
                     let outcome = match &ml {
@@ -4489,6 +4554,7 @@ fn compute_ml_conformance(paths: &Paths, profile: &str, files: &[PathBuf]) -> Ml
                                 &rec.modules,
                                 call,
                                 &rec.host_responses,
+                                &rec.host_calls,
                                 GateTarget::Wasm,
                             );
                             // An oracle-side harness failure is likewise not comparable — not a disagreement.

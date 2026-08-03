@@ -2932,6 +2932,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // (the gate driver builds it from the recorded response text: a quoted "…" → String, a byte
                 // list → Vec<u8>). The declared result type IS that Rust type, so pass the call through.
                 Some(t) if t == "String" || t == "Vec<u8>" => call.clone(),
+                // A UNIT result (H8): a pure effect op that crosses the boundary FOR ITS SIDE EFFECT only
+                // (the host-call observation) and yields the unit value — the shim returns `()` and prints
+                // its op. Call it for effect, then evaluate to `()`. This op has NO recorded host_response
+                // (it returns nothing), so the driver generates its shim from the case's `(host-calls …)`
+                // sequence instead (an op in host_calls but not host_responses → a Unit-result shim).
+                Some(t) if t == "()" => format!("{{ {call}; () }}"),
                 _ => {
                     return Err(Reject::decline(
                         "the Rust backend does not yet render a host call whose result is not a fixed-width integer, bool, float, unit, string, or bytes (later increment)",
