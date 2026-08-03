@@ -153,12 +153,17 @@ pub fn encode_capability_manifest(manifest: &crate::effect::CapabilityManifest) 
 /// event payloads). This lives kernel-side (effect-schema domain) so the ONE impl is shared by the host's
 /// HttpExecutor decode AND any future Cadenza reducer that emits an HTTP effect — neither hand-rolls a
 /// parallel parser (decided with v-agent-harness-host). Shape:
-///   `(http-request (method <name>) (body <payload-opt>))`
+///   `(http-request (method <name>) (headers ((<k:str> <v:str>) …)) (body <payload-opt>))`
 /// `<name>` is a Name atom (`get`/`post`/`put`/`delete`/`patch`/… — Name-headed so a NEW method appends
-/// with no wire break; a tolerant reader maps an unknown method itself). `<payload-opt>` = `(none)` |
-/// `(some <bytes>)` (a bodyless GET is `(none)`; a POST/PUT body rides as `Leaf::Bytes`). Kept minimal —
-/// headers/etc. are additive fields later (open-record posture), not baked in now.
-pub fn encode_http_request(method: &str, body: Option<&[u8]>) -> Vec<u8> {
+/// with no wire break; a tolerant reader maps an unknown method itself). `headers` is an ordered list of
+/// `(name value)` string pairs (HTTP header values are UTF-8 text). `<payload-opt>` = `(none)` |
+/// `(some <bytes>)` (a bodyless GET is `(none)`; a POST/PUT body rides as `Leaf::Bytes`). Backward-compat:
+/// [`decode_http_request`] also accepts the pre-headers 2-field form (empty headers) — see its doc.
+pub fn encode_http_request(
+    method: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+) -> Vec<u8> {
     let mut b = Builder::new();
     let head = b.name("http-request");
     let method_form = {
@@ -166,39 +171,42 @@ pub fn encode_http_request(method: &str, body: Option<&[u8]>) -> Vec<u8> {
         let m = b.name(method);
         b.list(vec![h, m])
     };
+    let headers_form = {
+        let h = b.name("headers");
+        let pairs = encode_header_pairs(&mut b, headers);
+        b.list(vec![h, pairs])
+    };
     let body_form = {
         let h = b.name("body");
-        let opt = match body {
-            None => {
-                let none = b.name("none");
-                b.list(vec![none])
-            }
-            Some(bytes) => {
-                let some = b.name("some");
-                let v = bytes_leaf(&mut b, bytes);
-                b.list(vec![some, v])
-            }
-        };
+        let opt = encode_opt_body(&mut b, body);
         b.list(vec![h, opt])
     };
-    let root = b.list(vec![head, method_form, body_form]);
+    let root = b.list(vec![head, method_form, headers_form, body_form]);
     codec::encode(&b.finish(root))
 }
 
-/// Decode an HTTP effect request payload encoded by [`encode_http_request`] → `(method, body)`. Total:
-/// any non-conforming bytes are an `Err` (never a panic), same posture as [`decode`]. The method is
-/// returned as a `String` (the caller maps it to its own method enum, with a catch-all for extension
-/// methods — the Name-headed open-sum contract).
-pub fn decode_http_request(bytes: &[u8]) -> Result<(String, Option<Vec<u8>>), EventAstError> {
+/// Decode an HTTP effect request payload → `(method, headers, body)`. Total: non-conforming bytes are an
+/// `Err` (never a panic), same posture as [`decode`]. Method is a `String` (the caller maps it to its own
+/// enum, with a catch-all — the Name-headed open-sum contract). BACKWARD-COMPAT: accepts BOTH the current
+/// 3-field form `(http-request (method) (headers) (body))` AND the pre-headers 2-field
+/// `(http-request (method) (body))`, which decodes with empty headers — so a payload from the pre-headers
+/// encoder still decodes (additive, tolerant-reader).
+#[allow(clippy::type_complexity)]
+pub fn decode_http_request(
+    bytes: &[u8],
+) -> Result<(String, Vec<(String, String)>, Option<Vec<u8>>), EventAstError> {
     let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
     let root = a
         .as_form(a.root, "http-request")
         .ok_or(shape("http-request head"))?;
-    let [method_f, body_f] = root else {
-        return Err(shape("http-request arity"));
+    // 3-field (method headers body) OR legacy 2-field (method body).
+    let (method_f, headers_f, body_f) = match root {
+        [m, h, b] => (*m, Some(*h), *b),
+        [m, b] => (*m, None, *b),
+        _ => return Err(shape("http-request arity")),
     };
     // (method <name>)
-    let method_kids = a.as_form(*method_f, "method").ok_or(shape("method form"))?;
+    let method_kids = a.as_form(method_f, "method").ok_or(shape("method form"))?;
     let [mname] = method_kids else {
         return Err(shape("method arity"));
     };
@@ -206,13 +214,132 @@ pub fn decode_http_request(bytes: &[u8]) -> Result<(String, Option<Vec<u8>>), Ev
         .as_name(*mname)
         .ok_or(shape("method not a name"))?
         .to_string();
+    // (headers ((k v) …)) — empty on the legacy form.
+    let headers = match headers_f {
+        Some(hf) => {
+            let hkids = a.as_form(hf, "headers").ok_or(shape("headers form"))?;
+            let [pairs] = hkids else {
+                return Err(shape("headers arity"));
+            };
+            read_header_pairs(&a, *pairs)?
+        }
+        None => Vec::new(),
+    };
     // (body <payload-opt>)
-    let body_kids = a.as_form(*body_f, "body").ok_or(shape("body form"))?;
+    let body_kids = a.as_form(body_f, "body").ok_or(shape("body form"))?;
     let [opt] = body_kids else {
         return Err(shape("body arity"));
     };
     let body = read_opt_body(&a, *opt)?;
-    Ok((method, body))
+    Ok((method, headers, body))
+}
+
+/// Encode an HTTP effect RESULT payload — the response the executor produces and the reducer decodes.
+/// Shape: `(http-response (status <int>) (headers ((<k:str> <v:str>) …)) (body <bytes>))`. `status` is the
+/// numeric HTTP status (100–599; a `u16` on the wire as an Int). Same `§9b` shared-codec rationale as the
+/// request: ONE impl so the executor encodes and a Cadenza reducer decodes identically.
+pub fn encode_http_response(status: u16, headers: &[(String, String)], body: &[u8]) -> Vec<u8> {
+    let mut b = Builder::new();
+    let head = b.name("http-response");
+    let status_form = {
+        let h = b.name("status");
+        let s = u64_leaf(&mut b, status as u64);
+        b.list(vec![h, s])
+    };
+    let headers_form = {
+        let h = b.name("headers");
+        let pairs = encode_header_pairs(&mut b, headers);
+        b.list(vec![h, pairs])
+    };
+    let body_form = {
+        let h = b.name("body");
+        let v = bytes_leaf(&mut b, body);
+        b.list(vec![h, v])
+    };
+    let root = b.list(vec![head, status_form, headers_form, body_form]);
+    codec::encode(&b.finish(root))
+}
+
+/// Decode an HTTP response payload encoded by [`encode_http_response`] → `(status, headers, body)`. Total.
+/// A status outside `u16` range is a clean `Shape` error, never a panic.
+#[allow(clippy::type_complexity)]
+pub fn decode_http_response(
+    bytes: &[u8],
+) -> Result<(u16, Vec<(String, String)>, Vec<u8>), EventAstError> {
+    let a = codec::decode_detailed(bytes).map_err(EventAstError::Codec)?;
+    let root = a
+        .as_form(a.root, "http-response")
+        .ok_or(shape("http-response head"))?;
+    let [status_f, headers_f, body_f] = root else {
+        return Err(shape("http-response arity"));
+    };
+    // (status <int>)
+    let status_kids = a.as_form(*status_f, "status").ok_or(shape("status form"))?;
+    let [sv] = status_kids else {
+        return Err(shape("status arity"));
+    };
+    let status = u16::try_from(read_u64(&a, *sv)?).map_err(|_| shape("status out of u16 range"))?;
+    // (headers ((k v) …))
+    let hkids = a
+        .as_form(*headers_f, "headers")
+        .ok_or(shape("headers form"))?;
+    let [pairs] = hkids else {
+        return Err(shape("headers arity"));
+    };
+    let headers = read_header_pairs(&a, *pairs)?;
+    // (body <bytes>)
+    let body_kids = a.as_form(*body_f, "body").ok_or(shape("body form"))?;
+    let [v] = body_kids else {
+        return Err(shape("body arity"));
+    };
+    let body = read_bytes(&a, *v)?;
+    Ok((status, headers, body))
+}
+
+/// Encode a `(none)` | `(some <bytes>)` optional body form (shared by the request encoder).
+fn encode_opt_body(b: &mut Builder, body: Option<&[u8]>) -> StructId {
+    match body {
+        None => {
+            let none = b.name("none");
+            b.list(vec![none])
+        }
+        Some(bytes) => {
+            let some = b.name("some");
+            let v = bytes_leaf(b, bytes);
+            b.list(vec![some, v])
+        }
+    }
+}
+
+/// Encode an ordered list of `(name value)` header pairs as `((<k> <v>) …)` — a list of 2-element string
+/// lists. Order-preserving (HTTP allows repeated/ordered headers).
+fn encode_header_pairs(b: &mut Builder, headers: &[(String, String)]) -> StructId {
+    let mut items = Vec::with_capacity(headers.len());
+    for (k, v) in headers {
+        let kl = str_leaf(b, k);
+        let vl = str_leaf(b, v);
+        items.push(b.list(vec![kl, vl]));
+    }
+    b.list(items)
+}
+
+/// Decode the `((<k> <v>) …)` header-pairs list (the child of a `(headers …)` form) → ordered
+/// `Vec<(String, String)>`. Each element must be a 2-element `(name value)` string list.
+fn read_header_pairs(a: &Arenas, id: StructId) -> Result<Vec<(String, String)>, EventAstError> {
+    let Struct::List(pairs) = a.get(id) else {
+        return Err(shape("headers not a list"));
+    };
+    let mut out = Vec::with_capacity(pairs.len());
+    for &p in pairs {
+        let Struct::List(kv) = a.get(p) else {
+            return Err(shape("header pair not a list"));
+        };
+        let [k, v] = kv.as_slice() else {
+            return Err(shape("header pair arity (want (name value))"));
+        };
+        out.push((read_str(a, *k)?, read_str(a, *v)?));
+    }
+    Ok(out)
 }
 
 /// Decode the `(none)` | `(some <bytes>)` payload-opt used by [`decode_http_request`]'s body field.
@@ -1015,33 +1142,83 @@ mod tests {
     }
 
     #[test]
-    fn http_request_payload_round_trips_body_and_bodyless() {
-        // The HTTP effect payload codec (shared with cdz-agent-host's HttpExecutor decode, §9b). A body-
-        // bearing method (POST) and a bodyless one (GET) both round-trip method + body exactly.
-        let (m, b) = decode_http_request(&encode_http_request("post", Some(b"{\"k\":1}")))
-            .expect("post round-trips");
+    fn http_request_payload_round_trips_method_headers_body() {
+        // The HTTP effect payload codec (shared with cdz-agent-host's HttpExecutor decode, §9b). Method +
+        // ordered headers + body all round-trip; a bodyless GET is (none).
+        let hdrs = vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("x-trace".to_string(), "abc".to_string()),
+        ];
+        let (m, h, b) =
+            decode_http_request(&encode_http_request("post", &hdrs, Some(b"{\"k\":1}")))
+                .expect("post round-trips");
         assert_eq!(m, "post");
+        assert_eq!(h, hdrs, "headers round-trip in order");
         assert_eq!(b.as_deref(), Some(&b"{\"k\":1}"[..]));
 
-        let (m, b) =
-            decode_http_request(&encode_http_request("get", None)).expect("get round-trips");
+        let (m, h, b) =
+            decode_http_request(&encode_http_request("get", &[], None)).expect("get round-trips");
         assert_eq!(m, "get");
+        assert!(h.is_empty(), "no headers → empty");
         assert_eq!(b, None);
 
-        // An extension method name survives verbatim (Name-headed open sum — the decoder doesn't reject
-        // an unknown method; the caller maps it, with a catch-all).
-        let (m, _) = decode_http_request(&encode_http_request("propfind", None)).unwrap();
+        // An extension method name survives verbatim (Name-headed open sum).
+        let (m, _, _) = decode_http_request(&encode_http_request("propfind", &[], None)).unwrap();
         assert_eq!(m, "propfind");
     }
 
     #[test]
-    fn decode_http_request_is_total_on_garbage() {
+    fn http_response_payload_round_trips_status_headers_body() {
+        let hdrs = vec![("content-length".to_string(), "3".to_string())];
+        let (s, h, b) = decode_http_response(&encode_http_response(200, &hdrs, b"ok!"))
+            .expect("200 round-trips");
+        assert_eq!(s, 200);
+        assert_eq!(h, hdrs);
+        assert_eq!(&b[..], b"ok!");
+        // A non-2xx status + empty headers/body round-trips too.
+        let (s, h, b) = decode_http_response(&encode_http_response(404, &[], b"")).unwrap();
+        assert_eq!(s, 404);
+        assert!(h.is_empty());
+        assert!(b.is_empty());
+    }
+
+    #[test]
+    fn decode_http_request_accepts_the_pre_headers_2field_form() {
+        // BACKWARD-COMPAT: a payload from the pre-headers encoder — (http-request (method) (body)) — must
+        // still decode (empty headers), so v-ah-host's in-flight explicit-method work stays valid until it
+        // migrates to the headers-carrying encoder. Build the legacy 2-field form by hand.
+        let mut b = Builder::new();
+        let head = b.name("http-request");
+        let method_form = {
+            let h = b.name("method");
+            let m = b.name("get");
+            b.list(vec![h, m])
+        };
+        let body_form = {
+            let h = b.name("body");
+            let none = b.name("none");
+            let opt = b.list(vec![none]);
+            b.list(vec![h, opt])
+        };
+        let root = b.list(vec![head, method_form, body_form]);
+        let bytes = codec::encode(&b.finish(root));
+
+        let (m, h, body) = decode_http_request(&bytes).expect("legacy 2-field decodes");
+        assert_eq!(m, "get");
+        assert!(h.is_empty(), "legacy form → empty headers");
+        assert_eq!(body, None);
+    }
+
+    #[test]
+    fn decode_http_request_and_response_are_total_on_garbage() {
         // Non-conforming bytes are a clean Err, never a panic (same posture as decode()).
         assert!(decode_http_request(b"not a cadenza sexpr").is_err());
-        // A valid AST of the WRONG shape (a capabilities-manifest) is also an Err, not a misread.
+        assert!(decode_http_response(b"not a cadenza sexpr").is_err());
+        // A valid AST of the WRONG shape (a capabilities-manifest) is an Err for both, not a misread.
         let wrong =
             encode_capability_manifest(&crate::effect::CapabilityManifest { entries: vec![] });
         assert!(decode_http_request(&wrong).is_err());
+        assert!(decode_http_response(&wrong).is_err());
     }
 
     #[test]
