@@ -47,5 +47,6 @@ pub mod hash;
 pub mod kernel;
 pub mod kv;
 pub mod log_store;
+pub mod namespace;
 pub mod reducer;
 pub mod wasm_host;
