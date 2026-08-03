@@ -2664,6 +2664,37 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64)))
 
+(case "a runtime Bool host arg crosses the boundary and drives two response bindings"
+  (doc    "The Bool scalar-ARG host-boundary face (v-rust-backend #1708 closed the rust arm: a bool
+           marshals to i64 via i64::from, matching wasm's i32 rep). Two host calls each take a runtime
+           bool computed from a comparison — `io.check (> n 5)` then `io.check (< n 5)` at n=7 → true then
+           false — and each response (10, 20) sums to 30. Pins the bool arg crosses AND that two ops
+           consume their rows in order. (breaker bh1, verified past its #1708 witness.) wasm + rust pass;
+           rust-async todo pending its host-delegated op-arg path.")
+  (input  (do
+            (effect io (op check (-> Bool Int64)))
+            (def (main (: n Int64))
+              (host (io) (+ (io.check (> n 5)) (io.check (< n 5)))))
+            (export main)))
+  (host-responses (respond io.check (: 10 Int64)) (respond io.check (: 20 Int64)))
+  (host-calls (call io.check) (call io.check))
+  (call   main (: 7 Int64)) (output (: 30 Int64)))
+
+(case "a Bool host arg BESIDE a scalar and a String composes in one mixed-arity op"
+  (doc    "The mixed-arity composition face: one op `(-> Bool Int64 String Int64)` takes a bool, a
+           scalar, AND a string arg together — the Bool marshal (#1708) composing with the existing
+           scalar and String-arg arms in a single arg list (the multi-arg slot-threading the
+           host-arg-before-scalar fix hardened). `io.log (= n 3) n \"tag\"` at n=3 → host answers 42.
+           (breaker bh2, verified.) wasm + rust pass; rust-async todo.")
+  (input  (do
+            (effect io (op log (-> Bool Int64 String Int64)))
+            (def (main (: n Int64))
+              (host (io) (io.log (= n 3) n "tag")))
+            (export main)))
+  (host-responses (respond io.log (: 42 Int64)))
+  (host-calls (call io.log))
+  (call   main (: 3 Int64)) (output (: 42 Int64)))
+
 (case "a RECURSIVE-sum value of runtime depth rides a handler resume"
   (doc    "An op whose declared result is a RECURSIVE sum (`Give.get : Unit -> Nat`) resumed with a
            runtime-depth spine `(mk a)`: the resume value is an unbounded heap structure, not a scalar or
