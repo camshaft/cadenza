@@ -605,6 +605,7 @@ pass	a GUARD over a QUOTE pattern compares two bound subtrees — the x=x algebr
 pass	a HANDLE as a NON-FINAL multi-binding let init completes before the sibling binding
 pass	a HANDLE of an undeclared effect in an uncalled def is rejected
 pass	a HEAP element pushed across the RRB 32→33 boundary reads back intact at every index
+pass	a HEAP handler seed stays readable in the body after performs advance the state
 pass	a HEX DECODER finds each digit's value by alphabet scan and rejects a bad digit
 pass	a HEX ENCODER splits each byte into nibbles and indexes a digit alphabet string
 pass	a HOF callback matching a tuple argument computes through the nested reduction
