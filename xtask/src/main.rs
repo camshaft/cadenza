@@ -2577,10 +2577,17 @@ fn build_closure_consumer_call(
                 cap: src_params.len(),
                 shape,
             });
-        } else if !src_params.iter().any(|p| is_closure_param(p)) {
-            // PEELED candidate: a plain fn (no closure param, non-closure return). Its equivalent closure
-            // type is `Rc<dyn Fn(<param types>) -> <ret>>`; the raw `fn(<param types>) -> <ret>` is used
-            // for the coercion. (A fn with a closure param is a CONSUMER, not a producer — skip it.)
+        } else {
+            // PEELED candidate: a fn whose EQUIVALENT closure value is `Rc::new(fn-item)`. Its closure type
+            // is `Rc<dyn Fn(<param types>) -> <ret>>` and the raw `fn(<param types>) -> <ret>` is the
+            // coercion target. `param_type_of` yields each param's full Rust type — so a HIGHER-ORDER
+            // producer (S4: a fn that itself takes a closure param, `fn mk(f: Rc<dyn Fn(i64)->i64>) -> i64`)
+            // is a valid producer whose closure type is `Rc<dyn Fn(Rc<dyn Fn(i64)->i64>)->i64>`. It is
+            // supplied to the consumer as `Rc::new(prog::mk as fn(Rc<dyn Fn…>)->i64)`. (Previously a fn WITH
+            // a closure param was skipped as "a consumer, not a producer" — but the higher-order round-trip
+            // has mk be BOTH: a producer for app's `g` AND a consumer of an in-guest `f`. Pairing is by
+            // erased closure-type via `ty_matches` below, so a genuine consumer that matches no sibling
+            // closure param is simply never paired — accepting it as a producer candidate is harmless.)
             let param_types: Vec<String> = src_params.iter().map(|p| param_type_of(p)).collect();
             let ret = psig
                 .ret_head

@@ -6170,6 +6170,52 @@ fn rustc_roundtrip_closure_parameter_consumer_with_a_producer_sibling() {
 }
 
 #[test]
+fn rustc_roundtrip_higher_order_closure_arg_consumer_s4() {
+    // S4-HIGHER-ORDER: a consumer `app` takes a closure whose ARG is ITSELF a closure — `g: (-> (-> Int64
+    // Int64) Int64)` — and applies it to an INNER closure built IN-GUEST (`(g (fn (y) (+ y x)))`). The
+    // higher-order producer `mk` (whose signature `(-> (-> Int64 Int64) Int64)` = app's `g` type) supplies
+    // `g`. Two emit pieces make this work: (1) `arg_ok_or_fn` admits a `Ty::Fn` closure arg in the consumer
+    // gate; (2) `def_is_producer_for_sibling` exempts `mk` from the producer requirement for its OWN `f`
+    // param (fed in-guest by app, never host-supplied) — so `mk` emits as a plain `pub fn mk(f: Rc<dyn
+    // Fn>)`. The harness recognizes `mk` as a higher-order producer and passes it `Rc::new(mk)`.
+    let m = compile_rust(
+        "(module m \
+           (def (mk) (fn ((: f (-> Int64 Int64))) (f 10))) \
+           (def (app (: g (-> (-> Int64 Int64) Int64)) (: x Int64)) (g (fn (y) (+ y x)))) \
+           (export mk) (export app))",
+    );
+    assert!(
+        m.contains("pub fn mk(f: std::rc::Rc<dyn Fn(i64) -> i64>) -> i64"),
+        "the higher-order producer mk emits as a plain fn taking an Rc<dyn Fn> param:\n{m}"
+    );
+    assert!(
+        m.contains("pub fn app(g: std::rc::Rc<dyn Fn(std::rc::Rc<dyn Fn(i64) -> i64>) -> i64>"),
+        "the consumer app emits a higher-order Rc<dyn Fn(Rc<dyn Fn>)> param:\n{m}"
+    );
+    // Driven producer→consumer: `app(Rc::new(mk), 5)` — mk is the higher-order closure, app applies it to
+    // the in-guest `(fn (y) (+ y 5))`, so mk calls that on 10 → 10+5 = 15.
+    if let Some(out) = rustc_run(
+        &m,
+        "app(std::rc::Rc::new(mk as fn(std::rc::Rc<dyn Fn(i64)->i64>)->i64), 5)",
+    ) {
+        assert_eq!(
+            out, "15",
+            "app(mk, 5): mk applies the in-guest (+ y 5) to 10 → 15"
+        );
+    }
+    // A HIGHER-ORDER closure export called ALONE (no consumer sibling) still DECLINES — the host would have
+    // to supply the inner `(-> Int64 Int64)` over the boundary (no rep). `def_is_producer_for_sibling` is
+    // false (nothing consumes mk's type), and `f` has no producer → declines.
+    let mk_alone = compile_rust_result(
+        "(module m (def (mk) (fn ((: f (-> Int64 Int64))) (f 10))) (export mk))",
+    );
+    assert!(
+        mk_alone.is_err(),
+        "a higher-order closure export with no consuming sibling declines (host can't supply the inner closure):\n{mk_alone:?}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_closure_parameter_consumer_with_a_compound_arg_closure_s2() {
     // CLOSURE-PARAMETER CONSUMER, S2: the consumer's closure param takes a COMPOUND arg (a Tuple) with a
     // scalar result. The consumer applies `(g p)` where `p` is a tuple built in its OWN body; the producing
