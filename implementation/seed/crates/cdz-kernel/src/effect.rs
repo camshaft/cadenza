@@ -77,6 +77,31 @@ pub mod effect_ct {
     /// `ControlHostSurfaced` disposition: returned to the driver, captured by the query fork's watch).
     pub const SUMMARY: &str = "control/summary";
 
+    /// The `store/*` namespace PREFIX — the §4c global-store WRITE layer (mutable name→hash pointers). A
+    /// family whose string starts with this is a STORE effect: unlike `control/*` (authz-EXEMPT), a store
+    /// effect is AUTHZ-GATED — a `store/set` is the anti-hijack surface (repointing `system/compiler/latest`
+    /// at an evil hash), so it goes through the authorizer keyed on the NAME's prefix authority (a Cedar
+    /// prefix-grant / [`crate::name_store::NameStore::authority_prefix_of`], §4c point 2). These are all NEW
+    /// families (no wire history), so they carry the `store/` prefix — the same asymmetry as `control/`.
+    pub const STORE_PREFIX: &str = "store/";
+
+    /// `store/set` — append `set(name, hash)` to a mutable name's value-over-time log (§4c point 1). The
+    /// effect target is the mutable NAME; the hash rides the payload ([`crate::event_ast::encode_name_set`]).
+    /// AUTHZ-GATED by the name's prefix authority (only a `system/` grant may `store/set` a `system/…` name).
+    pub const STORE_SET: &str = "store/set";
+
+    /// `store/resolve` — read a mutable name's CURRENT hash = its latest `set` (§4c point 3: resolving
+    /// FREEZES the resolved hash into the resolver's log, so a later hijacking set can't retroactively
+    /// change it). A read; a broad store grant admits it (the write-authority gate is on `store/set`).
+    pub const STORE_RESOLVE: &str = "store/resolve";
+
+    /// Is `family` in the `store/*` namespace (the §4c global-store write layer, authz-gated on the name's
+    /// prefix authority)? The drive loop's partition test alongside [`is_control_family`]: `store/*` routes
+    /// to the name-store handler, not a generic executor. One source of truth for the split.
+    pub fn is_store_family(family: &str) -> bool {
+        family.starts_with(STORE_PREFIX)
+    }
+
     /// Is `family` in the `control/*` namespace (authz-exempt, host/kernel-answered, never executor-routed)?
     /// The partition test the drive loop applies BEFORE authorize/route: `true` → control path, `false` →
     /// the effect path (authorize → executor). A simple prefix check on [`CONTROL_PREFIX`] — one source of
@@ -641,6 +666,28 @@ mod tests {
         // A bare family that merely CONTAINS "control" but doesn't start with the prefix is NOT control.
         assert!(!effect_ct::is_control_family("my-control-thing"));
         assert!(!effect_ct::is_control_family(""));
+    }
+
+    #[test]
+    fn store_family_partition_is_distinct_from_control_and_effect_families() {
+        // §4c store/* partition: store/set + store/resolve are AUTHZ-GATED store effects (the write layer),
+        // a THIRD partition alongside control/* (authz-exempt) and bare effect families (executor-routed).
+        assert!(effect_ct::is_store_family(effect_ct::STORE_SET));
+        assert!(effect_ct::is_store_family(effect_ct::STORE_RESOLVE));
+        assert!(effect_ct::is_store_family("store/anything"));
+        assert_eq!(effect_ct::STORE_PREFIX, "store/");
+        assert!(effect_ct::STORE_SET.starts_with(effect_ct::STORE_PREFIX));
+        assert!(effect_ct::STORE_RESOLVE.starts_with(effect_ct::STORE_PREFIX));
+        // store/* is NOT control (it IS gated) and control/* is NOT store — the partitions are disjoint.
+        assert!(!effect_ct::is_control_family(effect_ct::STORE_SET));
+        assert!(!effect_ct::is_store_family(effect_ct::CAPABILITIES));
+        // Bare effect families are neither store nor control.
+        for &fam in effect_ct::ALL {
+            assert!(!effect_ct::is_store_family(fam), "effect {fam:?} not store");
+        }
+        // A family merely CONTAINING "store" but not prefixed is not a store family.
+        assert!(!effect_ct::is_store_family("my-store"));
+        assert!(!effect_ct::is_store_family(""));
     }
 
     #[test]
