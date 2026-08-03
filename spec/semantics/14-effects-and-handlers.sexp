@@ -6852,3 +6852,40 @@
   (host-responses (respond io.a (: 3 Int64)) (respond io.b (: 5 Int64)))
   (host-calls (call io.a) (call io.b))
   (output (: 513 Int64)))
+
+(case "a unit-result host op consumes its response row so the next value op reads its own (adv-65)"
+  (doc    "adv-65 (breaker, HIGH wasm differential): a UNIT-result host op must CONSUME its response row,
+           in order, so a later value-result op reads ITS OWN row — not the unit op's. `(host (io) (do
+           (io.ping k) (+ (io.get k) k)))` with responses [io.ping=0, io.get=7], k=3 → 10 (io.get reads
+           its own row 7: 7+3). The wasm host runner previously did NOT advance the response cursor on a
+           unit-result op (it returns nothing), so `io.get` read io.ping's row 0 → 3 (silent wrong value);
+           rust was correct (per-op response lists). FIX (v-effects, cdz-run): a unit-result op advances
+           the cursor IFF the row at the cursor is FOR THIS OP (kebab-normalized match) — consuming a
+           supplied row, but NOT skipping a value op's row for a pure observe-only unit op (H8's `log.emit`
+           shape, which supplies no row). The response model is in-order consumption of ALL calls.")
+  (input  (do
+            (effect io (op ping (-> Int64 Unit)) (op get (-> Int64 Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (do (io.ping k)
+                    (+ (io.get k) k))))
+            (export main)))
+  (host-responses (respond io.ping (: 0 Int64)) (respond io.get (: 7 Int64)))
+  (host-calls (call io.ping) (call io.get))
+  (call   main (: 3 Int64)) (output (: 10 Int64)))
+
+(case "the unit-op response-cursor discriminator: a nonzero ping row is not misread by the later get (adv-65)"
+  (doc    "adv-65 CURSOR DISCRIMINATOR: the same shape with io.ping's row = 99 (not 0) — if the unit op
+           failed to consume its row, io.get would read 99 → 102; consuming it correctly gives io.get its
+           own row 7 → 10. Pins that the fix READS THE RIGHT ROW, not merely that a zero happens to be
+           harmless.")
+  (input  (do
+            (effect io (op ping (-> Int64 Unit)) (op get (-> Int64 Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (do (io.ping k)
+                    (+ (io.get k) k))))
+            (export main)))
+  (host-responses (respond io.ping (: 99 Int64)) (respond io.get (: 7 Int64)))
+  (host-calls (call io.ping) (call io.get))
+  (call   main (: 3 Int64)) (output (: 10 Int64)))

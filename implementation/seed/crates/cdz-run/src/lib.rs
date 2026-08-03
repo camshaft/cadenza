@@ -1901,8 +1901,30 @@ fn bind_host_imports(
                     format!("{op_label}\t{}", str_args.join(" "))
                 };
                 observed.lock().expect("observed calls mutex").push(entry);
-                // A unit-result op returns nothing and consumes no response. A scalar-result op pops the
-                // next recorded response, coerces it to the result type, and returns it.
+                // adv-65 (HIGH differential): a UNIT-result op returns nothing, but it STILL CONSUMES its
+                // response row when the fixture supplied one for it — the corpus model is "responses are
+                // consumed IN ORDER of the calls made", so a `(host (io) (do (io.ping k) (+ (io.get k) k)))`
+                // with responses [io.ping, io.get] must have `io.ping` advance the cursor past ITS row, so
+                // the later `io.get` reads its OWN row — not `io.ping`'s (the wasm-vs-rust wrong-value:
+                // io.get was reading ping's row → 0+3=3 instead of 7+3=10). Previously a unit op advanced
+                // NOTHING, desyncing every unit-op-then-value-op sequence. But a PURE observe-only unit op
+                // (H8's `log.emit` — no `(host-response …)` row at all) must NOT consume, or it would skip a
+                // later value op's row. So consume IFF the row at the cursor is FOR THIS OP: match the
+                // current response's recorded op against this op (both KEBAB-normalized, since the fixture's
+                // op may be source-cased while `op_label` is the WIT export name — the same two-sided
+                // normalization cdz-run uses elsewhere). Row-present-and-matching → consume-and-discard;
+                // row-absent-or-other-op (a pure observe-only unit op) → leave the cursor for the value op.
+                if results.is_empty() {
+                    let mut idx = cursor.lock().expect("host response cursor mutex");
+                    if let Some(resp) = responses.get(*idx) {
+                        let want = cadenza_syntax::extern_name::kebab_extern_name(&op_label);
+                        let have = cadenza_syntax::extern_name::kebab_extern_name(&resp.op);
+                        if want == have {
+                            *idx += 1;
+                        }
+                    }
+                }
+                // A scalar-result op pops the next recorded response, coerces it to the result type, returns it.
                 if let Some(slot) = results.get_mut(0) {
                     let ret_ty = ret_ty
                         .clone()
