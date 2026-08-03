@@ -19,7 +19,7 @@
 
 use crate::retry;
 use bytes::Bytes;
-use cdz_kernel::effect::{effect_ct, EffectKind, EffectRequest, Payload};
+use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
@@ -72,10 +72,14 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
     async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
         // These are structural request errors — retrying can't fix them, so they're PERMANENT (§17
         // totality: an observable Err, never a panic).
-        if req.kind != EffectKind::Model {
+        // Key the guard on the effect FAMILY STRING (seq-39 / effect-schema slice 2), not the EffectKind
+        // enum — the same decision the router and authz make. Decouples this executor from the enum ahead
+        // of its retirement; matches_family is the one-source-of-truth family compare.
+        if !req.content_type.matches_family(effect_ct::MODEL) {
             return EffectOutcome::Err(retry::permanent(format!(
-                "ModelExecutor only handles Model effects, got {:?}",
-                req.kind
+                "ModelExecutor only handles the {} family, got {}",
+                effect_ct::MODEL,
+                req.content_type.family
             )));
         }
         // A model call needs a request body. An inline payload IS the request; a blob-ref payload is
@@ -118,7 +122,7 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cdz_kernel::effect::Timeliness;
+    use cdz_kernel::effect::{EffectKind, Timeliness};
 
     /// A transport that echoes a canned completion, recording what it was asked to invoke so a test can
     /// assert the executor extracted the model id + body correctly.
@@ -239,15 +243,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_model_kind_is_a_permanent_err() {
+    async fn a_non_model_family_is_a_permanent_err() {
         struct NeverCalled;
         #[async_trait::async_trait(?Send)]
         impl ModelTransport for NeverCalled {
             async fn invoke(&self, _m: &str, _b: &[u8], _k: Hash) -> Result<Bytes, String> {
-                panic!("transport must not be called for a non-Model kind");
+                panic!("transport must not be called for a non-model-family effect");
             }
         }
         let mut exec = ModelExecutor::new(NeverCalled);
+        // A request in the http family (not model): the guard keys on the family string now, so this is
+        // rejected as PERMANENT and the transport is never touched.
         let req = EffectRequest::new(
             EffectKind::Http,
             "https://x/".to_string(),
@@ -256,14 +262,17 @@ mod tests {
         );
         match exec.perform_async(&req, Hash::of(b"k")).await {
             EffectOutcome::Err(msg) => {
-                assert!(msg.contains("Model"), "err names the handled kind: {msg}");
+                assert!(
+                    msg.contains(effect_ct::MODEL) && msg.contains(effect_ct::HTTP),
+                    "err names the handled family (model) + the rejected one (http): {msg}"
+                );
                 assert_eq!(
                     retry::classify(&msg),
                     retry::Retryability::Permanent,
                     "{msg}"
                 );
             }
-            other => panic!("expected Err for a non-Model kind, got {other:?}"),
+            other => panic!("expected Err for a non-model-family effect, got {other:?}"),
         }
     }
 
