@@ -21,6 +21,8 @@
   #         `buildRustPackage` (root Cargo.lock, tracked #1748). S2 cadenza-projects, S3 per-test skip.
   #   rcdzc-wasm — `packages.rcdzc-wasm` (+ `-hash`) : the compiler as a wasm32-wasip1 module for the
   #         agent kernel's blob store (v-agent-harness owns the store pointer + compile-effect ABI).
+  #   S2  — `packages.example-project` (+ the `buildCadenzaProject` fn) : build a Cadenza project
+  #         (Project.cdz + sources) through nix via the S1 compiler → its wasm. S3 per-test skip follows.
   #         North star: nix builds every component + the compiler (native + wasm) + projects, deterministically.
   #
   # The Rust toolchain is read DIRECTLY from `rust-toolchain.toml` (the load-bearing pin — the
@@ -104,6 +106,55 @@
           # Tests run in the existing gate/CI, not here — this derivation just BUILDS the toolchain
           # reproducibly (S1). (S3 will add fine-grained per-test derivations.)
           doCheck = false;
+        };
+
+        # ── S2: build a CADENZA PROJECT through nix ───────────────────────────────────────────────
+        #
+        # Operator arc (2026-08-03): "then we can have it building cadenza projects." A reusable function
+        # that runs the nix-built S1 `cdz` on a Cadenza project (`Project.cdz` + sources) → its compiled
+        # wasm, as a derivation. `cdz build` compiles a project from source with JUST the compiler — no
+        # value-heap store + no network at BUILD time (the emitted program imports the runtime by hash;
+        # only `cdz run` needs the store). So the derivation is toolchain-only + fully hermetic.
+        #   `src` : the project directory (must contain Project.cdz + the sources it names).
+        #   output: $out/ holding the built artifacts (main.wasm + link-map.txt) `cdz build` emits.
+        buildCadenzaProject = { pname, src }:
+          pkgs.stdenvNoCC.mkDerivation {
+            inherit pname src;
+            version = "0.0.0";
+            nativeBuildInputs = [ seedCompiler ];
+            buildPhase = ''
+              runHook preBuild
+              export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+              # `cdz build` reads Project.cdz in the cwd + writes the artifacts beside it.
+              cdz build
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              mkdir -p "$out"
+              cp ./*.wasm ./link-map.txt "$out"/ 2>/dev/null || cp ./*.wasm "$out"/
+              runHook postInstall
+            '';
+          };
+
+        # S2 gate witness: a minimal in-flake demo project (no committed .cdz needed) proving the S1
+        # compiler builds a project through nix. Mirrors `cdz new`'s scaffold.
+        exampleProjectSrc = pkgs.runCommand "cdz-example-project-src" { } ''
+          mkdir -p "$out"
+          cat > "$out/Project.cdz" <<'EOF'
+          def name = "example"
+          def entry = "main.cdz"
+          def tests = ["main.cdz"]
+          EOF
+          cat > "$out/main.cdz" <<'EOF'
+          def main() -> Int64 = 0
+
+          export { main }
+          EOF
+        '';
+        exampleProject = buildCadenzaProject {
+          pname = "cdz-example-project";
+          src = exampleProjectSrc;
         };
 
         # ── rcdzc→WASM: the Cadenza COMPILER as a wasm artifact (agent-harness v0.2, operator 2026-08-03) ─
@@ -503,6 +554,11 @@
         # compiler-latest store pointer).
         packages.rcdzc-wasm = rcdzcWasm;
         packages.rcdzc-wasm-hash = hashOf rcdzcWasm "rcdzc-wasm-hash";
+
+        # S2: build a Cadenza project through nix (the S1 compiler on Project.cdz → wasm).
+        # `.#example-project` is the gate-witness demo, built by the in-flake `buildCadenzaProject`
+        # function (reusable — point it at any project dir; a cross-system `lib` export can wrap it later).
+        packages.example-project = exampleProject;
 
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
