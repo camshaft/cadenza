@@ -3171,8 +3171,8 @@
   (call   main (: 0 Int64)) (output (: 2110 Int64)))
 
 ; ── THREE-way CHAMP collision node ───────────────────────────────────────────────────────
-; The 2-key cases above build a collision node of arity 2. A THREE-way collision exercises faces a pair
-; cannot reach: the `collision_insert` APPEND onto an EXISTING collision node (2 entries → 3), remove that
+; The 2-key cases above build a collision node of arity 2. A THREE-way collision reaches faces a pair
+; cannot: the `collision_insert` APPEND onto an EXISTING collision node (2 entries → 3), remove that
 ; COLLAPSES a 3-entry node back toward canonical, and set-algebra that must split/rebuild a >2-entry node.
 ; The keys 1, 162287981, 530337573 are three fixnum-range Int64s that ALL share FNV-1a hash 0x3e801244
 ; (brute-forced against `champ_node_raw_hash` over the decoded fixnum's 8 LE bytes; breaker-probed 2026-08-03).
@@ -3201,10 +3201,13 @@
   (doc    "The remove faces of a 3-way collision node. `Set.remove` of the middle colliding key from
            {1,162287981,530337573} (all hash 0x3e801244) must leave a LIVE 2-entry collision node with the
            other two still found by identity (not corrupt the node) — tens+hundreds digits. Then removing a
-           second colliding key COLLAPSES the node back to a canonical single-key set, which must be
-           byte-equal to the directly-built `(Set.of (list a))` — ones digit. Result: 100·(b∉ ∧ a∈ ∧ c∈ after
+           second colliding key COLLAPSES the node back to a single-key set that CONTENT-equals the
+           directly-built `(Set.of (list a))` — ones digit (Set `=` is content equality per this file's def, so
+           this leg witnesses that the right ELEMENT survives the two removes, i.e. no key wrongly dropped or
+           kept — it does not, and cannot, observe internal node layout). Result: 100·(b∉ ∧ a∈ ∧ c∈ after
            1 remove) + 10·(len 2 after 1 remove) + (collapsed == direct single) = 100·1 + 10·1 + 1 = 111. A
-           remove that left residual collision structure would flip the collapse-equality leg.")
+           remove that dropped or retained the wrong element would flip a leg (a `Set.len`-2 check pins the
+           intermediate arity; the finds pin membership).")
   (input  (do
             (def (main (: z Int64))
               (let ((a (+ 1 z)) (b (+ 162287981 z)) (c (+ 530337573 z))
@@ -3239,10 +3242,12 @@
 (case "set algebra over a 3-entry collision node splits and rebuilds the colliding keys by content"
   (doc    "Set difference/union must split + rebuild a collision node of arity 3 correctly. With the three
            colliding keys a=1,b=162287981,c=530337573 (hash 0x3e801244): `{a,b,c} ∖ {b}` = {a,c} (a live
-           2-entry collision node, len 2 — tens digit), and `{a,b} ∪ {c}` = {a,b,c} rebuilt to the full
-           3-entry node byte-equal to the direct `(Set.of (list a b c))` (ones digit). Result:
+           2-entry collision node, len 2 — tens digit), and `{a,b} ∪ {c}` CONTENT-equals the full 3-entry
+           `(Set.of (list a b c))` (ones digit — Set `=` is content equality, so this pins that the union
+           rebuild holds exactly the three elements, no key dropped or duplicated across the collision split;
+           the `Set.len`-2 difference leg pins the split arity). Result:
            10·(len {a,b,c}∖{b} == 2) + ({a,b}∪{c} == {a,b,c}) = 10·1 + 1 = 11. Algebra that mishandled the
-           collision node during the split/merge would give a wrong length or a non-canonical rebuild.")
+           collision node during the split/merge would give a wrong length or a wrong element set.")
   (input  (do
             (def (main (: z Int64))
               (let ((a (+ 1 z)) (b (+ 162287981 z)) (c (+ 530337573 z)))
@@ -3250,3 +3255,36 @@
                    (if (= (Set.union (Set.of (list a b)) (Set.of (list c))) (Set.of (list a b c))) 1 0))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 11 Int64)))
+
+; ── Collision node ACROSS the fixnum/boxed representation split ───────────────────────────
+; The collision cases above collide keys of the SAME representation (all inline fixnums, or all tuples). The
+; sharpest face is a collision where the two keys straddle the fixnum/boxed boundary: 134198332 is an inline
+; FIXNUM immediate (≤ FIXNUM_MAX = 2^29-1 = 536870911), 536870918 is a HEAP-BOXED Int64 (just past it), and
+; both share FNV-1a hash 0x0c35bac3 (breaker-probed 2026-08-03). They occupy ONE collision node whose
+; `champ_eq` must compare an inline value against a boxed one by CONTENT — the canonicalize-at-construction
+; invariant that an immediate hashes AND compares equal to its boxed twin (runtime open-Q#8). A runtime `z`
+; keeps each key's construction (hence its representation) off the const-fold path.
+
+(case "a collision node holds a FIXNUM immediate and a BOXED Int64 sharing one hash as distinct keys"
+  (doc    "The representation-boundary face of the CHAMP collision node: 134198332 (inline fixnum, ≤ 2^29-1)
+           and 536870918 (heap-boxed, just past the window) share FNV-1a hash 0x0c35bac3, so they land in one
+           collision node whose `champ_eq` compares ACROSS the inline-vs-boxed split. Both are distinct Set
+           elements (len 2) — each found by identity, the immediate NOT fused with the boxed sibling — and a
+           Map keys them to distinct values retrieved correctly. Result: 10000·(Set.len 2) + 1000·(imm∈s) +
+           100·(boxed∈s) + 10·(m[imm]) + m[boxed] = 10000·2 + 1000 + 100 + 10·1 + 2 = 21112. A `champ_eq` that
+           short-circuited on the representation tag (inline≠boxed) before comparing content would treat them
+           as unequal AND as non-colliding, splitting the node wrong; one that mis-decoded a boxed operand as
+           inline would fuse or miscompare them.")
+  (input  (do
+            (def (main (: z Int64))
+              (let ((imm (+ 134198332 z))
+                    (boxed (+ 536870918 z))
+                    (s (Set.of (list (+ 134198332 z) (+ 536870918 z))))
+                    (m (Map.insert (Map.insert Map.empty (+ 134198332 z) 1) (+ 536870918 z) 2)))
+                (+ (* 10000 (Set.len s))
+                   (+ (* 1000 (if (Set.contains s imm) 1 0))
+                      (+ (* 100 (if (Set.contains s boxed) 1 0))
+                         (+ (* 10 (Option.expect (Map.lookup m imm) "imm"))
+                            (Option.expect (Map.lookup m boxed) "boxed")))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 21112 Int64)))
