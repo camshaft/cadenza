@@ -24161,6 +24161,50 @@ mod match_engine {
     }
 
     #[test]
+    fn an_absent_record_field_access_is_cdz0212_like_record_project() {
+        // A `.`-access of an absent field on a GENUINE record is CDZ0212 (AbsentField) — the SAME code
+        // `Record.project` onto an absent field gives (`type-system.md` §A Record Is Restricted To A Named
+        // Set Of Its Fields + corpus `15-rows:235`). The two surfaces are the same user error, so they get
+        // the same code (was CDZ0201 for `.`-access — an inconsistency a code-keying tool saw). The flip is
+        // narrow: it fires ONLY on a genuine record (`member_category` → `"field"`); a module MEMBER, effect
+        // OPERATION, and sum-type VARIANT keep CDZ0201 (their own category word), so no module-privacy design
+        // question is touched. Both the infer copy and the emit copy flip off the same `member_word`, so they
+        // dedup to ONE diagnostic (a code mismatch would double-report).
+        assert_eq!(
+            reject_code("(module m (def (main) (. (record (x 1)) z)) (export main))").as_deref(),
+            Some("CDZ0212"),
+            "a `.`-access of an absent record field is CDZ0212, the Record.project twin"
+        );
+        // A let-bound and a function-returned record reach the same check (the field set is statically
+        // known via reduction) — also CDZ0212.
+        assert_eq!(
+            reject_code("(module m (def (main) (let ((p (record (x 1)))) (. p z))) (export main))")
+                .as_deref(),
+            Some("CDZ0212")
+        );
+        // GUARD the narrow scope: the three NON-record categories stay CDZ0201 (Malformed) — a module
+        // member, and a sum-type variant. (A user-module member miss is routed to `"member"` via
+        // `module_name_by_synth_record`, so its export record is NOT mistaken for a bare record.)
+        assert_eq!(
+            reject_code(
+                "(module top (module m (def (pub x) (+ x 1)) (export pub)) \
+                 (def (main) ((. m secret) 5)) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201"),
+            "a user-module member miss stays CDZ0201 (not a record field)"
+        );
+        assert_eq!(
+            reject_code(
+                "(module m (type T (A Int64) (B Int64)) (def (main) (. T nonesuch)) (export main))"
+            )
+            .as_deref(),
+            Some("CDZ0201"),
+            "a sum-type variant miss stays CDZ0201 (not a record field)"
+        );
+    }
+
+    #[test]
     fn a_generic_newtype_at_two_instantiations_stays_distinct() {
         // `Box Int64` and `Box Bool` are DISTINCT types (same `decl`, different `inner`), so comparing
         // them across the boundary is a type error — the nominal-over-generic analogue of `Option Int64 ≠
@@ -24336,15 +24380,15 @@ mod match_engine {
     #[test]
     fn a_newtype_over_a_record_still_rejects_a_missing_field() {
         // The tag does NOT swallow the closed-record check: `.z` on a newtype over `(Record (x …))`
-        // rejects (CDZ0201) exactly as it would on the bare record — seeing through the tag reaches the
-        // SAME field-set validation.
+        // rejects (CDZ0212, the absent-record-field code) exactly as it would on the bare record — seeing
+        // through the tag reaches the SAME field-set validation.
         assert_eq!(
             reject_code(
                 "(module m (type UserId (Mk (Record (x Int64)))) \
                    (def (main) (. (UserId.Mk (record (x 1))) z)) (export main))"
             )
             .as_deref(),
-            Some("CDZ0201")
+            Some("CDZ0212")
         );
     }
 
@@ -27560,7 +27604,7 @@ mod match_engine {
             )))
         });
         assert!(
-            genuine.iter().any(|d| d.code.as_deref() == Some("CDZ0201")
+            genuine.iter().any(|d| d.code.as_deref() == Some("CDZ0212")
                 && d.message.contains("has no field `bar`")),
             "a genuine absent field on a well-typed binder still faults: {genuine:?}"
         );
@@ -52568,7 +52612,7 @@ mod diagnostics {
         let diags = crate::diagnostics(&mut crate::db::Db::load(parse(&wide_record_typos(8))));
         assert!(
             diags.iter().any(|d| {
-                d.code.as_deref() == Some("CDZ0201")
+                d.code.as_deref() == Some("CDZ0212")
                     && d.message.contains("no field")
                     && (d.message.contains("did you mean") || d.message.contains("closest matches"))
             }),
@@ -57306,7 +57350,7 @@ mod stage1 {
         // on a compile-time-visible record names the near field AND carries a heuristic fix on the KEY
         // token (`spec/capabilities/diagnostics.md` §A Diagnostic Carries A Route To A Fix).
         let d = expect_error("(. (record (width 10) (height 20)) heigth)");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
         assert!(
             d.message.contains("did you mean `height`?"),
             "names the near field: {}",
@@ -57325,7 +57369,7 @@ mod stage1 {
         let src = "(module m (def (get-h r) (. r heigth)) \
                    (def (main) (get-h (record (width 10) (height 20)))) (export main))";
         let d = compile_component(&crate::codec::encode(&parse(src))).expect_err("must reject");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
         assert_eq!(
             d.fix.as_ref().map(|f| f.replacement.as_str()),
             Some("height"),
@@ -57674,7 +57718,7 @@ mod stage1 {
         // acts on (it no longer has to read the type/prelude to learn what exists), not noise. No FIX (a
         // list of options is not one mechanical edit) and no false "did you mean" (there is no near typo).
         let d = expect_error("(. (record (width 10) (height 20)) zzzzzz)");
-        assert_eq!(d.code.as_deref(), Some("CDZ0201"), "got: {}", d.message);
+        assert_eq!(d.code.as_deref(), Some("CDZ0212"), "got: {}", d.message);
         assert!(
             !d.message.contains("did you mean"),
             "no confident single suggestion (nothing is a plausible typo): {}",

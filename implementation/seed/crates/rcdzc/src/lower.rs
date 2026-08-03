@@ -515,11 +515,20 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                 }
                 // Match `infer::no_field_reject`'s category-aware subject/word (effect/module/type/record)
                 // so the two copies share the `has no <word> \`key\`` dedup core and `dedup_faults`
-                // collapses them (keeping the infer copy's did-you-mean fix).
+                // collapses them (keeping the infer copy's did-you-mean fix). This includes the CODE: a
+                // genuine RECORD-value field absence is CDZ0212 (AbsentField, the `Record.project` twin),
+                // everything else CDZ0201 — flipped off the SAME `member_word` as infer's copy, so the two
+                // copies keep equal codes and `dedup_faults` still collapses them (a code mismatch would
+                // double-report the fixless tier-2 case).
                 let (subject, member_word) = crate::infer::member_category(db, operand, &key.name);
+                let code = if member_word == "field" {
+                    Code::AbsentField
+                } else {
+                    Code::Malformed
+                };
                 Core::Poison(
                     Reject::coded(
-                        Code::Malformed,
+                        code,
                         format!("{subject} has no {member_word} `{}`", key.name),
                     )
                     .at(id),

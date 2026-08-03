@@ -227,27 +227,30 @@
 (case "member access of a field the record does not have is a type error"
   (doc    "`(record (x 1))` has the single field `x`; its type carries no field `z` (type-system.md
            #The Structural Types Are Record… — a record's field names with their types). Projecting the
-           absent `z` has no defined result, so it is a compile-time type error (CDZ0201), the
+           absent `z` has no defined result, so it is a compile-time type error (CDZ0212 AbsentField —
+           the same code `Record.project` onto an absent field gives, `15-rows:235`; a `.`-access and a
+           `Record.project` of an absent RECORD field are the SAME error and get the SAME code), the
            record-operand companion of `(. 5 x)` (member access on a non-record, rejected above) and the
            bare-access analogue of the row-projection rule that rejects naming a field the operand does
            not contain (type-system.md #A Record Is Restricted To A Named Set Of Its Fields;
            core-semantics.md #Member Access Projects A Record Field). Rejected before lowering, not
            deferred to a runtime trap. A valid field (`(. (record (x 1)) x)` = 1) is unaffected.")
   (input     (. (record (x 1)) z))
-  (error     CDZ0201))
+  (error     CDZ0212))
 
 (case "member access of an absent field on a function-returned record is a type error"
   (doc    "The field-presence check reaches a record RETURNED by a function, not only a literal: `(mk)`
            returns `(record (x 1))`, whose type carries only `x`, so `(. (mk) z)` names an absent field —
-           a compile-time type error (CDZ0201). `resolve` beta-reduces the call to its `(record …)` body,
-           so the field set is known at the access site exactly as for a literal (the record-field twin of
-           the tuple-arity check reaching a function-returned tuple). A record PARAMETER, whose field set
-           is not known in the callee, resolves to no `(record …)` and imposes nothing — it is not
-           false-rejected (declining or taking the runtime path instead).")
+           a compile-time type error (CDZ0212 AbsentField, the `Record.project` twin — see the record-literal
+           case above). `resolve` beta-reduces the call to its `(record …)` body, so the field set is known
+           at the access site exactly as for a literal (the record-field twin of the tuple-arity check
+           reaching a function-returned tuple). A record PARAMETER, whose field set is not known in the
+           callee, resolves to no `(record …)` and imposes nothing — it is not false-rejected (declining or
+           taking the runtime path instead).")
   (input  (do
             (def (mk) (record (x 1)))
             (def (main) (. (mk) z)) (export main)))
-  (error  CDZ0201))
+  (error  CDZ0212))
 
 ; The positional tuple accessor `(. x N)` requires a TUPLE operand, exactly as member access `.`
 ; requires a record operand (above). Applying `(. x N)` to a non-tuple — a scalar, a record, a sum —
@@ -516,12 +519,14 @@
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field (3rd sentence):
            projecting a field the record does not contain has no defined result. A record's field
            names are part of its type, so `p`'s type carries only `x`; naming the absent `z` is a
-           COMPILE-TIME type error (CDZ0201), the bare-access companion of the row-projection rule
-           (type-system.md #A Record Is Restricted To A Named Set Of Its Fields) — rejected before
-           lowering, not deferred to a runtime trap. The `let`-bound record `p` resolves to a
-           compile-time `(record (x 1))`, so the field set is statically known at the access site.")
+           COMPILE-TIME type error (CDZ0212 AbsentField, the `Record.project` twin — a `.`-access and a
+           `Record.project` of an absent record field are the same error, same code), the bare-access
+           companion of the row-projection rule (type-system.md #A Record Is Restricted To A Named Set Of
+           Its Fields) — rejected before lowering, not deferred to a runtime trap. The `let`-bound record
+           `p` resolves to a compile-time `(record (x 1))`, so the field set is statically known at the
+           access site.")
   (input  (let ((p (record (x 1)))) (. p z)))
-  (error  CDZ0201))
+  (error  CDZ0212))
 
 (case "member access on a record chosen by a conditional projects the field"
   (doc    "Witnesses core-semantics.md #Member Access Projects A Record Field with a record value that

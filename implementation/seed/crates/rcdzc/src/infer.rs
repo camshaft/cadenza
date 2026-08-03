@@ -11492,8 +11492,24 @@ fn no_field_reject(
     // the real cause is a shadowed later declaration); otherwise keep the ordinary two-tier `hint`.
     let is_shadow = !shadow_hint.is_empty();
     let suffix = if is_shadow { shadow_hint } else { hint };
+    // A genuine RECORD-value field absence is CDZ0212 (AbsentField) — the code `type-system.md` §A Record
+    // Is Restricted To A Named Set Of Its Fields + the corpus pin `15-rows:235` assign to "projecting a
+    // record onto an absent field", and `Record.project` already emits it. A `.`-access of an absent field
+    // is the SAME user error via a different surface, so it gets the SAME code (was CDZ0201). ONLY the
+    // record case flips: `member_word == "field"` now reliably means a GENUINE record value — a module
+    // MEMBER, effect OPERATION, and sum-type VARIANT each get their own category word (`member`/`operation`/
+    // `variant`) from `member_category`, and a user-module export record is routed to `"member"` too (via
+    // `module_name_by_synth_record`), so none of them flips. This is the narrow half of the CDZ0201/CDZ0212
+    // consistency (`Record.project` twin) that needs no module-privacy design ruling. The EMIT-side copy
+    // (`lower.rs`) flips identically off the same `member_word`, so the two copies keep equal codes and
+    // `dedup_faults` still collapses them to one diagnostic.
+    let code = if member_word == "field" {
+        Code::AbsentField
+    } else {
+        Code::Malformed
+    };
     let reject = Reject::coded(
-        Code::Malformed,
+        code,
         format!("{subject} has no {member_word} `{}`{suffix}", key.name),
     );
     // A shadow case has no single mechanical replace fix (the op is real, just in another declaration), so
