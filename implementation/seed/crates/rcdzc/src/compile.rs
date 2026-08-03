@@ -1120,6 +1120,26 @@ pub(crate) fn validate_type_position(
         out.push(Reject::coded(Code::TypeMismatch, msg).at(pos));
         return;
     }
+    // A BARE type-CONSTRUCTOR name used with NO argument in this position — `(type W (Wrap Box))`, `(op emit
+    // (-> Option Int64))`. The APPLIED wrong-arity is caught above, but a bare generic ctor is not an
+    // application, so `type_ctor_arity_message` returns `None` AND `typeval_of` SUCCEEDS (a user generic's
+    // bare name reduces to a `Ty::Sum` with a fresh var; a prelude ctor fails to reduce but the "not a type"
+    // branch below would give a vaguer message) — so it slipped through. The ANNOTATION path rejects this
+    // via `bare_type_ctor_needs_argument` (infer.rs); mirror it here so a declaration position agrees:
+    // CDZ0203 naming the missing argument + the canonical spelling, checked BEFORE the `typeval_of` return.
+    // Returns `None` for a monomorphic/nullary type or a genuine value, so those are unaffected.
+    if let Some((ctor, placeholder)) = crate::infer::bare_type_ctor_needs_argument(db, pos) {
+        out.push(
+            Reject::coded(
+                Code::TypeMismatch,
+                format!(
+                    "`{ctor}` is a type constructor — it needs a type argument here, e.g. `({ctor} {placeholder})`"
+                ),
+            )
+            .at(pos),
+        );
+        return;
+    }
     if crate::eval::typeval_of(db, pos).is_some() {
         return; // denotes a real type (self/mutual/forward refs + nested generics resolve)
     }

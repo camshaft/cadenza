@@ -1798,7 +1798,10 @@ fn non_type_annotation_message(db: &mut Db, ty_expr: StructId, lead: &str) -> St
 /// (`Int64`, a `(type C (R) (G))`). Used to turn a bare `(: xs List)` from the misleading "is a value" into
 /// the accurate missing-argument message (the bare-name twin of `type_ctor_arity_message`, which handles
 /// only the APPLIED `(List)` / `(List T T)` forms).
-fn bare_type_ctor_needs_argument(db: &mut Db, ty_expr: StructId) -> Option<(String, String)> {
+pub(crate) fn bare_type_ctor_needs_argument(
+    db: &mut Db,
+    ty_expr: StructId,
+) -> Option<(String, String)> {
     let name = db.ast.as_name(ty_expr)?.to_string();
     // A PRELUDE collection/quantity constructor — identified by its `(meta apply)` prim, placeholder names
     // matching `type_ctor_arity_message_here`.
