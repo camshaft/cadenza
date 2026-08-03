@@ -448,6 +448,77 @@ once (a)–(d) exist. The `summary` reshape (v-agent-harness / v-agent-harness-h
 separately but shares this exact channel. Net chain: **[this channel design] → [register-by-string
 (a)–(d)] → [I4 capabilities wiring] (‖ summary reshape).**
 
+## I4 detail — the `capabilities-manifest` payload encoding + the reactive half
+
+The register-by-string kernel foundation is on trunk (the `control/` partition in `drive_worklist_async`,
+`effect_ct::CAPABILITIES`/`SUMMARY`, the host-surfaced `ControlEffect` return via `deliver_async_control`,
+and the projection: `project_manifest` + `CompositeExecutor::handles_family` + `effect_ct::probe_target`).
+I4 makes `control/capabilities` KERNEL-ANSWERED-INLINE: in `drive_worklist_async`'s control-family branch,
+a `capabilities` arm builds the manifest via `project_manifest(effect_ct::ALL, |f| executor.handles_family(f),
+authz, effect_ct::probe_target)`, serializes it to a `capabilities-manifest` content-typed payload, and
+`record_result_async`s it so it folds back to the requesting reducer (NOT pushed to `control_out`). The
+kernel wiring is v-agent-harness's edit (they own `drive_worklist_async`); this section settles the two
+design pieces they asked me for.
+
+### (a) `capabilities-manifest` payload serialization (Cadenza binary-sexpr — the guest decodes it)
+
+The payload is a Cadenza binary-sexpr value (the shared `cadenza-ast` codec, same as every other payload),
+encoded from `CapabilityManifest`. Proposed s-expr form, mirroring the `event_ast` idioms already in the
+tree (`Name`/`Int`/`Str`/`Bytes` leaves; `(none)`/`(some …)` optionals; `list` nesting):
+
+```
+(capabilities-manifest <version:int>
+  (entries
+    (entry <family:str> <grant> <scope>)
+    …))                                  ; one (entry …) per well-known family, in effect_ct::ALL order
+
+<grant>  = (granted) | (denied) | (absent)         ; a Name-headed nullary list (mirrors GrantState;
+                                                   ;   grows to (requestable …) when that policy model lands)
+<scope>  = (none) | (some <predicate>)             ; None for Absent/Denied entries
+<predicate> =                                       ; mirrors ResourcePredicate, one head per variant
+    (any)
+  | (exact <str>)
+  | (one-of <str>…)
+  | (host-in <str>…)
+  | (prefix <str>)
+```
+
+Notes that make this durable + tolerant-reader-friendly (§9b envelope discipline):
+- **Leading `<version:int>` inside the payload** (=1) in ADDITION to the envelope `content_type.version` —
+  cheap, and lets a decoder that already holds the bytes range-check without re-reading the envelope.
+- **`<grant>` and `<predicate>` are Name-HEADED lists, not bare atoms** — so the `(requestable …)` split
+  (the ⟨pending operator ratification⟩ policy model) appends a new head with no wire break, and a predicate
+  variant can carry fields. A tolerant guest matches the head and treats an unknown head as "ignore/deny"
+  (never decodes garbage — the open-sums posture).
+- **`entries` in `effect_ct::ALL` order** (canonical, deterministic) so the encoded bytes are stable →
+  content-address-stable → replay-stable (§16c-S3).
+- **Guest decode** reverses this into whatever the reducer's language binding is; the kernel treats the
+  bytes as opaque (it only produces them here — it does not re-parse them). The genesis-seed, the query
+  answer, and the `capabilities-changed` push ALL carry this identical form (the "one shape, pinned with a
+  test" rule from the control-plane section).
+
+### (b) The reactive half — genesis-seed (I5) + `capabilities-changed` push (I6)
+
+Both reuse the (a) payload form + the same fold path; they differ only in WHO emits the event and WHEN:
+- **Genesis-seed (I5):** the session-mint / session-factory path emits an initial `capabilities-manifest`
+  event (content-typed, the (a) form) as one of the early genesis events, so the reducer folds it into its
+  `sys/capabilities` KV before its first substantive fold — born knowing, no first-fold round-trip. It is
+  the SAME projection (`project_manifest` over the session's initial caps + the executor registry at mint
+  time), just produced at genesis rather than on a query.
+- **`capabilities-changed` push (I6):** when the host's mechanism or policy changes (an executor
+  registered/removed, an authorizer/policy-pointer `set` §20b, a delegated grant landing), the kernel
+  RE-PROJECTS each affected live session and, IF that session's manifest actually changed, appends a
+  `capabilities-changed` event (the (a) payload) to its log. The reducer folds it → updates `sys/capabilities`
+  → may now emit a newly-available effect. Design constraints already locked (from fork 2): the push is
+  DURABLE (appended to the log, not a live signal — §4b) so replay sees it at the same position; delivered
+  ONLY to sessions whose projection changed (the kernel computes the projection, so it knows who); and
+  COALESCED — at most one `capabilities-changed` per session per settle point, carrying the final manifest,
+  so a burst of registry/policy changes can't flood logs. Polling is rejected (anti-§9d).
+- **Sequencing:** I4 (the inline query answer) lands first — it exercises the (a) encode + the fold-back on
+  the smallest surface. I5 (genesis-seed) and I6 (the reactive push) build on the same encode + fold path;
+  I6 needs a kernel hook on executor-registry / authorizer-pointer mutation to trigger the re-projection,
+  which is a `drive`-adjacent change v-agent-harness owns — pair on it after I4.
+
 ## Related design context
 
 Related design context, all in `design/agent-harness-kernel.md`: §3 (genesis + context-as-events), §4b
