@@ -366,11 +366,11 @@ designed once, here, for both.
 
 ### Partition: a `control/` family-string PREFIX, decided BEFORE authorize (LOCKED)
 
-The `control/*` vs `effect/*` split is a real **family-string prefix**, tested by
-`family.starts_with("control/")` at drive, BEFORE authorization. (**Notation:** `effect/*` in this section
-is shorthand for "a world-action effect family" — those families are **BARE** (`http`, `model`, …), they do
-NOT carry an `effect/` prefix. Only `control/*` is a literal prefix. The partition test is purely
-`starts_with("control/")`; everything else is a world-effect.)
+The partition is the single **`control/` family-string prefix**, tested at drive BEFORE authorization: a
+family is control-plane iff it `starts_with("control/")`; everything else is a **world-effect family
+(bare)**. (**Notation:** `effect/*` elsewhere in this section is shorthand for "a world-action effect
+family" — those families are **BARE** (`http`, `model`, …) and do NOT carry an `effect/` prefix. Only
+`control/` is a literal prefix; the partition test is purely `starts_with("control/")`.)
 - **Control families carry the `control/` prefix** — `control/capabilities`, `control/summary`. They are all
   NEW, so they have no wire history to preserve.
 - **Well-known effect families STAY BARE** — `http` / `model` / `shell` / `now` / `timer` / `emit`, NOT
