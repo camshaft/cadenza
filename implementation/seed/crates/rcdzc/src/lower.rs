@@ -17289,10 +17289,14 @@ fn lower_float_of_int(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
 }
 
 /// Lower a `Float64.of` / `Float32.of` — the TOTAL float-WIDTH conversion `Float M → (Float N)` (promote
-/// / demote / identity). FOLD a constant float by rounding the exact `Decimal` at the TARGET width
-/// (this node's solved `Ty::Float`): a same-width or widening conversion is exact, a narrowing rounds to
-/// nearest under the fixed mode. A runtime float emits `Core::Convert{op:FloatOf}` (select →
-/// demote/promote/nothing). Total — a float always has an image at another float width.
+/// / demote / identity). FOLD a constant float in TWO steps: (1) read the source AT THE SOURCE OPERAND'S
+/// OWN width (`const_float_bits_at_operand_width` — a `Float32` source literal IS its binary32 value, so
+/// demote before converting; a `Float64` source is unchanged), then (2) round to the TARGET width (this
+/// node's solved `Ty::Float`): narrowing rounds to nearest under the fixed mode, a promote/identity of
+/// the source-width value is exact. Step (1) is what makes a WIDEN of a `Float32` source correct
+/// (`(Float64.of (: 0.1 Float32))` promotes `0.1f32`, not the un-demoted f64 literal — the adv-61
+/// fold-precision class in the width conversion). A runtime float emits `Core::Convert{op:FloatOf}`
+/// (select → demote/promote/nothing). Total — a float always has an image at another float width.
 fn lower_float_of(db: &mut Db, id: StructId, args: &[StructId]) -> Core {
     if args.len() != 1 {
         return Core::Poison(Reject::coded(
