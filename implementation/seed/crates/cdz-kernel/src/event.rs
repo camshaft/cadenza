@@ -46,7 +46,26 @@ impl ContentType {
     /// a reducer accepts any report version it understands, range-checking `version` itself if it cares),
     /// so a reducer's fold can branch a summarize-query cheaply: `if event_ct.is_report() { …describe self… }`.
     pub fn is_report(&self) -> bool {
-        self.family == Self::REPORT_FAMILY
+        self.matches_family(Self::REPORT_FAMILY)
+    }
+
+    /// The tolerant-reader family match (§9b, design §"content-type"): does this content-type belong to
+    /// `family`, IGNORING version? This is the primitive a reducer/router keys off — match the family,
+    /// then range-check the version separately with [`ContentType::version_in`] if it cares. Keeping the
+    /// two checks distinct is exactly the "known family, unknown version → defer/reject honestly" behavior
+    /// the design calls for (a v1 reader must not decode a `family/v2` payload as garbage). One source of
+    /// truth for the comparison — [`ContentType::is_report`] and the effect-schema router both route here.
+    pub fn matches_family(&self, family: &str) -> bool {
+        self.family == family
+    }
+
+    /// The version half of the tolerant-reader check: is `version` within the INCLUSIVE `[min, max]` range
+    /// this reader understands? Pair with [`ContentType::matches_family`] — `matches_family(f) &&
+    /// version_in(1, 3)` is "a known `f`, at a version I can handle." A `family` match with a version
+    /// OUTSIDE the range is the "known family, unknown version" case the reader defers/rejects rather than
+    /// misdecoding (§9b / design §content-type). Total: an empty range (`min > max`) is simply never in.
+    pub fn version_in(&self, min: u32, max: u32) -> bool {
+        min <= self.version && self.version <= max
     }
 }
 
@@ -662,6 +681,33 @@ mod tests {
             version: 1,
         };
         assert!(!message.is_report());
+    }
+
+    #[test]
+    fn matches_family_and_version_in_are_the_tolerant_reader_split() {
+        // The §9b tolerant-reader split: family match is version-INDEPENDENT, and the version range is a
+        // SEPARATE inclusive check — so "known family, unknown version" is representable (match family,
+        // fail version) rather than collapsing into one decode-or-die test.
+        let ct = ContentType {
+            family: "model-request".into(),
+            version: 2,
+        };
+        // Family match ignores version...
+        assert!(ct.matches_family("model-request"));
+        assert!(!ct.matches_family("model-response"));
+        // ...and the version range is inclusive on both ends.
+        assert!(ct.version_in(1, 3));
+        assert!(ct.version_in(2, 2));
+        assert!(!ct.version_in(3, 5)); // below the range
+        assert!(!ct.version_in(0, 1)); // above the range
+                                       // The "known family, unknown version" case a v1 reader must DEFER, not misdecode: family matches
+                                       // but the version is outside what it handles — the two checks disagree, which is the whole point.
+        assert!(ct.matches_family("model-request") && !ct.version_in(1, 1));
+        // Totality: an empty/backwards range is simply never satisfied (no panic).
+        assert!(!ct.version_in(5, 1));
+        // is_report is exactly matches_family(REPORT_FAMILY) — one source of truth.
+        let r = ContentType::report();
+        assert_eq!(r.is_report(), r.matches_family(ContentType::REPORT_FAMILY));
     }
 
     // A FULLY-FIXED event (every field a literal, no Hash::of indirection) whose encoded bytes are
