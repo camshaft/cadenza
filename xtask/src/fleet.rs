@@ -8141,14 +8141,18 @@ fn publish_candidate(
             return false;
         }
         None => {
-            // rev-list itself FAILED — surface the real error (reuse the ONE Output's stderr), don't
-            // let it masquerade as a conflict.
-            let stderr = match &rev_list_out {
-                Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
-                Err(e) => format!("(could not spawn git: {e})"),
+            // rev-list FAILED (spawn/exit error) OR SUCCEEDED with UNPARSEABLE stdout — either way we
+            // can't trust a count, so surface the real error (reuse the ONE Output's stderr + raw
+            // stdout for the unparseable case) rather than let it masquerade as a conflict.
+            let (stderr, stdout) = match &rev_list_out {
+                Ok(o) => (
+                    String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                    String::from_utf8_lossy(&o.stdout).trim().to_string(),
+                ),
+                Err(e) => (format!("(could not spawn git: {e})"), String::new()),
             };
             eprintln!(
-                "publish-candidate: `git rev-list --count {range}` FAILED — NOT dispatching (this is a rev-list error, e.g. an invalid/missing ref, NOT a stale-base conflict). git said: {stderr}"
+                "publish-candidate: `git rev-list --count {range}` failed OR returned unparseable output — NOT dispatching (a rev-list error, e.g. an invalid/missing ref, NOT a stale-base conflict). git stderr: {stderr} | stdout: {stdout}"
             );
             cleanup(&fleet.repo, &scratch_s);
             return false;
