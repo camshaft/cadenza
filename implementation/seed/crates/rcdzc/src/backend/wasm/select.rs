@@ -11416,6 +11416,13 @@ fn emit(
             // Only ONE runtime string arg per host call (they share the one fixed scratch buffer); a second
             // declines above rather than silently overwriting the first.
             let mut runtime_string_arg_seen = false;
+            // Each arg is emitted above the scratch its predecessors consumed — `arg_base` rises to `*high`
+            // after every arg (as the ordinary `Core::Call` arg loop does, ~6330). WITHOUT this, a runtime
+            // String/Bytes marshal reserves i32 rope/len/pos slots at `base.max(*high)` and bumps `*high`, but
+            // a FOLLOWING scalar arg emitted with the stale `base` would tee its i64 checked-arith guard into
+            // that same slot — one wasm local declared at two widths → an invalid module (the marshalled-arg-
+            // BEFORE-scalar order; the reverse worked only because the scalar bumped `*high` first).
+            let mut arg_base = base;
             for &arg in &args {
                 let at = crate::infer::type_of(db, arg);
                 match at {
@@ -11459,7 +11466,7 @@ fn emit(
                             }
                             runtime_string_arg_seen = true;
                             let scratch_base = host_arg_scratch_base(layout);
-                            let rope_slot = base.max(*high);
+                            let rope_slot = arg_base.max(*high);
                             *high = (*high).max(rope_slot + 3);
                             scratch_ty.insert(rope_slot, ValType::I32);
                             let len_slot = rope_slot + 1;
@@ -11500,8 +11507,11 @@ fn emit(
                         }
                     },
                     // A scalar argument emits its value directly.
-                    _ => emit(db, arg, slots, base, high, scratch_ty, layout, out)?,
+                    _ => emit(db, arg, slots, arg_base, high, scratch_ty, layout, out)?,
                 }
+                // Raise the floor past ANY scratch this arg consumed, so the NEXT arg allocates fresh slots
+                // (never reusing — and thus never re-typing — a slot a prior marshal/checked-op still owns).
+                arg_base = (*high).max(arg_base);
             }
             out.push(Lir::CallHostImport(index));
             Ok(())

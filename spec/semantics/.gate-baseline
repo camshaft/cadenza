@@ -2800,6 +2800,7 @@ pass	a runtime BigInt three-way compare reports Equal at a BEYOND-Int64 magnitud
 pass	a runtime BigInt three-way compare reports equality as Equal
 pass	a runtime BigInt-inner quantity used as a Map key hits, and a different magnitude misses
 pass	a runtime Bool-payload ctor binder threads its Bool through construction and destructure
+pass	a runtime Bytes host-arg BEFORE a scalar arg keeps distinct core slots (no width-clobber)
 pass	a runtime Bytes rope in a SUM payload compares equal to its flat twin
 pass	a runtime Bytes rope in a record field compares equal to its flat twin
 pass	a runtime Bytes rope is found as a Set element by its flat twin
