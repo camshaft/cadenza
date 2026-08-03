@@ -310,6 +310,7 @@ pass	Set.to-list orders (Int,Bytes) tuples with the Bytes component as the tie-b
 pass	Set.to-list orders a multibyte string element AFTER ascii by unsigned byte order
 pass	Set.to-list orders a set of COMPOUND (tuple) elements lexicographically
 pass	Set.to-list orders a set of RECORD elements canonically
+todo	Set.to-list orders float-carrying sums discriminant-first then by float payload
 pass	Set.to-list orders runtime Bytes elements by unsigned-lexicographic byte order — 0x80 sorts LAST, not as signed -128
 pass	Set.to-list over Float32 elements enumerates by canonical byte order at f32 width
 pass	Set.to-list over Float64 elements enumerates by canonical byte order
@@ -1570,6 +1571,8 @@ pass	a float leaf and a Bytes leaf compare together in one compound
 pass	a float literal compared against a Float32 param computes at the narrow width
 pass	a float width from runtime data is rejected, like an integer width
 pass	a float width outside the admitted set is rejected
+pass	a float-carrying SUM as a Set key dedupes by payload and probes by content
+pass	a float-carrying sum as a MAP key is found by a reconstructed equal key
 pass	a float-field RECORD as a SET element dedups by content including the float leaf
 pass	a float-form literal with the N (BigInt) suffix is rejected with a swap-to-R fix
 pass	a floating-point literal
@@ -3859,6 +3862,7 @@ pass	an escaping tuple evaluates its trapping element
 pass	an eval match binder shadowing a HEAP-typed outer name leaves the heap value intact
 pass	an eval splice consumes a value extracted from a CHAMP map at run time
 pass	an eval-reconstructed BARE pattern on a withheld constructor is also rejected (encapsulation soundness, metaprogramming route)
+pass	an evaluated quasiquote builds a HEAP value the surrounding code consumes
 pass	an exact RATIONAL host value crosses as two scalar num/den ops the guest recombines (#13)
 pass	an expect of a list index result is an integer usable in arithmetic
 pass	an explicit Bytes annotation on a runtime bin result compares the same
@@ -4991,6 +4995,7 @@ pass	sibling performs feeding a subtraction witness the advancing state non-comm
 pass	sibling recursive calls sequenced through let bindings thread state
 pass	sibling-recursive effect threading is left-to-right (order-observing)
 pass	signed 8-bit addition that overflows its width is rejected at compile time
+pass	signed zeros INSIDE a sum payload are DISTINCT Set keys (the ±0.0 edge survives the wrapper)
 pass	signed-zero Float32 tuple-key components stay distinct at binary32 width
 pass	signed-zero float components make DISTINCT tuple keys
 pass	signed-zero float fields make distinct record keys

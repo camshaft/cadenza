@@ -2928,6 +2928,19 @@
   (input  (eval (quote (match 7 (0 100) (n n)))))
   (output (: 7 Int64)))
 
+(case "an evaluated quasiquote builds a HEAP value the surrounding code consumes"
+  (doc    "The runtime-splice-to-heap face of eval: the quasiquote's holes splice a RUNTIME k, eval
+           reconstructs + compiles the (list …) construction, and the surrounding match consumes the
+           resulting HEAP list as an ordinary value (len 2, element 1 = 2k). The eval-of-lambda pin
+           beside this is quote-const; this pins the spliced template flowing into the value heap.")
+  (input  (do
+            (def (main (: k Int64))
+              (match (eval (quasiquote (list (unquote k) (* (unquote k) 2))))
+                (xs (+ (List.len xs)
+                       (* 10 (match (List.at xs 1) ((Some v) v) ((None _u) -1)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 102 Int64)))
+
 (case "eval of a quoted lambda application folds"
   (doc    "`(eval (quote ((fn (x) (* x x)) 5)))` = 25: the quoted form is a lambda APPLIED to 5; eval
            reconstructs the `fn` and its application, β-reduces `x`↦5, and folds `(* 5 5)` to 25. Pins that
