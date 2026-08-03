@@ -1,0 +1,351 @@
+# Host capability discovery + mid-session capability upgrade
+
+Owner: TBD (design by `design-host-capabilities`, for a `v-agent-harness`-area vertical). Status:
+**PROPOSAL — peer-reviewed, awaiting operator ratification.** Operator idea via concierge 2026-08-03;
+the operator is away all week (no live iteration), so this is a proposal shaped WITH the two harness
+owners (`v-agent-harness`, `v-agent-harness-host`) rather than decided in a live design session. The three
+core forks below carry a RECOMMENDED path (mine, endorsed/refined by the harness owners where noted) with
+the specific points the operator should ratify on return flagged **⟨pending operator ratification⟩**.
+Subsystem: `cdz-kernel` (+ its guest ABI `wit/reducer.wit`), coordinated with `v-agent-harness` (the
+extensible content-type / `effect_ct` family arc) and `v-agent-harness-host` (the executor registry +
+Cedar authorizer that PRODUCE the manifest).
+
+This dovetails with the in-flight extensible-effects arc: routing + authz already key on the effect
+**family string** (`effect_ct::{SHELL,HTTP,MODEL,NOW,TIMER,EMIT,…}`, `EffectKind::family()`, landed
+#1475). A capability manifest is exactly *a list of those families* the reducer may use — so this design
+REUSES that vocabulary rather than inventing a parallel one.
+
+## The problem
+
+A reducer (`wit/reducer.wit`) emits effect *requests*; the host authorizes (SEC-F1), dispatches, and folds
+the result back. But the reducer today has **no way to know which effect families the host can serve, at
+what resource scope, and whether policy will let it**. It can only emit an effect and discover the answer
+from the outcome (`EffectOutcome::Err "no executor registered for kind …"`, or an authz denial). The
+operator wants the reducer to KNOW its effect capabilities — and, if the host gains a capability
+mid-session, to be able to UPGRADE (learn the new capability) without a restart.
+
+## The load-bearing constraint (from the kernel design, §4b "bridge rule")
+
+Host capabilities are **mutable current-view** state ("what can this host do *right now*"), NOT
+immutable-by-hash. The kernel design already rules that a mutable current-view read **must be a query
+effect frozen into the local log**, never a live read — a live read poisons replay (the same event would
+fold differently tomorrow, §3/§16c-S3). So capability discovery has the SAME shape as every other
+mutable-current-view query in the design (status checks, "is session B alive", "which memories are valid
+now"): the reducer asks → the kernel answers as-of-now → the answer freezes into the reducer's own log at a
+hash → replay reads the frozen answer. Nondeterministic *when asked*, deterministic *once folded*.
+
+This constraint is why "just let the reducer read a global capability table directly" is WRONG: that table
+is mutable, so a direct read is a replay hazard. Discovery is a query effect (or a folded event), full stop.
+
+## The two sets, and the one projected answer
+
+There are two distinct notions of "capability", and the manifest must be their **projection**, not either
+one raw:
+
+- **Mechanism** — what the host CAN execute: the `CompositeExecutor`'s registered executors, keyed by
+  effect family (src/executor.rs `by_kind: HashMap<EffectKind, Box<dyn Executor>>`; under the extensible
+  arc, keyed by family string). This is a host fact, session-independent.
+- **Policy** — what THIS session MAY do: the session's resource-scoped `Capability` grants (SEC-F1;
+  src/effect.rs `Capability { kind, predicate }`) as decided by the current authorizer component (Cedar,
+  §20b).
+
+The manifest handed to a reducer = **the authorized projection**: for each family, does the host have an
+executor, and what does policy allow this session, at what resource scope. Least-authority by construction
+(you see what you may do), but with a visible "you could request more" path (below).
+
+## The three core forks (recommended path + ⟨pending operator ratification⟩)
+
+### 1. Discovery = BOTH genesis-seed AND a `capabilities` query effect (recommended)
+
+- **Genesis seed** — the initial manifest arrives as an early folded event (§3 genesis + context-as-events),
+  so the reducer is **born knowing** its starting capability set without a round-trip on its first fold. The
+  genesis/session-factory that mints the session already emits setup events; the initial manifest is one of
+  them (a `capabilities-manifest` content-type event the reducer folds into KV under a well-known key, e.g.
+  `sys/capabilities`).
+- **`capabilities` query effect** — a reducer can RE-READ the current manifest on demand by emitting a
+  `capabilities` query effect. Per the bridge rule the kernel answers as-of-now and the answer freezes into
+  the log as a `capabilities-manifest` result event, folded exactly like the genesis seed (same
+  content-type, same KV key → one fold path handles both).
+
+Genesis = the starting snapshot; the query = the mutable-current-view refresh. Not either/or.
+
+### 2. Mid-session upgrade = a PUSHED `capabilities-changed` event (recommended; polling rejected)
+
+The kernel is REACTIVE — append-wakes-the-reducer, no polling (§9d; §12e "swap signal"). When the host
+gains (or loses) a capability — a new executor registered, an authorizer/policy swap (§20b `set` of the
+Cedar-engine or policy pointer), a delegated grant landing — the kernel **appends a `capabilities-changed`
+event to each affected live session**. The reducer folds it, updates its `sys/capabilities` KV, and can now
+emit the newly-available effect. A re-query (fork 1's effect) is the PULL fallback for a reducer that wants
+to force a refresh; the push is the normal path.
+
+- **Polling a capability-version is REJECTED** — it contradicts the reactive, no-poll principle (§9d) and
+  makes every reducer carry version-watch bookkeeping. The kernel already knows exactly when the set
+  changed (it owns the executor registry + the authorizer-pointer writes), so it pushes.
+- **Determinism (§16c-S3):** the pushed event freezes the new manifest into the log at fold time, same as a
+  query result — replay re-folds the identical bytes. The push is just the kernel choosing to inject the
+  refresh rather than waiting to be asked; the *content* is a frozen manifest either way.
+- **Scope:** a `capabilities-changed` is delivered ONLY to sessions whose projected manifest actually
+  changed (a policy change touching family X wakes only sessions that could use X) — the kernel computes
+  the projection, so it knows who is affected. Avoids waking every session on every host change.
+- **Durable, not a live signal (v-agent-harness):** the push is APPENDED to each affected session's log
+  (same §4b reason), so replay sees the upgrade at the same log position — not an out-of-band poke.
+- **Coalesce bursts (v-agent-harness):** if the executor registry / policy changes N times in a tick, do
+  NOT append N `capabilities-changed` events to every session — coalesce to the net-new manifest (the
+  content is a snapshot, so coalescing is sound), else you flood every session's log. The kernel emits at
+  most one `capabilities-changed` per session per settle point carrying the final projected manifest.
+
+### 3. Manifest = 3-state grant per family: GRANTED / REQUESTABLE / ABSENT (recommended)
+
+The manifest must represent "the host HAS this but policy DENIES this session" as a first-class, visible
+state — not an indistinguishable failure. Each manifest entry:
+
+```
+capability-entry {
+  family:     string,            // the effect_ct family ("http", "shell", "model", …) — the SAME
+                                 //   vocabulary routing + authz key on (v-agent-harness arc). REUSED.
+  version:    u32,               // the content-type version (tolerant readers range-check; §9b envelope)
+  grant:      grant-state,       // GRANTED | REQUESTABLE | ABSENT (below)
+  scope:      resource-scope,    // for GRANTED/REQUESTABLE: the resource predicate the grant is bounded to
+                                 //   (mirrors ResourcePredicate: any / exact / one-of / host-in / prefix)
+}
+```
+
+`grant-state`:
+- **GRANTED** — the host has an executor for this family AND policy admits this session (at `scope`). The
+  reducer may emit the effect now; it will pass authz for targets satisfying `scope`.
+- **REQUESTABLE** — the host HAS an executor, but policy DENIES this session right now. The reducer may
+  `request` the grant (capability-request is itself an effect — §9b "read the shortfall, request it",
+  delegating down the attenuating spawn tree §4c/§12f). This is what makes "have-but-denied" actionable
+  rather than a silent wall. `scope` here = the maximal scope the reducer *could* be granted (informs the
+  request).
+- **ABSENT** — the host has NO executor for this family at all. Requesting is futile; the reducer must do
+  without (or the operator must extend the host — a binary/executor change, §12e). Distinguishing ABSENT
+  from REQUESTABLE tells the reducer whether asking for more authority can possibly help.
+
+This makes the capability surface honest: the reducer sees what it can do, what it could ask for, and what
+is simply impossible — the three sides of §9b's "effect row IS the manifest", now resource-scoped (SEC-F1)
+and policy-projected.
+
+**How the three states are computed (v-agent-harness-host input, LOCKED).** The split is exactly
+mechanism × policy, from the two ACTUAL sources — never a hand-maintained third list that could drift:
+- **ABSENT vs present** = `CompositeExecutor::handles(family)` (mechanism): no executor → ABSENT.
+- **GRANTED vs REQUESTABLE** (both require an executor present) = the authorizer's decision for this
+  session on that family.
+
+⚠ **REQUESTABLE-vs-hard-DENY needs a POLICY-MODEL decision (⟨pending operator ratification⟩).** The Cedar
+authorizer today returns a single `allow / deny` decision — it does NOT distinguish "denied now but the
+session *may request* this" from "hard-forbidden, never grantable." So the manifest can't derive the
+REQUESTABLE/hard-DENY line from one decision unless policy ENCODES it. Options (for the operator to pick):
+(a) a separate Cedar action `may-request(family)` the probe also checks → REQUESTABLE = `deny(use) ∧
+allow(may-request)`, hard-DENY = `deny(use) ∧ deny(may-request)`; (b) a reason-string convention on the
+deny; (c) v0 simplification — collapse to two states GRANTED/DENIED (drop REQUESTABLE) and defer the
+request-the-shortfall path to a later increment. RECOMMENDED: (a) — it keeps the request path first-class
+and stays within Cedar's decide-only model (just another action to decide), but it is a policy-model choice
+the operator should ratify. Until ratified, the vertical builds the manifest with the states it CAN derive
+(GRANTED where `allow(use)`, otherwise a single denied state) and leaves the REQUESTABLE/hard-DENY split as
+a typed hole the policy decision fills.
+
+## Where it lives (seams / file anchors)
+
+- **`wit/reducer.wit`** — additive: under the extensible arc, the `capabilities` query is a well-known
+  `control/*` content-type (`effect_ct::CAPABILITIES`), NOT a new effect-kind enum variant — the reducer
+  emits it as a content-typed effect request. The `capabilities-manifest` / `capabilities-changed` events
+  arrive through the existing `apply` entrypoint as ordinary content-typed events (no new export). The
+  `capability-entry` / `grant-state` value types are the guest-side decode of the `capabilities-manifest`
+  payload (Cadenza binary-sexpr), matched by `content_type.matches_family("capabilities-manifest")`.
+- **`src/effect.rs`** — the manifest is DERIVED by PROBING (see the crux below): add a `CapabilityManifest`
+  type (a `Vec<CapabilityEntry>`) + a projection function `project_manifest(families, session_ctx,
+  authorizer, executor_registry) -> CapabilityManifest` that, for each family in the canonical
+  `effect_ct` set, checks `executor_registry.handles(family)` (mechanism) and calls the authorizer
+  (policy). NO authorizer-enumeration API — see the crux.
+- **`src/executor.rs`** — the `CompositeExecutor` must expose its registered family set (`fn families(&self)
+  -> impl Iterator<Item = &str>` or similar) so the projection can ask "does the host have X". Today the
+  registry is private; this is a read-only accessor. (v-agent-harness-host: TRIVIAL — one-liner over the
+  `by_kind` map keys; `handles(kind)->bool` already exists.)
+- **`src/kernel.rs`** — (a) answer the `capabilities` query effect (build the manifest, freeze it into a
+  result event); (b) on an executor-registry change or authorizer/policy-pointer write, compute affected
+  sessions + append `capabilities-changed`. This is the reactive push machinery.
+- **`src/event_ast.rs` / codec** — the `capabilities-manifest` / `capabilities-changed` payloads are
+  Cadenza binary-sexpr like every other payload (opaque to the kernel envelope; the content-type family
+  routes them). No kernel-parses-payload coupling.
+- **`v-agent-harness-host` (cdz-agent-host)** — owns the two SOURCES: the real executor registry
+  (mechanism) and the Cedar authorizer (policy). Provides the `families()` accessor (C) and emits the
+  register/swap signal (D). Does NOT gain an enumeration API — the projection probes (below).
+
+### THE CRUX (LOCKED with v-agent-harness-host): projection = host-side PROBE, not authorizer enumeration
+
+The manifest is built by **probing the authorizer over the canonical `effect_ct` family set**, NOT by
+asking the authorizer to enumerate a session's grants. Reason: the Cedar authorizer is **decide-only** — its
+locked WIT contract (`authorizer.wit`, owned by v-agent-harness) exports exactly one function,
+`authorize(auth-request{principal, action, target}) -> decision{allow, reason}`. There is NO "list this
+principal's granted actions" entry point, and adding one would enlarge the locked authorizer world AND force
+the guest to expose Cedar's entity/policy-store enumeration — a much bigger surface that cuts against the
+minimal-immutable-host directive (the authorizer should stay a pure decision function). So:
+
+- The **kernel** (which holds the executor registry + the session's capability context) iterates the
+  **finite, canonical `effect_ct` family const set** (`http`/`model`/`shell`/`now`/`timer`/`emit`/… — the
+  same const set the extensible-effects slices establish). For each family it (1) checks
+  `executor_registry.handles(family)` for the mechanism dimension, and (2) calls
+  `authorize(principal=session, action=family, target=scope-probe)` for the policy dimension.
+- **"Probe each known family" is complete BY CONSTRUCTION** — the family set is finite and canonical, so
+  there is nothing to miss. This is why it is the CLEANER design, not merely a fallback: it keeps the WIT
+  contract + guest surface minimal and reuses the existing single `authorize` decision function unchanged.
+- **Cost** = N `authorize` calls (N ≈ a dozen), each a fast wasm decision; cacheable per session until
+  policy changes. Negligible.
+- This means **I3 is NOT a new authorizer API** (as an earlier draft assumed) — it is the host-side probe
+  loop using the EXISTING `Authorize` trait / `authorize` WIT function. The `Authorize` trait is unchanged.
+
+### Control-plane partition + result surfacing (LOCKED with v-agent-harness)
+
+`capabilities` / `capabilities-manifest` / `capabilities-changed` are **control-plane**, not world-actions.
+Per the extensible-effects design's `control/*` vs `effect/*` partition, they live under `control/*`:
+authz-EXEMPT (asking what you may do is not itself a world-action, and gating it would be circular — you'd
+need a capability to ask what capabilities you have), and NEVER routed to the `CompositeExecutor` (the
+kernel/host answers them in-process, exactly like the `summary` control effect). v-agent-harness confirms:
+**`capabilities` is a clean `control/*` member alongside `summary` — the first two control/* families.**
+
+**Result surfacing = a WELL-KNOWN CONTENT-TYPE, NOT a bespoke typed side-channel (v-agent-harness LOCKED).**
+- Query effect family = **`effect_ct::CAPABILITIES`** (family string `"capabilities"`, a `control/*` member).
+- Manifest result / genesis-seed / push all use the SAME well-known content-type **`capabilities-manifest`
+  v1**. It then rides the exact same `EffectResult`/`Inbound` fold path as everything else — the reducer
+  matches `content_type.matches_family("capabilities-manifest") && version_in(...)`, reusing the
+  tolerant-reader helpers v-agent-harness landed (`matches_family` / `version_in`) — with ZERO new kernel
+  plumbing. A typed side-channel would fork the fold path; rejected for that reason.
+- **One shape for genesis + query + push (pin with a test).** The genesis-seeded manifest, a query answer,
+  and a `capabilities-changed` push MUST all be the same `capabilities-manifest` content-type + the same
+  manifest struct, so the reducer folds all three through ONE code path. Do not let genesis emit a bespoke
+  shape and the query a different one — pin it: a genesis-seed event and a query-result event fold to the
+  same KV shape.
+
+### Sequencing dependency (v-agent-harness): AFTER the register-by-string slice
+
+Capability-discovery is a **consumer** of the `control/*` partition, not a prerequisite. It depends on the
+extensible-effects arc reaching the point where routing/authz key on **family strings** and the
+`control/*` vs `effect/*` partition (fail-closed unknown-family + control-vs-effect routing) exists — that
+is the "register-by-string" slice, which lands after the in-flight ctor-first bridge (beat 1
+`EffectRequest::new` landed #1513; beat 2 = v-ah-host literal migration; beat 3 = `content_type` field +
+family-keyed authz/routing). So the PM should sequence this vertical **after the family-routing /
+register-by-string slices**. I1–I3 (the pure projection + accessor + probe loop) can be built against the
+current `EffectKind` family bridge and don't hard-block on register-by-string; only I4+ (the actual
+control/* query wiring) needs the partition to exist.
+
+## Increments (top-to-bottom, the way a vertical lands them)
+
+Each slice is independently green + additive (the cdz-kernel discipline: never a bare break; own the crate
+gate for both feature sets; tests in-crate).
+
+- **I1 — `CapabilityManifest` + projection by probing (src/effect.rs, no wire yet).** The `CapabilityEntry`
+  / `GrantState` types + `project_manifest(families, session_ctx, authorizer, registry) -> CapabilityManifest`
+  pure function that, for each family in the canonical set, computes ABSENT (via `registry.handles`) vs
+  GRANTED/denied (via one `authorize` probe). **`scope` REUSES the existing `ResourcePredicate`**
+  (HostIn/Prefix/Any/Exact/OneOf) — NOT a new scope type (v-agent-harness-host). The states are computed
+  from the two ACTUAL sources, never a hand-maintained third list (avoids drift). Unit tests: a granted
+  family, a denied family (host has executor, policy denies), an absent family (no executor). No kernel/guest
+  change — just the type + the projection, fully testable. (Until the REQUESTABLE policy-model is ratified,
+  the denied state is a single "denied" — see the ⟨pending⟩ note; the type leaves room for the split.)
+- **I2 — executor registry family accessor (src/executor.rs).** `CompositeExecutor` exposes its registered
+  family set read-only (one-liner over `by_kind` keys; `handles(kind)` already exists), so I1's projection
+  has a real mechanism source. Tiny; unit test the accessor. (v-agent-harness-host: trivial, will add.)
+- **I3 — the host-side probe loop (src/effect.rs or kernel, using the EXISTING `Authorize` trait — NO new
+  authorizer API).** Cedar is decide-only (see the crux); the manifest is built by probing the existing
+  `authorize` function over the canonical family set — not by an enumeration API (the earlier "enumerate
+  grants" framing is DROPPED; the `Authorize` trait / `authorizer.wit` are UNCHANGED). This slice is the
+  loop that calls `authorize(session, family, scope-probe)` per family and assembles the manifest via I1's
+  projection. Coordinate the scope-probe-target convention with v-agent-harness-host (what `target` to probe
+  a family with when the reducer hasn't named a concrete one). No shared-WIT change — much smaller than the
+  earlier draft implied.
+- **I4 — the `capabilities` control query effect + manifest result event (src/kernel.rs + event_ast +
+  wit).** Wire the query: reducer emits `control/capabilities` → kernel builds the manifest via I1's
+  projection → freezes it as a `capabilities-manifest` result event → guest folds it. Control-plane:
+  authz-exempt, not executor-routed. E2E test with a real (fixture) reducer that queries and folds the
+  manifest.
+- **I5 — genesis seed (session-factory emits the initial manifest event).** The session-mint path emits a
+  `capabilities-manifest` as an early event so the reducer is born knowing. Reuses I4's fold path (same
+  content-type, same KV key). Test: a freshly-minted session's first fold sees `sys/capabilities` populated.
+- **I6 — reactive `capabilities-changed` push (src/kernel.rs).** On executor-registry change or
+  authorizer/policy-pointer write, compute affected sessions (projection delta) + append
+  `capabilities-changed` to each. Test: register a new executor for a session that could use it → the
+  session receives a `capabilities-changed` folding the upgraded manifest; a session that couldn't use it
+  does NOT. This is the mid-session upgrade the operator asked for.
+- **I7 (optional / follow-on) — `request` the shortfall.** The reducer, seeing a REQUESTABLE family, emits a
+  capability-request effect (§9b/§12f delegation). This may be its own design increment (it touches the
+  spawn-tree attenuation model); scope it separately if I1–I6 land first. Noted here so the manifest's
+  REQUESTABLE state has a concrete consumer.
+
+## The gate that protects it
+
+- `cargo test -p cdz-kernel` (both default + `live-exec` feature sets — the crate is NOT in `xtask check`;
+  own its cargo gate) + `cargo clippy --all-targets --features live-exec -- -D warnings` (grep for
+  `warning:`, the io_other_error lesson) + `cargo fmt`.
+- I4/I5/I6 each ship an in-crate E2E test driving a fixture reducer through the query / genesis-seed /
+  upgrade-push path (the `component_reducer_e2e` pattern).
+- The manifest projection (I1) has exhaustive unit coverage of the 3 grant-states — the correctness heart.
+- `wit/reducer.wit` changes are additive-only (append variants/fields, never reorder — the frozen-contract
+  discipline); any codec/golden touch (event_ast forms for the new events) re-pins consciously.
+
+## ⟨Pending operator ratification⟩ — the short list for the operator's return
+
+The harness owners and I converged on the recommended path above; these are the points where the operator
+should confirm or redirect on return (the vertical can start on the parts NOT on this list — see the
+hand-off note). None of these block I1–I3 (the pure projection + accessor + probe-loop slices, using the
+existing `Authorize` trait unchanged).
+
+1. **The whole shape** — discovery as genesis-seed + query effect, upgrade as a pushed event, manifest as
+   a 3-state grant. High confidence, peer-endorsed, but it is the operator's runtime to shape.
+2. **Is capability-discovery authz-EXEMPT?** The recommendation treats `control/capabilities` as
+   authz-exempt (asking what you may do isn't a world-action, and gating it is circular). This mirrors the
+   `summary` control effect's authz-exemption the operator already ruled — but it is a security-surface
+   decision worth an explicit nod.
+3. **REQUESTABLE visibility** — showing a session capabilities it does NOT hold (so it can request them) is
+   a mild information-disclosure choice (a sandboxed reducer learns what the host *could* do). Recommended
+   because it enables the §9b/§12f request-the-shortfall path, but the operator may prefer a stricter
+   authorized-only manifest for high-isolation sessions (could be a per-session policy flag).
+4. **REQUESTABLE-vs-hard-DENY policy model** (surfaced by v-agent-harness-host — the concrete crux of #3).
+   Cedar is decide-only (`allow`/`deny`), so the manifest can't tell "denied but requestable" from
+   "hard-forbidden" without policy encoding it. RECOMMENDED: add a separate Cedar action `may-request(family)`
+   the probe also checks. The operator should ratify the policy model (add `may-request`, a reason-string
+   convention, or collapse to two states for v0). Until ratified, the vertical ships GRANTED + a single
+   denied state, with the type leaving room for the split.
+
+## Open decisions (with a chosen default)
+
+- **Manifest granularity — per-family only, or per-(family, resource-scope)?** DEFAULT: per-family with a
+  single `scope` predicate (mirrors one `Capability`). If a session holds multiple grants for the same
+  family at different scopes (e.g. `http` to host A AND host B), the entry's `scope` is the UNION (a
+  `one-of` / `host-in` list). A future refinement could list multiple scoped sub-grants per family, but the
+  union keeps I1 simple and matches how `HostIn`/`OneOf` already aggregate. Revisit if a reducer needs to
+  distinguish which scope came from which grant.
+- **Who computes the projection — kernel or authorizer component?** RESOLVED: the KERNEL orchestrates
+  (it holds the executor registry + the session's capability context) and PROBES the authorizer's existing
+  `authorize` function per family (the crux — Cedar is decide-only, no enumeration). Keeps the kernel
+  authz-agnostic (§20b: kernel = mechanism, Cedar = policy) — the kernel never decides grant-state itself,
+  it asks the authorizer per family, exactly as it does for a single-effect authorize today.
+- **`capabilities-changed` batching.** RESOLVED (v-agent-harness): coalesce — at most one
+  `capabilities-changed` per session per settle point, carrying the final projected manifest (the content is
+  a snapshot, so coalescing is sound). Prevents log flooding on a burst of registry/policy changes.
+- **Control-plane surfacing shape.** RESOLVED (v-agent-harness): a WELL-KNOWN CONTENT-TYPE
+  (`capabilities-manifest` v1), not a typed side-channel — it rides the existing fold path + reuses the
+  `matches_family`/`version_in` tolerant-reader helpers, zero new kernel plumbing.
+- **Scope-probe target convention (I3, open).** When probing `authorize(session, family, target)` for the
+  manifest, the reducer hasn't named a concrete `target` — so what target does the probe use? DEFAULT: probe
+  with a wildcard/sentinel target and have the authorizer report the admitted scope (or probe the session's
+  own held-capability scope). Settle the exact convention with v-agent-harness-host at I3 (it depends on how
+  Cedar expresses "admitted for any target of this family").
+
+## Coordination
+
+- **v-agent-harness** owns the extensible content-type arc + the `control/*` vs `effect/*` partition. The
+  capability query is a `control/*` member (`effect_ct::CAPABILITIES`); result = well-known
+  `capabilities-manifest` content-type; families REUSE `effect_ct`. **Sequencing: this vertical lands AFTER
+  the register-by-string / family-routing slices** (it consumes `control/*`, doesn't provide it). Ping
+  before I4 — do NOT invent a parallel routing mechanism.
+- **v-agent-harness-host** owns the Cedar authorizer (DECIDE-ONLY — no enumeration; the manifest PROBES) +
+  the real executor registry (provides the `families()` accessor, I2, trivial) + emits the register/swap
+  signal for the mid-session push (I6, D). NO shared-WIT change — the `Authorize`/`authorizer.wit` contract
+  is unchanged. Coordinate the scope-probe-target convention (I3) + the register/swap signal shape (I6).
+
+Related design context: `design/agent-harness-kernel.md` §3 (genesis), §4b (bridge rule — the load-bearing
+constraint), §9b (effect-row-as-manifest), §9d (reactive), §12c/§12f (three-way authz + delegation),
+§20a/§20b (rescoping components + Cedar-as-component). Memory: `agent-harness-v2-kernel-design-and-v0-plan`,
+`agent-harness-extensible-effects-and-summary-effect-design`.
+</content>
