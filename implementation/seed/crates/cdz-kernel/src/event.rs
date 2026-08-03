@@ -22,7 +22,9 @@ pub type SeqNo = u64;
 /// are `&'static str` consts ([`crate::effect::effect_ct`]), so a content-type built from a kind holds
 /// `Cow::Borrowed` — ZERO heap allocation on the hot effect path (an effect's `content_type.family` was a
 /// fresh `String` per `EffectRequest::new` before this). A runtime-derived family (a decoded/inbound one)
-/// holds `Cow::Owned`; both compare + deref to `&str` identically, so callers are unaffected.
+/// holds `Cow::Owned`; both compare + deref to `&str` identically, so read/deref/compare callers are
+/// unaffected — only a caller that ASSIGNS a `String` to `family` now needs `.into()` (`String` and
+/// `&'static str` both `Into<Cow>`).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ContentType {
     pub family: std::borrow::Cow<'static, str>,

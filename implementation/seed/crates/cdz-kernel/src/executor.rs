@@ -66,7 +66,16 @@ impl CompositeExecutor {
 
     /// Is an executor registered for this kind (i.e. for its family)?
     pub fn handles(&self, kind: &EffectKind) -> bool {
-        self.by_family.contains_key(kind.family())
+        self.handles_family(kind.family())
+    }
+
+    /// Is an executor registered for this effect FAMILY string? The string-keyed sibling of [`handles`] —
+    /// the read-only mechanism accessor the capability-manifest projection ([`crate::effect::project_manifest`])
+    /// probes: it asks "does the host serve family X" over the canonical family set to compute the
+    /// `Absent` vs granted/denied grant-state, WITHOUT needing an `EffectKind` variant (so it also answers
+    /// for an extension family that has no built-in kind). One source of truth — [`handles`] routes here.
+    pub fn handles_family(&self, family: &str) -> bool {
+        self.by_family.contains_key(family)
     }
 }
 
@@ -284,6 +293,20 @@ mod tests {
             exec.perform_async(&req(EffectKind::Http, "x"), key).await,
             EffectOutcome::Ok(Some(Payload::Inline(key.as_bytes().to_vec().into())))
         );
+    }
+
+    #[test]
+    fn handles_family_reports_the_registered_family_set_by_string() {
+        // I2: the read-only mechanism accessor the manifest projection probes. A registered kind's family
+        // is handled (by string); an unregistered family — including an extension family with no EffectKind
+        // variant — is not. handles(&EffectKind) agrees with handles_family(kind.family()).
+        let exec = CompositeExecutor::new().with(EffectKind::Http, Box::new(TagExecutor(b"h")));
+        assert!(exec.handles_family(EffectKind::Http.family()));
+        assert!(exec.handles(&EffectKind::Http)); // the enum sibling agrees
+        assert!(!exec.handles_family(EffectKind::Model.family()));
+        assert!(!exec.handles(&EffectKind::Model));
+        // An extension family (no EffectKind variant) is cleanly "not handled", never a panic.
+        assert!(!exec.handles_family("embedding"));
     }
 
     #[tokio::test(flavor = "current_thread")]

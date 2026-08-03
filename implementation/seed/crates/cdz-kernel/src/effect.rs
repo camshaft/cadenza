@@ -696,4 +696,37 @@ mod tests {
             assert!(manifest.entries.iter().any(|e| e.family == fam));
         }
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn project_manifest_driven_by_the_real_composite_executor_mechanism_source() {
+        // I2: the projection's `handles` closure fed by the REAL CompositeExecutor::handles_family accessor
+        // (not a test stub) — the actual wiring the host uses. Register a Now executor only; over ALL, the
+        // registered family reflects the policy decision (Granted here — deny-nothing grant), every other
+        // family is Absent (no executor). Proves handles_family is the mechanism source project_manifest
+        // consumes.
+        use crate::authz::Authorizer;
+        use crate::executor::{CompositeExecutor, RecordingExecutor};
+
+        let exec =
+            CompositeExecutor::new().with(EffectKind::Now, Box::new(RecordingExecutor::new()));
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Now,
+            predicate: ResourcePredicate::Any,
+        }]);
+        let manifest =
+            project_manifest(effect_ct::ALL, |f| exec.handles_family(f), &authz, "x").await;
+
+        for entry in &manifest.entries {
+            if entry.family == effect_ct::NOW {
+                assert_eq!(entry.grant, GrantState::Granted, "Now: mechanism + policy");
+            } else {
+                assert_eq!(
+                    entry.grant,
+                    GrantState::Absent,
+                    "{}: no executor",
+                    entry.family
+                );
+            }
+        }
+    }
 }
