@@ -502,6 +502,7 @@ pass	a @requires predicate that CALLS a user-defined function resolves and enfor
 pass	a @requires predicate that MATCHES on a sum-typed parameter dispatches and enforces (v-patterns seam)
 pass	a @requires predicate that itself traps keeps its own trap kind
 pass	a @requires predicate that references `ret` is REJECTED CDZ0101 — only @ensures binds the result
+pass	a @requires relating TWO heap params enforces the zip precondition at runtime
 pass	a @test-stacked @requires+@ensures def keeps full contract enforcement for a direct call
 pass	a BARE (unqualified) constructor pattern over an abstract proof type outside the kernel is also a withheld-constructor rejection
 pass	a BARE pattern on a withheld constructor is rejected like the qualified spelling (encapsulation soundness)
@@ -3687,6 +3688,7 @@ pass	an @ensures on a recursive def is re-checked at every EXIT including self-c
 pass	an @ensures over a MATCH-bodied def wraps the whole match — the postcondition checks the match's result
 pass	an @ensures predicate reading a top-level GLOBAL alongside ret resolves and enforces (resolution seam)
 pass	an @ensures predicate that itself traps keeps its own trap kind (not the @ensures-failed unreachable)
+pass	an @ensures relating the RESULT to a PARAM over heap values enforces growth
 pass	an @invariant newtype REBUILT through a chain of constructor calls re-establishes each time
 pass	an @invariant newtype constructed INSIDE a handler arm establishes per resume
 pass	an @param of a Bool type generates a Bool-typed accessor

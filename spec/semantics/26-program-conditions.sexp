@@ -3719,3 +3719,43 @@
             (export main)))
   (call   main (: 1 Int64)) (trap "unreachable")
   (call   main (: -45 Int64)) (output (: 5 Int64)))
+
+; ── RELATIONAL contracts over HEAP values: conditions relating two params, a result to a param,
+; and both ends of a call chain. The fn-level relational face above is scalar; these pin the
+; heap shapes real code leans on (the zip precondition, the growth postcondition). ---
+
+(case "a @requires relating TWO heap params enforces the zip precondition at runtime"
+  (doc    "`@requires (= (List.len xs) (List.len ys))` on a pairwise-product fold — the classic zip
+           precondition relating two HEAP arguments. Matched 3/3 lengths → 1·4+2·5+3·6 = 32; a 3-vs-2
+           call traps at entry BEFORE the body's indexing could read out of bounds. Pins that a
+           relational predicate over two heap params evaluates both operands' lengths at the call
+           boundary (a single-subject-only rewrite that dropped the second operand would let the
+           mismatch through to an in-body index miss).")
+  (input  (do
+            (@ (requires (= (List.len xs) (List.len ys)))
+              (def (zip-sum (: xs (List Int64)) (: ys (List Int64)) (: i Int64) (: acc Int64))
+                (if (>= i (List.len xs)) acc
+                    (zip-sum xs ys (+ i 1)
+                      (+ acc (* (Option.expect (List.at xs i) "x")
+                                (Option.expect (List.at ys i) "y")))))))
+            (def (main (: n Int64))
+              (zip-sum (list 1 2 3) (if (> n 0) (list 4 5 6) (list 4 5)) 0 0))
+            (export main)))
+  (call   main (: 1 Int64)) (output (: 32 Int64))
+  (call   main (: 0 Int64)) (trap "unreachable"))
+
+(case "an @ensures relating the RESULT to a PARAM over heap values enforces growth"
+  (doc    "`@ensures (> (List.len ret) (List.len xs))` — the postcondition compares the RESULT's length
+           against the INPUT's, both heap values. The growth path (n>0 pushes) satisfies → 3; the n=0
+           identity path returns the input unchanged, violating strict growth → trap. Pins that `ret`
+           and a param are BOTH in scope for the postcondition and that heap-measure comparisons between
+           them evaluate at exit (a post that could only see `ret` cannot express this contract).")
+  (input  (do
+            (@ (ensures (> (List.len ret) (List.len xs)))
+              (def (grow (: xs (List Int64)) (: n Int64))
+                (if (> n 0) (List.push xs n) xs)))
+            (def (main (: n Int64))
+              (List.len (grow (list 1 2) n)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 3 Int64))
+  (call   main (: 0 Int64)) (trap "unreachable"))
