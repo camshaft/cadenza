@@ -94,6 +94,13 @@
           root = ./.;
           fileset = pkgs.lib.fileset.unions [
             ./implementation/seed/crates/cdz-runtime
+            # The runtime's world imports `cadenza:nfc/normalize` (FINDING#23), and its Cargo.toml points
+            # cargo-component's WIT resolution at the sibling NFC crate's WIT
+            # (`[package.metadata.component.target.dependencies] "cadenza:nfc" = { path = "../cdz-nfc/wit" }`).
+            # So the NFC WIT dir MUST be in the build source or `cargo component build` can't resolve the
+            # dep offline. Scope to just the WIT (not the whole cdz-nfc crate) — that's all the runtime
+            # build reads.
+            ./implementation/seed/crates/cdz-nfc/wit
             ./rust-toolchain.toml
           ];
         };
@@ -140,9 +147,16 @@
               directory = "${runtimeVendor}"
               EOF
               cd implementation/seed/crates/cdz-runtime
-              # --locked honors the committed Cargo.lock exactly; --offline forbids any network (the
-              # vendor dir + in-store rust-src satisfy every dep). A missing/re-resolved dep fails LOUD.
-              cargo component build --release --target wasm32-unknown-unknown --locked --offline $featuresArg
+              # --locked honors the committed Cargo.lock exactly. Network is blocked by CARGO_NET_OFFLINE
+              # (set below) + the sandbox itself — NOT the `--offline` FLAG: the runtime's world imports
+              # the NFC component (a `[package.metadata.component.target.dependencies]` WIT path-dep on
+              # ../cdz-nfc/wit, FINDING#23), and the `--offline` flag makes `cargo component` refuse that
+              # component-dep resolution outright ("lock file must be provided when offline mode is
+              # enabled") even though it's a LOCAL path needing no network. CARGO_NET_OFFLINE blocks the
+              # crates.io registry (our vendor covers it) while still letting cargo-component resolve the
+              # local WIT dep. A truly-missing dep still fails LOUD (no network in the sandbox).
+              export CARGO_NET_OFFLINE=true
+              cargo component build --release --target wasm32-unknown-unknown --locked $featuresArg
               runHook postBuild
             '';
 
