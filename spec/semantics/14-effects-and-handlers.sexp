@@ -7442,3 +7442,28 @@
                     (+ (C.c) (+ (C.c) (A.a)))))))
             (export main)))
   (call   main (: 0 Int64)) (output (: 2112 Int64)))
+
+(case "TWO Map-stated handlers stacked route each op to its own Map with no cross-contamination"
+  (doc    "Heap-valued handler state × handler stacking: A and B each carry their own `(Map.empty)`-seeded
+           state; six interleaved ops (3 to A at one regime, 2-or-3 to B) must route each `put` to ITS
+           handler's Map, and both `size` reads at the end see only their own inserts — 3/3 at n=3 (33)
+           and 2/3 at n=1 where A's third put duplicates key 1 (23). A state-slot mixup between the
+           stacked frames (one Map receiving the other's insert, or a size read against the wrong frame)
+           corrupts either count. The heap-state sibling of the scalar two-handler pins; each resume
+           dups/drops a CHAMP handle per op.")
+  (input  (do
+            (effect A (op puta (-> Int64 Unit)) (op sizea (-> Unit Int64)))
+            (effect B (op putb (-> Int64 Unit)) (op sizeb (-> Unit Int64)))
+            (def (main (: n Int64))
+              (handle A (Map.empty)
+                ( (puta (k) m (resume unit (Map.insert m k k)))
+                  (sizea (u) m (resume (Map.len m) m)) )
+                (handle B (Map.empty)
+                  ( (putb (k) m (resume unit (Map.insert m k k)))
+                    (sizeb (u) m (resume (Map.len m) m)) )
+                  (do
+                    (A.puta 1) (B.putb 10) (A.puta 2) (B.putb 20) (B.putb 30) (A.puta n)
+                    (+ (* 10 (A.sizea)) (B.sizeb))))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 33 Int64))
+  (call   main (: 1 Int64)) (output (: 23 Int64)))
