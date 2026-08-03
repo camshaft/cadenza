@@ -1,4 +1,4 @@
-# PR #1725 review comment — xtask/src/fleet.rs (v-fleet-tooling) — OPEN
+# PR #1725 review comment — xtask/src/fleet.rs (v-fleet-tooling) — ADDRESSED (delta c8410460c, held behind #1725; error-face closed)
 
 https://github.com/camshaft/cadenza/pull/1725 (distinguish a rev-list failure from an empty range — the
 fix for my #1719 note, itself a follow-on to #1712). The Some(0)-vs-None split is correct; Copilot flags
