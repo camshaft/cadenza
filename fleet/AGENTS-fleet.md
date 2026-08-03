@@ -178,6 +178,23 @@ and wait for each `merged` before sending the next**. After one lands, `cargo xt
 drops it by patch-id and replays the rest of your stack, giving you the next commit to send as a fresh
 `--ref`. (Keep each commit independently green so this per-commit cadence never lands a broken `trunk`.)
 
+**Make each merge-request carry MEANINGFUL change — iterations must count** (operator rule, fleet-wide).
+Every candidate PR runs a FULL ~16-job CI gate, so a trivial MR (e.g. a 9-line one) costs the same
+gate cycle as a substantial one — a per-line drip of tiny MRs wastes the fleet's CI + integration
+capacity disproportionately. Both bounds apply:
+- **FLOOR:** land a COHERENT UNIT — a whole slice / stage / fix / review-cleanup — not per-line
+  increments. If several small edits are one logical change, they belong in ONE commit. Make the
+  iteration worth its gate cycle.
+- **CEILING (anti-gaming):** do NOT pad, invent, or bundle unrelated work just to look bigger — the
+  goal is meaningful PROGRESS per iteration, not artificial size. Land what's genuinely ready as a
+  coherent whole; don't split a natural unit into trivial pieces, and don't staple unrelated landables
+  together for size.
+This is about the SUBSTANCE of each unit, NOT batching: the per-commit-green + one-MR-per-commit
+invariants above stay intact — keep independent landables as separate commits, just make each one a
+meaningful unit rather than a sliver. (A genuinely small fix that IS the whole coherent change — a
+one-line correctness fix, a targeted review nit — is fine; the rule targets needless fragmentation,
+not honest small changes.)
+
 **Delivery wakes the recipient.** `fleet send` doesn't just drop the JSON — after delivering it
 nudges the recipient's tmux window into an immediate tick (`send-keys`), so a message is reacted to
 within seconds instead of waiting for the next scheduled `/loop`. Delivery == wake. This means when
