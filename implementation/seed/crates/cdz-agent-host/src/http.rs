@@ -25,7 +25,7 @@ use crate::retry;
 use bytes::Bytes;
 use cdz_kernel::effect::{effect_ct, EffectRequest, Payload};
 use cdz_kernel::event::EffectOutcome;
-use cdz_kernel::event_ast::{decode_http_request, encode_http_response};
+use cdz_kernel::event_ast::{decode_http_request_with_headers, encode_http_response};
 use cdz_kernel::executor::Executor;
 use cdz_kernel::hash::Hash;
 
@@ -48,7 +48,7 @@ pub enum HttpMethod {
 }
 
 impl HttpMethod {
-    /// Map a decoded method name to the enum. `decode_http_request` returns the method name AS ENCODED
+    /// Map a decoded method name to the enum. `decode_http_request_with_headers` returns the method name AS ENCODED
     /// (case preserved — the kernel does not normalize case), so this matches CASE-INSENSITIVELY on its
     /// own `to_ascii_lowercase` (a caller that encoded "GET"/"Get"/"get" all resolve to
     /// [`HttpMethod::Get`]). An unrecognized name is preserved verbatim (original case) as
@@ -93,12 +93,13 @@ impl HttpMethod {
 /// 500) and read response headers (content-type, …). The `idempotency_key` lets a side-effecting transport
 /// dedup a crash-re-driven request (§16c-S1/D) — relevant for a non-idempotent method.
 ///
-/// **Error classification (supervision, [`crate::retry`]):** an `Err(reason)` MUST lead with a
-/// retryability token — a transient failure (5xx, timeout, connection reset) as
-/// [`crate::retry::retryable`], a permanent one (4xx client error, DNS failure, malformed URL) as
-/// [`crate::retry::permanent`]. Unprefixed reasons are treated PERMANENT (fail-closed). Note: an `Err` is
-/// a TRANSPORT failure (couldn't complete the request); a completed request with a 4xx/5xx STATUS is an
-/// `Ok(HttpResponse)` carrying that status — the reducer decides what a 404/500 means, not the transport.
+/// **Error classification (supervision, [`crate::retry`]).** `Err` is strictly a TRANSPORT-LEVEL failure
+/// (the request never completed) — NOT an HTTP status: a completed request with a 4xx/5xx STATUS comes back
+/// as `Ok(HttpResponse)` carrying that status, and the reducer decides what a 404/500 means, not the
+/// transport. An `Err(reason)` MUST lead with a retryability token classifying that transport failure — a
+/// transient one (timeout, connection reset/refused) as [`crate::retry::retryable`], a permanent one (DNS
+/// failure, malformed URL, TLS error) as [`crate::retry::permanent`]. Unprefixed reasons are treated
+/// PERMANENT (fail-closed). The retryability guidance applies to `Err` only, never to app-level statuses.
 /// `#[async_trait(?Send)]` — a real HTTP request awaits the socket; not `Send` (single-threaded host).
 #[async_trait::async_trait(?Send)]
 pub trait HttpTransport {
@@ -154,7 +155,7 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
         // are structural → PERMANENT.
         let (method, headers, body): (HttpMethod, Vec<(String, String)>, Option<Vec<u8>>) =
             match &req.payload {
-                Some(Payload::Inline(bytes)) => match decode_http_request(bytes) {
+                Some(Payload::Inline(bytes)) => match decode_http_request_with_headers(bytes) {
                     Ok((method_name, headers, body)) => {
                         (HttpMethod::from_name(&method_name), headers, body)
                     }
