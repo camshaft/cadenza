@@ -3917,6 +3917,26 @@ fn a_record_match_pattern_faults_are_actionable_and_lockstep() {
     )))
     .expect_err("absent field rejects");
     assert_eq!(absent.code.as_deref(), Some("CDZ0201"));
+    // SINGLE diagnostic — no redundant CDZ0212. The arm BODY's reference to the field binder `a` resolves
+    // (Case 6rec) to a Member projection of the scrutinee at `nope`; when `nope` is absent that Member used
+    // to ALSO fire a generic "record has no field `nope`" (CDZ0212) at the bare-name body-ref, double-
+    // reporting one error. `no_field_reject`'s Member arm now suppresses the fault for a BARE-NAME node (a
+    // pattern-binder ref, vs a genuine `(. …)` access), so the canonical pattern CDZ0201 is the sole primary.
+    let diags = crate::host::run_with_compiler_stack(|| {
+        crate::diagnostics(&mut crate::db::Db::load(parse(
+            "(module m (def (main) (match (record (x 3)) ((record (nope a)) a))) (export main))",
+        )))
+    });
+    let field_faults: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("field `nope`"))
+        .collect();
+    assert_eq!(
+        field_faults.len(),
+        1,
+        "one primary for an absent record-pattern field (the pattern CDZ0201), no redundant member CDZ0212: {field_faults:?}"
+    );
+    assert_eq!(field_faults[0].code.as_deref(), Some("CDZ0201"));
     // nested compound field value → clean decline, NOT CDZ0101
     let nested = compile_component(&crate::codec::encode(&parse(
         "(module m (def (main) \

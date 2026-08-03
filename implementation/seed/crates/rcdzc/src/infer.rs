@@ -12297,6 +12297,23 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
         //= spec/capabilities/core-semantics.md#member-access-projects-a-record-field
         //# Member access naming a field the record does not contain MUST be rejected at compile time with the machine-readable code for a required field that is absent rather than produce an unspecified value or a runtime trap, so that a projection cannot name a field the operand's type never held.
         Resolved::Member { operand, key } => {
+            // A record-PATTERN field binder's arm-BODY reference resolves to this same `Member` shape:
+            // `((record (nope a)) a)` — the body `a` resolves (Case 6rec) to `Member{operand: scrutinee,
+            // key: nope}`, a PROJECTION of the matched value at the pattern's field. When `nope` is absent
+            // from the scrutinee's record, the canonical, richer CDZ0201 "a record pattern names field
+            // `nope`, which the matched value of type … does not have" ALREADY fires at the pattern
+            // (`lower.rs`), so a generic "record has no field `nope`" (CDZ0212) here is a REDUNDANT second
+            // diagnostic for one error. Distinguish this synthesized-Member body-ref from a genuine member
+            // ACCESS syntactically: a real `(. operand key)` is a LIST form, whereas a pattern-binder ref is
+            // a BARE NAME atom that merely RESOLVED to a Member. Skip the member no-field fault for a bare
+            // name — the pattern-lowering reject stays the sole primary. (Node-syntactic + safe: a genuine
+            // `(. …)` access on any record keeps its own reject, incl. a distinct absent field of the same
+            // name on another record; only the pattern binder's bare-name ref is suppressed. v-patterns
+            // traced this to the body-ref — the pattern-position binder is not the source, so a
+            // pattern-position or dedup-node key would miss it; the bare-name test at this fault site does.)
+            if db.ast.as_name(id).is_some() {
+                return;
+            }
             // Project via the evaluator (reduces refs / a ctor-built module), so a missing field on a
             // built module is caught too. A poison operand reports its OWN fault (via the descent
             // below), so we don't add a redundant "not a record" for it.
