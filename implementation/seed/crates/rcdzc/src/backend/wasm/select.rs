@@ -11542,9 +11542,13 @@ fn emit(
                     continue;
                 }
                 // A host-reaching statement must run. Emit it; if it leaves a value (a non-Unit host-call
-                // result, discarded here), drop that value so the block stays stack-balanced.
+                // result, discarded here), drop that value so the block stays stack-balanced. Strip nominals
+                // before the Unit test: a nominal-Unit (a newtype over `Unit`) leaves NO machine value at the
+                // boundary just like a bare `Unit` (`valtype_of` is None), so it must NOT be dropped — a
+                // `Lir::Drop` on an empty stack underflows → an invalid module. Mirrors the field-proj Unit
+                // check (~1108) and the tail-drop (~2486), both of which strip_nominal for the same reason.
                 emit(db, *s, slots, base, high, scratch_ty, layout, out)?;
-                if !matches!(crate::infer::type_of(db, *s), Ty::Unit) {
+                if !matches!(crate::infer::type_of(db, *s).strip_nominal(), Ty::Unit) {
                     out.push(Lir::Drop);
                 }
             }

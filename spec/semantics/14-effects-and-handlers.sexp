@@ -2880,6 +2880,28 @@
   (host-calls (call io.put) (call io.put))
   (call   main (: 0 Int64)) (output (: 42 Int64)))
 
+(case "a NOMINAL-Unit-typed host-call statement in a do-body is not spuriously dropped"
+  (doc    "The nominal-Unit edge of the Seq stmt-DROP arm (the sibling above): `(Done (io.fire k))` is a
+           non-final statement that REACHES a host call AND is typed `Done` — a NEWTYPE over `Unit`
+           (`(type Done (Done Unit))`). A nominal-Unit leaves NO machine value at the boundary just like a
+           bare `Unit` (`valtype_of` is None), so it must NOT be dropped. The drop test must strip nominals
+           (`type_of(..).strip_nominal() != Unit`) — WITHOUT that, `Done` ≠ `Ty::Unit` takes the drop branch
+           and `Lir::Drop` underflows the empty stack → an invalid module (`wasm-tools: expected a type but
+           nothing on stack`). io.fire still fires (recorded), the do yields io.get's response, 9. Mirrors
+           the field-proj / tail-drop Unit checks that already strip_nominal. Rust + wasm pass; rust-async
+           todo.")
+  (input  (do
+            (type Done (Done Unit))
+            (effect io (op fire (-> Int64 Unit)) (op get (-> Unit Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (do (Done (io.fire k))
+                    (io.get unit))))
+            (export main)))
+  (host-responses (respond io.fire (: 0 Int64)) (respond io.get (: 9 Int64)))
+  (host-calls (call io.fire) (call io.get))
+  (call   main (: 5 Int64)) (output (: 9 Int64)))
+
 (case "a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom"
   (doc    "The `Result` companion of the Option-result case: an operation whose declared result is a
            `(Result Int64 Int64)`, resumed with an `Ok` or `Err` chosen by the arm, and the body dispatches

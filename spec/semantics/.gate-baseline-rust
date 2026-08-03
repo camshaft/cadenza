@@ -748,6 +748,7 @@ pass	a NESTED sum-in-sum map key discriminates by the inner variant
 pass	a NESTED tuple of quantities renders every element scaled at depth
 pass	a NESTED tuple-of-tuples let pattern destructures a call's runtime result to all four leaves
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
+pass	a NOMINAL-Unit-typed host-call statement in a do-body is not spuriously dropped
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-LAST handler arm whose body is a MATCH round-trips through the ML printer
 pass	a NON-TAIL host call consumes rows on the unwind, deepest frame first
