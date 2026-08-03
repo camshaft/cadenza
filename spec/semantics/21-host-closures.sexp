@@ -206,6 +206,21 @@
                 (let ((f (fn ((: x Int64)) (+ x (ask.ask))))) f))) (export main)))
   (error  CDZ0406))
 
+(case "a closure performing a HANDLED (non-delegated) effect does NOT trip the escape reject"
+  (doc    "The NEGATIVE control of the escaping-closure CDZ0406 fence (the reject cases above): here the
+           closure is APPLIED IN-GUEST inside the enclosing `(handle Ctr …)`, so `Ctr.tick` has a home along
+           the dynamic extent — it does NOT escape, so it must RUN, NOT reject. Guards the fence against
+           OVER-firing: a closure that merely performs an effect is fine as long as it's discharged
+           in-extent; only a closure that CROSSES the host boundary carrying an unhandled perform rejects.
+           Seeded 5, main(10): the tick reads 5, 10+5 = 15. (breaker es2.) wasm+rust+rust-async all run.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main (: k Int64))
+              (handle Ctr 5 ((tick (u) s (resume s (+ s 1))))
+                ((fn (x) (+ x (Ctr.tick))) k)))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 15 Int64)))
+
 ; --- An exported closure's BODY is type-checked, like an ordinary def / an in-guest-applied lambda ------
 ; A `(def (a) (fn …))` exported as a host closure crosses the boundary and is NEVER applied in-guest, so
 ; its body is never β-reduced. An ill-typed body must still be a compile-time rejection — the same CDZ0203
