@@ -12305,12 +12305,15 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             // (`lower.rs`), so a generic "record has no field `nope`" (CDZ0212) here is a REDUNDANT second
             // diagnostic for one error. Distinguish this synthesized-Member body-ref from a genuine member
             // ACCESS syntactically: a real `(. operand key)` is a LIST form, whereas a pattern-binder ref is
-            // a BARE NAME atom that merely RESOLVED to a Member. Skip the member no-field fault for a bare
-            // name — the pattern-lowering reject stays the sole primary. (Node-syntactic + safe: a genuine
-            // `(. …)` access on any record keeps its own reject, incl. a distinct absent field of the same
-            // name on another record; only the pattern binder's bare-name ref is suppressed. v-patterns
-            // traced this to the body-ref — the pattern-position binder is not the source, so a
-            // pattern-position or dedup-node key would miss it; the bare-name test at this fault site does.)
+            // a BARE NAME atom that merely RESOLVED to a Member. So for a bare name, SKIP this whole
+            // Member-access fault arm — not just the no-field case, ALL of it (no-field AND not-a-record):
+            // a bare name that resolves to a Member is ALWAYS a pattern-binder projection (never a genuine
+            // access, which is always a `(. …)` list), so no member-access fault is ever legitimate here;
+            // the pattern-lowering reject is the sole primary. (Node-syntactic + safe: a genuine `(. …)`
+            // access on any record keeps its own reject, incl. a distinct absent field of the same name on
+            // another record; only the pattern binder's bare-name ref is suppressed. v-patterns traced this
+            // to the body-ref — the pattern-position binder is not the source, so a pattern-position or
+            // dedup-node key would miss it; the bare-name test at this fault site does.)
             if db.ast.as_name(id).is_some() {
                 return;
             }

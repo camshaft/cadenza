@@ -3920,8 +3920,9 @@ fn a_record_match_pattern_faults_are_actionable_and_lockstep() {
     // SINGLE diagnostic — no redundant CDZ0212. The arm BODY's reference to the field binder `a` resolves
     // (Case 6rec) to a Member projection of the scrutinee at `nope`; when `nope` is absent that Member used
     // to ALSO fire a generic "record has no field `nope`" (CDZ0212) at the bare-name body-ref, double-
-    // reporting one error. `no_field_reject`'s Member arm now suppresses the fault for a BARE-NAME node (a
-    // pattern-binder ref, vs a genuine `(. …)` access), so the canonical pattern CDZ0201 is the sole primary.
+    // reporting one error. `collect_node`'s `Member` arm now early-returns for a BARE-NAME node (a
+    // pattern-binder ref, vs a genuine `(. …)` access) BEFORE calling `no_field_reject`, so the canonical
+    // pattern CDZ0201 is the sole primary.
     let diags = crate::host::run_with_compiler_stack(|| {
         crate::diagnostics(&mut crate::db::Db::load(parse(
             "(module m (def (main) (match (record (x 3)) ((record (nope a)) a))) (export main))",
