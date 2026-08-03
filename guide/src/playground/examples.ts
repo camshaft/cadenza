@@ -762,6 +762,29 @@ export const EXAMPLES: Example[] = [
     expected: "5",
   },
   {
+    // Shows off: Unicode NFC normalization at string CONSTRUCTION. Concatenating a plain "e" with a lone
+    // U+0301 COMBINING ACUTE ACCENT composes them into the single precomposed scalar "é" (U+00E9), so the
+    // result reads as 1 scalar / 2 UTF-8 bytes — not 2 scalars / 3 bytes. Strings are normalized as they're built.
+    id: "unicode-nfc-normalization",
+    name: "Unicode NFC normalization",
+    theme: "data-and-collections",
+    surface: "sexpr",
+    source: `(do
+  ; A lone U+0301 COMBINING ACUTE ACCENT, decoded from its two UTF-8 bytes.
+  (def (accent) (String.from-bytes (Bytes.of (list 204 129))))
+  (def (main)
+    (match (accent)
+      ((Some acc)
+       ; Concatenation constructs a new string, so the join is normalized to NFC:
+       ; "e" + combining-accent composes into the single precomposed scalar "é".
+       (let ((composed (String.concat "e" acc)))
+         ; (scalar count, byte count) of the composed "é" — 1 scalar, 2 bytes.
+         (tuple (String.scalar-len composed) (String.byte-len composed))))
+      ((None) (trap "nfc: invalid accent bytes"))))
+  (export main))`,
+    expected: "(: (tuple 1 2) (Tuple Int64 Int64))",
+  },
+  {
     // Shows off: computing a result without a built-in — integer square root by searching upward for the
     // largest g with g*g <= n. isqrt(144) = 12.
     id: "integer-square-root",
