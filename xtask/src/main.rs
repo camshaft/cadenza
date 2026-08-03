@@ -2462,12 +2462,39 @@ fn is_closure_param(param: &str) -> bool {
 
 /// The closure TYPE of a parameter slice (`g: std::rc::Rc<dyn Fn(i64) -> i64>`) → the `Rc<dyn Fn…>` text,
 /// or `None` if the param is not a closure. Used to match a consumer's closure param to the PRODUCER whose
-/// result type is that same closure type.
+/// result type is that same closure type. Extracts the BALANCED `Rc<…>` (stops at the angle bracket that
+/// matches the opening `<` of `Rc<`), so a param that is NOT last in the list (`g: Rc<dyn Fn(i64)->i64>,
+/// x: i64`) yields ONLY the closure type — NOT the trailing `, x: i64`. This matters for a HIGHER-ORDER
+/// producer: a substring-tolerant match would false-pair a first-order consumer param `Rc<dyn Fn(i64)->i64>`
+/// to a higher-order producer `Rc<dyn Fn(Rc<dyn Fn(i64)->i64>)->i64>` (the former is a substring of the
+/// latter), so the pairing must compare EXACT balanced closure types (`ty_matches` uses `==` — see there).
 fn closure_param_type(param: &str) -> Option<&str> {
     let start = param
         .find("std::rc::Rc<dyn Fn(")
         .or_else(|| param.find("Rc<dyn Fn("))?;
-    Some(param[start..].trim())
+    let rest = &param[start..];
+    // Find the `<` that opens `Rc<` and walk to its MATCHING `>` (depth-balanced over `<`/`>`), so a nested
+    // `Rc<dyn Fn(Rc<…>)…>` returns its whole self and a trailing `, x: i64` is excluded. CRITICAL: the
+    // return arrow `->` contains a `>` that must NOT be counted as a closing angle bracket — skip a `>`
+    // immediately preceded by `-` (matching Rust's `->` in the emitted `Rc<dyn Fn(A) -> R>`).
+    let open = rest.find('<')?;
+    let bytes = rest.as_bytes();
+    let mut depth = 0i32;
+    for (i, c) in rest.char_indices().skip(open) {
+        match c {
+            '<' => depth += 1,
+            '>' if i > 0 && bytes[i - 1] == b'-' => {} // the `>` of a `->` return arrow — not a bracket
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(rest[..=i].trim());
+                }
+            }
+            _ => {}
+        }
+    }
+    // Unbalanced (shouldn't happen for emitted Rust) — fall back to the whole tail, trimmed.
+    Some(rest.trim())
 }
 
 /// The TYPE of a parameter slice `<name>: <type>` → the `<type>` text (everything after the first `:`).
@@ -2634,7 +2661,14 @@ fn build_closure_consumer_call(
                 closure_ty, shape, ..
             } => (closure_ty, shape.as_deref()),
         };
-        let erased_ok = closure_ty.contains(cty) || cty.contains(closure_ty.as_str());
+        // EXACT structural equality (not substring containment): both `closure_ty` (the producer's, built by
+        // `format!("std::rc::Rc<dyn Fn({}) -> {}>", …)`) and `cty` (the consumer param's, extracted BALANCED
+        // by `closure_param_type`) are spelled by the SAME `rust_type` formatter, so an identical closure
+        // type compares equal. Substring containment (the prior check) FALSE-MATCHED a first-order consumer
+        // param to a HIGHER-ORDER producer whose erased type CONTAINS it (`Rc<dyn Fn(Rc<dyn Fn(i64)->i64>)->
+        // i64>` contains `Rc<dyn Fn(i64)->i64>`) → nondeterministic mis-pairing → ill-typed harness codegen
+        // (github-liaison #1654 review). Exact `==` removes that class entirely.
+        let erased_ok = closure_ty.as_str() == cty;
         if !erased_ok {
             return false;
         }
@@ -7347,6 +7381,40 @@ mod trap_grading_tests {
         assert_eq!(
             call, "appb(prog::mkb(9), 6)",
             "the Record-arg consumer pairs to the RECORD factory (mkb), not the tuple mka: {call}"
+        );
+    }
+
+    #[test]
+    fn closure_param_type_extracts_the_balanced_type_and_ty_matches_is_exact_not_substring() {
+        // `closure_param_type` must extract the BALANCED `Rc<dyn Fn(…)->…>` — stopping at the angle bracket
+        // that matches `Rc<`, NOT the `>` inside the `->` return arrow, and NOT swallowing a trailing param.
+        // A first-order closure param that is NOT last in the list yields ONLY the closure type.
+        assert_eq!(
+            closure_param_type("g: std::rc::Rc<dyn Fn(i64) -> i64>, x: i64"),
+            Some("std::rc::Rc<dyn Fn(i64) -> i64>"),
+            "a non-last closure param extracts the balanced closure type, excluding the trailing `, x: i64`"
+        );
+        // A HIGHER-ORDER closure param (its arg is itself a closure) extracts its WHOLE nested self.
+        assert_eq!(
+            closure_param_type(
+                "g: std::rc::Rc<dyn Fn(std::rc::Rc<dyn Fn(i64) -> i64>) -> i64>, x: i64"
+            ),
+            Some("std::rc::Rc<dyn Fn(std::rc::Rc<dyn Fn(i64) -> i64>) -> i64>"),
+            "a higher-order closure param extracts the full nested Rc<…>, excluding the trailing param"
+        );
+        // REGRESSION (github-liaison #1654): a higher-order PRODUCER must NOT false-pair to a FIRST-ORDER
+        // consumer param via substring containment. mk is higher-order (`Rc<dyn Fn(Rc<dyn Fn(i64)->i64>)->
+        // i64>`); app takes a FIRST-ORDER `g: Rc<dyn Fn(i64)->i64>` with a producer sibling `adder`. The
+        // exact-match pairing must pick `adder` (the first-order producer), NOT `mk` (whose erased type
+        // CONTAINS app's g type as a substring — the false match the old `contains` check admitted).
+        let m = "pub fn mk(f: std::rc::Rc<dyn Fn(i64) -> i64>) -> i64 { … }\n\
+                 pub fn adder(k: i64) -> std::rc::Rc<dyn Fn(i64) -> i64> { … }\n\
+                 pub fn app(g: std::rc::Rc<dyn Fn(i64) -> i64>, x: i64) -> i64 { … }";
+        let call =
+            build_closure_consumer_call(m, "app", &["100".into(), "7".into()], false).unwrap();
+        assert_eq!(
+            call, "app(prog::adder(100), 7)",
+            "app's first-order g pairs to the first-order factory `adder`, NOT the higher-order `mk`: {call}"
         );
     }
 
