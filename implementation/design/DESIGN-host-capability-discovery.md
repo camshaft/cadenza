@@ -434,7 +434,7 @@ enum Disposition {
 
 ### Sequencing (what register-by-string introduces, then I4)
 
-register-by-string (v-agent-harness owns) introduces, in one arc:
+the register-by-string arc (in `cdz-kernel`) introduces, in one arc:
 (a) the family-string registration API — `with(family: impl Into<String>, Disposition)` replacing
 `with(EffectKind, Executor)` (the peer bridge already scoped with v-agent-harness-host; its ~10 registration
 sites migrate behind the signature change, bare effect families, unchanged behavior);
@@ -450,15 +450,16 @@ separately but shares this exact channel. Net chain: **[this channel design] →
 
 ## I4 detail — the `capabilities-manifest` payload encoding + the reactive half
 
-The register-by-string kernel foundation is on trunk (the `control/` partition in `drive_worklist_async`,
-`effect_ct::CAPABILITIES`/`SUMMARY`, the host-surfaced `ControlEffect` return via `deliver_async_control`,
-and the projection: `project_manifest` + `CompositeExecutor::handles_family` + `effect_ct::probe_target`).
-I4 makes `control/capabilities` KERNEL-ANSWERED-INLINE: in `drive_worklist_async`'s control-family branch,
-a `capabilities` arm builds the manifest via `project_manifest(effect_ct::ALL, |f| executor.handles_family(f),
-authz, effect_ct::probe_target)`, serializes it to a `capabilities-manifest` content-typed payload, and
-`record_result_async`s it so it folds back to the requesting reducer (NOT pushed to `control_out`). The
-kernel wiring is v-agent-harness's edit (they own `drive_worklist_async`); this section settles the two
-design pieces they asked me for.
+I4 builds on the register-by-string control-plane foundation in `cdz-kernel` (the `control/` partition in
+`drive_worklist_async`, `effect_ct::CAPABILITIES`/`SUMMARY`, the host-surfaced `ControlEffect` return via
+`deliver_async_control`, and the projection: `project_manifest` + `CompositeExecutor::handles_family` +
+`effect_ct::probe_target`). I4 makes `control/capabilities` KERNEL-ANSWERED-INLINE: in
+`drive_worklist_async`'s control-family branch, a `capabilities` arm builds the manifest via
+`project_manifest(effect_ct::ALL, |f| executor.handles_family(f), authz, effect_ct::probe_target)`,
+serializes it to a `capabilities-manifest` content-typed payload, and `record_result_async`s it so it folds
+back to the requesting reducer (NOT pushed to `control_out`). The kernel wiring is a `drive_worklist_async`
+edit (`src/kernel.rs`); this section settles the two design pieces it depends on — the payload encoding (a)
+and the reactive half (b).
 
 ### (a) `capabilities-manifest` payload serialization (Cadenza binary-sexpr — the guest decodes it)
 
@@ -517,7 +518,7 @@ Both reuse the (a) payload form + the same fold path; they differ only in WHO em
 - **Sequencing:** I4 (the inline query answer) lands first — it exercises the (a) encode + the fold-back on
   the smallest surface. I5 (genesis-seed) and I6 (the reactive push) build on the same encode + fold path;
   I6 needs a kernel hook on executor-registry / authorizer-pointer mutation to trigger the re-projection,
-  which is a `drive`-adjacent change v-agent-harness owns — pair on it after I4.
+  a `drive`-adjacent change in `src/kernel.rs`, sequenced after I4.
 
 ## Related design context
 
