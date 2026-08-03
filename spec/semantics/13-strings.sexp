@@ -2561,6 +2561,28 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 295 Int64)))
 
+(case "a RUNTIME byte-slice torn mid-scalar is rejected by from-bytes at both tear points"
+  (doc    "The RUNTIME-torn face of the ill-formed-decode family: the constant malformed pins below feed
+           hand-written bad byte lists; here the invalid sequence arises from SLICING a genuinely valid
+           string's encoding mid-scalar. `\"aé🎵z\"` encodes as a|é(2 bytes)|🎵(4 bytes)|z; a 3-byte
+           slice at start = 2 captures é's continuation byte + 🎵's first two (a bare continuation
+           lead), and at start = 3 captures 🎵's first three bytes (a truncated 4-byte sequence) — both
+           decode to None (−1), never a trap or a replacement-character string. Pins that the total
+           decode's rejection reaches slices of REAL encodings cut at runtime offsets, not only
+           synthetic constant byte lists.")
+  (input  (do
+            (def (main (: start Int64))
+              (let ((b (String.to-bytes (String.concat "aé🎵" "z"))))
+                (match (Bytes.slice b start 3)
+                  ((Some cut)
+                    (match (String.from-bytes cut)
+                      ((Some t) (String.byte-len t))
+                      ((None _u) -1)))
+                  ((None _u) -2))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: -1 Int64))
+  (call   main (: 3 Int64)) (output (: -1 Int64)))
+
 (case "decoding ill-formed UTF-8 bytes yields none, not a trap"
   (doc    "`(String.from-bytes (Bytes.of (list 255)))` is given 0xFF, which is not a well-formed UTF-8
            sequence (0xFF never appears in valid UTF-8), so the decode yields `None` — NOT a trap and NOT

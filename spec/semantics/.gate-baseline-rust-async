@@ -680,6 +680,7 @@ pass	a NEGATIVE Float32-overflowing literal in a runtime branch is rejected
 pass	a NEGATIVE large-magnitude float renders its full expansion with its sign
 pass	a NEGATIVE prefixed quantity carries its sign through the reference scale-fold
 pass	a NEGATIVE-constant point fact folds an inner comparison with the correct SIGN — the negative-point twin
+pass	a RUNTIME byte-slice torn mid-scalar is rejected by from-bytes at both tear points
 pass	a RUNTIME erased Qty add is still CHECKED at the inner width (overflow traps at run time)
 pass	a bin-arm guard cond that traps at the decoded binder TRAPS the match — it does not fall through
 pass	a closure capturing a RUNTIME String.slice→to-bytes VIEW reads it at host-call dispatch
@@ -2559,6 +2560,7 @@ pass	a recursive CONSTANT-FOLD pass rewrites int-add subtrees bottom-up and coun
 pass	a recursive HOF infers a callback whose RESULT is a sum matched in the body
 pass	a recursive MERGE SORT splits alternately, sorts halves, and merges — duplicates survive
 pass	a recursive RENAME pass rewrites every matching Name leaf at any depth and counts them
+pass	a recursive TLV frame walk over sliced runtime bytes decodes LE payloads per frame
 pass	a recursive byte fold calling two helpers emits valid wasm (disjoint scratch slots)
 pass	a recursive byte walk sums a runtime sequence via Bytes.at and match
 pass	a recursive byte walk threading a Bytes parameter through a helper infers without annotation
@@ -3535,6 +3537,7 @@ pass	a zero-length slice is the empty byte sequence
 pass	abstract theorems stored in a MAP stay unforgeable and usable — lookup returns a real Thm
 pass	abstract-type values live in an importer's map and round-trip through module ops
 pass	accessing through an empty-side split-at is usable, like the equivalent literal
+pass	accumulator introduction preserves the zero-iteration exit and the body's trap
 pass	accumulator introduction threads a transformed extra parameter through a multi-parameter recursion
 pass	adding a cubed length to a squared length is a dimension mismatch
 pass	adding a data-rate to a length is a compile-time dimension error over a composite dimension

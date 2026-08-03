@@ -1658,6 +1658,24 @@
               (def (main (: n Int64)) (go n 0)) (export main)))
   (call   main (: 1000000 Int64)) (output (: 1000000 Int64)))
 
+(case "accumulator introduction preserves the zero-iteration exit and the body's trap"
+  (doc    "The TRAP-SAFETY face of the loop transform, bracketing the exactness (non-associative alt)
+           and scale (100000 constant-stack) pins: `(sum-div n d)` recurses non-tail with a body
+           containing `(/ 100 d)`. Three verdicts: n = 0, d = 0 → 0 — the transform must NOT hoist the
+           trapping divide ahead of the zero-iteration exit (an accumulator loop that evaluated the body
+           once before checking the bound would trap here); n = 3, d = 5 → 60 — the value is exact; and
+           n = 3, d = 0 → the trap FIRES when an iteration genuinely reaches the divide (the transform
+           must not elide it either). Together: the rewrite moves no trap in either direction.")
+  (input  (do
+            (def (sum-div (: n Int64) (: d Int64))
+              (if (= n 0) 0 (+ (/ 100 d) (sum-div (- n 1) d))))
+            (def (main (: n Int64) (: d Int64))
+              (sum-div n d))
+            (export main)))
+  (call   main (: 0 Int64) (: 0 Int64)) (output (: 0 Int64))
+  (call   main (: 3 Int64) (: 5 Int64)) (output (: 60 Int64))
+  (call   main (: 3 Int64) (: 0 Int64)) (trap "divide by zero"))
+
 (case "a non-tail accumulable recursion runs to a large runtime N in constant stack"
   (doc    "`(go n) = (if (= n 0) 0 (+ 1 (go (- n 1))))` — the self-call is NOT in tail position (its result
            is fed to `(+ 1 …)`), but the accumulation is associative, so the backend's accumulator
