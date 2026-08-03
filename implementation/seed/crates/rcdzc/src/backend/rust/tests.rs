@@ -5362,6 +5362,27 @@ fn rustc_roundtrip_value_eq_over_bytes_string_and_compounds() {
 }
 
 #[test]
+fn rustc_value_eq_over_an_empty_set_of_an_unconstrained_element_type() {
+    // `Core::ValueEq` over an EMPTY collection whose element type is an UNSOLVED FREE VAR: `(Set.of (list))`
+    // never constrains its element (nothing is inserted), so its type stays `Set(Var _)`. Previously the
+    // eq-derivability check rejected the free-var element → ValueEq declined "runtime structural equality
+    // not yet rendered" (while wasm ran it — the drained-set case). Now `ty_leaf_eq_or_free` admits a
+    // free-var leaf: an empty set emits a concrete default rep (`BTreeSet<i64>`) on BOTH sides, so the
+    // native `==` type-checks and compares equal. Here a drained set (build {k}, remove k) equals the
+    // literal empty set. `main(5)` = 1 (they compare equal). Pins the empty-collection-openvar Eq path.
+    let src = "(module m (def (drained-eq (: k Int64)) \
+        (if (= (Set.of (list)) (Set.remove (Set.of (list k)) k)) 1 0)) (export drained-eq))";
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("=="),
+        "an empty-Set value-eq emits a native == (not a decline):\n{rs}"
+    );
+    if let Some(out) = rustc_run(&rs, "drained_eq(5)") {
+        assert_eq!(out, "1", "a drained set compares equal to the empty set");
+    }
+}
+
+#[test]
 fn rustc_roundtrip_single_variant_newtype_literal_payload_arm_at_narrow_widths() {
     // A single-variant newtype matched with a LITERAL-payload arm (`(match (W.Wrap n) ((W.Wrap 0) 100)
     // ((W.Wrap x) x))`, `W = (Wrap UInt8)`). The newtype tag ERASES (`(W.Wrap n)` → `n`), so `lower`
