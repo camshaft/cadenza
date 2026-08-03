@@ -102,7 +102,7 @@ async fn agent_loop_runs_end_to_end_through_the_http_executor() {
 
     // Replay-equivalence: the response is recorded, so replay reconstructs the identical KV without
     // re-fetching.
-    let replayed = Session::replay_async(session.log().to_vec(), &reducer)
+    let replayed = Session::replay(session.log().to_vec(), &reducer)
         .await
         .unwrap();
     assert_eq!(replayed.snapshot().kv_root, session.snapshot().kv_root);

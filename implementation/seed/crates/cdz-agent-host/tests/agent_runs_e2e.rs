@@ -119,7 +119,7 @@ async fn the_recorded_instant_makes_the_run_replayable() {
     // log reconstructs the identical KV without ever touching the clock again. This is why a
     // world-touching executor doesn't break event-sourcing's replay-equivalence.
     // Both the live drive and the replay go through the async path: `deliver_async` for the run, and
-    // `Session::replay_async` for the replay (it re-folds the recorded log through the Reducer, runs
+    // `Session::replay` for the replay (it re-folds the recorded log through the Reducer, runs
     // no executor). The reducer is a native `Reducer` (the single reducer trait, ruling (b)).
     let reducer = ClockAgent;
     let mut exec =
@@ -134,7 +134,7 @@ async fn the_recorded_instant_makes_the_run_replayable() {
 
     // Replay the WHOLE log into a fresh session — no executor is consulted; the recorded EffectResult
     // supplies the instant. The reconstructed KV must be byte-identical to the live one.
-    let replayed = Session::replay_async(session.log().to_vec(), &reducer)
+    let replayed = Session::replay(session.log().to_vec(), &reducer)
         .await
         .unwrap();
     assert_eq!(replayed.kv().get(b"phase"), Some(&b"running"[..]));
