@@ -7474,8 +7474,8 @@
            a trailing tick pinning the exact post-connective state. k=20: the lhs tick reads 20 (s→21),
            true short-circuits the rhs → 100 + 21 = 121 (ONE tick). k=4: lhs 4 (s→5) false, rhs 5 (s→6)
            true → 100 + 6 = 106 (TWO ticks). k=0: both false (s→2) → 200 + 2 = 202. A fold treating the
-           rhs perform as unconditional double-fires and shifts every digit — the adv-55 Core::And
-           rhs-conditionality class observed at the STATE tier, where a wrong fold is visible even when
+           rhs perform as unconditional double-fires and shifts every digit — the adv-55 Core::And rhs-conditionality
+           class (Core::And is the SHARED core node for both and/or — not a typo in this or case) observed at the STATE tier, where a wrong fold is visible even when
            the boolean value happens to agree.")
   (input  (do
             (effect Ctr (op tick (-> Unit Int64)))
@@ -7487,3 +7487,24 @@
   (call   main (: 20 Int64)) (output (: 121 Int64))
   (call   main (: 4 Int64)) (output (: 106 Int64))
   (call   main (: 0 Int64)) (output (: 202 Int64)))
+
+(case "a Map-stated handler threads 50 recursive puts and reads the accumulated size"
+  (doc    "Heap-valued handler state × recursion at scale: `fill` performs one `put` per recursive step,
+           each resume dup/dropping the CHAMP handle as the Map grows to 50 entries — a Perceus witness
+           on the handler path (a per-resume leak or premature free surfaces as memory corruption or a
+           fault long before 50). The trailing `size` reads the fully-accumulated state (50). The
+           straight-line put pins cover 2-3 ops; this is the recursion-driven volume shape a memoizing
+           pass actually produces.")
+  (input  (do
+            (effect Store (op put (-> Int64 Unit)) (op size (-> Unit Int64)))
+            (def (fill (: i Int64))
+              (if (= i 0) unit (do (Store.put i) (fill (- i 1)))))
+            (def (main (: n Int64))
+              (handle Store (Map.empty)
+                ( (put (k) m (resume unit (Map.insert m k (* k 2))))
+                  (size (u) m (resume (Map.len m) m)) )
+                (do
+                  (fill n)
+                  (Store.size))))
+            (export main)))
+  (call   main (: 50 Int64)) (output (: 50 Int64)))
