@@ -8281,7 +8281,7 @@ fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String>
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    let _ = git(&["fetch", "origin", "--quiet"]);
+    let _ = git(&["fetch", "origin", "main", "--quiet"]);
     let trunk_before = rev(TRUNK).ok_or_else(|| "cannot resolve trunk".to_string())?;
 
     // Cherry-pick THIS PR's OWN squash mergeCommit onto trunk — NOT `origin/main`'s tip and NOT the
@@ -8319,6 +8319,14 @@ fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String>
     if already_ancestor || patch_present {
         return rev(TRUNK).ok_or_else(|| "cannot re-resolve trunk".to_string());
     }
+    // Fetch the EXACT mergeCommit from origin right before the pick (re-smoke #2 bug-1b, pr-sync):
+    // `git cherry-pick <oid>` computes the diff vs the oid's PARENT, so BOTH the merge commit AND its
+    // parent must be present locally. A brand-new squash merge — and especially its parent, which is
+    // often ANOTHER just-merged PR (GitHub squashes sequentially onto origin/main) — may not be in the
+    // local object store yet, so the pick conflicts against a stale base. `git fetch origin <oid>`
+    // guarantees that specific commit + its ancestry are local. (The `fetch origin main` above usually
+    // covers it, but fetching the oid explicitly is the robust guarantee.)
+    let _ = git(&["fetch", "origin", &merge_oid, "--quiet"]);
     // Cherry-pick this PR's merge commit onto trunk (in pr-sync's trunk worktree — the only checkout of
     // `trunk`). On conflict, abort + bail (trunk untouched) — a conflict means this PR's base wasn't
     // trunk's tree (stale-base that slipped dispatch); pr-sync handles that MR manually.
