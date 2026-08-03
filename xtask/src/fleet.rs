@@ -8061,10 +8061,19 @@ fn parse_pr_state(gh_state_json: &str) -> PrState {
     }
 }
 
-/// Query GitHub for a candidate PR's `(state, CI verdict)` — the two inputs [`reap_action`] needs.
-/// `gh pr view <n> --json state` gives the merge/close state (parsed by [`parse_pr_state`]); `gh pr
-/// checks` gives the buckets. A gh error → `(Open, NoChecks)` (→ `KeepWaiting`), never a false
-/// `Merged`/`Green`/`Closed` (an error must not manufacture a land OR a reject).
+/// Query GitHub for a candidate PR's `(state, all_verdict, required_verdict)`.
+///
+/// - `state` — merge/close state from `gh pr view --json state` (parsed by [`parse_pr_state`]).
+/// - `all_verdict` — CI verdict over ALL checks (`gh pr checks`). For DISPLAY / the "green but not yet
+///   merged" observation only. Do NOT gate reaping on this — a red here may be a NON-required job.
+/// - `required_verdict` — CI verdict over ONLY merge-required checks (`gh pr checks --required`). This
+///   is the ONE that drives a reap REJECTION: [`reap_action`] rejects an OPEN PR only when THIS is
+///   `Red` (a required check failed). A non-required red leaves `required_verdict` non-Red → the PR
+///   still auto-merges → `KeepWaiting` (#2/#3). Pass `required_verdict` to `reap_action`, never
+///   `all_verdict`.
+///
+/// A gh error → `(Open, NoChecks, NoChecks)` (→ `KeepWaiting`), never a false `Merged`/`Green`/`Closed`
+/// or a false required-`Red` (an error must not manufacture a land OR a reject).
 fn pr_state_and_verdict(pr: u64) -> (PrState, CiVerdict, CiVerdict) {
     let n = pr.to_string();
     let state = Command::new("gh")
