@@ -567,24 +567,29 @@ fn compile_with_opt_inner(
             };
             match provider_result {
                 Ok(provider_bytes) => {
-                    // The provider component (if emitted) + the interface-name sidecar the runner binds
-                    // `Peer{interface}` to (emitted on BOTH paths — the consumer-only path needs it to know
-                    // which cached provider to pair).
+                    // The provider component — emitted only on the MISS (provider-emitting) path.
                     if let Some(bytes) = provider_bytes {
                         artifacts.push(Artifact::new("component-provider", CLOSURE_IFACE, bytes));
-                        // The closure CONTENT-HASH (a `u64` hex over the union edge set) — emitted ONLY on the
-                        // MISS (provider-emitting) path, so a runner persists the provider keyed by this exact
-                        // hash (recompute-free) + validates its own HIT-decision hash against this canonical
-                        // one (a fold of the same `def_content_hash` = FuncLayout col-2 — a drift-guard). Not
-                        // emitted on the consumer-only path (the caller already HAS the hash — it's how it
-                        // decided the HIT). Cheap: `union_edges` is already computed above.
-                        let hash = sidecar::closure_content_hash(&db, &union_edges);
-                        artifacts.push(Artifact::new(
-                            sidecar::KIND_CLOSURE_HASH,
-                            CLOSURE_IFACE,
-                            hash.into_bytes(),
-                        ));
                     }
+                    // The closure CONTENT-HASH (a `u64` hex over the union edge set) — emitted on BOTH the
+                    // provider (MISS) AND the consumer-only path. On a MISS a runner persists the provider
+                    // keyed by this exact hash (recompute-free) + validates its own HIT-decision hash against
+                    // this canonical one (a fold of the same `def_content_hash` = FuncLayout col-2 — a
+                    // drift-guard). On the CONSUMER-ONLY path it lets `precompile_group` do the cache-HIT
+                    // decision from ONE `EmitTestsConsumerOnly` drive (read this hash, confirm the HIT) WITHOUT
+                    // the expensive provider mono+codegen the composed path pays — the codegen-skip-on-HIT
+                    // win: on a HIT the composed provider bytes would only be DISCARDED, and emitting them is
+                    // the dominant warm-once cost. Cheap to add: `union_edges` is already computed above and
+                    // `closure_content_hash` just folds `def_content_hash` over it. Additive for existing
+                    // consumer-only callers (an extra sidecar they ignore); no behavior change on the MISS
+                    // path (same hash, same value, emitted as before — just hoisted out of the provider-bytes
+                    // guard). See `consumer_only_emits_the_closure_hash_sidecar`.
+                    let hash = sidecar::closure_content_hash(&db, &union_edges);
+                    artifacts.push(Artifact::new(
+                        sidecar::KIND_CLOSURE_HASH,
+                        CLOSURE_IFACE,
+                        hash.into_bytes(),
+                    ));
                     artifacts.push(Artifact::new(
                         link::KIND_COMPONENT_NAME,
                         CLOSURE_IFACE,

@@ -77064,6 +77064,87 @@ mod sidecar_driven {
     }
 
     #[test]
+    fn consumer_only_emits_the_closure_hash_sidecar() {
+        // GATE-PERF (codegen-skip-on-HIT, v-compiler-perf ↔ v-cdz-tooling): `EmitTestsConsumerOnly` now
+        // emits the closure-hash sidecar too (it used to be MISS/provider-path-only). This lets
+        // `precompile_group` do the cache-HIT decision from ONE `EmitTestsConsumerOnly` drive — read this
+        // hash, confirm the HIT — WITHOUT the expensive provider mono+codegen the composed path pays (the
+        // dominant ~230s warm-once cost, which on a HIT only produces bytes that get DISCARDED). This pins
+        // (1) ConsumerOnly emits exactly one closure-hash sidecar, (2) it emits NO provider (the whole
+        // point — skip the codegen), (3) its hash VALUE equals the composed path's (the two-sided key must
+        // agree, else a HIT confirmed off the ConsumerOnly hash would mismatch the persisted provider's key).
+        let lib = crate::codec::encode(&parse(
+            "(do \
+             (def (alpha (: n Int64)) (if (= n 0) 0 (+ 2 (alpha (- n 1))))) \
+             (def (beta (: n Int64)) (if (= n 0) 1 (+ 3 (beta (- n 1))))) \
+             (export alpha) (export beta))",
+        ));
+        let app_a = crate::codec::encode(&parse(
+            "(do (import \"lib\" (alpha)) (@ test (def (t-a) (if (= (alpha 3) 6) unit (trap \"x\")))))",
+        ));
+        let app_b = crate::codec::encode(&parse(
+            "(do (import \"lib\" (beta)) (@ test (def (t-b) (if (= (beta 3) 10) unit (trap \"x\")))))",
+        ));
+        let drive = |req: Request| {
+            let (lib, app_a, app_b) = (lib.clone(), app_a.clone(), app_b.clone());
+            crate::host::run_with_compiler_stack(move || {
+                crate::compile::compile(
+                    &[
+                        Artifact::new(Artifact::KIND_AST, "lib", lib),
+                        Artifact::new(Artifact::KIND_AST, "app-a", app_a),
+                        Artifact::new(Artifact::KIND_AST, "app-b", app_b),
+                        Artifact::new(crate::link::KIND_ENTRY, "entry", b"app-a".to_vec()),
+                        Artifact::new(sidecar::KIND_SIDECAR, "drive", sidecar::encode(&[req])),
+                    ],
+                    &[],
+                )
+            })
+        };
+        let hash_of = |out: &crate::abi::CompileOutput| -> String {
+            let hashes: Vec<&Artifact> = out
+                .artifacts
+                .iter()
+                .filter(|a| a.kind == crate::sidecar::KIND_CLOSURE_HASH)
+                .collect();
+            assert_eq!(hashes.len(), 1, "exactly one closure-hash sidecar");
+            String::from_utf8(hashes[0].bytes.clone()).unwrap()
+        };
+
+        let consumer = drive(Request::EmitTestsConsumerOnly);
+        assert!(
+            !consumer.has_error(),
+            "consumer-only emit does not error: {:?}",
+            consumer.diagnostics
+        );
+        // (2) NO provider on the consumer-only path — the codegen we skip.
+        assert_eq!(
+            consumer
+                .artifacts
+                .iter()
+                .filter(|a| a.kind == "component-provider")
+                .count(),
+            0,
+            "consumer-only emits NO provider (the skipped codegen)"
+        );
+        // (1) exactly one closure-hash sidecar (was zero before this fix).
+        let consumer_hash = hash_of(&consumer);
+        assert!(
+            consumer_hash.len() == 16 && consumer_hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "closure-hash is a 16-hex-digit u64: {consumer_hash:?}"
+        );
+        // (3) the ConsumerOnly hash EQUALS the composed (provider) path's — the two-sided key agreement, so
+        // a HIT confirmed off this hash matches the persisted provider's key.
+        let composed = drive(Request::EmitTestsComposed);
+        assert!(!composed.has_error());
+        assert_eq!(
+            consumer_hash,
+            hash_of(&composed),
+            "the consumer-only closure-hash must equal the composed path's — else the cache HIT decision \
+             would mismatch the persisted provider's key"
+        );
+    }
+
+    #[test]
     fn closure_hash_query_matches_the_composed_miss_path_sidecar() {
         // OPTION C provider-cache DECISION KEY: `Query::ClosureHash` returns the canonical shared-closure hash
         // (layout-only, no provider emit) — the value a runner keys a cache HIT on BEFORE emitting. It MUST
@@ -77190,15 +77271,20 @@ mod sidecar_driven {
             String::from_utf8(iface[0].bytes.clone()).unwrap(),
             "cadenza:closure/api"
         );
-        // NO closure-hash sidecar on the consumer-only path — the caller already HAS the hash (it's how it
-        // decided the cache HIT); the hash is emitted only on the MISS (provider-emitting) path.
+        // The closure-hash sidecar IS emitted on the consumer-only path (changed 2026-08-02, the
+        // codegen-skip-on-HIT enabler): it lets `precompile_group` do the cache-HIT decision from ONE
+        // `EmitTestsConsumerOnly` drive (read this hash, confirm the HIT) WITHOUT the expensive provider
+        // mono+codegen the composed path pays — see `consumer_only_emits_the_closure_hash_sidecar` for the
+        // full rationale + the value-agrees-with-composed pin. (Previously this path emitted no hash; the
+        // caller was assumed to already have it, but that forced the composed/provider path just to obtain
+        // the hash — the whole ~230s warm-once HIT cost.)
         assert_eq!(
             out.artifacts
                 .iter()
                 .filter(|a| a.kind == crate::sidecar::KIND_CLOSURE_HASH)
                 .count(),
-            0,
-            "consumer-only must NOT emit a closure-hash (the caller supplied it to decide the hit)"
+            1,
+            "consumer-only now emits exactly one closure-hash (the HIT-decision key, no provider codegen)"
         );
         // The N consumer components ARE emitted, named by file link path, and validate as components that
         // IMPORT the closure iface (the same consumers EmitTestsComposed emits — only the provider is skipped).
