@@ -7982,7 +7982,9 @@ fn write_ci_dispatch(fleet: &Fleet, d: &CiDispatch) -> std::io::Result<()> {
 /// Live path (execute), following the pilot-validated recipe (`fleet/CI-GATED-LANES-DESIGN.md`):
 ///
 /// 1. `git worktree add --detach <scratch> origin/main` — a throwaway worktree at the published tip.
-/// 2. `git cherry-pick <ref>` there — re-parent the SINGLE MR commit onto origin/main.
+/// 2. `git cherry-pick trunk..<ref>` there — re-parent the MR's FULL commit range onto origin/main
+///    (not just the tip — a multi-commit `--ref` must not drop its ancestors; an empty range is a
+///    no-op "already landed", not a conflict).
 /// 3. `candidate_dispatch_argv` (push cand branch / gh pr create --base main / gh pr merge --squash --auto).
 /// 4. scrape the PR number, write the `CiDispatch` record, remove the scratch worktree.
 ///
@@ -8099,9 +8101,29 @@ fn publish_candidate(
     //    ancestor commits (v-effects #1705: a slot-clobber miscompile fix in the parent was lost while
     //    only the tip's 6-line test tweak landed). `trunk..ref` is exactly the agent's unlanded commits
     //    (trunk is tree-equal to origin/main, so the range applies cleanly), replayed oldest-first.
-    //    `--allow-empty` tolerates a commit whose change is already present. If the range is empty
-    //    (ref == trunk, nothing to land) cherry-pick errors → treated as a conflict/no-op below.
+    //    `--allow-empty` tolerates a commit whose change is already present.
     let range = format!("{TRUNK}..{}", r#ref);
+    // EMPTY RANGE up front (ref == trunk / already landed): `trunk..ref` has ZERO commits. This is
+    // NOT a conflict — it's "nothing to land" (the MR's content is already on trunk by patch-id, e.g.
+    // it landed under a re-parented sha and the audit path will ack it). Distinguish it from a REAL
+    // cherry-pick conflict so we don't emit a misleading "CONFLICTS → needs rebase → reject stale-base"
+    // signal for an already-landed MR (PR #1712 review). Don't dispatch a no-op candidate; the reap/
+    // audit (`ref_landed_on_trunk`) concludes an already-landed MR correctly.
+    let range_count: usize = Command::new("git")
+        .current_dir(&scratch)
+        .args(["rev-list", "--count", &range])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(0);
+    if range_count == 0 {
+        println!(
+            "publish-candidate: {ref} has NOTHING to land (trunk..{ref} is empty — already on trunk by patch-id). Not dispatching a no-op candidate; the audit/reap will ack it as already-landed."
+        );
+        cleanup(&fleet.repo, &scratch_s);
+        return false;
+    }
     let pick = Command::new("git")
         .current_dir(&scratch)
         .args(["cherry-pick", "--allow-empty", &range])
@@ -8113,7 +8135,7 @@ fn publish_candidate(
             .args(["cherry-pick", "--abort"])
             .output();
         eprintln!(
-            "publish-candidate: `git cherry-pick {range}` onto origin/main CONFLICTS (or empty range) — this MR needs a rebase; NOT dispatching. (reject the sender with a stale-base note.)"
+            "publish-candidate: `git cherry-pick {range}` onto origin/main CONFLICTS — this MR needs a rebase; NOT dispatching. (reject the sender with a stale-base note.)"
         );
         cleanup(&fleet.repo, &scratch_s);
         return false;
