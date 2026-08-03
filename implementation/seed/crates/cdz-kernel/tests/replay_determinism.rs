@@ -57,12 +57,12 @@ impl Reducer for BusyReducer {
 
                 // Every third input emits an effect, so the log grows the dispatch/result chain.
                 if byte % 3 == 0 {
-                    FoldOutput::with(vec![EffectRequest {
-                        kind: EffectKind::Http,
-                        target: "https://ok.host/x".into(),
-                        payload: None,
-                        timeliness: Timeliness::Interactive,
-                    }])
+                    FoldOutput::with(vec![EffectRequest::new(
+                        EffectKind::Http,
+                        "https://ok.host/x",
+                        None,
+                        Timeliness::Interactive,
+                    )])
                 } else {
                     FoldOutput::none()
                 }

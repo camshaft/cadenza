@@ -732,17 +732,17 @@ impl crate::reducer::Reducer for ComponentReducer {
                 let effects = guest_effects
                     .into_iter()
                     .map(|g| crate::reducer::Effect {
-                        request: crate::effect::EffectRequest {
-                            kind: guest_kind_to_kernel(&g.kind),
-                            target: g.target,
+                        request: crate::effect::EffectRequest::new(
+                            guest_kind_to_kernel(&g.kind),
+                            g.target,
                             // The guest's payload is opaque bytes → an Inline kernel payload; None stays
                             // None. `g.payload` is a Vec<u8> from the guest; freeze it into `Bytes` (the
                             // ref-counted Inline body) via `.into()`.
-                            payload: g.payload.map(|p| crate::effect::Payload::Inline(p.into())),
+                            g.payload.map(|p| crate::effect::Payload::Inline(p.into())),
                             // The reducer WIT doesn't yet surface a per-effect timeliness (guest-declared
                             // batchability is a follow-up WIT slice); guest effects default to Interactive.
-                            timeliness: crate::effect::Timeliness::Interactive,
-                        },
+                            crate::effect::Timeliness::Interactive,
+                        ),
                         // The guest's continuation token rides into the kernel Effect (→ Dispatched frame).
                         token: g.correlation,
                     })
@@ -950,12 +950,12 @@ impl crate::reducer::Reducer for AsyncComponentReducer {
                 let effects = guest_effects
                     .into_iter()
                     .map(|g| crate::reducer::Effect {
-                        request: crate::effect::EffectRequest {
-                            kind: guest_kind_to_kernel(&g.kind),
-                            target: g.target,
-                            payload: g.payload.map(|p| crate::effect::Payload::Inline(p.into())),
-                            timeliness: crate::effect::Timeliness::Interactive,
-                        },
+                        request: crate::effect::EffectRequest::new(
+                            guest_kind_to_kernel(&g.kind),
+                            g.target,
+                            g.payload.map(|p| crate::effect::Payload::Inline(p.into())),
+                            crate::effect::Timeliness::Interactive,
+                        ),
                         token: g.correlation,
                     })
                     .collect();

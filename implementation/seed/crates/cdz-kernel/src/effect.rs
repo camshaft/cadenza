@@ -12,6 +12,7 @@
 //!   the reducer resumes when the *result event* carrying that id arrives. Correlation is by id, so
 //!   concurrent / out-of-order results are unambiguous.
 
+use crate::event::ContentType;
 use crate::hash::Hash;
 
 /// A kernel-assigned identifier for a single dispatched effect, unique within a session. The reducer
@@ -108,6 +109,14 @@ pub struct EffectRequest {
     /// directly to pick the on-demand vs batch path. Meaningful for `Model` today; a first-class field so
     /// future batchable kinds (embeddings, bulk fetches) reuse it. Default `Interactive`.
     pub timeliness: Timeliness,
+    /// The extensible content-type of this effect (seq-39): a `{family, version}` tag that routing and
+    /// authz key on, so a NEW effect type is served by registering a handler for its family STRING rather
+    /// than growing the [`EffectKind`] enum + recompiling the kernel. For the well-known kinds this is
+    /// derived from `kind` ([`EffectKind::family`] + version 1) by [`EffectRequest::new`], so the two agree
+    /// by construction; a future register-by-string slice lets an effect carry a family with no matching
+    /// `EffectKind` variant at all. The `family` is the seam [`crate::authz::Authorizer`] and the executor
+    /// router match on (via [`ContentType::matches_family`]).
+    pub content_type: ContentType,
 }
 
 impl EffectRequest {
@@ -115,13 +124,12 @@ impl EffectRequest {
     /// over a struct literal at every call site (kernel AND downstream crates).
     ///
     /// Why a constructor for a plain data struct: it lets the shared `EffectRequest` shape grow a field
-    /// later without editing every call site. Adding a field to a struct breaks every pre-existing struct
-    /// literal at compile time (rustc E0063, and across a crate boundary too) — so a field-add to a type
-    /// the downstream `cdz-agent-host` crate constructs by literal would fail its build. Once construction
-    /// goes through `new` instead, a later field-add only edits THIS body (deriving the new field from the
-    /// existing args), leaving call sites untouched. That benefit is CONDITIONAL: it's only realized for
-    /// call sites that have actually migrated off literals onto `new`. Today `new` just builds the current
-    /// shape verbatim.
+    /// without editing every call site. Adding a field to a struct breaks every pre-existing struct literal
+    /// at compile time (rustc E0063, and across a crate boundary too), so once construction goes through
+    /// `new`, a field-add edits only THIS body — call sites are untouched. This is exactly how
+    /// `content_type` was added: `new` DERIVES it from `kind` ([`EffectKind::family`] + version 1), so
+    /// every caller that already builds via `new` got the new field for free. A caller passing a `kind`
+    /// therefore always gets a matching `content_type` — the two can't drift.
     pub fn new(
         kind: EffectKind,
         target: impl Into<String>,
@@ -129,6 +137,10 @@ impl EffectRequest {
         timeliness: Timeliness,
     ) -> Self {
         EffectRequest {
+            content_type: ContentType {
+                family: kind.family().to_string(),
+                version: 1,
+            },
             kind,
             target: target.into(),
             payload,
@@ -220,10 +232,17 @@ pub struct Capability {
 }
 
 impl Capability {
-    /// Does this grant permit the given request? Kind must match AND the predicate must admit the
-    /// resolved target. Both conditions — the review's whole point (SEC-F1): kind alone is not enough.
+    /// Does this grant permit the given request? The effect FAMILY must match AND the predicate must admit
+    /// the resolved target. Both conditions — the review's whole point (SEC-F1): family alone is not enough.
+    ///
+    /// Family-keyed (seq-39): the match is `req.content_type.family == self.kind.family()`, via
+    /// [`ContentType::matches_family`], NOT an `EffectKind` enum equality. So authz keys on the same family
+    /// STRING the codec/router use — the seam that lets a future effect type (a family with no built-in
+    /// `EffectKind`) be granted by family without a kernel enum edit. For the well-known kinds this is
+    /// identical to the old `kind ==` check (a request built via [`EffectRequest::new`] has
+    /// `content_type.family == kind.family()` by construction).
     pub fn permits(&self, req: &EffectRequest) -> bool {
-        self.kind == req.kind && self.predicate.admits(&req.target)
+        req.content_type.matches_family(self.kind.family()) && self.predicate.admits(&req.target)
     }
 }
 
@@ -271,22 +290,29 @@ mod tests {
     }
 
     #[test]
-    fn new_builds_the_same_request_as_a_struct_literal() {
-        // EffectRequest::new is construction-equivalent to a struct literal (it just wraps one), so
-        // migrating call sites off literals onto `new` is behavior-preserving. This is what lets a field
-        // later be added inside `new` (derived from the existing args) without touching migrated callers;
-        // today the two forms are identical field-for-field.
+    fn new_derives_content_type_from_kind_and_matches_a_full_literal() {
+        // EffectRequest::new DERIVES content_type from kind (family = kind.family(), version 1) — this is
+        // the field-add benefit realized: callers pass the same 4 args and get the extra field filled
+        // consistently, so kind and content_type.family can't drift. Equivalent to a full literal that
+        // spells out the derived content_type.
         let via_new = EffectRequest::new(
             EffectKind::Http,
             "https://ok.host/x",
             Some(Payload::Inline(b"body".to_vec().into())),
             Timeliness::Interactive,
         );
+        // new() set content_type.family to the kind's canonical family string.
+        assert_eq!(via_new.content_type.family, EffectKind::Http.family());
+        assert_eq!(via_new.content_type.version, 1);
         let via_literal = EffectRequest {
             kind: EffectKind::Http,
             target: "https://ok.host/x".to_string(),
             payload: Some(Payload::Inline(b"body".to_vec().into())),
             timeliness: Timeliness::Interactive,
+            content_type: ContentType {
+                family: EffectKind::Http.family().to_string(),
+                version: 1,
+            },
         };
         assert_eq!(via_new, via_literal);
         // The `impl Into<String>` target arg accepts both &str and String uniformly.
@@ -381,14 +407,14 @@ mod tests {
         assert_eq!(Timeliness::default(), Timeliness::Interactive);
         // A Batchable request carries its optional caller latency hint (a sum, not a bool — the hint
         // rides the variant). None = batch whenever; Some(ms) = the longest latency tolerated.
-        let deferred = EffectRequest {
-            kind: EffectKind::Model,
-            target: "anthropic.claude".to_string(),
-            payload: None,
-            timeliness: Timeliness::Batchable {
+        let deferred = EffectRequest::new(
+            EffectKind::Model,
+            "anthropic.claude",
+            None,
+            Timeliness::Batchable {
                 max_latency_ms: Some(3_600_000),
             },
-        };
+        );
         match deferred.timeliness {
             Timeliness::Batchable { max_latency_ms } => assert_eq!(max_latency_ms, Some(3_600_000)),
             Timeliness::Interactive => panic!("expected Batchable"),
@@ -523,18 +549,13 @@ mod tests {
             kind: EffectKind::Shell,
             predicate: ResourcePredicate::Prefix("cargo ".into()),
         };
-        let ok = EffectRequest {
-            kind: EffectKind::Shell,
-            target: "cargo test".into(),
-            payload: None,
-            timeliness: Timeliness::Interactive,
-        };
-        let bad = EffectRequest {
-            kind: EffectKind::Shell,
-            target: "rm -rf /".into(),
-            payload: None,
-            timeliness: Timeliness::Interactive,
-        };
+        let ok = EffectRequest::new(
+            EffectKind::Shell,
+            "cargo test",
+            None,
+            Timeliness::Interactive,
+        );
+        let bad = EffectRequest::new(EffectKind::Shell, "rm -rf /", None, Timeliness::Interactive);
         assert!(cap.permits(&ok));
         assert!(!cap.permits(&bad));
     }
