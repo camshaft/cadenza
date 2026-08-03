@@ -500,25 +500,50 @@ Notes that make this durable + tolerant-reader-friendly (§9b envelope disciplin
 
 ### (b) The reactive half — genesis-seed (I5) + `capabilities-changed` push (I6)
 
-Both reuse the (a) payload form + the same fold path; they differ only in WHO emits the event and WHEN:
-- **Genesis-seed (I5):** the session-mint / session-factory path emits an initial `capabilities-manifest`
-  event (content-typed, the (a) form) as one of the early genesis events, so the reducer folds it into its
-  `sys/capabilities` KV before its first substantive fold — born knowing, no first-fold round-trip. It is
-  the SAME projection (`project_manifest` over the session's initial caps + the executor registry at mint
-  time), just produced at genesis rather than on a query.
-- **`capabilities-changed` push (I6):** when the host's mechanism or policy changes (an executor
-  registered/removed, an authorizer/policy-pointer `set` §20b, a delegated grant landing), the kernel
-  RE-PROJECTS each affected live session and, IF that session's manifest actually changed, appends a
-  `capabilities-changed` event (the (a) payload) to its log. The reducer folds it → updates `sys/capabilities`
-  → may now emit a newly-available effect. Design constraints already locked (from fork 2): the push is
-  DURABLE (appended to the log, not a live signal — §4b) so replay sees it at the same position; delivered
-  ONLY to sessions whose projection changed (the kernel computes the projection, so it knows who); and
-  COALESCED — at most one `capabilities-changed` per session per settle point, carrying the final manifest,
-  so a burst of registry/policy changes can't flood logs. Polling is rejected (anti-§9d).
-- **Sequencing:** I4 (the inline query answer) lands first — it exercises the (a) encode + the fold-back on
-  the smallest surface. I5 (genesis-seed) and I6 (the reactive push) build on the same encode + fold path;
-  I6 needs a kernel hook on executor-registry / authorizer-pointer mutation to trigger the re-projection —
-  a `drive`-adjacent change in `src/kernel.rs` — sequenced after I4.
+I4b (kernel-answered inline query) is the reference shape: `project_manifest` → `encode_capability_manifest`
+→ a folded `EffectResult` carrying the manifest bytes, logged so replay reads the logged answer. I5 and I6
+reuse that exact encode + logged-result shape; they differ only in WHO triggers the emission and WHEN. Both
+are **logged, replay-deterministic events** (mirroring I4b) — NOT transient control surfaces — so a
+capability the reducer learned survives replay at the same log position.
+
+**I5 — genesis-seed (born-knowing).** Concrete decisions for the open questions:
+- **Not the `Genesis` event itself.** `Session::genesis` carries no effects and folds nothing (verified in
+  `kernel.rs`), so the seed cannot be an effect the genesis emits. Instead, **immediately after genesis, the
+  kernel folds a SYNTHETIC `capabilities-manifest` `EffectResult`** — identical in shape to the I4b answer
+  (same `encode_capability_manifest` bytes, folded through `record_result_async`-style machinery) but
+  triggered by the kernel at session-birth rather than by a guest `control/capabilities` request. This
+  reuses I4b's code path wholesale — the seed IS "the query answer, asked by the kernel on the guest's
+  behalf at birth." One shape, one decoder in the guest (the "one shape, pinned with a test" rule).
+- **Always seed, do NOT condition on whether the guest reads it.** The cost is one projection + one small
+  logged event at birth — negligible — and conditioning on guest behavior would (a) require the kernel to
+  predict guest reads (it can't; the guest is opaque) and (b) break the born-knowing guarantee. Always-seed
+  keeps `sys/capabilities` populated before the first substantive fold, deterministically.
+- Seeded manifest = `project_manifest` over the session's initial caps + the executor registry as of birth.
+
+**I6 — `capabilities-changed` push (mid-session upgrade).** Concrete decisions:
+- **Shape = a logged `capabilities-changed` event, mirroring I4b** (v-agent-harness's lean, concurred):
+  DURABLE (appended to the log, not a transient control surface — §4b), so replay sees the upgrade at the
+  same position and folds the identical bytes. Same `encode_capability_manifest` payload as I4b/I5.
+- **The mutation HOOK is DESIGN-AHEAD, not present today.** The current kernel takes the executor set +
+  authorizer as parameters to `deliver_async` — there is NO dynamic executor-registration or
+  authorizer/policy-swap path yet. So I6's trigger is the §20b end-state (a policy-log append that repoints
+  the Cedar-engine/policy pointer, or a delegated-grant landing) — it should be built WHEN that mutation
+  path exists, keyed off the same policy-log append that changes what a probe would return. ⚠ Do NOT
+  fabricate a mutation hook I6 fires on before the mechanism/policy actually becomes mutable at runtime;
+  I6 is correctly sequenced AFTER the runtime-mutable-policy work (§20b), not after I4b. (Flag to keep the
+  vertical honest: I5 is buildable now on I4b's shape; I6 waits on runtime-mutable policy/mechanism.)
+- **When it does fire:** on a mutation, the kernel RE-PROJECTS each affected live session and, only if that
+  session's manifest actually CHANGED, appends one `capabilities-changed`. **Coalescing rule = one push per
+  drive-quiescence** (not per-mutation): a burst of mutations that settles before the next fold yields a
+  single push carrying the final manifest — bounded log growth, and the reducer only ever sees net-new state.
+- **Delivered only to sessions whose projection changed** — the kernel computes the projection, so it knows
+  which sessions a given policy/mechanism change affects; unaffected sessions get nothing. Polling is
+  rejected (anti-§9d).
+
+**Sequencing:** I4b LANDED (query answer, exercises the encode + fold-back). **I5 (genesis-seed) is next and
+buildable now** — it reuses I4b's exact path, triggered at birth. **I6 (the push) is gated on §20b
+runtime-mutable policy/mechanism** — its trigger hook has nothing to fire on until then; spec is ready so it
+drops in when that path exists.
 
 ## Related design context
 
