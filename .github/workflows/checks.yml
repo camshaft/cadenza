@@ -312,7 +312,12 @@ jobs:
           # valid bytes (same rationale as reducer-guest, trunk@455dcb7e7). The lifted component's PATH is
           # handed to the e2e via CEDAR_POLICY_COMPONENT (next step).
           rustup target add wasm32-unknown-unknown
-          ( cd tests/fixtures/cedar-policy-guest && cargo build --target wasm32-unknown-unknown --release )
+          # --locked: build against the COMMITTED Cargo.lock (#1522). The guest's deps are loose
+          # (cedar-policy = "4", wit-bindgen = "0.45"), so without --locked CI floats to a newer
+          # cedar-policy 4.x whose codegen breaks the component lift below — the "no longer builds a
+          # valid wasm component" red. --locked pins the reproducible lock (cedar-policy 4.12.0) the
+          # commit intended, so the lift stays valid.
+          ( cd tests/fixtures/cedar-policy-guest && cargo build --target wasm32-unknown-unknown --release --locked )
           wasm-tools component new \
             tests/fixtures/cedar-policy-guest/target/wasm32-unknown-unknown/release/cedar_policy_guest.wasm \
             -o /tmp/cedar_policy_guest.component.wasm
