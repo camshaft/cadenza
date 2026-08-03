@@ -8118,10 +8118,16 @@ fn publish_candidate(
     //   success + count==0  → empty-range no-op (already reachable from trunk)
     //   success + count>0    → real range → proceed to cherry-pick below
     //   error (bad ref / missing object / spawn) → surface stderr + bail (NOT a conflict)
-    let range_count: Option<usize> = Command::new("git")
+    // Capture the rev-list Output ONCE (PR #1731 review): derive the count from its stdout AND reuse
+    // its stderr on the error arm below — no second subprocess just to read stderr, and no stderr
+    // mismatch from a repo-state change between two calls. `range_count` is `Some(n)` only on a
+    // SUCCESSFUL rev-list; a spawn/exit failure → `None` (the error face).
+    let rev_list_out = Command::new("git")
         .current_dir(&scratch)
         .args(["rev-list", "--count", &range])
-        .output()
+        .output();
+    let range_count: Option<usize> = rev_list_out
+        .as_ref()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok());
@@ -8134,13 +8140,12 @@ fn publish_candidate(
             return false;
         }
         None => {
-            // rev-list itself FAILED — surface the real error, don't let it masquerade as a conflict.
-            let stderr = Command::new("git")
-                .current_dir(&scratch)
-                .args(["rev-list", "--count", &range])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string())
-                .unwrap_or_else(|e| format!("(could not spawn git: {e})"));
+            // rev-list itself FAILED — surface the real error (reuse the ONE Output's stderr), don't
+            // let it masquerade as a conflict.
+            let stderr = match &rev_list_out {
+                Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                Err(e) => format!("(could not spawn git: {e})"),
+            };
             eprintln!(
                 "publish-candidate: `git rev-list --count {range}` FAILED — NOT dispatching (this is a rev-list error, e.g. an invalid/missing ref, NOT a stale-base conflict). git said: {stderr}"
             );
