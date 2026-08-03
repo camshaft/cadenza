@@ -215,6 +215,32 @@
             (export main)))
   (error  CDZ0203))
 
+; The bare-under-applied reject above is a PARAMETER annotation. A VALUE annotation `(: <value> Name)` with
+; a bare generic ctor must give the SAME needs-an-argument message — it used to give a CONFUSING mismatch
+; ('annotation type Box does not match value type Box') because a bare generic REDUCES to a Ty::Sum with a
+; fresh var, so the value-vs-annotation unify fired a mismatch whose two sides rendered identically. The
+; value-annotation path now runs the same bare-ctor check the parameter path does → CDZ0203, for a user
+; generic and a built-in alike; the two faces below pin that a value annotation reads like a param annotation.
+
+(case "a bare user generic ctor in a VALUE annotation needs a type argument"
+  (doc    "`(: (Mk 1) Box)` annotates a VALUE with the bare generic `(type (Box a) (Mk a))` — no type
+           argument. This must give the type-constructor-needs-an-argument reject (CDZ0203), the same the
+           bare PARAMETER annotation `(: b Container)` above gives, NOT the old confusing 'annotation type Box
+           does not match value type Box — wrap the value in Mk' (both sides rendered `Box`, reading as a
+           self-contradiction) that fired because the bare generic reduced to a `Ty::Sum` with a fresh var so
+           the value-vs-annotation unify mismatched. Pins the value-annotation bare-ctor face aligns with the
+           parameter path's clear diagnostic.")
+  (input  (do (type (Box a) (Mk a)) (def (main) (: (Mk 1) Box)) (export main)))
+  (error  CDZ0203))
+
+(case "a bare built-in generic in a VALUE annotation needs a type argument"
+  (doc    "The built-in companion: `(: 5 List)` annotates a value with the bare generic `List` — no element
+           type. CDZ0203 needs-an-argument, matching the user-generic value-annotation case above and the
+           bare built-in in a parameter position. Pins the value-annotation bare-ctor check is uniform for a
+           built-in generic and a user one.")
+  (input  (do (def (main) (: 5 List)) (export main)))
+  (error  CDZ0203))
+
 ; The single-param applied case above covers the flat one-argument face; the resolve path also handles
 ; MULTI-parameter generics and NESTED type-arguments (a user generic inside a built-in generic, or inside
 ; another user generic). Each was equally CDZ0101-unresolvable under the parenthesized-head `""`-name bug
@@ -292,10 +318,11 @@
   (input  (do (type (Pair a b) (Both a b)) (def (f (: x (Pair Int64))) 0) (def (main) 0) (export main)))
   (error  CDZ0203))
 
-; The two cases above over-apply a NON-generic type to a TYPE argument (arity is wrong). The dual slip
-; is a legitimately GENERIC type constructor — one that DOES take a type parameter — applied to a VALUE
-; where a type belongs: `(Option 5)`, `(List 5)`. Here the arity is right (Option/List take one
-; parameter) but the argument's KIND is wrong (a value, not a type). This is a distinct diagnostic
+; The arity rejects above (a non-generic type over-applied, and a generic type over-/under-supplied) are
+; about the NUMBER of type arguments. The dual slip is a legitimately GENERIC type constructor — one that
+; DOES take a type parameter — applied to a VALUE where a type belongs: `(Option 5)`, `(List 5)`. Here the
+; arity is right (Option/List take one parameter) but the argument's KIND is wrong (a value, not a type).
+; This is a distinct diagnostic
 ; (CDZ0203) that names the type-argument position — "the type argument must be a type, but a value
 ; appears here" — rather than the "not a type constructor" / "takes no type parameters" arity messages,
 ; so an author who wrote a value where the element/payload TYPE goes is told to write a type.
