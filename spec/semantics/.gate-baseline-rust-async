@@ -5549,7 +5549,7 @@ todo	a build-time delegated effect whose result a returned closure captures does
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a closure captures the result of a build-time host op called with an argument
 todo	a closure capturing a build-time host effect preserves the order of two host calls
-todo	a closure that performs a delegated effect cannot cross the host boundary
+pass	a closure that performs a delegated effect cannot cross the host boundary
 todo	a conditional performs only the taken branch's effect — else
 todo	a conditional performs only the taken branch's effect — then
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
