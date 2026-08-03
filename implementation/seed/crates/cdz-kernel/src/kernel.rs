@@ -2658,12 +2658,12 @@ mod store_effect_tests {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     let payload = crate::event_ast::encode_name_set(
-                        "system/compiler/latest",
+                        NameStore::COMPILER_LATEST,
                         &Hash::of(b"compiler-wasm-v1"),
                     );
                     FoldOutput::with(vec![EffectRequest::new_with_family(
                         effect_ct::STORE_SET,
-                        "system/compiler/latest",
+                        NameStore::COMPILER_LATEST,
                         Some(Payload::Inline(payload.into())),
                         Timeliness::Interactive,
                     )])
@@ -2678,7 +2678,7 @@ mod store_effect_tests {
                             kv.put(b"phase".to_vec(), b"resolving".to_vec());
                             FoldOutput::with(vec![EffectRequest::new_with_family(
                                 effect_ct::STORE_RESOLVE,
-                                "system/compiler/latest",
+                                NameStore::COMPILER_LATEST,
                                 None,
                                 Timeliness::Interactive,
                             )])
@@ -2824,7 +2824,7 @@ mod store_effect_tests {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(
                         effect_ct::STORE_RESOLVE,
-                        "system/compiler/latest",
+                        NameStore::COMPILER_LATEST,
                         None,
                         Timeliness::Interactive,
                     )])
@@ -2888,7 +2888,7 @@ mod store_effect_tests {
         store
             .apply_effect(
                 effect_ct::STORE_SET,
-                "system/compiler/latest",
+                NameStore::COMPILER_LATEST,
                 Some(Hash::of(b"seeded")),
                 Hash::of(b"seed-key"),
             )

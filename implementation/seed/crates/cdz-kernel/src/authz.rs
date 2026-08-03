@@ -105,6 +105,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn family_grant_permits_a_store_family_no_capability_can() {
         use crate::effect::{effect_ct, EffectRequest};
+        use crate::name_store::NameStore;
         // §4c: store/* has NO EffectKind, so a `Capability` (keyed on kind.family()) CANNOT grant it —
         // Capability::for_family + with_family_grants is the register-by-string seam that can. A store/set
         // grant scoped to `system/` permits `store/set system/…` and denies other prefixes / other families.
@@ -122,7 +123,7 @@ mod tests {
         };
         // Permits a system/ name...
         assert!(authz
-            .authorize(&store_set("system/compiler/latest"))
+            .authorize(&store_set(NameStore::COMPILER_LATEST))
             .await
             .is_ok());
         // ...denies a name outside the granted prefix...
@@ -131,7 +132,7 @@ mod tests {
         assert!(authz
             .authorize(&EffectRequest::new_with_family(
                 effect_ct::STORE_RESOLVE,
-                "system/compiler/latest",
+                NameStore::COMPILER_LATEST,
                 None,
                 crate::effect::Timeliness::Interactive,
             ))

@@ -305,20 +305,20 @@ mod tests {
         let mut s = NameStore::new();
         let v1 = Hash::of(b"compiler v1");
         let v2 = Hash::of(b"compiler v2");
-        s.set("system/compiler/latest", SetEntry::unsigned(v1))
+        s.set(NameStore::COMPILER_LATEST, SetEntry::unsigned(v1))
             .unwrap();
-        assert_eq!(s.resolve("system/compiler/latest").unwrap(), v1);
+        assert_eq!(s.resolve(NameStore::COMPILER_LATEST).unwrap(), v1);
         // A later set moves the pointer; resolve returns the NEW latest (value-over-time).
-        s.set("system/compiler/latest", SetEntry::unsigned(v2))
+        s.set(NameStore::COMPILER_LATEST, SetEntry::unsigned(v2))
             .unwrap();
-        assert_eq!(s.resolve("system/compiler/latest").unwrap(), v2);
+        assert_eq!(s.resolve(NameStore::COMPILER_LATEST).unwrap(), v2);
     }
 
     #[test]
     fn resolve_of_a_never_set_name_is_no_such_name() {
         let s = NameStore::new();
         assert_eq!(
-            s.resolve("system/compiler/latest"),
+            s.resolve(NameStore::COMPILER_LATEST),
             Err(NameStoreError::NoSuchName)
         );
     }
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn authority_prefix_parse_covers_the_four_namespaces_and_fails_closed() {
         assert_eq!(
-            NameStore::authority_prefix_of("system/compiler/latest"),
+            NameStore::authority_prefix_of(NameStore::COMPILER_LATEST),
             NameAuthority::System
         );
         assert_eq!(
@@ -436,11 +436,11 @@ mod tests {
         // The store's entry payload IS what event_ast::encode_name_set serializes for a durable backend —
         // pin that the value survives the wire (slice-1 codec + slice-2 store agree).
         let h = Hash::of(b"the compiler wasm");
-        let bytes = crate::event_ast::encode_name_set("system/compiler/latest", &h);
+        let bytes = crate::event_ast::encode_name_set(NameStore::COMPILER_LATEST, &h);
         let (name, hash) = crate::event_ast::decode_name_set(&bytes).unwrap();
         let mut s = NameStore::new();
         s.set(&name, SetEntry::unsigned(hash)).unwrap();
-        assert_eq!(s.resolve("system/compiler/latest").unwrap(), h);
+        assert_eq!(s.resolve(NameStore::COMPILER_LATEST).unwrap(), h);
     }
 
     #[test]
@@ -450,16 +450,16 @@ mod tests {
         let (v1, v2) = (Hash::of(b"compiler v1"), Hash::of(b"compiler v2"));
         let sess = Hash::of(b"scratch");
         let rebuilt = NameStore::replay_set_entries([
-            ("system/compiler/latest", v1),
+            (NameStore::COMPILER_LATEST, v1),
             ("session/abc/scratch", sess),
-            ("system/compiler/latest", v2), // a later set moves the pointer
+            (NameStore::COMPILER_LATEST, v2), // a later set moves the pointer
         ])
         .expect("replay a well-formed set-event stream");
-        assert_eq!(rebuilt.resolve("system/compiler/latest").unwrap(), v2);
+        assert_eq!(rebuilt.resolve(NameStore::COMPILER_LATEST).unwrap(), v2);
         assert_eq!(rebuilt.resolve("session/abc/scratch").unwrap(), sess);
         // The full value-over-time is preserved (audit/rollback), not just the latest.
         let hist: Vec<Hash> = rebuilt
-            .history("system/compiler/latest")
+            .history(NameStore::COMPILER_LATEST)
             .iter()
             .map(|e| e.hash)
             .collect();
@@ -540,14 +540,14 @@ mod tests {
 
         // store/set with a hash → appends + echoes the set hash.
         assert_eq!(
-            s.apply_effect(effect_ct::STORE_SET, "system/compiler/latest", Some(h), k),
+            s.apply_effect(effect_ct::STORE_SET, NameStore::COMPILER_LATEST, Some(h), k),
             Ok(StoreOutcome::Set(h))
         );
         // store/resolve with no hash → the current (frozen) hash.
         assert_eq!(
             s.apply_effect(
                 effect_ct::STORE_RESOLVE,
-                "system/compiler/latest",
+                NameStore::COMPILER_LATEST,
                 None,
                 Hash::of(b"key-2")
             ),
@@ -573,7 +573,7 @@ mod tests {
         let mut s = NameStore::new();
         let h = Hash::of(b"compiler wasm v1");
         let key = Hash::of(b"dispatch-key-A");
-        let name = "system/compiler/latest";
+        let name = NameStore::COMPILER_LATEST;
 
         // First apply appends.
         assert_eq!(
@@ -613,7 +613,7 @@ mod tests {
         // and forgetting an absent key (a resolve's, or an already-forgotten one) is a harmless no-op.
         use crate::effect::effect_ct;
         let mut s = NameStore::new();
-        let name = "system/compiler/latest";
+        let name = NameStore::COMPILER_LATEST;
         let key = Hash::of(b"dispatch-key-A");
         let h = Hash::of(b"v1");
 

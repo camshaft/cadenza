@@ -1298,10 +1298,11 @@ mod tests {
     fn name_set_payload_round_trips_name_and_hash() {
         // §4c set(name, hash) log-entry payload (non-crypto half): the full name string + the content
         // hash it points at round-trip through the shared codec.
+        use crate::name_store::NameStore;
         let h = Hash::of(b"the compiler wasm bytes");
         let (name, hash) =
-            decode_name_set(&encode_name_set("system/compiler/latest", &h)).expect("round-trips");
-        assert_eq!(name, "system/compiler/latest");
+            decode_name_set(&encode_name_set(NameStore::COMPILER_LATEST, &h)).expect("round-trips");
+        assert_eq!(name, NameStore::COMPILER_LATEST);
         assert_eq!(hash, h);
 
         // A scoped name with a different prefix round-trips identically (the prefix is the resolver's
