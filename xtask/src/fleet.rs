@@ -5028,6 +5028,15 @@ fn watchdog_tick_prompt(fleet: &Fleet, a: &Agent) -> String {
 /// escalation path — see [`RearmAction::ReissueLoop`]). Unlike [`nudge_tick`]'s one-shot `continue`,
 /// this types the whole `/loop` command so the loop skill schedules the recurring job AND runs the
 /// first tick. The prompt is sent with `-l` (literal) so no chars are interpreted as tmux key names.
+///
+/// TWO Enters, not one: this `/loop <interval> <full tick prompt>` is the LONGEST keystroke line the
+/// watchdog sends (~600 chars). On a long line, tmux paste-buffering can leave the text typed-but-
+/// UNSUBMITTED after a single Enter — the exact by-hand workaround [`nudge_drain_stall`] already
+/// automates. A one-Enter re-issue that doesn't submit arms no cron, so the SAME agent re-issues every
+/// sweep (observed live 2026-08-03: `design-host-capabilities` re-issued 3× in a row after the
+/// dead-cron decision fix #1568 landed — the decision was right, the delivery didn't stick). The short
+/// `continue`/`/compact` nudges get away with one Enter; this long line needs the second to clear the
+/// paste buffer.
 fn reissue_loop(session: &str, agent: &str, interval: &str, tick_prompt: &str) -> bool {
     let target = format!("{session}:{agent}");
     let line = format!("/loop {interval} {tick_prompt}");
@@ -5039,11 +5048,18 @@ fn reissue_loop(session: &str, agent: &str, interval: &str, tick_prompt: &str) -
     if !sent {
         return false;
     }
-    Command::new("tmux")
-        .args(["send-keys", "-t", &target, "Enter"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    // Two Enters: submit + clear paste-buffering on the long line (see the fn doc; mirrors nudge_drain_stall).
+    for _ in 0..2 {
+        let ok = Command::new("tmux")
+            .args(["send-keys", "-t", &target, "Enter"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            return false;
+        }
+    }
+    true
 }
 
 // ── archive ────────────────────────────────────────────────────────────────────────────────────
