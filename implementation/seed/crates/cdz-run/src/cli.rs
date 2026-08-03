@@ -324,9 +324,17 @@ pub fn content_address(bytes: &[u8]) -> String {
     s
 }
 
-/// The default content-addressed store: `<repo>/target/cadenza-store`, resolved from this crate's
-/// manifest location (crate lives at `<repo>/implementation/seed/crates/cdz-run`).
+/// The default content-addressed store: the `CDZ_STORE` env var if set, else `<repo>/target/cadenza-store`
+/// resolved from this crate's manifest location (crate lives at `<repo>/implementation/seed/crates/cdz-run`).
+/// The `--store` flag still wins over this (callers `unwrap_or_else(default_store)`), so precedence is
+/// flag > `CDZ_STORE` > compiled default — matching `resolve_nfc_from_store`'s NFC-component resolution so a
+/// single env var repoints the WHOLE store (value-heap runtime + NFC) at a Nix-provided path (R4).
 fn default_store() -> PathBuf {
+    store_from_env_or(std::env::var_os("CDZ_STORE"), compiled_default_store)
+}
+
+/// The compiled fallback store path (`<repo>/target/cadenza-store`) — used only when `CDZ_STORE` is unset.
+fn compiled_default_store() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // <repo>/implementation/seed/crates/cdz-run → up 4 → <repo>
     let repo = manifest
@@ -361,6 +369,18 @@ fn resolve_runtime_cache_dir(
     } else {
         // `--runtime <path>` given: honor an explicit `--store` (scopes NFC), else `None`.
         store
+    }
+}
+
+/// Pure precedence: `CDZ_STORE` (as an already-read `OsString`) wins over the compiled fallback. Split out
+/// so the env-var precedence is unit-testable without mutating the process-global environment.
+fn store_from_env_or(
+    env: Option<std::ffi::OsString>,
+    fallback: impl FnOnce() -> PathBuf,
+) -> PathBuf {
+    match env {
+        Some(dir) => PathBuf::from(dir),
+        None => fallback(),
     }
 }
 
@@ -407,5 +427,33 @@ mod cache_dir_tests {
         // `--runtime P` with NO `--store`: don't cache a debug-override runtime; NFC falls back to
         // CDZ_STORE/default (handled downstream in resolve_nfc_from_store), so no dir is pinned here.
         assert_eq!(resolve_runtime_cache_dir(true, true, None), None);
+    }
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+
+    #[test]
+    fn cdz_store_env_wins_over_compiled_default() {
+        let picked = store_from_env_or(Some("/nix/store/abc-cadenza-store".into()), || {
+            PathBuf::from("/should/not/be/used")
+        });
+        assert_eq!(picked, PathBuf::from("/nix/store/abc-cadenza-store"));
+    }
+
+    #[test]
+    fn compiled_default_used_when_env_unset() {
+        let picked = store_from_env_or(None, || PathBuf::from("/repo/target/cadenza-store"));
+        assert_eq!(picked, PathBuf::from("/repo/target/cadenza-store"));
+    }
+
+    #[test]
+    fn empty_env_value_is_still_honored_not_treated_as_unset() {
+        // An explicitly-set-but-empty CDZ_STORE is a caller choice (var_os returns Some("")), distinct from
+        // unset (None). We honor it verbatim rather than silently falling back — the flag layer above can
+        // still override, and an empty path fails loudly at store-open rather than masking a misconfig.
+        let picked = store_from_env_or(Some("".into()), || PathBuf::from("/fallback"));
+        assert_eq!(picked, PathBuf::from(""));
     }
 }

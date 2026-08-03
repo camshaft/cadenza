@@ -6628,10 +6628,15 @@ fn locate_cdz_run() -> Option<PathBuf> {
         .filter(|p| p.exists())
 }
 
-/// The default content-addressed runtime store — `<repo>/target/cadenza-store`, resolved relative to this
-/// binary (`target/<profile>/cdz` → up two → `target` → `cadenza-store`). Mirrors `cdz-run`'s own default
-/// so `cdz test` and a direct `cdz-run` agree on where the value-heap runtime lives.
+/// The default content-addressed runtime store — the `CDZ_STORE` env var if set, else
+/// `<repo>/target/cadenza-store` resolved relative to this binary (`target/<profile>/cdz` → up two →
+/// `target` → `cadenza-store`). Mirrors `cdz-run`'s own `default_store` (flag > `CDZ_STORE` > compiled
+/// default) so `cdz test`, `cdz run`, and a direct `cdz-run` all agree on where the value-heap runtime
+/// lives — a single env var repoints the whole store at a Nix-provided path (R4).
 fn default_store() -> PathBuf {
+    if let Some(dir) = std::env::var_os("CDZ_STORE") {
+        return PathBuf::from(dir);
+    }
     std::env::current_exe()
         .ok()
         .and_then(|p| {
