@@ -127,9 +127,6 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
         None => None,
     };
 
-    let runtime_cache_dir =
-        resolve_runtime_cache_dir(runtime.is_some(), cli.runtime.is_some(), cli.store.clone());
-
     // Parse each `--host-response op=value` into a `HostResponse`. A missing `=` takes the whole string
     // as the value with an empty op label (the ordered-consume model does not yet match on the op).
     let host_responses = cli
@@ -196,6 +193,13 @@ fn real_run(cli: &RunArgs, prog: &str) -> anyhow::Result<ExitCode> {
         }
         None => None,
     };
+
+    // Compute the runtime cache/NFC-store dir AFTER the peer-runtime resolution above — so a runtime induced
+    // by a PEER (consumer needs none, but a `--peer` does) is store-scoped for NFC too, not just a consumer's.
+    // Computing it earlier (before this block) missed the peer case: `runtime` was still `None` at that point,
+    // so an explicit `--store` did not scope NFC for the peer-induced runtime (PR #1633 review follow-on).
+    let runtime_cache_dir =
+        resolve_runtime_cache_dir(runtime.is_some(), cli.runtime.is_some(), cli.store.clone());
 
     // FINDING#23: the runtime imports `cadenza:nfc/normalize`, but the host now SELF-RESOLVES that NFC
     // component from the store inside `compose_nfc_into_runtime_linker` (via `runtime_cache_dir`/`CDZ_STORE`/
