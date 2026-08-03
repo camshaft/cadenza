@@ -2561,6 +2561,29 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 295 Int64)))
 
+(case "Bytes.concat of two sliced-view to-bytes is read twice and both reads see the concatenated bytes"
+  (doc    "The `Bytes.concat` member of the consuming-op-double-read family (adv-54b, the next op after the
+           to-bytes case above): a let-bound `Bytes.concat` whose OPERANDS are `String.to-bytes(String.slice
+           …)` VIEWS, read more than once, must see the joined bytes on every read. `tail` = slice(concat
+           'ab' 'cdé', 3, 5) = 'dé' = [100, 0xC3, 0xA9]; `b` = concat(to-bytes tail, to-bytes tail) =
+           [100,0xC3,0xA9,100,0xC3,0xA9]; `b[0]+b[3]` = 100+100 = 200. Before the fix, `Core::BytesConcat`
+           was NOT in `is_runtime_computation`, so the let-bound `b` was copy-propagated + RECOMPUTED at each
+           `Bytes.at`, and the recompute CONSUMED the borrowed slice-view sources → the 2nd read walked a
+           freed buffer → wasm OOB (rust computed 200). Fixed once adv-66 made BytesConcat CONSUMING in the
+           dup pass, unblocking its keep-list entry (trunk 998329abf) — closing the adv-54/54b/66
+           aliasing-consume arc. Now 200 on all three backends.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((s (String.concat "ab" "cdé")))
+                (match (String.slice s 3 5)
+                  ((Some tail)
+                    (let ((b (Bytes.concat (String.to-bytes tail) (String.to-bytes tail))))
+                      (+ (Int64.of (Option.expect (Bytes.at b 0) "b0"))
+                         (Int64.of (Option.expect (Bytes.at b 3) "b3")))))
+                  ((None u) -1))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 200 Int64)))
+
 (case "a RUNTIME byte-slice torn mid-scalar is rejected by from-bytes at both tear points"
   (doc    "The RUNTIME-torn face of the ill-formed-decode family: the constant malformed pins below feed
            hand-written bad byte lists; here the invalid sequence arises from SLICING a genuinely valid

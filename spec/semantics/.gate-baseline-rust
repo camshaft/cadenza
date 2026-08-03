@@ -5611,3 +5611,4 @@ pass	a let-bound Bytes.compact result read twice (eq then order-compare) compute
 pass	compacting then reading the flat's LEN after an equality against the rope is safe (adv-66 perimeter)
 pass	compacting then a concat+len of the flat after an equality (no rope-left compare) is safe (adv-66 perimeter)
 pass	compacting then TWO order-compares (no equality) is safe (adv-66 perimeter)
+pass	Bytes.concat of two sliced-view to-bytes is read twice and both reads see the concatenated bytes
