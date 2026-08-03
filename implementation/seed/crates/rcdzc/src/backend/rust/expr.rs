@@ -2894,16 +2894,28 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let mut call_args = Vec::with_capacity(args.len());
             for (i, &a) in args.iter().enumerate() {
                 let a_ty = type_of(db, a);
-                // The arg must be a fixed-width integer (marshalled `as i64` to the shim's i64 param); the
-                // exact width is not needed (the `as i64` widens/narrows uniformly), only that it IS one.
-                if !types::rust_type(&a_ty).is_some_and(|t| int_rust_ty(&t)) {
+                let Some(a_rt) = types::rust_type(&a_ty) else {
                     return Err(Reject::decline(
-                        "the Rust backend does not yet render a host call with a non-integer ARGUMENT (later increment)",
+                        "the Rust backend does not yet render a host call with an argument of no native Rust type (later increment)",
                     ));
-                }
+                };
                 let av = emit(db, a, env, ctx)?;
-                // Cast to i64 (the shim's param type). A `let` per arg pins the eval order.
-                bindings.push_str(&format!("let __ha{i} = ({av}) as i64; "));
+                // Bind each arg to `let __ha<i>` in source order (pins eval order). An INTEGER arg casts to
+                // `i64` (uniform marshal, matching H3); a STRING/BYTES arg passes as-is (`String`/`Vec<u8>`).
+                // The generated shim param is GENERIC (`fn shim<A>(_a: A)`), so it accepts any arg type and
+                // ignores the VALUE — the recorded host response is keyed per-op, arg-independent, and the
+                // corpus host-call sequence compares the op NAME only (args are documentation). A
+                // float/compound arg has no boundary form yet → decline.
+                let bound = if int_rust_ty(&a_rt) {
+                    format!("({av}) as i64")
+                } else if a_rt == "String" || a_rt == "Vec<u8>" {
+                    av
+                } else {
+                    return Err(Reject::decline(
+                        "the Rust backend does not yet render a host call with a non-integer/string/bytes ARGUMENT (later increment)",
+                    ));
+                };
+                bindings.push_str(&format!("let __ha{i} = {bound}; "));
                 call_args.push(format!("__ha{i}"));
             }
             let call = format!("crate::{shim}({})", call_args.join(", "));
@@ -2916,9 +2928,13 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 Some(t) if int_rust_ty(&t) => format!("({call} as {t})"),
                 Some(t) if t == "bool" => format!("({call} != 0)"),
                 Some(t) if t == "f32" || t == "f64" => format!("({call} as {t})"),
+                // A STRING/BYTES result crosses as the value itself — the shim returns `String`/`Vec<u8>`
+                // (the gate driver builds it from the recorded response text: a quoted "…" → String, a byte
+                // list → Vec<u8>). The declared result type IS that Rust type, so pass the call through.
+                Some(t) if t == "String" || t == "Vec<u8>" => call.clone(),
                 _ => {
                     return Err(Reject::decline(
-                        "the Rust backend does not yet render a host call whose result is not a fixed-width integer, bool, or float (later increment)",
+                        "the Rust backend does not yet render a host call whose result is not a fixed-width integer, bool, float, unit, string, or bytes (later increment)",
                     ));
                 }
             };

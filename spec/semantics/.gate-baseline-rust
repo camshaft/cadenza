@@ -5499,8 +5499,8 @@ todo	a closed literal closure forwarded through const-wrapper hops is not a fals
 pass	a closure captures the result of a build-time host op called with an argument
 pass	a closure capturing a build-time host effect preserves the order of two host calls
 todo	a closure that performs a delegated effect cannot cross the host boundary
-todo	a conditional performs only the taken branch's effect — else
-todo	a conditional performs only the taken branch's effect — then
+pass	a conditional performs only the taken branch's effect — else
+pass	a conditional performs only the taken branch's effect — then
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
 todo	a delegated effect performed in a closure passed to a HOF is reached and fires
 todo	a delegated effect reached only through an if-branch is granted and fires when the branch is taken
@@ -5518,19 +5518,19 @@ todo	an Ast as a MAP key looks up by structural content
 todo	an abortive perform in a recursive callee with a PENDING continuation in the handle body abandons it
 todo	an entrypoint delegation lets a program reach its host function
 todo	an entrypoint delegation reaches an effect performed in a recursive callee
-todo	and performs the right operand's effect when the left is true
-todo	and short-circuit does not perform the right operand's effect
-todo	binary operator operands are evaluated left to right
+pass	and performs the right operand's effect when the left is true
+pass	and short-circuit does not perform the right operand's effect
+pass	binary operator operands are evaluated left to right
 todo	distinct-sig round-trip: a higher-order closure + a scalar closure of another sig — the higher-order one
 todo	distinct-sig round-trip: a higher-order closure-typed arg on one group + a scalar closure on another
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
-todo	function arguments are evaluated left to right
+pass	function arguments are evaluated left to right
 todo	generic user-sum values dedupe as set elements and key a map by rope-payload content
 todo	host calls are observed in the order they were made
-todo	let bindings' initializers are evaluated in binding order
-todo	or performs the right operand's effect when the left is false
-todo	or short-circuit does not perform the right operand's effect
+pass	let bindings' initializers are evaluated in binding order
+pass	or performs the right operand's effect when the left is false
+pass	or short-circuit does not perform the right operand's effect
 todo	quoted Asts as SET elements dedup by structural content
 todo	read of malformed text is a coded reject, not a wrong value
 todo	round-trip: a HIGHER-ORDER closure arg composed with a SUM result
@@ -5541,7 +5541,7 @@ todo	round-trip: a higher-order closure whose inner closure takes an UNANNOTATED
 todo	round-trip: an UNANNOTATED inner closure with a List param via the context arrow
 todo	the program manifest is the union of its entrypoints' delegations
 todo	the same conditional delegation makes no host call when the branch is not taken
-todo	tuple elements are evaluated left to right
+pass	tuple elements are evaluated left to right
 todo	two adapter records with different state types drive a take-while fold in one program
 pass	a computed (runtime-branched) label operand to Record.with is rejected — labels are static
 pass	a host op returning Bool crosses the boundary and drives a branch
