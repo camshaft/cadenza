@@ -29,6 +29,12 @@ use std::collections::HashMap;
 /// A session's identity in the host registry. A short opaque string the operator/driver assigns (e.g.
 /// `"concierge"`, `"builder-42"`) — distinct from the kernel's per-effect `EffectId` and from the
 /// content `Hash` of the reducer. Owned so the registry key needs no lifetime.
+///
+/// Backed by `Arc<str>` (operator cheap-clone directive, same as the kernel's `EffectRequest.target`):
+/// a `SessionId` is CLONED on every `spawn` (it's the `HashMap` key) and again by `session_ids()`
+/// (`keys().cloned()`), so an `Arc<str>` clone is an O(1) refcount bump, not a fresh heap `String`. It
+/// derefs to `&str`, so every read/compare is unchanged, and `new` takes `impl Into<Arc<str>>` so
+/// `&str`/`String` call sites are unaffected.
 //
 // The host drives sessions through the kernel's ASYNC loop (`Session::deliver_async`) so a long fold can
 // cooperatively yield and sessions interleave (§15b). A reducer is therefore held as a `Box<dyn
@@ -36,10 +42,10 @@ use std::collections::HashMap;
 // a native `impl Reducer` (its `fold_async` runs to completion with no await point), and a wasm
 // reducer uses `AsyncComponentReducer`. Both box directly as `Box<dyn Reducer>` — no wrapper.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
-pub struct SessionId(pub String);
+pub struct SessionId(pub std::sync::Arc<str>);
 
 impl SessionId {
-    pub fn new(id: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<std::sync::Arc<str>>) -> Self {
         SessionId(id.into())
     }
     pub fn as_str(&self) -> &str {
