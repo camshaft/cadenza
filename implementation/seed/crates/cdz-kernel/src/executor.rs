@@ -78,17 +78,6 @@ impl Executor for CompositeExecutor {
     }
 }
 
-// Transitional aliases for `Executor` / `CompositeExecutor` — the redundant `Async` prefix was dropped
-// now there is one (async) executor trait each (operator directive 2026-08-02). `pub use` re-exports
-// (NOT `type` aliases) so `impl AsyncExecutor for X`, `dyn AsyncExecutor`, and
-// `AsyncCompositeExecutor::new()` in the downstream `cdz-agent-host` crate keep compiling verbatim across
-// the rename (alias-bridge beat 1); removed once its impls migrate to the bare names (beat 3). Do not use
-// in new code — write `Executor` / `CompositeExecutor`.
-#[doc(hidden)]
-pub use self::CompositeExecutor as AsyncCompositeExecutor;
-#[doc(hidden)]
-pub use self::Executor as AsyncExecutor;
-
 /// A recording test executor: performs nothing real, returns a canned outcome, and logs what it saw
 /// (including whether an idempotency key was replayed). Lets kernel-loop tests assert the crash /
 /// no-double-fire behavior deterministically.

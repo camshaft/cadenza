@@ -31,14 +31,6 @@ pub trait Authorize {
     async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String>;
 }
 
-// Transitional alias for `Authorize` — the redundant `Async` prefix was dropped now there is exactly ONE
-// (async) authorize trait (operator directive 2026-08-02). A `pub use` re-export (NOT a `type` alias) so
-// `impl AsyncAuthorize for X` and `dyn AsyncAuthorize` in the downstream `cdz-agent-host` crate keep
-// compiling verbatim across the rename (alias-bridge beat 1); removed once its impls migrate to the bare
-// name (beat 3). Do not use in new code — write `Authorize`.
-#[doc(hidden)]
-pub use self::Authorize as AsyncAuthorize;
-
 /// Decides whether a requested effect may be performed. The result is logged either way (§10): a
 /// permitted effect proceeds to dispatch; a denied one becomes an `AuthzDenied` event and never runs.
 /// The v0 [`Authorize`] impl: a flat capability-set check (SEC-F1). A future Cedar/delegation authorizer

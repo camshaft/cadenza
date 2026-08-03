@@ -123,14 +123,6 @@ pub trait Reducer {
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput;
 }
 
-// Transitional alias for `Reducer` — the redundant `Async` prefix was dropped now there is exactly ONE
-// (async) reducer trait (operator directive 2026-08-02). A `pub use` re-export (NOT a `type` alias) so
-// `impl AsyncReducer for X` and `dyn AsyncReducer` in the downstream `cdz-agent-host` crate keep compiling
-// verbatim across the rename (alias-bridge beat 1); removed once its impls migrate to the bare name
-// (beat 3). Do not use in new code — write `Reducer`.
-#[doc(hidden)]
-pub use self::Reducer as AsyncReducer;
-
 /// A trivial reducer used by kernel-loop tests: it ignores everything and emits nothing. Real reducers
 /// (Rust-wasm first, Cadenza-native later) implement domain behavior. Native async (no `.await` — a pure
 /// in-process reducer never blocks).
