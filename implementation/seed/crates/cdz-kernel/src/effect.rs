@@ -96,8 +96,10 @@ pub mod effect_ct {
     pub const STORE_RESOLVE: &str = "store/resolve";
 
     /// Is `family` in the `store/*` namespace (the §4c global-store write layer, authz-gated on the name's
-    /// prefix authority)? The drive loop's partition test alongside [`is_control_family`]: `store/*` routes
-    /// to the name-store handler, not a generic executor. One source of truth for the split.
+    /// prefix authority)? The one-source prefix test the drive loop WILL apply alongside
+    /// [`is_control_family`] to route `store/*` to the name-store handler rather than a generic executor —
+    /// slice 3a defines this vocabulary; the routing + authz wiring that consumes it is slice 3b (not yet
+    /// wired, so today this classifier has no in-kernel caller).
     pub fn is_store_family(family: &str) -> bool {
         family.starts_with(STORE_PREFIX)
     }
