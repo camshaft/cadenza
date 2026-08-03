@@ -2910,9 +2910,15 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     format!("({av}) as i64")
                 } else if a_rt == "String" || a_rt == "Vec<u8>" {
                     av
+                } else if a_rt == "()" {
+                    // A UNIT-typed argument (H9): a nullary-ish host op is written `(io.fetch unit)` — the
+                    // `unit` operand carries no data but may be an EFFECTFUL expression, so evaluate it for
+                    // its side effect and yield `()` (mirrors H8's unit-result `{ …; () }` shape). The
+                    // generic shim param accepts `()`, and eval-order is pinned by the `let` binding below.
+                    format!("{{ {av}; () }}")
                 } else {
                     return Err(Reject::decline(
-                        "the Rust backend does not yet render a host call with a non-integer/string/bytes ARGUMENT (later increment)",
+                        "the Rust backend does not yet render a host call with a non-integer/string/bytes/unit ARGUMENT (later increment)",
                     ));
                 };
                 bindings.push_str(&format!("let __ha{i} = {bound}; "));

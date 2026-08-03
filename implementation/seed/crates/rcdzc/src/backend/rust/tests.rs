@@ -7347,3 +7347,25 @@ fn rustc_host_call_unit_result_emits_the_shim_call_for_effect_then_unit() {
         "the Unit-result op's String arg still marshals to the shim:\n{rs}"
     );
 }
+
+#[test]
+fn rustc_host_call_unit_arg_evaluates_for_effect_then_passes_unit() {
+    // H9 host-call emit: a UNIT-typed ARGUMENT (`io.fetch : (-> Unit String)` called `(io.fetch unit)`). The
+    // `unit` operand carries no data but may itself be effectful, so the arg binds to `{ <av>; () }` — the
+    // operand is evaluated for its side effect, then `()` crosses to the generic shim param (H7). This
+    // UNBLOCKS a String-RESULT host op reached through a unit arg (breaker's s2): the arg-decline previously
+    // fired BEFORE the String-result marshal (H7) could run. Here `io.fetch`'s String result reads twice.
+    let src = "(module m (effect io (op fetch (-> Unit String))) \
+        (def (main) (host (io) (String.byte-len (io.fetch unit)))) (export main))";
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("let __ha0 = { (); () };"),
+        "a Unit-typed host-call arg binds `{{ <expr>; () }}` (eval-for-effect then unit):\n{rs}"
+    );
+    // And the shim IS called with that unit arg (the whole no longer declines on the argument — H7's
+    // String-result marshal now runs on the shim's String return, read here via `.len()`).
+    assert!(
+        rs.contains("crate::__cdz_host_io_fetch(__ha0)"),
+        "the unit arg is passed to the shim, reaching the String-result marshal:\n{rs}"
+    );
+}
