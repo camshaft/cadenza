@@ -36,7 +36,7 @@ use std::collections::HashMap;
 /// derefs to `&str`, so every read/compare is unchanged, and `new` takes `impl Into<Arc<str>>` so
 /// `&str`/`String` call sites are unaffected.
 //
-// The host drives sessions through the kernel's ASYNC loop (`Session::deliver_async`) so a long fold can
+// The host drives sessions through the kernel's ASYNC loop (`Session::deliver`) so a long fold can
 // cooperatively yield and sessions interleave (§15b). A reducer is therefore held as a `Box<dyn
 // Reducer>` — the SINGLE reducer trait (operator "one async trait only"): a pure-Rust reducer writes
 // a native `impl Reducer` (its `fold` runs to completion with no await point), and a wasm
@@ -96,7 +96,7 @@ impl HostedSession {
     /// emits none, so most callers ignore the return.
     pub async fn seed_capabilities(&mut self) -> Vec<cdz_kernel::effect::ControlEffect> {
         self.session
-            .seed_capabilities_async(&*self.reducer, &*self.authz, &mut self.executor)
+            .seed_capabilities(&*self.reducer, &*self.authz, &mut self.executor)
             .await
     }
 
@@ -109,7 +109,7 @@ impl HostedSession {
         cause: Option<Hash>,
     ) -> Result<(), KernelError> {
         self.session
-            .deliver_async(
+            .deliver(
                 body,
                 cause,
                 &*self.reducer,
@@ -123,7 +123,7 @@ impl HostedSession {
     /// scheduler calls this on a tick; returns how many fired.
     pub async fn fire_due_timers(&mut self, now_ms: u64) -> usize {
         self.session
-            .fire_due_timers_async(now_ms, &*self.reducer, &*self.authz, &mut self.executor)
+            .fire_due_timers(now_ms, &*self.reducer, &*self.authz, &mut self.executor)
             .await
     }
 
@@ -154,7 +154,7 @@ impl HostedSession {
     ///
     /// The summary rides the CONTROL-PLANE return channel (register-by-string beat 3): the reducer emits a
     /// `control/summary` effect (family [`effect_ct::SUMMARY`]) whose `request.payload` carries the summary
-    /// bytes; `deliver_async_control` returns those authz-exempt, non-routed control effects. We scan the
+    /// bytes; `deliver_control` returns those authz-exempt, non-routed control effects. We scan the
     /// returned `Vec<ControlEffect>` for the `control/summary` entry (FILTERING by family, not taking the
     /// first — `control/capabilities` also rides this channel until it becomes kernel-answered inline) and
     /// read its inline payload. This replaces the earlier `public/summary` KV convention.
@@ -179,7 +179,7 @@ impl HostedSession {
             payload: cdz_kernel::effect::Payload::Inline(Vec::new().into()),
         };
         let controls = fork
-            .deliver_async_control(body, None, reducer, authz, executor)
+            .deliver_control(body, None, reducer, authz, executor)
             .await
             .ok()?;
         // The summary the reducer emitted for observers (§4b tier-1), read off the control-plane channel
