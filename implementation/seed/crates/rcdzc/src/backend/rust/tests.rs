@@ -7667,10 +7667,11 @@ fn adv68_inrange_sibling_typed_set_element_and_map_value_render_at_the_collectio
     let set = "(module m \
         (def (run) (Set.len (Set.of (list (: 1 UInt64) 41)))) \
         (export run))";
+    let set_res = try_compile_rust(set);
     assert!(
-        try_compile_rust(set).is_ok(),
+        set_res.is_ok(),
         "a sibling-UInt64 Set element must render at the set width, not `as i64`: {:?}",
-        try_compile_rust(set).err()
+        set_res.err()
     );
     if let Some(out) = rustc_run(&compile_rust(set), "run()") {
         assert_eq!(
@@ -7685,10 +7686,11 @@ fn adv68_inrange_sibling_typed_set_element_and_map_value_render_at_the_collectio
     let map = "(module m \
         (def (run) (Map.len (Map.insert (Map.insert (Map.empty) 1 (: 5 UInt8)) 2 30))) \
         (export run))";
+    let map_res = try_compile_rust(map);
     assert!(
-        try_compile_rust(map).is_ok(),
+        map_res.is_ok(),
         "a sibling-UInt8 Map value must render at the value width, not `as i64`: {:?}",
-        try_compile_rust(map).err()
+        map_res.err()
     );
     if let Some(out) = rustc_run(&compile_rust(map), "run()") {
         assert_eq!(out, "2", "the two distinct keys {{1, 2}} count as 2");
