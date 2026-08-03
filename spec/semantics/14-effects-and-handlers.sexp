@@ -2240,6 +2240,29 @@
 ; produces a value independent of the argument). Two calls with different seeds witness the
 ; dependence.
 
+(case "a HEAP handler seed stays readable in the body after performs advance the state"
+  (doc    "The ALIAS face of a heap-valued handler seed: `seed` (a let-bound list) is BOTH the handler's
+           initial state — which two performs then advance via `List.push` — AND a binding the body
+           re-reads AFTER those performs. The state hand-off at the handler boundary must DUP the seed,
+           not take it uniquely: a reuse that treated the seed as dead after seeding would let the
+           state's pushes clobber the shared payload, and the body's `(List.at seed 0)` would read a
+           pushed value instead of the original k. resume values are the PRE-push lengths (1, 2), so
+           a = 1, b = 2, and the re-read gives k = 5 → 1 + 2 + 500 = 503. The heap-STATE pins nearby
+           thread list/record/set states; the runtime-seed pins use scalars — this is the heap-seed
+           aliased-and-re-read composition neither covers.")
+  (input  (do
+            (effect Acc (op push (-> Int64 Int64)))
+            (def (main (: k Int64))
+              (let ((seed (list k)))
+                (handle Acc seed
+                  ((push (v) s (resume (List.len s) (List.push s v))))
+                  (let ((a (Acc.push 10)))
+                    (let ((b (Acc.push 20)))
+                      (+ (+ a b)
+                         (* 100 (match (List.at seed 0) ((Some v) v) ((None _u) -1)))))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 503 Int64)))
+
 (case "a handle seeded from a runtime caller argument advances from that seed"
   (doc    "`(handle Ctr seed …)` where `seed` is main's PARAMETER — the handler's initial state is a
            runtime value, not a compile-time constant. Two ticks encode 100·first + second: seeded 7 →
