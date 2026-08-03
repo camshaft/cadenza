@@ -13727,6 +13727,28 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                 collect(db, expr, out);
                 return;
             }
+            // A BARE type-CONSTRUCTOR name used with NO argument in a VALUE annotation — `(: (Mk 1) Box)`,
+            // `(: 5 List)`. Like the applied wrong-arity above (and the param/payload paths), this must be
+            // caught BEFORE the type is used: a user generic's bare name REDUCES to a `Ty::Sum` with a fresh
+            // var, so `typeval_of` succeeds and the value-vs-annotation UNIFY below fires the CONFUSING
+            // "annotation type Box does not match value type Box — wrap the value in `Mk`" (both render `Box`,
+            // reading as a contradiction) instead of the clear "needs a type argument". Emit the same CDZ0203
+            // the parameter annotation gives (`bare_type_ctor_needs_argument` → the constructor message), so
+            // an under-applied generic in a value annotation reads like one in a parameter annotation. Returns
+            // `None` for a monomorphic type / a genuine value, so those are unaffected.
+            if !runtime_width
+                && let Some((ctor, placeholder)) = bare_type_ctor_needs_argument(db, ty_expr)
+            {
+                trace!(target: "rcdzc::infer", node = id.0, "fault: bare type constructor missing its argument in a value annotation (CDZ0203)");
+                out.push(Reject::coded(
+                    Code::TypeMismatch,
+                    format!(
+                        "`{ctor}` is a type constructor — it needs a type argument here, e.g. `({ctor} {placeholder})`"
+                    ),
+                ));
+                collect(db, expr, out);
+                return;
+            }
             if let Some(annot_ty) = crate::eval::typeval_of(db, ty_expr) {
                 // A FLOAT type annotating with a NON-ADMITTED width reduces (via the `Float` constructor)
                 // to the sentinel `Ty::Float(Fixed(0))` — a `(: 1.5 (Float 16))` / `(: 1.5 (Float 48))`.
