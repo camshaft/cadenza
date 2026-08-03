@@ -1021,6 +1021,7 @@ pass	a bare UInt8 literal-match (no newtype) is the width template
 pass	a bare arithmetic keyword is rejected, not a crash
 pass	a bare binding form with no bindings and no body is rejected, not a crash
 pass	a bare built-in constructor Some is passed as a first-class function
+pass	a bare built-in generic in a VALUE annotation needs a type argument
 pass	a bare conditional keyword is rejected, not a crash
 pass	a bare construct and a qualified match name the same colliding variant
 pass	a bare data-constructor-colliding variant's OTHER arm fires on the other discriminant
@@ -1041,6 +1042,7 @@ pass	a bare number on the left scales the quantity and keeps its dimension
 pass	a bare prelude-colliding variant name matches as the local variant
 pass	a bare type-name-colliding variant name constructs as the local variant
 pass	a bare user constructor is passed as a first-class function to a higher-order function
+pass	a bare user generic ctor in a VALUE annotation needs a type argument
 pass	a bare variant reusing a prelude DATA-constructor name constructs and matches as the local variant
 pass	a bare-binder guard over a STRING (heap) param scrutinee in a helper binds and evaluates
 pass	a bare-literal-arm float match under Float32 emits valid f32 across the select and probe-chain paths
