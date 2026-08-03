@@ -29,6 +29,14 @@ pub trait Authorize {
     /// request never reaches an executor and the reason is recorded. Total + pure; may `.await` a wasm
     /// policy evaluation internally.
     async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String>;
+
+    /// Authorize `req` — the un-suffixed name (the trait is `async`; `_async` is redundant, operator
+    /// cleanup). TRANSITIONAL default forwards to [`authorize_async`] so callers can move to `authorize`
+    /// while existing impls still define `authorize_async` — never-red bridge, dropped once all impls
+    /// define `authorize` (trait-rename beat T1→T3, coordinated with v-agent-harness-host).
+    async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
+        self.authorize_async(req).await
+    }
 }
 
 /// Decides whether a requested effect may be performed. The result is logged either way (§10): a

@@ -30,6 +30,15 @@ pub trait Executor {
     /// crash. Returns the outcome the kernel folds back as an `EffectResult`. May `.await` real I/O.
     async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome;
 
+    /// Perform `req` — the un-suffixed name (the whole trait is `async`, so the `_async` suffix is
+    /// redundant; operator cleanup). TRANSITIONAL default forwards to [`perform_async`] so callers can move
+    /// to `perform` while existing impls (kernel + cdz-agent-host) still define `perform_async` — never-red
+    /// bridge. Once all impls define `perform`, `perform_async` is dropped and this becomes the required
+    /// method (coordinated with v-agent-harness-host; the trait-method rename beat T1→T3).
+    async fn perform(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
+        self.perform_async(req, idempotency_key).await
+    }
+
     /// Does this executor serve effect `family`? The MECHANISM dimension the capability-manifest
     /// projection ([`crate::effect::project_manifest`]) probes over the canonical family set — "does the
     /// host serve family X" — to compute `Absent` vs granted/denied, so the kernel's inline
