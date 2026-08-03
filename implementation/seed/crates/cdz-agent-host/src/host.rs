@@ -86,8 +86,8 @@ impl HostedSession {
     /// up front without issuing a query. Opt-in: seeding is a separate call, so `genesis` stays sync and an
     /// agent that queries on demand (or doesn't care) needs no change.
     ///
-    /// Returns any [`ControlEffect`]s the seed turn surfaced; an ordinary reducer emits none, so most
-    /// callers ignore the return.
+    /// Returns any [`cdz_kernel::effect::ControlEffect`]s the seed turn surfaced; an ordinary reducer
+    /// emits none, so most callers ignore the return.
     pub async fn seed_capabilities(&mut self) -> Vec<cdz_kernel::effect::ControlEffect> {
         self.session
             .seed_capabilities_async(&*self.reducer, &*self.authz, &mut self.executor)
@@ -864,16 +864,19 @@ mod tests {
         // I5 host adoption: seed_capabilities() right after genesis folds a synthetic capabilities-manifest
         // EffectResult (same code path as an on-demand control/capabilities query), so a capability-aware
         // reducer records its grants before the first deliver — without issuing a query.
+        //
+        // control/capabilities is KERNEL-answered inline: the manifest is computed from the executor's
+        // served families ∩ the authorizer's decision and folded back without routing to any executor. So
+        // the seed does NOT consult a per-effect grant — deny_all() here PROVES that (a real effect under
+        // deny_all would be denied, but the control seed still folds its manifest). The executor serves Now
+        // only, so the manifest reflects that mechanism.
+        let served =
+            || CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
         let mut hosted = HostedSession::genesis(
             Hash::of(b"cap-aware-v1"),
             Box::new(CapabilityAwareAgent),
-            // Permit emit so the synthetic control/capabilities seed drives to completion; the manifest is
-            // answered inline (the executor is never consulted for the answer).
-            Box::new(Authorizer::new(vec![Capability {
-                kind: EffectKind::Emit,
-                predicate: ResourcePredicate::Any,
-            }])),
-            CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new())),
+            Box::new(Authorizer::deny_all()),
+            served(),
         );
         // Precondition: nothing recorded before the seed.
         assert_eq!(hosted.session().kv().get(b"capabilities"), None);
@@ -885,15 +888,24 @@ mod tests {
             "the seed is answered inline, not surfaced"
         );
 
-        // Born knowing: the capability-aware reducer folded the seeded manifest into KV, before any deliver.
-        let caps = hosted
-            .session()
-            .kv()
-            .get(b"capabilities")
-            .map(|v| v.to_vec());
-        assert!(
-            caps.is_some_and(|b| !b.is_empty()),
-            "the seed folds a capabilities-manifest the reducer records — the guest is born knowing"
+        // Born knowing: the reducer recorded the seeded payload. Assert it IS the capabilities manifest for
+        // this session's mechanism ∩ policy — the exact bytes the kernel projects from the SAME served
+        // families + authorizer via its public API — not merely "some non-empty payload".
+        let expected = {
+            let exec = served();
+            let manifest = cdz_kernel::effect::project_manifest(
+                cdz_kernel::effect::effect_ct::ALL,
+                |f| exec.handles_family(f),
+                &Authorizer::deny_all(),
+                cdz_kernel::effect::effect_ct::probe_target,
+            )
+            .await;
+            cdz_kernel::event_ast::encode_capability_manifest(&manifest)
+        };
+        assert_eq!(
+            hosted.session().kv().get(b"capabilities"),
+            Some(&expected[..]),
+            "the seed folds THE capabilities manifest (mechanism ∩ policy) — born knowing, not just any payload"
         );
     }
 }
