@@ -6923,3 +6923,19 @@
             (export main)))
   (call   main (: 4 Int64)) (output (: 4070 Int64))
   (call   main (: 3 Int64)) (output (: 3008 Int64)))
+
+(case "a pipeline chain threads handler STATE left-to-right through effectful stages"
+  (doc    "`|>` composed with effects: two chained pipe stages each perform `(Ctr.tick)` — the desugar
+           to nested applications must evaluate stages LEFT-TO-RIGHT so the first stage reads state 1
+           and the second reads the advanced 2 (5 + 100·1 + 10000·2 = 20105). A desugar that reordered
+           or duplicated a stage's evaluation shifts a digit. Composes the pipe rewrite (pinned above as
+           value-only) with handler state threading.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (stage1 (: v Int64)) (+ v (* 100 (Ctr.tick))))
+            (def (stage2 (: v Int64)) (+ v (* 10000 (Ctr.tick))))
+            (def (main (: k Int64))
+              (handle Ctr 1 ((tick (u) s (resume s (+ s 1))))
+                (|> (|> k stage1) stage2)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 20105 Int64)))

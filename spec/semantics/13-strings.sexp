@@ -4350,10 +4350,11 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64)))
 
-; ── UTF-8 validation ACROSS rope leaves: the from-bytes pins above validate FLAT buffers; these
-; pin the CROSS-LEAF walk — a multibyte sequence split over concat seams must decode, and a torn
-; sequence whose invalid continuation sits in the NEXT leaf must reject. A per-leaf validator
-; passes flat cases while failing both of these. ---
+; ── UTF-8 validation ACROSS rope leaves, deepened: the single-seam straddle is pinned above
+; (a multi-byte scalar across ONE runtime rope seam); these pin what that case cannot reach — a
+; 3-byte scalar split ONE BYTE PER LEAF across BOTH seams of a 3-leaf rope, and a TORN sequence
+; whose invalid continuation sits in the NEXT leaf. A per-leaf validator (or a seam-state-resetting
+; decoder) passes the single-seam case yet fails these. ---
 
 (case "from-bytes decodes a 3-byte scalar split across BOTH seams of a 3-leaf rope"
   (doc    "One byte per leaf: [0xE1] ++ [0x98] ++ [0x8F] — the 3-byte scalar ᘏ (U+160F) with each byte
