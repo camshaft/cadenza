@@ -344,8 +344,8 @@ existing `Authorize` trait unchanged).
   signal for the mid-session push (I6, D). NO shared-WIT change — the `Authorize`/`authorizer.wit` contract
   is unchanged. Coordinate the scope-probe-target convention (I3) + the register/swap signal shape (I6).
 
-Related design context: `design/agent-harness-kernel.md` §3 (genesis), §4b (bridge rule — the load-bearing
-constraint), §9b (effect-row-as-manifest), §9d (reactive), §12c/§12f (three-way authz + delegation),
-§20a/§20b (rescoping components + Cedar-as-component). Memory: `agent-harness-v2-kernel-design-and-v0-plan`,
-`agent-harness-extensible-effects-and-summary-effect-design`.
-</content>
+Related design context, all in `design/agent-harness-kernel.md`: §3 (genesis + context-as-events), §4b
+(bridge rule — the load-bearing constraint), §9b (effect-row-as-manifest), §9d (reactive execution),
+§12c/§12f (three-way authz + attenuating delegation), §20a/§20b (resource-rescoping components +
+Cedar-as-a-component). The extensible content-type / `control-*` partition arc this consumes is owned by
+`v-agent-harness`; see the `effect_ct` family consts in `implementation/seed/crates/cdz-kernel/src/effect.rs`.
