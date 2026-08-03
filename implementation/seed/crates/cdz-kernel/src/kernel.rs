@@ -254,7 +254,7 @@ impl Session {
                 if self.open.contains(&id.0) {
                     in_flight.push(InFlight {
                         kind: effect_kind_name(kind),
-                        target: target.clone(),
+                        target: target.to_string(),
                     });
                     // The dispatch's deadline anchor (if any) doubles as its dispatch-time reference for
                     // stall detection; track the oldest so a long-outstanding effect trips Stalled.
@@ -581,7 +581,7 @@ impl Session {
                             id,
                             kind: req.kind.clone(),
                             family: req.content_type.family.as_ref().into(),
-                            target: req.target.to_string(),
+                            target: req.target.clone(),
                             idempotency_key,
                             deadline_ms: None,
                             token,
@@ -678,7 +678,7 @@ impl Session {
                     id,
                     kind: req.kind.clone(),
                     family: req.content_type.family.as_ref().into(),
-                    target: req.target.to_string(),
+                    target: req.target.clone(),
                     idempotency_key,
                     deadline_ms: None,
                     token,

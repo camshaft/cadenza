@@ -110,7 +110,12 @@ pub enum EventBody {
         /// (re-answer `control/capabilities` inline vs. re-drive a real emit), and is the direction the
         /// effect model is migrating onto (family is the source of truth, `kind` the legacy tag).
         family: std::sync::Arc<str>,
-        target: String,
+        /// The resolved target argument (URL / session-id / command). `Arc<str>` (operator cheap-clone
+        /// directive): the dispatch frame is CLONED as it threads through record/replay/status, and the
+        /// source [`crate::effect::EffectRequest::target`] is ALREADY `Arc<str>`, so recording it here is an
+        /// O(1) refcount bump (`req.target.clone()`) instead of a fresh `String` alloc per dispatch. Derefs
+        /// to `&str`, so readers are unaffected.
+        target: std::sync::Arc<str>,
         /// Idempotency key (§16c-S1/D): re-driving a dispatch with the same key must not double-apply.
         /// For naturally-idempotent effects this can equal the id; for side-effecting ones the
         /// executor dedups on it.
@@ -380,7 +385,7 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
                 id,
                 kind,
                 family: family.into(),
-                target,
+                target: target.into(),
                 idempotency_key,
                 deadline_ms,
                 token,
