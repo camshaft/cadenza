@@ -5572,3 +5572,4 @@ pass	an ordering <= of two same-bits Float32 literals const-folds true
 pass	an ordering >= of two same-bits Float32 literals const-folds true
 pass	Float32 subtraction const-folds at f32 (0.4f32 - 0.1f32 = 0.3f32)
 pass	Float32 division const-folds at f32 (0.3f32 / 3.0f32 = 0.1f32)
+pass	two DISTINCT let-bound host calls each captured by its own escaping closure fire once each in order (adv-62)
