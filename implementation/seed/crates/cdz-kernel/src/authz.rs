@@ -76,7 +76,8 @@ impl Authorizer {
 impl Authorize for Authorizer {
     /// SEC-F1: permission requires a capability whose predicate admits the *resolved target*. Native async
     /// (no `.await` — a flat capability-set check does no I/O).
-    async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String> {
+    /// Defines the TARGET unsuffixed `authorize` (trait-rename beat T2, kernel-side).
+    async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
         if self.caps.iter().any(|c| c.permits(req)) {
             Ok(())
         } else {

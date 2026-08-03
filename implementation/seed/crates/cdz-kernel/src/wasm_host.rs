@@ -713,12 +713,13 @@ impl ComponentReducer {
 /// fails safe by emitting nothing so a broken reducer can't brick the loop.)
 #[async_trait::async_trait(?Send)]
 impl crate::reducer::Reducer for ComponentReducer {
-    /// Native `Reducer` — but NOTE: `ComponentReducer` runs a SYNC wasm engine, so `fold_async` calls
+    /// Native `Reducer` — but NOTE: `ComponentReducer` runs a SYNC wasm engine, so `fold` calls
     /// the sync `apply` with no `.await` (it does not cooperatively yield mid-fold). The fuel-yielding
     /// async wasm path is [`AsyncComponentReducer`]. `ComponentReducer` remains because it is the only
     /// dep-CAPABLE wasm reducer today (§23 dep-compose; `AsyncComponentReducer` declines deps pending async
     /// dep-compose). Once async dep-compose lands, `ComponentReducer` collapses into `AsyncComponentReducer`.
-    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
+    /// Defines the TARGET unsuffixed `fold` (trait-rename beat T2, kernel-side).
+    async fn fold(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
         // Map the kernel event → the guest's (content_type, payload, resumes) inputs.
         let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
 
@@ -944,7 +945,8 @@ impl AsyncComponentReducer {
 
 #[async_trait::async_trait(?Send)]
 impl crate::reducer::Reducer for AsyncComponentReducer {
-    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
+    // Defines the TARGET unsuffixed `fold` (trait-rename beat T2, kernel-side).
+    async fn fold(&self, event: &Event, kv: &mut Kv) -> crate::reducer::FoldOutput {
         let (content_type, payload, resumes) = event_to_guest_inputs(&event.body);
         let taken = std::mem::take(kv);
         match self.apply(taken, content_type, payload, resumes).await {
@@ -1053,7 +1055,8 @@ impl crate::authz::Authorize for ComponentAuthorizer {
     /// legitimate decision. Native `Authorize` — the policy instantiate/call is a SYNC wasm engine
     /// call today (no `.await`); a fuel-yielding async policy eval is a later refinement (the trait is
     /// async so it drops in without a signature change).
-    async fn authorize_async(&self, req: &crate::effect::EffectRequest) -> Result<(), String> {
+    /// Defines the TARGET unsuffixed `authorize` (trait-rename beat T2, kernel-side).
+    async fn authorize(&self, req: &crate::effect::EffectRequest) -> Result<(), String> {
         let mut store = wasmtime::Store::new(&self.engine, ());
         if store.set_fuel(DEFAULT_FOLD_FUEL).is_err() {
             return Err("authz: fuel init failed (fail-closed deny)".to_string());
