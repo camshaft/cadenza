@@ -1892,10 +1892,15 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             // caught by the `SetInsert` guard below.
             // A bare `Float` element is OK — it keys via the `CdzF64` wrapper (`ty_is_ord_key`). A
             // float-CARRYING compound element still declines (the wrapper isn't threaded through it).
-            let e0_ty = elems.first().map(|&e0| type_of(db, e0));
-            if let Some(et) = &e0_ty
-                && !types::ty_is_ord_key(db, et)
-            {
+            // ELEMENT-TYPE grounding is ORDER-INDEPENDENT: a Set is homogeneous, so all elements share ONE
+            // element type, but `type_of` on a given node can be UNDER-GROUND (a `(Nil unit)` variant of
+            // `(Box a)` reads as `Box <openvar>` while a sibling `(Full k)` reads as the solved `Box Int64`).
+            // Check the BEST-grounded element (the first whose type `ty_is_ord_key` accepts), NOT `elems[0]`:
+            // else `Set.of (list (Nil unit) (Full k))` (Nil first) declined "non-Ord" while `(Full k)` first
+            // compiled — an order-dependent decline (breaker/v-inference, post-#1674, ground_open_vars class).
+            // Decline ONLY when NO element grounds to an Ord-key type (a genuinely-open or float-carrying set).
+            let elem_tys: Vec<Ty> = elems.iter().map(|&e| type_of(db, e)).collect();
+            if !elem_tys.is_empty() && !elem_tys.iter().any(|et| types::ty_is_ord_key(db, et)) {
                 return Err(Reject::decline(
                     "a Set with a non-Ord element (a float-carrying element, or a Bytes element whose order the spec does not bless) has no BTreeSet rep on the Rust backend",
                 ));
@@ -4472,7 +4477,7 @@ fn emit_arith(
                         //    SLOT's min (i32::MIN for Int24), NOT the declared min (-2^23), so the guard would
                         //    never fire (adv-67). Compute `-(1{t} << (w-1))` — the declared min fits the
                         //    strictly-wider slot (w < slot bits), no overflow.
-                        let decl_min = if matches!(w, 8 | 16 | 32 | 64) {
+                        let decl_min = if crate::ty::ALIASED_INT_WIDTHS.contains(&w) {
                             format!("{t}::MIN")
                         } else {
                             format!("(-(1{t} << {}))", w - 1)
@@ -4595,7 +4600,8 @@ fn emit_arith(
                 // max 15, `24>>3`==3 round-trips clean → 24 escaped, poisoning a CHAMP Set). So for an odd
                 // width ADD a DECLARED-RANGE check on `r` (the same `[min_N, max_N]` bound the checked +/-/*
                 // unusual-width path uses). An aliased width keeps ONLY the round-trip (slot==declared).
-                let odd_width = (1..=64).contains(&width) && !matches!(width, 8 | 16 | 32 | 64);
+                let odd_width =
+                    (1..=64).contains(&width) && !crate::ty::ALIASED_INT_WIDTHS.contains(&width);
                 let range_check = if odd_width {
                     let signed = it.ground_signed();
                     let (min_n, max_n): (i128, i128) = if signed {

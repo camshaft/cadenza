@@ -5512,6 +5512,51 @@ fn rustc_value_eq_over_an_empty_set_of_an_unconstrained_element_type() {
 }
 
 #[test]
+fn rustc_set_element_ord_check_is_order_independent_across_members() {
+    // ORDER-INDEPENDENT element grounding (breaker/v-inference post-#1674, ground_open_vars class): a Set
+    // is homogeneous, but `type_of` on a `(Nil unit)` variant of `(Box a)` reads as `Box <openvar>` (under-
+    // ground) while a sibling `(Full k)` reads as the solved `Box Int64`. The Ord-check must consult the
+    // BEST-grounded element across ALL members, NOT `elems[0]`: else Nil-FIRST declined "non-Ord" while
+    // Full-first compiled — an order-dependent decline. Both orders now emit + run (dedup → len 2).
+    let nil_first = compile_rust(
+        "(module m (type (Box a) (Full a) (Nil unit)) \
+           (def (go (: k Int64)) (Set.len (Set.of (list (Nil unit) (Full k))))) (export go))",
+    );
+    assert!(
+        nil_first.contains("BTreeSet") && !nil_first.contains("__cdz_"),
+        "Nil-FIRST set-of a unit-payload generic sum emits a BTreeSet (was an order-dependent decline):\n{nil_first}"
+    );
+    if let Some(out) = rustc_run(&nil_first, "go(1)") {
+        assert_eq!(
+            out, "2",
+            "Nil-first {{Full 1, Nil}} has 2 distinct elements"
+        );
+    }
+    // Full-FIRST (already worked) — pin it stays correct (the fix must not regress the working order).
+    let full_first = compile_rust(
+        "(module m (type (Box a) (Full a) (Nil unit)) \
+           (def (go (: k Int64)) (Set.len (Set.of (list (Full k) (Nil unit))))) (export go))",
+    );
+    if let Some(out) = rustc_run(&full_first, "go(1)") {
+        assert_eq!(
+            out, "2",
+            "Full-first order is unchanged (still 2 distinct elements)"
+        );
+    }
+    // CONTROL: a genuinely NON-Ord element (a `List Float64` — a float list has no total order; the
+    // per-element `__CdzF` wrapper is NOT threaded through a List) still declines — the fix only admits a
+    // set where SOME member grounds to an Ord-key type, it does not make every set Ord.
+    let float_list_elem = compile_rust_result(
+        "(module m (def (go (: d Float64)) \
+           (Set.len (Set.of (list (list d) (list d))))) (export go))",
+    );
+    assert!(
+        float_list_elem.is_err(),
+        "a Set of a `List Float64` element still declines (no Ord member):\n{float_list_elem:?}"
+    );
+}
+
+#[test]
 fn rustc_roundtrip_single_variant_newtype_literal_payload_arm_at_narrow_widths() {
     // A single-variant newtype matched with a LITERAL-payload arm (`(match (W.Wrap n) ((W.Wrap 0) 100)
     // ((W.Wrap x) x))`, `W = (Wrap UInt8)`). The newtype tag ERASES (`(W.Wrap n)` → `n`), so `lower`
