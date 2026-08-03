@@ -1791,7 +1791,9 @@ pass	a host effect with a non-kebab OPERATION name crosses under a normalized fu
 pass	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 pass	a host op with a Bytes arg AND a scalar arg crosses both parameters (list<u8> beside a scalar)
 pass	a host response SIZES a guest-built collection which is then folded and keyed
+pass	a host result captured by closures in a NESTED tuple fires the host op once (adv-62 nested face)
 pass	a host result captured by two closures stored in a RECORD fires the host op once (adv-62b)
+pass	a host-block scrutinee folding to a multi-arm sum switch fires the host op once (adv-62 switch face)
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
 pass	a host-crossing closure captures a CHAMP map and set and reads both per call

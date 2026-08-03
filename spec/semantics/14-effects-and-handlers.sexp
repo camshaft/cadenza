@@ -7059,8 +7059,50 @@
             (effect io (op sink2 (-> Bytes Int64 Int64)))
             (def (main (: k Int64))
               (host (io)
-                (io.sink2 (Bytes.of (list ((UInt 8).wrap k) ((UInt 8).wrap 66))) 5)))
+                (io.sink2 (Bytes.of (list (UInt8.wrap k) (UInt8.wrap 66))) 5)))
             (export main)))
   (host-responses (respond io.sink2 (: 9 Int64)))
   (host-calls (call io.sink2))
   (call   main (: 65 Int64)) (output (: 9 Int64)))
+
+(case "a host result captured by closures in a NESTED tuple fires the host op once (adv-62 nested face)"
+  (doc    "adv-62 family, NESTED-destructure face: the let-bound host result `v` is shared by closures at
+           TWO tuple nesting levels — `(tuple f (tuple g h))` — destructured by a nested pattern. All three
+           closures capture the ONE `io.get` (fired once at the shared `let`, not re-lowered per projection);
+           the fix (should_keep_binding follows the CALL init into mk's host body → force-keep + materialize
+           once) threads through the nested `Core::Proj` chain. io.get=10: f(1)=11, g(2)=20, h(3)=7, sum 38.
+           rust crosses it; rust-async declines the closure-in-tuple-through-host shape (todo).")
+  (input  (do
+            (effect io (op get (-> Unit Int64)))
+            (def (mk)
+              (host (io)
+                (let ((v (io.get unit)))
+                  (tuple (fn ((: x Int64)) (+ v x))
+                         (tuple (fn ((: x Int64)) (* v x)) (fn ((: x Int64)) (- v x)))))))
+            (def (main)
+              (match (mk) ((tuple f (tuple g h)) (+ (+ (f 1) (g 2)) (h 3)))))
+            (export main)))
+  (host-responses (respond io.get (: 10 Int64)))
+  (host-calls (call io.get))
+  (output (: 38 Int64)))
+
+(case "a host-block scrutinee folding to a multi-arm sum switch fires the host op once (adv-62 switch face)"
+  (doc    "adv-62 family, SWITCH-path face (vs the Leaf-fold face the base cases pin): the host block `(mk)`
+           β-inlines into the MATCH SCRUTINEE and folds to a multi-arm sum SWITCH (not a single-arm Leaf), so
+           the scrutinee-reaches-host-perform guard keeps the `MatchSum` wrapper and materializes the host
+           call ONCE — each arm reads the one materialized scrutinee, not a re-lowered `(host …)` block. io.get=7
+           → (> 7 5) → Big 7 → 7*10 = 70 (the Small arm's +100 discriminates). Pins that the host materialize
+           holds on the Switch path, not just the tuple/record Leaf fold. rust crosses it; rust-async declines.")
+  (input  (do
+            (effect io (op get (-> Unit Int64)))
+            (type R (Big Int64) (Small Int64))
+            (def (mk)
+              (host (io)
+                (let ((v (io.get unit)))
+                  (if (> v 5) (Big v) (Small v)))))
+            (def (main)
+              (match (mk) ((Big h) (* h 10)) ((Small w) (+ w 100))))
+            (export main)))
+  (host-responses (respond io.get (: 7 Int64)))
+  (host-calls (call io.get))
+  (output (: 70 Int64)))
