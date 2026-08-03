@@ -8260,11 +8260,13 @@ fn mark_dispatch_resolved(fleet: &Fleet, d: &CiDispatch, status: &str) {
     }
 }
 
-/// FF local `trunk` to `origin/main` after a candidate merged there — a compare-and-swap
-/// (`update-ref <ref> <new> <old>`) so it only moves if trunk is STILL where we read it (a concurrent
-/// advance fails the CAS rather than clobbering; preserves forward-only + single-writer). Returns
-/// `Ok(new_sha)` on advance, `Ok(current)` if already at origin/main (nothing to do), `Err` on a git
-/// failure or a lost CAS. FAST-FORWARD ONLY — never a merge/reset that could move trunk backward.
+/// Advance local `trunk` after candidate PR `pr` merged on GitHub, by CHERRY-PICKING that PR's own
+/// squash `mergeCommit.oid` onto trunk (NOT a fast-forward — trunk & origin/main are tree-equal but
+/// COMMIT-DISTINCT in the re-parent model, so a literal FF is impossible; see the body). The picked
+/// commit's parent-tree == trunk's tree, so it applies cleanly + advances trunk by exactly this PR;
+/// forward-only + single-writer are preserved (we only ADD this commit, never reset backward). Returns
+/// `Ok(new_sha)` on advance, `Ok(trunk)` if the PR is already present (ancestor OR patch-id — no-op),
+/// `Err` on a git/gh failure or a cherry-pick conflict (aborted, trunk untouched).
 fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String> {
     let git = |args: &[&str]| {
         Command::new("git")
@@ -8299,13 +8301,22 @@ fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String>
         .filter(|s| !s.is_empty())
         .ok_or_else(|| format!("PR #{pr}: could not read mergeCommit.oid via gh (merged but no merge sha?) — not advancing trunk"))?;
 
-    // Already present on trunk by patch-id (a prior pass advanced it, or a peer did) → no-op, done.
-    if git(&["cherry", TRUNK, &merge_oid])
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| cherry_says_landed(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or(false)
-    {
+    // Already on trunk → no-op, done. TWO ways it can already be present, BOTH must short-circuit
+    // BEFORE the --allow-empty cherry-pick (else we'd append a duplicate EMPTY commit — PR #1532 review):
+    //   (a) merge_oid is a direct ANCESTOR of trunk (a prior pass/peer advanced trunk to include it as-is)
+    //       — `git cherry` outputs NOTHING for an ancestor, so cherry_says_landed("") is FALSE and would
+    //       NOT catch this; check ancestry explicitly first.
+    //   (b) its PATCH is present under a different sha (re-parented) — the `git cherry` `-` case.
+    let already_ancestor = git(&["merge-base", "--is-ancestor", &merge_oid, TRUNK])
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let patch_present = !already_ancestor
+        && git(&["cherry", TRUNK, &merge_oid])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| cherry_says_landed(&String::from_utf8_lossy(&o.stdout)))
+            .unwrap_or(false);
+    if already_ancestor || patch_present {
         return rev(TRUNK).ok_or_else(|| "cannot re-resolve trunk".to_string());
     }
     // Cherry-pick this PR's merge commit onto trunk (in pr-sync's trunk worktree — the only checkout of
