@@ -121,6 +121,68 @@ fn param_manifest_json_is_a_stable_schema_per_param() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A `@param` SELECT site: an `options` list + a `default` — the two config fields the existing PROG
+/// fixture never populates (it only exercises `widget`+`range`, leaving options/default asserted as null).
+const SELECT_PROG: &str = "(module m \
+    (pragma param (param (: widget select) (: options (list \"a\" \"b\" \"c\")) (: default \"b\")) (: mode String)) \
+    (def (main) 0) (export main))";
+
+#[test]
+fn param_manifest_renders_options_and_default_present() {
+    // Coverage gap: the doc surface lists `options=[…]` and `default=…` as manifest fields, but the other
+    // tests only ever assert them ABSENT (null). This pins the PRESENT rendering of both — a select widget
+    // with an options list + a default. `options`/`default` render via the SAME node-arena path as `range`,
+    // so a rendering regression (a wrong node id, an omitted field) would surface here.
+    let (dir, path) = temp_src("select", SELECT_PROG);
+
+    // Human: the bracketed config carries widget + options + default (options is the rendered source list).
+    let (ok, out, err) = run(&["param-manifest", &path]);
+    assert!(ok, "param-manifest should succeed: {out}{err}");
+    let row = out
+        .lines()
+        .find(|l| l.contains("mode"))
+        .expect("a mode row");
+    assert!(
+        row.contains("mode : String") && row.contains("widget=select"),
+        "select row carries type + widget: {row}"
+    );
+    assert!(
+        row.contains("options=") && row.contains("\"a\"") && row.contains("\"c\""),
+        "the options list is rendered in the human summary: {row}"
+    );
+    assert!(
+        row.contains("default=") && row.contains("\"b\""),
+        "the default value is rendered in the human summary: {row}"
+    );
+
+    // JSON: options + default are present (non-null) strings — the stable-schema fields a select-widget host
+    // consumes. (They render as the source form, like `range`'s elements; pinned here as the current CLI
+    // contract — same string form the wasm `param_manifest` binding emits, which the guide's parseWidgets
+    // consumes.)
+    let (jok, jout, jerr) = run(&["param-manifest", &path, "--json"]);
+    assert!(jok, "param-manifest --json should succeed: {jout}{jerr}");
+    let row: serde_json::Value = serde_json::from_str(jout.trim())
+        .unwrap_or_else(|e| panic!("row is valid JSON ({e}): {jout}"));
+    assert_eq!(row["name"], "mode", "the select param: {row}");
+    assert_eq!(row["widget"], "select", "widget: {row}");
+    assert!(
+        row["options"]
+            .as_str()
+            .is_some_and(|s| s.contains("\"a\"") && s.contains("\"c\"")),
+        "options is a present (non-null) rendered list: {row}"
+    );
+    assert!(
+        row["default"].as_str().is_some_and(|s| s.contains("\"b\"")),
+        "default is a present (non-null) rendered value: {row}"
+    );
+    // range stays null (this site declares none) — the complement of the width-site test.
+    assert!(
+        row["range"].is_null(),
+        "a select site with no range → range null: {row}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn param_manifest_on_a_paramless_program_reports_none() {
     // Total: a program with no `@param` sites succeeds and produces no manifest rows.
