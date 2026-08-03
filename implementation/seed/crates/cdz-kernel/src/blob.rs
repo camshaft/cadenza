@@ -49,7 +49,10 @@ pub trait BlobStore {
     /// (re-hash the bytes, refuse a mismatch) — content-addressing makes tamper-detection free.
     async fn get(&self, hash: &Hash) -> std::io::Result<Option<Vec<u8>>>;
 
-    /// Is a blob present without fetching it? Cheap existence check (a disk backend stats the file).
+    /// Is a blob present? A backend SHOULD override this with a real existence probe (a disk backend
+    /// stats the file, an object store issues a HEAD) — the check is only as cheap as the impl makes it.
+    /// The default below is a correctness fallback that performs a FULL `get`, so an un-overridden backend
+    /// pays the fetch cost; override it wherever a probe is meaningfully cheaper than a fetch.
     async fn has(&self, hash: &Hash) -> std::io::Result<bool> {
         Ok(self.get(hash).await?.is_some())
     }
