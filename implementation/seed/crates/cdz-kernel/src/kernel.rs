@@ -987,27 +987,30 @@ impl Session {
         self.open.iter().map(|n| EffectId(*n)).collect()
     }
 
-    /// Boot a session from a persisted log on disk — the real recovery entry point (§16c-S1). Reads
-    /// the durable log via [`crate::log_store::LogStore::recover`] and folds it through [`Session::replay`]
-    /// to reconstruct KV + the open-obligation set, returning the session together with a
-    /// [`RecoveryReport`] telling the driver what it must act on:
+    /// Boot a session from an ALREADY-READ recovery result — the backend-AGNOSTIC recovery core (§16c-S1).
+    /// This is the real recovery logic: it takes a [`crate::log_store::Recovered`] (the good prefix of
+    /// events + how the read ended) from ANY backend — a disk [`crate::log_store::LogStore`], a network /
+    /// replicated log, an in-memory fixture — and folds it through [`Session::replay`] to reconstruct KV +
+    /// the open-obligation set, returning the session together with a [`RecoveryReport`]. The kernel does
+    /// NOT assume the log is backed by a file (operator directive: "the log should be generic"); reading the
+    /// bytes is the backend's job, this is the fold-and-report job. [`Session::recover`] is the file
+    /// convenience that reads via `LogStore` and calls this.
     ///
     /// - `kind` — how the log ended: `Clean`, `TornTail` (benign crash mid-append), or `Corrupt`
     ///   (a fully-present frame that didn't decode — an ALARM the driver must not miss; PR#993 #1
-    ///   propagates this from `LogStore` so `Session::recover` callers can react, not just internal
-    ///   code). The session is recovered to the last *whole* event before the tail either way.
+    ///   propagates this from the backend so callers can react, not just internal code). The session is
+    ///   recovered to the last *whole* event before the tail either way.
     /// - `open_effects` — dispatched-but-unsettled effects the driver must re-drive (by their stable
     ///   idempotency key, so re-drive dedups rather than double-fires) or time out.
     ///
     /// Corruption is reported (not turned into a hard `Err`) so the driver keeps the recovered
     /// good-prefix + open-effects and DECIDES whether to proceed or halt — `report.kind` /
-    /// `report.is_corrupt()` is the signal. An empty log (no file yet) is NOT recoverable as a session
+    /// `report.is_corrupt()` is the signal. An empty recovery (no events) is NOT recoverable as a session
     /// — the caller must `genesis()` a new one — reported as [`RecoverError::EmptyLog`].
-    pub async fn recover(
-        path: impl AsRef<std::path::Path>,
+    pub async fn recover_from(
+        recovered: crate::log_store::Recovered,
         reducer: &dyn Reducer,
     ) -> Result<(Session, RecoveryReport), RecoverError> {
-        let recovered = crate::log_store::LogStore::recover(path).map_err(RecoverError::Io)?;
         if recovered.events.is_empty() {
             return Err(RecoverError::EmptyLog);
         }
@@ -1020,6 +1023,21 @@ impl Session {
             open_effects: session.open_effect_ids(),
         };
         Ok((session, report))
+    }
+
+    /// Boot a session from a persisted log ON DISK — the file convenience over [`Session::recover_from`].
+    /// Reads the durable log via [`crate::log_store::LogStore::recover`], then hands the [`Recovered`] to
+    /// the backend-agnostic core. Callers on a non-file backend read their own `Recovered` and call
+    /// [`Session::recover_from`] directly, so the kernel core carries no file assumption.
+    ///
+    /// An empty/absent file is reported as [`RecoverError::EmptyLog`] (the caller must `genesis()` a fresh
+    /// session instead); see [`Session::recover_from`] for the `kind`/`open_effects` report contract.
+    pub async fn recover(
+        path: impl AsRef<std::path::Path>,
+        reducer: &dyn Reducer,
+    ) -> Result<(Session, RecoveryReport), RecoverError> {
+        let recovered = crate::log_store::LogStore::recover(path).map_err(RecoverError::Io)?;
+        Session::recover_from(recovered, reducer).await
     }
 }
 
