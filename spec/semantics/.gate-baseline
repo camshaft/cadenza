@@ -2608,6 +2608,8 @@ pass	a record match pattern destructures a record scrutinee by field
 pass	a record missing a field the annotation names is rejected
 pass	a record of quantities RETURNED as a value renders every field scaled to its reference
 pass	a record op argument with a HEAP field crosses the perform and its scalar field accumulates state
+pass	a record reached VIA Record.with keys a Map like the directly-built record
+pass	a record reached via a with-CHAIN keys like the final direct build, generations intact
 pass	a record scrutinee is bound whole by a match binder
 pass	a record sub-pattern nested inside a tuple match names the feature, not an unbound binder (CDZ0201)
 pass	a record threaded through self-recursion with per-step Record.with leaves the SEED intact
@@ -3231,6 +3233,7 @@ pass	a signed segment reads the sign-bit-only byte as the minimum, not its magni
 pass	a signed zero survives a TUPLE round-trip and its sign still steers arithmetic after unboxing
 pass	a signed-byte entrypoint returns its runtime argument
 pass	a signed-zero tuple-key leaf MISSES the opposite-signed-zero entry on lookup
+pass	a simplifier pass applied TWICE equals one application (idempotence at the fixpoint)
 pass	a single Map.swap reports the OLD prior value WHILE the new map holds the NEW value (combined atomicity)
 pass	a single handler with both a resuming and an abortive arm dispatches each op to its own arm kind
 pass	a single mixed handler uses only its resuming arm when the abortive op is never performed
