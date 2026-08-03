@@ -635,6 +635,50 @@ fn rustc_roundtrip_signed_div_min_by_neg1_traps_overflow_not_div_by_zero() {
 }
 
 #[test]
+fn rustc_odd_width_signed_div_min_by_neg1_guards_the_declared_min_not_the_slot_min() {
+    // adv-67 (HIGH differential): an ODD-width signed type (Int24, stored in the i32 slot) `MIN / -1` must
+    // trap OVERFLOW — the quotient +2^23 is OUT of the Int24 range. The bug: the guard tested `l == i32::MIN`
+    // (the SLOT min), but Int24's declared MIN is -2^23 = -8388608, which never equals i32::MIN, so the
+    // guard never fired and `l / r` yielded the out-of-range +8388608 (rust returned it; wasm trapped).
+    // Fix: the guard tests the DECLARED-width min `-(1i32 << 23)`, NOT `i32::MIN`.
+    let rs = compile_rust("(module m (def (d (: a (Int 24)) (: b (Int 24))) (/ a b)) (export d))");
+    assert!(
+        rs.contains("(-(1i32 << 23)) && r == -1") && rs.contains("panic!(\"division overflow\")"),
+        "an Int24 div guards the DECLARED min (-(1i32<<23)), NOT the i32 slot min:\n{rs}"
+    );
+    // The guard must NOT test the slot min (the adv-67 bug): `i32::MIN && r == -1` would never fire.
+    assert!(
+        !rs.contains("i32::MIN && r == -1"),
+        "the Int24 div guard must NOT test the slot i32::MIN (adv-67 regression):\n{rs}"
+    );
+    // End-to-end: Int24 MIN (-8388608) / -1 must TRAP overflow (was returning the out-of-range +8388608).
+    match rustc_run_traps(&rs, "d(-8388608, -1)") {
+        TrapRun::Trapped(msg) => assert!(
+            msg.contains("overflow") && !msg.contains("by zero"),
+            "Int24 MIN / -1 must trap OVERFLOW (the escaped +8388608 was adv-67); panic was:\n{msg}"
+        ),
+        TrapRun::RanOk(out) => {
+            panic!("Int24 MIN / -1 must TRAP (overflow), but ran → {out} (adv-67)")
+        }
+        TrapRun::NoRustc => {}
+    }
+    // A NORMAL Int24 division still computes: MIN / -2 = +4194304 (in range, no trap).
+    if let Some(out) = rustc_run(&rs, "d(-8388608, -2)") {
+        assert_eq!(
+            out, "4194304",
+            "Int24 MIN / -2 is a normal in-range division"
+        );
+    }
+    // CONTROL: an ALIASED width (Int32) keeps testing the slot min `i32::MIN` (slot == declared width), so
+    // the fix is behavior-identical there — the declared-min computation is ONLY for odd widths.
+    let aliased = compile_rust("(module m (def (d (: a Int32) (: b Int32)) (/ a b)) (export d))");
+    assert!(
+        aliased.contains("i32::MIN && r == -1"),
+        "an aliased Int32 div still guards i32::MIN (slot == declared width):\n{aliased}"
+    );
+}
+
+#[test]
 fn a_provably_safe_signed_division_elides_its_min_by_neg1_overflow_guard() {
     // BOTH-BACKEND PARITY (v-core-opt Slice-7): the signed `MIN/-1` overflow guard is the Div member of
     // the guard-elision family. The rust `/` emit now consults the SAME Core-tier predicates the wasm
