@@ -42830,6 +42830,38 @@ mod match_engine {
                 wasmparser::validate(&component(narrow)).err()
             );
         }
+        // adv-64 (value-form regression the adv-63b fix first introduced, then closed): the PARAM'D
+        // scalar-newtype escape must render the NOMINAL name — `(: 5 W)` — NOT the erased inner `(: 5
+        // Int64)`, matching the NULLARY constant path. Needs the runtime store to render the value form.
+        if let Some(runtime) = super::find_runtime_wasm() {
+            let render = |src: &str, arg: &str| -> String {
+                let opts = cdz_run::RunOpts {
+                    export: None,
+                    args: vec![arg.to_string()],
+                    runtime: Some(runtime.clone()),
+                    runtime_cache_dir: None,
+                    host_responses: Vec::new(),
+                };
+                match cdz_run::run(&component(src), &opts).expect("run") {
+                    cdz_run::Outcome::Value(s) => s,
+                    cdz_run::Outcome::Trap(t) => panic!("escape run trapped: {t}"),
+                }
+            };
+            assert_eq!(
+                render(w, "5"),
+                "(: 5 W)",
+                "a param'd scalar-newtype escape renders the NOMINAL name, not the erased inner (adv-64)"
+            );
+            // The nullary path always rendered the nominal — pin the two AGREE (the regression was the
+            // param'd path diverging from nullary).
+            assert_eq!(
+                run_heap_value_escape(
+                    "(module m (type W (Mk Int64)) (def (main) (Mk 5)) (export main))"
+                ),
+                Some("(: 5 W)".to_string()),
+                "the nullary scalar-newtype escape renders the nominal (unchanged)"
+            );
+        }
         // COMPOUND inner: `(type LW (Mk (List Int64)))` erases to the list handle — still takes the heap
         // escape (the recursive-sum-branch guard keeps it there). Matched-back value check (no host escape).
         let lw = "(module m (type LW (Mk (List Int64))) \

@@ -14702,6 +14702,18 @@ fn template_value_ast_flagged(
             let qty_of = member_access(b, "Qty", "of");
             Some(b.list(vec![qty_of, inner_hole, unit_ast]))
         }
+        // A NOMINAL newtype's runtime value IS its erased inner's value (the box adds nothing — `type-
+        // system.md §156`). Its VALUE form is therefore the INNER's value hole VERBATIM (a bare `5`, no
+        // ctor wrapper), while its TYPE surface (`type_ast`, applied at the value-form root) renders the
+        // NOMINAL NAME. So `(type W (Mk Int64))`'s runtime `(Mk k)` escape renders `(: 5 W)` — matching the
+        // NULLARY constant path (`const_value_ast`), which already bakes the nominal name. Without this arm
+        // `template_value_ast` returned `None` for a `Ty::Nominal`, so `mod.rs`'s escape router passed the
+        // STRIPPED inner (`Ty::Int`) to build the template → the value form rendered `(: 5 Int64)`, dropping
+        // the declared nominal (adv-64, a value-form regression from the adv-63b crash fix: the crash is
+        // gone but the rendering lost the tag). Recurse on the inner for the value; the wrapper is erased.
+        Ty::Nominal { inner, .. } => {
+            template_value_ast_flagged(b, inner, path, out, via_sum_payload)
+        }
         _ => None,
     }
 }
