@@ -6,24 +6,38 @@
 //! boundary — the operator's §21c bar (a real Cadenza reducer is the eventual target; this Rust guest
 //! is the interim bring-up that proves the machinery).
 //!
-//! The fixture (`tests/fixtures/reducer_guest.component.wasm`) is a committed build artifact of
-//! `tests/fixtures/reducer-guest/` (a wit-bindgen guest). Regenerate it when the WIT or guest changes:
-//!   cd tests/fixtures/reducer-guest
-//!   cargo build --target wasm32-unknown-unknown --release
-//!   wasm-tools component new target/wasm32-unknown-unknown/release/reducer_guest.wasm \
-//!       -o ../reducer_guest.component.wasm
-//! (CI rebuilds it from source + validates the result is a valid component so a stale fixture is
-//! caught — NOT a byte-diff, since the guest's deps/toolchain aren't lock-pinned; see the cdz-kernel CI
-//! job. This test loading + folding the committed .wasm is what proves its correctness.)
+//! The guest component is built from `tests/fixtures/reducer-guest/` (a wit-bindgen guest) — no longer a
+//! committed binary (v-nix N2: nix `packages.reducer-guest` builds it content-addressed). These tests
+//! read its bytes from the `REDUCER_GUEST_COMPONENT` env path (see `guest_bytes`); the cdz-kernel CI job
+//! builds it from source, validates it's a component, and exports the path. When the env is UNSET (a bare
+//! local `cargo test` with no wasm build) the tests OPTIONAL-SKIP cleanly. To run locally:
+//!   cd tests/fixtures/reducer-guest && cargo build --target wasm32-unknown-unknown --release
+//!   wasm-tools component new target/wasm32-unknown-unknown/release/reducer_guest.wasm -o /tmp/rg.wasm
+//!   REDUCER_GUEST_COMPONENT=/tmp/rg.wasm cargo test  (or `nix build .#reducer-guest`)
 
 use cdz_kernel::kv::Kv;
 use cdz_kernel::wasm_host::{ComponentError, ComponentReducer, ContentType, EffectKind};
 
-const GUEST: &[u8] = include_bytes!("fixtures/reducer_guest.component.wasm");
+/// The reducer-guest component bytes, read from the `REDUCER_GUEST_COMPONENT` env path (the nix-built
+/// `packages.reducer-guest`; the cdz-kernel CI job exports it). Returns `None` when the env is UNSET so a
+/// bare `cargo test -p cdz-kernel` (no wasm build) SKIPS these e2e tests cleanly instead of failing — the
+/// same optional-skip contract as the Cedar guest (v-nix N2, agreed). A path that IS set but unreadable
+/// PANICS (a broken path in CI must fail loud, not silently skip).
+fn guest_bytes() -> Option<Vec<u8>> {
+    let p = std::env::var("REDUCER_GUEST_COMPONENT").ok()?;
+    Some(
+        std::fs::read(&p)
+            .unwrap_or_else(|e| panic!("REDUCER_GUEST_COMPONENT={p:?} is set but unreadable: {e}")),
+    )
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn real_guest_component_folds_through_apply_end_to_end() {
-    let reducer = match ComponentReducer::from_component_bytes(GUEST) {
+    let Some(guest) = guest_bytes() else {
+        eprintln!("SKIP real_guest_component_folds_through_apply_end_to_end: REDUCER_GUEST_COMPONENT unset");
+        return;
+    };
+    let reducer = match ComponentReducer::from_component_bytes(&guest) {
         Ok(r) => r,
         Err(e) => panic!("the guest fixture must be a valid reducer component: {e:?}"),
     };
@@ -76,7 +90,11 @@ async fn real_guest_component_folds_through_apply_end_to_end() {
 /// the pre-instantiation is the safe form.
 #[tokio::test(flavor = "current_thread")]
 async fn dependency_free_reducer_takes_the_cached_instance_pre_fast_path() {
-    let reducer = ComponentReducer::from_component_bytes(GUEST).expect("valid reducer component");
+    let Some(guest) = guest_bytes() else {
+        eprintln!("SKIP dependency_free_reducer_takes_the_cached_instance_pre_fast_path: REDUCER_GUEST_COMPONENT unset");
+        return;
+    };
+    let reducer = ComponentReducer::from_component_bytes(&guest).expect("valid reducer component");
     assert!(
         reducer.uses_cached_instance_pre(),
         "a dep-free fold-exporting reducer must cache its ReducerPre (the per-fold fast path)"
@@ -100,7 +118,11 @@ async fn dependency_free_reducer_takes_the_cached_instance_pre_fast_path() {
 /// This proves (a) the budget is charged against the fold, and (b) exhaustion is classified correctly.
 #[tokio::test(flavor = "current_thread")]
 async fn a_fold_that_exceeds_its_fuel_budget_is_aborted_as_fuel_exhausted() {
-    let reducer = ComponentReducer::from_component_bytes(GUEST)
+    let Some(guest) = guest_bytes() else {
+        eprintln!("SKIP a_fold_that_exceeds_its_fuel_budget_is_aborted_as_fuel_exhausted: REDUCER_GUEST_COMPONENT unset");
+        return;
+    };
+    let reducer = ComponentReducer::from_component_bytes(&guest)
         .expect("valid reducer component")
         // A budget of 1 fuel unit: instantiation gets full headroom (reset internally), but the fold
         // itself executes real instructions, so 1 unit can't cover it → OutOfFuel.
@@ -129,7 +151,11 @@ async fn a_fold_that_exceeds_its_fuel_budget_is_aborted_as_fuel_exhausted() {
 /// (guards against a budget so tight it breaks real reducers — the default must not false-positive).
 #[tokio::test(flavor = "current_thread")]
 async fn a_normal_fold_completes_within_the_default_fuel_budget() {
-    let reducer = ComponentReducer::from_component_bytes(GUEST).expect("valid reducer component");
+    let Some(guest) = guest_bytes() else {
+        eprintln!("SKIP a_normal_fold_completes_within_the_default_fuel_budget: REDUCER_GUEST_COMPONENT unset");
+        return;
+    };
+    let reducer = ComponentReducer::from_component_bytes(&guest).expect("valid reducer component");
     let ct = ContentType {
         family: "message".into(),
         version: 1,
@@ -158,7 +184,11 @@ async fn the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatc
     use cdz_kernel::hash::Hash;
     use cdz_kernel::kernel::Session;
 
-    let reducer = ComponentReducer::from_component_bytes(GUEST).expect("valid reducer component");
+    let Some(guest) = guest_bytes() else {
+        eprintln!("SKIP the_wasm_guest_drives_the_kernel_loop_and_its_token_reaches_the_dispatched_frame: REDUCER_GUEST_COMPONENT unset");
+        return;
+    };
+    let reducer = ComponentReducer::from_component_bytes(&guest).expect("valid reducer component");
     // Grant the guest's Http target (SEC-F1) so the effect isn't denied.
     let authz = Authorizer::new(vec![Capability {
         kind: KKind::Http,
@@ -240,9 +270,13 @@ async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
             .await
     }
 
+    let Some(guest) = guest_bytes() else {
+        eprintln!("SKIP fold_commits_on_success_and_leaves_the_kv_intact_on_failure: REDUCER_GUEST_COMPONENT unset");
+        return;
+    };
     // SUCCESS path: default budget. Pre-populate an unrelated key; the fold bumps "count".
     let ok_reducer =
-        ComponentReducer::from_component_bytes(GUEST).expect("valid reducer component");
+        ComponentReducer::from_component_bytes(&guest).expect("valid reducer component");
     let mut kv = Kv::new();
     kv.put(b"unrelated".to_vec(), b"keep".to_vec());
     let out = inbound(&mut kv, &ok_reducer).await;
@@ -257,7 +291,7 @@ async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
 
     // FAILURE path: 1-fuel budget → the fold fails. A pre-populated KV must be restored intact, not
     // left empty by the `mem::take`.
-    let fail_reducer = ComponentReducer::from_component_bytes(GUEST)
+    let fail_reducer = ComponentReducer::from_component_bytes(&guest)
         .expect("valid reducer component")
         .with_fuel_budget(1);
     let mut kv2 = Kv::new();
@@ -288,8 +322,12 @@ async fn a_failed_wasm_fold_records_a_foldfailed_event_on_the_log() {
     use cdz_kernel::hash::Hash;
     use cdz_kernel::kernel::Session;
 
+    let Some(guest) = guest_bytes() else {
+        eprintln!("SKIP a_failed_wasm_fold_records_a_foldfailed_event_on_the_log: REDUCER_GUEST_COMPONENT unset");
+        return;
+    };
     // A 1-fuel budget guarantees the guest fold traps (OutOfFuel) mid-apply.
-    let reducer = ComponentReducer::from_component_bytes(GUEST)
+    let reducer = ComponentReducer::from_component_bytes(&guest)
         .expect("valid reducer component")
         .with_fuel_budget(1);
     let authz = Authorizer::new(vec![Capability {

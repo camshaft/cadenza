@@ -1,4 +1,4 @@
-//! End-to-end async fold: drive the REAL committed reducer-guest component through
+//! End-to-end async fold: drive the REAL reducer-guest component through
 //! [`AsyncComponentReducer`] (the cooperative-gas-yield path, operator all-async directive) and assert it
 //! behaves identically to the sync `ComponentReducer` — same effects, same KV mutation — but via the async
 //! engine (`async_support` + `fuel_async_yield_interval`) and an `.await`ed `call_apply`. This is the
@@ -10,13 +10,29 @@ use cdz_kernel::kv::Kv;
 use cdz_kernel::reducer::Reducer;
 use cdz_kernel::wasm_host::{AsyncComponentReducer, ComponentError, ContentType, EffectKind};
 
-// The SAME committed guest fixture the sync e2e uses — a dependency-free wit-bindgen reducer that, on an
-// inbound "message", requests one Http effect + increments a KV counter.
-const GUEST: &[u8] = include_bytes!("fixtures/reducer_guest.component.wasm");
+// The SAME guest the sync e2e uses (via REDUCER_GUEST_COMPONENT) — a dependency-free wit-bindgen reducer
+// that, on an inbound "message", requests one Http effect + increments a KV counter.
+/// The reducer-guest component bytes, from the `REDUCER_GUEST_COMPONENT` env path (nix-built
+/// `packages.reducer-guest`; the cdz-kernel CI job exports it). `None` when UNSET so a bare
+/// `cargo test -p cdz-kernel` SKIPS these e2e tests cleanly (optional-skip, same as the Cedar guest —
+/// v-nix N2). A set-but-unreadable path PANICS (a broken CI path must fail loud, not skip).
+fn guest_bytes() -> Option<Vec<u8>> {
+    let p = std::env::var("REDUCER_GUEST_COMPONENT").ok()?;
+    Some(
+        std::fs::read(&p)
+            .unwrap_or_else(|e| panic!("REDUCER_GUEST_COMPONENT={p:?} is set but unreadable: {e}")),
+    )
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn real_guest_folds_through_async_apply_end_to_end() {
-    let reducer = match AsyncComponentReducer::from_component_bytes(GUEST) {
+    let Some(guest) = guest_bytes() else {
+        eprintln!(
+            "SKIP real_guest_folds_through_async_apply_end_to_end: REDUCER_GUEST_COMPONENT unset"
+        );
+        return;
+    };
+    let reducer = match AsyncComponentReducer::from_component_bytes(&guest) {
         Ok(r) => r,
         Err(e) => panic!("the guest fixture must be a valid async reducer component: {e:?}"),
     };
@@ -46,8 +62,14 @@ async fn async_reducer_drives_via_the_async_reducer_trait() {
     // Drive through the `Reducer` trait (what the async kernel loop will call) via a `&dyn` reference
     // — proving the native `impl Reducer for AsyncComponentReducer` is object-safe + folds a real
     // Inbound event, mutating the passed-in KV (the fold_async contract).
+    let Some(guest) = guest_bytes() else {
+        eprintln!(
+            "SKIP async_reducer_drives_via_the_async_reducer_trait: REDUCER_GUEST_COMPONENT unset"
+        );
+        return;
+    };
     let reducer =
-        AsyncComponentReducer::from_component_bytes(GUEST).expect("valid async reducer component");
+        AsyncComponentReducer::from_component_bytes(&guest).expect("valid async reducer component");
     let dyn_reducer: &dyn Reducer = &reducer;
 
     let event = cdz_kernel::event::Event {
