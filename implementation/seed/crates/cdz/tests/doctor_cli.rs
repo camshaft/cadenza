@@ -142,3 +142,62 @@ fn doctor_json_reports_a_missing_store_as_not_ok() {
         "json reports the store status as missing: {out}"
     );
 }
+
+/// Run `cdz <args…>` with `CDZ_STORE` set to `store`, returning (exit_ok, stdout).
+fn run_with_store_env(args: &[&str], store: &std::path::Path) -> (bool, String) {
+    let exe = env!("CARGO_BIN_EXE_cdz");
+    let out = Command::new(exe)
+        .args(args)
+        .env("CDZ_STORE", store)
+        .output()
+        .expect("spawn cdz");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+    )
+}
+
+#[test]
+fn doctor_consults_cdz_store_when_no_explicit_store() {
+    // `cdz` resolves the runtime store as `--store` → `CDZ_STORE` → compiled default (via `default_store`).
+    // This pins the middle step: with NO `--store` but `CDZ_STORE` at a nonexistent dir, doctor must report
+    // that store MISSING (and exit non-zero) — proving the CLI HONORS the env. This is the behavior a
+    // `nix develop` devShell relies on: it exports `CDZ_STORE=<nix-built store>` so the whole toolchain uses
+    // that store without a flag (R4 / #1659). The fix landed via `default_store` reading `CDZ_STORE` (#1658);
+    // this is the CLI-level behavioral pin that a future store-resolution refactor can't silently regress.
+    let missing =
+        std::env::temp_dir().join(format!("cdz-doctor-cdzstore-env-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&missing);
+    let (ok, out) = run_with_store_env(&["doctor"], &missing);
+    assert!(
+        !ok,
+        "a missing CDZ_STORE store is an error (doctor consults the env): {out}"
+    );
+    assert!(
+        out.contains("runtime store: MISSING") && out.contains(&missing.display().to_string()),
+        "doctor reports the CDZ_STORE path as the (missing) runtime store: {out}"
+    );
+}
+
+#[test]
+fn doctor_explicit_store_wins_over_cdz_store_env() {
+    // Precedence: an explicit `--store` beats `CDZ_STORE` (a typed flag wins over the ambient env). Point
+    // `CDZ_STORE` at one missing dir and `--store` at a DIFFERENT missing dir; doctor must report the
+    // `--store` path, not the env's. Both missing → still an error, but the REPORTED path proves which won.
+    let env_store =
+        std::env::temp_dir().join(format!("cdz-doctor-envstore-{}", std::process::id()));
+    let flag_store =
+        std::env::temp_dir().join(format!("cdz-doctor-flagstore-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&env_store);
+    let _ = std::fs::remove_dir_all(&flag_store);
+    let (ok, out) = run_with_store_env(
+        &["doctor", "--store", flag_store.to_str().unwrap()],
+        &env_store,
+    );
+    assert!(!ok, "both stores missing → error: {out}");
+    assert!(
+        out.contains(&flag_store.display().to_string())
+            && !out.contains(&env_store.display().to_string()),
+        "an explicit --store wins over CDZ_STORE (reports the flag path, not the env path): {out}"
+    );
+}
