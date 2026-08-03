@@ -528,6 +528,7 @@ pass	a BigInt-inner quantity scales by a bare BigInt on the bigint path
 pass	a BigInt-inner quantity stored in a List reads back through List.at
 pass	a Bool argument to a parameter used in integer addition is rejected
 pass	a Bool generator derived from the seed is reproducible (same seed, same Bool)
+pass	a Bool host arg BESIDE a scalar and a String composes in one mixed-arity op
 pass	a Bool match with its arms in either order is exhaustive
 pass	a Bool match with only the true arm is non-exhaustive
 pass	a Bool-payload ctor BINDER used as a Bool in an if computes on the compiled path
@@ -2826,6 +2827,7 @@ pass	a runtime BigInt three-way compare agrees with the boolean ordering
 pass	a runtime BigInt three-way compare reports Equal at a BEYOND-Int64 magnitude
 pass	a runtime BigInt three-way compare reports equality as Equal
 pass	a runtime BigInt-inner quantity used as a Map key hits, and a different magnitude misses
+pass	a runtime Bool host arg crosses the boundary and drives two response bindings
 pass	a runtime Bool-payload ctor binder threads its Bool through construction and destructure
 pass	a runtime Bytes host-arg BEFORE a scalar arg keeps distinct core slots (no width-clobber)
 pass	a runtime Bytes rope in a SUM payload compares equal to its flat twin
@@ -3595,6 +3597,7 @@ pass	a value definition may carry a leading doc, like a function definition
 pass	a value-eq guard on a LITERAL-probe arm drives a tail-recursive loop
 pass	a value-eq guard on a SUM-match arm drives a tail-recursive loop
 pass	a value-eq guard on a wildcard arm drives a tail-recursive loop
+pass	a value-leaving host-call statement in a do-body runs and its result is dropped (dead-init sibling)
 pass	a variadic Ast form is folded via a tail-splice rest-binder over its operands
 pass	a variant carrying a Char payload constructs, matches, and binds it
 pass	a variant carrying a RECORD payload constructs and matches

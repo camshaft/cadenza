@@ -2664,6 +2664,37 @@
             (export main)))
   (call   main (: 0 Int64)) (output (: 7 Int64)))
 
+(case "a runtime Bool host arg crosses the boundary and drives two response bindings"
+  (doc    "The Bool scalar-ARG host-boundary face (v-rust-backend #1708 closed the rust arm: a bool
+           marshals to i64 via i64::from, matching wasm's i32 rep). Two host calls each take a runtime
+           bool computed from a comparison — `io.check (> n 5)` then `io.check (< n 5)` at n=7 → true then
+           false — and each response (10, 20) sums to 30. Pins the bool arg crosses AND that two ops
+           consume their rows in order. (breaker bh1, verified past its #1708 witness.) wasm + rust pass;
+           rust-async todo pending its host-delegated op-arg path.")
+  (input  (do
+            (effect io (op check (-> Bool Int64)))
+            (def (main (: n Int64))
+              (host (io) (+ (io.check (> n 5)) (io.check (< n 5)))))
+            (export main)))
+  (host-responses (respond io.check (: 10 Int64)) (respond io.check (: 20 Int64)))
+  (host-calls (call io.check) (call io.check))
+  (call   main (: 7 Int64)) (output (: 30 Int64)))
+
+(case "a Bool host arg BESIDE a scalar and a String composes in one mixed-arity op"
+  (doc    "The mixed-arity composition face: one op `(-> Bool Int64 String Int64)` takes a bool, a
+           scalar, AND a string arg together — the Bool marshal (#1708) composing with the existing
+           scalar and String-arg arms in a single arg list (the multi-arg slot-threading the
+           host-arg-before-scalar fix hardened). `io.log (= n 3) n \"tag\"` at n=3 → host answers 42.
+           (breaker bh2, verified.) wasm + rust pass; rust-async todo.")
+  (input  (do
+            (effect io (op log (-> Bool Int64 String Int64)))
+            (def (main (: n Int64))
+              (host (io) (io.log (= n 3) n "tag")))
+            (export main)))
+  (host-responses (respond io.log (: 42 Int64)))
+  (host-calls (call io.log))
+  (call   main (: 3 Int64)) (output (: 42 Int64)))
+
 (case "a RECURSIVE-sum value of runtime depth rides a handler resume"
   (doc    "An op whose declared result is a RECURSIVE sum (`Give.get : Unit -> Nat`) resumed with a
            runtime-depth spine `(mk a)`: the resume value is an unbounded heap structure, not a scalar or
@@ -2814,8 +2845,9 @@
            recorded), not the pure discarded sibling. Pins that the Core::Seq emit ELIDES a discarded pure
            non-final statement rather than force-evaluating it (adv-56 rust miscompile — `let _ = <stmt>;`
            ran the trap). The pure-only dead-init twin (02-binding-and-control) elides the same way with no
-           host call; this is the host-call face. Rust passes (the fix landed there); wasm / rust-async
-           decline this host-delegated shape (todo).")
+           host call; this is the host-call face. Rust + wasm pass (the wasm Core::Seq emit elides a
+           non-host-reaching statement via the SAME `subtree_reaches_host_call` predicate CDZ0307 warns on);
+           rust-async declines this host-delegated shape (todo).")
   (input  (do
             (effect io (op put (-> Int64 Int64)))
             (def (main (: d Int64))
@@ -2826,6 +2858,26 @@
             (export main)))
   (host-responses (respond io.put (: 0 Int64)))
   (host-calls (call io.put))
+  (call   main (: 0 Int64)) (output (: 42 Int64)))
+
+(case "a value-leaving host-call statement in a do-body runs and its result is dropped (dead-init sibling)"
+  (doc    "The DROP face of the dead-init Core::Seq emit: `(do (io.put 1) (io.put 2) 42)` — the two non-final
+           statements are VALUE-LEAVING host calls (`io.put : Int64 -> Int64`), not Unit. Each must RUN (both
+           host calls fire, recorded in order) but its returned value is DISCARDED — the emit drops the
+           leftover so the block stays stack-balanced and yields the tail, 42. Distinct from the pure-elide
+           sibling above (which does NOT emit its statement at all): a host-reaching statement is always
+           emitted; only a non-Unit RESULT is dropped. Pins the `Lir::Drop` arm the sibling's pure-elide path
+           doesn't exercise. Rust + wasm pass; rust-async todo pending its host-delegated Seq emit.")
+  (input  (do
+            (effect io (op put (-> Int64 Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (do (io.put 1)
+                    (io.put 2)
+                    42)))
+            (export main)))
+  (host-responses (respond io.put (: 0 Int64)) (respond io.put (: 0 Int64)))
+  (host-calls (call io.put) (call io.put))
   (call   main (: 0 Int64)) (output (: 42 Int64)))
 
 (case "a RESULT-returning effect op is matched on Ok / Err — the fallible-step idiom"

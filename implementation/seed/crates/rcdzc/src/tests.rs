@@ -66398,7 +66398,7 @@ mod stage1 {
         // guard into a slot the marshal had declared i32 — one wasm local at two widths → an INVALID module
         // (`wasm-tools validate: expected i64, found i32`). Only the marshalled-BEFORE-scalar order tripped it
         // (scalar-first worked because the scalar bumped `high` first). Fixed by threading a rising `arg_base`
-        // (as the ordinary call arg loop, ~6330, already does). `Component::from_binary` RE-VALIDATES the
+        // (the same `arg_base = *high` pattern `emit_call_args` / `emit_loop_iteration` use). `Component::from_binary` RE-VALIDATES the
         // composed component — the exact guard that failed pre-fix — and the run proves the scalar (`n`, also
         // re-read after the call as `10*n`) was NOT clobbered: send responds 5, so 5 + 10*7 = 75. The corpus
         // case pins the same shape cross-backend; this is the unit-level invalid-module guard.
@@ -66425,7 +66425,9 @@ mod stage1 {
             runtime: Some(runtime),
             runtime_cache_dir: None,
             host_responses: vec![cdz_run::HostResponse {
-                op: "send".to_string(),
+                // Dotted `E.op` per the HostResponse.op contract (effect `io`, op `send`); responses are
+                // consumed in order, so the name is for the diagnostic, but match the documented form.
+                op: "io.send".to_string(),
                 value: "5".to_string(),
             }],
         };
