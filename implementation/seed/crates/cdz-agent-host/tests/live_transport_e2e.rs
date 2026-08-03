@@ -123,7 +123,15 @@ async fn a_real_bedrock_invoke_returns_a_completion() {
     // model id decides the schema; this is the common case for the crate's headline (an agent's model call).
     let body = br#"{"anthropic_version":"bedrock-2023-05-31","max_tokens":16,"messages":[{"role":"user","content":"ping"}]}"#;
 
-    let transport = cdz_agent_host::BedrockModelTransport::new().await;
+    // Construction ALSO probes the environment (the SDK loads config — credential/region resolution can
+    // stall), so it's inside the timeout too: the "hard ceiling on any single live call" must cover the
+    // whole path, not just invoke() (PR #1857 review — new() was left uncovered).
+    let transport = tokio::time::timeout(
+        LIVE_CALL_TIMEOUT,
+        cdz_agent_host::BedrockModelTransport::new(),
+    )
+    .await
+    .expect("building the Bedrock transport (AWS config load) completes within LIVE_CALL_TIMEOUT");
     let outcome = tokio::time::timeout(
         LIVE_CALL_TIMEOUT,
         transport.invoke(&model_id, body, Hash::of(b"live-bedrock-e2e")),
