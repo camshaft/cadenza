@@ -96,10 +96,9 @@ pub mod effect_ct {
     pub const STORE_RESOLVE: &str = "store/resolve";
 
     /// Is `family` in the `store/*` namespace (the §4c global-store write layer, authz-gated on the name's
-    /// prefix authority)? The one-source prefix test the drive loop WILL apply alongside
-    /// [`is_control_family`] to route `store/*` to the name-store handler rather than a generic executor —
-    /// slice 3a defines this vocabulary; the routing + authz wiring that consumes it is slice 3b (not yet
-    /// wired, so today this classifier has no in-kernel caller).
+    /// prefix authority)? The one-source prefix test the drive loop applies alongside [`is_control_family`]
+    /// to route `store/*` to the attached name-store (via `Session::apply_store_effect`) rather than a
+    /// generic executor — after the SEC-F1 authorize gate, since store writes ARE authz-gated (§4c slice 3b).
     pub fn is_store_family(family: &str) -> bool {
         family.starts_with(STORE_PREFIX)
     }
