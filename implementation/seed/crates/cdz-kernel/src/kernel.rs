@@ -2149,4 +2149,58 @@ mod monotonic_now_tests {
         });
         assert!(emit_granted, "seeded manifest reads emit as granted");
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_genesis_seeded_session_replays_identically_and_leaves_no_open_seed_dispatch() {
+        use crate::executor::CompositeExecutor;
+        // The seed writes a Dispatched + its answering EffectResult into the durable log. Recovery must
+        // reconstruct a seeded session correctly: (1) the born-knowing KV state survives replay byte-for-
+        // byte, (2) the seed's dispatch is SETTLED by its own result — NOT left in the open set (else
+        // recovery would re-drive the seed as a phantom in-flight effect), and (3) the seed is NOT
+        // re-executed on replay (replay folds the logged result, never re-drives) — proven by the log
+        // length being preserved (no second Dispatched/EffectResult pair appears).
+        let mut exec = CompositeExecutor::new().with_effect(
+            crate::effect::effect_ct::EMIT,
+            Box::new(RecordingExecutor::new()),
+        );
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Emit,
+            predicate: crate::effect::ResourcePredicate::Any,
+        }]);
+        let mut session = Session::genesis(Hash::of(b"seed-replay-v1"));
+        session
+            .seed_capabilities_async(&InertReducer, &authz, &mut exec)
+            .await;
+
+        // Precondition: after seeding, the seed dispatch is already settled (result folded), nothing open.
+        assert_eq!(
+            session.open_effects(),
+            0,
+            "the seed's dispatch is settled by its answer — no open in-flight obligation"
+        );
+        let live_root = session.snapshot().kv_root;
+        let live_len = session.log().len();
+
+        // Replay the durable log — recovery reconstructs the same session.
+        let log = session.log().to_vec();
+        let replayed = Session::replay_async(log, &InertReducer)
+            .await
+            .expect("a seeded log replays");
+
+        assert_eq!(
+            replayed.snapshot().kv_root,
+            live_root,
+            "born-knowing KV state must survive replay identically"
+        );
+        assert_eq!(
+            replayed.log().len(),
+            live_len,
+            "replay folds the logged seed result — it does not re-drive/re-seed (no new events)"
+        );
+        assert_eq!(
+            replayed.open_effects(),
+            0,
+            "replay reconstructs the settled seed dispatch — not a phantom open effect to re-drive"
+        );
+    }
 }
