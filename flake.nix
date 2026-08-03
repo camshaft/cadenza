@@ -93,13 +93,22 @@
           ./implementation/seed/crates/rcdzc/src/backend/wasm/runtime_abi.rs;
         hashFromAbi = constName:
           let
-            # split on the exact `pub const NAME: &str =` declaration; the text AFTER it is the last
-            # split element (the file has the const once). Then take the first 64-hex string literal.
-            afterDecl = pkgs.lib.last (builtins.split ("pub const " + constName + ": &str =") runtimeAbi);
-            m = builtins.match "[^\"]*\"([0-9a-f]{64})\".*" afterDecl;
+            decl = "pub const " + constName + ": &str =";
+            # `builtins.split` returns a single-element list `[wholeFile]` when the pattern is NOT
+            # found, and `[before [] after …]` (≥3 elements) when it IS. So a length of 1 means the
+            # declaration is absent — we MUST fail there, else `builtins.match` would run on the whole
+            # file and silently grab SOME OTHER 64-hex literal (Copilot #1523). Only when the delimiter
+            # matched do we take the text AFTER it and read the first hex string literal (case-
+            # insensitive — don't assume codegen emits lowercase).
+            parts = builtins.split decl runtimeAbi;
+            afterDecl = if builtins.length parts >= 3 then pkgs.lib.last parts else null;
+            m = if afterDecl == null then null
+                else builtins.match "[^\"]*\"([0-9a-fA-F]{64})\".*" afterDecl;
           in
-          if m == null then
-            throw "flake.nix: could not read ${constName} from runtime_abi.rs (codegen shape changed?)"
+          if afterDecl == null then
+            throw "flake.nix: `${decl}` not found in runtime_abi.rs (codegen shape changed? this MUST match — refusing to guess a hash)"
+          else if m == null then
+            throw "flake.nix: found `${decl}` in runtime_abi.rs but no 64-hex literal followed it (codegen shape changed?)"
           else
             builtins.head m;
 
