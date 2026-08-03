@@ -420,6 +420,77 @@ fn a_single_file_with_imports_reuses_a_warmed_provider_cache() {
 }
 
 #[test]
+fn a_cache_hit_does_not_re_emit_the_provider() {
+    // Regression guard for the codegen-skip-on-HIT win (#1561): `precompile_group` drives
+    // `EmitTestsConsumerOnly` FIRST and, on a cache HIT, reuses the cached `.provider.wasm` WITHOUT driving
+    // `EmitTestsComposed` — so the (expensive, ~215s for the self-host closure) provider CODEGEN is never
+    // paid on a hit. A regression that reverted to always driving Composed would still PASS + still trace
+    // `hit` (it would emit the provider, then discard it for the cached one), so the `hit` trace alone does
+    // NOT witness the win. This pins it via the persist trace: a MISS emits+persists (`miss persisted`); a
+    // HIT reuses and MUST NOT persist again (no `miss persisted` on the second run). If a future edit made a
+    // HIT re-drive Composed, that drive would re-emit the provider and (finding the key present) NOT need to
+    // persist — but the tell we CAN observe is that a HIT run must show `hit` and must NOT show any `miss`
+    // event, i.e. it took the no-Composed branch. Two runs over the SAME cache dir.
+    let dir = std::env::temp_dir().join(format!("cdz-hit-noreemit-src-{}", std::process::id()));
+    let cache = std::env::temp_dir().join(format!("cdz-hit-noreemit-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+    std::fs::create_dir_all(&dir).unwrap();
+    // A recursive shared closure imported by two @test files → the composed/provider path (a real cross-edge).
+    std::fs::write(
+        dir.join("shared.cdz"),
+        "def sumto(n: Int64) =\n  if n == 0 then 0 else n + sumto(n - 1)\nexport { sumto }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ta.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_ha() =\n  if sumto(5) == 15 then unit else trap(\"ta\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tb.cdz"),
+        "import { sumto } from \"shared\"\n@test\ndef t_hb() =\n  if sumto(4) == 10 then unit else trap(\"tb\")\n",
+    )
+    .unwrap();
+
+    let run = || -> (bool, String) {
+        let out = Command::new(cdz())
+            .args(["test", dir.to_str().unwrap()])
+            .env("CDZ_PROVIDER_CACHE", &cache)
+            .env("CDZ_PROVIDER_CACHE_TRACE", "1")
+            .output()
+            .expect("spawn cdz test");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    // RUN 1: cold cache → a MISS that emits + persists the provider (drives Composed — the one time it should).
+    let (ok1, err1) = run();
+    assert!(ok1, "run 1 (cold MISS) passes:\n{err1}");
+    assert!(
+        err1.contains("[provider-cache] miss persisted"),
+        "run 1 is a MISS that persists the provider (drives Composed once):\n{err1}"
+    );
+
+    // RUN 2: warm cache → a HIT that reuses the cached provider and does NOT drive Composed → no `miss` event.
+    let (ok2, err2) = run();
+    assert!(ok2, "run 2 (warm HIT) passes:\n{err2}");
+    assert!(
+        err2.contains("[provider-cache] hit"),
+        "run 2 is a cache HIT:\n{err2}"
+    );
+    assert!(
+        !err2.contains("miss"),
+        "a HIT must NOT re-drive Composed / re-emit the provider (no `miss` event on the warm run — the \
+         codegen-skip-on-HIT win):\n{err2}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&cache);
+}
+
+#[test]
 fn a_heterogeneous_dir_composes_one_provider_per_shared_closure() {
     // Option-A per-closure grouping: a `cdz test <dir>` over a HETEROGENEOUS tree — files importing DIFFERENT
     // shared closures — must emit ONE provider PER genuine closure, NOT one whole-dir union. Regression guard:
