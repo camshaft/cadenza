@@ -42273,6 +42273,49 @@ mod match_engine {
     }
 
     #[test]
+    fn a_mutrec_map_and_set_accumulator_ground_the_partner_sum_child_and_emit_on_rust() {
+        // Coverage-hardening for the #1816 mutual-recursion partner-result-retype fix — beyond the List
+        // accumulator it landed with. The same shape with a MAP accumulator (value = the partner-tuple's
+        // sum `child`) and a SET accumulator (element = `child`) also freezes on rust without the fix:
+        // `child`'s type flows off the partner call `(dn b i)`, and the SumPayload-arm re-type feeds its
+        // concrete `Ast` into whatever collection it lands in — via Map.insert's value arm / Set.insert's
+        // element arm, distinct code paths from List.push. Both must EMIT on rust (the freeze was rust-only;
+        // wasm heap-erases the element). This locks the fix's generality across the three heap collections.
+        let emits_rust = |src: &str| {
+            let mut dbr = crate::db::Db::load(parse(src));
+            let lay =
+                crate::layout::compute(&mut dbr).expect("mutrec collection accumulator lays out");
+            crate::backend::emit(crate::backend::Target::Rust, &mut dbr, &lay, None, None).expect(
+                "mutrec collection accumulator grounds the partner sum child and emits rust",
+            );
+        };
+        // MAP accumulator — the inserted VALUE is `child` (an Ast bound off the partner tuple).
+        emits_rust(
+            "(module m \
+               (type Ast (AInt Int64) ALeaf (AList (List Ast))) \
+               (def (dn b i) \
+                 (if (= i 0) (tuple (AInt (Option.expect (List.at b 0) \"x\")) (+ i 1)) \
+                             (tuple (AList (list (dac b i (- i 1) Map.empty))) (+ i 1)))) \
+               (def (dac b i n acc) \
+                 (if (< n 1) acc \
+                     (match (dn b i) ((tuple child nx) (dac b nx (- n 1) (Map.insert acc n child)))))) \
+               (def (main) 0) (export main))",
+        );
+        // SET accumulator — the inserted ELEMENT is `child`.
+        emits_rust(
+            "(module m \
+               (type Ast (AInt Int64) ALeaf (AList (List Ast))) \
+               (def (dn b i) \
+                 (if (= i 0) (tuple (AInt (Option.expect (List.at b 0) \"x\")) (+ i 1)) \
+                             (tuple (AList (list (dac b i (- i 1) Set.empty))) (+ i 1)))) \
+               (def (dac b i n acc) \
+                 (if (< n 1) acc \
+                     (match (dn b i) ((tuple child nx) (dac b nx (- n 1) (Set.insert acc child)))))) \
+               (def (main) 0) (export main))",
+        );
+    }
+
+    #[test]
     fn an_unannotated_mutrec_accumulator_grounds_its_sum_element_and_emits_on_rust() {
         // THE FIX for the mutual-recursion `(List Any)` freeze (v-rust-backend ask, breaker mx5). An
         // UNANNOTATED accumulator `acc` in a mutually-recursive decoder — `dac`'s `acc` seeds as an empty
