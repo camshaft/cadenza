@@ -2550,6 +2550,51 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 143 Int64)))
 
+(case "a module-exported recursive performer called from a HANDLER ARM homes under the outer handler"
+  (doc    "Composition escalation of the module-performer fix (breaker mo4): the module recursive performer
+           `(. m walk)` is invoked NOT from the handle body directly but from INSIDE another effect's handler
+           ARM — `(handle Ask 0 ((get (u) s (resume ((. m walk) k 0) s))) …)` nested under `(handle Ctr …)`.
+           The `Ctr` performs inside `walk` must still home under the OUTER `Ctr` handler even though the
+           module call originates in the `Ask` arm's resume expression. Confirms the Member-arm reduction
+           reaches a module callee through an arm-nested call site, not just a handle-body one. Seeded 10,
+           main(3) sums 10+11+12 = 33.")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (effect Ask (op get (-> Unit Int64)))
+            (module m
+              (def (walk (: n Int64) (: acc Int64))
+                (if (= n 0) acc (walk (- n 1) (+ acc (Ctr.next unit)))))
+              (export walk))
+            (def (main (: k Int64))
+              (handle Ctr 10 ((next (u) s (resume s (+ s 1))))
+                (handle Ask 0 ((get (u) s (resume ((. m walk) k 0) s)))
+                  (Ask.get))))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 33 Int64)))
+
+(case "TWO modules' recursive performers interleave under ONE handler's shared state"
+  (doc    "Cross-module state-continuity escalation (breaker mo5): TWO separate modules `ma`/`mb` each export
+           a recursive performer of `Ctr.next`, both entered under ONE `Ctr` handler; the handler's per-run
+           state must thread continuously ACROSS the module boundary — `wa`'s activations consume the first
+           rows, then `wb`'s consume the next (mb scales its tick ×100). The Member-arm reduction must
+           specialize BOTH modules' recursive callees under the same handler and keep one shared cursor. At
+           k=2, seeded 1: wa reads 1,2 (→3), wb reads 3,4 ×100 (→700), sum 703.")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (module ma
+              (def (wa (: n Int64) (: acc Int64))
+                (if (= n 0) acc (wa (- n 1) (+ acc (Ctr.next unit)))))
+              (export wa))
+            (module mb
+              (def (wb (: n Int64) (: acc Int64))
+                (if (= n 0) acc (wb (- n 1) (+ acc (* 100 (Ctr.next unit))))))
+              (export wb))
+            (def (main (: k Int64))
+              (handle Ctr 1 ((next (u) s (resume s (+ s 1))))
+                (+ ((. ma wa) k 0) ((. mb wb) k 0))))
+            (export main)))
+  (call   main (: 2 Int64)) (output (: 703 Int64)))
+
 (case "a performed operation is the scrutinee of a match that dispatches on its result"
   (doc    "Witnesses that an effect operation composes as a match SCRUTINEE, exactly as it composes as an
            `if` condition or an arithmetic operand: `(match (Fresh.next) (0 100) (_ 200))`. The scrutinee is

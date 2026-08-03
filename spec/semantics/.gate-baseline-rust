@@ -392,6 +392,7 @@ pass	TWO closures escaping one handle carry DISTINCT captured state reads
 pass	TWO distinct nonzero BigInt literal probes dispatch in one recursive fn
 pass	TWO guarded map arms over a PARTIAL-CONST map fall through, each re-resolving its value binder
 pass	TWO loop-carried ropes each rebind to derived strings every recursion step
+pass	TWO modules' recursive performers interleave under ONE handler's shared state
 pass	TWO match inits in one let SEQUENCE - the second scrutinizes the first's binding
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
@@ -2151,6 +2152,7 @@ pass	a module with two definitions of the same name is rejected
 pass	a module's delegated capability is reachable as metadata, not as an export
 pass	a module-PRIVATE heap Map is read through an exported accessor across repeated calls
 pass	a module-exported closure factory builds a PERFORMING closure homed at the apply site
+pass	a module-exported recursive performer called from a HANDLER ARM homes under the outer handler
 pass	a module-private Symbol-keyed table resolves the IMPORTER's own symbol literals by content
 pass	a monomorphic user sum applied to a type argument in an annotation is rejected
 pass	a multi-arg constructor with mixed-kind payloads binds each by its own kind
