@@ -2334,6 +2334,7 @@ pass	a nested if of a common constructor builds it once and dispatches to each a
 pass	a nested if on the same condition collapses the inner test to the known branch
 pass	a nested inner handler that re-threads its own state folds (merged-context seed from init)
 pass	a nested lambda captures+applies a closure-typed def PARAMETER (inline lambda argument)
+pass	a nested let shadows an outer let of a different type and both resolve, outer surviving
 pass	a nested list element composes over a runtime list of lists
 pass	a nested literal pattern of the wrong type is a type error
 pass	a nested map pattern falls through when its key is absent
@@ -4109,6 +4110,7 @@ pass	an out-of-range literal MAP VALUE through a builder chain (Map.insert) is r
 pass	an out-of-range literal SET element via Set.insert is rejected
 pass	an out-of-range literal SET element via Set.of is rejected
 pass	an out-of-range literal argument caught transitively through a two-call chain of narrow params
+pass	an outer Int64 let binder survives an inner String shadow of the same name
 pass	an outer definition references a sibling nested module by bare name
 pass	an over-ceiling integer width in an unused parameter is rejected, like a used one
 pass	an overwrite-churn runtime map holds one entry with the last value winning
