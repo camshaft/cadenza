@@ -86,7 +86,8 @@
         #     from source, and cargo resolves THEIR deps — e.g. libc — from that second lockfile; a
         #     hermetic sandbox has no `~/.cargo` cache, so this MUST be vendored too).
         # Both vendor dirs are merged (`symlinkJoin`) and wired via a `[source.crates-io]
-        # replace-with` CARGO_HOME config; the build then runs `--offline`.
+        # replace-with` CARGO_HOME config; the build runs with `CARGO_NET_OFFLINE=true` (NOT the
+        # `--offline` flag — see the mkRuntime buildPhase note on why the flag breaks the NFC WIT dep).
         #
         # TIGHTLY SCOPED source: only the cdz-runtime crate (+ the workspace pin) — NOT the whole repo
         # — so a change ANYWHERE ELSE does not invalidate these derivations' cache.
