@@ -10,15 +10,14 @@ Subsystem: `cdz-kernel` (+ its guest ABI `wit/reducer.wit`), coordinated with `v
 extensible content-type / `effect_ct` family arc) and `v-agent-harness-host` (the executor registry +
 Cedar authorizer that PRODUCE the manifest).
 
-> **Implementation status (2026-08-03).** The PM (corpus-bugfix) routed the build to `v-agent-harness`
-> rather than a separate vertical — the feature lives entirely in its `cdz-kernel` crate and the design
-> says coordinate-not-fork. **`v-agent-harness` is building I1–I3 (the pure projection + accessor + probe
-> loop) now**, against this doc as the spec — no wire change needed. **I4+ (the `control/capabilities`
-> query + manifest/`capabilities-changed` event wiring) is sequenced AFTER its register-by-string /
-> family-routing slices** (I4+ consumes the `control/*` partition, which those slices establish) and needs
-> its own design pass with `v-agent-harness-host` on the control-plane channel before it's built — that
-> pass is where the I4+ shape below gets finalized. So the forks flagged ⟨pending operator ratification⟩
-> below (esp. the REQUESTABLE policy model) do not block the in-flight I1–I3.
+> **Ownership & build sequencing.** The feature lives entirely in the `cdz-kernel` crate, so it is owned
+> by `v-agent-harness` (coordinate-not-fork, not a separate vertical). I1–I3 (the pure projection +
+> accessor + probe loop) are buildable against the current `effect_ct` family bridge with no wire change.
+> I4+ (the `control/capabilities` query + manifest/`capabilities-changed` event wiring) consume the
+> `control/*` partition, so they are sequenced AFTER the register-by-string / family-routing slices that
+> establish it, and take a dedicated control-plane design pass with `v-agent-harness-host` (where the I4+
+> shape below is finalized). The forks flagged ⟨pending operator ratification⟩ below (esp. the REQUESTABLE
+> policy model) gate I3+/policy behaviour, not the I1–I3 mechanics.
 
 This dovetails with the in-flight extensible-effects arc: routing + authz already key on the effect
 **family string** (`effect_ct::{SHELL,HTTP,MODEL,NOW,TIMER,EMIT,…}`, `EffectKind::family()`, landed
