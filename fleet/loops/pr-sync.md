@@ -25,8 +25,8 @@ full window lacks) and integration stalls fleet-wide. Keep it small:
 - **Never paste full command output into your context or a reply.** `schedule-pass` prints a concise
   per-candidate line (reap action / dispatch pick); a candidate's CI detail lives on its PR (view with
   `gh run view <id> --log-failed` only when investigating a specific red). On a `reject`, the ack body
-  is a SHORT reason + the PR/run link, never dumped logs. (This is much less output than the old local
-  gate — CI holds the detail, not your window.)
+  is a SHORT reason + the PR number (and a run link if handy), never dumped logs. (This is much less
+  output than the old local gate — CI holds the detail, not your window.)
 
 ## Each tick
 1. `cargo xtask fleet heartbeat pr-sync`. **Keep turns short so you stay compactable** — you can't
@@ -44,18 +44,22 @@ full window lacks) and integration stalls fleet-wide. Keep it small:
    merge-requests" — which made pr-sync charter-blind to notes, silently piling up an 8h+ note backlog
    and blocking coordination the watchdog's note-backlog signal now flags. Notes matter too.)
 
-   **⚡ INTEGRATION = ONE COMMAND: `cargo xtask fleet schedule-pass --execute`** (the CI-gated executor,
-   operator-greenlit + smoke-tested 2026-08-03; replaces the old local-gate/gate-batch/bisect + manual
-   publish loop). You NO LONGER gate locally — GitHub Actions is the gate, running every candidate's
+   **⚡ INTEGRATION = ONE COMMAND: `cargo xtask fleet schedule-pass --execute`** (the CI-gated executor;
+   replaces the old local-gate/gate-batch/bisect + manual publish loop — see `fleet/CI-GATED-LANES-DESIGN.md`
+   for the model + rationale). You NO LONGER gate locally — GitHub Actions is the gate, running every candidate's
    full ~16-job check set IN PARALLEL. One `schedule-pass --execute` does BOTH halves of a scheduler
    pass, honoring the reply-invariant + single-writer + forward-only-trunk rules:
    - **REAP** each in-flight candidate PR (from `.claude/fleet/ci-dispatch/`): re-reads its `(state,
-     verdict)` fresh, then — MERGED on GitHub → advance `trunk` to `origin/main` (cherry-picks
-     `trunk..origin/main` onto trunk since they're tree-equal-but-commit-distinct, verifies
-     `git diff --quiet trunk origin/main`, then `fleet ack merged`); a merge-REQUIRED check RED or the
-     PR CLOSED-unmerged → `fleet ack reject` (with why) + free the slot; a NON-required-job red
-     (cdz-kernel / `cadenza @test suites`) → LEFT in flight (it still auto-merges — never reject on it);
-     still pending → left in flight.
+     verdict)` fresh, then — MERGED on GitHub → advance `trunk` by cherry-picking THIS PR's OWN squash
+     `mergeCommit.oid` (from `gh pr view <n> --json mergeCommit --jq .mergeCommit.oid`) onto trunk —
+     NOT `origin/main`'s tip and NOT the `trunk..origin/main` range (both wrong: trunk & origin/main are
+     tree-equal but commit-distinct under the re-parent model, so the range is origin/main's whole
+     divergent history and the tip is whatever merged LAST, not this PR). The picked commit's parent
+     tree == trunk's tree, so it applies cleanly and advances trunk by exactly this PR; multi-merge
+     windows are handled by reaping each PR separately. Then `fleet ack merged`. A merge-REQUIRED check
+     RED or the PR CLOSED-unmerged → `fleet ack reject` (with why) + free the slot; a NON-required-job
+     red (cdz-kernel / `cadenza @test suites`) → LEFT in flight (it still auto-merges — never reject on
+     it); still pending → left in flight.
    - **TOP-UP DISPATCH**: pushes new candidates from the queue up to the in-flight cap (8), respecting
      per-lane serialization + file-collision (`publish-candidate`: re-parent the `--ref` onto
      origin/main in a scratch worktree, push `cand/<agent>-<sha>`, `gh pr create --base main --title
