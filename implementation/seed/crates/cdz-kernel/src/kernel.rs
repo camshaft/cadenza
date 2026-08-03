@@ -59,7 +59,7 @@ pub struct Session {
     /// Armed-but-unfired timers: effect id → ABSOLUTE deadline in wall-clock ms (§9c/§16c-S5). The
     /// absolute anchor (not a duration) is what lets a recovered/migrated session compute remaining
     /// time. Rebuilt from `TimerArmed` events on replay; drained when the timer fires. The kernel — not
-    /// an executor — injects `TimerFired` once `now_ms` reaches the deadline (see `fire_due_timers`).
+    /// an executor — injects `TimerFired` once `now_ms` reaches the deadline (see `fire_due_timers_async`).
     armed_timers: BTreeMap<u64, u64>,
     /// The last `Now`-effect timestamp this session HANDED BACK, in binary nanoseconds since epoch —
     /// the monotonicity high-water mark (operator ruling). The `Now` clock effect must be strictly
@@ -84,7 +84,7 @@ pub struct Session {
     /// The first persistence error hit while writing through `store`, latched here (§16c-S1, tier B —
     /// see [`Session::attach_log`]). The in-memory log + fold always succeed, so `append`/`drive` stay
     /// infallible; a disk write failure is recorded (not swallowed, not panicked) and surfaced to the
-    /// driver via [`Session::take_persist_error`], which it MUST check after a `deliver`/`fire_due_timers`
+    /// driver via [`Session::take_persist_error`], which it MUST check after a `deliver_async`/`fire_due_timers_async`
     /// before acting on the run's external effects as durably-logged. Latched (first error wins) so one
     /// failure doesn't spam; once set, further writes are skipped (the on-disk log stopped at the last
     /// good frame, which recovery heals via `truncate_to`).
@@ -141,7 +141,7 @@ impl Session {
     }
 
     /// Take the latched persistence error, if any (§16c-S1 tier B). Call after a
-    /// `deliver`/`fire_due_timers`/`time_out_effect`; `Some` means a write-through failed mid-run, so the
+    /// `deliver_async`/`fire_due_timers_async`/`time_out_effect`; `Some` means a write-through failed mid-run, so the
     /// on-disk log stopped at the last good frame (recovery heals the torn tail via `truncate_to`) —
     /// alert/surface, don't silently proceed. Note the kernel ALREADY prevents the core S1 hazard: an
     /// effect whose `Dispatched` frame didn't persist is NOT routed (its outcome is a failed-undurable
@@ -174,7 +174,7 @@ impl Session {
     /// id-space, seeded with a CLONE of this session's current KV and the SAME reducer-hash, so it's ready
     /// to fold a "summarize yourself" inbound message WITHOUT replaying history (fork-from-snapshot, not
     /// full-replay — the materialized KV *is* the snapshot at the current seq). The caller then
-    /// [`Session::deliver`]s a report/summarize message, runs to quiescence, reads the reducer's answer
+    /// [`Session::deliver_async`]es a report/summarize message, runs to quiescence, reads the reducer's answer
     /// (its `public/` view or a model result), and DISCARDS the fork — it is never persisted.
     ///
     /// NON-INTERFERENCE by construction: this reads `self` immutably (a KV clone + the reducer-hash) and
@@ -233,7 +233,7 @@ impl Session {
     /// the semantic "what is X DOING?" answer is a fork-for-query (a fork's model summarizes itself).
     ///
     /// `now_ms` is passed by the CALLER (the kernel stays clock-free — §9c — it never reads the clock
-    /// itself; see `fire_due_timers`): it's used only to derive [`SessionState::Stalled`] from how long an
+    /// itself; see `fire_due_timers_async`): it's used only to derive [`SessionState::Stalled`] from how long an
     /// in-flight effect has been outstanding. `stall_after_ms` is the staleness threshold (e.g. 5 min); an
     /// in-flight effect whose dispatch is older than it flips the state to `Stalled`. Passing `None` for
     /// `now_ms` skips stall detection (state is Active/Quiescent/Closed only) — for a caller with no clock.
@@ -312,7 +312,7 @@ impl Session {
     }
 
     /// Deliver an inbound event and drive the fold→authorize→dispatch→fold-result loop to quiescence,
-    /// awaiting the reducer's fold via [`Reducer`] — the async form of [`Session::deliver`]. Appends
+    /// awaiting the reducer's fold via [`Reducer`]. Appends
     /// `body` (cause-linked to `cause`), then folds it through `reducer`; each effect the fold emits is
     /// authorized then handled by kind: an executor-dispatched effect (Http/Model/Shell/Now/Emit) is
     /// durably dispatched, performed by the executor, and its result folded back; a `Timer` effect is
@@ -861,7 +861,7 @@ impl Session {
     /// the timer analogue of [`dispatch_token_of`]: `Some(Some(token))` = a token was armed, `Some(None)`
     /// = a token-free timer, `None` = no `TimerArmed` frame for `id`. Derived from the DURABLE arming
     /// frame so it's replay-deterministic — the same fire gets the same token live or reconstructed. This
-    /// is how the token "rides the TimerFired": [`fire_due_timers`] copies it onto the fire event so a
+    /// is how the token "rides the TimerFired": [`fire_due_timers_async`] copies it onto the fire event so a
     /// wasm reducer's fold reads it back as the guest's `resumes` without fold ever touching the log/map.
     fn timer_armed_token_of(&self, id: EffectId) -> Option<Option<Vec<u8>>> {
         // Scan from the END (rev): at most ONE matching frame per id, and a result/fire event is
