@@ -282,6 +282,7 @@ mod tests {
             body: EventBody::Dispatched {
                 id: EffectId(seq),
                 kind: crate::effect::EffectKind::Http,
+                family: crate::effect::EffectKind::Http.family().into(),
                 target: "https://ok.host/x".into(),
                 idempotency_key: Hash::of(b"k"),
                 deadline_ms: None,

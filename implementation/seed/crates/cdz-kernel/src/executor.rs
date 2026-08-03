@@ -35,9 +35,10 @@ pub trait Executor {
     /// host serve family X" — to compute `Absent` vs granted/denied, so the kernel's inline
     /// `control/capabilities` answer needs it reachable through `&dyn Executor`, not just the concrete
     /// [`CompositeExecutor`]. Default `false` = FAIL-SAFE: an executor that doesn't override under-reports
-    /// (the family reads `Absent`), never falsely claims to serve one. The real drive path is always a
-    /// `CompositeExecutor` (which overrides to its `by_family` map); a single-kind leaf executor overrides
-    /// to its one family only if it's ever used bare as a `dyn Executor`.
+    /// (the family reads `Absent`), never falsely claims to serve one. In practice the top-level drive-loop
+    /// executor is a `CompositeExecutor` (which overrides to its `by_family` map), so the manifest is
+    /// accurate there; a single-kind leaf executor overrides to its one family for when it's used bare as a
+    /// `dyn Executor`.
     fn handles_family(&self, _family: &str) -> bool {
         false
     }
@@ -111,8 +112,8 @@ impl Executor for CompositeExecutor {
     /// fail-safe `false` default by delegating to the inherent [`CompositeExecutor::handles_family`] (the
     /// `by_family` registration source of truth) — so `&dyn Executor` (the drive loop's inline
     /// capability-manifest projection) gets the accurate answer, matching a concrete caller. Since the
-    /// top-level drive-loop executor is always a `CompositeExecutor`, this is accurate without needing
-    /// every leaf executor to override.
+    /// top-level drive-loop executor is in practice a `CompositeExecutor`, the projection is accurate
+    /// without needing every leaf executor to override.
     fn handles_family(&self, family: &str) -> bool {
         CompositeExecutor::handles_family(self, family)
     }

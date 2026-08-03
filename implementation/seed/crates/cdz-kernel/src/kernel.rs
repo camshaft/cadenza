@@ -504,6 +504,7 @@ impl Session {
                         EventBody::Dispatched {
                             id,
                             kind: req.kind.clone(),
+                            family: req.content_type.family.as_ref().into(),
                             target: req.target.to_string(),
                             idempotency_key,
                             deadline_ms: None,
@@ -596,6 +597,7 @@ impl Session {
                 EventBody::Dispatched {
                     id,
                     kind: req.kind.clone(),
+                    family: req.content_type.family.as_ref().into(),
                     target: req.target.to_string(),
                     idempotency_key,
                     deadline_ms: None,
@@ -1961,6 +1963,23 @@ mod monotonic_now_tests {
         assert!(
             control.is_empty(),
             "control/capabilities is answered inline, not surfaced"
+        );
+
+        // The durable Dispatched frame records the CONTROL family (not the `Emit` placeholder kind) — so
+        // crash recovery can classify this open dispatch as control/capabilities and re-answer it inline,
+        // rather than misreading it as a real emit (PR #1668 review, durability fix).
+        let dispatched_family = session
+            .log()
+            .iter()
+            .find_map(|e| match &e.body {
+                EventBody::Dispatched { family, .. } => Some(family.clone()),
+                _ => None,
+            })
+            .expect("a Dispatched frame was recorded");
+        assert_eq!(
+            dispatched_family.as_ref(),
+            crate::effect::effect_ct::CAPABILITIES,
+            "the inline-capabilities dispatch records control/capabilities, not the emit placeholder"
         );
 
         // The kernel folded an EffectResult carrying the manifest bytes. Find it + decode.

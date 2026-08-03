@@ -275,6 +275,7 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
         EventBody::Dispatched {
             id,
             kind,
+            family,
             target,
             idempotency_key,
             deadline_ms,
@@ -283,11 +284,14 @@ fn body_form(b: &mut Builder, body: &EventBody) -> StructId {
             let head = b.name("dispatched");
             let idv = u64_leaf(b, id.0);
             let k = kind_atom(b, kind);
+            let fam = str_leaf(b, family);
             let t = str_leaf(b, target);
             let idem = hash_form(b, idempotency_key);
             let dl = opt_ms_form(b, *deadline_ms);
             let tok = opt_bytes_form(b, token.as_deref());
-            b.list(vec![head, idv, k, t, idem, dl, tok])
+            // family rides AFTER kind (seq-39 identity). A pre-family log has a 6-element `dispatched`
+            // form (no `fam`); the decoder tolerates both arities for backward compat.
+            b.list(vec![head, idv, k, fam, t, idem, dl, tok])
         }
         EventBody::EffectResult { id, result, token } => {
             let head = b.name("effect-result");
@@ -525,16 +529,30 @@ fn read_body(a: &Arenas, id: StructId) -> Result<EventBody, EventAstError> {
             }
         }
         "dispatched" => {
-            let [idv, k, t, idem, dl, tok] = form(a, id, "dispatched")? else {
-                return Err(shape("dispatched arity"));
-            };
-            EventBody::Dispatched {
-                id: EffectId(read_u64(a, *idv)?),
-                kind: read_kind(a, *k)?,
-                target: read_str(a, *t)?,
-                idempotency_key: read_hash(a, *idem)?,
-                deadline_ms: read_opt_ms(a, *dl)?,
-                token: read_opt_bytes(a, *tok)?,
+            // Two arities for backward compat: 7 = the current `(dispatched id kind FAMILY target idem
+            // deadline token)`, 6 = a pre-family log `(dispatched id kind target idem deadline token)`,
+            // whose family is derived from the kind (a pre-family log only ever held built-in kinds — no
+            // register-by-string/control dispatch existed before the family field, so kind→family is exact).
+            match form(a, id, "dispatched")? {
+                [idv, k, fam, t, idem, dl, tok] => EventBody::Dispatched {
+                    id: EffectId(read_u64(a, *idv)?),
+                    kind: read_kind(a, *k)?,
+                    family: read_str(a, *fam)?.into(),
+                    target: read_str(a, *t)?,
+                    idempotency_key: read_hash(a, *idem)?,
+                    deadline_ms: read_opt_ms(a, *dl)?,
+                    token: read_opt_bytes(a, *tok)?,
+                },
+                [idv, k, t, idem, dl, tok] => EventBody::Dispatched {
+                    id: EffectId(read_u64(a, *idv)?),
+                    kind: read_kind(a, *k)?,
+                    family: read_kind(a, *k)?.family().into(),
+                    target: read_str(a, *t)?,
+                    idempotency_key: read_hash(a, *idem)?,
+                    deadline_ms: read_opt_ms(a, *dl)?,
+                    token: read_opt_bytes(a, *tok)?,
+                },
+                _ => return Err(shape("dispatched arity")),
             }
         }
         "effect-result" => {
@@ -652,6 +670,7 @@ mod tests {
                 body: EventBody::Dispatched {
                     id: EffectId(7),
                     kind: EffectKind::Http,
+                    family: EffectKind::Http.family().into(),
                     target: "https://ok.host/p".into(),
                     idempotency_key: h,
                     deadline_ms: Some(12345),
@@ -664,6 +683,7 @@ mod tests {
                 body: EventBody::Dispatched {
                     id: EffectId(8),
                     kind: EffectKind::Shell,
+                    family: EffectKind::Shell.family().into(),
                     target: "cargo test".into(),
                     idempotency_key: h,
                     deadline_ms: None,
@@ -854,6 +874,46 @@ mod tests {
             other => {
                 panic!("the known-family control must decode to Dispatched(Http), got {other:?}")
             }
+        }
+    }
+
+    #[test]
+    fn a_pre_family_six_element_dispatched_frame_decodes_deriving_family_from_kind() {
+        // Backward compat: a durable log written BEFORE the `family` field has a 6-element `dispatched`
+        // form `(dispatched id kind target idem deadline token)`. It must still decode — deriving `family`
+        // from `kind` (exact, because no register-by-string/control dispatch could exist before the field).
+        // Build the legacy 6-element frame by hand (what body_form emitted pre-change).
+        let mut b = Builder::new();
+        let head = b.name("dispatched");
+        let idv = u64_leaf(&mut b, 9);
+        let kind = b.name(crate::effect::effect_ct::MODEL);
+        let target = str_leaf(&mut b, "claude-x");
+        let idem = hash_form(&mut b, &Hash::of(b"idem"));
+        let dl = opt_ms_form(&mut b, None);
+        let tok = opt_bytes_form(&mut b, None);
+        let body = b.list(vec![head, idv, kind, target, idem, dl, tok]);
+        let ev_head = b.name("event");
+        let seq = u64_leaf(&mut b, 0);
+        let no_cause = {
+            let h = b.name("none");
+            b.list(vec![h])
+        };
+        let root = b.list(vec![ev_head, seq, no_cause, body]);
+        let bytes = codec::encode(&b.finish(root));
+
+        match decode(&bytes) {
+            Ok(Event {
+                body: EventBody::Dispatched { kind, family, .. },
+                ..
+            }) => {
+                assert_eq!(kind, EffectKind::Model);
+                assert_eq!(
+                    family.as_ref(),
+                    crate::effect::effect_ct::MODEL,
+                    "a pre-family frame derives family from its kind"
+                );
+            }
+            other => panic!("legacy 6-element dispatched must decode, got {other:?}"),
         }
     }
 

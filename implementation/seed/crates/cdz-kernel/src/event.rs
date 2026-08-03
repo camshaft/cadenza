@@ -102,6 +102,14 @@ pub enum EventBody {
     Dispatched {
         id: EffectId,
         kind: EffectKind,
+        /// The dispatched effect's content-type FAMILY (seq-39) — the authoritative identity of what was
+        /// dispatched. Recorded ALONGSIDE `kind` because a register-by-string / control family (e.g.
+        /// `control/capabilities`) has NO distinguishing `EffectKind` variant — its `kind` is a
+        /// placeholder (`Emit`), so `kind` alone can't tell such a dispatch apart from a real emit on the
+        /// recovery path. Persisting the family makes recovery classify an open dispatch deterministically
+        /// (re-answer `control/capabilities` inline vs. re-drive a real emit), and is the direction the
+        /// effect model is migrating onto (family is the source of truth, `kind` the legacy tag).
+        family: std::sync::Arc<str>,
         target: String,
         /// Idempotency key (§16c-S1/D): re-driving a dispatch with the same key must not double-apply.
         /// For naturally-idempotent effects this can equal the id; for side-effecting ones the
@@ -363,6 +371,7 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
         2 => {
             let id = EffectId(c.u64()?);
             let kind = decode_kind(c.u8()?)?;
+            let family = c.string()?;
             let target = c.string()?;
             let idempotency_key = Hash::from_bytes(c.hash()?);
             let deadline_ms = decode_opt_u64(c)?;
@@ -370,6 +379,7 @@ fn decode_body(c: &mut Cursor) -> Result<EventBody, DecodeError> {
             EventBody::Dispatched {
                 id,
                 kind,
+                family: family.into(),
                 target,
                 idempotency_key,
                 deadline_ms,
@@ -518,6 +528,7 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
         EventBody::Dispatched {
             id,
             kind,
+            family,
             target,
             idempotency_key,
             deadline_ms,
@@ -526,6 +537,7 @@ fn encode_body(body: &EventBody, out: &mut Vec<u8>) {
             out.push(2);
             out.extend_from_slice(&id.0.to_le_bytes());
             out.push(kind_tag(kind));
+            encode_str(family, out);
             encode_str(target, out);
             out.extend_from_slice(idempotency_key.as_bytes());
             encode_opt_u64(*deadline_ms, out);
@@ -732,6 +744,7 @@ mod tests {
             body: EventBody::Dispatched {
                 id: EffectId(7),
                 kind: EffectKind::Http,
+                family: EffectKind::Http.family().into(),
                 target: "https://ok.host/p".into(),
                 idempotency_key: Hash::from_bytes([0xCDu8; 32]),
                 deadline_ms: Some(1000),
@@ -772,7 +785,9 @@ mod tests {
         // durable-log persistence ships AND gains a real external consumer before the next such change, a
         // further bump must instead use a new tag or a version/length framing layer (so old streams can't
         // desync); until then, in-place extension with this golden pin as the byte-stability tripwire is
-        // the deliberate, documented policy.
+        // the deliberate, documented policy. tag 2 (Dispatched) ALSO gained a `family` str after `kind`
+        // (host-capability-discovery follow-up): a register-by-string/control dispatch has no distinguishing
+        // kind, so recovery needs the family — same deliberate pre-release in-place extension.
         let expected: &[u8] = &[
             42, 0, 0, 0, 0, 0, 0, 0, // seq
             1, // cause: Some
@@ -782,6 +797,8 @@ mod tests {
             2,   // body tag = Dispatched
             7, 0, 0, 0, 0, 0, 0, 0, // id
             1, // kind = Http
+            4, 0, 0, 0, 0, 0, 0, 0, // family len
+            104, 116, 116, 112, // "http"
             17, 0, 0, 0, 0, 0, 0, 0, // target len
             104, 116, 116, 112, 115, 58, 47, 47, 111, 107, 46, 104, 111, 115, 116, 47,
             112, // "https://ok.host/p"
@@ -801,7 +818,7 @@ mod tests {
         // And the content-address hash the log/cause-edges depend on is pinned too.
         assert_eq!(
             golden_event().hash().to_hex(),
-            "e9b6ff706b67c632eb61a64be8522ec2f613455337a0cbf46e700074b428aee0",
+            "9d12eae713d354981db668c8e4d32029754c9fdf1942b582f87404bc1f157a66",
             "FROZEN event hash changed — persisted `cause` edges + content addresses would break."
         );
     }
@@ -883,6 +900,7 @@ mod tests {
                 body: EventBody::Dispatched {
                     id: EffectId(7),
                     kind: EffectKind::Http,
+                    family: EffectKind::Http.family().into(),
                     target: "https://ok.host/p".into(),
                     idempotency_key: h,
                     deadline_ms: Some(12345),
@@ -895,6 +913,7 @@ mod tests {
                 body: EventBody::Dispatched {
                     id: EffectId(8),
                     kind: EffectKind::Shell,
+                    family: EffectKind::Shell.family().into(),
                     target: "cargo test".into(),
                     idempotency_key: h,
                     deadline_ms: None,
