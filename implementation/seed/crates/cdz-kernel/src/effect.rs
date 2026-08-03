@@ -804,8 +804,8 @@ mod tests {
         use crate::authz::Authorizer;
         use crate::executor::{CompositeExecutor, RecordingExecutor};
 
-        let exec =
-            CompositeExecutor::new().with(EffectKind::Now, Box::new(RecordingExecutor::new()));
+        let exec = CompositeExecutor::new()
+            .with_effect(effect_ct::NOW, Box::new(RecordingExecutor::new()));
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Now,
             predicate: ResourcePredicate::Any,
@@ -838,8 +838,8 @@ mod tests {
         // A SCOPED model grant (model == "claude-x") — the host serves model, policy grants only that id.
         use crate::authz::Authorizer;
         use crate::executor::{CompositeExecutor, RecordingExecutor};
-        let exec =
-            CompositeExecutor::new().with(EffectKind::Model, Box::new(RecordingExecutor::new()));
+        let exec = CompositeExecutor::new()
+            .with_effect(effect_ct::MODEL, Box::new(RecordingExecutor::new()));
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Model,
             predicate: ResourcePredicate::Exact("claude-x".into()),
@@ -898,9 +898,9 @@ mod tests {
 
         // Host serves http + now + model; NOT shell/timer/emit.
         let exec = CompositeExecutor::new()
-            .with(EffectKind::Http, Box::new(RecordingExecutor::new()))
-            .with(EffectKind::Now, Box::new(RecordingExecutor::new()))
-            .with(EffectKind::Model, Box::new(RecordingExecutor::new()));
+            .with_effect(effect_ct::HTTP, Box::new(RecordingExecutor::new()))
+            .with_effect(effect_ct::NOW, Box::new(RecordingExecutor::new()))
+            .with_effect(effect_ct::MODEL, Box::new(RecordingExecutor::new()));
         let authz = Authorizer::new(vec![
             // http granted exactly at the default probe host → Granted at the real probe target.
             Capability {
