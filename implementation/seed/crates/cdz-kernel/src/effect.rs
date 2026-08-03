@@ -85,6 +85,19 @@ pub mod effect_ct {
         family.starts_with(CONTROL_PREFIX)
     }
 
+    /// If `family` is a WELL-KNOWN control-plane family, return its `&'static str` const (so a caller can
+    /// hold it as a zero-alloc `Cow::Borrowed` instead of owning the string). `None` for an unknown/
+    /// ad-hoc control family. The control-plane analogue of [`super::EffectKind::from_family`] — used by
+    /// [`super::EffectRequest::new_with_family`] to keep the #1563/#1722 zero-alloc invariant for
+    /// `control/capabilities` and `control/summary`, which have no `EffectKind`.
+    pub fn wellknown_control(family: &str) -> Option<&'static str> {
+        match family {
+            CAPABILITIES => Some(CAPABILITIES),
+            SUMMARY => Some(SUMMARY),
+            _ => None,
+        }
+    }
+
     /// The canonical, finite set of well-known effect families — the SAME set routing/authz/codec key on.
     /// Iterating it is what makes capability-manifest projection complete BY CONSTRUCTION (probe each known
     /// family; there is nothing to miss — see [`super::project_manifest`]). Keep in sync with the consts
@@ -243,18 +256,23 @@ impl EffectRequest {
         timeliness: Timeliness,
     ) -> Self {
         let family: std::sync::Arc<str> = family.into();
-        // Canonicalize a well-known family to its `&'static str` const → `Cow::Borrowed`, ZERO alloc (the
-        // same zero-alloc invariant `new` holds via `kind.family()`; #1563 Cow work). Only a genuine
-        // register-by-string EXTENSION family (no built-in kind) owns its string.
+        // Canonicalize a WELL-KNOWN family (an effect kind OR a control-plane family) to its `&'static str`
+        // const → `Cow::Borrowed`, ZERO alloc (the same invariant `new` holds via `kind.family()`; #1563 Cow
+        // work). A well-known effect family carries its own kind; a control-plane family (control/*) has no
+        // world-effect kind, so it takes the `Emit` placeholder (inert — dispatch/idempotency key on family).
+        // Only a genuine register-by-string EXTENSION family (unknown to both) owns its string.
         let (kind, family) = match EffectKind::from_family(&family) {
             Some(k) => {
-                let borrowed = std::borrow::Cow::Borrowed(k.family());
-                (k, borrowed)
+                let fam = std::borrow::Cow::Borrowed(k.family());
+                (k, fam)
             }
-            None => (
-                EffectKind::Emit,
-                std::borrow::Cow::Owned(family.to_string()),
-            ),
+            None => match effect_ct::wellknown_control(&family) {
+                Some(c) => (EffectKind::Emit, std::borrow::Cow::Borrowed(c)),
+                None => (
+                    EffectKind::Emit,
+                    std::borrow::Cow::Owned(family.to_string()),
+                ),
+            },
         };
         EffectRequest {
             content_type: ContentType { family, version: 1 },
@@ -525,7 +543,29 @@ mod tests {
         assert_eq!(http.content_type, via_enum.content_type);
         assert_eq!(http.kind, via_enum.kind);
 
-        // An extension family with no EffectKind variant → Emit placeholder, family preserved.
+        // A well-known family is a zero-alloc Cow::Borrowed (the #1563/#1722 invariant).
+        assert!(
+            matches!(http.content_type.family, std::borrow::Cow::Borrowed(_)),
+            "a well-known family is Cow::Borrowed (zero-alloc)"
+        );
+
+        // A well-known CONTROL family (no EffectKind) is ALSO zero-alloc Borrowed, via wellknown_control —
+        // the #1727 residual: it used to fall to None→Owned. Emit placeholder, family preserved.
+        let caps = EffectRequest::new_with_family(
+            effect_ct::CAPABILITIES,
+            "self",
+            None,
+            Timeliness::Interactive,
+        );
+        assert_eq!(caps.content_type.family, effect_ct::CAPABILITIES);
+        assert_eq!(caps.kind, EffectKind::Emit);
+        assert!(
+            matches!(caps.content_type.family, std::borrow::Cow::Borrowed(_)),
+            "a well-known control family is Cow::Borrowed (zero-alloc), not owned"
+        );
+
+        // An extension family with no EffectKind variant → Emit placeholder, family preserved, OWNED (it's
+        // a genuine ad-hoc string, not a known const).
         let ext =
             EffectRequest::new_with_family("custom/metrics", "m", None, Timeliness::Interactive);
         assert_eq!(ext.content_type.family, "custom/metrics");
@@ -533,6 +573,10 @@ mod tests {
             ext.kind,
             EffectKind::Emit,
             "an extension family with no built-in kind gets the Emit placeholder"
+        );
+        assert!(
+            matches!(ext.content_type.family, std::borrow::Cow::Owned(_)),
+            "a genuine extension family is owned (no static const to borrow)"
         );
     }
 
