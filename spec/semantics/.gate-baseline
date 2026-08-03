@@ -4848,6 +4848,7 @@ pass	performing an operation with a wrong-type argument for a compound parameter
 pass	performing an operation with an argument of the wrong type is a type error
 pass	performs as Set.of elements build the set with stepping state and dedup applies to the RESULTS
 pass	performs as list-literal elements land at their POSITIONS in perform order
+pass	performs in BOTH operands of an or consume state only on the reached paths
 pass	performs in match-arm bodies fire ONLY for the selected arm — counter witnesses the count
 pass	performs in the ELEMENTS of a tuple / list CONSTRUCTOR thread left-to-right
 pass	performs in the FIELD VALUES of a RECORD constructor thread in written order

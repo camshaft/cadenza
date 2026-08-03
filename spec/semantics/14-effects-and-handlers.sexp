@@ -7467,3 +7467,23 @@
             (export main)))
   (call   main (: 3 Int64)) (output (: 33 Int64))
   (call   main (: 1 Int64)) (output (: 23 Int64)))
+
+(case "performs in BOTH operands of an or consume state only on the reached paths"
+  (doc    "The RESUMPTIVE-perform composition with short-circuit (the abortive pins cover elision of an
+           ABORT; this observes handler STATE): `(or (> (Ctr.tick) 10) (> (Ctr.tick) 3))` seeded k, with
+           a trailing tick pinning the exact post-connective state. k=20: the lhs tick reads 20 (s→21),
+           true short-circuits the rhs → 100 + 21 = 121 (ONE tick). k=4: lhs 4 (s→5) false, rhs 5 (s→6)
+           true → 100 + 6 = 106 (TWO ticks). k=0: both false (s→2) → 200 + 2 = 202. A fold treating the
+           rhs perform as unconditional double-fires and shifts every digit — the adv-55 Core::And
+           rhs-conditionality class observed at the STATE tier, where a wrong fold is visible even when
+           the boolean value happens to agree.")
+  (input  (do
+            (effect Ctr (op tick (-> Unit Int64)))
+            (def (main (: k Int64))
+              (handle Ctr k ((tick (u) s (resume s (+ s 1))))
+                (+ (if (or (> (Ctr.tick) 10) (> (Ctr.tick) 3)) 100 200)
+                   (Ctr.tick))))
+            (export main)))
+  (call   main (: 20 Int64)) (output (: 121 Int64))
+  (call   main (: 4 Int64)) (output (: 106 Int64))
+  (call   main (: 0 Int64)) (output (: 202 Int64)))
