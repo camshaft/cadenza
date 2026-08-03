@@ -491,6 +491,56 @@
   (call   main (: 10 Int64)) (output (: 11 Int64))
   (call   main (: 2 Int64)) (output (: 11 Int64)))
 
+; OVER-ROTATION perimeter for the compact-aliasing consume fix (adv-66): these near-neighbor shapes
+; ALREADY compute correctly (they don't hit the rope-2nd-deep-walk-after-eq trigger), but they must
+; STAY correct. The fix widened the consume set for Core::BytesCompact; a future dup-pass change that
+; OVER-consumes a borrow (or mis-widens the set) would double-free one of these and flip it. Pinning
+; the passing edge (requested by the seam owner) catches an over-rotation the failing base case can't.
+(case "compacting then reading the flat's LEN after an equality against the rope is safe (adv-66 perimeter)"
+  (doc    "eq-then-LEN: `(= rope flat)` borrows both, then `(Bytes.len flat)` reads the (aliased) flat
+           WITHOUT a second rope deep-walk — no double-consume, so no fault even pre-fix. Result at n=1:
+           eq true (1) + 100·len(1) = 101. Guards that the consume-widening doesn't over-free flat's
+           borrow-then-len read.")
+  (input (do
+    (def (build-rope (: n Int64) (: acc Bytes))
+      (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of (list (UInt8.wrap 65))))) acc))
+    (def (main (: n Int64))
+      (let ((rope (build-rope n (Bytes.of (list)))))
+        (let ((flat (Bytes.compact rope)))
+          (+ (if (= rope flat) 1 0) (* 100 (Bytes.len flat))))))
+    (export main)))
+  (call main (: 1 Int64)) (output (: 101 Int64)))
+(case "compacting then a concat+len of the flat after an equality (no rope-left compare) is safe (adv-66 perimeter)"
+  (doc    "eq-then-CONCAT+len, but the second read does NOT re-walk the rope as a compare's left operand
+           (it only consumes flat via concat) — so no rope-2nd-deep-walk, no fault even pre-fix. n=1: eq
+           true (1) + 10·len(concat flat 'B')=10·2 = 21. The near-miss of the base trigger: same
+           consuming concat of the alias, minus the rope-on-left compare that forced the freed re-walk.")
+  (input (do
+    (def (build-rope (: n Int64) (: acc Bytes))
+      (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of (list (UInt8.wrap 65))))) acc))
+    (def (main (: n Int64))
+      (let ((rope (build-rope n (Bytes.of (list)))))
+        (let ((flat (Bytes.compact rope)))
+          (+ (if (= rope flat) 1 0)
+             (* 10 (Bytes.len (Bytes.concat flat (Bytes.of (list (UInt8.wrap 66))))))))))
+    (export main)))
+  (call main (: 1 Int64)) (output (: 21 Int64)))
+(case "compacting then TWO order-compares (no equality) is safe (adv-66 perimeter)"
+  (doc    "Two order-compares, NO eq: each compare deep-walks rope/flat once but there is no borrow-then-
+           consume of the SAME binding pair in sequence, so no double-consume — correct even pre-fix.
+           n=1: (rope < flat+'B') true (1) + 10·(flat < rope+'B') true (10) = 11. Guards that the
+           consume-classification doesn't over-free a binding used across two independent compares.")
+  (input (do
+    (def (build-rope (: n Int64) (: acc Bytes))
+      (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of (list (UInt8.wrap 65))))) acc))
+    (def (main (: n Int64))
+      (let ((rope (build-rope n (Bytes.of (list)))))
+        (let ((flat (Bytes.compact rope)))
+          (+ (if (< rope (Bytes.concat flat (Bytes.of (list (UInt8.wrap 66))))) 1 0)
+             (* 10 (if (< flat (Bytes.concat rope (Bytes.of (list (UInt8.wrap 66))))) 1 0))))))
+    (export main)))
+  (call main (: 1 Int64)) (output (: 11 Int64)))
+
 ; --- Bytes as a RUNTIME value: construct, measure, and concatenate at run time ------------
 ; Every case above builds Bytes from literal integers, so the whole value is compile-time-known and
 ; folds to one baked constant. But the compiler's OWN interface is `compile: list<u8> -> result<list<u8>>`
