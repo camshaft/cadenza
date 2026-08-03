@@ -93,6 +93,12 @@ const SAT_NOTIFY_GRACE: u64 = 1800;
 /// watchdog sweeps every ~4 min, so this permits at most one restart per agent per ~10 min.
 const WEDGE_RESTART_GRACE: u64 = 600;
 
+/// Thrash-guard (seconds) between watchdog-sent `/compact` keystrokes to the same agent. A `/compact`
+/// takes a turn to land + drop the context %, so re-sending faster than that would stack duplicate
+/// compacts. The watchdog sweeps every ~4 min, so this permits at most one compact-nudge per agent per
+/// ~5 min — enough to let one land + the % re-read before considering another.
+const COMPACT_NUDGE_GRACE: u64 = 300;
+
 /// The watchdog's drain-stall signal only counts ACTIONABLE mail (`message_kind_is_actionable` —
 /// informational note/merged/backlog/status/reply are deliberately excluded, since a note is
 /// fire-and-forget and need not be replied to). That leaves a BLIND SPOT (found live 2026-08-02:
@@ -2787,6 +2793,28 @@ fn nudge_tick(session: &str, agent: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Type `/compact` + Enter into an agent's pane — the watchdog's ACTUAL pre-wall compaction (v-cdz-tooling
+/// root-cause 2026-08-02: `/compact` is a BUILT-IN CLI slash command, NOT a tool/skill, so an unattended
+/// agent physically CANNOT self-invoke it — the "compact at tick-top" contract rule is unexecutable from
+/// the agent side, and every prior "run /compact" NOTE was futile). A human typing `/compact` at the REPL
+/// triggers compaction; `send-keys` does the same. Same mechanism as [`nudge_tick`]'s `continue`.
+fn send_compact(session: &str, agent: &str) -> bool {
+    let target = format!("{session}:{agent}");
+    let sent = Command::new("tmux")
+        .args(["send-keys", "-t", &target, "-l", "/compact"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !sent {
+        return false;
+    }
+    Command::new("tmux")
+        .args(["send-keys", "-t", &target, "Enter"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Auto-nudge a drain-stalled agent's idle pane with the canonical drain instruction (opt-in, from the
 /// watchdog under `--nudge-drain-stalls`). Sends a literal message telling it to drain its hub inbox via
 /// `cargo xtask fleet inbox <agent>` (the resolver — never a relative glob), then TWO Enters: the first
@@ -2924,6 +2952,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
     let mut saturated = 0usize;
     let mut wedge_escalations = 0usize;
     let mut wedge_restarts = 0usize;
+    let mut compact_nudges = 0usize;
     let mut note_backlogs = 0usize;
     for a in &reg.agents {
         // Only ACTIVE agents with no stop-file are candidates — a stopped/removed agent SHOULD be idle.
@@ -3212,6 +3241,58 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 "approaching the 100% wall — proactive `/compact` NOW while it still submits"
             };
             eprintln!("  ⚠ '{}' is at {pct}% context — {tail}.", a.name);
+
+            // ── PRE-WALL AUTO-COMPACT (v-cdz-tooling root-cause 2026-08-02): the REAL prevent-the-wall fix. ──
+            // Agents CAN'T self-invoke `/compact` (it's a built-in CLI cmd, not a tool), so the "compact at
+            // tick-top" rule is unexecutable agent-side — that's why they climb to 100%. The watchdog types
+            // `/compact` for them via send-keys (same lever as `continue`/wake). Fires in the PRE-WALL band
+            // [85, 100) where a compact still submits — at the wall it can't (that's the auto-restart's job).
+            // Same guards as wake: skip stopped / interactive / no-live-window / mid-tick (`/compact` only
+            // lands at an idle prompt). Thrash-guarded by COMPACT_NUDGE_GRACE. This converts the pre-wall rung
+            // from a futile note into ACTUAL compaction, so the 100% auto-restart is rarely needed.
+            let compacted_recently = compact_nudge_age_secs(fleet, &a.name, now)
+                .is_some_and(|s| s < COMPACT_NUDGE_GRACE);
+            if should_send_compact(ctx_pct, compacted_recently) {
+                let stopped = fleet.stopfile(&a.name).exists();
+                let live = live.iter().any(|w| w == &a.name);
+                let interactive = role_is_terminal_interactive(&a.role); // never keystroke a human's window
+                let working = window_is_working(&session, &a.name); // `/compact` only lands at an idle prompt
+                if dry_run {
+                    println!(
+                        "  DRY-RUN would send-keys /compact to '{}' (pre-wall {pct}%)",
+                        a.name
+                    );
+                } else if stopped || !live || interactive || working {
+                    // A working/interactive/gone window can't take the keystroke this sweep — the next
+                    // sweep retries once it's idle-at-prompt. (No stamp, so it's not rate-limited out.)
+                    eprintln!(
+                        "  … '{}' pre-wall {pct}% but can't /compact now ({}); retry next sweep.",
+                        a.name,
+                        if working {
+                            "mid-tick"
+                        } else if !live {
+                            "no window"
+                        } else if interactive {
+                            "interactive"
+                        } else {
+                            "stopped"
+                        }
+                    );
+                } else if send_compact(&session, &a.name) {
+                    stamp_compact_nudge(fleet, &a.name);
+                    compact_nudges += 1;
+                    eprintln!(
+                        "  ⌂ sent /compact to '{}' (pre-wall {pct}%) — proactive compaction before the wall.",
+                        a.name
+                    );
+                    println!("  ⌂ auto-compacted '{}' (pre-wall {pct}%)", a.name);
+                } else {
+                    eprintln!(
+                        "  ! send-keys /compact to '{}' FAILED — will retry next sweep.",
+                        a.name
+                    );
+                }
+            }
 
             // Escalate to the concierge at the PRE-WALL threshold (95% general / 92% pr-sync) — BEFORE the
             // 100% wall, while a `/compact` can still submit — so the concierge can nudge a proactive
@@ -3751,6 +3832,7 @@ fn watchdog(fleet: &Fleet, opts: WatchdogOpts) {
                 queued_but_landed: landed_queued.len(),
                 wedge_escalations,
                 wedge_restarts,
+                compact_nudges,
                 note_backlogs,
                 leases_reaped,
                 stranded_agents,
@@ -3814,6 +3896,11 @@ struct WatchdogCounts {
     /// wedge without an operator. Persistently >0 across sweeps means agents keep hitting the wall (the
     /// self-compact discipline is failing upstream), worth a deeper fix than the restart papering over it.
     wedge_restarts: usize,
+    /// `/compact` keystrokes the watchdog sent to PRE-WALL agents this sweep (the real prevent-the-wall
+    /// remedy — agents can't self-compact). An ACTION count; a healthy fleet shows occasional nudges that
+    /// keep agents off the wall. Persistently 0 while `wedge_restarts` climbs would mean the send-keys
+    /// isn't landing (guards too tight / windows always mid-tick) — worth investigating.
+    compact_nudges: usize,
     /// Active agents flagged this sweep for a stale INFORMATIONAL backlog (deep + old note/merged/…
     /// inbox — the agent has stopped note-draining while still processing actionable mail). The
     /// selective-drain signal the actionable drain-stall misses by design; persistently >0 for the same
@@ -3857,6 +3944,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         && c.queued_but_landed == 0
         && c.wedge_escalations == 0
         && c.wedge_restarts == 0
+        && c.compact_nudges == 0
         && c.note_backlogs == 0
         && c.leases_reaped == 0
         && c.stranded_agents == 0
@@ -3873,7 +3961,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         format!("\treissued_agents={}", c.reissued_agents.join(","))
     };
     Some(format!(
-        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\twedge_restarts={}\tnote_backlogs={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}{reissued_agents}",
+        "{now}\tchecked={checked}\trearmed={}\treissued={}\treaped={}\tdrain_stalls={}\tdrain_stall_escalations={}\tsaturated={}\tqueued_but_landed={}\twedge_escalations={}\twedge_restarts={}\tcompact_nudges={}\tnote_backlogs={}\tleases_reaped={}\tstranded_agents={}\tdead_letters_reaped={}{reissued_agents}",
         c.rearmed,
         c.reissued,
         c.reaped,
@@ -3883,6 +3971,7 @@ fn watchdog_log_line(now: u64, checked: usize, c: &WatchdogCounts) -> Option<Str
         c.queued_but_landed,
         c.wedge_escalations,
         c.wedge_restarts,
+        c.compact_nudges,
         c.note_backlogs,
         c.leases_reaped,
         c.stranded_agents,
@@ -4020,6 +4109,33 @@ fn concierge_wedge_needs_operator(agent: &str, ctx_pct: Option<u8>) -> bool {
 /// is unit-tested without tmux.
 fn should_auto_restart_wedge(ctx_pct: Option<u8>, restarted_recently: bool) -> bool {
     matches!(ctx_pct, Some(p) if p >= CTX_WEDGE_THRESHOLD) && !restarted_recently
+}
+
+/// Should the watchdog SEND-KEYS `/compact` to this agent's pane this sweep? The REAL pre-wall remedy
+/// (v-cdz-tooling root-cause 2026-08-02): agents can't self-invoke `/compact` (built-in CLI cmd, not a
+/// tool), so the watchdog must type it for them — the same send-keys lever it uses for `continue`/wake.
+/// Fires ONLY in the PRE-WALL band: at/above `CTX_SATURATION_THRESHOLD` (85 — compact early + often, the
+/// cheapest intervention) but STRICTLY BELOW the 100% wall (at the wall `/compact` can't submit — that's
+/// the auto-restart's job). And not recently sent (thrash-guard — a compact takes a turn to land + drop
+/// the %). Pure so the trigger is unit-tested without tmux.
+fn should_send_compact(ctx_pct: Option<u8>, sent_recently: bool) -> bool {
+    matches!(ctx_pct, Some(p) if (CTX_SATURATION_THRESHOLD..CTX_WEDGE_THRESHOLD).contains(&p))
+        && !sent_recently
+}
+
+/// Age (seconds) since we last sent this agent a `/compact` keystroke (mtime of
+/// `.claude/fleet/compact-nudge/<name>`), or `None` if never. The thrash-guard for `should_send_compact`.
+fn compact_nudge_age_secs(fleet: &Fleet, name: &str, now: u64) -> Option<u64> {
+    file_mtime_unix(&fleet.root.join("compact-nudge").join(name)).map(|m| now.saturating_sub(m))
+}
+
+/// Record that we sent this agent a `/compact` keystroke (touch `.claude/fleet/compact-nudge/<name>`),
+/// for the `COMPACT_NUDGE_GRACE` thrash-guard. Best-effort (a failed stamp just risks one extra compact
+/// next sweep — harmless, unlike the wedge-restart stamp whose failure loops a kill).
+fn stamp_compact_nudge(fleet: &Fleet, name: &str) {
+    let dir = fleet.root.join("compact-nudge");
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(dir.join(name), "compact-nudge\n").ok();
 }
 
 /// Age (seconds) since we last auto-restarted this agent for a context wedge (mtime of
@@ -11154,6 +11270,7 @@ mod tests {
                     queued_but_landed: 5,
                     wedge_escalations: 1,
                     wedge_restarts: 2,
+                    compact_nudges: 9,
                     note_backlogs: 8,
                     leases_reaped: 4,
                     stranded_agents: 6,
@@ -11165,7 +11282,7 @@ mod tests {
                 }
             ),
             Some(
-                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tdrain_stall_escalations=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\twedge_restarts=2\tnote_backlogs=8\tleases_reaped=4\tstranded_agents=6\tdead_letters_reaped=7"
+                "1700000000\tchecked=42\trearmed=2\treissued=1\treaped=1\tdrain_stalls=0\tdrain_stall_escalations=0\tsaturated=3\tqueued_but_landed=5\twedge_escalations=1\twedge_restarts=2\tcompact_nudges=9\tnote_backlogs=8\tleases_reaped=4\tstranded_agents=6\tdead_letters_reaped=7"
                     .to_string()
             )
         );
@@ -11526,6 +11643,28 @@ mod tests {
             Some(CTX_WEDGE_THRESHOLD - 1),
             false
         ));
+    }
+
+    #[test]
+    fn should_send_compact_fires_in_the_pre_wall_band_only() {
+        // The real prevent-the-wall remedy (v-cdz-tooling root-cause): send-keys /compact in the PRE-WALL
+        // band [85,100) — a compact still submits there. Below 85: quiet (not saturated). At/above 100:
+        // NOT here (compact can't submit — that's should_auto_restart_wedge's job). The two remedies
+        // partition the saturation range at CTX_WEDGE_THRESHOLD with no overlap.
+        assert!(should_send_compact(Some(85), false)); // at the warn floor → compact
+        assert!(should_send_compact(Some(95), false));
+        assert!(should_send_compact(Some(99), false)); // last pre-wall pct → compact
+        assert!(!should_send_compact(Some(84), false)); // below the band → quiet
+        assert!(!should_send_compact(Some(100), false)); // AT the wall → restart's job, not compact's
+        assert!(!should_send_compact(Some(120), false));
+        // Thrash-guard: sent within COMPACT_NUDGE_GRACE → hold (let the last one land + the % re-read).
+        assert!(!should_send_compact(Some(95), true));
+        // No reading → never.
+        assert!(!should_send_compact(None, false));
+        // Partition check: the compact band and the restart trigger meet exactly at the wall, no overlap.
+        assert!(should_send_compact(Some(CTX_WEDGE_THRESHOLD - 1), false)); // 99 → compact
+        assert!(!should_send_compact(Some(CTX_WEDGE_THRESHOLD), false)); // 100 → NOT compact (restart)
+        assert!(should_auto_restart_wedge(Some(CTX_WEDGE_THRESHOLD), false)); // 100 → restart
     }
 
     #[test]
