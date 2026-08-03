@@ -280,6 +280,12 @@ const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
 const { meshFromSolid } = await import(pathToFileURL(join(guideRoot, "src/cad/index.ts")).href);
 const HEAP_IMPORT = "cadenza:runtime/heap";
 const runtimePath = join(guideRoot, "src/wasm/runtime.wasm");
+// FINDING#23: the runtime imports cadenza:nfc/normalize (separate NFC component) — supply the JS shim so it
+// instantiates. NFC of well-formed UTF-8 is String.prototype.normalize('NFC') over the list<u8> boundary.
+const NFC_IMPORT = "cadenza:nfc/normalize";
+const nfcHostImport = {
+  nfc: (bytes) => new TextEncoder().encode(new TextDecoder("utf-8").decode(bytes).normalize("NFC")),
+};
 const camel = (s) => s.replace(/-([a-z0-9])/g, (_, c) => c.toUpperCase());
 
 async function loadComp(bytes, name) {
@@ -298,7 +304,7 @@ async function loadComp(bytes, name) {
 let heapImport = null;
 try {
   const rt = await loadComp(readFileSync(runtimePath), "heap");
-  const rtRoot = await rt.instantiate(rt.getCore, {});
+  const rtRoot = await rt.instantiate(rt.getCore, { [NFC_IMPORT]: nfcHostImport });
   heapImport = rtRoot[HEAP_IMPORT] ?? rtRoot["heap"];
 } catch (e) {
   failures.push(`visible-geometry: could not instantiate the value-heap runtime — ${String(e && e.message ? e.message : e).slice(0, 100)}`);

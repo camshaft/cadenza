@@ -32,6 +32,12 @@ const { transpileBytes } = await import("@bytecodealliance/jco-transpile");
 
 const HEAP_IMPORT = "cadenza:runtime/heap";
 const runtimePath = join(guideRoot, "src/wasm/runtime.wasm");
+// FINDING#23: the runtime imports cadenza:nfc/normalize (separate NFC component) — supply the JS shim so it
+// instantiates. NFC of well-formed UTF-8 is String.prototype.normalize('NFC') over the list<u8> boundary.
+const NFC_IMPORT = "cadenza:nfc/normalize";
+const nfcHostImport = {
+  nfc: (bytes) => new TextEncoder().encode(new TextDecoder("utf-8").decode(bytes).normalize("NFC")),
+};
 
 async function loadComponent(bytes, name) {
   const { files } = await transpileBytes(new Uint8Array(bytes), { name, instantiation: "async", wasiShim: false, minify: false });
@@ -50,7 +56,7 @@ async function getHeap() {
   if (!heapPromise) {
     heapPromise = (async () => {
       const rt = await loadComponent(readFileSync(runtimePath), "heap");
-      const root = await rt.instantiate(rt.getCore, {});
+      const root = await rt.instantiate(rt.getCore, { [NFC_IMPORT]: nfcHostImport });
       return root[HEAP_IMPORT] ?? root["heap"];
     })();
   }
