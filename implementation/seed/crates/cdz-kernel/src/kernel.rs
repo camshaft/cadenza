@@ -602,8 +602,12 @@ impl Session {
                 continue;
             }
 
-            // Timers arm a kernel-fired deadline (§9c), not an executor call — same as sync path.
-            if req.kind == EffectKind::Timer {
+            // Timers arm a kernel-fired deadline (§9c), not an executor call — same as sync path. Keyed on
+            // the content-type FAMILY (seq-39), not the legacy kind enum: the kernel routes by family.
+            if req
+                .content_type
+                .matches_family(crate::effect::effect_ct::TIMER)
+            {
                 match req.target.parse::<u64>() {
                     Ok(deadline_ms) => {
                         self.append(
@@ -668,8 +672,12 @@ impl Session {
             // is preserved across the await.
             let outcome = executor.perform_async(&req, idempotency_key).await;
 
-            // MONOTONIC `now` clamp (operator ruling) — same as sync path; only `Now` results are clamped.
-            let outcome = if req.kind == EffectKind::Now {
+            // MONOTONIC `now` clamp (operator ruling) — same as sync path; only `now` results are clamped.
+            // Keyed on the content-type FAMILY (seq-39), not the legacy kind enum.
+            let outcome = if req
+                .content_type
+                .matches_family(crate::effect::effect_ct::NOW)
+            {
                 clamp_now_outcome(outcome, &mut self.last_now)
             } else {
                 outcome
@@ -810,16 +818,17 @@ impl Session {
         })
     }
 
-    /// The effect KIND that dispatch `id`'s `Dispatched` frame recorded, or `None` if `id` has no
-    /// `Dispatched` frame (e.g. a timer, opened by `TimerArmed`). Used on replay to tell a `Now`
-    /// result apart (so `last_now` rebuilds only from `Now` results). Reads the durable frame, so it's
-    /// replay-deterministic.
-    fn dispatch_kind_of(&self, id: EffectId) -> Option<EffectKind> {
+    /// The effect FAMILY that dispatch `id`'s `Dispatched` frame recorded, or `None` if `id` has no
+    /// `Dispatched` frame (e.g. a timer, opened by `TimerArmed`). Used on replay to tell a `now` result
+    /// apart (so `last_now` rebuilds only from `now` results). Keys on the durable `family` string (seq-39,
+    /// the authoritative identity) rather than the legacy `kind` enum, so it stays correct for a
+    /// register-by-string family with no `EffectKind` variant. Reads the durable frame → replay-deterministic.
+    fn dispatch_family_of(&self, id: EffectId) -> Option<std::sync::Arc<str>> {
         // Scan from the END (rev): at most ONE matching frame per id, and a result/fire event is
         // near its dispatch/arm, so the reverse scan finds it fast — avoids an O(log^2) replay hot
         // path where a front scan re-walks the whole prefix for every EffectResult (PR#1253 review).
         self.log.iter().rev().find_map(|e| match &e.body {
-            EventBody::Dispatched { id: d, kind, .. } if *d == id => Some(kind.clone()),
+            EventBody::Dispatched { id: d, family, .. } if *d == id => Some(family.clone()),
             _ => None,
         })
     }
@@ -897,7 +906,7 @@ impl Session {
                     s.open.remove(&id.0);
                     s.settled.insert(id.0);
                     s.next_effect_id = s.next_effect_id.max(id.0 + 1);
-                    if s.dispatch_kind_of(*id) == Some(EffectKind::Now) {
+                    if s.dispatch_family_of(*id).as_deref() == Some(crate::effect::effect_ct::NOW) {
                         if let EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes))) =
                             result
                         {
@@ -2201,6 +2210,59 @@ mod monotonic_now_tests {
             replayed.open_effects(),
             0,
             "replay reconstructs the settled seed dispatch — not a phantom open effect to re-drive"
+        );
+    }
+
+    // A reducer that emits an effect whose content-type FAMILY is `timer` but whose kind is the `Emit`
+    // placeholder — the register-by-string shape (a family with no matching EffectKind variant). Proves the
+    // drive loop's timer-arm decision keys on the FAMILY (seq-39), not the legacy kind enum.
+    struct TimerByFamilyReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for TimerByFamilyReducer {
+        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    let mut request =
+                        EffectRequest::new(EffectKind::Emit, "1000", None, Timeliness::Interactive);
+                    request.content_type.family = crate::effect::effect_ct::TIMER.into();
+                    FoldOutput::with_effects(vec![Effect {
+                        request,
+                        token: None,
+                    }])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_timer_arm_decision_keys_on_family_not_the_kind_enum() {
+        // seq-39: the kernel routes by content-type family. An effect with family=timer but the Emit
+        // placeholder kind must ARM A TIMER (kernel-fired deadline), NOT get routed to the executor as an
+        // emit. This pins that the drive loop's dispatch decision moved off the EffectKind enum onto family.
+        let mut exec = RecordingExecutor::new();
+        let mut session = Session::genesis(Hash::of(b"timer-family-v1"));
+        // A grant permitting the timer family at the "1000" target (authz keys on family too).
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Timer,
+            predicate: crate::effect::ResourcePredicate::Any,
+        }]);
+        session
+            .deliver_async(inbound(), None, &TimerByFamilyReducer, &authz, &mut exec)
+            .await
+            .expect("deliver");
+
+        // Armed a timer at 1000 — the family drove the timer path...
+        assert_eq!(
+            session.next_timer_deadline(),
+            Some(1000),
+            "family=timer arms a timer even with the Emit placeholder kind"
+        );
+        // ...and it was NOT routed to the executor as an emit.
+        assert_eq!(
+            exec.seen.len(),
+            0,
+            "a timer-family effect is kernel-armed, never routed to an executor"
         );
     }
 }
