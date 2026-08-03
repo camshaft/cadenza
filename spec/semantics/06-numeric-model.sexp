@@ -718,6 +718,61 @@
   (input  (do (def (main) (list -41 (: 1 UInt64))) (export main)))
   (error  CDZ0302))
 
+; The sibling-inferred width check also reaches a bare `(list …)` DESCENDED THROUGH a collection builder —
+; a `Set.of` element list and a `Map.insert` value where the width is fixed by a sibling annotation, not a
+; `(Set …)`/`(Map …)` collection annotation. Distinct seams from the plain-list arm (Set.of descends its
+; list arg; Map.insert's value is a builder-chain rung), each with its own re-validation hook. These faces
+; pin the OUT-OF-RANGE reject (CDZ0302 uniform post-fix). NOTE: the IN-RANGE Set/Map controls are HELD — a
+; separate rust-emit gap (adv-68) renders an in-range sibling-typed Set/Map literal at the Int64 default →
+; E0308 on rust (wasm computes); the in-range LIST path is fine (covered by the plain-list arm above), so
+; only the Set/Map in-range controls wait on the emit fix before they can be pinned cross-backend.
+
+(case "an out-of-range Set.of element via a sibling-inferred width is CDZ0302"
+  (doc    "The Set builder face of the sibling-inferred width check: `(Set.of (list (: 1 UInt64) -41))` — the
+           first list element's annotation fixes the element type to UInt64, so the un-annotated `-41` is a
+           UInt64 element and is out of range → CDZ0302, exactly as the bare-list `(list (: 1 UInt64) -41)`
+           above. The check must descend through `Set.of`'s list argument and re-run once sibling-unification
+           settles the element type; before the fix this escaped — wasm built a set with a wrapped `-41`,
+           rust rejected the emit (E0308), a cross-backend differential. Pins the descent reaches a Set.of
+           element whose width is sibling-inferred, the collection-builder companion of the plain-list arm.")
+  (input  (do (def (main) (Set.len (Set.of (list (: 1 UInt64) -41)))) (export main)))
+  (error  CDZ0302))
+
+(case "an out-of-range Map.insert value via a sibling-inferred width is CDZ0302"
+  (doc    "The Map builder face: `(Map.insert (Map.insert Map.empty 1 (: 5 UInt8)) 2 300)` — the FIRST insert's
+           value `(: 5 UInt8)` fixes the map's value type to UInt8, so the second insert's un-annotated value
+           `300` is a UInt8 and overflows (max 255) → CDZ0302. The width arrives from a sibling INSERT's value
+           annotation across the builder chain, not a `(Map … UInt8)` collection annotation; the check must
+           re-run per inserted value once the value type settles. Escaped pre-fix (wasm wrapped `300`→`44`,
+           rust E0308). Pins the descent reaches a Map.insert value whose width is sibling-inferred.")
+  (input  (do (def (main) (Map.len (Map.insert (Map.insert Map.empty 1 (: 5 UInt8)) 2 300))) (export main)))
+  (error  CDZ0302))
+
+; The IN-RANGE controls for the two sibling-inferred Set/Map faces above: a value that FITS the
+; sibling-inferred width must build + compute on every backend (the width check rejects only genuine
+; overflows, and the rust literal-emitter must render the in-range element at the COLLECTION width, not the
+; literal's Int64 default). The rust emit of an in-range sibling-typed Set/Map literal was a distinct gap
+; (rendered `41u64 as i64` into a `u64` container → E0308) fixed separately; these controls pin that the
+; in-range path now agrees cross-backend, the compute companions of the CDZ0302 rejects.
+
+(case "an IN-RANGE Set.of element via a sibling-inferred width computes"
+  (doc    "The compute control for the Set.of CDZ0302 reject above: `(Set.of (list (: 1 UInt64) 41))` — the
+           un-annotated `41` takes the sibling-inferred UInt64 width and FITS, so the set builds `{1,41}`
+           (len 2). Pins that the width check admits an in-range sibling-typed Set element AND that rust
+           emits it at the UInt64 collection width (not the literal's Int64 default, which had rendered
+           `41u64 as i64` into a `BTreeSet<u64>` → E0308); the in-range Set companion of the reject.")
+  (input  (do (def (main) (Set.len (Set.of (list (: 1 UInt64) 41)))) (export main)))
+  (call   main) (output (: 2 Int64)))
+
+(case "an IN-RANGE Map.insert value via a sibling-inferred width computes"
+  (doc    "The compute control for the Map.insert CDZ0302 reject above: `(Map.insert (Map.insert Map.empty 1
+           (: 5 UInt8)) 2 30)` — the second insert's un-annotated value `30` takes the sibling-inferred UInt8
+           width and FITS (≤255), so the map builds two entries (len 2). Pins the in-range sibling-typed
+           Map.insert value builds + computes cross-backend (rust rendering `30` at the UInt8 value width,
+           not the Int64 default that had produced E0308); the in-range Map companion of the reject.")
+  (input  (do (def (main) (Map.len (Map.insert (Map.insert Map.empty 1 (: 5 UInt8)) 2 30))) (export main)))
+  (call   main) (output (: 2 Int64)))
+
 (case "an IN-RANGE literal through a Map.insert builder chain compiles (the CDZ0302 control)"
   (doc    "The passing control for the builder-chain overflow rejects above: an in-range `5` (fits Int8)
            inserted into a `(Map Int64 Int8)` compiles + runs — the width fit-check must REJECT only genuine

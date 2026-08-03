@@ -390,8 +390,8 @@ pass	TWO closures escaping one handle carry DISTINCT captured state reads
 pass	TWO distinct nonzero BigInt literal probes dispatch in one recursive fn
 pass	TWO guarded map arms over a PARTIAL-CONST map fall through, each re-resolving its value binder
 pass	TWO loop-carried ropes each rebind to derived strings every recursion step
-pass	TWO modules' recursive performers interleave under ONE handler's shared state
 pass	TWO match inits in one let SEQUENCE - the second scrutinizes the first's binding
+pass	TWO modules' recursive performers interleave under ONE handler's shared state
 pass	TWO performs in an if condition both fold on the strict-first spine
 pass	TWO prefix scalars then a Tuple then a suffix scalar cross the direct-call boundary
 pass	TWO sequential inner handles seed from the outer's ADVANCING state
@@ -3700,6 +3700,8 @@ pass	an EXPORT naming an unbound definition is rejected
 pass	an IEC binary prefix converts exactly over Int64
 pass	an IEC binary prefix scales a unit by a power of two
 pass	an IEC-prefixed quantity displays scaled to its reference over Int64
+pass	an IN-RANGE Map.insert value via a sibling-inferred width computes
+pass	an IN-RANGE Set.of element via a sibling-inferred width computes
 pass	an IN-RANGE literal through a Map.insert builder chain compiles (the CDZ0302 control)
 pass	an INCLUSIVE ordering refinement folds at the boundary but must not over-refine one past it
 pass	an INFINITY-axiom theorem is unforgeable — its Thm cannot be fabricated outside the kernel
@@ -4063,6 +4065,8 @@ pass	an ordering <= of two same-bits Float32 literals const-folds true
 pass	an ordering > of two same-bits Float32 literals const-folds false
 pass	an ordering >= of two same-bits Float32 literals const-folds true
 pass	an ordering operator with a single operand is rejected, not a crash
+pass	an out-of-range Map.insert value via a sibling-inferred width is CDZ0302
+pass	an out-of-range Set.of element via a sibling-inferred width is CDZ0302
 pass	an out-of-range float literal is a malformed literal, not a non-finite value
 pass	an out-of-range integer literal is a malformed literal, not an unbound name
 pass	an out-of-range literal MAP KEY through a builder chain (Map.insert) is rejected
