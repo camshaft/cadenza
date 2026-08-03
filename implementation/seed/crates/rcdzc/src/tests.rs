@@ -24280,6 +24280,78 @@ mod match_engine {
     }
 
     #[test]
+    fn a_bare_generic_ctor_in_a_value_annotation_is_the_needs_argument_message_not_a_confusing_mismatch()
+     {
+        // FIX: a BARE under-applied generic constructor in a VALUE annotation `(: (Mk 1) Box)` / `(: 5 List)`
+        // previously gave the CONFUSING "annotation type Box does not match value type Box — wrap the value
+        // in `Mk`" (both render `Box`, reading as a contradiction) — because the bare generic REDUCES to a
+        // `Ty::Sum` with a fresh var, so `typeval_of` succeeds and the value-vs-annotation UNIFY fired the
+        // mismatch. The PARAMETER annotation path already gave the clear "`Box` is a type constructor — it
+        // needs a type argument here". FIX: the `Resolved::Annot` collect arm now runs
+        // `bare_type_ctor_needs_argument` (after the applied-arity check), so a value annotation reads like a
+        // parameter annotation. A right-arity value annotation still type-checks, and a GENUINE type mismatch
+        // still gives the mismatch message (the fix fires ONLY on a bare under-applied ctor).
+        let reject = |src: &str| {
+            compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("a bare generic ctor in a value annotation must reject")
+        };
+        for (src, ctor) in [
+            (
+                "(module m (type (Box a) (Mk a)) (def (main) (match (: (Mk 1) Box) ((Mk v) v))) (export main))",
+                "Box",
+            ),
+            ("(module m (def (main) (: 5 List)) (export main))", "List"),
+        ] {
+            let e = reject(src);
+            let m = &e.message;
+            // The behavior is CDZ0203 — assert the CODE, not just the message text (a message-only check is
+            // brittle and doesn't pin the code the way a consumer branching on it needs).
+            assert_eq!(
+                e.code.as_deref(),
+                Some("CDZ0203"),
+                "expected CDZ0203, got: {m}"
+            );
+            assert!(
+                m.contains(&format!(
+                    "`{ctor}` is a type constructor — it needs a type argument"
+                )),
+                "expected the needs-argument message for {ctor}, got: {m}"
+            );
+            assert!(
+                !m.contains("does not match value type"),
+                "must NOT be the confusing mismatch message, got: {m}"
+            );
+        }
+        // CONTROL — a right-arity value annotation still type-checks + runs.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type (Box a) (Mk a)) \
+                       (def (main) (match (: (Mk 7) (Box Int64)) ((Mk v) v))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+        // CONTROL — a GENUINE type mismatch (not a bare ctor) still gives the mismatch message, unchanged.
+        let mismatch = compile_component(&crate::codec::encode(&parse(
+            "(module m (def (main) (: 5 Bool)) (export main))",
+        )))
+        .expect_err("a genuine mismatch rejects");
+        assert_eq!(
+            mismatch.code.as_deref(),
+            Some("CDZ0203"),
+            "got: {}",
+            mismatch.message
+        );
+        assert!(
+            mismatch.message.contains("does not match value type"),
+            "a genuine type mismatch keeps the mismatch message, got: {}",
+            mismatch.message
+        );
+    }
+
+    #[test]
     fn a_generic_def_monomorphizes_over_a_user_generic_at_two_element_types() {
         // Coverage-hardening for recursive-generic monomorphization when a DEF's parameter/result is a USER
         // generic sum, exercised at TWO distinct element types in one program (each call site
