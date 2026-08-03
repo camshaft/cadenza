@@ -355,7 +355,7 @@ impl Session {
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> Result<Vec<crate::effect::ControlEffect>, KernelError> {
-        self.append(body, cause);
+        self.append(body, cause).await;
         let control = self.drive(reducer, authz, executor).await;
         Ok(control)
     }
@@ -461,7 +461,8 @@ impl Session {
                     token,
                 },
                 None,
-            );
+            )
+            .await;
             self.drive(reducer, authz, executor).await;
         }
         due.len()
@@ -485,7 +486,7 @@ impl Session {
     /// further writes are skipped, rather than propagated — the in-memory session stays consistent and
     /// the driver observes the failure via [`Session::take_persist_error`]. (Strict abort-on-persist-fail
     /// — tier A — is a raised design decision; this is the tier-B baseline.)
-    fn append(&mut self, body: EventBody, cause: Option<Hash>) -> Hash {
+    async fn append(&mut self, body: EventBody, cause: Option<Hash>) -> Hash {
         // Maintain the open/settled sets and the armed-timer table as obligations are created and
         // discharged (§16c-S1/S4/S5).
         match &body {
@@ -517,7 +518,7 @@ impl Session {
         // recovery heals the tail). First error wins; recorded, never swallowed or panicked.
         if self.persist_error.is_none() {
             if let Some(store) = self.store.as_mut() {
-                if let Err(e) = store.append(&event) {
+                if let Err(e) = store.append(&event).await {
                     self.persist_error = Some(e);
                 }
             }
@@ -569,18 +570,20 @@ impl Session {
                     // record_result the continuation token to resume the guest. authz-exempt: no
                     // authorize() call; the projection PROBES authz per family but the query itself is free.
                     let idempotency_key = idempotency_key_for(id, &req);
-                    let dispatch_hash = self.append(
-                        EventBody::Dispatched {
-                            id,
-                            kind: req.kind.clone(),
-                            family: req.content_type.family.as_ref().into(),
-                            target: req.target.clone(),
-                            idempotency_key,
-                            deadline_ms: None,
-                            token,
-                        },
-                        Some(cause),
-                    );
+                    let dispatch_hash = self
+                        .append(
+                            EventBody::Dispatched {
+                                id,
+                                kind: req.kind.clone(),
+                                family: req.content_type.family.as_ref().into(),
+                                target: req.target.clone(),
+                                idempotency_key,
+                                deadline_ms: None,
+                                token,
+                            },
+                            Some(cause),
+                        )
+                        .await;
                     // S1 latch: an un-durable dispatch folds an Err, never a phantom answer (same tier-B
                     // rule the routed path applies before executing).
                     let outcome = if self.persist_error.is_some() {
@@ -621,8 +624,9 @@ impl Session {
 
             // SEC-F1: authorize against the resolved target, awaiting the (possibly wasm) policy gate.
             if let Err(reason) = authz.authorize(&req).await {
-                let denial_hash =
-                    self.append(EventBody::AuthzDenied { id, reason, token }, Some(cause));
+                let denial_hash = self
+                    .append(EventBody::AuthzDenied { id, reason, token }, Some(cause))
+                    .await;
                 for pair in self.fold_tip(reducer, denial_hash).await {
                     to_process.push(pair);
                 }
@@ -644,17 +648,23 @@ impl Session {
                                 token,
                             },
                             Some(cause),
-                        );
+                        )
+                        .await;
                     }
                     Err(_) => {
-                        let denial_hash = self.append(
-                            EventBody::AuthzDenied {
-                                id,
-                                reason: format!("timer deadline not a u64 ms: {:?}", req.target),
-                                token,
-                            },
-                            Some(cause),
-                        );
+                        let denial_hash = self
+                            .append(
+                                EventBody::AuthzDenied {
+                                    id,
+                                    reason: format!(
+                                        "timer deadline not a u64 ms: {:?}",
+                                        req.target
+                                    ),
+                                    token,
+                                },
+                                Some(cause),
+                            )
+                            .await;
                         for pair in self.fold_tip(reducer, denial_hash).await {
                             to_process.push(pair);
                         }
@@ -666,18 +676,20 @@ impl Session {
             let idempotency_key = idempotency_key_for(id, &req);
 
             // S1: durable dispatch record BEFORE routing.
-            let dispatch_hash = self.append(
-                EventBody::Dispatched {
-                    id,
-                    kind: req.kind.clone(),
-                    family: req.content_type.family.as_ref().into(),
-                    target: req.target.clone(),
-                    idempotency_key,
-                    deadline_ms: None,
-                    token,
-                },
-                Some(cause),
-            );
+            let dispatch_hash = self
+                .append(
+                    EventBody::Dispatched {
+                        id,
+                        kind: req.kind.clone(),
+                        family: req.content_type.family.as_ref().into(),
+                        target: req.target.clone(),
+                        idempotency_key,
+                        deadline_ms: None,
+                        token,
+                    },
+                    Some(cause),
+                )
+                .await;
 
             // S1 latch-check BEFORE routing (tier B): an un-durable dispatch is NOT routed.
             if self.persist_error.is_some() {
@@ -733,7 +745,8 @@ impl Session {
                     caused_event: cause,
                 },
                 Some(cause),
-            );
+            )
+            .await;
             return Vec::new();
         }
         let mut v: Vec<(Effect, Hash)> = out.effects.into_iter().map(|e| (e, cause)).collect();
@@ -759,14 +772,16 @@ impl Session {
                  derive its continuation token from (§19b/§19e (B))"
             )
         });
-        let result_hash = self.append(
-            EventBody::EffectResult {
-                id,
-                result: outcome,
-                token,
-            },
-            Some(dispatch_hash),
-        );
+        let result_hash = self
+            .append(
+                EventBody::EffectResult {
+                    id,
+                    result: outcome,
+                    token,
+                },
+                Some(dispatch_hash),
+            )
+            .await;
         self.fold_tip(reducer, result_hash).await
     }
 
@@ -1584,7 +1599,8 @@ mod status_snapshot_tests {
                 outcome: crate::effect::Payload::Inline(b"".to_vec().into()),
             },
             None,
-        );
+        )
+        .await;
         let snap = s.status_snapshot(Some(0), 300_000);
         assert_eq!(snap.state, SessionState::Closed);
         assert_eq!(snap.last_event_kind, "Closed");

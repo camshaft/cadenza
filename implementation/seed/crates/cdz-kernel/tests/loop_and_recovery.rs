@@ -705,8 +705,9 @@ async fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_pers
     use cdz_kernel::log_store::LogSink;
 
     struct FailingSink;
+    #[async_trait::async_trait(?Send)]
     impl LogSink for FailingSink {
-        fn append(&mut self, _event: &cdz_kernel::event::Event) -> std::io::Result<()> {
+        async fn append(&mut self, _event: &cdz_kernel::event::Event) -> std::io::Result<()> {
             Err(std::io::Error::other("disk full (injected)"))
         }
     }

@@ -37,10 +37,15 @@ use std::path::{Path, PathBuf};
 /// (a `LogStore` over a real file can't be made to fail its append deterministically — a read-only file
 /// fails at open, not append — so the S1 route-guard's "don't route on an un-durable dispatch" path is
 /// otherwise untestable; a test impl that returns `Err` closes that gap).
+/// **Async** (operator ruling: the storage backends are async — a `LogSink` may be a network/replicated
+/// log whose append `.await`s I/O; the disk [`LogStore`] just returns a ready future). Object-safe via
+/// `#[async_trait(?Send)]` (`?Send` to match the single-threaded kernel + the crate's other backend traits
+/// [`crate::blob::BlobStore`]/[`crate::executor::Executor`]).
+#[async_trait::async_trait(?Send)]
 pub trait LogSink {
     /// Persist one event durably (append + flush/fsync as the impl's tier requires). `Err` = the event
     /// did NOT reach stable storage — the caller (`Session`) latches it and refuses to route (§16c-S1).
-    fn append(&mut self, event: &Event) -> io::Result<()>;
+    async fn append(&mut self, event: &Event) -> io::Result<()>;
 }
 
 /// A durable append-only event log backed by a single file.
@@ -49,8 +54,11 @@ pub struct LogStore {
     file: File,
 }
 
+#[async_trait::async_trait(?Send)]
 impl LogSink for LogStore {
-    fn append(&mut self, event: &Event) -> io::Result<()> {
+    /// The disk backend is synchronous under the hood (std `File` write+flush); it satisfies the async
+    /// trait by returning a ready future (no `.await` — an in-process file append never yields).
+    async fn append(&mut self, event: &Event) -> io::Result<()> {
         LogStore::append(self, event)
     }
 }
