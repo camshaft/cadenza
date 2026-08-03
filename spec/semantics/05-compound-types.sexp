@@ -2167,12 +2167,14 @@
 ; vectors is a different operation: it MERGES two multi-node RRB tries into one, which must splice the left
 ; vector's tail against the right's head and (in a relaxed-radix impl) rebalance the seam so indices stay
 ; O(log n)-navigable. A concat that mis-joined the interior spines would corrupt reads NEAR the boundary while
-; leaving the far ends intact — so the read checks straddle the join. No corpus case concatenates two lists big
-; enough to exercise this (the existing List.concat cases are single-element / scratch-slot / reject cases).
+; leaving the far ends intact — so the read checks straddle the join. The other `List.concat` corpus cases all
+; use SMALL operands (single-/few-element lists, scratch-slot, or reject cases), so none reaches this multi-node
+; merge path; this case is the large-operand companion.
 (case "concatenating two large runtime RRB vectors preserves length and every element across the join"
   (doc    "`left` = [0,600) and `right` = [600,1200) each built by a push-loop (each spans >1 RRB node), then
            `(List.concat left right)` must produce the 1200-element vector [0,1200) — length 1200, and value at
-           index i is exactly i. `readsum` sums a spread of probe indices that STRADDLE the join at 600:
+           index i is exactly i. The case sums (via the inline `at` helper) a spread of probe indices that
+           STRADDLE the join at 600:
            at {0, 599, 600, 601, 1199} the values are 0+599+600+601+1199 = 2999, plus 1000·(len==1200). Result
            = 1000·(len 1200 ok) + (probe sum 2999) = 1000 + 2999 = 3999. A concat that mis-spliced the RRB seam
            would misread an index near 600 (flipping the probe sum) or report a wrong length; a merge that
