@@ -665,7 +665,6 @@ pass	a MIXED payload+nullary SUM compound = has DISCRIMINATING power (separates 
 pass	a MIXED-endian frame packs big and little fields side by side and round-trips both
 pass	a MIXED-shape compound scales its quantity leaf beside a non-quantity element
 pass	a MODULE-exported NON-recursive performer is homed by the importer's handler (single perform)
-todo	a MODULE-exported closure that performs a delegated effect cannot cross the host boundary
 pass	a MODULE-exported recursive callee performing per step is homed by the importer's handler
 pass	a MONOTONE BISECTION finds the least r with r*r >= n over answer space, certified from both sides
 pass	a MULTI-LEVEL concat-built list SET element (n>=33) is found by a push-built equal element
@@ -2134,6 +2133,7 @@ pass	a multi-level RRB list persistently updates deep interior-level indices lea
 pass	a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall to the next field
 pass	a multi-limb modulo keeps the truncating dividend-sign convention across the limb boundary
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
+pass	a multi-parameter user generic UNDER-applied in an annotation is rejected
 pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
@@ -2162,6 +2162,7 @@ pass	a mutual walk where BOTH partners perform threads one shared counter across
 pass	a mutually tail-recursive even/odd over a large runtime count iterates in constant stack
 pass	a mutually-recursive AST walker reads a node's child list without corrupting a sibling head-read
 pass	a mutually-recursive check/check-if returning a Result compiles and runs (if-cond is a call)
+pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 pass	a mutually-recursive fold matching a rebuilt list with a payload binder builds and computes
 pass	a mutually-recursive fresh-id walk assigns a fresh id at each node and sums them
 pass	a mutually-recursive generic group is instantiated per type
@@ -2442,7 +2443,6 @@ pass	a performing closure called TWICE observes the state advance between its ca
 pass	a performing closure duplicated through a generic tuple applies twice with stepping state
 pass	a performing closure homed TRANSITIVELY through a pass-through function is not falsely rejected
 pass	a performing closure passed to a function that applies it UNDER a handler is homed at the apply site
-todo	a performing closure stored in a TUPLE and applied IN-GUEST fires normally
 pass	a performing do-def feeding a bin-construction operand under a handler stays bound (F2)
 pass	a performing match SCRUTINEE threads its state into a performing arm body
 pass	a performing match-arm guard folds with WILDCARD patterns (no binder to let-bind)
@@ -3531,6 +3531,7 @@ pass	a user SUM leaf inside a tuple key discriminates hits by variant AND payloa
 pass	a user function may be named quote — its signature is a binding form, not a quote
 pass	a user generic NESTED as the type argument of a built-in generic resolves in an annotation
 pass	a user generic NESTED as the type argument of another user generic resolves in an annotation
+pass	a user generic sum OVER-applied with too many type arguments in an annotation is rejected
 pass	a user generic sum named BARE (unapplied) in an annotation needs a type argument
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
@@ -5579,6 +5580,7 @@ todo	a Bool host arg BESIDE a scalar and a String composes in one mixed-arity op
 todo	a Bytes value SENT to the host is still readable after the call (the arg marshal borrows)
 todo	a Float64 closure captures a Float64 build-time host effect result
 todo	a Float64-inner Qty host result crosses as its float magnitude
+todo	a MODULE-exported closure that performs a delegated effect cannot cross the host boundary
 todo	a NOMINAL-Unit-typed host-call statement in a do-body is not spuriously dropped
 todo	a NON-TAIL host call consumes rows on the unwind, deepest frame first
 todo	a Quantity @param generates a Qty-result accessor the host supplies as a scalar magnitude
@@ -5611,7 +5613,7 @@ todo	a host-block scrutinee folding to a multi-arm sum switch fires the host op 
 todo	a host-delegated result SEEDS an in-program handler's initial state
 todo	a host-op argument COMPUTED by guest arithmetic crosses the boundary evaluated
 todo	a let-bound host result captured by two escaping closures fires the host op once (adv-62)
-pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
+todo	a performing closure stored in a TUPLE and applied IN-GUEST fires normally
 todo	a program that makes a host call has that call in its observable behavior
 todo	a program uses a response-returning delegated host function's return value
 todo	a recursion-driven host-call sequence consumes one response row per iteration in order

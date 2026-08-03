@@ -2168,6 +2168,7 @@ pass	a multi-level RRB list persistently updates deep interior-level indices lea
 pass	a multi-limb BigInt leaf in a tuple orders by the high limb and ties fall to the next field
 pass	a multi-limb modulo keeps the truncating dividend-sign convention across the limb boundary
 pass	a multi-parameter closure keeps its captured environment distinct from its arguments
+pass	a multi-parameter user generic UNDER-applied in an annotation is rejected
 pass	a multi-payload destructure binds the head and recurses on the tail
 pass	a multi-payload nested same-sum match falls through when the nested variant differs
 pass	a multi-payload pattern of the wrong arity is a malformed destructure
@@ -3577,6 +3578,7 @@ pass	a user SUM leaf inside a tuple key discriminates hits by variant AND payloa
 pass	a user function may be named quote — its signature is a binding form, not a quote
 pass	a user generic NESTED as the type argument of a built-in generic resolves in an annotation
 pass	a user generic NESTED as the type argument of another user generic resolves in an annotation
+pass	a user generic sum OVER-applied with too many type arguments in an annotation is rejected
 pass	a user generic sum named BARE (unapplied) in an annotation needs a type argument
 pass	a user sum NAMED `Box` wrapping a recursive type does not collide with the heap pointer
 pass	a user sum NAMED after a prelude sum shadows it without a duplicate definition
