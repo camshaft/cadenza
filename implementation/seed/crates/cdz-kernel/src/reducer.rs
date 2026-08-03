@@ -120,15 +120,25 @@ pub trait Reducer {
     /// Totality (§17 "can't-brick"): this must not panic for any input — a reducer that sees an event it
     /// doesn't understand returns [`FoldOutput::none`], not a crash. A long-running implementation (a wasm
     /// fold) may `.await` internally so the host loop can interleave other sessions while it yields on fuel.
-    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput;
-
     /// Fold one event — the un-suffixed name (the trait is `async`; `_async` is redundant, operator
-    /// cleanup). TRANSITIONAL default forwards to [`fold_async`] so callers can move to `fold` while
-    /// existing impls (kernel + cdz-agent-host's 12 test reducers + executors) still define `fold_async` —
-    /// never-red bridge, dropped once all impls define `fold` (trait-rename beat T1→T3, coordinated with
-    /// v-agent-harness-host).
+    /// cleanup). This is the TARGET name. During the trait-rename window BOTH `fold` and `fold_async`
+    /// carry mutually-forwarding defaults, so an impl provides EXACTLY ONE and the other forwards to it —
+    /// a zero-red migration (no flag-day, no coordinated red window): existing impls keep defining
+    /// `fold_async`; new/migrated impls define `fold`; callers always use `fold`. Once ALL impls (kernel +
+    /// cdz-agent-host) define `fold`, `fold_async` is dropped and `fold` becomes required (beat T3).
+    ///
+    /// TRANSITIONAL-WINDOW INVARIANT: every impl must define exactly one of the two. An impl that defines
+    /// NEITHER compiles but infinite-recurses at first call — this is a known, temporary hazard of the
+    /// window, guarded by the fact that the impl set is fixed and enumerated (no new neither-impls land
+    /// during the rename). Do not add a new Reducer impl without defining one method.
     async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         self.fold_async(event, kv).await
+    }
+
+    /// Legacy suffixed name — TRANSITIONAL default forwarding to [`fold`]. Existing impls still define this
+    /// directly; it is dropped once every impl has migrated to `fold` (see the window invariant above).
+    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        self.fold(event, kv).await
     }
 }
 
