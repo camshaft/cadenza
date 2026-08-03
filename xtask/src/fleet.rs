@@ -8265,7 +8265,7 @@ fn mark_dispatch_resolved(fleet: &Fleet, d: &CiDispatch, status: &str) {
 /// advance fails the CAS rather than clobbering; preserves forward-only + single-writer). Returns
 /// `Ok(new_sha)` on advance, `Ok(current)` if already at origin/main (nothing to do), `Err` on a git
 /// failure or a lost CAS. FAST-FORWARD ONLY — never a merge/reset that could move trunk backward.
-fn advance_trunk_to_origin_main(fleet: &Fleet) -> Result<String, String> {
+fn advance_trunk_for_merged_pr(fleet: &Fleet, pr: u64) -> Result<String, String> {
     let git = |args: &[&str]| {
         Command::new("git")
             .current_dir(&fleet.repo)
@@ -8273,58 +8273,48 @@ fn advance_trunk_to_origin_main(fleet: &Fleet) -> Result<String, String> {
             .output()
     };
     let git_ok = |args: &[&str]| git(args).map(|o| o.status.success()).unwrap_or(false);
-    let _ = git(&["fetch", "origin", "--quiet"]);
     let rev = |r: &str| {
         git(&["rev-parse", r])
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
+    let _ = git(&["fetch", "origin", "--quiet"]);
     let trunk_before = rev(TRUNK).ok_or_else(|| "cannot resolve trunk".to_string())?;
-    let origin = rev("origin/main").ok_or_else(|| "cannot resolve origin/main".to_string())?;
 
-    // MODEL (pr-sync smoke-test, 2026-08-03): `trunk` and `origin/main` are permanently TREE-EQUAL but
-    // COMMIT-DISTINCT — every candidate is RE-PARENTED onto origin/main before its PR, so origin/main's
-    // squash commits are NOT ancestors of trunk. A literal fast-forward can therefore NEVER work
-    // (origin/main is not a descendant of trunk). Instead, CHERRY-PICK the commit(s) origin/main has that
-    // trunk lacks (`trunk..origin/main`, oldest-first) ONTO trunk — each applies CLEANLY because trunk's
-    // tree already equals origin/main's pre-merge tree — then VERIFY the trees now match (`git diff
-    // --quiet trunk origin/main`). This preserves forward-only + single-writer (we only ADD commits to
-    // trunk, matching origin/main's content) without requiring an ancestry relationship.
-    if trunk_before == origin {
-        return Ok(origin); // identical sha (rare) → nothing to do
-    }
-    // Already tree-equal (a prior pass or peer already advanced trunk to match) → done, no-op.
-    if git_ok(&["diff", "--quiet", TRUNK, "origin/main"]) {
-        return Ok(trunk_before);
-    }
-    // The commits to replay, oldest-first (rev-list --reverse), that are on origin/main but not trunk.
-    let list = git(&["rev-list", "--reverse", &format!("{TRUNK}..origin/main")])
+    // Cherry-pick THIS PR's OWN squash mergeCommit onto trunk — NOT `origin/main`'s tip and NOT the
+    // `trunk..origin/main` range (both are wrong: pr-sync smoke-test #2, 2026-08-03). trunk & origin/main
+    // are tree-equal but COMMIT-DISTINCT (re-parent model), so `trunk..origin/main` is origin/main's
+    // WHOLE divergent history, and origin/main's TIP is whatever merged LAST, not necessarily this PR.
+    // The one correct sha is the reaped PR's `mergeCommit.oid` (from `gh pr view`) — cherry-picking that
+    // specific commit onto trunk applies cleanly (its parent's tree == trunk's tree, per re-parenting)
+    // and advances trunk by exactly this PR. Multi-merge windows are handled by reaping each PR
+    // separately (each pass/PR picks its own mergeCommit), so no ordering logic is needed here.
+    let merge_oid = Command::new("gh")
+        .args(["pr", "view", &pr.to_string(), "--json", "mergeCommit", "--jq", ".mergeCommit.oid"])
+        .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    if list.is_empty() {
-        // No trunk..origin/main commits yet trees differ → trunk has commits origin/main lacks
-        // (shouldn't happen in this model) — refuse rather than guess.
-        return Err(format!(
-            "trunk ({trunk_before}) and origin/main ({origin}) differ but origin/main has no commits ahead of trunk — unexpected divergence; needs manual reconcile"
-        ));
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("PR #{pr}: could not read mergeCommit.oid via gh (merged but no merge sha?) — not advancing trunk"))?;
+
+    // Already present on trunk by patch-id (a prior pass advanced it, or a peer did) → no-op, done.
+    if git(&["cherry", TRUNK, &merge_oid])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| cherry_says_landed(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or(false)
+    {
+        return rev(TRUNK).ok_or_else(|| "cannot re-resolve trunk".to_string());
     }
-    // Work IN pr-sync's trunk worktree (the only one with `trunk` checked out). Cherry-pick each; on any
-    // conflict, abort + bail (leave trunk untouched) — a conflict means the tree-equal assumption broke.
-    for sha in list.lines() {
-        if !git_ok(&["cherry-pick", "--allow-empty", sha]) {
-            let _ = git(&["cherry-pick", "--abort"]);
-            return Err(format!(
-                "cherry-pick of {sha} (origin/main) onto trunk CONFLICTED — trunk/origin-main are not tree-equal as assumed; aborted, trunk left at {trunk_before}. Manual reconcile."
-            ));
-        }
-    }
-    // VERIFY trees now match origin/main — the invariant that says the advance is correct.
-    if !git_ok(&["diff", "--quiet", TRUNK, "origin/main"]) {
+    // Cherry-pick this PR's merge commit onto trunk (in pr-sync's trunk worktree — the only checkout of
+    // `trunk`). On conflict, abort + bail (trunk untouched) — a conflict means this PR's base wasn't
+    // trunk's tree (stale-base that slipped dispatch); pr-sync handles that MR manually.
+    if !git_ok(&["cherry-pick", "--allow-empty", &merge_oid]) {
+        let _ = git(&["cherry-pick", "--abort"]);
         return Err(format!(
-            "after cherry-picking {TRUNK}..origin/main, trunk still differs from origin/main — NOT acking (avoid a wrong land); trunk was {trunk_before}. Manual check."
+            "PR #{pr}: cherry-pick of its mergeCommit {merge_oid} onto trunk CONFLICTED — its base wasn't trunk's tree; aborted, trunk left at {trunk_before}. Manual reconcile."
         ));
     }
     rev(TRUNK).ok_or_else(|| "cannot re-resolve trunk after advance".to_string())
@@ -8350,10 +8340,10 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
         let (state, _all_verdict, req_verdict) = pr_state_and_verdict(d.pr_number);
         match reap_action(state, req_verdict) {
             ReapAction::LandMerged => {
-                // GitHub already merged the PR to origin/main; advance trunk to match (cherry-pick
-                // trunk..origin/main — trunk/origin-main are tree-equal but commit-distinct, so NOT a
-                // literal FF; see the fn), then ack the sender.
-                match advance_trunk_to_origin_main(fleet) {
+                // GitHub already merged this PR; advance trunk by cherry-picking THIS PR's own
+                // mergeCommit.oid onto trunk (not origin/main's tip / the whole range — see the fn),
+                // then ack the sender.
+                match advance_trunk_for_merged_pr(fleet, d.pr_number) {
                     Ok(sha) => {
                         ack(
                             fleet,
