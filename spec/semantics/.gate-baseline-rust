@@ -3490,6 +3490,7 @@ pass	a unary variant applied to a wrong-arity tuple payload is a type error
 pass	a unary variant applied to a wrong-type payload is a type error
 pass	a unit multiplied by its own inverse cancels to the dimensionless unit
 pass	a unit raised to the ZEROTH power is the dimensionless identity Unit.one
+pass	a unit-result host op consumes its response row so the next value op reads its own (adv-65)
 pass	a user Name variant does not capture the Ast sum's Name variant
 pass	a user SUM leaf inside a tuple key discriminates hits by variant AND payload
 pass	a user function may be named quote — its signature is a binding form, not a quote
@@ -5271,6 +5272,7 @@ pass	the union contains the elements of either set
 pass	the union of sets of TUPLES holds a shared tuple once and preserves component order
 pass	the unit recovered from a runtime-magnitude quantity is dimensionally checked
 pass	the unit value
+pass	the unit-op response-cursor discriminator: a nonzero ping row is not misread by the later get (adv-65)
 pass	the untaken branch's runtime div-by-zero does not fire
 pass	the unusual-width overflow check is width-parametric: a SECOND width (Int 12) also enforces its own range
 pass	the value-yielding insert of a new key adds the entry
