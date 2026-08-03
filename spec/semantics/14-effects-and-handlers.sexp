@@ -6785,8 +6785,11 @@
            copy lost its effect-op meta — the `scrutinee_reaches_host_perform` guard missed it, so the
            bare-body fold RE-EMITTED the whole `(host …)` block once per tuple binder → `io.get` fired
            TWICE → the second call had no recorded response and TRAPPED. FIX (v-effects): the guard now
-           treats a `Resolved::Host` block in the scrutinee as reaching a host perform (a compiling host
-           body always performs), so the `MatchSum` wrapper is kept and the scrutinee materializes ONCE;
+           treats a `Resolved::Host` block in the scrutinee as reaching a host perform — a CONSERVATIVE
+           OVER-APPROXIMATION (not every compiling host block performs: an op-reference-only body like
+           `(host (E) (E.get))` compiles without a perform; over-reporting is safe here because it only
+           keeps the wrapper, which merely materializes the scrutinee once), so the `MatchSum` wrapper is
+           kept and the scrutinee materializes ONCE;
            and the wasm `Core::Let` emit maps the scalar value node → its slot so the two closures capture
            the SAME slot rather than re-lowering the host call. With io.get=21: `f(10)=21+10=31`,
            `g(100)=21*100=2100`, sum 2131 — and the (host-calls) fixture pins the SINGLE firing. rust
