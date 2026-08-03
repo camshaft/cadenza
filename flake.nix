@@ -60,7 +60,7 @@
             targets = [ "wasm32-unknown-unknown" "wasm32-wasip1" ];
           };
 
-        # ── N1: the value-heap runtime components AS content-addressed derivations ────────────────
+        # ── N1: the value-heap runtime components AS input-addressed derivations (hash from output) ─
         #
         # `xtask build` produces TWO runtime components (build_component + canonicalize_runtime in
         # xtask/src/main.rs): the RELEASE runtime (what a shipped program pins + composes) and the
@@ -200,7 +200,7 @@
           features = [ "debug-counters" ];
         };
 
-        # ── N1: the NFC component (`cdz-nfc`) AS a content-addressed derivation ───────────────────
+        # ── N1: the NFC component (`cdz-nfc`) AS an input-addressed derivation (hash from output) ──
         #
         # FINDING#23: the runtime's world imports `cadenza:nfc/normalize` by hash, so the heavy Unicode
         # normalization tables live in a SEPARATE component the runtime composes from the CAS. `xtask
@@ -473,6 +473,19 @@
             pkgs.wasm-tools
             pkgs.cargo-component
           ];
+
+          # R4: point cdz/cdz-run at the NIX-BUILT component store. cdz-run + cdz `default_store()`
+          # resolve `CDZ_STORE` (env) before the compiled `target/cadenza-store` fallback (the --store
+          # flag still wins over the env); the content-address re-hash-verify on load is untouched, so a
+          # wrong store entry is caught, not silently loaded. So exporting CDZ_STORE=<packages.store>
+          # makes `cdz run`/`cdz test` inside `nix develop` resolve every component (runtime + NFC +
+          # guests) from the nix-built, content-addressed store — the operator's load-by-hash north star.
+          # OPT-IN + non-destructive: `cargo xtask build` (the store WRITER) still writes
+          # target/cadenza-store; this only overrides the READ path for a nix-develop session.
+          shellHook = ''
+            export CDZ_STORE="${componentStore}"
+            echo "cdz: CDZ_STORE → nix component store ($CDZ_STORE)"
+          '';
         };
       });
 }
