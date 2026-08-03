@@ -4243,7 +4243,6 @@ pass	concatenating tuples with a runtime element reads elements from both operan
 pass	concatenating two byte sequences appends their bytes in order
 pass	concatenating two empty lists is the empty list
 pass	concatenating two empty tuples is the empty tuple
-pass	concatenating two large runtime RRB vectors preserves length and every element across the join
 pass	concatenating two runtime strings and measuring the result
 pass	concatenating two tuples appends their elements
 pass	concatenating with the empty list on the left is the identity
