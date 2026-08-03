@@ -221,6 +221,21 @@
             (export main)))
   (call   main (: 10 Int64)) (output (: 15 Int64)))
 
+(case "a MODULE-exported closure that performs a delegated effect cannot cross the host boundary"
+  (doc    "The COMPOSITION face where the escaping-closure CDZ0406 fence meets the module-member call path:
+           the performing closure is produced by a MODULE export — `(module m (def (mk) (fn (x) (+ x
+           (ask.ask)))) (export mk))` — and returned via `(. m mk)` from the host block. The escaping-closure
+           scan must reach THROUGH the module-member projection to the returned closure whose body performs
+           `ask.ask` → rejected CDZ0406, exactly as the bare/tuple-nested/let-bound faces. Pins that a module
+           boundary does not smuggle an escaping-effect closure past the fence — the intersection of the
+           module-performer resolution and the closure-escape reject. wasm + rust reject CDZ0406; rust-async
+           todo pending its host-delegation path.")
+  (input  (do
+            (effect ask (op ask (-> Unit Int64)))
+            (module m (def (mk) (fn ((: x Int64)) (+ x (ask.ask)))) (export mk))
+            (def (main) (host (ask) ((. m mk)))) (export main)))
+  (error  CDZ0406))
+
 ; --- An exported closure's BODY is type-checked, like an ordinary def / an in-guest-applied lambda ------
 ; A `(def (a) (fn …))` exported as a host closure crosses the boundary and is NEVER applied in-guest, so
 ; its body is never β-reduced. An ill-typed body must still be a compile-time rejection — the same CDZ0203
