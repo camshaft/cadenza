@@ -1056,12 +1056,12 @@ mod status_snapshot_tests {
                     kv.put(b"public/status".to_vec(), b"investigating auth".to_vec());
                     kv.put(b"private/secret".to_vec(), b"nope".to_vec());
                     FoldOutput::with_effects(vec![crate::reducer::Effect {
-                        request: EffectRequest {
-                            kind: EffectKind::Timer,
-                            target: "1000".into(), // absolute deadline ms
-                            payload: None,
-                            timeliness: Timeliness::Interactive,
-                        },
+                        request: EffectRequest::new(
+                            EffectKind::Timer,
+                            "1000", // absolute deadline ms
+                            None,
+                            Timeliness::Interactive,
+                        ),
                         token: None,
                     }])
                 }
@@ -1270,12 +1270,12 @@ mod status_snapshot_tests {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with_effects(vec![crate::reducer::Effect {
-                        request: EffectRequest {
-                            kind: EffectKind::Timer,
-                            target: "1000".into(), // absolute deadline ms
-                            payload: None,
-                            timeliness: Timeliness::Interactive,
-                        },
+                        request: EffectRequest::new(
+                            EffectKind::Timer,
+                            "1000", // absolute deadline ms
+                            None,
+                            Timeliness::Interactive,
+                        ),
                         token: None,
                     }])
                 }
@@ -1519,12 +1519,12 @@ mod monotonic_now_tests {
                         }
                     }
                     FoldOutput::with_effects(vec![Effect {
-                        request: EffectRequest {
-                            kind: EffectKind::Now,
-                            target: String::new(),
-                            payload: None,
-                            timeliness: Timeliness::Interactive,
-                        },
+                        request: EffectRequest::new(
+                            EffectKind::Now,
+                            String::new(),
+                            None,
+                            Timeliness::Interactive,
+                        ),
                         token: None,
                     }])
                 }

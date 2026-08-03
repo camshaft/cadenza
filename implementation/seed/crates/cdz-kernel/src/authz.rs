@@ -75,12 +75,7 @@ mod tests {
     use crate::effect::{EffectKind, ResourcePredicate};
 
     fn req(kind: EffectKind, target: &str) -> EffectRequest {
-        EffectRequest {
-            kind,
-            target: target.to_string(),
-            payload: None,
-            timeliness: crate::effect::Timeliness::Interactive,
-        }
+        EffectRequest::new(kind, target, None, crate::effect::Timeliness::Interactive)
     }
 
     #[tokio::test(flavor = "current_thread")]

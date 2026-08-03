@@ -42,37 +42,44 @@ pub trait Executor {
 /// contract (§16c-S1).
 #[derive(Default)]
 pub struct CompositeExecutor {
-    by_kind: HashMap<EffectKind, Box<dyn Executor>>,
+    /// Executors keyed by effect FAMILY STRING (seq-39), not the `EffectKind` enum — so a request routes
+    /// by `req.content_type.family`, the same string authz/codec use. Registration still takes an
+    /// `EffectKind` (1:1 with its family for the well-known kinds), so callers are unchanged; a future
+    /// register-by-string API lets a NEW family be served with no `EffectKind` variant + no kernel edit.
+    by_family: HashMap<String, Box<dyn Executor>>,
 }
 
 impl CompositeExecutor {
     pub fn new() -> Self {
         CompositeExecutor {
-            by_kind: HashMap::new(),
+            by_family: HashMap::new(),
         }
     }
 
     /// Register the async executor for one effect kind (builder-style; last registration wins — a
-    /// deliberate override, e.g. swapping a recording executor for a live one in a test).
+    /// deliberate override, e.g. swapping a recording executor for a live one in a test). Keyed by the
+    /// kind's canonical family string ([`EffectKind::family`]).
     pub fn with(mut self, kind: EffectKind, executor: Box<dyn Executor>) -> Self {
-        self.by_kind.insert(kind, executor);
+        self.by_family.insert(kind.family().to_string(), executor);
         self
     }
 
-    /// Is an async executor registered for this kind?
+    /// Is an executor registered for this kind (i.e. for its family)?
     pub fn handles(&self, kind: &EffectKind) -> bool {
-        self.by_kind.contains_key(kind)
+        self.by_family.contains_key(kind.family())
     }
 }
 
 #[async_trait::async_trait(?Send)]
 impl Executor for CompositeExecutor {
     async fn perform_async(&mut self, req: &EffectRequest, idempotency_key: Hash) -> EffectOutcome {
-        match self.by_kind.get_mut(&req.kind) {
+        // Route by the request's content-type FAMILY (seq-39): a request whose family has no registered
+        // executor is an OBSERVABLE Err (§9d anti-stuck), never a panic/drop.
+        match self.by_family.get_mut(&req.content_type.family) {
             Some(inner) => inner.perform_async(req, idempotency_key).await,
             None => EffectOutcome::Err(format!(
-                "no executor registered for effect kind {:?} (target {:?})",
-                req.kind, req.target
+                "no executor registered for effect family {:?} (target {:?})",
+                req.content_type.family, req.target
             )),
         }
     }
@@ -179,12 +186,7 @@ mod tests {
     use crate::effect::EffectKind;
 
     fn req(kind: EffectKind, target: &str) -> EffectRequest {
-        EffectRequest {
-            kind,
-            target: target.to_string(),
-            payload: None,
-            timeliness: crate::effect::Timeliness::Interactive,
-        }
+        EffectRequest::new(kind, target, None, crate::effect::Timeliness::Interactive)
     }
 
     // A test executor that tags its Ok payload so we can prove WHICH inner executor ran. Native async.
@@ -242,9 +244,10 @@ mod tests {
             .await
         {
             EffectOutcome::Err(msg) => {
+                // The message names the unroutable FAMILY (seq-39: routing keys on the family string).
                 assert!(
-                    msg.contains("Model"),
-                    "err names the unroutable kind: {msg}"
+                    msg.contains(EffectKind::Model.family()),
+                    "err names the unroutable family: {msg}"
                 );
             }
             other => panic!("expected Err for an unroutable kind, got {other:?}"),
