@@ -201,6 +201,27 @@
   (host-calls (call io.get) (call io.get))
   (output (: 18 Int64)))
 
+(case "a String host RESULT crosses the boundary and is read twice (byte-len + scalar-len of a multibyte response)"
+  (doc    "The String-RESULT boundary face (H7's marshal reached through H9's unit-arg emit): `io.fetch :
+           (-> Unit String)` returns the recorded multibyte response \"héllo\" (6 bytes, 5 scalars), which
+           the guest let-binds and reads TWICE — byte-len then scalar-len — so the crossed String is a
+           live guest value under the consuming-op discipline (the binding must be kept; a per-read
+           re-fetch would consume a second, unsupplied response and trap). 6 + 100·5 = 506. This is the
+           shape that was DECLINING arg-side pre-H9 while the String-result emit arm sat unreachable —
+           the pin keeps it reachable. (wasm/rust-async: todo until their unit-arg + String-result host
+           paths land; the rust baseline pins the pass.)")
+  (input  (do
+            (effect io (op fetch (-> Unit String)))
+            (def (main (: k Int64))
+              (host (io)
+                (let ((s (io.fetch unit)))
+                  (+ (String.byte-len s)
+                     (* 100 (String.scalar-len s))))))
+            (export main)))
+  (host-responses (respond io.fetch (: "héllo" String)))
+  (host-calls (call io.fetch))
+  (call   main (: 0 Int64)) (output (: 506 Int64)))
+
 (case "two host calls consume their responses in order"
   (doc    "Witnesses capabilities-and-effects.md #A Run Is A Deterministic Function Of Its Input And
            Responses: two host calls consume two responses in the order made; the sum is a deterministic
