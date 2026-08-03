@@ -43,9 +43,10 @@ pub trait Executor {
 #[derive(Default)]
 pub struct CompositeExecutor {
     /// Executors keyed by effect FAMILY STRING (seq-39), not the `EffectKind` enum — so a request routes
-    /// by `req.content_type.family`, the same string authz/codec use. Registration still takes an
-    /// `EffectKind` (1:1 with its family for the well-known kinds), so callers are unchanged; a future
-    /// register-by-string API lets a NEW family be served with no `EffectKind` variant + no kernel edit.
+    /// by `req.content_type.family`, the same string authz/codec use. Registered via
+    /// [`with_effect`](Self::with_effect) (family-string; register-by-string — a NEW family is served with
+    /// no `EffectKind` variant + no kernel edit) or the transitional [`with`](Self::with) (`EffectKind`,
+    /// delegates to `with_effect(kind.family(), ..)`).
     by_family: HashMap<String, Box<dyn Executor>>,
 }
 
@@ -59,8 +60,23 @@ impl CompositeExecutor {
     /// Register the async executor for one effect kind (builder-style; last registration wins — a
     /// deliberate override, e.g. swapping a recording executor for a live one in a test). Keyed by the
     /// kind's canonical family string ([`EffectKind::family`]).
-    pub fn with(mut self, kind: EffectKind, executor: Box<dyn Executor>) -> Self {
-        self.by_family.insert(kind.family().to_string(), executor);
+    ///
+    /// Prefer [`with_effect`](Self::with_effect) — the family-string registration API. This
+    /// `EffectKind`-typed form is the pre-register-by-string spelling, kept during the migration so
+    /// existing callers stay green; it delegates to `with_effect`. (Removed once callers migrate — the
+    /// register-by-string bridge, beat 3.)
+    pub fn with(self, kind: EffectKind, executor: Box<dyn Executor>) -> Self {
+        self.with_effect(kind.family(), executor)
+    }
+
+    /// Register an effect executor for a FAMILY STRING (register-by-string): a new effect type is served
+    /// by registering a handler for its family, with NO [`EffectKind`] variant + no kernel recompile.
+    /// Builder-style; last registration wins. Keyed by the family string the router matches
+    /// (`req.content_type.family`). The canonical registration API — callers pass a family const
+    /// ([`crate::effect::effect_ct`]) or any family string. (control/* families register their in-kernel/
+    /// host-surfaced dispositions in a later beat; this registers an executor-routed effect/* family.)
+    pub fn with_effect(mut self, family: impl Into<String>, executor: Box<dyn Executor>) -> Self {
+        self.by_family.insert(family.into(), executor);
         self
     }
 
@@ -261,6 +277,39 @@ mod tests {
             }
             other => panic!("expected Err for an unroutable kind, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn with_effect_registers_by_family_string_incl_an_extension_family() {
+        // register-by-string: with_effect keys on a FAMILY STRING, so a NEW effect family with NO
+        // EffectKind variant is servable + routable. And `with(EffectKind)` delegates to it (same result).
+        let mut exec = CompositeExecutor::new()
+            // A well-known family via the const (what the host migrates to)...
+            .with_effect(
+                crate::effect::effect_ct::HTTP,
+                Box::new(TagExecutor(b"http-e")),
+            )
+            // ...and an EXTENSION family with no EffectKind variant — the whole point of register-by-string.
+            .with_effect("embedding", Box::new(TagExecutor(b"embed-e")));
+        assert!(exec.handles_family(crate::effect::effect_ct::HTTP));
+        assert!(exec.handles_family("embedding"));
+        // Route a request whose content_type.family is the extension family → its executor runs.
+        let mut ext = req(EffectKind::Http, "x");
+        ext.content_type.family = "embedding".into();
+        assert_eq!(
+            exec.perform_async(&ext, Hash::of(b"k")).await,
+            EffectOutcome::Ok(Some(Payload::Inline(b"embed-e".to_vec().into())))
+        );
+        // with(EffectKind) delegates to with_effect(kind.family(), ..) — same registration.
+        let mut viaenum =
+            CompositeExecutor::new().with(EffectKind::Http, Box::new(TagExecutor(b"h")));
+        assert!(viaenum.handles_family(crate::effect::effect_ct::HTTP));
+        assert_eq!(
+            viaenum
+                .perform_async(&req(EffectKind::Http, "x"), Hash::of(b"k"))
+                .await,
+            EffectOutcome::Ok(Some(Payload::Inline(b"h".to_vec().into())))
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
