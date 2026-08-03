@@ -6775,3 +6775,31 @@
   (host-responses (respond env.flag (: true Bool)))
   (host-calls (call env.flag))
   (output (: 100 Int64)))
+
+(case "a let-bound host result captured by two escaping closures fires the host op once (adv-62)"
+  (doc    "adv-62 (breaker, HIGH wasm soundness): a `let`-bound host-call result captured by TWO OR MORE
+           ESCAPING closures must fire the host op EXACTLY ONCE — the `let`-bound `v` is shared by both
+           closures. The callee `mk` returns `(tuple (fn (x) (+ v x)) (fn (x) (* v x)))` from inside a
+           `(host (io) …)`; `main` destructures the tuple and calls both closures. The bug: `mk` β-inlines
+           into the match scrutinee, the match folds to a single Leaf, and — because the inlined `io.get`
+           copy lost its effect-op meta — the `scrutinee_reaches_host_perform` guard missed it, so the
+           bare-body fold RE-EMITTED the whole `(host …)` block once per tuple binder → `io.get` fired
+           TWICE → the second call had no recorded response and TRAPPED. FIX (v-effects): the guard now
+           treats a `Resolved::Host` block in the scrutinee as reaching a host perform (a compiling host
+           body always performs), so the `MatchSum` wrapper is kept and the scrutinee materializes ONCE;
+           and the wasm `Core::Let` emit maps the scalar value node → its slot so the two closures capture
+           the SAME slot rather than re-lowering the host call. With io.get=21: `f(10)=21+10=31`,
+           `g(100)=21*100=2100`, sum 2131 — and the (host-calls) fixture pins the SINGLE firing. rust
+           declines the shape (its closure-in-tuple-through-host emit is a separate frontier).")
+  (input  (do
+            (effect io (op get (-> Unit Int64)))
+            (def (mk)
+              (host (io)
+                (let ((v (io.get unit)))
+                  (tuple (fn ((: x Int64)) (+ v x)) (fn ((: x Int64)) (* v x))))))
+            (def (main)
+              (match (mk) ((tuple f g) (+ (f 10) (g 100)))))
+            (export main)))
+  (host-responses (respond io.get (: 21 Int64)))
+  (host-calls (call io.get))
+  (output (: 2131 Int64)))

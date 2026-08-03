@@ -5986,6 +5986,27 @@ fn emit_tail(
                     out.binding_local(slot, name.to_string(), ty.clone());
                 }
                 extended.insert(*binder, slot);
+                // ALSO map the VALUE node → this slot, for a SCALAR binding. A closure that captures a
+                // let-bound value records the capture as the VALUE node itself (`collect_captures` keys the
+                // capture by the binding's value occurrence, NOT a `LocalRef` to the binder), so the closure
+                // build-site's `emit(cap)` would RE-LOWER the value — a SECOND host call for a `(let ((v
+                // (io.get))) …)` init captured by ≥2 escaping closures (adv-62: the host op fired once per
+                // capturing closure → the extra call had no recorded response and TRAPPED, a soundness bug;
+                // the rust backend fixed the same double-emit at expr.rs's `Core::Let`/`Core::Closure` arms).
+                // The node→slot fast path at the top of `emit` reads this: a capture of `*value` now emits
+                // `local.get slot` (the value computed ONCE at the `let`) instead of re-running the init.
+                // SCALAR ONLY: a scalar slot holds the value directly (a `local.get` is a faithful re-read),
+                // and a scalar host-result is the confirmed miscompile domain. A HEAP binding is EXCLUDED —
+                // its slot holds a refcounted handle whose Perceus dup/drop accounting is per-OCCURRENCE
+                // (`dup_sites`/`binding_escapes_dup_aware`), so aliasing the value node to the slot could
+                // skew that bookkeeping; a heap value captured by a closure declines today (CDZ0201) anyway,
+                // so it is not a live miscompile. Insert only when the slot is not already a node-key (a
+                // materialized scrutinee), so this never shadows an existing fast-path entry.
+                if !is_heap_type(&ty)
+                    && matches!(ty.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_))
+                {
+                    extended.entry(*value).or_insert(slot);
+                }
                 // The body emits ABOVE both this binding slot AND any scratch the INITIALIZER used (its
                 // transient slots are recorded in `scratch_ty` at a fixed TYPE; a body reusing one at a
                 // different type would re-type a wasm local → invalid module — e.g. a runtime-`(bin …)`
@@ -10405,6 +10426,27 @@ fn emit(
                     out.binding_local(slot, name.to_string(), ty.clone());
                 }
                 extended.insert(*binder, slot);
+                // ALSO map the VALUE node → this slot, for a SCALAR binding. A closure that captures a
+                // let-bound value records the capture as the VALUE node itself (`collect_captures` keys the
+                // capture by the binding's value occurrence, NOT a `LocalRef` to the binder), so the closure
+                // build-site's `emit(cap)` would RE-LOWER the value — a SECOND host call for a `(let ((v
+                // (io.get))) …)` init captured by ≥2 escaping closures (adv-62: the host op fired once per
+                // capturing closure → the extra call had no recorded response and TRAPPED, a soundness bug;
+                // the rust backend fixed the same double-emit at expr.rs's `Core::Let`/`Core::Closure` arms).
+                // The node→slot fast path at the top of `emit` reads this: a capture of `*value` now emits
+                // `local.get slot` (the value computed ONCE at the `let`) instead of re-running the init.
+                // SCALAR ONLY: a scalar slot holds the value directly (a `local.get` is a faithful re-read),
+                // and a scalar host-result is the confirmed miscompile domain. A HEAP binding is EXCLUDED —
+                // its slot holds a refcounted handle whose Perceus dup/drop accounting is per-OCCURRENCE
+                // (`dup_sites`/`binding_escapes_dup_aware`), so aliasing the value node to the slot could
+                // skew that bookkeeping; a heap value captured by a closure declines today (CDZ0201) anyway,
+                // so it is not a live miscompile. Insert only when the slot is not already a node-key (a
+                // materialized scrutinee), so this never shadows an existing fast-path entry.
+                if !is_heap_type(&ty)
+                    && matches!(ty.strip_nominal(), Ty::Int(_) | Ty::Bool | Ty::Float(_))
+                {
+                    extended.entry(*value).or_insert(slot);
+                }
                 // The body emits ABOVE both this binding slot AND any scratch the INITIALIZER used (its
                 // transient slots are recorded in `scratch_ty` at a fixed TYPE; a body reusing one at a
                 // different type would re-type a wasm local → invalid module — e.g. a runtime-`(bin …)`
