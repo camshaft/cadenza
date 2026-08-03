@@ -590,6 +590,9 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
     // HANDLED effect leaves no `Core::HostCall` in the lifted body and is NOT caught here — only an escaping
     // one is.) Placed before the lifted-lambda emit so the reject fires instead of the broken emit.
     {
+        // Find the FIRST escaping host effect, then STOP — the reject names one op and doesn't need the full
+        // set, so break on the first non-empty scan rather than walking every lifted body (github-liaison
+        // PR#1723 efficiency review).
         let mut escaping = Vec::new();
         for k in 0..layout.lifted.len() {
             // Scan a lifted body when it is REACHED (a `Core::Closure` builds it) OR ETA-PEELED into an
@@ -606,6 +609,9 @@ pub fn emit(db: &mut Db, layout: &Layout, mode: Mode) -> Result<Vec<u8>, Reject>
                     layout.lifted[k].body,
                     &mut escaping,
                 );
+                if !escaping.is_empty() {
+                    break; // one escaping effect is enough to reject — stop scanning
+                }
             }
         }
         if let Some(h) = escaping.first() {
