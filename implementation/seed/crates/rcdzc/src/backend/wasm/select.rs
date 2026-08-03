@@ -1763,10 +1763,19 @@ fn mark_binder_dups_inner(
             false
         }
         // Borrowing reads: the operand is borrowed (a scalar element `Proj`, a length, a lookup's map, …).
-        Core::ListLen { operand }
-        | Core::BytesLen { operand }
-        | Core::StrScalarLen { operand }
-        | Core::BytesCompact { operand } => borrow(db, operand, live_after, sites),
+        Core::ListLen { operand } | Core::BytesLen { operand } | Core::StrScalarLen { operand } => {
+            borrow(db, operand, live_after, sites)
+        }
+        // `Bytes.compact` (adv-66) is NOT a borrow — it lowers to the SAME runtime `bytes-compact` op as
+        // `StrToBytes` (op_bytes_compact: flattens the rope IN PLACE and returns the SAME handle), so it
+        // CONSUMES its operand and hands the handle back as the result. `binding_escapes_dup_aware` already
+        // treats it consuming (the operand escapes into the result); this pass must AGREE — a binding
+        // consumed by `Bytes.compact` that has a LATER live use needs a `dup` before the compact, exactly
+        // like `StrToBytes` below. Misclassifying it as a borrow meant `(let ((flat (Bytes.compact rope)))
+        // …)` never dup'd `rope`: the compact consumes rope's handle + returns it as `flat` (an ALIAS), so a
+        // later consuming use of `flat` (`Bytes.concat flat …`) FBIP-freed the handle while `rope` (the same
+        // handle) was still read (`= rope flat` / `< rope …`) → use-after-free / OOB (a wasm-only miscompile).
+        Core::BytesCompact { operand } => consume(db, operand, live_after, sites),
         Core::Proj { operand, .. } => {
             let scalar_element = matches!(get_op(db, id), Ok(Some(_)));
             // A NESTED-COMPOUND projection (`get_op` None — `arr-get` returns the child HANDLE, a BORROW of
