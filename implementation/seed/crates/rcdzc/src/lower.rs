@@ -3931,6 +3931,32 @@ fn count_localref_reads(db: &mut Db, id: StructId, binder: StructId, n: &mut usi
     }
 }
 
+/// Whether the LOWERED CORE of `id` reaches a `Core::HostCall` anywhere in its subtree — walking the
+/// maintained `core_child_ids` enumeration, so it FOLLOWS a call into its inlined callee body (unlike the
+/// AST-based [`subtree_reaches_host_call`], whose List arm recurses only the syntactic children and so
+/// MISSES a host call inside a nullary call's body — `(mk)` where `mk`'s body is `(host (io) (let ((v
+/// (io.get))) …))` lowers to a `Core::Let` whose init IS the host call, reachable HERE but not through the
+/// AST walk). adv-62b: a `let`-binding whose init is such a call must be FORCE-KEPT (materialized once), or
+/// each use re-inlines the callee's `(host …)` block → the host op fires per use (double-fire trap). Reads
+/// memoized `core_of` results (no re-lower, no `kept_bindings`/`captured_ref` perturbation). Bounded by a
+/// visited set — a lowered core can share sub-nodes (a kept binding referenced twice), so a plain recursion
+/// could re-walk; the set keeps it linear and cycle-safe.
+fn core_reaches_host_call(
+    db: &mut Db,
+    id: StructId,
+    seen: &mut std::collections::HashSet<StructId>,
+) -> bool {
+    if !seen.insert(id) {
+        return false;
+    }
+    if matches!(core_of(db, id), Core::HostCall { .. }) {
+        return true;
+    }
+    crate::backend::wasm::select::core_child_ids(db, id)
+        .into_iter()
+        .any(|child| core_reaches_host_call(db, child, seen))
+}
+
 /// The non-exhaustiveness fault of the match form `id`, if it has one — for the WELL-FORMEDNESS pass
 /// (`compile::collect_faults` via `infer::collect_node`) to surface a CDZ0210 over EVERY match, not only
 /// the ones the emit path lowers. `cdz check` runs `type_errors` on every def body but the reached-poison
@@ -13455,7 +13481,28 @@ fn should_keep_binding(db: &mut Db, init: StructId, uses: &BindingUses) -> bool 
     // through). Keeping such a compound would instead force an unlowerable heap build. Only an init that IS
     // (or reduces to) the perform — not one that merely aggregates performs into a fold-through shape — is
     // force-kept here; the compound's elements are single-evaluated by the compound, not by naming it.
-    if subtree_reaches_host_call(db, init)
+    // The host-reach test has TWO detectors. `subtree_reaches_host_call` (AST walk) catches a DIRECT perform
+    // in the init. But adv-62b (HIGH wasm soundness): when the init is a CALL whose CALLEE BODY reaches a
+    // host call — `(let ((r (mk))) …)` with `mk = (host (io) (let ((v (io.get))) (record …)))` — the AST
+    // walk stops at the nullary-call node `(mk)` (its only child is the `mk` name ref) and MISSES the host
+    // call in mk's body, so `r` was copy-propagated and each `(. r •)` re-inlined the `(host …)` block → the
+    // host op fired once per use (double-fire trap). `core_reaches_host_call` follows the call into mk's
+    // INLINED core (`core_of((mk))` is a `Core::Let` whose init IS the host call) and catches it, so `r` is
+    // force-kept (materialized once; every projection reads the shared slot). Gated to a CALL init (`core_of`
+    // is `Core::Call`, OR the init reduced to a `Core::Let`/compound wrapping the callee body — i.e. NOT
+    // already caught by the AST walk) so the extra core-walk cost stays off the common direct-perform path.
+    // The call-following `core_reaches_host_call` runs ONLY when the init is a CALL (`Resolved::Apply`) —
+    // the one shape whose host call the AST walk can't see (it stops at the call node). A COMPOUND-literal
+    // init (`Resolved::Record`/`Tuple`/`List` holding a capturing lambda) must NOT trigger it: walking the
+    // compound's core `core_of`s its contained lambda, SPECULATIVELY LIFTING it (`lower_lambda_value`) and
+    // polluting `db.captured_ref` → poisons the projected-closure fold (an INVALID module — the exact hazard
+    // the lambda short-circuits above avoid; it regressed `a capturing closure stored in a let-bound
+    // tuple/record is projected and applied`). Those compound inits reach no host call and are handled by the
+    // `compound_contains_lambda` propagate-arm above anyway; only a genuine CALL init needs the deeper walk.
+    let host_reaching = subtree_reaches_host_call(db, init)
+        || (matches!(resolved_of(db, init), Resolved::Apply { .. })
+            && core_reaches_host_call(db, init, &mut std::collections::HashSet::new()));
+    if host_reaching
         && !matches!(
             core_of(db, init),
             Core::Tuple { .. } | Core::Record { .. } | Core::ListNew { .. }
