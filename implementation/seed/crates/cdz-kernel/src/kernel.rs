@@ -157,6 +157,19 @@ impl Session {
         self.name_store = Some(name_store);
     }
 
+    /// Borrow this session's attached §4c [`NameStore`](crate::name_store::NameStore) (`None` if none is
+    /// attached). The READ-BACK dual of [`Session::attach_name_store`]: `attach` hands a store IN by value,
+    /// this hands a `&` back OUT so a driver can observe what the session's `store/set`s mutated WITHOUT
+    /// taking the store away (the session keeps driving). This is the seam the host's shared-store slice
+    /// needs — after session A `store/set COMPILER_LATEST → hash`, the host reads A's store here, exports it
+    /// with [`crate::name_store::NameStore::to_set_entries`], and seeds session B via
+    /// [`crate::name_store::NameStore::replay_set_entries`], so B can `store/resolve` the pointer A published
+    /// (the "agent B runs the program the resolver fetched" loop). Borrowing, so it composes with the
+    /// by-value attach without a shared handle / interior mutability — the driver owns the sharing policy.
+    pub fn name_store(&self) -> Option<&crate::name_store::NameStore> {
+        self.name_store.as_ref()
+    }
+
     /// Take the latched persistence error, if any (§16c-S1 tier B). Call after a
     /// `deliver`/`fire_due_timers`/`time_out_effect`; `Some` means a write-through failed mid-run, so the
     /// on-disk log stopped at the last good frame (recovery heals the torn tail via `truncate_to`) —
@@ -2751,6 +2764,55 @@ mod store_effect_tests {
             s.kv().get(b"resolved"),
             Some(Hash::of(b"compiler-wasm-v1").to_hex().as_bytes()),
             "store/set + store/resolve round-trip under a real Capability::for_family grant"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_publisher_session_store_is_readable_back_and_hands_the_pointer_to_a_consumer_session(
+    ) {
+        // The read-back seam (`Session::name_store`) end-to-end: the "agent B runs the program the resolver
+        // fetched" loop the host's shared-store slice needs. Per-session stores mean A's writes are invisible
+        // to B UNLESS a driver reads A's store out and seeds B's — this proves that hand-across works with
+        // only the borrowing accessor + the landed export/replay primitives (no shared handle / interior mut).
+        let mut exec_a = crate::executor::RecordingExecutor::new();
+        let mut publisher = Session::genesis(Hash::of(b"store-v1"));
+        publisher.attach_name_store(NameStore::new());
+        // A publishes: store/set system/compiler/latest → compiler-wasm-v1 (then resolves it, immaterial here).
+        publisher
+            .deliver(inbound(), None, &SetThenResolve, &AllowStore, &mut exec_a)
+            .await
+            .unwrap();
+
+        // The DRIVER reads A's store BACK OUT (borrow — A is untouched, keeps its store) and exports the
+        // name→hash pointers A published. This is the step the by-value attach alone could never do.
+        let published = publisher
+            .name_store()
+            .expect("publisher has a store attached")
+            .to_set_entries();
+        assert!(
+            published
+                .iter()
+                .any(|(n, h)| n == "system/compiler/latest" && *h == Hash::of(b"compiler-wasm-v1")),
+            "A's published pointer is visible via the read-back accessor"
+        );
+
+        // Seed a SEPARATE consumer session B from A's exported pointers (replay_set_entries, landed), then B
+        // store/resolve's the name A published — and reads back exactly the hash A set, across the session
+        // boundary, with no shared store object.
+        let consumer_store =
+            NameStore::replay_set_entries(published.iter().map(|(n, h)| (n.as_str(), *h)))
+                .expect("A's exported entries replay into a fresh store");
+        let mut exec_b = crate::executor::RecordingExecutor::new();
+        let mut consumer = Session::genesis(Hash::of(b"store-v1"));
+        consumer.attach_name_store(consumer_store);
+        consumer
+            .deliver(inbound(), None, &ResolveOnly, &AllowStore, &mut exec_b)
+            .await
+            .unwrap();
+        assert_eq!(
+            consumer.kv().get(b"resolved"),
+            Some(Hash::of(b"compiler-wasm-v1").to_hex().as_bytes()),
+            "consumer B resolved the pointer publisher A set — the hand-across loop closes"
         );
     }
 
