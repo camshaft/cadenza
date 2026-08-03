@@ -5437,30 +5437,11 @@ fn sync(fleet: &Fleet, force: bool) {
     if !replay.is_empty() {
         // Read ALL replay-commit subjects in ONE `git show` (not one subprocess per commit — PR #1684
         // review): `git show -s --format=%s <sha…>` prints one subject line per commit, in the order
-        // given, so we can zip them back to `replay` by index. Falls back to keeping a commit if its
-        // subject line is missing (a short output → never wrongly drop).
+        // given, so we zip them back to `replay` by index (see `filter_out_archive_mirrors`).
         let mut args: Vec<&str> = vec!["show", "-s", "--format=%s"];
         args.extend(replay.iter().map(String::as_str));
-        // RAW read + `split_terminator('\n')`, NOT `git_stdout(...).lines()`: `git_stdout` global-trims,
-        // which would STRIP an empty commit subject (an `--allow-empty-message` / some merge/import
-        // commit yields a blank `%s` line) — and a dropped line shifts every later subject, MISALIGNING
-        // the positional `subjects[i]↔replay[i]` zip so the archive-mirror filter drops the WRONG commit
-        // (PR #1690 review, a real latent bug the batching introduced). `git show -s --format=%s`
-        // emits exactly one line per commit terminated by `\n`; `split_terminator` yields one element
-        // per commit (dropping only the final-newline artifact, never a genuine empty subject), so the
-        // index alignment holds even when a subject is empty. Per-element trim handles any `%s` padding.
         let raw = String::from_utf8_lossy(&git(&args).stdout).into_owned();
-        let subjects: Vec<&str> = raw.split_terminator('\n').collect();
-        replay = replay
-            .into_iter()
-            .enumerate()
-            .filter(|(i, _)| {
-                !subjects
-                    .get(*i)
-                    .is_some_and(|s| commit_is_archive_mirror(s))
-            })
-            .map(|(_, sha)| sha)
-            .collect();
+        replay = filter_out_archive_mirrors(replay, &raw);
     }
     if replay.len() < before {
         println!(
@@ -6674,6 +6655,33 @@ const ARCHIVE_MIRROR_SUBJECT: &str =
 /// they don't get re-adopted as an agent's "unlanded" commit every tick. Pure so it's unit-testable.
 fn commit_is_archive_mirror(subject: &str) -> bool {
     subject.trim() == ARCHIVE_MIRROR_SUBJECT
+}
+
+/// Drop archive-mirror commits from a `replay` list, given the RAW batched output of
+/// `git show -s --format=%s <sha…>` (one subject line per commit, in `replay` order). Pure so the
+/// index-alignment — the load-bearing invariant — is unit-tested without git.
+///
+/// CRITICAL: parse `raw_subjects` with `split_terminator('\n')`, NOT `.lines()` on a TRIMMED string.
+/// `git show -s --format=%s` emits exactly one line per commit terminated by `\n`; an EMPTY commit
+/// subject (`--allow-empty-message`, some merge/import commits) is a genuine blank line that MUST be
+/// preserved to keep `subjects[i] ↔ replay[i]` aligned. Trimming the whole output first (as the old
+/// `git_stdout(...).lines()` did) strips a leading/trailing empty subject → every later index shifts →
+/// the WRONG commit is dropped (PR #1690 review, a real latent bug). `split_terminator` drops only the
+/// final-newline artifact, never a genuine empty subject. A subject line MISSING entirely (fewer lines
+/// than shas — a short/failed read) → `get(i)` is `None` → that commit is KEPT (never wrongly dropped).
+/// Per-element trim is handled by [`commit_is_archive_mirror`].
+fn filter_out_archive_mirrors(replay: Vec<String>, raw_subjects: &str) -> Vec<String> {
+    let subjects: Vec<&str> = raw_subjects.split_terminator('\n').collect();
+    replay
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| {
+            !subjects
+                .get(*i)
+                .is_some_and(|s| commit_is_archive_mirror(s))
+        })
+        .map(|(_, sha)| sha)
+        .collect()
 }
 
 fn commits_to_replay(cherry_output: &str) -> Vec<String> {
@@ -11270,6 +11278,44 @@ mod tests {
             "xtask/fleet: archive commits ONLY its own pathspec"
         ));
         assert!(!commit_is_archive_mirror("")); // empty subject never matches
+    }
+
+    #[test]
+    fn filter_out_archive_mirrors_keeps_index_alignment_even_with_empty_subjects() {
+        let mirror = ARCHIVE_MIRROR_SUBJECT;
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Basic: drop exactly the archive-mirror sha, keep the rest (subjects in replay order).
+        assert_eq!(
+            filter_out_archive_mirrors(v(&["a", "b", "c"]), &format!("feat A\n{mirror}\nfix C")),
+            v(&["a", "c"])
+        );
+        // THE BUG THIS GUARDS (PR #1690): an EMPTY subject at index 0 must NOT shift the alignment.
+        // With `.lines()` on a trimmed string the leading blank would vanish → "b"(the mirror) maps to
+        // index 0's dropped slot → WRONG commit dropped. `split_terminator` preserves the blank line.
+        assert_eq!(
+            filter_out_archive_mirrors(v(&["a", "b", "c"]), &format!("\n{mirror}\nfix C")),
+            v(&["a", "c"]) // a has empty subject (kept), b is the mirror (dropped), c kept
+        );
+        // Empty subject in the MIDDLE, mirror last.
+        assert_eq!(
+            filter_out_archive_mirrors(v(&["a", "b", "c"]), &format!("feat A\n\n{mirror}")),
+            v(&["a", "b"])
+        );
+        // A trailing-newline artifact must NOT create a phantom extra subject (split_terminator drops it).
+        assert_eq!(
+            filter_out_archive_mirrors(v(&["a", "b"]), &format!("feat A\n{mirror}\n")),
+            v(&["a"])
+        );
+        // SHORT read (fewer subject lines than shas) → missing-index commits are KEPT, never wrongly dropped.
+        assert_eq!(
+            filter_out_archive_mirrors(v(&["a", "b", "c"]), mirror),
+            v(&["b", "c"]) // only index 0 has a subject (the mirror, dropped); b/c have none → kept
+        );
+        // No mirrors present → everything kept.
+        assert_eq!(
+            filter_out_archive_mirrors(v(&["a", "b"]), "feat A\nfix B"),
+            v(&["a", "b"])
+        );
     }
 
     #[test]
