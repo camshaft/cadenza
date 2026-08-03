@@ -1917,3 +1917,47 @@
                  (if (= (Option.expect (Bytes.slice (rope k) 0 1) "in bounds") (Bytes.of (list (UInt8.wrap k)))) 1 0)))
             (export main)))
   (call   main (: 10 Int64)) (output (: 11 Int64)))
+
+; --- The kept-binding family for `Bytes.concat` (adv-54b): a let-bound concat result is a
+; RUNTIME COMPUTATION — copy-propagating it would recompute per read and consume its source
+; rope on each recompute (the adv-54 StrSlice/StrToBytes and adv-66 Bytes.compact family;
+; lower.rs is_runtime_computation). These pin the fix's behavior at the corpus tier — the
+; landing carried only a Rust unit witness. ---
+
+(case "a let-bound Bytes.concat result is read three ways (len, index, order-compare)"
+  (doc    "`rope` is built by recursive concat (n leaves); `joined = (Bytes.concat rope [66])` is then
+           read THREE times: `Bytes.len` (n+1), `Bytes.at joined n` (the appended 66), and an
+           order-compare against the still-live source `rope` (a strict prefix, so rope < joined).
+           n=10 → 11 + 100·66 + 100000·1 = 106611; n=2 → 106603. A copy-propagated concat would
+           recompute per read, consuming `rope` — the second read faults or reads freed leaves
+           (adv-54b's OOB shape).")
+  (input  (do
+            (def (build-rope (: n Int64) (: acc Bytes))
+              (if (> n 0) (build-rope (- n 1) (Bytes.concat acc (Bytes.of (list (UInt8.wrap 65))))) acc))
+            (def (main (: n Int64))
+              (let ((rope (build-rope n (Bytes.of (list)))))
+                (let ((joined (Bytes.concat rope (Bytes.of (list (UInt8.wrap 66))))))
+                  (+ (Bytes.len joined)
+                     (+ (* 100 (match (Bytes.at joined n) ((Some v) (Int64.of v)) ((None _u) -1)))
+                        (* 100000 (if (< rope joined) 1 0)))))))
+            (export main)))
+  (call   main (: 10 Int64)) (output (: 106611 Int64))
+  (call   main (: 2 Int64)) (output (: 106603 Int64)))
+
+(case "a concat-of-concat chain keeps every intermediate binding readable"
+  (doc    "Three let-bound generations — `a` = [k], `ab` = a++[66], `abc` = ab++[67] — with EVERY
+           generation read after the chain completes: len(a)=1, len(ab)=2, len(abc)=3, and the
+           order-compare ab < abc (strict prefix) → 1 + 2·10 + 3·100 + 1·10000 = 10321. Each
+           intermediate is BOTH a consumed concat operand and a later-read binding — the deep-chain
+           face of the kept-binding rule (one un-kept generation frees a leaf the next read walks).")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((a (Bytes.of (list (UInt8.wrap k)))))
+                (let ((ab (Bytes.concat a (Bytes.of (list (UInt8.wrap 66))))))
+                  (let ((abc (Bytes.concat ab (Bytes.of (list (UInt8.wrap 67))))))
+                    (+ (Bytes.len a)
+                       (+ (* 10 (Bytes.len ab))
+                          (+ (* 100 (Bytes.len abc))
+                             (* 10000 (if (< ab abc) 1 0)))))))))
+            (export main)))
+  (call   main (: 65 Int64)) (output (: 10321 Int64)))
