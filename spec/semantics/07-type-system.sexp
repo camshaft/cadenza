@@ -1333,20 +1333,23 @@
   (call   main (: 4 Int64))
   (output (: 5 Int64)))
 
-(case "a same-name GENERIC constructor via a called helper is rejected — the residual harder case"
-  (doc    "The residual discriminator: a GENERIC same-name sum `(type Box (Box a))` constructed via a called
-           helper `(def (mk x) (Box x))` STILL declines CDZ0203 — for a generic same-name sum the β-copied
-           `(Box x)` head cannot be disambiguated from the `sum_applied` synth type-expr the way a monomorphic
-           one can, so it is (correctly, conservatively) rejected rather than risk corrupting the generic
-           type-expr path. NOT a miscompile — a clean compile-time reject; the DIRECT generic construct works,
-           and the monomorphic helper forms (above) resolve. Pins the boundary of the same-name-in-helper fix
-           so a future generalization to the generic case is a deliberate corpus flip, not a silent one.")
+(case "a same-name GENERIC constructor via a called helper resolves to the constructor (adv-63)"
+  (doc    "The former residual boundary, now CLOSED (adv-63, deliberate flip): a GENERIC same-name sum `(type
+           Box (Box a))` constructed via a called helper `(def (mk x) (Box x))` and INLINED into main now
+           resolves the β-copied `(Box x)` head to the VARIANT CONSTRUCTOR — completing the {mono, generic} ×
+           {direct, helper} matrix. Previously this DECLINED CDZ0203 because the synth-node ctor rule was
+           monomorphic-gated (a generic sum has a confusable `sum_applied` type-expr synth `(Box a)` that must
+           stay the type). The fix distinguishes the two synth kinds by β-copy PROVENANCE: an inlined VALUE
+           construct traces (`source_of_synth`) back to the author's value-position `Box` outside any
+           type-expression subtree, whereas the `sum_applied` synth has none — so the value construct fires the
+           ctor while the generic type-expr path stays the type. `mk(4)` builds `(Box 4)`, matched → 5.")
   (input  (do
             (type Box (Box a))
             (def (mk x) (Box x))
             (def (main (: a Int64)) (match (mk a) ((Box v) (+ v 1))))
             (export main)))
-  (error CDZ0203))
+  (call   main (: 4 Int64))
+  (output (: 5 Int64)))
 
 (case "Type.of on a bare nullary variant reflects its element as UNDETERMINED"
   (doc    "`Type.of` reflects a value's INFERRED type, so a bare nullary variant — carrying no element —

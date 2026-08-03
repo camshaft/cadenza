@@ -707,9 +707,27 @@ fn resolve_name(db: &Db, id: StructId, name: &str) -> Resolved {
         // type-expression subtree (a monomorphic type takes no args, so `(Meters T)` in type position is
         // itself the CDZ0203 error — never a legitimate type-expr — but the `!is_type_expr_node` guard keeps
         // the value-vs-type split honest for a load-time type-expr occurrence).
+        //
+        // The monomorphic arm cannot cover a GENERIC same-name sum: a generic sum DOES have a confusable
+        // `sum_applied` synth `(Box a)` (the ctor-result type re-applied in type position), and firing the
+        // ctor on any synth head would corrupt it (the guard test). But a β-COPY of a VALUE construct
+        // `(Box k)` — `inner`'s body inlined into a caller (adv-63), or a param'd def whose returned `(Box
+        // k)` reaches emit — is ALSO a synth head, and left as the TYPE it rejects CDZ0203 (or emits an
+        // invalid module one stage later). Distinguish the two by β-copy PROVENANCE: `copy_structural`
+        // records each copied name atom's SOURCE occurrence (`synth_name_origin`), so `source_of_synth`
+        // traces an inlined `(Box k)` head back to the author's VALUE-position `Box` (not a type-expr node),
+        // whereas the freshly-pushed `sum_applied` `(Box a)` head has NO provenance (`None`) and an inlined
+        // type annotation `(: x (Box a))` traces to a source that IS a type-expr node. So fire the ctor when
+        // the synth head traces to a user occurrence OUTSIDE a type-expression subtree — the exact "an
+        // inlined value construct" set, leaving both the `sum_applied` synth and a copied annotation as the
+        // type.
+        let inlined_value_construct = db
+            .source_of_synth(id)
+            .is_some_and(|src| !db.is_type_expr_node(src));
         if db.child_ix_of(id) == 0
             && (db.is_user_node(id)
-                || (db.same_name_monomorphic_ctor(name) && !db.is_type_expr_node(id)))
+                || (db.same_name_monomorphic_ctor(name) && !db.is_type_expr_node(id))
+                || inlined_value_construct)
             && let Some(ctor) = db.same_name_newtype_ctor(name)
         {
             trace!(target: "rcdzc::resolve", node = id.0, %name, bound_to = ctor.0, "name → same-name newtype ctor (head position)");
