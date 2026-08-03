@@ -119,6 +119,108 @@ impl<T: ModelTransport> Executor for ModelExecutor<T> {
     }
 }
 
+/// The REAL Bedrock model transport (behind `live-net`) — fills the [`ModelTransport`] seam via
+/// `aws-sdk-bedrockruntime`'s `InvokeModel`. This is the headline: with it wired into a
+/// [`cdz_kernel::executor::CompositeExecutor`], a reducer's `Model` effect reaches Bedrock and the
+/// completion folds back — an agent loops against a real model.
+///
+/// **Credentials come from the ENVIRONMENT** (operator directive): the SDK's DEFAULT credential provider
+/// chain — env vars (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`), the shared
+/// profile, or IMDS — whatever the ambient environment supplies, plus region from the environment. No
+/// broker, no credential wiring, no Membrain in this repo.
+///
+/// **Request/response shape.** `invoke`'s `body` is the OPAQUE `InvokeModel` request body (a userspace
+/// agreement — the model's native JSON, e.g. the Anthropic Messages schema); `model_id` is the effect
+/// target. The returned [`Bytes`] is the raw `InvokeModel` response body, folded back verbatim so the
+/// reducer decodes it. The kernel authorized the model-id target before dispatch; this does not
+/// re-authorize. Unlike the HTTP client there is no cross-host redirect class to guard — the SDK talks to
+/// the standard regional Bedrock endpoint for the resolved model id.
+///
+/// **Error classification (§17):** a throttle / server / timeout / dispatch failure is
+/// [`retry::retryable`]; a request-construction or other service error is [`retry::permanent`]
+/// (fail-closed — an unprefixed reason is treated permanent, so a misclassification never retries forever).
+#[cfg(feature = "live-net")]
+pub struct BedrockModelTransport {
+    client: aws_sdk_bedrockruntime::Client,
+}
+
+#[cfg(feature = "live-net")]
+impl BedrockModelTransport {
+    /// Build the transport, loading AWS config from the ambient environment (default provider chain +
+    /// region from env). Async because the default chain may probe the environment (e.g. IMDS). A missing
+    /// region or unresolvable credentials surface later, per-request, as a classified transport `Err` —
+    /// construction itself just wires the client to the environment.
+    pub async fn new() -> Self {
+        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+        BedrockModelTransport {
+            client: aws_sdk_bedrockruntime::Client::new(&config),
+        }
+    }
+
+    /// Build from an explicit SDK config (e.g. a caller that already loaded one, or a test/integration
+    /// harness pointing at a specific region) instead of the ambient default chain.
+    pub fn from_conf(config: &aws_config::SdkConfig) -> Self {
+        BedrockModelTransport {
+            client: aws_sdk_bedrockruntime::Client::new(config),
+        }
+    }
+}
+
+#[cfg(feature = "live-net")]
+#[async_trait::async_trait(?Send)]
+impl ModelTransport for BedrockModelTransport {
+    async fn invoke(
+        &self,
+        model_id: &str,
+        body: &[u8],
+        _idempotency_key: Hash,
+    ) -> Result<Bytes, String> {
+        use aws_sdk_bedrockruntime::primitives::Blob;
+
+        let resp = self
+            .client
+            .invoke_model()
+            .model_id(model_id)
+            .content_type("application/json")
+            .body(Blob::new(body.to_vec()))
+            .send()
+            .await
+            .map_err(classify_bedrock_error)?;
+
+        // The response body is the model's native completion JSON — folded back verbatim as Bytes.
+        Ok(Bytes::from(resp.body.into_inner()))
+    }
+}
+
+/// Classify a Bedrock `InvokeModel` error into the supervision retryability token (§17). Throttling and
+/// server-side (5xx) errors are transient → retryable; a construction/dispatch failure (timeout, connect)
+/// is also retryable; everything else (validation, access-denied, model-not-found) is permanent
+/// (fail-closed — retrying can't fix a 4xx).
+#[cfg(feature = "live-net")]
+fn classify_bedrock_error(
+    e: aws_sdk_bedrockruntime::error::SdkError<
+        aws_sdk_bedrockruntime::operation::invoke_model::InvokeModelError,
+    >,
+) -> String {
+    use aws_sdk_bedrockruntime::error::SdkError;
+    // Dispatch/timeout/IO failures never reached (or didn't complete at) the service → transient.
+    let transient_dispatch = matches!(e, SdkError::TimeoutError(_) | SdkError::DispatchFailure(_));
+    if transient_dispatch {
+        return retry::retryable(format!("Bedrock transport failure: {e}"));
+    }
+    // A completed service error: throttling / 5xx are transient; other 4xx are permanent.
+    if let SdkError::ServiceError(ref svc) = e {
+        let err = svc.err();
+        if err.is_throttling_exception() || err.is_model_timeout_exception() {
+            return retry::retryable(format!("Bedrock throttled/timed out: {e}"));
+        }
+        if err.is_internal_server_exception() || err.is_service_unavailable_exception() {
+            return retry::retryable(format!("Bedrock server error: {e}"));
+        }
+    }
+    retry::permanent(format!("Bedrock invoke failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
