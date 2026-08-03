@@ -1574,36 +1574,57 @@ fn build_rust_host_shims(module: &str, host_responses: &[(String, String)]) -> S
     }
     let mut out = String::new();
     for (fn_name, &arity) in &referenced {
-        // The shim's params: N ignored `i64`s (the arg values crossed the boundary but do not select the
-        // response — host_responses is keyed per-op, arg-independent). `_a<i>: i64` so a call at this arity
-        // type-checks; each is unused.
+        // The shim's params are GENERIC + ignored — the arg VALUES crossed the boundary but do not select
+        // the response (host_responses is keyed per-op, arg-independent) and the corpus host-call sequence
+        // compares the op NAME only. `<A0: …>(_a0: A0)` accepts ANY arg type (int/string/bytes) at the call
+        // site so a String/Bytes arg (H7) type-checks without the driver knowing arg types.
+        let generics = (0..arity)
+            .map(|i| format!("A{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let generics = if generics.is_empty() {
+            String::new()
+        } else {
+            format!("<{generics}>")
+        };
         let params = (0..arity)
-            .map(|i| format!("_a{i}: i64"))
+            .map(|i| format!("_a{i}: A{i}"))
             .collect::<Vec<_>>()
             .join(", ");
         match by_ident.get(fn_name) {
             Some((op, values)) => {
-                // The shim's RETURN TYPE is keyed on the recorded response value text (the backend picks the
-                // matching shim type from the op's result: i64 for int/bool, f64 for float). A FLOAT response
-                // has a `.` (e.g. `2.5`) and is not a bool → the shim returns `f64` with an `[f64; n]` array;
-                // otherwise it returns `i64` (a bool `true`/`false` normalizes to `1`/`0`, an integer passes
-                // through). This matches the backend's HostCall marshal: a Float64-result op reads the shim as
-                // `f64`, an int/bool result reads it as `i64`.
-                let is_float = values
-                    .iter()
-                    .any(|v| v.trim().contains('.') && v.trim() != "true" && v.trim() != "false");
-                let (ret_ty, arr) = if is_float {
+                // RETURN TYPE keyed on the recorded response value text (matches the backend's per-result-
+                // kind read): a quoted "…" → `String`; a `[..]`/byte-list-looking value → `Vec<u8>`; a
+                // `.`-bearing non-bool → `f64`; else `i64` (bool true/false → 1/0). The `__V` response table
+                // is that type; the shim hands out one per call in order.
+                let all_quoted = values.iter().all(|v| {
+                    let t = v.trim();
+                    t.starts_with('"') && t.ends_with('"') && t.len() >= 2
+                });
+                let is_float = !all_quoted
+                    && values
+                        .iter()
+                        .any(|v| v.trim().contains('.') && v.trim() != "true" && v.trim() != "false");
+                let (ret_ty, arr, is_owned) = if all_quoted {
+                    // String response: `"hi".to_string()` per value; the shim returns `String` (owned).
                     (
-                        "f64",
+                        "String".to_string(),
                         values
                             .iter()
-                            .map(|v| v.trim().to_string())
+                            .map(|v| format!("{}.to_string()", v.trim()))
                             .collect::<Vec<_>>()
                             .join(", "),
+                        true,
+                    )
+                } else if is_float {
+                    (
+                        "f64".to_string(),
+                        values.iter().map(|v| v.trim().to_string()).collect::<Vec<_>>().join(", "),
+                        false,
                     )
                 } else {
                     (
-                        "i64",
+                        "i64".to_string(),
                         values
                             .iter()
                             .map(|v| match v.trim() {
@@ -1613,24 +1634,47 @@ fn build_rust_host_shims(module: &str, host_responses: &[(String, String)]) -> S
                             })
                             .collect::<Vec<_>>()
                             .join(", "),
+                        false,
                     )
                 };
                 let n = values.len();
-                out.push_str(&format!(
-                    "#[allow(unused, non_snake_case)]\nfn {fn_name}({params}) -> {ret_ty} {{ \
-                     use std::sync::atomic::{{AtomicUsize, Ordering}}; \
-                     static __I: AtomicUsize = AtomicUsize::new(0); \
-                     static __V: [{ret_ty}; {n}] = [{arr}]; \
-                     eprintln!(\"host-call\\t{op}\"); \
-                     let __k = __I.fetch_add(1, Ordering::Relaxed); \
-                     __V[__k] }}\n"
-                ));
+                if is_owned {
+                    // An owned (String/Vec) response can't live in a `static` array (non-const); build a
+                    // fresh owned value per call, indexed by the call counter via a match.
+                    let arms = values
+                        .iter()
+                        .enumerate()
+                        .map(|(k, v)| format!("{k} => {}.to_string(),", v.trim()))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    out.push_str(&format!(
+                        "#[allow(unused, non_snake_case)]\nfn {fn_name}{generics}({params}) -> {ret_ty} {{ \
+                         use std::sync::atomic::{{AtomicUsize, Ordering}}; \
+                         static __I: AtomicUsize = AtomicUsize::new(0); \
+                         eprintln!(\"host-call\\t{op}\"); \
+                         let __k = __I.fetch_add(1, Ordering::Relaxed); \
+                         match __k {{ {arms} _ => unreachable!() }} }}\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "#[allow(unused, non_snake_case)]\nfn {fn_name}{generics}({params}) -> {ret_ty} {{ \
+                         use std::sync::atomic::{{AtomicUsize, Ordering}}; \
+                         static __I: AtomicUsize = AtomicUsize::new(0); \
+                         static __V: [{ret_ty}; {n}] = [{arr}]; \
+                         eprintln!(\"host-call\\t{op}\"); \
+                         let __k = __I.fetch_add(1, Ordering::Relaxed); \
+                         __V[__k] }}\n"
+                    ));
+                }
             }
-            // An unexercised referenced shim (no recorded response). Its return type is unknown here, but the
-            // stub is never called on a passing trial; return i64 (the common case) — if a reached call site
-            // expected f64 it'd type-error, but an unexercised op by definition isn't reached.
+            // A referenced shim with NO recorded response. A VALUE-result op always records a response, and
+            // a Unit-result (effect-only) host op still DECLINES in the emit (its op name — needed for the
+            // (host-calls) check — isn't recoverable from host_responses alone; a later increment threads
+            // host_calls). So a no-response referenced shim is an UNEXERCISED def (e.g. an unused `delegated`
+            // def beside the called one): generate a panic stub (never reached on a passing trial) so the
+            // artifact links. Generic + returns i64 (unreached, so the type is irrelevant).
             None => out.push_str(&format!(
-                "#[allow(unused, non_snake_case)]\nfn {fn_name}({params}) -> i64 {{ panic!(\"unexercised host op {fn_name}\") }}\n"
+                "#[allow(unused, non_snake_case)]\nfn {fn_name}{generics}({params}) -> i64 {{ panic!(\"unexercised host op {fn_name}\") }}\n"
             )),
         }
     }

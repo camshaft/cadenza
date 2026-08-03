@@ -7209,14 +7209,8 @@ fn rustc_host_call_with_int_arg_emits_left_to_right_bound_args() {
         rs.contains("let __ha0 = ") && rs.contains("crate::__cdz_host_out_put(__ha0)"),
         "a host call with an int arg binds the arg (__ha0) then passes it to the shim:\n{rs}"
     );
-
-    // A host op with a NON-INTEGER arg (a String) is a later increment — declines cleanly.
-    let strarg = "(module m (effect log (op emit (-> String Int64))) \
-        (def (main) (host (log) (log.emit \"hi\"))) (export main))";
-    assert!(
-        compile_rust_result(strarg).is_err(),
-        "a host call with a non-integer (String) arg declines (later increment):\n{strarg:?}"
-    );
+    // (A String host-call ARG now emits too — see rustc_host_call_string_arg_and_string_result_marshal
+    // (H7); the earlier "non-integer arg declines" sub-assertion here was retired when H7 landed.)
 }
 
 #[test]
@@ -7302,5 +7296,30 @@ fn rustc_closure_capturing_a_let_bound_host_call_emits_it_once() {
             .count(),
         1,
         "a let-bound host call used twice in a non-closure body stays a single call site"
+    );
+}
+
+#[test]
+fn rustc_host_call_string_arg_and_string_result_marshal() {
+    // H7 host-call emit: STRING args + STRING results. A host op taking a String arg emits the arg to a
+    // GENERIC shim param (`fn shim<A0>(_a0: A0)` — the arg value isn't compared, so the shim ignores it);
+    // a String-result op reads the shim's `String` return directly. (A Unit-result effect op still declines
+    // — its op name isn't recoverable from host_responses alone; a later increment.)
+    // String arg into a value-returning op — log.ask : (-> String Int64).
+    let arg = "(module m (effect log (op ask (-> String Int64))) \
+        (def (main) (host (log) (log.ask \"q\"))) (export main))";
+    let rs = compile_rust(arg);
+    assert!(
+        rs.contains("\"q\".to_string()") && rs.contains("crate::__cdz_host_log_ask(__ha0)"),
+        "a String host-call arg emits `\"q\".to_string()` passed to the shim:\n{rs}"
+    );
+    // String RESULT — line : (-> Unit String); the shim returns String, emit passes it through to a String
+    // consumer (String.concat).
+    let sres = "(module m (effect log (op line (-> Unit String))) \
+        (def (main) (host (log) (String.concat (log.line) \"!\"))) (export main))";
+    let rr = compile_rust(sres);
+    assert!(
+        rr.contains("crate::__cdz_host_log_line()"),
+        "a String-result host op reads the shim's String return:\n{rr}"
     );
 }
