@@ -1290,7 +1290,7 @@
            top-level opcode record. Pins that a top-level value definition binding a sum is in scope for
            every function and dispatches by its variant, exactly as a bound record projects.")
   (input  (do
-            (type C (R unit) (G unit) (B unit))
+            (type C (R Unit) (G Unit) (B Unit))
             (def chosen (C.G unit))
             (def (main) (match chosen ((C.R _) 1) ((C.G _) 2) ((C.B _) 3)))
             (export main)))
@@ -17217,7 +17217,7 @@
            two monomorphs' payload slots) breaks the application or the scalar read — the sum-payload
            twin of the generic-tuple fn-slot pin.")
   (input  (do
-        (type (Box a) (Full a) (Nil unit))
+        (type (Box a) (Full a) (Nil Unit))
         (def (main (: k Int64))
           (do
             (def b (Full (fn ((: y Int64)) (* y k))))
@@ -17236,7 +17236,7 @@
            salt (or a payload slot hashed as a raw handle) splits the rope key from the flat probe;
            a tag-blind hash collapses Full/Nil.")
   (input  (do
-        (type (Box a) (Full a) (Nil unit))
+        (type (Box a) (Full a) (Nil Unit))
         (def (main (: k Int64))
           (do
             (def s (Set.of (list (Full 1) (Full k) (Nil unit))))

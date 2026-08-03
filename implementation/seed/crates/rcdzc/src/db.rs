@@ -5529,6 +5529,19 @@ fn collect_type_params(ast: &Arenas, occ: StructId, params: &mut Vec<String>) {
         Struct::Atom(_) => {
             if let Some(n) = ast.as_name(occ)
                 && n.starts_with(|c: char| c.is_ascii_lowercase())
+                // `unit` is the prelude VALUE (the empty product / units-module), NOT a type — the language
+                // splits value/type spelling (`true` the value, `Bool` the type), so lowercase `unit` is the
+                // value and capital `Unit` is the type. It is therefore NOT a type parameter: without this,
+                // a variant payload `(Nil unit)` harvested `unit` as a spurious type PARAM, so `(type (Box a)
+                // (Full a) (Nil unit))` read as 2-parameter `[a, unit]` → `(Full 1)` typed `Sum{Box, args:
+                // [Int64, <free Var>]}` (the unfilled phantom param) → the stray free Var left the sum
+                // non-Eq/non-Ord, DECLINING a Set/Map of it on the rust backend (wasm erased the open arg).
+                // A concrete unit-typed payload is spelled `(Nil Unit)` (capital, a `ground_type_record`),
+                // exactly like `(Nil Bool)`; a type-position lowercase `unit` now correctly fails to reduce
+                // to a type (it is a value) — the value/type-split ruling (concierge (B), 2026-08-03). The
+                // bare-atom analogue of the lowercase compound-type ALIASES (`tuple`/`record`/`list`/`map`)
+                // skipped in the List arms below.
+                && n != "unit"
                 && !params.iter().any(|p| p == n)
             {
                 params.push(n.to_string());

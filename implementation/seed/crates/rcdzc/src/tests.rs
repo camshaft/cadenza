@@ -24106,6 +24106,38 @@ mod match_engine {
     }
 
     #[test]
+    fn a_generic_sum_with_a_unit_typed_variant_has_exactly_its_declared_params() {
+        use crate::testkit::parse;
+        // `unit` is the VALUE (empty product), `Unit` the TYPE — so a variant payload TYPE is `Unit`
+        // (capital), like `(Nil Bool)`. `collect_type_params` no longer harvests lowercase `unit` as a
+        // spurious param, so `(type (Box a) (Full a) (Nil Unit))` has EXACTLY ONE param `a` (was 2:
+        // `[a, unit]`, whose unfilled phantom left a stray Var making the sum non-Eq/non-Ord → a Set/Map of
+        // it DECLINED on the rust backend; v-rust-backend routed it). Value side: a match over both variants
+        // runs (the `(Nil …)` variant is CONSTRUCTED with the `unit` VALUE; its declared payload TYPE is
+        // `Unit`).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type (Box a) (Full a) (Nil Unit)) \
+                       (def (main) (match (Full 6) ((Full v) (+ v 1)) ((Nil _u) -1))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+        // The rust-decline witness: a Set of the generic Unit-payload sum must EMIT rust (the spurious stray
+        // Var previously left it non-Ord → "Set with a non-Ord element"). Exactly the shape the ask flagged;
+        // a HARD emit check on the RUST target (storeless-safe — no run).
+        let src = "(module m (type (Box a) (Full a) (Nil Unit)) \
+                   (def (main (: k Int64)) (Set.len (Set.of (list (Full 1) (Full k) (Nil unit))))) (export main))";
+        let mut dbr = crate::db::Db::load(parse(src));
+        let layr = crate::layout::compute(&mut dbr).expect("layout");
+        crate::backend::emit(crate::backend::Target::Rust, &mut dbr, &layr, None, None).expect(
+            "a Set of a generic Unit-payload sum must emit rust — no spurious stray-Var non-Ord decline",
+        );
+    }
+
+    #[test]
     fn a_generic_same_name_newtype_constructs_and_matches() {
         // Generic + same-name compose: `(type Box (Box a))` constructs `(Box 42)` by the type name and
         // matches `(Box n)`, erasing to the raw payload. (The head-position rule fires on the USER node;
@@ -55988,9 +56020,10 @@ mod stage1 {
         .expect("a top-level value def may bind a record");
         assert_eq!(run_returns::<i64>(&bytes, "main"), 8);
         // A value def may bind a SUM value, matched by a sibling function — the self-hosting compiler's
-        // top-level constant AST/config-node shape. `chosen = (C.G unit)` dispatches to arm 2.
+        // top-level constant AST/config-node shape. `chosen = (C.G unit)` dispatches to arm 2. The variant
+        // payload TYPE is `Unit` (capital — the type); it is CONSTRUCTED with the `unit` VALUE (lowercase).
         let bytes = compile_component(&crate::codec::encode(&parse(
-            "(module m (type C (R unit) (G unit) (B unit)) (def chosen (C.G unit)) \
+            "(module m (type C (R Unit) (G Unit) (B Unit)) (def chosen (C.G unit)) \
                (def (main) (match chosen ((C.R _) 1) ((C.G _) 2) ((C.B _) 3))) (export main))",
         )))
         .expect("a top-level value def may bind a sum value");
