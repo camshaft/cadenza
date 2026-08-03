@@ -773,10 +773,11 @@ fn top_item_defined_name(ast: &Arenas, item: StructId) -> Option<String> {
         };
     }
     // A `(type …)` decl's name is decoded via the shared helper: a bare atom `(type Box …)` OR a
-    // parenthesized generic head `(type (Box a) …)` (the head atom is the name). Without the helper, a bare
-    // `tail.first().as_name()` returned `None` for a `(List)` head, so a parenthesized-head generic type had no
-    // defined-name here and was invisible to the export/import name resolution that reads this fn — treated
-    // un-exported/absent.
+    // parenthesized generic head `(type (Box a) …)` (the head atom is the name). Without the helper, reading
+    // a bare name off the first tail element missed the parenthesized case — a generic head `(type (Name a)
+    // …)` has a LIST as its first tail element, not an atom, so a name-only read yields nothing. That gave a
+    // parenthesized-head generic type no defined-name here, making it invisible to the export/import name
+    // resolution that reads this fn — treated un-exported/absent.
     if let Some(tail) = ast.as_form(item, "type") {
         return tail
             .first()
