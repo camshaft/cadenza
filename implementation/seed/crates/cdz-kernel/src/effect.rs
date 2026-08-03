@@ -222,9 +222,12 @@ pub struct EffectRequest {
     /// How latency-sensitive this effect is (§ operator timeliness directive). A [`Timeliness::Batchable`]
     /// effect MAY be deferred/batched by the executor for cost (e.g. Bedrock batch inference is ~half the
     /// on-demand price at higher latency); [`Timeliness::Interactive`] must run now. First-class (not a
-    /// payload convention) so it's on the durable log — replay-deterministic — and the executor reads it
-    /// directly to pick the on-demand vs batch path. Meaningful for `Model` today; a first-class field so
-    /// future batchable kinds (embeddings, bulk fetches) reuse it. Default `Interactive`.
+    /// payload convention) rather than a hint smuggled through the payload — so a future executor can pick
+    /// the on-demand vs batch path by reading it directly. CURRENT behavior: the field is carried on the
+    /// in-memory request, but it is NOT yet recorded on the durable `Dispatched` frame ([`crate::event::EventBody`]
+    /// carries kind/family/target/idempotency/deadline, not timeliness) and no executor reads it yet —
+    /// wiring it through the durable frame + executor routing is a follow-up. Meaningful for `Model`; a
+    /// first-class field so future batchable kinds (embeddings, bulk fetches) reuse it. Default `Interactive`.
     pub timeliness: Timeliness,
     /// The extensible content-type of this effect (seq-39): a `{family, version}` tag that routing and
     /// authz key on, so a NEW effect type is served by registering a handler for its family STRING rather
