@@ -367,7 +367,10 @@ designed once, here, for both.
 ### Partition: a `control/` family-string PREFIX, decided BEFORE authorize (LOCKED)
 
 The `control/*` vs `effect/*` split is a real **family-string prefix**, tested by
-`family.starts_with("control/")` at drive, BEFORE authorization:
+`family.starts_with("control/")` at drive, BEFORE authorization. (**Notation:** `effect/*` in this section
+is shorthand for "a world-action effect family" — those families are **BARE** (`http`, `model`, …), they do
+NOT carry an `effect/` prefix. Only `control/*` is a literal prefix. The partition test is purely
+`starts_with("control/")`; everything else is a world-effect.)
 - **Control families carry the `control/` prefix** — `control/capabilities`, `control/summary`. They are all
   NEW, so they have no wire history to preserve.
 - **Well-known effect families STAY BARE** — `http` / `model` / `shell` / `now` / `timer` / `emit`, NOT
@@ -383,7 +386,7 @@ The `control/*` vs `effect/*` split is a real **family-string prefix**, tested b
   partition short-circuits before `authorize` (NOT "authorize returns allow"). Rationale (both owners
   concur, §20b): asking what you may do and emitting a summary are not world-actions, emit nothing outward
   (host-captured in-process), and gating `capabilities` would be circular (you'd need a capability to ask
-  what capabilities you have). The Cedar authorizer stays a pure `effect/*` world-action gate.
+  what capabilities you have). The Cedar authorizer stays a pure world-action (bare-family) gate.
 
 ### Disposition: ONE family→`Disposition` registry (LOCKED)
 
@@ -392,7 +395,7 @@ covers effects and both control kinds:
 
 ```
 enum Disposition {
-    Effect(Box<dyn Executor>),   // effect/* : authorize → CompositeExecutor → EffectResult(token) folds back
+    Effect(Box<dyn Executor>),   // bare world-effect family : authorize → CompositeExecutor → EffectResult(token) folds back
     ControlKernel(<handler>),    // control/* K : kernel produces the result INLINE, records EffectResult(token),
                                  //   folds back to the SAME reducer (capabilities → project_manifest)
     ControlHostSurfaced,         // control/* H : returned to drive's caller in Vec<ControlEffect{request,token}>
