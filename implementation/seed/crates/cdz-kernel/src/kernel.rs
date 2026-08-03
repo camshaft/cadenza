@@ -1175,20 +1175,23 @@ fn observable(body: &EventBody) -> bool {
     }
 }
 
-/// Derive a dispatch's idempotency key (§16c-S1). For v0 it's the hash of `(id, kind, target)` — stable
+/// Derive a dispatch's idempotency key (§16c-S1). For v0 it's the hash of `(id, family, target)` — stable
 /// across a re-drive of the *same* dispatch, distinct across different effects. A real side-effecting
 /// executor dedups on this so a crash-recovery re-drive doesn't double-apply.
+///
+/// Keys on the content-type FAMILY string (seq-39), not the legacy `EffectKind` enum tag: a
+/// register-by-string family carries the `Emit` placeholder kind, so two DISTINCT families (an extension
+/// family and a real `emit`) would hash the SAME enum tag and could collide their keys — the family string
+/// is the authoritative identity, so it can't. The key is an OPAQUE dedup handle (executors never pin a
+/// specific value), so deriving it from family rather than the enum tag is a safe internal change; re-drive
+/// consistency is preserved (same request → same family → same key). A length prefix separates the family
+/// from the target so `(family="a", target="bc")` and `(family="ab", target="c")` can't alias.
 fn idempotency_key_for(id: EffectId, req: &EffectRequest) -> Hash {
     let mut buf = Vec::new();
     buf.extend_from_slice(&id.0.to_le_bytes());
-    buf.push(match req.kind {
-        EffectKind::Shell => 0,
-        EffectKind::Http => 1,
-        EffectKind::Model => 2,
-        EffectKind::Now => 3,
-        EffectKind::Timer => 4,
-        EffectKind::Emit => 5,
-    });
+    let family = req.content_type.family.as_bytes();
+    buf.extend_from_slice(&(family.len() as u64).to_le_bytes());
+    buf.extend_from_slice(family);
     buf.extend_from_slice(req.target.as_bytes());
     Hash::of(&buf)
 }
@@ -2336,6 +2339,36 @@ mod monotonic_now_tests {
             exec.seen.len(),
             0,
             "a timer-family effect is kernel-armed, never routed to an executor"
+        );
+    }
+
+    #[test]
+    fn idempotency_key_distinguishes_families_sharing_a_placeholder_kind() {
+        // seq-39: the idempotency key keys on the content-type FAMILY, not the EffectKind enum tag. Two
+        // effects with the SAME id + target + placeholder kind (Emit) but DIFFERENT families must get
+        // DISTINCT keys — else a register-by-string family would collide its dedup handle with a real emit
+        // (both carry kind=Emit), and a crash-re-drive could dedup two genuinely-different effects together.
+        let id = EffectId(1);
+        let mut emit = EffectRequest::new(EffectKind::Emit, "t", None, Timeliness::Interactive);
+        emit.content_type.family = crate::effect::effect_ct::EMIT.into();
+        let mut ext = EffectRequest::new(EffectKind::Emit, "t", None, Timeliness::Interactive);
+        ext.content_type.family = "control/capabilities".into();
+
+        assert_ne!(
+            idempotency_key_for(id, &emit),
+            idempotency_key_for(id, &ext),
+            "same id/target/placeholder-kind but different family → distinct keys"
+        );
+        // Same family + id + target → SAME key (re-drive stability preserved).
+        let emit2 = {
+            let mut r = EffectRequest::new(EffectKind::Emit, "t", None, Timeliness::Interactive);
+            r.content_type.family = crate::effect::effect_ct::EMIT.into();
+            r
+        };
+        assert_eq!(
+            idempotency_key_for(id, &emit),
+            idempotency_key_for(id, &emit2),
+            "identical request → identical key (crash-re-drive dedup)"
         );
     }
 }
