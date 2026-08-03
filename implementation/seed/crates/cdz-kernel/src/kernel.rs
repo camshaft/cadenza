@@ -1935,7 +1935,7 @@ mod monotonic_now_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_control_effect_is_surfaced_to_the_driver_not_authorized_or_routed() {
         // register-by-string beat 3: a control/* effect is authz-EXEMPT + NOT routed to the executor —
-        // the kernel returns it to the driver via deliver_async_control. Prove all three: it's returned
+        // the kernel returns it to the driver via deliver_control. Prove all three: it's returned
         // (with its payload + token), the executor NEVER saw it, and a DENY-ALL authz did NOT deny it
         // (control is exempt — a normal effect under deny_all would be AuthzDenied).
         let mut exec = RecordingExecutor::new();
