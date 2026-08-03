@@ -19966,11 +19966,13 @@ fn lower_comparison(db: &mut Db, op: Prim, args: &[StructId]) -> Core {
                 Core::ConstBool(false)
             }
         }
-        // Two CONSTANT floats compare by their canonical Float64 value (contracts/deterministic-value-
-        // form.md #Numeric Values Serialize Deterministically — floats equal under structural equality
-        // share a canonical form, distinct floats have distinct forms). EQUALITY (`=`) is by RAW BITS, so
-        // `-0.0 ≠ 0.0` (distinct bit patterns → the canonical form distinguishes them) and a NaN is
-        // unequal to itself. `1e19` and `1e20` round to different doubles → unequal. Ordering (`<`/`>`)
+        // Two CONSTANT floats compare by their canonical value AT THE OPERAND'S OWN FLOAT WIDTH
+        // (contracts/deterministic-value-form.md #Numeric Values Serialize Deterministically — floats
+        // equal under structural equality share a canonical form, distinct floats have distinct forms) —
+        // a `Float32` pair is demoted to binary32 first (`const_float_bits_at_operand_width`), a `Float64`
+        // pair stays f64. EQUALITY (`=`) is by RAW BITS at that width, so `-0.0 ≠ 0.0` (distinct bit
+        // patterns → the canonical form distinguishes them) and a NaN is unequal to itself. `1e19` and
+        // `1e20` round to different doubles → unequal. Ordering (`<`/`>`)
         // uses the IEEE PARTIAL order (`f64::partial_cmp`): an ordered pair folds to the relation's result,
         // an unordered pair (a NaN — but a bare `nan` constant is `ConstFloatNan`, handled above, so this
         // arm's operands are finite) folds to false. Only the fold — no float runtime for a Bool result.
@@ -21276,7 +21278,8 @@ pub(crate) fn const_compound_eq(db: &mut Db, a: StructId, b: StructId) -> Option
         (Core::ConstStr(x), Core::ConstStr(y)) => Some(x == y),
         // Two chars: equal iff their scalar values match.
         (Core::ConstChar(x), Core::ConstChar(y)) => Some(x == y),
-        // Two floats: equal iff their canonical Float64 BITS match — so a nested `-0.0` is distinct from
+        // Two floats: equal iff their canonical BITS match AT THE OPERAND'S OWN FLOAT WIDTH (a nested
+        // `Float32` pair demotes to binary32 first, `const_float_bits_at_operand_width`) — so a `-0.0` is distinct from
         // `0.0` (`(= (tuple -0.0) (tuple 0.0))` → false). By-bits, NOT `f64` `==`, precisely so `-0.0`/
         // `0.0` differ — the structural byte-form rule.
         (Core::ConstFloat(x), Core::ConstFloat(y)) => {
