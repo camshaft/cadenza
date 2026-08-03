@@ -2479,6 +2479,30 @@
   (call   main (: 3 Int64)) (output (: 33 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64)))
 
+(case "a MODULE-exported recursive callee performing per step is homed by the importer's handler"
+  (doc    "The MODULE-EXPORT face of the recursive-callee-performing case above: `walk` is a self-recursive
+           performer of `Ctr.next`, but it lives INSIDE `(module m …)` and is called through the projection
+           `(. m walk)` from the importer's handle body. The handler-context monomorphization must reach the
+           module-exported recursive callee — re-homing its per-step perform (and its recursive self-calls)
+           under the importer's handler — exactly as it does for a bare-named recursive performer (case
+           above). Seeded 1, main(3) reads 1,2,3 as `((10·acc)+next)` → 123. Previously DECLINED (`no
+           enclosing handler here`): the effect-reduction's `callee_def_index_of` followed `Ref` but not
+           `Resolved::Member`, so a module-qualified recursive callee was never specialized under the handler
+           (the module × recursion × effect-context-mono composition gap). Fixed by following the `Member`
+           projection there, mirroring `lower::callee_def_index`. (breaker mo1 witness.)")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (module m
+              (def (walk (: n Int64) (: acc Int64))
+                (if (= n 0) acc (walk (- n 1) (+ (* 10 acc) (Ctr.next unit)))))
+              (export walk))
+            (def (main (: k Int64))
+              (handle Ctr 1
+                ((next (u) s (resume s (+ s 1))))
+                ((. m walk) k 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 123 Int64)))
+
 (case "a performed operation is the scrutinee of a match that dispatches on its result"
   (doc    "Witnesses that an effect operation composes as a match SCRUTINEE, exactly as it composes as an
            `if` condition or an arithmetic operand: `(match (Fresh.next) (0 100) (_ 200))`. The scrutinee is
