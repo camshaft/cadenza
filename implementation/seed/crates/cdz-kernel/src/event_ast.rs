@@ -923,4 +923,62 @@ mod tests {
         assert!(a.as_form(e2[1], "absent").is_some());
         assert!(a.as_form(e2[2], "none").is_some());
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn projection_output_encodes_and_round_trips_the_real_grant_states() {
+        // The I4 payload PIPELINE end-to-end: feed a manifest produced by `project_manifest` (not a
+        // hand-built one) through `encode_capability_manifest`, decode the bytes, and assert the
+        // projection's ACTUAL grant-states survive. The isolated tests cover each half — projection
+        // grant-state logic (effect.rs) and encode shape from a literal manifest (above) — but nothing
+        // pins the SEAM: that `GrantState`/`ResourcePredicate` as the projection emits them map onto the
+        // encoder's `(granted)|(denied)|(absent)` arms. This is exactly the path I4b's inline-answer arm
+        // wires (project_manifest → encode → EffectResult), so a drift on either side must fail here.
+        use crate::authz::Authorizer;
+        use crate::effect::{
+            effect_ct, project_manifest, Capability, EffectKind, ResourcePredicate,
+        };
+
+        // Policy grants Http only; mechanism serves Http + Model but not Shell → one of each grant-state.
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }]);
+        let handles = |f: &str| f == effect_ct::HTTP || f == effect_ct::MODEL;
+        let families = [effect_ct::HTTP, effect_ct::MODEL, effect_ct::SHELL];
+        let manifest = project_manifest(&families, handles, &authz, |_| "probe://scope").await;
+
+        let bytes = encode_capability_manifest(&manifest);
+        let a =
+            codec::decode_detailed(&bytes).expect("projected manifest payload decodes as an AST");
+
+        let root = a
+            .as_form(a.root, "capabilities-manifest")
+            .expect("root head");
+        let entries = a.as_form(root[1], "entries").expect("entries head");
+        assert_eq!(
+            entries.len(),
+            3,
+            "one entry per probed family, projection order"
+        );
+
+        // http → GRANTED (mechanism yes + policy allows); model → DENIED (mechanism yes + policy denies);
+        // shell → ABSENT (mechanism no). project_manifest leaves scope None → every entry encodes (none).
+        let expect = [
+            (effect_ct::HTTP, "granted"),
+            (effect_ct::MODEL, "denied"),
+            (effect_ct::SHELL, "absent"),
+        ];
+        for (i, (fam, grant)) in expect.iter().enumerate() {
+            let e = a.as_form(entries[i], "entry").expect("entry head");
+            assert_eq!(a.as_str(e[0]), Some(*fam), "family at index {i}");
+            assert!(
+                a.as_form(e[1], grant).is_some(),
+                "family {fam} must encode as ({grant})"
+            );
+            assert!(
+                a.as_form(e[2], "none").is_some(),
+                "projection emits no scope → (none)"
+            );
+        }
+    }
 }
