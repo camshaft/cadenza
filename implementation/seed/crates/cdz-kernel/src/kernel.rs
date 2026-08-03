@@ -89,6 +89,14 @@ pub struct Session {
     /// failure doesn't spam; once set, further writes are skipped (the on-disk log stopped at the last
     /// good frame, which recovery heals via `truncate_to`).
     persist_error: Option<io::Error>,
+    /// The §4c mutable-name store this session's `store/*` effects act on, if attached via
+    /// [`Session::attach_name_store`]. `None` = no store bound, so a `store/set`/`store/resolve` folds an
+    /// Err outcome (§9d anti-stuck: an unroutable store effect is an observable failure, never a panic).
+    /// A per-session handle for v0 (the shared/federated global store — §4c "the store is itself a
+    /// session" — layers behind this same seam later). NOT rebuilt on replay: the store is EXTERNAL
+    /// mutable state, not derived from this session's log (unlike kv/armed_timers), so the driver
+    /// re-attaches it after `recover`, exactly like `attach_log`.
+    name_store: Option<crate::name_store::NameStore>,
 }
 
 impl Session {
@@ -105,6 +113,7 @@ impl Session {
             last_now: 0,
             store: None,
             persist_error: None,
+            name_store: None,
         };
         s.log.push(Event {
             seq: 0,
@@ -138,6 +147,14 @@ impl Session {
     /// or — in tests — a sink that fails its append so the S1 route-guard can be exercised).
     pub fn attach_sink(&mut self, sink: Box<dyn crate::log_store::LogSink>) {
         self.store = Some(sink);
+    }
+
+    /// Attach the §4c mutable-name [`crate::name_store::NameStore`] this session's `store/*` effects act on
+    /// (the drive loop routes `store/set`/`store/resolve` to it — see `drive_worklist`). Like
+    /// [`Session::attach_log`], the store is EXTERNAL state re-attached by the driver after `recover` (it's
+    /// not rebuilt from the log). Without it, a `store/*` effect folds an observable Err (§9d), never panics.
+    pub fn attach_name_store(&mut self, name_store: crate::name_store::NameStore) {
+        self.name_store = Some(name_store);
     }
 
     /// Take the latched persistence error, if any (§16c-S1 tier B). Call after a
@@ -623,11 +640,55 @@ impl Session {
             }
 
             // SEC-F1: authorize against the resolved target, awaiting the (possibly wasm) policy gate.
+            // For a `store/*` effect the "target" is the mutable NAME, so this gate IS the §4c write-
+            // authority check: a capability whose family is `store/*` and whose predicate admits the name
+            // (e.g. `Prefix("system/")`) permits `store/set system/…`; a session without it is denied here,
+            // exactly as an unauthorized HTTP host would be. So store effects reuse the ONE authz seam.
             if let Err(reason) = authz.authorize(&req).await {
                 let denial_hash = self
                     .append(EventBody::AuthzDenied { id, reason, token }, Some(cause))
                     .await;
                 for pair in self.fold_tip(reducer, denial_hash).await {
+                    to_process.push(pair);
+                }
+                continue;
+            }
+
+            // §4c STORE PARTITION (slice 3b): a `store/*` family is not executor-routed — the kernel
+            // applies it to the attached mutable-name store (like a control family is kernel-answered, but
+            // store IS authz-gated, so it lands AFTER the authorize() above). Durable Dispatched BEFORE the
+            // mutation (S1), then apply_effect, then fold the outcome. No store attached, or a malformed
+            // effect, is an observable Err (§9d anti-stuck), never a panic.
+            if crate::effect::effect_ct::is_store_family(&req.content_type.family) {
+                let idempotency_key = idempotency_key_for(id, &req);
+                let dispatch_hash = self
+                    .append(
+                        EventBody::Dispatched {
+                            id,
+                            kind: req.kind.clone(),
+                            family: req.content_type.family.as_ref().into(),
+                            target: req.target.clone(),
+                            idempotency_key,
+                            deadline_ms: None,
+                            token,
+                        },
+                        Some(cause),
+                    )
+                    .await;
+                let outcome = if self.persist_error.is_some() {
+                    // S1 latch: an un-durable dispatch never mutates the store (same tier-B rule the routed
+                    // path applies before executing) — the set/resolve is NOT applied.
+                    EffectOutcome::Err(
+                        "dispatch not durably logged (persist failure) — store effect NOT applied (S1)"
+                            .to_string(),
+                    )
+                } else {
+                    self.apply_store_effect(&req)
+                };
+                let more = self
+                    .record_result(id, outcome, reducer, dispatch_hash)
+                    .await;
+                for pair in more {
                     to_process.push(pair);
                 }
                 continue;
@@ -840,6 +901,59 @@ impl Session {
             .map(|e| e.hash())
     }
 
+    /// Apply a `store/*` effect to the attached mutable-name store and map the result to the
+    /// [`EffectOutcome`] the drive loop folds back (§4c slice 3b). The effect's `target` is the mutable
+    /// NAME; for `store/set` the payload is an inline `name-set` blob ([`crate::event_ast::encode_name_set`])
+    /// carrying the hash, for `store/resolve` there is no payload. Every failure is an observable
+    /// `EffectOutcome::Err` (§9d anti-stuck) — no store attached, a malformed payload, an Unscoped name, a
+    /// never-set resolve — never a panic. A successful `store/resolve` returns the frozen hash as an inline
+    /// `name-set`-shaped payload (name + resolved hash), so the reducer reads it back through the SAME §9b
+    /// codec it would use for a set.
+    fn apply_store_effect(&mut self, req: &EffectRequest) -> EffectOutcome {
+        let family = req.content_type.family.as_ref();
+        let name = req.target.as_ref();
+        // A `store/set` carries the target hash in an inline `name-set` payload; `store/resolve` carries
+        // none. Decode → the optional hash apply_effect expects. A set with a missing/garbage payload is a
+        // malformed effect (observable Err), not a panic.
+        let hash = match &req.payload {
+            Some(crate::effect::Payload::Inline(bytes)) => {
+                match crate::event_ast::decode_name_set(bytes) {
+                    Ok((_name, h)) => Some(h),
+                    Err(e) => {
+                        return EffectOutcome::Err(format!(
+                            "store effect: malformed name-set payload: {e:?}"
+                        ));
+                    }
+                }
+            }
+            Some(crate::effect::Payload::Blob(_)) => {
+                return EffectOutcome::Err(
+                    "store effect: blob-ref payload unsupported — inline the name-set".to_string(),
+                );
+            }
+            None => None,
+        };
+        let Some(store) = self.name_store.as_mut() else {
+            return EffectOutcome::Err(
+                "store effect: no name store attached to this session (attach_name_store)"
+                    .to_string(),
+            );
+        };
+        match store.apply_effect(family, name, hash) {
+            Ok(crate::name_store::StoreOutcome::Set(_)) => {
+                // A set's outcome is empty-success — the reducer keyed the continuation by EffectId; the
+                // set's value already rode the request payload. (A future slice may echo the new value.)
+                EffectOutcome::Ok(None)
+            }
+            Ok(crate::name_store::StoreOutcome::Resolved(h)) => {
+                // Return the resolved hash in the SAME name-set codec shape (name + hash) the guest decodes.
+                let bytes = crate::event_ast::encode_name_set(name, &h);
+                EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes.into())))
+            }
+            Err(e) => EffectOutcome::Err(format!("store effect on {name:?}: {e:?}")),
+        }
+    }
+
     /// The reducer continuation token that effect `id`'s `Dispatched` frame carried (§19b/§19e (B)):
     /// `Some(Some(token))` = a token was recorded, `Some(None)` = a token-free dispatch, `None` = no
     /// Dispatched frame for `id` (an invariant violation — every result has a prior dispatch). Derived
@@ -914,6 +1028,7 @@ impl Session {
             last_now: 0,
             store: None,
             persist_error: None,
+            name_store: None,
         };
         for (i, event) in log.into_iter().enumerate() {
             if event.seq != i as u64 {
@@ -2467,5 +2582,154 @@ mod monotonic_now_tests {
             idempotency_key_for(id, &emit2),
             "identical request → identical key (crash-re-drive dedup)"
         );
+    }
+}
+
+// §4c slice 3b: the drive-loop store partition — a `store/*` effect, once authorized, is applied to the
+// attached NameStore (not routed to an executor) and its outcome folded back.
+#[cfg(test)]
+mod store_effect_tests {
+    use super::*;
+    use crate::authz::Authorizer;
+    use crate::effect::{effect_ct, EffectRequest, Payload, Timeliness};
+    use crate::name_store::NameStore;
+    use crate::reducer::{FoldOutput, Reducer};
+
+    fn inbound() -> EventBody {
+        EventBody::Inbound {
+            content_type: crate::event::ContentType {
+                family: "message".into(),
+                version: 1,
+            },
+            payload: Payload::Inline(b"go".to_vec().into()),
+        }
+    }
+
+    // Permits any `store/*` effect (the authz gate the store arm goes through). A real deployment uses a
+    // Capability whose family is store/* with a name-PREFIX predicate; here we prove the arm's ROUTING +
+    // apply, so a blanket store-permitting authorizer isolates that from the (coordinated) grant-shape work.
+    struct AllowStore;
+    #[async_trait::async_trait(?Send)]
+    impl Authorize for AllowStore {
+        async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
+            if effect_ct::is_store_family(&req.content_type.family) {
+                Ok(())
+            } else {
+                Err("only store/* permitted".into())
+            }
+        }
+    }
+
+    // A reducer that: on inbound, emits `store/set system/compiler/latest → <hash>`; when that set's
+    // result arrives, emits `store/resolve system/compiler/latest`; when the resolve result arrives,
+    // records the resolved hash's hex in KV so the test can read it back.
+    struct SetThenResolve;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SetThenResolve {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    let payload = crate::event_ast::encode_name_set(
+                        "system/compiler/latest",
+                        &Hash::of(b"compiler-wasm-v1"),
+                    );
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::STORE_SET,
+                        "system/compiler/latest",
+                        Some(Payload::Inline(payload.into())),
+                        Timeliness::Interactive,
+                    )])
+                }
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(body),
+                    ..
+                } => {
+                    match kv.get(b"phase") {
+                        None => {
+                            // The set completed → now resolve.
+                            kv.put(b"phase".to_vec(), b"resolving".to_vec());
+                            FoldOutput::with(vec![EffectRequest::new_with_family(
+                                effect_ct::STORE_RESOLVE,
+                                "system/compiler/latest",
+                                None,
+                                Timeliness::Interactive,
+                            )])
+                        }
+                        Some(_) => {
+                            // The resolve completed → record the resolved hash (decoded from the payload).
+                            if let Some(Payload::Inline(bytes)) = body {
+                                if let Ok((_n, h)) = crate::event_ast::decode_name_set(bytes) {
+                                    kv.put(b"resolved".to_vec(), h.to_hex().into_bytes());
+                                }
+                            }
+                            FoldOutput::none()
+                        }
+                    }
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn store_set_then_resolve_round_trips_through_the_attached_name_store() {
+        let mut exec = crate::executor::RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"store-v1"));
+        s.attach_name_store(NameStore::new());
+
+        s.deliver(inbound(), None, &SetThenResolve, &AllowStore, &mut exec)
+            .await
+            .unwrap();
+
+        // The reducer set then resolved system/compiler/latest; the resolved hash it recorded must equal
+        // the hash it set — the store round-tripped THROUGH the kernel's store arm (set applied, resolve
+        // read the latest). And the executor NEVER saw a store effect (it's not executor-routed).
+        assert_eq!(
+            s.kv().get(b"resolved"),
+            Some(Hash::of(b"compiler-wasm-v1").to_hex().as_bytes())
+        );
+        assert!(
+            exec.seen.is_empty(),
+            "store/* is NOT routed to the executor"
+        );
+        assert_eq!(s.open_effects(), 0, "both store effects settled");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn store_effect_with_no_attached_store_folds_an_observable_err() {
+        // §9d anti-stuck: a store effect on a session with no NameStore attached is an observable Err
+        // outcome (folded), never a panic. The reducer's set gets an Err result → it does NOT advance to
+        // "resolving", so `resolved` is never written and nothing is left open.
+        let mut exec = crate::executor::RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"store-v1")); // NO attach_name_store
+        s.deliver(inbound(), None, &SetThenResolve, &AllowStore, &mut exec)
+            .await
+            .unwrap();
+        assert_eq!(s.kv().get(b"resolved"), None);
+        assert_eq!(
+            s.open_effects(),
+            0,
+            "the failed store effect settled (Err), not left open"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unauthorized_store_effect_is_denied_at_the_gate_not_applied() {
+        // The store arm sits AFTER the SEC-F1 authorize gate: an authorizer that denies store/* means the
+        // set never reaches the store (AuthzDenied), so a later resolve would find nothing. Here deny-all.
+        let mut exec = crate::executor::RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"store-v1"));
+        s.attach_name_store(NameStore::new());
+        s.deliver(
+            inbound(),
+            None,
+            &SetThenResolve,
+            &Authorizer::deny_all(),
+            &mut exec,
+        )
+        .await
+        .unwrap();
+        // Denied before apply → nothing resolved, store untouched.
+        assert_eq!(s.kv().get(b"resolved"), None);
     }
 }
