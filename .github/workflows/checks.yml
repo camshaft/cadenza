@@ -245,16 +245,15 @@ jobs:
           # guest from source, verifies it's a VALID component (wasm-tools validate), and hands its path to
           # the test step so the e2e tests exercise a FRESH build (no stale committed fixture to drift).
           #
-          # NOT a byte-diff against the committed .wasm (was `cmp`): that assumed reproducible bytes, but
-          # even with the toolchain PINNED (rust-toolchain.toml + pinned wasm-tools/cargo-component) the
-          # wasm bytes are NOT byte-identical across build environments (host-arch-dependent LTO/codegen
-          # layout — same functions, reordered; see runtime-cross-arch-determinism), so CI's build
-          # differed from the committed fixture → the cmp failed on every batch since #131, a false red masking real
-          # signal (pr-sync note, trunk@455dcb7e7). The committed fixture's CORRECTNESS is already proven
-          # at test time — `cargo test` below runs component_reducer_e2e, which loads the committed .wasm
-          # through ComponentReducer and asserts it folds (effects + KV). So this step only needs to catch
-          # "source no longer produces a valid reducer component," which validate does robustly without
-          # depending on byte-for-byte reproducibility.
+          # Build the guest from source + `wasm-tools validate` it — NOT a byte-diff (the old `cmp` against
+          # a committed .wasm): even with the toolchain PINNED (rust-toolchain.toml + pinned wasm-tools/
+          # cargo-component) the bytes are NOT byte-identical across build environments (host-arch-dependent
+          # LTO/codegen layout — same functions, reordered; see runtime-cross-arch-determinism), so a cmp
+          # false-red'd on every batch since #131 (pr-sync note, trunk@455dcb7e7). There is NO committed
+          # reducer-guest .wasm anymore (v-nix N2 made it nix-built); the guest's CORRECTNESS is proven at
+          # test time — the cdz-kernel job below runs component_reducer_e2e, which reads the built component
+          # via the `REDUCER_GUEST_COMPONENT` env path and asserts it folds (effects + KV). So this step only
+          # needs to catch "source no longer produces a valid reducer component," which validate does robustly.
           rustup target add wasm32-unknown-unknown
           ( cd tests/fixtures/reducer-guest && cargo build --locked --target wasm32-unknown-unknown --release )
           wasm-tools component new \
