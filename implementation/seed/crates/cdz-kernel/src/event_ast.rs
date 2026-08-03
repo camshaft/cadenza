@@ -981,4 +981,65 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn scope_predicate_encodes_every_resource_predicate_variant() {
+        use crate::effect::{CapabilityEntry, CapabilityManifest, GrantState, ResourcePredicate};
+        // The manifest payload is a DURABLE wire contract the guest decodes; the `<scope>` predicate has
+        // five arms but the shape test above exercises only HostIn. A typo in any tag (`one-of`→`oneof`)
+        // or a swapped payload arity would ship silently. Encode one entry per ResourcePredicate variant
+        // and assert each `(some <predicate>)` head + payload decodes as designed. One entry per arm keeps
+        // the family a don't-care label; grant is fixed Granted.
+        let pred_entry = |family: &str, pred: ResourcePredicate| CapabilityEntry {
+            family: family.into(),
+            grant: GrantState::Granted,
+            scope: Some(pred),
+        };
+        let manifest = CapabilityManifest {
+            entries: vec![
+                pred_entry("f-any", ResourcePredicate::Any),
+                pred_entry("f-exact", ResourcePredicate::Exact("t".into())),
+                pred_entry(
+                    "f-one-of",
+                    ResourcePredicate::OneOf(vec!["a".into(), "b".into()]),
+                ),
+                pred_entry(
+                    "f-host-in",
+                    ResourcePredicate::HostIn(vec!["h.host".into()]),
+                ),
+                pred_entry("f-prefix", ResourcePredicate::Prefix("pre/".into())),
+            ],
+        };
+        let bytes = encode_capability_manifest(&manifest);
+        let a = codec::decode_detailed(&bytes).expect("manifest decodes as an AST");
+        let root = a
+            .as_form(a.root, "capabilities-manifest")
+            .expect("root head");
+        let entries = a.as_form(root[1], "entries").expect("entries head");
+        assert_eq!(entries.len(), 5, "one entry per predicate arm");
+
+        // Pull the `(some <predicate>)` predicate form for entry i, asserting the (some ..) wrapper.
+        let pred_of = |i: usize| {
+            let e = a.as_form(entries[i], "entry").expect("entry head");
+            let some = a.as_form(e[2], "some").expect("scope must be (some ..)");
+            some[0]
+        };
+
+        // (any) — nullary head.
+        assert!(a.as_form(pred_of(0), "any").is_some(), "(any)");
+        // (exact <str>)
+        let exact = a.as_form(pred_of(1), "exact").expect("(exact ..)");
+        assert_eq!(a.as_str(exact[0]), Some("t"));
+        // (one-of <str>…) — order-preserving list.
+        let one_of = a.as_form(pred_of(2), "one-of").expect("(one-of ..)");
+        assert_eq!(one_of.len(), 2, "one-of carries every element");
+        assert_eq!(a.as_str(one_of[0]), Some("a"));
+        assert_eq!(a.as_str(one_of[1]), Some("b"));
+        // (host-in <str>…)
+        let host_in = a.as_form(pred_of(3), "host-in").expect("(host-in ..)");
+        assert_eq!(a.as_str(host_in[0]), Some("h.host"));
+        // (prefix <str>)
+        let prefix = a.as_form(pred_of(4), "prefix").expect("(prefix ..)");
+        assert_eq!(a.as_str(prefix[0]), Some("pre/"));
+    }
 }
