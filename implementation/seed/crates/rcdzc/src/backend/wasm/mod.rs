@@ -189,10 +189,10 @@ pub fn emit(
     // NOT flagged. (The per-path scans remain as-is — now redundant for the shapes reached here, harmless.)
     // Only scan REACHED lifted slots: `layout.lifted` also holds UNREACHED lambdas (demanded during
     // type-checking but built by no reachable `Core::Closure`), which `append_lifted_bodies` emits as inert
-    // never-called STUBS gated on `layout.lifted_reached` (:122). A HostCall in such a dead/stub body is
-    // provably unreachable — flagging it is a spurious CDZ0406 reject of a program where the effectful
-    // closure can never run (PR #1792 review, MED false-reject). Mirror the `:122` reached-gate so only a
-    // genuinely-reachable escaping closure is caught; stop at the first (a coded reject needs just one).
+    // never-called STUBS gated on `layout.lifted_reached`. A HostCall in such a dead/stub body is provably
+    // unreachable — flagging it would spuriously reject CDZ0406 a program whose effectful closure can never
+    // run. Mirror `append_lifted_bodies`' `layout.lifted_reached` gate so only a genuinely-reachable escaping
+    // closure is caught; stop at the first (a coded reject needs just one).
     {
         let mut escaping = Vec::new();
         for (code, l) in layout.lifted.iter().enumerate() {

@@ -271,6 +271,12 @@ fn is_extern_heap_type(ty: &Ty) -> bool {
 //# The compiler MUST surface a program's declared capabilities in its manifest without deciding which capabilities are permissible.
 //= spec/contracts/host-interface-binding.md#policy-over-the-manifest-belongs-to-the-runtime
 //# The compiler MUST NOT refuse a program solely because a capability it declares would be disallowed by a particular runtime's policy.
+//
+// This is a BACKEND-AGNOSTIC reachability walk of the lowered core (it only enumerates reached host ops;
+// no wasm-emit specifics), so the RUST backend deliberately REUSES it (e.g. its closure-escapes-effect
+// scan) rather than duplicating the descent. The `HostImport` it builds carries wasm-ABI shape, so a clean
+// hoist to a shared `backend::host` module would need a walk/construction split — deferred as not worth the
+// churn for a single reuse (v-rust-backend agreed); if a 2nd/3rd cross-backend reuse appears, do the split.
 pub fn collect_host_imports(db: &mut Db, id: StructId, out: &mut Vec<HostImport>) {
     // WALK-DEPTH GUARD — the same bound `collect_call_callees` / `collect_closure_codes` hold (see
     // [`crate::db::WALK_DEPTH_LIMIT`]): this walk drives `core_of` at every node, and a non-normalizing
