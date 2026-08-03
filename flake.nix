@@ -22,8 +22,11 @@
   #   rcdzc-wasm — `packages.rcdzc-wasm` (+ `-hash`) : the compiler as a wasm32-wasip1 module for the
   #         agent kernel's blob store (v-agent-harness owns the store pointer + compile-effect ABI).
   #   S2  — `packages.example-project` (+ the `buildCadenzaProject` fn) : build a Cadenza project
-  #         (Project.cdz + sources) through nix via the S1 compiler → its wasm. S3 per-test skip follows.
-  #         North star: nix builds every component + the compiler (native + wasm) + projects, deterministically.
+  #         (Project.cdz + sources) through nix via the S1 compiler → its wasm.
+  #   S3  — `testCadenzaProject` (+ `checks.example-project-tests`) : run a project's @tests through nix
+  #         as a derivation — nix input-hashing SKIPS unchanged tests (cache hit), re-runs on a change.
+  #         North star: nix builds every component + the compiler (native + wasm) + projects + runs tests
+  #         with fine-grained skip-unchanged, all deterministically.
   #
   # The Rust toolchain is read DIRECTLY from `rust-toolchain.toml` (the load-bearing pin — the
   # recorded `REQUIRED_RUNTIME_HASH` is only reproducible on that exact rustc). `rust-toolchain.toml`
@@ -149,11 +152,51 @@
           cat > "$out/main.cdz" <<'EOF'
           def main() -> Int64 = 0
 
+          @test
+          def main_is_zero() = if main() == 0 then unit else trap("main")
+
           export { main }
           EOF
         '';
         exampleProject = buildCadenzaProject {
           pname = "cdz-example-project";
+          src = exampleProjectSrc;
+        };
+
+        # ── S3: run a project's tests through nix, cached per-input (skip unchanged) ───────────────
+        #
+        # Operator arc (2026-08-03): "nix to run tests with relative fine granularity so we can skip
+        # tests that haven't changed." `testCadenzaProject` runs the nix-built S1 `cdz test` on a project
+        # as a DERIVATION — so nix's input-hashing gives the skip FOR FREE at derivation granularity: if
+        # the project's test sources + the compiler + the store are unchanged, the derivation is a CACHE
+        # HIT and the tests DON'T re-run; only a changed input re-runs them. `cdz test` compiles a test
+        # component from the `@test`-marked defs and runs each; it needs the value-heap store at RUNTIME
+        # (a heap-using test resolves the runtime by hash), so we point CDZ_STORE at the nix component
+        # store. The derivation SUCCEEDS iff all tests pass (a failing `cdz test` exits non-zero → build
+        # fails); the output is a small pass-marker. Fine-grained: one derivation per project (a per-file
+        # split is a later refinement once projects have multiple independently-cacheable test files).
+        testCadenzaProject = { pname, src }:
+          pkgs.stdenvNoCC.mkDerivation {
+            inherit pname src;
+            version = "0.0.0";
+            nativeBuildInputs = [ seedCompiler ];
+            buildPhase = ''
+              runHook preBuild
+              export HOME="$TMPDIR/home"; mkdir -p "$HOME"
+              export CDZ_STORE="${componentStore}"
+              cdz test | tee "$TMPDIR/test.out"
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              # `cdz test` exits non-zero on failure (so a red suite already fails the build); record the
+              # summary as the cached output — a cache HIT here means "these tests passed + haven't changed".
+              cp "$TMPDIR/test.out" "$out"
+              runHook postInstall
+            '';
+          };
+        exampleProjectTests = testCadenzaProject {
+          pname = "cdz-example-project-tests";
           src = exampleProjectSrc;
         };
 
@@ -560,6 +603,10 @@
         # function (reusable — point it at any project dir; a cross-system `lib` export can wrap it later).
         packages.example-project = exampleProject;
 
+        # S3: run a project's tests through nix, cached per-input (skip unchanged). `.#example-project-tests`
+        # is the witness (built by `testCadenzaProject`). Also a `checks` entry so `nix flake check` runs it.
+        packages.example-project-tests = exampleProjectTests;
+
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
         # COMPARE — the flake never uses it as the build's asserted output. It catches a divergence
@@ -616,6 +663,9 @@
             };
             reducer-guest-valid = validComponent { name = "reducer-guest"; drv = reducerGuest; };
             cedar-guest-valid = validComponent { name = "cedar-guest"; drv = cedarGuest; };
+            # S3: the example project's @tests run through nix — a cache HIT when its sources are
+            # unchanged (the "skip tests that haven't changed" win), a re-run + fail on a red test.
+            example-project-tests = exampleProjectTests;
           };
 
         devShells.default = pkgs.mkShell {
