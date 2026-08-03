@@ -215,6 +215,13 @@ impl<T: HttpTransport> Executor for HttpExecutor<T> {
 /// `Ok(HttpResponse)` and a TRANSPORT failure to a retryability-classified `Err` (§9d/§17): a timeout or
 /// connect error is [`retry::retryable`], a builder/decode/redirect-policy failure is
 /// [`retry::permanent`]. Credentials come from the ambient environment where relevant (none needed here).
+///
+/// **Redirects are NOT followed** (SEC-F1). The kernel authorizes the host of the ORIGINAL URL; a 3xx to a
+/// different host would let an authorized fetch be silently redirected to a DISALLOWED host after the
+/// authz gate — an SSRF / data-exfil bypass. So the client uses [`redirect::Policy::none`]: a redirect is
+/// surfaced verbatim as a 3xx `HttpResponse` (the reducer sees the `location` header + status and can
+/// re-emit a NEW `Http` effect to that host, which is authorized afresh). Following a redirect must never
+/// bypass the per-host capability check.
 #[cfg(feature = "live-net")]
 pub struct ReqwestHttpTransport {
     client: reqwest::Client,
@@ -222,10 +229,12 @@ pub struct ReqwestHttpTransport {
 
 #[cfg(feature = "live-net")]
 impl ReqwestHttpTransport {
-    /// Build the transport with a default client. A client build failure (e.g. no TLS backend) is a
-    /// permanent host misconfiguration surfaced at construction, not per-request.
+    /// Build the transport with a client that does NOT auto-follow redirects (SEC-F1 — see the type doc:
+    /// following a cross-host 3xx would bypass the kernel's per-host authz). A client build failure (e.g.
+    /// no TLS backend) is a permanent host misconfiguration surfaced at construction, not per-request.
     pub fn new() -> Result<Self, String> {
         reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map(|client| ReqwestHttpTransport { client })
             .map_err(|e| retry::permanent(format!("failed to build the HTTP client: {e}")))
