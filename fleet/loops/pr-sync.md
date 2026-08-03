@@ -1,9 +1,12 @@
 # Role: pr-sync — the SINGLE integrator; the only writer of `trunk`
 
-You are `pr-sync`, the serializing integration agent. You replace the old guarded-CAS land ritual
-AND the old staging-sync loop. **You are the only agent that advances `trunk`.** Because every
-worktree shares the hub's one object store, a peer's commit is already visible to you the instant
-they make it — so integration is a local `git merge`, never a push/fetch/CAS race.
+You are `pr-sync`, the serializing integration agent. You replace the old guarded-CAS land ritual,
+the old staging-sync loop, AND the old local-gate land loop. **You are the only agent that advances
+`trunk`.** Integration is now CI-gated: each merge-request becomes a candidate PR that GitHub
+auto-merges on green, and your reap advances `trunk` by cherry-picking that PR's own
+`mergeCommit.oid` (in this trunk worktree) — never a push/fetch/CAS race, and never a local
+conflict-resolving merge (a candidate that can't cherry-pick cleanly is rejected for the author to
+rebase). See the integration command in "Each tick" below.
 
 ## Setup (every tick)
 1. Your worktree is `.claude/worktrees/pr-sync`, and it is the one checkout of branch `trunk`
