@@ -1463,7 +1463,7 @@ fn rustc_roundtrip_map_and_set_compute_and_enumerate_in_order() {
 }
 
 #[test]
-fn a_bare_float_set_or_map_uses_cdz_f64_but_float_carrying_sum_declines() {
+fn a_bare_float_set_or_map_uses_cdz_f64_and_a_monomorphic_float_carrying_sum_gets_a_custom_ord() {
     // A `Set`/`Map` of a BARE FLOAT now COMPILES via the `CdzF64` total-order wrapper (a raw `f64` is only
     // `PartialOrd`; `CdzF64` orders by canonical bits, NaN-canonical — mirroring the runtime's `box-float`).
     // (WAS a decline — the "no BTreeSet<f64>" era, before the wrapper.) The float-insert into an EMPTY set is
@@ -1492,26 +1492,36 @@ fn a_bare_float_set_or_map_uses_cdz_f64_but_float_carrying_sum_declines() {
         "an Int-element Set still emits a BTreeSet:\n{set_int}"
     );
 
-    // FOLLOW-ON (Copilot PR#455): a sum CARRYING A FLOAT is one type-shape past a bare float key — its
-    // emitted enum derives no `Ord` (a float payload isn't `Eq`/`Ord`), so a `Set<Enum>`/`Map<Enum,_>`
-    // is still uncompilable. The old `ty_is_ord` returned `true` for EVERY `Ty::Sum` (comment claimed the
-    // enum-derive path caught it — but that's a rustc COMPILE ERROR, not the clean decline). Both the
-    // VALUE path (a construction op) and the TYPE-POSITION path (a param `(Set W)`, no construction op —
-    // caught by the `sum_representable` gate) must decline.
-    let sum_float_set_val = compile_rust_result(
+    // FOLLOW-ON (float-carrying-sum Ord-key): a MONOMORPHIC sum CARRYING A FLOAT is one type-shape past a
+    // bare float key. Its emitted enum can't `#[derive(Ord)]` (a float payload isn't `Eq`/`Ord`), so it
+    // NOW gets a HAND-WRITTEN `impl Ord` (delegating to a `__ord_<Ident>` walk that orders the float leaf by
+    // canonical bits) — making `Set<W>`/`Map<W,_>` compilable with an order that agrees with wasm. (This
+    // REVERSES the old decline: `ty_is_ord`'s Sum arm now admits a `sum_is_custom_ord` sum.) Both the VALUE
+    // path (a construction op) and the TYPE-POSITION path (a `(Set W)` param) now EMIT.
+    let sum_float_set_val = compile_rust(
         "(module m (type W (F Float64) (G)) \
            (def (main (: d Float64)) (Set.len (Set.of (list ((. W F) d))))) (export main))",
     );
     assert!(
-        sum_float_set_val.is_err(),
-        "a Set of a float-carrying sum (value) must DECLINE, got:\n{sum_float_set_val:?}"
+        sum_float_set_val.contains("impl Ord for W") && sum_float_set_val.contains("BTreeSet<W>"),
+        "a Set of a float-carrying sum (value) now emits a custom impl Ord + BTreeSet<W>:\n{sum_float_set_val}"
     );
-    let sum_float_set_param = compile_rust_result(
+    let sum_float_set_param = compile_rust(
         "(module m (type W (F Float64) (G)) (def (main (: s (Set W))) (Set.len s)) (export main))",
     );
     assert!(
-        sum_float_set_param.is_err(),
-        "a (Set W) PARAM where W carries a float must DECLINE (no BTreeSet<W>), got:\n{sum_float_set_param:?}"
+        sum_float_set_param.contains("BTreeSet<W>")
+            && sum_float_set_param.contains("impl Ord for W"),
+        "a (Set W) PARAM where W carries a float now emits BTreeSet<W> + custom impl Ord:\n{sum_float_set_param}"
+    );
+    // CONTROL: a GENERIC float-carrying sum still DECLINES as a key (a generic `__ord_` helper signature is
+    // a follow-up) — `sum_is_custom_ord` is monomorphic-only.
+    let generic_float_sum_set = compile_rust_result(
+        "(module m (type W a (F Float64 a) (G)) (def (main (: s (Set (W Int64)))) (Set.len s)) (export main))",
+    );
+    assert!(
+        generic_float_sum_set.is_err(),
+        "a (Set (W Int64)) where generic W carries a float must still DECLINE (monomorphic-only), got:\n{generic_float_sum_set:?}"
     );
     // CONTROL: an ALL-NULLARY sum (its enum DOES derive Ord) is a valid Set element/key — the fix is
     // Ord-derivability-specific, not "decline every sum key".
@@ -5328,6 +5338,36 @@ fn char_literal_escapes_c1_controls_not_just_c0() {
         assert_eq!(
             out, "133",
             "U+0085 round-trips through generated Rust as scalar 133"
+        );
+    }
+}
+
+#[test]
+fn rustc_float_carrying_sum_keys_a_set_via_a_custom_ord_impl() {
+    // A FLOAT-CARRYING sum (`Ast`, which has a `Float Float64` variant) cannot `#[derive(Eq/Ord)]` (f64 is
+    // not Eq/Ord), so it emits `#[derive(Clone)]` only — and previously could NOT be a `BTreeSet` element /
+    // `BTreeMap` key (the Set/Map construction declined "non-Ord element ... no BTreeSet rep"). Now the
+    // backend emits a HAND-WRITTEN `impl PartialEq/Eq/PartialOrd/Ord for Ast` delegating to `__eq_Ast` /
+    // `__ord_Ast` walk helpers (float leaf by canonical bits, recursion via the helper). So a set of quoted
+    // Asts dedups by structural content. `(quote (+ 1 2))` twice + `(quote (* 1 2))` once → 2 distinct.
+    let src = "(module m (def (go (: n Int64)) \
+        (Set.len (Set.of (list (quote (+ 1 2)) (quote (+ 1 2)) (quote (* 1 2)))))) (export go))";
+    let rs = compile_rust(src);
+    assert!(
+        rs.contains("impl Ord for Ast") && rs.contains("__ord_Ast"),
+        "a float-carrying sum used as a Set element emits a custom impl Ord + __ord_ helper:\n{rs}"
+    );
+    // partial_cmp must FULLY-QUALIFY `Option` (`core::option::Option`) — a user `(type Option …)` in the
+    // same module would otherwise shadow std's and the `-> Option<Ordering>` return would resolve to the
+    // 0-generic user enum (E0107). Pin the qualified spelling so that regression can't recur.
+    assert!(
+        rs.contains("-> core::option::Option<core::cmp::Ordering>"),
+        "partial_cmp fully-qualifies core::option::Option (user-Option-shadow safety):\n{rs}"
+    );
+    if let Some(out) = rustc_run(&rs, "go(0)") {
+        assert_eq!(
+            out, "2",
+            "a set of quoted Asts dedups by structural content: 2 distinct"
         );
     }
 }

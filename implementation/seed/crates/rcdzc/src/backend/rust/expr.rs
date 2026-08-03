@@ -3171,6 +3171,30 @@ fn ty_float_walkable(db: &mut Db, ty: &Ty) -> bool {
     ty_float_walkable_seen(db, ty, &mut Vec::new())
 }
 
+/// Whether a float-carrying MONOMORPHIC sum can be given a hand-written `impl Ord` (so it is usable as a
+/// `BTreeSet`/`BTreeMap` key) via [`emit_value_ord_walk`]. TRUE iff: it is a `Ty::Sum`; it is NOT already
+/// native-`Ord` (that path derives `Ord` directly — this is only for the ELSE); every payload is
+/// float-walkable (`ty_float_walkable` — the eq/ord walks render exactly this domain); it carries NO
+/// flip-order `Option` (the ord-walk's native-`.cmp()` fast path would give the WRONG order for an Option
+/// leaf — excluded here, declined rather than miscompiled); and it is MONOMORPHIC (no type args — a generic
+/// helper signature is a follow-up). `Ast` (a `Float`+`List Ast` sum, no Option, monomorphic) qualifies.
+pub(super) fn sum_is_custom_ord(db: &mut Db, ty: &Ty) -> bool {
+    let Ty::Sum { args, .. } = ty else {
+        return false;
+    };
+    if !args.is_empty() {
+        return false; // generic — a generic __ord_ helper signature is a follow-up
+    }
+    // Native-Ord sums derive Ord (handled elsewhere); this predicate is only for the float-carrying ELSE.
+    if super::enums::ty_supports_eq(db, ty) {
+        return false;
+    }
+    if ty_uses_flip_order_option(db, ty) {
+        return false; // an Option leaf's native .cmp() order is the reverse of Cadenza's — decline
+    }
+    ty_float_walkable(db, ty)
+}
+
 /// `ty_float_walkable` with a recursion guard for the SUM descent — a self-referential sum (e.g. `Ast` via
 /// `Ast.List (List Ast)`) closes on `seen` so the walk terminates. `emit_value_eq_walk`'s `Ty::Sum` arm
 /// renders EXACTLY this domain (the doc invariant that both backends route the same types).
@@ -3249,7 +3273,7 @@ fn ty_float_walkable_seen(db: &mut Db, ty: &Ty, seen: &mut Vec<crate::ast::Struc
 /// rust_type's element order, which for a record is sorted-key order); a NOMINAL → its inner (the newtype is
 /// transparent). `l`/`r` are already-bound identifiers (or field projections built on them), so re-reading
 /// them per leaf is sound (a projection of a bound value; the enclosing bind is done once by the caller).
-fn emit_value_eq_walk(
+pub(super) fn emit_value_eq_walk(
     db: &mut Db,
     ty: &Ty,
     l: &str,
@@ -3257,6 +3281,226 @@ fn emit_value_eq_walk(
     helpers: &mut Vec<String>,
 ) -> Result<String, Reject> {
     emit_value_eq_walk_seen(db, ty, l, r, &mut Vec::new(), helpers)
+}
+
+/// The ORD twin of [`emit_value_eq_walk`]: build a `core::cmp::Ordering` expression comparing two values of a
+/// FLOAT-CARRYING type (one that is NOT native-`Ord`-derivable — a float leaf makes the derive impossible)
+/// in the blessed lexicographic order, with each float leaf ordered by its CANONICAL BIT FORM (NaN folded to
+/// one form, matching the runtime's canonical-byte float order and `emit_value_eq_walk`'s float arm). Used to
+/// give a float-carrying sum (`Ast`) a hand-written `impl Ord` so it can be a `BTreeSet`/`BTreeMap` key —
+/// `enums.rs` wraps the generated `__ord_<Ident>` helper in the trait impl. Mirrors the eq-walk's shape
+/// (native-`Ord` fast path, tuple/record lexicographic, list element-wise-then-length, sum via a recursive
+/// helper). REQUIRES the type carry no flip-order `Option` (the admission gate ensures this): the native
+/// `.cmp()` fast path for an Option-free native-Ord leaf is then the correct Cadenza order.
+pub(super) fn emit_value_ord_walk(
+    db: &mut Db,
+    ty: &Ty,
+    l: &str,
+    r: &str,
+    helpers: &mut Vec<String>,
+) -> Result<String, Reject> {
+    emit_value_ord_walk_seen(db, ty, l, r, &mut Vec::new(), helpers)
+}
+
+fn emit_value_ord_walk_seen(
+    db: &mut Db,
+    ty: &Ty,
+    l: &str,
+    r: &str,
+    seen: &mut Vec<Ty>,
+    helpers: &mut Vec<String>,
+) -> Result<String, Reject> {
+    // A NATIVELY-`Ord` leaf (Int/Bool/Bytes/String/BigInt/… and any all-`Ord`-DERIVING compound/sum) — a
+    // plain `.cmp()`. Checked FIRST so an `Ord` sub-tree compares in one `.cmp()` rather than being walked;
+    // it is also the ONLY spelling for a map/set leaf the walk does not descend. Gate on `ty_derives_eq`
+    // (the DERIVE condition), NOT `ty_is_ord`: a CUSTOM-ord sum (`Ast`) satisfies `ty_is_ord` but its `.cmp()`
+    // IS this very `__ord_` helper — short-circuiting to `l.cmp(&r)` would recurse forever. Such a sum must
+    // fall through to the `Ty::Sum` walk arm. A flip-order Option would also be wrong here, but the admission
+    // gate (`sum_is_custom_ord`) excludes it. The `&` handles a non-Copy compound.
+    if super::enums::ty_supports_eq(db, ty) {
+        // `ty_supports_eq` = the enum/compound DERIVES Eq (hence Ord) — a native `.cmp()` is the Cadenza
+        // order (BigInt/Rational also reach here and have a total `cmp`). A custom-ord sum is NOT Eq-deriving
+        // (it carries a float), so it does not take this path.
+        return Ok(format!("{l}.cmp(&{r})"));
+    }
+    // BigInt/Rational are `Ord` but not yet `ty_supports_eq`-true — still a native `.cmp()`.
+    if matches!(ty, Ty::BigInt | Ty::Rational) {
+        return Ok(format!("{l}.cmp(&{r})"));
+    }
+    match ty {
+        // A FLOAT leaf — order by the canonical bit pattern (NaN folded to one form), mirroring the eq-walk's
+        // float arm but with `.cmp()` on the bits (a total order over the canonicalized `u{32,64}`). This
+        // matches the runtime's canonical-byte float order (so a float set/map key agrees with wasm).
+        Ty::Float(ft) => {
+            let (canon_nan, bits_ty) = if ft.ground_width() == 32 {
+                ("0x7FC0_0000u32", "u32")
+            } else {
+                ("0x7FF8_0000_0000_0000u64", "u64")
+            };
+            let canon = |v: &str| {
+                format!(
+                    "({{ let __f = {v}; if __f.is_nan() {{ {canon_nan} }} else {{ __f.to_bits() as {bits_ty} }} }})"
+                )
+            };
+            Ok(format!("{}.cmp(&{})", canon(l), canon(r)))
+        }
+        // A TUPLE — lexicographic: compare element 0, and only on `Equal` fall through (`.then_with`).
+        Ty::Tuple(elems) => {
+            let elems = elems.clone();
+            let mut acc: Option<String> = None;
+            for (i, e) in elems.iter().enumerate() {
+                let part = emit_value_ord_walk_seen(
+                    db,
+                    e,
+                    &format!("{l}.{i}"),
+                    &format!("{r}.{i}"),
+                    seen,
+                    helpers,
+                )?;
+                acc = Some(match acc {
+                    None => part,
+                    Some(prev) => format!("{prev}.then_with(|| {part})"),
+                });
+            }
+            Ok(acc.unwrap_or_else(|| "core::cmp::Ordering::Equal".to_string()))
+        }
+        // A RECORD — a tuple in sorted-key order; same lexicographic chain over `.i`.
+        Ty::Record(fields) => {
+            let tys: Vec<Ty> = fields.values().cloned().collect();
+            let mut acc: Option<String> = None;
+            for (i, e) in tys.iter().enumerate() {
+                let part = emit_value_ord_walk_seen(
+                    db,
+                    e,
+                    &format!("{l}.{i}"),
+                    &format!("{r}.{i}"),
+                    seen,
+                    helpers,
+                )?;
+                acc = Some(match acc {
+                    None => part,
+                    Some(prev) => format!("{prev}.then_with(|| {part})"),
+                });
+            }
+            Ok(acc.unwrap_or_else(|| "core::cmp::Ordering::Equal".to_string()))
+        }
+        // A LIST — `Vec<T>` compared element-wise lexicographically, then by length (the derived-`Vec` Ord
+        // shape): the first non-Equal zipped element decides, else compare lengths. Built over bound refs.
+        Ty::List(elem) => {
+            let elem = (**elem).clone();
+            let elem_cmp = emit_value_ord_walk_seen(db, &elem, "__le", "__re", seen, helpers)?;
+            Ok(format!(
+                "{l}.iter().zip({r}.iter()).map(|(__le, __re)| {elem_cmp}).find(|__o| *__o != core::cmp::Ordering::Equal).unwrap_or_else(|| {l}.len().cmp(&{r}.len()))"
+            ))
+        }
+        // A NOMINAL newtype is transparent — walk the inner over the same operands (no projection).
+        Ty::Nominal { inner, .. } => {
+            let inner = (**inner).clone();
+            emit_value_ord_walk_seen(db, &inner, l, r, seen, helpers)
+        }
+        // A Qty erases to its inner magnitude — walk the inner (same operands).
+        Ty::Qty { inner, .. } => {
+            let inner = (**inner).clone();
+            emit_value_ord_walk_seen(db, &inner, l, r, seen, helpers)
+        }
+        // A SUM whose payloads carry a Float/List (so it is NOT native-Ord — that path was taken first).
+        // Compared through a generated recursive helper `fn __ord_<Ident>(l, r) -> Ordering` that matches
+        // `(l, r)`: a same-variant pair compares payloads (lexicographic over the payload walk); a
+        // mismatched pair compares the DECLARED discriminant ORDINALS (Cadenza declared order = the enum
+        // declaration order, which for a monomorphic user sum matches the emitted enum's variant order). The
+        // helper (call-indirection) makes a RECURSIVE sum (`Ast.List (List Ast)`) terminate at runtime —
+        // exactly like the eq-walk's `__eq_<Ident>`. Monomorphic only (a generic re-entry declines).
+        Ty::Sum { decl, args, name } => {
+            let enum_ty = super::types::rust_type(ty)
+                .ok_or_else(|| Reject::decline("sum ord: no rust type for the enum"))?;
+            let fn_name = format!("__ord_{}", super::types::sum_ident(name));
+            let sum_ty = ty.clone();
+            if seen.contains(&sum_ty) {
+                if !args.is_empty() {
+                    return Err(Reject::decline(
+                        "runtime ordering over a RECURSIVE GENERIC sum is not yet rendered by the Rust backend (needs a generic helper fn)",
+                    ));
+                }
+                return Ok(format!("{fn_name}(&{l}, &{r})"));
+            }
+            if !args.is_empty() {
+                return Err(Reject::decline(
+                    "runtime ordering over a GENERIC sum is not yet rendered by the Rust backend (needs a generic helper fn)",
+                ));
+            }
+            seen.push(sum_ty);
+            let variant_count = match db.type_decl_by_occ(*decl).map(|t| t.variants.len()) {
+                Some(n) => n,
+                None => {
+                    seen.pop();
+                    return Err(Reject::decline("sum ord: no variant count"));
+                }
+            };
+            // Same-variant arms compare payloads; the fallthrough compares declared ordinals. `__ord_pos`
+            // maps a ref to its declared position (a small helper match, emitted alongside).
+            let mut same_arms = Vec::with_capacity(variant_count + 1);
+            let mut pos_arms = Vec::with_capacity(variant_count);
+            let mut arm_err: Option<Reject> = None;
+            for disc in 0..variant_count as u32 {
+                let path = match sum_variant_path_of_ty(db, ty, disc) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        arm_err = Some(e);
+                        break;
+                    }
+                };
+                match variant_payload_ty(db, ty, disc) {
+                    None => {
+                        // Nullary — same-variant pair is `Equal`; position arm maps the bare ctor to its disc.
+                        same_arms.push(format!("({path}, {path}) => core::cmp::Ordering::Equal,"));
+                        pos_arms.push(format!("{path} => {disc}u32,"));
+                    }
+                    Some(payload_ty) => {
+                        let deref = if super::enums::variant_is_recursive(db, ty, disc) {
+                            "**"
+                        } else {
+                            "*"
+                        };
+                        let lp = format!("({deref}__lp)");
+                        let rp = format!("({deref}__rp)");
+                        match emit_value_ord_walk_seen(db, &payload_ty, &lp, &rp, seen, helpers) {
+                            Ok(cmp) => {
+                                same_arms.push(format!("({path}(__lp), {path}(__rp)) => {cmp},"));
+                                pos_arms.push(format!("{path}(_) => {disc}u32,"));
+                            }
+                            Err(e) => {
+                                arm_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            seen.pop();
+            if let Some(e) = arm_err {
+                return Err(e);
+            }
+            // A same-discriminant pair is handled by an arm above; a mismatched pair compares declared
+            // ordinals via the position helper. The `__pos` closure maps each operand to its declared disc.
+            same_arms.push("_ => __pos(l).cmp(&__pos(r)),".to_string());
+            if !helpers
+                .iter()
+                .any(|h| h.contains(&format!("fn {fn_name}(")))
+            {
+                helpers.push(format!(
+                    "#[allow(unused)] fn {fn_name}(l: &{enum_ty}, r: &{enum_ty}) -> core::cmp::Ordering {{ \
+                     fn __pos(v: &{enum_ty}) -> u32 {{ match v {{ {} }} }} \
+                     match (l, r) {{ {} }} }}",
+                    pos_arms.join(" "),
+                    same_arms.join(" ")
+                ));
+            }
+            Ok(format!("{fn_name}(&{l}, &{r})"))
+        }
+        _ => Err(Reject::decline(
+            "runtime ordering over this compound is not yet rendered by the Rust backend",
+        )),
+    }
 }
 
 /// [`emit_value_eq_walk`] with a `seen` set of sum decls currently being expanded (the recursion guard that
