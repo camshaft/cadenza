@@ -59,6 +59,12 @@ pub mod effect_ct {
     pub const NOW: &str = "now";
     pub const TIMER: &str = "timer";
     pub const EMIT: &str = "emit";
+
+    /// The canonical, finite set of well-known effect families — the SAME set routing/authz/codec key on.
+    /// Iterating it is what makes capability-manifest projection complete BY CONSTRUCTION (probe each known
+    /// family; there is nothing to miss — see [`super::project_manifest`]). Keep in sync with the consts
+    /// above (they're the single source; this just lists them for enumeration).
+    pub const ALL: &[&str] = &[SHELL, HTTP, MODEL, NOW, TIMER, EMIT];
 }
 
 impl EffectKind {
@@ -244,6 +250,82 @@ impl Capability {
     pub fn permits(&self, req: &EffectRequest) -> bool {
         req.content_type.matches_family(self.kind.family()) && self.predicate.admits(&req.target)
     }
+}
+
+/// Whether a session may use a given effect family — one entry of a [`CapabilityManifest`]. Computed from
+/// the TWO actual sources (host mechanism + policy), never a hand-maintained list, so it can't drift:
+/// `Absent` when the host has no executor for the family; otherwise `Granted`/`Denied` by the authorizer's
+/// decision. (The design leaves room for a future `Requestable` split of `Denied` — host has the executor
+/// but policy denies AND the session may request it — once that policy model is ratified; today a
+/// policy-denied family is a single `Denied`.)
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum GrantState {
+    /// The host has an executor for this family AND policy admits this session's probe → usable now.
+    Granted,
+    /// The host has an executor for this family, but policy denied the probe.
+    Denied,
+    /// The host has NO executor for this family — unusable regardless of policy.
+    Absent,
+}
+
+/// One family's entry in the capability manifest: the family string, its grant-state, and (when known) the
+/// resource scope the grant is bound to. `scope` REUSES [`ResourcePredicate`] (never a new scope type); it
+/// is `None` when there is no scope to report (an `Absent` family, or a `Denied` one).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CapabilityEntry {
+    pub family: String,
+    pub grant: GrantState,
+    pub scope: Option<ResourcePredicate>,
+}
+
+/// A session's capability manifest (§host-capability-discovery I1): one [`CapabilityEntry`] per well-known
+/// effect family. The reducer learns "what effect families may I use, and at what scope" from this — the
+/// authorized projection of host mechanism ∩ policy. Content-typed as `capabilities-manifest` when it rides
+/// the log (a later slice); this is the in-kernel value.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct CapabilityManifest {
+    pub entries: Vec<CapabilityEntry>,
+}
+
+/// Project a session's capability manifest by PROBING (the LOCKED crux — not authorizer enumeration).
+/// For each family in the canonical set (`families`, normally [`effect_ct::ALL`]): the mechanism dimension
+/// is `handles(family)` (does the host have an executor?), and the policy dimension is ONE `authorize`
+/// probe (the existing decide-only [`Authorize`] trait — no enumeration API). Complete BY CONSTRUCTION: the
+/// family set is finite + canonical, so nothing is missed. Pure: deterministic given `(families, handles,
+/// authorizer, probe_target)`; async only because the authorizer may `.await` a wasm policy eval.
+///
+/// `probe_target` is the resolved target used to probe each family's policy (e.g. a session-scoped default);
+/// the concrete convention is coordinated with the host in I3. The probed request is built via
+/// [`EffectRequest::new`] so its `content_type.family` matches the family being probed.
+pub async fn project_manifest(
+    families: &[&str],
+    handles: impl Fn(&str) -> bool,
+    authorizer: &dyn crate::authz::Authorize,
+    probe_target: &str,
+) -> CapabilityManifest {
+    let mut entries = Vec::with_capacity(families.len());
+    for &family in families {
+        let grant = if !handles(family) {
+            GrantState::Absent
+        } else {
+            // Mechanism present → the policy probe decides. Build the probe request via the family's
+            // well-known kind when there is one (so kind + content_type.family agree); an extension family
+            // with no `EffectKind` still probes by family once register-by-string lands.
+            let kind = EffectKind::from_family(family).unwrap_or(EffectKind::Emit);
+            let mut probe = EffectRequest::new(kind, probe_target, None, Timeliness::Interactive);
+            probe.content_type.family = family.to_string();
+            match authorizer.authorize_async(&probe).await {
+                Ok(()) => GrantState::Granted,
+                Err(_) => GrantState::Denied,
+            }
+        };
+        entries.push(CapabilityEntry {
+            family: family.to_string(),
+            grant,
+            scope: None,
+        });
+    }
+    CapabilityManifest { entries }
 }
 
 /// Extract the host from a `scheme://host[:port]/…` target, for `HostIn`. Uses the battle-tested `url`
@@ -558,5 +640,58 @@ mod tests {
         let bad = EffectRequest::new(EffectKind::Shell, "rm -rf /", None, Timeliness::Interactive);
         assert!(cap.permits(&ok));
         assert!(!cap.permits(&bad));
+    }
+
+    // ---- host-capability-discovery I1: manifest projection by probing --------------------------------
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn project_manifest_computes_the_three_grant_states_from_mechanism_and_policy() {
+        use crate::authz::Authorizer;
+
+        // Policy: grant Http (any target) only. Mechanism (handles): the host serves Http + Model, but NOT
+        // Shell. So over {http, model, shell} the projection must yield exactly one of each grant-state:
+        //  - http  → GRANTED  (mechanism yes + policy allows)
+        //  - model → DENIED   (mechanism yes + policy denies — the REQUESTABLE-precursor state)
+        //  - shell → ABSENT   (mechanism no — policy irrelevant)
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }]);
+        let handles = |f: &str| f == effect_ct::HTTP || f == effect_ct::MODEL;
+        let families = [effect_ct::HTTP, effect_ct::MODEL, effect_ct::SHELL];
+
+        let manifest = project_manifest(&families, handles, &authz, "probe://scope").await;
+
+        assert_eq!(manifest.entries.len(), 3);
+        let state = |fam: &str| {
+            manifest
+                .entries
+                .iter()
+                .find(|e| e.family == fam)
+                .map(|e| e.grant.clone())
+                .unwrap()
+        };
+        assert_eq!(state(effect_ct::HTTP), GrantState::Granted);
+        assert_eq!(state(effect_ct::MODEL), GrantState::Denied);
+        assert_eq!(state(effect_ct::SHELL), GrantState::Absent);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn project_manifest_over_all_is_complete_by_construction() {
+        use crate::authz::Authorizer;
+        // Probing the canonical `effect_ct::ALL` set yields exactly one entry per known family — nothing
+        // missed (the crux: the family set is finite + canonical). With deny_all + no mechanism, every
+        // family is Absent (handles=false short-circuits before the policy probe).
+        let manifest =
+            project_manifest(effect_ct::ALL, |_| false, &Authorizer::deny_all(), "x").await;
+        assert_eq!(manifest.entries.len(), effect_ct::ALL.len());
+        assert!(manifest
+            .entries
+            .iter()
+            .all(|e| e.grant == GrantState::Absent));
+        // Every canonical family is represented.
+        for &fam in effect_ct::ALL {
+            assert!(manifest.entries.iter().any(|e| e.family == fam));
+        }
     }
 }
