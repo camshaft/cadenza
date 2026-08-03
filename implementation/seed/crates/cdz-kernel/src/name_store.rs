@@ -171,6 +171,30 @@ impl NameStore {
         Ok(store)
     }
 
+    /// Export this store's full set-event stream — the DUAL of [`NameStore::replay_set_entries`], the other
+    /// half of the durable snapshot/restore pair (like [`crate::kv::Kv::encode`]/`decode` for the session
+    /// KV). A durable backend calls this to serialize the store (each `(name, hash)` becomes a `name-set`
+    /// frame via [`crate::event_ast::encode_name_set`]); `replay_set_entries` on that stream reconstructs
+    /// an identical store.
+    ///
+    /// DETERMINISTIC order: names in ascending byte order, and within each name its value-over-time
+    /// (oldest→newest, the append order). So the exported stream is byte-STABLE (a snapshot content-addresses
+    /// the same regardless of insertion history — the property the session KV snapshot relies on), and
+    /// replaying it re-establishes each name's latest correctly. `producer` is dropped for now (unset in P0;
+    /// when signing lands the export carries the signed envelope, not just the payload). Full history is
+    /// exported (audit/rollback preserved), not just the latest per name.
+    pub fn to_set_entries(&self) -> Vec<(String, Hash)> {
+        let mut names: Vec<&String> = self.names.keys().collect();
+        names.sort_unstable();
+        let mut out = Vec::new();
+        for name in names {
+            for entry in &self.names[name] {
+                out.push((name.clone(), entry.hash));
+            }
+        }
+        out
+    }
+
     /// The §4c write-authority namespace for `name`, by its prefix — the pure classification a Cedar
     /// prefix-grant keys on. Signature-independent and total (every string maps to a variant; unknown →
     /// `Unscoped`, fail-closed).
@@ -445,6 +469,52 @@ mod tests {
         assert!(
             rebuilt.applied_set_keys.is_empty(),
             "recovery must NOT populate the dedup set — replayed entries are historical, not in-flight"
+        );
+    }
+
+    #[test]
+    fn to_set_entries_round_trips_through_replay_and_is_deterministic() {
+        // The durable snapshot/restore pair: to_set_entries → replay_set_entries reconstructs an identical
+        // store, and the export is byte-STABLE regardless of insertion order (name-sorted + per-name append
+        // order), like the KV snapshot.
+        let (a1, a2, b1) = (Hash::of(b"a1"), Hash::of(b"a2"), Hash::of(b"b1"));
+        let mut s = NameStore::new();
+        // Insert in a deliberately non-sorted, interleaved order.
+        s.set("system/z", SetEntry::unsigned(b1)).unwrap();
+        s.set("system/a", SetEntry::unsigned(a1)).unwrap();
+        s.set("system/a", SetEntry::unsigned(a2)).unwrap();
+
+        let entries = s.to_set_entries();
+        // Deterministic: names ascending, per-name oldest→newest.
+        assert_eq!(
+            entries,
+            vec![
+                ("system/a".to_string(), a1),
+                ("system/a".to_string(), a2),
+                ("system/z".to_string(), b1),
+            ]
+        );
+
+        // Round-trip: replay reconstructs the same latest values + full history.
+        let rebuilt =
+            NameStore::replay_set_entries(entries.iter().map(|(n, h)| (n.as_str(), *h))).unwrap();
+        assert_eq!(rebuilt.resolve("system/a").unwrap(), a2);
+        assert_eq!(rebuilt.resolve("system/z").unwrap(), b1);
+        assert_eq!(
+            rebuilt.to_set_entries(),
+            entries,
+            "export is idempotent across a round-trip"
+        );
+
+        // Insertion-order-independent: a store built in a different order exports IDENTICALLY.
+        let mut s2 = NameStore::new();
+        s2.set("system/a", SetEntry::unsigned(a1)).unwrap();
+        s2.set("system/z", SetEntry::unsigned(b1)).unwrap();
+        s2.set("system/a", SetEntry::unsigned(a2)).unwrap();
+        assert_eq!(
+            s2.to_set_entries(),
+            entries,
+            "byte-stable regardless of insertion order"
         );
     }
 
