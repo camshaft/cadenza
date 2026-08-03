@@ -3643,3 +3643,23 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 42 Int64))
   (call   main (: 6 Int64)) (output (: -1 Int64)))
+
+(case "a template EXPANSION is a CHAMP Map key found by its directly-woven twin"
+  (doc    "The template face of cross-construction-path Ast key identity (the quote-vs-weave face is
+           pinned above; this is EXPANSION-vs-weave): a Map keyed by the directly-woven
+           `(+ <a> 2)` tree is hit by a TAG EXPANSION producing the same tree from a hole — the
+           expansion output must hash/compare as an ordinary Ast value with no expansion-provenance
+           residue. A tag-output interning (or a wrapper node left on the expansion) would miss the
+           lookup.")
+  (input  (do
+            (def (mk chunks holes)
+              (match holes
+                ((list h) (Ast.List (list (Ast.Name "+") h (Ast.Int 2))))
+                (_other (Ast.Int 0))))
+            (def (main (: a Int64))
+              (match (Map.lookup
+                       (Map.insert Map.empty (Ast.List (list (Ast.Name "+") (Ast.Int (BigInt.of a)) (Ast.Int 2))) 42)
+                       (tagged-template mk (chunks "" "") (holes (Ast.Int (BigInt.of a)))))
+                ((Some v) v) ((None _u) -1)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 42 Int64)))
