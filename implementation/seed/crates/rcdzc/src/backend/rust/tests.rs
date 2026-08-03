@@ -7650,3 +7650,47 @@ fn rustc_host_call_unit_arg_evaluates_for_effect_then_passes_unit() {
         "the unit arg is passed to the shim, reaching the String-result marshal:\n{rs}"
     );
 }
+
+#[test]
+fn adv68_inrange_sibling_typed_set_element_and_map_value_render_at_the_collection_width() {
+    // adv-68 (v-inference ROUTED, emit-side): an IN-RANGE bare literal in a Set element / Map key/value
+    // position defaults its OWN `type_of` to Int64, so the rust emitter rendered it `Nu64 as i64` —
+    // dropping an `i64` into a `BTreeSet<u64>` / a `BTreeMap<_, u8>` value slot → rustc E0308 (wasm just
+    // wraps the literal to the element width and runs). The emit half of #1780's CDZ0302 sibling-width
+    // range check: the literal must render at the COLLECTION's settled element/value width, via
+    // `emit_grounded` (the Set/Map twin of the list-element render #1766). Witnesses that it now BUILDS
+    // and computes the right value under rustc (a witness that merely compiled the container type but
+    // never ran would not prove the element render is right).
+    //
+    // Set over a sibling-typed element: `(: 1 UInt64)` pins the set's element type to UInt64; the bare
+    // in-range `41` must render `41u64` (not `41u64 as i64`) into the `BTreeSet<u64>`.
+    let set = "(module m \
+        (def (run) (Set.len (Set.of (list (: 1 UInt64) 41)))) \
+        (export run))";
+    assert!(
+        try_compile_rust(set).is_ok(),
+        "a sibling-UInt64 Set element must render at the set width, not `as i64`: {:?}",
+        try_compile_rust(set).err()
+    );
+    if let Some(out) = rustc_run(&compile_rust(set), "run()") {
+        assert_eq!(
+            out, "2",
+            "the two distinct u64 elements {{1, 41}} count as 2"
+        );
+    }
+    // Map with a sibling-typed VALUE: the first entry's `(: 5 UInt8)` pins the value type to UInt8; the
+    // second entry's bare in-range `30` must render `30u8` (not `30u64 as i64`) into the `BTreeMap<_, u8>`
+    // value slot. A chained `Map.insert(Map.insert Map.empty …)` folds to `Core::MapNew`, so the fix lives
+    // in the MapNew entry render (and the MapInsert arm for the un-folded single-insert shape).
+    let map = "(module m \
+        (def (run) (Map.len (Map.insert (Map.insert (Map.empty) 1 (: 5 UInt8)) 2 30))) \
+        (export run))";
+    assert!(
+        try_compile_rust(map).is_ok(),
+        "a sibling-UInt8 Map value must render at the value width, not `as i64`: {:?}",
+        try_compile_rust(map).err()
+    );
+    if let Some(out) = rustc_run(&compile_rust(map), "run()") {
+        assert_eq!(out, "2", "the two distinct keys {{1, 2}} count as 2");
+    }
+}
