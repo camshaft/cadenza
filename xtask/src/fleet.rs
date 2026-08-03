@@ -7745,13 +7745,18 @@ enum PrState {
 ///      GitHub owns the merge, we only observe it).
 ///
 /// Pure over its two inputs.
-fn reap_action(state: PrState, verdict: CiVerdict) -> ReapAction {
+fn reap_action(state: PrState, required_verdict: CiVerdict) -> ReapAction {
     match state {
         PrState::Merged => ReapAction::LandMerged,
         // Closed-not-merged is terminal: it can't merge, so reject (free the slot) regardless of the
         // last CI verdict — a closed PR's checks are moot.
         PrState::Closed => ReapAction::Reject,
-        PrState::Open if verdict == CiVerdict::Red => ReapAction::Reject,
+        // Reject an OPEN PR only when a merge-REQUIRED check failed (`required_verdict` is computed over
+        // `gh pr checks --required`). A red in a NON-required job (cdz-kernel, `cadenza @test suites`)
+        // does NOT block auto-merge, so it must NOT reject — the PR will still merge and we'll reap it as
+        // LandMerged. #2/#3, pr-sync live: rejecting on any-red wrongly killed candidates during the
+        // cdz-kernel outage. Non-required reds → `KeepWaiting`; GitHub's auto-merge is the authority.
+        PrState::Open if required_verdict == CiVerdict::Red => ReapAction::Reject,
         PrState::Open => ReapAction::KeepWaiting,
     }
 }
@@ -8060,7 +8065,7 @@ fn parse_pr_state(gh_state_json: &str) -> PrState {
 /// `gh pr view <n> --json state` gives the merge/close state (parsed by [`parse_pr_state`]); `gh pr
 /// checks` gives the buckets. A gh error → `(Open, NoChecks)` (→ `KeepWaiting`), never a false
 /// `Merged`/`Green`/`Closed` (an error must not manufacture a land OR a reject).
-fn pr_state_and_verdict(pr: u64) -> (PrState, CiVerdict) {
+fn pr_state_and_verdict(pr: u64) -> (PrState, CiVerdict, CiVerdict) {
     let n = pr.to_string();
     let state = Command::new("gh")
         .args(["pr", "view", &n, "--json", "state"])
@@ -8069,18 +8074,27 @@ fn pr_state_and_verdict(pr: u64) -> (PrState, CiVerdict) {
         .filter(|o| o.status.success())
         .map(|o| parse_pr_state(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or(PrState::Open);
-    let checks_out = Command::new("gh")
-        .args(["pr", "checks", &n, "--json", "bucket,name,state"])
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
-    let verdict = ci_verdict_from_buckets(
-        parse_gh_checks(&checks_out)
-            .iter()
-            .map(|(b, _, _)| b.as_str()),
-    );
-    (state, verdict)
+    // Verdict over ALL checks (for the human-facing plan preview + the Green/land observation) AND over
+    // only merge-REQUIRED checks (for the REJECT decision). #2/#3 (pr-sync live): cdz-kernel + `cadenza
+    // @test suites` are NOT merge-required — a red there still auto-merges, so rejecting on it is wrong
+    // (during the cdz-kernel outage EVERY kernel candidate's non-required job was red for ~10 ticks, yet
+    // all correctly auto-merged). `gh pr checks --required` filters to the merge-required set, so a
+    // non-required red never counts toward a reject. Empty required set (gh error / none configured) →
+    // NoChecks (never a false Red → never a false reject).
+    let verdict_of = |required: bool| {
+        let mut args = vec!["pr", "checks", &n, "--json", "bucket,name,state"];
+        if required {
+            args.push("--required");
+        }
+        let out = Command::new("gh")
+            .args(&args)
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        ci_verdict_from_buckets(parse_gh_checks(&out).iter().map(|(b, _, _)| b.as_str()))
+    };
+    (state, verdict_of(false), verdict_of(true))
 }
 
 /// `fleet schedule-plan [--cap N]`: read the queued merge-requests + the in-flight `ci-dispatch` state
@@ -8098,13 +8112,17 @@ fn schedule_plan(fleet: &Fleet, cap: usize) {
     if !dispatched.is_empty() {
         println!("in-flight ({}):", dispatched.len());
         for d in &dispatched {
-            let (state, verdict) = pr_state_and_verdict(d.pr_number);
-            let action = match reap_action(state, verdict) {
+            let (state, all_verdict, req_verdict) = pr_state_and_verdict(d.pr_number);
+            let action = match reap_action(state, req_verdict) {
                 ReapAction::LandMerged => "LAND (merged → FF trunk + ack merged)",
                 ReapAction::Reject if state == PrState::Closed => {
                     "REJECT (PR closed unmerged → ack reject + free slot)"
                 }
-                ReapAction::Reject => "REJECT (CI red → ack reject + close)",
+                ReapAction::Reject => "REJECT (required check RED → ack reject + close)",
+                // Distinguish a non-required red (still auto-merging, we wait) from a genuine pending.
+                ReapAction::KeepWaiting if all_verdict == CiVerdict::Red => {
+                    "wait (NON-required check red — still auto-merges; not a reject)"
+                }
                 ReapAction::KeepWaiting => "wait (CI pending / not merged)",
             };
             println!("  PR #{}\t[{}]\t{}", d.pr_number, d.lane, action);
@@ -8262,8 +8280,12 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
     let mut reaped_merged = 0usize;
     let mut reaped_rejected = 0usize;
     for d in &dispatched {
-        let (state, verdict) = pr_state_and_verdict(d.pr_number);
-        match reap_action(state, verdict) {
+        // #1 (pr-sync live): re-fetch state+verdict RIGHT before acting (an OPEN→MERGED flip or a
+        // merged-despite-red can happen between a stale poll and the action) — this call IS that fresh
+        // read, per-candidate, immediately before the match. reap uses the REQUIRED-only verdict for the
+        // reject decision (#2/#3: a non-required red still auto-merges, must not reject).
+        let (state, _all_verdict, req_verdict) = pr_state_and_verdict(d.pr_number);
+        match reap_action(state, req_verdict) {
             ReapAction::LandMerged => {
                 // GitHub already merged the PR to origin/main; FF trunk to match, then ack the sender.
                 match ff_trunk_from_origin_main(fleet) {
@@ -8299,7 +8321,7 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
                     )
                 } else {
                     format!(
-                        "candidate PR #{} CI went RED — fix + resend (see the PR's failing checks)",
+                        "candidate PR #{} — a merge-REQUIRED check went RED (fmt/clippy/gate/test) — fix + resend (see the PR's failing required checks; a non-required job red would NOT reject)",
                         d.pr_number
                     )
                 };
@@ -13230,13 +13252,17 @@ mod tests {
     fn reap_action_lands_merged_rejects_red_or_closed_else_waits() {
         use CiVerdict::*;
         use PrState::*;
+        // The verdict arg is the REQUIRED-only verdict (`gh pr checks --required`) — see reap_action.
         // MERGED (auto-merge fired on green) → LAND, regardless of a racy straggler verdict.
         assert_eq!(reap_action(Merged, Green), ReapAction::LandMerged);
         assert_eq!(reap_action(Merged, Pending), ReapAction::LandMerged);
         assert_eq!(reap_action(Merged, Red), ReapAction::LandMerged); // merged wins (shouldn't happen, but merged is authoritative)
-        // OPEN + red CI → REJECT (auto-merge will never fire).
+        // OPEN + a merge-REQUIRED check red → REJECT (auto-merge will never fire).
         assert_eq!(reap_action(Open, Red), ReapAction::Reject);
-        // OPEN + still running / green-but-not-yet-merged / no checks → keep waiting (GitHub owns the merge).
+        // OPEN + still running / green-but-not-yet-merged / no required checks → keep waiting. A
+        // NON-required red is modeled by the CALLER passing a non-Red required_verdict here (the
+        // required set is Green/Pending/NoChecks while all-checks is Red) → KeepWaiting, NOT reject
+        // (#2/#3: the PR still auto-merges; we reap it as LandMerged next pass). GitHub owns the merge.
         assert_eq!(reap_action(Open, Pending), ReapAction::KeepWaiting);
         assert_eq!(reap_action(Open, Green), ReapAction::KeepWaiting);
         assert_eq!(reap_action(Open, NoChecks), ReapAction::KeepWaiting);
