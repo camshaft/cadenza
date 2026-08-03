@@ -4598,6 +4598,8 @@ pass	float multiplication uses the arithmetic operator
 pass	float subtraction uses the arithmetic operator
 pass	floating-point uses the fixed rounding mode
 pass	four same-signature closure exports share one resource
+pass	from-bytes decodes a 3-byte scalar split across BOTH seams of a 3-leaf rope
+pass	from-bytes rejects a torn sequence whose invalid continuation sits in the NEXT leaf
 pass	function arguments are evaluated left to right
 pass	functions are single-arity and curried
 pass	generated FLOAT values are totally ordered (a trichotomy property over two generated floats)
@@ -5667,7 +5669,7 @@ todo	Set.of over runtime lists at two different element types declines pending t
 todo	Type is a first-class value
 todo	a closed literal closure forwarded through const-wrapper hops is not a false reject
 todo	a constant-try helper that fails feeds the None arm's fallback into resume
-todo	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
+pass	a mutually-recursive decoder returns a heap value and cursor and its heap slot is dispatched
 todo	a recursive NEWTYPE traversal recurses on its projected recursive field
 todo	a recursive NEWTYPE-wrapped linked list folds to a scalar
 todo	a runtime bin match decodes a FINAL constant-size utf8 segment

@@ -4349,3 +4349,44 @@
                  (if (= (via-concat "ab") "abce") 1 0)))
             (export main)))
   (call   main (: 0 Int64)) (output (: 10 Int64)))
+
+; ── UTF-8 validation ACROSS rope leaves: the from-bytes pins above validate FLAT buffers; these
+; pin the CROSS-LEAF walk — a multibyte sequence split over concat seams must decode, and a torn
+; sequence whose invalid continuation sits in the NEXT leaf must reject. A per-leaf validator
+; passes flat cases while failing both of these. ---
+
+(case "from-bytes decodes a 3-byte scalar split across BOTH seams of a 3-leaf rope"
+  (doc    "One byte per leaf: [0xE1] ++ [0x98] ++ [0x8F] — the 3-byte scalar ᘏ (U+160F) with each byte
+           in its own rope leaf. `String.from-bytes` must walk the sequence ACROSS both seams to
+           validate + decode: 1 scalar, 3 bytes → 13. A validator that checked leaves independently
+           sees a lone lead byte and two orphan continuations — three invalid fragments — and wrongly
+           yields None.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def a (Bytes.of (list (UInt8.wrap (+ 225 k)))))
+                (def b (Bytes.of (list 152)))
+                (def c (Bytes.of (list 143)))
+                (match (String.from-bytes (Bytes.concat (Bytes.concat a b) c))
+                  ((Some s) (+ (* 10 (String.scalar-len s)) (String.byte-len s)))
+                  ((None _u) -1))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 13 Int64)))
+
+(case "from-bytes rejects a torn sequence whose invalid continuation sits in the NEXT leaf"
+  (doc    "[0xE2 0x98] (a 3-byte lead + one valid continuation) ++ [0x41] ('A', NOT a continuation
+           byte): the sequence is torn exactly AT the rope seam — the leftmost leaf alone is a prefix
+           of a valid sequence, and the next leaf's first byte breaks it. Strict validation must look
+           ACROSS the seam to see the tear and yield None (0). A per-leaf validator either falsely
+           accepts the fragments or mis-places the error; a decoder that reset its state at the seam
+           would accept 'A' as a fresh scalar and silently drop the dangling lead.")
+  (input  (do
+            (def (main (: k Int64))
+              (do
+                (def left (Bytes.of (list 226 152)))
+                (def right (Bytes.of (list (UInt8.wrap (+ 65 k)))))
+                (match (String.from-bytes (Bytes.concat left right))
+                  ((Some _s) 1)
+                  ((None _u) 0))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 0 Int64)))
