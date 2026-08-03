@@ -1394,8 +1394,9 @@ mod status_snapshot_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn deliver_is_deterministic_same_input_same_state() {
-        // Determinism (§3): `deliver` is a pure function of (input, reducer) — two independent sessions
-        // fed the SAME inbound through the SAME reducer must end BYTE-IDENTICAL. Build two and assert they
+        // Determinism (§3): `deliver` is a pure function of (starting state, input, reducer) — two
+        // independent sessions at the SAME starting state, fed the SAME inbound through the SAME reducer,
+        // must end BYTE-IDENTICAL (here both start from a fresh genesis). Build two and assert they
         // match on the KV ROOT HASH (the whole KV, not one key), the log length, and the derived status.
         // Any nondeterminism in the drive loop fails loudly HERE. (Historically this pinned sync-vs-async
         // equivalence; post all-async collapse there is one `deliver`, so it now pins delivery determinism.)
