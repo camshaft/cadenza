@@ -8117,11 +8117,12 @@ fn publish_candidate(
     // would then HIDE the real rev-list error — PR #1725 review). Handle all three faces explicitly:
     //   success + count==0  → empty-range no-op (already reachable from trunk)
     //   success + count>0    → real range → proceed to cherry-pick below
-    //   error (bad ref / missing object / spawn) → surface stderr + bail (NOT a conflict)
+    //   error (bad ref / missing object / spawn failure / UNPARSEABLE stdout) → surface stderr + bail (NOT a conflict)
     // Capture the rev-list Output ONCE (PR #1731 review): derive the count from its stdout AND reuse
     // its stderr on the error arm below — no second subprocess just to read stderr, and no stderr
-    // mismatch from a repo-state change between two calls. `range_count` is `Some(n)` only on a
-    // SUCCESSFUL rev-list; a spawn/exit failure → `None` (the error face).
+    // mismatch from a repo-state change between two calls. `range_count` is `Some(n)` ONLY when
+    // rev-list both succeeded AND its stdout parsed as a usize; a spawn/exit failure OR unparseable
+    // output → `None` (the error face) — via `parse().ok()` (PR #1734 review: None ≠ only-spawn-fail).
     let rev_list_out = Command::new("git")
         .current_dir(&scratch)
         .args(["rev-list", "--count", &range])
