@@ -8103,23 +8103,27 @@ fn publish_candidate(
     //    (trunk is tree-equal to origin/main, so the range applies cleanly), replayed oldest-first.
     //    `--allow-empty` tolerates a commit whose change is already present.
     let range = format!("{TRUNK}..{}", r#ref);
-    // EMPTY RANGE up front (ref == trunk / already landed): `trunk..ref` has ZERO commits. This is
-    // NOT a conflict — it's "nothing to land" (the MR's content is already on trunk by patch-id, e.g.
-    // it landed under a re-parented sha and the audit path will ack it). Distinguish it from a REAL
-    // cherry-pick conflict so we don't emit a misleading "CONFLICTS → needs rebase → reject stale-base"
-    // signal for an already-landed MR (PR #1712 review). Don't dispatch a no-op candidate; the reap/
-    // audit (`ref_landed_on_trunk`) concludes an already-landed MR correctly.
-    let range_count: usize = Command::new("git")
+    // EMPTY RANGE up front (ref reachable from trunk / already landed): `trunk..ref` has ZERO commits.
+    // This is NOT a conflict — it's "nothing to land" (the MR's commits are already reachable from
+    // trunk, e.g. it landed under a re-parented sha and the audit path will ack it). Distinguish it
+    // from a REAL cherry-pick conflict so we don't emit a misleading "CONFLICTS → needs rebase →
+    // reject stale-base" signal for an already-landed MR (PR #1712 review). Don't dispatch a no-op
+    // candidate; the reap/audit (`ref_landed_on_trunk`) concludes an already-landed MR correctly.
+    //
+    // Only a SUCCESSFUL `rev-list` returning 0 is the empty-range no-op. A rev-list ERROR (bad ref,
+    // missing object, spawn failure) must NOT collapse to 0 — that would silently mask the failure as
+    // a no-op (PR #1719 review). On error → `None` → fall through to the cherry-pick, which surfaces
+    // the real conflict/error via the reject path rather than swallowing it.
+    let range_count: Option<usize> = Command::new("git")
         .current_dir(&scratch)
         .args(["rev-list", "--count", &range])
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
-        .unwrap_or(0);
-    if range_count == 0 {
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok());
+    if range_count == Some(0) {
         println!(
-            "publish-candidate: {ref} has NOTHING to land (trunk..{ref} is empty — already on trunk by patch-id). Not dispatching a no-op candidate; the audit/reap will ack it as already-landed."
+            "publish-candidate: {ref} has NOTHING to land (trunk..{ref} is empty — already reachable from trunk). Not dispatching a no-op candidate; the audit/reap will ack it as already-landed."
         );
         cleanup(&fleet.repo, &scratch_s);
         return false;
