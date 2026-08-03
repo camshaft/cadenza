@@ -653,4 +653,104 @@ mod tests {
         assert_eq!(hosted.session().kv().get(b"phase"), Some(&b"working"[..]));
         assert_eq!(hosted.session().log().len(), live_event_count);
     }
+
+    /// A report-aware agent that emits control effects on a `report` — but emits `control/capabilities`
+    /// FIRST and `control/summary` SECOND, plus a non-summary payload on the capabilities one. Proves the
+    /// fork reads the summary by FILTERING on family, not by taking the first control effect.
+    struct MultiControlAgent;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for MultiControlAgent {
+        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { content_type, .. } if content_type.is_report() => {
+                    let mut caps = EffectRequest::new(
+                        EffectKind::Emit,
+                        "self",
+                        Some(Payload::Inline(b"NOT-the-summary".to_vec().into())),
+                        Timeliness::Interactive,
+                    );
+                    caps.content_type.family = effect_ct::CAPABILITIES.into();
+                    let mut summary = EffectRequest::new(
+                        EffectKind::Emit,
+                        "self",
+                        Some(Payload::Inline(b"the-real-summary".to_vec().into())),
+                        Timeliness::Interactive,
+                    );
+                    summary.content_type.family = effect_ct::SUMMARY.into();
+                    // capabilities FIRST, summary SECOND — a take-first read would grab the wrong one.
+                    FoldOutput::with(vec![caps, summary])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_for_query_picks_control_summary_by_family_not_the_first_control_effect() {
+        // The reshape FILTERS the returned Vec<ControlEffect> by family == SUMMARY (control/capabilities
+        // also rides this channel until it's kernel-answered). Emit capabilities-then-summary so a
+        // take-first read would return the capabilities payload; assert we get the summary.
+        let mut host = AgentHost::new();
+        let id = SessionId::new("multi");
+        host.spawn(
+            id.clone(),
+            HostedSession::genesis(
+                Hash::of(b"multi-control-v1"),
+                Box::new(MultiControlAgent),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ),
+        );
+        let mut exec = CompositeExecutor::new();
+        let summary = host
+            .get(&id)
+            .unwrap()
+            .fork_for_query(&MultiControlAgent, &Authorizer::deny_all(), &mut exec)
+            .await;
+        assert_eq!(
+            summary.as_deref(),
+            Some(&b"the-real-summary"[..]),
+            "must select control/summary by family, not the first (control/capabilities) control effect"
+        );
+    }
+
+    /// A report-aware agent that never emits a `control/summary` (it does other work on a report but
+    /// publishes no summary) — the fork must return `None`, not panic or return some other effect.
+    struct NoSummaryAgent;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for NoSummaryAgent {
+        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            if let EventBody::Inbound { content_type, .. } = &event.body {
+                if content_type.is_report() {
+                    // Does local work on the report, but emits NO control/summary effect.
+                    kv.put(b"noted".to_vec(), b"1".to_vec());
+                }
+            }
+            FoldOutput::none()
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_for_query_returns_none_when_no_control_summary_is_emitted() {
+        // The `None` branch: a reducer that summarizes nowhere (emits no control/summary) yields None —
+        // the honest "it didn't summarize" signal, replacing the old public/summary-absent path.
+        let mut host = AgentHost::new();
+        let id = SessionId::new("silent");
+        host.spawn(
+            id.clone(),
+            HostedSession::genesis(
+                Hash::of(b"no-summary-v1"),
+                Box::new(NoSummaryAgent),
+                Box::new(Authorizer::deny_all()),
+                CompositeExecutor::new(),
+            ),
+        );
+        let mut exec = CompositeExecutor::new();
+        let summary = host
+            .get(&id)
+            .unwrap()
+            .fork_for_query(&NoSummaryAgent, &Authorizer::deny_all(), &mut exec)
+            .await;
+        assert_eq!(summary, None, "no control/summary emitted → None");
+    }
 }
