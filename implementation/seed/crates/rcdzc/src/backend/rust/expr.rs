@@ -1734,11 +1734,39 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     "a Map with a non-Ord key (a float-carrying key, or a Bytes key whose order the spec does not bless) has no BTreeMap rep on the Rust backend",
                 ));
             }
+            // The map's SETTLED key/value widths — a bare in-range literal entry key/value defaults its own
+            // `type_of` to Int64 (`Nu64 as i64`), but the map is `BTreeMap<kw, vw>`, so an unannotated entry
+            // renders at the wrong width (a chained `Map.insert` folds to this `MapNew`, so `(30)` into a
+            // `BTreeMap<i64, u8>` value slot rendered `(30u64 as i64)` → E0308). Ground each entry key/value
+            // to the map's key/value type (`emit_grounded` renders a bare literal at that width, no-op when
+            // already width-carrying) — the Map twin of the Set-element / list-element sibling-width render
+            // (adv-68, v-inference: the emit half of #1780's CDZ0302 range check).
+            let (key_it, val_it): (Option<IntTy>, Option<IntTy>) =
+                match type_of(db, id).strip_nominal() {
+                    Ty::Map(mk, mv) => {
+                        let ki = match mk.strip_nominal() {
+                            Ty::Int(it) => Some(*it),
+                            _ => None,
+                        };
+                        let vi = match mv.strip_nominal() {
+                            Ty::Int(it) => Some(*it),
+                            _ => None,
+                        };
+                        (ki, vi)
+                    }
+                    _ => (None, None),
+                };
             let mut lines = String::new();
             for (k, v) in &entries {
-                let ke = emit(db, *k, env, ctx)?;
+                let ke = match key_it {
+                    Some(it) => emit_grounded(db, *k, it, env, ctx)?,
+                    None => emit(db, *k, env, ctx)?,
+                };
                 let ke = wrap_ord_key(ke, &type_of(db, *k));
-                let ve = emit(db, *v, env, ctx)?;
+                let ve = match val_it {
+                    Some(it) => emit_grounded(db, *v, it, env, ctx)?,
+                    None => emit(db, *v, env, ctx)?,
+                };
                 lines.push_str(&format!("__m.insert({ke}, {ve}); "));
             }
             // ANNOTATE `__m` with the node's `BTreeMap<K,V>` type. When the node maps concretely, spell it
@@ -1803,9 +1831,36 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
             let mut map_ctx = ctx.clone();
             map_ctx.map_typed_by_enclosing_insert = true;
             let m = emit(db, map, env, &map_ctx)?;
-            let k = emit(db, key, env, ctx)?;
+            // The map's SETTLED key/value widths — a bare in-range literal key/value defaults its own
+            // `type_of` to Int64 (`Nu64 as i64`), but the map is `BTreeMap<kw, vw>`, so an unannotated
+            // key/value renders at the wrong width (`__m.insert((2u64 as i64), (30u64 as i64))` into
+            // `BTreeMap<i64, u8>` → the `u8` value slot gets an `i64` → E0308). Ground each to the map's
+            // key/value type (`emit_grounded` renders a bare literal at that width, no-op when already
+            // width-carrying) — the Map twin of the Set-element / list-element sibling-width render (adv-68).
+            let (key_it, val_it): (Option<IntTy>, Option<IntTy>) =
+                match type_of(db, id).strip_nominal() {
+                    Ty::Map(mk, mv) => {
+                        let ki = match mk.strip_nominal() {
+                            Ty::Int(it) => Some(*it),
+                            _ => None,
+                        };
+                        let vi = match mv.strip_nominal() {
+                            Ty::Int(it) => Some(*it),
+                            _ => None,
+                        };
+                        (ki, vi)
+                    }
+                    _ => (None, None),
+                };
+            let k = match key_it {
+                Some(it) => emit_grounded(db, key, it, env, ctx)?,
+                None => emit(db, key, env, ctx)?,
+            };
             let k = wrap_ord_key(k, &kt);
-            let v = emit(db, val, env, ctx)?;
+            let v = match val_it {
+                Some(it) => emit_grounded(db, val, it, env, ctx)?,
+                None => emit(db, val, env, ctx)?,
+            };
             Ok(format!(
                 "{{ let mut __m = {m}; __m.insert({k}, {v}); __m }}"
             ))
@@ -1905,9 +1960,25 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     "a Set with a non-Ord element (a float-carrying element, or a Bytes element whose order the spec does not bless) has no BTreeSet rep on the Rust backend",
                 ));
             }
+            // The set's SETTLED element type — a bare in-range literal element defaults its OWN `type_of`
+            // to Int64 (`Nu64 as i64`), but the set is `BTreeSet<elem_width>`, so an unannotated element
+            // renders at the wrong width (`__s.insert((41u64 as i64))` into `BTreeSet<u64>` → E0308). Ground
+            // each element to the set's element type (`emit_grounded` renders a bare literal at that width and
+            // is a no-op when the element already carries the width) — the Set twin of the list-element
+            // sibling-width render (#1766) and the compound-slot literal grounding above (adv-68, v-inference).
+            let set_elem_ty: Option<IntTy> = match type_of(db, id).strip_nominal() {
+                Ty::Set(elem) => match elem.strip_nominal() {
+                    Ty::Int(it) => Some(*it),
+                    _ => None,
+                },
+                _ => None,
+            };
             let mut lines = String::new();
             for e in &elems {
-                let ee = emit(db, *e, env, ctx)?;
+                let ee = match set_elem_ty {
+                    Some(it) => emit_grounded(db, *e, it, env, ctx)?,
+                    None => emit(db, *e, env, ctx)?,
+                };
                 // Wrap a bare-float element in `CdzF64::new` (the set's element type is `CdzF64`).
                 let ee = wrap_ord_key(ee, &type_of(db, *e));
                 lines.push_str(&format!("__s.insert({ee}); "));
