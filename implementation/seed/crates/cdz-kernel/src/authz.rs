@@ -27,27 +27,9 @@ use crate::effect::{Capability, EffectRequest};
 pub trait Authorize {
     /// Is this request permitted? `Ok(())` to proceed to dispatch; `Err(reason)` to deny — the denied
     /// request never reaches an executor and the reason is recorded. Total + pure; may `.await` a wasm
-    /// policy evaluation internally.
-    /// Authorize `req` — the un-suffixed name (the trait is `async`; `_async` is redundant, operator
-    /// cleanup). This is the TARGET name. During the trait-rename window BOTH `authorize` and
-    /// `authorize_async` carry mutually-forwarding defaults, so an impl provides EXACTLY ONE and the other
-    /// forwards to it — a zero-red migration (no flag-day, no coordinated red window): existing impls keep
-    /// defining `authorize_async`; new/migrated impls define `authorize`; callers always use `authorize`.
-    /// Once ALL impls (kernel + cdz-agent-host) define `authorize`, `authorize_async` is dropped and
-    /// `authorize` becomes required (beat T3).
-    ///
-    /// TRANSITIONAL-WINDOW INVARIANT: every impl must define exactly one of the two. An impl that defines
-    /// NEITHER compiles but infinite-recurses at first call — a known, temporary hazard, guarded by the impl
-    /// set being fixed and enumerated. Do not add a new Authorize impl without defining one method.
-    async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
-        self.authorize_async(req).await
-    }
-
-    /// Legacy suffixed name — TRANSITIONAL default forwarding to [`authorize`]. Existing impls still define
-    /// this directly; dropped once every impl has migrated to `authorize` (see the window invariant above).
-    async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String> {
-        self.authorize(req).await
-    }
+    /// policy evaluation internally. The un-suffixed name (the trait is `async`, so an `_async` suffix
+    /// would be redundant).
+    async fn authorize(&self, req: &EffectRequest) -> Result<(), String>;
 }
 
 /// Decides whether a requested effect may be performed. The result is logged either way (§10): a
@@ -76,7 +58,6 @@ impl Authorizer {
 impl Authorize for Authorizer {
     /// SEC-F1: permission requires a capability whose predicate admits the *resolved target*. Native async
     /// (no `.await` — a flat capability-set check does no I/O).
-    /// Defines the TARGET unsuffixed `authorize` (trait-rename beat T2, kernel-side).
     async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
         if self.caps.iter().any(|c| c.permits(req)) {
             Ok(())
@@ -105,11 +86,11 @@ mod tests {
             predicate: ResourcePredicate::HostIn(vec!["ok.host".into()]),
         }]);
         assert!(authz
-            .authorize_async(&req(EffectKind::Http, "https://ok.host/x"))
+            .authorize(&req(EffectKind::Http, "https://ok.host/x"))
             .await
             .is_ok());
         assert!(authz
-            .authorize_async(&req(EffectKind::Http, "https://evil.host/x"))
+            .authorize(&req(EffectKind::Http, "https://evil.host/x"))
             .await
             .is_err());
     }
@@ -132,18 +113,15 @@ mod tests {
         let mut r = req(EffectKind::Http, "x");
         r.content_type.family = EffectKind::Model.family().into();
         // The Http grant's family ("http") no longer matches the request's family ("model") → denied...
-        assert!(http_grant.authorize_async(&r).await.is_err());
+        assert!(http_grant.authorize(&r).await.is_err());
         // ...and the Model grant's family ("model") matches → permitted, despite kind == Http.
-        assert!(model_grant.authorize_async(&r).await.is_ok());
+        assert!(model_grant.authorize(&r).await.is_ok());
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn deny_all_denies_everything() {
         let authz = Authorizer::deny_all();
-        assert!(authz
-            .authorize_async(&req(EffectKind::Now, ""))
-            .await
-            .is_err());
+        assert!(authz.authorize(&req(EffectKind::Now, "")).await.is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -153,7 +131,7 @@ mod tests {
         struct OnlyNow;
         #[async_trait::async_trait(?Send)]
         impl Authorize for OnlyNow {
-            async fn authorize_async(&self, req: &EffectRequest) -> Result<(), String> {
+            async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
                 if req.kind == EffectKind::Now {
                     Ok(())
                 } else {
@@ -162,12 +140,9 @@ mod tests {
             }
         }
         let authz: &dyn Authorize = &OnlyNow;
+        assert!(authz.authorize(&req(EffectKind::Now, "")).await.is_ok());
         assert!(authz
-            .authorize_async(&req(EffectKind::Now, ""))
-            .await
-            .is_ok());
-        assert!(authz
-            .authorize_async(&req(EffectKind::Http, "https://ok.host/x"))
+            .authorize(&req(EffectKind::Http, "https://ok.host/x"))
             .await
             .is_err());
     }

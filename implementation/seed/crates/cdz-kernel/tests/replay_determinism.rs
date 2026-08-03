@@ -30,7 +30,7 @@ struct BusyReducer;
 
 #[async_trait::async_trait(?Send)]
 impl Reducer for BusyReducer {
-    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { payload, .. } => {
                 let byte = match payload {
@@ -201,7 +201,7 @@ async fn different_sequences_generally_produce_different_roots() {
 struct ScanOrderReducer;
 #[async_trait::async_trait(?Send)]
 impl Reducer for ScanOrderReducer {
-    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         if let EventBody::Inbound { payload, .. } = &event.body {
             let byte = match payload {
                 Payload::Inline(b) if !b.is_empty() => b[0],

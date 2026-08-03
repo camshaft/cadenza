@@ -102,7 +102,7 @@ impl FoldOutput {
 
 /// The reducer interface — a pure ASYNC fold (see module docs). There is ONE reducer trait, and it is
 /// async (operator ruling: "one async trait only; no reason to use sync at all"). A reducer that does no
-/// I/O simply writes an `async fn fold_async` with no `.await` (the empty-await is accepted); a wasm
+/// I/O simply writes an `async fn fold` with no `.await` (the empty-await is accepted); a wasm
 /// reducer ([`crate::wasm_host::ComponentReducer`]/[`crate::wasm_host::AsyncComponentReducer`]) awaits its
 /// fuel-yielding component call so a long fold cooperatively YIELDS (wasmtime `fuel_async_yield_interval`)
 /// instead of blocking the single-threaded host loop.
@@ -115,31 +115,14 @@ impl FoldOutput {
 #[async_trait::async_trait(?Send)]
 pub trait Reducer {
     /// Fold one event into the KV, returning requested effects. Called once per event, in log order, on a
-    /// fresh conceptual instance (no cross-call state outside `kv`).
+    /// fresh conceptual instance (no cross-call state outside `kv`). The un-suffixed name (the trait is
+    /// `async`, so an `_async` suffix would be redundant); a reducer that does no I/O simply writes it with
+    /// no `.await`.
     ///
     /// Totality (§17 "can't-brick"): this must not panic for any input — a reducer that sees an event it
     /// doesn't understand returns [`FoldOutput::none`], not a crash. A long-running implementation (a wasm
     /// fold) may `.await` internally so the host loop can interleave other sessions while it yields on fuel.
-    /// Fold one event — the un-suffixed name (the trait is `async`; `_async` is redundant, operator
-    /// cleanup). This is the TARGET name. During the trait-rename window BOTH `fold` and `fold_async`
-    /// carry mutually-forwarding defaults, so an impl provides EXACTLY ONE and the other forwards to it —
-    /// a zero-red migration (no flag-day, no coordinated red window): existing impls keep defining
-    /// `fold_async`; new/migrated impls define `fold`; callers always use `fold`. Once ALL impls (kernel +
-    /// cdz-agent-host) define `fold`, `fold_async` is dropped and `fold` becomes required (beat T3).
-    ///
-    /// TRANSITIONAL-WINDOW INVARIANT: every impl must define exactly one of the two. An impl that defines
-    /// NEITHER compiles but infinite-recurses at first call — this is a known, temporary hazard of the
-    /// window, guarded by the fact that the impl set is fixed and enumerated (no new neither-impls land
-    /// during the rename). Do not add a new Reducer impl without defining one method.
-    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
-        self.fold_async(event, kv).await
-    }
-
-    /// Legacy suffixed name — TRANSITIONAL default forwarding to [`fold`]. Existing impls still define this
-    /// directly; it is dropped once every impl has migrated to `fold` (see the window invariant above).
-    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
-        self.fold(event, kv).await
-    }
+    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput;
 }
 
 /// A trivial reducer used by kernel-loop tests: it ignores everything and emits nothing. Real reducers
@@ -149,9 +132,6 @@ pub struct InertReducer;
 
 #[async_trait::async_trait(?Send)]
 impl Reducer for InertReducer {
-    // Defines the TARGET unsuffixed `fold` (trait-rename beat T2, kernel-side): the `fold_async` default
-    // now forwards here. The mutual-default bridge stays until every impl (incl. cdz-agent-host's) migrates
-    // and beat T3 drops `fold_async`.
     async fn fold(&self, _event: &Event, _kv: &mut Kv) -> FoldOutput {
         FoldOutput::none()
     }
@@ -200,11 +180,11 @@ mod tests {
         };
         let mut kv = Kv::new();
         let dyn_reducer: &dyn Reducer = &reducer;
-        let out = poll_ready(dyn_reducer.fold_async(&event, &mut kv));
+        let out = poll_ready(dyn_reducer.fold(&event, &mut kv));
         assert_eq!(out, FoldOutput::none());
     }
 
-    // Poll an IMMEDIATELY-READY future once with a no-op waker (the adapter's `fold_async` wraps a sync
+    // Poll an IMMEDIATELY-READY future once with a no-op waker (the adapter's `fold` wraps a sync
     // fold, so it never returns Pending). Fail-fast on Pending rather than spin — this helper is only for
     // known-ready futures; a Pending here is a bug, not something to busy-wait on.
     fn poll_ready<F: std::future::Future>(fut: F) -> F::Output {

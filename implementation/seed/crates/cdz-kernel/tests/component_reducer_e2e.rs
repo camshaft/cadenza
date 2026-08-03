@@ -253,7 +253,7 @@ async fn fold_commits_on_success_and_leaves_the_kv_intact_on_failure() {
     // trips the borrow checker; an `async fn` scopes the borrow to its own await cleanly).
     async fn inbound(kv: &mut Kv, reducer: &ComponentReducer) -> cdz_kernel::reducer::FoldOutput {
         reducer
-            .fold_async(
+            .fold(
                 &cdz_kernel::event::Event {
                     seq: 1,
                     cause: None,
