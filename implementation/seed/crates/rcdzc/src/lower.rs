@@ -8091,7 +8091,8 @@ fn scrutinee_reaches_host_perform(db: &mut Db, scrutinee: StructId) -> bool {
         // so a perform in `body` is an observable host call. Treat ANY `Resolved::Host` node as reaching a
         // host perform — a CONSERVATIVE OVER-APPROXIMATION, not a claim that every compiling host block
         // performs (it does not: an op-REFERENCE-only body like `(host (E) (E.get))` — the op named but
-        // never applied — compiles WITHOUT a perform; see the op-ref tests). Over-reporting is SAFE here:
+        // never applied — compiles WITHOUT a perform; see the regression `a_host_with_too_many_operands_
+        // is_cdz0201`, which asserts `(host (E) (E.get))` compiles OK). Over-reporting is SAFE here:
         // it only keeps the `MatchSum` wrapper (materialize the scrutinee ONCE), which is never wrong — a
         // non-performing host-block scrutinee is merely materialized rather than folded through, same value,
         // no re-emit. Under-reporting would be the bug. This is the ROBUST detector for a host perform
