@@ -246,8 +246,10 @@ jobs:
           # the test step so the e2e tests exercise a FRESH build (no stale committed fixture to drift).
           #
           # NOT a byte-diff against the committed .wasm (was `cmp`): that assumed reproducible bytes, but
-          # CI floats rustc/wasm-tools, so CI resolves different TOOLCHAIN versions → different
-          # (still-valid) bytes → the cmp failed on every batch since #131, a false red masking real
+          # even with the toolchain PINNED (rust-toolchain.toml + pinned wasm-tools/cargo-component) the
+          # wasm bytes are NOT byte-identical across build environments (host-arch-dependent LTO/codegen
+          # layout — same functions, reordered; see runtime-cross-arch-determinism), so CI's build
+          # differed from the committed fixture → the cmp failed on every batch since #131, a false red masking real
           # signal (pr-sync note, trunk@455dcb7e7). The committed fixture's CORRECTNESS is already proven
           # at test time — `cargo test` below runs component_reducer_e2e, which loads the committed .wasm
           # through ComponentReducer and asserts it folds (effects + KV). So this step only needs to catch

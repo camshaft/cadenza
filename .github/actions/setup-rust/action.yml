@@ -32,8 +32,8 @@ runs:
         cargo --version
 
     # Cache registry, git deps, and target/. Keyed on the lockfile + toolchain so a dependency or
-    # compiler bump invalidates cleanly. (Cargo.lock is gitignored here, so fall back to the
-    # manifests when it is absent — the cache still helps, it just refreshes more often.)
+    # compiler bump invalidates cleanly. (The root Cargo.lock is tracked as of #1748, so rust-cache
+    # keys on it directly — a lock change invalidates the cache precisely.)
     - name: Cache cargo
       uses: Swatinem/rust-cache@v2
       with:
