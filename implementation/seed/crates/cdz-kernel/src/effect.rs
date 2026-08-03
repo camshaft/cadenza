@@ -110,6 +110,30 @@ pub struct EffectRequest {
     pub timeliness: Timeliness,
 }
 
+impl EffectRequest {
+    /// Construct an effect request from its four fields. This is the canonical constructor — prefer it
+    /// over a struct literal at every call site (kernel AND downstream crates). It exists so the shared
+    /// `EffectRequest` shape can GROW without a cross-crate break: the effect-schema arc (seq-39) adds a
+    /// `content_type` field next, and a new field breaks every pre-existing struct literal at compile time
+    /// (rustc E0063) — reding the downstream `cdz-agent-host` CI job on the field-add PR. Routing all
+    /// construction through `new` first means that later field-add only touches THIS body (deriving the
+    /// new field from the args), so no call site changes and the seam stays never-red. Today `new` just
+    /// builds the current shape; it's the additive first beat of that migration.
+    pub fn new(
+        kind: EffectKind,
+        target: impl Into<String>,
+        payload: Option<Payload>,
+        timeliness: Timeliness,
+    ) -> Self {
+        EffectRequest {
+            kind,
+            target: target.into(),
+            payload,
+            timeliness,
+        }
+    }
+}
+
 /// How latency-sensitive an effect is — the operator's timeliness parameter (batchable-or-not). A sum,
 /// not a bool (no-sentinels standing directive): the `Batchable` arm carries an optional caller latency
 /// hint, and the type grows cleanly if a third timeliness class ever appears.
@@ -239,12 +263,39 @@ mod tests {
     use super::*;
 
     fn http(target: &str) -> EffectRequest {
-        EffectRequest {
+        // Exercises the canonical constructor (the effect-schema-arc migration path).
+        EffectRequest::new(EffectKind::Http, target, None, Timeliness::Interactive)
+    }
+
+    #[test]
+    fn new_builds_the_same_request_as_a_struct_literal() {
+        // Beat-1 invariant of the effect-schema ctor-first bridge: EffectRequest::new is construction-
+        // equivalent to today's struct literal (it just wraps it), so migrating call sites off literals is
+        // behavior-preserving. When slice 2 adds `content_type` inside `new`, this equivalence shifts to
+        // "new fills the derived field" — but today they're identical field-for-field.
+        let via_new = EffectRequest::new(
+            EffectKind::Http,
+            "https://ok.host/x",
+            Some(Payload::Inline(b"body".to_vec().into())),
+            Timeliness::Interactive,
+        );
+        let via_literal = EffectRequest {
             kind: EffectKind::Http,
-            target: target.to_string(),
-            payload: None,
+            target: "https://ok.host/x".to_string(),
+            payload: Some(Payload::Inline(b"body".to_vec().into())),
             timeliness: Timeliness::Interactive,
-        }
+        };
+        assert_eq!(via_new, via_literal);
+        // The `impl Into<String>` target arg accepts both &str and String uniformly.
+        assert_eq!(
+            EffectRequest::new(
+                EffectKind::Now,
+                String::new(),
+                None,
+                Timeliness::Interactive
+            ),
+            EffectRequest::new(EffectKind::Now, "", None, Timeliness::Interactive),
+        );
     }
 
     #[test]

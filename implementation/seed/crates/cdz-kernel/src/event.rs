@@ -54,7 +54,8 @@ impl ContentType {
     /// then range-check the version separately with [`ContentType::version_in`] if it cares. Keeping the
     /// two checks distinct is exactly the "known family, unknown version → defer/reject honestly" behavior
     /// the design calls for (a v1 reader must not decode a `family/v2` payload as garbage). One source of
-    /// truth for the comparison — [`ContentType::is_report`] and the effect-schema router both route here.
+    /// truth for the comparison: [`ContentType::is_report`] routes through it today, and the effect-schema
+    /// arc's family-keyed authz/routing will too (slice 2), so the family match can't drift across sites.
     pub fn matches_family(&self, family: &str) -> bool {
         self.family == family
     }
