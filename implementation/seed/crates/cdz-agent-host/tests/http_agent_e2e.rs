@@ -8,7 +8,7 @@
 use cdz_agent_host::{HttpExecutor, HttpTransport};
 use cdz_kernel::authz::Authorizer;
 use cdz_kernel::effect::{
-    Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
+    effect_ct, Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
 };
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
 use cdz_kernel::executor::CompositeExecutor;
@@ -82,8 +82,8 @@ fn host_cap() -> Authorizer {
 #[tokio::test]
 async fn agent_loop_runs_end_to_end_through_the_http_executor() {
     let reducer = FetchAgent;
-    let mut exec =
-        CompositeExecutor::new().with(EffectKind::Http, Box::new(HttpExecutor::new(StubHttp)));
+    let mut exec = CompositeExecutor::new()
+        .with_effect(effect_ct::HTTP, Box::new(HttpExecutor::new(StubHttp)));
     let mut session = Session::genesis(Hash::of(b"fetch-agent-v1"));
 
     session
@@ -141,8 +141,8 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
             }
         }
     }
-    let mut exec =
-        CompositeExecutor::new().with(EffectKind::Http, Box::new(HttpExecutor::new(MustNotCall)));
+    let mut exec = CompositeExecutor::new()
+        .with_effect(effect_ct::HTTP, Box::new(HttpExecutor::new(MustNotCall)));
     let mut session = Session::genesis(Hash::of(b"exfil-agent-v1"));
     session
         .deliver_async(inbound_go(), None, &ExfilAgent, &host_cap(), &mut exec)

@@ -256,7 +256,7 @@ mod tests {
     use crate::ClockExecutor;
     use cdz_kernel::authz::Authorizer;
     use cdz_kernel::effect::{
-        Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
+        effect_ct, Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
     };
     use cdz_kernel::event::{ContentType, EffectOutcome, Event};
     use cdz_kernel::kv::Kv;
@@ -298,7 +298,7 @@ mod tests {
 
     fn now_host() -> HostedSession {
         let executor =
-            CompositeExecutor::new().with(EffectKind::Now, Box::new(ClockExecutor::new()));
+            CompositeExecutor::new().with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Now,
             predicate: ResourcePredicate::Any,

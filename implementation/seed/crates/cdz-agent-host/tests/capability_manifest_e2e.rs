@@ -1,39 +1,32 @@
-//! End-to-end: a capability manifest projected against the REAL host wiring — my Clock/Http/Model
-//! executors as the mechanism axis (through `CompositeExecutor::handles_family`) and a REAL Cedar
+//! End-to-end: a capability manifest projected against the REAL host wiring — the Clock/Http/Model
+//! executors as the mechanism axis (through `CompositeExecutor::handles_family`) and a real Cedar
 //! `ComponentAuthorizer` (the lifted wasm policy) as the policy axis. This is the host half of
-//! host-capability-discovery (I2/I3): the kernel's own `project_manifest` tests use the NATIVE
-//! `Authorizer` + a `RecordingExecutor` stub; this proves the projection over the ACTUAL executors a
-//! deployed host registers, gated by a real Cedar decision — and pins the I3 scoped-grant probe-target
+//! host-capability-discovery (I2/I3): the kernel's own `project_manifest` tests use the native
+//! `Authorizer` + a `RecordingExecutor` stub; this proves the projection over the actual executors a
+//! deployed host registers, gated by a real Cedar decision, and pins the I3 scoped-grant probe-target
 //! override that only a live policy component can exercise.
 //!
-//! **Fixture delivery (CI-only, same strategy as `cedar_authz_e2e`).** The lifted Cedar policy component
-//! is ~3.3 MB (embeds the Cedar engine) so it is NOT committed; the `cdz-agent-host` CI job builds it and
+//! Fixture delivery (CI-only, same strategy as `cedar_authz_e2e`): the lifted Cedar policy component is
+//! ~3.3 MB (embeds the Cedar engine) so it is not committed; the `cdz-agent-host` CI job builds it and
 //! points this test at it via `CEDAR_POLICY_COMPONENT`. Unset (a plain local `cargo test` without the
-//! wasm toolchain) → this test SKIPS cleanly. When SET the component MUST read — a missing/corrupt
-//! component is a CI misconfig, so we PANIC rather than silently skip (same discipline as the S1
-//! store-guard / `cedar_authz_e2e`).
+//! wasm toolchain) → this test skips cleanly. When set the component must read — a missing/corrupt
+//! component is a CI misconfig, so the shared loader panics rather than silently skipping (same
+//! discipline as the S1 store-guard / `cedar_authz_e2e`; see `common::policy_component_bytes`).
 //!
 //! The guest policy (see `fixtures/cedar-policy-guest/src/lib.rs`): permit now/timer (any), permit http
-//! broadly + forbid IMDS, permit model ONLY at `claude-test`, default-deny. Crossed with the host
-//! mechanism (executors registered for Now/Http/Model — NOT Timer/Shell/Emit) the manifest must show all
+//! broadly + forbid IMDS, permit model only at `claude-test`, default-deny. Crossed with the host
+//! mechanism (executors registered for Now/Http/Model, not Timer/Shell/Emit) the manifest must show all
 //! three grant-states, and the model family must flip Denied→Granted under a session probe-target override.
+
+mod common;
 
 use bytes::Bytes;
 use cdz_agent_host::{ClockExecutor, HttpExecutor, HttpTransport, ModelExecutor, ModelTransport};
-use cdz_kernel::effect::{effect_ct, project_manifest, EffectKind, GrantState};
+use cdz_kernel::effect::{effect_ct, project_manifest, GrantState};
 use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::wasm_host::ComponentAuthorizer;
-
-/// Load the lifted Cedar policy component the CI job built. `None` ONLY when the env var is UNSET (local
-/// run without the wasm toolchain → the caller skips). Set-but-unreadable PANICS — a broken component
-/// must fail loud, never silently skip the CI-gated projection (same as `cedar_authz_e2e`).
-fn policy_component_bytes() -> Option<Vec<u8>> {
-    let path = std::env::var("CEDAR_POLICY_COMPONENT").ok()?;
-    Some(std::fs::read(&path).unwrap_or_else(|e| {
-        panic!("CEDAR_POLICY_COMPONENT is set to {path:?} but the component can't be read: {e}")
-    }))
-}
+use common::policy_component_bytes;
 
 /// Stub transports — the manifest only probes `handles_family` (mechanism) + `authorize` (policy); it
 /// NEVER routes an effect to an executor, so these `perform`-half impls are never actually invoked. They
@@ -59,9 +52,9 @@ impl ModelTransport for UnusedModel {
 /// Timer/Shell/Emit. `handles_family` over this is the mechanism axis of the projection.
 fn real_host_executors() -> CompositeExecutor {
     CompositeExecutor::new()
-        .with(EffectKind::Now, Box::new(ClockExecutor::new()))
-        .with(EffectKind::Http, Box::new(HttpExecutor::new(UnusedHttp)))
-        .with(EffectKind::Model, Box::new(ModelExecutor::new(UnusedModel)))
+        .with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()))
+        .with_effect(effect_ct::HTTP, Box::new(HttpExecutor::new(UnusedHttp)))
+        .with_effect(effect_ct::MODEL, Box::new(ModelExecutor::new(UnusedModel)))
 }
 
 #[tokio::test]

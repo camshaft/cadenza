@@ -169,7 +169,7 @@ mod tests {
     use crate::ClockExecutor;
     use cdz_kernel::authz::Authorizer;
     use cdz_kernel::effect::{
-        Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
+        effect_ct, Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
     };
     use cdz_kernel::event::{ContentType, Event, EventBody};
     use cdz_kernel::hash::Hash;
@@ -212,7 +212,7 @@ mod tests {
     fn timer_host() -> HostedSession {
         // Timer effects are kernel-internal (no executor needed); a ClockExecutor is registered but unused.
         let executor = cdz_kernel::executor::CompositeExecutor::new()
-            .with(EffectKind::Now, Box::new(ClockExecutor::new()));
+            .with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Timer,
             predicate: ResourcePredicate::Any,
@@ -332,7 +332,7 @@ mod tests {
             }
         }
         let executor = cdz_kernel::executor::CompositeExecutor::new()
-            .with(EffectKind::Now, Box::new(ClockExecutor::new()));
+            .with_effect(effect_ct::NOW, Box::new(ClockExecutor::new()));
         let authz = Authorizer::new(vec![Capability {
             kind: EffectKind::Now,
             predicate: ResourcePredicate::Any,
