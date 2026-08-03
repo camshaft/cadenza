@@ -143,8 +143,10 @@ fn doctor_json_reports_a_missing_store_as_not_ok() {
     );
 }
 
-/// Run `cdz <args…>` with `CDZ_STORE` set to `store`, returning (exit_ok, stdout).
-fn run_with_store_env(args: &[&str], store: &std::path::Path) -> (bool, String) {
+/// Run `cdz <args…>` with `CDZ_STORE` set to `store`, returning (exit_ok, stdout, stderr). Returns stderr
+/// too because `cdz doctor` prints its error SUMMARY there — a failing assertion that only saw stdout would
+/// drop the most relevant diagnostic (PR #1665 review).
+fn run_with_store_env(args: &[&str], store: &std::path::Path) -> (bool, String, String) {
     let exe = env!("CARGO_BIN_EXE_cdz");
     let out = Command::new(exe)
         .args(args)
@@ -154,6 +156,7 @@ fn run_with_store_env(args: &[&str], store: &std::path::Path) -> (bool, String) 
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
     )
 }
 
@@ -168,14 +171,14 @@ fn doctor_consults_cdz_store_when_no_explicit_store() {
     let missing =
         std::env::temp_dir().join(format!("cdz-doctor-cdzstore-env-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&missing);
-    let (ok, out) = run_with_store_env(&["doctor"], &missing);
+    let (ok, out, err) = run_with_store_env(&["doctor"], &missing);
     assert!(
         !ok,
-        "a missing CDZ_STORE store is an error (doctor consults the env): {out}"
+        "a missing CDZ_STORE store is an error (doctor consults the env): out={out} err={err}"
     );
     assert!(
         out.contains("runtime store: MISSING") && out.contains(&missing.display().to_string()),
-        "doctor reports the CDZ_STORE path as the (missing) runtime store: {out}"
+        "doctor reports the CDZ_STORE path as the (missing) runtime store: out={out} err={err}"
     );
 }
 
@@ -190,14 +193,12 @@ fn doctor_explicit_store_wins_over_cdz_store_env() {
         std::env::temp_dir().join(format!("cdz-doctor-flagstore-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&env_store);
     let _ = std::fs::remove_dir_all(&flag_store);
-    let (ok, out) = run_with_store_env(
-        &["doctor", "--store", flag_store.to_str().unwrap()],
-        &env_store,
-    );
-    assert!(!ok, "both stores missing → error: {out}");
+    let flag_arg = flag_store.to_string_lossy();
+    let (ok, out, err) = run_with_store_env(&["doctor", "--store", &flag_arg], &env_store);
+    assert!(!ok, "both stores missing → error: out={out} err={err}");
     assert!(
         out.contains(&flag_store.display().to_string())
             && !out.contains(&env_store.display().to_string()),
-        "an explicit --store wins over CDZ_STORE (reports the flag path, not the env path): {out}"
+        "an explicit --store wins over CDZ_STORE (reports the flag path, not the env path): out={out} err={err}"
     );
 }
