@@ -3997,33 +3997,31 @@ fn precompile_group(
         rcdzc::run_with_compiler_stack(|| rcdzc::compile(&inputs, &[]))
     };
 
-    // CROSS-INVOCATION PROVIDER CACHE, single-mono flow: run `EmitTestsComposed` ONCE — it does one
-    // monomorphize+layout and returns, from that single pass, the closure CONTENT-HASH sidecar
-    // (`KIND_CLOSURE_HASH`), the composed shared-closure PROVIDER bytes, AND every file's CONSUMER component.
-    // We then decide HIT/MISS from the emitted hash: on a HIT we REUSE the persisted `.provider.wasm` (and
-    // DISCARD the just-emitted composed provider bytes — the consumers are the same either way); on a MISS we
-    // PERSIST the emitted provider by that hash so the next run hits. The KEY is v-rust-backend's canonical
-    // `closure_content_hash` — the emit sidecar and this cache agree by construction (same fold).
+    // CROSS-INVOCATION PROVIDER CACHE, codegen-skip-on-HIT flow: drive `EmitTestsConsumerOnly` FIRST — one
+    // monomorphize+layout that emits the closure CONTENT-HASH sidecar (`KIND_CLOSURE_HASH`, hoisted onto this
+    // path by rcdzc #1502) + every file's CONSUMER component, but NO provider (`emit_provider=false`). We
+    // decide HIT/MISS from that hash:
+    //   • HIT (a validated `.provider.wasm` exists for the hash): pair the CACHED provider with the
+    //     ConsumerOnly consumers — DONE, and we NEVER emit the provider. This SKIPS the ~215s provider CODEGEN
+    //     (the ~570-def self-host closure's emit) that dominates the warm-once cost — the whole point of the
+    //     cache. (Measured by v-compiler-perf, #1502: the ~231s HIT precompile was "~all of it the provider
+    //     emit that gets thrown away.")
+    //   • MISS: drive `EmitTestsComposed` — which emits the provider — and PERSIST it by the hash so the next
+    //     run HITs. We pay the provider codegen ONLY when there's no cached provider to reuse.
+    // The KEY is v-rust-backend's canonical `closure_content_hash`; #1502's `consumer_only_emits_the_closure_
+    // hash_sidecar` locks that ConsumerOnly's hash EQUALS Composed's, so the HIT decision (from ConsumerOnly)
+    // and the persisted key (from Composed) agree by construction.
     //
-    // Why ONE `EmitTestsComposed` instead of the old two drives (`Query::ClosureHash` then a HIT
-    // `EmitTestsConsumerOnly` / MISS `EmitTestsComposed`): computing the cache KEY requires the closure's
-    // monomorphize+layout (the dominant cost — ~236s for the ~570-def self-host closure), and so does the
-    // consumer emit. The old flow paid that mono+layout TWICE on a HIT (once for the key query, once for the
-    // ConsumerOnly emit), and the cache only saved the provider's final CODEGEN. Folding both into one
-    // `EmitTestsComposed` pays the mono+layout ONCE; the only added cost is the provider's codegen on a HIT
-    // (emitted then discarded) — the CHEAP part (JIT of the provider was ~7ms vs the ~236s mono). Net: a HIT
-    // no longer re-monomorphizes. (v-compiler-perf confirmed EmitTestsComposed already emits all three
-    // artifacts from one mono — no rcdzc change; a codegen-skip-on-hit request is a future option if the
-    // always-emitted provider codegen ever shows up in a measurement, but the mono was the whole cost.)
-    // NOTE the hash is over THIS GROUP's closure only — grouping shrinks each provider AND scopes each cache
-    // entry to one closure (a lib change busts only the groups whose closure includes it).
-    let out = drive(rcdzc::Request::EmitTestsComposed);
-    let emitted_provider = out
-        .artifacts
-        .iter()
-        .find(|a| a.kind == "component-provider")
-        .map(|p| p.bytes.clone());
-    let closure_hash = out
+    // Why ConsumerOnly-first (not the prior single-`EmitTestsComposed`): Composed ALWAYS emits the provider —
+    // paying its ~215s codegen even on a HIT, then discarding it. ConsumerOnly's mono+layout is the ~15s floor
+    // (measured: `cdz func-layout`), with only thin consumer codegen — so a HIT collapses ~230s→~20s. The
+    // trade is a MISS now pays TWO monos (ConsumerOnly ~15s + Composed ~230s ≈ 245s vs single-Composed's
+    // ~230s) — a negligible regression on the RARE miss (only the first warm, or when the closure content
+    // changes) for a large win on the COMMON hit (every re-gate against a stable closure). NOTE the hash is
+    // over THIS GROUP's closure only — grouping shrinks each provider AND scopes each cache entry to one
+    // closure (a lib change busts only the groups whose closure includes it).
+    let consumer_out = drive(rcdzc::Request::EmitTestsConsumerOnly);
+    let closure_hash = consumer_out
         .artifact(rcdzc::sidecar::KIND_CLOSURE_HASH)
         .map(|b| String::from_utf8_lossy(b).trim().to_string())
         .filter(|h| !h.is_empty());
@@ -4045,7 +4043,7 @@ fn precompile_group(
     // A VALIDATED cached provider for this key, if one exists. VALIDATE the bytes compile BEFORE trusting the
     // hit path: a truncated / corrupt / stale-format cache file must NOT break `cdz test` (it would surface
     // later as an opaque per-file "invalid peer component" compile error). If it doesn't compile, discard it →
-    // treat as a MISS (use the just-emitted provider + re-persist), which self-heals the bad entry.
+    // treat as a MISS (emit + re-persist via the Composed drive below), which self-heals the bad entry.
     let cached_provider = closure_hash
         .as_ref()
         .and_then(|h| cache_dir.map(|d| d.join(format!("{h}.provider.wasm"))))
@@ -4053,51 +4051,62 @@ fn precompile_group(
         .and_then(|p| std::fs::read(&p).ok())
         .filter(|bytes| cdz_run::compile_component(bytes).is_ok());
 
-    // Decide the peer provider: HIT reuses the cached bytes (discarding the just-emitted composed provider);
-    // MISS uses the emitted provider AND persists it for the next run.
-    let provider = if let Some(cached) = cached_provider {
-        // HIT: the emitted composed provider is dropped; the cached one is byte-for-byte a prior emit of the
-        // SAME closure (same content-hash key), so reusing it is exactly equivalent + skips nothing we need.
+    // Decide the peer provider AND which drive's output supplies the consumers/iface:
+    //   HIT   → cached provider + the ConsumerOnly consumers (no Composed drive: skips the provider codegen).
+    //   DECLINE (no hash) → ConsumerOnly emitted no shared-closure hash; a Composed drive would re-mono and
+    //           re-decline, so DON'T drive it — fall back per-file (peer stays None below).
+    //   MISS  → drive Composed to emit the provider, persist it, and use ITS output (provider + consumers are
+    //           generated together, guaranteed consistent).
+    let (provider, out) = if let Some(cached) = cached_provider {
         trace("hit");
-        Some(cached)
-    } else if let (Some(bytes), Some(dir), Some(key)) =
-        (&emitted_provider, cache_dir, &closure_hash)
-    {
-        // MISS with a provider + a place to persist it. Best-effort ATOMIC persist: write a pid-stamped temp
-        // in the SAME dir, then rename onto the content-addressed key — rename is atomic on POSIX, so a reader
-        // (incl. a CONCURRENT `cdz test`) never sees a partial file at the key, and a crash mid-write leaves
-        // only the temp (never a truncated file at the key that a later run would HIT as corrupt). A
-        // write/rename FAILURE (full/RO FS) just means the next run re-emits — no correctness impact.
-        let _ = std::fs::create_dir_all(dir);
-        let final_path = dir.join(format!("{key}.provider.wasm"));
-        let tmp = dir.join(format!(".{key}.provider.wasm.{}.tmp", std::process::id()));
-        if std::fs::write(&tmp, bytes).is_err() {
-            let _ = std::fs::remove_file(&tmp);
-            trace("miss no-persist(write-failed)");
-        } else if std::fs::rename(&tmp, &final_path).is_err() {
-            // Rename failed. On POSIX rare (a real FS error). On WINDOWS `rename` fails when the dest EXISTS —
-            // the self-heal case (a corrupt {key} present) where the corrupt file must NOT survive: best-effort
-            // remove the dest + retry once; if that also fails, drop the temp (no partial/leak left behind).
-            let _ = std::fs::remove_file(&final_path);
-            if std::fs::rename(&tmp, &final_path).is_err() {
+        (Some(cached), consumer_out)
+    } else if closure_hash.is_none() {
+        trace("decline no-shared-closure");
+        (None, consumer_out)
+    } else {
+        // MISS: emit the provider via Composed (the only drive that emits it), then persist by the hash.
+        let composed_out = drive(rcdzc::Request::EmitTestsComposed);
+        let emitted_provider = composed_out
+            .artifacts
+            .iter()
+            .find(|a| a.kind == "component-provider")
+            .map(|p| p.bytes.clone());
+        if let (Some(bytes), Some(dir), Some(key)) = (&emitted_provider, cache_dir, &closure_hash) {
+            // Best-effort ATOMIC persist: write a pid-stamped temp in the SAME dir, then rename onto the
+            // content-addressed key — rename is atomic on POSIX, so a reader (incl. a CONCURRENT `cdz test`)
+            // never sees a partial file at the key, and a crash mid-write leaves only the temp (never a
+            // truncated file at the key that a later run would HIT as corrupt). A write/rename FAILURE
+            // (full/RO FS) just means the next run re-emits — no correctness impact.
+            let _ = std::fs::create_dir_all(dir);
+            let final_path = dir.join(format!("{key}.provider.wasm"));
+            let tmp = dir.join(format!(".{key}.provider.wasm.{}.tmp", std::process::id()));
+            if std::fs::write(&tmp, bytes).is_err() {
                 let _ = std::fs::remove_file(&tmp);
-                trace("miss no-persist(rename-failed)");
+                trace("miss no-persist(write-failed)");
+            } else if std::fs::rename(&tmp, &final_path).is_err() {
+                // Rename failed. On POSIX rare (a real FS error). On WINDOWS `rename` fails when the dest
+                // EXISTS — the self-heal case (a corrupt {key} present) where the corrupt file must NOT
+                // survive: best-effort remove the dest + retry once; if that also fails, drop the temp.
+                let _ = std::fs::remove_file(&final_path);
+                if std::fs::rename(&tmp, &final_path).is_err() {
+                    let _ = std::fs::remove_file(&tmp);
+                    trace("miss no-persist(rename-failed)");
+                } else {
+                    trace("miss persisted");
+                }
             } else {
                 trace("miss persisted");
             }
         } else {
-            trace("miss persisted");
+            // MISS but nothing to persist (no cache dir, no emitted provider, or no key) — still use whatever
+            // provider was emitted (may be `None` → the group falls back per-file below).
+            trace(if emitted_provider.is_none() {
+                "miss no-persist(no-provider)"
+            } else {
+                "miss no-persist(no-key-or-dir)"
+            });
         }
-        emitted_provider.clone()
-    } else {
-        // MISS but nothing to persist (no cache dir, no emitted provider, or no key) — still use whatever
-        // provider was emitted (may be `None` → the group falls back per-file below).
-        trace(if emitted_provider.is_none() {
-            "miss no-persist(no-provider)"
-        } else {
-            "miss no-persist(no-key-or-dir)"
-        });
-        emitted_provider.clone()
+        (emitted_provider, composed_out)
     };
 
     // Demux: the `component-name` sidecar carries the provider's interface string; the N `component` artifacts
