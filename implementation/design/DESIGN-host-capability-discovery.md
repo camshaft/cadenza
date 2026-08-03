@@ -524,9 +524,12 @@ capability the reducer learned survives replay at the same log position.
 - **Shape = a logged `capabilities-changed` event, mirroring I4b** (v-agent-harness's lean, concurred):
   DURABLE (appended to the log, not a transient control surface — §4b), so replay sees the upgrade at the
   same position and folds the identical bytes. Same `encode_capability_manifest` payload as I4b/I5.
-- **The mutation HOOK is DESIGN-AHEAD, not present today.** The current kernel takes the executor set +
-  authorizer as parameters to `deliver_async` — there is NO dynamic executor-registration or
-  authorizer/policy-swap path yet. So I6's trigger is the §20b end-state (a policy-log append that repoints
+- **The mutation HOOK is DESIGN-AHEAD; there is NO in-kernel mutable executor/policy registry to hook.**
+  Stable constraint (not a transient current-state note): the kernel holds no executor set or authorizer of
+  its own — `deliver_async` takes a SINGLE `executor: &mut (impl Executor)` + `authz: &(impl Authorize)`
+  supplied by the caller PER CALL, and mechanism/policy are whatever that call passes. So there is nothing
+  in-kernel for an I6 trigger to observe changing. The reactive trigger therefore attaches to whatever
+  DURABLE MUTATION §20b introduces (a policy-log append that repoints
   the Cedar-engine/policy pointer, or a delegated-grant landing) — it should be built WHEN that mutation
   path exists, keyed off the same policy-log append that changes what a probe would return. ⚠ Do NOT
   fabricate a mutation hook I6 fires on before the mechanism/policy actually becomes mutable at runtime;
