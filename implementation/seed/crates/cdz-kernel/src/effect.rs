@@ -112,13 +112,16 @@ pub struct EffectRequest {
 
 impl EffectRequest {
     /// Construct an effect request from its four fields. This is the canonical constructor — prefer it
-    /// over a struct literal at every call site (kernel AND downstream crates). It exists so the shared
-    /// `EffectRequest` shape can GROW without a cross-crate break: the effect-schema arc (seq-39) adds a
-    /// `content_type` field next, and a new field breaks every pre-existing struct literal at compile time
-    /// (rustc E0063) — reding the downstream `cdz-agent-host` CI job on the field-add PR. Routing all
-    /// construction through `new` first means that later field-add only touches THIS body (deriving the
-    /// new field from the args), so no call site changes and the seam stays never-red. Today `new` just
-    /// builds the current shape; it's the additive first beat of that migration.
+    /// over a struct literal at every call site (kernel AND downstream crates).
+    ///
+    /// Why a constructor for a plain data struct: it lets the shared `EffectRequest` shape grow a field
+    /// later without editing every call site. Adding a field to a struct breaks every pre-existing struct
+    /// literal at compile time (rustc E0063, and across a crate boundary too) — so a field-add to a type
+    /// the downstream `cdz-agent-host` crate constructs by literal would fail its build. Once construction
+    /// goes through `new` instead, a later field-add only edits THIS body (deriving the new field from the
+    /// existing args), leaving call sites untouched. That benefit is CONDITIONAL: it's only realized for
+    /// call sites that have actually migrated off literals onto `new`. Today `new` just builds the current
+    /// shape verbatim.
     pub fn new(
         kind: EffectKind,
         target: impl Into<String>,
@@ -269,10 +272,10 @@ mod tests {
 
     #[test]
     fn new_builds_the_same_request_as_a_struct_literal() {
-        // Beat-1 invariant of the effect-schema ctor-first bridge: EffectRequest::new is construction-
-        // equivalent to today's struct literal (it just wraps it), so migrating call sites off literals is
-        // behavior-preserving. When slice 2 adds `content_type` inside `new`, this equivalence shifts to
-        // "new fills the derived field" — but today they're identical field-for-field.
+        // EffectRequest::new is construction-equivalent to a struct literal (it just wraps one), so
+        // migrating call sites off literals onto `new` is behavior-preserving. This is what lets a field
+        // later be added inside `new` (derived from the existing args) without touching migrated callers;
+        // today the two forms are identical field-for-field.
         let via_new = EffectRequest::new(
             EffectKind::Http,
             "https://ok.host/x",
