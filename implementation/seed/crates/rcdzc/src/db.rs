@@ -5436,11 +5436,41 @@ pub(crate) fn scan_effect_decl(ast: &Arenas, item: StructId) -> Option<EffectDec
 /// prelude-sum synthesis, so a prelude `Option`/`Result` declaration scans exactly like a user one.
 pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
     let tail = ast.as_form(item, "type")?;
-    let name = tail
-        .first()
-        .and_then(|&s| ast.as_name(s))
-        .unwrap_or("")
-        .to_string();
+    // The type NAME is the first tail element in TWO spellings: a BARE atom `(type Box (Mk a))` — the name
+    // is the atom — OR a PARENTHESIZED head `(type (Box a b…) …)` — a `(Name params…)` list whose HEAD atom
+    // is the name and whose tail are the declared type parameters. Both are canonical in the corpus (`(type
+    // Box (Box a))` and `(type (Box a) (Full a) (Nil unit))`). Without the list-head case, `as_name` on the
+    // `(Box a)` list returned `None` → the name defaulted to `""`, so the type was registered under the
+    // empty string: it worked in VALUE position (resolved by its VARIANT names) but was UNRESOLVABLE by
+    // NAME in a TYPE-EXPRESSION position — `(: b (Box Int64))` / `(: b Box)` / a `(Wrap (Box Int64))`
+    // payload reported CDZ0101 "unknown type `Box`", while the built-in `(Option Int64)` (prelude) worked.
+    let head = tail.first().copied();
+    let (name, head_params) = match head.map(|s| ast.get(s)) {
+        // Bare-atom name: `(type Box …)`.
+        Some(Struct::Atom(_)) => (
+            head.and_then(|s| ast.as_name(s)).unwrap_or("").to_string(),
+            Vec::new(),
+        ),
+        // Parenthesized `(Name params…)` head: the list's head atom is the name; its lowercase tail atoms
+        // are the declared type params (collected in first-appearance order alongside the payload-implied
+        // ones below, so a HEAD-ONLY param — a phantom `(type (P a) (Mk Int64))` — is not lost).
+        Some(Struct::List(kids)) => {
+            let nm = kids
+                .first()
+                .and_then(|&h| ast.as_name(h))
+                .unwrap_or("")
+                .to_string();
+            let ps: Vec<String> = kids
+                .iter()
+                .skip(1)
+                .filter_map(|&p| ast.as_name(p))
+                .filter(|p| p.starts_with(|c: char| c.is_ascii_lowercase()) && *p != "unit")
+                .map(str::to_string)
+                .collect();
+            (nm, ps)
+        }
+        None => (String::new(), Vec::new()),
+    };
     // An OPEN sum ends in a trailing `.. r` row-variable marker (`type-system.md §204/§208`): `(type T
     // (Known Int64) .. r)`. The `..` token already lexes (list-rest); here it marks the sum OPEN and `r`
     // (a lowercase name) is the row variable. Detect it as the two FINAL elements of the `(type …)` tail
@@ -5493,9 +5523,13 @@ pub(crate) fn scan_type_decl(ast: &Arenas, item: StructId) -> Option<TypeDecl> {
             // (`ctor` is filled by `sums::synthesize` once the record is built.)
         }
     }
-    // Collect the IMPLICIT type parameters: a free LOWERCASE name in any payload, in first-appearance
-    // order across the variants (`(type Option (Some a) None)` → `["a"]`). A Capitalized name is a type.
-    let mut params: Vec<String> = Vec::new();
+    // Collect the type parameters. EXPLICIT head params (`(type (Box a) …)` → `["a"]`) come first, in the
+    // order declared; then the IMPLICIT payload params — a free LOWERCASE name in any variant payload, in
+    // first-appearance order (`(type Option (Some a) None)` → `["a"]`; a Capitalized name is a type). A
+    // param already named in the head is not re-added (a head-declared `a` mentioned again in a payload is
+    // one param). This keeps a HEAD-ONLY (phantom) param and de-dups the common case where the head param
+    // also appears in a payload.
+    let mut params: Vec<String> = head_params;
     for variant in &variants {
         for &p in &variant.payloads {
             collect_type_params(ast, p, &mut params);
