@@ -405,6 +405,47 @@ impl Capability {
     pub fn permits(&self, req: &EffectRequest) -> bool {
         req.content_type.matches_family(self.kind.family()) && self.predicate.admits(&req.target)
     }
+
+    /// Grant an effect FAMILY that has no built-in [`EffectKind`] — the register-by-string authz seam
+    /// (seq-39). A [`Capability`] can only name a family via `kind.family()`, i.e. one of the six well-known
+    /// kinds; a `store/*` family (§4c) — or any future register-by-string family — has NO `EffectKind`, so it
+    /// is otherwise UNGRANTABLE. This returns a [`FamilyGrant`] naming the family STRING directly; hand it to
+    /// [`Authorizer::with_family_grants`] (or the host's grant set) to permit that family under `predicate`.
+    ///
+    /// For `store/*` the predicate gates the NAME (the effect target): e.g.
+    /// `Capability::for_family(effect_ct::STORE_SET, ResourcePredicate::Prefix("system/".into()))` permits
+    /// `store/set` on any `system/…` name — the §4c write-authority grant. Additive: it does NOT change the
+    /// `Capability` struct (its 45 kernel+host literals are untouched) — a NEW grant shape alongside it.
+    pub fn for_family(
+        family: impl Into<std::sync::Arc<str>>,
+        predicate: ResourcePredicate,
+    ) -> FamilyGrant {
+        FamilyGrant {
+            family: family.into(),
+            predicate,
+        }
+    }
+}
+
+/// A grant keyed by an effect FAMILY STRING (not an [`EffectKind`]) — the register-by-string authz grant
+/// (see [`Capability::for_family`]). Permits a request whose `content_type.family` equals `family` AND
+/// whose resolved target satisfies `predicate` (SEC-F1, same two-condition rule as [`Capability::permits`]).
+/// The grant shape for families with no built-in kind — `store/*` (§4c) today, any extension family later.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FamilyGrant {
+    /// The exact effect family this grant names (e.g. `"store/set"`).
+    pub family: std::sync::Arc<str>,
+    /// The resource predicate the request's resolved target must satisfy (SEC-F1). For `store/*` this gates
+    /// the NAME (e.g. `Prefix("system/")` → may set any `system/…` name).
+    pub predicate: ResourcePredicate,
+}
+
+impl FamilyGrant {
+    /// Does this family-grant permit `req`? Family STRING match AND predicate admits the resolved target —
+    /// the same SEC-F1 two-condition rule [`Capability::permits`] applies, keyed on the family string.
+    pub fn permits(&self, req: &EffectRequest) -> bool {
+        req.content_type.matches_family(&self.family) && self.predicate.admits(&req.target)
+    }
 }
 
 /// Whether a session may use a given effect family — one entry of a [`CapabilityManifest`]. Computed from

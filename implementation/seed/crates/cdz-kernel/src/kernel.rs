@@ -2680,6 +2680,8 @@ mod store_effect_tests {
         s.deliver(inbound(), None, &SetThenResolve, &AllowStore, &mut exec)
             .await
             .unwrap();
+        // (AllowStore isolates the ARM here; production grantability via Capability::for_family is proven
+        // in `store_effects_are_grantable_via_capability_for_family` below and in authz.rs's family-grant test.)
 
         // The reducer set then resolved system/compiler/latest; the resolved hash it recorded must equal
         // the hash it set — the store round-tripped THROUGH the kernel's store arm (set applied, resolve
@@ -2693,6 +2695,35 @@ mod store_effect_tests {
             "store/* is NOT routed to the executor"
         );
         assert_eq!(s.open_effects(), 0, "both store effects settled");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn store_effects_are_grantable_via_capability_for_family() {
+        // PRODUCTION grantability: the real Authorizer + Capability::for_family grants store/set + store/
+        // resolve on `system/…` names (the §4c write-authority grant). Same round-trip as above but through
+        // the actual grant path, not the test-only AllowStore — proves store/* is now grantable end-to-end.
+        use crate::effect::{effect_ct, Capability, ResourcePredicate};
+        let authz = Authorizer::new(vec![]).with_family_grants(vec![
+            Capability::for_family(
+                effect_ct::STORE_SET,
+                ResourcePredicate::Prefix("system/".into()),
+            ),
+            Capability::for_family(
+                effect_ct::STORE_RESOLVE,
+                ResourcePredicate::Prefix("system/".into()),
+            ),
+        ]);
+        let mut exec = crate::executor::RecordingExecutor::new();
+        let mut s = Session::genesis(Hash::of(b"store-v1"));
+        s.attach_name_store(NameStore::new());
+        s.deliver(inbound(), None, &SetThenResolve, &authz, &mut exec)
+            .await
+            .unwrap();
+        assert_eq!(
+            s.kv().get(b"resolved"),
+            Some(Hash::of(b"compiler-wasm-v1").to_hex().as_bytes()),
+            "store/set + store/resolve round-trip under a real Capability::for_family grant"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

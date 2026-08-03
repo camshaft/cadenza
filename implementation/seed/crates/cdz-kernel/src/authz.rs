@@ -38,28 +38,51 @@ pub trait Authorize {
 /// implements the same trait and drops into the kernel unchanged.
 pub struct Authorizer {
     caps: Vec<Capability>,
+    /// Register-by-string grants for families with no built-in [`EffectKind`] (`store/*` §4c, any extension
+    /// family) — see [`Capability::for_family`]/[`crate::effect::FamilyGrant`]. Separate from `caps` so the
+    /// `Capability{kind,predicate}` struct + its 45 literals stay untouched (additive); `authorize` admits a
+    /// request permitted by EITHER list. Empty unless populated via [`Authorizer::with_family_grants`].
+    family_grants: Vec<crate::effect::FamilyGrant>,
 }
 
 impl Authorizer {
     /// An authorizer holding a fixed capability set (the session's grants). Delegation/attenuation
     /// (§12f) layers on later; v0 is a flat grant set for one operator.
     pub fn new(caps: Vec<Capability>) -> Self {
-        Authorizer { caps }
+        Authorizer {
+            caps,
+            family_grants: Vec::new(),
+        }
+    }
+
+    /// Add register-by-string [`FamilyGrant`](crate::effect::FamilyGrant)s (from
+    /// [`Capability::for_family`]) — grants for families with no built-in [`crate::effect::EffectKind`]
+    /// (`store/*` §4c, extension families). Builder-style; composes with the `Capability` set passed to
+    /// [`Authorizer::new`]. A request is permitted if EITHER a `Capability` OR a `FamilyGrant` admits it.
+    pub fn with_family_grants(mut self, grants: Vec<crate::effect::FamilyGrant>) -> Self {
+        self.family_grants.extend(grants);
+        self
     }
 
     /// Grant nothing — every effect is denied. Useful for pure-fold reducers that should have no
     /// ambient authority (the §9c "deny the clock entirely" case).
     pub fn deny_all() -> Self {
-        Authorizer { caps: Vec::new() }
+        Authorizer {
+            caps: Vec::new(),
+            family_grants: Vec::new(),
+        }
     }
 }
 
 #[async_trait::async_trait(?Send)]
 impl Authorize for Authorizer {
-    /// SEC-F1: permission requires a capability whose predicate admits the *resolved target*. Native async
-    /// (no `.await` — a flat capability-set check does no I/O).
+    /// SEC-F1: permission requires a grant whose predicate admits the *resolved target* — a `Capability`
+    /// (keyed on `EffectKind::family`) OR a register-by-string `FamilyGrant` (keyed on the family string, for
+    /// families with no built-in kind, e.g. `store/*`). Native async (no `.await` — a flat set check).
     async fn authorize(&self, req: &EffectRequest) -> Result<(), String> {
-        if self.caps.iter().any(|c| c.permits(req)) {
+        if self.caps.iter().any(|c| c.permits(req))
+            || self.family_grants.iter().any(|g| g.permits(req))
+        {
             Ok(())
         } else {
             Err(format!(
@@ -77,6 +100,49 @@ mod tests {
 
     fn req(kind: EffectKind, target: &str) -> EffectRequest {
         EffectRequest::new(kind, target, None, crate::effect::Timeliness::Interactive)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn family_grant_permits_a_store_family_no_capability_can() {
+        use crate::effect::{effect_ct, EffectRequest};
+        // §4c: store/* has NO EffectKind, so a `Capability` (keyed on kind.family()) CANNOT grant it —
+        // Capability::for_family + with_family_grants is the register-by-string seam that can. A store/set
+        // grant scoped to `system/` permits `store/set system/…` and denies other prefixes / other families.
+        let authz = Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+            effect_ct::STORE_SET,
+            ResourcePredicate::Prefix("system/".into()),
+        )]);
+        let store_set = |name: &str| {
+            EffectRequest::new_with_family(
+                effect_ct::STORE_SET,
+                name,
+                None,
+                crate::effect::Timeliness::Interactive,
+            )
+        };
+        // Permits a system/ name...
+        assert!(authz
+            .authorize(&store_set("system/compiler/latest"))
+            .await
+            .is_ok());
+        // ...denies a name outside the granted prefix...
+        assert!(authz.authorize(&store_set("session/abc/x")).await.is_err());
+        // ...and denies a DIFFERENT store family (store/resolve) the grant didn't name.
+        assert!(authz
+            .authorize(&EffectRequest::new_with_family(
+                effect_ct::STORE_RESOLVE,
+                "system/compiler/latest",
+                None,
+                crate::effect::Timeliness::Interactive,
+            ))
+            .await
+            .is_err());
+        // A plain Capability-only authorizer CANNOT grant store/* at all (the gap for_family closes).
+        let no_store = Authorizer::new(vec![Capability {
+            kind: EffectKind::Http,
+            predicate: ResourcePredicate::Any,
+        }]);
+        assert!(no_store.authorize(&store_set("system/x")).await.is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]
