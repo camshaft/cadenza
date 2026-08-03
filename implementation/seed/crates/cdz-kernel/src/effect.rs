@@ -117,6 +117,21 @@ pub mod effect_ct {
     }
 }
 
+/// A `control/*` effect surfaced from the drive loop to the DRIVER (host), rather than authorized +
+/// routed to an executor (control-plane partition, register-by-string design). control/* families
+/// (`control/summary`, …) are host-answered, not world-actions — the kernel does NOT authorize or route
+/// them; it collects them and hands them back from [`crate::kernel::Session::deliver_async`] so the driver
+/// (e.g. `fork_for_query`'s watch) can consume them. `token` is the reducer's continuation token (§19e);
+/// the effect's payload/family live in `request` (`request.content_type.family` is the control family, e.g.
+/// `summary`; `request.payload` carries the summary bytes). (Once a control family has an in-kernel handler
+/// — `control/capabilities` → `project_manifest` — that family is answered inline and folds an EffectResult
+/// back instead of surfacing here; the host-surfaced channel is for the driver-consumed ones like summary.)
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ControlEffect {
+    pub request: EffectRequest,
+    pub token: Option<Vec<u8>>,
+}
+
 impl EffectKind {
     /// The canonical lowercase family string for this kind (see [`effect_ct`]) — the string the codec
     /// writes, the router keys on, and Cedar uses as the action. One source of truth for the wire name.
