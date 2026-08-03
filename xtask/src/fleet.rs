@@ -979,7 +979,10 @@ pub fn run(paths: &Paths, cmd: FleetCmd) {
             agent,
             mr_file,
             execute,
-        } => publish_candidate(&fleet, &r#ref, &agent, &mr_file, execute),
+        } => {
+            // Discard the dispatched? bool — the CLI path only needs the side effect + printed status.
+            let _ = publish_candidate(&fleet, &r#ref, &agent, &mr_file, execute);
+        }
         FleetCmd::SchedulePlan { cap } => schedule_plan(&fleet, cap),
         FleetCmd::SchedulePass { cap, execute } => {
             if execute {
@@ -7892,7 +7895,18 @@ fn write_ci_dispatch(fleet: &Fleet, d: &CiDispatch) -> std::io::Result<()> {
 /// 4. scrape the PR number, write the `CiDispatch` record, remove the scratch worktree.
 ///
 /// Any step failing aborts + cleans up the scratch worktree; nothing partial is recorded.
-fn publish_candidate(fleet: &Fleet, r#ref: &str, agent: &str, mr_file: &str, execute: bool) {
+/// Returns `true` iff a candidate PR was actually opened + its ci-dispatch record written (a real new
+/// dispatch). Returns `false` on every non-dispatch path — the idempotency guard blocked it, `--execute`
+/// wasn't set (DRY), or any git/gh step failed. The caller (`schedule_pass_execute`) counts a dispatch
+/// as "new" ONLY on `true`, so a blocked/failed pick no longer inflates the "dispatched N new" tally
+/// (pr-sync executor nit: the counter incremented even when the guard bailed — the mis-count).
+fn publish_candidate(
+    fleet: &Fleet,
+    r#ref: &str,
+    agent: &str,
+    mr_file: &str,
+    execute: bool,
+) -> bool {
     // Idempotency: never re-dispatch THIS ref while it is IN FLIGHT (the reaper owns concluding it).
     // Two scoping rules matter (pr-sync executor nit, 2026-08-03):
     //   - Filter to `dispatch_is_in_flight`: the reap marks a concluded record `merged`/`rejected` but
@@ -7909,7 +7923,7 @@ fn publish_candidate(fleet: &Fleet, r#ref: &str, agent: &str, mr_file: &str, exe
             "publish-candidate: {ref} is ALREADY in flight as PR #{} (branch {}) — refusing to re-dispatch.",
             d.pr_number, d.cand_branch
         );
-        return;
+        return false;
     }
     let branch = candidate_branch(agent, r#ref);
     let lane = lane_label_for_ref(r#ref);
@@ -7952,7 +7966,7 @@ fn publish_candidate(fleet: &Fleet, r#ref: &str, agent: &str, mr_file: &str, exe
             println!("  {}. {}", i + 1, cmd.join(" "));
         }
         println!("  → would record .claude/fleet/ci-dispatch/{key}");
-        return;
+        return false;
     }
 
     // ── LIVE dispatch ──
@@ -7983,7 +7997,7 @@ fn publish_candidate(fleet: &Fleet, r#ref: &str, agent: &str, mr_file: &str, exe
             "publish-candidate: `git worktree add --detach {scratch_s} origin/main` FAILED — aborting (did you `git fetch` origin first?)."
         );
         cleanup(&fleet.repo, &scratch_s);
-        return;
+        return false;
     }
     // 2. Re-parent the single MR commit onto origin/main.
     let pick = Command::new("git")
@@ -7995,7 +8009,7 @@ fn publish_candidate(fleet: &Fleet, r#ref: &str, agent: &str, mr_file: &str, exe
             "publish-candidate: `git cherry-pick {ref}` onto origin/main CONFLICTS — this MR needs a rebase; NOT dispatching. (reject the sender with a stale-base note.)"
         );
         cleanup(&fleet.repo, &scratch_s);
-        return;
+        return false;
     }
     let cand_sha = Command::new("git")
         .current_dir(&scratch)
@@ -8022,7 +8036,7 @@ fn publish_candidate(fleet: &Fleet, r#ref: &str, agent: &str, mr_file: &str, exe
                     .unwrap_or_default()
             );
             cleanup(&fleet.repo, &scratch_s);
-            return;
+            return false;
         }
         // The `gh pr create` step (index 1) prints the PR URL — scrape the trailing number.
         if i == 1
@@ -8055,6 +8069,9 @@ fn publish_candidate(fleet: &Fleet, r#ref: &str, agent: &str, mr_file: &str, exe
         }
     }
     cleanup(&fleet.repo, &scratch_s);
+    // Reached here ⟹ every dispatch step (push / pr create / auto-merge arm) succeeded and the
+    // ci-dispatch record was written: a real new dispatch.
+    true
 }
 
 /// The lane label for a queued merge-request, computed from its `--ref`'s changed paths (same source
@@ -8564,8 +8581,11 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
             .into_iter()
             .find(|m| &m.file == mr_file)
         {
-            publish_candidate(fleet, &mr.r#ref, &mr.from, mr_file, /*execute=*/ true);
-            dispatched_now += 1;
+            // Count as "new" ONLY if a PR was actually opened — a guard-blocked/failed pick returns
+            // false and must not inflate the tally (pr-sync executor nit: the mis-count).
+            if publish_candidate(fleet, &mr.r#ref, &mr.from, mr_file, /*execute=*/ true) {
+                dispatched_now += 1;
+            }
         }
     }
     println!(
