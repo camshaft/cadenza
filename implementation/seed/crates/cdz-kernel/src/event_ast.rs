@@ -68,6 +68,86 @@ pub fn decode(bytes: &[u8]) -> Result<Event, EventAstError> {
     read_event(&arenas, arenas.root)
 }
 
+/// Encode a [`CapabilityManifest`](crate::effect::CapabilityManifest) to the `capabilities-manifest`
+/// payload — the Cadenza binary-sexpr a `control/capabilities` query answer / genesis-seed / change-push
+/// carries (host-capability-discovery I4, shape agreed with design-host-capabilities). The kernel
+/// PRODUCES this; the guest DECODES it (the kernel never re-parses its own control payloads). Shape:
+///   `(capabilities-manifest <version:int=1> (entries (entry <family:str> <grant> <scope>) ...))`
+///   `<grant>` = `(granted)` | `(denied)` | `(absent)` — Name-HEADED nullary lists, so the pending
+///     `(requestable …)` split + future fields append with NO wire break (open sums; a tolerant guest
+///     matches the head and ignores/denies an unknown one).
+///   `<scope>` = `(none)` | `(some <predicate>)`; `<predicate>` = `(any)` | `(exact <str>)` |
+///     `(one-of <str>…)` | `(host-in <str>…)` | `(prefix <str>)` — mirrors [`ResourcePredicate`].
+/// Entries are emitted in the manifest's order (the projection uses `effect_ct::ALL` order) so the bytes
+/// are stable/replay-safe. The leading `<version:int>` INSIDE the payload (=1) lets a decoder range-check
+/// without re-reading the envelope's `content_type.version`.
+pub fn encode_capability_manifest(manifest: &crate::effect::CapabilityManifest) -> Vec<u8> {
+    use crate::effect::{GrantState, ResourcePredicate};
+    let mut b = Builder::new();
+    let head = b.name("capabilities-manifest");
+    let version = u64_leaf(&mut b, 1);
+    let entries_head = b.name("entries");
+    let mut entry_forms = vec![entries_head];
+    for e in &manifest.entries {
+        let e_head = b.name("entry");
+        let fam = str_leaf(&mut b, &e.family);
+        let grant = {
+            let g = match e.grant {
+                GrantState::Granted => b.name("granted"),
+                GrantState::Denied => b.name("denied"),
+                GrantState::Absent => b.name("absent"),
+            };
+            b.list(vec![g])
+        };
+        let scope = match &e.scope {
+            None => {
+                let none = b.name("none");
+                b.list(vec![none])
+            }
+            Some(pred) => {
+                let pred_form = match pred {
+                    ResourcePredicate::Any => {
+                        let h = b.name("any");
+                        b.list(vec![h])
+                    }
+                    ResourcePredicate::Exact(s) => {
+                        let h = b.name("exact");
+                        let v = str_leaf(&mut b, s);
+                        b.list(vec![h, v])
+                    }
+                    ResourcePredicate::OneOf(set) => {
+                        let h = b.name("one-of");
+                        let mut items = vec![h];
+                        for s in set {
+                            items.push(str_leaf(&mut b, s));
+                        }
+                        b.list(items)
+                    }
+                    ResourcePredicate::HostIn(hosts) => {
+                        let h = b.name("host-in");
+                        let mut items = vec![h];
+                        for s in hosts {
+                            items.push(str_leaf(&mut b, s));
+                        }
+                        b.list(items)
+                    }
+                    ResourcePredicate::Prefix(p) => {
+                        let h = b.name("prefix");
+                        let v = str_leaf(&mut b, p);
+                        b.list(vec![h, v])
+                    }
+                };
+                let some = b.name("some");
+                b.list(vec![some, pred_form])
+            }
+        };
+        entry_forms.push(b.list(vec![e_head, fam, grant, scope]));
+    }
+    let entries = b.list(entry_forms);
+    let root = b.list(vec![head, version, entries]);
+    codec::encode(&b.finish(root))
+}
+
 // ---- encode (Event → Arenas) ------------------------------------------------------------------------
 
 fn u64_leaf(b: &mut Builder, n: u64) -> StructId {
@@ -775,5 +855,72 @@ mod tests {
                 panic!("the known-family control must decode to Dispatched(Http), got {other:?}")
             }
         }
+    }
+
+    #[test]
+    fn capability_manifest_encodes_to_the_agreed_sexpr_shape() {
+        use crate::effect::{CapabilityEntry, CapabilityManifest, GrantState, ResourcePredicate};
+        // A manifest with all three grant-states + a scoped predicate — encode, then DECODE the bytes as a
+        // Cadenza AST and assert the agreed shape (host-capability-discovery I4 encode, design-locked):
+        // (capabilities-manifest 1 (entries (entry <fam> <grant> <scope>) ...)).
+        let manifest = CapabilityManifest {
+            entries: vec![
+                CapabilityEntry {
+                    family: "http".into(),
+                    grant: GrantState::Granted,
+                    scope: Some(ResourcePredicate::HostIn(vec!["ok.host".into()])),
+                },
+                CapabilityEntry {
+                    family: "model".into(),
+                    grant: GrantState::Denied,
+                    scope: None,
+                },
+                CapabilityEntry {
+                    family: "shell".into(),
+                    grant: GrantState::Absent,
+                    scope: None,
+                },
+            ],
+        };
+        let bytes = encode_capability_manifest(&manifest);
+        let a = codec::decode_detailed(&bytes).expect("manifest payload decodes as a Cadenza AST");
+
+        // Root: (capabilities-manifest <version> <entries>)
+        let root = a
+            .as_form(a.root, "capabilities-manifest")
+            .expect("root head");
+        assert_eq!(
+            root.len(),
+            2,
+            "capabilities-manifest has <version> + <entries>"
+        );
+        // version leaf == 1
+        match a.get(root[0]) {
+            Struct::Atom(l) => match a.leaf(*l) {
+                Leaf::Int { value, .. } => assert_eq!(*value, BigInt::from(1u32)),
+                other => panic!("version must be an Int leaf, got {other:?}"),
+            },
+            other => panic!("version must be an atom, got {other:?}"),
+        }
+        // (entries (entry ...) x3), in manifest order.
+        let entries = a.as_form(root[1], "entries").expect("entries head");
+        assert_eq!(entries.len(), 3, "one entry per family");
+        // Entry 0: (entry "http" (granted) (some (host-in "ok.host")))
+        let e0 = a.as_form(entries[0], "entry").expect("entry head");
+        assert_eq!(a.as_str(e0[0]), Some("http"));
+        assert!(a.as_form(e0[1], "granted").is_some(), "grant is (granted)");
+        let some = a.as_form(e0[2], "some").expect("scope (some ..)");
+        let host_in = a.as_form(some[0], "host-in").expect("(host-in ..)");
+        assert_eq!(a.as_str(host_in[0]), Some("ok.host"));
+        // Entry 1: (entry "model" (denied) (none))
+        let e1 = a.as_form(entries[1], "entry").unwrap();
+        assert_eq!(a.as_str(e1[0]), Some("model"));
+        assert!(a.as_form(e1[1], "denied").is_some());
+        assert!(a.as_form(e1[2], "none").is_some(), "denied → (none) scope");
+        // Entry 2: (entry "shell" (absent) (none))
+        let e2 = a.as_form(entries[2], "entry").unwrap();
+        assert_eq!(a.as_str(e2[0]), Some("shell"));
+        assert!(a.as_form(e2[1], "absent").is_some());
+        assert!(a.as_form(e2[2], "none").is_some());
     }
 }
