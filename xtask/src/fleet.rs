@@ -7544,10 +7544,15 @@ fn candidate_refspec(branch: &str) -> String {
 /// run them) — the two can never drift. Unit-tested against the pilot-validated command shapes
 /// (full refspec form, `--base main`, squash-auto-merge). Returns argv (not a shell string) so a
 /// branch name never needs shell-quoting and can't be mis-split.
-fn candidate_dispatch_argv(branch: &str) -> [Vec<String>; 3] {
+fn candidate_dispatch_argv(branch: &str, title: &str, body: &str) -> [Vec<String>; 3] {
     let refspec = candidate_refspec(branch);
     [
         vec!["git".into(), "push".into(), "origin".into(), refspec],
+        // Explicit --title/--body, NOT --fill (pr-sync smoke-test bug 2, 2026-08-03): `--fill` derives
+        // the title/body from the `origin/main..head` commit range, but the freshly force-pushed cand
+        // branch isn't fetched locally, so that range ref doesn't resolve → `gh pr create --fill` fails
+        // ("ambiguous argument origin/main...cand/x: unknown revision") and NO PR is created. Passing an
+        // explicit title/body needs no local range ref.
         vec![
             "gh".into(),
             "pr".into(),
@@ -7556,7 +7561,10 @@ fn candidate_dispatch_argv(branch: &str) -> [Vec<String>; 3] {
             "main".into(),
             "--head".into(),
             branch.into(),
-            "--fill".into(),
+            "--title".into(),
+            title.into(),
+            "--body".into(),
+            body.into(),
         ],
         vec![
             "gh".into(),
@@ -7788,8 +7796,10 @@ fn dispatch_plan(fleet: &Fleet, r#ref: &str, agent: &str) {
         .into_iter()
         .find(|d| d.r#ref == r#ref || d.agent == agent);
     // Print the EXACT commands `publish-candidate` will run (shared source of truth), so the preview
-    // can never drift from the executor.
-    let [push, create, merge] = candidate_dispatch_argv(&branch);
+    // can never drift from the executor. (Preview uses placeholder title/body — the live path fills the
+    // real commit subject; the COMMAND SHAPE is what this previews.)
+    let [push, create, merge] =
+        candidate_dispatch_argv(&branch, "<commit subject>", "<candidate body>");
     println!("dispatch-plan for {agent} @ {ref}:");
     println!("  cand branch : {branch}");
     println!("  1. {}", push.join(" "));
@@ -7858,7 +7868,27 @@ fn publish_candidate(fleet: &Fleet, r#ref: &str, agent: &str, mr_file: &str, exe
     }
     let branch = candidate_branch(agent, r#ref);
     let lane = lane_label_for_ref(r#ref);
-    let argv = candidate_dispatch_argv(&branch);
+    // PR title = the ref's commit subject (`git show -s --format=%s`); body names the sender + ref so
+    // the PR is self-describing. Explicit title/body (not --fill) — see candidate_dispatch_argv.
+    let title = Command::new("git")
+        .current_dir(&fleet.repo)
+        .args(["show", "-s", "--format=%s", r#ref])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            format!(
+                "cand: {agent} {}",
+                &r#ref.chars().take(12).collect::<String>()
+            )
+        });
+    let body = format!(
+        "Candidate PR for {agent}'s merge-request (ref {}, lane {lane}). Auto-merge armed; pr-sync's schedule-pass reaps on green.",
+        r#ref
+    );
+    let argv = candidate_dispatch_argv(&branch, &title, &body);
     let key = if mr_file.is_empty() {
         format!(
             "publish-{agent}-{}",
@@ -8235,13 +8265,14 @@ fn mark_dispatch_resolved(fleet: &Fleet, d: &CiDispatch, status: &str) {
 /// advance fails the CAS rather than clobbering; preserves forward-only + single-writer). Returns
 /// `Ok(new_sha)` on advance, `Ok(current)` if already at origin/main (nothing to do), `Err` on a git
 /// failure or a lost CAS. FAST-FORWARD ONLY — never a merge/reset that could move trunk backward.
-fn ff_trunk_from_origin_main(fleet: &Fleet) -> Result<String, String> {
+fn advance_trunk_to_origin_main(fleet: &Fleet) -> Result<String, String> {
     let git = |args: &[&str]| {
         Command::new("git")
             .current_dir(&fleet.repo)
             .args(args)
             .output()
     };
+    let git_ok = |args: &[&str]| git(args).map(|o| o.status.success()).unwrap_or(false);
     let _ = git(&["fetch", "origin", "--quiet"]);
     let rev = |r: &str| {
         git(&["rev-parse", r])
@@ -8249,31 +8280,54 @@ fn ff_trunk_from_origin_main(fleet: &Fleet) -> Result<String, String> {
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
-    let old = rev(TRUNK).ok_or_else(|| "cannot resolve trunk".to_string())?;
-    let new = rev("origin/main").ok_or_else(|| "cannot resolve origin/main".to_string())?;
-    if old == new {
-        return Ok(new); // already current
+    let trunk_before = rev(TRUNK).ok_or_else(|| "cannot resolve trunk".to_string())?;
+    let origin = rev("origin/main").ok_or_else(|| "cannot resolve origin/main".to_string())?;
+
+    // MODEL (pr-sync smoke-test, 2026-08-03): `trunk` and `origin/main` are permanently TREE-EQUAL but
+    // COMMIT-DISTINCT — every candidate is RE-PARENTED onto origin/main before its PR, so origin/main's
+    // squash commits are NOT ancestors of trunk. A literal fast-forward can therefore NEVER work
+    // (origin/main is not a descendant of trunk). Instead, CHERRY-PICK the commit(s) origin/main has that
+    // trunk lacks (`trunk..origin/main`, oldest-first) ONTO trunk — each applies CLEANLY because trunk's
+    // tree already equals origin/main's pre-merge tree — then VERIFY the trees now match (`git diff
+    // --quiet trunk origin/main`). This preserves forward-only + single-writer (we only ADD commits to
+    // trunk, matching origin/main's content) without requiring an ancestry relationship.
+    if trunk_before == origin {
+        return Ok(origin); // identical sha (rare) → nothing to do
     }
-    // FF only: origin/main must be a DESCENDANT of trunk (forward move). Never move trunk backward.
-    let is_ff = git(&["merge-base", "--is-ancestor", &old, "origin/main"])
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !is_ff {
+    // Already tree-equal (a prior pass or peer already advanced trunk to match) → done, no-op.
+    if git_ok(&["diff", "--quiet", TRUNK, "origin/main"]) {
+        return Ok(trunk_before);
+    }
+    // The commits to replay, oldest-first (rev-list --reverse), that are on origin/main but not trunk.
+    let list = git(&["rev-list", "--reverse", &format!("{TRUNK}..origin/main")])
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if list.is_empty() {
+        // No trunk..origin/main commits yet trees differ → trunk has commits origin/main lacks
+        // (shouldn't happen in this model) — refuse rather than guess.
         return Err(format!(
-            "origin/main ({new}) is NOT a fast-forward of trunk ({old}) — refusing to move trunk (a peer/external commit diverged; needs manual reconcile)"
+            "trunk ({trunk_before}) and origin/main ({origin}) differ but origin/main has no commits ahead of trunk — unexpected divergence; needs manual reconcile"
         ));
     }
-    let trunk_ref = format!("refs/heads/{TRUNK}");
-    let ok = git(&["update-ref", &trunk_ref, &new, &old])
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if ok {
-        Ok(new)
-    } else {
-        Err(format!(
-            "update-ref CAS failed — trunk moved from {old} between read and write (concurrent advance); retry next pass"
-        ))
+    // Work IN pr-sync's trunk worktree (the only one with `trunk` checked out). Cherry-pick each; on any
+    // conflict, abort + bail (leave trunk untouched) — a conflict means the tree-equal assumption broke.
+    for sha in list.lines() {
+        if !git_ok(&["cherry-pick", "--allow-empty", sha]) {
+            let _ = git(&["cherry-pick", "--abort"]);
+            return Err(format!(
+                "cherry-pick of {sha} (origin/main) onto trunk CONFLICTED — trunk/origin-main are not tree-equal as assumed; aborted, trunk left at {trunk_before}. Manual reconcile."
+            ));
+        }
     }
+    // VERIFY trees now match origin/main — the invariant that says the advance is correct.
+    if !git_ok(&["diff", "--quiet", TRUNK, "origin/main"]) {
+        return Err(format!(
+            "after cherry-picking {TRUNK}..origin/main, trunk still differs from origin/main — NOT acking (avoid a wrong land); trunk was {trunk_before}. Manual check."
+        ));
+    }
+    rev(TRUNK).ok_or_else(|| "cannot re-resolve trunk after advance".to_string())
 }
 
 /// I4 — one LIVE scheduler pass (operator-greenlit executor; DRY path is `schedule-plan`). Reaps each
@@ -8296,8 +8350,10 @@ fn schedule_pass_execute(fleet: &Fleet, cap: usize) {
         let (state, _all_verdict, req_verdict) = pr_state_and_verdict(d.pr_number);
         match reap_action(state, req_verdict) {
             ReapAction::LandMerged => {
-                // GitHub already merged the PR to origin/main; FF trunk to match, then ack the sender.
-                match ff_trunk_from_origin_main(fleet) {
+                // GitHub already merged the PR to origin/main; advance trunk to match (cherry-pick
+                // trunk..origin/main — trunk/origin-main are tree-equal but commit-distinct, so NOT a
+                // literal FF; see the fn), then ack the sender.
+                match advance_trunk_to_origin_main(fleet) {
                     Ok(sha) => {
                         ack(
                             fleet,
@@ -12987,9 +13043,10 @@ mod tests {
     #[test]
     fn candidate_dispatch_argv_matches_the_pilot_validated_command_shapes() {
         // The 3 dispatch commands, shared by `dispatch-plan` (prints) and `publish-candidate` (runs) so
-        // they can never drift. Pins the pilot-validated shapes: full-refspec push, `--base main`,
-        // squash-auto-merge with branch cleanup.
-        let [push, create, merge] = candidate_dispatch_argv("cand/v-fleet-tooling-55c9f407c002");
+        // they can never drift. Pins the shapes: full-refspec push, `--base main` + EXPLICIT title/body
+        // (NOT --fill — smoke-test bug 2), squash-auto-merge with branch cleanup.
+        let [push, create, merge] =
+            candidate_dispatch_argv("cand/v-fleet-tooling-55c9f407c002", "my title", "my body");
         assert_eq!(
             push,
             vec![
@@ -13009,9 +13066,14 @@ mod tests {
                 "main",
                 "--head",
                 "cand/v-fleet-tooling-55c9f407c002",
-                "--fill"
+                "--title",
+                "my title",
+                "--body",
+                "my body"
             ]
         );
+        // NOT --fill (the freshly-pushed cand branch has no local origin/main..head range).
+        assert!(!create.iter().any(|a| a == "--fill"));
         assert_eq!(
             merge,
             vec![
