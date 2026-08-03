@@ -362,6 +362,15 @@
                 fi
                 echo "ok: nix-built ${name} == ${constName} ($want)" > $out
               '';
+            # VALIDITY: assert a built artifact is a well-formed wasm COMPONENT. The guest derivations
+            # end in `wasm-tools component new` (the lift); nothing else gates that the result is valid,
+            # so a future guest/WIT/toolchain change could silently produce a broken component that only
+            # blows up at test-load time. This check fails the flake at `nix flake check` instead.
+            validComponent = { name, drv }:
+              pkgs.runCommand "${name}-valid" { nativeBuildInputs = [ pkgs.wasm-tools ]; } ''
+                wasm-tools validate --features component-model ${drv}
+                echo "ok: nix-built ${name} is a valid wasm component" > $out
+              '';
           in
           {
             runtime-hash-parity = parity {
@@ -370,6 +379,8 @@
             runtime-debug-hash-parity = parity {
               name = "runtime-debug"; drv = runtimeDebug; constName = "DEBUG_RUNTIME_HASH";
             };
+            reducer-guest-valid = validComponent { name = "reducer-guest"; drv = reducerGuest; };
+            cedar-guest-valid = validComponent { name = "cedar-guest"; drv = cedarGuest; };
           };
 
         devShells.default = pkgs.mkShell {
