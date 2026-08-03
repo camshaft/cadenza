@@ -127,9 +127,12 @@
             nativeBuildInputs = [ seedCompiler ];
             buildPhase = ''
               runHook preBuild
+              set -o pipefail
               export HOME="$TMPDIR/home"; mkdir -p "$HOME"
-              # `cdz build` reads Project.cdz in the cwd + writes the artifacts beside it.
-              cdz build
+              # Build THIS project explicitly (`.` = the unpacked src cwd) — never rely on `cdz`'s
+              # upward `Project.cdz` search, which in a sandbox could escape to an unexpected parent
+              # manifest (github-liaison #1779). The artifacts land beside the manifest in the cwd.
+              cdz build .
               runHook postBuild
             '';
             installPhase = ''
@@ -182,9 +185,16 @@
             nativeBuildInputs = [ seedCompiler ];
             buildPhase = ''
               runHook preBuild
+              # `set -o pipefail` is LOAD-BEARING here: without it, `cdz test | tee` returns tee's
+              # exit (always 0), so a FAILING suite would still yield a SUCCESSFUL derivation —
+              # silently defeating the whole point of gating tests through nix (github-liaison #1786).
+              # With pipefail, a non-zero `cdz test` propagates through the pipe and fails the build.
+              set -o pipefail
               export HOME="$TMPDIR/home"; mkdir -p "$HOME"
               export CDZ_STORE="${componentStore}"
-              cdz test | tee "$TMPDIR/test.out"
+              # Test THIS project explicitly (`.` = the unpacked src cwd), not via the upward
+              # manifest search — same sandbox-escape guard as buildCadenzaProject.
+              cdz test . | tee "$TMPDIR/test.out"
               runHook postBuild
             '';
             installPhase = ''
