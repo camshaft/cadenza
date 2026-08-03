@@ -121,6 +121,15 @@ pub trait Reducer {
     /// doesn't understand returns [`FoldOutput::none`], not a crash. A long-running implementation (a wasm
     /// fold) may `.await` internally so the host loop can interleave other sessions while it yields on fuel.
     async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput;
+
+    /// Fold one event — the un-suffixed name (the trait is `async`; `_async` is redundant, operator
+    /// cleanup). TRANSITIONAL default forwards to [`fold_async`] so callers can move to `fold` while
+    /// existing impls (kernel + cdz-agent-host's 12 test reducers + executors) still define `fold_async` —
+    /// never-red bridge, dropped once all impls define `fold` (trait-rename beat T1→T3, coordinated with
+    /// v-agent-harness-host).
+    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        self.fold_async(event, kv).await
+    }
 }
 
 /// A trivial reducer used by kernel-loop tests: it ignores everything and emits nothing. Real reducers

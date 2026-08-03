@@ -626,7 +626,7 @@ impl Session {
             }
 
             // SEC-F1: authorize against the resolved target (same as sync path), awaiting the async gate.
-            if let Err(reason) = authz.authorize_async(&req).await {
+            if let Err(reason) = authz.authorize(&req).await {
                 let denial_hash =
                     self.append(EventBody::AuthzDenied { id, reason, token }, Some(cause));
                 for pair in self.fold_tip(reducer, denial_hash).await {
@@ -703,7 +703,7 @@ impl Session {
             // Route + execute — awaiting the async executor (a real I/O executor yields here without
             // blocking the single-threaded loop). The Dispatched record is already durable, so ordering
             // is preserved across the await.
-            let outcome = executor.perform_async(&req, idempotency_key).await;
+            let outcome = executor.perform(&req, idempotency_key).await;
 
             // MONOTONIC `now` clamp (operator ruling) — same as sync path; only `now` results are clamped.
             // Keyed on the content-type FAMILY (seq-39), not the legacy kind enum.
@@ -730,7 +730,7 @@ impl Session {
     /// same FoldFailed capture + effect-reversal. This is the ONE place the reducer actually awaits.
     async fn fold_tip(&mut self, reducer: &dyn Reducer, cause: Hash) -> Vec<(Effect, Hash)> {
         let tip = self.log.last().expect("log always has genesis").clone();
-        let out = reducer.fold_async(&tip, &mut self.kv).await;
+        let out = reducer.fold(&tip, &mut self.kv).await;
         // Error-resilience (§17): a failed fold is captured as a FoldFailed log event, not folded further
         // — identical to the sync `fold_tip`.
         if let Some(reason) = out.failure {
@@ -957,11 +957,24 @@ impl Session {
                 _ => {}
             }
             if observable(&event.body) {
-                let _ = reducer.fold_async(&event, &mut s.kv).await;
+                let _ = reducer.fold(&event, &mut s.kv).await;
             }
             s.log.push(event);
         }
         Ok(s)
+    }
+
+    /// TRANSITIONAL alias for [`Session::replay`] — the `_async` suffix was dropped (operator cleanup;
+    /// the whole method is `async`), but `replay_async` is a PUBLIC method cdz-agent-host's e2e tests call,
+    /// so this forwarding shim keeps them compiling until v-agent-harness-host migrates to `replay`. Remove
+    /// once the host is off `replay_async` (same never-red bridge as the trait-method renames). This is the
+    /// beat-1 miss: `replay_async` was public + used by the host's TESTS, which the src-only grep didn't see.
+    #[doc(hidden)]
+    pub async fn replay_async(
+        log: Vec<Event>,
+        reducer: &dyn Reducer,
+    ) -> Result<Session, KernelError> {
+        Self::replay(log, reducer).await
     }
 
     /// The set of open (dispatched-but-unsettled) effect ids after recovery — what a driver must
