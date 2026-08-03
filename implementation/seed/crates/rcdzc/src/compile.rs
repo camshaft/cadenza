@@ -3907,6 +3907,53 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
         .filter(|r| r.code.is_some())
         .filter_map(|r| r.at.map(|s| s.0))
         .collect();
+    // A BARE "unbound name `X`" reject is SUPERSEDED by an ENRICHED unbound reject for the same name at the
+    // SAME node. `enrich_unbound` (infer.rs) rewrites a bare unbound into a teaching message for a recognized
+    // form — `(eval …)` ("`eval` executes only a COMPILE-TIME-VISIBLE AST …"), a width slot, a type-var
+    // annotation, etc. — but a DIFFERENT collect path can ALSO push the un-enriched bare "unbound name `X`"
+    // at the same (code CDZ0101, node). Both collapse to ONE via `seen` below, and the SURVIVOR was just
+    // whichever was pushed first — often the BARE copy, so the teaching text was lost (adv-58: a match-
+    // scrutinee `(eval q)` gave the misleading bare "unbound name `eval`"). Drop the bare copy when an
+    // enriched sibling exists. NARROW by design: keyed to the EXACT bare form `unbound name `X`` (nothing
+    // after the closing backtick) so it only ever suppresses the literal un-enriched copy — NOT two distinct
+    // same-node rejects that merely share a code (e.g. a nameless-effect-op's "must be named" vs "has no
+    // type", which are DIFFERENT defects, neither the bare-unbound form). A bare unbound with NO enriched
+    // sibling (an ordinary unbound name) is untouched (no sibling to supersede it).
+    let bare_unbound_superseded: std::collections::HashSet<(u32, String)> = {
+        // Nodes+names that carry an ENRICHED unbound reject (CDZ0101, mentions the name, but is NOT the bare
+        // form). Keyed by (node, name) so only the SAME name's bare copy at that node is dropped.
+        let bare_of = |m: &str| -> Option<String> {
+            // The exact bare form is "unbound name `X`" with nothing trailing.
+            m.strip_prefix("unbound name `")
+                .and_then(|rest| rest.strip_suffix('`'))
+                .map(str::to_string)
+        };
+        let enriched: std::collections::HashSet<(u32, String)> = faults
+            .iter()
+            .filter(|r| r.code == Some(Code::Unbound))
+            .filter_map(|r| {
+                let node = r.at?.0;
+                // An ENRICHED unbound names the variable somewhere but is not the exact bare string.
+                // Recover the name from a bare SIBLING at the same node instead (below); here just record
+                // that this node has a NON-bare CDZ0101.
+                (bare_of(&r.message).is_none()).then_some((node, r.message.clone()))
+            })
+            .map(|(n, _)| (n, String::new()))
+            .collect();
+        // For each BARE unbound, mark it superseded iff its node also carries a non-bare CDZ0101.
+        faults
+            .iter()
+            .filter(|r| r.code == Some(Code::Unbound))
+            .filter_map(|r| {
+                let node = r.at?.0;
+                let name = bare_of(&r.message)?;
+                enriched
+                    .iter()
+                    .any(|(n, _)| *n == node)
+                    .then_some((node, name))
+            })
+            .collect()
+    };
     let mut seen: std::collections::HashSet<(Option<Code>, Option<u32>, Option<String>)> =
         std::collections::HashSet::new();
     faults
@@ -4270,6 +4317,16 @@ fn dedup_faults(db: &Db, faults: Vec<Reject>, has_bakeable_type_export: bool) ->
             // closest-matches list, the other stayed bare), so a full-message key lets both through as a
             // double report. Keying by the core collapses the two copies of the SAME field-miss while
             // leaving a DISTINCT field-miss (different `k`, or anchored at its own node) its own key.
+            // Drop a BARE "unbound name `X`" when an ENRICHED unbound sibling exists at the same node (see
+            // `bare_unbound_superseded`) — so the teaching text survives, not the bare copy (adv-58).
+            if r.code == Some(Code::Unbound)
+                && let Some(s) = r.at
+                && let Some(rest) = r.message.strip_prefix("unbound name `")
+                && let Some(name) = rest.strip_suffix('`')
+                && bare_unbound_superseded.contains(&(s.0, name.to_string()))
+            {
+                return false;
+            }
             let msg_key = r.at.is_none().then(|| {
                 no_field_key(&r.message)
                     .map(str::to_string)
