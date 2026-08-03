@@ -24,10 +24,10 @@ publish = false
 # like cdz-kernel's `live-exec` gates the one subprocess-spawning executor. CI lints AND tests
 # `--features live-net` where a runner has egress; the default gate stays hermetic.
 #
-# It enables the real transports' network deps (reqwest for the HTTP client) — kept OPTIONAL so the
-# default build never compiles them (no reqwest/hyper/rustls tree, no network types). `dep:reqwest`
-# binds the optional dependency to this feature only.
-live-net = ["dep:reqwest"]
+# It enables the real transports' network deps (reqwest for the HTTP client, the aws-sdk for the Bedrock
+# model transport) — kept OPTIONAL so the default build never compiles them (no reqwest/hyper/rustls/aws
+# tree, no network types). The `dep:` bindings tie the optional dependencies to this feature only.
+live-net = ["dep:reqwest", "dep:aws-config", "dep:aws-sdk-bedrockruntime"]
 
 [dependencies]
 # The kernel whose Executor/Authorize traits + effect/event types we implement. Path dep across the
@@ -59,3 +59,12 @@ async-trait = "0.1"
 # single-threaded host awaits reqwest's async client directly (no `Send` bound needed — `#[cfg]`-gated
 # `ReqwestHttpTransport` is constructed on the host task).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+# aws-sdk-bedrockruntime + aws-config — the real Bedrock model transport behind `live-net`. OPTIONAL
+# (default build compiles no AWS tree). Credentials come from the ENVIRONMENT via the SDK's DEFAULT
+# credential provider chain (operator directive: pull creds from the environment; NO Membrain, NO broker,
+# no credential wiring in this repo). `aws-config` loads the default chain (env vars / profile / IMDS as
+# the ambient environment provides); `default-features = false` + the rustls HTTP client keeps it off the
+# platform OpenSSL, matching reqwest. Pinned to the crate's own (gitignored) Cargo.lock for a reproducible
+# live-net build; the default gate never sees them.
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"], optional = true }
+aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rustls"], optional = true }

@@ -52,6 +52,8 @@ pub use host::{AgentHost, HostedSession, SessionId};
 #[cfg(feature = "live-net")]
 pub use http::ReqwestHttpTransport;
 pub use http::{HttpExecutor, HttpMethod, HttpResponse, HttpTransport};
+#[cfg(feature = "live-net")]
+pub use model::BedrockModelTransport;
 pub use model::{ModelExecutor, ModelTransport};
 pub use retry::{classify, permanent, retryable, Retryability};
 pub use status::{host_session_status_json, session_status_json, DEFAULT_STALL_AFTER_MS};
