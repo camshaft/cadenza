@@ -227,6 +227,34 @@ impl EffectRequest {
             timeliness,
         }
     }
+
+    /// Construct an effect request FROM A FAMILY STRING (effect-schema slice 2 / seq-39) — the
+    /// register-by-string constructor. Where [`EffectRequest::new`] takes an [`EffectKind`] and derives the
+    /// family, this takes the family directly, so a NEW effect type needs no `EffectKind` variant. The
+    /// legacy `kind` field is still populated (it's not retired yet): a family with a well-known kind gets
+    /// it via [`EffectKind::from_family`]; a register-by-string extension family (no built-in kind) gets the
+    /// `Emit` PLACEHOLDER — kernel dispatch decisions and the idempotency key already key on the family, not
+    /// the kind, so the placeholder is inert (the durable `Dispatched` frame records the family, the
+    /// authoritative identity). `version` is 1. Additive alongside `new`; both yield the same shape.
+    pub fn new_with_family(
+        family: impl Into<std::sync::Arc<str>>,
+        target: impl Into<std::sync::Arc<str>>,
+        payload: Option<Payload>,
+        timeliness: Timeliness,
+    ) -> Self {
+        let family: std::sync::Arc<str> = family.into();
+        let kind = EffectKind::from_family(&family).unwrap_or(EffectKind::Emit);
+        EffectRequest {
+            content_type: ContentType {
+                family: std::borrow::Cow::Owned(family.to_string()),
+                version: 1,
+            },
+            kind,
+            target: target.into(),
+            payload,
+            timeliness,
+        }
+    }
 }
 
 /// How latency-sensitive an effect is — the operator's timeliness parameter (batchable-or-not). A sum,
@@ -459,6 +487,44 @@ mod tests {
     fn http(target: &str) -> EffectRequest {
         // Exercises the canonical constructor (the effect-schema-arc migration path).
         EffectRequest::new(EffectKind::Http, target, None, Timeliness::Interactive)
+    }
+
+    #[test]
+    fn new_with_family_derives_kind_for_wellknown_and_placeholders_extensions() {
+        // effect-schema slice 2: the register-by-string constructor. A WELL-KNOWN family derives its kind
+        // (and equals the enum constructor's shape); an EXTENSION family (no built-in kind) gets the Emit
+        // placeholder while preserving the real family — the durable identity dispatch/idempotency key on.
+        let http = EffectRequest::new_with_family(
+            effect_ct::HTTP,
+            "https://ok/x",
+            None,
+            Timeliness::Interactive,
+        );
+        assert_eq!(http.content_type.family, effect_ct::HTTP);
+        assert_eq!(
+            http.kind,
+            EffectKind::Http,
+            "well-known family derives its kind"
+        );
+        // Same shape as the enum constructor for a well-known family.
+        let via_enum = EffectRequest::new(
+            EffectKind::Http,
+            "https://ok/x",
+            None,
+            Timeliness::Interactive,
+        );
+        assert_eq!(http.content_type, via_enum.content_type);
+        assert_eq!(http.kind, via_enum.kind);
+
+        // An extension family with no EffectKind variant → Emit placeholder, family preserved.
+        let ext =
+            EffectRequest::new_with_family("custom/metrics", "m", None, Timeliness::Interactive);
+        assert_eq!(ext.content_type.family, "custom/metrics");
+        assert_eq!(
+            ext.kind,
+            EffectKind::Emit,
+            "an extension family with no built-in kind gets the Emit placeholder"
+        );
     }
 
     #[test]
