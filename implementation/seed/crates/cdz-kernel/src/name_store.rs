@@ -238,11 +238,15 @@ impl NameStore {
         }
     }
 
-    /// Drop a `store/set`'s idempotency key from the dedup set once its `EffectResult` is durably recorded
-    /// (the effect is SETTLED — recovery will not re-drive it, so its dedup entry is no longer needed).
-    /// This BOUNDS `applied_set_keys` to the in-flight (dispatched-but-unsettled) window instead of letting
-    /// it grow monotonically with every set (an unbounded-memory / DoS vector otherwise). Idempotent + total:
-    /// forgetting an absent key (e.g. a resolve, or a key already forgotten) is a harmless no-op.
+    /// Drop a `store/set`'s idempotency key from the dedup set once its `EffectResult` is RECORDED IN THE
+    /// SESSION LOG (the effect is SETTLED in this session — its dedup entry is no longer needed). Note the
+    /// boundary: "recorded" here means the in-memory session log; DURABILITY is separate (the write-through
+    /// append may latch a persist error), so this is NOT gated on a fsync'd EffectResult. That's still
+    /// re-drive-safe — the caller's prune site documents why (recovery re-attaches a FRESH store; an
+    /// in-process re-drive is blocked by the settled set) — so pruning after the in-memory record can't
+    /// re-open the crash-recovery re-apply. BOUNDS `applied_set_keys` to the in-flight window instead of
+    /// letting it grow monotonically with every set (an unbounded-memory / DoS vector otherwise). Idempotent
+    /// + total: forgetting an absent key (a resolve's, or an already-forgotten one) is a harmless no-op.
     pub fn forget_applied_key(&mut self, idempotency_key: &Hash) {
         self.applied_set_keys.remove(idempotency_key);
     }
