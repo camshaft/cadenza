@@ -2265,7 +2265,7 @@ mod monotonic_now_tests {
             kind: EffectKind::Emit,
             predicate: crate::effect::ResourcePredicate::Any,
         }]);
-        let mut session = Session::genesis(Hash::of(b"guery-then-seed-v1"));
+        let mut session = Session::genesis(Hash::of(b"query-then-seed-v1"));
 
         // Guest issues a control/capabilities query (via an inbound-triggered fold) BEFORE any seed.
         session
@@ -2432,8 +2432,11 @@ mod monotonic_now_tests {
         let id = EffectId(1);
         let mut emit = EffectRequest::new(EffectKind::Emit, "t", None, Timeliness::Interactive);
         emit.content_type.family = crate::effect::effect_ct::EMIT.into();
+        // A genuine NON-control register-by-string extension family (no EffectKind variant, so it carries
+        // the Emit placeholder kind) — NOT a control/* family (which the drive loop routes out before the
+        // emit path, per the control-plane partition). This is the real extension-vs-emit collision case.
         let mut ext = EffectRequest::new(EffectKind::Emit, "t", None, Timeliness::Interactive);
-        ext.content_type.family = "control/capabilities".into();
+        ext.content_type.family = "custom/metrics".into();
 
         assert_ne!(
             idempotency_key_for(id, &emit),
