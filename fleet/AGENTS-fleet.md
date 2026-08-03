@@ -116,20 +116,28 @@ Every firing of your `/loop`, in order:
    broken — but your worktree may be left dirty across ticks (the next tick resumes it).
 6. **If a commit is ready,** send `pr-sync` a `merge-request` (below). Otherwise reschedule.
 
-### ⚠ Keep your context small — self-compact at tick-top AND per work unit
+### ⚠ Keep your context small — keep turns short; compaction is WATCHDOG-driven, not self-invoked
 A saturated context is the fleet's worst failure mode: at ~100% even `/compact` can't submit (it
-queues behind your busy turn and never fires), so a wedged agent needs a manual operator RESTART —
-recurring churn across every role that does long turns. The rule, applied by EVERY role (with any
-role-specific cadence layered on top in the role body — e.g. pr-sync's per-MR checkpoint, the
-vertical's per-slice one):
-- **Tick-top:** if context is past ~70% at the START of a tick (right after the heartbeat, step 2),
-  run `/compact` FIRST, before draining the inbox or doing any work — a compact at 70% submits fine,
-  at 100% it cannot.
-- **Per work unit:** after EACH significant unit within a tick — a gate/build/test run (the biggest
-  single context ingest), a landed edit — CHECK context and `/compact` if past ~70% BEFORE starting
-  the next unit. A tick-top check ALONE is insufficient: a long continuous turn (common in a build
-  phase) never returns to the tick-top check, so it climbs to 100% mid-tick and starves its own
-  compact. Never carry a near-full window into another gate cycle.
+queues behind your busy turn and never fires), so a fully-wedged agent needs an auto-RESTART —
+recurring churn across every role that does long turns.
+
+**🔑 You CANNOT self-invoke `/compact`.** It is a built-in CLI slash command, NOT a tool/skill — an
+unattended looping agent has no way to run it (the Skill tool rejects built-ins). So "run `/compact`"
+is not an action you can take. Instead, **the watchdog does it FOR you**: it detects a pre-wall pane
+(≥85%, below the 100% wall) and `send-keys` `/compact` into your window — but only when your window is
+IDLE AT A PROMPT (a `/compact` can't land mid-turn). At the 100% wall it can no longer compact, so the
+watchdog auto-restarts the window instead (durable state persists). Both are automatic; you don't
+trigger either.
+
+**Your job is therefore to STAY COMPACTABLE — keep each turn short** so you return to an idle prompt
+often (that's when the watchdog can compact you) and never sprint from 70% to 100% inside one
+uninterrupted turn:
+- Do ONE well-scoped unit per turn, then yield to a prompt — don't chain a build + a big read + edits
+  into a single continuous turn that climbs past the wall before the watchdog can catch it idle.
+- The biggest single ingest is a gate/build/test run; after one, prefer ending the turn so the next
+  tick (and the watchdog) can act, rather than immediately starting another heavy unit.
+- If you're already very high and mid-turn, the safest move is to STOP the turn cleanly (finish the
+  current small step, don't start another) so your window goes idle and the watchdog can compact it.
 
 ## The message protocol
 
