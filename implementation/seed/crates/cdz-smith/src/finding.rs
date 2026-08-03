@@ -116,7 +116,9 @@ impl Finding {
                 // canned "disagree on VALUE" is wrong for a liveness or artifact-error divergence.
                 match differential_tag(d) {
                     "artifact" => {
-                        format!("backends DIVERGE at compile (one emits, one rejects): {body}")
+                        format!(
+                            "backends DIVERGE at compile — one builds, the other's emitted source fails to compile: {body}"
+                        )
                     }
                     "liveness" => format!("backends DISAGREE — one runs, one traps: {body}"),
                     _ => format!("backends DISAGREE on value: {body}"),
