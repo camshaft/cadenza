@@ -931,9 +931,12 @@ mod tests {
                    (inner (+ n 1)))) \
              (export outer))",
         ));
-        let d = db.def_by_name("outer").expect("def outer");
-        let body = db.defs[d].body.expect("outer body");
-        let _ = crate::lower::core_of(&mut db, body);
+        // Run the pass on a FRESH db (no prior `core_of` of `outer`'s body) — this is the faithful order
+        // (Copilot #1662): the hazard is that the pass's OWN pre-emit `core_of` over a capturing body is
+        // the FIRST demand and poisons `db.core`; pre-lowering the body here would pre-seed the very
+        // context the hazard says shouldn't exist yet, weakening the witness. The eligibility gate must
+        // reject `outer`'s body BEFORE the pass `core_of`s it, so no override installs and no poison. The
+        // pass enumerates the db's own def bodies, so it reaches `outer` without a handle threaded here.
         cse::GlobalCsePass.run(&mut db);
         assert!(
             !db.has_core_overrides(),
@@ -943,18 +946,21 @@ mod tests {
     }
 
     // NOTE on the heap-type exclusion (guard A, `candidate_groups`: `is_heap_type(ty) ||
-    // valtype_of(ty).is_none()` → skip): this guard is NOT unit-tested here by design. A clean pass-level
-    // witness proved impractical to construct — a heap VALUE reaches the pass only through forms that
-    // either fail the pure-scalar ELIGIBILITY gate (a `(list …)` build is `Resolved::List`, rejected; a
-    // `List.len`/`Bytes.at` body doesn't clear eligibility either) or wrap the heap node inside a SCALAR
-    // candidate (`(List.len (. r xs))` — the scalar `List.len` result becomes the maximal shared class,
-    // so a "no override" or "an override" result can't be cleanly attributed to guard A vs the eligibility
-    // gate). An earlier attempt here used `(list x x)` and asserted "no override", but that no-override
-    // came from the ELIGIBILITY gate (List builds are ineligible), NOT guard A — a test that passed for
-    // the wrong reason (github-liaison/Copilot #1652 review, correct). Rather than ship a third contrived
-    // body, guard A is left to its authoritative end-to-end coverage: the `--opt-sweep` level-equivalence
-    // gate over the whole corpus + v-wasm-opt's `tests::recursion` battery (heap-carrying loops where a
-    // wrongly-shared handle drifts Perceus rc into an observable miscompile). Those exercise the real
-    // heap path; a unit body cannot without contortion. The capturing-body gate above IS unit-tested
-    // because it is cleanly reachable (a nested capturing def is a direct, faithful trigger).
+    // valtype_of(ty).is_none()` → skip): NOT unit-tested here, for a HARNESS reason established empirically
+    // (Copilot #1662 review + a debug trace). To isolate guard A a witness needs an ELIGIBILITY-clean body
+    // whose SOLE `core_eq` repeat is a HEAP-typed candidate. The only such shapes route a heap value
+    // through a collection OPERATION (`Bytes.concat`/`Bytes.len`/`List.len`, so the scalar result doesn't
+    // become the maximal shared class) — but `crate::testkit::parse` + `Db::load` (the unit harness) does
+    // NOT seed the prelude MODULE operations, so `Bytes.concat`/`Bytes.len`/`List.len` resolve as
+    // `Poison(Unbound "concat"/"len")` → the body is a Poison, ineligible for a reason UNRELATED to guard
+    // A. (Verified: `(Bytes.concat (. r b) (. r b))` and `(Bytes.len (Bytes.concat …))` both trace an
+    // "unbound name" Poison at the module-op node in the unit harness, though both compile fine end-to-end.
+    // Copilot's Bytes.concat construction is sound in PRINCIPLE — Member/Proj ARE eligible — but the module
+    // op it depends on is unresolvable at the unit level.) An earlier `(list x x)` witness "passed" but via
+    // the ELIGIBILITY gate (`Resolved::List` rejected), NOT guard A — a wrong-reason test, removed. Rather
+    // than seed the full module prelude into a unit fixture (heavy, brittle), guard A is left to its
+    // authoritative END-TO-END coverage where module ops resolve: the `--opt-sweep` level-equivalence gate
+    // over the whole corpus + v-wasm-opt's `tests::recursion` battery (heap-carrying loops where a
+    // wrongly-shared handle drifts Perceus rc into an observable miscompile). The capturing-body gate above
+    // IS unit-tested — it needs no module op, so it is cleanly reachable in the harness.
 }
