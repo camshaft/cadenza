@@ -24547,6 +24547,49 @@ mod match_engine {
     }
 
     #[test]
+    fn a_let_binding_shadows_an_outer_binding_of_a_different_type_and_both_resolve() {
+        // Coverage-hardening for scope resolution: an inner `let` binder that SHADOWS an outer binder of a
+        // DIFFERENT type must resolve each occurrence at its own binding's type, and the outer binder must
+        // survive after the inner scope closes. Three faces, each construct + run:
+        //   (1) shadow Int64 `x` with Bool `x` in an inner let — the inner `x` is Bool, the outer stays Int64;
+        //   (2) the outer binder survives an inner same-name shadow of a THIRD type (String);
+        //   (3) a scalar shadowed by a generic built from itself — `(let ((x 7)) (let ((x (Mk x))) …))`.
+        // (1) outer x=5 (Int64) + y (from inner Bool `x`=true → `(if x 1 0)`=1) = 6.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) \
+                       (let ((x 5)) (let ((y (let ((x true)) (if x 1 0)))) (+ x y)))) (export main))"
+                ),
+                "main"
+            ),
+            6
+        );
+        // (2) outer x=10 (Int64) survives an inner `x`="hi" (String); z = byte-len "hi" = 2 → 10+2 = 12.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (def (main) \
+                       (let ((x 10)) (let ((z (let ((x \"hi\")) (String.byte-len x)))) (+ x z)))) (export main))"
+                ),
+                "main"
+            ),
+            12
+        );
+        // (3) scalar x=7 shadowed by `(Mk x)` (a `(Box Int64)`) — the inner `x` is the generic; match → 7.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type (Box a) (Mk a)) (def (main) \
+                       (let ((x 7)) (let ((x (Mk x))) (match x ((Mk v) v))))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
     fn a_wrong_arity_generic_in_a_variant_payload_is_cdz0203_at_the_declaration() {
         // FIX: a type constructor applied at the WRONG ARITY in a VARIANT PAYLOAD position — `(type W (Wrap
         // (Box Int64 Bool)))` where `(Box a)` takes 1, or a built-in `(Option Int64 Bool)` — was SILENTLY
