@@ -38,7 +38,7 @@ pub trait Authorize {
 /// implements the same trait and drops into the kernel unchanged.
 pub struct Authorizer {
     caps: Vec<Capability>,
-    /// Register-by-string grants for families with no built-in [`EffectKind`] (`store/*` §4c, any extension
+    /// Register-by-string grants for families with no built-in [`crate::effect::EffectKind`] (`store/*` §4c, any extension
     /// family) — see [`Capability::for_family`]/[`crate::effect::FamilyGrant`]. Separate from `caps` so the
     /// `Capability{kind,predicate}` struct + its 45 literals stay untouched (additive); `authorize` admits a
     /// request permitted by EITHER list. Empty unless populated via [`Authorizer::with_family_grants`].
