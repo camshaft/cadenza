@@ -104,6 +104,14 @@ pub struct NameStore {
 }
 
 impl NameStore {
+    /// The well-known mutable name for the current compiler build (the v0.2 seam: an agent `store/set`s
+    /// this to publish a freshly-compiled `rcdzc→wasm` hash; another agent `store/resolve`s it, then
+    /// blob-fetches + calls the compiled program). ONE source of truth for the pointer name across the
+    /// kernel, cdz-agent-host's demo agents, and any real user — so it isn't a string duplicated per crate.
+    /// Its `system/` prefix means only a `store/set` grant scoped to `system/` may repoint it (the §4c
+    /// anti-hijack write-authority — a random agent can't swap the compiler out from under everyone).
+    pub const COMPILER_LATEST: &'static str = "system/compiler/latest";
+
     pub fn new() -> Self {
         NameStore {
             names: HashMap::new(),
@@ -315,6 +323,30 @@ mod tests {
             Err(NameStoreError::UnscopedNameUnwritable)
         );
         assert_eq!(s.resolve("random-name"), Err(NameStoreError::NoSuchName));
+    }
+
+    #[test]
+    fn compiler_latest_const_is_a_system_scoped_well_formed_name() {
+        // The v0.2 compiler-pointer const: pin its value (one source of truth) + that it's System-scoped
+        // (so a store/set is write-gated by a system/ grant — the anti-hijack property the demo relies on).
+        assert_eq!(NameStore::COMPILER_LATEST, "system/compiler/latest");
+        assert_eq!(
+            NameStore::authority_prefix_of(NameStore::COMPILER_LATEST),
+            NameAuthority::System,
+            "the compiler pointer must be System-scoped (write-gated)"
+        );
+        // It's a well-formed (writable) name — a set to it is accepted (given the authz grant, which the
+        // store's own backstop doesn't check; here just the store mechanic).
+        let mut s = NameStore::new();
+        s.set(
+            NameStore::COMPILER_LATEST,
+            SetEntry::unsigned(Hash::of(b"wasm")),
+        )
+        .unwrap();
+        assert_eq!(
+            s.resolve(NameStore::COMPILER_LATEST).unwrap(),
+            Hash::of(b"wasm")
+        );
     }
 
     #[test]
