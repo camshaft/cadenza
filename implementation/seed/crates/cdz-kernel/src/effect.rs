@@ -410,7 +410,7 @@ impl Capability {
     /// (seq-39). A [`Capability`] can only name a family via `kind.family()`, i.e. one of the six well-known
     /// kinds; a `store/*` family (§4c) — or any future register-by-string family — has NO `EffectKind`, so it
     /// is otherwise UNGRANTABLE. This returns a [`FamilyGrant`] naming the family STRING directly; hand it to
-    /// [`Authorizer::with_family_grants`] (or the host's grant set) to permit that family under `predicate`.
+    /// [`crate::authz::Authorizer::with_family_grants`] (or the host's grant set) to permit that family under `predicate`.
     ///
     /// For `store/*` the predicate gates the NAME (the effect target): e.g.
     /// `Capability::for_family(effect_ct::STORE_SET, ResourcePredicate::Prefix("system/".into()))` permits

@@ -2808,6 +2808,35 @@ mod store_effect_tests {
         }
     }
 
+    // A reducer that ONLY resolves (a pure read): on inbound it emits store/resolve; on the Ok result it
+    // records the resolved hash. Used to prove read authority independently of write.
+    struct ResolveOnly;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for ResolveOnly {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    FoldOutput::with(vec![EffectRequest::new_with_family(
+                        effect_ct::STORE_RESOLVE,
+                        "system/compiler/latest",
+                        None,
+                        Timeliness::Interactive,
+                    )])
+                }
+                EventBody::EffectResult {
+                    result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
+                    ..
+                } => {
+                    if let Ok((_n, h)) = crate::event_ast::decode_name_set(bytes) {
+                        kv.put(b"resolved".to_vec(), h.to_hex().into_bytes());
+                    }
+                    FoldOutput::none()
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn store_set_with_payload_name_mismatching_target_is_refused() {
         // The target is what authz gated (SEC-F1); a set whose embedded payload name differs must be an
@@ -2832,6 +2861,64 @@ mod store_effect_tests {
             s.open_effects(),
             0,
             "the refused set settled (Err), not left open"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn allow_read_deny_write_a_resolve_only_grant_permits_resolve_but_denies_set() {
+        // Operator ask (2026-08-03): store read/write are SEPARATELY authorized — a grant of store/resolve
+        // (a read) must NOT imply store/set (a write). Prove BOTH halves under a resolve-ONLY grant:
+        use crate::effect::{effect_ct, Capability, ResourcePredicate};
+        let resolve_only = || {
+            Authorizer::new(vec![]).with_family_grants(vec![Capability::for_family(
+                effect_ct::STORE_RESOLVE,
+                ResourcePredicate::Prefix("system/".into()),
+            )])
+        };
+
+        // (a) READ is ALLOWED: pre-seed the name (bypassing authz — direct store), then a resolve-only
+        // session reads it under the resolve grant. (apply_effect takes the idempotency key — #1852.)
+        let mut store = NameStore::new();
+        store
+            .apply_effect(
+                effect_ct::STORE_SET,
+                "system/compiler/latest",
+                Some(Hash::of(b"seeded")),
+                Hash::of(b"seed-key"),
+            )
+            .unwrap();
+        let mut exec = crate::executor::RecordingExecutor::new();
+        let mut reader = Session::genesis(Hash::of(b"store-v1"));
+        reader.attach_name_store(store);
+        reader
+            .deliver(inbound(), None, &ResolveOnly, &resolve_only(), &mut exec)
+            .await
+            .unwrap();
+        assert_eq!(
+            reader.kv().get(b"resolved"),
+            Some(Hash::of(b"seeded").to_hex().as_bytes()),
+            "a store/resolve grant PERMITS the read"
+        );
+
+        // (b) WRITE is DENIED under the same resolve-only grant: SetThenResolve emits store/set first, which
+        // has no grant → AuthzDenied → the reducer never advances to resolving, nothing written.
+        let mut exec2 = crate::executor::RecordingExecutor::new();
+        let mut writer = Session::genesis(Hash::of(b"store-v1"));
+        writer.attach_name_store(NameStore::new());
+        writer
+            .deliver(
+                inbound(),
+                None,
+                &SetThenResolve,
+                &resolve_only(),
+                &mut exec2,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            writer.kv().get(b"resolved"),
+            None,
+            "a store/resolve-only grant must DENY store/set (allow-read-deny-write)"
         );
     }
 }
