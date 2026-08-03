@@ -4104,6 +4104,47 @@
   (call   main (: 17 Int64)) (output (: -17 Int64))
   (call   main (: -9223372036854775808 Int64)) (trap "integer overflow"))
 
+; The MIN/-1 overflow trap must fire at the DECLARED width, not the machine SLOT width — for an
+; ODD/unusual width whose slot is wider than the type (Int24 in an i32 slot, Int48 in an i64 slot),
+; the declared-width minimum is NOT the slot minimum, so a divide overflow guard that tests the slot
+; MIN never fires and the out-of-range value +2^(N-1) escapes into downstream arithmetic unchecked
+; (adv-67, rust: the checked +/-/* path already range-checks the declared width; the Div guard tested
+; {slot}::MIN). wasm traps correctly at every width. These pin the odd-width Div MIN/-1 face across a
+; sub-i32 width (Int24), a wider-than-i32 width (Int48), and the downstream-escape (poison) shape.
+(case "an odd-width signed division overflow traps at the declared width (Int24 min / -1)"
+  (doc    "`(/ (Int24 min) (Int24 k))` at k=-1: Int24.min = -8388608, and -8388608/-1 = +8388608 which
+           exceeds Int24.max (8388607) → MUST trap 'integer overflow'. The rust Div guard once tested the
+           SLOT min (i32::MIN for the i24 slot), which the declared min never equals, so it returned the
+           out-of-range +8388608; wasm traps. The in-range control (k=2) → -4194304 confirms the divide is
+           otherwise normal. Both backends trap now.")
+  (input  (do
+            (def (main (: k Int64))
+              (Int64.of (/ ((. (Int 24) wrap) -8388608) ((. (Int 24) wrap) k))))
+            (export main)))
+  (call   main (: -1 Int64)) (trap "integer overflow")
+  (call   main (: 2 Int64)) (output (: -4194304 Int64)))
+(case "an odd-width signed division overflow traps above the i32 slot too (Int48 min / -1)"
+  (doc    "The wider-slot face: Int48.min = -140737488355328 in an i64 slot; /-1 overflows Int48 (max
+           140737488355327) → traps. Pins that the declared-width guard is width-parametric, not special-cased
+           to sub-i32 — an Int48 (slot i64) declared min differs from i64::MIN, so the slot-min guard missed it
+           identically. Both backends trap.")
+  (input  (do
+            (def (main (: k Int64))
+              (Int64.of (/ ((. (Int 48) wrap) -140737488355328) ((. (Int 48) wrap) k))))
+            (export main)))
+  (call   main (: -1 Int64)) (trap "integer overflow"))
+(case "an odd-width division overflow traps before the out-of-range value escapes into Int64 arithmetic"
+  (doc    "The soundness bite (adv-67 poison face): if the odd-width Int24 min/-1 did NOT trap, the
+           out-of-range +8388608 would flow into `(+ bad …)` at Int64 unchecked — an out-of-range value
+           for the declared Int24 escaping into downstream math. The trap must fire AT the division, before
+           the escape. Both backends trap at k=-1.")
+  (input  (do
+            (def (main (: k Int64))
+              (let ((bad (/ ((. (Int 24) wrap) -8388608) ((. (Int 24) wrap) k))))
+                (Int64.of (+ bad ((. (Int 24) wrap) 0)))))
+            (export main)))
+  (call   main (: -1 Int64)) (trap "integer overflow"))
+
 (case "remainder by negative one annihilates to zero at every input including the minimum"
   (doc    "`(% x -1)` is 0 for EVERY x — including Int64.min, where the sibling `/` traps: the remainder
            after dividing by -1 is always exact. The `%`-vs-`/` overflow split at a LITERAL -1 divisor

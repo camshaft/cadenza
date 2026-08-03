@@ -5621,3 +5621,6 @@ pass	compacting then reading the flat's LEN after an equality against the rope i
 pass	compacting then a concat+len of the flat after an equality (no rope-left compare) is safe (adv-66 perimeter)
 pass	compacting then TWO order-compares (no equality) is safe (adv-66 perimeter)
 pass	Bytes.concat of two sliced-view to-bytes is read twice and both reads see the concatenated bytes
+pass	an odd-width signed division overflow traps at the declared width (Int24 min / -1)
+pass	an odd-width signed division overflow traps above the i32 slot too (Int48 min / -1)
+pass	an odd-width division overflow traps before the out-of-range value escapes into Int64 arithmetic
