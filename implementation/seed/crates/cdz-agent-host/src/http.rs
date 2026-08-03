@@ -131,8 +131,8 @@ mod tests {
     }
 
     fn http_req(payload: Option<Payload>) -> EffectRequest {
-        EffectRequest::new(
-            EffectKind::Http,
+        EffectRequest::new_with_family(
+            effect_ct::HTTP,
             "https://ok.host/x".to_string(),
             payload,
             Timeliness::Interactive,
@@ -243,8 +243,8 @@ mod tests {
             }
         }
         let mut exec = HttpExecutor::new(NeverCalled);
-        let req = EffectRequest::new(
-            EffectKind::Model,
+        let req = EffectRequest::new_with_family(
+            effect_ct::MODEL,
             "m".to_string(),
             None,
             Timeliness::Interactive,

