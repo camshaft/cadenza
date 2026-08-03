@@ -42273,6 +42273,47 @@ mod match_engine {
     }
 
     #[test]
+    fn an_unannotated_mutrec_accumulator_grounds_its_sum_element_and_emits_on_rust() {
+        // THE FIX for the mutual-recursion `(List Any)` freeze (v-rust-backend ask, breaker mx5). An
+        // UNANNOTATED accumulator `acc` in a mutually-recursive decoder — `dac`'s `acc` seeds as an empty
+        // `(list)` and is only ever `(List.push acc child)` where `child : Ast` is bound by `(match (dn b i)
+        // ((tuple child nx) …))`, `dn`/`dac` a mutual SCC. Its element SHOULD ground to `Ast`. It DID on
+        // wasm (heap-erased) but FROZE to `(List Any)` on the rust path: during the connected param-solve,
+        // `child`'s type reads through `arg_ty_in_env`'s SumPayload arm off the partner call `(dn b i)`,
+        // which types `Any` mid-solve (dn's scheme deferred under the in-flight SCC) → `child : Any` → froze
+        // `acc = (List Any)` in `db.param_types` → rust "parameter type (List Any) has no native
+        // representation". FIX (infer.rs SumPayload arm): when the partner-call result is an undetermined
+        // `Any`, RE-TYPE it from the callee's BODY (whose constructors fix the concrete `(Tuple Ast Int64)`),
+        // guarded by `db.scc_result_typing` against the mutual-edge recursion. `acc` now grounds to `(List
+        // Ast)` and BOTH backends emit. Prior to the fix the unannotated form declined rust while the
+        // annotated workaround (the pin above) was the only rust-buildable spelling.
+        let src = "(module m \
+          (type Ast (AInt Int64) ALeaf (AList (List Ast))) \
+          (def (dn b i) \
+            (if (= i 0) \
+                (tuple (AInt (Option.expect (List.at b 0) \"in range\")) (+ i 1)) \
+                (tuple (AList (dac b i (- i 1) (list))) (+ i 1)))) \
+          (def (dac b i n acc) \
+            (if (< n 1) acc \
+                (match (dn b i) ((tuple child nx) (dac b nx (- n 1) (List.push acc child)))))) \
+          (def (top b) (match (dn b 0) ((tuple ast pos) ast))) \
+          (def (main) (match (top (list 42 7)) ((AInt n) n) (_ -1))) (export main))";
+        // WASM (always emitted).
+        let mut dbw = crate::db::Db::load(parse(src));
+        let layw =
+            crate::layout::compute(&mut dbw).expect("unannotated mutrec decoder lays out (wasm)");
+        crate::backend::emit(crate::backend::Target::Wasm, &mut dbw, &layw, None, None)
+            .expect("unannotated mutrec decoder must emit wasm");
+        // RUST (the regressed side — must now EMIT, not decline on a frozen (List Any) accumulator).
+        let mut dbr = crate::db::Db::load(parse(src));
+        let layr =
+            crate::layout::compute(&mut dbr).expect("unannotated mutrec decoder lays out (rust)");
+        crate::backend::emit(crate::backend::Target::Rust, &mut dbr, &layr, None, None).expect(
+            "unannotated mutrec accumulator grounds its element to Ast (not frozen (List Any)) and emits rust",
+        );
+    }
+
+    #[test]
     fn an_annotated_accumulator_lets_a_mutually_recursive_decoder_emit_on_both_backends() {
         // PERIMETER pin for the (List Any) mutual-recursion freeze (v-rust-backend ask + breaker mx2):
         // the UNANNOTATED accumulator `acc` of `dac` freezes to `(List Any)` and DECLINES on rust — its

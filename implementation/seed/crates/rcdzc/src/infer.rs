@@ -4323,8 +4323,33 @@ fn arg_ty_in_env(
                 // binder read directly off a parameter sum; this covers one read off a call's result sum.
                 _ => Some(arg_ty_in_env(db, scrutinee, env, subst, fresh)),
             };
-            if let Some(root) = root {
-                return walk_payload_ty(db, subst.apply(&root), &steps, &heads, subst);
+            if let Some(mut root) = root {
+                root = subst.apply(&root);
+                // MUTUAL-RECURSION PARTNER RESULT (SCC freeze fix). When the scrutinee is a call to a MUTUAL
+                // PARTNER — `(match (dn b i) ((tuple child nx) …))` where `dn` and the def whose params are
+                // being solved (`dac`) are in the SAME recursive SCC (both in `solving_params`) — the call
+                // types to `Any` mid-solve: `dn`'s scheme is deferred under the in-flight solve, so its whole
+                // result collapses. A payload binder read off it (`child`) then types `Any` and FREEZES into
+                // `db.param_types` for the accumulator it is pushed onto (`acc` → `(List Any)`), which the
+                // rust backend cannot represent though a clean re-solve grounds it to the real sum. STANDALONE
+                // `type_of(dn's body)` DOES resolve the concrete result (its constructors fix the shape). So
+                // when the partner-call result is an undetermined `Any`, RE-TYPE it from the callee's BODY,
+                // which reads the concrete ctors. Guarded by a visited-set (`scc_result_typing`) so co-solving
+                // the SCC does not recurse forever (dn's body calls dac, whose child would re-demand dn's body).
+                if matches!(root, Ty::Any)
+                    && let Resolved::Apply { head, .. } = resolved_of(db, scrutinee)
+                    && let Some(callee) = callee_def_index_for_infer(db, head)
+                    && !db.scc_result_typing.contains(&callee)
+                    && let Some(callee_body) = db.defs[callee].body
+                {
+                    db.scc_result_typing.insert(callee);
+                    let body_ty = type_of(db, callee_body);
+                    db.scc_result_typing.remove(&callee);
+                    if !matches!(body_ty, Ty::Any) {
+                        root = subst.apply(&body_ty);
+                    }
+                }
+                return walk_payload_ty(db, root, &steps, &heads, subst);
             }
         }
         _ => {}
