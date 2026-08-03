@@ -177,6 +177,44 @@
             (export main)))
   (error  CDZ0203))
 
+; The monomorphic case above rejects an OVER-application; its positive counterpart is a legitimately
+; GENERIC user sum applied to a CONCRETE type in an annotation — this must RESOLVE by name exactly as a
+; built-in generic `(Option Int64)` / `(List Int64)` does. That path was silently broken (a user generic's
+; name missed the type-annotation resolve — bare or applied — while monomorphic user sums and built-in
+; generics resolved fine), so no annotation case existed to catch it; the two below pin both faces.
+
+(case "a user-declared generic sum resolves by name in a parameter type annotation"
+  (doc    "The positive counterpart of the monomorphic over-application reject above: a user-declared
+           GENERIC sum `(type (Container a) (Full a))` applied to a CONCRETE type in a parameter annotation
+           `(: b (Container Int64))` must RESOLVE by name and check the argument, exactly as the built-in
+           `(: x (Option Int64))` / `(: x (List Int64))` do (type-system.md #Generics Are Type-Valued
+           Parameters). A user generic's type NAME previously missed the type-annotation resolve entirely —
+           `(Container Int64)` reported CDZ0101 'unbound name Container' — so a program could not annotate a
+           parameter with its own generic type (workaround was to drop the annotation and lean on inference).
+           `(unwrap (Full 7))` at `(Container Int64)` recovers the payload `7`. Pins that a user generic
+           resolves in a type-expression position like a built-in generic does, closing the annotation gap.")
+  (input  (do
+            (type (Container a) (Full a))
+            (def (unwrap (: b (Container Int64))) (match b ((Full v) v)))
+            (def (main (: k Int64)) (unwrap (Full k)))
+            (export main)))
+  (call   main (: 7 Int64))
+  (output (: 7 Int64)))
+
+(case "a user generic sum named BARE (unapplied) in an annotation needs a type argument"
+  (doc    "The generic sibling of the monomorphic over-application: naming the generic `Container` BARE in a
+           parameter annotation `(: b Container)` — no type argument — is under-applied, exactly the reject a
+           bare built-in `(: b Option)` gets. The diagnostic is the type-constructor-needs-an-argument branch
+           (CDZ0203), NOT the old 'unknown type Container' (CDZ0101): the name now resolves to the type
+           constructor, and the fault is the missing argument. Pins that a user generic behaves as a proper
+           type constructor in an annotation — resolvable by name, but requiring its argument.")
+  (input  (do
+            (type (Container a) (Full a))
+            (def (unwrap (: b Container)) (match b ((Full v) v)))
+            (def (main (: k Int64)) (unwrap (Full k)))
+            (export main)))
+  (error  CDZ0203))
+
 ; The two cases above over-apply a NON-generic type to a TYPE argument (arity is wrong). The dual slip
 ; is a legitimately GENERIC type constructor — one that DOES take a type parameter — applied to a VALUE
 ; where a type belongs: `(Option 5)`, `(List 5)`. Here the arity is right (Option/List take one
