@@ -1394,12 +1394,13 @@ mod status_snapshot_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn deliver_is_deterministic_same_input_same_state() {
-        // Determinism (§3): `deliver` is a pure function of (starting state, input, reducer) — two
-        // independent sessions at the SAME starting state, fed the SAME inbound through the SAME reducer,
-        // must end BYTE-IDENTICAL (here both start from a fresh genesis). Build two and assert they
-        // match on the KV ROOT HASH (the whole KV, not one key), the log length, and the derived status.
-        // Any nondeterminism in the drive loop fails loudly HERE. (Historically this pinned sync-vs-async
-        // equivalence; post all-async collapse there is one `deliver`, so it now pins delivery determinism.)
+        // Determinism (§3): `deliver` is REPRODUCIBLE — same starting state + same inputs (inbound,
+        // reducer, authz, executor) ⇒ BYTE-IDENTICAL result. Two independent sessions, both from a fresh
+        // genesis, fed the same inbound through the same reducer/authz/executor must end identical. Build
+        // two and assert they match on the KV ROOT HASH (the whole KV, not one key), the log length, and
+        // the derived status. Any nondeterminism in the drive loop fails loudly HERE. (Historically this
+        // pinned sync-vs-async equivalence; post all-async collapse there is one `deliver`, so it now pins
+        // delivery determinism.)
 
         let mut sync_exec = RecordingExecutor::new();
         let mut sync_s = Session::genesis(Hash::of(b"status-v1"));
