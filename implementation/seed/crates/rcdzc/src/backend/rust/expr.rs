@@ -2924,6 +2924,12 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                 // float/compound arg has no boundary form yet → decline.
                 let bound = if int_rust_ty(&a_rt) {
                     format!("({av}) as i64")
+                } else if a_rt == "bool" {
+                    // A BOOL argument marshals to `i64` (0/1) — the SAME uniform integer marshal an int arg
+                    // uses, matching wasm (which reps Bool as i32 and crosses it fine). `as i64` doesn't apply
+                    // to `bool` in Rust, so cast through `i64::from(<bool>)`. The generated shim param is
+                    // generic and ignores the value; the corpus host-call sequence compares the op name only.
+                    format!("i64::from({av})")
                 } else if a_rt == "String" || a_rt == "Vec<u8>" {
                     av
                 } else if a_rt == "()" {
@@ -2934,7 +2940,7 @@ fn emit(db: &mut Db, id: StructId, env: &Env, ctx: &Ctx) -> Result<String, Rejec
                     format!("{{ {av}; () }}")
                 } else {
                     return Err(Reject::decline(
-                        "the Rust backend does not yet render a host call with a non-integer/string/bytes/unit ARGUMENT (later increment)",
+                        "the Rust backend does not yet render a host call with a non-integer/bool/string/bytes/unit ARGUMENT (later increment)",
                     ));
                 };
                 bindings.push_str(&format!("let __ha{i} = {bound}; "));
