@@ -60,11 +60,18 @@ async-trait = "0.1"
 # `ReqwestHttpTransport` is constructed on the host task).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 # aws-sdk-bedrockruntime + aws-config — the real Bedrock model transport behind `live-net`. OPTIONAL
-# (default build compiles no AWS tree). Credentials come from the ENVIRONMENT via the SDK's DEFAULT
+# (default build compiles no AWS tree). Credentials come from the ENVIRONMENT via the SDK's default
 # credential provider chain (operator directive: pull creds from the environment; NO Membrain, NO broker,
-# no credential wiring in this repo). `aws-config` loads the default chain (env vars / profile / IMDS as
-# the ambient environment provides); `default-features = false` + the rustls HTTP client keeps it off the
-# platform OpenSSL, matching reqwest. Pinned to the crate's own (gitignored) Cargo.lock for a reproducible
-# live-net build; the default gate never sees them.
-aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"], optional = true }
-aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rustls"], optional = true }
+# no credential wiring in this repo).
+#
+# `default-features = false` drops the platform native-tls (we bring rustls instead — no system OpenSSL,
+# matching reqwest), BUT the SDK's default set also carries the HTTPS CONNECTOR (`default-https-client`)
+# and the async RUNTIME (`rt-tokio`) that `.send().await` needs at runtime — so we MUST re-enable those
+# explicitly or a live-net call would fail with no connector/runtime (PR #1841 review, verified). So the
+# enabled set is: rustls (TLS backend) + default-https-client (the hyper connector) + rt-tokio (the tokio
+# sleep/timeout runtime). aws-config additionally keeps `behavior-version-latest`. We do NOT enable the
+# profile/SSO/IMDS credential-source features (`sso`, `credentials-process`) — env-var credentials
+# (AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY / _SESSION_TOKEN + region) are the supported source per the
+# operator's environment-creds directive; a deployment needing profile/IMDS adds those features.
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "default-https-client", "rt-tokio"], optional = true }
+aws-sdk-bedrockruntime = { version = "1", default-features = false, features = ["rustls", "default-https-client", "rt-tokio"], optional = true }
