@@ -2817,6 +2817,48 @@ mod store_effect_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn a_published_pointer_survives_a_snapshot_bytes_round_trip_into_a_recovered_session() {
+        // The DURABLE hand-across: same publish→consume loop as above, but the pointer crosses the session
+        // boundary through the snapshot BLOB path (snapshot_bytes → from_snapshot_bytes), not the in-memory
+        // to_set_entries/replay pair. This is exactly what a durable-store backend runs — persist publisher A's
+        // store to one content-addressed blob on quiescence, then restore it into a recovered/other session on
+        // recover. Each primitive is unit-tested alone (snapshot round-trip in name_store.rs, read-back +
+        // in-memory hand-across above); this pins them COMPOSED, the sequence the backend actually executes.
+        let mut exec_a = crate::executor::RecordingExecutor::new();
+        let mut publisher = Session::genesis(Hash::of(b"store-v1"));
+        publisher.attach_name_store(NameStore::new());
+        publisher
+            .deliver(inbound(), None, &SetThenResolve, &AllowStore, &mut exec_a)
+            .await
+            .unwrap();
+
+        // Driver PERSISTS A's store as a single durable blob (what a backend blob.put()s on quiescence),
+        // reading it out via the borrowing accessor. Then RESTORES it into a fresh store (blob.get() on
+        // recover) — no shared handle, the whole store survives as opaque bytes.
+        let snapshot = publisher
+            .name_store()
+            .expect("publisher has a store attached")
+            .snapshot_bytes();
+        let restored = NameStore::from_snapshot_bytes(&snapshot)
+            .expect("A's snapshot blob restores into an identical store");
+
+        // Attach the restored store to a SEPARATE recovered consumer session B; B store/resolve's the name A
+        // published and reads back exactly the hash A set — the pointer survived the durable blob boundary.
+        let mut exec_b = crate::executor::RecordingExecutor::new();
+        let mut consumer = Session::genesis(Hash::of(b"store-v1"));
+        consumer.attach_name_store(restored);
+        consumer
+            .deliver(inbound(), None, &ResolveOnly, &AllowStore, &mut exec_b)
+            .await
+            .unwrap();
+        assert_eq!(
+            consumer.kv().get(b"resolved"),
+            Some(Hash::of(b"compiler-wasm-v1").to_hex().as_bytes()),
+            "B resolved A's pointer after a snapshot_bytes→from_snapshot_bytes round-trip — durable hand-across"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn store_effect_with_no_attached_store_folds_an_observable_err() {
         // §9d anti-stuck: a store effect on a session with no NameStore attached is an observable Err
         // outcome (folded), never a panic. The reducer's set gets an Err result → it does NOT advance to
