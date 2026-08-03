@@ -628,6 +628,28 @@ mod tests {
     }
 
     #[test]
+    fn from_snapshot_bytes_fails_closed_on_an_injected_unscoped_name() {
+        // §4c anti-hijack: from_snapshot_bytes decodes bytes from the CAS, so a TAMPERED blob is in the
+        // threat model. snapshot_bytes itself can never emit an Unscoped name (a valid store can't hold one),
+        // but an attacker with CAS-write could hand-craft a WELL-FRAMED name-set naming an unwritable prefix
+        // (`evil/x → hash`) to smuggle a nonsense pointer into a recovered store. The restore path must reject
+        // it — replay_set_entries_fails_closed pins this for replay DIRECTLY; this pins it THROUGH the decode
+        // path, where the untrusted bytes actually enter. (match on Err — NameStore has no Debug.)
+        let frame = crate::event_ast::encode_name_set("evil/x", &Hash::of(b"hijack"));
+        let mut adversarial = (frame.len() as u32).to_le_bytes().to_vec();
+        adversarial.extend_from_slice(&frame);
+        // The blob is perfectly well-FRAMED (not MalformedSnapshot) — it fails on the AUTHORITY check.
+        match NameStore::from_snapshot_bytes(&adversarial) {
+            Err(e) => assert_eq!(
+                e,
+                NameStoreError::UnscopedNameUnwritable,
+                "an injected Unscoped name is rejected on the authority check, not silently restored"
+            ),
+            Ok(_) => panic!("a tampered snapshot naming an unwritable prefix must fail-closed"),
+        }
+    }
+
+    #[test]
     fn replay_set_entries_fails_closed_on_an_unscoped_name_in_the_stream() {
         // A corrupt/tampered durable stream can't smuggle a nonsense (Unscoped) name into the recovered
         // store — replay goes through set(), which rejects it (same fail-closed invariant as live write).
