@@ -252,7 +252,9 @@ scannable, near-static map. Your default write target is your OWN sub-index/log 
   find yourself editing the root most ticks, that's the churn this rule exists to stop — put it in your
   log instead.
 - The root line is a STABLE 1-line pointer in the shape the `librarian` maintains (~1 sentence, <~250B):
-  `- <emoji> **NAME (`v-x`)** — <one-clause current status/phase> [🔜 <next, if any>] [[<your-sub-index-or-log>]]`.
+  ```
+  - <emoji> **NAME (v-x)** — <one-clause current status/phase> [🔜 <next, if any>] [[<your-sub-index-or-log>]]
+  ```
   So a genuine-focus-shift edit is just: change the one status clause (+ maybe the 🔜-next) — nothing
   else. ALL detail (traps, landed shas, in-flight MRs, increments) lives in the `[[sub-index]]`. Not a
   changelog, not a status board.
