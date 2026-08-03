@@ -7649,10 +7649,13 @@ fn dispatch_is_in_flight(d: &CiDispatch) -> bool {
     d.status == "in-flight"
 }
 
-/// Do two git refs name the same commit, tolerant of abbreviation? Candidate refs are stored at
-/// varying widths (a 9-char abbrev in one place, a full 40-char sha in another), so an exact `==`
-/// misses a real match. Case-insensitive prefix match either direction (the git convention: `abc123`
-/// matches `abc123def…`). Empty on either side never matches (an unknown ref must not alias). Pure.
+/// Abbreviation-tolerant prefix match between two git refs (git convention: `abc123` matches
+/// `abc123def…`) — NOT a uniqueness proof. Candidate refs are stored at varying widths (a 9-char
+/// abbrev in one place, a full 40-char sha in another), so an exact `==` misses a real match; a
+/// case-insensitive prefix match either direction catches it. It CANNOT prove two refs are the same
+/// commit (a short abbrev could in principle prefix two distinct shas), but our refs are full or
+/// git-abbreviated shas of REAL commits, so a prefix match is a reliable "same commit" signal in
+/// practice. Empty on either side never matches (an unknown ref must not alias). Pure.
 fn refs_match(a: &str, b: &str) -> bool {
     if a.is_empty() || b.is_empty() {
         return false;
@@ -7833,9 +7836,15 @@ fn dispatch_plan(fleet: &Fleet, r#ref: &str, agent: &str) {
         })
         .unwrap_or_default();
     let lane = lane_of(&paths);
+    // MUST mirror `publish_candidate`'s in-flight guard EXACTLY (the preview can't drift from the
+    // executor): filter to `dispatch_is_in_flight` + match on the REF (`refs_match`), NOT the agent.
+    // The old `d.ref==ref || d.agent==agent` scanned resolved records + matched agent-alone, so the
+    // preview would falsely report "in-flight: YES" for a DIFFERENT ref from the same agent while the
+    // executor proceeded (PR #1591 review).
     let already = read_ci_dispatches(fleet)
         .into_iter()
-        .find(|d| d.r#ref == r#ref || d.agent == agent);
+        .filter(dispatch_is_in_flight)
+        .find(|d| refs_match(&d.r#ref, r#ref));
     // Print the EXACT commands `publish-candidate` will run (shared source of truth), so the preview
     // can never drift from the executor. (Preview uses placeholder title/body — the live path fills the
     // real commit subject; the COMMAND SHAPE is what this previews.)
