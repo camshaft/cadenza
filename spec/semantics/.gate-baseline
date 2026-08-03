@@ -211,6 +211,7 @@ pass	MULTI-EXPORT: two two-Tuple-arg closures with a LIST result share one `call
 pass	MULTI-EXPORT: two two-Tuple-arg closures with a fixed COMPOUND result
 pass	MULTI-LIMB BigInts built by three arithmetic routes hash to one set element
 pass	MULTI-TYPE bracket matching pushes openers on a list stack and rejects the interleave
+pass	MUTUALLY-recursive MODULE-exported performers are both homed by the importer's handler
 pass	Map.remove and Map.lookup by different-route MULTI-LIMB keys agree with the inserted key
 pass	Map.remove at a RUNTIME key shrinks only on a hit
 pass	Map.remove by a slice-view key drops the flat-keyed entry

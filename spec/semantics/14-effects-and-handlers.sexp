@@ -2523,6 +2523,33 @@
             (export main)))
   (call   main (: 5 Int64)) (output (: 105 Int64)))
 
+(case "MUTUALLY-recursive MODULE-exported performers are both homed by the importer's handler"
+  (doc    "The mutual-recursion escalation of the module-performer fix: `ping`/`pong` are TWO module-exported
+           functions that CROSS-CALL each other, each performing `Ctr.next` per step, entered via `(. m ping)`
+           under the importer's handler. Both must home under that handler — so the effect-context reduction
+           must resolve BOTH module-qualified recursive callees (through the `Member` projection) and
+           specialize the mutual-recursion SCC as a unit. This is the deeper face of the single-recursive
+           module case: the `callee_def_index_of` Member arm covers it because BOTH `ping` and `pong` resolve
+           through the same Member path and the existing mutual-recursion specialization then handles the
+           cross-calls — no separate SCC machinery needed. Seeded 1, the per-run cursor yields 1,2,3 across
+           the three activations (ping→pong→ping); pong doubles its tick, so main(3) = 143. (breaker mm1
+           escalation witness — flips together with mo1, confirming the fix generalizes past single
+           self-recursion to the mutual-recursion SCC.)")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (module m
+              (def (ping (: n Int64) (: acc Int64))
+                (if (= n 0) acc (pong (- n 1) (+ (* 10 acc) (Ctr.next unit)))))
+              (def (pong (: n Int64) (: acc Int64))
+                (if (= n 0) acc (ping (- n 1) (+ (* 10 acc) (* 2 (Ctr.next unit))))))
+              (export ping) (export pong))
+            (def (main (: k Int64))
+              (handle Ctr 1
+                ((next (u) s (resume s (+ s 1))))
+                ((. m ping) k 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 143 Int64)))
+
 (case "a performed operation is the scrutinee of a match that dispatches on its result"
   (doc    "Witnesses that an effect operation composes as a match SCRUTINEE, exactly as it composes as an
            `if` condition or an arithmetic operand: `(match (Fresh.next) (0 100) (_ 200))`. The scrutinee is
