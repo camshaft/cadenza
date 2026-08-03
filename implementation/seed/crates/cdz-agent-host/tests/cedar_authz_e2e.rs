@@ -56,7 +56,7 @@ fn inbound(kind_marker: &str) -> EventBody {
 struct PolicyProbe;
 #[async_trait::async_trait(?Send)]
 impl Reducer for PolicyProbe {
-    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { payload, .. } => {
                 let Payload::Inline(m) = payload else {

@@ -43,17 +43,13 @@ impl ClockExecutor {
 }
 
 // Native `Executor` (not driven via the `SyncExecutorAsAsync` blanket): the async kernel loop calls
-// `perform_async`. Reading the clock is synchronous (no `.await` point) — an executor that touches real
-// I/O (Model/Http) awaits its transport, but the clock read is instantaneous — so `perform_async` here
+// `perform`. Reading the clock is synchronous (no `.await` point) — an executor that touches real
+// I/O (Model/Http) awaits its transport, but the clock read is instantaneous — so `perform` here
 // has no await. It impls `Executor` directly (dropping the old sync `Executor` impl) so it can sit in
 // an `CompositeExecutor` and not overlap the blanket (§ all-async, step-5).
 #[async_trait::async_trait(?Send)]
 impl Executor for ClockExecutor {
-    async fn perform_async(
-        &mut self,
-        req: &EffectRequest,
-        _idempotency_key: Hash,
-    ) -> EffectOutcome {
+    async fn perform(&mut self, req: &EffectRequest, _idempotency_key: Hash) -> EffectOutcome {
         if req.kind != EffectKind::Now {
             // A wrong-kind request is structural — PERMANENT, a supervisor must not retry it (§17: an
             // observable Err, never a panic).
@@ -116,7 +112,7 @@ mod tests {
     async fn now_returns_an_8_byte_le_u64_nanos_timestamp() {
         let mut exec = ClockExecutor::new();
         let ns = decode_ns(
-            exec.perform_async(&req(EffectKind::Now, ""), Hash::of(b"k"))
+            exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k"))
                 .await,
         );
         // A sane lower bound: well after 2020 (1_577_836_800_000_000_000 ns = 2020-01-01) — proves it's a
@@ -133,7 +129,7 @@ mod tests {
         // width is load-bearing for the monotonic guarantee.
         let mut exec = ClockExecutor::new();
         match exec
-            .perform_async(&req(EffectKind::Now, ""), Hash::of(b"k"))
+            .perform(&req(EffectKind::Now, ""), Hash::of(b"k"))
             .await
         {
             EffectOutcome::Ok(Some(Payload::Inline(bytes))) => {
@@ -155,11 +151,11 @@ mod tests {
         // only what this executor guarantees — each read is a sane epoch-nanos value.
         let mut exec = ClockExecutor::new();
         let a = decode_ns(
-            exec.perform_async(&req(EffectKind::Now, ""), Hash::of(b"k"))
+            exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k"))
                 .await,
         );
         let b = decode_ns(
-            exec.perform_async(&req(EffectKind::Now, ""), Hash::of(b"k"))
+            exec.perform(&req(EffectKind::Now, ""), Hash::of(b"k"))
                 .await,
         );
         assert!(
@@ -177,7 +173,7 @@ mod tests {
         // This is a single-kind executor; a wrong kind is an observable Err (§9d), never a panic.
         let mut exec = ClockExecutor::new();
         match exec
-            .perform_async(&req(EffectKind::Http, "https://x/"), Hash::of(b"k"))
+            .perform(&req(EffectKind::Http, "https://x/"), Hash::of(b"k"))
             .await
         {
             EffectOutcome::Err(msg) => {

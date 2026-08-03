@@ -49,7 +49,7 @@ impl ModelTransport for StubModel {
 struct ModelAgent;
 #[async_trait::async_trait(?Send)]
 impl Reducer for ModelAgent {
-    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"prompting".to_vec());
@@ -133,7 +133,7 @@ async fn one_composite_routes_both_now_and_model_for_one_agent() {
     struct ClockThenModel;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ClockThenModel {
-        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 // Step 1: ask for the time.
                 EventBody::Inbound { .. } => {
@@ -219,7 +219,7 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
     struct WrongModelAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for WrongModelAgent {
-        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
                 FoldOutput::with(vec![EffectRequest::new_with_family(
                     effect_ct::MODEL,

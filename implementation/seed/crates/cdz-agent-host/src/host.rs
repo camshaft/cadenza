@@ -39,7 +39,7 @@ use std::collections::HashMap;
 // The host drives sessions through the kernel's ASYNC loop (`Session::deliver_async`) so a long fold can
 // cooperatively yield and sessions interleave (§15b). A reducer is therefore held as a `Box<dyn
 // Reducer>` — the SINGLE reducer trait (operator "one async trait only"): a pure-Rust reducer writes
-// a native `impl Reducer` (its `fold_async` runs to completion with no await point), and a wasm
+// a native `impl Reducer` (its `fold` runs to completion with no await point), and a wasm
 // reducer uses `AsyncComponentReducer`. Both box directly as `Box<dyn Reducer>` — no wrapper.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct SessionId(pub std::sync::Arc<str>);
@@ -310,7 +310,7 @@ mod tests {
     struct ClockAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ClockAgent {
-        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(
@@ -364,7 +364,7 @@ mod tests {
     }
     #[async_trait::async_trait(?Send)]
     impl Reducer for TimerAgent {
-        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { .. } => {
                     FoldOutput::with(vec![EffectRequest::new_with_family(
@@ -619,7 +619,7 @@ mod tests {
     struct ReportingAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for ReportingAgent {
-        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
                     // Summarize from local KV — here, echo the recorded phase into the emitted summary.
@@ -691,7 +691,7 @@ mod tests {
     struct MultiControlAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for MultiControlAgent {
-        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
                     let caps = EffectRequest::new_with_family(
@@ -748,7 +748,7 @@ mod tests {
     struct NoSummaryAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for NoSummaryAgent {
-        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if let EventBody::Inbound { content_type, .. } = &event.body {
                 if content_type.is_report() {
                     // Does local work on the report, but emits NO control/summary effect.
@@ -790,7 +790,7 @@ mod tests {
     struct BlobThenInlineSummaryAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for BlobThenInlineSummaryAgent {
-        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             match &event.body {
                 EventBody::Inbound { content_type, .. } if content_type.is_report() => {
                     // First control/summary: a BLOB payload (no inline bytes to read).
@@ -853,7 +853,7 @@ mod tests {
     struct CapabilityAwareAgent;
     #[async_trait::async_trait(?Send)]
     impl Reducer for CapabilityAwareAgent {
-        async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+        async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
             if let EventBody::EffectResult {
                 result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
                 ..

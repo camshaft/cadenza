@@ -34,7 +34,7 @@ struct ClockAgent;
 
 #[async_trait::async_trait(?Send)]
 impl Reducer for ClockAgent {
-    async fn fold_async(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
+    async fn fold(&self, event: &Event, kv: &mut Kv) -> FoldOutput {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"awaiting-time".to_vec());
