@@ -2162,6 +2162,40 @@
             (export main)))
   (call   main (: 1100 Int64)) (output (: 604450 Int64)))
 
+; --- Large-vector CONCATENATION (the RRB MERGE/rebalance path, distinct from push/prepend growth) ---
+; The push/prepend cases above grow ONE RRB vector element-by-element. `List.concat` of two ALREADY-LARGE
+; vectors is a different operation: it MERGES two multi-node RRB tries into one, which must splice the left
+; vector's tail against the right's head and (in a relaxed-radix impl) rebalance the seam so indices stay
+; O(log n)-navigable. A concat that mis-joined the interior spines would corrupt reads NEAR the boundary while
+; leaving the far ends intact — so the read checks straddle the join. No corpus case concatenates two lists big
+; enough to exercise this (the existing List.concat cases are single-element / scratch-slot / reject cases).
+(case "concatenating two large runtime RRB vectors preserves length and every element across the join"
+  (doc    "`left` = [0,600) and `right` = [600,1200) each built by a push-loop (each spans >1 RRB node), then
+           `(List.concat left right)` must produce the 1200-element vector [0,1200) — length 1200, and value at
+           index i is exactly i. `readsum` sums a spread of probe indices that STRADDLE the join at 600:
+           at {0, 599, 600, 601, 1199} the values are 0+599+600+601+1199 = 2999, plus 1000·(len==1200). Result
+           = 1000·(len 1200 ok) + (probe sum 2999) = 1000 + 2999 = 3999. A concat that mis-spliced the RRB seam
+           would misread an index near 600 (flipping the probe sum) or report a wrong length; a merge that
+           dropped/duplicated a node would break the length leg. Exercises the RRB MERGE/rebalance path no
+           push/prepend-growth case reaches.")
+  (input  (do
+            (def (build (: i Int64) (: lo Int64) (: hi Int64) (: out (List Int64)))
+              (if (< (+ lo i) hi) (build (+ i 1) lo hi (List.push out (+ lo i))) out))
+            (def (at (: xs (List Int64)) (: i Int64))
+              (match (List.at xs i) ((Some v) v) ((None u) -1000000)))
+            (def (main (: n Int64))
+              (let ((left (build 0 0 600 (list)))
+                    (right (build 0 600 1200 (list))))
+                (let ((cat (List.concat left right)))
+                  (+ (* 1000 (if (= (List.len cat) 1200) 1 0))
+                     (+ (at cat 0)
+                        (+ (at cat 599)
+                           (+ (at cat 600)
+                              (+ (at cat 601)
+                                 (at cat 1199)))))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 3999 Int64)))
+
 ; --- Large multi-level CHAMP SET membership (the set companion of the deep RRB read + deep CHAMP-map key) --
 ; The push/read RRB cases above exercise a deep VECTOR spine; this exercises a deep CHAMP SET trie. At n=1100
 ; (> 32*32 = 1024) the hash-array-mapped trie is a THREE-level structure, so a `Set.contains` probe descends
