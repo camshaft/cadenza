@@ -109,10 +109,19 @@ impl Finding {
                 "backend emitted INVALID wasm: {}",
                 first_line(self.detail.as_deref().unwrap_or("validation failed"))
             ),
-            (None, Category::Differential) => format!(
-                "backends DISAGREE on value: {}",
-                first_line(self.detail.as_deref().unwrap_or("wasm ≠ rust"))
-            ),
+            (None, Category::Differential) => {
+                let d = self.detail.as_deref();
+                let body = first_line(d.unwrap_or("wasm ≠ rust"));
+                // A `Differential` covers three sub-kinds (see `differential::MismatchKind`); the
+                // canned "disagree on VALUE" is wrong for a liveness or artifact-error divergence.
+                match differential_tag(d) {
+                    "artifact" => {
+                        format!("backends DIVERGE at compile (one emits, one rejects): {body}")
+                    }
+                    "liveness" => format!("backends DISAGREE — one runs, one traps: {body}"),
+                    _ => format!("backends DISAGREE on value: {body}"),
+                }
+            }
             (None, Category::Timeout) => {
                 "compiler timeout (no result inside the budget)".to_string()
             }
@@ -196,15 +205,31 @@ impl FindingStore {
             .unwrap_or("<repro>");
         let mut s = String::new();
         s.push_str(&format!("# SMITH FINDING — {}\n\n", finding.title()));
-        s.push_str(
-            "_Filed by `cdz-smith` (the compiler fuzzer). This is an auto-generated finding: a\n",
-        );
-        s.push_str(
-            "generated program made the compiler PANIC, HANG, or emit INVALID wasm — never valid\n",
-        );
-        s.push_str("behavior, since the compiler reports every legitimate \"no\" as a diagnostic. Triage, fix,\n");
-        s.push_str("then rename this file `.RESOLVED.md` (or `.REJECTED.md` with a rationale) so it is not\n");
-        s.push_str("re-triaged._\n\n");
+        // The intro states what "never valid behavior" means for THIS category — a differential
+        // finding is not a panic/hang/invalid-wasm, it's two backends producing incomparable
+        // outcomes below the shared front-end, so the canned crash wording would misdescribe it.
+        if finding.category == Category::Differential {
+            s.push_str(
+                "_Filed by `cdz-smith` (the compiler fuzzer). This is an auto-generated finding: the\n",
+            );
+            s.push_str(
+                "two emit backends (wasm vs rust) produced DIFFERENT outcomes for one program — a\n",
+            );
+            s.push_str("value disagreement, a liveness split (one runs, one traps), or a compile divergence\n");
+            s.push_str("(one emits, one rejects). They share the front-end, so a divergence below the emit\n");
+            s.push_str("seam is a lowering bug on one side. Triage, fix, then rename this file `.RESOLVED.md`\n");
+            s.push_str("(or `.REJECTED.md` with a rationale) so it is not re-triaged._\n\n");
+        } else {
+            s.push_str(
+                "_Filed by `cdz-smith` (the compiler fuzzer). This is an auto-generated finding: a\n",
+            );
+            s.push_str(
+                "generated program made the compiler PANIC, HANG, or emit INVALID wasm — never valid\n",
+            );
+            s.push_str("behavior, since the compiler reports every legitimate \"no\" as a diagnostic. Triage, fix,\n");
+            s.push_str("then rename this file `.RESOLVED.md` (or `.REJECTED.md` with a rationale) so it is not\n");
+            s.push_str("re-triaged._\n\n");
+        }
         s.push_str(&format!("- **Category:** {}\n", finding.category.tag()));
         s.push_str(&format!("- **Compiler commit:** `{}`\n", finding.commit));
         s.push_str("- **Hits:** 1\n");
@@ -244,22 +269,56 @@ impl FindingStore {
                 s.push_str(&format!("- **Validator error:** {}\n", first_line(d)));
             }
         } else if finding.category == Category::Differential {
-            s.push_str("## Backend value disagreement (miscompile)\n\n");
-            s.push_str(
-                "Both emit backends produced a VALID artifact, but they DISAGREE on the program's\n",
-            );
-            s.push_str(
-                "result — the wasm component (run via `cdz-run`) and the Rust backend (run via\n",
-            );
-            s.push_str(
-                "`cdz run-rust`) computed different values, or one ran to a value where the other\n",
-            );
-            s.push_str(
-                "trapped. The backends share the front-end and diverge below the emit seam, so this\n",
-            );
-            s.push_str(
-                "is a lowering bug on one side. The crash/invalid-wasm oracles are blind to it.\n\n",
-            );
+            match differential_tag(finding.detail.as_deref()) {
+                "artifact" => {
+                    s.push_str("## Backend compile divergence (miscompile)\n\n");
+                    s.push_str(
+                        "The two backends diverged at COMPILE time — one emitted a buildable artifact\n",
+                    );
+                    s.push_str(
+                        "while the other emitted source that FAILED TO BUILD (`cdz run-rust` → a rustc\n",
+                    );
+                    s.push_str(
+                        "`error`, e.g. `E0308`). This is NOT a value disagreement: one side produced no\n",
+                    );
+                    s.push_str(
+                        "value at all. The compiler reported success at the emit seam but produced\n",
+                    );
+                    s.push_str(
+                        "un-compilable source on that side — a build-blocking lowering bug. The\n",
+                    );
+                    s.push_str("crash/invalid-wasm oracles are blind to it.\n\n");
+                }
+                "liveness" => {
+                    s.push_str("## Backend liveness disagreement (miscompile)\n\n");
+                    s.push_str(
+                        "Both backends produced a VALID artifact, but they diverged at RUN time — one\n",
+                    );
+                    s.push_str(
+                        "backend ran the program to a value where the other TRAPPED. The backends share\n",
+                    );
+                    s.push_str(
+                        "the front-end and diverge below the emit seam, so this is a lowering bug on one\n",
+                    );
+                    s.push_str("side. The crash/invalid-wasm oracles are blind to it.\n\n");
+                }
+                _ => {
+                    s.push_str("## Backend value disagreement (miscompile)\n\n");
+                    s.push_str(
+                        "Both emit backends produced a VALID artifact, but they DISAGREE on the program's\n",
+                    );
+                    s.push_str(
+                        "result — the wasm component (run via `cdz-run`) and the Rust backend (run via\n",
+                    );
+                    s.push_str(
+                        "`cdz run-rust`) computed DIFFERENT values. The backends share the front-end and\n",
+                    );
+                    s.push_str(
+                        "diverge below the emit seam, so this is a lowering bug on one side. The\n",
+                    );
+                    s.push_str("crash/invalid-wasm oracles are blind to it.\n\n");
+                }
+            }
             if let Some(d) = &finding.detail {
                 s.push_str(&format!("- **Disagreement:** {}\n", first_line(d)));
             }
@@ -393,6 +452,23 @@ fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or(s).trim()
 }
 
+/// Extract the differential `MismatchKind` tag from a finding's `detail`, which the driver formats
+/// as `"[<kind>] wasm=… rust=…"` (see `driver.rs`). Returns the bare tag (`"value"`, `"liveness"`,
+/// `"artifact"`) or `"value"` as the conservative default when the prefix is absent/unrecognized —
+/// so the note wording matches the ACTUAL recorded outcome rather than always claiming a value
+/// disagreement (a wasm=value vs rust=E0308 artifact-error is a compile divergence, not a value one).
+fn differential_tag(detail: Option<&str>) -> &'static str {
+    let d = match detail {
+        Some(d) => d.trim_start(),
+        None => return "value",
+    };
+    match d.strip_prefix('[').and_then(|r| r.split_once(']')) {
+        Some(("artifact", _)) => "artifact",
+        Some(("liveness", _)) => "liveness",
+        _ => "value",
+    }
+}
+
 /// Turn an arbitrary string into a filesystem-safe, bounded slug.
 fn slugify(s: &str) -> String {
     let mut out = String::with_capacity(s.len().min(80));
@@ -500,6 +576,82 @@ mod tests {
         assert_eq!(a, b, "same masked validator error → same bucket");
         assert_ne!(a, c, "different validator error → different bucket");
         assert!(a.starts_with("invalid-wasm"), "sig namespaced: {a}");
+    }
+
+    fn differential(detail: &str) -> Finding {
+        Finding {
+            category: Category::Differential,
+            program: "(do (def (main) 0) (export main))".into(),
+            crash: None,
+            detail: Some(detail.into()),
+            commit: "abc".into(),
+        }
+    }
+
+    #[test]
+    fn differential_tag_reads_the_kind_prefix() {
+        assert_eq!(
+            differential_tag(Some("[artifact] wasm=value 1 rust=error")),
+            "artifact"
+        );
+        assert_eq!(
+            differential_tag(Some("[liveness] wasm=value 1 rust=trap x")),
+            "liveness"
+        );
+        assert_eq!(differential_tag(Some("[value] wasm=3 rust=4")), "value");
+        // Missing / unrecognized prefix → conservative "value".
+        assert_eq!(differential_tag(Some("wasm=3 rust=4")), "value");
+        assert_eq!(differential_tag(None), "value");
+    }
+
+    #[test]
+    fn artifact_error_note_reads_as_a_compile_divergence_not_a_value_disagreement() {
+        // The github-liaison finding: wasm=value, rust=E0308 artifact-error. The note must NOT claim
+        // a value disagreement or that both produced a valid artifact, and the intro must not claim a
+        // panic/hang/invalid-wasm.
+        let f = differential(
+            "[artifact] wasm=wasm value (list 1 -41) rust=artifact-error error[E0308]: mismatched types",
+        );
+        let store = FindingStore::open(std::env::temp_dir()).unwrap();
+        let note = store.render_note(&f, std::path::Path::new("x.smith.sexp"));
+        assert!(
+            note.contains("compile"),
+            "title/section should say compile divergence:\n{note}"
+        );
+        assert!(
+            !note.contains("DISAGREE on value"),
+            "must not claim a value disagreement:\n{note}"
+        );
+        assert!(
+            !note.contains("PANIC, HANG"),
+            "differential intro must not claim panic/hang:\n{note}"
+        );
+        assert!(
+            !note.contains("Both emit backends produced a VALID artifact"),
+            "must not assert both produced a valid artifact:\n{note}"
+        );
+    }
+
+    #[test]
+    fn value_and_liveness_notes_keep_their_own_wording() {
+        let store = FindingStore::open(std::env::temp_dir()).unwrap();
+        let val = store.render_note(
+            &differential("[value] wasm=3 rust=4"),
+            std::path::Path::new("x.smith.sexp"),
+        );
+        assert!(
+            val.contains("DISAGREE on value"),
+            "value note wording:\n{val}"
+        );
+        let live = store.render_note(
+            &differential("[liveness] wasm=value 7 rust=trap overflow"),
+            std::path::Path::new("x.smith.sexp"),
+        );
+        assert!(live.contains("liveness"), "liveness note wording:\n{live}");
+        assert!(
+            !live.contains("PANIC, HANG"),
+            "differential intro must not claim panic/hang:\n{live}"
+        );
     }
 
     #[test]
