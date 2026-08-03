@@ -1394,6 +1394,33 @@
             (export main)))
   (output (: 5 Int64)))
 
+; The correct-arity applied-generic-in-payload cases above denote the type. The WRONG-arity form in a
+; variant payload must reject CDZ0203 AT THE DECLARATION — the payload-position sibling of the annotation
+; wrong-arity rejects (a user generic OVER-applied, or a built-in given too many args). This used to be
+; SILENTLY ACCEPTED: a user generic reduces to a Ty::Sum dropping the extra arg, so the payload type-reader
+; waved `(Box Int64 Bool)` through, and the mis-arity surfaced only LATER as a confusing CDZ0201 at a
+; construction site (identical renders because the extra arg was dropped). The check must fire at the decl.
+
+(case "a wrong-arity user generic in a variant payload is rejected at the declaration"
+  (doc    "`(type W (Wrap (Box Int64 Bool)))` puts the one-parameter user generic `(type (Box a) (Mk a))`
+           OVER-applied (two type args) in a variant PAYLOAD. The payload type-position arity check must fire
+           at the DECLARATION — CDZ0203 naming `Box`'s true arity of 1 — exactly as the same over-application
+           rejects in an annotation. Was silently accepted (the user generic reduced to a `Ty::Sum` dropping
+           the extra `Bool`, so the payload reader's typeval early-return waved it through), surfacing only
+           later as a confusing CDZ0201 at a construction site with identical `Box`-vs-`Box` renders. Pins the
+           arity check reaches a variant-payload position, not only an annotation — the payload sibling of the
+           over-supplied annotation case.")
+  (input  (do (type (Box a) (Mk a)) (type W (Wrap (Box Int64 Bool))) (def (main) 0) (export main)))
+  (error  CDZ0203))
+
+(case "a wrong-arity built-in generic in a variant payload is rejected at the declaration"
+  (doc    "The built-in companion: `(type W (Wrap (Option Int64 Bool)))` over-applies `Option` (takes 1) in a
+           variant payload → CDZ0203 at the declaration, matching the user-generic payload case above and the
+           built-in annotation arity reject. Pins that the payload-position arity check is uniform for a
+           built-in generic and a user one.")
+  (input  (do (type W (Wrap (Option Int64 Bool))) (def (main) 0) (export main)))
+  (error  CDZ0203))
+
 ; ---- Same-name MONOMORPHIC constructor in a VALUE position: the ctor wins, in a helper AND multi-variant.
 ; The cases above are the TYPE-position complement (an applied same-name generic denotes the TYPE). These pin
 ; the VALUE-position rule for a MONOMORPHIC same-name sum: `(N a)` builds the VARIANT, not the type — direct
