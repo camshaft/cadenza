@@ -4859,6 +4859,40 @@
             (export main)))
   (call   main (: 41 Int64)) (output (: 42 Int64)))
 
+; A scalar-erased newtype VALUE escaping a PARAMETERIZED def (returned, not matched in place) must
+; emit a valid module AND render its declared NOMINAL type, exactly like the nullary/const path. The
+; wasm backend's escape path once (a) took the recursive-sum route for the erased-scalar newtype →
+; INVALID module (adv-63b, fixed by routing off that path), then (b) built the value-form template
+; from the stripped inner Ty::Int → rendered the ERASED type dropping the nominal (adv-64, fixed by
+; passing the un-stripped nominal). Nullary and in-place-match paths were always fine; the trigger is
+; a newtype value crossing a parameterized def's boundary. rust erases to the inner Rust type (correct
+; both paths). These pin both faces (valid module + nominal render) so the escape ABI can't regress.
+(case "a single-variant newtype value escaping a parameterized def emits a valid module and matches back"
+  (doc    "adv-63b: `(Mk k)` (a generic single-variant newtype over a scalar) constructed inside a
+           PARAMETERIZED def and matched back must emit a valid wasm module — the escape once took the
+           recursive-sum resource route (expects a heap handle) while the value is a bare erased int →
+           invalid module. Nullary `(Mk 5)` and in-place match were always fine; the param'd escape is
+           the trigger. `main 5` → 5 on all backends.")
+  (input  (do
+            (type Box (Mk a))
+            (def (main (: k Int64)) (match (Mk k) ((Mk v) v)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 5 Int64)))
+
+(case "a scalar-erased newtype returned directly from a parameterized def renders its nominal type"
+  (doc    "adv-64: `(secs n)` returns a `Duration` (a newtype over UInt64) DIRECTLY from a parameterized
+           def — the escaped value must render its declared NOMINAL type `(: 5000000000 Duration)`, like
+           the nullary/const path, NOT the erased inner `(: 5000000000 UInt64)`. The value-form template
+           once built from the stripped inner Ty::Int, dropping the nominal on the param'd escape only.
+           Pins that the escape carries the un-stripped nominal into the value form (the DES Duration
+           idiom's whole point — a task never handles a bare UInt64). `secs 5` → 5·10⁹ ns as a Duration.")
+  (input  (do
+            (type Duration (Duration UInt64))
+            (def (secs (: n UInt64)) (Duration.Duration (* n 1000000000)))
+            (def (main (: n UInt64)) (secs n))
+            (export main)))
+  (call   main (: 5 UInt64)) (output (: 5000000000 Duration)))
+
 (case "two newtypes over the SAME inner type do not cross-assign"
   (doc    "The type-distinctness half of the newtype contract (the erasure pins above are the runtime
            half): `UserId` and `OrderId` both wrap Int64, but passing an `(OrderId n)` where a `UserId`
