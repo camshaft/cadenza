@@ -459,8 +459,6 @@ pass	a 1000-iteration concat loop builds a 4000-byte rope measured exactly
 pass	a 1000-step UPSERT fold builds a 7-bucket histogram — persistent-map churn under real load
 pass	a 100k-iteration pure tail loop under a handler runs in constant stack
 pass	a 1100-element prepend-built runtime list reads every index through a multi-level RRB front-spine
-pass	concatenating two large runtime RRB vectors preserves length and every element across the join
-pass	an UNEVEN large-vector RRB concat (short left, multi-node right) rebalances the seam correctly
 pass	a 1100-element runtime list resolves every index through a multi-level RRB trie
 pass	a 1100-element runtime set resolves every member through a multi-level CHAMP trie and rejects non-members
 pass	a 16-field MIXED-type record projects across the layout and survives a mid-layout Record.without
@@ -3177,6 +3175,7 @@ pass	a shift by a RUNTIME amount computes (both operands off the fold)
 pass	a shift of a non-numeric operand names the integer requirement
 pass	a short-circuit connective threads a branch perform to the continuation
 pass	a shorter string that is a prefix of a longer one compares Less
+pass	a sibling-inferred out-of-range list element is CDZ0302 regardless of element order
 pass	a sibling-recursive walk threads a HEAP list accumulator across the siblings
 pass	a signed dependent size that reads negative falls through, not a backward read
 pass	a signed i16 bin field spanning a rope seam sign-extends from the stitched bytes
@@ -3680,6 +3679,7 @@ pass	an RPN evaluator drives a LIST-as-STACK through token dispatch — push, po
 pass	an SI decimal prefix scales a unit by a power of ten
 pass	an UNANNOTATED generic compose instantiates at a scalar arrow AND a String arrow in one program
 pass	an UNCONSTRAINED add is NOT dischargeable: with no precondition bound, the no-overflow obligation cannot be closed (the check must stay)
+pass	an UNEVEN large-vector RRB concat (short left, multi-node right) rebalances the seam correctly
 pass	an UNSIGNED branch refinement decides a nested comparison and its soundness twin must not over-refine
 pass	an UNSIGNED lower-bound refinement must not fabricate an i64::MAX ceiling for a UInt64 above it
 pass	an UNZIP walk splits a list of pairs into two parallel lists that re-zip to the original
@@ -4008,6 +4008,8 @@ pass	an out-of-range literal SET element via Set.of is rejected
 pass	an outer definition references a sibling nested module by bare name
 pass	an over-ceiling integer width in an unused parameter is rejected, like a used one
 pass	an overwrite-churn runtime map holds one entry with the last value winning
+pass	an un-annotated negative list element in an unsigned sibling-inferred list is CDZ0302
+pass	an un-annotated over-max list element takes the sibling-inferred narrow width and is CDZ0302
 pass	an un-projected tuple element is not evaluated, so its trap does not occur
 pass	an un-read record field is not evaluated, so its trap does not occur
 pass	an unannotated add narrowed by a UInt8 consumer keeps its overflow guard and traps
@@ -4249,6 +4251,7 @@ pass	concatenating tuples with a runtime element reads elements from both operan
 pass	concatenating two byte sequences appends their bytes in order
 pass	concatenating two empty lists is the empty list
 pass	concatenating two empty tuples is the empty tuple
+pass	concatenating two large runtime RRB vectors preserves length and every element across the join
 pass	concatenating two runtime strings and measuring the result
 pass	concatenating two tuples appends their elements
 pass	concatenating with the empty list on the left is the identity

@@ -681,6 +681,43 @@
   (input  (: (Set.insert Set.empty 200) (Set Int8)))
   (error  CDZ0302))
 
+; The collection cases above ground an element/key/value literal from a COLLECTION-TYPE annotation
+; (`(Set Int8)` / `(Map Int64 Int8)`). A distinct width-fit path is a bare `(list …)` with NO collection
+; annotation whose element width is fixed by a SIBLING element's OWN annotation — the un-annotated
+; literal must be range-checked against that sibling-inferred width too. This path silently escaped the
+; fit-check (wasm wrapped the literal into the list, rust emitted an initializer rustc rejected → a
+; cross-backend differential, fuzzer-found); the three faces below pin it CDZ0302 uniformly. The check is
+; order-independent (the un-annotated literal takes the sibling's width in either position) and covers
+; both a negative literal in an unsigned list and an over-max literal in a narrow list.
+
+(case "an un-annotated over-max list element takes the sibling-inferred narrow width and is CDZ0302"
+  (doc    "`(list (: 1 UInt8) 300)` — the FIRST element's annotation fixes the list's element type to UInt8,
+           so the un-annotated `300` is a UInt8 element and overflows (max 255) → CDZ0302, exactly as a
+           directly-annotated `(: 300 UInt8)` is. The element width arrives from a SIBLING, not the literal's
+           own annotation nor a `(List UInt8)` collection annotation — the width fit-check must re-run once
+           sibling-unification settles the element type. This escaped the check: wasm wrapped `300`→`44` into
+           a `(List UInt8)` and ran, while rust emitted a u8 initializer rustc rejected (E0308) — a
+           cross-backend differential (fuzzer-found). Pins the check reaches a sibling-inferred list element.")
+  (input  (do (def (main) (list (: 1 UInt8) 300)) (export main)))
+  (error  CDZ0302))
+
+(case "an un-annotated negative list element in an unsigned sibling-inferred list is CDZ0302"
+  (doc    "The negative-in-unsigned face: `(list (: 1 UInt64) -41)` fixes the element type to UInt64 via the
+           first element, so the un-annotated `-41` is a UInt64 element and is out of range (0..=u64::MAX) →
+           CDZ0302, as a direct `(: -41 UInt64)` is. Before the fix the bare `-41` skipped the range check and
+           wasm stored a wrapped negative in a `(List UInt64)`; rust rejected it (E0308). Pins the negative
+           companion of the over-max case, the sign face of the same sibling-inferred width check.")
+  (input  (do (def (main) (list (: 1 UInt64) -41)) (export main)))
+  (error  CDZ0302))
+
+(case "a sibling-inferred out-of-range list element is CDZ0302 regardless of element order"
+  (doc    "The order-independence face: `(list -41 (: 1 UInt64))` puts the annotated sibling SECOND — the
+           un-annotated `-41` still takes UInt64 and still rejects CDZ0302. Pins that the sibling-inferred
+           width check does not depend on the annotated element appearing first (the element-type JOIN picks
+           up the fixed width from any position), closing the ordering gap on the two cases above.")
+  (input  (do (def (main) (list -41 (: 1 UInt64))) (export main)))
+  (error  CDZ0302))
+
 (case "an IN-RANGE literal through a Map.insert builder chain compiles (the CDZ0302 control)"
   (doc    "The passing control for the builder-chain overflow rejects above: an in-range `5` (fits Int8)
            inserted into a `(Map Int64 Int8)` compiles + runs — the width fit-check must REJECT only genuine
