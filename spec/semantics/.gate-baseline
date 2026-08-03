@@ -1843,6 +1843,7 @@ pass	a let shadowing a parameter with a same-typed value runs, not miscompiles
 pass	a let tuple pattern destructures a helper CALL's runtime tuple result
 pass	a let-bound Ast splices into a template
 pass	a let-bound handle with a runtime seed composes with arithmetic after the let
+pass	a let-bound host result captured by two escaping closures fires the host op once (adv-62)
 pass	a let-bound if-selected partial constructor is applied and reclaimed once (borrowed-operand path)
 pass	a let-bound lambda passed to a returned-closure factory
 pass	a let-bound lambda whose body performs is applied in the handle body
