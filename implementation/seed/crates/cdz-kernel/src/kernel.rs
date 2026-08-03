@@ -688,10 +688,16 @@ impl Session {
                 let more = self
                     .record_result(id, outcome, reducer, dispatch_hash)
                     .await;
-                // The EffectResult is now durably recorded → this store effect is SETTLED, so recovery will
-                // not re-drive it and its dedup key is no longer needed. Prune it to BOUND applied_set_keys
-                // to the in-flight window (liaison #1852: it grew monotonically otherwise → memory/DoS). Safe
-                // for a resolve too (its key was never inserted → a no-op).
+                // The EffectResult is now recorded IN THE IN-MEMORY SESSION LOG (durability is separate — the
+                // write-through `append` may have latched a persist_error; it is NOT guaranteed on disk here)
+                // → this store effect is SETTLED in this session, so its dedup key can be pruned to BOUND
+                // applied_set_keys to the in-flight window (liaison #1852: unbounded otherwise → memory/DoS).
+                // Why pruning is re-drive-SAFE even on a persist-latched path (liaison #1858): (a) recovery
+                // re-attaches a FRESH NameStore (the store is external state, NOT rebuilt from the session log
+                // — see the `name_store` field), so a post-crash re-drive re-applies into an EMPTY store, which
+                // is correct, not a duplicate; (b) an in-process re-drive of this id is blocked by `settled`
+                // (record_result early-returns on a settled id). So the pruned key can't re-open the #1844
+                // re-apply. (A resolve's key was never inserted → the prune is a no-op.)
                 if let Some(store) = self.name_store.as_mut() {
                     store.forget_applied_key(&idempotency_key);
                 }
