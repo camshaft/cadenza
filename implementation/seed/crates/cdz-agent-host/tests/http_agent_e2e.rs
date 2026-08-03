@@ -5,21 +5,21 @@
 //! (here a STUB transport, so the loop is hermetically gateable), and the response body folds back and
 //! drives the agent's next step. The REAL client drops into the same wiring behind `live-net`.
 
-use cdz_agent_host::{HttpExecutor, HttpMethod, HttpTransport};
+use cdz_agent_host::{HttpExecutor, HttpMethod, HttpResponse, HttpTransport};
 use cdz_kernel::authz::Authorizer;
 use cdz_kernel::effect::{
     effect_ct, Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
 };
 use cdz_kernel::event::{ContentType, EffectOutcome, Event, EventBody};
-use cdz_kernel::event_ast::encode_http_request;
+use cdz_kernel::event_ast::{decode_http_response, encode_http_request};
 use cdz_kernel::executor::CompositeExecutor;
 use cdz_kernel::hash::Hash;
 use cdz_kernel::kernel::Session;
 use cdz_kernel::kv::Kv;
 use cdz_kernel::reducer::{FoldOutput, Reducer};
 
-/// A stub HTTP transport: returns a canned response body so the fetch loop is hermetic. The real client
-/// implements this same trait behind `live-net`. Asserts it got the caller-specified GET.
+/// A stub HTTP transport: returns a canned 200 response (status + a header + body) so the fetch loop is
+/// hermetic. The real client implements this same trait behind `live-net`. Asserts the caller-specified GET.
 struct StubHttp;
 #[async_trait::async_trait(?Send)]
 impl HttpTransport for StubHttp {
@@ -27,16 +27,22 @@ impl HttpTransport for StubHttp {
         &self,
         method: HttpMethod,
         url: &str,
+        _headers: &[(String, String)],
         _body: Option<&[u8]>,
         _key: Hash,
-    ) -> Result<bytes::Bytes, String> {
+    ) -> Result<HttpResponse, String> {
         assert_eq!(method, HttpMethod::Get, "the reducer emitted a GET");
-        Ok(format!("fetched {url}").into_bytes().into())
+        Ok(HttpResponse {
+            status: 200,
+            headers: vec![("content-type".to_string(), "text/plain".to_string())],
+            body: format!("fetched {url}").into_bytes().into(),
+        })
     }
 }
 
-/// A minimal agent that fetches a URL: on "go" it emits an `Http` effect; when the response comes back
-/// it stashes the body and marks itself `fetched`. The loop closes through a real executor.
+/// A minimal agent that fetches a URL: on "go" it emits an `Http` effect; when the response comes back it
+/// decodes the http-response, stashes the status + body, and marks itself `fetched`. The loop closes
+/// through a real executor + proves the reducer can read the status, not just the body.
 struct FetchAgent;
 #[async_trait::async_trait(?Send)]
 impl Reducer for FetchAgent {
@@ -53,10 +59,14 @@ impl Reducer for FetchAgent {
                 )])
             }
             EventBody::EffectResult {
-                result: EffectOutcome::Ok(Some(Payload::Inline(body))),
+                result: EffectOutcome::Ok(Some(Payload::Inline(payload))),
                 ..
             } => {
-                kv.put(b"body".to_vec(), body.to_vec());
+                // The result is an (http-response …) — decode it to read status + body.
+                let (status, _headers, body) =
+                    decode_http_response(payload).expect("result is a valid http-response");
+                kv.put(b"status".to_vec(), status.to_string().into_bytes());
+                kv.put(b"body".to_vec(), body);
                 kv.put(b"phase".to_vec(), b"fetched".to_vec());
                 FoldOutput::none()
             }
@@ -124,9 +134,10 @@ async fn a_fetch_to_an_unpermitted_host_is_denied_before_the_client() {
             &self,
             _m: HttpMethod,
             _u: &str,
+            _h: &[(String, String)],
             _b: Option<&[u8]>,
             _k: Hash,
-        ) -> Result<bytes::Bytes, String> {
+        ) -> Result<HttpResponse, String> {
             panic!("a denied Http effect must never reach the client");
         }
     }
