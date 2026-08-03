@@ -131,14 +131,23 @@ impl NameStore {
     /// The §4c write-authority namespace for `name`, by its prefix — the pure classification a Cedar
     /// prefix-grant keys on. Signature-independent and total (every string maps to a variant; unknown →
     /// `Unscoped`, fail-closed).
+    ///
+    /// A prefix ONLY governs when there's a NON-EMPTY segment after it: `system/compiler/latest` is System,
+    /// but a DEGENERATE `"system/"` (empty tail) — or `"team/"` (no team), `"session/"` (no id) — is
+    /// `Unscoped` and thus UNWRITABLE. A malformed prefix must NOT be treated as a valid scoped authority
+    /// (that would weaken the fail-closed anti-hijack posture — a name with no real scope segment naming no
+    /// actual resource is a mistake, not a grantable target). Fail-closed: only a well-formed scoped name
+    /// gets an authority.
     pub fn authority_prefix_of(name: &str) -> NameAuthority {
-        if name.starts_with("system/") {
+        // `governs(prefix)` = `name` starts with `prefix` AND has a non-empty segment after it.
+        let governs = |prefix: &str| name.len() > prefix.len() && name.starts_with(prefix);
+        if governs("system/") {
             NameAuthority::System
-        } else if name.starts_with("team/") {
+        } else if governs("team/") {
             NameAuthority::Team
-        } else if name.starts_with("session/") {
+        } else if governs("session/") {
             NameAuthority::Session
-        } else if name.starts_with("memory/") {
+        } else if governs("memory/") {
             NameAuthority::Memory
         } else {
             NameAuthority::Unscoped
@@ -228,6 +237,32 @@ mod tests {
         assert_eq!(
             NameStore::authority_prefix_of("evil/compiler"),
             NameAuthority::Unscoped
+        );
+    }
+
+    #[test]
+    fn degenerate_prefix_with_empty_segment_is_unscoped_not_writable() {
+        // Security posture (github-liaison #1829): a prefix only governs with a NON-EMPTY segment after it.
+        // A degenerate name — the bare prefix with an empty tail — must NOT classify as a scoped authority
+        // (that would let a malformed name masquerade as a valid grantable target, weakening fail-closed).
+        for degenerate in ["system/", "team/", "session/", "memory/"] {
+            assert_eq!(
+                NameStore::authority_prefix_of(degenerate),
+                NameAuthority::Unscoped,
+                "{degenerate:?} has no segment after the prefix → Unscoped (fail-closed)"
+            );
+        }
+        // ...and an Unscoped name is unwritable end-to-end (the store refuses the set).
+        let mut s = NameStore::new();
+        assert_eq!(
+            s.set("system/", SetEntry::unsigned(Hash::of(b"evil"))),
+            Err(NameStoreError::UnscopedNameUnwritable),
+            "a degenerate `system/` must not be writable"
+        );
+        // The MINIMAL well-formed name (one non-empty segment) IS governed.
+        assert_eq!(
+            NameStore::authority_prefix_of("system/x"),
+            NameAuthority::System
         );
     }
 
