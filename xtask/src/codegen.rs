@@ -100,11 +100,14 @@ pub fn run(paths: &Paths, check: bool) {
 /// Generate `runtime_abi.rs` from the runtime WIT (see the `runtime_abi` bullet in the module doc).
 fn generate_runtime_abi(paths: &Paths, check: bool) {
     let wit = paths.seed.join("crates/cdz-runtime/wit/runtime.wit");
+    // The runtime world imports `cadenza:nfc/normalize` (FINDING#23), so the NFC package must be in the
+    // resolve before the runtime WIT parses — push it first (its authoritative WIT is the cdz-nfc crate).
+    let nfc_wit = paths.seed.join("crates/cdz-nfc/wit/nfc.wit");
     let out = paths
         .seed
         .join("crates/rcdzc/src/backend/wasm/runtime_abi.rs");
 
-    let ops = match resolve_ops(&wit) {
+    let ops = match resolve_ops(&wit, &nfc_wit) {
         Ok(ops) => ops,
         Err(e) => {
             eprintln!("xtask codegen: {e}");
@@ -122,6 +125,12 @@ fn generate_runtime_abi(paths: &Paths, check: bool) {
     // the debug runtime by hash, neither hard-coded. (`xtask check` already builds the runtime, so the
     // release build's cost is shared; the debug build is one extra `cargo component` invocation.)
     let (runtime_hash, debug_runtime_hash, imm_unit) = build_runtime_hashes(paths);
+    // The NFC component's content hash — built + content-addressed the SAME way the runtime is (build →
+    // canonicalize → content_address), so the generated `REQUIRED_NFC_HASH` tracks an NFC-component change
+    // automatically, exactly like `REQUIRED_RUNTIME_HASH`. The emit pins this in the imported
+    // `cadenza:nfc/normalize@…+<hash>` name (FINDING#23, operator ruling d: NFC lives in a separate imported
+    // component so the core runtime stays light + hash-stable). One extra `cargo component` build.
+    let nfc_hash = build_nfc_hash(paths);
     // Build the body as tokens (`render`), pretty-print + rustfmt it (`format_tokens`), then prepend the
     // `//!` module banner as text (a module doc is awkward as a token attribute). prettyplease-then-
     // rustfmt makes the committed file agree with BOTH `fmt --check` and `codegen --check`.
@@ -130,6 +139,7 @@ fn generate_runtime_abi(paths: &Paths, check: bool) {
         iface,
         &runtime_hash,
         &debug_runtime_hash,
+        &nfc_hash,
         imm_unit,
     ));
     let source = format!("{}{body}", runtime_abi_banner());
@@ -234,6 +244,20 @@ fn build_runtime_hashes(paths: &Paths) -> (String, String, u32) {
     (release_hash, debug_hash, imm_unit)
 }
 
+/// Build the NFC component (`cdz-nfc`) and return its content hash — the same build → canonicalize →
+/// content-address pipeline `build_runtime_hashes` uses for the runtime, so `REQUIRED_NFC_HASH` tracks an
+/// NFC-component change automatically (rebuild → new hash → `runtime_abi.rs` differs → `codegen --check`
+/// fails until regenerated). FINDING#23 / operator ruling (d): NFC (the heavy `unicode-normalization`
+/// tables) lives in this SEPARATE component the emitted program imports BY HASH, so the tagless core
+/// runtime carries none of it and its own hash is unaffected. `canonicalize_runtime` strips the tool-version
+/// `producers` sections so the hash is reproducible across hosts (identical to the artifact `build` stores).
+fn build_nfc_hash(paths: &Paths) -> String {
+    let sh = Shell::new().expect("open a shell");
+    let nfc_wasm = build_component_with_features(&sh, &paths.seed, "cdz-nfc", "cdz_nfc", &[]);
+    let nfc_bytes = crate::canonicalize_runtime(&nfc_wasm);
+    content_address(&nfc_bytes)
+}
+
 /// Read the inline-unit handle bits from the runtime's `cdz-abi` CUSTOM SECTION (a little-endian `u32`).
 /// The runtime declares it via `#[link_section = "cdz-abi"]` so this is a STATIC read — no execution —
 /// and it is read from the RAW build before `strip -a` removes it (hence zero shipped-byte cost). The
@@ -296,8 +320,14 @@ fn rustfmt_stdin(src: &str) -> Option<String> {
 /// Resolve every function of the runtime's `heap` interface from the WIT, IN DECLARATION ORDER — the
 /// full op vocabulary as structured data. (The compiler resolves imports by name, so this order is
 /// informational; it is the WIT's own order, kept stable for readability.)
-fn resolve_ops(wit_path: &std::path::Path) -> Result<Vec<Op>, String> {
+fn resolve_ops(wit_path: &std::path::Path, nfc_wit_path: &std::path::Path) -> Result<Vec<Op>, String> {
     let mut resolve = Resolve::default();
+    // Push the NFC package first so the runtime world's `import cadenza:nfc/normalize` resolves (FINDING#23:
+    // NFC is the runtime's component dependency). Only the runtime's `heap` interface functions are read
+    // below; the NFC package just needs to EXIST in the resolve for the import to type.
+    resolve
+        .push_file(nfc_wit_path)
+        .map_err(|e| format!("parse {}: {e}", nfc_wit_path.display()))?;
     let pkg = resolve
         .push_file(wit_path)
         .map_err(|e| format!("parse {}: {e}", wit_path.display()))?;
@@ -353,6 +383,7 @@ fn render(
     iface: &str,
     runtime_hash: &str,
     debug_runtime_hash: &str,
+    nfc_hash: &str,
     imm_unit: u32,
 ) -> TokenStream {
     // The RUNTIME_OPS rows.
@@ -464,6 +495,20 @@ fn render(
         #[doc = " composes THIS build to assert `live-objects == 0` after a run. Recorded here so the harness"]
         #[doc = " locates the debug runtime by content address (from the store), never by rebuilding it."]
         pub const DEBUG_RUNTIME_HASH: &str = #debug_runtime_hash;
+
+        #[doc = " The NFC-normalization interface a program imports for Unicode Normalization Form C —"]
+        #[doc = " the ABI-identity prefix of the versioned `cadenza:nfc/normalize@…+<hash>` import name."]
+        #[doc = " FINDING#23 (operator ruling d): NFC lives in a SEPARATE imported component (the heavy"]
+        #[doc = " `unicode-normalization` tables), so the tagless value-heap runtime carries none of it."]
+        pub const NFC_IFACE: &str = "cadenza:nfc/normalize";
+
+        #[doc = " The SHA-256 content address of the NFC component (`cdz-nfc`) this compiler emits an import"]
+        #[doc = " on. Regenerated from the built NFC-component bytes like `REQUIRED_RUNTIME_HASH`, so it tracks"]
+        #[doc = " an NFC-code change automatically. The compiler pins it in the imported"]
+        #[doc = " `cadenza:nfc/normalize@…+<hash>` name; the host resolves + composes the NFC component from CAS"]
+        #[doc = " by this hash (v-agent-harness dep-compose). Adding this IMPORT changes only the emitted"]
+        #[doc = " PROGRAM's hash, never `REQUIRED_RUNTIME_HASH` — the core runtime stays light + hash-stable."]
+        pub const REQUIRED_NFC_HASH: &str = #nfc_hash;
 
         #[doc = " The runtime's INLINE-UNIT handle — the value `arr-alloc(0)` returns (a compile-time-known"]
         #[doc = " handle carrying the empty tuple/unit, no heap node). DERIVED from the runtime's `cdz-abi`"]

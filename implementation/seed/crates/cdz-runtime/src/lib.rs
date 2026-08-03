@@ -3163,6 +3163,33 @@ fn op_bytes_compact(buf: Handle) -> Handle {
     buf
 }
 
+/// `str-nfc-normalize` (heap op 89, FINDING#23) — normalize a runtime String value to Unicode Normalization
+/// Form C. A String is a UTF-8 byte leaf (possibly a rope): flatten `s`, read its logical bytes, normalize
+/// them to NFC via the imported `cadenza:nfc/normalize` component (the runtime's DEPENDENCY — the heavy
+/// Unicode tables live THERE, not in this runtime), and return a FRESH OWNED flat String leaf of the NFC
+/// bytes. CONSUMES `s` (drops it; returns the fresh leaf) — the same spend-the-input contract as
+/// `bytes-compact`/`str-to-bytes`. Idempotent (the imported `nfc` is). The NFC import is only linked in the
+/// wasm component build; a native `cargo test` has no NFC component, so the call is gated to wasm and the
+/// native build normalizes to a no-op passthrough (the native suite exercises the flatten/leaf plumbing, not
+/// NFC content — NFC correctness is covered by cdz-nfc's own unit tests + the corpus witness).
+#[cfg(target_arch = "wasm32")]
+fn op_str_nfc(s: Handle) -> Handle {
+    bytes_flatten(s);
+    let bytes = unsafe { s.0.as_ref() }.map_or(&[][..], |n| n.raw.as_slice());
+    let normalized = bindings::cadenza::nfc::normalize::nfc(bytes);
+    let out = alloc(Vec::new(), normalized);
+    op_drop(s);
+    out
+}
+
+/// Native stand-in for `op_str_nfc` (no NFC component linked off-wasm): flatten + return `s` unchanged. The
+/// native suite covers the flatten/leaf plumbing; NFC content correctness lives in cdz-nfc's unit tests.
+#[cfg(not(target_arch = "wasm32"))]
+fn op_str_nfc(s: Handle) -> Handle {
+    bytes_flatten(s);
+    s
+}
+
 // ─── String: a stored UTF-8 leaf (bytes in `raw`) ───────────────────────────────────────
 
 fn op_str_new(s: String) -> Handle {
@@ -5323,6 +5350,9 @@ impl Guest for Component {
     }
     fn bytes_compact(buf: u32) -> u32 {
         op_bytes_compact(Handle::from_u32(buf)).to_u32()
+    }
+    fn str_nfc_normalize(s: u32) -> u32 {
+        op_str_nfc(Handle::from_u32(s)).to_u32()
     }
     fn str_from_bytes(buf: u32) -> u32 {
         op_str_from_bytes(Handle::from_u32(buf)).to_u32()

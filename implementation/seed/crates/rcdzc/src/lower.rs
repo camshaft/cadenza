@@ -1946,8 +1946,18 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                     c @ Core::ConstStr(_) => c,
                     Core::Poison(r) => Core::Poison(r),
                     _ if matches!(crate::infer::type_of(db, args[0]), crate::ty::Ty::String) => {
-                        trace!(target: "rcdzc::lower", "Symbol.of on a runtime string → compact its byte-rope to a canonical Symbol leaf");
-                        Core::StrToBytes { string: args[0] }
+                        trace!(target: "rcdzc::lower", "Symbol.of on a runtime string → NFC-normalize then compact its byte-rope to a canonical Symbol leaf");
+                        // A Symbol's identity is its interned CONTENT, and a String's content is its
+                        // NFC-normalized form (FINDING #23) — so a symbol interned from a DECOMPOSED runtime
+                        // string (`Symbol.of (String.concat "e" "<combining-acute>")`) must compose to the
+                        // same leaf as its composed literal twin `#"é"`, or the two symbols wrongly compare
+                        // unequal (violating the 17-symbols content-identity MUST). NFC-normalize the string
+                        // BEFORE the byte-compact: wrap the operand in `Core::NfcNormalize`, then `StrToBytes`
+                        // flattens the (now canonical) leaf. Already-NFC input (the common case) → the op is a
+                        // no-op passthrough, so a plain ASCII symbol is unaffected.
+                        let normalized =
+                            synth_core(db, Core::NfcNormalize { string: args[0] }, crate::ty::Ty::String);
+                        Core::StrToBytes { string: normalized }
                     }
                     _ => runtime_string_op_decline(
                         db,
@@ -2269,11 +2279,24 @@ fn compute(db: &mut Db, id: StructId) -> Core {
                             crate::ty::Ty::String
                         ) =>
                         {
-                            trace!(target: "rcdzc::lower", node = id.0, "String.concat on runtime strings → bytes-concat over their byte leaves");
-                            Core::BytesConcat {
-                                lhs: args[0],
-                                rhs: args[1],
-                            }
+                            trace!(target: "rcdzc::lower", node = id.0, "String.concat on runtime strings → NFC-normalize(bytes-concat over their byte leaves)");
+                            // A runtime String join is a raw `bytes-concat` of the two byte leaves — but a
+                            // String's identity is its NFC-NORMALIZED contents (collections-and-text.md
+                            // L33-34/L53-54 MUSTs; FINDING #23), and a decomposed sequence assembled here
+                            // (`concat "e" "<combining-acute>"`) would otherwise be stored un-normalized →
+                            // wrong length + unequal to / unfindable-as-key-against its composed literal twin.
+                            // So wrap the concat in `Core::NfcNormalize`, which emits the `str-nfc-normalize`
+                            // runtime op to canonicalize the joined result. The op is a no-op (same handle) for
+                            // already-NFC text (the ASCII/pre-composed common case), so this is near-free there.
+                            let concat = synth_core(
+                                db,
+                                Core::BytesConcat {
+                                    lhs: args[0],
+                                    rhs: args[1],
+                                },
+                                crate::ty::Ty::String,
+                            );
+                            Core::NfcNormalize { string: concat }
                         }
                         _ => Core::Poison(Reject::decline(
                             "a string concatenation is only folded for constant ASCII operands (the \

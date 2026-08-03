@@ -46,6 +46,12 @@ package = "cadenza:runtime"
 path = "wit"
 world = "runtime"
 
+# The runtime's world imports `cadenza:nfc/normalize` (FINDING#23 — NFC is the runtime's component dependency).
+# Point cargo-component's WIT resolution at the NFC package's authoritative WIT (the sibling cdz-nfc crate), so
+# the import types without a hand-maintained `wit/deps` copy that could drift.
+[package.metadata.component.target.dependencies]
+"cadenza:nfc" = { path = "../cdz-nfc/wit" }
+
 [profile.release]
 # Small, deterministic output: no unwinding, size-optimized, single codegen unit.
 panic = "abort"

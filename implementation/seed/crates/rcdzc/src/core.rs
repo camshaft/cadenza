@@ -492,6 +492,20 @@ pub enum Core {
         disc_some: u32,
         disc_none: u32,
     },
+    /// NFC-normalize a RUNTIME `String` value (FINDING #23). A String's identity is its NFC-normalized
+    /// contents (collections-and-text.md L33-34/L53-54 MUSTs), but the tagless runtime's `String.concat` =
+    /// `bytes-concat` (a raw byte join), so a decomposed sequence assembled at run time is stored
+    /// un-normalized → wrong length + unequal to / unfindable-as-key-against its composed literal twin (and
+    /// its interned symbol misses too). Emitted ONLY at String-typed construction sites where the type is
+    /// known — a `String.concat` result, a String Map/Set key, a symbol-intern — wrapping the operand so the
+    /// runtime `str-nfc-normalize` op canonicalizes it. A raw `Bytes` / a `String.from-bytes` decode NEVER
+    /// gets this (the decode-exemption, collections-and-text.md L90-94). CONSUMES `string` (the runtime op
+    /// returns the same handle when already NFC — the dominant ASCII/pre-composed case, no alloc — else a
+    /// fresh normalized leaf with the original dropped). An owned producer (like a fresh `String.concat`
+    /// result), so the result is an owned temporary the Perceus discipline drops after a borrow.
+    NfcNormalize {
+        string: StructId,
+    },
     /// `String.to-bytes s` on a RUNTIME `String` — the UTF-8 encoding `String → Bytes`. Present when the
     /// operand is not a compile-time-visible constant string (a constant folds to a `Core::BytesOf` of its
     /// UTF-8 bytes in `lower_str_to_bytes`). A String IS a UTF-8 Bytes leaf (byte-identical representation),
