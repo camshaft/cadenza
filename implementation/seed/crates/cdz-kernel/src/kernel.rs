@@ -356,14 +356,14 @@ impl Session {
         executor: &mut (impl Executor + ?Sized),
     ) -> Result<Vec<crate::effect::ControlEffect>, KernelError> {
         self.append(body, cause);
-        let control = self.drive_async(reducer, authz, executor).await;
+        let control = self.drive(reducer, authz, executor).await;
         Ok(control)
     }
 
     /// Genesis-seed the capability manifest (host-capability-discovery I5): fold a synthetic
     /// `control/capabilities` answer so the guest knows its capabilities without issuing a query. Synthesizes
     /// a `control/capabilities` [`Effect`] and runs it through the same drive path as a guest-issued query
-    /// ([`drive_worklist_async`]'s inline-answer arm), so there is one manifest shape, one guest decoder, and
+    /// ([`drive_worklist`]'s inline-answer arm), so there is one manifest shape, one guest decoder, and
     /// one replay-safe (logged EffectResult) code path. Call immediately after [`Session::genesis`], before
     /// the first delivery; the seed's dispatch is cause-linked to the genesis event.
     ///
@@ -412,7 +412,7 @@ impl Session {
             request,
             token: None,
         };
-        self.drive_worklist_async(vec![(seed, cause)], reducer, authz, executor)
+        self.drive_worklist(vec![(seed, cause)], reducer, authz, executor)
             .await
     }
 
@@ -463,7 +463,7 @@ impl Session {
                 },
                 None,
             );
-            self.drive_async(reducer, authz, executor).await;
+            self.drive(reducer, authz, executor).await;
         }
         due.len()
     }
@@ -530,26 +530,25 @@ impl Session {
     /// The ASYNC twin of [`Session::drive`] — same fold→authorize→dispatch→fold-result loop, but the
     /// reducer folds are `.await`ed (via [`Reducer`]) so a long wasm fold cooperatively yields. The
     /// authorize/executor/append mechanics are IDENTICAL to the sync path — only the fold calls await.
-    async fn drive_async(
+    async fn drive(
         &mut self,
         reducer: &dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> Vec<crate::effect::ControlEffect> {
         let trigger = self.tip_hash();
-        let initial = self.fold_tip_async(reducer, trigger).await;
-        self.drive_worklist_async(initial, reducer, authz, executor)
-            .await
+        let initial = self.fold_tip(reducer, trigger).await;
+        self.drive_worklist(initial, reducer, authz, executor).await
     }
 
     /// The ASYNC twin of [`Session::drive_worklist`] — structurally identical (authorize → durable
-    /// dispatch → execute → fold-result), but the reducer folds (`fold_tip_async`/`record_result_async`)
+    /// dispatch → execute → fold-result), but the reducer folds (`fold_tip`/`record_result`)
     /// are `.await`ed. The executor call stays SYNC (only the reducer fold yields this slice); the
     /// authorize/timer/append/S1-latch logic is byte-identical to the sync path. Kept as a parallel copy
     /// because the fold-call interleaving (which mutates `to_process` mid-loop) can't be factored behind a
     /// sync/async-agnostic helper without threading a closure per fold point — the duplication is the
     /// never-red migration cost, removed with the sync path at step 6.
-    async fn drive_worklist_async(
+    async fn drive_worklist(
         &mut self,
         mut to_process: Vec<(Effect, Hash)>,
         reducer: &dyn Reducer,
@@ -573,7 +572,7 @@ impl Session {
             if crate::effect::effect_ct::is_control_family(&req.content_type.family) {
                 if req.content_type.family.as_ref() == crate::effect::effect_ct::CAPABILITIES {
                     // Durable Dispatched record BEFORE the answer (S1) — also what gives
-                    // record_result_async the continuation token to resume the guest. authz-exempt: no
+                    // record_result the continuation token to resume the guest. authz-exempt: no
                     // authorize() call; the projection PROBES authz per family but the query itself is free.
                     let idempotency_key = idempotency_key_for(id, &req);
                     let dispatch_hash = self.append(
@@ -612,7 +611,7 @@ impl Session {
                         EffectOutcome::Ok(Some(crate::effect::Payload::Inline(bytes.into())))
                     };
                     let more = self
-                        .record_result_async(id, outcome, reducer, dispatch_hash)
+                        .record_result(id, outcome, reducer, dispatch_hash)
                         .await;
                     for pair in more {
                         to_process.push(pair);
@@ -630,7 +629,7 @@ impl Session {
             if let Err(reason) = authz.authorize_async(&req).await {
                 let denial_hash =
                     self.append(EventBody::AuthzDenied { id, reason, token }, Some(cause));
-                for pair in self.fold_tip_async(reducer, denial_hash).await {
+                for pair in self.fold_tip(reducer, denial_hash).await {
                     to_process.push(pair);
                 }
                 continue;
@@ -662,7 +661,7 @@ impl Session {
                             },
                             Some(cause),
                         );
-                        for pair in self.fold_tip_async(reducer, denial_hash).await {
+                        for pair in self.fold_tip(reducer, denial_hash).await {
                             to_process.push(pair);
                         }
                     }
@@ -693,7 +692,7 @@ impl Session {
                         .to_string(),
                 );
                 let more = self
-                    .record_result_async(id, outcome, reducer, dispatch_hash)
+                    .record_result(id, outcome, reducer, dispatch_hash)
                     .await;
                 for pair in more {
                     to_process.push(pair);
@@ -718,7 +717,7 @@ impl Session {
             };
 
             let more = self
-                .record_result_async(id, outcome, reducer, dispatch_hash)
+                .record_result(id, outcome, reducer, dispatch_hash)
                 .await;
             for pair in more {
                 to_process.push(pair);
@@ -729,7 +728,7 @@ impl Session {
 
     /// The ASYNC twin of [`Session::fold_tip`] — folds the tip through a [`Reducer`] (`.await`),
     /// same FoldFailed capture + effect-reversal. This is the ONE place the reducer actually awaits.
-    async fn fold_tip_async(&mut self, reducer: &dyn Reducer, cause: Hash) -> Vec<(Effect, Hash)> {
+    async fn fold_tip(&mut self, reducer: &dyn Reducer, cause: Hash) -> Vec<(Effect, Hash)> {
         let tip = self.log.last().expect("log always has genesis").clone();
         let out = reducer.fold_async(&tip, &mut self.kv).await;
         // Error-resilience (§17): a failed fold is captured as a FoldFailed log event, not folded further
@@ -752,7 +751,7 @@ impl Session {
     /// The ASYNC twin of [`Session::record_result`] — same timeout-cancels (drop a late result for a
     /// settled id) + token-copy-from-Dispatched-frame invariant, but folds the result through an
     /// [`Reducer`] (`.await`).
-    async fn record_result_async(
+    async fn record_result(
         &mut self,
         id: EffectId,
         outcome: EffectOutcome,
@@ -776,7 +775,7 @@ impl Session {
             },
             Some(dispatch_hash),
         );
-        self.fold_tip_async(reducer, result_hash).await
+        self.fold_tip(reducer, result_hash).await
     }
 
     /// Time out an open (dispatched-but-unsettled) effect — the missing half of the S4 recovery
@@ -816,11 +815,10 @@ impl Session {
         };
         // Link the timeout result to the dispatch that opened it (causal DAG §5), like a real result.
         let more = self
-            .record_result_async(id, EffectOutcome::TimedOut, reducer, dispatch_hash)
+            .record_result(id, EffectOutcome::TimedOut, reducer, dispatch_hash)
             .await;
         // The reducer's timeout continuation may emit further effects — drive them to quiescence.
-        self.drive_worklist_async(more, reducer, authz, executor)
-            .await;
+        self.drive_worklist(more, reducer, authz, executor).await;
         true
     }
 
@@ -896,10 +894,7 @@ impl Session {
     ///
     /// Effects emitted during replay are IGNORED (§17 "replay re-folds with no live effect" — the results
     /// are already in the log), exactly as the sync path; so replayed-kv == live-kv (PR#990 finding #1).
-    pub async fn replay_async(
-        log: Vec<Event>,
-        reducer: &dyn Reducer,
-    ) -> Result<Session, KernelError> {
+    pub async fn replay(log: Vec<Event>, reducer: &dyn Reducer) -> Result<Session, KernelError> {
         match log.first().map(|e| &e.body) {
             Some(EventBody::Genesis { .. }) => {}
             _ => return Err(KernelError::MissingGenesis),
@@ -1000,7 +995,7 @@ impl Session {
             return Err(RecoverError::EmptyLog);
         }
         let kind = recovered.kind;
-        let session = Session::replay_async(recovered.events, reducer)
+        let session = Session::replay(recovered.events, reducer)
             .await
             .map_err(RecoverError::Replay)?;
         let report = RecoveryReport {
@@ -1777,20 +1772,19 @@ mod monotonic_now_tests {
         // Replay the log: the recorded (already-clamped) Now results must rebuild the SAME last_now +
         // the SAME sequence — replay never re-clamps, it re-derives (determinism).
         let log = s.log().to_vec();
-        let replayed = Session::replay_async(log, &NowReducer)
-            .await
-            .expect("replay");
+        let replayed = Session::replay(log, &NowReducer).await.expect("replay");
         assert_eq!(recorded_now_sequence(&replayed), live_seq);
         assert_eq!(replayed.last_now, live_last_now);
         assert_eq!(replayed.last_now, 1002);
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn replay_async_reconstructs_identically_to_sync_replay() {
-        // The async twin `replay_async` (driving a Reducer) must reconstruct a session BYTE-IDENTICAL
-        // to sync `replay` — the additive-migration invariant (replay's re-fold only awaits; it changes no
-        // reconstruction). Build a session, then replay the SAME log both ways and compare KV root + last_now
-        // + open set + log length. A replay/replay_async drift fails loudly HERE.
+    async fn replay_reconstructs_kv_and_open_set_deterministically() {
+        // `replay` reconstructs a session from its log DETERMINISTICALLY: replaying the same log yields the
+        // same KV root, last_now, open set, and length as the live session that produced it — and two
+        // replays of the same log agree (idempotent, no hidden nondeterminism in the re-fold). (Formerly a
+        // sync-vs-async replay equivalence check; there is only ONE async replay now — the all-async arc
+        // dropped the sync twin — so this pins single-replay determinism instead.)
         let mut exec = StuckClock(1000);
         let mut s = Session::genesis(Hash::of(b"now-v1"));
         s.deliver_async(inbound(), None, &NowReducer, &now_cap(), &mut exec)
@@ -1798,25 +1792,19 @@ mod monotonic_now_tests {
             .unwrap();
         let log = s.log().to_vec();
 
-        let sync_replayed = Session::replay_async(log.clone(), &NowReducer)
+        let replayed = Session::replay(log.clone(), &NowReducer)
             .await
-            .expect("sync replay");
-        let async_replayed = Session::replay_async(log, &NowReducer)
-            .await
-            .expect("async replay");
+            .expect("replay");
+        // Reconstructs the live session's derived state exactly.
+        assert_eq!(replayed.snapshot().kv_root, s.snapshot().kv_root);
+        assert_eq!(replayed.last_now, s.last_now);
+        assert_eq!(replayed.last_now, 1002);
+        assert_eq!(replayed.log().len(), s.log().len());
+        assert_eq!(recorded_now_sequence(&replayed), recorded_now_sequence(&s));
 
-        assert_eq!(
-            async_replayed.snapshot().kv_root,
-            sync_replayed.snapshot().kv_root,
-            "async replay KV root must equal sync replay KV root"
-        );
-        assert_eq!(async_replayed.last_now, sync_replayed.last_now);
-        assert_eq!(async_replayed.last_now, 1002);
-        assert_eq!(async_replayed.log().len(), sync_replayed.log().len());
-        assert_eq!(
-            recorded_now_sequence(&async_replayed),
-            recorded_now_sequence(&sync_replayed)
-        );
+        // Two replays of the same log agree — the re-fold has no hidden nondeterminism.
+        let replayed2 = Session::replay(log, &NowReducer).await.expect("replay 2");
+        assert_eq!(replayed2.snapshot().kv_root, replayed.snapshot().kv_root);
     }
 
     // A reducer that, on an inbound message, emits a `control/summary` effect carrying summary bytes in
@@ -2349,7 +2337,7 @@ mod monotonic_now_tests {
 
         // Replay the durable log — recovery reconstructs the same session.
         let log = session.log().to_vec();
-        let replayed = Session::replay_async(log, &InertReducer)
+        let replayed = Session::replay(log, &InertReducer)
             .await
             .expect("a seeded log replays");
 

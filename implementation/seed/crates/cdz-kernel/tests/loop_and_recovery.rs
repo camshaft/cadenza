@@ -228,7 +228,7 @@ async fn crash_after_dispatch_before_result_does_not_double_fire() {
     let crashed_log: Vec<Event> = full_log[..=first_dispatch_idx].to_vec();
 
     // Recover from the truncated log.
-    let recovered = Session::replay_async(crashed_log, &reducer).await.unwrap();
+    let recovered = Session::replay(crashed_log, &reducer).await.unwrap();
 
     // The recovery correctly identifies exactly one OPEN (dispatched-but-unsettled) effect (S1)...
     assert_eq!(recovered.open_effects(), 1);
@@ -361,7 +361,7 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
         _ => unreachable!(),
     };
     // Replay only up to the dispatch → a recovered session with one open, un-resulted effect.
-    let mut restored = Session::replay_async(full_log[..=dispatch_idx].to_vec(), &reducer)
+    let mut restored = Session::replay(full_log[..=dispatch_idx].to_vec(), &reducer)
         .await
         .expect("replay");
     assert_eq!(restored.open_effect_ids(), vec![open_id]);
@@ -398,7 +398,7 @@ async fn time_out_effect_settles_an_open_dispatch_and_resumes_the_reducer() {
 
     // The timeout outcome folded observably, so a replay of the WHOLE resulting log reconstructs the
     // same KV (the §16c-S3 determinism the observable() predicate guarantees).
-    let replayed = Session::replay_async(restored.log().to_vec(), &reducer)
+    let replayed = Session::replay(restored.log().to_vec(), &reducer)
         .await
         .expect("replay after timeout");
     assert_eq!(replayed.kv().get(b"status"), Some(&b"gave-up"[..]));
@@ -798,9 +798,7 @@ async fn persist_crash_recover_reconstructs_kv_and_open_obligations() {
     // Phase 2: recover from disk ONLY, then replay into a fresh Session.
     let recovered = LogStore::recover(&path).unwrap();
     assert_eq!(recovered.kind, cdz_kernel::log_store::RecoveryKind::Clean);
-    let restored = Session::replay_async(recovered.events, &reducer)
-        .await
-        .unwrap();
+    let restored = Session::replay(recovered.events, &reducer).await.unwrap();
 
     // KV reconstructed to the crash point (reducer had set phase=fetching before dispatching)...
     assert_eq!(restored.kv().get(b"phase"), Some(&b"fetching"[..]));
@@ -1030,7 +1028,7 @@ async fn armed_timer_survives_replay() {
         .unwrap();
 
     // Replay the log into a fresh session — the armed timer must come back.
-    let restored = Session::replay_async(session.log().to_vec(), &reducer)
+    let restored = Session::replay(session.log().to_vec(), &reducer)
         .await
         .unwrap();
     assert_eq!(restored.next_timer_deadline(), Some(2000));
@@ -1302,7 +1300,7 @@ async fn authz_denied_is_folded_live_so_replay_matches() {
     let live_root = session.snapshot().kv_root;
 
     // Replay: must reconstruct the SAME kv (the denial is folded in replay too, matching live).
-    let replayed = Session::replay_async(session.log().to_vec(), &DenialCounter)
+    let replayed = Session::replay(session.log().to_vec(), &DenialCounter)
         .await
         .unwrap();
     assert_eq!(replayed.kv().get(b"denials"), Some(&[1u8][..]));
@@ -1337,7 +1335,7 @@ async fn replay_rejects_a_genesis_less_log_loudly() {
         },
     }];
     assert!(
-        Session::replay_async(genesis_less, &Inert).await.is_err(),
+        Session::replay(genesis_less, &Inert).await.is_err(),
         "replay must reject a log whose first event is not Genesis (finding #2 fail-loud)"
     );
 }
