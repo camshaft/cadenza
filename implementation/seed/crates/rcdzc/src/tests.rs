@@ -22289,6 +22289,61 @@ mod match_engine {
         compile_component(&crate::codec::encode(&parse(src))).expect("compile")
     }
 
+    #[test]
+    fn a_multi_param_and_nested_user_generic_resolve_by_name_in_a_type_annotation() {
+        // Coverage-hardening for the parenthesized-head user-generic-by-name resolve (#1683/#1700): the
+        // pinned case `a_parenthesized_head_generic_sum_resolves_by_name_in_a_type_annotation` covered a
+        // SINGLE-param `(Container a)` in a flat annotation. Three untested faces of the SAME resolve path,
+        // all confirmed here to resolve by name AND compute:
+        //   (1) a MULTI-param generic `(Pair a b)` applied with two args `(Pair Int64 Bool)` — the head
+        //       param collect + applied-ctor reduction must handle arity > 1;
+        //   (2) a user generic NESTED as a type-arg to a BUILT-IN generic `(Option (Box Int64))`;
+        //   (3) a user generic NESTED as a type-arg to ANOTHER user generic `(Box (Box Int64))`.
+        // Each was previously CDZ0101-unresolvable (the `""`-name registration bug); all now resolve like a
+        // built-in and run.
+        // (1) multi-param: `(Both 9 true)` through `fst` = 9.
+        assert_eq!(
+            run_returns_with::<i64>(
+                &component(
+                    "(module m (type (Pair a b) (Both a b)) \
+                       (def (fst (: p (Pair Int64 Bool))) (match p ((Both x y) x))) \
+                       (def (main (: k Int64)) (fst (Both k true))) (export main))"
+                ),
+                "main",
+                &[wasmtime::component::Val::S64(9)],
+            ),
+            9
+        );
+        // (2) user generic inside a built-in generic: `(Some (Mk 4))` through `unwrap` = 4.
+        assert_eq!(
+            run_returns_with::<i64>(
+                &component(
+                    "(module m (type (Box a) (Mk a)) \
+                       (def (unwrap (: b (Option (Box Int64)))) \
+                          (match b ((Some x) (match x ((Mk v) v))) (None 0))) \
+                       (def (main (: k Int64)) (unwrap (Some (Mk k)))) (export main))"
+                ),
+                "main",
+                &[wasmtime::component::Val::S64(4)],
+            ),
+            4
+        );
+        // (3) user generic inside another user generic: `(Mk (Mk 6))` through `unwrap` = 6.
+        assert_eq!(
+            run_returns_with::<i64>(
+                &component(
+                    "(module m (type (Box a) (Mk a)) \
+                       (def (unwrap (: b (Box (Box Int64)))) \
+                          (match b ((Mk x) (match x ((Mk v) v))))) \
+                       (def (main (: k Int64)) (unwrap (Mk (Mk k)))) (export main))"
+                ),
+                "main",
+                &[wasmtime::component::Val::S64(6)],
+            ),
+            6
+        );
+    }
+
     /// A runtime `Qty` return over a MID-WIDTH Int inner (a width in 33..=63, here `(Int 40)` produced at
     /// run time by a `.wrap` of an Int64 param) crosses the scalar-erased resource-escape as VALID wasm.
     /// The `scalar_box` narrow-int i32→i64 extend must gate on the actual machine SLOT (`int_valtype`: ground
