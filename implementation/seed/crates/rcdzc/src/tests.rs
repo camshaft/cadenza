@@ -22290,7 +22290,7 @@ mod match_engine {
     }
 
     #[test]
-    fn a_multi_param_and_nested_user_generic_resolve_by_name_in_a_type_annotation() {
+    fn a_multi_param_and_nested_user_generic_resolves_by_name_in_a_type_annotation() {
         // Coverage-hardening for the parenthesized-head user-generic-by-name resolve (#1683/#1700): the
         // pinned case `a_parenthesized_head_generic_sum_resolves_by_name_in_a_type_annotation` covered a
         // SINGLE-param `(Container a)` in a flat annotation. Three untested faces of the SAME resolve path,
