@@ -6910,3 +6910,31 @@
   (host-responses (respond io.ping (: 99 Int64)) (respond io.get (: 7 Int64)))
   (host-calls (call io.ping) (call io.get))
   (call   main (: 3 Int64)) (output (: 10 Int64)))
+
+(case "a host result captured by two closures stored in a RECORD fires the host op once (adv-62b)"
+  (doc    "adv-62b (breaker→v-effects, HIGH wasm soundness): the RECORD-face sibling of adv-62 — a
+           `let`-bound host-call result captured by two closures stored in a RECORD must fire the host op
+           EXACTLY ONCE. `(def (mk) (host (io) (let ((v (io.get))) (record (f (fn (x) (+ v x))) (g (fn (x)
+           (* v x)))))))` + `(def (main) (let ((r (mk))) (+ ((. r f) 10) ((. r g) 100))))` → 2131 (io.get=21
+           once: f(10)=31 + g(100)=2100). The bug: `r`'s init `(mk)` reaches a host call THROUGH THE CALL,
+           but `subtree_reaches_host_call`'s AST walk stopped at the `(mk)` node and missed the host call in
+           mk's body → `r` was copy-propagated → each `(. r •)` re-inlined the `(host …)` block → io.get
+           fired PER projection → the 2nd call had no recorded response and TRAPPED. FIX (v-effects): the
+           `should_keep_binding` host-force-keep test now ALSO follows a CALL init into its inlined callee
+           body (`core_reaches_host_call`, a Core-tree walk, gated to a `Resolved::Apply` init), so `r` is
+           force-kept — materialized ONCE, every projection reads the shared record slot via `LocalRef`.
+           rust declines the record-of-closures-through-host shape (a separate frontier). The tuple/match
+           face is adv-62 (#1528); this is the record face.")
+  (input  (do
+            (effect io (op get (-> Unit Int64)))
+            (def (mk)
+              (host (io)
+                (let ((v (io.get unit)))
+                  (record (f (fn ((: x Int64)) (+ v x))) (g (fn ((: x Int64)) (* v x)))))))
+            (def (main)
+              (let ((r (mk)))
+                (+ ((. r f) 10) ((. r g) 100))))
+            (export main)))
+  (host-responses (respond io.get (: 21 Int64)))
+  (host-calls (call io.get))
+  (output (: 2131 Int64)))
