@@ -66391,6 +66391,54 @@ mod stage1 {
     }
 
     #[test]
+    fn a_marshalled_host_arg_before_a_scalar_arg_keeps_distinct_slots_valid_module() {
+        // The multi-arg SLOT-THREADING regression: a runtime String/Bytes host arg reserves i32 rope/len/pos
+        // scratch (at `base.max(high)`) and bumps `high`, but the HostCall emit arm formerly reused the STALE
+        // `base` for the FOLLOWING arg. So a scalar arg AFTER a marshalled one teed its i64 checked-arith
+        // guard into a slot the marshal had declared i32 — one wasm local at two widths → an INVALID module
+        // (`wasm-tools validate: expected i64, found i32`). Only the marshalled-BEFORE-scalar order tripped it
+        // (scalar-first worked because the scalar bumped `high` first). Fixed by threading a rising `arg_base`
+        // (as the ordinary call arg loop, ~6330, already does). `Component::from_binary` RE-VALIDATES the
+        // composed component — the exact guard that failed pre-fix — and the run proves the scalar (`n`, also
+        // re-read after the call as `10*n`) was NOT clobbered: send responds 5, so 5 + 10*7 = 75. The corpus
+        // case pins the same shape cross-backend; this is the unit-level invalid-module guard.
+        use crate::testkit::parse;
+        let Some(runtime) = find_runtime_wasm() else {
+            eprintln!("[host-arg-slot-thread] runtime wasm not in the store; skipping run");
+            return;
+        };
+        let src = "(do (effect io (op send (-> Bytes Int64 Int64))) \
+                   (def (main (: k Int64)) \
+                     (host (io) \
+                       (let ((n (+ k 7))) \
+                         (+ (io.send (Bytes.of (list ((UInt 8).wrap k))) n) (* 10 n))))) \
+                   (export main))";
+        let bytes = compile_component(&crate::codec::encode(&parse(src)))
+            .expect("a marshalled host arg before a scalar arg must compile, not decline");
+        let engine = wasmtime::Engine::default();
+        wasmtime::component::Component::from_binary(&engine, &bytes).expect(
+            "the marshalled-arg-before-scalar component must be VALID (no i32/i64 slot-width clobber)",
+        );
+        let opts = cdz_run::RunOpts {
+            export: Some("main".to_string()),
+            args: vec!["0".to_string()],
+            runtime: Some(runtime),
+            runtime_cache_dir: None,
+            host_responses: vec![cdz_run::HostResponse {
+                op: "send".to_string(),
+                value: "5".to_string(),
+            }],
+        };
+        match cdz_run::run(&bytes, &opts).expect("run") {
+            cdz_run::Outcome::Value(s) => assert_eq!(
+                s, "75",
+                "the scalar arg (n=7, re-read after the call) survives distinct from the marshal scratch: 5 + 10*7"
+            ),
+            cdz_run::Outcome::Trap(t) => panic!("marshalled-arg-before-scalar run trapped: {t}"),
+        }
+    }
+
+    #[test]
     fn a_runtime_string_host_arg_handles_empty_and_multibyte_lengths() {
         // EDGE-LENGTH coverage for the `_mem` runtime-string-arg copy loop (the primary test uses a 1-byte
         // string). Two edges an off-by-one in the loop guard `pos >= len → done` would break: (1) an EMPTY

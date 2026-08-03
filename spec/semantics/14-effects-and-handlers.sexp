@@ -248,6 +248,29 @@
   (host-calls (call io.sink))
   (call   main (: 0 Int64)) (output (: 57 Int64)))
 
+(case "a runtime Bytes host-arg BEFORE a scalar arg keeps distinct core slots (no width-clobber)"
+  (doc    "The multi-arg slot-threading edge of the host-ARG marshal: a RUNTIME String/Bytes arg reserves
+           i32 rope/len/pos scratch slots (at `base.max(high)`) and bumps `high`, but the emit arm formerly
+           reused the STALE `base` for the FOLLOWING arg — so a subsequent scalar's i64 checked-arith guard
+           teed into a slot the marshal had declared i32, one wasm local at two widths → an INVALID module
+           (`func failed to validate: expected i64, found i32`). Only the marshalled-arg-BEFORE-scalar order
+           tripped it; scalar-before-marshalled worked because the scalar bumped `high` first. Fixed by
+           threading a rising `arg_base` (as the ordinary call arg loop does). Here `n = k+7` is BOTH the
+           scalar arg AND re-read after the call (`10*n`), so a clobbered slot would corrupt the output, not
+           just fail to validate: send responds 5, so 5 + 10*7 = 75. (rust-async: todo pending its host-arg
+           path; wasm + rust pin the pass.)")
+  (input  (do
+            (effect io (op send (-> Bytes Int64 Int64)))
+            (def (main (: k Int64))
+              (host (io)
+                (let ((n (+ k 7)))
+                  (+ (io.send (String.to-bytes (String.concat "ab" (if (> k 100) "z" "cd"))) n)
+                     (* 10 n)))))
+            (export main)))
+  (host-responses (respond io.send (: 5 Int64)))
+  (host-calls (call io.send))
+  (call   main (: 0 Int64)) (output (: 75 Int64)))
+
 (case "one host effect with TWO ops interleaves its calls in program order"
   (doc    "The per-run response cursor over a MULTI-OP effect: geta, getb, geta consume rows 1,2,3 in
            the order made — the cursor is per-RUN, not per-op (a per-op cursor would give the second
