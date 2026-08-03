@@ -54,7 +54,7 @@ this PR. The one correct advance is `git cherry-pick <mergeCommit.oid>` (from
 `gh pr view <n> --json mergeCommit --jq .mergeCommit.oid`) onto `trunk` — its parent's tree == trunk's
 tree, so it applies cleanly and advances trunk by exactly this PR; multi-merge windows are handled by
 reaping each PR separately. The cherry-pick MUST run in the worktree that has `trunk` CHECKED OUT
-(pr-sync's), never the bare hub (no work tree → git fatals, misreported as a false conflict). See the
+(pr-sync's), never the bare hub (no work tree → git errors out, misreported as a false conflict). See the
 smoke-test bug log below.
 
 ```
@@ -71,7 +71,7 @@ MR arrives → categorize into a LANE → re-parent sender --ref onto origin/mai
 pr-sync's tick becomes a **scheduler pass**, not a serial gate loop: reap concluded PRs
 (merged→cherry-pick-mergeCommit.oid-onto-trunk+ack / required-red→reject), then top up in-flight
 capacity by pushing new candidates from the queue, respecting per-lane ordering + a global in-flight
-cap. After the reap it `git remote prune origin` (drops stale cand remote-tracking refs whose branch
+cap. After the reap it runs `git remote prune origin` (drops stale cand remote-tracking refs whose branch
 auto-deleted on merge). Dropping the bisect is a direct
 win: today one red MR in a batch forces ~log₂(N) re-gates to isolate; in the new model it just fails
 its own PR in isolation and every other candidate proceeds untouched.
@@ -270,7 +270,7 @@ corruption:
   local (#1549).
 - **BUG-2** — `gh pr create --fill` fails (no local `origin/main..head` range on a fresh cand branch);
   use explicit `--title`/`--body`.
-- **BUG-3** — the cherry-pick ran in the BARE hub (`fleet.repo`, no work tree) → git fatals "must be
+- **BUG-3** — the cherry-pick ran in the BARE hub (`fleet.repo`, no work tree) → git errors out "must be
   run in a work tree", misreported as a false conflict; run the mutating ops in the worktree that has
   `trunk` checked out (#1591, via `parse_trunk_worktree` over `git worktree list --porcelain`).
 - **Guard + count nits** — the re-dispatch idempotency guard matched agent-alone across all records
