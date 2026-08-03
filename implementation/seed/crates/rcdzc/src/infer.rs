@@ -9987,6 +9987,19 @@ fn check_application(
             }
             return;
         }
+        // The key/value AGREE with the map's types — but a bare inserted literal whose width is fixed by the
+        // map's key/value type (from a SIBLING insert in the chain, e.g. `(Map.insert (Map.insert m 1 (: 5
+        // UInt8)) 2 300)` where the inner `(: 5 UInt8)` pins the value type UInt8) must still be RANGE-checked
+        // against that width. `agrees_with` only tests kind/shape agreement (a deferred `Int64` agrees with
+        // `UInt8`), not fit — so `300` slipped CDZ0302 → wasm wrapped, rust E0308 (breaker's Map face of the
+        // sibling-width skip). Range-check the inserted key against `kt` and value against `vt` via the same
+        // `width_fault_against_ty` the annotation path uses. (The operand map's own inserts are checked when
+        // `collect` recurses into `args[0]` below.)
+        if let Some(reject) = width_fault_against_ty(db, args[1], &kt)
+            .or_else(|| width_fault_against_ty(db, args[2], &vt))
+        {
+            out.push(reject);
+        }
     }
     // `Set.of list` — the set is HOMOGENEOUS: its elements (the list's) must share one type
     // (collections-and-text.md §A Set Is A Collection Of Unique Elements — elements of ONE type). A
@@ -10048,6 +10061,25 @@ fn check_application(
                 collect(db, el, out);
             }
             return;
+        }
+        // HOMOGENEOUS set (no clash) — RANGE-CHECK each element against the SETTLED element type. A bare
+        // out-of-range element whose width is fixed by an annotated SIBLING (`(Set.of (list (: 1 UInt64)
+        // -41))`) must reject CDZ0302, exactly like the list-literal sibling-width fix — else wasm wraps +
+        // rust E0308 (breaker's Set face of the sibling-unification skip). The `Set.of` path walks its
+        // elements HERE, bypassing the list-literal fault arm, so the check must live at this seam too. The
+        // settled type is the JOIN of the element types (takes the fixed width regardless of position).
+        if let Some((first, first_ty)) = first_pair {
+            let settled = elems
+                .iter()
+                .skip(1)
+                .fold(first_ty, |acc, &e| acc.join(&type_of(db, e)));
+            let _ = first;
+            if let Some(reject) = elems
+                .iter()
+                .find_map(|&e| width_fault_against_ty(db, e, &settled))
+            {
+                out.push(reject);
+            }
         }
     }
     // A LIST constructor (`list` alias) applied — its arguments are its ELEMENTS, and a list is
@@ -13606,6 +13638,9 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                         Vec::new()
                     }
                 };
+                // (The sibling-width CDZ0302 range-check for `Set.of` elements runs in `check_application`'s
+                // `Set.of` arm — the homogeneous-set path — which sees the settled element type; this
+                // `collect` arm only descends into each element for its OWN nested faults.)
                 for &e in &elems {
                     collect(db, e, out);
                 }
