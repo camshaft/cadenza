@@ -3100,3 +3100,51 @@
                  (if (= (Set.union (Set.of (list x)) (Set.of (list x))) (Set.of (list x))) 1 0)))
             (export main)))
   (call   main (: 5 Int64)) (output (: 11 Int64)))
+
+; ── CHAMP hash-collision node ────────────────────────────────────────────────────────────
+; A Set/Map is a 5-bit-per-level CHAMP over a 32-bit FNV-1a key hash (CHAMP_LEVELS=7). When two DISTINCT
+; keys share the FULL 32-bit hash, they exhaust every trie level with identical fragments and MUST land in
+; the same COLLISION NODE, which stores them side-by-side and disambiguates by a byte-for-byte `champ_eq`
+; linear scan (cdz-runtime `is_collision_node` / `champ_eq`). This path is otherwise unwitnessed by the
+; corpus. 150512886 and 59555794 are two fixnum-range Int64s with EQUAL FNV-1a hash 0x9457bd5f (brute-forced
+; against the runtime's exact `champ_node_raw_hash` over the 8 LE bytes of the decoded fixnum) — so as Set
+; elements / Map keys they collide at the leaf. A runtime `z` (added to each) keeps the keys off the
+; const-fold path so the collision node is actually built at RUN time.
+
+(case "two keys sharing a full 32-bit hash occupy one CHAMP collision node as distinct Set elements"
+  (doc    "The CHAMP collision-node path: 150512886 and 59555794 share FNV-1a hash 0x9457bd5f, so a
+           `Set` holding both must build a single collision node with BOTH entries — `Set.len` is 2 (a
+           collision that dropped one key, or a scan that treated them as equal, would report 1), and
+           `Set.contains` finds EACH by its byte-for-byte identity. The decoy `a+1` (a NON-colliding
+           neighbor, absent from the set) must be reported absent — a collision-node scan that matched by
+           hash-slot rather than by `champ_eq` content would spuriously find it. Result:
+           1000·len + 100·(a∈s) + 10·(b∈s) + (a+1∈s) = 1000·2 + 100 + 10 + 0 = 2110.")
+  (input  (do
+            (def (main (: z Int64))
+              (let ((a (+ 150512886 z))
+                    (b (+ 59555794 z))
+                    (s (Set.of (list (+ 150512886 z) (+ 59555794 z)))))
+                (+ (* 1000 (Set.len s))
+                   (+ (* 100 (if (Set.contains s a) 1 0))
+                      (+ (* 10 (if (Set.contains s b) 1 0))
+                         (if (Set.contains s (+ a 1)) 1 0))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 2110 Int64)))
+
+(case "a Map keyed by two full-hash-colliding keys stores + retrieves each value by identity"
+  (doc    "The Map face of the CHAMP collision node: insert 150512886->1 then 59555794->2 (the two keys
+           share FNV-1a hash 0x9457bd5f), so the second insert extends the first's collision node rather
+           than overwriting it — `Map.len` is 2, and each lookup returns its OWN value (not the sibling's:
+           the values 1 and 2 differ, so a scan matching the wrong entry would return 21 not 12). Result:
+           100·len + 10·(m[a]) + m[b] = 100·2 + 10·1 + 2 = 212. A collision node that clobbered on the
+           second insert would give len 1; a scan comparing by hash-slot alone would return the wrong value.")
+  (input  (do
+            (def (main (: z Int64))
+              (let ((a (+ 150512886 z))
+                    (b (+ 59555794 z))
+                    (m (Map.insert (Map.insert Map.empty (+ 150512886 z) 1) (+ 59555794 z) 2)))
+                (+ (* 100 (Map.len m))
+                   (+ (* 10 (Option.expect (Map.lookup m a) "a"))
+                      (Option.expect (Map.lookup m b) "b")))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 212 Int64)))

@@ -668,6 +668,7 @@ pass	a Map accumulator threaded through a non-tail double tree recursion accumul
 pass	a Map keyed by a (Bytes, Int64) tuple is looked up by content through the compound key descent
 pass	a Map keyed by a COMPOUND containing an abstract type is rejected (opacity — the key path compares the abstract leaf)
 pass	a Map keyed by a DEEPLY-nested compound containing an abstract type is rejected (opacity recurses to any depth)
+pass	a Map keyed by two full-hash-colliding keys stores + retrieves each value by identity
 pass	a Map rebuilt by folding Map.insert over its own Map.to-list equals the original
 pass	a Map-returning closure alongside a parameterized plain export — the closure
 pass	a Map-returning closure alongside a parameterized plain export — the plain
@@ -5330,6 +5331,7 @@ pass	two functions both body-solved to Int64->Bool reflect equal arrows
 pass	two functions defined by mutual recursion compute a result
 pass	two functions with the same body-solved arrow but different bodies reflect equal types
 pass	two heap-list accumulators swap slots through every tail call
+pass	two keys sharing a full 32-bit hash occupy one CHAMP collision node as distinct Set elements
 pass	two lists are concatenated into one flat list
 pass	two lists of different length are unequal, not a type error
 pass	two maps of different sizes are unequal, not a type error
