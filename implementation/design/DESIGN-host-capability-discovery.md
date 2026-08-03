@@ -353,6 +353,100 @@ existing `Authorize` trait unchanged).
   signal for the mid-session push (I6, D). NO shared-WIT change — the `Authorize`/`authorizer.wit` contract
   is unchanged. Coordinate the scope-probe-target convention (I3) + the register/swap signal shape (I6).
 
+## The control-plane return channel (I4 prerequisite — LOCKED with both harness owners)
+
+I1–I3 (manifest projection, the executor-family accessor, the per-family authorizer probe) are BUILT and
+landed. I4 — wiring the `capabilities` query effect + its result event — requires the `control/*` partition
+to exist, which requires the extensible-effects **register-by-string** slice. That slice needs a settled
+control-plane return-channel shape; this section is that design, agreed in a three-party pass
+(`design-host-capabilities` drove; `v-agent-harness` owns the partition + register-by-string;
+`v-agent-harness-host` owns the `fork_query` consumer + Cedar authorizer). It governs BOTH control families
+that exist so far — `capabilities` (this doc) and `summary` (v-agent-harness's fork-query reshape) — so it is
+designed once, here, for both.
+
+### Partition: a `control/` family-string PREFIX, decided BEFORE authorize (LOCKED)
+
+The `control/*` vs `effect/*` split is a real **family-string prefix**, tested by
+`family.starts_with("control/")` at drive, BEFORE authorization:
+- **Control families carry the `control/` prefix** — `control/capabilities`, `control/summary`. They are all
+  NEW, so they have no wire history to preserve.
+- **Well-known effect families STAY BARE** — `http` / `model` / `shell` / `now` / `timer` / `emit`, NOT
+  `effect/http`. ⚠ **Hard wire constraint** (v-agent-harness): the family string is a DURABLE wire value —
+  the codec writes the bare family into the append-only log (`event_ast` `kind_atom = kind.family()`) and
+  `from_family` routes it back, and it is also the deployed Cedar action name. Renaming the six well-known
+  families to an `effect/` namespace would break on-disk log compatibility + every deployed Cedar action-map
+  for zero benefit. So the convention is **asymmetric**: control families are prefixed (new), effect families
+  are bare (existing, or a future bare world-effect family). No `is_control` flag is needed — the prefix is
+  self-describing. (Explicitly namespacing effect families later is a separate wire-migration project; do NOT
+  couple it here.)
+- **Authz-EXEMPT means SKIPPED, not allow.** A `control/*` effect never reaches the authorizer at all — the
+  partition short-circuits before `authorize` (NOT "authorize returns allow"). Rationale (both owners
+  concur, §20b): asking what you may do and emitting a summary are not world-actions, emit nothing outward
+  (host-captured in-process), and gating `capabilities` would be circular (you'd need a capability to ask
+  what capabilities you have). The Cedar authorizer stays a pure `effect/*` world-action gate.
+
+### Disposition: ONE family→`Disposition` registry (LOCKED)
+
+register-by-string's registry is keyed by family string; its value is a disposition enum that uniformly
+covers effects and both control kinds:
+
+```
+enum Disposition {
+    Effect(Box<dyn Executor>),   // effect/* : authorize → CompositeExecutor → EffectResult(token) folds back
+    ControlKernel(<handler>),    // control/* K : kernel produces the result INLINE, records EffectResult(token),
+                                 //   folds back to the SAME reducer (capabilities → project_manifest)
+    ControlHostSurfaced,         // control/* H : returned to drive's caller in Vec<ControlEffect{request,token}>
+                                 //   (summary → the fork_query watch captures it + implicit-closes the fork)
+}
+```
+
+- **capabilities → `ControlKernel(project_manifest)`** — the kernel runs I1–I3's projection inline, records
+  an `EffectResult` carrying the well-known `capabilities-manifest` payload + the guest token, and folds it
+  back to the requesting reducer through the EXISTING result/resume/token machinery. Purely reducer-facing;
+  the host never sees it. (v-agent-harness-host confirmed: nothing needed on its side beyond the landed
+  I1–I3 — `handles_family` + the authorizer probe.)
+- **summary → `ControlHostSurfaced`** — NOT handled in-kernel; `drive` accumulates it and RETURNS it to its
+  caller. (v-agent-harness-host: a returned typed `Vec<ControlEffect{request,token}>` is exactly what
+  `fork_query` wants — its loop is already pull-shaped: `fork.deliver_async(...).await` then inspect; it
+  swaps today's `kv.get("public/summary")` read for scraping the returned control effects, captures the
+  summary payload, and drops the fork. A push/callback would be MORE awkward — it would thread a sink
+  through the fork drive. So: `drive` accumulates control-host-surfaced effects across the fold-to-quiescence
+  and returns them all in one call; no polling.)
+- **`drive` return-shape change:** `drive` (and `deliver_async`) gain a returned `Vec<ControlEffect>` (or a
+  richer `DriveOutcome` carrying it) for the host-surfaced control effects collected during the run.
+  Effect/* and control/kernel dispositions add NOTHING to the return (they fold back internally); only
+  control/host-surfaced accumulates into it. Coordinate the exact `ControlEffect` struct + the `drive`
+  signature change with v-agent-harness-host (their `fork_query` is the consumer) when it is built.
+
+### Consistency invariant + fail-closed (LOCKED)
+
+- **Partition and disposition MUST agree** — a `control/`-prefixed family must register a `Control*`
+  disposition, and a bare family an `Effect` disposition. A mismatch (e.g. a `control/` family registered as
+  `Effect`, or a bare family registered `ControlKernel`) is a **registration-time error**, not a silent
+  route. This keeps the namespace prefix and the registry from drifting apart.
+- **Fail-closed on the unknown family** — a family not in the registry → **permanent decline / observable
+  `Err`**, never a silent drop and never a fallthrough to authorize or route. This is ONE arm covering both
+  `effect/<unknown>` and `control/<unknown>` (they share the single registry). It lands in the
+  register-by-string slice (below).
+
+### Sequencing (what register-by-string introduces, then I4)
+
+register-by-string (v-agent-harness owns) introduces, in one arc:
+(a) the family-string registration API — `with(family: impl Into<String>, Disposition)` replacing
+`with(EffectKind, Executor)` (the peer bridge already scoped with v-agent-harness-host; its ~10 registration
+sites migrate behind the signature change, bare effect families, unchanged behavior);
+(b) the `starts_with("control/")` partition at drive + authz-exempt routing for control;
+(c) the fail-closed unknown-family arm + test;
+(d) the `Disposition` enum + the partition/disposition-agreement check.
+
+Then **I4** (this vertical) wires `capabilities` as `ControlKernel(project_manifest)` on top — a small slice
+once (a)–(d) exist. The `summary` reshape (v-agent-harness / v-agent-harness-host) wires `summary` as
+`ControlHostSurfaced` + re-points `fork_query` off the `public/summary` KV read; that is coordinated
+separately but shares this exact channel. Net chain: **[this channel design] → [register-by-string
+(a)–(d)] → [I4 capabilities wiring] (‖ summary reshape).**
+
+## Related design context
+
 Related design context, all in `design/agent-harness-kernel.md`: §3 (genesis + context-as-events), §4b
 (bridge rule — the load-bearing constraint), §9b (effect-row-as-manifest), §9d (reactive execution),
 §12c/§12f (three-way authz + attenuating delegation), §20a/§20b (resource-rescoping components +
