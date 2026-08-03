@@ -1278,6 +1278,33 @@
             (export main)))
   (error  CDZ0302))
 
+; The INTEGER analogue of the narrow-parameter argument face above: a bare integer literal passed to a
+; narrow-width parameter is range-checked against the callee's declared parameter width at the CALL SITE —
+; directly `(f 300)` where `f : UInt8`, and TRANSITIVELY where `f` forwards its arg to another narrow-param
+; `g` (the callee-param-width seeding threads across the chain, catching the literal at the first narrow
+; param it reaches). No `if`/`match` wrapper needed — the plain call carries the width. Both reject CDZ0302.
+
+(case "a bare literal argument out of range for a narrow parameter width is rejected at check"
+  (doc    "The integer sibling of the Float32 narrow-parameter argument reject above: `(f 300)` where `f`
+           declares `(: x UInt8)` — the parameter's UInt8 width grounds the bare argument literal `300`, which
+           overflows (0..=255) → CDZ0302 at the call site, with no annotation written there (the declared
+           parameter type carries the width) and no runtime conditional. Pins that the literal range-check
+           reaches a narrow parameter DIRECTLY through a plain call, not only through an if/match branch; a
+           check that only descended runtime conditionals would let a direct out-of-range argument silently
+           truncate (300 → 44 as u8).")
+  (input  (do (def (f (: x UInt8)) x) (def (main) (f 300)) (export main)))
+  (error  CDZ0302))
+
+(case "an out-of-range literal argument caught transitively through a two-call chain of narrow params"
+  (doc    "The TRANSITIVE face: `(f 300)` where `f : UInt8` forwards its argument to `g : UInt8` (`(g x)`),
+           both narrow. The out-of-range `300` is caught against the FIRST narrow parameter it reaches — the
+           callee-param-width seeding threads the declared width across the call chain — so a literal too big
+           for the chain's width rejects CDZ0302 rather than slipping to a later emit truncation. Pins the
+           chain-threading of the narrow-param range-check, the transitive companion of the direct call-arg
+           case above.")
+  (input  (do (def (g (: y UInt8)) y) (def (f (: x UInt8)) (g x)) (def (main) (f 300)) (export main)))
+  (error  CDZ0302))
+
 (case "a narrow-width overflow reached through a MATCH projection of a runtime sum is rejected"
   (doc    "A PROJECTION face of the width descent: the narrow annotation sits on a `match` that EXTRACTS the
            payload of a runtime sum — `(: (match (if c (Some 10000) (None)) ((Some v) v) ((None) 0)) UInt8)`.

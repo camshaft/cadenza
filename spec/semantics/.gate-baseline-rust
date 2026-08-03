@@ -1029,6 +1029,7 @@ pass	a bare empty list reflects an undetermined element, distinct from a concret
 pass	a bare equality keyword is rejected, not a crash
 pass	a bare in-range ConstFloat if-branch under a Float32 annotation emits valid f32 and runs
 pass	a bare literal annotated Float32 is grounded at binary32 precision (literal path, not a runtime demote)
+pass	a bare literal argument out of range for a narrow parameter width is rejected at check
 pass	a bare literal exceeding the default-integer pragma's narrow type is rejected
 pass	a bare literal grounded to a narrow width THROUGH an arith spine is range-checked (contextual, transitive)
 pass	a bare literal grounded to a narrow width through a BITWISE spine is range-checked
@@ -4105,6 +4106,7 @@ pass	an out-of-range literal MAP KEY through a builder chain (Map.insert) is rej
 pass	an out-of-range literal MAP VALUE through a builder chain (Map.insert) is rejected
 pass	an out-of-range literal SET element via Set.insert is rejected
 pass	an out-of-range literal SET element via Set.of is rejected
+pass	an out-of-range literal argument caught transitively through a two-call chain of narrow params
 pass	an outer definition references a sibling nested module by bare name
 pass	an over-ceiling integer width in an unused parameter is rejected, like a used one
 pass	an overwrite-churn runtime map holds one entry with the last value winning
