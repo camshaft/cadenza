@@ -717,6 +717,7 @@ pass	a NESTED tuple-of-tuples let pattern destructures a call's runtime result t
 pass	a NESTED-tuple ARG composes with a NESTED-tuple RESULT
 pass	a NOMINAL-over-tuple ARG crosses as the underlying tuple (direct-call)
 pass	a NON-LAST handler arm whose body is a MATCH round-trips through the ML printer
+todo	a NON-TAIL host call consumes rows on the unwind, deepest frame first
 pass	a NON-TAIL recursion rebinding its rope arg to a slice-concat accumulates after each return
 pass	a NON-identity constant add over a high UInt64 operand still rejects the overflow
 pass	a NON-tail heap-spine build 5000 deep constructs and drains through real frames
@@ -2565,6 +2566,7 @@ pass	a record-returning closure alongside a parameterized plain export — the c
 pass	a record-returning closure alongside a parameterized plain export — the plain
 pass	a recursion carrying a Bytes parameter does a fallible read in its base arm
 pass	a recursion carrying a List parameter does a fallible read in its base arm
+todo	a recursion-driven host-call sequence consumes one response row per iteration in order
 pass	a recursive Ast walk via a List.fold closure over the sub-trees DECLINES cleanly (no compile overflow)
 pass	a recursive BigInt fn whose bound result feeds a mod compiles and computes (FINDING)
 pass	a recursive CONSTANT-FOLD pass rewrites int-add subtrees bottom-up and counts folds
@@ -2819,6 +2821,7 @@ pass	a runtime bit-field run spans two bytes and composes with an int segment
 pass	a runtime bitwise AND masks bits
 pass	a runtime bitwise OR combines bits
 pass	a runtime bitwise XOR toggles bits
+todo	a runtime branch selects WHICH host op consumes the first response row
 pass	a runtime branch selects between two ANONYMOUS closures fed to the iterate combinator
 pass	a runtime byte truncation of the sign extremes keeps exactly the low byte
 pass	a runtime bytes value is spliced into a length-prefixed frame
@@ -5549,7 +5552,7 @@ todo	distinct-sig round-trip: a higher-order closure-typed arg on one group + a 
 todo	expect on an overflowing checked add traps
 todo	expect traps on the absent case of a runtime optional
 todo	function arguments are evaluated left to right
-todo	generic user-sum values dedupe as set elements and key a map by rope-payload content
+pass	generic user-sum values dedupe as set elements and key a map by rope-payload content
 todo	host calls are observed in the order they were made
 todo	host calls issue only from the TAKEN arm of a fused match and in arm order
 todo	let bindings' initializers are evaluated in binding order
