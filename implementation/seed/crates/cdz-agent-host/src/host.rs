@@ -302,10 +302,42 @@ impl AgentHost {
 /// loops against Bedrock + fetches URLs, not stubs.
 ///
 /// Async because the Bedrock transport loads AWS config from the ambient environment (the SDK default
-/// credential chain — env/profile/IMDS, no broker). Credentials + region come from the ENVIRONMENT
-/// (operator directive); nothing is wired in code. Returns `Err` if the HTTP client can't be built (e.g.
-/// no TLS backend) — a permanent host misconfiguration surfaced at assembly, not per-effect. `Now` stays
-/// hermetic (no network); it's included because a real agent reads the clock.
+/// provider). Credentials + region come from the ENVIRONMENT — environment variables
+/// (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` + region); the profile/SSO/IMDS
+/// sources are `aws-config` feature-gated and not enabled here (operator directive: env creds, no broker).
+/// Nothing is wired in code. Returns `Err` if the HTTP client can't be built (e.g. no TLS backend) — a
+/// permanent host misconfiguration surfaced at assembly, not per-effect. `Now` stays hermetic (no
+/// network); it's included because a real agent reads the clock.
+///
+/// # Wiring an agent that loops against the real world
+///
+/// Hand the assembled set to [`HostedSession::genesis`] alongside a reducer + an authorizer; from then on
+/// the reducer's `Model` effects reach Bedrock and its `Http` effects reach a real client. This is the
+/// end-to-end shape of "an agent runs" (the crate's north star):
+///
+/// ```no_run
+/// # #[cfg(feature = "live-net")]
+/// # async fn demo(
+/// #     reducer: Box<dyn cdz_kernel::reducer::Reducer>,
+/// #     authz: Box<dyn cdz_kernel::authz::Authorize>,
+/// #     reducer_hash: cdz_kernel::hash::Hash,
+/// #     inbound: cdz_kernel::event::EventBody,
+/// # ) -> Result<(), String> {
+/// use cdz_agent_host::{live_executor_set, HostedSession};
+///
+/// // The real executor set: Now (hermetic) + Http (reqwest) + Model (Bedrock, env creds).
+/// let executors = live_executor_set().await?;
+/// let mut session = HostedSession::genesis(reducer_hash, reducer, authz, executors);
+///
+/// // Delivering an inbound event runs one full turn: fold → authorize → dispatch (a real Bedrock/HTTP
+/// // call) → fold the result back. The agent is running against the world.
+/// session
+///     .deliver(inbound, None)
+///     .await
+///     .map_err(|e| format!("turn failed: {e:?}"))?;
+/// # Ok(())
+/// # }
+/// ```
 #[cfg(feature = "live-net")]
 pub async fn live_executor_set() -> Result<CompositeExecutor, String> {
     use crate::{
