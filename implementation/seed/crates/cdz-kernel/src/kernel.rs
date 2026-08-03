@@ -332,9 +332,32 @@ impl Session {
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
     ) -> Result<(), KernelError> {
+        // The common delivery path DROPS the surfaced control/* effects (a live session turn doesn't
+        // consume them by default). A driver that needs them — `fork_for_query`'s summary watch — calls
+        // [`Session::deliver_async_control`] instead. Keeping this `-> Result<(), _>` is the never-red
+        // bridge: the downstream `cdz-agent-host` HostedSession::deliver returns this verbatim, so widening
+        // it would break its build; the control-returning variant is ADDITIVE alongside it.
+        self.deliver_async_control(body, cause, reducer, authz, executor)
+            .await
+            .map(|_control| ())
+    }
+
+    /// Like [`Session::deliver_async`], but RETURNS the `control/*` effects the reducer emitted this turn
+    /// (control-plane partition, register-by-string): `control/*` families are authz-exempt + not routed —
+    /// the kernel collects them and hands them back here for the DRIVER to consume (e.g. `fork_for_query`
+    /// scrapes the `control/summary` effect's `request.payload`). The common [`deliver_async`] path drops
+    /// them; use this when you need them. See [`crate::effect::ControlEffect`].
+    pub async fn deliver_async_control(
+        &mut self,
+        body: EventBody,
+        cause: Option<Hash>,
+        reducer: &dyn Reducer,
+        authz: &(impl Authorize + ?Sized),
+        executor: &mut (impl Executor + ?Sized),
+    ) -> Result<Vec<crate::effect::ControlEffect>, KernelError> {
         self.append(body, cause);
-        self.drive_async(reducer, authz, executor).await;
-        Ok(())
+        let control = self.drive_async(reducer, authz, executor).await;
+        Ok(control)
     }
 
     /// The ASYNC twin of [`Session::fire_due_timers`] — fire every armed timer past `now_ms`, driving the
@@ -436,11 +459,11 @@ impl Session {
         reducer: &dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
-    ) {
+    ) -> Vec<crate::effect::ControlEffect> {
         let trigger = self.tip_hash();
         let initial = self.fold_tip_async(reducer, trigger).await;
         self.drive_worklist_async(initial, reducer, authz, executor)
-            .await;
+            .await
     }
 
     /// The ASYNC twin of [`Session::drive_worklist`] — structurally identical (authorize → durable
@@ -456,7 +479,8 @@ impl Session {
         reducer: &dyn Reducer,
         authz: &(impl Authorize + ?Sized),
         executor: &mut (impl Executor + ?Sized),
-    ) {
+    ) -> Vec<crate::effect::ControlEffect> {
+        let mut control_out = Vec::new();
         while let Some((effect, cause)) = to_process.pop() {
             let Effect {
                 request: req,
@@ -464,6 +488,18 @@ impl Session {
             } = effect;
             let id = EffectId(self.next_effect_id);
             self.next_effect_id += 1;
+
+            // CONTROL-PLANE PARTITION (register-by-string): a `control/*` family is authz-EXEMPT and NEVER
+            // routed to an executor — it's host-answered. Surface it to the driver (via the returned Vec)
+            // and skip the authorize/route path entirely. (A future in-kernel handler — control/capabilities
+            // → project_manifest — will answer inline instead of surfacing; today all control/* surface.)
+            if crate::effect::effect_ct::is_control_family(&req.content_type.family) {
+                control_out.push(crate::effect::ControlEffect {
+                    request: req,
+                    token,
+                });
+                continue;
+            }
 
             // SEC-F1: authorize against the resolved target (same as sync path), awaiting the async gate.
             if let Err(reason) = authz.authorize_async(&req).await {
@@ -554,6 +590,7 @@ impl Session {
                 to_process.push(pair);
             }
         }
+        control_out
     }
 
     /// The ASYNC twin of [`Session::fold_tip`] — folds the tip through a [`Reducer`] (`.await`),
@@ -1427,6 +1464,9 @@ mod monotonic_now_tests {
         Capability, EffectKind, EffectRequest, Payload, ResourcePredicate, Timeliness,
     };
     use crate::event::{ContentType, EffectOutcome, EventBody};
+    use crate::executor::RecordingExecutor;
+    use crate::hash::Hash;
+    use crate::kv::Kv;
     use crate::reducer::{Effect, FoldOutput, Reducer};
 
     // The clamp helper directly: a fresh reading above the floor passes through (and raises last_now);
@@ -1639,5 +1679,91 @@ mod monotonic_now_tests {
             recorded_now_sequence(&async_replayed),
             recorded_now_sequence(&sync_replayed)
         );
+    }
+
+    // A reducer that, on an inbound message, emits a `control/summary` effect carrying summary bytes in
+    // its payload (the fork-for-query control-plane pattern). It's a control/* family → authz-exempt +
+    // host-surfaced (register-by-string beat 3).
+    struct SummaryEmitReducer;
+    #[async_trait::async_trait(?Send)]
+    impl Reducer for SummaryEmitReducer {
+        async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
+            match &event.body {
+                EventBody::Inbound { .. } => {
+                    let mut request = EffectRequest::new(
+                        EffectKind::Emit, // kind is irrelevant for a control family; the family drives it
+                        "self",
+                        Some(crate::effect::Payload::Inline(
+                            b"i am investigating".to_vec().into(),
+                        )),
+                        Timeliness::Interactive,
+                    );
+                    // Control families carry the "control/" prefix; set it directly (a register-by-string
+                    // caller would emit this family without any EffectKind at all).
+                    request.content_type.family = crate::effect::effect_ct::SUMMARY.into();
+                    FoldOutput::with_effects(vec![Effect {
+                        request,
+                        token: Some(b"cont-9".to_vec()),
+                    }])
+                }
+                _ => FoldOutput::none(),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_control_effect_is_surfaced_to_the_driver_not_authorized_or_routed() {
+        // register-by-string beat 3: a control/* effect is authz-EXEMPT + NOT routed to the executor —
+        // the kernel returns it to the driver via deliver_async_control. Prove all three: it's returned
+        // (with its payload + token), the executor NEVER saw it, and a DENY-ALL authz did NOT deny it
+        // (control is exempt — a normal effect under deny_all would be AuthzDenied).
+        let mut exec = RecordingExecutor::new();
+        let mut session = Session::genesis(Hash::of(b"control-v1"));
+        let control = session
+            .deliver_async_control(
+                inbound(),
+                None,
+                &SummaryEmitReducer,
+                &Authorizer::deny_all(),
+                &mut exec,
+            )
+            .await
+            .expect("deliver");
+
+        // Surfaced to the driver: exactly the control/summary effect, payload + token intact.
+        assert_eq!(control.len(), 1);
+        assert_eq!(
+            control[0].request.content_type.family.as_ref(),
+            crate::effect::effect_ct::SUMMARY
+        );
+        assert_eq!(control[0].token.as_deref(), Some(&b"cont-9"[..]));
+        match &control[0].request.payload {
+            Some(crate::effect::Payload::Inline(b)) => assert_eq!(&b[..], b"i am investigating"),
+            other => panic!("summary payload should carry the bytes, got {other:?}"),
+        }
+        // NEVER routed to the executor (control is host-answered, not a world-action).
+        assert_eq!(exec.seen.len(), 0);
+        // Authz-EXEMPT: deny_all did NOT produce an AuthzDenied for it (a normal effect would be denied).
+        assert!(
+            !session
+                .log()
+                .iter()
+                .any(|e| matches!(e.body, EventBody::AuthzDenied { .. })),
+            "a control/* effect must skip authz entirely — no AuthzDenied"
+        );
+
+        // The common deliver_async path drops the control Vec but is otherwise identical (returns ()).
+        let mut exec2 = RecordingExecutor::new();
+        let mut s2 = Session::genesis(Hash::of(b"control-v2"));
+        s2.deliver_async(
+            inbound(),
+            None,
+            &SummaryEmitReducer,
+            &Authorizer::deny_all(),
+            &mut exec2,
+        )
+        .await
+        .expect("deliver (dropping control)");
+        assert_eq!(exec2.seen.len(), 0);
     }
 }

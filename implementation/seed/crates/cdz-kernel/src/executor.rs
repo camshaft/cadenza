@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn with_effect_registers_by_family_string_incl_an_extension_family() {
+    async fn with_effect_registers_by_family_string_including_an_extension_family() {
         // register-by-string: with_effect keys on a FAMILY STRING, so a NEW effect family with NO
         // EffectKind variant is servable + routable. And `with(EffectKind)` delegates to it (same result).
         let mut exec = CompositeExecutor::new()
