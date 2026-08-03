@@ -7246,3 +7246,61 @@
   (host-calls (call io.alt) (call io.get))
   (call   main (: 3 Int64))
   (output (: 107 Int64)))
+
+; --- Handler-ARM effect composition beyond the single observation pin above (:1031, whose
+; re-performed value is discarded): arms whose OUTER-perform results feed the resume value,
+; sibling handlers sharing one outer counter, and a transitive arm-perform cascade. ---
+
+(case "an arm performs the outer effect TWICE and the results feed the resume value"
+  (doc    "The value-carrying face of the arm-performs-outer pin: A's arm resumes `(+ (Count.tick)
+           (Count.tick))` — the observation IS the resume value, not a discarded side effect. Count
+           seeded 10: the two arm ticks read 10 and 11 (arm resumes 21, Count threads to 12), and a
+           tick AFTER the inner handle closes reads 12 → 21 + 100·12 = 1221. Pins that an arm's
+           under-frame performs advance the outer state exactly like body-level performs (a re-seeded
+           or frame-local Count gives 21+100·10=1021; per-arm-entry re-reads give 20).")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect Count (op tick (-> Unit Int64)))
+            (def (main (: k Int64))
+              (handle Count 10 ((tick (u) c (resume c (+ c 1))))
+                (+ (handle A 0 ((a (u) s (resume (+ (Count.tick) (Count.tick)) s))) (A.a))
+                   (* 100 (Count.tick)))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 1221 Int64)))
+
+(case "TWO sibling inner handlers observe through ONE outer counter"
+  (doc    "Under-frame threading ACROSS sequential handler frames: sibling handles A and B each tick
+           the same enclosing Count from their arms. Count seeded 0: A's arm ticks (0→1), B's arm
+           ticks (1→2), the body's final tick reads 2 → 7 + 10·3 + 100·2 = 237. Pins that the outer
+           state is ONE line threading through both siblings in evaluation order — per-handler counter
+           instances (a frame-local clone) would read 0 at the final tick (37).")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (effect Count (op tick (-> Unit Int64)))
+            (def (main (: k Int64))
+              (handle Count 0 ((tick (u) c (resume c (+ c 1))))
+                (+ (handle A 0 ((a (u) s (do (Count.tick) (resume 7 s)))) (A.a))
+                   (+ (* 10 (handle B 0 ((b (u) s (do (Count.tick) (resume 3 s)))) (B.b)))
+                      (* 100 (Count.tick))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 237 Int64)))
+
+(case "a depth-3 transitive arm-perform cascade threads the innermost state end to end"
+  (doc    "C's arm performs B; B's arm performs A — each perform resolving one frame further out
+           (the under-frame discipline applied TRANSITIVELY). A seeded 100 resumes s and threads s+1.
+           `(C.c)` → C's arm asks B ×10 → B's arm asks A → 100 (A→101) → C resumes 1000. The second
+           `(C.c)` walks the same cascade reading 101 (A→102) → 1010. The direct `(A.a)` then reads
+           102. 1000+1010+102 = 2112. A cascade that re-entered A at its seed per chain (2102), or
+           resolved B's perform against a stale frame, breaks the sum.")
+  (input  (do
+            (effect A (op a (-> Unit Int64)))
+            (effect B (op b (-> Unit Int64)))
+            (effect C (op c (-> Unit Int64)))
+            (def (main (: k Int64))
+              (handle A 100 ((a (u) s (resume s (+ s 1))))
+                (handle B 0 ((b (u) s (resume (A.a) s)))
+                  (handle C 0 ((c (u) s (resume (* 10 (B.b)) s)))
+                    (+ (C.c) (+ (C.c) (A.a)))))))
+            (export main)))
+  (call   main (: 0 Int64)) (output (: 2112 Int64)))
