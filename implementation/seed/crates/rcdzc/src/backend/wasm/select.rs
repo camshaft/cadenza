@@ -11417,7 +11417,8 @@ fn emit(
             // declines above rather than silently overwriting the first.
             let mut runtime_string_arg_seen = false;
             // Each arg is emitted above the scratch its predecessors consumed — `arg_base` rises to `*high`
-            // after every arg (as the ordinary `Core::Call` arg loop does, ~6330). WITHOUT this, a runtime
+            // after every arg (the same `arg_base = *high` threading the call/tail-call arg loops use —
+            // `emit_call_args` and `emit_loop_iteration`). WITHOUT this, a runtime
             // String/Bytes marshal reserves i32 rope/len/pos slots at `base.max(*high)` and bumps `*high`, but
             // a FOLLOWING scalar arg emitted with the stale `base` would tee its i64 checked-arith guard into
             // that same slot — one wasm local declared at two widths → an invalid module (the marshalled-arg-
