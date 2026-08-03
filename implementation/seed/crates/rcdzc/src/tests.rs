@@ -24232,6 +24232,61 @@ mod match_engine {
     }
 
     #[test]
+    fn a_wrong_arity_generic_type_application_in_an_annotation_is_cdz0203_for_user_and_builtin() {
+        // Coverage-hardening for the applied-generic-ctor arity check in a TYPE-ANNOTATION position (the
+        // #1683 user-generic-by-name path + the built-in generics). A generic type applied with the WRONG
+        // NUMBER of type arguments — over-supplied, under-supplied, or bare — must reject CDZ0203 with an
+        // ACTIONABLE message naming the true arity (correct singular/plural grammar) and the canonical
+        // spelling, uniformly for a USER generic and a BUILT-IN. Locks that the user-generic arity check
+        // (post-#1683) agrees with the built-in one and doesn't panic / silently accept.
+        let msg_of = |src: &str| -> (Option<String>, String) {
+            let e = compile_component(&crate::codec::encode(&parse(src)))
+                .expect_err("a wrong-arity generic type application must reject");
+            (e.code.clone(), e.message)
+        };
+        let check = |src: &str, name: &str, takes: &str, supplied: &str| {
+            let (code, msg) = msg_of(src);
+            assert_eq!(code.as_deref(), Some("CDZ0203"), "got: {msg}");
+            // The message agrees number ("but 1 WAS supplied" vs "but 2 WERE supplied") — accept either
+            // by matching just the count + "supplied", so the pin locks the arity + count, not the verb.
+            assert!(
+                msg.contains(&format!("`{name}` takes {takes}"))
+                    && (msg.contains(&format!("but {supplied} was supplied"))
+                        || msg.contains(&format!("but {supplied} were supplied"))),
+                "expected arity message for {name} (takes {takes}, {supplied} supplied), got: {msg}"
+            );
+        };
+        // built-in Option given TWO args (takes 1).
+        check(
+            "(module m (def (f (: x (Option Int64 Bool))) 0) (def (main) (f (Some 1))) (export main))",
+            "Option",
+            "1 type argument",
+            "2",
+        );
+        // user generic (Box a) given TWO args (takes 1) — the #1683 path, same message shape as built-in.
+        check(
+            "(module m (type (Box a) (Mk a)) (def (f (: x (Box Int64 Bool))) 0) (def (main) 0) (export main))",
+            "Box",
+            "1 type argument",
+            "2",
+        );
+        // multi-param user generic (Pair a b) given ONE arg (takes 2) — plural "arguments".
+        check(
+            "(module m (type (Pair a b) (Both a b)) (def (f (: x (Pair Int64))) 0) (def (main) 0) (export main))",
+            "Pair",
+            "2 type arguments",
+            "1",
+        );
+        // user generic (Box) applied with ZERO args — bare-applied, takes 1 (grammar: "0 were supplied").
+        check(
+            "(module m (type (Box a) (Mk a)) (def (f (: x (Box))) 0) (def (main) 0) (export main))",
+            "Box",
+            "1 type argument",
+            "0",
+        );
+    }
+
+    #[test]
     fn a_parenthesized_head_generic_sum_resolves_by_name_in_a_type_annotation() {
         // A generic sum declared with the PARENTHESIZED-head spelling `(type (Container a) …)` (name +
         // params in the head, a corpus-canonical form alongside `(type Box (Mk a))`) must resolve BY NAME in
