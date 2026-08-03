@@ -18,6 +18,16 @@ import { genArgs, renderArgs, normalizeName, GenPool } from "./genPool.ts";
 
 const HEAP_IMPORT = "cadenza:runtime/heap";
 
+// FINDING#23: the value-heap runtime imports `cadenza:nfc/normalize` — a separate component carrying the
+// Unicode NFC tables (kept out of the runtime). The native/CI path composes the real cdz-nfc component; the
+// browser supplies the import as a JS shim. `nfc: list<u8> -> list<u8>` crosses as (Uint8Array) => Uint8Array,
+// and NFC of well-formed UTF-8 is exactly String.prototype.normalize('NFC') round-tripped through UTF-8.
+const NFC_IMPORT = "cadenza:nfc/normalize";
+const nfcHostImport = {
+  nfc: (bytes: Uint8Array): Uint8Array =>
+    new TextEncoder().encode(new TextDecoder("utf-8").decode(bytes).normalize("NFC")),
+};
+
 export interface RunJob {
   component: Uint8Array;
   /** The value-heap runtime component bytes, or null when none is bundled (scalar-only). */
@@ -145,7 +155,11 @@ async function instantiateComponent(
   let heap: Record<string, unknown> | null = null;
   if (job.runtime) {
     const rt = await loadComponent(job.runtime, "heap");
-    const rtRoot = await rt.instantiate(rt.getCoreModule, {});
+    // FINDING#23: the runtime imports `cadenza:nfc/normalize` (a separate NFC component — the heavy Unicode
+    // tables live there, not in the runtime). Supply it as a JS shim: NFC of well-formed UTF-8 is exactly
+    // String.prototype.normalize('NFC'), round-tripped through the `list<u8>` boundary (Uint8Array). Without
+    // it the runtime component fails to instantiate ("Cannot destructure property 'nfc' of undefined").
+    const rtRoot = await rt.instantiate(rt.getCoreModule, { [NFC_IMPORT]: nfcHostImport });
     heap = (rtRoot[HEAP_IMPORT] ?? rtRoot["heap"]) as Record<string, unknown>;
   }
   const prog = await loadComponent(job.component, "prog");
@@ -155,7 +169,9 @@ async function instantiateComponent(
   // (`genInt` → 0n) so instantiation always succeeds; the compound driver OVERRIDES it via extraImports with a
   // real seeded pool per trial. Harmless for a non-compound component (the unused import is ignored).
   const defaultTest = { test: { "gen-int": () => 0n, genInt: () => 0n } };
-  const imports: Record<string, unknown> = { ...defaultTest, ...extraImports, ...(heap ? { [HEAP_IMPORT]: heap } : {}) };
+  // The program links the value-heap runtime, so it also imports cadenza:nfc/normalize — supply the NFC shim
+  // here too (not just the shared runtime's instantiate above), or a runtime-linking example fails to load.
+  const imports: Record<string, unknown> = { ...defaultTest, [NFC_IMPORT]: nfcHostImport, ...extraImports, ...(heap ? { [HEAP_IMPORT]: heap } : {}) };
   // A parametric model imports a `param` interface — one accessor per `@param`. A Rational `@param <name>`
   // desugars to the WIT accessors `<name>-num`/`<name>-den`, which jco binds as CAMELCASE JS names. jco
   // camelCases the WHOLE kebab identifier, so a KEBAB param name matters: `pa-bolt` → `pa-bolt-num` →

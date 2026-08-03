@@ -442,8 +442,31 @@ interface heap {
   //    constant). Consistent with `value-cmp`: `value-eq-shaped == true` iff `value-cmp == 0` for an orderable
   //    type. APPENDED last (frozen-contract rule). See `value_eq_shaped`.
   value-eq-shaped: func(a: u32, b: u32, desc: u32) -> bool; // 88 — descriptor-guided structural equality (borrows a+b)
+
+  //  str-nfc-normalize(s) -> handle
+  //    Normalize a runtime String value `s` to Unicode Normalization Form C (FINDING#23). A String is a
+  //    UTF-8 byte leaf (possibly a rope): this flattens it, normalizes the bytes to NFC, and returns a FRESH
+  //    OWNED flat String leaf whose contents are the NFC form. The compiler emits this at String-typed
+  //    CONSTRUCTION sites whose bytes may be decomposed-but-not-NFC — `String.concat` result, String
+  //    champ-key construction, symbol-intern — so length / equality / hashing agree on NORMALIZED contents
+  //    (collections-and-text.md #A String's Length Counts Its Normalized Contents / equality-on-normalized-
+  //    contents). NOT emitted on the `String.from-bytes` DECODE path (NFC-exempt, L90-94), so a from-bytes
+  //    value is never re-normalized here. The heavy Unicode composition tables do NOT live in this runtime:
+  //    the runtime IMPORTS `cadenza:nfc/normalize` (a separate component loaded+linked as this runtime's
+  //    DEPENDENCY — operator ruling 2026-08-02) and this op flattens `s`, calls the imported `nfc`, and
+  //    rebuilds a leaf. So the runtime bytes stay light; only the linked NFC dep carries the tables.
+  //    Ownership: CONSUMES `s` (returns a fresh owned normalized leaf; the caller's `s` handle is spent, like
+  //    `bytes-compact`/`str-to-bytes`). Idempotent. APPENDED last (frozen-contract rule). See `op_str_nfc`.
+  str-nfc-normalize: func(s: u32) -> u32;              // 89 — NFC-normalize a String leaf via the imported NFC dep
 }
 
 world runtime {
   export heap;
+  // The runtime imports the NFC normalization component as its DEPENDENCY (FINDING#23, operator ruling d): the
+  // heavy `unicode-normalization` composition tables live in the separate `cadenza:nfc` component, NOT baked
+  // into this runtime's bytes. `str-nfc-normalize` (heap index 89) calls the imported `nfc`. The host composes
+  // the stored NFC component (resolved by content hash `REQUIRED_NFC_HASH`) into this runtime's linker before
+  // instantiating the runtime — the leaves-first transitive compose (program ← runtime ← nfc). Importing this
+  // is NOT a program effect/capability — it is the runtime's internal component dependency.
+  import cadenza:nfc/normalize;
 }

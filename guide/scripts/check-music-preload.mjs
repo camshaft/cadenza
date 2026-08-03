@@ -26,6 +26,12 @@ const guideRoot = join(here, "..");
 const pkgDir = join(guideRoot, "src/wasm/pkg");
 const HEAP_IMPORT = "cadenza:runtime/heap";
 const runtimePath = join(guideRoot, "src/wasm/runtime.wasm");
+// FINDING#23: the runtime imports cadenza:nfc/normalize (separate NFC component) — supply the JS shim so it
+// instantiates. NFC of well-formed UTF-8 is String.prototype.normalize('NFC') over the list<u8> boundary.
+const NFC_IMPORT = "cadenza:nfc/normalize";
+const nfcHostImport = {
+  nfc: (bytes) => new TextEncoder().encode(new TextDecoder("utf-8").decode(bytes).normalize("NFC")),
+};
 
 const wasm = await import(pathToFileURL(join(pkgDir, "cdz_wasm.js")).href);
 await wasm.default(await readFile(join(pkgDir, "cdz_wasm_bg.wasm")));
@@ -133,7 +139,7 @@ if (!existsSync(runtimePath)) {
   failures.push(`music-preload: runtime.wasm missing at ${runtimePath} (run \`cargo xtask guide-wasm\`)`);
 } else {
   const rt = await loadComp(readFileSync(runtimePath), "heap");
-  const heap = (await rt.instantiate(rt.getCore, {}))[HEAP_IMPORT];
+  const heap = (await rt.instantiate(rt.getCore, { [NFC_IMPORT]: nfcHostImport }))[HEAP_IMPORT];
 
   // (2) The piece-to-events showcase RUNS + yields a non-empty BALANCED event stream (the marquee payoff).
   // Every EVENT-STREAM showcase RUNS + yields a non-empty BALANCED stream (the no-stuck-keys payoff). Both
