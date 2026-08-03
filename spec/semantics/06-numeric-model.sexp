@@ -3368,6 +3368,26 @@
   (input  (Float64.of (: 1.5 Float32)))
   (output (: 1.5 Float64)))
 
+(case "promoting a Float32 literal to Float64 promotes the binary32 VALUE, not the un-demoted f64 payload (const fold)"
+  (doc    "The precision-discriminating promote (adv-61b): `(Float64.of (: 0.1 Float32))` must widen the
+           binary32 value of the literal — 0.10000000149011612 (the binary32 nearest 0.1) — NOT the
+           un-demoted f64 0.1. The 1.5 promote above can't catch this (1.5 is exact at both widths); 0.1
+           straddles the boundary. Before the fix (rcdzc, trunk c1bdcc1e5) the const fold promoted the
+           stripped f64 payload of the (: lit Float32) node → folded to 0.1, disagreeing with the runtime
+           `f32.promote` (const-vs-runtime divergence, both backends). Pins that the width-conversion fold
+           reads the SOURCE at its own (binary32) width before rounding to the target.")
+  (input  (do (def (main) (Float64.of (: 0.1 Float32))) (export main)))
+  (call   main) (output (: 0.10000000149011612 Float64)))
+
+(case "the runtime control for the Float32-to-Float64 promote reads the f32 value at its own width"
+  (doc    "The runtime companion of the promote-precision fold above (adv-61b control): `(Float64.of x)`
+           over a runtime `x : Float32` = 0.1f32 promotes to 0.10000000149011612 — the runtime f32.promote
+           the const fold must AGREE with. Pinned with a runtime parameter so nothing folds; whatever the
+           fold does must match THIS answer, exactly as the adv-61 compare pins pair with their runtime
+           controls.")
+  (input  (do (def (main (: x Float32)) (Float64.of x)) (export main)))
+  (call   main (: 0.1 Float32)) (output (: 0.10000000149011612 Float64)))
+
 (case "demoting a Float64 to Float32 rounds to the nearest binary32"
   (doc    "`(Float32.of 0.1)` narrows the binary64 0.1 to Float32, which rounds to the nearest
            representable binary32 — 0.10000000149011612 when read back as the canonical value form (the
