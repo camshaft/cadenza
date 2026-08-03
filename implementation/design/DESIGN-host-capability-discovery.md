@@ -434,7 +434,7 @@ enum Disposition {
 
 ### Sequencing (what register-by-string introduces, then I4)
 
-the register-by-string arc (in `cdz-kernel`) introduces, in one arc:
+The register-by-string arc (in `cdz-kernel`) introduces, in one pass:
 (a) the family-string registration API — `with(family: impl Into<String>, Disposition)` replacing
 `with(EffectKind, Executor)` (the peer bridge already scoped with v-agent-harness-host; its ~10 registration
 sites migrate behind the signature change, bare effect families, unchanged behavior);
@@ -517,8 +517,8 @@ Both reuse the (a) payload form + the same fold path; they differ only in WHO em
   so a burst of registry/policy changes can't flood logs. Polling is rejected (anti-§9d).
 - **Sequencing:** I4 (the inline query answer) lands first — it exercises the (a) encode + the fold-back on
   the smallest surface. I5 (genesis-seed) and I6 (the reactive push) build on the same encode + fold path;
-  I6 needs a kernel hook on executor-registry / authorizer-pointer mutation to trigger the re-projection,
-  a `drive`-adjacent change in `src/kernel.rs`, sequenced after I4.
+  I6 needs a kernel hook on executor-registry / authorizer-pointer mutation to trigger the re-projection —
+  a `drive`-adjacent change in `src/kernel.rs` — sequenced after I4.
 
 ## Related design context
 
