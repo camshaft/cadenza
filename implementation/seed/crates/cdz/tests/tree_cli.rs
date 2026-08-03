@@ -6,12 +6,41 @@
 //! connectors, a DIAMOND/cycle dep is marked `(*)` and not re-expanded, an unresolvable dep is marked
 //! `*unresolved*` (partial tree, not an abort), and a project with no deps prints just its root line.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
-/// Run `cdz <args…>`, returning (exit_ok, stdout, stderr).
+/// Run `cdz <args…>` under a WALL-CLOCK DEADLINE, returning (exit_ok, stdout, stderr). The cycle tests
+/// assert `cdz tree` TERMINATES on a dependency cycle (a→b→a); a bare `Command::output()` blocks with no
+/// timeout, so a regression that dropped the visited-set guard would spin `cdz tree` forever and HANG the
+/// whole test binary / CI job, not just the one test. This spawns the child, polls `try_wait()` against a
+/// deadline, and on timeout KILLS it and PANICS — so a non-terminating regression fails FAST with a clear
+/// message instead of hanging indefinitely. The bound is generous (`cdz tree` on these tiny fixtures is
+/// milliseconds) so it never flakes on a loaded host, only firing on a genuine infinite loop.
 fn run(args: &[&str]) -> (bool, String, String) {
     let exe = env!("CARGO_BIN_EXE_cdz");
-    let out = Command::new(exe).args(args).output().expect("spawn cdz");
+    let mut child = Command::new(exe)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cdz");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match child.try_wait().expect("try_wait on cdz") {
+            Some(_status) => break,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "`cdz {}` did not terminate within 30s — likely a `cdz tree` regression looping on a \
+                     dependency cycle (the visited-set terminator broke); killed the child",
+                    args.join(" ")
+                );
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    let out = child.wait_with_output().expect("collect cdz output");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -114,8 +143,8 @@ fn tree_terminates_on_a_dependency_cycle() {
     // A true CYCLE (a → b → a), not just a diamond — the diamond above is a DAG that would terminate even
     // without the guard (it would merely re-expand), but a cycle would recurse FOREVER without the
     // visited-set. Pin that the walk terminates (exit 0, in bounded time) and marks the back-edge to `a`
-    // with `(*)` instead of re-expanding it. Guarded by the harness so a regression that dropped the
-    // visited-set (or keyed it wrongly) would HANG here rather than silently loop.
+    // with `(*)` instead of re-expanding it. `run`'s wall-clock deadline makes this fail FAST (kill +
+    // panic) if a regression dropped/mis-keyed the visited-set, rather than hanging the CI job.
     let root = workspace("cycle");
     project(&root, "a", &["../b"]);
     project(&root, "b", &["../a"]);
@@ -164,6 +193,53 @@ fn tree_json_terminates_on_a_dependency_cycle() {
     assert!(
         back["deps"].is_null(),
         "the repeated back-edge is not re-expanded: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn tree_terminates_on_a_self_dependency() {
+    // The degenerate cycle: a project that lists ITSELF (`def deps = ["."]`) as a dependency. The
+    // visited-set inserts the root's canonical dir before walking, so the self-edge resolves to an
+    // already-visited dir and is marked `(*)` rather than recursing into the same project forever. (`cdz
+    // add` refuses a self-dep, but a hand-edited manifest can still contain one, so `cdz tree` must stay
+    // total on it.) `run`'s deadline fails fast if the self-edge ever loops.
+    let root = workspace("self");
+    project(&root, "a", &["."]);
+    let (ok, out, err) = run(&["tree", root.join("a").to_str().unwrap()]);
+    assert!(ok, "a self-dependency does not loop: {out}{err}");
+    assert!(out.starts_with("a ("), "root line names the project: {out}");
+    assert!(
+        out.contains("a (.) (*)"),
+        "the self-edge is marked (*) and not re-expanded: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn tree_collapses_path_aliases_to_the_same_dir_in_the_visited_set() {
+    // The visited-set is keyed by the CANONICAL dir, not the raw manifest spelling — so two deps that name
+    // the SAME directory via different path spellings (`../lib` and `../lib/.`) are recognized as one node:
+    // the first expands, the second is a diamond marked `(*)`. A visited-set keyed by the raw string would
+    // MISS this (treat them as two distinct deps and expand both), so this pins the canonicalization that
+    // makes cycle/diamond detection correct under path aliasing.
+    let root = workspace("alias");
+    project(&root, "lib", &[]);
+    project(&root, "app", &["../lib", "../lib/."]);
+    let (ok, out, err) = run(&["tree", root.join("app").to_str().unwrap()]);
+    assert!(
+        ok,
+        "cdz tree with aliased dep paths should succeed: {out}{err}"
+    );
+    // Both spellings appear (echoed as the raw manifest refs), but exactly ONE is expanded and the other
+    // marked `(*)` — proof the canonical-dir key collapsed the alias.
+    assert!(
+        out.contains("lib (../lib)"),
+        "the first spelling is shown: {out}"
+    );
+    assert!(
+        out.contains("lib (../lib/.) (*)"),
+        "the aliased second spelling is recognized as the same dir and marked (*): {out}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
