@@ -34,9 +34,16 @@ use cdz_kernel::name_store::NameStore;
 use cdz_kernel::reducer::{FoldOutput, Reducer};
 use cdz_kernel::wasm_host::AsyncComponentReducer;
 use common::reducer_component_bytes;
+use std::time::Duration;
 
 /// The pointer both phases use — one source of truth (the kernel-side well-known name).
 const POINTER: &str = NameStore::COMPILER_LATEST;
+
+/// A hard ceiling on running the resolved artifact's fold turn. `HostedSession::deliver` drives the
+/// reducer→effect loop to quiescence with no step bound, so a misbehaving/looping live reducer (this test
+/// runs a REAL, externally-supplied wasm component) could hang the suite. Bounding it surfaces a runaway as
+/// a clear error instead of a wedge — same discipline as the live-net e2es (#1853/#1857).
+const FOLD_RUN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A publisher/consumer reducer parameterized by the blob hash to publish. On inbound it `store/set`s the
 /// well-known pointer → `artifact_hash`; when that settles it `store/resolve`s the pointer; when THAT
@@ -170,18 +177,21 @@ async fn a_published_compiler_pointer_resolves_to_a_runnable_artifact() {
 
     // RUN the resolved artifact: host a fresh session driven by the reducer we just fetched-by-pointer, and
     // deliver one inbound event — the resolved program actually FOLDS (executes a real turn through the
-    // kernel loop), not merely loads. The reducer is content-addressed by its own bytes. We grant nothing
-    // and attach no store, so whatever effects it emits are denied/decline cleanly — the point is that the
-    // turn RUNS to quiescence without panicking (§17 totality), closing the pointer→fetch→RUN loop end to end.
+    // kernel loop), not merely loads. We grant nothing and attach no store, so whatever effects it emits are
+    // denied/decline cleanly — the point is that the turn RUNS to quiescence without panicking (§17
+    // totality), closing the pointer→fetch→RUN loop end to end. The reducer's genesis id IS the published
+    // pointer's resolved hash (`artifact_hash`) — content-addressed by the same bytes the pointer resolves
+    // to, so the running reducer's identity == what COMPILER_LATEST points at (no redundant re-hash).
     let mut running = HostedSession::genesis(
-        Hash::of(&fetched),
+        artifact_hash,
         Box::new(resolved_reducer),
         Box::new(Authorizer::new(vec![])),
         CompositeExecutor::new(),
     );
-    running
-        .deliver(inbound_go(), None)
+    // Bounded (see FOLD_RUN_TIMEOUT): a runaway live reducer surfaces as a timeout error, not a hung suite.
+    tokio::time::timeout(FOLD_RUN_TIMEOUT, running.deliver(inbound_go(), None))
         .await
+        .expect("the resolved artifact's fold turn completes within FOLD_RUN_TIMEOUT (not a runaway loop)")
         .expect("the resolved artifact runs one fold turn to quiescence (no panic, §17)");
     assert_eq!(
         running.open_effects(),
