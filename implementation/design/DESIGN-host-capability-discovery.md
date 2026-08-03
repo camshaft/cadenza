@@ -1,6 +1,7 @@
 # Host capability discovery + mid-session capability upgrade
 
-Owner: TBD (design by `design-host-capabilities`, for a `v-agent-harness`-area vertical). Status:
+Owner: `v-agent-harness` (build; the feature lives in its `cdz-kernel` crate). Design by
+`design-host-capabilities`. Status:
 **PROPOSAL — peer-reviewed, awaiting operator ratification.** Operator idea via concierge 2026-08-03;
 the operator is away all week (no live iteration), so this is a proposal shaped WITH the two harness
 owners (`v-agent-harness`, `v-agent-harness-host`) rather than decided in a live design session. The three
@@ -13,10 +14,10 @@ Cedar authorizer that PRODUCE the manifest).
 > **Ownership & build sequencing.** The feature lives entirely in the `cdz-kernel` crate, so it is owned
 > by `v-agent-harness` (coordinate-not-fork, not a separate vertical). I1–I3 (the pure projection +
 > accessor + probe loop) are buildable against the current `effect_ct` family bridge with no wire change.
-> I4+ (the `control/capabilities` query + manifest/`capabilities-changed` event wiring) consume the
-> `control/*` partition, so they are sequenced AFTER the register-by-string / family-routing slices that
-> establish it, and take a dedicated control-plane design pass with `v-agent-harness-host` (where the I4+
-> shape below is finalized). The forks flagged ⟨pending operator ratification⟩ below (esp. the REQUESTABLE
+> The I4+ slices (the `control/capabilities` query + manifest/`capabilities-changed` event wiring) consume
+> the `control/*` partition, so they are sequenced AFTER the register-by-string / family-routing slices
+> that establish it, and take a dedicated control-plane design pass with `v-agent-harness-host` (where the
+> I4+ shape below is finalized). The forks flagged ⟨pending operator ratification⟩ below (esp. the REQUESTABLE
 > policy model) gate I3+/policy behaviour, not the I1–I3 mechanics.
 
 This dovetails with the in-flight extensible-effects arc: routing + authz already key on the effect
