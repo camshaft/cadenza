@@ -165,6 +165,27 @@ async fn a_published_compiler_pointer_resolves_to_a_runnable_artifact() {
         "blob-get returned the exact published bytes"
     );
 
-    AsyncComponentReducer::from_component_bytes(&fetched)
+    let resolved_reducer = AsyncComponentReducer::from_component_bytes(&fetched)
         .expect("the resolved artifact loads as a runnable reducer component (fold.apply bound)");
+
+    // RUN the resolved artifact: host a fresh session driven by the reducer we just fetched-by-pointer, and
+    // deliver one inbound event — the resolved program actually FOLDS (executes a real turn through the
+    // kernel loop), not merely loads. The reducer is content-addressed by its own bytes. We grant nothing
+    // and attach no store, so whatever effects it emits are denied/decline cleanly — the point is that the
+    // turn RUNS to quiescence without panicking (§17 totality), closing the pointer→fetch→RUN loop end to end.
+    let mut running = HostedSession::genesis(
+        Hash::of(&fetched),
+        Box::new(resolved_reducer),
+        Box::new(Authorizer::new(vec![])),
+        CompositeExecutor::new(),
+    );
+    running
+        .deliver(inbound_go(), None)
+        .await
+        .expect("the resolved artifact runs one fold turn to quiescence (no panic, §17)");
+    assert_eq!(
+        running.open_effects(),
+        0,
+        "the resolved artifact's turn settled (any emitted effects resolved/denied — it ran)"
+    );
 }
