@@ -215,6 +215,15 @@ impl NameStore {
             _ => Err(NameStoreError::MalformedStoreEffect),
         }
     }
+
+    /// Drop a `store/set`'s idempotency key from the dedup set once its `EffectResult` is durably recorded
+    /// (the effect is SETTLED — recovery will not re-drive it, so its dedup entry is no longer needed).
+    /// This BOUNDS `applied_set_keys` to the in-flight (dispatched-but-unsettled) window instead of letting
+    /// it grow monotonically with every set (an unbounded-memory / DoS vector otherwise). Idempotent + total:
+    /// forgetting an absent key (e.g. a resolve, or a key already forgotten) is a harmless no-op.
+    pub fn forget_applied_key(&mut self, idempotency_key: &Hash) {
+        self.applied_set_keys.remove(idempotency_key);
+    }
 }
 
 /// The result of a [`NameStore::apply_effect`] — what the drive loop folds back as the `store/*` effect's
@@ -423,6 +432,37 @@ mod tests {
         );
         assert_eq!(s.history(name).len(), 2);
         assert_eq!(s.resolve(name).unwrap(), h2);
+    }
+
+    #[test]
+    fn forget_applied_key_bounds_the_dedup_set_and_is_a_total_noop_on_absent() {
+        // liaison #1852: applied_set_keys must be BOUNDED — pruned once the effect settles, not grown
+        // forever. After forget_applied_key, the SAME key is no longer deduped (proving it was dropped);
+        // and forgetting an absent key (a resolve's, or an already-forgotten one) is a harmless no-op.
+        use crate::effect::effect_ct;
+        let mut s = NameStore::new();
+        let name = "system/compiler/latest";
+        let key = Hash::of(b"dispatch-key-A");
+        let h = Hash::of(b"v1");
+
+        s.apply_effect(effect_ct::STORE_SET, name, Some(h), key)
+            .unwrap();
+        assert_eq!(s.history(name).len(), 1);
+        // Settle → prune the key.
+        s.forget_applied_key(&key);
+        // The SAME key now applies AGAIN (no longer deduped) — confirms it was dropped from the set (bounded).
+        // (In the kernel this can't double-apply because the EffectId — hence the key — is unique per
+        // dispatch; the test drives apply_effect directly to observe the prune.)
+        s.apply_effect(effect_ct::STORE_SET, name, Some(h), key)
+            .unwrap();
+        assert_eq!(
+            s.history(name).len(),
+            2,
+            "after forget, the key is no longer deduped (was pruned → bounded set)"
+        );
+        // Forgetting an absent key is a total no-op.
+        s.forget_applied_key(&Hash::of(b"never-inserted"));
+        s.forget_applied_key(&key); // already forgotten (well, re-applied) — still fine
     }
 
     #[test]
