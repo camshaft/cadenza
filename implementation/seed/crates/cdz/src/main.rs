@@ -5998,37 +5998,13 @@ fn run_one_trial_with_pool(
             value: n.to_string(),
         })
         .collect();
-    // The runtime's NFC dependency (FINDING#23): when a runtime is composed, resolve its NFC component from
-    // the store manifest's `nfc = "<hash>"` line so `instantiate_runtime` can compose it into the runtime
-    // (the transitive compose). `None` when there's no runtime / no manifest entry.
-    let nfc = if runtime.is_some() {
-        std::fs::read_to_string(store.join("runtime.toml"))
-            .ok()
-            .and_then(|m| {
-                m.lines().find_map(|l| {
-                    l.trim()
-                        .strip_prefix("nfc")
-                        .and_then(|r| r.trim_start().strip_prefix('='))
-                        .map(|v| v.trim().trim_matches('"').to_string())
-                })
-            })
-            .and_then(|hash| {
-                // Verify the stored bytes actually hash to the manifest's NFC content address before
-                // composing them — mirroring cdz-run's resolve_nfc/resolve_runtime. Content addressing's
-                // guarantee is void without the check: a corrupted/substituted <hash>.wasm would otherwise
-                // compose the WRONG Unicode tables silently. A mismatch drops to None (the runtime then
-                // fails to instantiate its NFC import with a clear error, not wrong normalization).
-                let bytes = std::fs::read(store.join(format!("{hash}.wasm"))).ok()?;
-                (cdz_run::cli::content_address(&bytes) == hash).then_some(bytes)
-            })
-    } else {
-        None
-    };
+    // FINDING#23: the runtime imports `cadenza:nfc/normalize`, but cdz-run now SELF-RESOLVES that NFC
+    // component from the store (keyed off `runtime_cache_dir`, set below) inside its compose step — no `nfc`
+    // field to thread here.
     let opts = cdz_run::RunOpts {
         export: Some(kebab.to_string()),
         args: arg_vals.to_vec(),
         runtime: runtime.map(<[u8]>::to_vec),
-        nfc,
         runtime_cache_dir: Some(store.to_path_buf()),
         host_responses,
     };
