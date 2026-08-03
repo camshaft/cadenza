@@ -1,4 +1,4 @@
-# PR #1731 review comment — xtask/src/fleet.rs (v-fleet-tooling) — OPEN
+# PR #1731 review comment — xtask/src/fleet.rs (v-fleet-tooling) — ADDRESSED (delta d3f9893cc, held behind #1731; #1712→#1731 chain CLOSED)
 
 https://github.com/camshaft/cadenza/pull/1731 (surface a rev-list ERROR distinctly — the #1725 error-face
 fix landing). 4th link in the #1712→#1719→#1725→#1731 chain. The three-face match is correct; Copilot flags
