@@ -59,14 +59,24 @@ fn host_import_functype(f: &crate::backend::wasm::host::HostImport) -> Vec<u8> {
     for p in &f.params {
         match p {
             HostParam::Scalar(v) => params.push(v.core_byte()),
-            HostParam::Str => params.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32]),
+            // Str AND Bytes both cross as `(ptr: i32, len: i32)` at the CORE level — 2 i32 slots. (Only the
+            // COMPONENT boundary type differs: string inline vs a `list<u8>` type-index; see mod.rs.)
+            HostParam::Str | HostParam::Bytes => {
+                params.extend_from_slice(&[wasm_abi::CORE_I32, wasm_abi::CORE_I32])
+            }
         }
     }
-    // A string param is 2 core slots, so count the total slots (not the param count).
+    // A string/bytes param is 2 core slots, so count the total slots (not the param count).
     let slot_count = f
         .params
         .iter()
-        .map(|p| if matches!(p, HostParam::Str) { 2 } else { 1 })
+        .map(|p| {
+            if matches!(p, HostParam::Str | HostParam::Bytes) {
+                2
+            } else {
+                1
+            }
+        })
         .sum::<usize>();
     item.extend_from_slice(&wasm_vec(slot_count, &params));
     match f.result {

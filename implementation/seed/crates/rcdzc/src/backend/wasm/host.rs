@@ -34,6 +34,13 @@ pub enum HostParam {
     Scalar(AbiValType),
     /// A `string` parameter — its component valtype is `string`; its core form is `(ptr: i32, len: i32)`.
     Str,
+    /// A `list<u8>` (Cadenza `Bytes`) parameter — its component valtype is the shared `(list u8)` DEFINED
+    /// type (referenced by index within the import instance-type, unlike `string`'s inline primitive), and
+    /// its core form is `(ptr: i32, len: i32)` — IDENTICAL to `Str` at the core level (the guest copies the
+    /// rope bytes into shared `mem` and passes `(ptr,len)`; the canon `Lower` reads them via `Memory(0)`,
+    /// no realloc for an argument). Only the COMPONENT boundary type differs (list<u8> vs string). adv-62b's
+    /// sibling: closes the wasm-vs-rust reverse-parity gap where a runtime Bytes host-arg declined.
+    Bytes,
 }
 
 /// One host-delegated operation the program performs — its declaring effect's NAME (the WIT interface),
