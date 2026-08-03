@@ -255,7 +255,7 @@ jobs:
           # "source no longer produces a valid reducer component," which validate does robustly without
           # depending on byte-for-byte reproducibility.
           rustup target add wasm32-unknown-unknown
-          ( cd tests/fixtures/reducer-guest && cargo build --target wasm32-unknown-unknown --release )
+          ( cd tests/fixtures/reducer-guest && cargo build --locked --target wasm32-unknown-unknown --release )
           wasm-tools component new \
             tests/fixtures/reducer-guest/target/wasm32-unknown-unknown/release/reducer_guest.wasm \
             -o /tmp/reducer_guest.component.wasm
