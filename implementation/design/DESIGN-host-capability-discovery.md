@@ -526,8 +526,9 @@ capability the reducer learned survives replay at the same log position.
   same position and folds the identical bytes. Same `encode_capability_manifest` payload as I4b/I5.
 - **The mutation HOOK is DESIGN-AHEAD; there is NO in-kernel mutable executor/policy registry to hook.**
   Stable constraint (not a transient current-state note): the kernel holds no executor set or authorizer of
-  its own — `deliver_async` takes a SINGLE `executor: &mut (impl Executor)` + `authz: &(impl Authorize)`
-  supplied by the caller PER CALL, and mechanism/policy are whatever that call passes. So there is nothing
+  its own — `deliver_async` takes ONE `executor: &mut (impl Executor)` value (in production a
+  `CompositeExecutor` that routes to many leaf executors by family) + `authz: &(impl Authorize)`, supplied
+  by the caller PER CALL, and mechanism/policy are whatever that call passes. So there is nothing
   in-kernel for an I6 trigger to observe changing. The reactive trigger therefore attaches to whatever
   DURABLE MUTATION §20b introduces (a policy-log append that repoints
   the Cedar-engine/policy pointer, or a delegated-grant landing) — it should be built WHEN that mutation
