@@ -38,12 +38,12 @@ impl Reducer for ClockAgent {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"awaiting-time".to_vec());
-                FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Now,
-                    target: String::new(), // Now takes no target; the capability gates it by kind
-                    payload: None,
-                    timeliness: Timeliness::Interactive,
-                }])
+                FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Now,
+                    String::new(),
+                    None,
+                    Timeliness::Interactive,
+                )])
             }
             EventBody::EffectResult {
                 result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),

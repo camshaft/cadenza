@@ -53,12 +53,12 @@ impl Reducer for ModelAgent {
         match &event.body {
             EventBody::Inbound { .. } => {
                 kv.put(b"phase".to_vec(), b"prompting".to_vec());
-                FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Model,
-                    target: "claude-test".into(), // the model id
-                    payload: Some(Payload::Inline(b"hello".to_vec().into())),
-                    timeliness: Timeliness::Interactive,
-                }])
+                FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Model,
+                    "claude-test",
+                    Some(Payload::Inline(b"hello".to_vec().into())),
+                    Timeliness::Interactive,
+                )])
             }
             EventBody::EffectResult {
                 result: EffectOutcome::Ok(Some(Payload::Inline(completion))),
@@ -138,12 +138,12 @@ async fn one_composite_routes_both_now_and_model_for_one_agent() {
                 // Step 1: ask for the time.
                 EventBody::Inbound { .. } => {
                     kv.put(b"phase".to_vec(), b"timing".to_vec());
-                    FoldOutput::with(vec![EffectRequest {
-                        kind: EffectKind::Now,
-                        target: String::new(),
-                        payload: None,
-                        timeliness: Timeliness::Interactive,
-                    }])
+                    FoldOutput::with(vec![EffectRequest::new(
+                        EffectKind::Now,
+                        String::new(),
+                        None,
+                        Timeliness::Interactive,
+                    )])
                 }
                 EventBody::EffectResult {
                     result: EffectOutcome::Ok(Some(Payload::Inline(bytes))),
@@ -153,12 +153,12 @@ async fn one_composite_routes_both_now_and_model_for_one_agent() {
                     Some(b"timing") => {
                         kv.put(b"at".to_vec(), bytes.to_vec());
                         kv.put(b"phase".to_vec(), b"prompting".to_vec());
-                        FoldOutput::with(vec![EffectRequest {
-                            kind: EffectKind::Model,
-                            target: "claude-test".into(),
-                            payload: Some(Payload::Inline(b"hi".to_vec().into())),
-                            timeliness: Timeliness::Interactive,
-                        }])
+                        FoldOutput::with(vec![EffectRequest::new(
+                            EffectKind::Model,
+                            "claude-test",
+                            Some(Payload::Inline(b"hi".to_vec().into())),
+                            Timeliness::Interactive,
+                        )])
                     }
                     // Step 3: got the completion → done.
                     Some(b"prompting") => {
@@ -221,12 +221,12 @@ async fn a_model_call_to_an_unpermitted_id_is_denied_before_the_transport() {
     impl Reducer for WrongModelAgent {
         async fn fold_async(&self, event: &Event, _kv: &mut Kv) -> FoldOutput {
             if matches!(event.body, EventBody::Inbound { .. }) {
-                FoldOutput::with(vec![EffectRequest {
-                    kind: EffectKind::Model,
-                    target: "expensive-other-model".into(), // outside the grant
-                    payload: Some(Payload::Inline(b"hi".to_vec().into())),
-                    timeliness: Timeliness::Interactive,
-                }])
+                FoldOutput::with(vec![EffectRequest::new(
+                    EffectKind::Model,
+                    "expensive-other-model",
+                    Some(Payload::Inline(b"hi".to_vec().into())),
+                    Timeliness::Interactive,
+                )])
             } else {
                 FoldOutput::none()
             }

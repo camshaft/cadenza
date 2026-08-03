@@ -88,12 +88,7 @@ mod tests {
     use cdz_kernel::effect::Timeliness;
 
     fn req(kind: EffectKind, target: &str) -> EffectRequest {
-        EffectRequest {
-            kind,
-            target: target.to_string(),
-            payload: None,
-            timeliness: Timeliness::Interactive,
-        }
+        EffectRequest::new(kind, target.to_string(), None, Timeliness::Interactive)
     }
 
     /// Decode a `Now` Ok payload as the u64 LE nanos the executor emits (the spec the kernel clamp reads).

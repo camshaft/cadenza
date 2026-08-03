@@ -72,18 +72,18 @@ impl Reducer for PolicyProbe {
                     return FoldOutput::none();
                 };
                 match m.as_ref() {
-                    b"model-ok" => FoldOutput::with(vec![EffectRequest {
-                        kind: EffectKind::Model,
-                        target: "claude-test".into(), // policy permits model → this id
-                        payload: Some(Payload::Inline(b"hi".to_vec().into())),
-                        timeliness: Timeliness::Interactive,
-                    }]),
-                    b"http-imds" => FoldOutput::with(vec![EffectRequest {
-                        kind: EffectKind::Http,
-                        target: "http://169.254.169.254/latest/meta-data/".into(), // policy FORBIDs this
-                        payload: None,
-                        timeliness: Timeliness::Interactive,
-                    }]),
+                    b"model-ok" => FoldOutput::with(vec![EffectRequest::new(
+                        EffectKind::Model,
+                        "claude-test",
+                        Some(Payload::Inline(b"hi".to_vec().into())),
+                        Timeliness::Interactive,
+                    )]),
+                    b"http-imds" => FoldOutput::with(vec![EffectRequest::new(
+                        EffectKind::Http,
+                        "http://169.254.169.254/latest/meta-data/",
+                        None,
+                        Timeliness::Interactive,
+                    )]),
                     _ => FoldOutput::none(),
                 }
             }
