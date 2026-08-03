@@ -24112,6 +24112,39 @@ mod match_engine {
     }
 
     #[test]
+    fn a_lowercase_unit_variant_payload_is_ty_unit_not_a_spurious_type_param() {
+        use crate::testkit::parse;
+        // The pervasive nullary-variant idiom `(None unit)` / `(Nil unit)` writes a unit-typed payload with
+        // the lowercase `unit` VALUE (prelude empty product). `collect_type_params` must NOT harvest it as a
+        // type param, and `typeval_of` maps a type-position `unit` → `Ty::Unit` (ruling A) — so
+        // `(type (Box a) (Full a) (Nil unit))` has EXACTLY ONE param `a` (was 2: `[a, unit]`, whose unfilled
+        // phantom left a stray Var making the sum non-Eq/non-Ord → a Set/Map of it DECLINED on the rust
+        // backend). Value side: a match over both variants runs, WITH the lowercase idiom intact (no
+        // migration to capital `Unit`).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type (Box a) (Full a) (Nil unit)) \
+                       (def (main) (match (Full 6) ((Full v) (+ v 1)) ((Nil _u) -1))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+        // The rust-decline witness: a Set of the generic lowercase-unit-payload sum must EMIT rust (the
+        // spurious stray Var previously left it non-Ord → "Set with a non-Ord element"). Exactly the shape
+        // the v-rust-backend ask flagged + the guide/playground idiom the (B) attempt's reject exposed; a
+        // HARD emit check on the RUST target (storeless-safe — no run).
+        let src = "(module m (type (Box a) (Full a) (Nil unit)) \
+                   (def (main (: k Int64)) (Set.len (Set.of (list (Full 1) (Full k) (Nil unit))))) (export main))";
+        let mut dbr = crate::db::Db::load(parse(src));
+        let layr = crate::layout::compute(&mut dbr).expect("layout");
+        crate::backend::emit(crate::backend::Target::Rust, &mut dbr, &layr, None, None).expect(
+            "a Set of a generic lowercase-unit-payload sum must emit rust — no spurious stray-Var non-Ord decline",
+        );
+    }
+
+    #[test]
     fn a_generic_same_name_newtype_constructs_and_matches() {
         // Generic + same-name compose: `(type Box (Box a))` constructs `(Box 42)` by the type name and
         // matches `(Box n)`, erasing to the raw payload. (The head-position rule fires on the USER node;
