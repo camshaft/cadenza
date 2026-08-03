@@ -646,11 +646,19 @@ pub fn assemble_provider_runtime(
 pub struct HostFn {
     pub op: String,
     /// The op's component functype item bytes (`0x40 …`) — declared in the effect's instance-type AND
-    /// (re)used for the core import functype indirectly via the lowered form.
+    /// (re)used for the core import functype indirectly via the lowered form. When `has_list_param` is
+    /// true, this functype references the shared `(list u8)` DEFINED type by INDEX (built with
+    /// `host_op_comp_functype(h, 0)` — index 0 is the list type the instance-type prepends).
     pub comp_functype: Vec<u8>,
     /// The op's CORE functype item bytes (`0x60 <params> <results>`) — the type the program's core module
     /// imports the lowered op under. Built by the caller from the op's core valtypes.
     pub core_functype: Vec<u8>,
+    /// Whether this op has a `list<u8>` (Bytes) parameter. When ANY host fn in the set does, the import
+    /// instance-type PREPENDS a `(list u8)` defined type as its type index 0 (so a Bytes param's
+    /// `comp_functype` reference resolves) and the per-op func types shift to 1..=h — the export decls
+    /// reference `i+1`. A pure scalar/string set (`has_list_param` false for all) is byte-identical (no
+    /// prepend, func types 0..h). See `list_u8_defined_type` + the export-side `comp_functype` mirror.
+    pub has_list_param: bool,
 }
 
 /// The HOST-IMPORT shape (E2h-2): a program that DELEGATES a single effect `iface` to the host, importing
@@ -1374,22 +1382,7 @@ pub fn assemble_host_runtime(
     // sec 7: TWO instance-types — component type 0 (the effect) then component type 1 (the runtime). Each
     // is `0x42` + a vec of 2*count interleaved (ty, export) decls, exactly as the single-import shapes.
     let type_sec = {
-        let host_it = {
-            let mut decls = Vec::new();
-            for (i, f) in host_fns.iter().enumerate() {
-                decls.push(0x01);
-                decls.extend_from_slice(&f.comp_functype);
-                decls.push(0x04);
-                decls.extend_from_slice(&extern_name(
-                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
-                ));
-                decls.push(0x01);
-                uleb128(i as u64, &mut decls);
-            }
-            let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * h, &decls));
-            it
-        };
+        let host_it = host_effect_instance_type(host_fns);
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -1587,22 +1580,7 @@ pub fn assemble_host_runtime_mem(
     // sec 7: TWO instance-types — host effect (comp type 0) then runtime (comp type 1) — identical to the
     // memoryless host+runtime shape (the shared memory is a CORE detail, invisible to the component types).
     let type_sec = {
-        let host_it = {
-            let mut decls = Vec::new();
-            for (i, f) in host_fns.iter().enumerate() {
-                decls.push(0x01);
-                decls.extend_from_slice(&f.comp_functype);
-                decls.push(0x04);
-                decls.extend_from_slice(&extern_name(
-                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
-                ));
-                decls.push(0x01);
-                uleb128(i as u64, &mut decls);
-            }
-            let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * h, &decls));
-            it
-        };
+        let host_it = host_effect_instance_type(host_fns);
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -2640,22 +2618,7 @@ pub fn assemble_host_runtime_resource(
     // sec 7: TWO instance-types — the host effect (comp type 0, its h ops) then the runtime (comp type 1,
     // its k ops).
     let type_sec = {
-        let host_it = {
-            let mut decls = Vec::new();
-            for (i, f) in host_fns.iter().enumerate() {
-                decls.push(0x01);
-                decls.extend_from_slice(&f.comp_functype);
-                decls.push(0x04);
-                decls.extend_from_slice(&extern_name(
-                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
-                ));
-                decls.push(0x01);
-                uleb128(i as u64, &mut decls);
-            }
-            let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * h, &decls));
-            it
-        };
+        let host_it = host_effect_instance_type(host_fns);
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -3433,22 +3396,7 @@ pub fn assemble_host_runtime_resource_with_scalar_methods(
 
     // sec 7: TWO instance-types — the host effect (comp type 0, its h ops) then the runtime (comp type 1).
     let type_sec = {
-        let host_it = {
-            let mut decls = Vec::new();
-            for (i, f) in host_fns.iter().enumerate() {
-                decls.push(0x01);
-                decls.extend_from_slice(&f.comp_functype);
-                decls.push(0x04);
-                decls.extend_from_slice(&extern_name(
-                    &crate::backend::common::export_name::kebab_extern_name(&f.op),
-                ));
-                decls.push(0x01);
-                uleb128(i as u64, &mut decls);
-            }
-            let mut it = vec![0x42];
-            it.extend_from_slice(&wasm_vec(2 * h, &decls));
-            it
-        };
+        let host_it = host_effect_instance_type(host_fns);
         let rt_it = {
             let mut decls = Vec::new();
             for (i, op) in imports.iter().enumerate() {
@@ -9090,6 +9038,39 @@ fn memory_alias_item(instance: u32, name: &str) -> Vec<u8> {
 /// `wasm-encoder` does not expose as a constant, pinned by the R0 byte-identity oracle.
 fn list_u8_defined_type() -> Vec<u8> {
     vec![0x70, wasm_abi::COMP_U8]
+}
+
+/// Build the HOST-effect import instance-type (`0x42 <decls>`) from `host_fns`. Each op is a `ty` decl
+/// (`01 <comp_functype>`) + an `export` decl (`04 <name> 01 <func-type-index>`). When ANY op has a
+/// `list<u8>` (Bytes) parameter (`has_list_param`), PREPEND a `(list u8)` defined type as instance-type
+/// type index 0 — a Bytes param's `comp_functype` references it by index 0 — and the per-op func types
+/// then occupy indices `1..=h`, so each export decl references `base + i` where `base = 1`. A pure
+/// scalar/string set (no Bytes param) takes `base = 0`, no prepend, `2*h` decls — byte-identical to the
+/// pre-Bytes shape. Shared by every host-import assembly variant so the prepend/shift is defined once.
+fn host_effect_instance_type(host_fns: &[HostFn]) -> Vec<u8> {
+    let h = host_fns.len();
+    let needs_list = host_fns.iter().any(|f| f.has_list_param);
+    let mut decls = Vec::new();
+    // The prepended `(list u8)` type is a bare `ty` decl (`01 <deftype>`) → instance-type type index 0.
+    if needs_list {
+        decls.push(0x01);
+        decls.extend_from_slice(&list_u8_defined_type());
+    }
+    let base: u64 = if needs_list { 1 } else { 0 };
+    for (i, f) in host_fns.iter().enumerate() {
+        decls.push(0x01);
+        decls.extend_from_slice(&f.comp_functype);
+        decls.push(0x04);
+        decls.extend_from_slice(&extern_name(
+            &crate::backend::common::export_name::kebab_extern_name(&f.op),
+        ));
+        decls.push(0x01); // sort: component func
+        uleb128(base + i as u64, &mut decls);
+    }
+    let decl_count = if needs_list { 2 * h + 1 } else { 2 * h };
+    let mut it = vec![0x42]; // instance type form
+    it.extend_from_slice(&wasm_vec(decl_count, &decls));
+    it
 }
 
 /// The sec-7 defined-type item for a component `tuple<vt0, vt1, …>`: `6f <count> <vt>*` — the component-
