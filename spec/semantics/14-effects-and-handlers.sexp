@@ -2479,6 +2479,77 @@
   (call   main (: 3 Int64)) (output (: 33 Int64))
   (call   main (: 0 Int64)) (output (: 0 Int64)))
 
+(case "a MODULE-exported recursive callee performing per step is homed by the importer's handler"
+  (doc    "The MODULE-EXPORT face of the recursive-callee-performing case above: `walk` is a self-recursive
+           performer of `Ctr.next`, but it lives INSIDE `(module m …)` and is called through the projection
+           `(. m walk)` from the importer's handle body. The handler-context monomorphization must reach the
+           module-exported recursive callee — re-homing its per-step perform (and its recursive self-calls)
+           under the importer's handler — exactly as it does for a bare-named recursive performer (case
+           above). Seeded 1, main(3) reads 1,2,3 as `((10·acc)+next)` → 123. Previously DECLINED (`no
+           enclosing handler here`): the effect-reduction's `callee_def_index_of` followed `Ref` but not
+           `Resolved::Member`, so a module-qualified recursive callee was never specialized under the handler
+           (the module × recursion × effect-context-mono composition gap). Fixed by following the `Member`
+           projection there, mirroring `lower::callee_def_index`. (breaker mo1 witness.)")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (module m
+              (def (walk (: n Int64) (: acc Int64))
+                (if (= n 0) acc (walk (- n 1) (+ (* 10 acc) (Ctr.next unit)))))
+              (export walk))
+            (def (main (: k Int64))
+              (handle Ctr 1
+                ((next (u) s (resume s (+ s 1))))
+                ((. m walk) k 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 123 Int64)))
+
+(case "a MODULE-exported NON-recursive performer is homed by the importer's handler (single perform)"
+  (doc    "The base-case sibling of the recursive module-performer above: `once` is a module-exported
+           NON-recursive fn performing `Ctr.next` ONCE, called via `(. m once)` from the importer's handle
+           body. This single-perform module case ALREADY worked (a non-recursive module callee inlines into
+           the handler context at its one call site) — pinning it guards the module-member call → handler-
+           homing path that the recursive fix's `callee_def_index_of` Member arm also serves, so a future
+           change there can't silently regress the non-recursive module perform. Seeded 5, main(5) reads 5 →
+           100+5 = 105. (breaker mo3 bisect witness.)")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (module m
+              (def (once (: k Int64)) (+ k (Ctr.next unit)))
+              (export once))
+            (def (main (: n Int64))
+              (handle Ctr n
+                ((next (u) s (resume s (+ s 1))))
+                ((. m once) 100)))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 105 Int64)))
+
+(case "MUTUALLY-recursive MODULE-exported performers are both homed by the importer's handler"
+  (doc    "The mutual-recursion escalation of the module-performer fix: `ping`/`pong` are TWO module-exported
+           functions that CROSS-CALL each other, each performing `Ctr.next` per step, entered via `(. m ping)`
+           under the importer's handler. Both must home under that handler — so the effect-context reduction
+           must resolve BOTH module-qualified recursive callees (through the `Member` projection) and
+           specialize the mutual-recursion SCC as a unit. This is the deeper face of the single-recursive
+           module case: the `callee_def_index_of` Member arm covers it because BOTH `ping` and `pong` resolve
+           through the same Member path and the existing mutual-recursion specialization then handles the
+           cross-calls — no separate SCC machinery needed. Seeded 1, the per-run cursor yields 1,2,3 across
+           the three activations (ping→pong→ping); pong doubles its tick, so main(3) = 143. (breaker mm1
+           escalation witness — flips together with mo1, confirming the fix generalizes past single
+           self-recursion to the mutual-recursion SCC.)")
+  (input  (do
+            (effect Ctr (op next (-> Unit Int64)))
+            (module m
+              (def (ping (: n Int64) (: acc Int64))
+                (if (= n 0) acc (pong (- n 1) (+ (* 10 acc) (Ctr.next unit)))))
+              (def (pong (: n Int64) (: acc Int64))
+                (if (= n 0) acc (ping (- n 1) (+ (* 10 acc) (* 2 (Ctr.next unit))))))
+              (export ping) (export pong))
+            (def (main (: k Int64))
+              (handle Ctr 1
+                ((next (u) s (resume s (+ s 1))))
+                ((. m ping) k 0)))
+            (export main)))
+  (call   main (: 3 Int64)) (output (: 143 Int64)))
+
 (case "a performed operation is the scrutinee of a match that dispatches on its result"
   (doc    "Witnesses that an effect operation composes as a match SCRUTINEE, exactly as it composes as an
            `if` condition or an arithmetic operand: `(match (Fresh.next) (0 100) (_ 200))`. The scrutinee is

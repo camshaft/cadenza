@@ -5349,6 +5349,16 @@ fn callee_def_index_of(db: &mut Db, head: StructId) -> Option<usize> {
         Resolved::Ref { value } => db
             .def_index_by_body(value)
             .or_else(|| callee_def_index_of(db, value)),
+        // A MODULE-member call `(. m walk)` resolves to a `Member`; follow it to the field lambda via
+        // `member_value` (exactly as `lower::callee_def_index` does), so a module-EXPORTED recursive
+        // performer is found by the handler-context reduction the same way a bare recursive def is. Without
+        // this arm the merge/base-arm reduction returns `None` for a module callee, so its per-step perform
+        // is never re-homed under the importer's handler → the recursive body lowers standalone → the
+        // "no enclosing handler here" decline (the module × recursion × effect-context-mono composition gap).
+        Resolved::Member { operand, key } => match crate::eval::member_value(db, operand, &key) {
+            crate::eval::Member::Field(v) => callee_def_index_of(db, v),
+            _ => None,
+        },
         _ => None,
     }
 }
