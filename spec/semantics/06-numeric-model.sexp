@@ -3698,6 +3698,24 @@
   (call   main (: 127 Int8)) (output (: 1 Int64))
   (call   main (: 10 Int8)) (output (: 0 Int64)))
 
+; The CONST-FOLD twin of the runtime sign-extend wraps above: a `Prim::Wrap` over a COMPILE-TIME-CONSTANT
+; operand folds at the Core tier (both backends inherit `IntValue::wrap_to(signed, width)` — the value
+; becomes a literal, no runtime wrap op emitted), and it must SIGN-EXTEND from the target's high bit exactly
+; as the runtime narrow wrap does. `(Int8.wrap 128)` folds to -128 (0x80 as s8), `(Int8.wrap 255)` → -1: a
+; fold that masked-unsigned (or skipped the sign-extend) would yield 128 / 255. The runtime signed-wrap
+; sign-extension is pinned above (and at 09-functions `Int8.wrap 200 → -56`), but the CONST-fold value was
+; unpinned — a future refactor of the const `Prim::Wrap` arm could flip the sign-extend silently on both
+; backends. `Int64.of` re-widens the narrowed value so the result is observable as a plain Int64.
+(case "a CONST narrow wrap folds with sign-extension at the target width, matching the runtime wrap"
+  (doc    "`(Int8.wrap 128)` and `(Int8.wrap 255)` are FULLY CONSTANT narrow wraps — they fold at compile
+           time (Core `Prim::Wrap` over a `ConstInt`, via `IntValue::wrap_to(true, 8)`) to -128 and -1
+           respectively: the low 8 bits with bit 7 set read as a SIGNED Int8 (sign-extended), NOT the
+           unsigned 128/255. Pins that the CONST-fold path sign-extends identically to the runtime narrow
+           wrap pinned above; a masked-unsigned fold would observe 128/255. Wrapped in `Int64.of` to widen
+           the narrowed Int8 back to an observable Int64.")
+  (input  (do (def (main) (tuple (Int64.of (Int8.wrap 128)) (Int64.of (Int8.wrap 255)))) (export main)))
+  (call   main) (output (: (tuple -128 -1) (Tuple Int64 Int64))))
+
 (case "the Int64.max and Int64.min CONSTANTS compare equal to their boundary values at runtime"
   (doc    "The prelude boundary constants as runtime COMPARANDS: `(= n Int64.max)` and `(= n Int64.min)`
            over a boundary parameter — the max value hits only the max test (1,0), the min value only the
