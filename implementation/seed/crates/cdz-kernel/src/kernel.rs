@@ -397,7 +397,17 @@ impl Session {
             crate::effect::Timeliness::Interactive,
         );
         request.content_type.family = crate::effect::effect_ct::CAPABILITIES.into();
-        let cause = self.tip_hash();
+        // Cause-link the seed to the GENESIS event (session birth) — not the current tip. Conceptually the
+        // kernel asks control/capabilities on the guest's behalf at t=0, so genesis is the true cause; and
+        // it gives the seed a stable, distinguishing signature (cause==genesis) that a guest-issued query
+        // (cause-linked to an Inbound fold) never has — see `already_seeded_capabilities`. In the normal
+        // "seed immediately after genesis" call the tip IS genesis, so this only matters if a caller seeds
+        // later, but keying on genesis explicitly makes the identity correct regardless of call ordering.
+        let cause = self
+            .log
+            .first()
+            .map(|e| e.hash())
+            .expect("log always has genesis");
         let seed = Effect {
             request,
             token: None,
@@ -406,18 +416,23 @@ impl Session {
             .await
     }
 
-    /// Has this session already been capability-seeded? True iff the log carries a `control/capabilities`
-    /// `Dispatched` frame — the durable trace [`seed_capabilities_async`] leaves. Keys on the durable
-    /// `family` (the recorded seed identity), so it's correct after recovery too (a recovered seeded session
-    /// won't be re-seeded). The seed is the only source of a `control/capabilities` dispatch that the kernel
-    /// itself originates.
+    /// Has this session already been capability-SEEDED (by [`seed_capabilities_async`])? True iff the log
+    /// carries a `control/capabilities` `Dispatched` whose cause is the GENESIS event — the seed's specific
+    /// signature. This deliberately does NOT match a GUEST-issued `control/capabilities` query, which
+    /// appends the same `Dispatched{family}` frame but is cause-linked to an `Inbound` fold, not genesis. A
+    /// guest query answers the manifest but is not "the seed", so keying on `family` alone would (a) let a
+    /// pre-seed guest query suppress the real seed, and (b) misstate the invariant. Cause-linked to genesis
+    /// is the seed's true identity and is replay-stable (the durable cause edge survives recovery).
     fn already_seeded_capabilities(&self) -> bool {
+        let Some(genesis_hash) = self.log.first().map(|e| e.hash()) else {
+            return false;
+        };
         self.log.iter().any(|e| {
             matches!(
                 &e.body,
                 EventBody::Dispatched { family, .. }
                     if family.as_ref() == crate::effect::effect_ct::CAPABILITIES
-            )
+            ) && e.cause == Some(genesis_hash)
         })
     }
 
@@ -2233,6 +2248,72 @@ mod monotonic_now_tests {
             1,
             "still exactly one seed dispatch — never double-seeded"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_prior_guest_capabilities_query_does_not_suppress_the_seed() {
+        use crate::executor::CompositeExecutor;
+        // PR #1704 review: the seed-once guard must key on the SEED's identity (cause==genesis), NOT on
+        // "any control/capabilities dispatch" — else a GUEST-issued capabilities query (same family frame,
+        // but cause-linked to an Inbound) would make already_seeded_capabilities return true and SKIP the
+        // real seed. Here a guest queries capabilities FIRST, then we seed: the seed must still fire.
+        let mut exec = CompositeExecutor::new().with_effect(
+            crate::effect::effect_ct::EMIT,
+            Box::new(RecordingExecutor::new()),
+        );
+        let authz = Authorizer::new(vec![Capability {
+            kind: EffectKind::Emit,
+            predicate: crate::effect::ResourcePredicate::Any,
+        }]);
+        let mut session = Session::genesis(Hash::of(b"guery-then-seed-v1"));
+
+        // Guest issues a control/capabilities query (via an inbound-triggered fold) BEFORE any seed.
+        session
+            .deliver_async(
+                inbound(),
+                None,
+                &CapabilitiesQueryReducer,
+                &authz,
+                &mut exec,
+            )
+            .await
+            .expect("guest query");
+        let cap_dispatches = |s: &Session| {
+            s.log()
+                .iter()
+                .filter(|e| {
+                    matches!(&e.body, EventBody::Dispatched { family, .. }
+                        if family.as_ref() == crate::effect::effect_ct::CAPABILITIES)
+                })
+                .count()
+        };
+        assert_eq!(
+            cap_dispatches(&session),
+            1,
+            "the guest query dispatched one capabilities frame"
+        );
+
+        // Now seed — the guard must NOT be fooled by the guest's frame; the seed must still fire.
+        session
+            .seed_capabilities_async(&InertReducer, &authz, &mut exec)
+            .await;
+        assert_eq!(
+            cap_dispatches(&session),
+            2,
+            "the seed fires despite a prior guest capabilities query (guard keys on cause==genesis)"
+        );
+        // And the genesis-caused (seed) frame is present exactly once.
+        let genesis_hash = session.log()[0].hash();
+        let seed_frames = session
+            .log()
+            .iter()
+            .filter(|e| {
+                matches!(&e.body, EventBody::Dispatched { family, .. }
+                    if family.as_ref() == crate::effect::effect_ct::CAPABILITIES)
+                    && e.cause == Some(genesis_hash)
+            })
+            .count();
+        assert_eq!(seed_frames, 1, "exactly one genesis-caused seed dispatch");
     }
 
     #[tokio::test(flavor = "current_thread")]
