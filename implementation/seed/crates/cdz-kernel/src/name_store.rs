@@ -82,6 +82,9 @@ pub enum NameStoreError {
     /// a `store/resolve` carrying a hash, or a non-`store/*` family. Structural — a malformed store effect,
     /// never a panic.
     MalformedStoreEffect,
+    /// A [`NameStore::from_snapshot_bytes`] blob was malformed: a short length prefix, a truncated/garbage
+    /// frame, or a frame that isn't a valid `name-set`. Total — a corrupt snapshot fails cleanly, not a panic.
+    MalformedSnapshot,
 }
 
 /// The mutable-name store: per-name append-only logs of [`SetEntry`]. In-memory for v0/tests; a durable
@@ -193,6 +196,56 @@ impl NameStore {
             }
         }
         out
+    }
+
+    /// Serialize the whole store to a SINGLE durable-snapshot blob — the §4c cascade-free durability path:
+    /// a backend `blob.put(store.snapshot_bytes())`s this and `from_snapshot_bytes(blob.get(..))`s it back on
+    /// recovery (BlobStore is content-addressed + async, so the snapshot self-verifies by hash). The blob is
+    /// the deterministic [`NameStore::to_set_entries`] stream, each `(name, hash)` a `u32-LE-length`-framed
+    /// [`crate::event_ast::encode_name_set`] frame (the SAME framing `log_store` uses — one shared frame
+    /// discipline). Byte-STABLE (to_set_entries is name-sorted), so the snapshot content-addresses
+    /// identically regardless of insertion history.
+    pub fn snapshot_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for (name, hash) in self.to_set_entries() {
+            let frame = crate::event_ast::encode_name_set(&name, &hash);
+            // u32-LE length prefix, matching the log-store framing (a frame is at most a small name+hash).
+            buf.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&frame);
+        }
+        buf
+    }
+
+    /// Reconstruct a store from a [`NameStore::snapshot_bytes`] blob — the restore half. Reads the framed
+    /// `name-set` stream and replays it via [`NameStore::replay_set_entries`], so the SAME fail-closed
+    /// invariants hold (an Unscoped name in a corrupt/tampered snapshot is rejected). Total: any malformed
+    /// framing (short length prefix, truncated/garbage frame) is a clean `Err`, never a panic — the bytes
+    /// come from a store/CAS, so a corrupt snapshot must fail cleanly (the caller falls back / halts), like
+    /// the session-log `Corrupt` path.
+    pub fn from_snapshot_bytes(bytes: &[u8]) -> Result<NameStore, NameStoreError> {
+        let mut entries: Vec<(String, Hash)> = Vec::new();
+        let mut pos = 0usize;
+        while pos < bytes.len() {
+            let len_end = pos
+                .checked_add(4)
+                .ok_or(NameStoreError::MalformedSnapshot)?;
+            let len_bytes = bytes
+                .get(pos..len_end)
+                .ok_or(NameStoreError::MalformedSnapshot)?;
+            let len = u32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]])
+                as usize;
+            let frame_end = len_end
+                .checked_add(len)
+                .ok_or(NameStoreError::MalformedSnapshot)?;
+            let frame = bytes
+                .get(len_end..frame_end)
+                .ok_or(NameStoreError::MalformedSnapshot)?;
+            let (name, hash) = crate::event_ast::decode_name_set(frame)
+                .map_err(|_| NameStoreError::MalformedSnapshot)?;
+            entries.push((name, hash));
+            pos = frame_end;
+        }
+        Self::replay_set_entries(entries.iter().map(|(n, h)| (n.as_str(), *h)))
     }
 
     /// The §4c write-authority namespace for `name`, by its prefix — the pure classification a Cedar
@@ -518,6 +571,60 @@ mod tests {
             entries,
             "byte-stable regardless of insertion order"
         );
+    }
+
+    #[test]
+    fn snapshot_bytes_round_trips_through_from_snapshot_bytes() {
+        // The single-blob durable snapshot/restore: snapshot_bytes → from_snapshot_bytes reconstructs an
+        // identical store (a backend blob.put's the bytes, from_snapshot_bytes(blob.get(..)) on recovery).
+        let (a1, a2, z1) = (Hash::of(b"a1"), Hash::of(b"a2"), Hash::of(b"z1"));
+        let mut s = NameStore::new();
+        s.set("system/a", SetEntry::unsigned(a1)).unwrap();
+        s.set("system/z", SetEntry::unsigned(z1)).unwrap();
+        s.set("system/a", SetEntry::unsigned(a2)).unwrap();
+
+        let blob = s.snapshot_bytes();
+        let restored = NameStore::from_snapshot_bytes(&blob).expect("valid snapshot round-trips");
+        assert_eq!(restored.resolve("system/a").unwrap(), a2);
+        assert_eq!(restored.resolve("system/z").unwrap(), z1);
+        assert_eq!(
+            restored.to_set_entries(),
+            s.to_set_entries(),
+            "identical store"
+        );
+        // Byte-stable: re-snapshotting the restored store yields identical bytes (content-addresses same).
+        assert_eq!(restored.snapshot_bytes(), blob);
+        // Empty store → empty snapshot → empty store (degenerate round-trip).
+        assert!(NameStore::new().snapshot_bytes().is_empty());
+        assert_eq!(
+            NameStore::from_snapshot_bytes(&[])
+                .unwrap()
+                .to_set_entries(),
+            Vec::<(String, Hash)>::new()
+        );
+    }
+
+    #[test]
+    fn from_snapshot_bytes_is_total_on_a_malformed_blob() {
+        // A corrupt/tampered snapshot fails cleanly (never a panic): a short length prefix, a truncated
+        // frame body, and garbage-in-a-frame all → MalformedSnapshot. (match on the Err — NameStore has no
+        // Debug, so avoid assert_eq's Ok-side formatting.)
+        let is_malformed = |bytes: &[u8]| {
+            matches!(
+                NameStore::from_snapshot_bytes(bytes),
+                Err(NameStoreError::MalformedSnapshot)
+            )
+        };
+        assert!(is_malformed(&[1, 2]), "< 4 bytes: short length prefix");
+        // A length prefix claiming 100 bytes but only 3 present → truncated frame.
+        let mut truncated = 100u32.to_le_bytes().to_vec();
+        truncated.extend_from_slice(&[1, 2, 3]);
+        assert!(is_malformed(&truncated), "truncated frame body");
+        // A well-framed but non-name-set body (garbage) → the frame doesn't decode.
+        let garbage = [0xFFu8; 5];
+        let mut bad = (garbage.len() as u32).to_le_bytes().to_vec();
+        bad.extend_from_slice(&garbage);
+        assert!(is_malformed(&bad), "garbage frame body");
     }
 
     #[test]
