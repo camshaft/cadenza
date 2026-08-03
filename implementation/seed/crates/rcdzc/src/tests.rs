@@ -14851,6 +14851,38 @@ mod runtime_ops {
         ));
     }
 
+    /// adv-67 wasm-side ORACLE PIN (v-rust-backend fixed the RUST half in #1681; wasm is the CORRECT oracle,
+    /// pinned here so a future emit change can't silently regress it — the "pin an edge even if it passes"
+    /// discipline). An ODD-width signed type (`(Int 24)`, stored in the i32 slot) `MIN / -1` must TRAP
+    /// overflow: the quotient +2^23 = 8388608 is OUT of the Int24 range [-2^23, 2^23-1]. The rust bug was a
+    /// guard that tested the SLOT min (`i32::MIN`) instead of the DECLARED min (`-2^23`), so it never fired
+    /// and returned the out-of-range +8388608; wasm's checked `div_s` correctly trapped. The operands are
+    /// derived from RUNTIME Int64 params via `(Int 24).wrap` (a non-aliased width cannot cross as a param
+    /// itself — it declines — AND constant operands would const-fold to CDZ0304 before the runtime guard;
+    /// threading params keeps the `/` opaque to the fold so the emitted div-overflow guard actually runs).
+    /// Also pins the non-overflowing companion (MIN / 1 = MIN, in range → no trap) so the guard is not
+    /// over-broad.
+    #[test]
+    fn an_odd_width_signed_min_divided_by_neg1_traps_overflow_on_wasm() {
+        // Int24 MIN (-2^23 = -8388608) / -1 = +2^23, OUT of Int24 range → must TRAP overflow. `a`,`b` are
+        // runtime Int64 params wrapped to Int24 so the `/` is not const-folded (a constant MIN/-1 is CDZ0304).
+        assert!(traps(
+            "(: a Int64) (: b Int64)",
+            "(/ ((. (Int 24) wrap) a) ((. (Int 24) wrap) b))",
+            &[Val::S64(-8388608), Val::S64(-1)]
+        ));
+        // Companion (guard not over-broad): Int24 MIN / 1 = MIN, IN range → must NOT trap, value = MIN.
+        // A produced Int24 result widens to the next aliased signed width (s32), sign-extended.
+        assert_eq!(
+            run::<i32>(
+                "(: a Int64) (: b Int64)",
+                "(/ ((. (Int 24) wrap) a) ((. (Int 24) wrap) b))",
+                &[Val::S64(-8388608), Val::S64(1)]
+            ),
+            -8388608
+        );
+    }
+
     #[test]
     fn a_provably_in_range_shift_computes_the_same_value_without_a_guard() {
         // A `<<` / `* 2^k` whose result provably fits (a masked operand) has its overflow guard elided —
