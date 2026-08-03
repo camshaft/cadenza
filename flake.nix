@@ -7,8 +7,9 @@
   # SCOPED to exactly its package's inputs (operator directive 2026-08-02: fine-grained cache
   # invalidation), never a monolithic everything-depends-on-everything graph.
   #   N0  — `devShell` reproducing the CI toolchain (rustc pin + wasm-tools + cargo-component).
-  #   N1  — `packages.runtime` : the value-heap RELEASE runtime component, built + stripped +
-  #         content-addressed AS a derivation (this file, below). N2 guest-wasm, N3 tests follow.
+  #   N1  — `packages.runtime` + `packages.runtime-debug` : the value-heap RELEASE and
+  #         DEBUG-COUNTERS runtime components, built + stripped + content-addressed AS fixed-output
+  #         derivations (this file, below). N2 guest-wasm, N3 tests follow.
   #
   # The Rust toolchain is read DIRECTLY from `rust-toolchain.toml` (the load-bearing pin — the
   # recorded `REQUIRED_RUNTIME_HASH` is only reproducible on that exact rustc). `rust-toolchain.toml`
@@ -51,25 +52,28 @@
             targets = [ "wasm32-unknown-unknown" "wasm32-wasip1" ];
           };
 
-        # ── N1: the value-heap RELEASE runtime component AS a derivation ──────────────────────────
+        # ── N1: the value-heap runtime components AS content-addressed derivations ────────────────
         #
-        # This wraps exactly what `xtask build` does for the release runtime (build_component +
-        # canonicalize_runtime in xtask/src/main.rs): `cargo component build --release --target
-        # wasm32-unknown-unknown` on cdz-runtime (with build-std + panic=immediate-abort from its
-        # .cargo/config.toml, enabled on the stable pin via RUSTC_BOOTSTRAP=1), then `wasm-tools
-        # strip -a` to drop the non-deterministic tool-version `producers` sections. The stripped
-        # bytes ARE the store artifact + the thing SHA-256'd into REQUIRED_RUNTIME_HASH.
+        # `xtask build` produces TWO runtime components (build_component + canonicalize_runtime in
+        # xtask/src/main.rs): the RELEASE runtime (what a shipped program pins + composes) and the
+        # DEBUG-COUNTERS runtime (same code + the `live-objects` leak counter, `--features
+        # debug-counters`, that a Perceus leak-check harness composes). Each is `cargo component
+        # build --release --target wasm32-unknown-unknown` on cdz-runtime (build-std +
+        # panic=immediate-abort from its .cargo/config.toml, enabled on the stable pin via
+        # RUSTC_BOOTSTRAP=1), then `wasm-tools strip -a` to drop the non-deterministic tool-version
+        # `producers` sections. The stripped bytes ARE the store artifact + the thing SHA-256'd into
+        # REQUIRED_RUNTIME_HASH / DEBUG_RUNTIME_HASH respectively.
         #
-        # Modeled as a FIXED-OUTPUT DERIVATION whose `outputHash` IS REQUIRED_RUNTIME_HASH: the
-        # Cadenza content-address is sha256(stripped bytes), and a flat FOD's hash is sha256(output
-        # file bytes), so when the output IS exactly the stripped runtime the two hashes coincide.
+        # Each is a FIXED-OUTPUT DERIVATION whose `outputHash` IS the recorded content hash: the
+        # Cadenza content-address is sha256(stripped bytes), and a flat FOD's OUTPUT CONTENT hash is
+        # sha256(output file bytes), so when the output IS exactly the stripped runtime they coincide.
         # This makes Nix ITSELF enforce the parity gate the design doc calls most fragile — if the
-        # build ever produces different bytes, the derivation FAILS to realize (hash mismatch), so a
-        # drift can never silently ship. FOD also grants the network access `cargo` needs to fetch
-        # the (Cargo.lock-pinned) deps, without vendoring them in this slice.
+        # build ever produces different bytes the derivation FAILS to realize (content-hash mismatch),
+        # so a drift can never silently ship. FOD also grants the network `cargo` needs to fetch the
+        # (Cargo.lock-pinned) deps, without vendoring them in this slice.
         #
-        # TIGHTLY SCOPED inputs: only the cdz-runtime crate source (+ the workspace pin files) — NOT
-        # the whole repo — so a change ANYWHERE ELSE does not invalidate this derivation's cache.
+        # TIGHTLY SCOPED inputs: only the cdz-runtime crate source (+ the workspace pin file) — NOT
+        # the whole repo — so a change ANYWHERE ELSE does not invalidate these derivations' cache.
         runtimeSrc = pkgs.lib.fileset.toSource {
           root = ./.;
           fileset = pkgs.lib.fileset.unions [
@@ -78,56 +82,77 @@
           ];
         };
 
-        requiredRuntimeHash =
-          "90f09723549a9658fa209ed6c3483032199ee31d965b515b21c51f6b7f7ebc7a";
+        # Build the value-heap runtime component as a fixed-output derivation. `features` is the
+        # cargo `--features` list (release = [], debug = ["debug-counters"]); `contentHash` is the
+        # recorded content address the stripped bytes MUST reproduce (= the FOD's outputHash).
+        mkRuntime = { pname, features, contentHash }:
+          pkgs.stdenvNoCC.mkDerivation {
+            inherit pname;
+            version = "0.0.0";
+            src = runtimeSrc;
 
-        runtime = pkgs.stdenvNoCC.mkDerivation {
+            nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.cargo-component ];
+
+            # Flat FOD: the output IS the content-addressed stripped runtime, so its CONTENT hash
+            # (sha256 of the file bytes) is the recorded hash. Nix verifies it — this IS the parity
+            # gate. (The nix store-path hash is a distinct derivation-derived hash — not this.)
+            outputHashMode = "flat";
+            outputHashAlgo = "sha256";
+            outputHash = contentHash;
+
+            featuresArg = pkgs.lib.optionalString (features != [ ])
+              ("--features " + pkgs.lib.concatStringsSep "," features);
+
+            buildPhase = ''
+              runHook preBuild
+              export RUSTC_BOOTSTRAP=1
+              # HOME must be writable for cargo/cargo-component caches inside the sandbox.
+              export HOME="$TMPDIR/home"
+              mkdir -p "$HOME"
+              cd implementation/seed/crates/cdz-runtime
+              # --locked: honor the COMMITTED Cargo.lock exactly (the runtime's lock IS committed and
+              # pins deps). Without it `cargo` may re-resolve to different dep versions and rewrite the
+              # lock, which would (a) undermine this FOD's determinism and (b) waste a network fetch
+              # before the output-hash check fails. --locked fails LOUDLY on a stale lock instead.
+              cargo component build --release --target wasm32-unknown-unknown --locked $featuresArg
+              runHook postBuild
+            '';
+
+            # CANONICALIZE (strip the tool-version producers sections) — the same step xtask's
+            # canonicalize_runtime does before hashing. The stripped bytes are the flat FOD output.
+            installPhase = ''
+              runHook preInstall
+              wasm-tools strip -a \
+                target/wasm32-unknown-unknown/release/cdz_runtime.wasm \
+                -o "$out"
+              runHook postInstall
+            '';
+          };
+
+        # The RELEASE runtime — what a shipped program pins (REQUIRED_RUNTIME_HASH).
+        runtime = mkRuntime {
           pname = "cdz-runtime-component";
-          version = "0.0.0";
-          src = runtimeSrc;
+          features = [ ];
+          contentHash = "90f09723549a9658fa209ed6c3483032199ee31d965b515b21c51f6b7f7ebc7a";
+        };
 
-          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools pkgs.cargo-component ];
-
-          # A fixed-output derivation: the output IS the content-addressed stripped runtime, so its
-          # hash is the recorded REQUIRED_RUNTIME_HASH (flat sha256 of the file bytes). Nix verifies
-          # the realized output matches — this IS the parity gate.
-          outputHashMode = "flat";
-          outputHashAlgo = "sha256";
-          outputHash = requiredRuntimeHash;
-
-          buildPhase = ''
-            runHook preBuild
-            export RUSTC_BOOTSTRAP=1
-            # HOME must be writable for cargo/cargo-component caches inside the sandbox.
-            export HOME="$TMPDIR/home"
-            mkdir -p "$HOME"
-            cd implementation/seed/crates/cdz-runtime
-            # --locked: honor the COMMITTED Cargo.lock exactly (the runtime's lock IS committed +
-            # pins deps). Without it `cargo` may re-resolve to different dep versions and rewrite the
-            # lock, which would (a) undermine this FOD's determinism and (b) waste a network fetch
-            # before the output-hash check fails. --locked fails LOUDLY on a stale lock instead.
-            cargo component build --release --target wasm32-unknown-unknown --locked
-            runHook postBuild
-          '';
-
-          # CANONICALIZE (strip the tool-version producers sections) — the same step xtask's
-          # canonicalize_runtime does before hashing. The stripped bytes are the flat FOD output.
-          installPhase = ''
-            runHook preInstall
-            wasm-tools strip -a \
-              target/wasm32-unknown-unknown/release/cdz_runtime.wasm \
-              -o "$out"
-            runHook postInstall
-          '';
+        # The DEBUG-COUNTERS runtime — same code + the `live-objects` leak counter
+        # (`--features debug-counters`); the Perceus leak-check harness composes it (DEBUG_RUNTIME_HASH).
+        runtimeDebug = mkRuntime {
+          pname = "cdz-runtime-component-debug";
+          features = [ "debug-counters" ];
+          contentHash = "9e999a12069f714dedec183b252977355392b281ee8b4a092cf52d80416247a0";
         };
       in
       {
-        # N1: the value-heap release runtime component, content-addressed. `nix build .#runtime`
-        # realizes the stripped runtime; because this is a fixed-output derivation, Nix checks the
-        # output's CONTENT hash (sha256 of the file bytes) == REQUIRED_RUNTIME_HASH and fails the
-        # build on any drift. (The nix STORE-PATH hash is a different, derivation-derived hash — do
-        # NOT locate the artifact by REQUIRED_RUNTIME_HASH; the content hash is what's enforced.)
+        # N1: the value-heap runtime components, content-addressed. `nix build .#runtime` /
+        # `.#runtime-debug` realizes the stripped runtime; because each is a fixed-output derivation,
+        # Nix checks the output's CONTENT hash (sha256 of the file bytes) == the recorded hash
+        # (REQUIRED_RUNTIME_HASH / DEBUG_RUNTIME_HASH) and fails the build on any drift. (The nix
+        # STORE-PATH hash is a different, derivation-derived hash — do NOT locate the artifact by the
+        # content hash; the content hash is what's enforced.)
         packages.runtime = runtime;
+        packages.runtime-debug = runtimeDebug;
 
         devShells.default = pkgs.mkShell {
           # TIGHTLY SCOPED: only what the seed workspace's build/gate actually needs —
