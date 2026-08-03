@@ -11,9 +11,9 @@
   #         DEBUG-COUNTERS runtime components, built + stripped as NORMAL (input-addressed)
   #         derivations; `packages.*-hash` is the content address DERIVED from the built bytes (never
   #         asserted). `checks.*-hash-parity` verifies it equals the committed REQUIRED_RUNTIME_HASH.
-  #   N2  — `packages.reducer-guest` (+ `-hash`) : the cdz-kernel reducer-guest wasm component built
-  #         from source (replaces the committed binary), same hash-falls-out shape. More guests + N3
-  #         tests follow. North star: nix builds every component, the content hash falls out.
+  #   N2  — `packages.reducer-guest` + `packages.cedar-guest` (+ `-hash` each) : the cdz-kernel
+  #         reducer-guest and cdz-agent-host cedar-policy-guest wasm components built from source, same
+  #         hash-falls-out shape. N3 tests follow. North star: nix builds every component, hash falls out.
   #
   # The Rust toolchain is read DIRECTLY from `rust-toolchain.toml` (the load-bearing pin — the
   # recorded `REQUIRED_RUNTIME_HASH` is only reproducible on that exact rustc). `rust-toolchain.toml`
@@ -220,6 +220,58 @@
           '';
         };
 
+        # ── N2: the cedar-policy-guest wasm COMPONENT as a content-addressed derivation ───────────
+        #
+        # `cdz-agent-host`'s cedar_authz_e2e test drives a Cedar authorizer built from a wit-bindgen
+        # guest that embeds the real Cedar decision engine (`cedar-policy = "4"`). That component is
+        # ~3.3 MB, so it was NEVER committed — CI builds it and hands the path to the test via
+        # CEDAR_POLICY_COMPONENT (an optional-skip env; the test skips locally when unset). This builds
+        # it as a derivation instead, so the nix store serves it (no per-consumer rebuild). Same shape
+        # as reducer-guest, with two differences:
+        #   - the WIT is INSIDE the guest crate (`wit_bindgen::generate!({ path: "wit/authorizer.wit" })`),
+        #     so the fileset is JUST the guest dir — no separate wit dir.
+        #   - a 173-package Cedar-engine closure (still one importCargoLock, plain cargo build, no
+        #     build-std). ~37s cold; cached after.
+        cedarGuestVendor = pkgs.rustPlatform.importCargoLock {
+          lockFile =
+            ./implementation/seed/crates/cdz-agent-host/tests/fixtures/cedar-policy-guest/Cargo.lock;
+        };
+        cedarGuestSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./implementation/seed/crates/cdz-agent-host/tests/fixtures/cedar-policy-guest
+            ./rust-toolchain.toml
+          ];
+        };
+        cedarGuest = pkgs.stdenvNoCC.mkDerivation {
+          pname = "cedar-policy-guest-component";
+          version = "0.0.0";
+          src = cedarGuestSrc;
+          nativeBuildInputs = [ rustToolchain pkgs.wasm-tools ];
+          buildPhase = ''
+            runHook preBuild
+            export HOME="$TMPDIR/home"
+            export CARGO_HOME="$TMPDIR/cargo"
+            mkdir -p "$HOME" "$CARGO_HOME"
+            cat > "$CARGO_HOME/config.toml" <<EOF
+            [source.crates-io]
+            replace-with = "vendored-sources"
+            [source.vendored-sources]
+            directory = "${cedarGuestVendor}"
+            EOF
+            cd implementation/seed/crates/cdz-agent-host/tests/fixtures/cedar-policy-guest
+            cargo build --release --target wasm32-unknown-unknown --locked --offline
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            wasm-tools component new \
+              target/wasm32-unknown-unknown/release/cedar_policy_guest.wasm \
+              -o "$out"
+            runHook postInstall
+          '';
+        };
+
         # The content address of a built component = sha256 of its (stripped) bytes. DERIVED from the
         # artifact nix built — this is the Cadenza content-address a program pins, falling out of the
         # build rather than being asserted. Exposed as a `packages.*-hash` (a plain-text store file).
@@ -244,6 +296,12 @@
         # `.#reducer-guest` is the lifted component; `.#reducer-guest-hash` its derived content address.
         packages.reducer-guest = reducerGuest;
         packages.reducer-guest-hash = hashOf reducerGuest "reducer-guest-hash";
+
+        # N2: the cedar-policy-guest wasm component (never committed — CI-built ~3.3 MB). `.#cedar-guest`
+        # is the lifted authorizer component; `.#cedar-guest-hash` its derived content address. A later
+        # increment points cdz-agent-host's CEDAR_POLICY_COMPONENT at this store path.
+        packages.cedar-guest = cedarGuest;
+        packages.cedar-guest-hash = hashOf cedarGuest "cedar-guest-hash";
 
         # PARITY CHECK (not a pin): assert the DERIVED hash of the nix-built runtime equals the hash
         # `xtask codegen` already recorded in runtime_abi.rs. This reads the committed value only to
