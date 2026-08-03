@@ -1784,7 +1784,7 @@ pass	a host effect with a non-kebab NAME crosses under a normalized interface ex
 pass	a host effect with a non-kebab OPERATION name crosses under a normalized func extern name
 pass	a host op whose result is a QUANTITY crosses the boundary as its inner scalar (unit erased)
 pass	a host response SIZES a guest-built collection which is then folded and keyed
-todo	a host result captured by two closures stored in a RECORD fires the host op once (adv-62b)
+pass	a host result captured by two closures stored in a RECORD fires the host op once (adv-62b)
 pass	a host-called closure applied to a different argument tracks the input
 pass	a host-called closure with a different body dispatches the right code
 pass	a host-crossing closure captures a CHAMP map and set and reads both per call

@@ -3319,12 +3319,12 @@ fn emit_value_ord_walk_seen(
     // gate (`sum_is_custom_ord`) excludes it. The `&` handles a non-Copy compound.
     if super::enums::ty_supports_eq(db, ty) {
         // `ty_supports_eq` = the enum/compound DERIVES Eq (hence Ord) — a native `.cmp()` is the Cadenza
-        // order (BigInt/Rational also reach here and have a total `cmp`). A custom-ord sum is NOT Eq-deriving
-        // (it carries a float), so it does not take this path.
-        return Ok(format!("{l}.cmp(&{r})"));
-    }
-    // BigInt/Rational are `Ord` but not yet `ty_supports_eq`-true — still a native `.cmp()`.
-    if matches!(ty, Ty::BigInt | Ty::Rational) {
+        // order. BigInt/Rational reach here too: `ty_derives_eq`'s tail arm returns `true` for them (they map
+        // to `cdz_num::Big`/`Rational`, which derive `Ord`), so this one branch covers them — no separate
+        // BigInt/Rational arm is needed (an earlier one was dead + its comment self-contradicting; dropped per
+        // github-liaison's PR#1617 review). A custom-ord sum is NOT Eq-deriving (it carries a float), so it
+        // does not take this path — it falls through to the `Ty::Sum` walk arm (whose `.cmp()` IS this
+        // `__ord_` helper; short-circuiting here would recurse forever). The `&` handles a non-Copy compound.
         return Ok(format!("{l}.cmp(&{r})"));
     }
     match ty {

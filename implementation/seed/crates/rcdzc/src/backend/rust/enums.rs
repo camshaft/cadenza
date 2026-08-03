@@ -382,8 +382,8 @@ fn emit_one_enum(db: &mut Db, i: usize) -> Result<String, Reject> {
     // `=`/`compare` uses). `sum_is_custom_ord` gates this (monomorphic, float-walkable, no flip-Option). The
     // helpers are emitted alongside (deduped by name). This makes `BTreeSet<Ast>` instantiable with an order
     // that agrees byte-for-byte with the wasm value-cmp walk.
-    if crate::backend::rust::expr::sum_is_custom_ord(db, &sentinel_sum_of(&decl)) {
-        let sum_ty = sentinel_sum_of(&decl); // monomorphic → args empty
+    let sum_ty = sentinel_sum_of(&decl); // monomorphic → args empty
+    if crate::backend::rust::expr::sum_is_custom_ord(db, &sum_ty) {
         let mut helpers: Vec<String> = Vec::new();
         // Delegating bodies (also populate `helpers` with the recursive `__eq_`/`__ord_` fns).
         let eq_body = crate::backend::rust::expr::emit_value_eq_walk(
