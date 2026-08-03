@@ -116,6 +116,7 @@ pass	EDIT DISTANCE rolls a two-row Levenshtein table over string scalars
 pass	EQUILIBRIUM INDEX finds where left and right sums balance using total minus running
 pass	Euclid's GCD runs over MULTI-LIMB BigInts — the remainder loop carries full precision
 pass	FAST-DOUBLING fib recurses on the halved index returning a pair, checked against linear iteration
+pass	FOUR bit-fields with widths 5+7+9+3 decode across three runtime bytes
 pass	FULL CONTRACT: @requires + @ensures on ONE def fire INDEPENDENTLY — a pre-violation and a post-violation trap on DIFFERENT inputs
 pass	Float32 arithmetic runs at 24-bit mantissa precision — 2^24+1 absorbs, 2^24+2 is exact
 pass	Float32 division const-folds at f32 (0.3f32 / 3.0f32 = 0.1f32)
@@ -1078,6 +1079,7 @@ pass	a bit-field value that needs more bits than its width does not fit its segm
 pass	a bit-field wider than a byte packs across the byte boundary big-endian
 pass	a bit-field width that is not a compile-time constant is ill-formed
 pass	a bits pattern segment reads sub-byte fields back into integers
+pass	a bits run spanning TWO bytes decodes MSB-first over a runtime scrutinee
 pass	a bitwise AND on an unusual signed width clears the sign bit to a non-negative result
 pass	a bitwise OR on an unusual signed width sign-extends a result that sets the sign bit
 pass	a bitwise XOR on an unusual signed width sign-extends a result that sets the sign bit
@@ -4945,6 +4947,7 @@ pass	record keys differing only in the float field stay distinct and look up
 pass	record ordering compares in canonical sorted field order, not written order
 pass	record ordering falls to the later canonical field when the earlier ties
 pass	record reshaping is subset comparison as explicit projection
+pass	records reached via MERGE and via WITHOUT dedupe with the direct build as one Set element
 pass	recursive factorial with a match base case
 pass	recursive fibonacci over a RUNTIME argument computes the predecessors correctly
 pass	recursive fibonacci with literal match base cases

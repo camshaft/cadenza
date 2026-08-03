@@ -1594,3 +1594,18 @@
                 (+ (* 10 (. r2 x)) (. r2 y))))
             (export main)))
   (call   main (: true Bool)) (error CDZ0215))
+
+(case "records reached via MERGE and via WITHOUT dedupe with the direct build as one Set element"
+  (doc    "Construction-path canonicalization for RECORDS (the set/bytes/string/BigInt siblings are pinned
+           in their files): `(Record.merge (record (a n)) (record (b 2)))`, `(Record.without (record (a n)
+           (b 2) (c 9)) (c))`, and the direct `(record (a n) (b 2))` are THREE derivation paths to one
+           value — a Set holding all three has len 1. A merge that assembled an unsorted field layout, or
+           a without that left a tombstone slot, splits an element off (2 or 3).")
+  (input  (do
+            (def (main (: n Int64))
+              (do
+                (def via-merge (Record.merge (record (a n)) (record (b 2))))
+                (def via-without (Record.without (record (a n) (b 2) (c 9)) (c)))
+                (Set.len (Set.of (list via-merge via-without (record (a n) (b 2)))))))
+            (export main)))
+  (call   main (: 5 Int64)) (output (: 1 Int64)))
