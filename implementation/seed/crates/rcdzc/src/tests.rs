@@ -24352,6 +24352,48 @@ mod match_engine {
     }
 
     #[test]
+    fn a_nested_generic_ctor_pattern_binds_and_computes_through_the_inner_ctor() {
+        // Coverage-hardening for match-PATTERN resolution when a user-generic ctor pattern NESTS another
+        // ctor pattern (a different resolve path than a type-annotation position): the inner binder must
+        // resolve through both ctor layers and compute. Faces, each construct + match + run:
+        //   (1) user-generic wrapping a BUILT-IN — `(Mk (Some v))` over `(Box (Option Int64))`, both arms;
+        //   (2) user-generic wrapping ITSELF — `(Mk (Mk v))` over `(Box (Box Int64))`.
+        // (1a) (Mk (Some 5)) → v = 5.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type (Box a) (Mk a)) \
+                       (def (main) (match (Mk (Some 5)) ((Mk (Some v)) v) ((Mk (None)) 0))) (export main))"
+                ),
+                "main"
+            ),
+            5
+        );
+        // (1b) the OTHER arm — (Mk (None)) → 99 (the nested-None pattern binds + selects correctly).
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type (Box a) (Mk a)) \
+                       (def (main) (match (Mk (None)) ((Mk (Some v)) v) ((Mk (None)) 99))) (export main))"
+                ),
+                "main"
+            ),
+            99
+        );
+        // (2) user generic wrapping itself — (Mk (Mk 7)) → v = 7.
+        assert_eq!(
+            run_returns::<i64>(
+                &component(
+                    "(module m (type (Box a) (Mk a)) \
+                       (def (main) (match (Mk (Mk 7)) ((Mk (Mk v)) v))) (export main))"
+                ),
+                "main"
+            ),
+            7
+        );
+    }
+
+    #[test]
     fn a_generic_def_monomorphizes_over_a_user_generic_at_two_element_types() {
         // Coverage-hardening for recursive-generic monomorphization when a DEF's parameter/result is a USER
         // generic sum, exercised at TWO distinct element types in one program (each call site
