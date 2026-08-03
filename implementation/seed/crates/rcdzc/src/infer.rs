@@ -10063,9 +10063,11 @@ fn check_application(
         let mut subst = Subst::new();
         if let Some(&first) = args.first() {
             let first_ty = type_of(db, first);
+            let mut homogeneity_fault = false;
             for &e in args.iter().skip(1) {
                 let et = type_of(db, e);
                 if crate::unify::unify(&mut subst, &first_ty, &et).is_err() {
+                    homogeneity_fault = true;
                     // The unify reports the generic CDZ0203. But list homogeneity draws the SAME taxonomy
                     // line the numeric operators and `if`-branches do (05-compound-types): a HOMOGENEITY
                     // violation between two DISTINCT NUMERIC types (`(list 1 2.5)` — Int64 vs Float64, the
@@ -10111,6 +10113,32 @@ fn check_application(
                     {
                         reject = reject.with_fix(fix);
                     }
+                    out.push(reject);
+                }
+            }
+            // RANGE-CHECK each element literal against the SETTLED element type. A list whose element type
+            // is fixed by a SIBLING (`(list (: 1 UInt64) -41)` — the annotated `1` pins `UInt64`, the bare
+            // `-41` unifies in as a deferred int) never re-validated the bare literal against that inferred
+            // width: the outer list carries no annotation, so `nested_literal_width_faults` (annotation-
+            // driven) never ran, and `-41`'s own `type_of` is the `Int64` default — so `cdz check` ACCEPTED
+            // it while wasm SILENTLY WRAPPED (-41 → a huge UInt64) and rust emitted an invalid `u64` init
+            // (E0308) — a backend-divergent miscompile (fuzzer/corpus-bugfix differential). Once the element
+            // type settles, run the same `width_fault_against_ty` the annotation path uses on EACH element
+            // against it. Only when the list was HOMOGENEOUS (no unify fault above — else the element type is
+            // not meaningfully settled and the homogeneity reject is the right one). The FIRST out-of-range
+            // element rejects (CDZ0302), anchored at that element.
+            if !homogeneity_fault {
+                // The settled element type is the JOIN of all element types — it takes the FIXED width/sign
+                // from whichever sibling supplies it, regardless of position (so a leading bare `-41` in
+                // `(list -41 (: 1 UInt64))` is checked against `UInt64` too, not its own deferred `Int64`).
+                let settled = args
+                    .iter()
+                    .skip(1)
+                    .fold(first_ty.clone(), |acc, &e| acc.join(&type_of(db, e)));
+                if let Some(reject) = args
+                    .iter()
+                    .find_map(|&e| width_fault_against_ty(db, e, &settled))
+                {
                     out.push(reject);
                 }
             }
@@ -12509,9 +12537,11 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
             let mut subst = Subst::new();
             if let Some(&first) = elems.first() {
                 let first_ty = type_of(db, first);
+                let mut homogeneity_fault = false;
                 for &e in elems.iter().skip(1) {
                     let et = type_of(db, e);
                     if crate::unify::unify(&mut subst, &first_ty, &et).is_err() {
+                        homogeneity_fault = true;
                         let code = list_homogeneity_code(&first_ty, &et);
                         trace!(target: "rcdzc::infer", node = id.0, ?code, "fault: list elements differ in type");
                         // Two same-dimension DIFFERENT-scale quantities render to the same name (scale
@@ -12536,6 +12566,26 @@ fn collect_node(db: &mut Db, id: StructId, out: &mut Vec<Reject>) {
                             )
                             .at(e),
                         );
+                    }
+                }
+                // RANGE-CHECK each element against the SETTLED element type — the sibling-unification twin of
+                // the `Apply(ListNew)` arm above (see its comment). A homogeneous list whose element width is
+                // fixed by an ANNOTATED sibling (`(list (: 1 UInt64) -41)`) must re-validate each bare literal
+                // against that width, or a `-41`/over-max element slips `cdz check` while wasm wraps + rust
+                // E0308s (the backend-divergent miscompile). Only when homogeneous (else the settled type is
+                // not meaningful and the homogeneity reject stands).
+                if !homogeneity_fault {
+                    // The JOIN of all element types — takes the FIXED width/sign from whichever sibling
+                    // supplies it, position-independently (see the `Apply(ListNew)` arm's comment).
+                    let settled = elems
+                        .iter()
+                        .skip(1)
+                        .fold(first_ty.clone(), |acc, &e| acc.join(&type_of(db, e)));
+                    if let Some(reject) = elems
+                        .iter()
+                        .find_map(|&e| width_fault_against_ty(db, e, &settled))
+                    {
+                        out.push(reject);
                     }
                 }
             }
