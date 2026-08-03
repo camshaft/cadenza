@@ -136,8 +136,8 @@ the first cut?
 
 ## 6. Recommendation & the decisions you're being asked to make
 
-**Overall recommendation (the "real thing, minimally":** real signatures, real prefix authority, real
-append-only signed log — with delegation sequenced right after, not stubbed):
+**Overall recommendation** (the "real thing, minimally"): real signatures, real prefix authority, real
+append-only signed log — with delegation sequenced right after, not stubbed:
 
 1. **Scheme:** ed25519.
 2. **Root key:** a keypair loaded from a configured file on the hub node (P0); IMDS/broker later.

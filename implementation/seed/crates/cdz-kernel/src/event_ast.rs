@@ -241,7 +241,9 @@ pub fn decode_http_request(
 
 /// Encode an HTTP effect RESULT payload — the response the executor produces and the reducer decodes.
 /// Shape: `(http-response (status <int>) (headers ((<k:str> <v:str>) …)) (body <bytes>))`. `status` is the
-/// numeric HTTP status (100–599; a `u16` on the wire as an Int). Same §9b shared-codec rationale.
+/// numeric HTTP status carried as a `u16` on the wire (an Int). This is a transport codec: it faithfully
+/// round-trips ANY `u16` and does NOT enforce the HTTP semantic range (100–599) — asserting a valid status
+/// is the caller's responsibility. Same §9b shared-codec rationale.
 pub fn encode_http_response(status: u16, headers: &[(String, String)], body: &[u8]) -> Vec<u8> {
     let mut b = Builder::new();
     let head = b.name("http-response");
