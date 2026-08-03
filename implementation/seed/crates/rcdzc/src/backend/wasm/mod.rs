@@ -233,7 +233,17 @@ pub fn emit(
         // a nominal directly (the erased-tag frame), closing the recursion on the newtype's decl. Tried
         // before the stripped-sum routing so the name is preserved; a non-recursive nominal (a flat
         // `sum_form_template` exists) still takes the stripped path below.
+        // The un-stripped-nominal recursive-sum route is ONLY for a newtype whose erased inner is a HEAP
+        // value (a recursive sum, a compound) — its `encode()` walks the heap spine. A newtype over a
+        // SCALAR (`(type W (Mk Int64))`) erases to a bare core int with NO heap spine; `sum_shape_descriptor`
+        // still builds a descriptor for its nominal frame, so WITHOUT this guard a scalar newtype was routed
+        // through `emit_recursive_sum_resource` (which expects a heap handle) while its value is a raw i64 →
+        // an invalid module ("expected i32, found i64") for a scalar-newtype value escaping a PARAM'd def
+        // (adv-63b; the nullary case bakes a constant and never reaches here). Gate on the stripped inner
+        // being a resource-escape (heap) type — a scalar-erased newtype falls through to the scalar
+        // `runtime_value_form_template` branch below (which boxes it).
         if matches!(&e.result, crate::ty::Ty::Nominal { .. })
+            && crosses_as_resource_escape(&result)
             && crate::lower::sum_form_template(db, &result).is_none()
             && let Some(desc) = crate::lower::sum_shape_descriptor(db, &e.result)
         {
@@ -323,6 +333,17 @@ pub fn emit(
                     }
                     _ => Some(("box-int", None)),
                 },
+                // A scalar-erased NEWTYPE (`(type W (Mk Int64))`) returned from a PARAMETERIZED def: the
+                // routing top stripped its tag, so `result` is a bare `Ty::Int`. Its runtime value is a raw
+                // core int — `make` must BOX it (`resource-new` takes a heap handle), exactly like the Qty
+                // case. Without this, `make` handed the raw scalar where the boxed handle was expected. Box
+                // with the i32→i64 extend a narrow leaf needs (gate on the SLOT ≤ 32; a mid-width 33..63 is
+                // already an i64 slot). This is the scalar half of the adv-63b fix — the other half gates the
+                // recursive-sum branch above off a scalar newtype so it FALLS THROUGH to here.
+                crate::ty::Ty::Int(it) if it.ground_width() <= 32 => {
+                    Some(("box-int", Some(it.ground_signed())))
+                }
+                crate::ty::Ty::Int(_) => Some(("box-int", None)),
                 _ => None,
             };
             return emit_runtime_resource(db, layout, e.def, &tpl, scalar_box, spans);
