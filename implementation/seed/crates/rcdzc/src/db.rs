@@ -4008,6 +4008,17 @@ impl Db {
             .map(|m| m.occ)
     }
 
+    /// The NAME of the module whose SYNTHESIZED record is `record` (`m` for `(module m …)`), or `None` if
+    /// `record` is not a module's synth record. The name-returning companion of [`Db::module_by_synth_record`]
+    /// — used by `member_category` to name a USER-module member miss "the `m` module has no member `k`"
+    /// (matching the prelude-module arm), instead of leaking the internal "record has no field `k`" spelling.
+    pub fn module_name_by_synth_record(&self, record: StructId) -> Option<&str> {
+        self.modules
+            .iter()
+            .find(|m| m.synth == Some(record))
+            .map(|m| m.name.as_str())
+    }
+
     /// The constructor-field occurrence a BARE variant name denotes — `NLit` for `(type Node (NLit …) …)`,
     /// the same field a qualified `(. Node NLit)` projects. A nullary variant used as a VALUE may be
     /// written bare (`NNil`, not `(. Node NNil)` — `core-semantics.md` §A Sum Type Constructor Is A

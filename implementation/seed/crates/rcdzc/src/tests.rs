@@ -58394,6 +58394,27 @@ mod stage1 {
         );
     }
 
+    #[test]
+    fn an_absent_user_module_member_names_the_module_not_a_record() {
+        // A member miss on a USER `(module m …)` value names the MODULE category — "the `m` module has no
+        // member `secret`" — matching the prelude-module arm, NOT the internal "record has no field"
+        // (a module is a module to the author, not a bare record — the export record is an implementation
+        // detail). `member_category` recognizes it by ORIGIN: the operand reduces to the module's SYNTH
+        // record (`module_name_by_synth_record`), so a NESTED projection `(. (. outer inner) k)` — which has
+        // no operand NAME to key on — is named too. The `secret` def exists but is not exported, so it is
+        // genuinely out of reach through `m`'s export record. Still CDZ0201 (this is a wording fix, not a
+        // code change); the "field" spelling stays reserved for a GENUINE record value.
+        let src = "(module top (module m (def (pub x) (+ x 1)) (def (secret x) (+ x 100)) (export pub)) \
+                    (def (main) ((. m secret) 5)) (export main))";
+        let msg = compile_component(&crate::codec::encode(&parse(src)))
+            .expect_err("an unexported user-module member must decline")
+            .message;
+        assert!(
+            msg.contains("the `m` module has no member `secret`"),
+            "a user-module member miss names the module, not a record: {msg}"
+        );
+    }
+
     // ── arithmetic intrinsics: application of a built-in operation, generic over the integer type ──
 
     #[test]
