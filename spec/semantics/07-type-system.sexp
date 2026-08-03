@@ -222,7 +222,7 @@
 ; handles arity > 1 and the applied-ctor reduction recurses into a nested type-argument.
 
 (case "a MULTI-parameter user generic resolves by name in a type annotation applied with two arguments"
-  (doc    "The arity->1 face of the parenthesized-head resolve: a two-parameter generic `(type (Pair a b)
+  (doc    "The arity-greater-than-1 face of the parenthesized-head resolve: a two-parameter generic `(type (Pair a b)
            (Both a b))` applied with two concrete arguments in an annotation `(: p (Pair Int64 Bool))` must
            resolve by name — the head-param collect harvests BOTH `a` and `b`, and the applied-ctor
            reduction binds both type arguments (the single-param `(Container Int64)` case above exercised
