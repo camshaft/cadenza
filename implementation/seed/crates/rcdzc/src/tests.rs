@@ -66290,6 +66290,31 @@ mod stage1 {
     }
 
     #[test]
+    fn a_host_op_with_two_runtime_bytes_args_declines_cleanly_never_miscompiles() {
+        // The Bytes twin of the two-runtime-STRING-args limit: the `_mem` marshalling uses ONE fixed scratch
+        // region shared by String AND Bytes args, so a host op taking TWO runtime Bytes args (each needing
+        // the copy-loop) would OVERWRITE the first arg's bytes with the second. Rather than miscompile
+        // (silently corrupt arg 1), it DECLINES — the `runtime_string_arg_seen` guard fires on the second
+        // rep-arg regardless of String/Bytes. This PINS the clean decline: a future "support two rep args"
+        // change (a per-arg bump allocator) must marshal them to DISTINCT regions, never share the one
+        // scratch — a regression here is a silent wrong-value at the host boundary. A SINGLE Bytes arg (and
+        // a Bytes+scalar mix) compiles + runs (the corpus pins those); only TWO rep-args that both copy
+        // collide. Assert it declines (Err) and the decline doesn't leak an internal scratch/emit name.
+        let src = "(do (effect io (op sink2 (-> Bytes Bytes Int64))) \
+                   (def (main (: k Int64)) \
+                     (host (io) (io.sink2 (Bytes.of (list ((UInt 8).wrap k))) (Bytes.of (list ((UInt 8).wrap 66)))))) \
+                   (export main))";
+        let err = crate::compile::compile_component(&crate::codec::encode(&parse(src))).expect_err(
+            "two runtime Bytes args share one scratch buffer → must decline, not miscompile",
+        );
+        assert!(
+            err.message.contains("TWO runtime string/Bytes arguments"),
+            "the decline names the shared-scratch limitation (not an internal leak): {}",
+            err.message
+        );
+    }
+
+    #[test]
     fn a_runtime_string_host_arg_handles_empty_and_multibyte_lengths() {
         // EDGE-LENGTH coverage for the `_mem` runtime-string-arg copy loop (the primary test uses a 1-byte
         // string). Two edges an off-by-one in the loop guard `pos >= len → done` would break: (1) an EMPTY
